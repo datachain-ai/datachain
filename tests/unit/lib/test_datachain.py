@@ -947,6 +947,55 @@ def test_map_hydrates_models_in_optional_dict_param(test_session):
     assert chain.to_values("count") == [3]
 
 
+class _Boxed(DataModel):
+    n: int
+
+
+@pytest.mark.parametrize(
+    "annotation,value,stored",
+    [
+        (list[_Boxed], [_Boxed(n=1)], [{"n": 1}]),
+        (tuple[_Boxed, ...], (_Boxed(n=1),), [{"n": 1}]),
+        (dict[str, list[_Boxed]], {"k": [_Boxed(n=1)]}, '{"k":[{"n":1}]}'),
+        (tuple[tuple[_Boxed, ...], ...], ((_Boxed(n=1),),), ['[{"n":1}]']),
+        (tuple[int, int], (1, 2), [1, 2]),
+    ],
+    ids=["list", "tuple", "dict-of-lists", "nested-tuples", "no-models"],
+)
+@skip_if_not_sqlite
+def test_save_writes_models_in_any_collection_as_objects(
+    test_session, annotation, value, stored
+):
+    holder = type("Holder", (DataModel,), {"__annotations__": {"field": annotation}})
+    saved = dc.read_values(c=[holder(field=value)], session=test_session).save("boxed")
+
+    warehouse = test_session.catalog.warehouse
+    table = warehouse.dataset_rows(
+        test_session.catalog.get_dataset("boxed", versions=["1.0.0"])
+    )
+    (row,) = warehouse.db.execute(table.select(table.c("field", "c")))
+
+    assert row[0] == stored
+    assert saved.to_values("c.field")[0] == value
+
+
+def test_read_keeps_working_for_a_tuple_written_before_the_format_changed(test_session):
+    class Holder(DataModel):
+        field: tuple[_Boxed, ...]
+
+    saved = dc.read_values(c=[Holder(field=(_Boxed(n=1),))], session=test_session).save(
+        "legacy"
+    )
+
+    warehouse = test_session.catalog.warehouse
+    table = warehouse.dataset_rows(
+        test_session.catalog.get_dataset("legacy", versions=["1.0.0"])
+    )
+    warehouse.db.execute(table.update().values({"c__field": '["{\\"n\\":1}"]'}))
+
+    assert saved.to_values("c.field")[0] == (_Boxed(n=1),)
+
+
 def test_map_hydrates_models_in_variadic_tuple_param(test_session):
     class TupleCollection(DataModel):
         items: tuple[MyFr, ...]

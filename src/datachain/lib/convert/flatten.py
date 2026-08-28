@@ -1,5 +1,5 @@
 from collections.abc import Generator, Iterator
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, get_args, get_origin
 
 from pydantic import BaseModel
 
@@ -83,12 +83,66 @@ def flatten_list(obj_list: list[BaseModel]) -> tuple:
     )
 
 
-def _flatten_list_field(value: list) -> list:
-    assert isinstance(value, list)
-    if value and ModelStore.is_pydantic(type(value[0])):
-        return [val.model_dump() for val in value]
-    if value and isinstance(value[0], list):
-        return [_flatten_list_field(v) for v in value]
+_BARE_CONTAINERS = (dict, list, tuple, set, frozenset)
+
+
+def _may_hold_model(annotation: Any) -> bool:
+    """Whether a declared type can hold a model, erring towards yes when unsure.
+
+    An erased annotation -- Any, object, a bare container -- says nothing about
+    its contents, so it has to be walked.
+    """
+    if ModelStore.is_pydantic(annotation):
+        return True
+    if annotation is Any or annotation is object or annotation is None:
+        return True
+    args = get_args(annotation)
+    if not args:
+        return get_origin(annotation) is not None or annotation in _BARE_CONTAINERS
+    return any(arg is not Ellipsis and _may_hold_model(arg) for arg in args)
+
+
+def _flatten_sequence(value: Any, annotation: Any) -> Any:
+    args = get_args(annotation)
+    if (
+        get_origin(annotation) is tuple
+        and args
+        and args[-1] is not Ellipsis
+        and len(args) == len(value)
+    ):
+        if not any(_may_hold_model(arg) for arg in args):
+            return value
+        return [
+            _flatten_nested(item, arg) for item, arg in zip(value, args, strict=True)
+        ]
+    item_type = args[0] if args else Any
+    if not _may_hold_model(item_type):
+        return value
+    return [_flatten_nested(item, item_type) for item in value]
+
+
+def _flatten_mapping(value: dict, annotation: Any) -> Any:
+    args = get_args(annotation)
+    value_type = args[1] if len(args) == 2 else Any
+    if not _may_hold_model(value_type):
+        return value
+    return {key: _flatten_nested(item, value_type) for key, item in value.items()}
+
+
+def _flatten_nested(value: Any, annotation: Any) -> Any:
+    """Replace models with their JSON-mode dumps, leaving everything else alone.
+
+    JSON mode is what the warehouse applies to a model it receives directly, so
+    converting here keeps the two paths agreeing on dates, paths and serializers
+    declared for JSON output. A value whose declared type cannot hold a model is
+    returned as it is, so a vector of numbers is never copied.
+    """
+    if ModelStore.is_pydantic(type(value)):
+        return value.model_dump(mode="json")
+    if isinstance(value, (list, tuple)):
+        return _flatten_sequence(value, annotation)
+    if isinstance(value, dict):
+        return _flatten_mapping(value, annotation)
     return value
 
 
@@ -109,13 +163,8 @@ def _flatten_fields_values(fields: dict, obj: BaseModel) -> Generator[Any, None,
         kind = classify_field(f_info.annotation)
         # Direct attribute access skips Pydantic's model_dump().
         value = getattr(obj, name)
-        if isinstance(value, list):
-            yield _flatten_list_field(value)
-        elif isinstance(value, dict):
-            yield {
-                key: val.model_dump() if ModelStore.is_pydantic(type(val)) else val
-                for key, val in value.items()
-            }
+        if isinstance(value, (list, tuple, dict)):
+            yield _flatten_nested(value, f_info.annotation)
         elif kind.is_model:
             if kind.is_optional:
                 if value is None:

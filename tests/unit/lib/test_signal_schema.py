@@ -1580,6 +1580,49 @@ def test_signal_resolving_type_error_with_unpicklable_field():
     assert type(restored) is SignalResolvingTypeError
 
 
+class _FlatItem(BaseModel):
+    n: int
+
+
+@pytest.mark.parametrize(
+    "annotation,value,expected",
+    [
+        (list[_FlatItem], [_FlatItem(n=1)], [{"n": 1}]),
+        (tuple[_FlatItem, ...], (_FlatItem(n=1),), [{"n": 1}]),
+        (dict[str, list[_FlatItem]], {"k": [_FlatItem(n=1)]}, {"k": [{"n": 1}]}),
+        (dict[str, tuple[_FlatItem, ...]], {"k": (_FlatItem(n=1),)}, {"k": [{"n": 1}]}),
+        (list[list[_FlatItem]], [[_FlatItem(n=1)]], [[{"n": 1}]]),
+        (tuple[tuple[_FlatItem, ...], ...], ((_FlatItem(n=1),),), [[{"n": 1}]]),
+        (
+            dict[str, dict[str, _FlatItem]],
+            {"a": {"b": _FlatItem(n=1)}},
+            {"a": {"b": {"n": 1}}},
+        ),
+        (tuple[_FlatItem, int], (_FlatItem(n=1), 7), [{"n": 1}, 7]),
+        (tuple[int, _FlatItem], (7, _FlatItem(n=1)), [7, {"n": 1}]),
+        (tuple[int, int], (1, 2), (1, 2)),
+        (list[int], [1, 2], [1, 2]),
+    ],
+    ids=[
+        "list",
+        "tuple",
+        "dict-of-lists",
+        "dict-of-tuples",
+        "nested-lists",
+        "nested-tuples",
+        "nested-dicts",
+        "fixed-tuple-model-first",
+        "fixed-tuple-model-last",
+        "tuple-without-models-untouched",
+        "list-without-models-untouched",
+    ],
+)
+def test_flatten_converts_models_in_any_collection(annotation, value, expected):
+    holder = type("Holder", (BaseModel,), {"__annotations__": {"field": annotation}})
+
+    assert flatten(holder(field=value)) == (expected,)
+
+
 @pytest.mark.parametrize(
     "schema,hidden_fields",
     [
