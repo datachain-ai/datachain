@@ -1753,10 +1753,11 @@ def test_studio_run_reconnect_resets_counter_on_streaming_data(
 
 def test_studio_job_logs_refused_handshake_aborts(capsys, mocker, studio_token):
     from websockets.datastructures import Headers
+    from websockets.exceptions import InvalidStatus
     from websockets.http11 import Response
 
     def mock_connect(url, additional_headers):
-        raise websockets.exceptions.InvalidStatus(Response(403, "Forbidden", Headers()))
+        raise InvalidStatus(Response(403, "Forbidden", Headers()))
 
     mocker.patch("datachain.remote.studio.websockets.connect", side_effect=mock_connect)
     mocker.patch("datachain.studio.RECONNECT_MAX_ATTEMPTS", 0)
@@ -1780,12 +1781,11 @@ def test_studio_job_logs_transient_handshake_failure_retries(
     capsys, mocker, studio_token
 ):
     from websockets.datastructures import Headers
+    from websockets.exceptions import InvalidStatus
     from websockets.http11 import Response
 
     def mock_connect(url, additional_headers):
-        raise websockets.exceptions.InvalidStatus(
-            Response(503, "Service Unavailable", Headers())
-        )
+        raise InvalidStatus(Response(503, "Service Unavailable", Headers()))
 
     mocker.patch("datachain.remote.studio.websockets.connect", side_effect=mock_connect)
     mocker.patch("datachain.studio.RECONNECT_MAX_ATTEMPTS", 0)
@@ -1814,14 +1814,13 @@ def test_studio_job_logs_terminal_error_on_reconnect_clears_banner(
     capsys, mocker, studio_token
 ):
     from websockets.datastructures import Headers
+    from websockets.exceptions import InvalidStatus
     from websockets.http11 import Response
 
     statuses = [503, 403]
 
     def mock_connect(url, additional_headers):
-        raise websockets.exceptions.InvalidStatus(
-            Response(statuses.pop(0), "", Headers())
-        )
+        raise InvalidStatus(Response(statuses.pop(0), "", Headers()))
 
     mocker.patch("datachain.remote.studio.websockets.connect", side_effect=mock_connect)
     mocker.patch("datachain.studio.RECONNECT_BACKOFF_BASE_SEC", 0)
@@ -1873,7 +1872,9 @@ def test_studio_job_logs_interrupt_during_backoff_clears_banner(
 def test_studio_job_logs_legacy_status_code_attribute_aborts(
     capsys, mocker, studio_token
 ):
-    class LegacyInvalidStatusCode(websockets.exceptions.WebSocketException):
+    from websockets.exceptions import WebSocketException
+
+    class LegacyInvalidStatusCode(WebSocketException):
         status_code = 403
 
     def mock_connect(url, additional_headers):
