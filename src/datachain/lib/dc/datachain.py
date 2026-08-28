@@ -3118,7 +3118,6 @@ class DataChain:
         count = chain.count()
 
         if placement == "filename":
-            # rows whose File arm is inactive carry no path and cannot collide
             path_col = chain.signals_schema.to_db_col(f"{signal}.path")
             named = chain._query.filter(C(path_col).isnot(None))
             if named.distinct(pathfunc.name(C(path_col))).count() != named.count():

@@ -192,6 +192,16 @@ def test_self_referential_model_field_walk_terminates():
     assert is_chain_type(Node)
 
 
+def test_union_serialization_is_order_independent():
+    left, right = SignalSchema({"v": str | int}), SignalSchema({"v": int | str})
+    assert left.serialize() == right.serialize() == {"v": "Union[int, str]"}
+    assert left.hash() == right.hash()
+    assert SignalSchema({"v": str | int | None}).serialize() == {
+        "v": "Union[int, str, NoneType]"
+    }
+    assert SignalSchema.deserialize({"v": "Union[str, int]"}).values["v"] == (int | str)
+
+
 def test_schema_scalar_union_columns():
     schema = SignalSchema({"value": str | int})
     assert schema.db_signals() == ["value___type_tag", "value__int", "value__str"]

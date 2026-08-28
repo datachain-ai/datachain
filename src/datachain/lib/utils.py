@@ -212,7 +212,7 @@ def type_to_str(  # noqa: C901, PLR0911, PLR0912
                 register_pydantic=register_pydantic,
             )
             return f"Optional[{type_str}]"
-        formatted_types = ", ".join(
+        arm_names = [
             type_to_str(
                 arg,
                 subtypes,
@@ -220,8 +220,10 @@ def type_to_str(  # noqa: C901, PLR0911, PLR0912
                 register_pydantic=register_pydantic,
             )
             for arg in args
-        )
-        return f"Union[{formatted_types}]"
+        ]
+        # order-independent arms: one type, one serialization, one schema hash
+        arm_names.sort(key=lambda name: (name == "NoneType", name))
+        return f"Union[{', '.join(arm_names)}]"
     if origin is list:
         args = get_args(type_)
         if len(args) == 0:
