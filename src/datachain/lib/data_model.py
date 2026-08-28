@@ -318,13 +318,23 @@ def arm_selector(arm: Any) -> str:
 
 
 def arm_for_tag(layout: "UnionLayout", tag: Any) -> Any:
-    """Union arm a stored ``_type_tag`` selects; None when the value is absent."""
+    """Union arm a stored ``_type_tag`` selects; None when the value is absent. A tag
+    naming no arm of a multi-arm union is a schema mismatch, not an absent value."""
     for arm in layout.arms:
         if arm_selector(arm) == tag:
             return arm
-    if tag is not None and not isinstance(tag, str):
+    if tag is None:
+        return None
+    if not isinstance(tag, str):
         return _arm_for_index_tag(layout, tag)
+    if layout.use_slots:
+        raise _unknown_tag_error(layout, tag)
     return None
+
+
+def _unknown_tag_error(layout: "UnionLayout", tag: Any) -> OutdatedDatasetFormatError:
+    names = ", ".join(arm_selector(arm) for arm in layout.arms)
+    return OutdatedDatasetFormatError(f"unknown _type_tag {tag!r}: expected {names}")
 
 
 # Index layout, read-only and deprecated (removal: #1949): only ever stored
@@ -334,8 +344,7 @@ LEGACY_PRESENT_TAG = 0
 
 def _arm_for_index_tag(layout: "UnionLayout", tag: Any) -> Any:
     if layout.use_slots:
-        names = ", ".join(arm_selector(arm) for arm in layout.arms)
-        raise OutdatedDatasetFormatError(f"unknown _type_tag {tag!r}: expected {names}")
+        raise _unknown_tag_error(layout, tag)
     _warn_index_tag()
     return layout.arms[0] if tag == LEGACY_PRESENT_TAG else None
 

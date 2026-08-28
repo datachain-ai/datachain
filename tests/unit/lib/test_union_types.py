@@ -355,10 +355,17 @@ def test_union_arm_named_like_the_discriminator_rejected():
         SignalSchema({"value": _type_tag | str}).db_signals()
 
 
-def test_union_value_unknown_arm_name_reads_none():
+def test_single_arm_unknown_tag_reads_none():
     layout = UnionLayout(arms=[Foo], has_none=True, use_slots=False)
     assert _union_value({"v._type_tag": "Gone"}, layout, "v") is None
     assert _union_value({"v._type_tag": None}, layout, "v") is None
+
+
+def test_multi_arm_unknown_tag_errors():
+    schema = SignalSchema({"v": int | str})
+    with pytest.raises(OutdatedDatasetFormatError, match="unknown _type_tag 'Gone'"):
+        schema.row_to_objs(("Gone", 42, None))
+    assert schema.row_to_objs((None, None, None)) == [None]
 
 
 @pytest.fixture
