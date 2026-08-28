@@ -136,20 +136,25 @@ def _match_union_arm(value, layout: UnionLayout) -> int | None:
     if matched := [
         i for i, arm in enumerate(layout.arms) if _arm_matches(value, arm, exact=False)
     ]:
-        return _narrowest_arm(layout.arms, matched)
+        return _narrowest_arm(value, layout.arms, matched)
     raise DataChainParamsError(
         f"value {value!r} does not match any arm of union {layout.arms}"
     )
 
 
-def _narrowest_arm(arms: tuple[Any, ...], matched: list[int]) -> int:
+def _narrowest_arm(value, arms: tuple[Any, ...], matched: list[int]) -> int:
     """The most derived of the ``matched`` arms: a wider arm stores only the fields it
-    declares, so a subclass value would lose the rest. Unrelated arms (multiple
-    inheritance) keep canonical order."""
+    declares, so a subclass value would lose the rest."""
     best = matched[0]
     for i in matched[1:]:
         if issubclass(arms[i], arms[best]):
             best = i
+    if any(not issubclass(arms[best], arms[i]) for i in matched):
+        names = ", ".join(arms[i].__name__ for i in matched)
+        raise DataChainParamsError(
+            f"{type(value).__name__} matches unrelated union arms {names}, so the "
+            "fields of the other arms would be dropped: add it as an arm of its own."
+        )
     return best
 
 

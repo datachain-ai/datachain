@@ -324,6 +324,21 @@ def test_flatten_subclass_matches_narrowest_arm():
     assert restored == {"legs": 4, "stripes": 9}
 
 
+def test_flatten_ambiguous_diamond_arms_error():
+    class A(DataModel):
+        a: int = 1
+
+    class B(DataModel):
+        b: int = 2
+
+    class AB(A, B):
+        pass
+
+    with pytest.raises(DataChainParamsError, match="unrelated union arms A, B"):
+        flatten_value(AB(a=10, b=20), A | B)
+    assert flatten_value(AB(a=10, b=20), A | B | AB)[0] == "AB"
+
+
 def test_flatten_datetime_arm():
     now = datetime(2024, 1, 2, 3, 4, 5)
     _, restored = _roundtrip(now, str | datetime)
