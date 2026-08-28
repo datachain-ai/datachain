@@ -13,7 +13,7 @@ is not stable across backends for generated rows.
 """
 
 import json
-from typing import Optional, Union
+from typing import Literal, Optional, Union
 
 import pytest
 
@@ -47,6 +47,20 @@ class _Dog(DataModel):
 
 class _PetHolder(DataModel):
     pet: Union[_Cat, _Dog]
+
+
+class _HumanLabel(DataModel):
+    kind: Literal["human"] = "human"
+    label: str = ""
+
+
+class _ModelLabel(DataModel):
+    kind: Literal["model"] = "model"
+    label: str = ""
+
+
+class _Labelled(DataModel):
+    labels: list[Union[_HumanLabel, _ModelLabel]] = []  # noqa: RUF012
 
 
 def _ordered(chain, *cols):
@@ -188,6 +202,30 @@ def test_union_nested_same_shaped_arms_roundtrip(test_session):
     ).save("u_nested_same_shape")
     back = _ordered(dc.read_dataset("u_nested_same_shape", session=test_session), "h")
     assert back[0][1].pet == _Dog(name="fido")
+
+
+def test_same_shaped_arms_in_a_collection_rejected(test_session):
+    class _Pets(DataModel):
+        pets: list[Union[_Cat, _Dog]] = []  # noqa: RUF012
+
+    with pytest.raises(DataChainParamsError, match="are indistinguishable"):
+        dc.read_values(
+            id=[1],
+            p=[_Pets()],
+            output={"id": int, "p": _Pets},
+            session=test_session,
+        )
+
+
+def test_literal_discriminator_keeps_arm_inside_a_collection(test_session):
+    dc.read_values(
+        id=[1],
+        s=[_Labelled(labels=[_ModelLabel(label="dog"), _HumanLabel(label="cat")])],
+        output={"id": int, "s": _Labelled},
+        session=test_session,
+    ).save("u_json_discriminated")
+    back = _ordered(dc.read_dataset("u_json_discriminated", session=test_session), "s")
+    assert back[0][1].labels == [_ModelLabel(label="dog"), _HumanLabel(label="cat")]
 
 
 # ---- ingestion via map -----------------------------------------------------

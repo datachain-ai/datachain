@@ -9,7 +9,7 @@ round-trips for every union kind (basic/basic, model/model, mixed, nullable).
 
 import copy
 from datetime import datetime
-from typing import Optional, Union
+from typing import Literal, Optional, Union
 
 import pytest
 
@@ -118,6 +118,93 @@ def test_is_chain_type_multiarm_union():
     assert is_chain_type(Union[Foo, Bar])
     assert is_chain_type(Union[str, int, Foo])
     assert is_chain_type(Union[str, int, None])
+
+
+def test_same_shaped_arms_rejected_inside_a_collection():
+    class Human(DataModel):
+        label: str = ""
+
+    class Machine(DataModel):
+        label: str = ""
+
+    class Holder(DataModel):
+        items: list[Union[Human, Machine]] = []  # noqa: RUF012
+
+    class DeepHolder(DataModel):
+        items: list[Holder] = []  # noqa: RUF012
+
+    class KeyedHolder(DataModel):
+        items: dict[str, Union[Human, Machine]] = {}  # noqa: RUF012
+
+    assert is_chain_type(Union[Human, Machine])
+    for anno in (
+        Holder,
+        DeepHolder,
+        KeyedHolder,
+        list[Union[Human, Machine]],
+        dict[str, Union[Human, Machine]],
+        Optional[list[Union[Human, Machine]]],
+    ):
+        with pytest.raises(DataChainParamsError, match="are indistinguishable"):
+            is_chain_type(anno)
+
+    with pytest.raises(DataChainParamsError, match=r"`Holder\.items`"):
+        is_chain_type(DeepHolder)
+
+
+def test_same_shaped_arms_rejected_whatever_the_field_order():
+    class Human(DataModel):
+        label: str = ""
+
+    class Machine(DataModel):
+        label: str = ""
+
+    class Inner(DataModel):
+        pet: Union[Human, Machine]
+
+    class Wrapped(DataModel):
+        wrapped: list[Inner] = []  # noqa: RUF012
+        direct: Inner = Inner(pet=Human())
+
+    with pytest.raises(DataChainParamsError, match=r"`Inner\.pet`"):
+        is_chain_type(Wrapped)
+
+
+def test_differently_shaped_arms_allowed_inside_a_collection():
+    class Human(DataModel):
+        label: str = ""
+
+    class Machine(DataModel):
+        score: float = 0.0
+
+    class Holder(DataModel):
+        items: list[Union[Human, Machine]] = []  # noqa: RUF012
+
+    assert is_chain_type(Holder)
+
+
+def test_literal_discriminator_allows_same_shaped_arms():
+    class Human(DataModel):
+        kind: Literal["human"] = "human"
+        label: str = ""
+
+    class Machine(DataModel):
+        kind: Literal["machine"] = "machine"
+        label: str = ""
+
+    class Holder(DataModel):
+        items: list[Union[Human, Machine]] = []  # noqa: RUF012
+
+    assert is_chain_type(Holder)
+
+
+def test_self_referential_model_field_walk_terminates():
+    class Node(DataModel):
+        name: str = ""
+        child: "Node | None" = None
+
+    Node.model_rebuild()
+    assert is_chain_type(Node)
 
 
 def test_schema_scalar_union_columns():

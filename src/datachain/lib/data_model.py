@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
 from functools import lru_cache
-from typing import Any, ClassVar, NamedTuple, Union, get_args, get_origin
+from typing import Any, ClassVar, Literal, NamedTuple, Union, get_args, get_origin
 
 from pydantic import AliasChoices, BaseModel, Field, create_model
 from pydantic.fields import FieldInfo
@@ -381,6 +381,7 @@ def promote_default_none(model: type[BaseModel]) -> None:
 
 def is_chain_type(t: type) -> bool:
     """Return true if type is supported by `DataChain`."""
+    _reject_json_union_arms(t)
     if ModelStore.is_pydantic(t):
         return True
     if any(t is ft or t is get_args(ft)[0] for ft in get_args(StandardType)):
@@ -407,16 +408,17 @@ def _is_chain_container_type(t: type) -> bool:
 
     orig, args = get_origin(t), get_args(t)
     if orig is list and len(args) == 1:
-        _reject_list_of_model_union(args[0])
+        _reject_collection_of_model_union(args[0], "list")
         return is_chain_type(args[0])
     if orig is dict and len(args) == 2:
+        _reject_collection_of_model_union(args[1], "dict")
         return is_chain_type(args[0]) and is_chain_type(args[1])
     return False
 
 
-def _reject_list_of_model_union(elem: Any) -> None:
-    """Reject a list of a union with a DataModel arm (model elements collapse to
-    dicts on read; scalar arms round-trip via JSON)."""
+def _reject_collection_of_model_union(elem: Any, kind: str) -> None:
+    """Reject a signal-level collection whose element type is a union with a DataModel
+    arm (such elements read back as plain dicts; scalar arms round-trip via JSON)."""
     layout = union_layout(elem)
     if (
         layout is not None
@@ -424,9 +426,66 @@ def _reject_list_of_model_union(elem: Any) -> None:
         and any(ModelStore.is_pydantic(arm) for arm in layout.arms)
     ):
         raise DataChainParamsError(
-            "list[Union[...]] with a DataModel arm is not supported: list elements "
+            f"{kind}[Union[...]] with a DataModel arm is not supported: elements "
             "lose their model type. Put the Union inside a DataModel field instead."
         )
+
+
+def _reject_json_union_arms(anno: Any) -> None:
+    """A collection is one JSON cell with no ``_type_tag``: below one, an arm is
+    recovered from the value's shape, so same-shaped arms read back as the wrong arm."""
+    # (annotation, whether a collection was crossed, nearest enclosing model field)
+    stack: list[tuple[Any, bool, str]] = [(anno, False, "")]
+    seen: set[tuple[type[BaseModel], bool]] = set()
+    while stack:
+        current, in_json, where = stack.pop()
+        inner, _ = unwrap_optional(current)
+        arms, _ = union_arms(inner)
+        if len(arms) >= 2:
+            if in_json:
+                _reject_same_shaped_arms(arms, where)
+            stack.extend((arm, in_json, where) for arm in arms)
+            continue
+        if get_origin(inner) in (list, dict):
+            stack.extend((arg, True, where) for arg in get_args(inner))
+            continue
+        fr = ModelStore.to_pydantic(inner)
+        # a model is walked once per in_json state: the same field is safe as a
+        # column and unsafe inside a JSON cell
+        if fr is not None and (fr, in_json) not in seen:
+            seen.add((fr, in_json))
+            stack.extend(
+                (f_info.annotation, in_json, f"{fr.__name__}.{name}")
+                for name, f_info in fr.model_fields.items()
+            )
+
+
+def _reject_same_shaped_arms(arms: Sequence[Any], where: str) -> None:
+    groups: dict[frozenset[str], list[Any]] = {}
+    for arm in arms:
+        if (fr := ModelStore.to_pydantic(arm)) is not None:
+            groups.setdefault(frozenset(fr.model_fields), []).append(fr)
+    for group in groups.values():
+        if len(group) > 1 and not _literal_discriminator(group):
+            names = ", ".join(arm.__name__ for arm in group)
+            location = f"`{where}`" if where else "a list or dict"
+            raise DataChainParamsError(
+                f"Union arms {names} are indistinguishable inside {location}: "
+                'add a field like `kind: Literal["human"]`.'
+            )
+
+
+def _literal_discriminator(arms: Sequence[type[BaseModel]]) -> bool:
+    """Whether some field is a ``Literal`` in every arm with disjoint values, which is
+    what lets pydantic pick the arm by value."""
+    for name in set.intersection(*(set(arm.model_fields) for arm in arms)):
+        annos = [arm.model_fields[name].annotation for arm in arms]
+        if any(get_origin(anno) is not Literal for anno in annos):
+            continue
+        values = [frozenset(get_args(anno)) for anno in annos]
+        if len(frozenset().union(*values)) == sum(len(v) for v in values):
+            return True
+    return False
 
 
 def dict_to_data_model(
