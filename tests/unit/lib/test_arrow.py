@@ -32,6 +32,7 @@ def test_arrow_generator_constructor_hash():
             input_schema=input_schema,
             output_schema=output_schema,
             nrows=nrows,
+            _generated_output_schema=True,
             parse_options=parse_options,
             format=CsvFileFormat(parse_options=parse_options),
         )

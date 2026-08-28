@@ -1,6 +1,6 @@
 import pandas as pd
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 import datachain as dc
 from datachain import func
@@ -105,6 +105,31 @@ def test_read_csv_single_file_is_deterministic(test_session, tmp_dir):
     h2 = dc.read_csv(path.as_uri(), session=test_session)._query.hash()
     assert is_sha256_hex(h1)
     assert h1 == h2
+
+
+def test_read_csv_user_output_model_behavior_changes_hash(test_session, tmp_dir):
+    def make_model(uppercase):
+        class Row(BaseModel):
+            value: str
+
+            @field_validator("value")
+            @classmethod
+            def transform(cls, value):
+                return value.upper() if uppercase else value.lower()
+
+        return Row
+
+    path = tmp_dir / "test.csv"
+    pd.DataFrame({"value": ["MiXeD"]}).to_csv(path, index=False)
+
+    uppercase = dc.read_csv(
+        path.as_uri(), output=make_model(True), session=test_session
+    )
+    lowercase = dc.read_csv(
+        path.as_uri(), output=make_model(False), session=test_session
+    )
+
+    assert uppercase._query.hash() != lowercase._query.hash()
 
 
 def test_read_csv_multi_file_glob_is_deterministic(test_session, tmp_dir):

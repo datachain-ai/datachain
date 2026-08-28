@@ -2537,7 +2537,9 @@ class DataChain:
             except ValueError as e:
                 raise DatasetPrepareError(self.name, e) from e
 
+        generated_output_schema = False
         if isinstance(output, dict):
+            generated_output_schema = True
             model_name = model_name or column or ""
             model = dict_to_data_model(model_name, output)
             output = model
@@ -2563,6 +2565,7 @@ class DataChain:
                 model,
                 source,
                 nrows,
+                _generated_output_schema=generated_output_schema,
                 parse_options=parse_options,
                 **kwargs,
             ),
