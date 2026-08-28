@@ -327,6 +327,19 @@ class StudioClient:
                         logger.error("Error receiving websocket message: %s", e)
                         break
         except (websockets.exceptions.WebSocketException, OSError) as e:
+            # Studio rejects the handshake with 403 for an unknown team, an
+            # invalid token, or a missing job_id; retrying cannot fix those.
+            # Any other status (a 5xx from a gateway mid-deploy) is transient.
+            response = getattr(e, "response", None)
+            status = getattr(response, "status_code", None) or getattr(
+                e, "status_code", None
+            )
+            if status in (401, 403):
+                raise DataChainError(
+                    f"Studio refused the log stream connection (HTTP {status})."
+                    f" Check the team name ({self.team}) and your token."
+                ) from e
+
             logger.debug("WebSocket connection failed: %s", e)
             return
 

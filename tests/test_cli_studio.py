@@ -1751,6 +1751,173 @@ def test_studio_run_reconnect_resets_counter_on_streaming_data(
     assert "Max reconnect attempts reached:" in caplog.text
 
 
+def test_studio_job_logs_refused_handshake_aborts(capsys, mocker, studio_token):
+    from websockets.datastructures import Headers
+    from websockets.http11 import Response
+
+    def mock_connect(url, additional_headers):
+        raise websockets.exceptions.InvalidStatus(Response(403, "Forbidden", Headers()))
+
+    mocker.patch("datachain.remote.studio.websockets.connect", side_effect=mock_connect)
+    mocker.patch("datachain.studio.RECONNECT_MAX_ATTEMPTS", 0)
+
+    with requests_mock.mock() as m:
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "RUNNING"}],
+        )
+
+        exit_code = main(["job", "logs", str(uuid.uuid4())])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "Studio refused the log stream connection (HTTP 403)" in captured.err
+    assert "team_name" in captured.err
+    assert "reconnecting in" not in captured.out
+
+
+def test_studio_job_logs_transient_handshake_failure_retries(
+    capsys, mocker, studio_token
+):
+    from websockets.datastructures import Headers
+    from websockets.http11 import Response
+
+    def mock_connect(url, additional_headers):
+        raise websockets.exceptions.InvalidStatus(
+            Response(503, "Service Unavailable", Headers())
+        )
+
+    mocker.patch("datachain.remote.studio.websockets.connect", side_effect=mock_connect)
+    mocker.patch("datachain.studio.RECONNECT_MAX_ATTEMPTS", 0)
+
+    with requests_mock.mock() as m:
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "COMPLETE"}],
+        )
+        m.get(
+            re.compile(
+                rf"^{re.escape(STUDIO_URL)}/api/datachain/datasets/dataset_job_versions"
+            ),
+            json={"dataset_versions": []},
+        )
+
+        exit_code = main(["job", "logs", str(uuid.uuid4())])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert ">>>> Job is now in COMPLETE status." in captured.out
+    assert "refused the log stream connection" not in captured.err
+
+
+def test_studio_job_logs_terminal_error_on_reconnect_clears_banner(
+    capsys, mocker, studio_token
+):
+    from websockets.datastructures import Headers
+    from websockets.http11 import Response
+
+    statuses = [503, 403]
+
+    def mock_connect(url, additional_headers):
+        raise websockets.exceptions.InvalidStatus(
+            Response(statuses.pop(0), "", Headers())
+        )
+
+    mocker.patch("datachain.remote.studio.websockets.connect", side_effect=mock_connect)
+    mocker.patch("datachain.studio.RECONNECT_BACKOFF_BASE_SEC", 0)
+
+    with requests_mock.mock() as m:
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "RUNNING"}],
+        )
+
+        exit_code = main(["job", "logs", str(uuid.uuid4())])
+
+    assert exit_code == 1
+    assert not statuses
+    captured = capsys.readouterr()
+    assert "Studio refused the log stream connection (HTTP 403)" in captured.err
+    assert "reconnecting in" in captured.out
+    assert re.search(r" {10,}\r", captured.out)
+
+
+def test_studio_job_logs_interrupt_during_backoff_clears_banner(
+    capsys, mocker, studio_token
+):
+    async def mock_tail_job_logs(jid, no_follow=False):
+        return
+        yield
+
+    mocker.patch(
+        "datachain.studio.StudioClient.tail_job_logs",
+        side_effect=mock_tail_job_logs,
+    )
+    mocker.patch("datachain.studio.asyncio.sleep", side_effect=KeyboardInterrupt)
+
+    with requests_mock.mock() as m:
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "RUNNING"}],
+        )
+
+        exit_code = main(["job", "logs", str(uuid.uuid4())])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "reconnecting in" in captured.out
+    assert re.search(r" {10,}\r", captured.out)
+    assert "Operation cancelled by the user" in captured.err
+
+
+def test_studio_job_logs_legacy_status_code_attribute_aborts(
+    capsys, mocker, studio_token
+):
+    class LegacyInvalidStatusCode(websockets.exceptions.WebSocketException):
+        status_code = 403
+
+    def mock_connect(url, additional_headers):
+        raise LegacyInvalidStatusCode
+
+    mocker.patch("datachain.remote.studio.websockets.connect", side_effect=mock_connect)
+    mocker.patch("datachain.studio.RECONNECT_MAX_ATTEMPTS", 0)
+
+    with requests_mock.mock() as m:
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "RUNNING"}],
+        )
+
+        exit_code = main(["job", "logs", str(uuid.uuid4())])
+
+    assert exit_code == 1
+    assert "HTTP 403" in capsys.readouterr().err
+
+
+def test_studio_job_logs_server_error_frame_aborts(capsys, mocker, studio_token):
+    async def mock_tail_job_logs(jid, no_follow=False):
+        yield {"message": "Job ID is incorrect or not found"}
+
+    mocker.patch(
+        "datachain.studio.StudioClient.tail_job_logs",
+        side_effect=mock_tail_job_logs,
+    )
+    mocker.patch("datachain.studio.RECONNECT_MAX_ATTEMPTS", 0)
+
+    with requests_mock.mock() as m:
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "RUNNING"}],
+        )
+
+        exit_code = main(["job", "logs", str(uuid.uuid4())])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "Job ID is incorrect or not found" in captured.err
+    assert "Failed to reconnect" not in captured.out
+
+
 def test_unpacker_hook_unknown_ext_type():
     import msgpack
 
