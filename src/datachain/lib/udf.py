@@ -229,7 +229,7 @@ def _hash_constructor_args(
 ) -> str:
     try:
         return hash_value(arguments)
-    except TypeError as exc:
+    except (TypeError, RecursionError) as exc:
         if warn_on_unsupported:
             logger.warning(
                 "%s; cache reuse across UDF instances is disabled",

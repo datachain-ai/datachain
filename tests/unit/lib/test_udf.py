@@ -282,6 +282,27 @@ def test_class_udf_unsupported_constructor_values_do_not_reuse_cache(config):
     assert udf_a.hash() != udf_b.hash()
 
 
+def test_class_udf_cyclic_constructor_value_disables_cache_reuse():
+    class Configured(Mapper):
+        def __init__(self, config):
+            self.config = config
+
+        def process(self, x: int) -> int:
+            return x
+
+    config = {}
+    config["self"] = config
+    first = Configured(config)
+    second = Configured(config)
+    sign_a = get_sign(first, output="y")
+    sign_b = get_sign(second, output="y")
+    udf_a = Mapper._create(sign_a, sign_a.output_schema)
+    udf_b = Mapper._create(sign_b, sign_b.output_schema)
+
+    assert udf_a.hash() == udf_a.hash()
+    assert udf_a.hash() != udf_b.hash()
+
+
 @pytest.mark.parametrize(
     "first_key,second_key,matches",
     [

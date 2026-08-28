@@ -745,6 +745,16 @@ def test_opaque_param_value_has_stable_identity_within_operation():
     assert spec.identity("m") == spec.identity("m")
 
 
+def test_cyclic_param_value_disables_cache_reuse():
+    options = {}
+    options["self"] = options
+    first = llm.complete("t", options=options)
+    second = llm.complete("t", options=options)
+
+    assert first.identity("m") == first.identity("m")
+    assert first.identity("m") != second.identity("m")
+
+
 def test_stable_param_values_have_stable_identity():
     first = llm.complete("t", temperature=0.0, opt={"a": 1}).identity("m")
     second = llm.complete("t", temperature=0.0, opt={"a": 1}).identity("m")

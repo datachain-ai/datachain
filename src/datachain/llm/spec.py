@@ -50,10 +50,14 @@ def _without_secrets(value: Any) -> Any:
     return value
 
 
-def _normalize_identity_value(value: Any, fallback: str) -> Any:
+def _normalize_identity_value(
+    value: Any, fallback: str, *, remove_secrets: bool = False
+) -> Any:
     try:
+        if remove_secrets:
+            value = _without_secrets(value)
         return normalize_hash_value(value, sort_dicts=True)
-    except TypeError as exc:
+    except (TypeError, RecursionError) as exc:
         logger.warning("%s; cache reuse for this LLM operation is disabled", exc)
         return ("unsupported", fallback)
 
@@ -187,7 +191,6 @@ class LLMSpec(BoundSpec):
         params = self.params
         if isinstance(llm_params, dict):
             params = {**llm_params, **self.params}
-        params = _without_secrets(params)
         return (
             self.kind,
             model,
@@ -198,7 +201,9 @@ class LLMSpec(BoundSpec):
             self.context_col,
             self.type,
             self.include_usage,
-            _normalize_identity_value(params, self._identity_fallback),
+            _normalize_identity_value(
+                params, self._identity_fallback, remove_secrets=True
+            ),
         )
 
     def _resolve_model(self, settings: "Settings") -> str:
