@@ -1787,13 +1787,19 @@ def test_studio_job_logs_transient_handshake_failure_retries(
     def mock_connect(url, additional_headers):
         raise InvalidStatus(Response(503, "Service Unavailable", Headers()))
 
-    mocker.patch("datachain.remote.studio.websockets.connect", side_effect=mock_connect)
-    mocker.patch("datachain.studio.RECONNECT_MAX_ATTEMPTS", 0)
+    connect = mocker.patch(
+        "datachain.remote.studio.websockets.connect", side_effect=mock_connect
+    )
+    mocker.patch("datachain.studio.RECONNECT_MAX_ATTEMPTS", 1)
+    mocker.patch("datachain.studio.asyncio.sleep")
 
     with requests_mock.mock() as m:
         m.get(
             re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
-            json=[{"status": "COMPLETE"}],
+            [
+                {"json": [{"status": "RUNNING"}]},
+                {"json": [{"status": "COMPLETE"}]},
+            ],
         )
         m.get(
             re.compile(
@@ -1805,7 +1811,9 @@ def test_studio_job_logs_transient_handshake_failure_retries(
         exit_code = main(["job", "logs", str(uuid.uuid4())])
 
     assert exit_code == 0
+    assert connect.call_count == 2
     captured = capsys.readouterr()
+    assert ">>>> Job is now in RUNNING status." in captured.out
     assert ">>>> Job is now in COMPLETE status." in captured.out
     assert "refused the log stream connection" not in captured.err
 
