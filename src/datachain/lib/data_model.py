@@ -434,7 +434,6 @@ def _reject_collection_of_model_union(elem: Any, kind: str) -> None:
 def _reject_json_union_arms(anno: Any) -> None:
     """A collection is one JSON cell with no ``_type_tag``: below one, an arm is
     recovered from the value's shape, so same-shaped arms read back as the wrong arm."""
-    # (annotation, whether a collection was crossed, nearest enclosing model field)
     stack: list[tuple[Any, bool, str]] = [(anno, False, "")]
     seen: set[tuple[type[BaseModel], bool]] = set()
     while stack:
@@ -450,8 +449,7 @@ def _reject_json_union_arms(anno: Any) -> None:
             stack.extend((arg, True, where) for arg in get_args(inner))
             continue
         fr = ModelStore.to_pydantic(inner)
-        # a model is walked once per in_json state: the same field is safe as a
-        # column and unsafe inside a JSON cell
+        # once per in_json state: a field is safe as a column, not inside a JSON cell
         if fr is not None and (fr, in_json) not in seen:
             seen.add((fr, in_json))
             stack.extend(

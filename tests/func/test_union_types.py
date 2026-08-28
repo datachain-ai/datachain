@@ -1,7 +1,8 @@
 """Functional tests for multi-arm ``Union[...]`` support (tagged unions).
 
 Covers every union kind end to end — ``Union[basic, basic]``,
-``Union[Model, Model]``, mixed ``Union[basic, Model]`` and nullable
+``Union[Model, Model]`` (arms declaring the same fields included), mixed
+``Union[basic, Model]`` and nullable
 ``Union[..., None]`` — through ``read_values`` / ``map`` ingestion, ``save``
 round-trips, parquet/JSON export, and the query ops (filter / mutate / select /
 group_by / isnone / count / union). The active arm is stored under a ``_type_tag``
@@ -202,6 +203,44 @@ def test_union_nested_same_shaped_arms_roundtrip(test_session):
     ).save("u_nested_same_shape")
     back = _ordered(dc.read_dataset("u_nested_same_shape", session=test_session), "h")
     assert back[0][1].pet == _Dog(name="fido")
+
+
+def test_same_shaped_arms_survive_ops(test_session, tmp_path):
+    pets = [_Dog(name="fido"), _Cat(name="tom")]
+    dc.read_values(
+        id=[1, 2],
+        pet=pets,
+        output={"id": int, "pet": Union[_Cat, _Dog]},
+        session=test_session,
+    ).save("u_same_shape_ops")
+    saved = dc.read_dataset("u_same_shape_ops", session=test_session)
+    assert [v for _, v in _ordered(saved, "pet")] == pets
+
+    path = str(tmp_path / "same_shape.parquet")
+    saved.order_by("id").to_parquet(path)
+    from_parquet = dc.read_parquet(path, session=test_session)
+    assert [v for _, v in _ordered(from_parquet, "pet")] == pets
+
+    assert saved.filter(func.isnone("pet._Cat.name")).to_values("pet") == [pets[0]]
+    assert saved.group_by(n=func.count("pet")).to_values("n") == [2]
+
+    right = dc.read_values(
+        id=[1, 2], k=["x", "y"], output={"id": int, "k": str}, session=test_session
+    )
+    assert [v for _, v in _ordered(saved.merge(right, on="id"), "pet")] == pets
+
+    other = dc.read_values(
+        id=[3, 4],
+        pet=[_Cat(name="mia"), _Dog(name="rex")],
+        output={"id": int, "pet": Union[_Cat, _Dog]},
+        session=test_session,
+    )
+    combined = saved.union(other)
+    assert [v for _, v in _ordered(combined, "pet")] == [
+        *pets,
+        _Cat(name="mia"),
+        _Dog(name="rex"),
+    ]
 
 
 def test_same_shaped_arms_in_a_collection_rejected(test_session):
