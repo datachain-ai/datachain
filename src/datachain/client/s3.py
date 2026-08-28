@@ -1,6 +1,6 @@
 import asyncio
 import os
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from botocore.exceptions import NoCredentialsError
 from fsspec.asyn import get_loop, sync
@@ -10,6 +10,9 @@ from datachain.lib.file import File
 from datachain.progress import tqdm
 
 from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue
+
+if TYPE_CHECKING:
+    from datachain.client.writeconfig import WriteConfig
 
 UPDATE_CHUNKSIZE = 1000
 
@@ -109,6 +112,24 @@ class ClientS3(Client):
             return BucketStatus(
                 exists=False, access="denied", error=f"S3 bucket '{name}' not found"
             )
+
+    @staticmethod
+    def _write_kwargs(cfg: "WriteConfig", *, streaming: bool) -> dict[str, Any]:
+        # Both pipe_file and fs.open forward extra kwargs into
+        # s3_additional_kwargs, which become boto3 put_object / multipart args.
+        kw: dict[str, Any] = {}
+        if cfg.content_type:
+            kw["ContentType"] = cfg.content_type
+        if cfg.content_disposition:
+            kw["ContentDisposition"] = cfg.content_disposition
+        if cfg.cache_control:
+            kw["CacheControl"] = cfg.cache_control
+        if cfg.content_encoding:
+            kw["ContentEncoding"] = cfg.content_encoding
+        if cfg.metadata:
+            kw["Metadata"] = dict(cfg.metadata)
+        kw.update(cfg.write_options or {})
+        return kw
 
     def url(
         self,

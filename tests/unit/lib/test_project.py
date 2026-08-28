@@ -223,3 +223,36 @@ def test_delete_project_non_empty(
         "Project cannot be removed. It contains 1 dataset(s)."
         " Please remove the dataset(s) first."
     )
+
+
+def test_count_datasets_ignores_tombstone_only(
+    test_session, studio_job, chatbot_project, dev_namespace
+):
+    catalog = test_session.catalog
+    ds = (
+        dc.read_values(num=[1, 2, 3])
+        .settings(namespace=dev_namespace.name, project=chatbot_project.name)
+        .save("numbers")
+    ).dataset
+    assert catalog.metastore.count_datasets(chatbot_project.id) == 1
+
+    catalog.remove_dataset_version(ds, ds.latest_version, keep_metadata=True)
+    assert catalog.metastore.count_datasets(chatbot_project.id) == 0
+
+
+def test_delete_project_with_only_tombstones(
+    test_session, studio_job, chatbot_project, dev_namespace
+):
+    catalog = test_session.catalog
+    ds = (
+        dc.read_values(num=[1, 2, 3])
+        .settings(namespace=dev_namespace.name, project=chatbot_project.name)
+        .save("numbers")
+    ).dataset
+    catalog.remove_dataset_version(ds, ds.latest_version, keep_metadata=True)
+
+    delete_namespace(
+        f"{dev_namespace.name}.{chatbot_project.name}", session=test_session
+    )
+    with pytest.raises(ProjectNotFoundError):
+        get_project(chatbot_project.name, dev_namespace.name, session=test_session)

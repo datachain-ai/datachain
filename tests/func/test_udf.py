@@ -196,6 +196,28 @@ def test_udf_parallel(cloud_test_catalog_tmpfile):
     assert count == 7
 
 
+@pytest.mark.xdist_group(name="tmpfile")
+def test_udf_parallel_multi_signal_map(test_session_tmpfile):
+    """Multi-signal `.map(a=f1, b=f2)` runs each function per row in a single
+    UDF stage and survives pickling to parallel workers."""
+
+    def name_len(name: str) -> int:
+        return len(name)
+
+    def name_upper(name: str) -> str:
+        return name.upper()
+
+    names = ["foo.txt", "bar.md", "baz.csv", "qux.json"]
+    chain = (
+        dc.read_values(name=names, session=test_session_tmpfile)
+        .settings(parallel=True)
+        .map(n=name_len, upper=name_upper)
+    )
+
+    rows = sorted(chain.to_iter("name", "n", "upper"))
+    assert rows == [(n, len(n), n.upper()) for n in sorted(names)]
+
+
 @pytest.mark.parametrize(
     "cloud_type,version_aware",
     [("s3", True)],
@@ -1154,6 +1176,119 @@ def test_agg_list_file_and_map_count(tmp_dir, test_session):
     ds = dc.read_dataset("temp_udf_types", session=test_session)
     rows = ds.select("num_files").to_list()
     assert rows == [(len(expected_files),)]
+
+
+def test_agg_reads_files_from_every_batch_row(test_session, tmp_path):
+    class BatchedFileHolder(dc.DataModel):
+        files: list[File]
+
+    (tmp_path / "short.txt").write_text("ab")
+    (tmp_path / "longer.txt").write_text("cdef")
+
+    def wrap_file(file: File) -> BatchedFileHolder:
+        return BatchedFileHolder(files=[file])
+
+    # the parameter names the signal; the list type is what makes it batched
+    def total_size(holder: list[BatchedFileHolder]) -> Iterator[int]:
+        yield sum(len(h.files[0].read()) for h in holder)
+
+    chain = (
+        dc.read_storage(tmp_path.as_uri(), session=test_session)
+        .map(holder=wrap_file)
+        .agg(total=total_size)
+    )
+
+    assert chain.to_values("total") == [len("ab") + len("cdef")]
+
+
+def test_map_reads_file_from_model_param(test_session, tmp_path):
+    class HeldFileHolder(dc.DataModel):
+        files: list[File]
+
+    (tmp_path / "held.txt").write_text("held")
+
+    def wrap_file(file: File) -> HeldFileHolder:
+        return HeldFileHolder(files=[file])
+
+    def read_from_holder(holder: HeldFileHolder) -> str:
+        return holder.files[0].read().decode()
+
+    chain = (
+        dc.read_storage(tmp_path.as_uri(), session=test_session)
+        .map(holder=wrap_file)
+        .map(content=read_from_holder)
+    )
+
+    assert chain.to_values("content") == ["held"]
+
+
+def test_map_reads_file_from_setup_value(test_session, tmp_path):
+    (tmp_path / "reference.txt").write_text("reference")
+    uri = tmp_path.as_uri()
+
+    chain = (
+        dc.read_storage(uri, session=test_session)
+        .setup(ref=lambda: File(path="reference.txt", source=uri))
+        .map(size=lambda ref: len(ref.read()), output=int)
+    )
+
+    assert chain.to_values("size") == [len("reference")]
+
+
+@pytest.mark.xdist_group(name="tmpfile")
+def test_map_reads_file_from_collection_in_child_process(
+    test_session_tmpfile, tmp_path
+):
+    class ParallelFileHolder(dc.DataModel):
+        files: list[File]
+
+    # a subdirectory, so listing does not pick up the session's own database
+    data = tmp_path / "data"
+    data.mkdir()
+    # more than one row: parallelism is disabled outright at a single row
+    for name in ("first", "second", "third"):
+        (data / f"{name}.txt").write_text(name)
+
+    def wrap_file(file: File) -> ParallelFileHolder:
+        return ParallelFileHolder(files=[file])
+
+    def read_first(files: list[File]) -> str:
+        return f"{os.getpid()}:{files[0].read().decode()}"
+
+    chain = (
+        dc.read_storage(data.as_uri(), session=test_session_tmpfile)
+        .settings(parallel=2)
+        .map(holder=wrap_file)
+        .map(content=read_first, params=["holder.files"])
+    )
+
+    # workers return in no guaranteed order
+    results = [value.split(":", 1) for value in chain.to_values("content")]
+    assert sorted(content for _, content in results) == ["first", "second", "third"]
+    assert os.getpid() not in {int(pid) for pid, _ in results}
+
+
+def test_map_reads_file_from_collection_param(test_session, tmp_path):
+    class NestedFileHolder(dc.DataModel):
+        files: list[File]
+
+    path = tmp_path / "nested.txt"
+    path.write_text("contents")
+
+    # two distinct objects, so every member has to be visited, not just the first
+    def wrap_file(file: File) -> NestedFileHolder:
+        return NestedFileHolder(files=[file, file.model_copy()])
+
+    def read_all(files: list[File]) -> str:
+        return "".join(f.read().decode() for f in files)
+
+    chain = (
+        dc.read_storage(tmp_path.as_uri(), session=test_session)
+        .map(holder=wrap_file)
+        .map(content=read_all, params=["holder.files"])
+    )
+
+    assert chain.to_values("content") == ["contentscontents"]
 
 
 def test_agg_list_file_persist_and_read(tmp_dir, test_session):

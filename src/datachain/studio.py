@@ -73,7 +73,7 @@ def process_jobs_args(args: "Namespace"):
         return show_job_logs(args.id, args.team)
 
     if args.cmd == "ls":
-        return list_jobs(args.status, args.team, args.limit)
+        return list_jobs(args.status, args.team, args.limit, args.extended)
 
     if args.cmd == "clusters":
         return list_clusters(args.team)
@@ -223,6 +223,8 @@ def login(args: "Namespace"):
         file_path = _save_default_team(team_names[0], level)
         print(f"Set default team to '{team_names[0]}' in {file_path}")
     else:
+        with Config(level).edit() as conf:
+            conf.get("studio", {}).pop("team", None)
         print("You can now use 'datachain auth team' to set the default team.")
     return 0
 
@@ -263,6 +265,7 @@ def logout(local: bool = False):
 
     with Config(level).edit() as conf:
         del conf["studio"]["token"]
+        conf["studio"].pop("team", None)
 
     print("Logged out from Studio. (you can log back in with 'datachain auth login')")
 
@@ -278,19 +281,23 @@ def token():
     print(token)
 
 
-def list_datasets(team: str | None = None, name: str | None = None):
+def list_datasets(
+    team: str | None = None,
+    name: str | None = None,
+    include_removed: bool = False,
+):
     def ds_full_name(ds: dict) -> str:
         return (
             f"{ds['project']['namespace']['name']}.{ds['project']['name']}.{ds['name']}"
         )
 
     if name:
-        yield from list_dataset_versions(team, name)
+        yield from list_dataset_versions(team, name, include_removed=include_removed)
         return
 
     client = StudioClient(team=team)
 
-    response = client.ls_datasets()
+    response = client.ls_datasets(include_removed=include_removed)
 
     if not response.ok:
         raise DataChainError(response.message)
@@ -309,13 +316,19 @@ def list_datasets(team: str | None = None, name: str | None = None):
             yield (full_name, version)
 
 
-def list_dataset_versions(team: str | None = None, name: str = ""):
+def list_dataset_versions(
+    team: str | None = None,
+    name: str = "",
+    include_removed: bool = False,
+):
     client = StudioClient(team=team)
 
     namespace_name, project_name, name = parse_dataset_name(name)
     if not namespace_name or not project_name:
-        raise DataChainError(f"Missing namespace or project form dataset name {name}")
-    response = client.dataset_info(namespace_name, project_name, name)
+        raise DataChainError(f"Missing namespace or project from dataset name {name}")
+    response = client.dataset_info(
+        namespace_name, project_name, name, include_removed=include_removed
+    )
 
     if not response.ok:
         raise DataChainError(response.message)
@@ -392,14 +405,13 @@ def parse_start_time(start_time_str: str | None) -> str | None:
 
 
 # Sync usage
-async def _fetch_log_blob(blob_url: str, token: str, timeout: float) -> str:
-    """Fetch log content from a blob URL asynchronously."""
+async def _fetch_log_blob(blob_url: str, timeout: float) -> bytes:
+    """Return the log blob content as bytes."""
 
     def _fetch():
-        headers = {"Authorization": f"token {token}"}
-        response = requests.get(blob_url, headers=headers, timeout=timeout)
+        response = requests.get(blob_url, timeout=timeout)
         response.raise_for_status()
-        return response.text
+        return response.content
 
     return await asyncio.to_thread(_fetch)
 
@@ -407,11 +419,25 @@ async def _fetch_log_blob(blob_url: str, token: str, timeout: float) -> str:
 async def _show_log_blobs(log_blobs: list[str], client):
     for blob_url in log_blobs:
         try:
-            log_content = await _fetch_log_blob(blob_url, client.token, client.timeout)
+            log_content = await _fetch_log_blob(blob_url, client.timeout)
             if log_content:
-                print(log_content, end="")
-        except (requests.RequestException, OSError):
-            print("\n>>>> Warning: Failed to fetch logs from studio")
+                sys.stdout.flush()
+                sys.stdout.buffer.write(log_content)
+                if not log_content.endswith(b"\n"):
+                    sys.stdout.buffer.write(b"\n")
+                sys.stdout.buffer.flush()
+        except BrokenPipeError:
+            raise
+        except (requests.RequestException, OSError) as exc:
+            response = getattr(exc, "response", None)
+            detail = (
+                f"HTTP {response.status_code}"
+                if response is not None
+                else type(exc).__name__
+            )
+            print(f"\n>>>> Warning: Failed to fetch logs from studio ({detail})")
+            if response is not None and response.text:
+                logger.debug("Log blob fetch failed, response body: %s", response.text)
 
 
 def _get_job_status(client, job_id: str) -> str | None:
@@ -701,7 +727,9 @@ def cancel_job(job_id: str, team_name: str | None):
     print(f"Job {job_id} canceled")
 
 
-def list_jobs(status: str | None, team_name: str | None, limit: int):
+def list_jobs(
+    status: str | None, team_name: str | None, limit: int, extended: bool = False
+):
     client = StudioClient(team=team_name)
     response = client.get_jobs(status, limit)
     if not response.ok:
@@ -712,16 +740,18 @@ def list_jobs(status: str | None, team_name: str | None, limit: int):
         print("No jobs found")
         return
 
-    rows = [
-        {
+    rows = []
+    for job in jobs:
+        row = {
             "ID": job.get("id"),
             "Name": job.get("name"),
             "Status": job.get("status"),
             "Created at": job.get("created_at"),
             "Created by": job.get("created_by"),
         }
-        for job in jobs
-    ]
+        if extended:
+            row["Cluster"] = job.get("compute_cluster_name")
+        rows.append(row)
 
     print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
 

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -194,6 +195,38 @@ def test_studio_login_default_expiration(mocker):
     assert token == "isat_access_token"  # noqa: S105
 
 
+def test_studio_login_single_team_sets_default(mocker):
+    mocker.patch(
+        "dvc_studio_client.auth.get_access_token",
+        return_value=("token_name", "isat_access_token"),
+    )
+
+    assert main(["auth", "login", "--team", "ml-team"]) == 0
+
+    config = Config().read()
+    assert config["studio"]["team"] == "ml-team"
+
+
+def test_studio_login_clears_stale_default_team(mocker):
+    mocker.patch(
+        "dvc_studio_client.auth.get_access_token",
+        return_value=("token_name", "isat_access_token"),
+    )
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {
+            "token": "old_token",
+            "url": "https://old-studio.example.com",
+            "team": "old-team",
+        }
+
+    assert main(["auth", "login", "--hostname", "https://new-studio.example.com"]) == 0
+
+    config = Config(ConfigLevel.GLOBAL).read()
+    assert config["studio"]["token"] == "isat_access_token"  # noqa: S105
+    assert config["studio"]["url"] == "https://new-studio.example.com"
+    assert "team" not in config["studio"]
+
+
 def test_studio_logout():
     with Config(ConfigLevel.GLOBAL).edit() as conf:
         conf["studio"] = {"token": "isat_access_token", "url": STUDIO_URL}
@@ -211,6 +244,26 @@ def test_studio_logout():
     assert "token" not in config["studio"]
 
     assert main(["auth", "logout"]) == 1
+
+
+def test_studio_logout_clears_default_team():
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {
+            "token": "isat_access_token",
+            "url": STUDIO_URL,
+            "team": "demo-1",
+        }
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/device-logout",
+            json={"detail": "Token revoked successfully"},
+        )
+        assert main(["auth", "logout"]) == 0
+
+    config = Config(ConfigLevel.GLOBAL).read()
+    assert "token" not in config["studio"]
+    assert "team" not in config["studio"]
 
 
 def test_studio_logout_token_already_revoked(capsys):
@@ -376,9 +429,9 @@ def test_studio_team_global():
 
 
 def test_studio_datasets(capsys, studio_datasets, mocker):
-    def list_datasets_local(_, __):
-        yield "local.local.local", "1.0.0"
-        yield "dev.animals.both", "1.0.0"
+    def list_datasets_local(_, __, include_removed=False):
+        yield "local.local.local", "1.0.0", False
+        yield "dev.animals.both", "1.0.0", False
 
     mocker.patch(
         "datachain.cli.commands.datasets.list_datasets_local",
@@ -441,15 +494,57 @@ def test_studio_datasets(capsys, studio_datasets, mocker):
 
     assert main(["dataset", "ls"]) == 0
     out = capsys.readouterr().out
-    assert sorted(out.splitlines()) == sorted(both_output.splitlines())
+    assert sorted(out.splitlines()) == sorted(local_output.splitlines())
 
     assert main(["dataset", "ls", "--versions"]) == 0
+    out = capsys.readouterr().out
+    assert sorted(out.splitlines()) == sorted(local_output.splitlines())
+
+    assert main(["dataset", "ls", "--versions", "--all"]) == 0
     out = capsys.readouterr().out
     assert sorted(out.splitlines()) == sorted(both_output_versions.splitlines())
 
     assert main(["dataset", "ls", "dev.animals.dogs", "--studio"]) == 0
     out = capsys.readouterr().out
     assert sorted(out.splitlines()) == sorted(dogs_output.splitlines())
+
+
+@pytest.mark.parametrize(
+    "extra_cli_args,route,ok_body",
+    [
+        pytest.param([], "datachain/datasets", [], id="ls-all"),
+        pytest.param(
+            ["dev.animals.cats"],
+            "datachain/datasets/info",
+            {
+                "versions": [],
+                "project": {
+                    "created_at": None,
+                    "namespace": {"created_at": None},
+                },
+                "created_at": None,
+                "finished_at": None,
+            },
+            id="ls-by-name",
+        ),
+    ],
+)
+def test_dataset_ls_include_removed_flows_to_studio(
+    requests_mock, studio_token, extra_cli_args, route, ok_body
+):
+    """`dataset ls --include-removed --studio` forwards the flag as a
+    query parameter to Studio on both the list-all
+    (`/datachain/datasets`) and list-by-name (`/datachain/datasets/info`)
+    endpoints, and omits it when the flag isn't set."""
+    m = requests_mock.get(f"{STUDIO_URL}/api/{route}", json=ok_body)
+
+    assert main(["dataset", "ls", "--studio", *extra_cli_args]) == 0
+    assert "include_removed" not in m.last_request.qs
+
+    assert (
+        main(["dataset", "ls", "--studio", "--include-removed", *extra_cli_args]) == 0
+    )
+    assert m.last_request.qs.get("include_removed") == ["true"]
 
 
 @skip_if_not_sqlite
@@ -587,6 +682,46 @@ def test_studio_rm_dataset(capsys, mocker):
         }
 
 
+def test_studio_list_jobs(capsys):
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"token": "isat_access_token", "team": "team_name"}
+
+    with requests_mock.mock() as m:
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[
+                {
+                    "id": "8bddde6c-c3ca-41b0-9d87-ee945bfdce70",
+                    "name": "on-cluster",
+                    "status": "COMPLETE",
+                    "compute_cluster_id": 1,
+                    "compute_cluster_name": "prod-cluster",
+                    "created_at": "2021-01-01T00:00:00Z",
+                    "created_by": "user",
+                },
+                {
+                    "id": "0502eef6-a32e-45fa-8e3b-d20ec0abbcf0",
+                    "name": "on-other-cluster",
+                    "status": "FAILED",
+                    "compute_cluster_id": 2,
+                    "compute_cluster_name": "dev-cluster",
+                    "created_at": "2021-01-02T00:00:00Z",
+                    "created_by": "user",
+                },
+            ],
+        )
+
+        assert main(["job", "ls"]) == 0
+        out = capsys.readouterr().out
+        assert "Cluster" not in out
+        assert "prod-cluster" not in out
+
+        assert main(["job", "ls", "--extended"]) == 0
+        out = capsys.readouterr().out
+        assert "Cluster" in out
+        assert "prod-cluster" in out
+
+
 def test_studio_cancel_job(capsys, mocker):
     job_id = "8bddde6c-c3ca-41b0-9d87-ee945bfdce70"
     with requests_mock.mock() as m:
@@ -691,7 +826,6 @@ def test_studio_run(capsys, mocker, tmp_dir):
         first_request.url
         == f"{STUDIO_URL}/api/datachain/jobs/files?team_name=team_name"
     )
-    # Check that it's multipart/form-data request
     assert "multipart/form-data" in first_request.headers.get("Content-Type", "")
     # Check query parameters
     assert first_request.qs["team_name"] == ["team_name"]
@@ -1228,7 +1362,7 @@ def test_studio_run_log_blobs(capsys, mocker, tmp_dir, studio_token):
     )
     mocker.patch(
         "datachain.studio._fetch_log_blob",
-        return_value="fetched log content\n",
+        return_value=b"fetched log content\n",
     )
 
     with requests_mock.mock() as m:
@@ -1253,6 +1387,118 @@ def test_studio_run_log_blobs(capsys, mocker, tmp_dir, studio_token):
 
     out = capsys.readouterr().out
     assert "fetched log content" in out
+
+
+def test_studio_run_log_blobs_fetches_presigned_bytes(
+    capsysbinary, mocker, tmp_dir, studio_token
+):
+    job_id = str(uuid.uuid4())
+
+    async def mock_tail_job_logs(jid, no_follow=False):
+        yield {
+            "log_blobs": [
+                "https://example.com/blob1",
+                "https://example.com/blob2",
+            ]
+        }
+        yield {"job": {"status": "COMPLETE"}}
+
+    mocker.patch(
+        "datachain.studio.StudioClient.tail_job_logs",
+        side_effect=mock_tail_job_logs,
+    )
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={"id": job_id, "url": "https://example.com"},
+        )
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "COMPLETE"}],
+        )
+        m.get(
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
+            json={"dataset_versions": []},
+        )
+        blob1 = m.get(
+            "https://example.com/blob1",
+            content=b"signal:\xff at 5 \xc2\xb5S",
+            headers={"Content-Type": "text/plain"},
+        )
+        blob2 = m.get(
+            "https://example.com/blob2",
+            content=b"second blob\n",
+            headers={"Content-Type": "text/plain"},
+        )
+
+        (tmp_dir / "example_query.py").write_text("print(1)")
+
+        exit_code = main(["job", "run", "example_query.py"])
+
+        assert exit_code == 0
+        assert "Authorization" not in blob1.last_request.headers
+        assert "Authorization" not in blob2.last_request.headers
+
+    out = capsysbinary.readouterr().out
+    assert b"signal:\xff at 5 \xc2\xb5S\nsecond blob\n" in out
+
+
+def test_studio_run_log_blobs_http_error_detail(
+    capsys, caplog, mocker, tmp_dir, studio_token
+):
+    job_id = str(uuid.uuid4())
+
+    async def mock_tail_job_logs(jid, no_follow=False):
+        yield {"log_blobs": ["https://example.com/blob1?X-Amz-Signature=secretsig"]}
+        yield {"job": {"status": "COMPLETE"}}
+
+    mocker.patch(
+        "datachain.studio.StudioClient.tail_job_logs",
+        side_effect=mock_tail_job_logs,
+    )
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={"id": job_id, "url": "https://example.com"},
+        )
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "COMPLETE"}],
+        )
+        m.get(
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
+            json={"dataset_versions": []},
+        )
+        m.get(
+            "https://example.com/blob1?X-Amz-Signature=secretsig",
+            status_code=400,
+            text="<Error><Code>InvalidArgument</Code></Error>",
+        )
+
+        (tmp_dir / "example_query.py").write_text("print(1)")
+
+        with caplog.at_level(logging.DEBUG, logger="datachain"):
+            exit_code = main(["job", "run", "-v", "example_query.py"])
+
+        assert exit_code == 0
+
+    out = capsys.readouterr().out
+    assert "Warning: Failed to fetch logs from studio (HTTP 400)" in out
+    assert "secretsig" not in out
+    assert "<Error><Code>InvalidArgument</Code></Error>" in caplog.text
+
+
+def test_show_log_blobs_propagates_broken_pipe(mocker):
+    from datachain.studio import _show_log_blobs
+
+    mocker.patch("datachain.studio._fetch_log_blob", return_value=b"content\n")
+    stdout = mocker.patch("datachain.studio.sys.stdout")
+    stdout.buffer.write.side_effect = BrokenPipeError
+
+    with pytest.raises(BrokenPipeError):
+        asyncio.run(_show_log_blobs(["https://example.com/blob1"], mocker.MagicMock()))
 
 
 def test_studio_run_log_blobs_fetch_failure(capsys, mocker, tmp_dir, studio_token):

@@ -833,7 +833,7 @@ def dataset_list_record():
         ),
         description="",
         attrs=[],
-        versions=[
+        _versions=[
             DatasetListVersion(
                 id=1,
                 uuid=uuid.uuid4().hex,

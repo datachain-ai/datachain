@@ -51,7 +51,6 @@ def _read_frontmatter(path):
 
 
 def _duration_str(seconds: int) -> str:
-    """Format duration as plain seconds string."""
     return f"{seconds}s"
 
 
@@ -67,7 +66,6 @@ def _parse_dt(s) -> datetime | None:
     if not s:
         return None
     try:
-        # Handle both "Z" suffix and "+00:00" offset
         s = str(s).replace("Z", "+00:00")
         dt = datetime.fromisoformat(s)
         if dt.tzinfo is None:
@@ -78,7 +76,6 @@ def _parse_dt(s) -> datetime | None:
 
 
 def _normalize_status(status) -> str:
-    """Normalize status value to lowercase string."""
     if status is None:
         return "unknown"
     return str(status).lower()
@@ -204,7 +201,6 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
     except Exception:  # noqa: BLE001, S110
         pass
 
-    # Fetch jobs
     response = client.get_jobs(limit=limit)
     if not response.ok:
         print(
@@ -226,7 +222,6 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
         elif created_dt is None:
             filtered.append(j)  # include if we can't parse date
 
-    # Optionally enrich terminal-state jobs
     to_enrich = []
     if enrich:
         to_enrich = [
@@ -257,7 +252,6 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
             for j in filtered
         ]
 
-    # Normalize each job
     jobs_out = []
     for j in filtered:
         created_dt = _parse_dt(j.get("created_at"))
@@ -277,11 +271,9 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
             or j.get("cluster")
         )
 
-        # Strip ordinal suffixes (e.g. " (3rd)") from ID
         raw_id = j.get("id") or ""
         job_id = _strip_ordinal(raw_id) if raw_id else None
 
-        # Format created as "YYYY-MM-DD HH:MM" for display
         created_display = (
             created_dt.strftime("%Y-%m-%d %H:%M") if created_dt else j.get("created_at")
         )
@@ -305,10 +297,8 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
             }
         )
 
-    # Sort newest-first
     jobs_out.sort(key=lambda j: j.get("created") or "", reverse=True)
 
-    # Compute status counts
     failed_count = sum(1 for j in jobs_out if j["status"] == "failed")
     complete_count = sum(1 for j in jobs_out if j["status"] == "complete")
     running_count = sum(1 for j in jobs_out if j["status"] == "running")

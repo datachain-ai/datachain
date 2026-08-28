@@ -1,5 +1,6 @@
 from importlib.metadata import version
 
+from datachain import func, llm  # re-export submodule namespaces
 from datachain.client import BucketStatus, bucket_status
 from datachain.lib.data_model import DataModel, DataType, is_chain_type
 from datachain.lib.dc import (
@@ -89,10 +90,12 @@ __all__ = [
     "datasets",
     "delete_dataset",
     "delete_namespace",
+    "func",
     "is_chain_type",
     "is_local",
     "is_studio",
     "listings",
+    "llm",
     "metrics",
     "move_dataset",
     "param",

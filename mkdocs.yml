@@ -140,6 +140,7 @@ nav:
               - Random: references/functions/random.md
               - String: references/functions/string.md
               - Window: references/functions/window.md
+          - LLM: references/llm.md
           - Toolkit: references/toolkit.md
       - 📖 CLI Reference:
           - Overview: commands/index.md
@@ -192,7 +193,10 @@ nav:
                   - Overview: studio/user-guide/git-connections/index.md
                   - GitHub App: studio/user-guide/git-connections/github-app.md
                   - Custom GitLab Server: studio/user-guide/git-connections/custom-gitlab-server.md
-              - Team Collaboration: studio/user-guide/team-collaboration.md
+              - Teams:
+                  - Overview: studio/user-guide/teams/index.md
+                  - Security & Permissions: studio/user-guide/teams/permissions.md
+                  - Team Settings: studio/user-guide/teams/settings.md
               - Authentication:
                   - Single Sign-on: studio/user-guide/authentication/single-sign-on.md
                   - OpenID Connect: studio/user-guide/authentication/openid-connect.md
@@ -250,6 +254,9 @@ hooks:
 plugins:
   - search
   - section-index
+  - redirects:
+      redirect_maps:
+        studio/user-guide/team-collaboration.md: studio/user-guide/teams/index.md
   - mkdocstrings:
       handlers:
         python:

@@ -1,3 +1,4 @@
+import importlib
 import posixpath
 import re
 from datetime import datetime
@@ -78,6 +79,33 @@ def test_ls_not_found(cloud_test_catalog):
     src = cloud_test_catalog.src_uri
     with pytest.raises(FileNotFoundError):
         ls([f"{src}/cats/bogus*"], catalog=cloud_test_catalog.catalog)
+
+
+WILDCARD_TREE = {
+    "dir_1": {"a.csv": "a", "b.csv": "b"},
+    # decoy: `_` is a LIKE wildcard, so an unescaped `dir_2/` prefix matches this
+    "dirX2": {"c.csv": "c"},
+}
+
+
+@pytest.mark.parametrize("tree", [WILDCARD_TREE], indirect=True)
+def test_ls_dir_with_underscore_lists_only_its_own_files(cloud_test_catalog, capsys):
+    src = cloud_test_catalog.src_uri
+    catalog = cloud_test_catalog.catalog
+    dc.read_storage(src, session=cloud_test_catalog.session).exec()
+
+    ls([f"{src}/dir_1/"], catalog=catalog)
+    assert same_lines(capsys.readouterr().out, "a.csv\nb.csv\n")
+
+
+@pytest.mark.parametrize("tree", [WILDCARD_TREE], indirect=True)
+def test_ls_missing_dir_raises_instead_of_matching_sibling(cloud_test_catalog):
+    src = cloud_test_catalog.src_uri
+    catalog = cloud_test_catalog.catalog
+    dc.read_storage(src, session=cloud_test_catalog.session).exec()
+
+    with pytest.raises(FileNotFoundError):
+        ls([f"{src}/dir_2/"], catalog=catalog)
 
 
 # TODO return file test when https://github.com/datachain-ai/datachain/issues/318
@@ -238,6 +266,36 @@ def test_ls_remote_sources(cloud_type, capsys, monkeypatch, studio_config):
         ls([src, f"{src}/dogs/others", f"{src}/dogs"], studio=True)
     captured = capsys.readouterr()
     assert captured.out == ls_remote_sources_output.format(src=src)
+
+
+def test_ls_all_labels_local_and_studio_sections(capsys, monkeypatch, studio_config):
+    ls_module = importlib.import_module("datachain.cli.commands.ls")
+    with monkeypatch.context() as m:
+        m.setattr(ls_module, "ls_local", lambda *a, **kw: print("local-data"))
+        m.setattr(ls_module, "ls_remote", lambda *a, **kw: print("studio-data"))
+        ls(["s3://x"], all=True)
+    assert capsys.readouterr().out == "Local:\nlocal-data\n\nStudio:\nstudio-data\n"
+
+
+def test_ls_default_only_local_when_logged_into_studio(
+    capsys, monkeypatch, studio_config
+):
+    ls_module = importlib.import_module("datachain.cli.commands.ls")
+    called = {"local": 0, "remote": 0}
+    with monkeypatch.context() as m:
+        m.setattr(
+            ls_module,
+            "ls_local",
+            lambda *a, **kw: called.__setitem__("local", called["local"] + 1),
+        )
+        m.setattr(
+            ls_module,
+            "ls_remote",
+            lambda *a, **kw: called.__setitem__("remote", called["remote"] + 1),
+        )
+        ls(["s3://x"])
+    assert called == {"local": 1, "remote": 0}
+    assert "Local:" not in capsys.readouterr().out
 
 
 REMOTE_DATA: dict[str, list[dict[str, Any]]] = {

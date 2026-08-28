@@ -54,6 +54,20 @@ def saved_dataset(test_session):
     )
 
 
+@pytest.fixture
+def warehouse_access_forbidden(test_session):
+    catalog = test_session.catalog
+    original = catalog.warehouse
+
+    class ForbiddenWarehouse:
+        def __getattr__(self, name):
+            raise AssertionError(f"warehouse accessed via {name!r}")
+
+    catalog.warehouse = ForbiddenWarehouse()
+    yield
+    catalog.warehouse = original
+
+
 def test_create_dataset_no_version_specified(test_session, project):
     catalog = test_session.catalog
 
@@ -361,20 +375,21 @@ def test_create_dataset_whole_bucket(listed_bucket, cloud_test_catalog, project)
 
 def test_remove_dataset(test_session, saved_dataset):
     catalog = test_session.catalog
+    warehouse = catalog.warehouse
 
     dataset_version = saved_dataset.get_version("1.0.0")
     assert dataset_version.num_objects
 
+    rows_table = warehouse.dataset_table_name(saved_dataset, "1.0.0")
+    assert table_row_count(warehouse.db, rows_table) is not None
+
     catalog.remove_dataset(saved_dataset.name, saved_dataset.project, force=True)
-    with pytest.raises(DatasetNotFoundError):
-        catalog.get_dataset(saved_dataset.name)
 
-    dataset_table_name = catalog.warehouse.dataset_table_name(saved_dataset, "1.0.0")
-    assert table_row_count(catalog.warehouse.db, dataset_table_name) is None
-
-    assert (
-        catalog.metastore.get_direct_dataset_dependencies(saved_dataset, "1.0.0") == []
-    )
+    # Dataset row stays with REMOVED versions; rows table gone.
+    ds = catalog.get_dataset(saved_dataset.name, versions=None, include_incomplete=True)
+    assert not ds.versions
+    assert all(v.status == DatasetStatus.REMOVED for v in ds.all_versions)
+    assert table_row_count(warehouse.db, rows_table) is None
 
 
 def test_remove_dataset_with_multiple_versions(test_session, saved_dataset):
@@ -384,18 +399,25 @@ def test_remove_dataset_with_multiple_versions(test_session, saved_dataset):
     updated_dataset, _ = catalog.create_dataset_version(
         saved_dataset, "2.0.0", columns=columns
     )
+    catalog.metastore.update_dataset_version(
+        updated_dataset, "2.0.0", status=DatasetStatus.COMPLETE
+    )
     updated_dataset = catalog.get_dataset(saved_dataset.name, versions=None)
     assert updated_dataset.has_version("2.0.0")
     assert updated_dataset.has_version("1.0.0")
 
     catalog.remove_dataset(updated_dataset.name, saved_dataset.project, force=True)
-    with pytest.raises(DatasetNotFoundError):
-        catalog.get_dataset(updated_dataset.name)
 
-    assert (
-        catalog.metastore.get_direct_dataset_dependencies(updated_dataset, "1.0.0")
-        == []
+    # Both COMPLETE versions become REMOVED tombstones; dataset row stays.
+    ds = catalog.get_dataset(
+        updated_dataset.name, versions=None, include_incomplete=True
     )
+    assert not ds.versions
+    removed = sorted(
+        (v for v in ds.all_versions if v.status == DatasetStatus.REMOVED),
+        key=lambda v: v.version,
+    )
+    assert [v.version for v in removed] == ["1.0.0", "2.0.0"]
 
 
 def test_remove_dataset_dataset_not_found(test_session, project):
@@ -445,6 +467,22 @@ def test_edit_dataset(test_session, saved_dataset):
     assert dataset.get_version("1.0.0").num_objects == expected_table_row_count
 
 
+def test_edit_dataset_metadata_only_does_not_touch_warehouse(
+    test_session, saved_dataset, warehouse_access_forbidden
+):
+    catalog = test_session.catalog
+    catalog.edit_dataset(
+        saved_dataset.name,
+        saved_dataset.project,
+        description="new description",
+        attrs=["cats", "birds"],
+    )
+
+    dataset = catalog.get_dataset(saved_dataset.name, versions=["1.0.0"])
+    assert dataset.description == "new description"
+    assert dataset.attrs == ["cats", "birds"]
+
+
 @pytest.mark.parametrize("is_studio", [True])
 @pytest.mark.parametrize(
     "old_name,new_name",
@@ -491,6 +529,33 @@ def test_move_dataset(
             assert table_row_count(catalog.warehouse.db, old_table_name) is None
 
         assert table_row_count(catalog.warehouse.db, new_table_name) == 3
+
+
+def test_datasets_include_removed(test_session, no_studio_dataset):
+    live_ds = "dc_datasets_live"
+    tombstoned_ds = "dc_datasets_tombstoned"
+
+    dc.read_values(num=[1, 2, 3], session=test_session).save(live_ds)
+    dc.read_values(num=[1, 2, 3], session=test_session).save(tombstoned_ds)
+    dc.delete_dataset(tombstoned_ds, force=True, session=test_session)
+
+    default_names = {
+        d.name
+        for d in dc.datasets(column="dataset", session=test_session).to_values(
+            "dataset"
+        )
+    }
+    assert live_ds in default_names
+    assert tombstoned_ds not in default_names
+
+    with_removed_names = {
+        d.name
+        for d in dc.datasets(
+            column="dataset", session=test_session, include_removed=True
+        ).to_values("dataset")
+    }
+    assert live_ds in with_removed_names
+    assert tombstoned_ds in with_removed_names
 
 
 def test_move_dataset_then_save_into(test_session, old_new_projects):
@@ -903,5 +968,6 @@ def test_dataset_storage_dependencies(cloud_test_catalog, cloud_type, indirect):
             "version": "1.0.0",
             "created_at": lst_dataset.get_version("1.0.0").created_at,
             "dependencies": [],
+            "removed": False,
         }
     ]

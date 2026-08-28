@@ -27,10 +27,6 @@ if GRAPH_SCRIPTS_DIR not in sys.path:
 
 from utils import read_frontmatter  # noqa: E402
 
-# ---------------------------------------------------------------------------
-# _parse_dt
-# ---------------------------------------------------------------------------
-
 
 class TestParseDt:
     def test_z_suffix(self):
@@ -51,11 +47,6 @@ class TestParseDt:
         assert _parse_dt("not-a-date") is None
 
 
-# ---------------------------------------------------------------------------
-# _normalize_status
-# ---------------------------------------------------------------------------
-
-
 class TestNormalizeStatus:
     def test_lowercase(self):
         assert _normalize_status("Complete") == "complete"
@@ -67,11 +58,6 @@ class TestNormalizeStatus:
         assert _normalize_status("RUNNING") == "running"
 
 
-# ---------------------------------------------------------------------------
-# _duration_str
-# ---------------------------------------------------------------------------
-
-
 class TestDurationStr:
     def test_seconds(self):
         assert _duration_str(60) == "60s"
@@ -81,11 +67,6 @@ class TestDurationStr:
 
     def test_zero(self):
         assert _duration_str(0) == "0s"
-
-
-# ---------------------------------------------------------------------------
-# _strip_ordinal
-# ---------------------------------------------------------------------------
 
 
 class TestStripOrdinal:
@@ -100,11 +81,6 @@ class TestStripOrdinal:
 
     def test_empty(self):
         assert _strip_ordinal("") == ""
-
-
-# ---------------------------------------------------------------------------
-# _read_frontmatter (duplicated in jobs.py)
-# ---------------------------------------------------------------------------
 
 
 class TestJobsReadFrontmatter:

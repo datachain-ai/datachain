@@ -16,17 +16,25 @@ def ls(
     long: bool = False,
     studio: bool = False,
     local: bool = False,
-    all: bool = True,
+    all: bool = False,
     team: str | None = None,
     **kwargs,
 ):
     token = Config().read().get("studio", {}).get("token")
     all, local, studio = determine_flavors(studio, local, all, token)
 
-    if all or local:
+    show_local = all or local
+    show_studio = all or studio
+    label_sections = show_local and show_studio
+
+    if show_local:
+        if label_sections:
+            print("Local:")
         ls_local(sources, long=long, **kwargs)
 
-    if (all or studio) and token:
+    if show_studio:
+        if label_sections:
+            print("\nStudio:")
         ls_remote(sources, long=long, team=team)
 
 

@@ -1,4 +1,3 @@
-import inspect
 from collections.abc import Iterable, Iterator, Sequence
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
@@ -66,7 +65,7 @@ def coerce_table_types(table: sa.Table, column_types: dict[str, Any]) -> sa.Tabl
     for c in table.columns:
         t = column_types.get(c.name)
         if t is not None:
-            t = t() if inspect.isclass(t) else t
+            t = t() if isinstance(t, type) else t
             columns.append(sa.Column(c.name, t))
         else:
             columns.append(sa.Column(c.name, c.type))
@@ -236,7 +235,7 @@ class DataTable:
         for c in table.columns:
             if c.name in column_types:
                 t = column_types[c.name]
-                c.type = t() if inspect.isclass(t) else t
+                c.type = t() if isinstance(t, type) else t
         return table
 
     @property

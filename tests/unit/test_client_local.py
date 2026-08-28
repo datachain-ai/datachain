@@ -4,8 +4,21 @@ from pathlib import Path
 import pytest
 
 from datachain.client.local import FileClient
+from datachain.client.writeconfig import WriteConfig
 from datachain.fs.utils import path_to_fsspec_uri
 from datachain.lib.file import File, FileError
+
+
+@pytest.mark.parametrize("streaming", [True, False])
+def test_write_kwargs_ignores_all_fields(streaming):
+    # Local files carry no content type or metadata, so every field is dropped
+    # (including the write_options escape hatch, which is simply ignored).
+    cfg = WriteConfig(
+        content_type="application/pdf",
+        metadata={"a": "b"},
+        write_options={"ACL": "public-read"},
+    )
+    assert FileClient._write_kwargs(cfg, streaming=streaming) == {}
 
 
 def test_split_url_directory_preserves_leaf(tmp_path):

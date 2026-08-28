@@ -7,7 +7,7 @@ Generate a human-readable markdown overview for a cloud storage bucket from its 
 JSON fields:
 
 - Identity: `uri`, `scheme`, `bucket`, `prefix`, `anon` (true/false/null)
-- Listing: `scanned`, `listing_uuid`, `listing_created`, `listing_expires`, `listing_expired`
+- Listing: `scanned`, `listing_uuid`, `listing_created`, `listing_finished`
 - Aggregates: `total_files`, `total_size_bytes`, `max_depth`
 - `extensions[]`: file-type breakdown with counts, bytes, percentages
 - `directories[]`: per-dir path, file count, bytes, depth
@@ -16,6 +16,7 @@ JSON fields:
 - `samples{}`: per-extension content samples with type-specific metadata
 - `file_url_prefix` (optional): HTTPS URL prefix for clickable links
 - `sampled` (optional): if true, totals reflect a subset; pass through to frontmatter
+- `warnings` (optional): collection diagnostics. Surface only completeness caveats (e.g. a timed-out scan); never echo raw internal error strings
 
 ## Output Format
 
@@ -49,10 +50,9 @@ Name the modalities and likely use case.}
 - **Access:** {"Public (use `anon=True`)" if anon=true; "Authenticated" if anon=false; omit if null}
 - **Listing:** {freshness message — see below}
 
-Listing freshness message:
-- `listing_expired: false` → "Bucket listing from {listing_created} (valid until {listing_expires})"
-- `listing_expired: true` → "Bucket listing from {listing_created} (**expired** — refresh with `dc.read_storage(\"{uri}\", update=True)`)"
-- `listing_created: null` → "Listing timestamp unavailable"
+Listing freshness message (the keys are absent on sampled overviews):
+- `listing_finished` missing or null → "Listing timestamp unavailable"
+- otherwise → "bucket file list as of {listing_finished}; may be stale (new/changed files since then aren't included). Re-scan with `dc.read_storage(\"{uri}\", update=True)`"
 
 ## Directory Structure
 
@@ -111,7 +111,8 @@ Omit the section entirely when nothing is notable.
 - **Omit empty sections.** If `time_range` is empty, skip date info. If no quality issues, skip Data Quality.
 - **No raw JSON dumps.** Markdown is a summary, not a data dump.
 - **`uri` is not a clickable URL.** Storage URIs (`s3://`, `gs://`, `az://`) are not browsable — show as plain text.
-- **Listing freshness is critical.** Always show the listing timestamp.
+- **Listing freshness is critical.** Always include the Listing line — show the timestamp when available, otherwise "Listing timestamp unavailable".
 - **Human-readable timestamps:** `YYYY-MM-DD HH:MM:SS` (no `T`, no `Z`).
 - **Structure only, no pipelines.** Do not propose decompositions, slices, example queries, or recommended pipelines — the right shape depends on the question being asked.
 - **Sampled mode.** If input has `sampled: true`, totals reflect a subset; carry through to frontmatter, state prominently in the body, and link to the underlying dataset (`dataset_name`) so readers can query actual file rows.
+- **Completeness caveats.** If `warnings` shows the scan was partial or timed out, state it plainly. Never reproduce raw internal error strings from `warnings` verbatim — they are diagnostics, not reader-facing.

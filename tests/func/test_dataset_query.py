@@ -1063,6 +1063,7 @@ def test_dataset_dependencies_one_storage_as_dependency(
             "version": "1.0.0",
             "created_at": listing.created_at,
             "dependencies": [],
+            "removed": False,
         }
     ]
 
@@ -1089,6 +1090,7 @@ def test_dataset_dependencies_one_dataset_as_dependency(
             "version": "1.0.0",
             "created_at": dogs_dataset.get_version("1.0.0").created_at,
             "dependencies": [],
+            "removed": False,
         }
     ]
 
@@ -1103,6 +1105,7 @@ def test_dataset_dependencies_one_dataset_as_dependency(
                 "version": "1.0.0",
                 "created_at": listing.created_at,
                 "dependencies": [],
+                "removed": False,
             }
         ]
 
@@ -1111,9 +1114,14 @@ def test_dataset_dependencies_one_dataset_as_dependency(
         for d in catalog.get_dataset_dependencies(ds_name, "1.0.0", indirect=indirect)
     ] == expected
 
+    # Removing keeps the dependency record so dependents can still
+    # render lineage to the removed source - now flagged with removed=True.
     catalog.remove_dataset(dogs_dataset.name, force=True)
-    # None means dependency was there but was removed in the meantime
-    assert catalog.get_dataset_dependencies(ds_name, "1.0.0") == [None]
+    expected[0]["removed"] = True
+    assert [
+        dataset_dependency_asdict(d)
+        for d in catalog.get_dataset_dependencies(ds_name, "1.0.0")
+    ] == expected
 
 
 @pytest.mark.parametrize("method", ["union", "join"])
@@ -1144,6 +1152,7 @@ def test_dataset_dependencies_multiple_direct_dataset_dependencies(
         "version": "1.0.0",
         "created_at": listing.created_at,
         "dependencies": [],
+        "removed": False,
     }
 
     expected = [
@@ -1156,6 +1165,7 @@ def test_dataset_dependencies_multiple_direct_dataset_dependencies(
             "version": "1.0.0",
             "created_at": dogs_dataset.get_version("1.0.0").created_at,
             "dependencies": [storage_depenedncy],
+            "removed": False,
         },
         {
             "id": ANY,
@@ -1166,6 +1176,7 @@ def test_dataset_dependencies_multiple_direct_dataset_dependencies(
             "version": "1.0.0",
             "created_at": cats_dataset.get_version("1.0.0").created_at,
             "dependencies": [storage_depenedncy],
+            "removed": False,
         },
     ]
 
@@ -1177,22 +1188,27 @@ def test_dataset_dependencies_multiple_direct_dataset_dependencies(
         key=lambda d: d["name"],
     ) == sorted(expected, key=lambda d: d["name"])
 
-    # check when removing one dependency
+    # Removing keeps dependency records intact: the dependent's lineage
+    # still resolves but the removed entry is flagged.
     catalog.remove_dataset(dogs_dataset.name, force=True)
-    expected[0] = None
-    expected[1]["dependencies"] = []
-
+    expected[0]["removed"] = True
     assert sorted(
         (
             dataset_dependency_asdict(d)
-            for d in catalog.get_dataset_dependencies(ds_name, "1.0.0")
+            for d in catalog.get_dataset_dependencies(ds_name, "1.0.0", indirect=True)
         ),
-        key=lambda d: d["name"] if d else "",
-    ) == sorted(expected, key=lambda d: d["name"] if d else "")
+        key=lambda d: d["name"],
+    ) == sorted(expected, key=lambda d: d["name"])
 
-    # check when removing the other dependency
     catalog.remove_dataset(cats_dataset.name, force=True)
-    assert catalog.get_dataset_dependencies(ds_name, "1.0.0") == [None, None]
+    expected[1]["removed"] = True
+    assert sorted(
+        (
+            dataset_dependency_asdict(d)
+            for d in catalog.get_dataset_dependencies(ds_name, "1.0.0", indirect=True)
+        ),
+        key=lambda d: d["name"],
+    ) == sorted(expected, key=lambda d: d["name"])
 
 
 def test_dataset_dependencies_multiple_union(
@@ -1218,6 +1234,7 @@ def test_dataset_dependencies_multiple_union(
         "version": "1.0.0",
         "created_at": listing.created_at,
         "dependencies": [],
+        "removed": False,
     }
 
     expected = [
@@ -1230,6 +1247,7 @@ def test_dataset_dependencies_multiple_union(
             "version": "1.0.0",
             "created_at": dogs_dataset.get_version("1.0.0").created_at,
             "dependencies": [storage_depenedncy],
+            "removed": False,
         },
         {
             "id": ANY,
@@ -1240,6 +1258,7 @@ def test_dataset_dependencies_multiple_union(
             "version": "1.0.0",
             "created_at": cats_dataset.get_version("1.0.0").created_at,
             "dependencies": [storage_depenedncy],
+            "removed": False,
         },
     ]
 

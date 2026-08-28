@@ -1,8 +1,12 @@
 import hashlib
+import inspect
 import logging
+from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import closing, nullcontext
+from dataclasses import dataclass
 from functools import partial
+from graphlib import CycleError, TopologicalSorter
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import attrs
@@ -19,7 +23,8 @@ from datachain.lib.convert.flatten import (
     flatten_value,
     is_optional_model,
 )
-from datachain.lib.file import DataModel, File, FileError
+from datachain.lib.file import File, FileError
+from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.utils import AbstractUDF, DataChainParamsError
 from datachain.query.batch import (
     Batch,
@@ -40,11 +45,79 @@ if TYPE_CHECKING:
 
     from datachain.cache import Cache
     from datachain.catalog import Catalog
-    from datachain.lib.signal_schema import SignalSchema
+    from datachain.lib.settings import Settings
     from datachain.lib.udf_signature import UdfSignature
     from datachain.query.batch import RowsOutput
 
 T = TypeVar("T", bound=Sequence[Any])
+
+
+@dataclass
+class BindContext:
+    """Context handed to a ``BoundSpec`` when it is attached to a verb. Carries the
+    chain settings and the target UDF class; new fields (catalog, session, ...) can
+    be added here without changing the ``bind`` signature."""
+
+    settings: "Settings"
+    target: Any = None  # the verb's UDF class (Mapper/Generator/Aggregator)
+
+
+class BoundSpec(ABC):
+    """A UDF spec that resolves itself against the chain when attached to a verb.
+    ``DataChain._udf_to_obj`` calls ``bind`` with a ``BindContext`` to get the
+    concrete per-row callable, so a spec can read ``.settings(...)`` and choose its
+    shape from the target verb at build time."""
+
+    @abstractmethod
+    def bind(self, ctx: BindContext) -> Callable: ...
+
+    @abstractmethod
+    def input_columns(self) -> list[str]:
+        """Return the chain columns this spec reads, in the order the bound
+        callable expects them. Must be stable across ``bind()``."""
+
+    @property
+    @abstractmethod
+    def output_count(self) -> int:
+        """How many chain columns the bound callable produces per row."""
+
+
+def reject_var_params(
+    udf_func: "Callable | UDFBase", label: str, *, columns_explicit: bool = False
+) -> None:
+    """Reject user callables the single-signal ``.map()`` call site can't invoke.
+
+    Values are passed positionally, so a signature that can't accept positional
+    args (only ``**kwargs``, or only keyword-only params) is rejected in both
+    modes. Without ``columns_explicit`` (no ``params=``), ``*args`` / ``**kwargs``
+    are also rejected because we can't infer column routing from them.
+    For UDFBase subclasses, the check runs against ``.process``."""
+    target = udf_func.process if isinstance(udf_func, AbstractUDF) else udf_func
+    params = list(inspect.signature(target).parameters.values())
+    if not columns_explicit:
+        var_params = [
+            f"*{p.name}"
+            if p.kind is inspect.Parameter.VAR_POSITIONAL
+            else f"**{p.name}"
+            for p in params
+            if p.kind
+            in {inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL}
+        ]
+        if var_params:
+            raise DataChainParamsError(
+                f"{label} uses {var_params}; list the input column names "
+                "as regular params"
+            )
+    positional_kinds = {
+        inspect.Parameter.POSITIONAL_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.VAR_POSITIONAL,
+    }
+    if params and not any(p.kind in positional_kinds for p in params):
+        raise DataChainParamsError(
+            f"{label} has no positional parameters; list the input column "
+            "names as regular params"
+        )
 
 
 class UdfError(DataChainParamsError):
@@ -201,6 +274,10 @@ class UDFBase(AbstractUDF):
     is_input_batched = False
     is_output_batched = False
     prefetch: int = 0
+    # Class-level default so subclasses that skip super().__init__() still
+    # have this attribute; _MultiSignalMapper sets params/output per entry
+    # but doesn't call _init(), so _func would otherwise be missing.
+    _func: Callable | None = None
 
     def __init__(self):
         self.params: SignalSchema | None = None
@@ -360,23 +437,8 @@ class UDFBase(AbstractUDF):
         assert self.params
         row = [row_dict[p] for p in self.params.to_udf_spec()]
         obj_row = self.params.row_to_objs(row)
-        for obj in obj_row:
-            self._set_stream_recursive(obj, catalog, cache, download_cb)
+        self.params.set_file_streams(obj_row, catalog, cache, download_cb)
         return obj_row
-
-    def _set_stream_recursive(
-        self, obj: Any, catalog: "Catalog", cache: bool, download_cb: Callback
-    ) -> None:
-        """Recursively set the catalog stream on all File objects within an object."""
-        if isinstance(obj, File):
-            obj._set_stream(catalog, caching_enabled=cache, download_cb=download_cb)
-
-        # Check all fields for nested File objects, but only for DataModel objects
-        if isinstance(obj, DataModel):
-            for field_name in type(obj).model_fields:
-                field_value = getattr(obj, field_name, None)
-                if isinstance(field_value, DataModel):
-                    self._set_stream_recursive(field_value, catalog, cache, download_cb)
 
     def _prepare_row(
         self, row, udf_fields, catalog, cache, download_cb, include_id=False
@@ -508,6 +570,187 @@ class Mapper(UDFBase):
                 yield output
 
         self.teardown()
+
+
+def _make_bound_adapter(fn: Callable, cols: list[str]) -> Callable:
+    """Wrap a positional bound-spec callable so it can be invoked with
+    column-name kwargs, uniformly with the other multi-signal entries."""
+
+    def adapter(**kw: Any) -> Any:
+        return fn(*(kw[c] for c in cols))
+
+    return adapter
+
+
+class _MultiSignalMapper(Mapper):
+    """Mapper that runs N user functions per row, yielding N output signals.
+
+    Implements `.map(a=f1, b=f2, ...)` as a single UDF stage: each row is
+    iterated once, all functions run, and no intermediate column is
+    materialized between them.
+
+    If a function's parameter name matches another function's output name
+    in the same call, the dependent function receives the producer's
+    result instead of a row column. Execution order is a topological sort
+    of that dependency graph; the order the user wrote the kwargs is
+    irrelevant. Cycles raise ``ValueError`` at construction time.
+    """
+
+    def __init__(
+        self,
+        signal_map: "dict[str, Callable | UDFBase]",
+        *,
+        bound_columns: dict[str, list[str]] | None = None,
+    ):
+        super().__init__()
+        self._signal_map = signal_map
+        self._bound_columns = bound_columns or {}
+        output_names = set(signal_map)
+        self._per_func_params: dict[str, list[str]] = {}
+        # For each function: which of its params come from another
+        # function's output (dependencies) vs from an input row column.
+        deps: dict[str, set[str]] = {}
+        for name, fn in signal_map.items():
+            if name in self._bound_columns:
+                params = list(self._bound_columns[name])
+            else:
+                params = self._resolve_sig_params(name, fn)
+            if name in params:
+                raise DataChainParamsError(
+                    f"map() entry {name!r} declares a parameter named {name!r} "
+                    "- an entry can't read a column with the same name as its "
+                    "own output. Rename the output or the parameter."
+                )
+            self._per_func_params[name] = params
+            deps[name] = {p for p in params if p in output_names}
+
+        try:
+            self._exec_order = list(TopologicalSorter(deps).static_order())
+        except CycleError as e:
+            raise ValueError(
+                f"Cyclic dependency between map functions: {e.args[1]}"
+            ) from e
+
+        # combined_params = union of params NOT resolved from other outputs,
+        # in first-seen order. Consumed positionally by the UDF layer.
+        seen: set[str] = set()
+        self.combined_params: list[str] = []
+        for name in signal_map:
+            for p in self._per_func_params[name]:
+                if p in output_names:
+                    continue
+                if p not in seen:
+                    seen.add(p)
+                    self.combined_params.append(p)
+
+        # Pre-build one uniform kwargs-callable per entry so process() has a
+        # single call path regardless of entry kind.
+        self._callers: dict[str, Callable[..., Any]] = {}
+        for name, fn in signal_map.items():
+            if isinstance(fn, UDFBase):
+                self._callers[name] = fn.process
+            elif name in self._bound_columns:
+                self._callers[name] = _make_bound_adapter(
+                    fn, self._per_func_params[name]
+                )
+            else:
+                self._callers[name] = fn
+
+    def _resolve_sig_params(self, name: str, fn: "Callable | UDFBase") -> list[str]:
+        """Derive parameter names from an entry's signature, rejecting shapes we
+        can't call by kwarg."""
+        if isinstance(fn, UDFBase):
+            if not isinstance(fn, Mapper):
+                raise DataChainParamsError(
+                    f"map() entry {name!r} is a {type(fn).__name__}; only "
+                    "Mapper subclasses (or plain callables) are supported "
+                    "in multi-signal .map() - use .gen() / .agg() for "
+                    "other UDF types"
+                )
+            sig_target = fn.process
+        else:
+            sig_target = fn
+        sig_params = list(inspect.signature(sig_target).parameters.values())
+        bad = [
+            p.name
+            for p in sig_params
+            if p.kind
+            not in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            )
+        ]
+        if bad:
+            raise DataChainParamsError(
+                f"map() function {name!r} has parameters that can't "
+                f"be passed by name ({bad}); multi-signal .map() calls "
+                "each function with keyword arguments"
+            )
+        return [p.name for p in sig_params]
+
+    def _init(self, sign, params, func):
+        super()._init(sign, params, func)
+        # Give each inner UDFBase entry its own params/output so framework
+        # attrs like self.signal_names, self.output, self.params work.
+        # Params can be outer-input columns or sibling-entry outputs; both
+        # flow into process() so both must show up in fn.params.
+        output_values = sign.output_schema.values
+        for name, fn in self._signal_map.items():
+            if isinstance(fn, UDFBase):
+                fn_param_types = {}
+                for p in self._per_func_params[name]:
+                    if p in params.values:
+                        fn_param_types[p] = params.values[p]
+                    elif p in output_values:
+                        fn_param_types[p] = output_values[p]
+                fn.params = SignalSchema(fn_param_types)
+                fn.output = SignalSchema({name: output_values[name]})
+
+    def process(self, *args):
+        row_by_name = dict(zip(self.combined_params, args, strict=True))
+        results: dict[str, Any] = {}
+        for name in self._exec_order:
+            params = self._per_func_params[name]
+            kw = {p: (results[p] if p in results else row_by_name[p]) for p in params}
+            results[name] = self._callers[name](**kw)
+        # Output order follows the user's declared kwarg order, not exec order.
+        return tuple(results[name] for name in self._signal_map)
+
+    def setup(self) -> None:
+        for name in self._signal_map:
+            fn = self._signal_map[name]
+            if isinstance(fn, UDFBase):
+                fn.setup()
+
+    def teardown(self) -> None:
+        for name in self._signal_map:
+            fn = self._signal_map[name]
+            if isinstance(fn, UDFBase):
+                fn.teardown()
+
+    @property
+    def verbose_name(self) -> str:
+        # The base property reads self._func, which is unset here.
+        return ", ".join(self._signal_map)
+
+    def hash(self, include_body: bool = True) -> str:
+        # cache key must vary with the wrapped functions; the base
+        # implementation would hash this class's process method, which is
+        # identical across instances.
+        parts = [
+            fn.hash(include_body=include_body)
+            if isinstance(fn, UDFBase)
+            else hash_callable(fn, include_body=include_body)
+            for fn in self._signal_map.values()
+        ]
+        # _bound_columns carries the chain-column routing for BoundSpec entries;
+        # the bound closures don't encode it in their bytecode, so we mix it in
+        # here to keep different routings distinct.
+        routing = repr(sorted((k, tuple(v)) for k, v in self._bound_columns.items()))
+        parts.append(hashlib.sha256(routing.encode()).hexdigest())
+        parts.append(self.params.hash() if self.params else "")
+        parts.append(self.output.hash())
+        return hashlib.sha256(b"".join([bytes.fromhex(p) for p in parts])).hexdigest()
 
 
 class Generator(UDFBase):

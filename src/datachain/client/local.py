@@ -14,6 +14,7 @@ from .fsspec import Client
 
 if TYPE_CHECKING:
     from datachain.cache import Cache
+    from datachain.client.writeconfig import WriteConfig
     from datachain.dataset import StorageURI
 
 
@@ -31,6 +32,11 @@ class FileClient(Client):
     ) -> None:
         super().__init__(name, fs_kwargs, cache)
         self.use_symlinks = use_symlinks
+
+    @staticmethod
+    def _write_kwargs(cfg: "WriteConfig", *, streaming: bool) -> dict[str, Any]:
+        # Local files carry no content type / metadata; write metadata is ignored.
+        return {}
 
     def url(
         self,
