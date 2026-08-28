@@ -1,4 +1,4 @@
-"""Adversarial / differential tests for multi-arm ``Union[...]`` support.
+"""Adversarial / differential tests for multi-arm ``...`` support.
 
 Each probe asserts the *logically correct* value, so running this file on SQLite
 (reference) and ClickHouse surfaces backend divergences as failures. Coverage:
@@ -14,7 +14,7 @@ Run: pytest tests/func/test_union_adversarial.py            # SQLite
 """
 
 from collections.abc import Iterator
-from typing import Literal, Optional, Union
+from typing import Literal, Union
 
 import pandas as pd
 
@@ -34,8 +34,8 @@ class UBar(DataModel):
 
 
 def _si(test_session, ids, values, *, none=False, name="value"):
-    """A chain with an id column and a Union[str,int] (optionally +None) signal."""
-    anno = Union[str, int, None] if none else Union[str, int]
+    """A chain with an id column and a Union[str, int] (optionally +None) signal."""
+    anno = Union[str, int, None] if none else Union[str, int]  # noqa: UP007
     return dc.read_values(
         id=ids,
         **{name: values},
@@ -85,7 +85,7 @@ def test_sum_over_all_inactive_partition_is_none(test_session):
         id=[1, 2, 3, 4],
         g=[0, 0, 1, 1],
         value=["a", "b", 10, 20],
-        output={"id": int, "g": int, "value": Union[str, int]},
+        output={"id": int, "g": int, "value": str | int},
         session=test_session,
     )
     rows = chain.group_by(s=func.sum("value.int"), partition_by="g").to_records()
@@ -165,7 +165,7 @@ def test_parquet_union_in_model_in_union(test_session, tmp_path):
     dc.read_values(
         id=[1, 2],
         o=items,
-        output={"id": int, "o": Union[Outer, UBar]},
+        output={"id": int, "o": Outer | UBar},
         session=test_session,
     ).order_by("id").to_parquet(path)
     back = dc.read_parquet(path, session=test_session)
@@ -235,7 +235,7 @@ def test_union_with_file_arm_roundtrip(test_session):
     dc.read_values(
         id=[1, 2],
         v=[f, "plain"],
-        output={"id": int, "v": Union[File, str]},
+        output={"id": int, "v": File | str},
         session=test_session,
     ).save("u_file_arm")
     back = dc.read_dataset("u_file_arm", session=test_session)
@@ -253,7 +253,7 @@ def test_to_storage_union_file_arm_skips_non_file(test_session, tmp_path):
     dc.read_values(
         id=[1, 2],
         v=[f, "plain"],
-        output={"id": int, "v": Union[File, str]},
+        output={"id": int, "v": File | str},
         session=test_session,
     ).to_storage(str(out), signal="v")
     exported = [p.name for p in out.rglob("*") if p.is_file()]
@@ -271,7 +271,7 @@ def test_to_storage_union_file_arm_placement_filename(test_session, tmp_path):
     dc.read_values(
         id=[1, 2, 3],
         v=[fa, "plain", fb],
-        output={"id": int, "v": Union[File, str]},
+        output={"id": int, "v": File | str},
         session=test_session,
     ).to_storage(str(out), signal="v", placement="filename")
     assert sorted(p.name for p in out.rglob("*") if p.is_file()) == ["a.txt", "b.txt"]
@@ -280,7 +280,7 @@ def test_to_storage_union_file_arm_placement_filename(test_session, tmp_path):
 def test_file_arm_nested_in_model_gets_stream(test_session):
     class Holder(DataModel):
         label: str = ""
-        doc: Union[File, str] = ""
+        doc: File | str = ""
 
     dc.read_values(
         id=[1],
@@ -318,7 +318,7 @@ def test_bool_int_union_preserves_type(test_session):
     dc.read_values(
         id=[1, 2, 3, 4],
         v=vals,
-        output={"id": int, "v": Union[int, bool]},
+        output={"id": int, "v": int | bool},
         session=test_session,
     ).save("u_boolint")
     back = dc.read_dataset("u_boolint", session=test_session)
@@ -336,7 +336,7 @@ def test_int_float_union_preserves_type(test_session):
     dc.read_values(
         id=[1, 2, 3],
         v=vals,
-        output={"id": int, "v": Union[int, float]},
+        output={"id": int, "v": int | float},
         session=test_session,
     ).save("u_intfloat")
     back = dc.read_dataset("u_intfloat", session=test_session)
@@ -352,7 +352,7 @@ def test_group_by_partition_arm_leaf(test_session):
     chain = dc.read_values(
         id=[1, 2, 3, 4],
         value=["a", "a", "b", 1],
-        output={"id": int, "value": Union[str, int]},
+        output={"id": int, "value": str | int},
         session=test_session,
     )
     rows = chain.group_by(c=func.count(), partition_by="value.str").to_records()
@@ -389,7 +389,7 @@ def test_union_with_plain_scalar_raises_cleanly(test_session):
 
 
 # ---- modern LLM API response shapes ----------------------------------------
-# The dominant LLM-response union is `content: list[Union[Block, ...]]` (Anthropic
+# The dominant LLM-response union is `content: list[Block | ...]` (Anthropic
 # content blocks, OpenAI Responses output items, Gemini parts) — a union *inside a
 # list*, which is stored as a JSON column (not tagged) and round-trips via pydantic's
 # `type` discriminator. A *field-level* union uses the tagged columns. Both must
@@ -417,15 +417,18 @@ class _ThinkingBlock(DataModel):
 class _Usage(DataModel):
     input_tokens: int = 0
     output_tokens: int = 0
-    cache_read_input_tokens: Optional[int] = None
+    cache_read_input_tokens: int | None = None
 
 
 class _AnthropicMessage(DataModel):
     id: str = ""
     role: str = "assistant"
-    content: list[Union[_TextBlock, _ToolUseBlock, _ThinkingBlock]] = []  # noqa: RUF012
-    stop_reason: Optional[str] = None
+    content: list[_TextBlock | _ToolUseBlock | _ThinkingBlock] = []  # noqa: RUF012
+    stop_reason: str | None = None
     usage: _Usage = _Usage()
+
+
+_LLM_Block = _TextBlock | _ToolUseBlock | _ThinkingBlock
 
 
 def test_llm_anthropic_message_roundtrip(test_session):
@@ -475,7 +478,7 @@ class _FunctionToolCall(DataModel):
 
 class _OpenAIResponse(DataModel):
     id: str = ""
-    output: list[Union[_OutputMessage, _FunctionToolCall]] = []  # noqa: RUF012
+    output: list[_OutputMessage | _FunctionToolCall] = []  # noqa: RUF012
 
 
 def test_llm_openai_response_roundtrip(test_session):
@@ -502,7 +505,7 @@ def test_llm_block_as_field_level_union_is_tagged(test_session):
     dc.read_values(
         id=[1, 2],
         block=[_TextBlock(text="hi"), _ToolUseBlock(name="wx")],
-        output={"id": int, "block": Union[_TextBlock, _ToolUseBlock]},
+        output={"id": int, "block": _TextBlock | _ToolUseBlock},
         session=test_session,
     ).save("llm_block")
     chain = dc.read_dataset("llm_block", session=test_session)
@@ -515,7 +518,7 @@ def test_llm_block_as_field_level_union_is_tagged(test_session):
 
 
 def test_llm_explode_content_blocks_with_id(test_session):
-    # The bridge over the queryability gap: explode `content: list[Union[...]]`
+    # The bridge over the queryability gap: explode `content: list[Block | ...]`
     # (an opaque JSON column) into one row per block via a multi-output generator
     # carrying the parent id; each block becomes a field-level (tagged) Union.
     msgs = [
@@ -532,13 +535,12 @@ def test_llm_explode_content_blocks_with_id(test_session):
     chain = dc.read_values(
         msg=msgs, output={"msg": _AnthropicMessage}, session=test_session
     )
-    Block = Union[_TextBlock, _ToolUseBlock, _ThinkingBlock]
 
-    def explode(msg: _AnthropicMessage) -> Iterator[tuple[str, Block]]:
+    def explode(msg: _AnthropicMessage) -> Iterator[tuple[str, _LLM_Block]]:
         for block in msg.content:
             yield msg.id, block
 
-    chain.gen(explode, output={"msg_id": str, "block": Block}).save("llm_exploded")
+    chain.gen(explode, output={"msg_id": str, "block": _LLM_Block}).save("llm_exploded")
     out = dc.read_dataset("llm_exploded", session=test_session)
 
     assert out.count() == 4  # 3 blocks from m1 + 1 from m2
@@ -554,8 +556,6 @@ def test_llm_explode_content_blocks_with_id(test_session):
 
 
 # ---- readable arm access (no _0 / __ in user code) -------------------------
-
-_LLM_Block = Union[_TextBlock, _ToolUseBlock, _ThinkingBlock]
 
 
 def _exploded_blocks(test_session):
@@ -639,7 +639,7 @@ def test_union_display_is_readable_not_positional(test_session):
     chain = dc.read_values(
         id=[1, 2],
         item=[UFoo(a=1, b="z"), UBar(x=2.5)],
-        output={"id": int, "item": Union[UFoo, UBar]},
+        output={"id": int, "item": UFoo | UBar},
         session=test_session,
     ).order_by("id")
     schema_str = str(chain.schema)

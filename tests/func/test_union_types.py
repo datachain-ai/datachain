@@ -1,9 +1,9 @@
-"""Functional tests for multi-arm ``Union[...]`` support (tagged unions).
+"""Functional tests for multi-arm ``...`` support (tagged unions).
 
-Covers every union kind end to end — ``Union[basic, basic]``,
-``Union[Model, Model]`` (arms declaring the same fields included), mixed
-``Union[basic, Model]`` and nullable
-``Union[..., None]`` — through ``read_values`` / ``map`` ingestion, ``save``
+Covers every union kind end to end — ``basic | basic``,
+``Model | Model`` (arms declaring the same fields included), mixed
+``basic | Model`` and nullable
+``... | None`` — through ``read_values`` / ``map`` ingestion, ``save``
 round-trips, parquet/JSON export, and the query ops (filter / mutate / select /
 group_by / isnone / count / union). The active arm is stored under a ``_type_tag``
 discriminator; inactive arms are NULL. These run on both SQLite and ClickHouse
@@ -14,7 +14,7 @@ is not stable across backends for generated rows.
 """
 
 import json
-from typing import Literal, Optional, Union
+from typing import Literal, Union
 
 import pytest
 
@@ -35,7 +35,7 @@ class _Bar(DataModel):
 
 class _Holder(DataModel):
     id: int = 0
-    payload: Union[str, int] = 0
+    payload: str | int = 0
 
 
 class _Cat(DataModel):
@@ -47,7 +47,7 @@ class _Dog(DataModel):
 
 
 class _PetHolder(DataModel):
-    pet: Union[_Cat, _Dog]
+    pet: _Cat | _Dog
 
 
 class _HumanLabel(DataModel):
@@ -61,7 +61,7 @@ class _ModelLabel(DataModel):
 
 
 class _Labelled(DataModel):
-    labels: list[Union[_HumanLabel, _ModelLabel]] = []  # noqa: RUF012
+    labels: list[_HumanLabel | _ModelLabel] = []  # noqa: RUF012
 
 
 def _ordered(chain, *cols):
@@ -75,7 +75,7 @@ def test_scalar_union_roundtrip(test_session):
     dc.read_values(
         id=[1, 2, 3, 4],
         value=["hello", 42, "world", 7],
-        output={"id": int, "value": Union[str, int]},
+        output={"id": int, "value": str | int},
         session=test_session,
     ).save("u_scalar")
     back = dc.read_dataset("u_scalar", session=test_session)
@@ -85,7 +85,7 @@ def test_scalar_union_roundtrip(test_session):
 def test_read_records_scalar_union(test_session):
     dc.read_records(
         [{"id": 1, "value": "a"}, {"id": 2, "value": 7}],
-        schema={"id": int, "value": Union[str, int]},
+        schema={"id": int, "value": str | int},
         session=test_session,
     ).save("u_rec_scalar")
     back = dc.read_dataset("u_rec_scalar", session=test_session)
@@ -96,7 +96,7 @@ def test_list_of_model_union_rejected(test_session):
     with pytest.raises(DataChainParamsError, match="DataModel arm is not supported"):
         dc.read_values(
             items=[[_Foo(a=1), _Bar(x=2.0)]],
-            output={"items": list[Union[_Foo, _Bar]]},
+            output={"items": list[_Foo | _Bar]},
             session=test_session,
         )
 
@@ -105,7 +105,7 @@ def test_read_records_preflattened_union_key_errors(test_session):
     with pytest.raises(DataChainParamsError, match="pre-flatten a multi-arm Union"):
         dc.read_records(
             [{"v__int": 99}],
-            schema={"v": Union[int, str]},
+            schema={"v": int | str},
             session=test_session,
         ).save("u_rec_pf")
 
@@ -114,7 +114,7 @@ def test_read_records_model_union(test_session):
     items = [_Foo(a=1, b="z"), _Bar(x=2.5)]
     dc.read_records(
         [{"id": 1, "item": items[0]}, {"id": 2, "item": items[1]}],
-        schema={"id": int, "item": Union[_Foo, _Bar]},
+        schema={"id": int, "item": _Foo | _Bar},
         session=test_session,
     ).save("u_rec_models")
     back = dc.read_dataset("u_rec_models", session=test_session)
@@ -126,7 +126,7 @@ def test_model_union_roundtrip(test_session):
     dc.read_values(
         id=[1, 2, 3],
         item=items,
-        output={"id": int, "item": Union[_Foo, _Bar]},
+        output={"id": int, "item": _Foo | _Bar},
         session=test_session,
     ).save("u_models")
     back = dc.read_dataset("u_models", session=test_session)
@@ -138,7 +138,7 @@ def test_mixed_union_roundtrip(test_session):
     dc.read_values(
         id=[1, 2, 3],
         value=items,
-        output={"id": int, "value": Union[str, int, _Foo]},
+        output={"id": int, "value": str | int | _Foo},
         session=test_session,
     ).save("u_mixed")
     back = dc.read_dataset("u_mixed", session=test_session)
@@ -149,7 +149,7 @@ def test_nullable_union_roundtrip(test_session):
     dc.read_values(
         id=[1, 2, 3, 4],
         value=["a", 3, None, "c"],
-        output={"id": int, "value": Union[str, int, None]},
+        output={"id": int, "value": str | int | None},
         session=test_session,
     ).save("u_nullable")
     back = dc.read_dataset("u_nullable", session=test_session)
@@ -158,12 +158,12 @@ def test_nullable_union_roundtrip(test_session):
 
 def test_union_float_arm_roundtrip(test_session):
     # A float arm works in a multi-arm union (the _type_tag disambiguates it),
-    # unlike the single-arm Optional[float].
+    # unlike the single-arm float | None.
     items = [1.5, "txt", 2.0]
     dc.read_values(
         id=[1, 2, 3],
         value=items,
-        output={"id": int, "value": Union[str, float]},
+        output={"id": int, "value": str | float},
         session=test_session,
     ).save("u_float")
     back = dc.read_dataset("u_float", session=test_session)
@@ -173,7 +173,7 @@ def test_union_float_arm_roundtrip(test_session):
 def test_select_arm_path_on_union_nested_in_model(test_session):
     class Outer(DataModel):
         name: str = ""
-        val: Union[int, str] = 0
+        val: int | str = 0
 
     s = dc.read_values(o=[Outer(name="x", val=10)], output={"o": Outer}).save("u_sel")
     whole = s.select("o.val").to_records()
@@ -210,7 +210,7 @@ def test_same_shaped_arms_survive_ops(test_session, tmp_path):
     dc.read_values(
         id=[1, 2],
         pet=pets,
-        output={"id": int, "pet": Union[_Cat, _Dog]},
+        output={"id": int, "pet": _Cat | _Dog},
         session=test_session,
     ).save("u_same_shape_ops")
     saved = dc.read_dataset("u_same_shape_ops", session=test_session)
@@ -232,7 +232,7 @@ def test_same_shaped_arms_survive_ops(test_session, tmp_path):
     other = dc.read_values(
         id=[3, 4],
         pet=[_Cat(name="mia"), _Dog(name="rex")],
-        output={"id": int, "pet": Union[_Cat, _Dog]},
+        output={"id": int, "pet": _Cat | _Dog},
         session=test_session,
     )
     combined = saved.union(other)
@@ -245,7 +245,7 @@ def test_same_shaped_arms_survive_ops(test_session, tmp_path):
 
 def test_same_shaped_arms_in_a_collection_rejected(test_session):
     class _Pets(DataModel):
-        pets: list[Union[_Cat, _Dog]] = []  # noqa: RUF012
+        pets: list[_Cat | _Dog] = []  # noqa: RUF012
 
     with pytest.raises(DataChainParamsError, match="are indistinguishable"):
         dc.read_values(
@@ -273,10 +273,10 @@ def test_literal_discriminator_keeps_arm_inside_a_collection(test_session):
 def test_map_returns_union(test_session):
     base = dc.read_values(id=[1, 2, 3, 4], session=test_session)
 
-    def f(id) -> Union[str, int]:
+    def f(id) -> str | int:
         return "even" if id % 2 == 0 else id
 
-    base.map(r=f, output={"r": Union[str, int]}).save("u_map")
+    base.map(r=f, output={"r": str | int}).save("u_map")
     back = dc.read_dataset("u_map", session=test_session)
     assert _ordered(back, "r") == [(1, 1), (2, "even"), (3, 3), (4, "even")]
 
@@ -290,7 +290,7 @@ def test_union_parquet_roundtrip(test_session, tmp_path):
     dc.read_values(
         id=[1, 2],
         item=items,
-        output={"id": int, "item": Union[_Foo, _Bar]},
+        output={"id": int, "item": _Foo | _Bar},
         session=test_session,
     ).order_by("id").to_parquet(path)
     back = dc.read_parquet(path, session=test_session)
@@ -302,7 +302,7 @@ def test_union_jsonl_export(test_session, tmp_path):
     dc.read_values(
         id=[1, 2],
         value=["hello", 42],
-        output={"id": int, "value": Union[str, int]},
+        output={"id": int, "value": str | int},
         session=test_session,
     ).order_by("id").to_jsonl(path)
     with open(path) as f:
@@ -318,7 +318,7 @@ def _nullable_union(test_session):
     return dc.read_values(
         id=[1, 2, 3, 4, 5],
         value=["hi", 42, "yo", 7, None],
-        output={"id": int, "value": Union[str, int, None]},
+        output={"id": int, "value": str | int | None},
         session=test_session,
     )
 
@@ -356,7 +356,7 @@ def test_union_filter_combined_arms(test_session):
     chain = dc.read_values(
         id=[1, 2, 3, 4],
         value=["hello", 42, "world", 7],
-        output={"id": int, "value": Union[str, int]},
+        output={"id": int, "value": str | int},
         session=test_session,
     )
     expr = (C("value.int") > 10) | (C("value.str") == "hello")
@@ -383,7 +383,7 @@ def test_union_filter_negation_and_unary(test_session):
     chain = dc.read_values(
         id=[1, 2, 3, 4],
         value=[10, "hello", 20, 30],
-        output={"id": int, "value": Union[int, str]},
+        output={"id": int, "value": int | str},
         session=test_session,
     )
     # ~ over a clause list and unary - over an arm path (UnaryExpression nodes)
@@ -399,7 +399,7 @@ def test_union_case_ifelse_over_arm(test_session):
     chain = dc.read_values(
         k=[1, 2, 3],
         v=[10, "hi", 20],
-        output={"k": int, "v": Union[int, str]},
+        output={"k": int, "v": int | str},
         session=test_session,
     )
     out = chain.mutate(label=func.ifelse(C("v.int") > 15, "big", "small"))
@@ -425,7 +425,7 @@ def test_union_select_except_atomic(test_session):
         id=[1, 2, 3],
         value=["a", 1, 2],
         name=["x", "y", "z"],
-        output={"id": int, "value": Union[str, int], "name": str},
+        output={"id": int, "value": str | int, "name": str},
         session=test_session,
     )
     for arg in ("value.int", "value.str"):
@@ -440,7 +440,7 @@ def test_union_root_reference_raises_guard(test_session):
     chain = dc.read_values(
         id=[1, 2],
         value=["x", 1],
-        output={"id": int, "value": Union[str, int]},
+        output={"id": int, "value": str | int},
         session=test_session,
     )
     with pytest.raises(DataChainColumnError, match="multi-arm Union"):
@@ -465,7 +465,7 @@ def test_union_distinct_on_arm(test_session):
     chain = dc.read_values(
         id=[1, 2, 3, 4, 5],
         value=["a", "b", 1, 1, 2],
-        output={"id": int, "value": Union[str, int]},
+        output={"id": int, "value": str | int},
         session=test_session,
     )
     assert sorted(chain.distinct("value.str").to_values("value"), key=str) == [
@@ -482,7 +482,7 @@ def test_readable_arm_access_across_ops(test_session):
     chain = dc.read_values(
         id=[1, 2, 3, 4],
         value=["hi", 42, "yo", 7],
-        output={"id": int, "value": Union[str, int]},
+        output={"id": int, "value": str | int},
         session=test_session,
     )
     assert chain.filter(C("value.int") == 42).to_values("id") == [2]
@@ -502,13 +502,13 @@ def test_union_combination_same_type(test_session):
     left = dc.read_values(
         id=[1, 2],
         value=["a", 1],
-        output={"id": int, "value": Union[str, int]},
+        output={"id": int, "value": str | int},
         session=test_session,
     )
     right = dc.read_values(
         id=[3, 4],
         value=[2, "b"],
-        output={"id": int, "value": Union[str, int]},
+        output={"id": int, "value": str | int},
         session=test_session,
     )
     left.union(right).save("u_union_op")
@@ -522,7 +522,7 @@ def test_merge_keeps_union_on_unmatched_rows(test_session):
     left = dc.read_values(
         id=[1, 2, 3],
         value=["a", 1, "b"],
-        output={"id": int, "value": Union[str, int]},
+        output={"id": int, "value": str | int},
         session=test_session,
     )
     right = dc.read_values(
@@ -537,13 +537,13 @@ def test_merge_widens_union_on_the_padded_side(test_session):
     right = dc.read_values(
         right_id=[1],
         value=["x"],
-        output={"right_id": int, "value": Union[int, str]},
+        output={"right_id": int, "value": int | str},
         session=test_session,
     )
     merged = left.merge(right, on="id", right_on="right_id", inner=False)
 
     assert _ordered(merged, "value") == [(1, "x"), (2, None)]
-    assert merged.signals_schema.values["value"] == Union[int, str, None]
+    assert merged.signals_schema.values["value"] == int | str | None
 
 
 def test_union_with_missing_signal_names_the_signal(test_session):
@@ -553,7 +553,7 @@ def test_union_with_missing_signal_names_the_signal(test_session):
     left = dc.read_values(
         id=[1],
         value=["a"],
-        output={"id": int, "value": Union[str, int]},
+        output={"id": int, "value": str | int},
         session=test_session,
     )
     right = dc.read_values(
@@ -573,7 +573,7 @@ def test_to_database_readable_arm_columns(test_session):
         dc.read_values(
             id=[1, 2, 3],
             value=["a", 1, "b"],
-            output={"id": int, "value": Union[str, int]},
+            output={"id": int, "value": str | int},
             session=test_session,
         ).to_database("t", conn)
         cols = [d[0] for d in conn.execute("SELECT * FROM t").description]
@@ -584,7 +584,7 @@ def test_to_database_readable_arm_columns(test_session):
 
 def test_union_optional_nested_in_model_roundtrip(test_session):
     class H(DataModel):
-        v: Optional[Union[str, int]] = None
+        v: str | int | None = None
 
     items = [H(v="a"), H(v=5), H(v=None)]
     dc.read_values(
@@ -603,13 +603,13 @@ def test_union_schema_canonical_order_both_spellings(test_session):
     a = dc.read_values(
         id=[1, 2],
         value=["x", 1],
-        output={"id": int, "value": Union[str, int]},
+        output={"id": int, "value": Union[str, int]},  # noqa: UP007
         session=test_session,
     )
     b = dc.read_values(
         id=[1, 2],
         value=["x", 1],
-        output={"id": int, "value": Union[int, str]},
+        output={"id": int, "value": Union[int, str]},  # noqa: UP007
         session=test_session,
     )
     assert a.signals_schema.db_signals() == b.signals_schema.db_signals()
@@ -632,7 +632,7 @@ def test_union_model_subclass_arm_preserves_fields(test_session):
     dc.read_values(
         id=[1, 2],
         item=[_Animal(legs=4), _Zebra(legs=4, stripes=20)],
-        output={"id": int, "item": Union[_Animal, _Zebra]},
+        output={"id": int, "item": _Animal | _Zebra},
         session=test_session,
     ).save("u_subclass")
     back = _ordered(dc.read_dataset("u_subclass", session=test_session), "item")
@@ -645,7 +645,7 @@ def test_union_subclass_of_arm_uses_narrowest_arm(test_session):
     dc.read_values(
         id=[1],
         item=[_BabyZebra(legs=4, stripes=9, age=2)],
-        output={"id": int, "item": Union[_Animal, _Zebra]},
+        output={"id": int, "item": _Animal | _Zebra},
         session=test_session,
     ).save("u_deep_subclass")
     back = _ordered(dc.read_dataset("u_deep_subclass", session=test_session), "item")
@@ -657,7 +657,7 @@ def test_list_of_union_roundtrip(test_session):
     dc.read_values(
         id=[1, 2],
         xs=[["a", 1, "b"], [2, "c"]],
-        output={"id": int, "xs": list[Union[str, int]]},
+        output={"id": int, "xs": list[str | int]},
         session=test_session,
     ).save("u_list")
     back = _ordered(dc.read_dataset("u_list", session=test_session), "xs")
@@ -670,13 +670,13 @@ def test_merge_on_union_signal_errors(test_session):
     left = dc.read_values(
         id=[1, 2],
         value=["a", 1],
-        output={"id": int, "value": Union[str, int]},
+        output={"id": int, "value": str | int},
         session=test_session,
     )
     right = dc.read_values(
         rid=[9],
         rvalue=["a"],
-        output={"rid": int, "rvalue": Union[str, int]},
+        output={"rid": int, "rvalue": str | int},
         session=test_session,
     )
     with pytest.raises(DataChainColumnError, match="Union signal"):
@@ -695,7 +695,7 @@ def test_union_indistinguishable_arms_rejected(test_session):
         dc.read_values(
             id=[1],
             v=[model_a(x=1)],
-            output={"id": int, "v": Union[model_a, model_b]},
+            output={"id": int, "v": model_a | model_b},
             session=test_session,
         ).save("u_dup")
 
@@ -704,12 +704,12 @@ def test_union_numpy_scalar_matches_numeric_arm(test_session):
     import numpy as np
 
     chain = dc.read_values(x=[1, 2], session=test_session)
-    ints = chain.map(
-        r=lambda x: np.int64(x * 10), output={"r": Union[float, int]}
-    ).to_values("r")
+    ints = chain.map(r=lambda x: np.int64(x * 10), output={"r": float | int}).to_values(
+        "r"
+    )
     assert sorted((v, type(v).__name__) for v in ints) == [(10, "int"), (20, "int")]
     floats = chain.map(
-        r=lambda x: np.float32(x) / 2, output={"r": Union[str, float]}
+        r=lambda x: np.float32(x) / 2, output={"r": str | float}
     ).to_values("r")
     assert sorted(floats) == [0.5, 1.0]
 
@@ -719,7 +719,7 @@ def test_union_no_arm_value_raises_multi_output(test_session):
         dc.read_values(
             id=[1],
             v=[5],
-            output={"id": int, "v": Union[float, str]},
+            output={"id": int, "v": float | str},
             session=test_session,
         ).save("u_noarm")
 
@@ -735,7 +735,7 @@ def test_union_wrong_model_raises_multi_output(test_session):
     with pytest.raises(DataChainParamsError, match="does not match any arm"):
         dc.read_values(id=[1], session=test_session).map(
             lambda id: (id, _Wrong(tag="_Foo", foo_a=7, foo_b="z")),
-            output={"id2": int, "v": Union[_Foo, _Bar]},
+            output={"id2": int, "v": _Foo | _Bar},
         ).save("u_wrong_model")
 
 
@@ -744,7 +744,7 @@ def test_union_none_value_raises_non_nullable(test_session):
         dc.read_values(
             id=[1],
             v=[None],
-            output={"id": int, "v": Union[float, str]},
+            output={"id": int, "v": float | str},
             session=test_session,
         ).save("u_none_noarm")
 
@@ -755,7 +755,7 @@ def test_column_multi_arm_union_message(test_session):
     chain = dc.read_values(
         id=[1],
         value=["x"],
-        output={"id": int, "value": Union[str, int]},
+        output={"id": int, "value": str | int},
         session=test_session,
     )
     with pytest.raises(DataChainColumnError, match="multi-arm Union"):
@@ -768,7 +768,7 @@ def test_column_optional_model_message(test_session):
     chain = dc.read_values(
         id=[1],
         addr=[_Foo(a=1, b="z")],
-        output={"id": int, "addr": Optional[_Foo]},
+        output={"id": int, "addr": _Foo | None},
         session=test_session,
     )
     with pytest.raises(DataChainColumnError, match="Optional model"):
@@ -779,7 +779,7 @@ def test_window_over_readable_arm_path(test_session):
     chain = dc.read_values(
         id=[1, 2, 3, 4, 5],
         value=[5, "x", 5, "y", 2],
-        output={"id": int, "value": Union[str, int]},
+        output={"id": int, "value": str | int},
         session=test_session,
     )
 
@@ -801,7 +801,7 @@ def test_union_arm_name_collision_errors(test_session):
         id=[1, 2],
         value=["a", 1],
         value__int=[100, 200],
-        output={"id": int, "value": Union[str, int], "value__int": int},
+        output={"id": int, "value": str | int, "value__int": int},
         session=test_session,
     )
     with pytest.raises(DataChainColumnError, match="same export column"):

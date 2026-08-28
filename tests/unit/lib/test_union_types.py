@@ -1,10 +1,10 @@
-"""Unit tests for multi-arm ``Union[...]`` support (tagged unions).
+"""Unit tests for multi-arm ``...`` support (tagged unions).
 
 Covers the type helpers (``union_arms`` canonical ordering, ``union_layout``
 classification, ``is_chain_type``), the ``_type_tag`` discriminator and per-arm
 slot schema emission, nullability of arm leaves, and flatten/unflatten
 round-trips for every union kind (basic/basic, model/model, mixed, nullable).
-``Optional[X]`` itself is the single-arm case and lives in ``test_optional.py``.
+``X | None`` itself is the single-arm case and lives in ``test_optional.py``.
 """
 
 import copy
@@ -62,12 +62,13 @@ class Wrap(DataModel):
 @pytest.mark.parametrize(
     "anno,expected_arms,has_none",
     [
-        (Union[str, int], [int, str], False),
-        (Union[int, str], [int, str], False),  # same type, order-independent
-        (Union[str, int, None], [int, str], True),
-        (Optional[int | str], [int, str], True),
+        (Union[str, int], [int, str], False),  # noqa: UP007
+        # the two spellings are one type, so the arm order must not depend on them
+        (Union[int, str], [int, str], False),  # noqa: UP007
+        (Union[str, int, None], [int, str], True),  # noqa: UP007
+        (Optional[int | str], [int, str], True),  # noqa: UP045
         (int, [int], False),
-        (Optional[int], [int], True),
+        (Optional[int], [int], True),  # noqa: UP045
     ],
 )
 def test_union_arms_canonical_order(anno, expected_arms, has_none):
@@ -79,15 +80,15 @@ def test_union_arms_canonical_order(anno, expected_arms, has_none):
 def test_union_arms_order_is_serialization_stable():
     # The two spellings are the same type; arm order (hence the column order)
     # must not depend on how the Union was written.
-    assert union_arms(Union[str, int]) == union_arms(Union[int, str])
-    assert union_arms(Union[Foo, Bar]) == union_arms(Union[Bar, Foo])
+    assert union_arms(Union[str, int]) == union_arms(Union[int, str])  # noqa: UP007
+    assert union_arms(Union[Foo, Bar]) == union_arms(Union[Bar, Foo])  # noqa: UP007
 
 
 # ---- union_layout classification -------------------------------------------
 
 
 def test_union_layout_multiarm_uses_slots():
-    layout = union_layout(Union[str, int])
+    layout = union_layout(str | int)
     assert layout is not None
     assert layout.use_slots
     assert layout.arms == (int, str)
@@ -95,29 +96,29 @@ def test_union_layout_multiarm_uses_slots():
 
 
 def test_union_layout_optional_model_no_slots():
-    # Optional[Model] is the single-arm union: tag + direct leaves, no slot prefix.
-    layout = union_layout(Optional[Foo])
+    # Model | None is the single-arm union: tag + direct leaves, no slot prefix.
+    layout = union_layout(Foo | None)
     assert layout is not None
     assert not layout.use_slots
     assert layout.has_none
 
 
-@pytest.mark.parametrize("anno", [int, str, Optional[int], list[int], dict[str, int]])
+@pytest.mark.parametrize("anno", [int, str, int | None, list[int], dict[str, int]])
 def test_union_layout_none_for_non_tagged(anno):
     assert union_layout(anno) is None
 
 
 def test_union_layout_json_union_not_tagged():
     # Collection/JSON unions stay single JSON columns, not tagged unions.
-    assert union_layout(Union[dict, list[dict]]) is None
-    assert union_layout(Union[dict, list[dict], None]) is None
+    assert union_layout(dict | list[dict]) is None
+    assert union_layout(dict | list[dict] | None) is None
 
 
 def test_is_chain_type_multiarm_union():
-    assert is_chain_type(Union[str, int])
-    assert is_chain_type(Union[Foo, Bar])
-    assert is_chain_type(Union[str, int, Foo])
-    assert is_chain_type(Union[str, int, None])
+    assert is_chain_type(str | int)
+    assert is_chain_type(Foo | Bar)
+    assert is_chain_type(str | int | Foo)
+    assert is_chain_type(str | int | None)
 
 
 def test_same_shaped_arms_rejected_inside_a_collection():
@@ -128,22 +129,22 @@ def test_same_shaped_arms_rejected_inside_a_collection():
         label: str = ""
 
     class Holder(DataModel):
-        items: list[Union[Human, Machine]] = []  # noqa: RUF012
+        items: list[Human | Machine] = []  # noqa: RUF012
 
     class DeepHolder(DataModel):
         items: list[Holder] = []  # noqa: RUF012
 
     class KeyedHolder(DataModel):
-        items: dict[str, Union[Human, Machine]] = {}  # noqa: RUF012
+        items: dict[str, Human | Machine] = {}  # noqa: RUF012
 
-    assert is_chain_type(Union[Human, Machine])
+    assert is_chain_type(Human | Machine)
     for anno in (
         Holder,
         DeepHolder,
         KeyedHolder,
-        list[Union[Human, Machine]],
-        dict[str, Union[Human, Machine]],
-        Optional[list[Union[Human, Machine]]],
+        list[Human | Machine],
+        dict[str, Human | Machine],
+        list[Human | Machine] | None,
     ):
         with pytest.raises(DataChainParamsError, match="are indistinguishable"):
             is_chain_type(anno)
@@ -160,7 +161,7 @@ def test_same_shaped_arms_rejected_whatever_the_field_order():
         label: str = ""
 
     class Inner(DataModel):
-        pet: Union[Human, Machine]
+        pet: Human | Machine
 
     class Wrapped(DataModel):
         wrapped: list[Inner] = []  # noqa: RUF012
@@ -178,7 +179,7 @@ def test_differently_shaped_arms_allowed_inside_a_collection():
         score: float = 0.0
 
     class Holder(DataModel):
-        items: list[Union[Human, Machine]] = []  # noqa: RUF012
+        items: list[Human | Machine] = []  # noqa: RUF012
 
     assert is_chain_type(Holder)
 
@@ -193,7 +194,7 @@ def test_literal_discriminator_allows_same_shaped_arms():
         label: str = ""
 
     class Holder(DataModel):
-        items: list[Union[Human, Machine]] = []  # noqa: RUF012
+        items: list[Human | Machine] = []  # noqa: RUF012
 
     assert is_chain_type(Holder)
 
@@ -208,7 +209,7 @@ def test_self_referential_model_field_walk_terminates():
 
 
 def test_schema_scalar_union_columns():
-    schema = SignalSchema({"value": Union[str, int]})
+    schema = SignalSchema({"value": str | int})
     # arms are stored under their type name
     assert schema.db_signals() == ["value___type_tag", "value__int", "value__str"]
     # The discriminator is hidden from user-facing signals; arm slots are not.
@@ -216,7 +217,7 @@ def test_schema_scalar_union_columns():
 
 
 def test_schema_model_union_columns():
-    schema = SignalSchema({"item": Union[Foo, Bar]})
+    schema = SignalSchema({"item": Foo | Bar})
     # Bar ("Bar") sorts before Foo ("Foo"); each arm is stored under its model name
     assert schema.db_signals() == [
         "item___type_tag",
@@ -239,7 +240,7 @@ def test_arm_selector_stable_across_reload():
 
 
 def test_union_arm_leaves_are_nullable():
-    cols = SignalSchema({"value": Union[str, int]}).db_signals(as_columns=True)
+    cols = SignalSchema({"value": str | int}).db_signals(as_columns=True)
     by_name = {c.name: c for c in cols}
     assert by_name["value__int"].type.dc_nullable  # int arm
     assert by_name["value__str"].type.dc_nullable  # str arm
@@ -267,11 +268,11 @@ def _roundtrip(value, anno):
 @pytest.mark.parametrize(
     "value,anno,tag",
     [
-        ("hello", Union[str, int], "str"),
-        (42, Union[str, int], "int"),
-        ("hi", Union[str, int, None], "str"),
-        (7, Union[str, int, None], "int"),
-        (None, Union[str, int, None], None),  # None -> NULL discriminator
+        ("hello", str | int, "str"),
+        (42, str | int, "int"),
+        ("hi", str | int | None, "str"),
+        (7, str | int | None, "int"),
+        (None, str | int | None, None),  # None -> NULL discriminator
     ],
 )
 def test_flatten_scalar_union(value, anno, tag):
@@ -282,23 +283,23 @@ def test_flatten_scalar_union(value, anno, tag):
 
 @pytest.mark.parametrize("value", [Foo(a=1, b="z"), Bar(x=3.5)])
 def test_flatten_model_union(value):
-    _, restored = _roundtrip(value, Union[Foo, Bar])
+    _, restored = _roundtrip(value, Foo | Bar)
     assert restored == value.model_dump()
 
 
 def test_flatten_mixed_union():
     for value in ["txt", 5, Foo(a=2, b="m")]:
-        _, restored = _roundtrip(value, Union[str, int, Foo])
+        _, restored = _roundtrip(value, str | int | Foo)
         expected = value.model_dump() if isinstance(value, DataModel) else value
         assert restored == expected
 
 
 def test_flatten_bool_not_swallowed_by_int_arm():
     # bool is a subclass of int; exact-type matching must keep them distinct.
-    layout = union_layout(Union[int, bool])
+    layout = union_layout(int | bool)
     assert layout is not None
-    flat_true = flatten_value(True, Union[int, bool])
-    flat_one = flatten_value(1, Union[int, bool])
+    flat_true = flatten_value(True, int | bool)
+    flat_one = flatten_value(1, int | bool)
     assert flat_true[0] == "bool"
     assert flat_one[0] == "int"
 
@@ -311,7 +312,7 @@ def test_nested_union_reads_the_tagged_arm():
         name: str = ""
 
     class Holder(DataModel):
-        pet: Union[Cat, Dog]
+        pet: Cat | Dog
 
     row = flatten(Holder(pet=Dog(name="fido")))
     (holder,) = SignalSchema({"h": Holder}).row_to_objs(row)
@@ -330,20 +331,20 @@ def test_flatten_subclass_matches_narrowest_arm():
     class BabyZebra(Zebra):
         age: int = 0
 
-    flat, restored = _roundtrip(BabyZebra(stripes=9, age=2), Union[Animal, Zebra])
+    flat, restored = _roundtrip(BabyZebra(stripes=9, age=2), Animal | Zebra)
     assert flat[0] == "Zebra"
     assert restored == {"legs": 4, "stripes": 9}
 
 
 def test_flatten_datetime_arm():
     now = datetime(2024, 1, 2, 3, 4, 5)
-    _, restored = _roundtrip(now, Union[str, datetime])
+    _, restored = _roundtrip(now, str | datetime)
     assert restored == now
 
 
 def test_flatten_inactive_arms_are_none():
     # str active -> the int slot and (model) arm leaves are None placeholders.
-    flat = flatten_value("hi", Union[int, str, Foo])
+    flat = flatten_value("hi", int | str | Foo)
     assert flat[0] == "str"
     # exactly one arm column is non-None (the active str slot).
     assert sum(1 for v in flat[1:] if v is not None) == 1
@@ -374,7 +375,7 @@ def test_union_arm_named_like_the_discriminator_rejected():
         x: int = 0
 
     with pytest.raises(DataChainParamsError, match="is reserved"):
-        SignalSchema({"value": Union[_type_tag, str]}).db_signals()
+        SignalSchema({"value": _type_tag | str}).db_signals()
 
 
 def test_union_value_unknown_arm_name_reads_none():
@@ -396,7 +397,7 @@ def test_index_tag_reads_optional_model(unwarned_index_tag):
         got = _union_value({"v._type_tag": 0, "v.a": 7, "v.b": "z"}, layout, "v")
     assert (got.a, got.b) == (7, "z")
 
-    schema = SignalSchema({"m": Optional[Foo]})
+    schema = SignalSchema({"m": Foo | None})
     assert schema.row_to_objs((0, 7, "z")) == [Foo(a=7, b="z")]
     # any other index is the absent arm
     assert schema.row_to_objs((1, 7, "z")) == [None]
@@ -405,20 +406,20 @@ def test_index_tag_reads_optional_model(unwarned_index_tag):
 
 def test_index_tag_rejected_multi_arm(unwarned_index_tag):
     # only the single-arm layout is ever stored with an index
-    schema = SignalSchema({"value": Union[int, str]})
+    schema = SignalSchema({"value": int | str})
     with pytest.raises(OutdatedDatasetFormatError, match="unknown _type_tag 0"):
         schema.row_to_objs((0, 42, None))
 
 
 def test_signal_schema_union_path_edges():
-    schema = SignalSchema({"v": Union[int, str]})
+    schema = SignalSchema({"v": int | str})
     assert schema.arm_display_path([]) == []
     assert schema.arm_display_path(["unknown"]) == ["unknown"]
     assert schema.order_by_column("nonexistent") is None
 
 
 def test_union_value_infers_arm_when_tag_absent():
-    layout = union_layout(Union[Foo, int])
+    layout = union_layout(Foo | int)
     fk, ik = arm_selector(Foo), arm_selector(int)
 
     foo = _union_value({f"v.{fk}.a": 5, f"v.{fk}.b": "z"}, layout, "v")
