@@ -196,6 +196,34 @@ def test_class_udf_hash_is_deterministic_across_instances():
     assert udf_a.hash() == udf_b.hash()
 
 
+@pytest.mark.parametrize(
+    "first_config,second_config",
+    [
+        ({"a": 1, "b": 2}, {"b": 2, "a": 1}),
+        (
+            {"options": {"a": 1, "b": 2}},
+            {"options": {"b": 2, "a": 1}},
+        ),
+    ],
+)
+def test_class_udf_hash_preserves_constructor_dict_order(first_config, second_config):
+    class Configured(Mapper):
+        def __init__(self, config):
+            self.config = config
+
+        def process(self, x: int) -> str:
+            return ",".join(self.config)
+
+    first = Configured(first_config)
+    second = Configured(second_config)
+    sign_a = get_sign(first, output="y")
+    sign_b = get_sign(second, output="y")
+    udf_a = Mapper._create(sign_a, sign_a.output_schema)
+    udf_b = Mapper._create(sign_b, sign_b.output_schema)
+
+    assert udf_a.hash() != udf_b.hash()
+
+
 def test_class_udf_unsupported_constructor_value_disables_cache_reuse(caplog):
     class Opaque:
         def __repr__(self):

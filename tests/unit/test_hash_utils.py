@@ -34,8 +34,8 @@ from datachain.hash_utils import (
             (
                 "dict",
                 (
-                    (("str", "x"), ("int", 1)),
                     (("str", "y"), ("int", 2)),
+                    (("str", "x"), ("int", 1)),
                 ),
             ),
         ),
@@ -49,8 +49,8 @@ from datachain.hash_utils import (
                         (
                             "dict",
                             (
-                                (("str", "x"), ("int", 1)),
                                 (("str", "y"), ("int", 2)),
+                                (("str", "x"), ("int", 1)),
                             ),
                         ),
                     ),

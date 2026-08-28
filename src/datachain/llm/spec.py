@@ -52,7 +52,7 @@ def _without_secrets(value: Any) -> Any:
 
 def _normalize_identity_value(value: Any, fallback: str) -> Any:
     try:
-        return normalize_hash_value(value)
+        return normalize_hash_value(value, sort_dicts=True)
     except TypeError as exc:
         logger.warning("%s; cache reuse for this LLM operation is disabled", exc)
         return ("unsupported", fallback)
