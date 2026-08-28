@@ -327,9 +327,9 @@ class StudioClient:
                         logger.error("Error receiving websocket message: %s", e)
                         break
         except (websockets.exceptions.WebSocketException, OSError) as e:
-            # Studio rejects the handshake with 403 for an unknown team, an
-            # invalid token, or a missing job_id; retrying cannot fix those.
-            # Any other status (a 5xx from a gateway mid-deploy) is transient.
+            # An auth refusal (401, 403) is terminal: the same request will be
+            # refused again. Any other status (a 5xx from a gateway mid-deploy)
+            # is worth another attempt.
             response = getattr(e, "response", None)
             status = getattr(response, "status_code", None) or getattr(
                 e, "status_code", None
