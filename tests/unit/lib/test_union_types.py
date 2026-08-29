@@ -25,6 +25,7 @@ from datachain.lib.data_model import (
     is_chain_type,
     union_arms,
     union_layout,
+    validate_chain_type,
 )
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema, SignalSchemaWarning
@@ -105,6 +106,26 @@ def test_is_chain_type_multiarm_union():
     assert is_chain_type(str | int | None)
 
 
+def test_is_chain_type_answers_instead_of_raising():
+    class Human(DataModel):
+        name: str = ""
+
+    class Robot(DataModel):
+        name: str = ""
+
+    candidates = [int, str, list[Human | Robot], float]
+    assert [t for t in candidates if is_chain_type(t)] == [int, str, float]
+    for anno in (
+        list[Human | Robot],
+        dict[str, Human | Robot],
+        list[Human | Robot] | None,
+    ):
+        with pytest.raises(
+            DataChainParamsError, match="Put the Union inside a DataModel"
+        ):
+            validate_chain_type(anno)
+
+
 def test_same_shaped_arms_rejected_inside_a_collection():
     class Human(DataModel):
         label: str = ""
@@ -122,19 +143,12 @@ def test_same_shaped_arms_rejected_inside_a_collection():
         items: dict[str, Human | Machine] = {}  # noqa: RUF012
 
     assert is_chain_type(Human | Machine)
-    for anno in (
-        Holder,
-        DeepHolder,
-        KeyedHolder,
-        list[Human | Machine],
-        dict[str, Human | Machine],
-        list[Human | Machine] | None,
-    ):
-        with pytest.raises(DataChainParamsError, match="are indistinguishable"):
-            is_chain_type(anno)
+    for anno in (Holder, DeepHolder, KeyedHolder):
+        with pytest.raises(DataChainParamsError, match="declare the same field names"):
+            validate_chain_type(anno)
 
     with pytest.raises(DataChainParamsError, match=r"`Holder\.items`"):
-        is_chain_type(DeepHolder)
+        validate_chain_type(DeepHolder)
 
 
 def test_same_shaped_arms_rejected_whatever_the_field_order():
@@ -152,7 +166,7 @@ def test_same_shaped_arms_rejected_whatever_the_field_order():
         direct: Inner = Inner(pet=Human())
 
     with pytest.raises(DataChainParamsError, match=r"`Inner\.pet`"):
-        is_chain_type(Wrapped)
+        validate_chain_type(Wrapped)
 
 
 def test_differently_shaped_arms_allowed_inside_a_collection():
@@ -189,6 +203,7 @@ def test_self_referential_model_field_walk_terminates():
         child: "Node | None" = None
 
     Node.model_rebuild()
+    validate_chain_type(Node)
     assert is_chain_type(Node)
 
 

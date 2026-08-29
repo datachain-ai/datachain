@@ -3,7 +3,12 @@ from collections.abc import Callable, Generator, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any, get_args, get_origin
 
-from datachain.lib.data_model import DataType, DataTypeNames, is_chain_type
+from datachain.lib.data_model import (
+    DataType,
+    DataTypeNames,
+    is_chain_type,
+    validate_chain_type,
+)
 from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.udf import UDFBase, reject_var_params
 from datachain.lib.utils import AbstractUDF, DataChainParamsError, callable_name
@@ -160,6 +165,7 @@ class UdfSignature:  # noqa: PLW1641
                         f"output signal '{key}' has type '{type(key)}'"
                         " while 'str' is expected",
                     )
+                validate_chain_type(value)
                 if not is_chain_type(value):
                     raise UdfSignatureError(
                         chain,
@@ -169,14 +175,15 @@ class UdfSignature:  # noqa: PLW1641
                     )
 
             udf_output_map = output
-        elif is_chain_type(output):
-            udf_output_map = {signal_name: output}
         else:
-            raise UdfSignatureError(
-                chain,
-                f"unknown output type: {output}. List of signals or dict of signals"
-                " to function are expected.",
-            )
+            validate_chain_type(output)
+            if not is_chain_type(output):
+                raise UdfSignatureError(
+                    chain,
+                    f"unknown output type: {output}. List of signals or dict of"
+                    " signals to function are expected.",
+                )
+            udf_output_map = {signal_name: output}
         return udf_output_map
 
     def __eq__(self, other) -> bool:

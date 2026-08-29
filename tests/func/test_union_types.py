@@ -243,7 +243,7 @@ def test_same_shaped_arms_in_a_collection_rejected(test_session):
     class _Pets(DataModel):
         pets: list[_Cat | _Dog] = []  # noqa: RUF012
 
-    with pytest.raises(DataChainParamsError, match="are indistinguishable"):
+    with pytest.raises(DataChainParamsError, match="declare the same field names"):
         dc.read_values(
             id=[1],
             p=[_Pets()],

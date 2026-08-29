@@ -2656,6 +2656,9 @@ class DataChain:
             fs_kwargs: Optional kwargs forwarded to the underlying fsspec filesystem
                 when writing (e.g., s3://, gs://, hf://), fsspec-specific options
                 are supported.
+
+        A `Union` signal is written with its `_type_tag` column, which names the arm
+        each value holds. Dropping that column loses the arm types on read-back.
         """
         import pyarrow as pa
         import pyarrow.parquet as pq
@@ -2689,8 +2692,6 @@ class DataChain:
             self._effective_signals_schema.serialize(), ensure_ascii=False
         ).encode("utf-8")
 
-        # parquet keeps the union discriminator: it is what makes the file read back
-        # as the arm it was written from
         column_names, column_chunks = self.to_columnar_data_with_names(
             chunk_size, include_sentinels=True
         )

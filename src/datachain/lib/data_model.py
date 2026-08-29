@@ -390,7 +390,6 @@ def promote_default_none(model: type[BaseModel]) -> None:
 
 def is_chain_type(t: type) -> bool:
     """Return true if type is supported by `DataChain`."""
-    _reject_json_union_arms(t)
     if ModelStore.is_pydantic(t):
         return True
     if any(t is ft or t is get_args(ft)[0] for ft in get_args(StandardType)):
@@ -417,54 +416,66 @@ def _is_chain_container_type(t: type) -> bool:
 
     orig, args = get_origin(t), get_args(t)
     if orig is list and len(args) == 1:
-        _reject_collection_of_model_union(args[0], "list")
-        return is_chain_type(args[0])
+        return not _is_model_arm_union(args[0]) and is_chain_type(args[0])
     if orig is dict and len(args) == 2:
-        _reject_collection_of_model_union(args[1], "dict")
-        return is_chain_type(args[0]) and is_chain_type(args[1])
+        return (
+            not _is_model_arm_union(args[1])
+            and is_chain_type(args[0])
+            and is_chain_type(args[1])
+        )
     return False
 
 
-def _reject_collection_of_model_union(elem: Any, kind: str) -> None:
-    """Reject a signal-level collection whose element type is a union with a DataModel
-    arm (such elements read back as plain dicts; scalar arms round-trip via JSON)."""
+def _is_model_arm_union(elem: Any) -> bool:
+    """Whether ``elem`` is a tagged union with a DataModel arm. Directly under a
+    collection such elements read back as plain dicts, losing their model type."""
     layout = union_layout(elem)
-    if (
+    return (
         layout is not None
         and layout.use_slots
         and any(ModelStore.is_pydantic(arm) for arm in layout.arms)
-    ):
+    )
+
+
+def validate_chain_type(anno: Any) -> None:
+    """Raise for a type ``DataChain`` cannot store, saying what to change. A collection
+    is one JSON cell with no ``_type_tag``: a union under one is read back by shape, so
+    its arms have to be tellable apart -- and directly under one, not at all."""
+    # (annotation, enclosing collection kind, inside a model, nearest model field)
+    stack: list[tuple[Any, str | None, bool, str]] = [(anno, None, False, "")]
+    seen: set[tuple[type[BaseModel], bool]] = set()
+    while stack:
+        current, collection, in_model, where = stack.pop()
+        inner, _ = unwrap_optional(current)
+        arms, _ = union_arms(inner)
+        if len(arms) >= 2:
+            if collection and not in_model:
+                _reject_model_arms(inner, collection)
+            elif collection:
+                _reject_same_shaped_arms(arms, where)
+            stack.extend((arm, collection, in_model, where) for arm in arms)
+            continue
+        origin = get_origin(inner)
+        if origin in (list, dict):
+            kind = "list" if origin is list else "dict"
+            stack.extend((arg, kind, in_model, where) for arg in get_args(inner))
+            continue
+        fr = ModelStore.to_pydantic(inner)
+        # once per collection state: a field is safe as a column, not inside a JSON cell
+        if fr is not None and (fr, collection is not None) not in seen:
+            seen.add((fr, collection is not None))
+            stack.extend(
+                (f_info.annotation, collection, True, f"{fr.__name__}.{name}")
+                for name, f_info in fr.model_fields.items()
+            )
+
+
+def _reject_model_arms(elem: Any, kind: str) -> None:
+    if _is_model_arm_union(elem):
         raise DataChainParamsError(
             f"{kind}[Union[...]] with a DataModel arm is not supported: elements "
             "lose their model type. Put the Union inside a DataModel field instead."
         )
-
-
-def _reject_json_union_arms(anno: Any) -> None:
-    """A collection is one JSON cell with no ``_type_tag``: below one, an arm is
-    recovered from the value's shape, so same-shaped arms read back as the wrong arm."""
-    stack: list[tuple[Any, bool, str]] = [(anno, False, "")]
-    seen: set[tuple[type[BaseModel], bool]] = set()
-    while stack:
-        current, in_json, where = stack.pop()
-        inner, _ = unwrap_optional(current)
-        arms, _ = union_arms(inner)
-        if len(arms) >= 2:
-            if in_json:
-                _reject_same_shaped_arms(arms, where)
-            stack.extend((arm, in_json, where) for arm in arms)
-            continue
-        if get_origin(inner) in (list, dict):
-            stack.extend((arg, True, where) for arg in get_args(inner))
-            continue
-        fr = ModelStore.to_pydantic(inner)
-        # once per in_json state: a field is safe as a column, not inside a JSON cell
-        if fr is not None and (fr, in_json) not in seen:
-            seen.add((fr, in_json))
-            stack.extend(
-                (f_info.annotation, in_json, f"{fr.__name__}.{name}")
-                for name, f_info in fr.model_fields.items()
-            )
 
 
 def _reject_same_shaped_arms(arms: Sequence[Any], where: str) -> None:
@@ -477,8 +488,9 @@ def _reject_same_shaped_arms(arms: Sequence[Any], where: str) -> None:
             names = ", ".join(arm.__name__ for arm in group)
             location = f"`{where}`" if where else "a list or dict"
             raise DataChainParamsError(
-                f"Union arms {names} are indistinguishable inside {location}: "
-                'add a field like `kind: Literal["human"]`.'
+                f"Union arms {names} declare the same field names, so inside "
+                f"{location} they cannot be told apart: add a field like `kind: "
+                'Literal["..."]`.'
             )
 
 
