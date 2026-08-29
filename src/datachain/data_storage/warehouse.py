@@ -7,6 +7,7 @@ import string
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
+from pathlib import PurePath
 from typing import TYPE_CHECKING, Any, Union, cast
 from urllib.parse import urlparse
 
@@ -106,6 +107,13 @@ class AbstractWarehouse(ABC, Serializable):
         if isinstance(obj, dict):
             out: dict[str, Any] = {}
             for k, v in obj.items():
+                if isinstance(k, PurePath):
+                    # Written as its JSON text, quotes and all, and nothing on
+                    # the read side turns that back into a path.
+                    raise TypeError(
+                        f"Cannot use {type(k).__name__} as a mapping key: "
+                        "paths are not supported as JSON object names"
+                    )
                 if not isinstance(k, str):
                     key_str = json.dumps(
                         self._to_jsonable(k),

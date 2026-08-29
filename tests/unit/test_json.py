@@ -1,5 +1,6 @@
 import datetime as dt
 import io
+import pathlib
 import sys
 
 import numpy as np
@@ -69,6 +70,48 @@ def test_datetime_serialization_matches_pydantic_json_mode() -> None:
         )
         == expected
     )
+
+
+class PathPayload(BaseModel):
+    pure: pathlib.PurePosixPath
+    relative: pathlib.PurePath
+    concrete: pathlib.Path
+
+
+def test_path_serialization_matches_pydantic_json_mode() -> None:
+    payload = PathPayload(
+        pure=pathlib.PurePosixPath("/a/b"),
+        relative=pathlib.PurePath("rel/name.txt"),
+        concrete=pathlib.Path("/a/b"),
+    )
+
+    assert json.loads(
+        json.dumps(
+            {
+                "pure": payload.pure,
+                "relative": payload.relative,
+                "concrete": payload.concrete,
+            }
+        )
+    ) == payload.model_dump(mode="json")
+
+
+@pytest.mark.parametrize("serialize_bytes", [False, True])
+def test_path_serialization_works_in_both_encoders(serialize_bytes: bool) -> None:
+    value = {"p": pathlib.PurePosixPath("/a/b")}
+
+    assert json.loads(json.dumps(value, serialize_bytes=serialize_bytes)) == {
+        "p": "/a/b"
+    }
+
+
+def test_path_serialization_handles_nested_values() -> None:
+    value = {
+        "a": [pathlib.PurePosixPath("/x")],
+        "b": {"c": pathlib.PurePosixPath("/y")},
+    }
+
+    assert json.loads(json.dumps(value)) == {"a": ["/x"], "b": {"c": "/y"}}
 
 
 def test_numpy_serialization_is_opt_in() -> None:

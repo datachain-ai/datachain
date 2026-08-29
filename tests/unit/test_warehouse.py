@@ -1,5 +1,6 @@
 import base64
 import json
+import pathlib
 from unittest.mock import patch
 
 import pytest
@@ -9,6 +10,23 @@ import datachain as dc
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SQLiteWarehouse
 from datachain.lib.file import File
+from datachain.sql.types import JSON
+
+
+def test_to_jsonable_refuses_a_path_mapping_key(warehouse):
+    with pytest.raises(TypeError, match="paths are not supported"):
+        warehouse.convert_type(
+            {pathlib.PurePosixPath("/a"): 1}, JSON(), dict, "JSON", "c"
+        )
+
+
+def test_to_jsonable_keeps_a_path_value(warehouse):
+    assert (
+        warehouse.convert_type(
+            {"p": pathlib.PurePosixPath("/a")}, JSON(), dict, "JSON", "c"
+        )
+        == '{"p":"\\/a"}'
+    )
 
 
 def test_serialize(sqlite_db):

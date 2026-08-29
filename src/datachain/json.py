@@ -9,6 +9,7 @@ All code inside DataChain should import this module instead of using
 
 import datetime as _dt
 import json as _json
+import pathlib as _pathlib
 import sys as _sys
 import uuid as _uuid
 from collections.abc import Callable
@@ -69,7 +70,7 @@ def _coerce(value: Any, serialize_bytes: bool, serialize_numpy: bool) -> Any:
         converted = value.isoformat()
     elif isinstance(value, _dt.time):
         converted = _format_time(value)
-    elif isinstance(value, _uuid.UUID):
+    elif isinstance(value, (_uuid.UUID, _pathlib.PurePath)):
         converted = str(value)
 
     if converted is _SENTINEL and serialize_numpy:
