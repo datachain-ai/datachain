@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from typing_extensions import TypedDict
 
 from datachain import Column, DataModel, Sys, func
-from datachain.lib.convert.flatten import flatten
+from datachain.lib.convert.flatten import flatten, flatten_value
 from datachain.lib.data_model import is_mapping_annotation
 from datachain.lib.file import File, TextFile
 from datachain.lib.model_store import ModelStore
@@ -1578,6 +1578,70 @@ def test_signal_resolving_type_error_with_unpicklable_field():
     restored = pickle.loads(pickle.dumps(err))  # noqa: S301
     assert str(restored) == str(err)
     assert type(restored) is SignalResolvingTypeError
+
+
+class _Boxed(BaseModel):
+    n: int
+
+
+@pytest.mark.parametrize(
+    "annotation,value,expected",
+    [
+        (list[_Boxed], [_Boxed(n=1)], [{"n": 1}]),
+        (tuple[_Boxed, ...], (_Boxed(n=1),), [{"n": 1}]),
+        (dict[str, list[_Boxed]], {"k": [_Boxed(n=1)]}, {"k": [{"n": 1}]}),
+        (dict[str, _Boxed], {"k": _Boxed(n=1)}, {"k": {"n": 1}}),
+        (tuple[tuple[_Boxed, ...], ...], ((_Boxed(n=1),),), [[{"n": 1}]]),
+        (dict[str, Any], {"k": _Boxed(n=1)}, {"k": {"n": 1}}),
+        (Optional[list[_Boxed]], [_Boxed(n=1)], [{"n": 1}]),
+        (Union[None, list[_Boxed]], [_Boxed(n=1)], [{"n": 1}]),
+        (tuple[_Boxed, int], (_Boxed(n=1), 7), [{"n": 1}, 7]),
+        (tuple[int, _Boxed], (7, _Boxed(n=1)), [7, {"n": 1}]),
+        (tuple[int, int], (1, 2), (1, 2)),
+        (list[int], [1, 2], [1, 2]),
+    ],
+    ids=[
+        "list",
+        "tuple",
+        "dict-of-lists",
+        "dict-of-models",
+        "nested-tuples",
+        "erased-dict-value",
+        "optional-first",
+        "optional-last",
+        "fixed-tuple-model-first",
+        "fixed-tuple-model-last",
+        "tuple-without-models",
+        "list-without-models",
+    ],
+)
+def test_flatten_normalizes_models_in_any_collection(annotation, value, expected):
+    holder = type("Holder", (BaseModel,), {"__annotations__": {"field": annotation}})
+
+    assert flatten(holder(field=value)) == (expected,)
+
+
+@pytest.mark.parametrize(
+    "annotation,value,expected",
+    [
+        (list[_Boxed], [_Boxed(n=1)], [{"n": 1}]),
+        (dict[str, _Boxed], {"k": _Boxed(n=1)}, {"k": {"n": 1}}),
+        (tuple[_Boxed, ...], (_Boxed(n=1),), [{"n": 1}]),
+        (list[int], [1, 2], [1, 2]),
+    ],
+    ids=["list", "dict", "tuple", "no-models"],
+)
+def test_flatten_value_normalizes_udf_output(annotation, value, expected):
+    assert flatten_value(value, annotation) == (expected,)
+
+
+def test_flatten_does_not_copy_a_collection_without_models():
+    class Holder(BaseModel):
+        field: list[int]
+
+    holder = Holder(field=[1, 2, 3])
+
+    assert flatten(holder)[0] is holder.field
 
 
 @pytest.mark.parametrize(

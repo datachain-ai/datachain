@@ -1,5 +1,5 @@
 from collections.abc import Generator, Iterator
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, get_args, get_origin
 
 from pydantic import BaseModel
 
@@ -72,7 +72,7 @@ def flatten_value(value: Any, anno: Any) -> tuple:
             # Non-Optional model None (outer-merge pad): per-leaf placeholders.
             return tuple(_emit_absent(kind.inner))
         return flatten(value)
-    return (value,)
+    return (normalize_models(value, anno),)
 
 
 def flatten_list(obj_list: list[BaseModel]) -> tuple:
@@ -83,12 +83,65 @@ def flatten_list(obj_list: list[BaseModel]) -> tuple:
     )
 
 
-def _flatten_list_field(value: list) -> list:
-    assert isinstance(value, list)
-    if value and ModelStore.is_pydantic(type(value[0])):
-        return [val.model_dump() for val in value]
-    if value and isinstance(value[0], list):
-        return [_flatten_list_field(v) for v in value]
+_ERASED = (Any, object, None)
+_BARE_CONTAINERS = (dict, list, tuple, set, frozenset)
+
+
+def _may_hold_model(annotation: Any) -> bool:
+    """Whether a declared type can hold a model, erring towards yes when unsure.
+
+    An erased annotation says nothing about its contents, so it has to be walked.
+    """
+    annotation, _ = unwrap_optional(annotation)
+    if ModelStore.is_pydantic(annotation):
+        return True
+    if annotation in _ERASED:
+        return True
+    args = get_args(annotation)
+    if not args:
+        return get_origin(annotation) is not None or annotation in _BARE_CONTAINERS
+    return any(arg is not Ellipsis and _may_hold_model(arg) for arg in args)
+
+
+def _normalize_sequence(value: Any, annotation: Any) -> Any:
+    args = get_args(annotation)
+    if (
+        get_origin(annotation) is tuple
+        and args
+        and args[-1] is not Ellipsis
+        and len(args) == len(value)
+    ):
+        if not any(_may_hold_model(arg) for arg in args):
+            return value
+        return [
+            normalize_models(item, arg) for item, arg in zip(value, args, strict=True)
+        ]
+    item_type = args[0] if args else Any
+    if not _may_hold_model(item_type):
+        return value
+    return [normalize_models(item, item_type) for item in value]
+
+
+def normalize_models(value: Any, annotation: Any) -> Any:
+    """Replace models anywhere in ``value`` with their dumps, leaving the rest alone.
+
+    Collections reach storage as they are, so a model still inside one arrives at
+    the warehouse live and is converted there instead -- by different rules, and
+    for a mapping only after Pydantic has already merged keys that collide. What
+    the declared type cannot hold is returned untouched, so a vector of numbers is
+    never copied.
+    """
+    annotation, _ = unwrap_optional(annotation)
+    if ModelStore.is_pydantic(type(value)):
+        return value.model_dump()
+    if isinstance(value, (list, tuple)):
+        return _normalize_sequence(value, annotation)
+    if isinstance(value, dict):
+        args = get_args(annotation)
+        value_type = args[1] if len(args) == 2 else Any
+        if not _may_hold_model(value_type):
+            return value
+        return {key: normalize_models(item, value_type) for key, item in value.items()}
     return value
 
 
@@ -109,13 +162,8 @@ def _flatten_fields_values(fields: dict, obj: BaseModel) -> Generator[Any, None,
         kind = classify_field(f_info.annotation)
         # Direct attribute access skips Pydantic's model_dump().
         value = getattr(obj, name)
-        if isinstance(value, list):
-            yield _flatten_list_field(value)
-        elif isinstance(value, dict):
-            yield {
-                key: val.model_dump() if ModelStore.is_pydantic(type(val)) else val
-                for key, val in value.items()
-            }
+        if isinstance(value, (list, tuple, dict)):
+            yield normalize_models(value, f_info.annotation)
         elif kind.is_model:
             if kind.is_optional:
                 if value is None:
