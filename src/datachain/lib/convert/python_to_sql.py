@@ -85,6 +85,10 @@ def python_to_sql(typ):  # noqa: PLR0911
 def _list_to_array(typ, args):
     if args is None:
         raise TypeError(f"Cannot resolve type '{typ}' for flattening features")
+    # tuple[T, ...] carries Ellipsis to mark variable length, not a second type
+    args = tuple(arg for arg in args if arg is not Ellipsis)
+    if not args:
+        raise TypeError(f"Cannot resolve type '{typ}' for flattening features")
     args0 = args[0]
     if ModelStore.is_pydantic(args0):
         return Array(JSON())

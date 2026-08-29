@@ -4,7 +4,7 @@ from typing import Dict, Literal  # noqa: UP035
 import pytest
 
 from datachain.lib.convert.python_to_sql import python_to_sql
-from datachain.sql.types import JSON, Array, Float, String
+from datachain.sql.types import JSON, Array, Float, Int64, String
 from tests.unit.lib.test_utils import MyModel
 
 
@@ -70,3 +70,26 @@ def test_pep_604_union_syntax():
 
     str_literal_union = Literal["a", "b"]
     assert python_to_sql(str_literal_union) == String
+
+
+@pytest.mark.parametrize(
+    "annotation,expected",
+    [
+        (tuple[int, ...], Array(Int64)),
+        (tuple[str, ...], Array(String)),
+        (tuple[int, int], Array(Int64)),
+        (tuple[int, str], Array(JSON)),
+        (tuple[tuple[int, ...], ...], Array(Array(Int64))),
+        (list[int], Array(Int64)),
+    ],
+    ids=[
+        "variadic-int",
+        "variadic-str",
+        "fixed-same",
+        "fixed-mixed",
+        "nested-variadic",
+        "list-unchanged",
+    ],
+)
+def test_variadic_tuple_keeps_its_element_type(annotation, expected):
+    assert python_to_sql(annotation).to_dict() == expected.to_dict()
