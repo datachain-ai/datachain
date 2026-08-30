@@ -22,6 +22,7 @@ __all__ = [
     "dumps",
     "load",
     "loads",
+    "numpy_to_python",
 ]
 
 JSONDecodeError = (_ujson.JSONDecodeError, _json.JSONDecodeError)
@@ -81,6 +82,16 @@ def _coerce(value: Any, serialize_bytes: bool, serialize_numpy: bool) -> Any:
     ):
         converted = list(bytes(value)[:DEFAULT_PREVIEW_BYTES])
 
+    return converted
+
+
+def numpy_to_python(value: Any) -> Any:
+    """Convert a numpy array or scalar to plain Python, or raise if it is neither."""
+    converted = _coerce_numpy(value)
+    if converted is _SENTINEL:
+        raise TypeError(
+            f"Object of type {type(value).__name__} is not JSON serializable"
+        )
     return converted
 
 

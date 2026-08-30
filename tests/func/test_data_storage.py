@@ -214,3 +214,52 @@ def test_convert_type(test_session):
     # error, float to int in list
     with pytest.raises(ValueError):
         run_convert_type([1.5, 1], Array(Int))
+
+
+class NumpyHolder(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    name: str
+    payload: Any = None
+
+
+def test_convert_type_writes_numpy_held_inside_a_model(test_session):
+    warehouse = test_session.catalog.warehouse
+
+    def to_json(value):
+        return json.loads(
+            warehouse.convert_type(
+                value, JSON(), warehouse.python_type(JSON()), "JSON", "test_column"
+            )
+        )
+
+    assert to_json(NumpyHolder(name="a", payload=np.array([1, 2], dtype=np.int64))) == {
+        "name": "a",
+        "payload": [1, 2],
+    }
+    assert to_json(NumpyHolder(name="b", payload=np.float32(0.5))) == {
+        "name": "b",
+        "payload": 0.5,
+    }
+    assert to_json(NumpyHolder(name="c", payload={"k": [np.int64(7)]})) == {
+        "name": "c",
+        "payload": {"k": [7]},
+    }
+    assert to_json([NumpyHolder(name="d", payload=np.array([1.5]))]) == [
+        {"name": "d", "payload": [1.5]},
+    ]
+
+
+def test_convert_type_refuses_a_type_no_encoder_can_write(test_session):
+    warehouse = test_session.catalog.warehouse
+
+    class Opaque:
+        pass
+
+    with pytest.raises(TypeError, match="not JSON serializable"):
+        warehouse.convert_type(
+            NumpyHolder(name="a", payload=Opaque()),
+            JSON(),
+            warehouse.python_type(JSON()),
+            "JSON",
+            "test_column",
+        )
