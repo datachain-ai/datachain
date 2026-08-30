@@ -85,11 +85,18 @@ def flatten_list(obj_list: list[BaseModel]) -> tuple:
 
 def _flatten_list_field(value: list) -> list:
     assert isinstance(value, list)
-    if value and ModelStore.is_pydantic(type(value[0])):
-        return [val.model_dump() for val in value]
-    if value and isinstance(value[0], list):
-        return [_flatten_list_field(v) for v in value]
-    return value
+    converted = [_flatten_list_item(item) for item in value]
+    if all(item is same for item, same in zip(value, converted, strict=True)):
+        return value
+    return converted
+
+
+def _flatten_list_item(item: Any) -> Any:
+    if ModelStore.is_pydantic(type(item)):
+        return item.model_dump()
+    if isinstance(item, list):
+        return _flatten_list_field(item)
+    return item
 
 
 def _leaf_count(model: type[BaseModel]) -> int:

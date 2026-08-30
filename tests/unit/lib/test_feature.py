@@ -66,6 +66,35 @@ def test_flatten_nested():
     assert flatten(t1) == ("sfo", "sf", 567, {"42": 999}, 1849)
 
 
+class _Point(BaseModel):
+    x: int
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ([_Point(x=1), 7], [{"x": 1}, 7]),
+        ([7, _Point(x=1)], [7, {"x": 1}]),
+        ([[_Point(x=1)], [7]], [[{"x": 1}], [7]]),
+    ],
+    ids=["model-first", "model-last", "nested"],
+)
+def test_flatten_list_field_converts_each_element(value, expected):
+    class Holder(BaseModel):
+        items: list
+
+    assert flatten(Holder(items=value)) == (expected,)
+
+
+def test_flatten_list_field_keeps_a_list_without_models():
+    class Holder(BaseModel):
+        items: list[int]
+
+    holder = Holder(items=[1, 2, 3])
+
+    assert flatten(holder)[0] is holder.items
+
+
 def test_flatten_list_field():
     class Trace(BaseModel):
         x: int
