@@ -1,7 +1,10 @@
+import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 import numpy as np
+import pandas as pd
 import pytest
 import ujson as json
 from pydantic import BaseModel, ConfigDict
@@ -276,6 +279,8 @@ REFUSED_BY_THE_ENCODER = [
     ),
     pytest.param(lambda: np.complex64(1 + 2j), id="complex"),
     pytest.param(lambda: np.timedelta64(3, "D"), id="timedelta"),
+    pytest.param(lambda: np.array([b"ab"], dtype=object), id="bytes-in-object-array"),
+    pytest.param(lambda: pd.Series([1, 2]), id="not-numpy-at-all"),
 ]
 
 STORED_BY_THE_ENCODER = [
@@ -285,6 +290,17 @@ STORED_BY_THE_ENCODER = [
     pytest.param(lambda: np.array([1.5, 2.5], dtype=np.float32), id="float32-array"),
     pytest.param(lambda: np.array(["a", "b"]), id="str-array"),
     pytest.param(lambda: np.array([1, None], dtype=object), id="object-array"),
+    pytest.param(
+        lambda: np.array([Decimal("1.25")], dtype=object), id="decimal-in-object-array"
+    ),
+    pytest.param(lambda: np.array([{None: 1}], dtype=object), id="none-key"),
+    pytest.param(lambda: np.array([{(1, "a"): 3}], dtype=object), id="tuple-key"),
+    pytest.param(
+        lambda: np.array([{datetime(2024, 1, 2): 1}], dtype=object), id="datetime-key"
+    ),
+    pytest.param(
+        lambda: np.array([{uuid.UUID(int=7): 1}], dtype=object), id="uuid-key"
+    ),
 ]
 
 
@@ -304,11 +320,13 @@ def _model_payload(warehouse, value):
 def test_a_model_refuses_the_numpy_a_plain_value_refuses(test_session, make):
     warehouse = test_session.catalog.warehouse
 
-    with pytest.raises(TypeError, match="not JSON serializable"):
+    with pytest.raises(TypeError) as plain:
         dcjson.dumps({"v": make()}, serialize_numpy=True)
 
-    with pytest.raises(TypeError, match="not JSON serializable"):
+    with pytest.raises(TypeError) as wrapped:
         _model_payload(warehouse, make())
+
+    assert str(wrapped.value) == str(plain.value)
 
 
 @pytest.mark.parametrize("make", STORED_BY_THE_ENCODER)

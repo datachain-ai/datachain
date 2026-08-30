@@ -88,50 +88,38 @@ def _coerce(value: Any, serialize_bytes: bool, serialize_numpy: bool) -> Any:
 def numpy_to_python(value: Any) -> Any:
     """Convert a numpy value to what this module's encoder would write, or raise.
 
-    Handed to Pydantic as its fallback, so a model must not be able to store a
-    value the encoder refuses outside one.
+    Handed to Pydantic as its fallback. Pydantic serializes whatever comes back,
+    so returning anything it understands better than the encoder does would let a
+    model store what a plain value cannot; everything therefore leaves here
+    already JSON-native.
     """
-    if _holds_settled_scalars(value):
-        return value.tolist()
-
     converted = _coerce_numpy(value)
     if converted is _SENTINEL:
         raise _not_serializable(value)
-    return _settle(converted)
 
+    if _holds_settled_scalars(value):
+        return converted
 
-def _holds_settled_scalars(value: Any) -> bool:
-    """Whether tolist() alone yields JSON-native leaves, so nothing need be walked.
-
-    Bytes, complex, datetimes and extended precision all need the slower path.
-    """
-    dtype = getattr(value, "dtype", None)
-    if dtype is None:
-        return False
-    if dtype.kind in "biuU":
-        return True
-
-    import numpy as np
-
-    return dtype.type in (np.float16, np.float32, np.float64)
+    return loads(dumps(converted, serialize_numpy=True))
 
 
 def _not_serializable(value: Any) -> TypeError:
     return TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
-def _settle(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, (list, tuple, set)):
-        return [_settle(item) for item in value]
-    if isinstance(value, dict):
-        return {_settle(key): _settle(item) for key, item in value.items()}
+def _holds_settled_scalars(value: Any) -> bool:
+    """Whether tolist() alone yields JSON-native leaves, so nothing need be encoded.
 
-    converted = _coerce(value, serialize_bytes=False, serialize_numpy=True)
-    if converted is _SENTINEL:
-        raise _not_serializable(value)
-    return _settle(converted)
+    Bytes, complex, datetimes, object arrays and extended precision all have to go
+    the slower way.
+    """
+    dtype = value.dtype
+    if dtype.kind in "biuU":
+        return True
+
+    import numpy as np
+
+    return dtype.type in (np.float16, np.float32, np.float64)
 
 
 def _coerce_numpy(value: Any) -> Any:
