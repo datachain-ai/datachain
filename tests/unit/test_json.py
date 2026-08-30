@@ -1,10 +1,13 @@
 import datetime as dt
+import enum
 import io
+import ipaddress
+import pathlib
 import sys
 
 import numpy as np
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from datachain import json
 
@@ -69,6 +72,55 @@ def test_datetime_serialization_matches_pydantic_json_mode() -> None:
         )
         == expected
     )
+
+
+class _Grade(enum.Enum):
+    FIRST = 1
+
+
+class _Colour(str, enum.Enum):
+    RED = "red"
+
+
+class ExtraPayload(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    span: dt.timedelta
+    long_span: dt.timedelta
+    path: pathlib.PurePosixPath
+    ipv4: ipaddress.IPv4Address
+    ipv6: ipaddress.IPv6Address
+    grade: _Grade
+    colour: _Colour
+    tags: set[int]
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["span", "long_span", "path", "ipv4", "ipv6", "grade", "colour", "tags"],
+)
+def test_extra_types_match_pydantic_json_mode(field: str) -> None:
+    payload = ExtraPayload(
+        span=dt.timedelta(seconds=90),
+        long_span=dt.timedelta(days=2, hours=3),
+        path=pathlib.PurePosixPath("/a/b"),
+        ipv4=ipaddress.IPv4Address("1.2.3.4"),
+        ipv6=ipaddress.IPv6Address("::1"),
+        grade=_Grade.FIRST,
+        colour=_Colour.RED,
+        tags={1, 2},
+    )
+
+    assert (
+        json.loads(json.dumps(getattr(payload, field)))
+        == payload.model_dump(mode="json")[field]
+    )
+
+
+def test_extra_types_are_handled_inside_containers() -> None:
+    value = {"a": [pathlib.PurePosixPath("/x")], "b": {"c": dt.timedelta(seconds=90)}}
+
+    assert json.loads(json.dumps(value)) == {"a": ["/x"], "b": {"c": "PT1M30S"}}
 
 
 def test_numpy_serialization_is_opt_in() -> None:

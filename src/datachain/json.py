@@ -8,7 +8,10 @@ All code inside DataChain should import this module instead of using
 """
 
 import datetime as _dt
+import enum as _enum
+import ipaddress as _ipaddress
 import json as _json
+import pathlib as _pathlib
 import sys as _sys
 import uuid as _uuid
 from collections.abc import Callable
@@ -46,6 +49,27 @@ def _format_datetime(value: _dt.datetime) -> str:
     return iso
 
 
+def _format_timedelta(value: _dt.timedelta) -> str:
+    """ISO 8601 duration, matching what Pydantic's JSON mode writes."""
+    seconds = value.total_seconds()
+    sign = "-" if seconds < 0 else ""
+    seconds = abs(seconds)
+    days, rest = divmod(seconds, 86400)
+    hours, rest = divmod(rest, 3600)
+    minutes, secs = divmod(rest, 60)
+    parts = f"{sign}P"
+    if days:
+        parts += f"{int(days)}D"
+    parts += "T"
+    if hours:
+        parts += f"{int(hours)}H"
+    if minutes:
+        parts += f"{int(minutes)}M"
+    if secs or parts.endswith("T"):
+        parts += f"{secs:g}S"
+    return parts
+
+
 def _format_time(value: _dt.time) -> str:
     iso = value.isoformat()
 
@@ -71,6 +95,17 @@ def _coerce(value: Any, serialize_bytes: bool, serialize_numpy: bool) -> Any:
         converted = _format_time(value)
     elif isinstance(value, _uuid.UUID):
         converted = str(value)
+    elif isinstance(value, _dt.timedelta):
+        converted = _format_timedelta(value)
+    elif isinstance(
+        value,
+        (_pathlib.PurePath, _ipaddress.IPv4Address, _ipaddress.IPv6Address),
+    ):
+        converted = str(value)
+    elif isinstance(value, _enum.Enum):
+        converted = value.value
+    elif isinstance(value, (set, frozenset)):
+        converted = list(value)
 
     if converted is _SENTINEL and serialize_numpy:
         converted = _coerce_numpy(value)
