@@ -9,6 +9,7 @@ All code inside DataChain should import this module instead of using
 
 import datetime as _dt
 import json as _json
+import math as _math
 import sys as _sys
 import uuid as _uuid
 from collections.abc import Callable
@@ -98,9 +99,41 @@ def numpy_to_python(value: Any) -> Any:
         raise _not_serializable(value)
 
     if _holds_settled_scalars(value):
+        _reject_non_finite_array(value)
         return converted
 
-    return loads(dumps(converted, serialize_numpy=True))
+    settled = loads(dumps(converted, serialize_numpy=True))
+    _reject_non_finite(settled)
+    return settled
+
+
+def _non_finite(value: Any) -> ValueError:
+    return ValueError(
+        f"Value {value!r} cannot be stored inside a model: Pydantic's JSON mode "
+        f"writes NaN and infinities as null, losing the value"
+    )
+
+
+def _reject_non_finite_array(value: Any) -> None:
+    if value.dtype.kind != "f":
+        return
+
+    import numpy as np
+
+    if not np.isfinite(value).all():
+        raise _non_finite(value)
+
+
+def _reject_non_finite(value: Any) -> None:
+    if isinstance(value, float):
+        if not _math.isfinite(value):
+            raise _non_finite(value)
+    elif isinstance(value, list):
+        for item in value:
+            _reject_non_finite(item)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _reject_non_finite(item)
 
 
 def _not_serializable(value: Any) -> TypeError:

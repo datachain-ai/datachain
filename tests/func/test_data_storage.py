@@ -336,3 +336,22 @@ def test_a_model_stores_the_numpy_a_plain_value_stores(test_session, make):
     plain = json.loads(dcjson.dumps({"v": make()}, serialize_numpy=True))
 
     assert _model_payload(warehouse, make()) == plain
+
+
+NON_FINITE_NUMPY = [
+    pytest.param(lambda: np.array([1.0, np.nan], dtype=np.float32), id="nan-in-array"),
+    pytest.param(lambda: np.array([np.inf]), id="inf-in-array"),
+    pytest.param(lambda: np.array([-np.inf]), id="negative-inf-in-array"),
+    pytest.param(lambda: np.float32("nan"), id="nan-scalar"),
+    pytest.param(
+        lambda: np.array([{"k": float("inf")}], dtype=object), id="inf-in-object-array"
+    ),
+]
+
+
+@pytest.mark.parametrize("make", NON_FINITE_NUMPY)
+def test_a_model_refuses_numpy_that_would_be_stored_as_null(test_session, make):
+    warehouse = test_session.catalog.warehouse
+
+    with pytest.raises(ValueError, match="writes NaN and infinities as null"):
+        _model_payload(warehouse, make())
