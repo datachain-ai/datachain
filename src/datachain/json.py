@@ -86,13 +86,52 @@ def _coerce(value: Any, serialize_bytes: bool, serialize_numpy: bool) -> Any:
 
 
 def numpy_to_python(value: Any) -> Any:
-    """Convert a numpy array or scalar to plain Python, or raise if it is neither."""
+    """Convert a numpy value to what this module's encoder would write, or raise.
+
+    Handed to Pydantic as its fallback, so a model must not be able to store a
+    value the encoder refuses outside one.
+    """
+    if _holds_settled_scalars(value):
+        return value.tolist()
+
     converted = _coerce_numpy(value)
     if converted is _SENTINEL:
-        raise TypeError(
-            f"Object of type {type(value).__name__} is not JSON serializable"
-        )
-    return converted
+        raise _not_serializable(value)
+    return _settle(converted)
+
+
+def _holds_settled_scalars(value: Any) -> bool:
+    """Whether tolist() alone yields JSON-native leaves, so nothing need be walked.
+
+    Bytes, complex, datetimes and extended precision all need the slower path.
+    """
+    dtype = getattr(value, "dtype", None)
+    if dtype is None:
+        return False
+    if dtype.kind in "biuU":
+        return True
+
+    import numpy as np
+
+    return dtype.type in (np.float16, np.float32, np.float64)
+
+
+def _not_serializable(value: Any) -> TypeError:
+    return TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def _settle(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (list, tuple, set)):
+        return [_settle(item) for item in value]
+    if isinstance(value, dict):
+        return {_settle(key): _settle(item) for key, item in value.items()}
+
+    converted = _coerce(value, serialize_bytes=False, serialize_numpy=True)
+    if converted is _SENTINEL:
+        raise _not_serializable(value)
+    return _settle(converted)
 
 
 def _coerce_numpy(value: Any) -> Any:
@@ -113,7 +152,12 @@ def _numpy_to_python(value: Any, numpy_module) -> Any:
             return converted
         return _numpy_to_python(converted, numpy_module)
     if isinstance(value, numpy_module.generic):
-        return value.tolist()
+        converted = value.tolist()
+        if isinstance(converted, numpy_module.generic):
+            # Extended precision: tolist() hands back the same numpy type, and
+            # converting again would not terminate.
+            raise _not_serializable(value)
+        return converted
     if isinstance(value, (list, tuple, set)):
         converted = [_numpy_to_python(item, numpy_module) for item in value]
         return tuple(converted) if isinstance(value, tuple) else converted

@@ -6,6 +6,7 @@ import pytest
 import ujson as json
 from pydantic import BaseModel, ConfigDict
 
+from datachain import json as dcjson
 from datachain.sql.types import (
     JSON,
     Array,
@@ -264,3 +265,56 @@ def test_convert_type_refuses_a_type_no_encoder_can_write(test_session):
             "JSON",
             "test_column",
         )
+
+
+REFUSED_BY_THE_ENCODER = [
+    pytest.param(lambda: np.longdouble(3), id="longdouble-scalar"),
+    pytest.param(lambda: np.array([1, 2], dtype=np.longdouble), id="longdouble-array"),
+    pytest.param(lambda: np.clongdouble(1 + 2j), id="clongdouble-scalar"),
+    pytest.param(
+        lambda: np.array([1, 2], dtype=np.clongdouble), id="clongdouble-array"
+    ),
+    pytest.param(lambda: np.complex64(1 + 2j), id="complex"),
+    pytest.param(lambda: np.timedelta64(3, "D"), id="timedelta"),
+]
+
+STORED_BY_THE_ENCODER = [
+    pytest.param(lambda: np.datetime64("2024-01-02"), id="datetime"),
+    pytest.param(lambda: np.float16(1.5), id="float16"),
+    pytest.param(lambda: np.array([[1, 2], [3, 4]]), id="int-matrix"),
+    pytest.param(lambda: np.array([1.5, 2.5], dtype=np.float32), id="float32-array"),
+    pytest.param(lambda: np.array(["a", "b"]), id="str-array"),
+    pytest.param(lambda: np.array([1, None], dtype=object), id="object-array"),
+]
+
+
+def _model_payload(warehouse, value):
+    return json.loads(
+        warehouse.convert_type(
+            NumpyHolder(name="a", payload={"v": value}),
+            JSON(),
+            warehouse.python_type(JSON()),
+            "JSON",
+            "test_column",
+        )
+    )["payload"]
+
+
+@pytest.mark.parametrize("make", REFUSED_BY_THE_ENCODER)
+def test_a_model_refuses_the_numpy_a_plain_value_refuses(test_session, make):
+    warehouse = test_session.catalog.warehouse
+
+    with pytest.raises(TypeError, match="not JSON serializable"):
+        dcjson.dumps({"v": make()}, serialize_numpy=True)
+
+    with pytest.raises(TypeError, match="not JSON serializable"):
+        _model_payload(warehouse, make())
+
+
+@pytest.mark.parametrize("make", STORED_BY_THE_ENCODER)
+def test_a_model_stores_the_numpy_a_plain_value_stores(test_session, make):
+    warehouse = test_session.catalog.warehouse
+
+    plain = json.loads(dcjson.dumps({"v": make()}, serialize_numpy=True))
+
+    assert _model_payload(warehouse, make()) == plain
