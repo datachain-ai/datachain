@@ -217,9 +217,8 @@ def test_convert_type(test_session):
 
 
 class NumpyHolder(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
     name: str
-    payload: Any = None
+    payload: dict
 
 
 def test_convert_type_writes_numpy_held_inside_a_model(test_session):
@@ -232,20 +231,22 @@ def test_convert_type_writes_numpy_held_inside_a_model(test_session):
             )
         )
 
-    assert to_json(NumpyHolder(name="a", payload=np.array([1, 2], dtype=np.int64))) == {
+    assert to_json(
+        NumpyHolder(name="a", payload={"v": np.array([1, 2], dtype=np.int64)})
+    ) == {
         "name": "a",
-        "payload": [1, 2],
+        "payload": {"v": [1, 2]},
     }
-    assert to_json(NumpyHolder(name="b", payload=np.float32(0.5))) == {
+    assert to_json(NumpyHolder(name="b", payload={"v": np.float32(0.5)})) == {
         "name": "b",
-        "payload": 0.5,
+        "payload": {"v": 0.5},
     }
     assert to_json(NumpyHolder(name="c", payload={"k": [np.int64(7)]})) == {
         "name": "c",
         "payload": {"k": [7]},
     }
-    assert to_json([NumpyHolder(name="d", payload=np.array([1.5]))]) == [
-        {"name": "d", "payload": [1.5]},
+    assert to_json([NumpyHolder(name="d", payload={"v": np.array([1.5])})]) == [
+        {"name": "d", "payload": {"v": [1.5]}},
     ]
 
 
@@ -257,7 +258,7 @@ def test_convert_type_refuses_a_type_no_encoder_can_write(test_session):
 
     with pytest.raises(TypeError, match="not JSON serializable"):
         warehouse.convert_type(
-            NumpyHolder(name="a", payload=Opaque()),
+            NumpyHolder(name="a", payload={"v": Opaque()}),
             JSON(),
             warehouse.python_type(JSON()),
             "JSON",

@@ -43,7 +43,7 @@ dependencies = [
   "sqlalchemy>=2",
   "multiprocess>=0.70.16",
   "cloudpickle",
-  "pydantic",
+  "pydantic>=2.11",
   "jmespath>=1.0",
   "datamodel-code-generator>=0.28.4",
   "Pillow>=12.1.1,<13",
