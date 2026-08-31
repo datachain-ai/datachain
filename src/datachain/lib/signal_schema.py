@@ -227,13 +227,69 @@ def _shape_hash(fields: Mapping[str, str], bases: Iterable[Sequence[Any]]) -> st
 
 
 def _class_shape_hash(cls: type[BaseModel]) -> str:
-    """Hash a live class's shape in the form ``_shape_hash`` uses on a stored
-    CustomType. ``register_pydantic=False`` so this never mutates ModelStore."""
-    fields = {
-        name: type_to_str(info.annotation, register_pydantic=False)
-        for name, info in cls.model_fields.items()
-    }
-    return _shape_hash(fields, SignalSchema._get_bases(cls))
+    """Hash the complete model graph reachable from a live class."""
+    models: dict[str, dict[str, Any]] = {}
+
+    def visit(model: type[BaseModel]) -> None:
+        name = ModelStore.get_name(model)
+        if name in models:
+            return
+        models[name] = {
+            "fields": {
+                field_name: type_to_str(info.annotation, register_pydantic=False)
+                for field_name, info in model.model_fields.items()
+            },
+            "bases": [list(base) for base in SignalSchema._get_bases(model)],
+        }
+        for info in model.model_fields.values():
+            visit_annotation(info.annotation)
+
+    def visit_annotation(annotation: Any) -> None:
+        if model := ModelStore.to_pydantic(annotation):
+            visit(model)
+            return
+        for part in annotation_parts(annotation):
+            visit_annotation(part)
+
+    visit(cls)
+    payload = json.dumps(
+        {"root": ModelStore.get_name(cls), "models": models}, sort_keys=True
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _stored_shape_hash(type_name: str, custom_types: Mapping[str, Any]) -> str:
+    """Hash the complete stored model graph reachable from ``type_name``."""
+    models: dict[str, dict[str, Any]] = {}
+
+    def visit(name: str) -> None:
+        if name in models or name not in custom_types:
+            return
+        ct = CustomType.deserialize(custom_types[name], name)
+        models[name] = {
+            "fields": dict(ct.fields),
+            "bases": [list(base) for base in ct.bases],
+        }
+        for field_type in ct.fields.values():
+            visit_annotation(field_type)
+
+    def visit_annotation(annotation: str) -> None:
+        annotation = annotation.strip()
+        if annotation in custom_types:
+            visit(annotation)
+            return
+        bracket_idx = annotation.find("[")
+        close_bracket_idx = annotation.rfind("]")
+        if bracket_idx < 0 or close_bracket_idx <= bracket_idx:
+            return
+        for part in SignalSchema._split_subtypes(
+            annotation[bracket_idx + 1 : close_bracket_idx]
+        ):
+            visit_annotation(part)
+
+    visit(type_name)
+    payload = json.dumps({"root": type_name, "models": models}, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _class_matches_shape(cls: type[BaseModel], expected_hash: str) -> bool:
@@ -282,7 +338,9 @@ class CustomType(BaseModel):
         return cls(**data)
 
 
-def _resolve_from_sys_modules(ct: CustomType, type_name: str) -> type[BaseModel] | None:
+def _resolve_from_sys_modules(
+    ct: CustomType, type_name: str, expected_shape_hash: str
+) -> type[BaseModel] | None:
     """Return the class already imported in this process at ``ct.bases[0]``'s
     (module, name), if its shape matches the stored spec. Never imports a
     module named in stored data. Warns once if a same-named class exists with
@@ -296,7 +354,7 @@ def _resolve_from_sys_modules(ct: CustomType, type_name: str) -> type[BaseModel]
     candidate = getattr(module, class_name, None)
     if candidate is None or not ModelStore.is_pydantic(candidate):
         return None
-    if _class_matches_shape(candidate, _shape_hash(ct.fields, ct.bases)):
+    if _class_matches_shape(candidate, expected_shape_hash):
         return candidate
     _warn_shape_drift(candidate, type_name)
     return None
@@ -525,13 +583,13 @@ class SignalSchema:
                     f"cannot deserialize custom type '{type_name}': {exc}"
                 ) from exc
 
-            expected_shape_hash = _shape_hash(ct.fields, ct.bases)
+            expected_shape_hash = _stored_shape_hash(type_name, custom_types)
             if fr := ModelStore.get(model_name, target_version):
                 if _class_matches_shape(fr, expected_shape_hash):
                     return fr
                 _warn_shape_drift(fr, type_name)
 
-            if fr := _resolve_from_sys_modules(ct, type_name):
+            if fr := _resolve_from_sys_modules(ct, type_name, expected_shape_hash):
                 return fr
 
             fields = {
