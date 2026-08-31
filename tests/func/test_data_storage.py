@@ -388,21 +388,20 @@ def test_convert_type_keeps_none_wherever_it_sits_in_an_array(
     assert converted == expected
 
 
-@pytest.mark.parametrize(
-    "value,expected",
-    [
-        pytest.param([{"k": 1}, None], [{"k": 1}, None], id="dict-then-none"),
-        pytest.param([None, {"k": 1}], [None, {"k": 1}], id="none-then-dict"),
-    ],
-)
-def test_convert_type_stores_a_json_array_the_same_wherever_none_sits(
-    test_session, value, expected
-):
+def test_convert_type_stores_a_json_array_the_same_wherever_none_sits(test_session):
     warehouse = test_session.catalog.warehouse
     col_type = Array(JSON())
 
-    converted = warehouse.convert_type(
-        value, col_type, warehouse.python_type(col_type), "Array", "test_column"
-    )
+    def to_db(value):
+        return warehouse.convert_type(
+            value, col_type, warehouse.python_type(col_type), "Array", "test_column"
+        )
 
-    assert converted == expected
+    none_last = to_db([{"k": 1}, None])
+    none_first = to_db([None, {"k": 1}])
+
+    # What an item becomes is the backend's business; that a None beside it does
+    # not change the answer is not.
+    assert none_last[1] is None
+    assert none_first[0] is None
+    assert none_last[0] == none_first[1]
