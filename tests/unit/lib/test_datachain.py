@@ -6277,3 +6277,39 @@ def test_count_after_limit_then_distinct(test_session, boundary_counter):
 
     assert chain.limit(4).distinct("session_id", "position").count() == 2
     boundary_counter.assert_count(1)
+
+
+class NumpyFrame(BaseModel):
+    name: str
+    meta: dict
+
+
+class NumpyFramePair(BaseModel):
+    items: tuple[NumpyFrame, NumpyFrame]
+
+
+def test_tuple_of_models_stores_numpy_held_in_a_field(test_session):
+    def build():
+        return NumpyFramePair(
+            items=(
+                NumpyFrame(
+                    name="a", meta={"emb": np.array([5.0, 6.0]), "n": np.int64(3)}
+                ),
+                NumpyFrame(name="b", meta={"emb": [1.0]}),
+            )
+        )
+
+    rows = (
+        dc.read_values(i=[1], session=test_session)
+        .map(pair=build, output=NumpyFramePair)
+        .to_list("pair.items")
+    )
+
+    assert rows == [
+        (
+            (
+                NumpyFrame(name="a", meta={"emb": [5.0, 6.0], "n": 3}),
+                NumpyFrame(name="b", meta={"emb": [1.0]}),
+            ),
+        )
+    ]
