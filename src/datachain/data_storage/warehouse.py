@@ -151,13 +151,18 @@ class AbstractWarehouse(ABC, Serializable):
 
             item_python_type = self.python_type(col_type.item_type)
 
-            if item_python_type is not list:
-                if isinstance(val[0], item_python_type):
+            # None carries no type, so it cannot say what the array holds; take
+            # the first element that can. Stops immediately unless the array
+            # starts with None.
+            probe = next((i for i in val if i is not None), None)
+
+            if item_python_type is not list and probe is not None:
+                if isinstance(probe, item_python_type):
                     # SQLite ARRAY storage expects a list; tuples/sets must be
                     # converted to lists even when element types already match.
                     return list(val)
-                if item_python_type is float and isinstance(val[0], int):
-                    return [float(i) for i in val]
+                if item_python_type is float and isinstance(probe, int):
+                    return [None if i is None else float(i) for i in val]
 
             # Optimization: Reuse these values for each function call within the
             # list comprehension.
@@ -167,7 +172,12 @@ class AbstractWarehouse(ABC, Serializable):
                 type(col_type.item_type).__name__,
                 col_name,
             )
-            return [self.convert_type(i, *item_type_info) for i in val]
+            # A None element carries no type to convert, and which branch above
+            # ran must not decide whether it survives.
+            return [
+                None if i is None else self.convert_type(i, *item_type_info)
+                for i in val
+            ]
 
         # Special use case with JSON type as we save it as string
         if col_python_type is dict or col_type_name == "JSON":

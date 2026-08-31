@@ -561,6 +561,13 @@ class TypeReadConverter:
     def array(self, value, item_type, dialect):
         if value is None or item_type is None:
             return value
+        if getattr(item_type, "dc_nullable", False):
+            # A nullable element keeps its None, the way a nullable column does;
+            # float() would otherwise turn it into nan.
+            return [
+                None if x is None else item_type.on_read_convert(x, dialect)
+                for x in value
+            ]
         return [item_type.on_read_convert(x, dialect) for x in value]
 
     def json(self, value):

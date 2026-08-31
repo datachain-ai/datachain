@@ -19,6 +19,8 @@ from datachain.sql.types import (
     Float32,
     Float64,
     Int,
+    Int64,
+    SQLType,
     String,
 )
 from tests.utils import (
@@ -355,3 +357,52 @@ def test_a_model_refuses_numpy_that_would_be_stored_as_null(test_session, make):
 
     with pytest.raises(ValueError, match="writes NaN and infinities as null"):
         _model_payload(warehouse, make())
+
+
+@pytest.mark.parametrize(
+    "value,item_type,expected",
+    [
+        pytest.param((1, None), Int64, [1, None], id="int-none-last"),
+        pytest.param((None, 2), Int64, [None, 2], id="int-none-first"),
+        pytest.param((None, None), Int64, [None, None], id="int-all-none"),
+        pytest.param([1, None], Float, [1.0, None], id="float-none-last"),
+        pytest.param([None, 2], Float, [None, 2.0], id="float-none-first"),
+        pytest.param(["a", None], String, ["a", None], id="str-none-last"),
+        pytest.param([None, "b"], String, [None, "b"], id="str-none-first"),
+    ],
+)
+def test_convert_type_keeps_none_wherever_it_sits_in_an_array(
+    test_session, value, item_type, expected
+):
+    warehouse = test_session.catalog.warehouse
+    col_type = Array(SQLType.as_nullable(item_type))
+
+    converted = warehouse.convert_type(
+        value,
+        col_type,
+        warehouse.python_type(col_type),
+        "Array",
+        "test_column",
+    )
+
+    assert converted == expected
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        pytest.param([{"k": 1}, None], [{"k": 1}, None], id="dict-then-none"),
+        pytest.param([None, {"k": 1}], [None, {"k": 1}], id="none-then-dict"),
+    ],
+)
+def test_convert_type_stores_a_json_array_the_same_wherever_none_sits(
+    test_session, value, expected
+):
+    warehouse = test_session.catalog.warehouse
+    col_type = Array(JSON())
+
+    converted = warehouse.convert_type(
+        value, col_type, warehouse.python_type(col_type), "Array", "test_column"
+    )
+
+    assert converted == expected
