@@ -149,33 +149,33 @@ class AbstractWarehouse(ABC, Serializable):
             if len(val) == 0:
                 return []
 
-            item_python_type = self.python_type(col_type.item_type)
+            item_type = col_type.item_type
+            item_python_type = self.python_type(item_type)
 
-            # None carries no type, so it cannot say what the array holds; take
-            # the first element that can. Stops immediately unless the array
-            # starts with None.
-            probe = next((i for i in val if i is not None), None)
+            if item_python_type is dict:
+                # This backend keeps JSON items as objects and encodes the array
+                # around them, so an item is normalized but not dumped.
+                return [self._to_jsonable(i) for i in val]
 
-            if item_python_type is not list and probe is not None:
-                if isinstance(probe, item_python_type):
-                    # SQLite ARRAY storage expects a list; tuples/sets must be
-                    # converted to lists even when element types already match.
-                    return list(val)
-                if item_python_type is float and isinstance(probe, int):
-                    return [None if i is None else float(i) for i in val]
-
-            # Optimization: Reuse these values for each function call within the
-            # list comprehension.
             item_type_info = (
-                col_type.item_type,
+                item_type,
                 item_python_type,
-                type(col_type.item_type).__name__,
+                type(item_type).__name__,
                 col_name,
             )
-            # A None element carries no type to convert, and which branch above
-            # ran must not decide whether it survives.
+            if item_python_type is list:
+                # A nested array is never already converted; its own items still
+                # have to go through this.
+                return [self.convert_type(i, *item_type_info) for i in val]
+
+            # Each element answers for itself. Reading the answer off one of them
+            # made an array's fate depend on which element happened to come
+            # first, and skipped conversion the rest of it needed.
+            keep_none = getattr(item_type, "dc_nullable", False)
             return [
-                None if i is None else self.convert_type(i, *item_type_info)
+                i
+                if isinstance(i, item_python_type) or (keep_none and i is None)
+                else self.convert_type(i, *item_type_info)
                 for i in val
             ]
 

@@ -6360,3 +6360,28 @@ def test_a_nullable_float_list_round_trips_whatever_the_order(
     )
 
     assert rows == [(expected,)]
+
+
+class DictItem(BaseModel):
+    n: int
+
+
+class DictItemHolder(BaseModel):
+    vals: list[dict[str, DictItem] | None]
+
+
+@pytest.mark.parametrize(
+    "vals",
+    [
+        pytest.param([{"a": DictItem(n=1)}, None], id="none-last"),
+        pytest.param([None, {"a": DictItem(n=1)}], id="none-first"),
+    ],
+)
+def test_models_inside_dict_items_convert_wherever_none_sits(test_session, vals):
+    rows = (
+        dc.read_values(i=[1], session=test_session)
+        .map(h=lambda: DictItemHolder(vals=vals), output=DictItemHolder)
+        .to_list("h.vals")
+    )
+
+    assert rows == [(vals,)]

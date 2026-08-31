@@ -397,11 +397,23 @@ def test_convert_type_stores_a_json_array_the_same_wherever_none_sits(test_sessi
             value, col_type, warehouse.python_type(col_type), "Array", "test_column"
         )
 
-    none_last = to_db([{"k": 1}, None])
-    none_first = to_db([None, {"k": 1}])
+    # What an item becomes is the backend's business; that its neighbours do not
+    # change the answer is not.
+    assert to_db([{"k": 1}, None]) == list(reversed(to_db([None, {"k": 1}])))
 
-    # What an item becomes is the backend's business; that a None beside it does
-    # not change the answer is not.
-    assert none_last[1] is None
-    assert none_first[0] is None
-    assert none_last[0] == none_first[1]
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param([None, 2], id="none-first"),
+        pytest.param([1, None], id="none-last"),
+    ],
+)
+def test_convert_type_refuses_none_in_a_non_nullable_array(test_session, value):
+    warehouse = test_session.catalog.warehouse
+    col_type = Array(Int64)
+
+    with pytest.raises(ValueError, match="incompatible"):
+        warehouse.convert_type(
+            value, col_type, warehouse.python_type(col_type), "Array", "test_column"
+        )
