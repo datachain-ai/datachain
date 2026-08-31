@@ -5,6 +5,7 @@ import warnings
 from collections import UserDict, UserList
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import datetime
+from types import ModuleType
 from typing import (
     Any,
     Final,
@@ -2058,6 +2059,20 @@ def test_resolve_from_sys_modules_returns_none(ct):
 def test_resolve_from_sys_modules_returns_none_for_none_module_entry(monkeypatch):
     monkeypatch.setitem(sys.modules, "some.stub.mod.xyz", None)
     ct = _empty_ct(bases=[("MyType1", "some.stub.mod.xyz", None)])
+    assert _resolve_ct(ct) is None
+
+
+def test_resolve_from_sys_modules_does_not_call_module_getattr(monkeypatch):
+    module_name = "module.with.lazy.attributes"
+    module = ModuleType(module_name)
+
+    def fail_on_getattr(name):
+        raise AssertionError(f"module __getattr__ called for {name}")
+
+    module.__getattr__ = fail_on_getattr
+    monkeypatch.setitem(sys.modules, module_name, module)
+    ct = _empty_ct(bases=[("LazyModel", module_name, None)])
+
     assert _resolve_ct(ct) is None
 
 

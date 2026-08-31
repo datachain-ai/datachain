@@ -351,7 +351,7 @@ def _resolve_from_sys_modules(
     module = sys.modules.get(module_name)
     if module is None:
         return None
-    candidate = getattr(module, class_name, None)
+    candidate = vars(module).get(class_name)
     if candidate is None or not ModelStore.is_pydantic(candidate):
         return None
     if _class_matches_shape(candidate, expected_shape_hash):
