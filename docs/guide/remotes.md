@@ -161,11 +161,11 @@ Example:
 ```python
 chain = dc.read_storage(
     "s3://my-bucket/my-dir",
-    client_config = {
-		"endpoint_url": "<minio-endpoint-url>",
-		"key": "<minio-access-key",
-		"secret": "<minio-secret-key"
-	}
+    client_config={
+        "endpoint_url": "<minio-endpoint-url>",
+        "key": "<minio-access-key",
+        "secret": "<minio-secret-key",
+    },
 )
 ```
 

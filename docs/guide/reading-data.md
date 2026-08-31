@@ -137,8 +137,12 @@ One JSON file contains multiple arrays, merged by ID:
 import datachain as dc
 
 images = dc.read_storage("gs://bucket/coco2017/images/val/")
-meta = dc.read_json("gs://bucket/coco2017/annotations/captions_val2017.json", jmespath="images")
-captions = dc.read_json("gs://bucket/coco2017/annotations/captions_val2017.json", jmespath="annotations")
+meta = dc.read_json(
+    "gs://bucket/coco2017/annotations/captions_val2017.json", jmespath="images"
+)
+captions = dc.read_json(
+    "gs://bucket/coco2017/annotations/captions_val2017.json", jmespath="annotations"
+)
 
 images_meta = images.merge(meta, on="file.path", right_on="images.file_name")
 captioned = images_meta.merge(captions, on="images.id", right_on="annotations.image_id")

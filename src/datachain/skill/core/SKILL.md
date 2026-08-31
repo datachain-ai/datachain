@@ -98,11 +98,11 @@ When a UDF is expensive (ML inference, LLM calls), save the **full, unfiltered**
 # ✗ Pre-filtering with problem-specific criteria — embeddings useless for next question.
 embeddings = (
     dc.read_storage("s3://product-catalog/images/")
-    .filter(dc.C("condition") != "refurbished")     # ← problem-specific
-    .filter(dc.C("width") > 400)                    # ← problem-specific
+    .filter(dc.C("condition") != "refurbished")  # ← problem-specific
+    .filter(dc.C("width") > 400)  # ← problem-specific
     .setup(model=lambda: clip)
     .map(emb=encode_image)
-    .save("l3_product_catalog_clip")                # ← USELESS for next question
+    .save("l3_product_catalog_clip")  # ← USELESS for next question
 )
 
 # ✓ Save embeddings over the WHOLE input, filter downstream as a Task.
@@ -120,10 +120,11 @@ embeddings = (
 ranked = (
     dc.read_dataset("l3_product_catalog_clip")
     .merge(dc.read_dataset("l1_product_catalog_meta"), on="file.stem")
-    .filter(dc.C("condition") != "refurbished")     # ← problem-specific, downstream
+    .filter(dc.C("condition") != "refurbished")  # ← problem-specific, downstream
     .filter(dc.C("width") > 400)
     .mutate(distance=dc.func.cosine_distance(dc.C("emb"), query_emb))
-    .order_by("distance").limit(5)
+    .order_by("distance")
+    .limit(5)
     .save(
         "products_similar_to_query",
         attrs=["cast:task", "scope:onetime", "source:products_similar_to_query"],
@@ -137,7 +138,7 @@ ranked = (
 ```python
 embeddings = (
     dc.read_storage("s3://b/")
-    .filter(dc.C("file.size") > 0)                  # ← data-quality, OK
+    .filter(dc.C("file.size") > 0)  # ← data-quality, OK
     .setup(model=lambda: clip)
     .map(emb=encode_image)
     .save("clip_embeddings")
@@ -170,8 +171,8 @@ The `l1_` / `l2_` / `l3_` prefix is enough; do NOT add layer-type infixes like `
 chain.save(
     "l3_product_catalog_clip",
     attrs=[
-        "cast:sense",                               # container | asset | sense | task
-        "scope:bucket",                             # bucket | directory | sample | onetime
+        "cast:sense",  # container | asset | sense | task
+        "scope:bucket",  # bucket | directory | sample | onetime
         "source:product_catalog",
     ],
     description="CLIP ViT-B-32 embeddings over the full product-catalog bucket.",
@@ -407,8 +408,8 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
 
 3. **Extracting results.** Use `to_values()` for one column (returns flat list); `to_list()` for multiple columns (returns tuples). Never use `to_iter()` — it loses parallelism and lineage. For processing, use `map()` / `gen()` rather than extracting and looping.
    ```python
-   files = chain.to_values("file")           # → [File(...), ...]
-   rows = chain.to_list("file", "label")     # → [(File, "cat"), ...]
+   files = chain.to_values("file")  # → [File(...), ...]
+   rows = chain.to_list("file", "label")  # → [(File, "cat"), ...]
    ```
 
 ---
@@ -434,15 +435,17 @@ from pydantic import BaseModel
 **Entry points.** `read_storage()` creates a cached listing keyed by prefix; subsequent calls with the same prefix reuse the cache.
 
 ```python
-dc.read_storage("s3://bucket/prefix/", type="image")          # File / ImageFile etc.
+dc.read_storage("s3://bucket/prefix/", type="image")  # File / ImageFile etc.
 dc.read_storage("s3://bucket/imgs/**/*.{jpg,png}", type="image")  # glob in path
 dc.read_csv("s3://bucket/data.csv")
 dc.read_json("s3://bucket/ann.json", jmespath="images")
 dc.read_parquet("s3://bucket/data/*.parquet")
 dc.read_hf("dataset-name", split="train")
-dc.read_pandas(df); dc.read_values(scores=[1.2, 3.4]); dc.read_records([{"a": 1}, ...])
+dc.read_pandas(df)
+dc.read_values(scores=[1.2, 3.4])
+dc.read_records([{"a": 1}, ...])
 dc.read_database("SELECT * FROM t", "sqlite:///local.db")
-dc.read_dataset("name")                    # latest version
+dc.read_dataset("name")  # latest version
 dc.read_dataset("name", version="2.0.0")
 ```
 
@@ -452,28 +455,38 @@ dc.read_dataset("name", version="2.0.0")
 chain.filter(C("file.size") > 1000)
 chain.filter((C("det.label") == "cat") & (C("det.conf") > 0.9))
 chain.filter(C("file.path").glob("*.jpg"))
-chain.filter(C("name").contains("alice"))     # also startswith, endswith, like, ilike, regexp
-chain.filter(C("name").isnot(None))           # also is_(None)
+chain.filter(
+    C("name").contains("alice")
+)  # also startswith, endswith, like, ilike, regexp
+chain.filter(C("name").isnot(None))  # also is_(None)
 chain.filter(C("price").between(10, 25))
 chain.filter(C("name").in_(["alice", "bob"]))
 # Combinators — always parenthesize: & (and), | (or), ~ (not)
 chain.mutate(ext=func.path.file_ext(C("file.path")))
 chain.mutate(dist=func.cosine_distance(C("emb"), reference))
-chain.mutate(total=chain.column("price") * chain.column("qty"))      # column-column
-chain.mutate(discounted=C("price") * 0.9)                            # scalar → C() is fine
-chain.mutate(price_int=chain.column("price").cast(sa.Integer))       # import sqlalchemy as sa
-chain.group_by(cnt=func.count(), total=func.sum(C("file.size")), partition_by="category")
-chain.order_by("dist"); chain.order_by("score", descending=True)
+chain.mutate(total=chain.column("price") * chain.column("qty"))  # column-column
+chain.mutate(discounted=C("price") * 0.9)  # scalar → C() is fine
+chain.mutate(
+    price_int=chain.column("price").cast(sa.Integer)
+)  # import sqlalchemy as sa
+chain.group_by(
+    cnt=func.count(), total=func.sum(C("file.size")), partition_by="category"
+)
+chain.order_by("dist")
+chain.order_by("score", descending=True)
 chain.distinct("response.text")
-chain.distinct(file_ext=func.path.file_ext(C("file.path")))          # expressions need names
+chain.distinct(file_ext=func.path.file_ext(C("file.path")))  # expressions need names
 chain.limit(100)
-chain.select("file", "score"); chain.select("file", score_pct=C("score") * 100)
+chain.select("file", "score")
+chain.select("file", score_pct=C("score") * 100)
 chain.select_except("internal_id")
-chain.merge(other, on="id", right_on="meta.id")                      # left join (default)
-chain.merge(other, on="id", inner=True)                              # inner
-chain.merge(other, on="id", full=True)                               # full outer
-chain.union(other); chain.subtract(other)
-chain.diff(other, on="id", compare=["score"]); chain.file_diff(other)
+chain.merge(other, on="id", right_on="meta.id")  # left join (default)
+chain.merge(other, on="id", inner=True)  # inner
+chain.merge(other, on="id", full=True)  # full outer
+chain.union(other)
+chain.subtract(other)
+chain.diff(other, on="id", compare=["score"])
+chain.file_diff(other)
 ```
 
 `merge()` has NO `how=` parameter. Use `inner=True` or `full=True`.
@@ -481,8 +494,8 @@ chain.diff(other, on="id", compare=["score"]); chain.file_diff(other)
 **Compute Engine (Python workers, expensive):**
 
 ```python
-chain.map(col_name=fn)              # 1 input → 1 output record
-chain.gen(col_name=fn)              # 1 input → N output records
+chain.map(col_name=fn)  # 1 input → 1 output record
+chain.gen(col_name=fn)  # 1 input → N output records
 chain.agg(col_name=fn, partition_by="key")
 ```
 
@@ -498,16 +511,20 @@ if dc.is_studio():
 **Terminal operations.** `.save()` creates a named, versioned, KB-tracked dataset. `.persist()` materializes anonymously (calibration runs, intermediate materialization not entering KB).
 
 ```python
-chain.save("dataset_name")                     # versioned, in dc.datasets() and KB
+chain.save("dataset_name")  # versioned, in dc.datasets() and KB
 chain.save("ns.proj.name", update_version="minor")
-chain.persist()                                # anonymous, NOT named, NOT in KB
+chain.persist()  # anonymous, NOT named, NOT in KB
 chain.show(limit=10)
-chain.to_values("col")                         # → flat list
-chain.to_list("col1", "col2")                  # → list of tuples
-chain.to_pandas(); chain.to_parquet("out.parquet"); chain.to_csv("out.csv")
+chain.to_values("col")  # → flat list
+chain.to_list("col1", "col2")  # → list of tuples
+chain.to_pandas()
+chain.to_parquet("out.parquet")
+chain.to_csv("out.csv")
 chain.to_pytorch(transform=..., tokenizer=...)
 chain.to_storage("s3://output/", signal="file", placement="filepath")
-chain.count(); chain.sum("column"); chain.avg("column")
+chain.count()
+chain.sum("column")
+chain.avg("column")
 ```
 
 **Delta + incremental:**
@@ -527,6 +544,7 @@ dc.read_storage("s3://bucket/", update=True, delta=True)
 ```python
 from pydantic import BaseModel
 from datachain import model
+
 
 class Detection(BaseModel):
     label: str
@@ -566,10 +584,10 @@ model.Segment(title="road", x=[...], y=[...])               # segmentation polyg
 **Column references:**
 
 ```python
-dc.C("file.size")                  # top-level
-dc.C("det.bbox.x1")                # nested
+dc.C("file.size")  # top-level
+dc.C("det.bbox.x1")  # nested
 dc.C("file.path").glob("*.jpg")
-chain.column("price")              # typed column for column-column arithmetic
+chain.column("price")  # typed column for column-column arithmetic
 ```
 
 ---
@@ -580,24 +598,31 @@ All run inside Data Memory (no Python, no deserialization). `C` = `dc.C`, `func`
 
 ```python
 # Distance (vector search)
-func.cosine_distance(C("emb"), reference); func.euclidean_distance(...); func.l2_distance(...)
+func.cosine_distance(C("emb"), reference)
+func.euclidean_distance(...)
+func.l2_distance(...)
 
 # Aggregate (in group_by)
-func.count(); func.sum(C("file.size")); func.avg(C("score")); func.min/max(C("val"))
-func.collect(C("label")); func.first(C("path"))
+func.count()
+func.sum(C("file.size"))
+func.avg(C("score"))
+func.min / max(C("val"))
+func.collect(C("label"))
+func.first(C("path"))
 
 # Path
-func.path.file_ext(C("file.path"))    # → "jpg"
-func.path.file_stem(C("file.path"))   # → "image01"
-func.path.name(C("file.path"))        # → "image01.jpg"
-func.path.parent(C("file.path"))      # → "folder/subfolder"
+func.path.file_ext(C("file.path"))  # → "jpg"
+func.path.file_stem(C("file.path"))  # → "image01"
+func.path.name(C("file.path"))  # → "image01.jpg"
+func.path.parent(C("file.path"))  # → "folder/subfolder"
 
 # Conditional
 func.case((C("score") > 0.9, "high"), (C("score") > 0.5, "medium"), else_="low")
 func.ifelse(func.isnone(C("result")), "pending", "done")
 
 # String
-func.string.length(C("text")); func.string.split(C("path"), "/")
+func.string.length(C("text"))
+func.string.split(C("path"), "/")
 
 # Window (both partition_by and order_by required)
 w = func.window(partition_by="category", order_by="created_at")
@@ -606,7 +631,8 @@ chain.mutate(rank=func.rank().over(w), row_num=func.row_number().over(w))
 # Ranking (in group_by): func.rank(), func.dense_rank(), func.row_number()
 
 # Hashing / sampling (ClickHouse only — not on local SQLite)
-func.sip_hash_64(C("file.path")); func.int_hash_64(C("file.path"))
+func.sip_hash_64(C("file.path"))
+func.int_hash_64(C("file.path"))
 ```
 
 ---
@@ -618,8 +644,10 @@ func.sip_hash_64(C("file.path")); func.int_hash_64(C("file.path"))
 ```python
 import datachain as dc
 
+
 def compute_embedding(file: dc.File) -> list[float]:
     return model.encode(file.read()).tolist()
+
 
 (
     dc.read_storage("s3://bucket/data/")
@@ -636,6 +664,7 @@ def compute_embedding(file: dc.File) -> list[float]:
 def encode(file: dc.ImageFile, model, preprocess) -> list[float]:
     img = preprocess(file.read()).unsqueeze(0)
     return model.encode_image(img)[0].tolist()
+
 
 m, _, p = open_clip.create_model_and_transforms("ViT-B-32", "laion2b_s34b_b79k")
 
@@ -655,18 +684,22 @@ m, _, p = open_clip.create_model_and_transforms("ViT-B-32", "laion2b_s34b_b79k")
 dc.read_storage("s3://docs/*.pdf").gen(chunk=split_pdf).save("chunks")
 
 # Stage 2 — build_chunk_embeddings.py
-(dc.read_dataset("chunks")
-   .setup(model=lambda: load_embedding_model())
-   .settings(parallel=4)
-   .map(emb=embed_chunk)
-   .save("chunk_embeddings"))
+(
+    dc.read_dataset("chunks")
+    .setup(model=lambda: load_embedding_model())
+    .settings(parallel=4)
+    .map(emb=embed_chunk)
+    .save("chunk_embeddings")
+)
 
 # Stage 3 — classify_chunks.py
-(dc.read_dataset("chunk_embeddings")
-   .setup(client=lambda: create_llm_client())
-   .settings(parallel=8)
-   .map(category=classify)
-   .save("classified_chunks"))
+(
+    dc.read_dataset("chunk_embeddings")
+    .setup(client=lambda: create_llm_client())
+    .settings(parallel=8)
+    .map(category=classify)
+    .save("classified_chunks")
+)
 ```
 
 **Generator (1 input → N outputs):**
@@ -674,13 +707,16 @@ dc.read_storage("s3://docs/*.pdf").gen(chunk=split_pdf).save("chunks")
 ```python
 from typing import Iterator
 
+
 class Chunk(BaseModel):
     text: str
     start_offset: int
 
+
 def split_doc(file: dc.File) -> Iterator[Chunk]:
     for offset, text in chunk(file.read_text()):
         yield Chunk(text=text, start_offset=offset)
+
 
 (dc.read_storage("s3://docs/").settings(parallel=4).gen(chunk=split_doc).save("chunks"))
 ```
@@ -701,10 +737,14 @@ xmls = dc.read_storage("gs://b/**/*.xml").settings(prefetch=128).map(xml=parse_x
 images = dc.read_storage("gs://b/**/*.jpg", type="image")
 
 (
-    images
-    .merge(annotations, on=dc.func.path.file_stem(dc.C("file.path")), right_on="ann.name")
-    .merge(xmls, on=dc.func.path.file_stem(dc.C("file.path")),
-                 right_on=dc.func.path.file_stem(dc.C("file.path")))
+    images.merge(
+        annotations, on=dc.func.path.file_stem(dc.C("file.path")), right_on="ann.name"
+    )
+    .merge(
+        xmls,
+        on=dc.func.path.file_stem(dc.C("file.path")),
+        right_on=dc.func.path.file_stem(dc.C("file.path")),
+    )
     .select_except("right_file", "ann.name")
     .save("annotated_items")
 )
@@ -716,7 +756,8 @@ images = dc.read_storage("gs://b/**/*.jpg", type="image")
 (
     dc.read_dataset("embeddings")
     .mutate(dist=dc.func.cosine_distance(dc.C("emb"), query_embedding))
-    .order_by("dist").limit(10)
+    .order_by("dist")
+    .limit(10)
     .show()
 )
 ```

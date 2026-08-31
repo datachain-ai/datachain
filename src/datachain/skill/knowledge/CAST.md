@@ -162,11 +162,11 @@ in `description` (one-line human summary):
 
 ```python
 attrs = [
-    "cast:sense",                              # container | asset | sense | task
-    "scope:bucket",                            # bucket | directory | sample | onetime
-    "source:product_catalog",                  # bucket slug for L1-L3, task slug for Task
-    "model:clip_vit_b32@open_clip-2.24",       # build signature (model id @ version)
-    "preset:cpu_fp32",                         # build signature (preset/config tag)
+    "cast:sense",  # container | asset | sense | task
+    "scope:bucket",  # bucket | directory | sample | onetime
+    "source:product_catalog",  # bucket slug for L1-L3, task slug for Task
+    "model:clip_vit_b32@open_clip-2.24",  # build signature (model id @ version)
+    "preset:cpu_fp32",  # build signature (preset/config tag)
 ]
 chain.save(
     "l3_product_catalog_clip",
@@ -241,7 +241,7 @@ query, forever.
 ```python
 # L3 Sense: one row per detection. Full model output preserved.
 class DetectionRow(BaseModel):
-    source: dc.VideoFile      # row provenance — typed back-pointer to the source file
+    source: dc.VideoFile  # row provenance — typed back-pointer to the source file
     frame_idx: int
     timestamp: float
     label: str
@@ -249,18 +249,25 @@ class DetectionRow(BaseModel):
     confidence: float
     bbox: list[float]
 
+
 # Build chain:
-(dc.read_storage("<scheme>://<bucket>/<prefix>/", type="video", update=True, delta=True)
-   .setup(model=load_detector)
-   .gen(det=detect_per_frame)        # one source → many detection rows
-   .save("l3_<source>_<descriptor>", attrs=["cast:sense", ...]))
+(
+    dc.read_storage(
+        "<scheme>://<bucket>/<prefix>/", type="video", update=True, delta=True
+    )
+    .setup(model=load_detector)
+    .gen(det=detect_per_frame)  # one source → many detection rows
+    .save("l3_<source>_<descriptor>", attrs=["cast:sense", ...])
+)
 
 # Task: "sources with N+ matches" — one .filter() + one .group_by() + one .save()
-(dc.read_dataset("l3_<source>_<descriptor>")
-   .filter(dc.C("label") == "<target_label>")
-   .group_by(n_matches=dc.func.count(), partition_by="source")
-   .filter(dc.C("n_matches") >= THRESHOLD)
-   .save("<task_slug>", attrs=["cast:task", ...]))
+(
+    dc.read_dataset("l3_<source>_<descriptor>")
+    .filter(dc.C("label") == "<target_label>")
+    .group_by(n_matches=dc.func.count(), partition_by="source")
+    .filter(dc.C("n_matches") >= THRESHOLD)
+    .save("<task_slug>", attrs=["cast:task", ...])
+)
 ```
 
 **Anti-pattern — do NOT replicate:** per-video L3 with `frames:
