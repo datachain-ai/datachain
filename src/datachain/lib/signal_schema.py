@@ -216,7 +216,7 @@ class SignalRemoveError(SignalSchemaError):
 _SHAPE_DRIFT_WARNED: set[str] = set()
 
 
-def shape_hash(fields: Mapping[str, str], bases: Iterable[Sequence[Any]]) -> str:
+def _shape_hash(fields: Mapping[str, str], bases: Iterable[Sequence[Any]]) -> str:
     """Stable hash over (fields, bases). Tuples and JSON-restored lists produce
     the same digest, so a stored CustomType and a live class compare cleanly."""
     payload = json.dumps(
@@ -226,23 +226,23 @@ def shape_hash(fields: Mapping[str, str], bases: Iterable[Sequence[Any]]) -> str
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def class_shape_hash(cls: type[BaseModel]) -> str:
-    """Hash a live class's shape in the form ``shape_hash`` uses on a stored
+def _class_shape_hash(cls: type[BaseModel]) -> str:
+    """Hash a live class's shape in the form ``_shape_hash`` uses on a stored
     CustomType. ``register_pydantic=False`` so this never mutates ModelStore."""
     fields = {
         name: type_to_str(info.annotation, register_pydantic=False)
         for name, info in cls.model_fields.items()
     }
-    return shape_hash(fields, SignalSchema._get_bases(cls))
+    return _shape_hash(fields, SignalSchema._get_bases(cls))
 
 
-def class_matches_shape(cls: type[BaseModel], expected_hash: str) -> bool:
+def _class_matches_shape(cls: type[BaseModel], expected_hash: str) -> bool:
     """Return whether a live or schema-restored class has the stored shape."""
     restored_hash = cls.__dict__.get("_stored_shape_hash")
-    return (restored_hash or class_shape_hash(cls)) == expected_hash
+    return (restored_hash or _class_shape_hash(cls)) == expected_hash
 
 
-def warn_shape_drift(cls: type[BaseModel], type_name: str) -> None:
+def _warn_shape_drift(cls: type[BaseModel], type_name: str) -> None:
     """Warn once when a loaded class conflicts with a stored schema."""
     key = f"{cls.__module__}.{cls.__name__}"
     if key in _SHAPE_DRIFT_WARNED:
@@ -282,7 +282,7 @@ class CustomType(BaseModel):
         return cls(**data)
 
 
-def resolve_from_sys_modules(ct: CustomType, type_name: str) -> type[BaseModel] | None:
+def _resolve_from_sys_modules(ct: CustomType, type_name: str) -> type[BaseModel] | None:
     """Return the class already imported in this process at ``ct.bases[0]``'s
     (module, name), if its shape matches the stored spec. Never imports a
     module named in stored data. Warns once if a same-named class exists with
@@ -296,9 +296,9 @@ def resolve_from_sys_modules(ct: CustomType, type_name: str) -> type[BaseModel] 
     candidate = getattr(module, class_name, None)
     if candidate is None or not ModelStore.is_pydantic(candidate):
         return None
-    if class_matches_shape(candidate, shape_hash(ct.fields, ct.bases)):
+    if _class_matches_shape(candidate, _shape_hash(ct.fields, ct.bases)):
         return candidate
-    warn_shape_drift(candidate, type_name)
+    _warn_shape_drift(candidate, type_name)
     return None
 
 
@@ -525,13 +525,13 @@ class SignalSchema:
                     f"cannot deserialize custom type '{type_name}': {exc}"
                 ) from exc
 
-            expected_shape_hash = shape_hash(ct.fields, ct.bases)
+            expected_shape_hash = _shape_hash(ct.fields, ct.bases)
             if fr := ModelStore.get(model_name, target_version):
-                if class_matches_shape(fr, expected_shape_hash):
+                if _class_matches_shape(fr, expected_shape_hash):
                     return fr
-                warn_shape_drift(fr, type_name)
+                _warn_shape_drift(fr, type_name)
 
-            if fr := resolve_from_sys_modules(ct, type_name):
+            if fr := _resolve_from_sys_modules(ct, type_name):
                 return fr
 
             fields = {
