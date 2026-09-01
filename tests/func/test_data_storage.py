@@ -478,6 +478,11 @@ class SubclassedInt(Int64):
             ["a", None],
             id="literal-none-in-a-union",
         ),
+        pytest.param(
+            list[Annotated[str, "meta"] | Literal[None]],  # noqa: PYI061
+            ["x", None],
+            id="annotated-beside-literal-none",
+        ),
         pytest.param(tuple[int, int | None], (1, None), id="second-tuple-slot"),
         pytest.param(tuple[int | None, int], (None, 1), id="first-tuple-slot"),
     ],

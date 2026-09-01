@@ -88,11 +88,16 @@ def _list_to_array(typ, args):
     if ModelStore.is_pydantic(args0):
         return Array(JSON())
 
-    list_type = list_of_args_to_type(args)
+    # Resolve what the wrappers hold, not the wrappers: composed ones --
+    # Annotated[str, ...] | Literal[None] -- are recognized by neither the
+    # scalar table nor the union handling on their own. Ellipsis is left in
+    # place, as it is what marks a variadic tuple.
+    peeled = tuple(arg if arg is Ellipsis else _peel_optional(arg)[0] for arg in args)
+    list_type = list_of_args_to_type(peeled)
+
     # Optional[scalar] elements map to a nullable Array element so None survives
-    # (ClickHouse: Array(Nullable(T))).
-    # A fixed tuple keeps every slot in the one column, so any slot admitting a
-    # None decides the item's nullability, not just the first.
+    # (ClickHouse: Array(Nullable(T))). A fixed tuple keeps every slot in the one
+    # column, so any slot admitting a None decides it, not just the first.
     admits_none = any(_peel_optional(arg)[1] for arg in args if arg is not Ellipsis)
     if admits_none and _takes_null(list_type):
         list_type = SQLType.as_nullable(list_type)
