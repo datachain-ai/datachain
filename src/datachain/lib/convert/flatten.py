@@ -85,12 +85,13 @@ def flatten_list(obj_list: list[BaseModel]) -> tuple:
 
 def _flatten_list_field(value: list) -> list:
     assert isinstance(value, list)
-    # A None says nothing about what the list holds; ask the first element that
-    # can, and leave the Nones where they are.
-    typed = next((val for val in value if val is not None), None)
-    if ModelStore.is_pydantic(type(typed)):
+    # A None says nothing about what the list holds, and one element cannot
+    # answer for the rest: take a homogeneous path only if every element that
+    # carries a type agrees, and leave the Nones where they are.
+    typed = [val for val in value if val is not None]
+    if typed and all(ModelStore.is_pydantic(type(val)) for val in typed):
         return [None if val is None else val.model_dump() for val in value]
-    if isinstance(typed, list):
+    if typed and all(isinstance(val, list) for val in typed):
         return [None if val is None else _flatten_list_field(val) for val in value]
     return value
 

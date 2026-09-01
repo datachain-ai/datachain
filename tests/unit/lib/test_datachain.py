@@ -6411,3 +6411,19 @@ def test_a_list_of_models_admitting_none_round_trips(test_session, vals):
     )
 
     assert rows == [(vals,)]
+
+
+class MixedUnionHolder(BaseModel):
+    vals: list[dict | list[dict] | None]
+
+
+def test_a_list_of_mixed_shapes_is_left_alone(test_session):
+    value = [None, [{"a": 1}], {"b": 2}]
+
+    rows = (
+        dc.read_values(i=[1], session=test_session)
+        .map(h=lambda: MixedUnionHolder(vals=value), output=MixedUnionHolder)
+        .to_list("h.vals")
+    )
+
+    assert rows == [(value,)]

@@ -87,9 +87,7 @@ def _list_to_array(typ, args):
     args0 = args[0]
     # A model element is JSON whether or not it admits a None: is_chain_type
     # accepts list[Model | None], and the union arm is all that hid the model.
-    if ModelStore.is_pydantic(args0) or ModelStore.is_pydantic(
-        _peel_optional(args0)[0]
-    ):
+    if ModelStore.is_pydantic(args0) or _optional_model(args0) is not None:
         return Array(JSON())
 
     # Resolve what the wrappers hold, not the wrappers: composed ones --
@@ -104,6 +102,22 @@ def _list_to_array(typ, args):
     if admits_none and _takes_null(list_type):
         list_type = SQLType.as_nullable(list_type)
     return Array(list_type)
+
+
+def _optional_model(annotation: Any) -> Any:
+    """The model behind ``Model | None``, or None if that is not the shape.
+
+    Deliberately shallow: reading back a nested model is decided elsewhere and
+    does not look through Annotated, so admitting Annotated[Model, ...] | None
+    here would store it and then hand back plain dicts.
+    """
+    if get_origin(annotation) not in (Union, UnionType):
+        return None
+
+    arms = [arm for arm in get_args(annotation) if arm is not type(None)]
+    if len(arms) == 1 and ModelStore.is_pydantic(arms[0]):
+        return arms[0]
+    return None
 
 
 def _unwrapped_for_lookup(annotation: Any) -> Any:
