@@ -180,7 +180,12 @@ class AbstractWarehouse(ABC, Serializable):
                 # inside.
                 return [self._to_jsonable(i) for i in val]
 
-            keep_none = getattr(item_type, "dc_nullable", False)
+            # A JSON item carries its own null, and already did so in either
+            # order; only a type with no in-band null needs one kept back.
+            keep_none = (
+                getattr(item_type, "dc_nullable", False)
+                and type(item_type).__name__ != "JSON"
+            )
             return [
                 i if keep_none and i is None else self.convert_type(i, *item_type_info)
                 for i in val
