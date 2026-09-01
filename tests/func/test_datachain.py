@@ -54,17 +54,25 @@ def _get_listing_datasets(session):
 @pytest.mark.parametrize("anon", [True, False])
 def test_catalog_anon(tmp_dir, catalog, anon):
     chain = dc.read_storage(tmp_dir.as_uri(), anon=anon)
-    assert chain.session.catalog.client_config.get("anon", False) is anon
+    catalog = chain.session.catalog
+    assert catalog.client_config_for(tmp_dir.as_uri()).get("anon", False) is anon
+    # Per-call config is registered per source; the session-wide default is
+    # untouched.
+    assert "anon" not in catalog.client_config
 
 
 def test_read_storage_client_config(tmp_dir):
     chain = dc.read_storage(tmp_dir.as_uri())
     assert chain.session.catalog.client_config == {}  # Default client config is set.
+    # Nothing registered for a bare call: the default applies.
+    assert chain.session.catalog.client_config_for(tmp_dir.as_uri()) == {}
 
     chain = dc.read_storage(tmp_dir.as_uri(), client_config={"anon": True})
-    assert chain.session.catalog.client_config == {
-        "anon": True
-    }  # New client config is set.
+    catalog = chain.session.catalog
+    # The per-call config is registered for the source, not written into the
+    # session-wide default, and the session is not forked or replaced.
+    assert catalog.client_config_for(tmp_dir.as_uri()) == {"anon": True}
+    assert catalog.client_config == {}
 
 
 def test_read_storage(cloud_test_catalog):
