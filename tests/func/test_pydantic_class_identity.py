@@ -44,13 +44,22 @@ dc.read_values(
 
 
 _READ_SCRIPT = """
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 import datachain as dc
+
+
+validated_limits = []
 
 
 class Thresholds(BaseModel):
     name: str
     limit: float
+
+    @field_validator("limit")
+    @classmethod
+    def record_validation(cls, value):
+        validated_limits.append(value)
+        return value
 
 
 class Scenario(BaseModel):
@@ -68,6 +77,7 @@ assert isinstance(row.thresholds, Thresholds), (
 )
 assert isinstance(row.threshold_items[0], Thresholds)
 assert isinstance(row.optional_thresholds, Thresholds)
+assert sorted(validated_limits) == [0.5, 0.75, 1.0]
 Scenario(
     key=99,
     thresholds=row.thresholds,
