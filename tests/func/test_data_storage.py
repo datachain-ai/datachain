@@ -417,3 +417,26 @@ def test_convert_type_refuses_none_in_a_non_nullable_array(test_session, value):
         warehouse.convert_type(
             value, col_type, warehouse.python_type(col_type), "Array", "test_column"
         )
+
+
+class NestedItem(BaseModel):
+    n: int
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param((None, {"a": NestedItem(n=2)}), id="none-first"),
+        pytest.param(({"a": NestedItem(n=2)}, None), id="none-last"),
+    ],
+)
+def test_convert_type_leaves_no_model_in_a_json_array_holding_none(test_session, value):
+    warehouse = test_session.catalog.warehouse
+    col_type = Array(JSON())
+
+    converted = warehouse.convert_type(
+        value, col_type, warehouse.python_type(col_type), "Array", "test_column"
+    )
+
+    # Whatever shape the backend asks for, nothing unserializable may survive.
+    json.dumps(converted)

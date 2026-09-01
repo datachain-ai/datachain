@@ -151,34 +151,38 @@ class AbstractWarehouse(ABC, Serializable):
 
             item_type = col_type.item_type
             item_python_type = self.python_type(item_type)
-
-            if item_python_type is dict and all(
-                i is None or isinstance(i, dict) for i in val
-            ):
-                # This backend keeps an array of JSON objects as objects and
-                # encodes the array around them. Normalizing each one instead of
-                # passing it through is what reaches a model nested inside.
-                return [self._to_jsonable(i) for i in val]
-
             item_type_info = (
                 item_type,
                 item_python_type,
                 type(item_type).__name__,
                 col_name,
             )
-            if item_python_type is list:
-                # A nested array is never already converted; its own items still
-                # have to go through this.
+
+            if not any(i is None for i in val):
+                if item_python_type is not list:
+                    if isinstance(val[0], item_python_type):
+                        # SQLite ARRAY storage expects a list; tuples/sets must
+                        # be converted to lists even when element types already
+                        # match.
+                        return list(val)
+                    if item_python_type is float and isinstance(val[0], int):
+                        return [float(i) for i in val]
                 return [self.convert_type(i, *item_type_info) for i in val]
 
-            # Each element answers for itself. Reading the answer off one of them
-            # made an array's fate depend on which element happened to come
-            # first, and skipped conversion the rest of it needed.
+            # Only an array actually holding a None gets here, so nothing else
+            # changes shape. Which element came first used to decide the whole
+            # array's fate, and a None cannot answer for the rest of it.
+            if item_python_type is dict and all(
+                i is None or isinstance(i, dict) for i in val
+            ):
+                # An array of JSON objects stays objects; normalizing each one
+                # rather than passing it through is what reaches a model nested
+                # inside.
+                return [self._to_jsonable(i) for i in val]
+
             keep_none = getattr(item_type, "dc_nullable", False)
             return [
-                i
-                if isinstance(i, item_python_type) or (keep_none and i is None)
-                else self.convert_type(i, *item_type_info)
+                i if keep_none and i is None else self.convert_type(i, *item_type_info)
                 for i in val
             ]
 
