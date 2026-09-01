@@ -1,5 +1,8 @@
+import gc
 import json
 import pickle
+import subprocess
+import sys
 from collections import UserDict, UserList
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import datetime
@@ -16,7 +19,7 @@ from typing import (
 )
 
 import pytest
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 from typing_extensions import TypedDict
 
 from datachain import Column, DataModel, Sys, func
@@ -94,6 +97,14 @@ class MyTypeComplexOld(DataModel):
     name: str
     items: list[MyType1]
     lookup: dict[str, MyType2]
+
+
+class ImportedThresholds(BaseModel):
+    minimum: float
+
+
+class ImportedScenario(BaseModel):
+    thresholds: ImportedThresholds
 
 
 def test_deserialize_basic():
@@ -789,6 +800,87 @@ def test_deserialize_restores_known_base_type():
     deserialized_schema = SignalSchema.deserialize(signals)
     assert deserialized_schema.values["fr"].__name__ == "MyType3_v1"
     assert issubclass(deserialized_schema.values["fr"], MyType1)
+
+
+def test_deserialize_reuses_imported_plain_pydantic_models(monkeypatch):
+    serialized = SignalSchema({"scenario": ImportedScenario}).serialize()
+    monkeypatch.setattr(ModelStore, "store", {})
+
+    restored = SignalSchema.deserialize(serialized)
+    restored_model = restored.values["scenario"]
+
+    assert restored_model is ImportedScenario
+    scenario = restored_model(thresholds={"minimum": 0.5})
+    assert isinstance(scenario, ImportedScenario)
+    assert isinstance(scenario.thresholds, ImportedThresholds)
+
+
+def test_deserialize_reuses_imported_plain_pydantic_models_in_new_process():
+    serialized = SignalSchema({"scenario": ImportedScenario}).serialize()
+    script = """
+import json
+import sys
+from importlib.util import module_from_spec, spec_from_file_location
+from pathlib import Path
+
+from datachain.lib.signal_schema import SignalSchema
+
+module_name = "tests.unit.lib.test_signal_schema"
+spec = spec_from_file_location(
+    module_name, Path(sys.argv[1])
+)
+module = module_from_spec(spec)
+sys.modules[module_name] = module
+spec.loader.exec_module(module)
+
+schema = SignalSchema.deserialize(json.loads(sys.stdin.read()))
+assert schema.values["scenario"] is module.ImportedScenario
+scenario = schema.values["scenario"](thresholds={"minimum": 0.5})
+assert isinstance(scenario.thresholds, module.ImportedThresholds)
+"""
+
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", script, __file__],
+        input=json.dumps(serialized),
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_deserialize_reuses_local_plain_pydantic_model(monkeypatch):
+    class LocalPlainModel(BaseModel):
+        value: int
+
+    serialized = SignalSchema({"model": LocalPlainModel}).serialize()
+    monkeypatch.setattr(ModelStore, "store", {})
+
+    restored = SignalSchema.deserialize(serialized)
+
+    assert restored.values["model"] is LocalPlainModel
+
+
+def test_deserialize_rebuilds_plain_model_when_loaded_fields_do_not_match(monkeypatch):
+    source_model = create_model("ImportedModel", value=(int, ...))
+    source_model.__module__ = __name__
+    serialized = SignalSchema({"model": source_model}).serialize()
+    monkeypatch.setattr(ModelStore, "store", {})
+
+    loaded_model = create_model("ImportedModel", value=(str, ...))
+    loaded_model.__module__ = __name__
+    monkeypatch.setattr(
+        sys.modules[__name__], "ImportedModel", loaded_model, raising=False
+    )
+    del source_model
+    gc.collect()
+
+    with pytest.warns(SignalSchemaWarning, match="does not match"):
+        restored = SignalSchema.deserialize(serialized).values["model"]
+
+    assert restored is not loaded_model
+    assert restored.model_fields["value"].annotation is int
 
 
 def test_deserialize_custom_type_bad_schema():
