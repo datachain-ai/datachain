@@ -93,9 +93,22 @@ def _list_to_array(typ, args):
     # Optional[scalar] elements map to a nullable Array element so None survives
     # (ClickHouse: Array(Nullable(T))).
     inner, is_optional = unwrap_optional(args0)
-    if is_optional and inner in NULLABLE_SCALARS:
+    if is_optional and _resolves_to_nullable_scalar(inner):
         list_type = SQLType.as_nullable(list_type)
     return Array(list_type)
+
+
+def _resolves_to_nullable_scalar(annotation) -> bool:
+    """Whether an element annotation ends up as a scalar a NULL can sit in.
+
+    Asking of the annotation itself misses the wrappers that resolve to one --
+    Annotated[int, ...] and Literal["a", "b"] are not int and str.
+    """
+    try:
+        resolved = python_to_sql(annotation)
+    except TypeError:
+        return False
+    return any(resolved is python_to_sql(t) for t in NULLABLE_SCALARS)
 
 
 def list_of_args_to_type(args) -> SQLType:

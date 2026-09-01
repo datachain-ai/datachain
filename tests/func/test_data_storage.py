@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Annotated, Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -10,6 +10,7 @@ import ujson as json
 from pydantic import BaseModel, ConfigDict
 
 from datachain import json as dcjson
+from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.sql.types import (
     JSON,
     Array,
@@ -440,3 +441,43 @@ def test_convert_type_leaves_no_model_in_a_json_array_holding_none(test_session,
 
     # Whatever shape the backend asks for, nothing unserializable may survive.
     json.dumps(converted)
+
+
+@pytest.mark.parametrize(
+    "annotation,value",
+    [
+        pytest.param(list[int | None], [1, None], id="plain-int"),
+        pytest.param(list[int | None], [None, 2], id="plain-int-none-first"),
+        pytest.param(
+            list[Annotated[int, "meta"] | None], [1, None], id="annotated-int"
+        ),
+        pytest.param(list[Literal["a", "b"] | None], ["a", None], id="literal-str"),
+        pytest.param(
+            list[Literal["a", "b"] | None], [None, "b"], id="literal-str-none-first"
+        ),
+    ],
+)
+def test_convert_type_keeps_none_for_a_wrapped_nullable_scalar(
+    test_session, annotation, value
+):
+    warehouse = test_session.catalog.warehouse
+    col_type = python_to_sql(annotation)
+
+    converted = warehouse.convert_type(
+        value, col_type, warehouse.python_type(col_type), "Array", "test_column"
+    )
+
+    assert converted == value
+
+
+def test_convert_type_json_encodes_an_all_none_array(test_session):
+    warehouse = test_session.catalog.warehouse
+    col_type = Array(SQLType.as_nullable(JSON()))
+
+    converted = warehouse.convert_type(
+        (None, None), col_type, warehouse.python_type(col_type), "Array", "test_column"
+    )
+
+    # An array with no object in it is not an array of objects; each None stays
+    # whatever JSON writes for one, as it did before.
+    assert converted == [json.dumps(None)] * 2

@@ -172,8 +172,12 @@ class AbstractWarehouse(ABC, Serializable):
             # Only an array actually holding a None gets here, so nothing else
             # changes shape. Which element came first used to decide the whole
             # array's fate, and a None cannot answer for the rest of it.
-            if item_python_type is dict and all(
-                i is None or isinstance(i, dict) for i in val
+            objects = [i for i in val if i is not None]
+
+            if (
+                item_python_type is dict
+                and objects
+                and all(isinstance(i, dict) for i in objects)
             ):
                 # An array of JSON objects stays objects; normalizing each one
                 # rather than passing it through is what reaches a model nested
