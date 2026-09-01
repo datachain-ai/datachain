@@ -152,9 +152,12 @@ class AbstractWarehouse(ABC, Serializable):
             item_type = col_type.item_type
             item_python_type = self.python_type(item_type)
 
-            if item_python_type is dict:
-                # This backend keeps JSON items as objects and encodes the array
-                # around them, so an item is normalized but not dumped.
+            if item_python_type is dict and all(
+                i is None or isinstance(i, dict) for i in val
+            ):
+                # This backend keeps an array of JSON objects as objects and
+                # encodes the array around them. Normalizing each one instead of
+                # passing it through is what reaches a model nested inside.
                 return [self._to_jsonable(i) for i in val]
 
             item_type_info = (
