@@ -6385,3 +6385,29 @@ def test_models_inside_dict_items_convert_wherever_none_sits(test_session, vals)
     )
 
     assert rows == [(vals,)]
+
+
+class OptionalChild(BaseModel):
+    x: int
+
+
+class OptionalChildHolder(BaseModel):
+    vals: list[OptionalChild | None]
+
+
+@pytest.mark.parametrize(
+    "vals",
+    [
+        pytest.param([OptionalChild(x=1), None], id="none-last"),
+        pytest.param([None, OptionalChild(x=2)], id="none-first"),
+        pytest.param([None, None], id="all-none"),
+    ],
+)
+def test_a_list_of_models_admitting_none_round_trips(test_session, vals):
+    rows = (
+        dc.read_values(i=[1], session=test_session)
+        .map(h=lambda: OptionalChildHolder(vals=vals), output=OptionalChildHolder)
+        .to_list("h.vals")
+    )
+
+    assert rows == [(vals,)]
