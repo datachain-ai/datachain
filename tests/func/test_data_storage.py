@@ -443,6 +443,10 @@ def test_convert_type_leaves_no_model_in_a_json_array_holding_none(test_session,
     json.dumps(converted)
 
 
+class SubclassedInt(Int64):
+    pass
+
+
 @pytest.mark.parametrize(
     "annotation,value",
     [
@@ -455,6 +459,20 @@ def test_convert_type_leaves_no_model_in_a_json_array_holding_none(test_session,
         pytest.param(
             list[Literal["a", "b"] | None], [None, "b"], id="literal-str-none-first"
         ),
+        pytest.param(
+            list[Annotated[int | None, "meta"]], [1, None], id="optional-in-annotated"
+        ),
+        pytest.param(
+            list[Annotated[int | None, "meta"]],
+            [None, 2],
+            id="optional-in-annotated-none-first",
+        ),
+        pytest.param(
+            list[Annotated[Literal["a", None], "meta"]],  # noqa: PYI061
+            ["a", None],
+            id="none-among-literal-values",
+        ),
+        pytest.param(list[SubclassedInt | None], [1, None], id="subclassed-sql-type"),
     ],
 )
 def test_convert_type_keeps_none_for_a_wrapped_nullable_scalar(

@@ -158,7 +158,7 @@ class AbstractWarehouse(ABC, Serializable):
                 col_name,
             )
 
-            if not any(i is None for i in val):
+            if type(None) not in map(type, val):
                 if item_python_type is not list:
                     if isinstance(val[0], item_python_type):
                         # SQLite ARRAY storage expects a list; tuples/sets must
@@ -172,17 +172,14 @@ class AbstractWarehouse(ABC, Serializable):
             # Only an array actually holding a None gets here, so nothing else
             # changes shape. Which element came first used to decide the whole
             # array's fate, and a None cannot answer for the rest of it.
-            objects = [i for i in val if i is not None]
-
-            if (
-                item_python_type is dict
-                and objects
-                and all(isinstance(i, dict) for i in objects)
-            ):
-                # An array of JSON objects stays objects; normalizing each one
-                # rather than passing it through is what reaches a model nested
-                # inside.
-                return [self._to_jsonable(i) for i in val]
+            if item_python_type is dict:
+                objects = [i for i in val if i is not None]
+                if objects and all(isinstance(i, dict) for i in objects):
+                    # An array of JSON objects stays objects; normalizing each
+                    # one rather than passing it through is what reaches a model
+                    # nested inside.
+                    return [self._to_jsonable(i) for i in val]
+                return [self.convert_type(i, *item_type_info) for i in val]
 
             # A JSON item carries its own null, and already did so in either
             # order; only a type with no in-band null needs one kept back.
@@ -191,7 +188,9 @@ class AbstractWarehouse(ABC, Serializable):
                 and type(item_type).__name__ != "JSON"
             )
             return [
-                i if keep_none and i is None else self.convert_type(i, *item_type_info)
+                i
+                if (keep_none and i is None) or isinstance(i, item_python_type)
+                else self.convert_type(i, *item_type_info)
                 for i in val
             ]
 

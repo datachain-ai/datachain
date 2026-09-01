@@ -2,7 +2,7 @@ import inspect
 from datetime import datetime
 from enum import Enum
 from types import UnionType
-from typing import Annotated, Literal, Union, get_args, get_origin
+from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel
 from typing_extensions import Literal as LiteralEx
@@ -92,23 +92,61 @@ def _list_to_array(typ, args):
     list_type = list_of_args_to_type(args)
     # Optional[scalar] elements map to a nullable Array element so None survives
     # (ClickHouse: Array(Nullable(T))).
-    inner, is_optional = unwrap_optional(args0)
+    inner, is_optional = _peel_optional(args0)
     if is_optional and _resolves_to_nullable_scalar(inner):
         list_type = SQLType.as_nullable(list_type)
     return Array(list_type)
 
 
+def _peel_optional(annotation) -> tuple[Any, bool]:
+    """Strip the wrappers around an element type, reporting whether it admits None.
+
+    They nest either way round -- Optional[Annotated[int, ...]] and
+    Annotated[int | None, ...] -- and a Literal can carry the None among its
+    values, so keep peeling until nothing is left to peel.
+    """
+    is_optional = False
+    while True:
+        if get_origin(annotation) is Annotated:
+            annotation = get_args(annotation)[0]
+            continue
+
+        if get_origin(annotation) in (Literal, LiteralEx):
+            values = get_args(annotation)
+            remaining = tuple(v for v in values if v is not None)
+            if len(remaining) == len(values):
+                return annotation, is_optional
+            is_optional = True
+            if not remaining:
+                return type(None), True
+            annotation = Literal[remaining]
+            continue
+
+        inner, unwrapped = unwrap_optional(annotation)
+        if not unwrapped:
+            return annotation, is_optional
+        is_optional = True
+        annotation = inner
+
+
 def _resolves_to_nullable_scalar(annotation) -> bool:
     """Whether an element annotation ends up as a scalar a NULL can sit in.
 
-    Asking of the annotation itself misses the wrappers that resolve to one --
-    Annotated[int, ...] and Literal["a", "b"] are not int and str.
+    Asking of the annotation itself misses the wrappers that resolve to one, and
+    identity misses the SQL types a user has subclassed.
     """
     try:
         resolved = python_to_sql(annotation)
     except TypeError:
         return False
-    return any(resolved is python_to_sql(t) for t in NULLABLE_SCALARS)
+
+    resolved_cls = resolved if isinstance(resolved, type) else type(resolved)
+    for scalar in NULLABLE_SCALARS:
+        nullable = python_to_sql(scalar)
+        nullable_cls = nullable if isinstance(nullable, type) else type(nullable)
+        if issubclass(resolved_cls, nullable_cls):
+            return True
+    return False
 
 
 def list_of_args_to_type(args) -> SQLType:
