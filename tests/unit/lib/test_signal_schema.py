@@ -848,6 +848,29 @@ def test_deserialize_custom_type_bad_schema():
         )
 
 
+def test_deserialize_nested_custom_type_bad_schema():
+    schema = {
+        "f": "OuterInvalidNested",
+        "_custom_types": {
+            "OuterInvalidNested": {
+                "schema_version": 2,
+                "name": "OuterInvalidNested",
+                "fields": {"child": "ChildInvalidNested"},
+                "bases": [],
+            },
+            "ChildInvalidNested": {
+                "schema_version": 123,
+                "name": "ChildInvalidNested",
+                "fields": {"value": "int"},
+                "bases": [],
+            },
+        },
+    }
+
+    with pytest.raises(SignalSchemaError, match="ChildInvalidNested"):
+        SignalSchema.deserialize(schema)
+
+
 def test_select_nested_names():
     schema = SignalSchema.deserialize(
         {

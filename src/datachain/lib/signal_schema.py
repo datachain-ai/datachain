@@ -255,7 +255,12 @@ def _stored_shape_hash(type_name: str, custom_types: Mapping[str, Any]) -> str:
     def visit(name: str) -> None:
         if name in models or name not in custom_types:
             return
-        ct = CustomType.deserialize(custom_types[name], name)
+        try:
+            ct = CustomType.deserialize(custom_types[name], name)
+        except ValidationError as exc:
+            raise SignalSchemaError(
+                f"cannot deserialize custom type '{name}': {exc}"
+            ) from exc
         models[name] = {
             "fields": dict(ct.fields),
             "bases": [list(base) for base in ct.bases],
