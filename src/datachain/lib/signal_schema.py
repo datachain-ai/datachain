@@ -216,16 +216,6 @@ class SignalRemoveError(SignalSchemaError):
 _SHAPE_DRIFT_WARNED: set[str] = set()
 
 
-def _shape_hash(fields: Mapping[str, str], bases: Iterable[Sequence[Any]]) -> str:
-    """Stable hash over (fields, bases). Tuples and JSON-restored lists produce
-    the same digest, so a stored CustomType and a live class compare cleanly."""
-    payload = json.dumps(
-        {"fields": dict(fields), "bases": [list(b) for b in bases]},
-        sort_keys=True,
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
 def _class_shape_hash(cls: type[BaseModel]) -> str:
     """Hash the complete model graph reachable from a live class."""
     models: dict[str, dict[str, Any]] = {}

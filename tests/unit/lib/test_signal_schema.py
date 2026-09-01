@@ -39,7 +39,6 @@ from datachain.lib.signal_schema import (
     SignalSchemaWarning,
     _class_shape_hash,
     _resolve_from_sys_modules,
-    _shape_hash,
     _stored_shape_hash,
 )
 from datachain.lib.utils import DataChainColumnError
@@ -1825,89 +1824,6 @@ def test_enrich_expr_types_unknown_column():
     assert isinstance(result.type, NullType)
 
 
-@pytest.mark.parametrize(
-    "left,right",
-    [
-        (
-            ({"a": "int"}, [("X", "m", None)]),
-            ({"a": "int"}, [["X", "m", None]]),
-        ),
-        (
-            ({"a": "int", "b": "str"}, [("X", "m", None)]),
-            ({"b": "str", "a": "int"}, [("X", "m", None)]),
-        ),
-        (
-            ({}, [("X", "m", None)]),
-            ({}, [("X", "m", None)]),
-        ),
-        (
-            (
-                {"a": "list[int]"},
-                [("X", "m", None), ("BaseModel", "pydantic.main", None)],
-            ),
-            (
-                {"a": "list[int]"},
-                [["X", "m", None], ["BaseModel", "pydantic.main", None]],
-            ),
-        ),
-    ],
-    ids=["tuple-vs-list", "dict-key-order", "empty-fields", "nested-with-mro"],
-)
-def test_shape_hash_equal_for_equivalent_inputs(left, right):
-    assert _shape_hash(*left) == _shape_hash(*right)
-
-
-@pytest.mark.parametrize(
-    "left,right",
-    [
-        (
-            ({"a": "int"}, [("X", "m", None)]),
-            ({"a": "str"}, [("X", "m", None)]),
-        ),
-        (
-            ({"a": "int"}, [("X", "m", None)]),
-            ({"a": "int", "b": "int"}, [("X", "m", None)]),
-        ),
-        (
-            ({"a": "int"}, [("X", "m", None)]),
-            ({"b": "int"}, [("X", "m", None)]),
-        ),
-        (
-            ({"a": "int"}, [("X", "m", None)]),
-            ({"a": "int"}, [("X", "other", None)]),
-        ),
-        (
-            ({"a": "int"}, [("X", "m", None)]),
-            ({"a": "int"}, [("Y", "m", None)]),
-        ),
-        (
-            ({"a": "int"}, [("X", "m", None)]),
-            ({"a": "int"}, [("X", "m", None), ("Y", "m", None)]),
-        ),
-        (
-            ({"a": "int"}, [("X", "m", None)]),
-            ({"a": "int"}, [("X", "m", "X@v1")]),
-        ),
-        (
-            ({"a": "list[int]"}, [("X", "m", None)]),
-            ({"a": "list[str]"}, [("X", "m", None)]),
-        ),
-    ],
-    ids=[
-        "field-type",
-        "added-field",
-        "renamed-field",
-        "different-module",
-        "different-class-name",
-        "different-mro-length",
-        "different-model-store-name",
-        "different-list-param",
-    ],
-)
-def test_shape_hash_differs_when_inputs_differ(left, right):
-    assert _shape_hash(*left) != _shape_hash(*right)
-
-
 class _ShapeEmpty(DataModel):
     pass
 
@@ -2041,7 +1957,7 @@ def _resolve_ct(ct):
         _empty_ct(bases=[]),
         _empty_ct(bases=[("MyType1", "totally.nonexistent.mod.xyz", None)]),
         _empty_ct(bases=[("NopeNotHere", _THIS_MODULE, None)]),
-        _empty_ct(bases=[("_shape_hash", "datachain.lib.signal_schema", None)]),
+        _empty_ct(bases=[("_stored_shape_hash", "datachain.lib.signal_schema", None)]),
         _empty_ct(bases=[("_NotPydantic", _THIS_MODULE, None)]),
     ],
     ids=[
