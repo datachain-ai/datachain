@@ -11,7 +11,6 @@ from datachain.lib.data_model import (
     NULLABLE_SCALARS,
     is_mapping_annotation,
     is_sequence_annotation,
-    unwrap_optional,
 )
 from datachain.lib.model_store import ModelStore
 from datachain.sql.types import (
@@ -92,18 +91,20 @@ def _list_to_array(typ, args):
     list_type = list_of_args_to_type(args)
     # Optional[scalar] elements map to a nullable Array element so None survives
     # (ClickHouse: Array(Nullable(T))).
-    inner, is_optional = _peel_optional(args0)
-    if is_optional and _resolves_to_nullable_scalar(inner):
+    # A fixed tuple keeps every slot in the one column, so any slot admitting a
+    # None decides the item's nullability, not just the first.
+    admits_none = any(_peel_optional(arg)[1] for arg in args if arg is not Ellipsis)
+    if admits_none and _takes_null(list_type):
         list_type = SQLType.as_nullable(list_type)
     return Array(list_type)
 
 
-def _peel_optional(annotation) -> tuple[Any, bool]:
+def _peel_optional(annotation: Any) -> tuple[Any, bool]:
     """Strip the wrappers around an element type, reporting whether it admits None.
 
-    They nest either way round -- Optional[Annotated[int, ...]] and
-    Annotated[int | None, ...] -- and a Literal can carry the None among its
-    values, so keep peeling until nothing is left to peel.
+    They nest either way round -- ``Optional[Annotated[int, ...]]`` and
+    ``Annotated[int | None, ...]`` -- and the None can be spelled as a union arm,
+    as one of a Literal's values, or as ``Literal[None]`` inside a union.
     """
     is_optional = False
     while True:
@@ -114,37 +115,42 @@ def _peel_optional(annotation) -> tuple[Any, bool]:
         if get_origin(annotation) in (Literal, LiteralEx):
             values = get_args(annotation)
             remaining = tuple(v for v in values if v is not None)
-            if len(remaining) == len(values):
-                return annotation, is_optional
-            is_optional = True
             if not remaining:
                 return type(None), True
-            annotation = Literal[remaining]
-            continue
-
-        inner, unwrapped = unwrap_optional(annotation)
-        if not unwrapped:
+            if len(remaining) != len(values):
+                is_optional = True
+                annotation = Literal[remaining]
+                continue
             return annotation, is_optional
-        is_optional = True
-        annotation = inner
+
+        if get_origin(annotation) in (Union, UnionType):
+            arms = []
+            for arm in get_args(annotation):
+                peeled, arm_optional = _peel_optional(arm)
+                if arm_optional or peeled is type(None):
+                    is_optional = True
+                if peeled is not type(None):
+                    arms.append(peeled)
+            if not arms:
+                return type(None), True
+            if len(arms) == 1:
+                annotation = arms[0]
+                continue
+            return Union[tuple(arms)], is_optional  # noqa: UP007
+
+        return annotation, is_optional
 
 
-def _resolves_to_nullable_scalar(annotation) -> bool:
-    """Whether an element annotation ends up as a scalar a NULL can sit in.
+def _takes_null(sql_type: Any) -> bool:
+    """Whether a NULL can sit in this column type.
 
-    Asking of the annotation itself misses the wrappers that resolve to one, and
-    identity misses the SQL types a user has subclassed.
+    Compared by subclass: a project or a user may have subclassed the scalar.
     """
-    try:
-        resolved = python_to_sql(annotation)
-    except TypeError:
-        return False
-
-    resolved_cls = resolved if isinstance(resolved, type) else type(resolved)
+    sql_cls = sql_type if isinstance(sql_type, type) else type(sql_type)
     for scalar in NULLABLE_SCALARS:
         nullable = python_to_sql(scalar)
         nullable_cls = nullable if isinstance(nullable, type) else type(nullable)
-        if issubclass(resolved_cls, nullable_cls):
+        if issubclass(sql_cls, nullable_cls):
             return True
     return False
 

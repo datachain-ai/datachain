@@ -473,6 +473,13 @@ class SubclassedInt(Int64):
             id="none-among-literal-values",
         ),
         pytest.param(list[SubclassedInt | None], [1, None], id="subclassed-sql-type"),
+        pytest.param(
+            list[str | Literal[None]],  # noqa: PYI061
+            ["a", None],
+            id="literal-none-in-a-union",
+        ),
+        pytest.param(tuple[int, int | None], (1, None), id="second-tuple-slot"),
+        pytest.param(tuple[int | None, int], (None, 1), id="first-tuple-slot"),
     ],
 )
 def test_convert_type_keeps_none_for_a_wrapped_nullable_scalar(
@@ -485,7 +492,7 @@ def test_convert_type_keeps_none_for_a_wrapped_nullable_scalar(
         value, col_type, warehouse.python_type(col_type), "Array", "test_column"
     )
 
-    assert converted == value
+    assert converted == list(value)
 
 
 def test_convert_type_json_encodes_an_all_none_array(test_session):
