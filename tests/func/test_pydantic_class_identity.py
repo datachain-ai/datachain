@@ -25,11 +25,20 @@ class Thresholds(BaseModel):
 class Scenario(BaseModel):
     key: int
     thresholds: Thresholds
+    threshold_items: list[Thresholds]
+    optional_thresholds: Thresholds | None
 
 
-dc.read_values(key=[1, 2]).map(
-    s=lambda key: Scenario(key=key, thresholds=Thresholds(name="v1", limit=0.5)),
-    output={"s": Scenario},
+dc.read_values(
+    settings={"prefetch": False},
+    s=[
+        Scenario(
+            key=1,
+            thresholds=Thresholds(name="v1", limit=0.5),
+            threshold_items=[Thresholds(name="v2", limit=0.75)],
+            optional_thresholds=Thresholds(name="v3", limit=1.0),
+        )
+    ],
 ).save("nested_pydantic_identity")
 """
 
@@ -47,6 +56,8 @@ class Thresholds(BaseModel):
 class Scenario(BaseModel):
     key: int
     thresholds: Thresholds
+    threshold_items: list[Thresholds]
+    optional_thresholds: Thresholds | None
 
 
 row = dc.read_dataset("nested_pydantic_identity").to_list("s")[0][0]
@@ -55,7 +66,14 @@ assert isinstance(row.thresholds, Thresholds), (
     f"row.thresholds is {type(row.thresholds).__module__}."
     f"{type(row.thresholds).__name__}"
 )
-Scenario(key=99, thresholds=row.thresholds)
+assert isinstance(row.threshold_items[0], Thresholds)
+assert isinstance(row.optional_thresholds, Thresholds)
+Scenario(
+    key=99,
+    thresholds=row.thresholds,
+    threshold_items=row.threshold_items,
+    optional_thresholds=row.optional_thresholds,
+)
 """
 
 
@@ -65,6 +83,7 @@ Scenario(key=99, thresholds=row.thresholds)
 def test_nested_pydantic_class_identity_cross_process(tmp_dir, catalog_tmpfile):
     env = {
         **os.environ,
+        "ITERATIVE_DO_NOT_TRACK": "1",
         "DATACHAIN__METASTORE": catalog_tmpfile.metastore.serialize(),
         "DATACHAIN__WAREHOUSE": catalog_tmpfile.warehouse.serialize(),
     }
