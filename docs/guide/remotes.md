@@ -244,6 +244,14 @@ DataChain uses [gcsfs](https://gcsfs.readthedocs.io/en/latest/) to interact with
 
 DataChain uses [adlfs](https://fsspec.github.io/adlfs/) to interact with Azure Blob Storage. Authentication can be achieved by using any of the method described at [adlfs documentation](https://github.com/fsspec/adlfs?tab=readme-ov-file#setting-credentials). You can also pass the following configuration parameters to the adlfs filesystem as client_config dictionary.
 
+An `az://` URI names only the container, so the storage account has to be provided separately (`account_name`, `AZURE_STORAGE_ACCOUNT_NAME`, or a connection string) — unless it is embedded in the URI itself:
+
+```
+az://container-name@account-name/path/to/data
+```
+
+The embedded account takes precedence over `account_name` from the client config, so URIs pointing to different storage accounts can be mixed in a single run. Note that account keys, SAS tokens, and connection strings are account-specific — mixing accounts requires credentials valid for each account (e.g. Azure AD or anonymous access), and a connection string configured for a different account than the URI names raises an error.
+
 - `account_name`: `str` (default: `None`)
 
     The storage account name. This is used to authenticate requests

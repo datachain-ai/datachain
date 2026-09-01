@@ -32,6 +32,10 @@ def _open(uri: str, anon: bool):
         kw: dict[str, str | bool] = {}
         if anon:
             kw = {"token": "anon"} if scheme == "gs" else {"anon": True}
+        if scheme == "az":
+            account = urlparse(uri).netloc.partition("@")[2]
+            if account:
+                kw["account_name"] = account
         return fsspec.filesystem(scheme, **kw), path, scheme
     raw = uri.removeprefix("file://") if scheme == "file" else uri
     return (
@@ -65,7 +69,9 @@ def _make_file(scheme: str, netloc: str, entry: dict):
 
     name = entry["name"]
     if scheme in REMOTE:
-        path = name.removeprefix(netloc + "/") if netloc else name
+        # adlfs names entries by bare container, without the "@account" part.
+        prefix = netloc.partition("@")[0] if scheme == "az" else netloc
+        path = name.removeprefix(prefix + "/") if prefix else name
         source = f"{scheme}://{netloc}/" if netloc else f"{scheme}://"
     else:
         path = name
@@ -82,7 +88,11 @@ def bucket_overview(
     netloc = urlparse(uri).netloc if scheme in REMOTE else ""
     files = [_make_file(scheme, netloc, e) for e in _sample(fs, root, limit)]
     name = name or f"overview_{_slug(uri)}_{int(time.time())}"
-    return dc.read_values(file=files).save(name)
+    session = None
+    if anon and scheme in REMOTE:
+        # Keep the saved File rows readable during later enrichment.
+        session = dc.Session.get(client_config={"anon": True})
+    return dc.read_values(file=files, session=session).save(name)
 
 
 def _to_bucket_json(ds, uri: str, anon: bool, dataset_name: str, output: str) -> None:
