@@ -89,11 +89,9 @@ def _list_to_array(typ, args):
         return Array(JSON())
 
     # Resolve what the wrappers hold, not the wrappers: composed ones --
-    # Annotated[str, ...] | Literal[None] -- are recognized by neither the
-    # scalar table nor the union handling on their own. Ellipsis is left in
-    # place, as it is what marks a variadic tuple.
-    peeled = tuple(arg if arg is Ellipsis else _peel_optional(arg)[0] for arg in args)
-    list_type = list_of_args_to_type(peeled)
+    # Annotated[str, ...] | Literal[None] -- are recognized by neither the scalar
+    # table nor the union handling on their own.
+    list_type = list_of_args_to_type(tuple(_unwrapped_for_lookup(a) for a in args))
 
     # Optional[scalar] elements map to a nullable Array element so None survives
     # (ClickHouse: Array(Nullable(T))). A fixed tuple keeps every slot in the one
@@ -102,6 +100,28 @@ def _list_to_array(typ, args):
     if admits_none and _takes_null(list_type):
         list_type = SQLType.as_nullable(list_type)
     return Array(list_type)
+
+
+def _unwrapped_for_lookup(annotation: Any) -> Any:
+    """What to resolve an element annotation as.
+
+    Peeling is only useful here when what is left resolves to something. It does
+    not for a Literal holding nothing but None, for Ellipsis marking a variadic
+    tuple, or for a bare model that only the union around it made resolvable, and
+    the annotation as written is what those already mapped to.
+    """
+    if annotation is Ellipsis:
+        return annotation
+
+    peeled, _ = _peel_optional(annotation)
+    if peeled is annotation:
+        return annotation
+
+    try:
+        python_to_sql(peeled)
+    except TypeError:
+        return annotation
+    return peeled
 
 
 def _peel_optional(annotation: Any) -> tuple[Any, bool]:
