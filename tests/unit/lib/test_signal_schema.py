@@ -80,6 +80,11 @@ class MyType2(DataModel):
     deep: MyType1
 
 
+class MyTypeOptionalNested(DataModel):
+    name: str
+    deep: MyType1 | None
+
+
 class MyType3(MyType1):
     name: str
 
@@ -979,6 +984,53 @@ def test_get_features_nested(test_session, nested_file_schema):
     assert actual_features[3].nested_file._catalog == test_session.catalog
 
 
+@pytest.mark.parametrize(
+    "spec,row,expected",
+    [
+        (
+            {"fr.name": str, "fr": MyType2},
+            ("Fred", "Fred", 129, "qwe"),
+            ["Fred", MyType2(name="Fred", deep=MyType1(aa=129, bb="qwe"))],
+        ),
+        (
+            {"fr.deep.aa": int, "fr": MyType2},
+            (129, "Fred", 129, "qwe"),
+            [129, MyType2(name="Fred", deep=MyType1(aa=129, bb="qwe"))],
+        ),
+        (
+            {"fr.name": str, "fr": MyType2 | None},
+            ("Fred", 0, "Fred", 129, "qwe"),
+            ["Fred", MyType2(name="Fred", deep=MyType1(aa=129, bb="qwe"))],
+        ),
+        (
+            {"fr.name": str, "fr.deep.aa": int, "fr": MyType2},
+            ("Fred", 129, "Fred", 129, "qwe"),
+            ["Fred", 129, MyType2(name="Fred", deep=MyType1(aa=129, bb="qwe"))],
+        ),
+        (
+            {"fr": MyType2, "fr.name": str},
+            ("Fred", 129, "qwe", "Fred"),
+            [MyType2(name="Fred", deep=MyType1(aa=129, bb="qwe")), "Fred"],
+        ),
+        (
+            {"fr.deep.aa": int, "fr": MyTypeOptionalNested},
+            (129, "Fred", 0, 129, "qwe"),
+            [
+                129,
+                MyTypeOptionalNested(name="Fred", deep=MyType1(aa=129, bb="qwe")),
+            ],
+        ),
+        (
+            {"fr.deep.aa": int, "fr": MyTypeOptionalNested},
+            (None, "Fred", 1, None, None),
+            [None, MyTypeOptionalNested(name="Fred", deep=None)],
+        ),
+    ],
+)
+def test_row_to_features_parent_and_child_overlap(test_session, spec, row, expected):
+    assert SignalSchema(spec).row_to_features(row, test_session.catalog) == expected
+
+
 def test_row_to_features_list_of_models(test_session):
     schema = SignalSchema({"items": list[MyType1]})
     row = ([{"aa": 1, "bb": "x"}, {"aa": 2, "bb": "y"}],)
@@ -1540,6 +1592,53 @@ def test_row_to_objs_setup():
     assert schema.setup_values is not None
 
     assert res == ["myname", 12.5, setup_value, val, {}]
+
+
+@pytest.mark.parametrize(
+    "spec,row,expected",
+    [
+        (
+            {"fr.name": str, "fr": MyType2},
+            ("Fred", 129, "qwe"),
+            ["Fred", MyType2(name="Fred", deep=MyType1(aa=129, bb="qwe"))],
+        ),
+        (
+            {"fr.deep.aa": int, "fr": MyType2},
+            (129, "Fred", "qwe"),
+            [129, MyType2(name="Fred", deep=MyType1(aa=129, bb="qwe"))],
+        ),
+        (
+            {"fr.name": str, "fr": MyType2 | None},
+            ("Fred", 0, 129, "qwe"),
+            ["Fred", MyType2(name="Fred", deep=MyType1(aa=129, bb="qwe"))],
+        ),
+        (
+            {"fr.name": str, "fr.deep.aa": int, "fr": MyType2},
+            ("Fred", 129, "qwe"),
+            ["Fred", 129, MyType2(name="Fred", deep=MyType1(aa=129, bb="qwe"))],
+        ),
+        (
+            {"fr": MyType2, "fr.name": str},
+            ("Fred", 129, "qwe"),
+            [MyType2(name="Fred", deep=MyType1(aa=129, bb="qwe")), "Fred"],
+        ),
+        (
+            {"fr.deep.aa": int, "fr": MyTypeOptionalNested},
+            (129, "Fred", 0, "qwe"),
+            [
+                129,
+                MyTypeOptionalNested(name="Fred", deep=MyType1(aa=129, bb="qwe")),
+            ],
+        ),
+        (
+            {"fr.deep.aa": int, "fr": MyTypeOptionalNested},
+            (None, "Fred", 1, None),
+            [None, MyTypeOptionalNested(name="Fred", deep=None)],
+        ),
+    ],
+)
+def test_row_to_objs_parent_and_child_overlap(spec, row, expected):
+    assert SignalSchema(spec).row_to_objs(row) == expected
 
 
 def test_setup_not_callable():
