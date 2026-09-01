@@ -135,7 +135,9 @@ chain = (
 )
 ```
 
-For external Pydantic models (like Mistral's `ChatCompletionResponse`), register them explicitly: `dc.DataModel.register(MistralResponse)`.
+Imported external Pydantic models, such as Mistral's `ChatCompletionResponse`, are
+resolved automatically when their stored schema matches the loaded class. You can also
+register one explicitly with `dc.DataModel.register(MistralResponse)`.
 
 ## Core Classes
 
