@@ -310,7 +310,7 @@ def test_class_udf_cyclic_constructor_value_disables_cache_reuse():
         ("tokenizer-v1", "tokenizer-v2", False),
     ],
 )
-def test_class_udf_state_hash_overrides_opaque_constructor_fallback(
+def test_class_udf_identity_hash_overrides_opaque_constructor_fallback(
     first_key, second_key, matches, caplog
 ):
     class Opaque:
@@ -321,7 +321,7 @@ def test_class_udf_state_hash_overrides_opaque_constructor_fallback(
             self.config = config
             self.cache_key = cache_key
 
-        def state_hash(self) -> str:
+        def identity_hash(self) -> str:
             return hash_value(self.cache_key)
 
         def process(self, x: int) -> int:
@@ -338,14 +338,14 @@ def test_class_udf_state_hash_overrides_opaque_constructor_fallback(
     assert "cache reuse across UDF instances is disabled" not in caplog.text
 
 
-def test_class_udf_state_hash_can_extend_automatic_constructor_hash():
+def test_class_udf_identity_hash_can_extend_automatic_constructor_hash():
     class Configured(Mapper):
         def __init__(self, limit: int, extra: str):
             self.limit = limit
             self.extra = extra
 
-        def state_hash(self) -> str:
-            return hash_value((super().state_hash(), self.extra))
+        def identity_hash(self) -> str:
+            return hash_value((super().identity_hash(), self.extra))
 
         def process(self, x: int) -> int:
             return x + self.limit
@@ -364,9 +364,9 @@ def test_class_udf_state_hash_can_extend_automatic_constructor_hash():
     "invalid_hash",
     ["tokenizer-v1", None, "ab" * 16 + " " * 32],
 )
-def test_class_udf_state_hash_rejects_invalid_hash(invalid_hash):
+def test_class_udf_identity_hash_rejects_invalid_hash(invalid_hash):
     class Configured(Mapper):
-        def state_hash(self) -> str:
+        def identity_hash(self) -> str:
             return invalid_hash
 
         def process(self, x: int) -> int:
@@ -377,7 +377,8 @@ def test_class_udf_state_hash_rejects_invalid_hash(invalid_hash):
     udf = Mapper._create(sign, sign.output_schema)
 
     with pytest.raises(
-        ValueError, match=r"state_hash\(\) must return a SHA-256 hexadecimal string"
+        ValueError,
+        match=r"identity_hash\(\) must return a SHA-256 hexadecimal string",
     ):
         udf.hash()
 
@@ -405,7 +406,7 @@ def test_class_udf_captures_normalized_constructor_arguments(
     udf = Limited(*args, **kwargs)
 
     assert (
-        udf._constructor_state_hash == baseline._constructor_state_hash
+        udf._constructor_identity_hash == baseline._constructor_identity_hash
     ) is matches_default
 
 
@@ -420,7 +421,7 @@ def test_class_udf_constructor_hash_survives_cloudpickle_roundtrip():
     udf = Limited(3)
     restored = loads(dumps(udf))
 
-    assert restored._constructor_state_hash == udf._constructor_state_hash
+    assert restored._constructor_identity_hash == udf._constructor_identity_hash
 
 
 def test_class_udf_hash_is_deterministic_across_processes():

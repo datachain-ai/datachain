@@ -291,7 +291,7 @@ class UDFBase(AbstractUDF):
     prefetch: int = 0
     # Set in __new__ from bound constructor args (see hash()); default keeps
     # mypy happy and acts as a safe fallback for instances that skip __new__.
-    _constructor_state_hash: str = ""
+    _constructor_identity_hash: str = ""
     # Class-level default so subclasses that skip super().__init__() still
     # have this attribute; _MultiSignalMapper sets params/output per entry
     # but doesn't call _init(), so _func would otherwise be missing.
@@ -310,9 +310,9 @@ class UDFBase(AbstractUDF):
 
         bound.apply_defaults()
         arguments = cls._constructor_hash_args(dict(bound.arguments))
-        instance._constructor_state_hash = _hash_constructor_args(
+        instance._constructor_identity_hash = _hash_constructor_args(
             arguments,
-            warn_on_unsupported=cls.state_hash is UDFBase.state_hash,
+            warn_on_unsupported=cls.identity_hash is UDFBase.identity_hash,
         )
         return instance
 
@@ -321,16 +321,16 @@ class UDFBase(AbstractUDF):
         """Constructor arguments that determine this UDF instance's identity."""
         return arguments
 
-    def state_hash(self) -> str:
-        """Return a stable SHA-256 hash for state that affects this UDF's output.
+    def identity_hash(self) -> str:
+        """Return a stable SHA-256 hash identifying this UDF instance for caching.
 
         Override this when constructor arguments contain callables or other opaque
         objects that DataChain cannot hash safely. The method is called after
-        ``__init__`` and must account for all per-instance behavioral state. By
+        ``__init__`` and must cover all per-instance state that affects output. By
         default, DataChain returns its automatic constructor-argument hash. Call
-        ``super().state_hash()`` to include that hash in an override.
+        ``super().identity_hash()`` to include that hash in an override.
         """
-        return self._constructor_state_hash
+        return self._constructor_identity_hash
 
     def __init__(self):
         self.params: SignalSchema | None = None
@@ -360,22 +360,22 @@ class UDFBase(AbstractUDF):
         # For class-based UDFs, mix in constructor state so two instances that
         # differ only in constructor args don't collide.
         if self._func is None:
-            state_hash = self.state_hash()
-            if not isinstance(state_hash, str) or len(state_hash) != 64:
+            identity_hash = self.identity_hash()
+            if not isinstance(identity_hash, str) or len(identity_hash) != 64:
                 raise ValueError(
-                    "state_hash() must return a SHA-256 hexadecimal string"
+                    "identity_hash() must return a SHA-256 hexadecimal string"
                 )
             try:
-                state_hash_bytes = bytes.fromhex(state_hash)
+                identity_hash_bytes = bytes.fromhex(identity_hash)
             except ValueError as exc:
                 raise ValueError(
-                    "state_hash() must return a SHA-256 hexadecimal string"
+                    "identity_hash() must return a SHA-256 hexadecimal string"
                 ) from exc
-            if len(state_hash_bytes) != 32:
+            if len(identity_hash_bytes) != 32:
                 raise ValueError(
-                    "state_hash() must return a SHA-256 hexadecimal string"
+                    "identity_hash() must return a SHA-256 hexadecimal string"
                 )
-            parts.append(state_hash)
+            parts.append(identity_hash)
 
         return hashlib.sha256(
             b"".join([bytes.fromhex(part) for part in parts])

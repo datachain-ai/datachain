@@ -24,8 +24,8 @@ def test_hf_generator_constructor_hash(as_dict):
     second = HFGenerator(second_ds, second_schema)
     limited = HFGenerator(second_ds, second_schema, limit=1)
 
-    assert first._constructor_state_hash == second._constructor_state_hash
-    assert first._constructor_state_hash != limited._constructor_state_hash
+    assert first._constructor_identity_hash == second._constructor_identity_hash
+    assert first._constructor_identity_hash != limited._constructor_identity_hash
 
 
 def test_hf():

@@ -202,4 +202,4 @@ dc.read_storage("gs://datachain-demo/dogs-and-cats/", anon=True).map(
 - **Script path matters:** DataChain links runs by the script's absolute path. Moving the script breaks checkpoint linking.
 - **Threading/multiprocessing:** Checkpoints are automatically disabled when Python threading or multiprocessing is detected. DataChain's built-in `parallel` setting for Python operations is not affected.
 - **Unhashable callables:** Built-in functions (`len`, `str`), C extensions, and `Mock` objects produce a different hash on each run, so checkpoints using these as Python operations will always recompute. Use regular `def` functions or lambdas instead.
-- **Class UDF state:** Constructor callables and custom objects recompute by default. Override [`state_hash()`](python-engine.md#caching-class-based-operations) only when you can provide a complete stable identity.
+- **Class UDF state:** Constructor callables and custom objects recompute by default. Override [`identity_hash()`](python-engine.md#caching-class-based-operations) only when you can provide a complete stable identity.

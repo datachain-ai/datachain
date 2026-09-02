@@ -156,7 +156,7 @@ class ImageEncoder(Mapper):
 DataChain hashes UDF code, schemas, and constructor arguments. Primitive values and
 nested built-in containers are handled automatically. Callables and custom objects
 receive a unique identity instead, preventing incorrect cache reuse. Override
-`state_hash()` when you can identify such state safely:
+`identity_hash()` when you can produce a stable identity for such arguments:
 
 ```python
 import hashlib
@@ -169,7 +169,7 @@ class Tokenize(Mapper):
         self.tokenizer_id = tokenizer_id
         self.max_length = max_length
 
-    def state_hash(self) -> str:
+    def identity_hash(self) -> str:
         state = json.dumps(
             {"tokenizer_id": self.tokenizer_id, "max_length": self.max_length},
             sort_keys=True,
@@ -180,10 +180,10 @@ class Tokenize(Mapper):
         return self.tokenizer(text)[: self.max_length]
 ```
 
-`state_hash()` must return a SHA-256 hexadecimal string covering all instance state
-that affects output. When all constructor arguments are supported primitives, call
-`super().state_hash()` to include them in an override. UDF code and schemas are always
-included; an incomplete hash can reuse an incorrect cached result.
+`identity_hash()` must return a SHA-256 hexadecimal string covering all constructor
+inputs that affect output. When all constructor arguments are supported primitives,
+call `super().identity_hash()` to include them in an override. UDF code and schemas
+are always included; an incomplete hash can reuse an incorrect cached result.
 
 Use class-based operations sparingly; `.setup()` covers most cases.
 

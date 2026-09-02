@@ -41,8 +41,8 @@ def test_arrow_generator_constructor_hash():
     second = make_generator(second_schema)
     limited = make_generator(second_schema, nrows=1)
 
-    assert first._constructor_state_hash == second._constructor_state_hash
-    assert first._constructor_state_hash != limited._constructor_state_hash
+    assert first._constructor_identity_hash == second._constructor_identity_hash
+    assert first._constructor_identity_hash != limited._constructor_identity_hash
 
 
 def test_arrow_generator_constructor_hash_with_closure_handler():
@@ -60,7 +60,7 @@ def test_arrow_generator_constructor_hash_with_closure_handler():
     comments = make_generator("#")
     metadata = make_generator("!")
 
-    assert comments._constructor_state_hash != metadata._constructor_state_hash
+    assert comments._constructor_identity_hash != metadata._constructor_identity_hash
 
 
 @pytest.mark.parametrize("cache", [True, False])
