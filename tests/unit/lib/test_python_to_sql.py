@@ -93,3 +93,10 @@ def test_pep_604_union_syntax():
 )
 def test_variadic_tuple_keeps_its_element_type(annotation, expected):
     assert python_to_sql(annotation).to_dict() == expected.to_dict()
+
+
+def test_a_tuple_with_no_element_type_is_refused():
+    # Ellipsis is stripped before the element type is read, so a tuple that
+    # names no type at all has to be refused rather than indexed into.
+    with pytest.raises(TypeError, match="Cannot resolve type"):
+        python_to_sql(tuple[()])
