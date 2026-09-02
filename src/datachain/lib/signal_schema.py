@@ -2,6 +2,7 @@ import copy
 import hashlib
 import logging
 import math
+import sys
 import types
 import warnings
 import weakref
@@ -212,6 +213,101 @@ class SignalRemoveError(SignalSchemaError):
         return self.__class__, (self._path, self._msg)
 
 
+_SHAPE_DRIFT_WARNED: set[str] = set()
+
+
+def _class_shape_hash(cls: type[BaseModel]) -> str:
+    """Hash the complete model graph reachable from a live class."""
+    models: dict[str, dict[str, Any]] = {}
+
+    def visit(model: type[BaseModel]) -> None:
+        name = ModelStore.get_name(model)
+        if name in models:
+            return
+        models[name] = {
+            "fields": {
+                field_name: type_to_str(info.annotation, register_pydantic=False)
+                for field_name, info in model.model_fields.items()
+            },
+            "bases": [list(base) for base in SignalSchema._get_bases(model)],
+        }
+        for info in model.model_fields.values():
+            visit_annotation(info.annotation)
+
+    def visit_annotation(annotation: Any) -> None:
+        if model := ModelStore.to_pydantic(annotation):
+            visit(model)
+            return
+        for part in annotation_parts(annotation):
+            visit_annotation(part)
+
+    visit(cls)
+    payload = json.dumps(
+        {"root": ModelStore.get_name(cls), "models": models}, sort_keys=True
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _stored_shape_hash(type_name: str, custom_types: Mapping[str, Any]) -> str:
+    """Hash the complete stored model graph reachable from ``type_name``."""
+    models: dict[str, dict[str, Any]] = {}
+
+    def visit(name: str) -> None:
+        if name in models or name not in custom_types:
+            return
+        try:
+            ct = CustomType.deserialize(custom_types[name], name)
+        except ValidationError as exc:
+            raise SignalSchemaError(
+                f"cannot deserialize custom type '{name}': {exc}"
+            ) from exc
+        models[name] = {
+            "fields": dict(ct.fields),
+            "bases": [list(base) for base in ct.bases],
+        }
+        for field_type in ct.fields.values():
+            visit_annotation(field_type)
+
+    def visit_annotation(annotation: str) -> None:
+        annotation = annotation.strip()
+        if annotation in custom_types:
+            visit(annotation)
+            return
+        bracket_idx = annotation.find("[")
+        close_bracket_idx = annotation.rfind("]")
+        if bracket_idx < 0 or close_bracket_idx <= bracket_idx:
+            return
+        for part in SignalSchema._split_subtypes(
+            annotation[bracket_idx + 1 : close_bracket_idx]
+        ):
+            visit_annotation(part)
+
+    visit(type_name)
+    payload = json.dumps({"root": type_name, "models": models}, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _class_matches_shape(cls: type[BaseModel], expected_hash: str) -> bool:
+    """Return whether a live or schema-restored class has the stored shape."""
+    restored_hash = cls.__dict__.get("_stored_shape_hash")
+    return (restored_hash or _class_shape_hash(cls)) == expected_hash
+
+
+def _warn_shape_drift(cls: type[BaseModel], type_name: str) -> None:
+    """Warn once when a loaded class conflicts with a stored schema."""
+    key = f"{cls.__module__}.{cls.__name__}"
+    if key in _SHAPE_DRIFT_WARNED:
+        return
+    _SHAPE_DRIFT_WARNED.add(key)
+    warnings.warn(
+        f"class {key} in this process has a different shape than {type_name!r} "
+        "stored in the dataset; using a synthetic class, so isinstance checks "
+        "against the imported class will fail",
+        SignalSchemaWarning,
+        stacklevel=3,
+    )
+
+
 class CustomType(BaseModel):
     schema_version: int = Field(ge=1, le=2, strict=True)
     name: str
@@ -237,6 +333,28 @@ class CustomType(BaseModel):
         return cls(**data)
 
 
+def _resolve_from_sys_modules(
+    ct: CustomType, type_name: str, expected_shape_hash: str
+) -> type[BaseModel] | None:
+    """Return the class already imported in this process at ``ct.bases[0]``'s
+    (module, name), if its shape matches the stored spec. Never imports a
+    module named in stored data. Warns once if a same-named class exists with
+    a different shape; the caller then rebuilds a synthetic class."""
+    if not ct.bases:
+        return None
+    class_name, module_name, _ = ct.bases[0]
+    module = sys.modules.get(module_name)
+    if module is None:
+        return None
+    candidate = vars(module).get(class_name)
+    if candidate is None or not ModelStore.is_pydantic(candidate):
+        return None
+    if _class_matches_shape(candidate, expected_shape_hash):
+        return candidate
+    _warn_shape_drift(candidate, type_name)
+    return None
+
+
 def create_feature_model(
     name: str,
     fields: Mapping[str, Any],
@@ -244,6 +362,7 @@ def create_feature_model(
     *,
     partial_fingerprint: str | None = None,
     hidden_fields: list[str] | None = None,
+    stored_shape_hash: str | None = None,
 ) -> type[BaseModel]:
     """
     Build and register a dynamic feature model so it can be resolved later by name.
@@ -283,6 +402,8 @@ def create_feature_model(
 
     model._version = parsed_version  # type: ignore[attr-defined]
     model._modelstore_base_name = base_name  # type: ignore[attr-defined]
+    if stored_shape_hash is not None:
+        model._stored_shape_hash = stored_shape_hash  # type: ignore[attr-defined]
     if partial_fingerprint is not None:
         model._partial_fingerprint = partial_fingerprint  # type: ignore[attr-defined]
     if hidden_fields is not None:
@@ -443,9 +564,10 @@ class SignalSchema:
     def _deserialize_custom_type(
         type_name: str, custom_types: dict[str, Any]
     ) -> type | None:
-        """Given a type name like MyType@v1 gets a type from ModelStore or recreates
-        it based on the information from the custom types dict that includes fields and
-        bases."""
+        """Given a type name like MyType@v1, resolve it to a Python class in
+        this order: ModelStore hit, the already-imported class from
+        ``sys.modules`` (matched by shape), or a synthetic class rebuilt from
+        the stored fields/bases as a last resort."""
         model_name, target_version = ModelStore.parse_name_version(type_name)
 
         if type_name in custom_types:
@@ -456,7 +578,13 @@ class SignalSchema:
                     f"cannot deserialize custom type '{type_name}': {exc}"
                 ) from exc
 
+            expected_shape_hash = _stored_shape_hash(type_name, custom_types)
             if fr := ModelStore.get(model_name, target_version):
+                if _class_matches_shape(fr, expected_shape_hash):
+                    return fr
+                _warn_shape_drift(fr, type_name)
+
+            if fr := _resolve_from_sys_modules(ct, type_name, expected_shape_hash):
                 return fr
 
             fields = {
@@ -481,6 +609,7 @@ class SignalSchema:
                 base=base_model,
                 hidden_fields=ct.hidden_fields,
                 partial_fingerprint=ct.partial_fingerprint,
+                stored_shape_hash=expected_shape_hash,
             )
 
         return ModelStore.get(model_name, target_version)
