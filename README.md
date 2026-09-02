@@ -8,13 +8,13 @@
 
 **A Python library that turns files in S3, GCS, and Azure into versioned, typed datasets, queryable at warehouse speed.**
 
-- **Compute Engine**: parallel and distributed Python over files. Async I/O, checkpoint recovery, incremental updates.
-- **Dataset DB**: Pydantic schemas, versioning, file pointers, automatic lineage. Sub-second filter, join, and similarity search over hundreds of millions of records.
+- **Compute Engine**: parallel Python over files, distributed on Studio. Async I/O, checkpoint recovery, incremental updates.
+- **Dataset DB**: Pydantic schemas, versioning, file pointers, automatic lineage. Sub-second filter, join, and group_by over millions of typed records locally, hundreds of millions on Studio. Vector search over the same rows, no separate store.
 
 Optional, for agent workflows:
 
 - **Knowledge Base**: markdown summaries derived from the Dataset DB and enriched by LLM. Readable by humans and LLMs.
-- **Agent Harness**: skill and MCP server that plug all three into Claude Code, Cursor, Codex, GitHub Copilot, and Pi, so they understand your data.
+- **Agent Harness**: a skill that plugs all three into Claude Code, Cursor, Codex, GitHub Copilot, and Pi, so they understand your data. On Studio, agents reach the same datasets over MCP.
 
 Bytes never leave your storage. Every run deposits a typed dataset the next pipeline (or agent) reads instead of recomputing.
 
@@ -311,7 +311,7 @@ Saved pets_images@1.0.2  (+500 records)
 
 ## 6. Knowledge Base
 
-DataChain maintains two layers. The **Dataset DB** is the ground truth: schemas, processing state, lineage, the vectors themselves. **The Knowledge Base** is derived from it: structured markdown for humans and agents to read. Because it's derived, it's always accurate. The Knowledge Base is stored in `dc-knowledge/`.
+DataChain maintains two layers. The **Dataset DB** is the ground truth: schemas, processing state, lineage, the vectors themselves. **The Knowledge Base** is derived from it: structured markdown for humans and agents to read. Because it's derived, it describes what actually ran rather than what someone wrote down. Rebuild it after a pass to bring it current. The Knowledge Base is stored in `dc-knowledge/`.
 
 Ask the agent to build it (from Claude Code, Cursor, Codex, GitHub Copilot, or Pi):
 ```bash
@@ -349,7 +349,7 @@ datachain job run --workers 20 --cluster gpu-pool caption.py
   <img src="docs/assets/studio_architecture.svg" alt="DataChain Studio Architecture" width="600" />
 </p>
 
-Studio adds: shared dataset registry, access control, UI for video/DICOM/NIfTI/point clouds, lineage graphs, reproducible runs.
+Studio adds: shared dataset registry, distributed compute across attached clusters, an MCP endpoint for agents, access control, UI for video/DICOM/NIfTI/point clouds, lineage graphs, reproducible runs.
 
 Bring Your Own Cloud - all data and compute stay in your infrastructure. AWS, GCP, Azure, on-prem Kubernetes.
 
