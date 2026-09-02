@@ -19,6 +19,8 @@ from datachain.sql.types import (
     Float32,
     Float64,
     Int,
+    Int64,
+    SQLType,
     String,
 )
 from tests.utils import (
@@ -355,3 +357,99 @@ def test_a_model_refuses_numpy_that_would_be_stored_as_null(test_session, make):
 
     with pytest.raises(ValueError, match="writes NaN and infinities as null"):
         _model_payload(warehouse, make())
+
+
+class NestedItem(BaseModel):
+    n: int
+
+
+@pytest.mark.parametrize(
+    "value,item_type,expected",
+    [
+        pytest.param((1, None), Int64, [1, None], id="int-none-last"),
+        pytest.param((None, 2), Int64, [None, 2], id="int-none-first"),
+        pytest.param((None, None), Int64, [None, None], id="int-all-none"),
+        pytest.param([1, None], Float, [1.0, None], id="float-none-last"),
+        pytest.param([None, 2], Float, [None, 2.0], id="float-none-first"),
+        pytest.param(["a", None], String, ["a", None], id="str-none-last"),
+        pytest.param([None, "b"], String, [None, "b"], id="str-none-first"),
+    ],
+)
+def test_convert_type_keeps_none_wherever_it_sits_in_an_array(
+    test_session, value, item_type, expected
+):
+    warehouse = test_session.catalog.warehouse
+    col_type = Array(SQLType.as_nullable(item_type))
+
+    converted = warehouse.convert_type(
+        value,
+        col_type,
+        warehouse.python_type(col_type),
+        "Array",
+        "test_column",
+    )
+
+    assert converted == expected
+
+
+def test_convert_type_stores_a_json_array_the_same_wherever_none_sits(test_session):
+    warehouse = test_session.catalog.warehouse
+    col_type = Array(JSON())
+
+    def to_db(value):
+        return warehouse.convert_type(
+            value, col_type, warehouse.python_type(col_type), "Array", "test_column"
+        )
+
+    # What an item becomes is the backend's business; that its neighbours do not
+    # change the answer is not.
+    assert to_db([{"k": 1}, None]) == list(reversed(to_db([None, {"k": 1}])))
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param([None, 2], id="none-first"),
+        pytest.param([1, None], id="none-last"),
+    ],
+)
+def test_convert_type_refuses_none_in_a_non_nullable_array(test_session, value):
+    warehouse = test_session.catalog.warehouse
+    col_type = Array(Int64)
+
+    with pytest.raises(ValueError, match="incompatible"):
+        warehouse.convert_type(
+            value, col_type, warehouse.python_type(col_type), "Array", "test_column"
+        )
+
+
+def test_convert_type_json_encodes_an_all_none_array(test_session):
+    warehouse = test_session.catalog.warehouse
+    col_type = Array(SQLType.as_nullable(JSON()))
+
+    converted = warehouse.convert_type(
+        (None, None), col_type, warehouse.python_type(col_type), "Array", "test_column"
+    )
+
+    # An array with no object in it is not an array of objects; each None stays
+    # whatever JSON writes for one, as it did before.
+    assert converted == [json.dumps(None)] * 2
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param((None, {"a": NestedItem(n=2)}), id="none-first"),
+        pytest.param(({"a": NestedItem(n=2)}, None), id="none-last"),
+    ],
+)
+def test_convert_type_leaves_no_model_in_a_json_array_holding_none(test_session, value):
+    warehouse = test_session.catalog.warehouse
+    col_type = Array(JSON())
+
+    converted = warehouse.convert_type(
+        value, col_type, warehouse.python_type(col_type), "Array", "test_column"
+    )
+
+    # Whatever shape the backend asks for, nothing unserializable may survive.
+    json.dumps(converted)

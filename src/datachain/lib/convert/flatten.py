@@ -85,10 +85,22 @@ def flatten_list(obj_list: list[BaseModel]) -> tuple:
 
 def _flatten_list_field(value: list) -> list:
     assert isinstance(value, list)
-    if value and ModelStore.is_pydantic(type(value[0])):
-        return [val.model_dump() for val in value]
-    if value and isinstance(value[0], list):
-        return [_flatten_list_field(v) for v in value]
+    # A None says nothing about what the list holds, so ask the first element
+    # that carries a type -- but one element cannot answer for the rest, so the
+    # others have to agree before a shape is assumed. Ordinary values settle it
+    # on the first element and never walk the list again.
+    first = next((val for val in value if val is not None), None)
+
+    if ModelStore.is_pydantic(type(first)):
+        if all(val is None or ModelStore.is_pydantic(type(val)) for val in value):
+            return [None if val is None else val.model_dump() for val in value]
+        return value
+
+    if isinstance(first, list) and all(
+        val is None or isinstance(val, list) for val in value
+    ):
+        return [None if val is None else _flatten_list_field(val) for val in value]
+
     return value
 
 
