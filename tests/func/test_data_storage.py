@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import ujson as json
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, RootModel
 
 from datachain import json as dcjson
 from datachain.lib.convert.python_to_sql import python_to_sql
@@ -542,3 +542,14 @@ def test_python_to_sql_refuses_a_tuple_slot_that_reads_back_wrong():
         "type": "Array",
         "item_type": {"type": "JSON"},
     }
+
+
+class RootInt(RootModel[int]):
+    pass
+
+
+def test_python_to_sql_refuses_an_optional_root_model_element():
+    # A root model dumps to its bare value, which the reader cannot rebuild into
+    # a model, so it must not be admitted by the optional-model shortcut.
+    with pytest.raises(TypeError):
+        python_to_sql(list[RootInt | None])

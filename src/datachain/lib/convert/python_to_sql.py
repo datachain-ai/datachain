@@ -4,7 +4,7 @@ from enum import Enum
 from types import UnionType
 from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
-from pydantic import BaseModel
+from pydantic import BaseModel, RootModel
 from typing_extensions import Literal as LiteralEx
 
 from datachain.lib.data_model import (
@@ -124,9 +124,14 @@ def _optional_model(annotation: Any) -> Any:
         return None
 
     arms = [arm for arm in get_args(annotation) if arm is not type(None)]
-    if len(arms) == 1 and ModelStore.is_pydantic(arms[0]):
-        return arms[0]
-    return None
+    if len(arms) != 1 or not ModelStore.is_pydantic(arms[0]):
+        return None
+
+    # A root model dumps to whatever it wraps, and the reader only rebuilds a
+    # model from a mapping, so this one would be handed back as its bare value.
+    if isinstance(arms[0], type) and issubclass(arms[0], RootModel):
+        return None
+    return arms[0]
 
 
 def _unwrapped_for_lookup(annotation: Any) -> Any:
@@ -145,8 +150,14 @@ def _unwrapped_for_lookup(annotation: Any) -> Any:
         return annotation
 
     try:
-        python_to_sql(peeled)
+        resolved = python_to_sql(peeled)
     except TypeError:
+        return annotation
+
+    # An array has nowhere to keep the None that peeling just dropped -- only a
+    # scalar item is made nullable, and JSON carries its own null.
+    resolved_cls = resolved if isinstance(resolved, type) else type(resolved)
+    if issubclass(resolved_cls, Array):
         return annotation
     return peeled
 
