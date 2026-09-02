@@ -521,3 +521,24 @@ def test_convert_type_json_encodes_an_all_none_array(test_session):
     # An array with no object in it is not an array of objects; each None stays
     # whatever JSON writes for one, as it did before.
     assert converted == [json.dumps(None)] * 2
+
+
+class SlotA(BaseModel):
+    x: int
+
+
+class SlotB(BaseModel):
+    y: int
+
+
+def test_python_to_sql_refuses_a_tuple_slot_that_reads_back_wrong():
+    # Every slot of a fixed tuple shares the column, so one that cannot be read
+    # back as a model has to refuse the whole annotation rather than be stored
+    # and handed back as a plain dict.
+    with pytest.raises(TypeError):
+        python_to_sql(tuple[SlotA | None, Annotated[SlotB, "meta"] | None])
+
+    assert python_to_sql(tuple[SlotA | None, SlotB | None]).to_dict() == {
+        "type": "Array",
+        "item_type": {"type": "JSON"},
+    }

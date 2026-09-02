@@ -85,9 +85,18 @@ def _list_to_array(typ, args):
     if args is None:
         raise TypeError(f"Cannot resolve type '{typ}' for flattening features")
     args0 = args[0]
+    if ModelStore.is_pydantic(args0):
+        return Array(JSON())
+
     # A model element is JSON whether or not it admits a None: is_chain_type
     # accepts list[Model | None], and the union arm is all that hid the model.
-    if ModelStore.is_pydantic(args0) or _optional_model(args0) is not None:
+    # A fixed tuple keeps every slot in the one column, so every slot has to be
+    # one -- a slot this cannot read back as a model must still be refused.
+    slots = [arg for arg in args if arg is not Ellipsis]
+    if slots and all(
+        ModelStore.is_pydantic(slot) or _optional_model(slot) is not None
+        for slot in slots
+    ):
         return Array(JSON())
 
     # Resolve what the wrappers hold, not the wrappers: composed ones --
