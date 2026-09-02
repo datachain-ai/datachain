@@ -43,7 +43,7 @@ dependencies = [
   "sqlalchemy>=2",
   "multiprocess>=0.70.16",
   "cloudpickle",
-  "pydantic",
+  "pydantic>=2.11",
   "jmespath>=1.0",
   "datamodel-code-generator>=0.28.4",
   "Pillow>=12.1.1,<13",
@@ -129,7 +129,7 @@ tests = [
 ]
 dev = [
   "datachain[docs,tests]",
-  "mypy==2.3.0",
+  "mypy==2.3.1",
   "types-python-dateutil",
   "types-dateparser",
   "types-pytz",

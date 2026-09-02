@@ -476,6 +476,27 @@ def _process_logs_message(
     return received, last_log_id
 
 
+async def _wait_before_reconnect(retry_count: int) -> str:
+    sleep_sec = min(
+        RECONNECT_BACKOFF_BASE_SEC * 2**retry_count,
+        RECONNECT_BACKOFF_MAX_SEC,
+    ) + random.uniform(0, 1)  # noqa: S311
+    logger.debug(
+        "WebSocket closed, reconnecting in %.1fs (attempt %d/%d)",
+        sleep_sec,
+        retry_count + 1,
+        RECONNECT_MAX_ATTEMPTS,
+    )
+    msg = _print_reconnect_msg(sleep_sec)
+    try:
+        await asyncio.sleep(sleep_sec)
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        _clear_line(msg)
+        raise
+
+    return msg
+
+
 def show_logs_from_client(  # noqa: C901
     client, job_id: str, no_follow: bool = False
 ):
@@ -487,8 +508,12 @@ def show_logs_from_client(  # noqa: C901
         while True:
             received_streaming_data = False
             session_start_id = last_log_id
+            reconnect_msg = _clear_line(reconnect_msg)
             async for message in client.tail_job_logs(job_id, no_follow=no_follow):
-                reconnect_msg = _clear_line(reconnect_msg)
+                # A bare {"message": ...} frame is Studio's terminal error.
+                if "message" in message:
+                    raise DataChainError(message["message"])
+
                 if "log_blobs" in message and not no_follow:
                     log_blobs = message.get("log_blobs", [])
                     if log_blobs and not log_blobs_processed:
@@ -525,19 +550,8 @@ def show_logs_from_client(  # noqa: C901
                 if retry_count >= RECONNECT_MAX_ATTEMPTS:
                     logger.debug("Max reconnect attempts reached: %d", retry_count)
                     break
-                sleep_sec = min(
-                    RECONNECT_BACKOFF_BASE_SEC * 2**retry_count,
-                    RECONNECT_BACKOFF_MAX_SEC,
-                ) + random.uniform(0, 1)  # noqa: S311
+                reconnect_msg = await _wait_before_reconnect(retry_count)
                 retry_count += 1
-                logger.debug(
-                    "WebSocket closed, reconnecting in %.1fs (attempt %d/%d)",
-                    sleep_sec,
-                    retry_count,
-                    RECONNECT_MAX_ATTEMPTS,
-                )
-                reconnect_msg = _print_reconnect_msg(sleep_sec)
-                await asyncio.sleep(sleep_sec)
             except KeyError:
                 break
 
