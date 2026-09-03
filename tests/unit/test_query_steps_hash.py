@@ -10,7 +10,12 @@ from datachain import C, func
 from datachain.dataset import DatasetRecord, DatasetVersion
 from datachain.func.func import Func
 from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.udf import Aggregator, Generator, Mapper
+from datachain.lib.udf import (
+    Aggregator,
+    Generator,
+    Mapper,
+    _physical_schema_hash,
+)
 from datachain.lib.udf_signature import UdfSignature
 from datachain.query.dataset import (
     QueryStep,
@@ -292,37 +297,37 @@ def test_subtract_hash(test_session, numbers_dataset, on):
             double,
             ["x"],
             {"double": int},
-            "4004b6ee6ef90934d0f48fcb337d73c6552fcf6e5d8250d652d310b849dbdca7",
+            "e9e4cdfede6099e64e14ff7d430e06d5a9a4d5dc8f8fba78a4f4c40028ef0e8f",
         ),
         (
             double2,
             ["y"],
             {"double": int},
-            "98eed82d9e4ca5217d325f1182c96789390b2743d3b09739b84e50420f10cb4f",
+            "96f977f42fe3c62fad9be25a531640dced494853688d470d3bf52db6d2b7b060",
         ),
         (
             double_default,
             ["x"],
             {"double": int},
-            "40e456055a765697bfebb8371e4b3c7c3125aea100e25505d8af09155c9b6a8e",
+            "e378641fcae870650e1df5ce85d09958d9e37471885758aec09db02bf69b694d",
         ),
         (
             double_kwonly,
             ["x"],
             {"double": int},
-            "221364c9949afdb25aff731ee6b2db815ecd62ed5a713f58190d341ffe608ac4",
+            "e56df26ab8c36a91849fa83db952050eb6a8ab34ebd7f0f17b85cfe1672d2cd6",
         ),
         (
             map_custom_feature,
             ["t1"],
             {"x": CustomFeature},
-            "728657607131969e66f374374c353987801e6abc724b8a8c12edd44bccc33380",
+            "8184307469b77db524fd7c894f198f69c8df59656f8ff1c9dbbfb72ce8463d82",
         ),
         (
             DoubleMapper(),
             ["x"],
             {"double": int},
-            "b58c9679ed454d3f54b4a754585727697a9aea9e4725bd12a842a774b5087963",
+            "b637c07c491ef521674e859c6c97ec45535866775ab69063e7ac86f2f86f0f15",
         ),
     ],
 )
@@ -344,25 +349,25 @@ def test_udf_mapper_hash(
             double_gen,
             ["x"],
             {"double": int},
-            "36c34c7c957ab0ba6210a49542ec3c9d6cc9d3c632a4752b1eee04e5c2ffdc2f",
+            "0eb1120e9508b7fb89349546ede72041945b51f3c6fcb6687be37aa9ce7aeeb2",
         ),
         (
             double_gen_multi_arg,
             ["x", "y"],
             {"double": int},
-            "1a39881c75054e4c548233d1ea0dff8f57488b060015fb820ff6ccf054fc60d3",
+            "137ebc9250861f45192914d7e111546fa010d726ccea2b75b12384a16c9eb73f",
         ),
         (
             custom_feature_gen,
             ["t1"],
             {"x": CustomFeature},
-            "990f4218dfcdcf9e5cecb07d6996e571c1144d9a52b207ca026de8b89918f091",
+            "15b296e6096cac42ac39d234f943e34830cda0d4005440a6f269ef3fc2d8bad4",
         ),
         (
             TripleGenerator(),
             ["x"],
             {"triple": int},
-            "01201327b1926788e6242d2be5383c63b97ec018232ab0844f047cf64ec2dfca",
+            "87395518564cfd14c04cb10f145f8ed919126becccdf00646ffdbbd2874ef224",
         ),
     ],
 )
@@ -385,14 +390,14 @@ def test_udf_generator_hash(
             ["x"],
             {"double": int},
             [C("x")],
-            "037a9753bfc2921557b48e6fbddc3ddadb6b1ac4e5a134e565d9d9181e5d930d",
+            "ada89641522f11fb504662ec1cae6247073ef123604e64a8fd56361bf234b194",
         ),
         (
             custom_feature_gen,
             ["t1"],
             {"x": CustomFeature},
             [C.t1.my_name],
-            "fbdacb85da356170053b297f887bcb3a70c9469a2fd65bcf935809e66a014860",
+            "7fd56d4a2af9dbd9506023bf30aab77673dade2610b7f12d66cb2377de4b59fe",
         ),
     ],
 )
@@ -459,3 +464,16 @@ def test_query_step_hash_uses_version_uuid():
     ds.versions[0].uuid = uuid1
     ds.name = "completely_different_name"
     assert QueryStep(None, ds, "1.0.0").hash() == hash1
+
+
+def test_a_udf_hash_follows_the_physical_column_types():
+    # The logical schema does not move when an annotation starts mapping to a
+    # different SQL type, so without this a checkpoint written before such a
+    # change would be reused under the new one and read back as the wrong type.
+    as_json = SignalSchema({"v": int})
+    assert _physical_schema_hash(as_json) != _physical_schema_hash(
+        SignalSchema({"v": str})
+    )
+    assert _physical_schema_hash(as_json) == _physical_schema_hash(
+        SignalSchema({"v": int})
+    )

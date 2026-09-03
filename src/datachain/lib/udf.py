@@ -1,5 +1,6 @@
 import hashlib
 import inspect
+import json
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -33,6 +34,7 @@ from datachain.query.batch import (
     Partition,
     RowsOutputBatch,
 )
+from datachain.sql.types import SQLType
 from datachain.utils import safe_closing, with_last_flag
 
 logger = logging.getLogger("datachain")
@@ -223,6 +225,23 @@ class UDFAdapter:
         return self.inner.prefetch
 
 
+def _physical_schema_hash(output: "SignalSchema") -> str:
+    """Fingerprint of the columns a UDF writes, as the warehouse will type them.
+
+    The logical schema hash does not move when an annotation starts mapping to a
+    different SQL type, so a checkpoint written before such a change would be
+    reused under the new one and its rows read back as the wrong thing. Both the
+    completed and the partial checkpoint keys are derived from here.
+    """
+    spec = {
+        name: (sql_type if isinstance(sql_type, SQLType) else sql_type()).to_dict()
+        for name, sql_type in output.to_udf_spec().items()
+    }
+    return hashlib.sha256(
+        json.dumps(spec, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 class UDFBase(AbstractUDF):
     """Base class for stateful user-defined functions.
 
@@ -303,6 +322,7 @@ class UDFBase(AbstractUDF):
             hash_callable(func_to_hash, include_body=include_body),
             self.params.hash() if self.params else "",
             self.output.hash(),
+            _physical_schema_hash(self.output),
         ]
 
         return hashlib.sha256(

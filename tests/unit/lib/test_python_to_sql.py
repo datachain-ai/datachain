@@ -1,10 +1,11 @@
+import enum
 from collections.abc import Mapping
 from typing import Dict, Literal  # noqa: UP035
 
 import pytest
 
 from datachain.lib.convert.python_to_sql import python_to_sql
-from datachain.sql.types import JSON, Array, Float, Int64, String
+from datachain.sql.types import JSON, Array, Boolean, Float, Int64, String
 from tests.unit.lib.test_utils import MyModel
 
 
@@ -100,3 +101,65 @@ def test_a_tuple_with_no_element_type_is_refused():
     # names no type at all has to be refused rather than indexed into.
     with pytest.raises(TypeError, match="Cannot resolve type"):
         python_to_sql(tuple[()])
+
+
+class IntKind(enum.IntEnum):
+    ONE = 1
+
+
+class StrKind(str, enum.Enum):
+    A = "a"
+
+
+class PlainKind(enum.Enum):
+    A = "a"
+
+
+@pytest.mark.parametrize(
+    "annotation,expected",
+    [
+        pytest.param(IntKind, Int64, id="int-enum"),
+        pytest.param(StrKind, String, id="str-mixin-enum"),
+        pytest.param(Literal[1, 2], Int64, id="int-literal"),
+        pytest.param(Literal["a", "b"], String, id="str-literal"),
+        pytest.param(Literal[True, False], Boolean, id="bool-literal"),
+        pytest.param(
+            Literal["a", None],  # noqa: PYI061
+            String,
+            id="literal-ignores-none",
+        ),
+        pytest.param(Literal[1, True], JSON, id="bool-is-not-int"),
+        pytest.param(Literal[1, "a"], JSON, id="mixed-categories"),
+    ],
+)
+def test_values_decide_the_column_type(annotation, expected):
+    assert python_to_sql(annotation) is expected
+
+
+def test_a_plain_enum_stays_unmapped():
+    # Its members are not their values, and nothing converts them through
+    # .value here, so it must not claim a column type.
+    assert python_to_sql(PlainKind) is str
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        pytest.param(tuple[IntKind, ...], id="int-enum"),
+        pytest.param(tuple[Literal[1, 2], ...], id="int-literal"),
+    ],
+)
+def test_a_variadic_tuple_keeps_a_value_typed_element(annotation):
+    assert python_to_sql(annotation).to_dict() == {
+        "type": "Array",
+        "item_type": {"type": "Int64"},
+    }
+
+
+def test_ellipsis_is_only_read_as_a_variadic_tuple():
+    # list[int, ...] is not a valid annotation; stripping the Ellipsis anywhere
+    # it appears would quietly accept it as list[int].
+    assert python_to_sql(list[int, ...]).to_dict() == {
+        "type": "Array",
+        "item_type": {"type": "JSON"},
+    }

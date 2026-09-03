@@ -2,7 +2,7 @@ import inspect
 from datetime import datetime
 from enum import Enum
 from types import UnionType
-from typing import Annotated, Literal, Union, get_args, get_origin
+from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel
 from typing_extensions import Literal as LiteralEx
@@ -46,6 +46,11 @@ def python_to_sql(typ):  # noqa: PLR0911
         if issubclass(typ, SQLType):
             return typ
         if issubclass(typ, Enum):
+            if issubclass(typ, (int, str)):
+                # A mixin enum's member is its value, so it stores as one.
+                return _values_to_sql(member.value for member in typ)
+            # A plain enum's member is not its value and nothing converts it
+            # through .value here, so it stays unmapped as before.
             return str
 
     res = PYTHON_TO_SQL.get(typ)
@@ -55,7 +60,7 @@ def python_to_sql(typ):  # noqa: PLR0911
     orig = get_origin(typ)
 
     if orig in (Literal, LiteralEx):
-        return String
+        return _values_to_sql(get_args(typ))
 
     args = get_args(typ)
     if is_sequence_annotation(typ):
@@ -82,11 +87,28 @@ def python_to_sql(typ):  # noqa: PLR0911
     raise TypeError(f"Cannot recognize type {typ}")
 
 
+def _values_to_sql(values) -> Any:
+    """The column type for a set of literal or enum values.
+
+    By the exact type of each value, so a bool is not taken for an int, and
+    ignoring None -- whether the column is nullable is decided separately.
+    Values of more than one storage category have no single column type between
+    them and are carried as JSON.
+    """
+    kinds = {type(value) for value in values if value is not None}
+    if len(kinds) != 1:
+        return JSON
+    return PYTHON_TO_SQL.get(kinds.pop(), JSON)
+
+
 def _list_to_array(typ, args):
     if args is None:
         raise TypeError(f"Cannot resolve type '{typ}' for flattening features")
-    # tuple[T, ...] carries Ellipsis to mark variable length, not a second type
-    args = tuple(arg for arg in args if arg is not Ellipsis)
+    if get_origin(typ) is tuple and len(args) == 2 and args[1] is Ellipsis:
+        # tuple[T, ...] is a homogeneous tuple: the Ellipsis marks variable
+        # length rather than naming a second element type. Anywhere else it is
+        # not valid, and stays unresolvable.
+        args = args[:1]
     if not args:
         raise TypeError(f"Cannot resolve type '{typ}' for flattening features")
     args0 = args[0]
