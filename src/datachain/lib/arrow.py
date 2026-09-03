@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
 from pyarrow._csv import ParseOptions
-from pyarrow.dataset import CsvFileFormat, dataset
+from pyarrow.dataset import CsvFileFormat, Partitioning, dataset
 
 from datachain import json
 from datachain.fs.reference import ReferenceFileSystem
@@ -109,6 +109,8 @@ class ArrowGenerator(Generator):
                 kwargs[name] = _parse_options_hash_args(value)
             elif isinstance(value, CsvFileFormat):
                 kwargs[name] = _csv_format_hash_args(value)
+            elif isinstance(value, Partitioning):
+                kwargs[name] = pickle.dumps(value)
         arguments["kwargs"] = kwargs
         return arguments
 

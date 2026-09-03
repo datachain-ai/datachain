@@ -7,7 +7,7 @@ import pyarrow.parquet as pq
 import pytest
 from datasets import Dataset
 from pyarrow.csv import ParseOptions
-from pyarrow.dataset import CsvFileFormat
+from pyarrow.dataset import CsvFileFormat, DirectoryPartitioning
 
 import datachain as dc
 from datachain.lib.arrow import (
@@ -42,6 +42,21 @@ def test_arrow_generator_constructor_hash():
 
     assert first._constructor_identity_hash == second._constructor_identity_hash
     assert first._constructor_identity_hash != limited._constructor_identity_hash
+
+
+def test_arrow_generator_constructor_hash_with_partitioning(caplog):
+    def make_partitioning():
+        return DirectoryPartitioning(pa.schema([("year", pa.int32())]))
+
+    first = ArrowGenerator(partitioning=make_partitioning())
+    second = ArrowGenerator(partitioning=make_partitioning())
+    other = ArrowGenerator(
+        partitioning=DirectoryPartitioning(pa.schema([("month", pa.int32())]))
+    )
+
+    assert first._constructor_identity_hash == second._constructor_identity_hash
+    assert first._constructor_identity_hash != other._constructor_identity_hash
+    assert "cache reuse across UDF instances is disabled" not in caplog.text
 
 
 def test_arrow_generator_constructor_hash_with_closure_handler():

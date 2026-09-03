@@ -16,6 +16,7 @@ from datachain.lib.file import File
 from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.udf import JsonSerializationError, UDFBase, UdfError, UdfRunError
 from datachain.lib.utils import DataChainError
+from tests.utils import is_sha256_hex
 
 from .test_udf_signature import get_sign
 
@@ -444,6 +445,23 @@ def test_class_udf_hashes_pydantic_class_arg(first_arg, second_arg, matches, cap
         first._constructor_identity_hash == second._constructor_identity_hash
     ) is matches
     assert "cache reuse across UDF instances is disabled" not in caplog.text
+
+
+def test_class_udf_hash_survives_subclass_custom_new():
+    class Custom(Mapper):
+        def __new__(cls, limit):
+            return super().__new__(cls)
+
+        def __init__(self, limit: int):
+            self.limit = limit
+
+        def process(self, x: int) -> int:
+            return x + self.limit
+
+    sign = get_sign(Custom(3), output="y")
+    udf = Mapper._create(sign, sign.output_schema)
+
+    assert is_sha256_hex(udf.hash())
 
 
 def test_class_udf_constructor_hash_survives_cloudpickle_roundtrip():

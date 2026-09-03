@@ -320,8 +320,11 @@ class UDFBase(AbstractUDF):
             # when __init__ uses *args instead of a named `self` parameter.
             bound = inspect.signature(instance.__init__).bind(*args, **kwargs)
         except TypeError:
-            # Pickle allocates an empty instance and restores its attributes
-            # afterwards, without calling __init__ or supplying its arguments.
+            # Pickle or a subclass __new__ override lands here; seed a valid
+            # random hash so .hash() stays well-formed.
+            instance._constructor_identity_hash = hashlib.sha256(
+                uuid4().bytes
+            ).hexdigest()
             return instance
 
         bound.apply_defaults()
