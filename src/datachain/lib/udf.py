@@ -224,11 +224,27 @@ class UDFAdapter:
         return self.inner.prefetch
 
 
+def _normalize_pydantic_in_args(value: Any) -> Any:
+    """Replace pydantic classes anywhere in the args tree with a stable
+    signal-schema description so hash_value can normalize the result."""
+    if isinstance(value, type) and issubclass(value, BaseModel):
+        custom_types: dict[str, Any] = {}
+        type_name = SignalSchema._serialize_type(value, custom_types)
+        return {"__pydantic_class__": type_name, "__custom_types__": custom_types}
+    if isinstance(value, dict):
+        return {k: _normalize_pydantic_in_args(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_normalize_pydantic_in_args(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_normalize_pydantic_in_args(v) for v in value)
+    return value
+
+
 def _hash_constructor_args(
     arguments: dict[str, Any], *, warn_on_unsupported: bool = True
 ) -> str:
     try:
-        return hash_value(arguments)
+        return hash_value(_normalize_pydantic_in_args(arguments))
     except (TypeError, RecursionError) as exc:
         if warn_on_unsupported:
             logger.warning(

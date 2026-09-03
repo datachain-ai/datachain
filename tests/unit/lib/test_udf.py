@@ -410,6 +410,42 @@ def test_class_udf_captures_normalized_constructor_arguments(
     ) is matches_default
 
 
+class _PydanticShapeA(BaseModel):
+    value: int
+
+
+class _PydanticShapeB(BaseModel):
+    value: str  # different shape
+
+
+@pytest.mark.parametrize(
+    "first_arg,second_arg,matches",
+    [
+        (_PydanticShapeA, _PydanticShapeA, True),
+        (_PydanticShapeA, _PydanticShapeB, False),
+        ([_PydanticShapeA], [_PydanticShapeA], True),
+        ({"s": _PydanticShapeA}, {"s": _PydanticShapeA}, True),
+        ((_PydanticShapeA,), (_PydanticShapeA,), True),
+    ],
+    ids=["same-class", "different-shape", "in-list", "in-dict", "in-tuple"],
+)
+def test_class_udf_hashes_pydantic_class_arg(first_arg, second_arg, matches, caplog):
+    class Configured(Mapper):
+        def __init__(self, schema):
+            self.schema = schema
+
+        def process(self, x: int) -> int:
+            return x
+
+    first = Configured(first_arg)
+    second = Configured(second_arg)
+
+    assert (
+        first._constructor_identity_hash == second._constructor_identity_hash
+    ) is matches
+    assert "cache reuse across UDF instances is disabled" not in caplog.text
+
+
 def test_class_udf_constructor_hash_survives_cloudpickle_roundtrip():
     class Limited(Mapper):
         def __init__(self, limit: int):

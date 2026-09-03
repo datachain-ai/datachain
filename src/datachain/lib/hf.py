@@ -108,12 +108,7 @@ class HFGenerator(Generator):
 
     @classmethod
     def _constructor_hash_args(cls, arguments):
-        # output_schema is a dynamically-created pydantic class with a random
-        # name suffix; its stable field shape lands in the UDF hash via the
-        # output signal schema, so drop it here to keep the constructor hash
-        # deterministic across runs.
         arguments = arguments.copy()
-        arguments.pop("output_schema", None)
         arguments["ds"] = _dataset_hash_args(arguments["ds"])
         return arguments
 

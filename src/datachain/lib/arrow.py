@@ -76,7 +76,6 @@ class ArrowGenerator(Generator):
         output_schema: type["BaseModel"] | None = None,
         source: bool = True,
         nrows: int | None = None,
-        _generated_output_schema: bool = False,
         **kwargs,
     ):
         """
@@ -101,10 +100,6 @@ class ArrowGenerator(Generator):
     @classmethod
     def _constructor_hash_args(cls, arguments):
         arguments = arguments.copy()
-        generated_output_schema = arguments.pop("_generated_output_schema")
-        if generated_output_schema:
-            # Its stable field shape is already part of the output signal schema.
-            arguments.pop("output_schema", None)
         input_schema = arguments.get("input_schema")
         if input_schema is not None:
             arguments["input_schema"] = input_schema.serialize().to_pybytes()

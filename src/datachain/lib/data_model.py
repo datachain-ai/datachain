@@ -1,7 +1,6 @@
 import hashlib
 import inspect
 import types
-import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -329,9 +328,11 @@ def dict_to_data_model(
                     field_info[str(alias)] = (_name, field)
             return field_info
 
-    # Generate random unique name if not provided
+    # Derive a stable shape-based name if none provided, so two calls with the
+    # same fields produce classes that hash equal downstream.
     if not name:
-        name = f"DataModel_{uuid.uuid4().hex[:8]}"
+        shape_repr = repr([(k, str(v[0])) for k, v in sorted(fields.items())])
+        name = f"DataModel_{hashlib.sha256(shape_repr.encode()).hexdigest()[:8]}"
 
     return create_model(
         name,

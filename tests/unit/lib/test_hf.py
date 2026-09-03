@@ -17,8 +17,8 @@ def test_hf_generator_constructor_hash(as_dict):
     if as_dict:
         first_ds = DatasetDict({"train": first_ds})
         second_ds = DatasetDict({"train": second_ds})
-    first_schema = dict_to_data_model("", {"value": int})
-    second_schema = dict_to_data_model("", {"value": int})
+    first_schema = dict_to_data_model("Fixed", {"value": int})
+    second_schema = dict_to_data_model("Fixed", {"value": int})
 
     first = HFGenerator(first_ds, first_schema)
     second = HFGenerator(second_ds, second_schema)

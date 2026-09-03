@@ -151,7 +151,7 @@ class ImageEncoder(Mapper):
         del self.model
 ```
 
-### Caching class-based operations
+### Cache identity
 
 DataChain hashes UDF code, schemas, and constructor arguments. Primitive values and
 nested built-in containers are handled automatically. Callables and custom objects

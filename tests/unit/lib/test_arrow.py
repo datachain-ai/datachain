@@ -22,8 +22,8 @@ from datachain.lib.hf import HFClassLabel
 
 
 def test_arrow_generator_constructor_hash():
-    first_schema = dict_to_data_model("", {"value": int})
-    second_schema = dict_to_data_model("", {"value": int})
+    first_schema = dict_to_data_model("Fixed", {"value": int})
+    second_schema = dict_to_data_model("Fixed", {"value": int})
 
     def make_generator(output_schema, nrows=None):
         input_schema = pa.schema({"value": pa.int64()})
@@ -32,7 +32,6 @@ def test_arrow_generator_constructor_hash():
             input_schema=input_schema,
             output_schema=output_schema,
             nrows=nrows,
-            _generated_output_schema=True,
             parse_options=parse_options,
             format=CsvFileFormat(parse_options=parse_options),
         )

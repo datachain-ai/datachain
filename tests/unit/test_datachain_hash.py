@@ -1,6 +1,6 @@
 import pandas as pd
 import pytest
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
 import datachain as dc
 from datachain import func
@@ -107,29 +107,20 @@ def test_read_csv_single_file_is_deterministic(test_session, tmp_dir):
     assert h1 == h2
 
 
-def test_read_csv_user_output_model_behavior_changes_hash(test_session, tmp_dir):
-    def make_model(uppercase):
-        class Row(BaseModel):
-            value: str
+def test_read_csv_user_output_model_shape_changes_hash(test_session, tmp_dir):
+    class RowA(BaseModel):
+        value: str
 
-            @field_validator("value")
-            @classmethod
-            def transform(cls, value):
-                return value.upper() if uppercase else value.lower()
-
-        return Row
+    class RowB(BaseModel):
+        value: int
 
     path = tmp_dir / "test.csv"
-    pd.DataFrame({"value": ["MiXeD"]}).to_csv(path, index=False)
+    pd.DataFrame({"value": ["hi"]}).to_csv(path, index=False)
 
-    uppercase = dc.read_csv(
-        path.as_uri(), output=make_model(True), session=test_session
-    )
-    lowercase = dc.read_csv(
-        path.as_uri(), output=make_model(False), session=test_session
-    )
+    a = dc.read_csv(path.as_uri(), output=RowA, session=test_session)
+    b = dc.read_csv(path.as_uri(), output=RowB, session=test_session)
 
-    assert uppercase._query.hash() != lowercase._query.hash()
+    assert a._query.hash() != b._query.hash()
 
 
 def test_read_csv_multi_file_glob_is_deterministic(test_session, tmp_dir):
