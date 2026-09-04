@@ -24,3 +24,4 @@ class JobStatus(int, Enum):
 class JobQueryType(int, Enum):
     PYTHON = 1
     SHELL = 2
+    FROM_GIT = 3

@@ -672,9 +672,7 @@ def create_job(  # noqa: PLR0913
     job_id = response.data.get("id")
     job_data = response.data
 
-    query_type_value = (
-        JobQueryType.PYTHON if query_type == "PYTHON" else JobQueryType.SHELL
-    )
+    query_type_value = JobQueryType[query_type]
     catalog.metastore.create_job(
         name=script_path,  # Use local script path, not Studio's query_name
         query=query,
