@@ -1,6 +1,7 @@
 import hashlib
 import inspect
 import logging
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import closing, nullcontext
@@ -8,6 +9,7 @@ from dataclasses import dataclass
 from functools import partial
 from graphlib import CycleError, TopologicalSorter
 from typing import TYPE_CHECKING, Any, TypeVar
+from uuid import uuid4
 
 import attrs
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
@@ -16,7 +18,7 @@ from pydantic import BaseModel
 from datachain.asyn import AsyncMapper
 from datachain.cache import temporary_cache
 from datachain.dataset import RowDict
-from datachain.hash_utils import hash_callable
+from datachain.hash_utils import hash_callable, hash_value
 from datachain.lib.convert.flatten import (
     classify_field,
     flatten,
@@ -36,6 +38,7 @@ from datachain.query.batch import (
 from datachain.utils import safe_closing, with_last_flag
 
 logger = logging.getLogger("datachain")
+_SHA256_RE = re.compile(r"[0-9a-fA-F]{64}\Z")
 
 if TYPE_CHECKING:
     from collections import abc
@@ -223,6 +226,42 @@ class UDFAdapter:
         return self.inner.prefetch
 
 
+def _normalize_pydantic_in_args(value: Any) -> Any:
+    """Replace pydantic classes anywhere in the args tree with a stable
+    signal-schema description so hash_value can normalize the result."""
+    if isinstance(value, type) and issubclass(value, BaseModel):
+        custom_types: dict[str, Any] = {}
+        type_name = SignalSchema._serialize_type(value, custom_types)
+        return {"__pydantic_class__": type_name, "__custom_types__": custom_types}
+    if isinstance(value, dict):
+        return {k: _normalize_pydantic_in_args(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_normalize_pydantic_in_args(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_normalize_pydantic_in_args(v) for v in value)
+    return value
+
+
+def _hash_constructor_args(
+    arguments: dict[str, Any], *, warn_on_unsupported: bool = True
+) -> str:
+    try:
+        return hash_value(_normalize_pydantic_in_args(arguments))
+    except (TypeError, RecursionError) as exc:
+        if warn_on_unsupported:
+            logger.warning(
+                "%s; cache reuse across UDF instances is disabled",
+                exc,
+            )
+        return hashlib.sha256(uuid4().bytes).hexdigest()
+
+
+def _validate_identity_hash(value: Any) -> str:
+    if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
+        raise ValueError("identity_hash() must return a SHA-256 hexadecimal string")
+    return value
+
+
 class UDFBase(AbstractUDF):
     """Base class for stateful user-defined functions.
 
@@ -274,10 +313,51 @@ class UDFBase(AbstractUDF):
     is_input_batched = False
     is_output_batched = False
     prefetch: int = 0
+    _constructor_identity_hash: str
     # Class-level default so subclasses that skip super().__init__() still
     # have this attribute; _MultiSignalMapper sets params/output per entry
     # but doesn't call _init(), so _func would otherwise be missing.
     _func: Callable | None = None
+
+    def __new__(cls, *args, **kwargs):
+        instance = super().__new__(cls)
+
+        # An identity_hash() override owns the complete cache identity.
+        if cls.identity_hash is not UDFBase.identity_hash:
+            return instance
+
+        instance._constructor_identity_hash = cls._constructor_identity(
+            instance.__init__, args, kwargs
+        )
+        return instance
+
+    @classmethod
+    def _constructor_identity(cls, init, args, kwargs) -> str:
+        """Hash arguments passed to a class UDF constructor."""
+        try:
+            # bound-method signature so `self` is already stripped; correct even
+            # when __init__ uses *args instead of a named `self` parameter.
+            bound = inspect.signature(init).bind(*args, **kwargs)
+        except TypeError:
+            # Pickle or a subclass __new__ override lands here; seed a valid
+            # random hash so .hash() stays well-formed.
+            return hashlib.sha256(uuid4().bytes).hexdigest()
+
+        bound.apply_defaults()
+        return _hash_constructor_args(
+            dict(bound.arguments),
+            warn_on_unsupported=cls.hash is UDFBase.hash,
+        )
+
+    def identity_hash(self) -> str:
+        """Return a stable SHA-256 hash identifying this UDF instance for caching.
+
+        Override this when constructor arguments contain callables or other opaque
+        objects that DataChain cannot hash safely. The method is called after
+        ``__init__`` and must cover all per-instance state that affects output.
+        Overriding this method replaces automatic constructor-argument hashing.
+        """
+        return self._constructor_identity_hash
 
     def __init__(self):
         self.params: SignalSchema | None = None
@@ -304,6 +384,10 @@ class UDFBase(AbstractUDF):
             self.params.hash() if self.params else "",
             self.output.hash(),
         ]
+        # For class-based UDFs, mix in constructor state so two instances that
+        # differ only in constructor args don't collide.
+        if self._func is None:
+            parts.append(_validate_identity_hash(self.identity_hash()))
 
         return hashlib.sha256(
             b"".join([bytes.fromhex(part) for part in parts])

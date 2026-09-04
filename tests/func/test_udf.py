@@ -8,6 +8,7 @@ from collections.abc import Iterator
 
 import multiprocess as mp
 import pytest
+from pydantic import BaseModel
 
 import datachain as dc
 from datachain.client.fileslice import FileWrapper
@@ -254,6 +255,45 @@ def test_class_udf(cloud_test_catalog):
         (4, 13),
         (4, 13),
     ]
+
+
+def test_class_agg_instance_state_produces_distinct_results(test_session):
+    class Out(BaseModel):
+        key: int
+        n: int
+
+    class CountAbove(dc.Aggregator):
+        def __init__(self, limit: int):
+            super().__init__()
+            self.limit = limit
+
+        def process(self, key, value):
+            yield Out(key=key[0], n=sum(1 for v in value if v > self.limit))
+
+    src = dc.read_values(
+        key=[1] * 5 + [2] * 5,
+        value=[1, 2, 3, 4, 5, 1, 2, 3, 4, 5],
+        session=test_session,
+    )
+    chain_zero = src.agg(
+        CountAbove(0),
+        partition_by="key",
+        params=["key", "value"],
+        output={"o": Out},
+    )
+    chain_three = src.agg(
+        CountAbove(3),
+        partition_by="key",
+        params=["key", "value"],
+        output={"o": Out},
+    )
+
+    assert chain_zero._query.hash() != chain_three._query.hash()
+
+    rows_zero = sorted(chain_zero.to_list("o.key", "o.n"))
+    rows_three = sorted(chain_three.to_list("o.key", "o.n"))
+    assert rows_zero == [(1, 5), (2, 5)]
+    assert rows_three == [(1, 2), (2, 2)]
 
 
 @pytest.mark.parametrize(

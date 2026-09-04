@@ -524,13 +524,6 @@ def test_identity_stable_across_param_dict_order():
     assert a == b
 
 
-def test_canonical_orders_sets_and_dicts():
-    from datachain.llm.spec import _canonical
-
-    assert _canonical({"a", "b", "c"}) == _canonical({"c", "b", "a"})
-    assert _canonical({"x": 1, "y": 2}) == _canonical({"y": 2, "x": 1})
-
-
 def test_param_clobber_is_blocked(fake_llm):
     bind(llm.complete("t", "real prompt", temperature=0.0), llm="real/model")("hi")
     call = fake_llm.calls[-1]
@@ -732,20 +725,54 @@ def test_callable_llm_params_not_in_identity():
     assert spec.identity("m", lambda: {"k": "v"}) == spec.identity("m")
 
 
-def test_opaque_param_value_warns_about_unstable_cache_key():
+def test_opaque_param_value_disables_cache_reuse():
+    class Opaque:
+        def __repr__(self):
+            return "Opaque()"
+
+    first = llm.complete("t", client=Opaque()).identity("m")
+    second = llm.complete("t", client=Opaque()).identity("m")
+
+    assert first != second
+
+
+def test_opaque_param_value_disables_reuse_within_operation():
     class Opaque:
         pass
 
-    with pytest.warns(UserWarning, match="no stable repr"):
-        llm.complete("t", client=Opaque()).identity("m")
+    spec = llm.complete("t", client=Opaque())
+
+    assert spec.identity("m") != spec.identity("m")
 
 
-def test_stable_param_values_do_not_warn():
-    import warnings
+def test_opaque_param_does_not_hide_supported_param_changes():
+    class Opaque:
+        pass
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        llm.complete("t", temperature=0.0, opt={"a": 1}).identity("m")
+    spec = llm.complete("t", "p")
+    client = Opaque()
+
+    assert spec.identity("m", {"client": client, "temperature": 0}) != spec.identity(
+        "m", {"client": client, "temperature": 1}
+    )
+
+
+def test_cyclic_param_value_disables_cache_reuse():
+    options = {}
+    options["self"] = options
+    first = llm.complete("t", options=options)
+    second = llm.complete("t", options=options)
+
+    identities = {first.identity("m"), first.identity("m"), second.identity("m")}
+
+    assert len(identities) == 3
+
+
+def test_stable_param_values_have_stable_identity():
+    first = llm.complete("t", temperature=0.0, opt={"a": 1}).identity("m")
+    second = llm.complete("t", temperature=0.0, opt={"a": 1}).identity("m")
+
+    assert first == second
 
 
 def test_secret_params_not_in_identity():

@@ -6,6 +6,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from datasets import Dataset
+from pyarrow.csv import ParseOptions
+from pyarrow.dataset import CsvFileFormat, DirectoryPartitioning
 
 import datachain as dc
 from datachain.lib.arrow import (
@@ -17,6 +19,62 @@ from datachain.lib.arrow import (
 from datachain.lib.data_model import dict_to_data_model
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.hf import HFClassLabel
+
+
+def test_arrow_generator_constructor_hash():
+    first_schema = dict_to_data_model("Fixed", {"value": int})
+    second_schema = dict_to_data_model("Fixed", {"value": int})
+
+    def make_generator(output_schema, nrows=None):
+        input_schema = pa.schema({"value": pa.int64()})
+        parse_options = ParseOptions(delimiter=";")
+        return ArrowGenerator(
+            input_schema=input_schema,
+            output_schema=output_schema,
+            nrows=nrows,
+            parse_options=parse_options,
+            format=CsvFileFormat(parse_options=parse_options),
+        )
+
+    first = make_generator(first_schema)
+    second = make_generator(second_schema)
+    limited = make_generator(second_schema, nrows=1)
+
+    assert first.identity_hash() == second.identity_hash()
+    assert first.identity_hash() != limited.identity_hash()
+
+
+def test_arrow_generator_constructor_hash_with_partitioning(caplog):
+    def make_partitioning():
+        return DirectoryPartitioning(pa.schema([("year", pa.int32())]))
+
+    first = ArrowGenerator(partitioning=make_partitioning())
+    second = ArrowGenerator(partitioning=make_partitioning())
+    other = ArrowGenerator(
+        partitioning=DirectoryPartitioning(pa.schema([("month", pa.int32())]))
+    )
+
+    assert first.identity_hash() == second.identity_hash()
+    assert first.identity_hash() != other.identity_hash()
+    assert "cache reuse across UDF instances is disabled" not in caplog.text
+
+
+def test_arrow_generator_constructor_hash_with_closure_handler():
+    def make_handler(prefix):
+        def handler(row):
+            return "skip" if row.text.startswith(prefix) else "error"
+
+        return handler
+
+    def make_generator(prefix):
+        return ArrowGenerator(
+            parse_options=ParseOptions(invalid_row_handler=make_handler(prefix))
+        )
+
+    comments = make_generator("#")
+    metadata = make_generator("!")
+
+    assert comments.identity_hash() != metadata.identity_hash()
 
 
 @pytest.mark.parametrize("cache", [True, False])

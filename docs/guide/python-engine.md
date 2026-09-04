@@ -151,6 +151,10 @@ class ImageEncoder(Mapper):
         del self.model
 ```
 
+Constructor arguments are included in checkpoint identity. For constructors that
+accept callables or custom objects, see
+[custom cache identity](../references/udf.md#cache-identity).
+
 Use class-based operations sparingly; `.setup()` covers most cases.
 
 ## Execution and Scale

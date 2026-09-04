@@ -1,11 +1,12 @@
-import re
-import warnings
+import logging
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin
+from uuid import uuid4
 
 from pydantic import BaseModel
 
+from datachain.hash_utils import normalize_hash_value
 from datachain.lib.udf import BindContext, BoundSpec
 from datachain.llm import engine
 from datachain.llm.content import MEDIA_VALUES, Media, build_messages, to_text
@@ -13,6 +14,8 @@ from datachain.llm.types import Usage
 
 if TYPE_CHECKING:
     from datachain.lib.settings import Settings
+
+logger = logging.getLogger("datachain")
 
 
 class LLMConfigError(engine.LLMError):
@@ -25,30 +28,6 @@ def _element_type(schema: Any) -> tuple[Any, bool]:
         args = get_args(schema)
         return (args[0] if args else str), True
     return schema, False
-
-
-# A value with no custom repr shows its memory address (``<Cls object at 0x...>``),
-# which changes each run and would make the cache key unstable.
-_DEFAULT_REPR = re.compile(r" object at 0x[0-9a-fA-F]+>")
-
-
-def _canonical(value: Any) -> Any:
-    """Order-independent form of a value, so the cache key is stable across
-    processes (``repr`` of a ``set`` or unsorted ``dict`` is not)."""
-    if isinstance(value, dict):
-        items = ((k, _canonical(v)) for k, v in value.items())
-        return tuple(sorted(items, key=lambda kv: repr(kv[0])))
-    if isinstance(value, (set, frozenset)):
-        return tuple(sorted((_canonical(v) for v in value), key=repr))
-    if isinstance(value, (list, tuple)):
-        return tuple(_canonical(v) for v in value)
-    if _DEFAULT_REPR.search(repr(value)):
-        warnings.warn(
-            f"llm param {type(value).__name__!r} has no stable repr; it breaks "
-            "caching (full recompute every run).",
-            stacklevel=2,
-        )
-    return value
 
 
 def _is_secret_key(key: Any) -> bool:
@@ -69,6 +48,16 @@ def _without_secrets(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_without_secrets(v) for v in value]
     return value
+
+
+def _normalize_identity_value(value: Any, *, remove_secrets: bool = False) -> Any:
+    try:
+        if remove_secrets:
+            value = _without_secrets(value)
+        return normalize_hash_value(value, sort_dicts=True)
+    except (TypeError, RecursionError) as exc:
+        logger.warning("%s; cache reuse for this LLM operation is disabled", exc)
+        return ("unsupported", uuid4().hex)
 
 
 @dataclass
@@ -166,7 +155,7 @@ class LLMSpec(BoundSpec):
         return tuple[out, Usage] if self.include_usage else out  # type: ignore[valid-type]
 
     def identity(self, model: str, llm_params: Any = None) -> tuple:
-        """Cache key baked into the UDF hash; changes iff an output-affecting
+        """Cache key baked into the UDF hash; changes if an output-affecting
         input (model, prompt, schema, params, llm_params, ...) changes.
 
         The schema is keyed by its JSON schema (fields, types, constraints, name);
@@ -183,13 +172,15 @@ class LLMSpec(BoundSpec):
         if self.schema is not None:
             elem, is_list = _element_type(self.schema)
             if hasattr(elem, "model_json_schema"):
-                schema_repr = (_canonical(elem.model_json_schema()), is_list)
+                schema_repr = (
+                    _normalize_identity_value(elem.model_json_schema()),
+                    is_list,
+                )
             else:
                 schema_repr = str(self.schema)
         params = self.params
         if isinstance(llm_params, dict):
             params = {**llm_params, **self.params}
-        params = _without_secrets(params)
         return (
             self.kind,
             model,
@@ -200,7 +191,7 @@ class LLMSpec(BoundSpec):
             self.context_col,
             self.type,
             self.include_usage,
-            _canonical(params),
+            _normalize_identity_value(params, remove_secrets=True),
         )
 
     def _resolve_model(self, settings: "Settings") -> str:
