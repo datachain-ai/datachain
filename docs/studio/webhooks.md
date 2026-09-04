@@ -166,8 +166,8 @@ def webhook():
         action = data.get("action")
         if action == "job_status":
             print(
-f"Job status for job {data['job']['id']} was"
-f" changed to {data['job']['status']}"
+                f"Job status for job {data['job']['id']} was"
+                f" changed to {data['job']['status']}"
             )
         else:
             print(f"Unhandled action for the job event: {action}")
