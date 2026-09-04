@@ -6313,3 +6313,91 @@ def test_tuple_of_models_stores_numpy_held_in_a_field(test_session):
             ),
         )
     ]
+
+
+class NullableInts(BaseModel):
+    vals: list[int | None]
+
+
+class NullableFloats(BaseModel):
+    vals: list[float | None]
+
+
+@pytest.mark.parametrize(
+    "vals",
+    [
+        pytest.param([1, None], id="none-last"),
+        pytest.param([None, 2], id="none-first"),
+        pytest.param([None, None], id="all-none"),
+        pytest.param([None, 2, None, 4], id="none-interleaved"),
+    ],
+)
+def test_a_nullable_int_list_round_trips_whatever_the_order(test_session, vals):
+    rows = (
+        dc.read_values(i=[1], session=test_session)
+        .map(h=lambda: NullableInts(vals=vals), output=NullableInts)
+        .to_list("h.vals")
+    )
+
+    assert rows == [(vals,)]
+
+
+@pytest.mark.parametrize(
+    "vals,expected",
+    [
+        pytest.param([1, None], [1.0, None], id="none-last"),
+        pytest.param([None, 2], [None, 2.0], id="none-first"),
+        pytest.param([None, None], [None, None], id="all-none"),
+    ],
+)
+def test_a_nullable_float_list_round_trips_whatever_the_order(
+    test_session, vals, expected
+):
+    rows = (
+        dc.read_values(i=[1], session=test_session)
+        .map(h=lambda: NullableFloats(vals=vals), output=NullableFloats)
+        .to_list("h.vals")
+    )
+
+    assert rows == [(expected,)]
+
+
+class DictItem(BaseModel):
+    n: int
+
+
+class DictItemHolder(BaseModel):
+    vals: list[dict[str, DictItem] | None]
+
+
+@pytest.mark.parametrize(
+    "vals",
+    [
+        pytest.param([{"a": DictItem(n=1)}, None], id="none-last"),
+        pytest.param([None, {"a": DictItem(n=1)}], id="none-first"),
+    ],
+)
+def test_models_inside_dict_items_convert_wherever_none_sits(test_session, vals):
+    rows = (
+        dc.read_values(i=[1], session=test_session)
+        .map(h=lambda: DictItemHolder(vals=vals), output=DictItemHolder)
+        .to_list("h.vals")
+    )
+
+    assert rows == [(vals,)]
+
+
+class MixedUnionHolder(BaseModel):
+    vals: list[dict | list[dict] | None]
+
+
+def test_a_list_of_mixed_shapes_is_left_alone(test_session):
+    value = [None, [{"a": 1}], {"b": 2}]
+
+    rows = (
+        dc.read_values(i=[1], session=test_session)
+        .map(h=lambda: MixedUnionHolder(vals=value), output=MixedUnionHolder)
+        .to_list("h.vals")
+    )
+
+    assert rows == [(value,)]

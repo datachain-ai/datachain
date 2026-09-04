@@ -149,7 +149,27 @@ class AbstractWarehouse(ABC, Serializable):
             if len(val) == 0:
                 return []
 
-            item_python_type = self.python_type(col_type.item_type)
+            item_type = col_type.item_type
+            item_python_type = self.python_type(item_type)
+            item_type_info = (
+                item_type,
+                item_python_type,
+                type(item_type).__name__,
+                col_name,
+            )
+
+            if item_python_type is dict:
+                # This backend keeps a JSON element as an object, so normalize
+                # each one rather than encoding it, and let the array hold the
+                # NULLs.
+                return [None if i is None else self._to_jsonable(i) for i in val]
+
+            if getattr(item_type, "dc_nullable", False):
+                # The array holds the NULL, so an element never encodes one.
+                return [
+                    None if i is None else self.convert_type(i, *item_type_info)
+                    for i in val
+                ]
 
             if item_python_type is not list:
                 if isinstance(val[0], item_python_type):
@@ -158,15 +178,6 @@ class AbstractWarehouse(ABC, Serializable):
                     return list(val)
                 if item_python_type is float and isinstance(val[0], int):
                     return [float(i) for i in val]
-
-            # Optimization: Reuse these values for each function call within the
-            # list comprehension.
-            item_type_info = (
-                col_type.item_type,
-                item_python_type,
-                type(col_type.item_type).__name__,
-                col_name,
-            )
             return [self.convert_type(i, *item_type_info) for i in val]
 
         # Special use case with JSON type as we save it as string
