@@ -4,7 +4,7 @@ from enum import Enum
 from types import UnionType
 from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
-from pydantic import BaseModel
+from pydantic import BaseModel, RootModel
 from typing_extensions import Literal as LiteralEx
 
 from datachain.lib.data_model import (
@@ -185,9 +185,20 @@ def _list_to_array(typ, args):
         args = args[:1]
     if not args:
         raise TypeError(f"Cannot resolve type '{typ}' for flattening features")
-    args0 = args[0]
-    if ModelStore.is_pydantic(args0):
-        return Array(JSON())
+    # A model element is JSON whether or not it admits a None: is_chain_type
+    # accepts list[Model | None], and the union arm is all that hid the model.
+    # A fixed tuple keeps every slot in the one column, so every slot is asked --
+    # answering from the first would let a slot through that cannot be read back
+    # as a model.
+    slots = [arg for arg in args if arg is not Ellipsis]
+    if slots and all(
+        ModelStore.is_pydantic(slot) or _optional_model(slot) is not None
+        for slot in slots
+    ):
+        item: SQLType = JSON()
+        if any(_admits_none(slot) for slot in slots):
+            item = SQLType.as_nullable(item)
+        return Array(item)
 
     list_type = list_of_args_to_type(args)
 
@@ -206,6 +217,39 @@ def _list_to_array(typ, args):
             # unwritable, as before.
             list_type = SQLType.as_nullable(JSON())
     return Array(list_type)
+
+
+def _optional_model(annotation: Any) -> Any:
+    """The model behind ``Model | None``, or None if that is not the shape.
+
+    Deliberately shallow: only a bare None, because the reader rebuilds a nested
+    model from Optional[Model] and not from Model | Literal[None], which would be
+    stored and handed back as plain dicts.
+    """
+    if get_origin(annotation) not in (Union, UnionType):
+        return None
+
+    arms = [arm for arm in get_args(annotation) if arm is not type(None)]
+    if len(arms) != 1 or not ModelStore.is_pydantic(arms[0]):
+        return None
+    if not _serializes_as_a_mapping(arms[0]):
+        return None
+    return arms[0]
+
+
+def _serializes_as_a_mapping(model: Any) -> bool:
+    """Whether this model is read back from a mapping, as a stored one is.
+
+    A root model dumps to whatever it wraps, and a model_serializer may return
+    anything at all; the reader rebuilds a nested model only from a mapping, so
+    either would be stored and then handed back as something else.
+    """
+    if not isinstance(model, type):
+        return False
+    if issubclass(model, RootModel):
+        return False
+    decorators = getattr(model, "__pydantic_decorators__", None)
+    return not (decorators and decorators.model_serializers)
 
 
 def _admits_none(annotation: Any) -> bool:

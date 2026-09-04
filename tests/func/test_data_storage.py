@@ -7,7 +7,13 @@ import numpy as np
 import pandas as pd
 import pytest
 import ujson as json
-from pydantic import BaseModel, BeforeValidator, ConfigDict
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    RootModel,
+    model_serializer,
+)
 
 import datachain as dc
 from datachain import json as dcjson
@@ -547,3 +553,63 @@ def test_an_optional_nested_array_keeps_a_typed_leaf():
         "type": "Array",
         "item_type": {"type": "JSON", "dc_nullable": True},
     }
+
+
+class SlotA(BaseModel):
+    x: int
+
+
+class SlotB(BaseModel):
+    y: int
+
+
+def test_python_to_sql_refuses_a_tuple_slot_that_reads_back_wrong():
+    # Every slot of a fixed tuple shares the column, so one that cannot be read
+    # back as a model has to refuse the whole annotation rather than be stored
+    # and handed back as a plain dict.
+    with pytest.raises(TypeError):
+        python_to_sql(tuple[SlotA | None, Annotated[SlotB, "meta"] | None])
+
+    assert python_to_sql(tuple[SlotA | None, SlotB | None]).to_dict() == {
+        "type": "Array",
+        "item_type": {"type": "JSON", "dc_nullable": True},
+    }
+
+
+class RootInt(RootModel[int]):
+    pass
+
+
+def test_python_to_sql_refuses_an_optional_root_model_element():
+    # A root model dumps to its bare value, which the reader cannot rebuild into
+    # a model, so it must not be admitted by the optional-model shortcut.
+    with pytest.raises(TypeError):
+        python_to_sql(list[RootInt | None])
+
+
+class ScalarDump(BaseModel):
+    x: int
+
+    @model_serializer
+    def _dump(self):
+        return self.x
+
+
+def test_python_to_sql_checks_every_tuple_slot_for_a_model():
+    # Answering from the first slot let the rest through unchecked: a nullable
+    # second slot lost its dc_nullable, and one that cannot be read back as a
+    # model was accepted.
+    assert python_to_sql(tuple[SlotA, SlotB | None]).to_dict() == {
+        "type": "Array",
+        "item_type": {"type": "JSON", "dc_nullable": True},
+    }
+
+    with pytest.raises(TypeError):
+        python_to_sql(tuple[SlotA, RootInt | None])
+
+
+def test_python_to_sql_refuses_a_model_that_does_not_dump_to_a_mapping():
+    # The reader rebuilds a nested model from a mapping, so a model_serializer
+    # returning something else would be stored and handed back as that instead.
+    with pytest.raises(TypeError):
+        python_to_sql(list[ScalarDump | None])
