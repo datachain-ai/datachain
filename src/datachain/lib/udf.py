@@ -1,6 +1,7 @@
 import hashlib
 import inspect
 import logging
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import closing, nullcontext
@@ -37,6 +38,7 @@ from datachain.query.batch import (
 from datachain.utils import safe_closing, with_last_flag
 
 logger = logging.getLogger("datachain")
+_SHA256_RE = re.compile(r"[0-9a-fA-F]{64}\Z")
 
 if TYPE_CHECKING:
     from collections import abc
@@ -254,6 +256,12 @@ def _hash_constructor_args(
         return hashlib.sha256(uuid4().bytes).hexdigest()
 
 
+def _validate_identity_hash(value: Any) -> str:
+    if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
+        raise ValueError("identity_hash() must return a SHA-256 hexadecimal string")
+    return value
+
+
 class UDFBase(AbstractUDF):
     """Base class for stateful user-defined functions.
 
@@ -379,22 +387,7 @@ class UDFBase(AbstractUDF):
         # For class-based UDFs, mix in constructor state so two instances that
         # differ only in constructor args don't collide.
         if self._func is None:
-            identity_hash = self.identity_hash()
-            if not isinstance(identity_hash, str) or len(identity_hash) != 64:
-                raise ValueError(
-                    "identity_hash() must return a SHA-256 hexadecimal string"
-                )
-            try:
-                identity_hash_bytes = bytes.fromhex(identity_hash)
-            except ValueError as exc:
-                raise ValueError(
-                    "identity_hash() must return a SHA-256 hexadecimal string"
-                ) from exc
-            if len(identity_hash_bytes) != 32:
-                raise ValueError(
-                    "identity_hash() must return a SHA-256 hexadecimal string"
-                )
-            parts.append(identity_hash)
+            parts.append(_validate_identity_hash(self.identity_hash()))
 
         return hashlib.sha256(
             b"".join([bytes.fromhex(part) for part in parts])
