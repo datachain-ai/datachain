@@ -305,9 +305,7 @@ class UDFBase(AbstractUDF):
     is_input_batched = False
     is_output_batched = False
     prefetch: int = 0
-    # Set in __new__ from bound constructor args (see hash()); default keeps
-    # mypy happy and acts as a safe fallback for instances that skip __new__.
-    _constructor_identity_hash: str = ""
+    _constructor_identity_hash: str
     # Class-level default so subclasses that skip super().__init__() still
     # have this attribute; _MultiSignalMapper sets params/output per entry
     # but doesn't call _init(), so _func would otherwise be missing.
@@ -315,39 +313,41 @@ class UDFBase(AbstractUDF):
 
     def __new__(cls, *args, **kwargs):
         instance = super().__new__(cls)
-        try:
-            # bound-method signature so `self` is already stripped; correct even
-            # when __init__ uses *args instead of a named `self` parameter.
-            bound = inspect.signature(instance.__init__).bind(*args, **kwargs)
-        except TypeError:
-            # Pickle or a subclass __new__ override lands here; seed a valid
-            # random hash so .hash() stays well-formed.
-            instance._constructor_identity_hash = hashlib.sha256(
-                uuid4().bytes
-            ).hexdigest()
+
+        # An identity_hash() override owns the complete cache identity.
+        if cls.identity_hash is not UDFBase.identity_hash:
             return instance
 
-        bound.apply_defaults()
-        arguments = cls._constructor_hash_args(dict(bound.arguments))
-        instance._constructor_identity_hash = _hash_constructor_args(
-            arguments,
-            warn_on_unsupported=cls.identity_hash is UDFBase.identity_hash,
+        instance._constructor_identity_hash = cls._constructor_identity(
+            instance.__init__, args, kwargs
         )
         return instance
 
     @classmethod
-    def _constructor_hash_args(cls, arguments: dict[str, Any]) -> dict[str, Any]:
-        """Constructor arguments that determine this UDF instance's identity."""
-        return arguments
+    def _constructor_identity(cls, init, args, kwargs) -> str:
+        """Hash arguments passed to a class UDF constructor."""
+        try:
+            # bound-method signature so `self` is already stripped; correct even
+            # when __init__ uses *args instead of a named `self` parameter.
+            bound = inspect.signature(init).bind(*args, **kwargs)
+        except TypeError:
+            # Pickle or a subclass __new__ override lands here; seed a valid
+            # random hash so .hash() stays well-formed.
+            return hashlib.sha256(uuid4().bytes).hexdigest()
+
+        bound.apply_defaults()
+        return _hash_constructor_args(
+            dict(bound.arguments),
+            warn_on_unsupported=cls.hash is UDFBase.hash,
+        )
 
     def identity_hash(self) -> str:
         """Return a stable SHA-256 hash identifying this UDF instance for caching.
 
         Override this when constructor arguments contain callables or other opaque
         objects that DataChain cannot hash safely. The method is called after
-        ``__init__`` and must cover all per-instance state that affects output. By
-        default, DataChain returns its automatic constructor-argument hash. Call
-        ``super().identity_hash()`` to include that hash in an override.
+        ``__init__`` and must cover all per-instance state that affects output.
+        Overriding this method replaces automatic constructor-argument hashing.
         """
         return self._constructor_identity_hash
 
@@ -686,12 +686,6 @@ class _MultiSignalMapper(Mapper):
     of that dependency graph; the order the user wrote the kwargs is
     irrelevant. Cycles raise ``ValueError`` at construction time.
     """
-
-    @classmethod
-    def _constructor_hash_args(cls, arguments):
-        # hash() is fully overridden below; skip the base state hash so we
-        # don't warn on the callables in signal_map or store unused bytes.
-        return {}
 
     def __init__(
         self,

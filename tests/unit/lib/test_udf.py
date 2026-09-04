@@ -339,20 +339,41 @@ def test_class_udf_identity_hash_overrides_opaque_constructor_fallback(
     assert "cache reuse across UDF instances is disabled" not in caplog.text
 
 
-def test_class_udf_identity_hash_can_extend_automatic_constructor_hash():
+def test_class_udf_identity_hash_replaces_automatic_constructor_hash():
     class Configured(Mapper):
         def __init__(self, limit: int, extra: str):
             self.limit = limit
             self.extra = extra
 
         def identity_hash(self) -> str:
-            return hash_value((super().identity_hash(), self.extra))
+            return hash_value(self.extra)
 
         def process(self, x: int) -> int:
             return x + self.limit
 
     first = Configured(3, "shared")
     second = Configured(5, "shared")
+    sign_a = get_sign(first, output="y")
+    sign_b = get_sign(second, output="y")
+    udf_a = Mapper._create(sign_a, sign_a.output_schema)
+    udf_b = Mapper._create(sign_b, sign_b.output_schema)
+
+    assert udf_a.hash() == udf_b.hash()
+
+
+def test_class_udf_hash_override_can_call_super():
+    class Configured(Mapper):
+        def __init__(self, limit: int):
+            self.limit = limit
+
+        def process(self, x: int) -> int:
+            return x + self.limit
+
+        def hash(self, include_body: bool = True) -> str:
+            return super().hash(include_body)
+
+    first = Configured(3)
+    second = Configured(5)
     sign_a = get_sign(first, output="y")
     sign_b = get_sign(second, output="y")
     udf_a = Mapper._create(sign_a, sign_a.output_schema)

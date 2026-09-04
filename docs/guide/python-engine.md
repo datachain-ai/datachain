@@ -181,9 +181,9 @@ class Tokenize(Mapper):
 ```
 
 `identity_hash()` must return a SHA-256 hexadecimal string covering all constructor
-inputs that affect output. When all constructor arguments are supported primitives,
-call `super().identity_hash()` to include them in an override. UDF code and schemas
-are always included; an incomplete hash can reuse an incorrect cached result.
+inputs that affect output. Overriding it replaces automatic constructor-argument
+hashing. UDF code and schemas are always included; an incomplete hash can reuse an
+incorrect cached result.
 
 Use class-based operations sparingly; `.setup()` covers most cases.
 

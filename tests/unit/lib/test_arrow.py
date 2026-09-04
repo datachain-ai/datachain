@@ -40,8 +40,8 @@ def test_arrow_generator_constructor_hash():
     second = make_generator(second_schema)
     limited = make_generator(second_schema, nrows=1)
 
-    assert first._constructor_identity_hash == second._constructor_identity_hash
-    assert first._constructor_identity_hash != limited._constructor_identity_hash
+    assert first.identity_hash() == second.identity_hash()
+    assert first.identity_hash() != limited.identity_hash()
 
 
 def test_arrow_generator_constructor_hash_with_partitioning(caplog):
@@ -54,8 +54,8 @@ def test_arrow_generator_constructor_hash_with_partitioning(caplog):
         partitioning=DirectoryPartitioning(pa.schema([("month", pa.int32())]))
     )
 
-    assert first._constructor_identity_hash == second._constructor_identity_hash
-    assert first._constructor_identity_hash != other._constructor_identity_hash
+    assert first.identity_hash() == second.identity_hash()
+    assert first.identity_hash() != other.identity_hash()
     assert "cache reuse across UDF instances is disabled" not in caplog.text
 
 
@@ -74,7 +74,7 @@ def test_arrow_generator_constructor_hash_with_closure_handler():
     comments = make_generator("#")
     metadata = make_generator("!")
 
-    assert comments._constructor_identity_hash != metadata._constructor_identity_hash
+    assert comments.identity_hash() != metadata.identity_hash()
 
 
 @pytest.mark.parametrize("cache", [True, False])

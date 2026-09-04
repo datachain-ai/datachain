@@ -19,7 +19,7 @@ from datachain.lib.data_model import (
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.udf import Generator
+from datachain.lib.udf import Generator, _hash_constructor_args
 from datachain.lib.utils import normalize_col_names
 from datachain.progress import tqdm
 
@@ -97,13 +97,14 @@ class ArrowGenerator(Generator):
         self.parse_options = kwargs.pop("parse_options", None)
         self.kwargs = kwargs
 
-    @classmethod
-    def _constructor_hash_args(cls, arguments):
-        arguments = arguments.copy()
-        input_schema = arguments.get("input_schema")
+    def identity_hash(self) -> str:
+        """Return a stable identity for supported Arrow constructor values."""
+        input_schema = self.input_schema
         if input_schema is not None:
-            arguments["input_schema"] = input_schema.serialize().to_pybytes()
-        kwargs = arguments["kwargs"].copy()
+            input_schema = input_schema.serialize().to_pybytes()
+        kwargs = self.kwargs.copy()
+        if self.parse_options is not None:
+            kwargs["parse_options"] = self.parse_options
         for name, value in kwargs.items():
             if isinstance(value, ParseOptions):
                 kwargs[name] = _parse_options_hash_args(value)
@@ -111,8 +112,15 @@ class ArrowGenerator(Generator):
                 kwargs[name] = _csv_format_hash_args(value)
             elif isinstance(value, Partitioning):
                 kwargs[name] = pickle.dumps(value)
-        arguments["kwargs"] = kwargs
-        return arguments
+        return _hash_constructor_args(
+            {
+                "input_schema": input_schema,
+                "output_schema": self.output_schema,
+                "source": self.source,
+                "nrows": self.nrows,
+                "kwargs": kwargs,
+            }
+        )
 
     def process(self, file: File):
         if file._caching_enabled:
