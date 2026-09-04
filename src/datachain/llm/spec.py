@@ -50,16 +50,14 @@ def _without_secrets(value: Any) -> Any:
     return value
 
 
-def _normalize_identity_value(
-    value: Any, fallback: str, *, remove_secrets: bool = False
-) -> Any:
+def _normalize_identity_value(value: Any, *, remove_secrets: bool = False) -> Any:
     try:
         if remove_secrets:
             value = _without_secrets(value)
         return normalize_hash_value(value, sort_dicts=True)
     except (TypeError, RecursionError) as exc:
         logger.warning("%s; cache reuse for this LLM operation is disabled", exc)
-        return ("unsupported", fallback)
+        return ("unsupported", uuid4().hex)
 
 
 @dataclass
@@ -82,12 +80,6 @@ class LLMSpec(BoundSpec):
     fallback: str | list[str] | None = None
     include_usage: bool = False
     params: dict[str, Any] = field(default_factory=dict)
-    _identity_fallback: str = field(
-        default_factory=lambda: uuid4().hex,
-        init=False,
-        repr=False,
-        compare=False,
-    )
 
     def __post_init__(self) -> None:
         if self.schema is not None:
@@ -181,9 +173,7 @@ class LLMSpec(BoundSpec):
             elem, is_list = _element_type(self.schema)
             if hasattr(elem, "model_json_schema"):
                 schema_repr = (
-                    _normalize_identity_value(
-                        elem.model_json_schema(), self._identity_fallback
-                    ),
+                    _normalize_identity_value(elem.model_json_schema()),
                     is_list,
                 )
             else:
@@ -201,9 +191,7 @@ class LLMSpec(BoundSpec):
             self.context_col,
             self.type,
             self.include_usage,
-            _normalize_identity_value(
-                params, self._identity_fallback, remove_secrets=True
-            ),
+            _normalize_identity_value(params, remove_secrets=True),
         )
 
     def _resolve_model(self, settings: "Settings") -> str:

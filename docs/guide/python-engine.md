@@ -151,39 +151,9 @@ class ImageEncoder(Mapper):
         del self.model
 ```
 
-### Cache identity
-
-DataChain hashes UDF code, schemas, and constructor arguments. Primitive values and
-nested built-in containers are handled automatically. Callables and custom objects
-receive a unique identity instead, preventing incorrect cache reuse. Override
-`identity_hash()` when you can produce a stable identity for such arguments:
-
-```python
-import hashlib
-import json
-from datachain.lib.udf import Mapper
-
-class Tokenize(Mapper):
-    def __init__(self, tokenizer, tokenizer_id: str, max_length: int):
-        self.tokenizer = tokenizer
-        self.tokenizer_id = tokenizer_id
-        self.max_length = max_length
-
-    def identity_hash(self) -> str:
-        state = json.dumps(
-            {"tokenizer_id": self.tokenizer_id, "max_length": self.max_length},
-            sort_keys=True,
-        )
-        return hashlib.sha256(state.encode()).hexdigest()
-
-    def process(self, text: str) -> list[str]:
-        return self.tokenizer(text)[: self.max_length]
-```
-
-`identity_hash()` must return a SHA-256 hexadecimal string covering all constructor
-inputs that affect output. Overriding it replaces automatic constructor-argument
-hashing. UDF code and schemas are always included; an incomplete hash can reuse an
-incorrect cached result.
+Constructor arguments are included in checkpoint identity. For constructors that
+accept callables or custom objects, see
+[custom cache identity](../references/udf.md#cache-identity).
 
 Use class-based operations sparingly; `.setup()` covers most cases.
 

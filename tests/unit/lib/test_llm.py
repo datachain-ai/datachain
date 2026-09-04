@@ -736,13 +736,25 @@ def test_opaque_param_value_disables_cache_reuse():
     assert first != second
 
 
-def test_opaque_param_value_has_stable_identity_within_operation():
+def test_opaque_param_value_disables_reuse_within_operation():
     class Opaque:
         pass
 
     spec = llm.complete("t", client=Opaque())
 
-    assert spec.identity("m") == spec.identity("m")
+    assert spec.identity("m") != spec.identity("m")
+
+
+def test_opaque_param_does_not_hide_supported_param_changes():
+    class Opaque:
+        pass
+
+    spec = llm.complete("t", "p")
+    client = Opaque()
+
+    assert spec.identity("m", {"client": client, "temperature": 0}) != spec.identity(
+        "m", {"client": client, "temperature": 1}
+    )
 
 
 def test_cyclic_param_value_disables_cache_reuse():
@@ -751,8 +763,9 @@ def test_cyclic_param_value_disables_cache_reuse():
     first = llm.complete("t", options=options)
     second = llm.complete("t", options=options)
 
-    assert first.identity("m") == first.identity("m")
-    assert first.identity("m") != second.identity("m")
+    identities = {first.identity("m"), first.identity("m"), second.identity("m")}
+
+    assert len(identities) == 3
 
 
 def test_stable_param_values_have_stable_identity():
