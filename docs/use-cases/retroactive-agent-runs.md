@@ -21,21 +21,32 @@ import os
 # yesterday's `dialog_verdicts` dataset is already saved with file references
 # and the prior verdict column
 
+
 class ClaudeVerdict(BaseModel):
     success: bool
     rationale: str
+
 
 def judge_with_claude(file: dc.File) -> ClaudeVerdict:
     client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     response = client.messages.create(
         model="claude-opus-4-7",
         max_tokens=200,
-        messages=[{"role": "user", "content": [
-            {"type": "text", "text": "Was this dialog successful? Reply JSON: {success: bool, rationale: str}."},
-            {"type": "text", "text": file.read()},
-        ]}],
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Was this dialog successful? Reply JSON: {success: bool, rationale: str}.",
+                    },
+                    {"type": "text", "text": file.read()},
+                ],
+            }
+        ],
     )
     return ClaudeVerdict.model_validate_json(response.content[0].text)
+
 
 (
     dc.read_dataset("dialog_verdicts")
@@ -55,7 +66,12 @@ import datachain as dc
 (
     dc.read_dataset("dialog_verdicts_claude")
     .filter(dc.C("verdict.success") != dc.C("claude_verdict.success"))
-    .select("file.path", "verdict.success", "claude_verdict.success", "claude_verdict.rationale")
+    .select(
+        "file.path",
+        "verdict.success",
+        "claude_verdict.success",
+        "claude_verdict.rationale",
+    )
     .show(20)
 )
 ```

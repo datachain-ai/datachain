@@ -68,11 +68,11 @@ code:
 from dvclive import Live
 
 with Live() as live:
-  for i in range(params["epochs"]):
+    for i in range(params["epochs"]):
+        ...
+        live.log_metric("accuracy", accuracy)
+        live.next_step()
     ...
-    live.log_metric("accuracy", accuracy)
-    live.next_step()
-  ...
 ```
 
 <admon type="tip">

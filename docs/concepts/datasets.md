@@ -13,11 +13,11 @@ A dataset version, once saved, never changes. New work produces a new version, n
 ```python
 import datachain as dc
 
-dc.read_values(x=[1, 2, 3]).save("experiment")        # v1.0.0
-dc.read_values(x=[1, 2, 3, 4]).save("experiment")      # v1.0.1
+dc.read_values(x=[1, 2, 3]).save("experiment")  # v1.0.0
+dc.read_values(x=[1, 2, 3, 4]).save("experiment")  # v1.0.1
 
-ds = dc.read_dataset("experiment", version="1.0.0")     # exact version
-ds = dc.read_dataset("experiment")                       # latest
+ds = dc.read_dataset("experiment", version="1.0.0")  # exact version
+ds = dc.read_dataset("experiment")  # latest
 ```
 
 ## Typed by Construction
@@ -28,14 +28,16 @@ Schemas are Pydantic models, not SQL DDL. A dataset carries all data as typed co
 from pydantic import BaseModel
 import datachain as dc
 
+
 class Detection(BaseModel):
     label: str
     confidence: float
     bbox: list[float]
 
+
 (
     dc.read_storage("s3://bucket/frames/", type="image")
-    .map(det=run_detector)   # returns Detection
+    .map(det=run_detector)  # returns Detection
     .save("detections")
 )
 ```
@@ -52,10 +54,10 @@ DataChain has a two-level data model: the dataset **name** (durable identity) an
 import datachain as dc
 
 chain = dc.read_values(x=[1, 2, 3])
-chain.save("experiment")                              # 1.0.0
-chain.save("experiment", update_version="patch")      # 1.0.1
-chain.save("experiment", update_version="minor")      # 1.1.0
-chain.save("experiment", update_version="major")      # 2.0.0
+chain.save("experiment")  # 1.0.0
+chain.save("experiment", update_version="patch")  # 1.0.1
+chain.save("experiment", update_version="minor")  # 1.1.0
+chain.save("experiment", update_version="major")  # 2.0.0
 ```
 
 Lineage references track specific versions, not names; the registry records exactly which version was consumed.
@@ -84,9 +86,9 @@ Datasets are organized by a two-level namespace system: `team.project.name`. The
 import datachain as dc
 
 # Save with explicit namespace
-dc.read_storage("s3://bucket/images/", type="image") \
-    .map(emb=clip_embedding) \
-    .save("quant.prod.image_embeddings")
+dc.read_storage("s3://bucket/images/", type="image").map(emb=clip_embedding).save(
+    "quant.prod.image_embeddings"
+)
 
 # Read with fully qualified name
 ds = dc.read_dataset("quant.prod.image_embeddings")

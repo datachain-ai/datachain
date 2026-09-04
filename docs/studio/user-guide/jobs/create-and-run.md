@@ -162,12 +162,14 @@ from datachain import read_storage
 
 dc = (
     read_storage("s3://images/")
-    .filter(lambda file: file.path.endswith(('.jpg', '.png')))
-    .map(lambda file: {
-        "path": file.path,
-        "size": file.size,
-        "extension": file.path.split('.')[-1]
-    })
+    .filter(lambda file: file.path.endswith((".jpg", ".png")))
+    .map(
+        lambda file: {
+            "path": file.path,
+            "size": file.size,
+            "extension": file.path.split(".")[-1],
+        }
+    )
     .save("image_catalog")
 )
 ```

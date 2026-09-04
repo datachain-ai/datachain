@@ -27,9 +27,9 @@ import datachain as dc
 chain = (
     dc.read_storage(
         "data/",
-        delta=True,                    # Enable delta processing
-        delta_on="file.path",          # Field that uniquely identifies records
-        delta_compare="file.mtime"     # Field to check for changes
+        delta=True,  # Enable delta processing
+        delta_on="file.path",  # Field that uniquely identifies records
+        delta_compare="file.mtime",  # Field to check for changes
     )
     .map(result=process_function)
     .save(name="processed_data")
@@ -49,23 +49,22 @@ chain = (
 import datachain as dc
 import time
 
+
 def process_file(file):
     """Process a file and return results."""
     content = file.read_text()
     # Simulate processing time
     time.sleep(0.1)
-    return {
-        "content": content,
-        "processed_at": time.strftime("%Y-%m-%d %H:%M:%S")
-    }
+    return {"content": content, "processed_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+
 
 # Process only new or modified files
 chain = (
     dc.read_storage(
         "data/",
-        update=True,                   # Update the storage index
-        delta=True,                    # Process only new files
-        delta_on="file.path"           # Files are identified by their paths
+        update=True,  # Update the storage index
+        delta=True,  # Process only new files
+        delta_on="file.path",  # Files are identified by their paths
     )
     .map(result=process_file)
     .save(name="processed_files")
@@ -101,7 +100,7 @@ Similarly, combining delta with methods like `merge`, `union`, `subtract`, `diff
 If you still need to use these methods together with delta, you can override this restriction by setting the additional flag:
 
 ```python
-delta_unsafe=True
+delta_unsafe = True
 ```
 
 If more than one delta-enabled source participates in the same composed query, set `delta_unsafe=True` on every participating delta source.

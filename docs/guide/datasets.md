@@ -48,18 +48,18 @@ Every `save()` auto-increments the version:
 ```python
 import datachain as dc
 
-dc.read_values(x=[1, 2, 3]).save("experiment")        # v1.0.0
-dc.read_values(x=[1, 2, 3, 4]).save("experiment")      # v1.0.1
-dc.read_values(x=[1, 2, 3, 4, 5]).save("experiment")   # v1.0.2
+dc.read_values(x=[1, 2, 3]).save("experiment")  # v1.0.0
+dc.read_values(x=[1, 2, 3, 4]).save("experiment")  # v1.0.1
+dc.read_values(x=[1, 2, 3, 4, 5]).save("experiment")  # v1.0.2
 ```
 
 Read specific versions:
 
 ```python
-ds = dc.read_dataset("experiment")                       # latest
-ds = dc.read_dataset("experiment", version="1.0.0")      # exact
-ds = dc.read_dataset("experiment", version=">=1.0,<3.0") # PEP 440 range
-ds = dc.read_dataset("experiment", version=2)             # legacy int
+ds = dc.read_dataset("experiment")  # latest
+ds = dc.read_dataset("experiment", version="1.0.0")  # exact
+ds = dc.read_dataset("experiment", version=">=1.0,<3.0")  # PEP 440 range
+ds = dc.read_dataset("experiment", version=2)  # legacy int
 ```
 
 Control version bumps:
@@ -68,10 +68,10 @@ Control version bumps:
 import datachain as dc
 
 chain = dc.read_values(x=[1, 2, 3])
-chain.save("experiment")                              # 1.0.0
-chain.save("experiment", update_version="patch")      # 1.0.1
-chain.save("experiment", update_version="minor")      # 1.1.0
-chain.save("experiment", update_version="major")      # 2.0.0
+chain.save("experiment")  # 1.0.0
+chain.save("experiment", update_version="patch")  # 1.0.1
+chain.save("experiment", update_version="minor")  # 1.1.0
+chain.save("experiment", update_version="major")  # 2.0.0
 ```
 
 ## Namespaces
@@ -82,9 +82,9 @@ Two-level namespace system: `team.project.name`.
 import datachain as dc
 
 # Save with explicit namespace
-dc.read_storage("s3://bucket/images/", type="image") \
-    .map(emb=clip_embedding) \
-    .save("quant.prod.image_embeddings")
+dc.read_storage("s3://bucket/images/", type="image").map(emb=clip_embedding).save(
+    "quant.prod.image_embeddings"
+)
 
 # Read with fully qualified name
 ds = dc.read_dataset("quant.prod.image_embeddings")
@@ -101,9 +101,9 @@ Or per-chain:
 ```python
 import datachain as dc
 
-dc.read_values(scores=[1.2, 3.4, 2.5]) \
-    .settings(namespace="dev", project="analytics") \
-    .save("metrics")
+dc.read_values(scores=[1.2, 3.4, 2.5]).settings(
+    namespace="dev", project="analytics"
+).save("metrics")
 ```
 
 Dataset URI scheme: `ds://namespace.project.name@v1.2.3`.
@@ -155,11 +155,11 @@ dc.delete_namespace("scratch")
 dc.move_dataset("draft_results", "prod.validated_results")
 
 # Add description and attributes
-dc.read_storage("s3://bucket/images/", type="image") \
-    .map(emb=clip_embedding) \
-    .save("image_embeddings",
-          description="CLIP embeddings for product images",
-          attrs=["NLP", "location=US"])
+dc.read_storage("s3://bucket/images/", type="image").map(emb=clip_embedding).save(
+    "image_embeddings",
+    description="CLIP embeddings for product images",
+    attrs=["NLP", "location=US"],
+)
 ```
 
 ## Metrics and Parameters
@@ -169,11 +169,7 @@ Attach quantitative metrics to dataset versions:
 ```python
 import datachain as dc
 
-results = (
-    dc.read_dataset("training_data")
-    .map(prediction=run_model)
-    .save("predictions")
-)
+results = dc.read_dataset("training_data").map(prediction=run_model).save("predictions")
 
 dc.metrics.set("accuracy", 0.95)
 dc.metrics.set("f1_score", 0.91)
