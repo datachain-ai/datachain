@@ -115,6 +115,10 @@ class PlainKind(enum.Enum):
     A = "a"
 
 
+class ZeroFlag(enum.IntFlag):
+    NONE = 0
+
+
 @pytest.mark.parametrize(
     "annotation,expected",
     [
@@ -123,6 +127,9 @@ class PlainKind(enum.Enum):
         pytest.param(Literal[1, 2], Int64, id="int-literal"),
         pytest.param(Literal["a", "b"], String, id="str-literal"),
         pytest.param(Literal[True, False], Boolean, id="bool-literal"),
+        pytest.param(Literal[IntKind.ONE], Int64, id="literal-of-int-enum"),
+        pytest.param(Literal[StrKind.A], String, id="literal-of-str-enum"),
+        pytest.param(ZeroFlag, Int64, id="zero-only-int-flag"),
         pytest.param(
             Literal["a", None],  # noqa: PYI061
             String,
@@ -140,7 +147,7 @@ def test_values_decide_the_column_type(annotation, expected):
         pytest.param(PlainKind, id="plain-enum"),
         pytest.param(Literal[1, True], id="bool-is-not-int"),
         pytest.param(Literal[1, "a"], id="mixed-categories"),
-        pytest.param(Literal[IntKind.ONE], id="literal-of-enum-members"),
+        pytest.param(str | Literal[1], id="str-beside-an-int-literal"),
     ],
 )
 def test_values_with_no_single_column_type_are_refused(annotation):

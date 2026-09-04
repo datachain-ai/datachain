@@ -46,13 +46,7 @@ def python_to_sql(typ):  # noqa: PLR0911
         if issubclass(typ, SQLType):
             return typ
         if issubclass(typ, Enum):
-            if issubclass(typ, (int, float, str)):
-                # A mixin enum's member is its value, so it stores as one.
-                return _values_to_sql(member.value for member in typ)
-            # A plain enum's member is not its value and nothing converts it
-            # through .value here, so it has no column type. Raising is what
-            # lets an array fall back to JSON, as it did before.
-            raise TypeError(f"Cannot resolve type '{typ}' for flattening features")
+            return _enum_to_sql(typ)
 
     res = PYTHON_TO_SQL.get(typ)
     if res:
@@ -85,12 +79,31 @@ def python_to_sql(typ):  # noqa: PLR0911
             return _values_to_sql(value for arg in args for value in get_args(arg))
 
         if all(arg is str or get_origin(arg) in (Literal, LiteralEx) for arg in args):
-            return String
+            # A str arm contributes str; a Literal arm contributes its values.
+            return _values_to_sql(
+                "" if arg is str else value
+                for arg in args
+                for value in ((arg,) if arg is str else get_args(arg))
+            )
 
         if _is_json_inside_union(orig, args):
             return JSON
 
     raise TypeError(f"Cannot recognize type {typ}")
+
+
+def _enum_to_sql(typ: Any) -> Any:
+    """The column type an enum stores as.
+
+    Read from the primitive it mixes in rather than from iterating its members,
+    which a zero-only IntFlag has none of. A plain enum's member is not its value
+    and nothing converts it through .value here, so it has no column type at all;
+    raising is what lets an array fall back to JSON.
+    """
+    for primitive in (bool, int, float, str):
+        if issubclass(typ, primitive):
+            return PYTHON_TO_SQL[primitive]
+    raise TypeError(f"Cannot resolve type '{typ}' for flattening features")
 
 
 def _values_to_sql(values) -> Any:
@@ -101,7 +114,13 @@ def _values_to_sql(values) -> Any:
     Values of more than one storage category have no single column type between
     them and are carried as JSON.
     """
-    kinds = {type(value) for value in values if value is not None}
+    # An enum member stores as its value, whether it arrived as the member or as
+    # a Literal holding one.
+    kinds = {
+        type(value.value if isinstance(value, Enum) else value)
+        for value in values
+        if value is not None
+    }
     if not kinds:
         # Nothing but None, so the column only ever holds NULL and any type
         # would do; String is what it mapped to before.
