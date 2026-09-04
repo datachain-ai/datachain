@@ -625,16 +625,35 @@ def test_a_required_model_slot_is_held_to_the_same_contract():
 
 
 @pytest.mark.parametrize(
-    "annotation",
+    "annotation,expected",
     [
-        pytest.param(tuple[SlotA, int], id="model-first"),
-        pytest.param(tuple[int, SlotA], id="model-second"),
+        pytest.param(tuple[SlotA, int], {"type": "JSON"}, id="model-first"),
+        pytest.param(tuple[int, SlotA], {"type": "JSON"}, id="model-second"),
+        pytest.param(
+            tuple[SlotA | None, int],
+            {"type": "JSON", "dc_nullable": True},
+            id="optional-model-first",
+        ),
+        pytest.param(
+            tuple[int, SlotA | None],
+            {"type": "JSON", "dc_nullable": True},
+            id="optional-model-second",
+        ),
     ],
 )
-def test_a_mixed_tuple_falls_back_to_json_whichever_slot_is_the_model(annotation):
-    # Resolving the first slot outside the fallback made one order raise and the
-    # other work.
+def test_a_mixed_tuple_reaches_the_same_type_whichever_slot_is_the_model(
+    annotation, expected
+):
+    # Returning early on the mixed case skipped the nullability step, so a
+    # nullable slot lost its marker depending on where it sat.
     assert python_to_sql(annotation).to_dict() == {
         "type": "Array",
-        "item_type": {"type": "JSON"},
+        "item_type": expected,
     }
+
+
+def test_a_model_beside_a_scalar_is_still_held_to_the_contract():
+    # The mixed case must not be a way past the check: this slot holds a model
+    # the reader cannot rebuild, whatever sits next to it.
+    with pytest.raises(TypeError):
+        python_to_sql(tuple[ScalarDump | None, int])

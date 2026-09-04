@@ -193,13 +193,11 @@ def _list_to_array(typ, args):
     slots = [arg for arg in args if arg is not Ellipsis]
 
     if slots and any(_holds_a_model(slot) for slot in slots):
-        if not all(_holds_a_model(slot) for slot in slots):
-            # A model beside something that is not one: no single element type
-            # between them, so the array carries JSON. Asked of every slot, or
-            # tuple[Model, int] would raise where tuple[int, Model] did not.
-            return Array(JSON())
-        if any(_model_element(slot) is None for slot in slots):
-            # Every slot is a model, but one of them is not read back as one.
+        # Any model among the slots makes the element JSON: there is no single
+        # column type between a model and anything else. Every slot holding one
+        # is checked first, whether or not the others do -- returning early on
+        # the mixed case would let an unreadable model in beside an int.
+        if any(_holds_a_model(slot) and _model_element(slot) is None for slot in slots):
             raise TypeError(f"Cannot resolve type '{typ}' for flattening features")
 
         item: SQLType = JSON()
