@@ -46,12 +46,13 @@ def python_to_sql(typ):  # noqa: PLR0911
         if issubclass(typ, SQLType):
             return typ
         if issubclass(typ, Enum):
-            if issubclass(typ, (int, str)):
+            if issubclass(typ, (int, float, str)):
                 # A mixin enum's member is its value, so it stores as one.
                 return _values_to_sql(member.value for member in typ)
             # A plain enum's member is not its value and nothing converts it
-            # through .value here, so it stays unmapped as before.
-            return str
+            # through .value here, so it has no column type. Raising is what
+            # lets an array fall back to JSON, as it did before.
+            raise TypeError(f"Cannot resolve type '{typ}' for flattening features")
 
     res = PYTHON_TO_SQL.get(typ)
     if res:
@@ -78,6 +79,11 @@ def python_to_sql(typ):  # noqa: PLR0911
             non_none_arg = args[0] if args[0] is not type(None) else args[1]
             return python_to_sql(non_none_arg)
 
+        if all(get_origin(arg) in (Literal, LiteralEx) for arg in args):
+            # Literal[1] | Literal[2] holds the same values as Literal[1, 2] and
+            # has to reach the same column type.
+            return _values_to_sql(value for arg in args for value in get_args(arg))
+
         if all(arg is str or get_origin(arg) in (Literal, LiteralEx) for arg in args):
             return String
 
@@ -97,8 +103,14 @@ def _values_to_sql(values) -> Any:
     """
     kinds = {type(value) for value in values if value is not None}
     if len(kinds) != 1:
-        return JSON
-    return PYTHON_TO_SQL.get(kinds.pop(), JSON)
+        # No column type holds both faithfully, and JSON does not either: it
+        # cannot tell a stored "1" from the number, so refuse rather than
+        # corrupt one of the arms.
+        raise TypeError(f"Cannot resolve values {sorted(map(str, kinds))} to one type")
+    sql_type = PYTHON_TO_SQL.get(kinds.pop())
+    if sql_type is None:
+        raise TypeError("Cannot resolve these values to a column type")
+    return sql_type
 
 
 def _list_to_array(typ, args):

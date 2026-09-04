@@ -128,18 +128,30 @@ class PlainKind(enum.Enum):
             String,
             id="literal-ignores-none",
         ),
-        pytest.param(Literal[1, True], JSON, id="bool-is-not-int"),
-        pytest.param(Literal[1, "a"], JSON, id="mixed-categories"),
     ],
 )
 def test_values_decide_the_column_type(annotation, expected):
     assert python_to_sql(annotation) is expected
 
 
-def test_a_plain_enum_stays_unmapped():
-    # Its members are not their values, and nothing converts them through
-    # .value here, so it must not claim a column type.
-    assert python_to_sql(PlainKind) is str
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        pytest.param(PlainKind, id="plain-enum"),
+        pytest.param(Literal[1, True], id="bool-is-not-int"),
+        pytest.param(Literal[1, "a"], id="mixed-categories"),
+    ],
+)
+def test_values_with_no_single_column_type_are_refused(annotation):
+    # A plain enum's members are not their values, and values of more than one
+    # storage category have no type that holds both faithfully -- JSON included,
+    # since it cannot tell a stored "1" from the number.
+    with pytest.raises(TypeError):
+        python_to_sql(annotation)
+
+
+def test_a_union_of_literals_matches_the_same_values_written_as_one():
+    assert python_to_sql(Literal[1, 2]) is python_to_sql(Literal[1, 2])
 
 
 @pytest.mark.parametrize(

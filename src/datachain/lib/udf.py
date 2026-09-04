@@ -190,7 +190,13 @@ class UDFAdapter:
     batch: int = 1
 
     def hash(self, include_body: bool = True) -> str:
-        return self.inner.hash(include_body=include_body)
+        # Mixed in here rather than in UDFBase.hash so that a UDF overriding its
+        # own hash -- _MultiSignalMapper does, and user subclasses may -- cannot
+        # drop it. Every UDF reaches the warehouse through this adapter.
+        return hashlib.sha256(
+            bytes.fromhex(self.inner.hash(include_body=include_body))
+            + bytes.fromhex(_physical_schema_hash(self.inner.output))
+        ).hexdigest()
 
     def get_batching(self, use_partitioning: bool = False) -> BatchingStrategy:
         if use_partitioning:
@@ -322,7 +328,6 @@ class UDFBase(AbstractUDF):
             hash_callable(func_to_hash, include_body=include_body),
             self.params.hash() if self.params else "",
             self.output.hash(),
-            _physical_schema_hash(self.output),
         ]
 
         return hashlib.sha256(
