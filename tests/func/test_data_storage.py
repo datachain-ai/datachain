@@ -9,6 +9,7 @@ import pytest
 import ujson as json
 from pydantic import BaseModel, ConfigDict
 
+import datachain as dc
 from datachain import json as dcjson
 from datachain.data_storage.codec import check_value
 from datachain.sql.types import (
@@ -376,3 +377,28 @@ def test_check_value_stores_a_json_array_the_same_wherever_none_sits():
 def test_check_value_leaves_no_model_in_a_json_array_holding_none(value):
     # from #1978: nothing unserializable may survive, wherever None sits
     json.dumps(check_value(Array(JSON()))(value))
+
+
+class NestedOptional(BaseModel):
+    vals: list[list[int] | None]
+
+
+@pytest.mark.parametrize(
+    "vals",
+    [
+        pytest.param([[1, 2], None], id="none-last"),
+        pytest.param([None, [1, 2]], id="none-first"),
+        pytest.param([None, None], id="all-none"),
+        pytest.param([[1, 2], []], id="empty-is-not-none"),
+    ],
+)
+def test_an_optional_nested_collection_round_trips(test_session, vals):
+    # An Array element cannot be nullable, so the element is carried as JSON --
+    # which keeps a None distinct from an empty collection.
+    rows = (
+        dc.read_values(i=[1], session=test_session)
+        .map(h=lambda: NestedOptional(vals=vals), output=NestedOptional)
+        .to_list("h.vals")
+    )
+
+    assert rows == [(vals,)]

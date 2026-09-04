@@ -1,8 +1,9 @@
 import enum
 from collections.abc import Mapping
-from typing import Dict, Literal, Union  # noqa: UP035
+from typing import Annotated, Dict, Literal, Union  # noqa: UP035
 
 import pytest
+from pydantic import BeforeValidator
 
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.sql.types import JSON, Array, Boolean, Float, Int64, String
@@ -230,3 +231,50 @@ def test_a_later_refused_slot_is_still_reached(annotation):
     # further along was never resolved and its values were stored lossily.
     with pytest.raises(TypeError):
         python_to_sql(annotation)
+
+
+class SubclassedInt(Int64):
+    pass
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        pytest.param(list[Annotated[int, "meta"] | None], id="annotated-int"),
+        pytest.param(list[Literal["a", "b"] | None], id="literal-str"),
+        pytest.param(list[Annotated[int | None, "meta"]], id="optional-in-annotated"),
+        pytest.param(
+            list[Annotated[Literal["a", None], "meta"]],  # noqa: PYI061
+            id="none-among-literal-values",
+        ),
+        pytest.param(list[SubclassedInt | None], id="subclassed-sql-type"),
+        pytest.param(
+            list[Annotated[SubclassedInt | None, "meta"]],
+            id="subclassed-sql-type-in-annotated",
+        ),
+        pytest.param(
+            tuple[str, Literal[None]],  # noqa: PYI061
+            id="null-only-literal-slot",
+        ),
+        pytest.param(list[Literal[None]], id="null-only-literal-item"),  # noqa: PYI061
+        pytest.param(tuple[int, int | None], id="second-tuple-slot"),
+        pytest.param(tuple[int | None, int], id="first-tuple-slot"),
+    ],
+)
+def test_python_to_sql_of_an_array_whose_item_admits_none_is_nullable(annotation):
+    assert python_to_sql(annotation).to_dict()["item_type"].get("dc_nullable")
+
+
+def _rejects_none(value):
+    if value is None:
+        raise TypeError("this field does not take None")
+    return int(value)
+
+
+def test_python_to_sql_does_not_run_a_field_validator():
+    annotation = list[Annotated[int, BeforeValidator(_rejects_none)]]
+
+    assert python_to_sql(annotation).to_dict() == {
+        "type": "Array",
+        "item_type": {"type": "Int64"},
+    }
