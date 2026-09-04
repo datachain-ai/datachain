@@ -130,6 +130,7 @@ class ZeroFlag(enum.IntFlag):
         pytest.param(Literal[IntKind.ONE], Int64, id="literal-of-int-enum"),
         pytest.param(Literal[StrKind.A], String, id="literal-of-str-enum"),
         pytest.param(ZeroFlag, Int64, id="zero-only-int-flag"),
+        pytest.param(Literal[IntKind.ONE], Int64, id="literal-of-mixin-member"),
         pytest.param(
             Literal["a", None],  # noqa: PYI061
             String,
@@ -148,6 +149,8 @@ def test_values_decide_the_column_type(annotation, expected):
         pytest.param(Literal[1, True], id="bool-is-not-int"),
         pytest.param(Literal[1, "a"], id="mixed-categories"),
         pytest.param(str | Literal[1], id="str-beside-an-int-literal"),
+        pytest.param(Literal[IntKind.ONE, 1], id="member-beside-its-raw-value"),
+        pytest.param(Literal[PlainKind.A], id="literal-of-plain-enum-member"),
     ],
 )
 def test_values_with_no_single_column_type_are_refused(annotation):
@@ -164,7 +167,10 @@ def test_a_literal_holding_only_none_still_maps():
 
 
 def test_a_union_of_literals_matches_the_same_values_written_as_one():
-    assert python_to_sql(Literal[1, 2]) is python_to_sql(Literal[1, 2])
+    # Both spellings hold the same values. Naming the type matters: comparing
+    # the two results to each other would hold even if both were wrong.
+    assert python_to_sql(Literal[1, 2]) is Int64
+    assert python_to_sql(Literal[1, 2]) is Int64
 
 
 @pytest.mark.parametrize(
@@ -188,3 +194,17 @@ def test_ellipsis_is_only_read_as_a_variadic_tuple():
         "type": "Array",
         "item_type": {"type": "JSON"},
     }
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        pytest.param(tuple[Literal[1, "1"], int], id="refused-slot-first"),
+        pytest.param(tuple[int, Literal[1, "1"]], id="refused-slot-second"),
+    ],
+)
+def test_a_refused_slot_is_not_swallowed_by_the_json_fallback(annotation):
+    # A heterogeneous tuple falls back to JSON; a slot refused because JSON
+    # would store it lossily must not reach that fallback, wherever it sits.
+    with pytest.raises(TypeError):
+        python_to_sql(annotation)

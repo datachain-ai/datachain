@@ -26,6 +26,16 @@ from datachain.sql.types import (
     String,
 )
 
+
+class UnstorableTypeError(TypeError):
+    """No column type holds these values faithfully.
+
+    Distinct from a type simply not resolving: a heterogeneous tuple falls back
+    to JSON, but a refusal must not, or the values it refuses would be stored
+    lossily by the fallback instead.
+    """
+
+
 PYTHON_TO_SQL = {
     int: Int64,
     str: String,
@@ -114,13 +124,26 @@ def _values_to_sql(values) -> Any:
     Values of more than one storage category have no single column type between
     them and are carried as JSON.
     """
-    # An enum member stores as its value, whether it arrived as the member or as
-    # a Literal holding one.
-    kinds = {
-        type(value.value if isinstance(value, Enum) else value)
-        for value in values
-        if value is not None
-    }
+    kinds: set[type] = set()
+    saw_member = saw_raw = False
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, Enum):
+            saw_member = True
+            if not isinstance(value, (bool, int, float, str)):
+                # A plain enum member is not its value and nothing converts it
+                # through .value on the way to the column.
+                raise UnstorableTypeError(f"Cannot store enum member {value!r}")
+            kinds.add(type(value.value))
+        else:
+            saw_raw = True
+            kinds.add(type(value))
+
+    if saw_member and saw_raw:
+        # Stored, IntKind.ONE and 1 are the same value; reading cannot tell which
+        # was written, so the member would come back as the raw one.
+        raise UnstorableTypeError("Cannot store enum members beside their raw values")
     if not kinds:
         # Nothing but None, so the column only ever holds NULL and any type
         # would do; String is what it mapped to before.
@@ -129,10 +152,12 @@ def _values_to_sql(values) -> Any:
         # No column type holds both faithfully, and JSON does not either: it
         # cannot tell a stored "1" from the number, so refuse rather than
         # corrupt one of the arms.
-        raise TypeError(f"Cannot resolve values {sorted(map(str, kinds))} to one type")
+        raise UnstorableTypeError(
+            f"Cannot resolve values {sorted(map(str, kinds))} to one type"
+        )
     sql_type = PYTHON_TO_SQL.get(kinds.pop())
     if sql_type is None:
-        raise TypeError("Cannot resolve these values to a column type")
+        raise UnstorableTypeError("Cannot resolve these values to a column type")
     return sql_type
 
 
@@ -166,6 +191,10 @@ def list_of_args_to_type(args) -> SQLType:
             next_type = python_to_sql(next_arg)
             if next_type != first_type:
                 return JSON()
+        except UnstorableTypeError:
+            # Refused on purpose; JSON would store it lossily rather than not
+            # at all, which is what the refusal is for.
+            raise
         except TypeError:
             return JSON()
     return first_type
