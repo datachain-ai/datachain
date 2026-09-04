@@ -140,6 +140,7 @@ def test_values_decide_the_column_type(annotation, expected):
         pytest.param(PlainKind, id="plain-enum"),
         pytest.param(Literal[1, True], id="bool-is-not-int"),
         pytest.param(Literal[1, "a"], id="mixed-categories"),
+        pytest.param(Literal[IntKind.ONE], id="literal-of-enum-members"),
     ],
 )
 def test_values_with_no_single_column_type_are_refused(annotation):
@@ -148,6 +149,11 @@ def test_values_with_no_single_column_type_are_refused(annotation):
     # since it cannot tell a stored "1" from the number.
     with pytest.raises(TypeError):
         python_to_sql(annotation)
+
+
+def test_a_literal_holding_only_none_still_maps():
+    # It has no value to categorize, but the column only ever holds NULL.
+    assert python_to_sql(Literal[None]) is String  # noqa: PYI061
 
 
 def test_a_union_of_literals_matches_the_same_values_written_as_one():
