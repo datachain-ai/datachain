@@ -947,6 +947,37 @@ def test_map_hydrates_models_in_optional_dict_param(test_session):
     assert chain.to_values("count") == [3]
 
 
+class _Crate(DataModel):
+    n: int
+
+
+def _stored_field(test_session, name, annotation, value):
+    holder = type("Holder", (DataModel,), {"__annotations__": {"field": annotation}})
+    dc.read_values(c=[holder(field=value)], session=test_session).save(name)
+
+    catalog = test_session.catalog
+    table = catalog.warehouse.dataset_rows(
+        catalog.get_dataset(name, versions=["1.0.0"])
+    )
+    (row,) = catalog.warehouse.db.execute(table.select(table.c("field", "c")))
+    return row[0]
+
+
+def test_save_stores_a_tuple_of_models_like_the_list_of_the_same_models(test_session):
+    as_list = _stored_field(test_session, "as_list", list[_Crate], [_Crate(n=1)])
+    as_tuple = _stored_field(
+        test_session, "as_tuple", tuple[_Crate, ...], (_Crate(n=1),)
+    )
+
+    assert as_tuple == as_list
+
+
+def test_save_leaves_a_collection_without_models_alone(test_session):
+    stored = _stored_field(test_session, "plain", tuple[int, int], (1, 2))
+
+    assert stored == [1, 2]
+
+
 def test_map_hydrates_models_in_variadic_tuple_param(test_session):
     class TupleCollection(DataModel):
         items: tuple[MyFr, ...]
