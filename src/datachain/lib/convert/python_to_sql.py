@@ -102,6 +102,10 @@ def _values_to_sql(values) -> Any:
     them and are carried as JSON.
     """
     kinds = {type(value) for value in values if value is not None}
+    if not kinds:
+        # Nothing but None, so the column only ever holds NULL and any type
+        # would do; String is what it mapped to before.
+        return String
     if len(kinds) != 1:
         # No column type holds both faithfully, and JSON does not either: it
         # cannot tell a stored "1" from the number, so refuse rather than
