@@ -11,7 +11,6 @@ from datachain.lib.data_model import (
     NULLABLE_SCALARS,
     is_mapping_annotation,
     is_sequence_annotation,
-    unwrap_optional,
 )
 from datachain.lib.model_store import ModelStore
 from datachain.sql.types import (
@@ -191,12 +190,58 @@ def _list_to_array(typ, args):
         return Array(JSON())
 
     list_type = list_of_args_to_type(args)
-    # Optional[scalar] elements map to a nullable Array element so None survives
-    # (ClickHouse: Array(Nullable(T))).
-    inner, is_optional = unwrap_optional(args0)
-    if is_optional and inner in NULLABLE_SCALARS:
-        list_type = SQLType.as_nullable(list_type)
+
+    # An element admitting None maps to a nullable Array element so the None
+    # survives (ClickHouse: Array(Nullable(T))). A fixed tuple keeps every slot
+    # in the one column, so any slot admitting one decides it.
+    if any(_admits_none(arg) for arg in args if arg is not Ellipsis):
+        if _takes_null(list_type):
+            list_type = SQLType.as_nullable(list_type)
+        else:
+            # An Array element cannot be made nullable -- ClickHouse has no
+            # Nullable(Array) -- so an optional collection is carried as a JSON
+            # document, which can be.
+            list_type = SQLType.as_nullable(JSON())
     return Array(list_type)
+
+
+def _admits_none(annotation: Any) -> bool:
+    """Whether this annotation permits None, however the None is spelled.
+
+    Structural on purpose. Asking Pydantic to validate a None would run whatever
+    validators the field declares -- a BeforeValidator rejecting None would then
+    fail the schema for a column of ordinary ints -- and a coercing one would
+    answer for its own behaviour rather than for the declared type.
+    """
+    if annotation is None or annotation is type(None):
+        return True
+
+    origin = get_origin(annotation)
+    if origin in (Literal, LiteralEx):
+        return any(value is None for value in get_args(annotation))
+    if origin is Annotated:
+        return _admits_none(get_args(annotation)[0])
+    if origin in (Union, UnionType):
+        return any(_admits_none(arm) for arm in get_args(annotation))
+    return False
+
+
+def _takes_null(sql_type: Any) -> bool:
+    """Whether a NULL can sit in this column type.
+
+    By subclass, since the scalar may have been subclassed. An Array has nowhere
+    to keep one; a JSON element does, the array around it holding the NULL
+    rather than the document.
+    """
+    sql_cls = sql_type if isinstance(sql_type, type) else type(sql_type)
+    if issubclass(sql_cls, JSON):
+        return True
+    for scalar in NULLABLE_SCALARS:
+        nullable = python_to_sql(scalar)
+        nullable_cls = nullable if isinstance(nullable, type) else type(nullable)
+        if issubclass(sql_cls, nullable_cls):
+            return True
+    return False
 
 
 def list_of_args_to_type(args) -> SQLType:
