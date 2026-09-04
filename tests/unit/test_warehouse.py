@@ -1,7 +1,10 @@
 import base64
+import datetime
 import json
+from enum import Enum
 from unittest.mock import patch
 
+import numpy as np
 import pytest
 import sqlalchemy as sa
 
@@ -9,6 +12,9 @@ import datachain as dc
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SQLiteWarehouse
 from datachain.lib.file import File
+from datachain.lib.udf import JsonSerializationError
+from datachain.sql.types import JSON, Array, Float, String
+from tests.utils import skip_if_not_sqlite
 
 
 def test_serialize(sqlite_db):
@@ -225,3 +231,182 @@ def test_select_node_fields_by_parent_path_tar_wildcards_are_literal(
         "dir_%1/b.csv",
         "dir_%1/nested/c.csv",
     ]
+
+
+class _StrEnum(str, Enum):
+    A = "a"
+    B = "b"
+    ONE = "1"
+
+
+class _Mangled(str):
+    """A str subclass whose __str__ disagrees with the key json emits."""
+
+    __slots__ = ()
+
+    def __str__(self):
+        return "MANGLED"
+
+
+class _OpaqueStr(str):
+    """A str subclass whose equality cannot spot a duplicate key."""
+
+    __slots__ = ()
+    __eq__ = object.__eq__
+    __hash__ = object.__hash__
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"1": "a", 1: "b"},
+        {None: "a", "null": "b"},
+        {True: "a", "true": "b"},
+        {(1, 2): "a", "[1,2]": "b"},
+        {"1": "a", _OpaqueStr("1"): "b"},
+        {_StrEnum.ONE: "a", 1: "b"},
+    ],
+    ids=[
+        "int-and-str",
+        "none-and-null",
+        "bool-and-str",
+        "tuple-and-str",
+        "subclass",
+        "enum-value-and-int",
+    ],
+)
+def test_convert_type_refuses_colliding_dict_keys(warehouse, value):
+    with pytest.raises(JsonSerializationError, match="would be lost"):
+        warehouse.convert_type(value, JSON(), dict, "JSON", "c")
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ({"x": "a", 2: "b"}, {"x": "a", "2": "b"}),
+        ({1: "a", 2: "b"}, {"1": "a", "2": "b"}),
+        ({_StrEnum.A: "x", _StrEnum.B: "y"}, {"a": "x", "b": "y"}),
+        ({_StrEnum.A: "x", "_StrEnum.A": "y"}, {"a": "x", "_StrEnum.A": "y"}),
+        ({_Mangled("a"): "x"}, {"a": "x"}),
+    ],
+    ids=["mixed", "all-int", "enum", "enum-and-its-label", "custom-str"],
+)
+def test_convert_type_keeps_dict_keys_that_do_not_collide(warehouse, value, expected):
+    got = warehouse.convert_type(value, JSON(), dict, "JSON", "c")
+    assert json.loads(got) == expected
+
+
+@pytest.mark.parametrize(
+    "value,col_type,expected",
+    [
+        ([1, 2], Array(Float()), [1.0, 2.0]),
+        (("x", "y"), Array(String()), ["x", "y"]),
+    ],
+    ids=["float-from-int", "tuple-to-list"],
+)
+def test_convert_type_converts_array_items(warehouse, value, col_type, expected):
+    assert warehouse.convert_type(value, col_type, list, "Array", "c") == expected
+
+
+@skip_if_not_sqlite
+def test_convert_type_keeps_a_numpy_object_array_that_adds_keys(warehouse):
+    value = [{"payload": np.array([{"a": 1}], dtype=object)}]
+
+    assert warehouse.convert_type(value, Array(JSON()), list, "Array", "c") == value
+
+
+@pytest.mark.parametrize(
+    "value,col_type,col_python_type,col_type_name",
+    [
+        (
+            [
+                {
+                    "1": "first",
+                    1: "second",
+                    "payload": np.array([{"a": 1}], dtype=object),
+                }
+            ],
+            Array(JSON()),
+            list,
+            "Array",
+        ),
+        (
+            {"payload": np.array([{"1": "first", 1: "second"}], dtype=object)},
+            JSON(),
+            dict,
+            "JSON",
+        ),
+    ],
+    ids=["array-item", "top-level"],
+)
+def test_convert_type_refuses_a_collision_a_numpy_array_hides(
+    warehouse, value, col_type, col_python_type, col_type_name
+):
+    with pytest.raises(JsonSerializationError, match="would be lost"):
+        warehouse.convert_type(value, col_type, col_python_type, col_type_name, "m__d")
+
+
+@skip_if_not_sqlite
+def test_convert_type_names_the_column_for_an_unserializable_array_item(warehouse):
+    with pytest.raises(JsonSerializationError) as excinfo:
+        warehouse.convert_type([{"k": {1, 2}}], Array(JSON()), list, "Array", "m__d")
+
+    assert excinfo.value.column_name == "m__d"
+
+
+@skip_if_not_sqlite
+def test_convert_type_keeps_array_dict_keys_the_driver_stores_apart(warehouse):
+    value = [{(1, 2): "tuple", "[1,2]": "string"}]
+
+    assert warehouse.convert_type(value, Array(JSON()), list, "Array", "c") == value
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize(
+    "value",
+    [
+        [{(1, 2): "tuple", "(1, 2)": "string"}],
+        [{datetime.date(2020, 1, 2): "date", "2020-01-02": "string"}],
+    ],
+    ids=["tuple-key", "date-key"],
+)
+def test_convert_type_refuses_array_dict_keys_the_driver_merges(warehouse, value):
+    with pytest.raises(JsonSerializationError, match="would be lost"):
+        warehouse.convert_type(value, Array(JSON()), list, "Array", "c")
+
+
+def test_convert_type_does_not_re_encode_dict_array_items(warehouse):
+    value = [{"a": 1}, {"b": 2}]
+
+    got = warehouse.convert_type(value, Array(JSON()), list, "Array", "c")
+
+    if warehouse.python_type(JSON()) is dict:
+        assert got == value
+    else:
+        assert got == ['{"a":1}', '{"b":2}']
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="_numpy_to_python rebuilds the mapping while materializing an object "
+    "array, so np.datetime64('NaT', 'ns') and None collapse onto one None key "
+    "there, "
+    "before any emitted JSON exists to read. Pre-existing; tracked on #1914.",
+)
+def test_convert_type_refuses_a_collision_numpy_normalization_hides(warehouse):
+    value = {
+        "payload": np.array(
+            [{np.datetime64("NaT", "ns"): "a", None: "b"}], dtype=object
+        )
+    }
+
+    with pytest.raises(JsonSerializationError, match="would be lost"):
+        warehouse.convert_type(value, JSON(), dict, "JSON", "c")
+
+
+def test_convert_type_names_the_column_for_a_colliding_dict(warehouse):
+    with pytest.raises(JsonSerializationError) as excinfo:
+        warehouse.convert_type({"1": "a", 1: "b"}, JSON(), dict, "JSON", "m__d")
+
+    assert excinfo.value.column_name == "m__d"
+    assert "both serialize to the JSON key '1'" in str(excinfo.value)
