@@ -18,10 +18,9 @@ from datachain.cache import temporary_cache
 from datachain.dataset import RowDict
 from datachain.hash_utils import hash_callable
 from datachain.lib.convert.flatten import (
-    classify_field,
     flatten,
     flatten_value,
-    is_optional_model,
+    union_value_match,
 )
 from datachain.lib.file import File, FileError
 from datachain.lib.signal_schema import SignalSchema
@@ -410,12 +409,11 @@ class UDFBase(AbstractUDF):
                     "in output"
                 )
             flat: list[Any] = []
+            names = list(annos)
             # strict=False as shorter row is allowed for arrow/parquet (guarded above)
-            for obj, anno in zip(row, annos.values(), strict=False):
-                # tag is added only when obj IS the Optional value, not a wrapper.
-                if is_optional_model(anno) and (
-                    obj is None or isinstance(obj, classify_field(anno).inner)
-                ):
+            for i, (obj, anno) in enumerate(zip(row, annos.values(), strict=False)):
+                # names[i:] are the signals a cover model at this position holds
+                if union_value_match(obj, anno, names[i:]):
                     flat.extend(flatten_value(obj, anno))
                 else:
                     flat.extend(self._obj_to_list(obj))
