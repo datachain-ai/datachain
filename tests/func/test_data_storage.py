@@ -17,7 +17,7 @@ from pydantic import (
 
 import datachain as dc
 from datachain import json as dcjson
-from datachain.lib.convert.python_to_sql import python_to_sql
+from datachain.lib.convert.python_to_sql import _model_element, python_to_sql
 from datachain.sql.types import (
     JSON,
     Array,
@@ -613,3 +613,28 @@ def test_python_to_sql_refuses_a_model_that_does_not_dump_to_a_mapping():
     # returning something else would be stored and handed back as that instead.
     with pytest.raises(TypeError):
         python_to_sql(list[ScalarDump | None])
+
+
+def test_a_required_model_slot_is_held_to_the_same_contract():
+    # Asking only of the optional slots let a required one through on the
+    # strength of its neighbour; both answer to "the reader can rebuild it".
+    assert _model_element(SlotA) is SlotA
+    assert _model_element(SlotA | None) is SlotA
+    assert _model_element(ScalarDump) is None
+    assert _model_element(ScalarDump | None) is None
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        pytest.param(tuple[SlotA, int], id="model-first"),
+        pytest.param(tuple[int, SlotA], id="model-second"),
+    ],
+)
+def test_a_mixed_tuple_falls_back_to_json_whichever_slot_is_the_model(annotation):
+    # Resolving the first slot outside the fallback made one order raise and the
+    # other work.
+    assert python_to_sql(annotation).to_dict() == {
+        "type": "Array",
+        "item_type": {"type": "JSON"},
+    }

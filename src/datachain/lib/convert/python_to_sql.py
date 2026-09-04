@@ -191,10 +191,17 @@ def _list_to_array(typ, args):
     # answering from the first would let a slot through that cannot be read back
     # as a model.
     slots = [arg for arg in args if arg is not Ellipsis]
-    if slots and all(
-        ModelStore.is_pydantic(slot) or _optional_model(slot) is not None
-        for slot in slots
-    ):
+
+    if slots and any(_holds_a_model(slot) for slot in slots):
+        if not all(_holds_a_model(slot) for slot in slots):
+            # A model beside something that is not one: no single element type
+            # between them, so the array carries JSON. Asked of every slot, or
+            # tuple[Model, int] would raise where tuple[int, Model] did not.
+            return Array(JSON())
+        if any(_model_element(slot) is None for slot in slots):
+            # Every slot is a model, but one of them is not read back as one.
+            raise TypeError(f"Cannot resolve type '{typ}' for flattening features")
+
         item: SQLType = JSON()
         if any(_admits_none(slot) for slot in slots):
             item = SQLType.as_nullable(item)
@@ -217,6 +224,35 @@ def _list_to_array(typ, args):
             # unwritable, as before.
             list_type = SQLType.as_nullable(JSON())
     return Array(list_type)
+
+
+def _holds_a_model(annotation: Any) -> bool:
+    """Whether this element is a model, or an Optional holding one.
+
+    Separate from whether the model can be read back: a slot that holds one it
+    cannot rebuild has to refuse the annotation, while a slot holding no model
+    at all just means the array carries JSON.
+    """
+    if get_origin(annotation) is Annotated:
+        return _holds_a_model(get_args(annotation)[0])
+    if ModelStore.is_pydantic(annotation):
+        return True
+    if get_origin(annotation) not in (Union, UnionType):
+        return False
+    arms = [arm for arm in get_args(annotation) if arm is not type(None)]
+    return len(arms) == 1 and _holds_a_model(arms[0])
+
+
+def _model_element(annotation: Any) -> Any:
+    """The model this element stores as, or None if it does not store as one.
+
+    Required and optional slots answer to the same contract: a model the reader
+    can rebuild. Asking it only of the optional ones would let
+    tuple[A | None, ScalarDump] through on the strength of its first slot.
+    """
+    if ModelStore.is_pydantic(annotation) and _serializes_as_a_mapping(annotation):
+        return annotation
+    return _optional_model(annotation)
 
 
 def _optional_model(annotation: Any) -> Any:
