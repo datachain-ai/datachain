@@ -1,15 +1,17 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Annotated, Any, Literal
 
 import numpy as np
 import pandas as pd
 import pytest
 import ujson as json
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, BeforeValidator, ConfigDict
 
+import datachain as dc
 from datachain import json as dcjson
+from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.sql.types import (
     JSON,
     Array,
@@ -423,3 +425,125 @@ def test_convert_type_leaves_no_model_in_a_json_array_holding_none(test_session,
 
     # Whatever shape the backend asks for, nothing unserializable may survive.
     json.dumps(converted)
+
+
+class SubclassedInt(Int64):
+    pass
+
+
+@pytest.mark.parametrize(
+    "annotation,value",
+    [
+        pytest.param(list[int | None], [1, None], id="plain-int"),
+        pytest.param(list[int | None], [None, 2], id="plain-int-none-first"),
+        pytest.param(
+            list[Annotated[int, "meta"] | None], [1, None], id="annotated-int"
+        ),
+        pytest.param(list[Literal["a", "b"] | None], ["a", None], id="literal-str"),
+        pytest.param(
+            list[Literal["a", "b"] | None], [None, "b"], id="literal-str-none-first"
+        ),
+        pytest.param(
+            list[Annotated[int | None, "meta"]], [1, None], id="optional-in-annotated"
+        ),
+        pytest.param(
+            list[Annotated[int | None, "meta"]],
+            [None, 2],
+            id="optional-in-annotated-none-first",
+        ),
+        pytest.param(
+            list[Annotated[Literal["a", None], "meta"]],  # noqa: PYI061
+            ["a", None],
+            id="none-among-literal-values",
+        ),
+        pytest.param(list[SubclassedInt | None], [1, None], id="subclassed-sql-type"),
+        pytest.param(
+            list[Annotated[SubclassedInt | None, "meta"]],
+            [1, None],
+            id="subclassed-sql-type-in-annotated",
+        ),
+        pytest.param(
+            list[str | Literal[None]],  # noqa: PYI061
+            ["a", None],
+            id="literal-none-in-a-union",
+        ),
+        pytest.param(
+            tuple[str, Literal[None]],  # noqa: PYI061
+            ("a", None),
+            id="null-only-literal-slot",
+        ),
+        pytest.param(
+            list[Literal[None]],  # noqa: PYI061
+            [None],
+            id="null-only-literal-item",
+        ),
+        pytest.param(tuple[int, int | None], (1, None), id="second-tuple-slot"),
+        pytest.param(tuple[int | None, int], (None, 1), id="first-tuple-slot"),
+    ],
+)
+def test_convert_type_keeps_none_for_a_wrapped_nullable_scalar(
+    test_session, annotation, value
+):
+    warehouse = test_session.catalog.warehouse
+    col_type = python_to_sql(annotation)
+
+    converted = warehouse.convert_type(
+        value, col_type, warehouse.python_type(col_type), "Array", "test_column"
+    )
+
+    assert converted == list(value)
+
+
+def _rejects_none(value):
+    if value is None:
+        raise TypeError("this field does not take None")
+    return int(value)
+
+
+def test_python_to_sql_does_not_run_a_field_validator():
+    # Deciding nullability by validating a None would run whatever the field
+    # declares, and fail a column of ordinary ints on a validator's own rules.
+    annotation = list[Annotated[int, BeforeValidator(_rejects_none)]]
+
+    assert python_to_sql(annotation).to_dict() == {
+        "type": "Array",
+        "item_type": {"type": "Int64"},
+    }
+
+
+class NestedOptional(BaseModel):
+    vals: list[list[int] | None]
+
+
+@pytest.mark.parametrize(
+    "vals",
+    [
+        pytest.param([[1, 2], None], id="none-last"),
+        pytest.param([None, [1, 2]], id="none-first"),
+        pytest.param([None, None], id="all-none"),
+        pytest.param([[1, 2], []], id="empty-is-not-none"),
+    ],
+)
+def test_an_optional_nested_collection_round_trips(test_session, vals):
+    # An Array element cannot be nullable, so the element is carried as JSON --
+    # which keeps a None distinct from an empty collection.
+    rows = (
+        dc.read_values(i=[1], session=test_session)
+        .map(h=lambda: NestedOptional(vals=vals), output=NestedOptional)
+        .to_list("h.vals")
+    )
+
+    assert rows == [(vals,)]
+
+
+def test_an_optional_nested_array_keeps_a_typed_leaf():
+    # The JSON fallback for an optional collection only applies where the leaves
+    # read back the same from JSON; a datetime would come back as its ISO string.
+    assert python_to_sql(list[list[datetime] | None]).to_dict() == {
+        "type": "Array",
+        "item_type": {"type": "Array", "item_type": {"type": "DateTime"}},
+    }
+    assert python_to_sql(list[list[int] | None]).to_dict() == {
+        "type": "Array",
+        "item_type": {"type": "JSON", "dc_nullable": True},
+    }
