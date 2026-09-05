@@ -7,11 +7,17 @@ import numpy as np
 import pandas as pd
 import pytest
 import ujson as json
-from pydantic import BaseModel, BeforeValidator, ConfigDict
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    RootModel,
+    model_serializer,
+)
 
 import datachain as dc
 from datachain import json as dcjson
-from datachain.lib.convert.python_to_sql import python_to_sql
+from datachain.lib.convert.python_to_sql import _model_element, python_to_sql
 from datachain.sql.types import (
     JSON,
     Array,
@@ -544,6 +550,169 @@ def test_an_optional_nested_array_keeps_a_typed_leaf():
         "item_type": {"type": "Array", "item_type": {"type": "DateTime"}},
     }
     assert python_to_sql(list[list[int] | None]).to_dict() == {
+        "type": "Array",
+        "item_type": {"type": "JSON", "dc_nullable": True},
+    }
+
+
+class SlotA(BaseModel):
+    x: int
+
+
+class SlotB(BaseModel):
+    y: int
+
+
+def test_python_to_sql_refuses_a_tuple_slot_that_reads_back_wrong():
+    # Every slot of a fixed tuple shares the column, so one that cannot be read
+    # back as a model has to refuse the whole annotation rather than be stored
+    # and handed back as a plain dict.
+    with pytest.raises(TypeError):
+        python_to_sql(tuple[SlotA | None, Annotated[SlotB, "meta"] | None])
+
+    assert python_to_sql(tuple[SlotA | None, SlotB | None]).to_dict() == {
+        "type": "Array",
+        "item_type": {"type": "JSON", "dc_nullable": True},
+    }
+
+
+class RootInt(RootModel[int]):
+    pass
+
+
+def test_python_to_sql_refuses_an_optional_root_model_element():
+    # A root model dumps to its bare value, which the reader cannot rebuild into
+    # a model, so it must not be admitted by the optional-model shortcut.
+    with pytest.raises(TypeError):
+        python_to_sql(list[RootInt | None])
+
+
+class ScalarDump(BaseModel):
+    x: int
+
+    @model_serializer
+    def _dump(self):
+        return self.x
+
+
+def test_python_to_sql_checks_every_tuple_slot_for_a_model():
+    # Answering from the first slot let the rest through unchecked: a nullable
+    # second slot lost its dc_nullable, and one that cannot be read back as a
+    # model was accepted.
+    assert python_to_sql(tuple[SlotA, SlotB | None]).to_dict() == {
+        "type": "Array",
+        "item_type": {"type": "JSON", "dc_nullable": True},
+    }
+
+    with pytest.raises(TypeError):
+        python_to_sql(tuple[SlotA, RootInt | None])
+
+
+def test_python_to_sql_refuses_a_model_that_does_not_dump_to_a_mapping():
+    # The reader rebuilds a nested model from a mapping, so a model_serializer
+    # returning something else would be stored and handed back as that instead.
+    with pytest.raises(TypeError):
+        python_to_sql(list[ScalarDump | None])
+
+
+def test_a_required_model_slot_is_held_to_the_same_contract():
+    # Asking only of the optional slots let a required one through on the
+    # strength of its neighbour; both answer to "the reader can rebuild it".
+    assert _model_element(SlotA) is SlotA
+    assert _model_element(SlotA | None) is SlotA
+    assert _model_element(ScalarDump) is None
+    assert _model_element(ScalarDump | None) is None
+
+
+@pytest.mark.parametrize(
+    "annotation,expected",
+    [
+        pytest.param(tuple[SlotA, int], {"type": "JSON"}, id="model-first"),
+        pytest.param(tuple[int, SlotA], {"type": "JSON"}, id="model-second"),
+        pytest.param(
+            tuple[SlotA | None, int],
+            {"type": "JSON", "dc_nullable": True},
+            id="optional-model-first",
+        ),
+        pytest.param(
+            tuple[int, SlotA | None],
+            {"type": "JSON", "dc_nullable": True},
+            id="optional-model-second",
+        ),
+    ],
+)
+def test_a_mixed_tuple_reaches_the_same_type_whichever_slot_is_the_model(
+    annotation, expected
+):
+    # Returning early on the mixed case skipped the nullability step, so a
+    # nullable slot lost its marker depending on where it sat.
+    assert python_to_sql(annotation).to_dict() == {
+        "type": "Array",
+        "item_type": expected,
+    }
+
+
+def test_a_model_beside_a_scalar_is_still_held_to_the_contract():
+    # The mixed case must not be a way past the check: this slot holds a model
+    # the reader cannot rebuild, whatever sits next to it.
+    with pytest.raises(TypeError):
+        python_to_sql(tuple[ScalarDump | None, int])
+
+
+class MappingDump(BaseModel):
+    x: int
+
+    @model_serializer
+    def _dump(self) -> dict[str, int]:
+        return {"x": self.x}
+
+
+class MappingDumpByDecorator(BaseModel):
+    x: int
+
+    @model_serializer(return_type=dict[str, int])
+    def _dump(self):
+        return {"x": self.x}
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        pytest.param(MappingDump, id="annotated-return"),
+        pytest.param(MappingDumpByDecorator, id="return_type-argument"),
+    ],
+)
+def test_a_serializer_returning_a_mapping_is_admitted(model):
+    # The reader rebuilds a nested model from a mapping, so a serializer that
+    # says it returns one is fine, however it says so; only one that says
+    # otherwise, or says nothing, is refused.
+    assert python_to_sql(list[model | None]).to_dict() == {
+        "type": "Array",
+        "item_type": {"type": "JSON", "dc_nullable": True},
+    }
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        pytest.param(tuple[Literal[1, "1"], SlotA], id="refused-slot-beside-a-model"),
+        pytest.param(tuple[SlotA | None, str], id="string-slot-beside-a-model"),
+        pytest.param(tuple[SlotA | None, datetime], id="datetime-slot-beside-a-model"),
+    ],
+)
+def test_a_non_model_slot_is_resolved_before_json_is_chosen(annotation):
+    # The model branch used to return JSON without looking at the other slots,
+    # so a refusal was skipped and a bare string was stored where reading it
+    # back raises.
+    with pytest.raises(TypeError):
+        python_to_sql(annotation)
+
+
+def test_a_null_only_slot_beside_a_model_is_not_mistaken_for_a_string():
+    # Literal[None] borrows String as a placeholder column type; it stores
+    # nothing, so the check that refuses a bare string beside a model does not
+    # apply to it.
+    assert python_to_sql(tuple[Literal[None], SlotA]).to_dict() == {  # noqa: PYI061
         "type": "Array",
         "item_type": {"type": "JSON", "dc_nullable": True},
     }

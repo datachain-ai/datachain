@@ -1,10 +1,12 @@
 import inspect
+from collections.abc import Mapping
 from datetime import datetime
 from enum import Enum
 from types import UnionType
-from typing import Annotated, Any, Literal, Union, get_args, get_origin
+from typing import Annotated, Any, Literal, Union, get_args, get_origin, get_type_hints
 
-from pydantic import BaseModel
+from pydantic import BaseModel, RootModel
+from pydantic_core import PydanticUndefined
 from typing_extensions import Literal as LiteralEx
 
 from datachain.lib.data_model import (
@@ -185,9 +187,40 @@ def _list_to_array(typ, args):
         args = args[:1]
     if not args:
         raise TypeError(f"Cannot resolve type '{typ}' for flattening features")
-    args0 = args[0]
-    if ModelStore.is_pydantic(args0):
-        return Array(JSON())
+    # A model element is JSON whether or not it admits a None: is_chain_type
+    # accepts list[Model | None], and the union arm is all that hid the model.
+    # A fixed tuple keeps every slot in the one column, so every slot is asked --
+    # answering from the first would let a slot through that cannot be read back
+    # as a model.
+    slots = [arg for arg in args if arg is not Ellipsis]
+
+    if slots and any(_holds_a_model(slot) for slot in slots):
+        # Any model among the slots makes the element JSON: there is no single
+        # column type between a model and anything else. Every slot holding one
+        # is checked first, whether or not the others do -- returning early on
+        # the mixed case would let an unreadable model in beside an int.
+        if any(_holds_a_model(slot) and _model_element(slot) is None for slot in slots):
+            raise TypeError(f"Cannot resolve type '{typ}' for flattening features")
+
+        for slot in slots:
+            if _holds_a_model(slot) or _is_null_only(slot):
+                continue
+            # JSON is the element type here, so a slot that is refused outright
+            # must not be swept into it, and one that maps to nothing is not
+            # storable either.
+            slot_type = python_to_sql(slot)
+            if not _reads_back_as_a_json_document(slot_type):
+                # A JSON element is read back as a document. A bare string is
+                # not one, and neither is the string a datetime or bytes is
+                # written as -- each comes back as a JSONDecodeError.
+                raise UnstorableTypeError(
+                    f"Cannot store {slot!r} as a JSON element beside a model"
+                )
+
+        item: SQLType = JSON()
+        if any(_admits_none(slot) for slot in slots):
+            item = SQLType.as_nullable(item)
+        return Array(item)
 
     list_type = list_of_args_to_type(args)
 
@@ -206,6 +239,111 @@ def _list_to_array(typ, args):
             # unwritable, as before.
             list_type = SQLType.as_nullable(JSON())
     return Array(list_type)
+
+
+def _is_null_only(annotation: Any) -> bool:
+    """Whether this annotation admits nothing but None -- Literal[None]."""
+    if get_origin(annotation) not in (Literal, LiteralEx):
+        return False
+    values = get_args(annotation)
+    return bool(values) and all(value is None for value in values)
+
+
+def _reads_back_as_a_json_document(sql_type: Any) -> bool:
+    """Whether a value of this column type is itself a valid JSON document.
+
+    Numbers, booleans and JSON are; anything written as a bare string is not.
+    """
+    instance = sql_type() if isinstance(sql_type, type) else sql_type
+    if isinstance(instance, JSON):
+        return True
+    return instance.python_type in (int, float, bool)
+
+
+def _holds_a_model(annotation: Any) -> bool:
+    """Whether this element is a model, or an Optional holding one.
+
+    Separate from whether the model can be read back: a slot that holds one it
+    cannot rebuild has to refuse the annotation, while a slot holding no model
+    at all just means the array carries JSON.
+    """
+    if get_origin(annotation) is Annotated:
+        return _holds_a_model(get_args(annotation)[0])
+    if ModelStore.is_pydantic(annotation):
+        return True
+    if get_origin(annotation) not in (Union, UnionType):
+        return False
+    arms = [arm for arm in get_args(annotation) if arm is not type(None)]
+    return len(arms) == 1 and _holds_a_model(arms[0])
+
+
+def _model_element(annotation: Any) -> Any:
+    """The model this element stores as, or None if it does not store as one.
+
+    Required and optional slots answer to the same contract: a model the reader
+    can rebuild. Asking it only of the optional ones would let
+    tuple[A | None, ScalarDump] through on the strength of its first slot.
+    """
+    if ModelStore.is_pydantic(annotation) and _serializes_as_a_mapping(annotation):
+        return annotation
+    return _optional_model(annotation)
+
+
+def _optional_model(annotation: Any) -> Any:
+    """The model behind ``Model | None``, or None if that is not the shape.
+
+    Deliberately shallow: only a bare None, because the reader rebuilds a nested
+    model from Optional[Model] and not from Model | Literal[None], which would be
+    stored and handed back as plain dicts.
+    """
+    if get_origin(annotation) not in (Union, UnionType):
+        return None
+
+    arms = [arm for arm in get_args(annotation) if arm is not type(None)]
+    if len(arms) != 1 or not ModelStore.is_pydantic(arms[0]):
+        return None
+    if not _serializes_as_a_mapping(arms[0]):
+        return None
+    return arms[0]
+
+
+def _serializes_as_a_mapping(model: Any) -> bool:
+    """Whether this model is read back from a mapping, as a stored one is.
+
+    A root model dumps to whatever it wraps, and a model_serializer may return
+    anything at all; the reader rebuilds a nested model only from a mapping, so
+    either would be stored and then handed back as something else.
+    """
+    if not isinstance(model, type):
+        return False
+    if issubclass(model, RootModel):
+        return False
+    decorators = getattr(model, "__pydantic_decorators__", None)
+    serializers = getattr(decorators, "model_serializers", None) or {}
+    return all(_returns_a_mapping(entry) for entry in serializers.values())
+
+
+def _returns_a_mapping(serializer: Any) -> bool:
+    """Whether a model_serializer is declared to return a mapping.
+
+    Read from its return annotation, the only thing said about it before it
+    runs. One that declares nothing could return anything, so it is not taken on
+    trust.
+    """
+    info = getattr(serializer, "info", None)
+    annotation = getattr(info, "return_type", PydanticUndefined)
+    if annotation is PydanticUndefined:
+        # Not given to the decorator, so read from the function -- resolved, as
+        # `from __future__ import annotations` leaves it a string otherwise.
+        func = getattr(serializer, "func", serializer)
+        try:
+            annotation = get_type_hints(func).get("return")
+        except (NameError, TypeError):
+            return False
+    if annotation is None:
+        return False
+    origin = get_origin(annotation) or annotation
+    return isinstance(origin, type) and issubclass(origin, Mapping)
 
 
 def _admits_none(annotation: Any) -> bool:
