@@ -160,6 +160,9 @@ class SQLType(TypeDecorator):
 
     # Optional[scalar] marker -> backend emits a nullable column so None round-trips.
     dc_nullable: bool = False
+    # Versioned typed columns decode their logical values in SignalSchema.
+    # Missing metadata keeps the historical physical read conversion.
+    dc_codec: str | None = None
 
     def load_dialect_impl(self, dialect):
         impl = self._load_dialect_impl(dialect)
@@ -178,6 +181,8 @@ class SQLType(TypeDecorator):
         d: dict[str, Any] = {"type": self.__class__.__name__}
         if self.dc_nullable:
             d["dc_nullable"] = True
+        if self.dc_codec is not None:
+            d["dc_codec"] = self.dc_codec
         return d
 
     @staticmethod
@@ -189,8 +194,11 @@ class SQLType(TypeDecorator):
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Union[type["SQLType"], "SQLType"]:
-        if d.get("dc_nullable"):
-            return cls.as_nullable(cls)
+        if d.get("dc_nullable") or d.get("dc_codec"):
+            inst = cls()
+            inst.dc_nullable = bool(d.get("dc_nullable"))
+            inst.dc_codec = d.get("dc_codec")
+            return inst
         return cls
 
 
@@ -400,6 +408,8 @@ class Array(SQLType):
         }
         if self.dc_nullable:
             d["dc_nullable"] = True
+        if self.dc_codec is not None:
+            d["dc_codec"] = self.dc_codec
         return d
 
     @classmethod
@@ -428,6 +438,7 @@ class Array(SQLType):
             raise ValueError(f"Array item type '{item_type}' is not supported") from e
         if d.get("dc_nullable"):
             inst.dc_nullable = True
+        inst.dc_codec = d.get("dc_codec")
         return inst
 
     @staticmethod
@@ -439,6 +450,12 @@ class Array(SQLType):
         return db_defaults(dialect).array()
 
     def on_read_convert(self, value, dialect):
+        if self.dc_codec is not None:
+            if self.dc_codec != "typed-v1":
+                raise ValueError(f"Unknown column codec: {self.dc_codec!r}")
+            # Only unpack the backend array. JSON elements are already values,
+            # and the column codec retains the types of all nested elements.
+            return read_converter(dialect).array(value, None, dialect)
         r = read_converter(dialect).array(value, self.item_type, dialect)
         if isinstance(self.item_type, JSON):
             r = [jsonlib.loads(item) if isinstance(item, str) else item for item in r]

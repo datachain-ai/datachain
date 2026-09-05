@@ -341,6 +341,10 @@ class DataChain:
             name_path = [name]
         for path, type_, _, _ in self.signals_schema.get_flat_tree():
             if path == name_path:
+                if self.signals_schema.storage_codec(name) is not None:
+                    return Column(
+                        name, self.signals_schema._db_leaf_sql_type(path, type_)
+                    )
                 return Column(name, python_to_sql(type_))
 
         raise ValueError(f"Column with name {name} not found in the schema")
@@ -2042,6 +2046,8 @@ class DataChain:
                 on, right_on, f"Could not resolve {', '.join(errors)}"
             )
 
+        self._check_merge_storage_codecs(right_ds, on, right_on)
+
         query = self._query.join(
             right_ds._query, sqlalchemy.and_(*ops), inner, full, rname
         )
@@ -2061,6 +2067,48 @@ class DataChain:
         )
 
         return ds
+
+    def _check_merge_storage_codecs(
+        self,
+        right_ds: "DataChain",
+        on: Sequence[MergeColType],
+        right_on: Sequence[MergeColType] | None,
+    ) -> None:
+        # The draft does not rewrite stored join keys. Comparing legacy JSON
+        # array bytes with a typed column would silently miss matching rows.
+        for left_key, right_key in zip(on, right_on or on, strict=False):
+            if not isinstance(left_key, (str, C)) or not isinstance(
+                right_key, (str, C)
+            ):
+                if (
+                    self.signals_schema.storage_codecs
+                    or right_ds.signals_schema.storage_codecs
+                ):
+                    raise DatasetMergeError(
+                        on,
+                        right_on,
+                        "Experimental typed-codec joins support direct column keys "
+                        "only; storage compatibility of SQL expressions is not "
+                        "checked by this draft",
+                    )
+                continue
+            left_name = left_key if isinstance(left_key, str) else left_key.name
+            right_name = right_key if isinstance(right_key, str) else right_key.name
+            left_codec = self.signals_schema.column_codec(left_name)
+            right_codec = right_ds.signals_schema.column_codec(right_name)
+            complex_key = any(
+                codec is not None and codec.sql_type.python_type in (list, dict)
+                for codec in (left_codec, right_codec)
+            )
+            if complex_key and self.signals_schema.storage_codec(
+                left_name
+            ) != right_ds.signals_schema.storage_codec(right_name):
+                raise DatasetMergeError(
+                    on,
+                    right_on,
+                    "Cannot join legacy and typed-codec collection keys; "
+                    "rewrite both inputs with the same storage codec first",
+                )
 
     def _align_optional_for_union(self, other: "Self") -> "tuple[Self, Self]":
         """Promote a plain ``T`` to ``Optional[T]`` when unioned with an
@@ -2086,10 +2134,12 @@ class DataChain:
             col.type = SQLType.as_nullable(python_to_sql(int))
             return col
 
-        def _nullable_leaf_casts(name: str, promoted: dict[str, Any]) -> dict[str, Any]:
+        def _nullable_leaf_casts(
+            name: str, promoted: dict[str, Any], source: SignalSchema
+        ) -> dict[str, Any]:
             # Re-cast leaves to nullable so the UNION keeps NULLs on CH (not 0/"").
             casts: dict[str, Any] = {}
-            sub = SignalSchema({name: promoted[name]})
+            sub = source._derive({name: promoted[name]})
             cols = cast(
                 "list[Column]",
                 sub.db_signals(as_columns=True, include_sentinels=False),
@@ -2101,10 +2151,14 @@ class DataChain:
             return casts
 
         def _promote(
-            name: str, inner: Any, prom: dict[str, Any], add: dict[str, Any]
+            name: str,
+            inner: Any,
+            prom: dict[str, Any],
+            add: dict[str, Any],
+            source: SignalSchema,
         ) -> None:
             prom[name] = inner | None
-            add.update(_nullable_leaf_casts(name, prom))
+            add.update(_nullable_leaf_casts(name, prom, source))
             if ModelStore.is_pydantic(inner):
                 add[f"{name}{DEFAULT_DELIMITER}{sentinel_field}"] = _present_sentinel()
 
@@ -2114,19 +2168,19 @@ class DataChain:
             if l_inner != r_inner or l_opt == r_opt:
                 continue
             if not l_opt:
-                _promote(name, l_inner, lprom, left_add)
+                _promote(name, l_inner, lprom, left_add, self.signals_schema)
             if not r_opt:
-                _promote(name, r_inner, rprom, right_add)
+                _promote(name, r_inner, rprom, right_add, other.signals_schema)
 
         left, right = self, other
         if left_add:
-            schema = SignalSchema(lprom)
+            schema = self.signals_schema._derive(lprom)
             left = self._evolve(
                 query=self._query.mutate(new_schema=schema, **left_add),
                 signal_schema=schema,
             )
         if right_add:
-            schema = SignalSchema(rprom)
+            schema = other.signals_schema._derive(rprom)
             right = other._evolve(
                 query=other._query.mutate(new_schema=schema, **right_add),
                 signal_schema=schema,
@@ -2148,6 +2202,18 @@ class DataChain:
             raise UnionSchemaMismatchError.from_column_sets(
                 missing_left,
                 missing_right,
+            )
+
+        mismatched_codecs = [
+            name
+            for name in self_schema.user_signals(include_hidden=True)
+            if self_schema.storage_codec(name) != other_schema.storage_codec(name)
+        ]
+        if mismatched_codecs:
+            raise DataChainParamsError(
+                "Cannot union columns with different storage codecs: "
+                f"{', '.join(mismatched_codecs)}. "
+                "Rewrite both inputs with the same storage codec first."
             )
 
         # Evolve, don't mutate `left` in place — it may be the caller's own chain.

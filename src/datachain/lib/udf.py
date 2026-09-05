@@ -1,5 +1,6 @@
 import hashlib
 import inspect
+import json
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -33,6 +34,7 @@ from datachain.query.batch import (
     Partition,
     RowsOutputBatch,
 )
+from datachain.sql.types import SQLType
 from datachain.utils import safe_closing, with_last_flag
 
 logger = logging.getLogger("datachain")
@@ -188,7 +190,22 @@ class UDFAdapter:
     batch: int = 1
 
     def hash(self, include_body: bool = True) -> str:
-        return self.inner.hash(include_body=include_body)
+        if not self.inner.output.storage_codecs:
+            return self.inner.hash(include_body=include_body)
+        # At the adapter boundary even custom UDF hash implementations include
+        # the codec and physical layout, for completed and partial checkpoints.
+        spec = [
+            (name, (typ if isinstance(typ, SQLType) else typ()).to_dict())
+            for name, typ in self.output.items()
+        ]
+        fingerprint = json.dumps(
+            {"columns": spec, "codecs": self.inner.output.storage_codecs},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        return hashlib.sha256(
+            self.inner.hash(include_body=include_body).encode() + fingerprint
+        ).hexdigest()
 
     def get_batching(self, use_partitioning: bool = False) -> BatchingStrategy:
         if use_partitioning:
@@ -411,20 +428,34 @@ class UDFBase(AbstractUDF):
                 )
             flat: list[Any] = []
             # strict=False as shorter row is allowed for arrow/parquet (guarded above)
-            for obj, anno in zip(row, annos.values(), strict=False):
+            for obj, (name, anno) in zip(row, annos.items(), strict=False):
+                structural = self.output.storage_codec(name) is not None
+                if structural:
+                    # Tabular readers can supply a model wrapping several
+                    # declared signals rather than one value for this signal.
+                    if isinstance(obj, BaseModel) and not classify_field(anno).is_model:
+                        flat.extend(flatten(obj, structural=True))
+                    else:
+                        flat.extend(flatten_value(obj, anno, structural=True))
                 # tag is added only when obj IS the Optional value, not a wrapper.
-                if is_optional_model(anno) and (
+                elif is_optional_model(anno) and (
                     obj is None or isinstance(obj, classify_field(anno).inner)
                 ):
                     flat.extend(flatten_value(obj, anno))
                 else:
                     flat.extend(self._obj_to_list(obj))
             return tuple(flat)
+        if len(self.output.values) == 1:
+            name, single_type = next(iter(self.output.values.items()))
+            if self.output.storage_codec(name) is not None:
+                if isinstance(row, tuple) and classify_field(single_type).is_model:
+                    # read_values(column=...) supplies an already flattened row.
+                    return row
+                return flatten_value(row, single_type, structural=True)
+            if not isinstance(row, tuple):
+                return flatten_value(row, single_type)
         if isinstance(row, tuple):
             return row
-        if len(self.output.values) == 1:
-            single_type = next(iter(self.output.values.values()))
-            return flatten_value(row, single_type)
         return tuple(self._obj_to_list(row))
 
     @staticmethod

@@ -28,7 +28,9 @@ def _flatten_record(record: dict, signal_schema: SignalSchema) -> dict:
     for key, value in record.items():
         if isinstance(value, BaseModel) and ModelStore.is_pydantic(type(value)):
             db_columns = signal_schema.db_signals(name=key)
-            flat_values = flatten(value)
+            flat_values = flatten(
+                value, structural=signal_schema.storage_codec(key) is not None
+            )
             flattened.update(dict(zip(db_columns, flat_values, strict=True)))
         else:
             flattened[key] = value

@@ -486,9 +486,12 @@ def adjust_outputs(
 
         # Validate and convert type if needed and possible
         try:
-            row[col_name] = warehouse.convert_type(
-                row_val, col_type, col_python_type, col_type_name, col_name
-            )
+            if (codec := signal_schema.column_codec(col_name)) is not None:
+                row[col_name] = codec.encode(row_val)
+            else:
+                row[col_name] = warehouse.convert_type(
+                    row_val, col_type, col_python_type, col_type_name, col_name
+                )
         except Exception as e:
             expected_type = type_to_str(signal_schema.get_column_type(col_name))
 

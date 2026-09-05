@@ -46,8 +46,8 @@ def iter_flat_columns(
             yield FlatColumn(path, False)
 
 
-def flatten(obj: BaseModel) -> tuple:
-    return tuple(_flatten_fields_values(type(obj).model_fields, obj))
+def flatten(obj: BaseModel, *, structural: bool = False) -> tuple:
+    return tuple(_flatten_fields_values(type(obj).model_fields, obj, structural))
 
 
 def is_optional_model(anno: Any) -> bool:
@@ -55,7 +55,7 @@ def is_optional_model(anno: Any) -> bool:
     return kind.is_optional and kind.is_model
 
 
-def flatten_value(value: Any, anno: Any) -> tuple:
+def flatten_value(value: Any, anno: Any, *, structural: bool = False) -> tuple:
     """Flatten ``value`` for one column declared with annotation ``anno``.
 
     ``Optional[DataModel]`` emits a leading ``_type_tag`` before its leaves.
@@ -67,11 +67,11 @@ def flatten_value(value: Any, anno: Any) -> tuple:
         if kind.is_optional:
             if value is None:
                 return (1, *_emit_absent(kind.inner))
-            return (0, *flatten(value))
+            return (0, *flatten(value, structural=structural))
         if value is None:
             # Non-Optional model None (outer-merge pad): per-leaf placeholders.
             return tuple(_emit_absent(kind.inner))
-        return flatten(value)
+        return flatten(value, structural=structural)
     return (value,)
 
 
@@ -104,14 +104,16 @@ def _emit_absent(model: type[BaseModel]) -> Generator[int | None, None, None]:
         yield 1 if col.is_sentinel else None
 
 
-def _flatten_fields_values(fields: dict, obj: BaseModel) -> Generator[Any, None, None]:
+def _flatten_fields_values(
+    fields: dict, obj: BaseModel, structural: bool = False
+) -> Generator[Any, None, None]:
     for name, f_info in fields.items():
         kind = classify_field(f_info.annotation)
         # Direct attribute access skips Pydantic's model_dump().
         value = getattr(obj, name)
-        if isinstance(value, list):
+        if not structural and isinstance(value, list):
             yield _flatten_list_field(value)
-        elif isinstance(value, dict):
+        elif not structural and isinstance(value, dict):
             yield {
                 key: val.model_dump() if ModelStore.is_pydantic(type(val)) else val
                 for key, val in value.items()
@@ -123,8 +125,12 @@ def _flatten_fields_values(fields: dict, obj: BaseModel) -> Generator[Any, None,
                     yield from _emit_absent(kind.inner)
                 else:
                     yield 0
-                    yield from _flatten_fields_values(kind.inner.model_fields, value)
+                    yield from _flatten_fields_values(
+                        kind.inner.model_fields, value, structural
+                    )
             else:
-                yield from _flatten_fields_values(kind.inner.model_fields, value)
+                yield from _flatten_fields_values(
+                    kind.inner.model_fields, value, structural
+                )
         else:
             yield value

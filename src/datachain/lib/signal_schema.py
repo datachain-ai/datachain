@@ -2,6 +2,7 @@ import copy
 import hashlib
 import logging
 import math
+import os
 import types
 import warnings
 import weakref
@@ -35,6 +36,7 @@ from sqlalchemy.sql.elements import BinaryExpression, Grouping, Label
 from datachain import json
 from datachain.func import literal
 from datachain.func.func import Func
+from datachain.lib.convert.column_codec import ColumnCodec, compile_codec
 from datachain.lib.convert.flatten import is_optional_model
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.convert.sql_to_python import sql_to_python
@@ -304,15 +306,71 @@ class SignalSchema:
         self,
         values: dict[str, DataType],
         setup: dict[str, Callable] | None = None,
+        *,
+        storage_codecs: dict[str, str] | None = None,
     ):
         self.values = values
         self.tree = self._build_tree(values)
+        self._compiled_codecs: dict[int, ColumnCodec | None] = {}
+        self._named_codecs: dict[str, ColumnCodec | None] = {}
+        if storage_codecs is None:
+            storage_codecs = {
+                name: "typed-v1"
+                for name, annotation in values.items()
+                if os.getenv("DATACHAIN_EXPERIMENTAL_TYPED_CODEC") == "1"
+                and name != "sys"
+                and (codec := self._codec_for_type(annotation)) is not None
+                and codec.sql_type.python_type in (list, dict)
+            }
+        unknown = set(storage_codecs.values()) - {"typed-v1"}
+        if unknown:
+            raise SignalSchemaError(f"Unknown storage codecs: {sorted(unknown)}")
+        self.storage_codecs = dict(storage_codecs)
 
         self.setup_func = setup or {}
         self.setup_values = None
         for key, func in self.setup_func.items():
             if not callable(func):
                 raise SetupError(key, "value must be function or callable class")
+
+    def _codec_for_type(self, annotation: Any) -> ColumnCodec | None:
+        key = id(annotation)
+        if key not in self._compiled_codecs:
+            self._compiled_codecs[key] = compile_codec(annotation)
+        return self._compiled_codecs[key]
+
+    def storage_codec(self, name: str) -> str | None:
+        """Codec for a signal or one of its flattened leaves."""
+        name = name.replace(DEFAULT_DELIMITER, ".")
+        for signal in sorted(self.storage_codecs, key=len, reverse=True):
+            if name == signal or name.startswith(signal + "."):
+                return self.storage_codecs[signal]
+        return None
+
+    def column_codec(self, name: str) -> ColumnCodec | None:
+        if name not in self._named_codecs:
+            self._named_codecs[name] = (
+                self._codec_for_type(
+                    self.values[name]
+                    if name in self.values
+                    else self.get_column_type(name, with_subtree=True)
+                )
+                if self.storage_codec(name) is not None
+                else None
+            )
+        return self._named_codecs[name]
+
+    def _derive(self, values: dict, setup: dict | None = None) -> "SignalSchema":
+        """Project existing data without silently changing its stored format."""
+        return SignalSchema(
+            values,
+            setup,
+            storage_codecs={
+                name: codec
+                for name in values
+                if (codec := self.storage_codec(name)) is not None
+            },
+        )
 
     def _init_setup_values(self) -> None:
         if self.setup_values is not None:
@@ -409,6 +467,8 @@ class SignalSchema:
             signals[name] = self._serialize_type(fr_type, custom_types)
         if custom_types:
             signals["_custom_types"] = custom_types
+        if self.storage_codecs:
+            signals["_storage_codecs"] = self.storage_codecs.copy()
         return signals
 
     def hash(self) -> str:
@@ -556,7 +616,7 @@ class SignalSchema:
         signals: dict[str, DataType] = {}
         custom_types: dict[str, Any] = schema.get("_custom_types", {})
         for signal, type_name in schema.items():
-            if signal == "_custom_types":
+            if signal in ("_custom_types", "_storage_codecs"):
                 # This entry is used as a lookup for custom types,
                 # and is not an actual field.
                 continue
@@ -583,7 +643,7 @@ class SignalSchema:
                 ) from err
             signals[signal] = fr  # type: ignore[assignment]
 
-        return SignalSchema(signals)
+        return SignalSchema(signals, storage_codecs=schema.get("_storage_codecs", {}))
 
     @staticmethod
     def get_flatten_hidden_fields(schema: dict):
@@ -600,7 +660,7 @@ class SignalSchema:
 
         def traverse(prefix, schema_info):
             for field, field_type in schema_info.items():
-                if field == "_custom_types":
+                if field in ("_custom_types", "_storage_codecs"):
                     continue
 
                 if field_type in custom_types:
@@ -640,7 +700,9 @@ class SignalSchema:
                 objs.append(obj)
             else:
                 value = row[pos]
-                if self._row_conversion_required[name]:
+                if (codec := self.column_codec(name)) is not None:
+                    value = codec.decode(value)
+                elif self._row_conversion_required[name]:
                     value = self._convert_feature_value(
                         fr_type, value, catalog=None, cache=False
                     )
@@ -790,6 +852,19 @@ class SignalSchema:
             if absent:
                 return None, pos
         j, pos = unflatten_to_json_pos(fr, row, pos)
+        if self.storage_codec(label) and (codec := self._codec_for_type(fr)):
+            try:
+                obj = codec.decode_fields(j)
+            except (TypeError, ValueError):
+                if not self._all_values_none(j):
+                    raise
+                # Preserve the existing outer-join padding convention. Do not
+                # replace valid models whose declared fields all permit None.
+                obj = None
+            if set_stream:
+                assert catalog is not None
+                SignalSchema._set_file_stream(obj, catalog, cache)
+            return obj, pos
         try:
             obj = fr(**j)
             if set_stream:
@@ -867,19 +942,25 @@ class SignalSchema:
                 f"types mismatch: {param_type} != {schema_type}",
             )
 
-        return SignalSchema(schema, setup)
+        return self._derive(schema, setup)
 
     def row_to_features(
         self, row: Sequence, catalog: "Catalog", cache: bool = False
     ) -> list[DataValue]:
         res = []
         pos = 0
-        for fr_cls in self.values.values():
+        for name, fr_cls in self.values.items():
             inner_cls, is_optional = unwrap_optional(fr_cls)
             if (fr := ModelStore.to_pydantic(inner_cls)) is None:
                 value = row[pos]
                 pos += 1
-                converted = self._convert_feature_value(fr_cls, value, catalog, cache)
+                if (codec := self.column_codec(name)) is not None:
+                    converted = codec.decode(value)
+                    self._set_file_stream(converted, catalog, cache, annotation=fr_cls)
+                else:
+                    converted = self._convert_feature_value(
+                        fr_cls, value, catalog, cache
+                    )
                 res.append(converted)
             else:
                 obj, pos = self._hydrate_model(
@@ -890,7 +971,7 @@ class SignalSchema:
                     catalog=catalog,
                     cache=cache,
                     set_stream=True,
-                    label=str(fr_cls),
+                    label=name,
                 )
                 res.append(obj)
         return res
@@ -1054,7 +1135,8 @@ class SignalSchema:
         """SQL type for a leaf at ``path``, marked ``dc_nullable`` per
         ``is_nullable_column`` so the backend stores real NULL, not the type
         default."""
-        sql_type = python_to_sql(anno)
+        codec = self.column_codec(DEFAULT_DELIMITER.join(path))
+        sql_type = codec.sql_type if codec is not None else python_to_sql(anno)
         if self.is_nullable_column(DEFAULT_DELIMITER.join(path), anno):
             sql_type = SQLType.as_nullable(sql_type)
         return sql_type
@@ -1133,7 +1215,7 @@ class SignalSchema:
                 raise SignalResolvingTypeError("select()", field)
             schema[field] = self._find_in_tree(field.split("."))
 
-        return SignalSchema(schema)
+        return self._derive(schema)
 
     def _find_in_tree(self, path: list[str]) -> DataType:
         if val := self.tree.get(".".join(path)):
@@ -1253,7 +1335,7 @@ class SignalSchema:
     def group_by(
         self, partition_by: Sequence[str], new_column: Sequence[Column]
     ) -> "SignalSchema":
-        orig_schema = SignalSchema(copy.deepcopy(self.values))
+        orig_schema = self._derive(copy.deepcopy(self.values))
         schema = orig_schema.to_partial(*partition_by)
 
         vals = {
@@ -1262,7 +1344,7 @@ class SignalSchema:
             )
             for c in new_column
         }
-        return SignalSchema(schema.values | vals)
+        return schema.append(SignalSchema(vals))
 
     def select_except_signals(self, *args: str) -> "SignalSchema":
         """Return a schema excluding the provided signals.
@@ -1305,14 +1387,25 @@ class SignalSchema:
         for signal in File._datachain_column_types:
             if signal in schema:
                 del schema[signal]
-        return SignalSchema(schema)
+        return self._derive(schema)
 
     def mutate(self, args_map: dict) -> "SignalSchema":
         new_values = self.values.copy()
+        storage_codecs = self.storage_codecs.copy()
         primitives = (bool, str, int, float)
 
         for name, value in args_map.items():
             current_type = None
+
+            if isinstance(value, Column):
+                if C.is_nested(name) and self.storage_codec(name) != self.storage_codec(
+                    value.name
+                ):
+                    raise DataChainColumnError(
+                        name,
+                        "cannot replace a nested field with a different storage codec",
+                    )
+                storage_codecs.pop(name, None)
 
             if C.is_nested(name):
                 try:
@@ -1327,9 +1420,14 @@ class SignalSchema:
                 # we don't allow removing nested columns to keep objects consistent
                 del new_values[value.name]
                 new_values[name] = self.values[value.name]
+                storage_codecs.pop(value.name, None)
+                if codec := self.storage_codec(value.name):
+                    storage_codecs[name] = codec
             elif isinstance(value, Column):
                 # adding new signal from existing signal field
                 new_values[name] = self.get_column_type(value.name, with_subtree=True)
+                if codec := self.storage_codec(value.name):
+                    storage_codecs[name] = codec
             elif isinstance(value, Func):
                 # adding new signal with function
                 result_type = value.get_result_type(self)
@@ -1360,12 +1458,12 @@ class SignalSchema:
                     raise ValueError(msg)
                 del new_values[name]
 
-        return SignalSchema(new_values)
+        return SignalSchema(new_values, storage_codecs=storage_codecs)
 
     def clone_without_sys_signals(self) -> "SignalSchema":
         schema = copy.deepcopy(self.values)
         schema.pop("sys", None)
-        return SignalSchema(schema)
+        return self._derive(schema)
 
     def merge(
         self,
@@ -1382,6 +1480,7 @@ class SignalSchema:
             return type_ | None  # type: ignore[return-value]
 
         merged_values = {k: _nullable(t, left_nullable) for k, t in self.values.items()}
+        storage_codecs = self.storage_codecs.copy()
 
         right_names = list(right_schema.values.keys())
         root_mapping = generate_merge_root_mapping(
@@ -1397,8 +1496,10 @@ class SignalSchema:
             mapped_root = root_mapping[root]
             new_name = mapped_root if not tail else f"{mapped_root}.{tail}"
             merged_values[new_name] = _nullable(type_, right_nullable)
+            if codec := right_schema.storage_codec(key):
+                storage_codecs[new_name] = codec
 
-        return SignalSchema(merged_values)
+        return SignalSchema(merged_values, storage_codecs=storage_codecs)
 
     @staticmethod
     def _extract_root(name: str) -> str:
@@ -1411,7 +1512,11 @@ class SignalSchema:
             key: right.values[key]
             for key in [k for k in right.values if k not in self.values]
         }
-        return SignalSchema(self.values | missing_schema)
+        return SignalSchema(
+            self.values | missing_schema,
+            storage_codecs=self.storage_codecs
+            | {k: v for k, v in right.storage_codecs.items() if k in missing_schema},
+        )
 
     def get_signals(self, target_type: type[DataModel]) -> Iterator[str]:
         for path, type_, has_subtree, _ in self.get_flat_tree():
@@ -1554,7 +1659,15 @@ class SignalSchema:
 
             new_values[name] = new_type
 
-        return self.__class__(new_values)
+        return self.__class__(
+            new_values,
+            storage_codecs=self.storage_codecs
+            | {
+                name: codec
+                for name, codec in other.storage_codecs.items()
+                if name not in self.values
+            },
+        )
 
     def __contains__(self, name: str):
         return name in self.values
@@ -1793,4 +1906,4 @@ class SignalSchema:
             base_type = self.values[signal]
             new_values[signal] = _build_partial_type(base_type, selection, [signal])
 
-        return SignalSchema(new_values)
+        return self._derive(new_values)
