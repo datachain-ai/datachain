@@ -3,6 +3,7 @@ from typing import Any, NamedTuple
 
 from pydantic import BaseModel
 
+from datachain import json
 from datachain.lib.data_model import unwrap_optional
 from datachain.lib.model_store import ModelStore
 
@@ -93,7 +94,15 @@ def _flatten_list_field(value: list) -> list:
 
     if ModelStore.is_pydantic(type(first)):
         if all(val is None or ModelStore.is_pydantic(type(val)) for val in value):
-            return [None if val is None else val.model_dump() for val in value]
+            # The same conversion the warehouse would apply to a model it
+            # received whole: python mode drops what only JSON mode writes, so
+            # a Path or bytes in the model would not survive being dumped here.
+            return [
+                None
+                if val is None
+                else val.model_dump(mode="json", fallback=json.numpy_to_python)
+                for val in value
+            ]
         return value
 
     if isinstance(first, list) and all(

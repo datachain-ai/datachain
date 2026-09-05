@@ -9,6 +9,7 @@ import re
 import uuid
 from collections import Counter
 from collections.abc import Generator, Iterator
+from pathlib import PurePosixPath
 from unittest.mock import ANY, patch
 
 import numpy as np
@@ -6401,3 +6402,34 @@ def test_a_list_of_mixed_shapes_is_left_alone(test_session):
     )
 
     assert rows == [(value,)]
+
+
+class RichModel(BaseModel):
+    path: PurePosixPath
+
+
+class RichHolder(BaseModel):
+    vals: list[RichModel | list[dict] | None]
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        pytest.param(lambda m: [None, m], id="none-first"),
+        pytest.param(lambda m: [m, None], id="none-last"),
+    ],
+)
+def test_a_model_in_a_list_is_converted_the_way_the_warehouse_would(test_session, make):
+    # Dumping in python mode here drops what only JSON mode writes, and the
+    # warehouse never gets the model to convert properly.
+    vals = make(RichModel(path=PurePosixPath("a/b")))
+
+    rows = (
+        dc.read_values(i=[1], session=test_session)
+        .map(h=lambda: RichHolder(vals=vals), output=RichHolder)
+        .to_list("h.vals")
+    )
+
+    # This union hydrates as plain JSON rather than as models, but the path has
+    # to survive being written either way round.
+    assert rows == [(make({"path": "a/b"}),)]
