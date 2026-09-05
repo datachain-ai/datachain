@@ -534,3 +534,16 @@ def test_an_optional_nested_collection_round_trips(test_session, vals):
     )
 
     assert rows == [(vals,)]
+
+
+def test_an_optional_nested_array_keeps_a_typed_leaf():
+    # The JSON fallback for an optional collection only applies where the leaves
+    # read back the same from JSON; a datetime would come back as its ISO string.
+    assert python_to_sql(list[list[datetime] | None]).to_dict() == {
+        "type": "Array",
+        "item_type": {"type": "Array", "item_type": {"type": "DateTime"}},
+    }
+    assert python_to_sql(list[list[int] | None]).to_dict() == {
+        "type": "Array",
+        "item_type": {"type": "JSON", "dc_nullable": True},
+    }

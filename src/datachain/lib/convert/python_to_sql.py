@@ -197,10 +197,13 @@ def _list_to_array(typ, args):
     if any(_admits_none(arg) for arg in args if arg is not Ellipsis):
         if _takes_null(list_type):
             list_type = SQLType.as_nullable(list_type)
-        else:
+        elif _survives_json(list_type):
             # An Array element cannot be made nullable -- ClickHouse has no
             # Nullable(Array) -- so an optional collection is carried as a JSON
-            # document, which can be.
+            # document, which can be. Only where its leaves read back the same
+            # from JSON: a datetime would come back as the ISO string it was
+            # written as, so that array keeps its typed form and its None stays
+            # unwritable, as before.
             list_type = SQLType.as_nullable(JSON())
     return Array(list_type)
 
@@ -224,6 +227,20 @@ def _admits_none(annotation: Any) -> bool:
     if origin in (Union, UnionType):
         return any(_admits_none(arm) for arm in get_args(annotation))
     return False
+
+
+def _survives_json(sql_type: Any) -> bool:
+    """Whether a value of this type reads back unchanged from a JSON document.
+
+    Numbers, booleans, strings and JSON itself do; a datetime or bytes is
+    written as a string and would be read back as one.
+    """
+    if isinstance(sql_type, Array):
+        return _survives_json(sql_type.item_type)
+    instance = sql_type() if isinstance(sql_type, type) else sql_type
+    if isinstance(instance, JSON):
+        return True
+    return instance.python_type in (int, float, bool, str)
 
 
 def _takes_null(sql_type: Any) -> bool:
