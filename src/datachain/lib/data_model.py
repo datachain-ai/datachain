@@ -1,5 +1,6 @@
 import hashlib
 import inspect
+import os
 import types
 import uuid
 from collections.abc import Iterator, Sequence
@@ -265,7 +266,7 @@ def promote_default_none(model: type[BaseModel]) -> None:
         model.model_rebuild(force=True)
 
 
-def is_chain_type(t: type) -> bool:
+def is_chain_type(t: type) -> bool:  # noqa: PLR0911
     """Return true if type is supported by `DataChain`."""
     if ModelStore.is_pydantic(t):
         return True
@@ -281,7 +282,8 @@ def is_chain_type(t: type) -> bool:
     # let `list[int, ...]` through to be serialized as `list[int]`. Only `list` and
     # `dict` at the exact arity `type_to_str` can write back out are accepted --
     # abstract origins serialize as a bare "Sequence"/"Mapping", and `python_to_sql`
-    # mis-types tuples. Matching on the origin identity also avoids `issubclass`
+    # mis-types tuples outside the experimental codec. Matching origin identity
+    # also avoids `issubclass`
     # against generics that reject it (TypedDicts, some protocols).
     orig = get_origin(t)
     args = get_args(t)
@@ -289,6 +291,10 @@ def is_chain_type(t: type) -> bool:
         return len(args) == 1 and is_chain_type(args[0])
     if orig is dict:
         return len(args) == 2 and all(is_chain_type(arg) for arg in args)
+    if orig is tuple and os.getenv("DATACHAIN_EXPERIMENTAL_TYPED_CODEC") == "1":
+        from datachain.lib.convert.column_codec import compile_codec
+
+        return compile_codec(t) is not None
 
     return False
 
