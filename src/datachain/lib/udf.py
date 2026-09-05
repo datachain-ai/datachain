@@ -1,5 +1,6 @@
 import hashlib
 import inspect
+import json
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -33,6 +34,7 @@ from datachain.query.batch import (
     Partition,
     RowsOutputBatch,
 )
+from datachain.sql.types import SQLType
 from datachain.utils import safe_closing, with_last_flag
 
 logger = logging.getLogger("datachain")
@@ -188,7 +190,13 @@ class UDFAdapter:
     batch: int = 1
 
     def hash(self, include_body: bool = True) -> str:
-        return self.inner.hash(include_body=include_body)
+        # Mixed in here rather than in UDFBase.hash so that a UDF overriding its
+        # own hash -- _MultiSignalMapper does, and user subclasses may -- cannot
+        # drop it. Every UDF reaches the warehouse through this adapter.
+        return hashlib.sha256(
+            bytes.fromhex(self.inner.hash(include_body=include_body))
+            + bytes.fromhex(_physical_schema_hash(self.inner.output))
+        ).hexdigest()
 
     def get_batching(self, use_partitioning: bool = False) -> BatchingStrategy:
         if use_partitioning:
@@ -221,6 +229,23 @@ class UDFAdapter:
     @property
     def prefetch(self) -> int:
         return self.inner.prefetch
+
+
+def _physical_schema_hash(output: "SignalSchema") -> str:
+    """Fingerprint of the columns a UDF writes, as the warehouse will type them.
+
+    The logical schema hash does not move when an annotation starts mapping to a
+    different SQL type, so a checkpoint written before such a change would be
+    reused under the new one and its rows read back as the wrong thing. Both the
+    completed and the partial checkpoint keys are derived from here.
+    """
+    spec = {
+        name: (sql_type if isinstance(sql_type, SQLType) else sql_type()).to_dict()
+        for name, sql_type in output.to_udf_spec().items()
+    }
+    return hashlib.sha256(
+        json.dumps(spec, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 class UDFBase(AbstractUDF):
