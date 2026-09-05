@@ -12,8 +12,6 @@ Opaque dictionaries are restricted to JSON-native values because their content
 has no annotation from which non-JSON types could be restored.
 """
 
-from __future__ import annotations
-
 import base64
 from collections.abc import Mapping
 from copy import copy
@@ -62,8 +60,8 @@ class ColumnCodec:
     annotation: Any
     sql_type: SQLType
     _kind: str
-    _children: tuple[ColumnCodec, ...] = ()
-    _fields: tuple[tuple[str, ColumnCodec], ...] = ()
+    _children: tuple["ColumnCodec", ...] = ()
+    _fields: tuple[tuple[str, "ColumnCodec"], ...] = ()
     _model: type[BaseModel] | None = None
     _scalar_type: type | None = None
     _allows_none: bool = False
@@ -198,7 +196,7 @@ class ColumnCodec:
             return self._model.model_construct(**decoded)
         raise AssertionError(f"Unknown codec kind {self._kind!r}")
 
-    def _child_at(self, index: int) -> ColumnCodec:
+    def _child_at(self, index: int) -> "ColumnCodec":
         return self._children[index] if self._kind == "tuple" else self._children[0]
 
     def _encode_scalar(self, value: Any) -> Any:
