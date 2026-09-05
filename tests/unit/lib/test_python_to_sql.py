@@ -1,6 +1,6 @@
 import enum
 from collections.abc import Mapping
-from typing import Dict, Literal  # noqa: UP035
+from typing import Dict, Literal, Union  # noqa: UP035
 
 import pytest
 
@@ -131,6 +131,8 @@ class ZeroFlag(enum.IntFlag):
         pytest.param(Literal[StrKind.A], String, id="literal-of-str-enum"),
         pytest.param(ZeroFlag, Int64, id="zero-only-int-flag"),
         pytest.param(Literal[IntKind.ONE], Int64, id="literal-of-mixin-member"),
+        pytest.param(Literal[IntKind.ONE, 2], Int64, id="member-beside-another-value"),
+        pytest.param(Literal[StrKind.A, "b"], String, id="str-member-beside-another"),
         pytest.param(
             Literal["a", None],  # noqa: PYI061
             String,
@@ -149,7 +151,7 @@ def test_values_decide_the_column_type(annotation, expected):
         pytest.param(Literal[1, True], id="bool-is-not-int"),
         pytest.param(Literal[1, "a"], id="mixed-categories"),
         pytest.param(str | Literal[1], id="str-beside-an-int-literal"),
-        pytest.param(Literal[IntKind.ONE, 1], id="member-beside-its-raw-value"),
+        pytest.param(Literal[IntKind.ONE, 1], id="member-collides-with-raw-value"),
         pytest.param(Literal[PlainKind.A], id="literal-of-plain-enum-member"),
     ],
 )
@@ -167,10 +169,14 @@ def test_a_literal_holding_only_none_still_maps():
 
 
 def test_a_union_of_literals_matches_the_same_values_written_as_one():
-    # Both spellings hold the same values. Naming the type matters: comparing
-    # the two results to each other would hold even if both were wrong.
-    assert python_to_sql(Literal[1, 2]) is Int64
-    assert python_to_sql(Literal[1, 2]) is Int64
+    # Built through a variable so no rewrite can fold the two spellings into
+    # one. Naming the type matters too: comparing the two results to each other
+    # would hold even if both were wrong.
+    split = Union[Literal[1], Literal[2]]  # noqa: UP007, PYI030
+    together = Literal[1, 2]
+
+    assert python_to_sql(split) is Int64
+    assert python_to_sql(together) is Int64
 
 
 @pytest.mark.parametrize(
@@ -206,5 +212,20 @@ def test_ellipsis_is_only_read_as_a_variadic_tuple():
 def test_a_refused_slot_is_not_swallowed_by_the_json_fallback(annotation):
     # A heterogeneous tuple falls back to JSON; a slot refused because JSON
     # would store it lossily must not reach that fallback, wherever it sits.
+    with pytest.raises(TypeError):
+        python_to_sql(annotation)
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        pytest.param(tuple[int, float, Literal[1, "1"]], id="refused-last-slot"),
+        pytest.param(tuple[PlainKind, int], id="plain-enum-first"),
+        pytest.param(tuple[int, PlainKind], id="plain-enum-second"),
+    ],
+)
+def test_a_later_refused_slot_is_still_reached(annotation):
+    # The fallback used to answer at the first mismatch, so a slot refused
+    # further along was never resolved and its values were stored lossily.
     with pytest.raises(TypeError):
         python_to_sql(annotation)

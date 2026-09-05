@@ -113,7 +113,7 @@ def _enum_to_sql(typ: Any) -> Any:
     for primitive in (bool, int, float, str):
         if issubclass(typ, primitive):
             return PYTHON_TO_SQL[primitive]
-    raise TypeError(f"Cannot resolve type '{typ}' for flattening features")
+    raise UnstorableTypeError(f"Cannot store enum {typ!r}: its members are not values")
 
 
 def _values_to_sql(values) -> Any:
@@ -125,25 +125,31 @@ def _values_to_sql(values) -> Any:
     them and are carried as JSON.
     """
     kinds: set[type] = set()
-    saw_member = saw_raw = False
+    member_values: set = set()
+    raw_values: set = set()
     for value in values:
         if value is None:
             continue
         if isinstance(value, Enum):
-            saw_member = True
             if not isinstance(value, (bool, int, float, str)):
                 # A plain enum member is not its value and nothing converts it
                 # through .value on the way to the column.
                 raise UnstorableTypeError(f"Cannot store enum member {value!r}")
+            member_values.add(value.value)
             kinds.add(type(value.value))
         else:
-            saw_raw = True
+            raw_values.add(value)
             kinds.add(type(value))
 
-    if saw_member and saw_raw:
+    collisions = sorted(map(repr, member_values & raw_values))
+
+    if collisions:
         # Stored, IntKind.ONE and 1 are the same value; reading cannot tell which
-        # was written, so the member would come back as the raw one.
-        raise UnstorableTypeError("Cannot store enum members beside their raw values")
+        # was written, so the member would come back as the raw one. Members
+        # whose values nothing else claims are safe.
+        raise UnstorableTypeError(
+            f"Cannot store enum members beside the same raw values: {collisions}"
+        )
     if not kinds:
         # Nothing but None, so the column only ever holds NULL and any type
         # would do; String is what it mapped to before.
@@ -186,18 +192,19 @@ def _list_to_array(typ, args):
 
 def list_of_args_to_type(args) -> SQLType:
     first_type = python_to_sql(args[0])
+    heterogeneous = False
     for next_arg in args[1:]:
+        # Every slot is resolved even once the answer is known to be JSON: a
+        # later one may be refused outright, and returning early would store it
+        # lossily through the fallback instead.
         try:
-            next_type = python_to_sql(next_arg)
-            if next_type != first_type:
-                return JSON()
+            if python_to_sql(next_arg) != first_type:
+                heterogeneous = True
         except UnstorableTypeError:
-            # Refused on purpose; JSON would store it lossily rather than not
-            # at all, which is what the refusal is for.
             raise
         except TypeError:
-            return JSON()
-    return first_type
+            heterogeneous = True
+    return JSON() if heterogeneous else first_type
 
 
 def _is_json_inside_union(orig, args) -> bool:
