@@ -6404,6 +6404,25 @@ def test_a_list_of_mixed_shapes_is_left_alone(test_session):
     assert rows == [(value,)]
 
 
+class ModelFirstMixedHolder(BaseModel):
+    vals: list[DictItem | dict | None]
+
+
+def test_a_mixed_list_led_by_a_model_is_left_alone(test_session):
+    # The first typed element is a model but the rest are not, so no single
+    # shape can be assumed; the list has to reach the warehouse as it is.
+    vals = [DictItem(n=1), {"b": 2}, None]
+
+    rows = (
+        dc.read_values(i=[1], session=test_session)
+        .map(h=lambda: ModelFirstMixedHolder(vals=vals), output=ModelFirstMixedHolder)
+        .to_list("h.vals")
+    )
+
+    # A heterogeneous union hydrates as plain JSON rather than as models.
+    assert rows == [([{"n": 1}, {"b": 2}, None],)]
+
+
 class RichModel(BaseModel):
     path: PurePosixPath
 
