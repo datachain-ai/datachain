@@ -231,6 +231,12 @@ class UDFAdapter:
         return self.inner.prefetch
 
 
+# Bumped whenever the bytes a column is written as change, even though the
+# physical types do not. A checkpoint from either side of such a change holds
+# rows the other side would read differently.
+ARRAY_CODEC_VERSION = "2"
+
+
 def _physical_schema_hash(output: "SignalSchema") -> str:
     """Fingerprint of the columns a UDF writes, as the warehouse will type them.
 
@@ -244,7 +250,11 @@ def _physical_schema_hash(output: "SignalSchema") -> str:
         for name, sql_type in output.to_udf_spec().items()
     }
     return hashlib.sha256(
-        json.dumps(spec, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(
+            {"codec": ARRAY_CODEC_VERSION, "columns": spec},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
     ).hexdigest()
 
 
