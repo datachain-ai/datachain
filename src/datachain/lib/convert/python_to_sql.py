@@ -89,12 +89,21 @@ def python_to_sql(typ):  # noqa: PLR0911
             return _values_to_sql(value for arg in args for value in get_args(arg))
 
         if all(arg is str or get_origin(arg) in (Literal, LiteralEx) for arg in args):
+            literal_values = [
+                value for arg in args if arg is not str for value in get_args(arg)
+            ]
+            if str in args and any(
+                isinstance(value, Enum) and isinstance(value, str)
+                for value in literal_values
+            ):
+                # A bare str arm claims every string, the enum member's value
+                # among them; stored, Kind.A and "a" are the same and the member
+                # would come back as the plain string.
+                raise UnstorableTypeError(
+                    "Cannot store a str-valued enum member beside a bare str arm"
+                )
             # A str arm contributes str; a Literal arm contributes its values.
-            return _values_to_sql(
-                "" if arg is str else value
-                for arg in args
-                for value in ((arg,) if arg is str else get_args(arg))
-            )
+            return _values_to_sql([""] * (str in args) + literal_values)
 
         if _is_json_inside_union(orig, args):
             return JSON

@@ -153,6 +153,7 @@ def test_values_decide_the_column_type(annotation, expected):
         pytest.param(str | Literal[1], id="str-beside-an-int-literal"),
         pytest.param(Literal[IntKind.ONE, 1], id="member-collides-with-raw-value"),
         pytest.param(Literal[PlainKind.A], id="literal-of-plain-enum-member"),
+        pytest.param(str | Literal[StrKind.A], id="str-arm-claims-the-member-value"),
     ],
 )
 def test_values_with_no_single_column_type_are_refused(annotation):
