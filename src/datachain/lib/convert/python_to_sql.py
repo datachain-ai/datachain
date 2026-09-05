@@ -3,9 +3,10 @@ from collections.abc import Mapping
 from datetime import datetime
 from enum import Enum
 from types import UnionType
-from typing import Annotated, Any, Literal, Union, get_args, get_origin
+from typing import Annotated, Any, Literal, Union, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel, RootModel
+from pydantic_core import PydanticUndefined
 from typing_extensions import Literal as LiteralEx
 
 from datachain.lib.data_model import (
@@ -202,16 +203,16 @@ def _list_to_array(typ, args):
             raise TypeError(f"Cannot resolve type '{typ}' for flattening features")
 
         for slot in slots:
-            if _holds_a_model(slot):
+            if _holds_a_model(slot) or _is_null_only(slot):
                 continue
             # JSON is the element type here, so a slot that is refused outright
             # must not be swept into it, and one that maps to nothing is not
             # storable either.
             slot_type = python_to_sql(slot)
-            slot_cls = slot_type if isinstance(slot_type, type) else type(slot_type)
-            if issubclass(slot_cls, (String, Binary)):
-                # A JSON element is read back as a document, and a bare string
-                # is not one -- "hello" comes back as a JSONDecodeError.
+            if not _reads_back_as_a_json_document(slot_type):
+                # A JSON element is read back as a document. A bare string is
+                # not one, and neither is the string a datetime or bytes is
+                # written as -- each comes back as a JSONDecodeError.
                 raise UnstorableTypeError(
                     f"Cannot store {slot!r} as a JSON element beside a model"
                 )
@@ -238,6 +239,25 @@ def _list_to_array(typ, args):
             # unwritable, as before.
             list_type = SQLType.as_nullable(JSON())
     return Array(list_type)
+
+
+def _is_null_only(annotation: Any) -> bool:
+    """Whether this annotation admits nothing but None -- Literal[None]."""
+    if get_origin(annotation) not in (Literal, LiteralEx):
+        return False
+    values = get_args(annotation)
+    return bool(values) and all(value is None for value in values)
+
+
+def _reads_back_as_a_json_document(sql_type: Any) -> bool:
+    """Whether a value of this column type is itself a valid JSON document.
+
+    Numbers, booleans and JSON are; anything written as a bare string is not.
+    """
+    instance = sql_type() if isinstance(sql_type, type) else sql_type
+    if isinstance(instance, JSON):
+        return True
+    return instance.python_type in (int, float, bool)
 
 
 def _holds_a_model(annotation: Any) -> bool:
@@ -310,8 +330,16 @@ def _returns_a_mapping(serializer: Any) -> bool:
     runs. One that declares nothing could return anything, so it is not taken on
     trust.
     """
-    func = getattr(serializer, "func", serializer)
-    annotation = getattr(func, "__annotations__", {}).get("return")
+    info = getattr(serializer, "info", None)
+    annotation = getattr(info, "return_type", PydanticUndefined)
+    if annotation is PydanticUndefined:
+        # Not given to the decorator, so read from the function -- resolved, as
+        # `from __future__ import annotations` leaves it a string otherwise.
+        func = getattr(serializer, "func", serializer)
+        try:
+            annotation = get_type_hints(func).get("return")
+        except (NameError, TypeError):
+            return False
     if annotation is None:
         return False
     origin = get_origin(annotation) or annotation

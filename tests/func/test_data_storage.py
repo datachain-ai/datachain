@@ -667,11 +667,26 @@ class MappingDump(BaseModel):
         return {"x": self.x}
 
 
-def test_a_serializer_returning_a_mapping_is_admitted():
+class MappingDumpByDecorator(BaseModel):
+    x: int
+
+    @model_serializer(return_type=dict[str, int])
+    def _dump(self):
+        return {"x": self.x}
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        pytest.param(MappingDump, id="annotated-return"),
+        pytest.param(MappingDumpByDecorator, id="return_type-argument"),
+    ],
+)
+def test_a_serializer_returning_a_mapping_is_admitted(model):
     # The reader rebuilds a nested model from a mapping, so a serializer that
-    # says it returns one is fine; only one that says otherwise, or says
-    # nothing, is refused.
-    assert python_to_sql(list[MappingDump | None]).to_dict() == {
+    # says it returns one is fine, however it says so; only one that says
+    # otherwise, or says nothing, is refused.
+    assert python_to_sql(list[model | None]).to_dict() == {
         "type": "Array",
         "item_type": {"type": "JSON", "dc_nullable": True},
     }
@@ -682,6 +697,7 @@ def test_a_serializer_returning_a_mapping_is_admitted():
     [
         pytest.param(tuple[Literal[1, "1"], SlotA], id="refused-slot-beside-a-model"),
         pytest.param(tuple[SlotA | None, str], id="string-slot-beside-a-model"),
+        pytest.param(tuple[SlotA | None, datetime], id="datetime-slot-beside-a-model"),
     ],
 )
 def test_a_non_model_slot_is_resolved_before_json_is_chosen(annotation):
@@ -690,3 +706,13 @@ def test_a_non_model_slot_is_resolved_before_json_is_chosen(annotation):
     # back raises.
     with pytest.raises(TypeError):
         python_to_sql(annotation)
+
+
+def test_a_null_only_slot_beside_a_model_is_not_mistaken_for_a_string():
+    # Literal[None] borrows String as a placeholder column type; it stores
+    # nothing, so the check that refuses a bare string beside a model does not
+    # apply to it.
+    assert python_to_sql(tuple[Literal[None], SlotA]).to_dict() == {  # noqa: PYI061
+        "type": "Array",
+        "item_type": {"type": "JSON", "dc_nullable": True},
+    }
