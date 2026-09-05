@@ -657,3 +657,36 @@ def test_a_model_beside_a_scalar_is_still_held_to_the_contract():
     # the reader cannot rebuild, whatever sits next to it.
     with pytest.raises(TypeError):
         python_to_sql(tuple[ScalarDump | None, int])
+
+
+class MappingDump(BaseModel):
+    x: int
+
+    @model_serializer
+    def _dump(self) -> dict[str, int]:
+        return {"x": self.x}
+
+
+def test_a_serializer_returning_a_mapping_is_admitted():
+    # The reader rebuilds a nested model from a mapping, so a serializer that
+    # says it returns one is fine; only one that says otherwise, or says
+    # nothing, is refused.
+    assert python_to_sql(list[MappingDump | None]).to_dict() == {
+        "type": "Array",
+        "item_type": {"type": "JSON", "dc_nullable": True},
+    }
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        pytest.param(tuple[Literal[1, "1"], SlotA], id="refused-slot-beside-a-model"),
+        pytest.param(tuple[SlotA | None, str], id="string-slot-beside-a-model"),
+    ],
+)
+def test_a_non_model_slot_is_resolved_before_json_is_chosen(annotation):
+    # The model branch used to return JSON without looking at the other slots,
+    # so a refusal was skipped and a bare string was stored where reading it
+    # back raises.
+    with pytest.raises(TypeError):
+        python_to_sql(annotation)

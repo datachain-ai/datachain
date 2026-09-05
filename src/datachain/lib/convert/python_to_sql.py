@@ -1,4 +1,5 @@
 import inspect
+from collections.abc import Mapping
 from datetime import datetime
 from enum import Enum
 from types import UnionType
@@ -200,6 +201,21 @@ def _list_to_array(typ, args):
         if any(_holds_a_model(slot) and _model_element(slot) is None for slot in slots):
             raise TypeError(f"Cannot resolve type '{typ}' for flattening features")
 
+        for slot in slots:
+            if _holds_a_model(slot):
+                continue
+            # JSON is the element type here, so a slot that is refused outright
+            # must not be swept into it, and one that maps to nothing is not
+            # storable either.
+            slot_type = python_to_sql(slot)
+            slot_cls = slot_type if isinstance(slot_type, type) else type(slot_type)
+            if issubclass(slot_cls, (String, Binary)):
+                # A JSON element is read back as a document, and a bare string
+                # is not one -- "hello" comes back as a JSONDecodeError.
+                raise UnstorableTypeError(
+                    f"Cannot store {slot!r} as a JSON element beside a model"
+                )
+
         item: SQLType = JSON()
         if any(_admits_none(slot) for slot in slots):
             item = SQLType.as_nullable(item)
@@ -283,7 +299,23 @@ def _serializes_as_a_mapping(model: Any) -> bool:
     if issubclass(model, RootModel):
         return False
     decorators = getattr(model, "__pydantic_decorators__", None)
-    return not (decorators and decorators.model_serializers)
+    serializers = getattr(decorators, "model_serializers", None) or {}
+    return all(_returns_a_mapping(entry) for entry in serializers.values())
+
+
+def _returns_a_mapping(serializer: Any) -> bool:
+    """Whether a model_serializer is declared to return a mapping.
+
+    Read from its return annotation, the only thing said about it before it
+    runs. One that declares nothing could return anything, so it is not taken on
+    trust.
+    """
+    func = getattr(serializer, "func", serializer)
+    annotation = getattr(func, "__annotations__", {}).get("return")
+    if annotation is None:
+        return False
+    origin = get_origin(annotation) or annotation
+    return isinstance(origin, type) and issubclass(origin, Mapping)
 
 
 def _admits_none(annotation: Any) -> bool:
