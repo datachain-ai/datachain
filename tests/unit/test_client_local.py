@@ -1,8 +1,10 @@
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
+from datachain.client.fsspec import _format_etag
 from datachain.client.local import FileClient
 from datachain.client.writeconfig import WriteConfig
 from datachain.fs.utils import path_to_fsspec_uri
@@ -19,6 +21,47 @@ def test_write_kwargs_ignores_all_fields(streaming):
         write_options={"ACL": "public-read"},
     )
     assert FileClient._write_kwargs(cfg, streaming=streaming) == {}
+
+
+def test_format_etag_renders_mtime_hex_as_iso_timestamp():
+    mtime = 1234567890.25
+    expected = datetime.fromtimestamp(mtime, timezone.utc).isoformat()
+    assert _format_etag(mtime.hex()) == expected
+
+
+@pytest.mark.parametrize(
+    "etag",
+    [
+        "d41d8cd98f00b204e9800998ecf8427e",
+        '"abc123"',
+        "abc",
+        "0xzz",
+    ],
+)
+def test_format_etag_passthrough_for_non_timestamp_etags(etag):
+    assert _format_etag(etag) == etag
+
+
+def test_put_in_cache_stale_etag_guides_update(tmp_path, catalog):
+    client = FileClient.from_source(str(tmp_path), catalog.cache)
+
+    rel_path = "folder/file.bin"
+    fpath = Path(tmp_path, rel_path)
+    fpath.parent.mkdir(parents=True)
+    fpath.write_bytes(b"hello")
+
+    current_etag = fpath.stat().st_mtime.hex()
+    stale_etag = (fpath.stat().st_mtime - 1).hex()
+    assert stale_etag != current_etag
+
+    file = File(source=client.uri, path=rel_path, etag=stale_etag)
+    with pytest.raises(FileNotFoundError) as excinfo:
+        client.put_in_cache(file)
+
+    message = str(excinfo.value)
+    assert rel_path in message
+    assert "update=True" in message
+    assert stale_etag not in message
 
 
 def test_split_url_directory_preserves_leaf(tmp_path):
