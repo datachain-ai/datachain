@@ -272,9 +272,9 @@ def _resolve_from_sys_modules(
     if matches:
         return candidate
     warnings.warn(
-        f"class {candidate.__module__}.{candidate.__name__} in this process has a "
-        f"different shape than {ct.name!r} stored in the dataset; using a synthetic "
-        "class, so isinstance checks against the imported class will fail",
+        f"class {candidate.__module__}.{candidate.__name__} does not match the stored "
+        f"schema for {ct.name!r}; using a synthetic class, so isinstance checks "
+        "against the imported class will fail",
         SignalSchemaWarning,
         stacklevel=3,
     )
@@ -404,8 +404,7 @@ class SignalSchema:
         *,
         register_pydantic: bool = True,
     ) -> str:
-        """This serializes any custom type information to the provided custom_types
-        dict, and returns the name of the type serialized."""
+        """Serialize a Pydantic model and its nested types into custom_types."""
         if version_name in custom_types:
             # This type is already stored in custom_types.
             return version_name
@@ -442,8 +441,7 @@ class SignalSchema:
         *,
         register_pydantic: bool = True,
     ) -> str:
-        """Serialize a given type to a string, including automatic ModelStore
-        registration, and save this type and subtypes to custom_types as well."""
+        """Serialize a type and its nested Pydantic models into custom_types."""
         subtypes: list[Any] = []
         type_name = SignalSchema._type_to_str(
             fr, subtypes, register_pydantic=register_pydantic

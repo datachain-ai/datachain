@@ -1879,7 +1879,7 @@ def test_deserialize_rejects_imported_model_with_different_shape(
     )
     ModelStore.store.clear()
 
-    with pytest.warns(SignalSchemaWarning, match="different shape"):
+    with pytest.warns(SignalSchemaWarning, match="does not match the stored schema"):
         restored = SignalSchema.deserialize(serialized).values["x"]
 
     assert restored is not current
@@ -1913,7 +1913,7 @@ def test_deserialize_rejects_nested_model_with_different_shape(monkeypatch, wrap
     )
     ModelStore.store.clear()
 
-    with pytest.warns(SignalSchemaWarning, match="different shape"):
+    with pytest.warns(SignalSchemaWarning, match="does not match the stored schema"):
         restored = SignalSchema.deserialize(serialized).values["x"]
 
     assert restored is not current_outer

@@ -5,7 +5,6 @@ import pytest
 
 from tests.utils import (
     run_test_subprocess,
-    skip_if_not_sqlite,
     wait_for_test_subprocess,
 )
 
@@ -87,7 +86,6 @@ Scenario(
 """
 
 
-@skip_if_not_sqlite
 @pytest.mark.e2e
 @pytest.mark.xdist_group(name="tmpfile")
 def test_nested_pydantic_class_identity_cross_process(tmp_dir, catalog_tmpfile):
