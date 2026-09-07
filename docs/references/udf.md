@@ -21,6 +21,7 @@ import hashlib
 import json
 from datachain.lib.udf import Mapper
 
+
 class Tokenize(Mapper):
     def __init__(self, tokenizer, tokenizer_id: str, max_length: int):
         self.tokenizer = tokenizer
