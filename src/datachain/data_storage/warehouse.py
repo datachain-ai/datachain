@@ -86,9 +86,6 @@ class AbstractWarehouse(ABC, Serializable):
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         """Default behavior is to do nothing, as connections may be shared."""
 
-    def cleanup_for_tests(self):
-        """Cleanup for tests."""
-
     def normalize_limit_offset(self, query: GenerativeSelect) -> GenerativeSelect:
         """Return query adjusted for warehouse-specific LIMIT/OFFSET semantics."""
         return query

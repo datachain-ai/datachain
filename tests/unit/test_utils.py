@@ -1,10 +1,13 @@
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from filelock import FileLock, Timeout
+from sqlalchemy.engine import make_url
 
 from datachain.fs.utils import is_subpath, path_to_fsspec_uri
+from datachain.testing import drop_all_tables
 from datachain.utils import (
     batched,
     batched_it,
@@ -637,3 +640,12 @@ def test_path_to_fsspec_uri_colon_in_filename_is_local(path):
 def test_path_to_fsspec_uri_passes_through_real_uris(uri):
     """URIs with a ``scheme://`` prefix must pass through unchanged."""
     assert path_to_fsspec_uri(uri) == uri
+
+
+def test_drop_all_tables_refuses_non_test_database():
+    db = SimpleNamespace(
+        engine=SimpleNamespace(url=make_url("postgresql://x@localhost/database"))
+    )
+
+    with pytest.raises(RuntimeError, match="must contain 'test'"):
+        drop_all_tables(db)
