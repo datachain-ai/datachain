@@ -34,8 +34,8 @@ import datachain as dc
 (
     dc.read_storage("s3://acme-robots/runs/", anon=True, type="video")
     .settings(parallel=8, prefetch=4)
-    .map(detections=detect_obstacles)        # no local copy of the video
-    .save("obstacle_detections")             # writes typed records, not files
+    .map(detections=detect_obstacles)  # no local copy of the video
+    .save("obstacle_detections")  # writes typed records, not files
 )
 ```
 
@@ -66,9 +66,8 @@ DataChain reads the sidecars once into typed columns the Query Engine indexes, t
 import datachain as dc
 
 meta = dc.read_json("s3://acme-robots/runs/**/*.json", column="meta", anon=True)
-videos = (
-    dc.read_storage("s3://acme-robots/runs/**/*.mp4", anon=True, type="video")
-    .map(run_id=lambda file: file.path.split("/")[-1].split(".")[0])
+videos = dc.read_storage("s3://acme-robots/runs/**/*.mp4", anon=True, type="video").map(
+    run_id=lambda file: file.path.split("/")[-1].split(".")[0]
 )
 
 videos.merge(meta, on="run_id", right_on="meta.run_id").save("runs")

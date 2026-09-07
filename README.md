@@ -115,20 +115,23 @@ import io
 from pydantic import BaseModel
 import datachain as dc
 
+
 class ImageInfo(BaseModel):
     width: int
     height: int
 
+
 def get_info(file: dc.File) -> ImageInfo:
     img = Image.open(io.BytesIO(file.read()))
     return ImageInfo(width=img.width, height=img.height)
+
 
 ds = (
     dc.read_storage(
         "s3://dc-readme/oxford-pets-micro/images/**/*.jpg",
         anon=True,
         update=True,
-        delta=True,         # re-runs skip unchanged files
+        delta=True,  # re-runs skip unchanged files
     )
     .settings(prefetch=64)
     .map(info=get_info)
@@ -198,8 +201,8 @@ import datachain as dc
 cnt = (
     dc.read_dataset("pets_images")
     .filter(
-        (dc.C("info.width") > 400) &
-        ~dc.C("file.path").ilike("%cocker_spaniel%")   # case-insensitive
+        (dc.C("info.width") > 400)
+        & ~dc.C("file.path").ilike("%cocker_spaniel%")  # case-insensitive
     )
     .count()
 )
@@ -223,19 +226,23 @@ import open_clip, torch, io
 from PIL import Image
 import datachain as dc
 
-model, _, preprocess = open_clip.create_model_and_transforms("ViT-B-32", "laion2b_s34b_b79k")
+model, _, preprocess = open_clip.create_model_and_transforms(
+    "ViT-B-32", "laion2b_s34b_b79k"
+)
 model.eval()
 
 counter = 0
 
+
 def encode(file: dc.File, model, preprocess) -> list[float]:
     global counter
     counter += 1
-    if counter > 236:                                    # ← bug: remove these two lines
-        raise Exception("some bug")                      # ←
+    if counter > 236:  # ← bug: remove these two lines
+        raise Exception("some bug")  # ←
     img = Image.open(io.BytesIO(file.read())).convert("RGB")
     with torch.no_grad():
         return model.encode_image(preprocess(img).unsqueeze(0))[0].tolist()
+
 
 (
     dc.read_dataset("pets_images")
@@ -273,16 +280,18 @@ import open_clip, torch, io
 from PIL import Image
 import datachain as dc
 
-model, _, preprocess = open_clip.create_model_and_transforms("ViT-B-32", "laion2b_s34b_b79k")
+model, _, preprocess = open_clip.create_model_and_transforms(
+    "ViT-B-32", "laion2b_s34b_b79k"
+)
 model.eval()
 
-ref_emb = model.encode_image(
-    preprocess(Image.open("fiona.jpg")).unsqueeze(0)
-)[0].tolist()
+ref_emb = model.encode_image(preprocess(Image.open("fiona.jpg")).unsqueeze(0))[
+    0
+].tolist()
 
 (
     dc.read_dataset("pets_embeddings")
-    .filter(dc.C("info.width") > 500)          # from pets_images - no re-read
+    .filter(dc.C("info.width") > 500)  # from pets_images - no re-read
     .mutate(dist=dc.func.cosine_distance(dc.C("emb"), ref_emb))
     .order_by("dist")
     .limit(3)

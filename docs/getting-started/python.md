@@ -41,11 +41,13 @@ import datachain as dc
 meta = dc.read_json("gs://datachain-demo/dogs-and-cats/*json", column="meta", anon=True)
 images = dc.read_storage("gs://datachain-demo/dogs-and-cats/*jpg", anon=True)
 
-images_id = images.map(id=lambda file: file.path.split('.')[-2])
+images_id = images.map(id=lambda file: file.path.split(".")[-2])
 annotated = images_id.merge(meta, on="id", right_on="meta.id")
 
-likely_cats = annotated.filter((dc.Column("meta.inference.confidence") > 0.93) \
-                               & (dc.Column("meta.inference.class_") == "cat"))
+likely_cats = annotated.filter(
+    (dc.Column("meta.inference.confidence") > 0.93)
+    & (dc.Column("meta.inference.class_") == "cat")
+)
 likely_cats.to_storage("high-confidence-cats/", signal="file")
 ```
 
@@ -68,19 +70,25 @@ sentiment detected are then copied to the local directory.
 from transformers import pipeline
 import datachain as dc
 
-classifier = pipeline("sentiment-analysis", device="cpu",
-                model="distilbert/distilbert-base-uncased-finetuned-sst-2-english")
+classifier = pipeline(
+    "sentiment-analysis",
+    device="cpu",
+    model="distilbert/distilbert-base-uncased-finetuned-sst-2-english",
+)
+
 
 def is_positive_dialogue_ending(file) -> bool:
     dialogue_ending = file.read()[-512:]
     return classifier(dialogue_ending)[0]["label"] == "POSITIVE"
 
+
 chain = (
-   dc.read_storage("gs://datachain-demo/chatbot-KiT/",
-                          column="file", type="text", anon=True)
-   .settings(parallel=8, cache=True)
-   .map(is_positive=is_positive_dialogue_ending)
-   .save("file_response")
+    dc.read_storage(
+        "gs://datachain-demo/chatbot-KiT/", column="file", type="text", anon=True
+    )
+    .settings(parallel=8, cache=True)
+    .map(is_positive=is_positive_dialogue_ending)
+    .save("file_response")
 )
 
 positive_chain = chain.filter(Column("is_positive") == True)
@@ -121,19 +129,24 @@ import datachain as dc
 
 PROMPT = "Was this dialog successful? Answer in a single word: Success or Failure."
 
+
 def eval_dialogue(file: dc.File) -> bool:
-     client = Mistral(api_key = os.environ["MISTRAL_API_KEY"])
-     response = client.chat.complete(
-         model="open-mixtral-8x22b",
-         messages=[{"role": "system", "content": PROMPT},
-                   {"role": "user", "content": file.read()}])
-     result = response.choices[0].message.content
-     return result.lower().startswith("success")
+    client = Mistral(api_key=os.environ["MISTRAL_API_KEY"])
+    response = client.chat.complete(
+        model="open-mixtral-8x22b",
+        messages=[
+            {"role": "system", "content": PROMPT},
+            {"role": "user", "content": file.read()},
+        ],
+    )
+    result = response.choices[0].message.content
+    return result.lower().startswith("success")
+
 
 chain = (
-   dc.read_storage("gs://datachain-demo/chatbot-KiT/", column="file", anon=True)
-   .map(is_success=eval_dialogue)
-   .save("mistral_files")
+    dc.read_storage("gs://datachain-demo/chatbot-KiT/", column="file", anon=True)
+    .map(is_success=eval_dialogue)
+    .save("mistral_files")
 )
 
 successful_chain = chain.filter(dc.Column("is_success") == True)
@@ -168,25 +181,30 @@ import datachain as dc
 
 PROMPT = "Was this dialog successful? Answer in a single word: Success or Failure."
 
+
 def eval_dialog(file: dc.File) -> ChatCompletionResponse:
-     client = MistralClient()
-     return client.chat(
-         model="open-mixtral-8x22b",
-         messages=[{"role": "system", "content": PROMPT},
-                   {"role": "user", "content": file.read()}])
+    client = MistralClient()
+    return client.chat(
+        model="open-mixtral-8x22b",
+        messages=[
+            {"role": "system", "content": PROMPT},
+            {"role": "user", "content": file.read()},
+        ],
+    )
+
 
 chain = (
-   dc.read_storage("gs://datachain-demo/chatbot-KiT/", column="file", anon=True)
-   .settings(parallel=4, cache=True)
-   .map(response=eval_dialog)
-   .map(status=lambda response: response.choices[0].message.content.lower()[:7])
-   .save("response")
+    dc.read_storage("gs://datachain-demo/chatbot-KiT/", column="file", anon=True)
+    .settings(parallel=4, cache=True)
+    .map(response=eval_dialog)
+    .map(status=lambda response: response.choices[0].message.content.lower()[:7])
+    .save("response")
 )
 
 chain.select("file.path", "status", "response.usage").show(5)
 
 success_rate = chain.filter(dc.Column("status") == "success").count() / chain.count()
-print(f"{100*success_rate:.1f}% dialogs were successful")
+print(f"{100 * success_rate:.1f}% dialogs were successful")
 ```
 
 Output:
@@ -247,10 +265,13 @@ output tokens:
 
 ``` py
 import datachain as dc
+
 chain = dc.read_dataset("mistral_dataset")
 
-cost = chain.sum("response.usage.prompt_tokens")*0.000002 \
-           + chain.sum("response.usage.completion_tokens")*0.000006
+cost = (
+    chain.sum("response.usage.prompt_tokens") * 0.000002
+    + chain.sum("response.usage.completion_tokens") * 0.000006
+)
 print(f"Spent ${cost:.2f} on {chain.count()} calls")
 ```
 
@@ -277,14 +298,14 @@ processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 chain = (
     dc.read_storage("gs://datachain-demo/dogs-and-cats/", type="image", anon=True)
     .map(label=lambda name: name.split(".")[0], params=["file.path"])
-    .select("file", "label").to_pytorch(
+    .select("file", "label")
+    .to_pytorch(
         transform=processor.image_processor,
         tokenizer=processor.tokenizer,
     )
 )
 
 loader = DataLoader(chain, batch_size=1)
-
 ```
 
 ## Next Steps

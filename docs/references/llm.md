@@ -17,16 +17,18 @@ import datachain as dc
 from datachain import llm
 from pydantic import BaseModel
 
+
 class Scene(BaseModel):
     objects: list[str]
     risk: float
+
 
 (
     dc.read_storage("s3://frames", type="image")
     .settings(llm="anthropic/claude-haiku-4-5")
     .map(topic=llm.classify("file", into=["accident", "normal"]))  # -> str
-    .map(risk=llm.score("file", "accident risk 0..1"))             # -> float
-    .map(scene=llm.complete("file", schema=Scene))                 # -> Scene
+    .map(risk=llm.score("file", "accident risk 0..1"))  # -> float
+    .map(scene=llm.complete("file", schema=Scene))  # -> Scene
     .save("frames")
 )
 ```

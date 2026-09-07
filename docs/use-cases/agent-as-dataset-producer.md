@@ -18,11 +18,14 @@ import datachain as dc
 from pydantic import BaseModel
 from mistralai import Mistral
 
+
 class Verdict(BaseModel):
     success: bool
     rationale: str
 
+
 PROMPT = "Was this dialog successful? Reply JSON: {success: bool, rationale: str}."
+
 
 def judge(file: dc.File) -> Verdict:
     client = Mistral(api_key=os.environ["MISTRAL_API_KEY"])
@@ -35,6 +38,7 @@ def judge(file: dc.File) -> Verdict:
         response_format={"type": "json_object"},
     )
     return Verdict.model_validate_json(response.choices[0].message.content)
+
 
 (
     dc.read_storage("gs://datachain-demo/chatbot-KiT/", type="text", anon=True)
