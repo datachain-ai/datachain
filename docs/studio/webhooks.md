@@ -141,12 +141,13 @@ secret = "secretString"
 # This initializes a new Flask application.
 app = Flask(__name__)
 
+
 # This defines a POST route at the `/webhook` path.
 # It matches the path you specified for the smee.io forwarding.
 #
 # Once you deploy your code to a server and update your webhook URL,
 # Change this to match the path portion of the URL for your webhook.
-@app.route('/webhook', methods=['POST'])
+@app.route("/webhook", methods=["POST"])
 def webhook():
     # Respond to indicate that delivery was successfully received.
     # Your server should respond with a 2XX response
@@ -155,33 +156,33 @@ def webhook():
     # then Studio terminates the connection.
 
     # Check `http-x-datachain-event` header for the event type.
-    datachain_event = request.headers.get('http-x-datachain-event')
+    datachain_event = request.headers.get("http-x-datachain-event")
 
     # You should add logic to handle each event type
     # that your webhook is subscribed to.
     # For example, this code handles the `JOB` and `PING` events.
-    if datachain_event == 'JOB':
+    if datachain_event == "JOB":
         data = request.get_json()
-        action = data.get('action')
-        if action == 'job_status':
+        action = data.get("action")
+        if action == "job_status":
             print(
-                f"Job status for job {data['job']['id']} was" \
-                " changed to {data['job']['status']}"
+                f"Job status for job {data['job']['id']} was"
+                f" changed to {data['job']['status']}"
             )
         else:
             print(f"Unhandled action for the job event: {action}")
-    elif datachain_event == 'PING':
-        print('Ping event received')
+    elif datachain_event == "PING":
+        print("Ping event received")
     else:
         print(f"Unhandled event: {datachain_event}")
 
-    return '', 202  # 202 Accepted status code
+    return "", 202  # 202 Accepted status code
+
 
 # This starts the server.
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=port, debug=True)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=port, debug=True)
     print(f"Server is running on port {port}")
-
 ```
 
 To test the code, run the file using `python FILENAME`. Make sure that you are forwarding the webhooks in a separate terminal.
@@ -220,6 +221,7 @@ import hashlib
 import hmac
 from flask import abort
 
+
 def verify_signature(payload_body, secret_token, signature_header):
     """Verify the payload was sent from Studio by validating SHA256.
 
@@ -233,14 +235,10 @@ def verify_signature(payload_body, secret_token, signature_header):
     if not signature_header:
         abort(403, "X-datachain-signature-256 is missing!")
     hash_object = hmac.new(
-        secret_token.encode('utf-8'),
-        msg=payload_body,
-        digestmod=hashlib.sha256
+        secret_token.encode("utf-8"), msg=payload_body, digestmod=hashlib.sha256
     )
     expected_signature = "sha256=" + hash_object.hexdigest()
-    if not hmac.compare_digest(
-        expected_signature, signature_header
-    ):
+    if not hmac.compare_digest(expected_signature, signature_header):
         abort(403, "Request signatures didn't match!")
 ```
 
@@ -248,7 +246,7 @@ Add the following call in the api receiver.
 
 ```python
 # Get the signature header
-signature = request.headers.get('X-Datachain-Signature-256')
+signature = request.headers.get("X-Datachain-Signature-256")
 
 # Re-enable signature verification with improved JSON handling
 if signature:

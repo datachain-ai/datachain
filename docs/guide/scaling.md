@@ -108,6 +108,7 @@ Standard approach for production queries that auto-retry failures:
 ```python
 import datachain as dc
 
+
 def process_file(file):
     try:
         content = file.read_text()
@@ -115,6 +116,7 @@ def process_file(file):
         return {"content": content, "result": result, "error": ""}
     except Exception as e:
         return {"content": "", "result": "", "error": str(e)}
+
 
 chain = (
     dc.read_storage(

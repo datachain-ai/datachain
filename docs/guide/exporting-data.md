@@ -79,10 +79,10 @@ Each split is a full chain that can be saved, exported, or fed to `to_pytorch()`
 
 ```python
 # Single column as a flat list
-scores = chain.to_values("score")          # -> [0.9, 0.7, 0.3]
+scores = chain.to_values("score")  # -> [0.9, 0.7, 0.3]
 
 # Multiple columns as tuples
-rows = chain.to_list("file", "label")      # -> [(File, "cat"), (File, "dog")]
+rows = chain.to_list("file", "label")  # -> [(File, "cat"), (File, "dog")]
 ```
 
 For processing chain results, prefer `map()`/`gen()` over extracting and looping; they preserve parallelism and lineage.
@@ -131,16 +131,22 @@ Read files, enrich with a local model, filter, and export the results:
 from transformers import pipeline
 import datachain as dc
 
-classifier = pipeline("sentiment-analysis", device="cpu",
-                model="distilbert/distilbert-base-uncased-finetuned-sst-2-english")
+classifier = pipeline(
+    "sentiment-analysis",
+    device="cpu",
+    model="distilbert/distilbert-base-uncased-finetuned-sst-2-english",
+)
+
 
 def is_positive_dialogue_ending(file) -> bool:
     dialogue_ending = file.read()[-512:]
     return classifier(dialogue_ending)[0]["label"] == "POSITIVE"
 
+
 chain = (
-    dc.read_storage("gs://datachain-demo/chatbot-KiT/",
-                     column="file", type="text", anon=True)
+    dc.read_storage(
+        "gs://datachain-demo/chatbot-KiT/", column="file", type="text", anon=True
+    )
     .settings(parallel=8, cache=True)
     .map(is_positive=is_positive_dialogue_ending)
     .save("file_response")
