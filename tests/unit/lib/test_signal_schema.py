@@ -1,7 +1,6 @@
 import json
 import pickle
 import sys
-import warnings
 from collections import UserDict, UserList
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import datetime
@@ -23,13 +22,11 @@ from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 from typing_extensions import TypedDict
 
 from datachain import Column, DataModel, Sys, func
-from datachain.lib import signal_schema as signal_schema_module
 from datachain.lib.convert.flatten import flatten
-from datachain.lib.data_model import annotation_parts, is_mapping_annotation
+from datachain.lib.data_model import is_mapping_annotation
 from datachain.lib.file import File, TextFile
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import (
-    CustomType,
     SetupError,
     SignalRemoveError,
     SignalResolvingError,
@@ -37,9 +34,6 @@ from datachain.lib.signal_schema import (
     SignalSchema,
     SignalSchemaError,
     SignalSchemaWarning,
-    _class_shape_hash,
-    _resolve_from_sys_modules,
-    _stored_shape_hash,
 )
 from datachain.lib.utils import DataChainColumnError
 from datachain.sql.types import (
@@ -784,18 +778,6 @@ def test_select_except_signals_error():
 
     with pytest.raises(SignalResolvingTypeError):
         schema.select_except_signals("address", 37)
-
-
-def test_deserialize_returns_real_class_after_model_store_removal():
-    schema = {"fr": MyType3}
-    signals = SignalSchema(schema).serialize()
-    ModelStore.remove(MyType3)
-
-    # ModelStore misses, but sys.modules still holds the real class, so
-    # deserialization returns the imported MyType3 instead of a synthetic one.
-    deserialized_schema = SignalSchema.deserialize(signals)
-    assert deserialized_schema.values["fr"] is MyType3
-    ModelStore.register(MyType3)
 
 
 def test_deserialize_rebuilds_with_known_base_when_class_not_in_sys_modules():
@@ -1847,259 +1829,6 @@ def test_enrich_expr_types_unknown_column():
     assert isinstance(result.type, NullType)
 
 
-class _ShapeEmpty(DataModel):
-    pass
-
-
-class _ShapeA(DataModel):
-    a: int
-
-
-class _ShapeAB(DataModel):
-    a: int
-    b: str
-
-
-class _ShapeAStr(DataModel):
-    a: str
-
-
-class _ShapeNested(DataModel):
-    child: _ShapeA
-
-
-class _ShapeListOfChildren(DataModel):
-    children: list[_ShapeA]
-
-
-class _ShapePlainA(BaseModel):
-    a: int
-
-
-class _ShapePlainAB(BaseModel):
-    a: int
-    b: str
-
-
-class _RecursiveShape(BaseModel):
-    child: Optional["_RecursiveShape"] = None
-
-
-@pytest.mark.parametrize(
-    "cls",
-    [
-        _ShapeEmpty,
-        _ShapeA,
-        _ShapeAB,
-        _ShapeNested,
-        _ShapeListOfChildren,
-        _ShapePlainA,
-    ],
-    ids=[
-        "empty",
-        "one-field",
-        "two-fields",
-        "nested",
-        "list-of-nested",
-        "plain-basemodel",
-    ],
-)
-def test_class_shape_hash_matches_stored_custom_type(cls):
-    name = ModelStore.get_name(cls)
-    custom_types = SignalSchema({"x": cls}).serialize()["_custom_types"]
-    assert _class_shape_hash(cls) == _stored_shape_hash(name, custom_types)
-
-
-@pytest.mark.parametrize(
-    "left,right",
-    [
-        (_ShapeA, _ShapeAB),
-        (_ShapeA, _ShapeAStr),
-        (_ShapeA, _ShapeEmpty),
-        (_ShapeA, _ShapeNested),
-        (_ShapePlainA, _ShapePlainAB),
-        (_ShapePlainA, _ShapeA),
-    ],
-    ids=[
-        "added-field",
-        "changed-type",
-        "removed-all-fields",
-        "changed-field-name-and-type",
-        "plain-added-field",
-        "plain-vs-datamodel-same-fields",
-    ],
-)
-def test_class_shape_hash_distinguishes(left, right):
-    assert _class_shape_hash(left) != _class_shape_hash(right)
-
-
-def test_class_shape_hash_does_not_touch_model_store():
-    class ShapeStoreUntouched(BaseModel):
-        a: int
-
-    before = {k: dict(v) for k, v in ModelStore.store.items()}
-    _class_shape_hash(ShapeStoreUntouched)
-    after = {k: dict(v) for k, v in ModelStore.store.items()}
-    assert before == after
-
-
-def test_shape_hash_handles_recursive_model_graph():
-    name = ModelStore.get_name(_RecursiveShape)
-    custom_type = CustomType(
-        schema_version=2,
-        name=name,
-        fields={"child": f"Optional[{name}]"},
-        bases=SignalSchema._get_bases(_RecursiveShape),
-    )
-    custom_types = {name: custom_type.model_dump(exclude_none=True)}
-
-    assert _class_shape_hash(_RecursiveShape) == _stored_shape_hash(name, custom_types)
-
-
-class _NotPydantic:
-    a: int
-
-
-_THIS_MODULE = "tests.unit.lib.test_signal_schema"
-
-
-def _empty_ct(bases=None, name="MyType1@v1"):
-    return CustomType(schema_version=2, name=name, fields={}, bases=bases or [])
-
-
-def _resolve_ct(ct):
-    custom_types = {ct.name: ct.model_dump(exclude_none=True)}
-    return _resolve_from_sys_modules(
-        ct, ct.name, _stored_shape_hash(ct.name, custom_types)
-    )
-
-
-@pytest.mark.parametrize(
-    "ct",
-    [
-        _empty_ct(bases=[]),
-        _empty_ct(bases=[("MyType1", "totally.nonexistent.mod.xyz", None)]),
-        _empty_ct(bases=[("NopeNotHere", _THIS_MODULE, None)]),
-        _empty_ct(bases=[("_stored_shape_hash", "datachain.lib.signal_schema", None)]),
-        _empty_ct(bases=[("_NotPydantic", _THIS_MODULE, None)]),
-    ],
-    ids=[
-        "no-bases",
-        "module-not-loaded",
-        "class-not-in-module",
-        "attribute-not-a-class",
-        "class-not-pydantic",
-    ],
-)
-def test_resolve_from_sys_modules_returns_none(ct):
-    assert _resolve_ct(ct) is None
-
-
-def test_resolve_from_sys_modules_returns_none_for_none_module_entry(monkeypatch):
-    monkeypatch.setitem(sys.modules, "some.stub.mod.xyz", None)
-    ct = _empty_ct(bases=[("MyType1", "some.stub.mod.xyz", None)])
-    assert _resolve_ct(ct) is None
-
-
-def test_resolve_from_sys_modules_does_not_call_module_getattr(monkeypatch):
-    module_name = "module.with.lazy.attributes"
-    module = ModuleType(module_name)
-
-    def fail_on_getattr(name):
-        raise AssertionError(f"module __getattr__ called for {name}")
-
-    module.__getattr__ = fail_on_getattr
-    monkeypatch.setitem(sys.modules, module_name, module)
-    ct = _empty_ct(bases=[("LazyModel", module_name, None)])
-
-    assert _resolve_ct(ct) is None
-
-
-def test_resolve_from_sys_modules_returns_class_on_shape_match():
-    signals = SignalSchema({"x": MyType1}).serialize()
-    custom_types = signals["_custom_types"]
-    ct = CustomType.deserialize(custom_types["MyType1@v1"], "MyType1@v1")
-    expected = _stored_shape_hash("MyType1@v1", custom_types)
-    assert _resolve_from_sys_modules(ct, "MyType1@v1", expected) is MyType1
-
-
-def _drifted_ct(mutate):
-    signals = SignalSchema({"x": MyType1}).serialize()
-    stored = signals["_custom_types"]["MyType1@v1"]
-    mutate(stored)
-    return CustomType.deserialize(stored, stored["name"])
-
-
-def _add_field(stored):
-    stored["fields"] = {**stored["fields"], "extra_field": "int"}
-
-
-def _change_field_type(stored):
-    stored["fields"] = {**stored["fields"], "aa": "str"}
-
-
-def _add_extra_base(stored):
-    stored["bases"] = [*stored["bases"], ["Extra", "some.mod", None]]
-
-
-def _bump_version_in_bases(stored):
-    bases = [list(b) for b in stored["bases"]]
-    bases[0][2] = "MyType1@v2"
-    stored["bases"] = bases
-
-
-@pytest.mark.parametrize(
-    "mutate",
-    [_add_field, _change_field_type, _add_extra_base, _bump_version_in_bases],
-    ids=["extra-field", "changed-type", "extra-base", "version-drift"],
-)
-def test_resolve_from_sys_modules_returns_none_and_warns_on_shape_drift(
-    mutate, monkeypatch
-):
-    monkeypatch.setattr(signal_schema_module, "_SHAPE_DRIFT_WARNED", set())
-    ct = _drifted_ct(mutate)
-    with pytest.warns(SignalSchemaWarning, match="different shape"):
-        assert _resolve_ct(ct) is None
-
-
-def test_resolve_from_sys_modules_warns_only_once_per_key(monkeypatch):
-    monkeypatch.setattr(signal_schema_module, "_SHAPE_DRIFT_WARNED", set())
-    with pytest.warns(SignalSchemaWarning):
-        _resolve_ct(_drifted_ct(_add_field))
-
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        assert _resolve_ct(_drifted_ct(_add_field)) is None
-    drift_warnings = [w for w in caught if issubclass(w.category, SignalSchemaWarning)]
-    assert drift_warnings == []
-
-
-def test_resolve_from_sys_modules_does_not_mutate_model_store():
-    signals = SignalSchema({"x": MyType1}).serialize()
-    ct = CustomType.deserialize(signals["_custom_types"]["MyType1@v1"], "MyType1@v1")
-    before = {k: dict(v) for k, v in ModelStore.store.items()}
-    expected = _stored_shape_hash("MyType1@v1", signals["_custom_types"])
-    _resolve_from_sys_modules(ct, "MyType1@v1", expected)
-    after = {k: dict(v) for k, v in ModelStore.store.items()}
-    assert before == after
-
-
-def test_deserialize_ignores_model_store_class_with_different_shape(monkeypatch):
-    monkeypatch.setattr(ModelStore, "store", {})
-    stored_class = create_model("StoreCollision", value=(int, ...))
-    serialized = SignalSchema({"x": stored_class}).serialize()
-
-    wrong_class = create_model("StoreCollision", label=(str, ...))
-    ModelStore.register(wrong_class)
-
-    with pytest.warns(SignalSchemaWarning, match="different shape"):
-        restored = SignalSchema.deserialize(serialized).values["x"]
-
-    assert restored is not wrong_class
-    assert set(restored.model_fields) == {"value"}
-    assert SignalSchema.deserialize(serialized).values["x"] is restored
-
-
 @pytest.mark.parametrize(
     "wrap",
     [
@@ -2112,25 +1841,121 @@ def test_deserialize_ignores_model_store_class_with_different_shape(monkeypatch)
     ],
     ids=["direct", "optional", "list", "mapping", "tuple", "union"],
 )
-def test_deserialize_detects_nested_model_shape_drift(monkeypatch, wrap):
+def test_deserialize_reuses_imported_nested_pydantic_model(monkeypatch, wrap):
     monkeypatch.setattr(ModelStore, "store", {})
-    monkeypatch.setattr(signal_schema_module, "_SHAPE_DRIFT_WARNED", set())
-    stored_child = create_model("NestedCollision", limit=(float, ...))
-    stored_outer = create_model("OuterCollision", child=(wrap(stored_child), ...))
-    serialized = SignalSchema({"x": stored_outer}).serialize()
+    child = create_model("ImportedNested", __module__=__name__, value=(int, ...))
+    outer = create_model("ImportedOuter", __module__=__name__, child=(wrap(child), ...))
+    monkeypatch.setattr(sys.modules[__name__], "ImportedNested", child, raising=False)
+    monkeypatch.setattr(sys.modules[__name__], "ImportedOuter", outer, raising=False)
+    serialized = SignalSchema({"x": outer}).serialize()
+    ModelStore.store.clear()
 
-    current_child = create_model("NestedCollision", name=(str, ...))
-    current_outer = create_model("OuterCollision", child=(wrap(current_child), ...))
-    ModelStore.register(current_outer)
+    restored = SignalSchema.deserialize(serialized).values["x"]
+
+    assert restored is outer
+    assert ModelStore.store == {}
+
+
+@pytest.mark.parametrize(
+    "stored_field,current_field",
+    [
+        ((int, ...), (str, ...)),
+        ((int, ...), (int | None, None)),
+        ((list[int], ...), (list[str], ...)),
+    ],
+    ids=["field-type", "optionality", "nested-container"],
+)
+def test_deserialize_rejects_imported_model_with_different_shape(
+    monkeypatch, stored_field, current_field
+):
+    monkeypatch.setattr(ModelStore, "store", {})
+    stored = create_model("DriftedPlainModel", __module__=__name__, value=stored_field)
+    serialized = SignalSchema({"x": stored}).serialize()
+    current = create_model(
+        "DriftedPlainModel", __module__=__name__, value=current_field
+    )
+    monkeypatch.setattr(
+        sys.modules[__name__], "DriftedPlainModel", current, raising=False
+    )
+    ModelStore.store.clear()
+
+    with pytest.warns(SignalSchemaWarning, match="different shape"):
+        restored = SignalSchema.deserialize(serialized).values["x"]
+
+    assert restored is not current
+
+
+@pytest.mark.parametrize(
+    "wrap",
+    [
+        lambda child: child,
+        lambda child: list[child],  # type: ignore[valid-type]
+        lambda child: child | None,
+    ],
+    ids=["direct", "list", "optional"],
+)
+def test_deserialize_rejects_nested_model_with_different_shape(monkeypatch, wrap):
+    monkeypatch.setattr(ModelStore, "store", {})
+    stored_child = create_model("NestedDrift", __module__=__name__, value=(int, ...))
+    stored_outer = create_model(
+        "OuterWithDrift", __module__=__name__, child=(wrap(stored_child), ...)
+    )
+    serialized = SignalSchema({"x": stored_outer}).serialize()
+    current_child = create_model("NestedDrift", __module__=__name__, value=(str, ...))
+    current_outer = create_model(
+        "OuterWithDrift", __module__=__name__, child=(wrap(current_child), ...)
+    )
+    monkeypatch.setattr(
+        sys.modules[__name__], "NestedDrift", current_child, raising=False
+    )
+    monkeypatch.setattr(
+        sys.modules[__name__], "OuterWithDrift", current_outer, raising=False
+    )
+    ModelStore.store.clear()
 
     with pytest.warns(SignalSchemaWarning, match="different shape"):
         restored = SignalSchema.deserialize(serialized).values["x"]
 
     assert restored is not current_outer
-    restored_annotation = restored.model_fields["child"].annotation
-    restored_child = next(
-        part
-        for part in (restored_annotation, *annotation_parts(restored_annotation))
-        if ModelStore.is_pydantic(part)
-    )
-    assert set(restored_child.model_fields) == {"limit"}
+
+
+@pytest.mark.parametrize("schema_version", [1, 2])
+def test_deserialize_preserves_registered_model(monkeypatch, schema_version):
+    monkeypatch.setattr(ModelStore, "store", {})
+    model = create_model("RegisteredModel", value=(int, ...))
+    ModelStore.register(model)
+    if schema_version == 1:
+        serialized = {
+            "x": "RegisteredModel",
+            "_custom_types": {"RegisteredModel": {"value": "int"}},
+        }
+    else:
+        serialized = SignalSchema({"x": model}).serialize()
+
+    assert SignalSchema.deserialize(serialized).values["x"] is model
+
+
+def test_deserialize_does_not_call_module_getattr(monkeypatch):
+    module_name = "module.with.lazy.attributes"
+    module = ModuleType(module_name)
+
+    def fail_on_getattr(name):
+        raise AssertionError(f"module __getattr__ called for {name}")
+
+    module.__getattr__ = fail_on_getattr
+    monkeypatch.setitem(sys.modules, module_name, module)
+    schema = {
+        "x": "LazyModel",
+        "_custom_types": {
+            "LazyModel": {
+                "schema_version": 2,
+                "name": "LazyModel",
+                "fields": {},
+                "bases": [["LazyModel", module_name, None]],
+            }
+        },
+    }
+
+    restored = SignalSchema.deserialize(schema).values["x"]
+
+    assert restored.__name__ == "LazyModel"

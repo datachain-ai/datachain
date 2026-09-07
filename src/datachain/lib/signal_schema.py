@@ -213,101 +213,6 @@ class SignalRemoveError(SignalSchemaError):
         return self.__class__, (self._path, self._msg)
 
 
-_SHAPE_DRIFT_WARNED: set[str] = set()
-
-
-def _class_shape_hash(cls: type[BaseModel]) -> str:
-    """Hash the complete model graph reachable from a live class."""
-    models: dict[str, dict[str, Any]] = {}
-
-    def visit(model: type[BaseModel]) -> None:
-        name = ModelStore.get_name(model)
-        if name in models:
-            return
-        models[name] = {
-            "fields": {
-                field_name: type_to_str(info.annotation, register_pydantic=False)
-                for field_name, info in model.model_fields.items()
-            },
-            "bases": [list(base) for base in SignalSchema._get_bases(model)],
-        }
-        for info in model.model_fields.values():
-            visit_annotation(info.annotation)
-
-    def visit_annotation(annotation: Any) -> None:
-        if model := ModelStore.to_pydantic(annotation):
-            visit(model)
-            return
-        for part in annotation_parts(annotation):
-            visit_annotation(part)
-
-    visit(cls)
-    payload = json.dumps(
-        {"root": ModelStore.get_name(cls), "models": models}, sort_keys=True
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _stored_shape_hash(type_name: str, custom_types: Mapping[str, Any]) -> str:
-    """Hash the complete stored model graph reachable from ``type_name``."""
-    models: dict[str, dict[str, Any]] = {}
-
-    def visit(name: str) -> None:
-        if name in models or name not in custom_types:
-            return
-        try:
-            ct = CustomType.deserialize(custom_types[name], name)
-        except ValidationError as exc:
-            raise SignalSchemaError(
-                f"cannot deserialize custom type '{name}': {exc}"
-            ) from exc
-        models[name] = {
-            "fields": dict(ct.fields),
-            "bases": [list(base) for base in ct.bases],
-        }
-        for field_type in ct.fields.values():
-            visit_annotation(field_type)
-
-    def visit_annotation(annotation: str) -> None:
-        annotation = annotation.strip()
-        if annotation in custom_types:
-            visit(annotation)
-            return
-        bracket_idx = annotation.find("[")
-        close_bracket_idx = annotation.rfind("]")
-        if bracket_idx < 0 or close_bracket_idx <= bracket_idx:
-            return
-        for part in SignalSchema._split_subtypes(
-            annotation[bracket_idx + 1 : close_bracket_idx]
-        ):
-            visit_annotation(part)
-
-    visit(type_name)
-    payload = json.dumps({"root": type_name, "models": models}, sort_keys=True)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _class_matches_shape(cls: type[BaseModel], expected_hash: str) -> bool:
-    """Return whether a live or schema-restored class has the stored shape."""
-    restored_hash = cls.__dict__.get("_stored_shape_hash")
-    return (restored_hash or _class_shape_hash(cls)) == expected_hash
-
-
-def _warn_shape_drift(cls: type[BaseModel], type_name: str) -> None:
-    """Warn once when a loaded class conflicts with a stored schema."""
-    key = f"{cls.__module__}.{cls.__name__}"
-    if key in _SHAPE_DRIFT_WARNED:
-        return
-    _SHAPE_DRIFT_WARNED.add(key)
-    warnings.warn(
-        f"class {key} in this process has a different shape than {type_name!r} "
-        "stored in the dataset; using a synthetic class, so isinstance checks "
-        "against the imported class will fail",
-        SignalSchemaWarning,
-        stacklevel=3,
-    )
-
-
 class CustomType(BaseModel):
     schema_version: int = Field(ge=1, le=2, strict=True)
     name: str
@@ -334,13 +239,10 @@ class CustomType(BaseModel):
 
 
 def _resolve_from_sys_modules(
-    ct: CustomType, type_name: str, expected_shape_hash: str
+    ct: CustomType, custom_types: dict[str, Any]
 ) -> type[BaseModel] | None:
-    """Return the class already imported in this process at ``ct.bases[0]``'s
-    (module, name), if its shape matches the stored spec. Never imports a
-    module named in stored data. Warns once if a same-named class exists with
-    a different shape; the caller then rebuilds a synthetic class."""
-    if not ct.bases:
+    """Reuse an already-imported plain Pydantic class when its schema matches."""
+    if not ct.bases or ct.bases[0][2] is not None:
         return None
     class_name, module_name, _ = ct.bases[0]
     module = sys.modules.get(module_name)
@@ -349,9 +251,33 @@ def _resolve_from_sys_modules(
     candidate = vars(module).get(class_name)
     if candidate is None or not ModelStore.is_pydantic(candidate):
         return None
-    if _class_matches_shape(candidate, expected_shape_hash):
+    serialized: dict[str, Any] = {}
+    SignalSchema._serialize_custom_model(
+        ct.name, candidate, serialized, register_pydantic=False
+    )
+    matches = True
+    for name, data in serialized.items():
+        if name not in custom_types:
+            matches = False
+            break
+        try:
+            stored_type = CustomType.deserialize(custom_types[name], name)
+        except ValidationError as exc:
+            raise SignalSchemaError(
+                f"cannot deserialize custom type '{name}': {exc}"
+            ) from exc
+        if CustomType.deserialize(data, name) != stored_type:
+            matches = False
+            break
+    if matches:
         return candidate
-    _warn_shape_drift(candidate, type_name)
+    warnings.warn(
+        f"class {candidate.__module__}.{candidate.__name__} in this process has a "
+        f"different shape than {ct.name!r} stored in the dataset; using a synthetic "
+        "class, so isinstance checks against the imported class will fail",
+        SignalSchemaWarning,
+        stacklevel=3,
+    )
     return None
 
 
@@ -362,7 +288,6 @@ def create_feature_model(
     *,
     partial_fingerprint: str | None = None,
     hidden_fields: list[str] | None = None,
-    stored_shape_hash: str | None = None,
 ) -> type[BaseModel]:
     """
     Build and register a dynamic feature model so it can be resolved later by name.
@@ -402,8 +327,6 @@ def create_feature_model(
 
     model._version = parsed_version  # type: ignore[attr-defined]
     model._modelstore_base_name = base_name  # type: ignore[attr-defined]
-    if stored_shape_hash is not None:
-        model._stored_shape_hash = stored_shape_hash  # type: ignore[attr-defined]
     if partial_fingerprint is not None:
         model._partial_fingerprint = partial_fingerprint  # type: ignore[attr-defined]
     if hidden_fields is not None:
@@ -475,7 +398,11 @@ class SignalSchema:
 
     @staticmethod
     def _serialize_custom_model(
-        version_name: str, fr: type[BaseModel], custom_types: dict[str, Any]
+        version_name: str,
+        fr: type[BaseModel],
+        custom_types: dict[str, Any],
+        *,
+        register_pydantic: bool = True,
     ) -> str:
         """This serializes any custom type information to the provided custom_types
         dict, and returns the name of the type serialized."""
@@ -488,7 +415,11 @@ class SignalSchema:
             field_type = info.annotation
             # All fields should be typed.
             assert field_type
-            fields[field_name] = SignalSchema._serialize_type(field_type, custom_types)
+            fields[field_name] = SignalSchema._serialize_type(
+                field_type,
+                custom_types,
+                register_pydantic=register_pydantic,
+            )
 
         bases = SignalSchema._get_bases(fr)
 
@@ -505,11 +436,18 @@ class SignalSchema:
         return version_name
 
     @staticmethod
-    def _serialize_type(fr: type, custom_types: dict[str, Any]) -> str:
+    def _serialize_type(
+        fr: type,
+        custom_types: dict[str, Any],
+        *,
+        register_pydantic: bool = True,
+    ) -> str:
         """Serialize a given type to a string, including automatic ModelStore
         registration, and save this type and subtypes to custom_types as well."""
         subtypes: list[Any] = []
-        type_name = SignalSchema._type_to_str(fr, subtypes)
+        type_name = SignalSchema._type_to_str(
+            fr, subtypes, register_pydantic=register_pydantic
+        )
         # Iterate over all subtypes (includes the input type).
         for st in subtypes:
             if st is None or not ModelStore.is_pydantic(st):
@@ -520,7 +458,12 @@ class SignalSchema:
                 # If the main type is Pydantic, then use the ModelStore version name.
                 type_name = st_version_name
             # Save this type to custom_types.
-            SignalSchema._serialize_custom_model(st_version_name, st, custom_types)
+            SignalSchema._serialize_custom_model(
+                st_version_name,
+                st,
+                custom_types,
+                register_pydantic=register_pydantic,
+            )
         return type_name
 
     def serialize(self) -> dict[str, Any]:
@@ -578,13 +521,10 @@ class SignalSchema:
                     f"cannot deserialize custom type '{type_name}': {exc}"
                 ) from exc
 
-            expected_shape_hash = _stored_shape_hash(type_name, custom_types)
             if fr := ModelStore.get(model_name, target_version):
-                if _class_matches_shape(fr, expected_shape_hash):
-                    return fr
-                _warn_shape_drift(fr, type_name)
+                return fr
 
-            if fr := _resolve_from_sys_modules(ct, type_name, expected_shape_hash):
+            if fr := _resolve_from_sys_modules(ct, custom_types):
                 return fr
 
             fields = {
@@ -609,7 +549,6 @@ class SignalSchema:
                 base=base_model,
                 hidden_fields=ct.hidden_fields,
                 partial_fingerprint=ct.partial_fingerprint,
-                stored_shape_hash=expected_shape_hash,
             )
 
         return ModelStore.get(model_name, target_version)
@@ -1690,7 +1629,10 @@ class SignalSchema:
 
     @staticmethod
     def _type_to_str(
-        type_: type | types.EllipsisType | None, subtypes: list | None = None
+        type_: type | types.EllipsisType | None,
+        subtypes: list | None = None,
+        *,
+        register_pydantic: bool = True,
     ) -> str:
         """Convert a type to a string-based representation."""
 
@@ -1701,7 +1643,7 @@ class SignalSchema:
             type_,
             subtypes,
             warn_with=_warn,
-            register_pydantic=True,
+            register_pydantic=register_pydantic,
         )
 
     # `_type_tag` = 0-based index of the active arm (Optional[X] == Union[X, None]:
