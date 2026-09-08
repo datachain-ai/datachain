@@ -763,7 +763,11 @@ class SignalSchema:
         is_optional: bool,
         row: Mapping[str, Any],
     ) -> list[Any]:
-        """Gather a model's flattened values in hydration order."""
+        """Gather a model's flattened values in hydration order.
+
+        For example, model ``fr`` reads ``fr__name`` and ``fr__deep__value``
+        from the row and returns their values in the model's field order.
+        """
         parts = name.split(".")
         result = []
         if is_optional:
