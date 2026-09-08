@@ -626,19 +626,10 @@ class SignalSchema:
                 res[db_name] = self._db_leaf_sql_type(path, type_)
         return res
 
-    @cached_property
-    def _udf_row_positions(self) -> dict[str, int]:
-        """Map deduplicated UDF column names to their positions in input rows."""
-        return {name: i for i, name in enumerate(self.to_udf_spec())}
-
-    @cached_property
-    def _udf_model_row_positions(self) -> dict[str, tuple[int, ...]]:
-        """Map UDF model names to their ordered positions in input rows."""
-        return self._model_row_positions(self._udf_row_positions)
-
-    def row_to_objs(self, row: Sequence[Any]) -> list[Any]:
+    def row_to_objs(self, row: Sequence[Any] | Mapping[str, Any]) -> list[Any]:
         self._init_setup_values()
-        positions = self._udf_row_positions
+        if not isinstance(row, Mapping):
+            row = dict(zip(self.to_udf_spec(), row, strict=True))
 
         objs: list[Any] = []
         for name, fr_type in self.values.items():
@@ -646,11 +637,11 @@ class SignalSchema:
             if self.setup_values and name in self.setup_values:
                 objs.append(self.setup_values.get(name))
             elif (fr := ModelStore.to_pydantic(inner_type)) is not None:
-                sub = [row[i] for i in self._udf_model_row_positions[name]]
-                obj = self._hydrate_model(fr, is_optional, sub, label=name)
+                sub = self._model_row_values(name, fr, is_optional, row)
+                obj, _ = self._hydrate_model(fr, is_optional, sub, 0, label=name)
                 objs.append(obj)
             else:
-                value = row[positions[DEFAULT_DELIMITER.join(name.split("."))]]
+                value = row[DEFAULT_DELIMITER.join(name.split("."))]
                 if self._row_conversion_required[name]:
                     value = self._convert_feature_value(
                         fr_type, value, catalog=None, cache=False
@@ -766,40 +757,25 @@ class SignalSchema:
         return fields
 
     @staticmethod
-    def _row_positions_for_model(
+    def _model_row_values(
         name: str,
         fr: type[BaseModel],
         is_optional: bool,
-        positions: Mapping[str, int],
-    ) -> tuple[int, ...]:
-        """Return model column positions in the order model hydration expects."""
+        row: Mapping[str, Any],
+    ) -> list[Any]:
+        """Gather a model's flattened values in hydration order."""
         parts = name.split(".")
         result = []
         if is_optional:
             db_name = DEFAULT_DELIMITER.join(
                 [*parts, SignalSchema._OPTIONAL_SENTINEL_FIELD]
             )
-            result.append(positions[db_name])
+            result.append(row[db_name])
         for col in iter_flat_columns(fr):
             path = [*parts, *col.path]
             if col.is_sentinel:
                 path.append(SignalSchema._OPTIONAL_SENTINEL_FIELD)
-            result.append(positions[DEFAULT_DELIMITER.join(path)])
-        return tuple(result)
-
-    def _model_row_positions(
-        self, positions: Mapping[str, int]
-    ) -> dict[str, tuple[int, ...]]:
-        """Build ordered row positions for every non-setup model signal."""
-        result = {}
-        for name, fr_type in self.values.items():
-            if name in self.setup_func:
-                continue
-            inner_type, is_optional = unwrap_optional(fr_type)
-            if (fr := ModelStore.to_pydantic(inner_type)) is not None:
-                result[name] = self._row_positions_for_model(
-                    name, fr, is_optional, positions
-                )
+            result.append(row[DEFAULT_DELIMITER.join(path)])
         return result
 
     @staticmethod
@@ -822,20 +798,19 @@ class SignalSchema:
         fr: type[BaseModel],
         is_optional: bool,
         row: Sequence[Any],
+        pos: int,
         *,
         catalog: "Catalog | None" = None,
         cache: bool = False,
         set_stream: bool = False,
         label: str = "",
-    ) -> Any:
-        """Build a (possibly optional) model instance from the flat row.
-        An absent optional or an all-None row yields None."""
-        pos = 0
+    ) -> tuple[Any, int]:
+        """Build a model from the flat row and return it with the next position."""
         if is_optional:
             absent, pos = read_optional_sentinel(fr, row, pos)
             if absent:
-                return None
-        j, _ = unflatten_to_json_pos(fr, row, pos)
+                return None, pos
+        j, pos = unflatten_to_json_pos(fr, row, pos)
         try:
             obj = fr(**j)
             if set_stream:
@@ -846,7 +821,7 @@ class SignalSchema:
                 raise
             logger.debug("Failed to create %s: %s", label, e)
             obj = None
-        return obj
+        return obj, pos
 
     def get_file_signal(self) -> str | None:
         for signal_name, signal_type in self.values.items():
@@ -918,21 +893,21 @@ class SignalSchema:
     def row_to_features(
         self, row: Sequence, catalog: "Catalog", cache: bool = False
     ) -> list[DataValue]:
-        positions = self._feature_row_positions
-
         res = []
-        for name, fr_cls in self.values.items():
+        pos = 0
+        for fr_cls in self.values.values():
             inner_cls, is_optional = unwrap_optional(fr_cls)
             if (fr := ModelStore.to_pydantic(inner_cls)) is None:
-                value = row[positions[DEFAULT_DELIMITER.join(name.split("."))]]
+                value = row[pos]
+                pos += 1
                 converted = self._convert_feature_value(fr_cls, value, catalog, cache)
                 res.append(converted)
             else:
-                sub = [row[i] for i in self._feature_model_row_positions[name]]
-                obj = self._hydrate_model(
+                obj, pos = self._hydrate_model(
                     fr,
                     is_optional,
-                    sub,
+                    row,
+                    pos,
                     catalog=catalog,
                     cache=cache,
                     set_stream=True,
@@ -940,16 +915,6 @@ class SignalSchema:
                 )
                 res.append(obj)
         return res
-
-    @cached_property
-    def _feature_row_positions(self) -> dict[str, int]:
-        """Map selected DB column names to their positions in feature rows."""
-        return {str(name): i for i, name in enumerate(self.db_signals())}
-
-    @cached_property
-    def _feature_model_row_positions(self) -> dict[str, tuple[int, ...]]:
-        """Map feature model names to their ordered positions in feature rows."""
-        return self._model_row_positions(self._feature_row_positions)
 
     def _convert_feature_value(
         self,
