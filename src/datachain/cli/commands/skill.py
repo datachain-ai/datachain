@@ -237,6 +237,20 @@ def uninstall_skills(skills: str | None, target: str, local: bool) -> int:
     )
     skills_dir = base / skills_dir_rel
 
+    for skill_name in skills_to_uninstall:
+        dependents = [
+            dependent
+            for dependent, deps in SKILL_DEPENDENCIES.items()
+            if skill_name in deps
+            and dependent not in skills_to_uninstall
+            and (skills_dir / dependent).exists()
+        ]
+        if dependents:
+            raise ValueError(
+                f"Cannot uninstall {skill_name}: {', '.join(dependents)} depends "
+                "on it. Uninstall them together or run without --skills."
+            )
+
     write_commands = (
         commands_dir_rel is not None
         and layout["command_ext"] is not None

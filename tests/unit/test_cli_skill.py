@@ -179,6 +179,29 @@ def test_install_only_graph_claude_global(tmp_path, fake_skills_src, fake_home):
     assert not (skills_base / "jobs").exists()
 
 
+def test_uninstall_core_refused_while_knowledge_installed(
+    tmp_path, fake_skills_src, fake_home
+):
+    from datachain.cli.commands.skill import uninstall_skills
+
+    _run_install(
+        fake_skills_src, fake_home, skills="knowledge", target="claude", local=False
+    )
+    skills_base = fake_home / ".claude" / "skills"
+
+    with (
+        patch("pathlib.Path.home", return_value=fake_home),
+        pytest.raises(ValueError, match=r"Cannot uninstall core: knowledge"),
+    ):
+        uninstall_skills(skills="core", target="claude", local=False)
+    assert (skills_base / "core" / "SDK.md").exists()
+
+    with patch("pathlib.Path.home", return_value=fake_home):
+        uninstall_skills(skills="core,knowledge", target="claude", local=False)
+    assert not (skills_base / "core").exists()
+    assert not (skills_base / "knowledge").exists()
+
+
 def test_install_knowledge_from_package_ships_core_sdk(tmp_path, fake_home):
     from datachain.cli.commands.skill import install_skills
 
