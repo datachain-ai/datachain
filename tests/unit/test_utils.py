@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import sqlalchemy as sa
 from filelock import FileLock, Timeout
 from sqlalchemy.engine import make_url
 
@@ -649,3 +650,25 @@ def test_drop_all_tables_refuses_non_test_database():
 
     with pytest.raises(RuntimeError, match="must contain 'test'"):
         drop_all_tables(db)
+
+
+def test_drop_all_tables_drops_fk_linked_tables(tmp_path):
+    engine = sa.create_engine(f"sqlite:///{tmp_path}/test.db")
+    metadata = sa.MetaData()
+    parents = sa.Table(
+        "parents", metadata, sa.Column("id", sa.Integer, primary_key=True)
+    )
+    children = sa.Table(
+        "children",
+        metadata,
+        sa.Column("id", sa.Integer, primary_key=True),
+        sa.Column("parent_id", sa.ForeignKey("parents.id")),
+    )
+    metadata.create_all(engine)
+    with engine.begin() as conn:
+        conn.execute(parents.insert().values(id=1))
+        conn.execute(children.insert().values(id=1, parent_id=1))
+
+    drop_all_tables(SimpleNamespace(engine=engine, dialect=engine.dialect))
+
+    assert sa.inspect(engine).get_table_names() == []
