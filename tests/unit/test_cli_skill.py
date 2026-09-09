@@ -186,9 +186,9 @@ def test_install_knowledge_from_package_ships_core_sdk(tmp_path, fake_home):
         install_skills(skills="knowledge", target="claude", local=False)
 
     skills_base = fake_home / ".claude" / "skills"
-    sdk = skills_base / "core" / "SDK.md"
-    assert sdk.exists()
-    assert str(sdk) in (skills_base / "knowledge" / "SKILL.md").read_text()
+    assert (skills_base / "core" / "SDK.md").exists()
+    content = (skills_base / "knowledge" / "SKILL.md").read_text()
+    assert f"{(skills_base / 'core').resolve()}/SDK.md" in content
 
 
 def test_install_all_cursor_global(tmp_path, fake_skills_src, fake_home):
