@@ -131,7 +131,7 @@ embeddings = (
 
 ### CAST quick reference
 
-CAST is the four-layer pattern owned by the `knowledge` skill at `CAST.md`. The full doctrine (recall economics, layer-ladder walk, calibration, dialogue) lives there. This is just enough to recognize the layer names:
+CAST is the four-layer pattern owned by the `datachain-knowledge` skill. The full doctrine (recall economics, layer-ladder walk, calibration, dialogue) lives there; when that skill is not installed, this section is all you need. This is just enough to recognize the layer names:
 
 - **Container** — typed index of what each file IS without full decode (paths, headers, sidecars).
 - **Asset** — raw extracted or mixed data in workable shape (decoded units, joined mixtures).
@@ -147,7 +147,7 @@ l3_<source>_<descriptor>      # Sense — model-derived signals
 <descriptor>                  # Task — no prefix
 ```
 
-The `l1_` / `l2_` / `l3_` prefix is enough; do NOT add layer-type infixes like `_container_`. Cap at 30 chars; the full doctrine is in `knowledge/CAST.md` §3.
+The `l1_` / `l2_` / `l3_` prefix is enough; do NOT add layer-type infixes like `_container_`. Cap at 30 chars.
 
 **Tag every `.save()` with `attrs` and `description`** so the knowledge skill can resolve the layer:
 
