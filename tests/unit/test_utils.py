@@ -654,6 +654,9 @@ def test_drop_all_tables_refuses_non_test_database():
 
 def test_drop_all_tables_drops_fk_linked_tables(tmp_path):
     engine = sa.create_engine(f"sqlite:///{tmp_path}/test.db")
+    sa.event.listen(
+        engine, "connect", lambda conn, _: conn.execute("PRAGMA foreign_keys = ON")
+    )
     metadata = sa.MetaData()
     parents = sa.Table(
         "parents", metadata, sa.Column("id", sa.Integer, primary_key=True)
