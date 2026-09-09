@@ -675,3 +675,4 @@ def test_drop_all_tables_drops_fk_linked_tables(tmp_path):
     drop_all_tables(SimpleNamespace(engine=engine, dialect=engine.dialect))
 
     assert sa.inspect(engine).get_table_names() == []
+    engine.dispose()
