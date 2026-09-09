@@ -230,6 +230,7 @@ def test_install_all_cursor_global(tmp_path, fake_skills_src, fake_home):
         assert "description: Test skill" in content
         # Original SKILL.md frontmatter fields should NOT appear
         assert "triggers:" not in content
+        assert f"# {skill} rules" in content
 
 
 def test_install_all_codex_global(tmp_path, fake_skills_src, fake_home):
@@ -306,6 +307,7 @@ def test_install_all_copilot_global(tmp_path, fake_skills_src, fake_home):
         # Original SKILL.md frontmatter fields should be stripped
         assert "name: datachain-" not in content
         assert "description: Test skill" not in content
+        assert f"# {skill} rules" in content
 
 
 def test_install_copilot_local_uses_github_path(

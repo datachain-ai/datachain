@@ -192,6 +192,9 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
                     content = _transform_copilot_instructions(skill_md)
                 else:
                     content = skill_md.read_text()
+                sdk_md = src / "SDK.md"
+                if sdk_md.exists():
+                    content = f"{content.rstrip()}\n\n{sdk_md.read_text()}"
                 cmd_dest.write_text(_resolve_placeholders(content, skills_dir, dest))
 
         installed.append(f"  {skill_name} → {dest}")
