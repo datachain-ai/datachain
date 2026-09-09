@@ -92,7 +92,9 @@ def _make_fake_skills_src(tmp_path: Path) -> Path:
             f"description: Test skill {skill_name}\n"
             f"---\n# {skill_name}\n"
             "```bash\npython3 scripts/plan.py\n```\n"
+            "Read `{core_skill_dir}/SDK.md`.\n"
         )
+        (skill_dir / "SDK.md").write_text(f"# {skill_name} rules\n")
         scripts = skill_dir / "scripts"
         scripts.mkdir()
         (scripts / "plan.py").write_text("# stub\n")
@@ -152,6 +154,8 @@ def test_install_all_claude_global(tmp_path, fake_skills_src, fake_home):
     content = (skills_base / "knowledge" / "SKILL.md").read_text()
     assert "{skill_dir}" not in content
     assert "scripts/plan.py" in content
+    assert "{core_skill_dir}" not in content
+    assert f"{(skills_base / 'core').resolve()}/SDK.md" in content
 
 
 def test_install_only_core_claude_global(tmp_path, fake_skills_src, fake_home):
@@ -171,7 +175,20 @@ def test_install_only_graph_claude_global(tmp_path, fake_skills_src, fake_home):
 
     skills_base = fake_home / ".claude" / "skills"
     assert (skills_base / "knowledge" / "SKILL.md").exists()
-    assert not (skills_base / "core").exists()
+    assert (skills_base / "core" / "SDK.md").exists()
+    assert not (skills_base / "jobs").exists()
+
+
+def test_install_knowledge_from_package_ships_core_sdk(tmp_path, fake_home):
+    from datachain.cli.commands.skill import install_skills
+
+    with patch("pathlib.Path.home", return_value=fake_home):
+        install_skills(skills="knowledge", target="claude", local=False)
+
+    skills_base = fake_home / ".claude" / "skills"
+    sdk = skills_base / "core" / "SDK.md"
+    assert sdk.exists()
+    assert str(sdk) in (skills_base / "knowledge" / "SKILL.md").read_text()
 
 
 def test_install_all_cursor_global(tmp_path, fake_skills_src, fake_home):
