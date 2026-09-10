@@ -30,8 +30,10 @@ from sentence_transformers import SentenceTransformer
 # Session 2: read the saved dataset and add CLIP embeddings as a new column
 encoder = SentenceTransformer("clip-ViT-B-32")
 
+
 def embed(file: dc.ImageFile) -> list[float]:
     return encoder.encode(file.read()).tolist()
+
 
 (
     dc.read_dataset("pets")

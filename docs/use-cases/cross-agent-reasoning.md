@@ -18,9 +18,11 @@ A Claude Code session on Monday produces this:
 import datachain as dc
 from pydantic import BaseModel
 
+
 class Quality(BaseModel):
     score: float
     reason: str
+
 
 (
     dc.read_storage("s3://acme/raw-images/", anon=True, type="image")
@@ -58,8 +60,7 @@ from datachain.toolkit import train_test_split
 train, evaluate = train_test_split(dc.read_dataset("curated_images"), [0.8, 0.2])
 
 (
-    evaluate
-    .map(label=lambda file: file.path.split("/")[-2])
+    evaluate.map(label=lambda file: file.path.split("/")[-2])
     .map(prediction=run_classifier)
     .save("classifier_predictions")
 )

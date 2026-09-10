@@ -21,13 +21,13 @@ import datachain as dc
 
 file = dc.File.at("s3://bucket/path/to/file.png")
 
-content = file.read()          # bytes
-text = file.read_text()        # str
+content = file.read()  # bytes
+text = file.read_text()  # str
 
-with file.open("rb") as f:    # stream large files
+with file.open("rb") as f:  # stream large files
     chunk = f.read(4096)
 
-file.ensure_cached()           # cache locally
+file.ensure_cached()  # cache locally
 local = file.get_local_path()  # local path after caching
 
 file.export("/local/output/", placement="filename")
@@ -45,7 +45,7 @@ import datachain as dc
 
 images = dc.read_storage("s3://bucket/images/", type="image")  # ImageFile
 videos = dc.read_storage("s3://bucket/videos/", type="video")  # VideoFile
-audio  = dc.read_storage("s3://bucket/audio/",  type="audio")  # AudioFile
+audio = dc.read_storage("s3://bucket/audio/", type="audio")  # AudioFile
 ```
 
 **ImageFile**: `read()` returns a `PIL.Image.Image`. `get_info()` returns Image metadata (width, height, format). `save()` supports format conversion.
@@ -71,8 +71,10 @@ chain = (
 # Time-based slicing
 from typing import Iterator
 
+
 def split_into_clips(file: dc.VideoFile) -> Iterator[dc.VideoFragment]:
     yield from file.get_fragments(duration=10.0)
+
 
 chain = (
     dc.read_storage("s3://videos/", type="video")
@@ -92,10 +94,10 @@ from datachain import model
 bbox = model.BBox.from_coco([100, 150, 200, 300], title="car")
 bbox = model.BBox.from_yolo([0.5, 0.5, 0.4, 0.6], img_size=(640, 480), title="car")
 
-coco = bbox.to_coco()                    # [x, y, w, h]
-yolo = bbox.to_yolo(img_size=(640, 480)) # normalized [cx, cy, w, h]
+coco = bbox.to_coco()  # [x, y, w, h]
+yolo = bbox.to_yolo(img_size=(640, 480))  # normalized [cx, cy, w, h]
 
-bbox.point_inside(300, 250)   # spatial queries
+bbox.point_inside(300, 250)  # spatial queries
 ```
 
 Annotation types compose naturally into Pydantic models:
@@ -103,6 +105,7 @@ Annotation types compose naturally into Pydantic models:
 ```python
 from pydantic import BaseModel
 from datachain import model
+
 
 class YoloPose(BaseModel):
     bbox: model.BBox
