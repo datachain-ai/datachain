@@ -7,12 +7,11 @@ from sqlalchemy import or_ as sql_or
 from sqlalchemy import true as sql_true
 
 from datachain.lib.convert.python_to_sql import python_to_sql
-from datachain.lib.data_model import OPTIONAL_PRESENT_TAG
 from datachain.lib.utils import DataChainParamsError
 from datachain.query.schema import Column, ColumnExpr
 from datachain.sql.functions import conditional
 
-from .func import Func, _SentinelAwareFunc, _source_is_nullable
+from .func import Func, _source_is_nullable, _TagAwareFunc
 
 if TYPE_CHECKING:
     from sqlalchemy import TableClause
@@ -23,9 +22,9 @@ if TYPE_CHECKING:
 CaseT = int | float | complex | bool | str | Func | ColumnExpr
 
 
-class _IsNoneFunc(_SentinelAwareFunc):
-    """``isnone`` reads the ``_type_tag`` discriminator for an
-    ``Optional[DataModel]``; for any other column it is plain ``col IS NULL``."""
+class _IsNoneFunc(_TagAwareFunc):
+    """``isnone``: a tagged union is None when its ``_type_tag`` is NULL; any other
+    column is plain ``col IS NULL``."""
 
     def is_nullable_result(
         self,
@@ -35,18 +34,15 @@ class _IsNoneFunc(_SentinelAwareFunc):
         # isnone is always True/False, never NULL.
         return False
 
-    def _sentinel_column(
+    def _tag_column(
         self,
-        sentinel_path: str,
+        tag_path: str,
         label: str | None,
         table: "TableClause | None",
     ) -> Column:
-        sentinel = Column(sentinel_path)
-        sentinel.table = table
-        func_col = sql_case(
-            (sql_or(sentinel.is_(None), sentinel != OPTIONAL_PRESENT_TAG), True),
-            else_=False,
-        )
+        tag = Column(tag_path)
+        tag.table = table
+        func_col = sql_case((tag.is_(None), True), else_=False)
         return self._finalize_column(func_col, python_to_sql(bool), label)
 
 

@@ -2,7 +2,13 @@ import itertools
 from collections.abc import Sequence
 from typing import Any
 
-from datachain.lib.data_model import DataType, DataTypeNames, DataValue, is_chain_type
+from datachain.lib.data_model import (
+    DataType,
+    DataTypeNames,
+    DataValue,
+    is_chain_type,
+    validate_chain_type,
+)
 from datachain.lib.utils import DataChainParamsError
 
 
@@ -97,6 +103,7 @@ def _infer_type_from_sequence(
 
     typ = type(first_element)
 
+    validate_chain_type(typ)
     if not is_chain_type(typ):
         raise ValuesToTupleError(
             ds_name,

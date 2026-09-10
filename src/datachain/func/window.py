@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from datachain.query.schema import ColumnExpr, ColumnMeta
+from datachain.query.schema import ColumnExpr
 
 
 @dataclass
@@ -45,12 +45,4 @@ def window(
         )
         ```
     """
-    return Window(
-        partition_by
-        if isinstance(partition_by, ColumnExpr)
-        else ColumnMeta.to_db_name(partition_by),
-        order_by
-        if isinstance(order_by, ColumnExpr)
-        else ColumnMeta.to_db_name(order_by),
-        desc,
-    )
+    return Window(partition_by, order_by, desc)

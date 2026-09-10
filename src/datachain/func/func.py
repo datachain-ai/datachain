@@ -65,8 +65,8 @@ def _source_is_nullable(col: ColT, signals_schema: "SignalSchema | None") -> boo
             _source_is_nullable(name, signals_schema)
             for name in _referenced_column_names(col)
         )
-    db_col = ColumnMeta.to_db_name(col)
-    if signals_schema.optional_parent_sentinel(db_col) is not None:
+    db_col = signals_schema.to_db_col(col)
+    if signals_schema.enclosing_type_tag(db_col) is not None:
         return True
     _, is_optional = unwrap_optional(signals_schema.get_column_type(db_col))
     return is_optional
@@ -516,6 +516,11 @@ class Func(Function):  # noqa: PLW1641
             return col.get_column(signals_schema, table=table)
 
         if isinstance(col, str) and not string_as_literal:
+            if (
+                signals_schema is not None
+                and (resolved := signals_schema.resolve_arm_path(col)) is not None
+            ):
+                col = ColumnMeta.to_db_name(resolved)
             column_sql_type = (
                 python_to_sql(signals_schema.get_column_type(col))
                 if signals_schema
@@ -527,13 +532,25 @@ class Func(Function):  # noqa: PLW1641
             column.table = table
             return column
 
+        if isinstance(col, ColumnElement) and signals_schema is not None:
+            # resolve arm paths inside an expression operand (e.g. case/ifelse)
+            return signals_schema.enrich_expr_types(col)
+
         return col
+
+    def _window_col(self, key, signals_schema):
+        if not isinstance(key, str):
+            return key
+        if signals_schema is None:
+            return ColumnMeta.to_db_name(key)
+        return signals_schema.to_db_col(key)
 
     def _finalize_column(
         self,
         func_col: Any,
         sql_type: Any,
         label: str | None,
+        signals_schema: "SignalSchema | None" = None,
     ) -> Any:
         result: Any = func_col
 
@@ -542,15 +559,12 @@ class Func(Function):  # noqa: PLW1641
                 raise DataChainParamsError(
                     f"Window function {self} requires over() clause with a window spec",
                 )
-            ordering = (
-                desc(self.window.order_by)
-                if self.window.desc
-                else asc(self.window.order_by)
-            )
+            order_by = self._window_col(self.window.order_by, signals_schema)
+            ordering = desc(order_by) if self.window.desc else asc(order_by)
             # NULLS LAST so window ordering matches across backends (SQLite
             # orders NULLs first by default, ClickHouse last).
             result = result.over(
-                partition_by=self.window.partition_by,
+                partition_by=self._window_col(self.window.partition_by, signals_schema),
                 order_by=nulls_last(ordering),
             )
 
@@ -590,14 +604,19 @@ class Func(Function):  # noqa: PLW1641
             )
             for k, v in self.kwargs.items()
         }
-        func_col = self.inner(*cols, *self.args, **kwargs)
-        return self._finalize_column(func_col, sql_type, label)
+        args = [
+            signals_schema.enrich_expr_types(a)
+            if signals_schema is not None and isinstance(a, ColumnElement)
+            else a
+            for a in self.args
+        ]
+        func_col = self.inner(*cols, *args, **kwargs)
+        return self._finalize_column(func_col, sql_type, label, signals_schema)
 
 
-class _SentinelAwareFunc(Func):
-    """A ``Func`` whose first argument may be an ``Optional[DataModel]``, which
-    has no real column on disk. When it is, the column resolves to that model's
-    ``_type_tag`` discriminator; otherwise it falls back to the plain column."""
+class _TagAwareFunc(Func):
+    """A ``Func`` whose first argument may be a tagged union (no single real column);
+    it then resolves to that node's ``_type_tag``, else the plain column."""
 
     def get_column(
         self,
@@ -607,14 +626,14 @@ class _SentinelAwareFunc(Func):
     ) -> Column:
         col = self._db_cols[0] if self._db_cols else None
         if signals_schema is not None and isinstance(col, str):
-            sentinel_path = signals_schema.model_sentinel(col)
-            if sentinel_path is not None:
-                return self._sentinel_column(sentinel_path, label, table)
+            tag_path = signals_schema.type_tag_column(col)
+            if tag_path is not None:
+                return self._tag_column(tag_path, label, table)
         return super().get_column(signals_schema, label, table)
 
-    def _sentinel_column(
+    def _tag_column(
         self,
-        sentinel_path: str,
+        tag_path: str,
         label: str | None,
         table: "TableClause | None",
     ) -> Column:
