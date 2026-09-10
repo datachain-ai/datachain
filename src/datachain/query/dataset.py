@@ -3140,7 +3140,19 @@ class DatasetQuery:
         query.steps.append(SQLGroupBy(cols, group_by))
         return query
 
+    def _ensure_same_catalog_mode(self, other: "DatasetQuery", op: str) -> None:
+        """In-memory and persistent catalogs live in different databases, so
+        a mixed combination would fail deep inside SQL execution."""
+        if self.catalog.in_memory != other.catalog.in_memory:
+            raise ValueError(
+                f"Cannot {op} a chain backed by an in-memory catalog with one "
+                "backed by a persistent catalog: they live in different "
+                "databases. Recreate both chains with the same `in_memory` "
+                "setting."
+            )
+
     def union(self, dataset_query: "DatasetQuery") -> "DatasetQuery":
+        self._ensure_same_catalog_mode(dataset_query, "union")
         left = self.clone()
         right = dataset_query.clone()
         return DatasetQuery(
@@ -3158,6 +3170,7 @@ class DatasetQuery:
         full=False,
         rname="right_",
     ) -> "DatasetQuery":
+        self._ensure_same_catalog_mode(dataset_query, "join")
         left = self.clone(new_table=False)
         if self.table.name == dataset_query.table.name:
             # for use case where we join with itself, e.g dogs.join(dogs, "name")
@@ -3240,6 +3253,7 @@ class DatasetQuery:
 
     @detach
     def subtract(self, dq: "DatasetQuery", on: Sequence[tuple[str, str]]) -> "Self":
+        self._ensure_same_catalog_mode(dq, "subtract")
         query = self.clone()
         query.steps.append(Subtract(dq, self.catalog, on=on))
         return query

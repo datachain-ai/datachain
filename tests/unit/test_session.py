@@ -191,3 +191,303 @@ def test_get_or_create_job_raises_in_studio_without_env(catalog, monkeypatch):
     with Session("testjob", catalog=catalog) as session:
         with pytest.raises(DataChainError, match="Cannot create job in Studio"):
             session.get_or_create_job()
+
+
+def test_get_in_memory_session_with_persistent_session_present(catalog):
+    global_session = Session.get(catalog=catalog)
+    assert not global_session.catalog.in_memory
+
+    session = Session.get(in_memory=True)
+    assert session is not global_session
+    assert session.catalog.in_memory
+
+    # A single in-memory session is cached and reused
+    assert Session.get(in_memory=True) is session
+
+    # Default resolution is unaffected
+    assert Session.get() is global_session
+
+    # client_config is inherited from the session it shadows
+    assert session.catalog.client_config == global_session.catalog.client_config
+
+
+def test_in_memory_conflicts_with_explicit_persistent_session(catalog):
+    with Session("conflict1", catalog=catalog) as session:
+        with pytest.raises(ValueError, match="in_memory"):
+            dc.read_values(num=[1], session=session, in_memory=True)
+
+    with pytest.raises(ValueError, match="in_memory"):
+        Session.get(catalog=catalog, in_memory=True)
+
+
+def test_in_memory_with_explicit_in_memory_session():
+    with Session("mem1", in_memory=True) as session:
+        chain = dc.read_values(num=[1], session=session, in_memory=True)
+        assert chain.to_values("num") == [1]
+
+
+def test_in_memory_never_becomes_process_default():
+    Session.cleanup_for_tests()
+    try:
+        session = Session.get(in_memory=True)
+        assert session.catalog.in_memory
+        assert Session.IN_MEMORY_SESSION_CTX is session
+        assert Session.GLOBAL_SESSION_CTX is None
+        assert Session.get(in_memory=True) is session
+    finally:
+        Session.cleanup_for_tests()
+
+
+def test_in_memory_session_has_one_config(catalog):
+    Session.get(catalog=catalog)  # global, client_config == {}
+
+    default = Session.get(in_memory=True)  # inherits {} from global
+    assert default.catalog.client_config == {}
+    assert Session.get(in_memory=True) is default
+    assert Session.get(in_memory=True, client_config={}) is default
+
+    # The implicit in-memory session's config is frozen at creation; a
+    # different effective config must be loud, not silently rebound —
+    # whether explicit...
+    with pytest.raises(ValueError, match="client_config"):
+        Session.get(in_memory=True, client_config={"anon": True})
+
+    # ...or inherited from a differently-configured ambient session
+    with Session("amb1", client_config={"anon": True}):
+        with pytest.raises(ValueError, match="client_config"):
+            Session.get(in_memory=True)
+    assert Session.get(in_memory=True) is default
+
+    # An explicit in-memory session context owns its own config
+    with Session("own1", client_config={"anon": True}, in_memory=True) as own:
+        assert Session.get(in_memory=True) is own
+        assert own.catalog.client_config == {"anon": True}
+
+    # Implicit resolution must not leak contexts or change the default
+    assert not Session.SESSION_CONTEXTS
+    assert Session.get() is Session.GLOBAL_SESSION_CTX
+
+
+def test_in_memory_session_config_deeply_frozen(catalog):
+    Session.get(catalog=catalog)
+
+    cfg = {"client_kwargs": {"endpoint_url": "A"}}
+    session = Session.get(in_memory=True, client_config=cfg)
+    cfg["client_kwargs"]["endpoint_url"] = "B"
+
+    assert session.catalog.client_config == {"client_kwargs": {"endpoint_url": "A"}}
+
+
+def test_reentrant_session_context_keeps_stack_consistent(catalog):
+    with Session("reenter1", catalog=catalog) as session:
+        with session:
+            assert [session, session] == Session.SESSION_CONTEXTS
+        assert [session] == Session.SESSION_CONTEXTS
+    assert Session.SESSION_CONTEXTS == []
+
+
+def test_config_override_with_explicit_catalog_raises(catalog):
+    with Session("customcat", catalog=catalog):
+        with pytest.raises(ValueError, match="explicitly provided catalog"):
+            Session.get(client_config={"anon": True})
+
+
+def test_persistent_config_override_is_call_scoped():
+    # Overrides rebuild the catalog from default/env config, so the global
+    # session here must not wrap an explicitly provided catalog object.
+    Session.cleanup_for_tests()
+    try:
+        global_session = Session.get()
+
+        override = Session.get(client_config={"anon": True})
+        assert override is not global_session
+        assert override.catalog.client_config == {"anon": True}
+        assert Session.get(client_config={"anon": True}) is override
+
+        # The override must not become ambient state
+        assert not Session.SESSION_CONTEXTS
+        assert Session.get() is global_session
+    finally:
+        Session.cleanup_for_tests()
+
+
+def test_in_memory_context_with_conflicting_config():
+    Session.cleanup_for_tests()
+    try:
+        with Session("outer1", client_config={"anon": True}, in_memory=True) as outer:
+            assert Session.get(in_memory=True) is outer
+            with pytest.raises(ValueError, match="client_config"):
+                Session.get(in_memory=True, client_config={"anon": False})
+            # conflict resolution must not have touched the context stack
+            assert [outer] == Session.SESSION_CONTEXTS
+        assert Session.SESSION_CONTEXTS == []
+    finally:
+        Session.cleanup_for_tests()
+
+
+def test_explicit_in_memory_catalog_is_used(catalog):
+    from datachain.catalog import get_catalog
+
+    Session.get(catalog=catalog)  # persistent global exists
+
+    with get_catalog(in_memory=True) as supplied:
+        assert Session.get(catalog=supplied, in_memory=True).catalog is supplied
+        assert Session.get(catalog=supplied, in_memory=True).catalog is supplied
+
+
+def test_in_memory_session_cleanup_for_tests(catalog):
+    Session.get(catalog=catalog)
+    session = Session.get(in_memory=True)
+    assert Session.IN_MEMORY_SESSION_CTX is session
+
+    Session.cleanup_for_tests()
+    assert Session.IN_MEMORY_SESSION_CTX is None
+
+
+def test_in_memory_session_job_isolated_from_env(catalog, monkeypatch):
+    from datachain.data_storage import JobQueryType, JobStatus
+
+    # A job exists in the persistent metastore and is advertised via env,
+    # as inside a Studio job run.
+    job_id = catalog.metastore.create_job(
+        "env-job", "", query_type=JobQueryType.PYTHON, status=JobStatus.RUNNING
+    )
+    monkeypatch.setenv("DATACHAIN_JOB_ID", job_id)
+
+    Session.get(catalog=catalog)
+    session = Session.get(in_memory=True)
+
+    # The env job must not leak into the throwaway catalog
+    assert session.get_job() is None
+
+    job = session.get_or_create_job()
+    assert job is not None
+    assert job.id != job_id
+    assert session.get_or_create_job() is job
+    assert session.get_job() is job
+
+    # ...and the session-local job must not leak into the process-wide cache
+    assert Session._CURRENT_JOB is None
+
+
+def test_read_storage_in_memory_keeps_listing_out_of_catalog(
+    catalog_tmpfile, tmp_path, monkeypatch
+):
+    # catalog_tmpfile: a file-backed catalog is required here — an in-memory
+    # test catalog would share the process-wide SQLite shared-cache database
+    # with the throwaway catalog, defeating the isolation this test checks.
+    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
+    data_dir = tmp_path / "data"  # tmp_path itself holds the catalog's db file
+    data_dir.mkdir()
+    (data_dir / "a.txt").write_text("a")
+    (data_dir / "b.txt").write_text("b")
+
+    global_session = Session.get(catalog=catalog_tmpfile)
+
+    chain = dc.read_storage(data_dir.as_uri(), in_memory=True)
+    assert chain.count() == 2
+    assert chain.session.catalog.in_memory
+
+    # The listing dataset lives only in the throwaway catalog
+    assert list(global_session.catalog.listings()) == []
+    assert len(list(chain.session.catalog.listings())) == 1
+
+    # Datasets saved through the chain stay in the throwaway catalog too.
+    # Check the persistent catalog directly — an unflagged read_dataset()
+    # would go through Studio remote fallback in environments with a
+    # non-local default namespace.
+    chain.save("mem_only_ds")
+    assert dc.read_dataset("mem_only_ds", in_memory=True).count() == 2
+    with pytest.raises(DatasetNotFoundError):
+        global_session.catalog.get_dataset("mem_only_ds")
+
+
+def test_in_memory_save_read_roundtrip_in_studio_job_env(catalog_tmpfile, monkeypatch):
+    from datachain.data_storage import JobQueryType, JobStatus
+
+    # Simulate a Studio job: is_studio() is true, the job lives in the
+    # persistent metastore and is advertised via env, and the job's project
+    # is routed via DATACHAIN_PROJECT (applies to any session — env is
+    # process-global).
+    job_id = catalog_tmpfile.metastore.create_job(
+        "studio-job", "", query_type=JobQueryType.PYTHON, status=JobStatus.RUNNING
+    )
+    monkeypatch.setenv("DATACHAIN_IS_STUDIO", "True")
+    monkeypatch.setenv("DATACHAIN_JOB_ID", job_id)
+    monkeypatch.setenv("DATACHAIN_PROJECT", "dev.analytics")
+
+    Session.get(catalog=catalog_tmpfile)
+
+    # Save resolves the env project and auto-creates it (is_studio() ⇒
+    # create=True) in the throwaway metastore; the session-local job is
+    # used, not the env job.
+    dc.read_values(num=[1, 2, 3], in_memory=True).save("gate")
+
+    # Symmetric read: same env resolution, same throwaway catalog.
+    assert dc.read_dataset("gate", in_memory=True).count() == 3
+    assert dc.read_dataset("dev.analytics.gate", in_memory=True).count() == 3
+
+    in_memory_catalog = Session.IN_MEMORY_SESSION_CTX.catalog
+    ds = in_memory_catalog.get_dataset(
+        "gate", namespace_name="dev", project_name="analytics", versions=None
+    )
+    assert ds.versions[-1].job_id != job_id  # session-local job attributed
+
+    # Nothing leaked into the persistent catalog.
+    with pytest.raises(DatasetNotFoundError):
+        catalog_tmpfile.get_dataset(
+            "gate", namespace_name="dev", project_name="analytics"
+        )
+
+    # And in Studio there is no remote fallback: an unknown dataset in the
+    # in-memory catalog fails cleanly.
+    with pytest.raises(DatasetNotFoundError):
+        dc.read_dataset("missing_ds", in_memory=True)
+
+
+def _compare_and_split(left, right):
+    from datachain.diff import compare_and_split
+
+    return compare_and_split(left, right, on="num")
+
+
+@pytest.mark.parametrize(
+    "op",
+    [
+        pytest.param(lambda left, right: left.union(right), id="union"),
+        pytest.param(lambda left, right: left.merge(right, on="num"), id="merge"),
+        pytest.param(lambda left, right: left.subtract(right, on="num"), id="subtract"),
+        pytest.param(lambda left, right: left.diff(right, on="num"), id="diff"),
+        pytest.param(_compare_and_split, id="compare_and_split"),
+    ],
+)
+@pytest.mark.parametrize("mem_side", ["left", "right"])
+def test_two_chain_apis_guard_mixed_catalogs(
+    catalog_tmpfile, monkeypatch, op, mem_side
+):
+    # Every public API combining two chains must reject an in-memory x
+    # persistent pair up front, whichever side is in-memory.
+    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
+    Session.get(catalog=catalog_tmpfile)
+
+    mem = dc.read_values(num=[1, 2], in_memory=True)
+    persistent = dc.read_values(num=[3, 4])
+    left, right = (mem, persistent) if mem_side == "left" else (persistent, mem)
+
+    with pytest.raises(ValueError, match="in-memory"):
+        op(left, right)
+
+
+@pytest.mark.parametrize("mem_side", ["left", "right"])
+def test_file_diff_guards_mixed_catalogs(catalog_tmpfile, monkeypatch, mem_side):
+    from datachain.lib.file import File
+
+    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
+    Session.get(catalog=catalog_tmpfile)
+
+    mem = dc.read_values(file=[File(path="a")], in_memory=True)
+    persistent = dc.read_values(file=[File(path="b")])
+    left, right = (mem, persistent) if mem_side == "left" else (persistent, mem)
+
+    with pytest.raises(ValueError, match="in-memory"):
+        left.file_diff(right)
