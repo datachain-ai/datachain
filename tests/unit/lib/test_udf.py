@@ -1,4 +1,7 @@
+import os
 import pickle
+import subprocess
+import sys
 
 import pytest
 from cloudpickle import dumps, loads
@@ -8,12 +11,39 @@ from pydantic import BaseModel
 import datachain as dc
 from datachain import Mapper
 from datachain.dataset import RowDict
+from datachain.hash_utils import hash_value
 from datachain.lib.file import File
 from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.udf import JsonSerializationError, UDFBase, UdfError, UdfRunError
 from datachain.lib.utils import DataChainError
+from tests.utils import is_sha256_hex
 
 from .test_udf_signature import get_sign
+
+
+class _OpaqueConstructorValue:
+    pass
+
+
+class _HashableConstructorValue:
+    def __hash__(self):
+        return 1
+
+
+class _CallableConstructorValue:
+    def __call__(self, value):
+        return value
+
+
+def _constructor_function(value):
+    return value
+
+
+def _make_constructor_closure(captured):
+    def closure(value):
+        return value, captured
+
+    return closure
 
 
 def test_udf_error():
@@ -108,7 +138,7 @@ def test_udf_verbose_name_class():
         def process(self, key: str) -> int:
             return len(key)
 
-    sign = get_sign(MyMapper, output="res")
+    sign = get_sign(MyMapper, params=[], output="res")
     udf = UDFBase._create(sign, sign.output_schema)
     assert udf.verbose_name == "MyMapper"
 
@@ -133,6 +163,401 @@ def test_udf_verbose_name_unknown():
     udf = UDFBase._create(sign, sign.output_schema)
     udf._func = None
     assert udf.verbose_name == "<unknown>"
+
+
+def test_class_udf_hash_varies_with_instance_state():
+    class Limited(Mapper):
+        def __init__(self, limit: int):
+            super().__init__()
+            self.limit = limit
+
+        def process(self, x: int) -> int:
+            return x + self.limit
+
+    sign_a = get_sign(Limited(0), output="y")
+    sign_b = get_sign(Limited(3), output="y")
+    udf_a = Mapper._create(sign_a, sign_a.output_schema)
+    udf_b = Mapper._create(sign_b, sign_b.output_schema)
+    assert udf_a.hash() != udf_b.hash()
+
+
+def test_class_udf_hash_is_deterministic_across_instances():
+    class Limited(Mapper):
+        def __init__(self, limit: int):
+            super().__init__()
+            self.limit = limit
+
+        def process(self, x: int) -> int:
+            return x + self.limit
+
+    sign_a = get_sign(Limited(3), output="y")
+    sign_b = get_sign(Limited(3), output="y")
+    udf_a = Mapper._create(sign_a, sign_a.output_schema)
+    udf_b = Mapper._create(sign_b, sign_b.output_schema)
+    assert udf_a.hash() == udf_b.hash()
+
+
+@pytest.mark.parametrize(
+    "first_config,second_config",
+    [
+        ({"a": 1, "b": 2}, {"b": 2, "a": 1}),
+        (
+            {"options": {"a": 1, "b": 2}},
+            {"options": {"b": 2, "a": 1}},
+        ),
+    ],
+)
+def test_class_udf_hash_preserves_constructor_dict_order(first_config, second_config):
+    class Configured(Mapper):
+        def __init__(self, config):
+            self.config = config
+
+        def process(self, x: int) -> str:
+            return ",".join(self.config)
+
+    first = Configured(first_config)
+    second = Configured(second_config)
+    sign_a = get_sign(first, output="y")
+    sign_b = get_sign(second, output="y")
+    udf_a = Mapper._create(sign_a, sign_a.output_schema)
+    udf_b = Mapper._create(sign_b, sign_b.output_schema)
+
+    assert udf_a.hash() != udf_b.hash()
+
+
+def test_class_udf_unsupported_constructor_value_disables_cache_reuse(caplog):
+    class Opaque:
+        def __repr__(self):
+            return "Opaque()"
+
+    class Configured(Mapper):
+        def __init__(self, config: Opaque):
+            self.config = config
+
+        def process(self, x: int) -> int:
+            return x
+
+    first = Configured(Opaque())
+    second = Configured(Opaque())
+    sign_a = get_sign(first, output="y")
+    sign_b = get_sign(second, output="y")
+    udf_a = Mapper._create(sign_a, sign_a.output_schema)
+    udf_b = Mapper._create(sign_b, sign_b.output_schema)
+
+    assert udf_a.hash() == udf_a.hash()
+    assert udf_a.hash() != udf_b.hash()
+    assert "cache reuse across UDF instances is disabled" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        pytest.param(_OpaqueConstructorValue(), id="custom-object"),
+        pytest.param(_HashableConstructorValue(), id="object-with-hash"),
+        pytest.param(_constructor_function, id="function"),
+        pytest.param(lambda value: value, id="lambda"),
+        pytest.param(_make_constructor_closure("captured"), id="closure"),
+        pytest.param(_CallableConstructorValue(), id="callable-object"),
+        pytest.param(
+            {"options": [{"client": _OpaqueConstructorValue()}]},
+            id="nested-custom-object",
+        ),
+    ],
+)
+def test_class_udf_unsupported_constructor_values_do_not_reuse_cache(config):
+    class Configured(Mapper):
+        def __init__(self, value):
+            self.value = value
+
+        def process(self, x: int) -> int:
+            return x
+
+    first = Configured(config)
+    second = Configured(config)
+    sign_a = get_sign(first, output="y")
+    sign_b = get_sign(second, output="y")
+    udf_a = Mapper._create(sign_a, sign_a.output_schema)
+    udf_b = Mapper._create(sign_b, sign_b.output_schema)
+
+    assert udf_a.hash() == udf_a.hash()
+    assert udf_a.hash() != udf_b.hash()
+
+
+def test_class_udf_cyclic_constructor_value_disables_cache_reuse():
+    class Configured(Mapper):
+        def __init__(self, config):
+            self.config = config
+
+        def process(self, x: int) -> int:
+            return x
+
+    config = {}
+    config["self"] = config
+    first = Configured(config)
+    second = Configured(config)
+    sign_a = get_sign(first, output="y")
+    sign_b = get_sign(second, output="y")
+    udf_a = Mapper._create(sign_a, sign_a.output_schema)
+    udf_b = Mapper._create(sign_b, sign_b.output_schema)
+
+    assert udf_a.hash() == udf_a.hash()
+    assert udf_a.hash() != udf_b.hash()
+
+
+@pytest.mark.parametrize(
+    "first_key,second_key,matches",
+    [
+        ("tokenizer-v1", "tokenizer-v1", True),
+        ("tokenizer-v1", "tokenizer-v2", False),
+    ],
+)
+def test_class_udf_identity_hash_overrides_opaque_constructor_fallback(
+    first_key, second_key, matches, caplog
+):
+    class Opaque:
+        pass
+
+    class Configured(Mapper):
+        def __init__(self, config: Opaque, cache_key: str):
+            self.config = config
+            self.cache_key = cache_key
+
+        def identity_hash(self) -> str:
+            return hash_value(self.cache_key)
+
+        def process(self, x: int) -> int:
+            return x
+
+    first = Configured(Opaque(), first_key)
+    second = Configured(Opaque(), second_key)
+    sign_a = get_sign(first, output="y")
+    sign_b = get_sign(second, output="y")
+    udf_a = Mapper._create(sign_a, sign_a.output_schema)
+    udf_b = Mapper._create(sign_b, sign_b.output_schema)
+
+    assert (udf_a.hash() == udf_b.hash()) is matches
+    assert "cache reuse across UDF instances is disabled" not in caplog.text
+
+
+def test_class_udf_identity_hash_replaces_automatic_constructor_hash():
+    class Configured(Mapper):
+        def __init__(self, limit: int, extra: str):
+            self.limit = limit
+            self.extra = extra
+
+        def identity_hash(self) -> str:
+            return hash_value(self.extra)
+
+        def process(self, x: int) -> int:
+            return x + self.limit
+
+    first = Configured(3, "shared")
+    second = Configured(5, "shared")
+    sign_a = get_sign(first, output="y")
+    sign_b = get_sign(second, output="y")
+    udf_a = Mapper._create(sign_a, sign_a.output_schema)
+    udf_b = Mapper._create(sign_b, sign_b.output_schema)
+
+    assert udf_a.hash() == udf_b.hash()
+
+
+def test_class_udf_hash_override_can_call_super():
+    class Configured(Mapper):
+        def __init__(self, limit: int):
+            self.limit = limit
+
+        def process(self, x: int) -> int:
+            return x + self.limit
+
+        def hash(self, include_body: bool = True) -> str:
+            return super().hash(include_body)
+
+    first = Configured(3)
+    second = Configured(5)
+    sign_a = get_sign(first, output="y")
+    sign_b = get_sign(second, output="y")
+    udf_a = Mapper._create(sign_a, sign_a.output_schema)
+    udf_b = Mapper._create(sign_b, sign_b.output_schema)
+
+    assert udf_a.hash() != udf_b.hash()
+
+
+@pytest.mark.parametrize(
+    "invalid_hash",
+    ["tokenizer-v1", None, "ab" * 16 + " " * 32],
+)
+def test_class_udf_identity_hash_rejects_invalid_hash(invalid_hash):
+    class Configured(Mapper):
+        def identity_hash(self) -> str:
+            return invalid_hash
+
+        def process(self, x: int) -> int:
+            return x
+
+    udf = Configured()
+    sign = get_sign(udf, output="y")
+    udf = Mapper._create(sign, sign.output_schema)
+
+    with pytest.raises(
+        ValueError,
+        match=r"identity_hash\(\) must return a SHA-256 hexadecimal string",
+    ):
+        udf.hash()
+
+
+@pytest.mark.parametrize(
+    "args,kwargs,matches_default",
+    [
+        ((), {}, True),
+        ((3,), {}, True),
+        ((), {"limit": 3}, True),
+        ((4,), {}, False),
+    ],
+)
+def test_class_udf_captures_normalized_constructor_arguments(
+    args, kwargs, matches_default
+):
+    class Limited(Mapper):
+        def __init__(self, limit: int = 3):
+            self.limit = limit
+
+        def process(self, x: int) -> int:
+            return x + self.limit
+
+    baseline = Limited(limit=3)
+    udf = Limited(*args, **kwargs)
+
+    assert (
+        udf._constructor_identity_hash == baseline._constructor_identity_hash
+    ) is matches_default
+
+
+class _PydanticShapeA(BaseModel):
+    value: int
+
+
+class _PydanticShapeB(BaseModel):
+    value: str  # different shape
+
+
+@pytest.mark.parametrize(
+    "first_arg,second_arg,matches",
+    [
+        (_PydanticShapeA, _PydanticShapeA, True),
+        (_PydanticShapeA, _PydanticShapeB, False),
+        ([_PydanticShapeA], [_PydanticShapeA], True),
+        ({"s": _PydanticShapeA}, {"s": _PydanticShapeA}, True),
+        ((_PydanticShapeA,), (_PydanticShapeA,), True),
+    ],
+    ids=["same-class", "different-shape", "in-list", "in-dict", "in-tuple"],
+)
+def test_class_udf_hashes_pydantic_class_arg(first_arg, second_arg, matches, caplog):
+    class Configured(Mapper):
+        def __init__(self, schema):
+            self.schema = schema
+
+        def process(self, x: int) -> int:
+            return x
+
+    first = Configured(first_arg)
+    second = Configured(second_arg)
+
+    assert (
+        first._constructor_identity_hash == second._constructor_identity_hash
+    ) is matches
+    assert "cache reuse across UDF instances is disabled" not in caplog.text
+
+
+def test_class_udf_hash_survives_subclass_custom_new():
+    class Custom(Mapper):
+        def __new__(cls, limit):
+            return super().__new__(cls)
+
+        def __init__(self, limit: int):
+            self.limit = limit
+
+        def process(self, x: int) -> int:
+            return x + self.limit
+
+    sign = get_sign(Custom(3), output="y")
+    udf = Mapper._create(sign, sign.output_schema)
+
+    assert is_sha256_hex(udf.hash())
+
+
+def test_class_udf_constructor_hash_survives_cloudpickle_roundtrip():
+    class Limited(Mapper):
+        def __init__(self, limit: int):
+            self.limit = limit
+
+        def process(self, x: int) -> int:
+            return x + self.limit
+
+    udf = Limited(3)
+    restored = loads(dumps(udf))
+
+    assert restored._constructor_identity_hash == udf._constructor_identity_hash
+
+
+def test_class_udf_hash_is_deterministic_across_processes():
+    code = """
+from datachain import Mapper
+from datachain.lib.signal_schema import SignalSchema
+from datachain.lib.udf_signature import UdfSignature
+
+class Limited(Mapper):
+    def __init__(self, limit=3, labels=frozenset({"a", "b", "c"})):
+        self.limit = limit
+        self.labels = labels
+
+    def process(self, x):
+        return x + self.limit
+
+udf = Limited()
+sign = UdfSignature(
+    udf,
+    SignalSchema({"x": int}),
+    SignalSchema({"y": int}),
+)
+print(Mapper._create(sign, sign.output_schema).hash())
+"""
+
+    hashes = {
+        subprocess.check_output(  # noqa: S603
+            [sys.executable, "-c", code],
+            env={**os.environ, "PYTHONHASHSEED": seed},
+            text=True,
+        ).strip()
+        for seed in ("1", "2", "random")
+    }
+
+    assert len(hashes) == 1
+
+
+def test_class_udf_hash_without_body_ignores_process_implementation():
+    def make_udf(add: bool):
+        class Stateful(Mapper):
+            def __init__(self, limit: int = 3):
+                self.limit = limit
+
+            if add:
+
+                def process(self, x: int) -> int:
+                    return x + self.limit
+
+            else:
+
+                def process(self, x: int) -> int:
+                    return x * self.limit
+
+        sign = get_sign(Stateful(), output="y")  # type: ignore[arg-type]
+        return Mapper._create(sign, sign.output_schema)
+
+    added = make_udf(add=True)
+    multiplied = make_udf(add=False)
+
+    assert added.hash(include_body=False) == multiplied.hash(include_body=False)
+    assert added.hash() != multiplied.hash()
 
 
 def test_udf_verbose_name_multi_signal_mapper(test_session):

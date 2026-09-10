@@ -32,7 +32,7 @@ import PIL
 
 from datachain.lib.arrow import arrow_type_mapper
 from datachain.lib.data_model import DataModel, DataType, dict_to_data_model
-from datachain.lib.udf import Generator
+from datachain.lib.udf import Generator, _hash_constructor_args
 from datachain.lib.utils import normalize_col_names
 from datachain.progress import tqdm
 
@@ -44,6 +44,19 @@ if TYPE_CHECKING:
 HFDatasetType: TypeAlias = (
     str | DatasetDict | Dataset | IterableDatasetDict | IterableDataset
 )
+
+
+def _dataset_hash_args(ds: HFDatasetType) -> Any:
+    if isinstance(ds, (DatasetDict, IterableDatasetDict)):
+        return (
+            type(ds).__name__,
+            {name: _dataset_hash_args(split) for name, split in ds.items()},
+        )
+    if isinstance(ds, (Dataset, IterableDataset)):
+        fingerprint = getattr(ds, "_fingerprint", None)
+        if fingerprint is not None:
+            return (type(ds).__name__, fingerprint)
+    return ds
 
 
 class HFClassLabel(DataModel):
@@ -92,6 +105,18 @@ class HFGenerator(Generator):
         self.limit = limit
         self.args = args
         self.kwargs = kwargs
+
+    def identity_hash(self) -> str:
+        """Return a stable identity for the Hugging Face dataset configuration."""
+        return _hash_constructor_args(
+            {
+                "ds": _dataset_hash_args(self.ds),
+                "output_schema": self.output_schema,
+                "limit": self.limit,
+                "args": self.args,
+                "kwargs": self.kwargs,
+            }
+        )
 
     def setup(self):
         self.ds_dict = stream_splits(self.ds, *self.args, **self.kwargs)

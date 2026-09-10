@@ -1,3 +1,5 @@
+import struct
+
 import pytest
 from sqlalchemy import (
     Float,
@@ -16,7 +18,84 @@ from sqlalchemy import (
 from sqlalchemy import func as sa_func
 
 from datachain import C, func
-from datachain.hash_utils import hash_callable, hash_column_elements
+from datachain.hash_utils import (
+    hash_callable,
+    hash_column_elements,
+    hash_value,
+    normalize_hash_value,
+)
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (
+            {"y": 2, "x": 1},
+            (
+                "dict",
+                (
+                    (("str", "y"), ("int", 2)),
+                    (("str", "x"), ("int", 1)),
+                ),
+            ),
+        ),
+        (
+            {"outer": {"y": 2, "x": 1}},
+            (
+                "dict",
+                (
+                    (
+                        ("str", "outer"),
+                        (
+                            "dict",
+                            (
+                                (("str", "y"), ("int", 2)),
+                                (("str", "x"), ("int", 1)),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        (
+            {"c", "b", "a"},
+            ("set", (("str", "a"), ("str", "b"), ("str", "c"))),
+        ),
+        (frozenset({2, 1}), ("frozenset", (("int", 1), ("int", 2)))),
+        ([1, 2], ("list", (("int", 1), ("int", 2)))),
+        ((1, 2), ("tuple", (("int", 1), ("int", 2)))),
+        (None, ("none",)),
+        (True, ("bool", True)),
+        (1, ("int", 1)),
+        (1.5, ("float", struct.pack("!d", 1.5))),
+        ("value", ("str", "value")),
+        (b"value", ("bytes", b"value")),
+    ],
+)
+def test_normalize_hash_value(value, expected):
+    assert normalize_hash_value(value) == expected
+
+
+def test_normalize_hash_value_rejects_unsupported_value():
+    class Opaque:
+        pass
+
+    with pytest.raises(TypeError, match="cannot be hashed safely"):
+        normalize_hash_value(Opaque())
+
+
+@pytest.mark.parametrize(
+    "first_bits,second_bits",
+    [
+        ("7ff8000000000001", "7ff8000000000002"),
+        ("7ff8000000000001", "fff8000000000001"),
+    ],
+)
+def test_hash_value_distinguishes_float_bit_patterns(first_bits, second_bits):
+    first = struct.unpack("!d", bytes.fromhex(first_bits))[0]
+    second = struct.unpack("!d", bytes.fromhex(second_bits))[0]
+
+    assert hash_value(first) != hash_value(second)
 
 
 def double(x):

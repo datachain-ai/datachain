@@ -1,6 +1,7 @@
 import hashlib
 import inspect
 import logging
+import struct
 import textwrap
 from collections.abc import Sequence
 from typing import TypeAlias, TypeVar
@@ -14,6 +15,46 @@ logger = logging.getLogger("datachain")
 
 T = TypeVar("T", bound=ColumnElement)
 ColumnLike: TypeAlias = str | T
+
+
+def normalize_hash_value(value, *, sort_dicts: bool = False):  # noqa: PLR0911
+    """Return a complete, deterministic representation for stable cache keys."""
+    value_type = type(value)
+
+    def normalize(item):
+        return normalize_hash_value(item, sort_dicts=sort_dicts)
+
+    if value is None:
+        return ("none",)
+    if value_type is float:
+        return ("float", struct.pack("!d", value))
+    if value_type in (bool, int, str, bytes):
+        return (value_type.__name__, value)
+    if value_type is dict:
+        items = tuple((normalize(key), normalize(item)) for key, item in value.items())
+        return ("dict", tuple(sorted(items, key=repr)) if sort_dicts else items)
+    if value_type is set:
+        return (
+            "set",
+            tuple(sorted(map(normalize, value), key=repr)),
+        )
+    if value_type is frozenset:
+        return (
+            "frozenset",
+            tuple(sorted(map(normalize, value), key=repr)),
+        )
+    if value_type is list:
+        return ("list", tuple(map(normalize, value)))
+    if value_type is tuple:
+        return ("tuple", tuple(map(normalize, value)))
+
+    raise TypeError(f"value of type {value_type.__name__!r} cannot be hashed safely")
+
+
+def hash_value(value) -> str:
+    """Hash a value after normalizing unordered containers."""
+    normalized = normalize_hash_value(value)
+    return hashlib.sha256(repr(normalized).encode("utf-8")).hexdigest()
 
 
 def _serialize_value(val):  # noqa: PLR0911
