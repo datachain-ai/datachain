@@ -110,7 +110,7 @@ to this skill.
 
 → **If the pipeline reads from a bucket**, run **Step 1** (Bucket Enlistment) for the bucket root first.
 → **Run the access check** (if not already done in Step 1): `datachain bucket status <uri>`. If `not found` / `denied`, stop and ask for credentials.
-→ Read `{skill_dir}/../core/SKILL.md` for DataChain SDK rules.
+→ Read `{core_skill_dir}/SDK.md` for DataChain SDK rules.
 → Follow `CAST.md` §4 (planning) and §4.10 (dialogue) before writing pipeline code.
 → **While the pipeline is running**, enrich any Step 1 bucket JSON that does not yet have a `.md` (parallel work).
 → After the pipeline completes, run Steps 2–7 to update the knowledge base.

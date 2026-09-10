@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TypedDict
 
 SKILLS = ("core", "knowledge", "jobs")
+SKILL_DEPENDENCIES = {"knowledge": ("core",)}
 
 
 class _TargetLayout(TypedDict):
@@ -124,7 +125,12 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
             raise ValueError(
                 f"Unknown skill(s): {', '.join(invalid)}. Valid skills: {valid}"
             )
-        skills_to_install = requested
+        skills_to_install = requested + [
+            dep
+            for skill in requested
+            for dep in SKILL_DEPENDENCIES.get(skill, ())
+            if dep not in requested
+        ]
     else:
         skills_to_install = list(SKILLS)
 
@@ -166,28 +172,30 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
         dest.mkdir(parents=True, exist_ok=True)
         shutil.copytree(src, dest, dirs_exist_ok=True, ignore=_COPYTREE_IGNORE)
 
-        # Resolve {skill_dir} placeholder in installed SKILL.md so the agent
-        # doesn't have to probe the filesystem to find its own scripts.
+        # Resolve {skill_dir} and {<name>_skill_dir} placeholders in installed
+        # SKILL.md so the agent doesn't have to probe the filesystem to find its
+        # own scripts or another skill's files.
         installed_skill_md = dest / "SKILL.md"
         if installed_skill_md.exists():
-            resolved = installed_skill_md.read_text().replace(
-                "{skill_dir}", str(dest.resolve())
+            installed_skill_md.write_text(
+                _resolve_placeholders(installed_skill_md.read_text(), skills_dir, dest)
             )
-            installed_skill_md.write_text(resolved)
 
         if commands_dir is not None and command_ext is not None:
             commands_dir.mkdir(parents=True, exist_ok=True)
             skill_md = src / "SKILL.md"
             if skill_md.exists():
                 cmd_dest = commands_dir / f"datachain-{skill_name}{command_ext}"
-                skill_dir_resolved = str(dest.resolve())
                 if command_ext == ".mdc":
                     content = _transform_cursor_mdc(skill_md)
                 elif command_ext == ".instructions.md":
                     content = _transform_copilot_instructions(skill_md)
                 else:
                     content = skill_md.read_text()
-                cmd_dest.write_text(content.replace("{skill_dir}", skill_dir_resolved))
+                sdk_md = src / "SDK.md"
+                if sdk_md.exists():
+                    content = f"{content.rstrip()}\n\n{sdk_md.read_text()}"
+                cmd_dest.write_text(_resolve_placeholders(content, skills_dir, dest))
 
         installed.append(f"  {skill_name} → {dest}")
 
@@ -231,6 +239,20 @@ def uninstall_skills(skills: str | None, target: str, local: bool) -> int:
         else layout["commands_dir"]
     )
     skills_dir = base / skills_dir_rel
+
+    for skill_name in skills_to_uninstall:
+        dependents = [
+            dependent
+            for dependent, deps in SKILL_DEPENDENCIES.items()
+            if skill_name in deps
+            and dependent not in skills_to_uninstall
+            and (skills_dir / dependent).exists()
+        ]
+        if dependents:
+            raise ValueError(
+                f"Cannot uninstall {skill_name}: {', '.join(dependents)} depends "
+                "on it. Uninstall them together or run without --skills."
+            )
 
     write_commands = (
         commands_dir_rel is not None
@@ -284,3 +306,10 @@ def list_skills() -> int:
     for name in SKILLS:
         print(f"{name:<12}  {targets}")
     return 0
+
+
+def _resolve_placeholders(text: str, skills_dir: Path, dest: Path) -> str:
+    text = text.replace("{skill_dir}", str(dest.resolve()))
+    for name in SKILLS:
+        text = text.replace(f"{{{name}_skill_dir}}", str((skills_dir / name).resolve()))
+    return text
