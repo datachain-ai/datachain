@@ -1,5 +1,6 @@
 import glob
 import itertools
+import json as stdlib_json
 import logging
 import posixpath
 import secrets
@@ -57,6 +58,22 @@ logger = logging.getLogger("datachain")
 SELECT_BATCH_SIZE = 100_000  # number of rows to fetch at a time
 
 
+class _KeyCollisionError(ValueError):
+    """Two keys of one mapping would be written as the same JSON name."""
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    seen: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in seen:
+            raise _KeyCollisionError(
+                f"Two keys serialize to the JSON key {key!r}, so one of their "
+                "values would be lost."
+            )
+        seen[key] = value
+    return seen
+
+
 class AbstractWarehouse(ABC, Serializable):
     """
     Abstract Warehouse class, to be implemented by any Database Adapters
@@ -106,6 +123,7 @@ class AbstractWarehouse(ABC, Serializable):
 
         if isinstance(obj, dict):
             out: dict[str, Any] = {}
+            seen: dict[str, Any] = {}
             for k, v in obj.items():
                 if not isinstance(k, str):
                     key_str = json.dumps(
@@ -114,7 +132,17 @@ class AbstractWarehouse(ABC, Serializable):
                         serialize_numpy=True,
                     )
                 else:
-                    key_str = k
+                    # str.__str__: collapses a str subclass whose __eq__ would
+                    # hide a duplicate, without invoking an overridden __str__
+                    # that would disagree with the key json actually emits.
+                    key_str = str.__str__(k)
+                if key_str in out:
+                    raise _KeyCollisionError(
+                        f"Keys {seen[key_str]!r} and {k!r} both serialize to the "
+                        f"JSON key {key_str!r}, so one of their values would be "
+                        "lost."
+                    )
+                seen[key_str] = k
                 out[key_str] = self._to_jsonable(v)
             return out
 
@@ -122,6 +150,44 @@ class AbstractWarehouse(ABC, Serializable):
             return [self._to_jsonable(i) for i in obj]
 
         return obj
+
+    def _dump_json(self, obj: Any, col_name: str) -> str:
+        """Serialize and check the result for duplicate property names.
+
+        JSON columns store this text. Array items are stored as they are and
+        serialized later by sqlite3's registered adapter; this is a separate
+        preflight serialization that predicts what the adapter will write, and
+        only matches while both call datachain.json.dumps with these options.
+
+        The encoder chooses the key spelling, and serialize_numpy materializes
+        mappings out of object arrays, so a duplicate property is only visible in
+        the emitted text.
+        """
+        try:
+            dumped = json.dumps(obj, ensure_ascii=False, serialize_numpy=True)
+        except TypeError as e:
+            # This is the encoder that stores the value, so refusing here only
+            # refuses what could not have been stored.
+            raise JsonSerializationError(
+                f"JSON serialization error: {e}",
+                column_name=col_name,
+                value_repr=repr(obj),
+            ) from e
+        try:
+            stdlib_json.loads(dumped, object_pairs_hook=_reject_duplicate_keys)
+        except _KeyCollisionError as e:
+            raise JsonSerializationError(
+                str(e), column_name=col_name, value_repr=repr(obj)
+            ) from e
+        return dumped
+
+    def _jsonable_or_raise(self, val: Any, col_name: str) -> Any:
+        try:
+            return self._to_jsonable(val)
+        except _KeyCollisionError as e:
+            raise JsonSerializationError(
+                str(e), column_name=col_name, value_repr=repr(val)
+            ) from e
 
     def convert_type(  # noqa: PLR0911
         self,
@@ -153,6 +219,8 @@ class AbstractWarehouse(ABC, Serializable):
 
             if item_python_type is not list:
                 if isinstance(val[0], item_python_type):
+                    if item_python_type is dict:
+                        self._dump_json(val, col_name)
                     # SQLite ARRAY storage expects a list; tuples/sets must be
                     # converted to lists even when element types already match.
                     return list(val)
@@ -173,15 +241,7 @@ class AbstractWarehouse(ABC, Serializable):
         if col_python_type is dict or col_type_name == "JSON":
             if value_type is str:
                 return val
-            json_ready = self._to_jsonable(val)
-            try:
-                return json.dumps(json_ready, ensure_ascii=False, serialize_numpy=True)
-            except TypeError as e:
-                raise JsonSerializationError(
-                    f"JSON serialization error: {e}",
-                    column_name=col_name,
-                    value_repr=repr(val),
-                ) from e
+            return self._dump_json(self._jsonable_or_raise(val, col_name), col_name)
 
         if isinstance(val, col_python_type):
             return val
