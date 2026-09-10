@@ -707,6 +707,22 @@ def test_studio_list_jobs(capsys):
                     "compute_cluster_name": "dev-cluster",
                     "created_at": "2021-01-02T00:00:00Z",
                     "created_by": "user",
+                    "steps": [
+                        {
+                            "name": "virtualenv",
+                            "label": "Installing dependencies",
+                            "status": "FINISHED",
+                            "started_at": "2021-01-02T00:00:00Z",
+                            "finished_at": "2021-01-02T00:02:30Z",
+                        },
+                        {
+                            "name": "running_query",
+                            "label": "Running query",
+                            "status": "STARTED",
+                            "started_at": "2021-01-02T00:02:30Z",
+                            "finished_at": None,
+                        },
+                    ],
                 },
             ],
         )
@@ -715,11 +731,16 @@ def test_studio_list_jobs(capsys):
         out = capsys.readouterr().out
         assert "Cluster" not in out
         assert "prod-cluster" not in out
+        assert "include_steps" not in m.last_request.qs
 
         assert main(["job", "ls", "--extended"]) == 0
         out = capsys.readouterr().out
         assert "Cluster" in out
         assert "prod-cluster" in out
+        assert m.last_request.qs["include_steps"] == ["true"]
+        assert "Installing dependencies: 2m 30s" in out
+        # A stage still going must be distinguishable from one that took no time.
+        assert "Running query: running" in out
 
 
 def test_studio_cancel_job(capsys, mocker):

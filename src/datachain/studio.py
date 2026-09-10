@@ -745,7 +745,7 @@ def list_jobs(
     status: str | None, team_name: str | None, limit: int, extended: bool = False
 ):
     client = StudioClient(team=team_name)
-    response = client.get_jobs(status, limit)
+    response = client.get_jobs(status, limit, include_steps=extended)
     if not response.ok:
         raise DataChainError(response.message)
 
@@ -765,9 +765,36 @@ def list_jobs(
         }
         if extended:
             row["Cluster"] = job.get("compute_cluster_name")
+            row["Stages"] = _format_stages(job.get("steps") or [])
         rows.append(row)
 
     print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
+
+
+def _format_stages(steps: list[dict]) -> str:
+    return "\n".join(
+        f"{step.get('label') or step.get('name')}: {_stage_duration(step)}"
+        for step in steps
+    )
+
+
+def _stage_duration(step: dict) -> str:
+    started, finished = step.get("started_at"), step.get("finished_at")
+    if not started:
+        return "-"
+    if not finished:
+        return "running"
+
+    seconds = int(
+        (
+            datetime.fromisoformat(finished) - datetime.fromisoformat(started)
+        ).total_seconds()
+    )
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m {seconds % 60}s"
+    return f"{seconds // 3600}h {seconds % 3600 // 60}m"
 
 
 def show_job_logs(job_id: str, team_name: str | None):
