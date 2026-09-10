@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from datachain.catalog import Catalog
     from datachain.client.fsspec import Client
     from datachain.dataset import RowDict
+    from datachain.lib.hdf5 import Hdf5File
     from datachain.query.session import Session
 
 sha256 = partial(hashlib.sha256, usedforsecurity=False)
@@ -47,7 +48,7 @@ _SOURCE_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 # how to create file path when exporting
 ExportPlacement = Literal["filename", "etag", "fullpath", "checksum", "filepath"]
 
-FileType = Literal["binary", "text", "image", "video", "audio"]
+FileType = Literal["binary", "text", "image", "video", "audio", "hdf5"]
 EXPORT_FILES_MAX_THREADS = 5
 
 
@@ -368,6 +369,16 @@ class File(DataModel):
         if isinstance(self, AudioFile):
             return self
         file = AudioFile(**self.model_dump())
+        file._set_stream(self._catalog, caching_enabled=self._caching_enabled)
+        return file
+
+    def as_hdf5_file(self) -> "Hdf5File":
+        """Convert the file to a `Hdf5File` object."""
+        from datachain.lib.hdf5 import Hdf5File
+
+        if isinstance(self, Hdf5File):
+            return self
+        file = Hdf5File(**self.model_dump())
         file._set_stream(self._catalog, caching_enabled=self._caching_enabled)
         return file
 
@@ -2080,5 +2091,9 @@ def get_file_type(type_: FileType = "binary") -> type[File]:
         file = VideoFile
     elif type_ == "audio":
         file = AudioFile
+    elif type_ == "hdf5":
+        from datachain.lib.hdf5 import Hdf5File
+
+        file = Hdf5File
 
     return file
