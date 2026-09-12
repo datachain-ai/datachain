@@ -1,10 +1,14 @@
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import sqlalchemy as sa
 from filelock import FileLock, Timeout
+from sqlalchemy.engine import make_url
 
 from datachain.fs.utils import is_subpath, path_to_fsspec_uri
+from datachain.testing import drop_all_tables
 from datachain.utils import (
     batched,
     batched_it,
@@ -637,3 +641,38 @@ def test_path_to_fsspec_uri_colon_in_filename_is_local(path):
 def test_path_to_fsspec_uri_passes_through_real_uris(uri):
     """URIs with a ``scheme://`` prefix must pass through unchanged."""
     assert path_to_fsspec_uri(uri) == uri
+
+
+def test_drop_all_tables_refuses_non_test_database():
+    db = SimpleNamespace(
+        engine=SimpleNamespace(url=make_url("postgresql://x@localhost/database"))
+    )
+
+    with pytest.raises(RuntimeError, match="must contain 'test'"):
+        drop_all_tables(db)
+
+
+def test_drop_all_tables_drops_fk_linked_tables(tmp_path):
+    engine = sa.create_engine(f"sqlite:///{tmp_path}/test.db")
+    sa.event.listen(
+        engine, "connect", lambda conn, _: conn.execute("PRAGMA foreign_keys = ON")
+    )
+    metadata = sa.MetaData()
+    parents = sa.Table(
+        "parents", metadata, sa.Column("id", sa.Integer, primary_key=True)
+    )
+    children = sa.Table(
+        "children",
+        metadata,
+        sa.Column("id", sa.Integer, primary_key=True),
+        sa.Column("parent_id", sa.ForeignKey("parents.id")),
+    )
+    metadata.create_all(engine)
+    with engine.begin() as conn:
+        conn.execute(parents.insert().values(id=1))
+        conn.execute(children.insert().values(id=1, parent_id=1))
+
+    drop_all_tables(SimpleNamespace(engine=engine, dialect=engine.dialect))
+
+    assert sa.inspect(engine).get_table_names() == []
+    engine.dispose()
