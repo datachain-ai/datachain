@@ -1,8 +1,10 @@
 import json
 import pickle
+import sys
 from collections import UserDict, UserList
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import datetime
+from types import ModuleType
 from typing import (
     Any,
     Final,
@@ -16,7 +18,7 @@ from typing import (
 )
 
 import pytest
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 from typing_extensions import TypedDict
 
 from datachain import Column, DataModel, Sys, func
@@ -778,17 +780,21 @@ def test_select_except_signals_error():
         schema.select_except_signals("address", 37)
 
 
-def test_deserialize_restores_known_base_type():
-    schema = {"fr": MyType3}
-    signals = SignalSchema(schema).serialize()
-    ModelStore.remove(MyType3)
+def test_deserialize_rebuilds_with_known_base_when_class_not_in_sys_modules():
+    class HiddenChild(MyType1):
+        name: str
 
-    # Since MyType3 is removed, deserialization restores it
-    # from the meta information stored in the schema, including the base type
-    # that is still known - MyType1
+    schema = {"fr": HiddenChild}
+    signals = SignalSchema(schema).serialize()
+    ModelStore.remove(HiddenChild)
+
+    # HiddenChild is defined inside this function, so sys.modules has no
+    # attribute for it; deserialization falls back to rebuilding and picks up
+    # MyType1 as the base from the stored bases list.
     deserialized_schema = SignalSchema.deserialize(signals)
-    assert deserialized_schema.values["fr"].__name__ == "MyType3_v1"
-    assert issubclass(deserialized_schema.values["fr"], MyType1)
+    restored = deserialized_schema.values["fr"]
+    assert restored.__name__ == "HiddenChild_v1"
+    assert issubclass(restored, MyType1)
 
 
 def test_deserialize_custom_type_bad_schema():
@@ -822,6 +828,29 @@ def test_deserialize_custom_type_bad_schema():
                 },
             }
         )
+
+
+def test_deserialize_nested_custom_type_bad_schema():
+    schema = {
+        "f": "OuterInvalidNested",
+        "_custom_types": {
+            "OuterInvalidNested": {
+                "schema_version": 2,
+                "name": "OuterInvalidNested",
+                "fields": {"child": "ChildInvalidNested"},
+                "bases": [],
+            },
+            "ChildInvalidNested": {
+                "schema_version": 123,
+                "name": "ChildInvalidNested",
+                "fields": {"value": "int"},
+                "bases": [],
+            },
+        },
+    }
+
+    with pytest.raises(SignalSchemaError, match="ChildInvalidNested"):
+        SignalSchema.deserialize(schema)
 
 
 def test_select_nested_names():
@@ -1798,3 +1827,135 @@ def test_enrich_expr_types_unknown_column():
     schema = SignalSchema({"a": int})
     result = schema.enrich_expr_types(Column("nope"))
     assert isinstance(result.type, NullType)
+
+
+@pytest.mark.parametrize(
+    "wrap",
+    [
+        lambda child: child,
+        lambda child: child | None,
+        lambda child: list[child],  # type: ignore[valid-type]
+        lambda child: dict[str, child],  # type: ignore[valid-type]
+        lambda child: tuple[child, ...],  # type: ignore[valid-type]
+        lambda child: child | int,
+    ],
+    ids=["direct", "optional", "list", "mapping", "tuple", "union"],
+)
+def test_deserialize_reuses_imported_nested_pydantic_model(monkeypatch, wrap):
+    monkeypatch.setattr(ModelStore, "store", {})
+    child = create_model("ImportedNested", __module__=__name__, value=(int, ...))
+    outer = create_model("ImportedOuter", __module__=__name__, child=(wrap(child), ...))
+    monkeypatch.setattr(sys.modules[__name__], "ImportedNested", child, raising=False)
+    monkeypatch.setattr(sys.modules[__name__], "ImportedOuter", outer, raising=False)
+    serialized = SignalSchema({"x": outer}).serialize()
+    ModelStore.store.clear()
+
+    restored = SignalSchema.deserialize(serialized).values["x"]
+
+    assert restored is outer
+    assert ModelStore.store == {}
+
+
+@pytest.mark.parametrize(
+    "stored_field,current_field",
+    [
+        ((int, ...), (str, ...)),
+        ((int, ...), (int | None, None)),
+        ((list[int], ...), (list[str], ...)),
+    ],
+    ids=["field-type", "optionality", "nested-container"],
+)
+def test_deserialize_rejects_imported_model_with_different_shape(
+    monkeypatch, stored_field, current_field
+):
+    monkeypatch.setattr(ModelStore, "store", {})
+    stored = create_model("DriftedPlainModel", __module__=__name__, value=stored_field)
+    serialized = SignalSchema({"x": stored}).serialize()
+    current = create_model(
+        "DriftedPlainModel", __module__=__name__, value=current_field
+    )
+    monkeypatch.setattr(
+        sys.modules[__name__], "DriftedPlainModel", current, raising=False
+    )
+    ModelStore.store.clear()
+
+    with pytest.warns(SignalSchemaWarning, match="does not match the stored schema"):
+        restored = SignalSchema.deserialize(serialized).values["x"]
+
+    assert restored is not current
+
+
+@pytest.mark.parametrize(
+    "wrap",
+    [
+        lambda child: child,
+        lambda child: list[child],  # type: ignore[valid-type]
+        lambda child: child | None,
+    ],
+    ids=["direct", "list", "optional"],
+)
+def test_deserialize_rejects_nested_model_with_different_shape(monkeypatch, wrap):
+    monkeypatch.setattr(ModelStore, "store", {})
+    stored_child = create_model("NestedDrift", __module__=__name__, value=(int, ...))
+    stored_outer = create_model(
+        "OuterWithDrift", __module__=__name__, child=(wrap(stored_child), ...)
+    )
+    serialized = SignalSchema({"x": stored_outer}).serialize()
+    current_child = create_model("NestedDrift", __module__=__name__, value=(str, ...))
+    current_outer = create_model(
+        "OuterWithDrift", __module__=__name__, child=(wrap(current_child), ...)
+    )
+    monkeypatch.setattr(
+        sys.modules[__name__], "NestedDrift", current_child, raising=False
+    )
+    monkeypatch.setattr(
+        sys.modules[__name__], "OuterWithDrift", current_outer, raising=False
+    )
+    ModelStore.store.clear()
+
+    with pytest.warns(SignalSchemaWarning, match="does not match the stored schema"):
+        restored = SignalSchema.deserialize(serialized).values["x"]
+
+    assert restored is not current_outer
+
+
+@pytest.mark.parametrize("schema_version", [1, 2])
+def test_deserialize_preserves_registered_model(monkeypatch, schema_version):
+    monkeypatch.setattr(ModelStore, "store", {})
+    model = create_model("RegisteredModel", value=(int, ...))
+    ModelStore.register(model)
+    if schema_version == 1:
+        serialized = {
+            "x": "RegisteredModel",
+            "_custom_types": {"RegisteredModel": {"value": "int"}},
+        }
+    else:
+        serialized = SignalSchema({"x": model}).serialize()
+
+    assert SignalSchema.deserialize(serialized).values["x"] is model
+
+
+def test_deserialize_does_not_call_module_getattr(monkeypatch):
+    module_name = "module.with.lazy.attributes"
+    module = ModuleType(module_name)
+
+    def fail_on_getattr(name):
+        raise AssertionError(f"module __getattr__ called for {name}")
+
+    module.__getattr__ = fail_on_getattr
+    monkeypatch.setitem(sys.modules, module_name, module)
+    schema = {
+        "x": "LazyModel",
+        "_custom_types": {
+            "LazyModel": {
+                "schema_version": 2,
+                "name": "LazyModel",
+                "fields": {},
+                "bases": [["LazyModel", module_name, None]],
+            }
+        },
+    }
+
+    restored = SignalSchema.deserialize(schema).values["x"]
+
+    assert restored.__name__ == "LazyModel"

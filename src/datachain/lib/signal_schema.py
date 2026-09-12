@@ -2,6 +2,7 @@ import copy
 import hashlib
 import logging
 import math
+import sys
 import types
 import warnings
 import weakref
@@ -237,6 +238,49 @@ class CustomType(BaseModel):
         return cls(**data)
 
 
+def _resolve_from_sys_modules(
+    ct: CustomType, custom_types: dict[str, Any]
+) -> type[BaseModel] | None:
+    """Reuse an already-imported plain Pydantic class when its schema matches."""
+    if not ct.bases or ct.bases[0][2] is not None:
+        return None
+    class_name, module_name, _ = ct.bases[0]
+    module = sys.modules.get(module_name)
+    if module is None:
+        return None
+    candidate = vars(module).get(class_name)
+    if candidate is None or not ModelStore.is_pydantic(candidate):
+        return None
+    serialized: dict[str, Any] = {}
+    SignalSchema._serialize_custom_model(
+        ct.name, candidate, serialized, register_pydantic=False
+    )
+    matches = True
+    for name, data in serialized.items():
+        if name not in custom_types:
+            matches = False
+            break
+        try:
+            stored_type = CustomType.deserialize(custom_types[name], name)
+        except ValidationError as exc:
+            raise SignalSchemaError(
+                f"cannot deserialize custom type '{name}': {exc}"
+            ) from exc
+        if CustomType.deserialize(data, name) != stored_type:
+            matches = False
+            break
+    if matches:
+        return candidate
+    warnings.warn(
+        f"class {candidate.__module__}.{candidate.__name__} does not match the stored "
+        f"schema for {ct.name!r}; using a synthetic class, so isinstance checks "
+        "against the imported class will fail",
+        SignalSchemaWarning,
+        stacklevel=3,
+    )
+    return None
+
+
 def create_feature_model(
     name: str,
     fields: Mapping[str, Any],
@@ -354,10 +398,13 @@ class SignalSchema:
 
     @staticmethod
     def _serialize_custom_model(
-        version_name: str, fr: type[BaseModel], custom_types: dict[str, Any]
+        version_name: str,
+        fr: type[BaseModel],
+        custom_types: dict[str, Any],
+        *,
+        register_pydantic: bool = True,
     ) -> str:
-        """This serializes any custom type information to the provided custom_types
-        dict, and returns the name of the type serialized."""
+        """Serialize a Pydantic model and its nested types into custom_types."""
         if version_name in custom_types:
             # This type is already stored in custom_types.
             return version_name
@@ -367,7 +414,11 @@ class SignalSchema:
             field_type = info.annotation
             # All fields should be typed.
             assert field_type
-            fields[field_name] = SignalSchema._serialize_type(field_type, custom_types)
+            fields[field_name] = SignalSchema._serialize_type(
+                field_type,
+                custom_types,
+                register_pydantic=register_pydantic,
+            )
 
         bases = SignalSchema._get_bases(fr)
 
@@ -384,11 +435,17 @@ class SignalSchema:
         return version_name
 
     @staticmethod
-    def _serialize_type(fr: type, custom_types: dict[str, Any]) -> str:
-        """Serialize a given type to a string, including automatic ModelStore
-        registration, and save this type and subtypes to custom_types as well."""
+    def _serialize_type(
+        fr: type,
+        custom_types: dict[str, Any],
+        *,
+        register_pydantic: bool = True,
+    ) -> str:
+        """Serialize a type and its nested Pydantic models into custom_types."""
         subtypes: list[Any] = []
-        type_name = SignalSchema._type_to_str(fr, subtypes)
+        type_name = SignalSchema._type_to_str(
+            fr, subtypes, register_pydantic=register_pydantic
+        )
         # Iterate over all subtypes (includes the input type).
         for st in subtypes:
             if st is None or not ModelStore.is_pydantic(st):
@@ -399,7 +456,12 @@ class SignalSchema:
                 # If the main type is Pydantic, then use the ModelStore version name.
                 type_name = st_version_name
             # Save this type to custom_types.
-            SignalSchema._serialize_custom_model(st_version_name, st, custom_types)
+            SignalSchema._serialize_custom_model(
+                st_version_name,
+                st,
+                custom_types,
+                register_pydantic=register_pydantic,
+            )
         return type_name
 
     def serialize(self) -> dict[str, Any]:
@@ -443,9 +505,10 @@ class SignalSchema:
     def _deserialize_custom_type(
         type_name: str, custom_types: dict[str, Any]
     ) -> type | None:
-        """Given a type name like MyType@v1 gets a type from ModelStore or recreates
-        it based on the information from the custom types dict that includes fields and
-        bases."""
+        """Given a type name like MyType@v1, resolve it to a Python class in
+        this order: ModelStore hit, the already-imported class from
+        ``sys.modules`` (matched by shape), or a synthetic class rebuilt from
+        the stored fields/bases as a last resort."""
         model_name, target_version = ModelStore.parse_name_version(type_name)
 
         if type_name in custom_types:
@@ -457,6 +520,9 @@ class SignalSchema:
                 ) from exc
 
             if fr := ModelStore.get(model_name, target_version):
+                return fr
+
+            if fr := _resolve_from_sys_modules(ct, custom_types):
                 return fr
 
             fields = {
@@ -1561,7 +1627,10 @@ class SignalSchema:
 
     @staticmethod
     def _type_to_str(
-        type_: type | types.EllipsisType | None, subtypes: list | None = None
+        type_: type | types.EllipsisType | None,
+        subtypes: list | None = None,
+        *,
+        register_pydantic: bool = True,
     ) -> str:
         """Convert a type to a string-based representation."""
 
@@ -1572,7 +1641,7 @@ class SignalSchema:
             type_,
             subtypes,
             warn_with=_warn,
-            register_pydantic=True,
+            register_pydantic=register_pydantic,
         )
 
     # `_type_tag` = 0-based index of the active arm (Optional[X] == Union[X, None]:
