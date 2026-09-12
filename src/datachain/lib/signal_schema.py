@@ -2,6 +2,7 @@ import copy
 import hashlib
 import logging
 import math
+import sys
 import types
 import warnings
 import weakref
@@ -440,6 +441,98 @@ class SignalSchema:
         return subtypes
 
     @staticmethod
+    def _custom_type_matches_model(  # noqa: PLR0911
+        model: type[BaseModel],
+        custom_type: CustomType,
+        custom_types: dict[str, Any],
+        seen: set[tuple[type[BaseModel], str]] | None = None,
+    ) -> bool:
+        if set(model.model_fields) != set(custom_type.fields):
+            return False
+        if custom_type.bases and SignalSchema._get_bases(model) != custom_type.bases:
+            return False
+        if custom_type.hidden_fields != getattr(model, "_hidden_fields", []):
+            return False
+        if custom_type.partial_fingerprint != getattr(
+            model, "_partial_fingerprint", None
+        ):
+            return False
+
+        if seen is None:
+            seen = set()
+        key = (model, custom_type.name)
+        if key in seen:
+            return True
+        seen.add(key)
+
+        for field_name, field_info in model.model_fields.items():
+            field_subtypes: list[Any] = []
+            serialized_field = type_to_str(
+                field_info.annotation,
+                field_subtypes,
+                register_pydantic=False,
+            )
+            if custom_type.fields[field_name] != serialized_field:
+                return False
+
+            for subtype in field_subtypes:
+                if not ModelStore.is_pydantic(subtype):
+                    continue
+                subtype_name = ModelStore.get_name(subtype)
+                subtype_data = custom_types.get(subtype_name)
+                if subtype_data is None:
+                    return False
+                try:
+                    subtype_schema = CustomType.deserialize(subtype_data, subtype_name)
+                except ValidationError:
+                    return False
+                if not SignalSchema._custom_type_matches_model(
+                    subtype, subtype_schema, custom_types, seen
+                ):
+                    return False
+
+        return True
+
+    @staticmethod
+    def _find_loaded_custom_type(
+        custom_type: CustomType, custom_types: dict[str, Any]
+    ) -> type[BaseModel] | None:
+        if not custom_type.bases or custom_type.bases[0][2] is not None:
+            return None
+
+        class_name, module_name, _ = custom_type.bases[0]
+        module = sys.modules.get(module_name)
+        candidate = getattr(module, class_name, None) if module is not None else None
+        if ModelStore.is_pydantic(candidate):
+            if SignalSchema._custom_type_matches_model(
+                candidate, custom_type, custom_types
+            ):
+                return candidate
+            warnings.warn(
+                f"loaded Pydantic model '{module_name}.{class_name}' does not match "
+                "the stored schema; rebuilding it",
+                SignalSchemaWarning,
+                stacklevel=3,
+            )
+
+        pending = list(BaseModel.__subclasses__())
+        seen: set[type[BaseModel]] = set()
+        while pending:
+            candidate = pending.pop()
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            pending.extend(candidate.__subclasses__())
+            if candidate.__name__ != class_name or candidate.__module__ != module_name:
+                continue
+            if SignalSchema._custom_type_matches_model(
+                candidate, custom_type, custom_types
+            ):
+                return candidate
+
+        return None
+
+    @staticmethod
     def _deserialize_custom_type(
         type_name: str, custom_types: dict[str, Any]
     ) -> type | None:
@@ -457,6 +550,9 @@ class SignalSchema:
                 ) from exc
 
             if fr := ModelStore.get(model_name, target_version):
+                return fr
+
+            if fr := SignalSchema._find_loaded_custom_type(ct, custom_types):
                 return fr
 
             fields = {
