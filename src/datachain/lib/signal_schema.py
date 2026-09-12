@@ -35,7 +35,7 @@ from sqlalchemy.sql.elements import BinaryExpression, Grouping, Label
 from datachain import json
 from datachain.func import literal
 from datachain.func.func import Func
-from datachain.lib.convert.flatten import is_optional_model
+from datachain.lib.convert.flatten import is_optional_model, iter_flat_columns
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.convert.sql_to_python import sql_to_python
 from datachain.lib.convert.unflatten import (
@@ -626,26 +626,27 @@ class SignalSchema:
                 res[db_name] = self._db_leaf_sql_type(path, type_)
         return res
 
-    def row_to_objs(self, row: Sequence[Any]) -> list[Any]:
+    def row_to_objs(self, row: Sequence[Any] | Mapping[str, Any]) -> list[Any]:
         self._init_setup_values()
+        if not isinstance(row, Mapping):
+            row = dict(zip(self.to_udf_spec(), row, strict=True))
 
         objs: list[Any] = []
-        pos = 0
         for name, fr_type in self.values.items():
             inner_type, is_optional = unwrap_optional(fr_type)
             if self.setup_values and name in self.setup_values:
                 objs.append(self.setup_values.get(name))
             elif (fr := ModelStore.to_pydantic(inner_type)) is not None:
-                obj, pos = self._hydrate_model(fr, is_optional, row, pos, label=name)
+                sub = self._model_row_values(name, fr, is_optional, row)
+                obj, _ = self._hydrate_model(fr, is_optional, sub, 0, label=name)
                 objs.append(obj)
             else:
-                value = row[pos]
+                value = row[DEFAULT_DELIMITER.join(name.split("."))]
                 if self._row_conversion_required[name]:
                     value = self._convert_feature_value(
                         fr_type, value, catalog=None, cache=False
                     )
                 objs.append(value)
-                pos += 1
         return objs
 
     def set_file_streams(
@@ -756,6 +757,32 @@ class SignalSchema:
         return fields
 
     @staticmethod
+    def _model_row_values(
+        name: str,
+        fr: type[BaseModel],
+        is_optional: bool,
+        row: Mapping[str, Any],
+    ) -> list[Any]:
+        """Gather a model's flattened values in hydration order.
+
+        For example, model ``fr`` reads ``fr__name`` and ``fr__deep__value``
+        from the row and returns their values in the model's field order.
+        """
+        parts = name.split(".")
+        result = []
+        if is_optional:
+            db_name = DEFAULT_DELIMITER.join(
+                [*parts, SignalSchema._OPTIONAL_SENTINEL_FIELD]
+            )
+            result.append(row[db_name])
+        for col in iter_flat_columns(fr):
+            path = [*parts, *col.path]
+            if col.is_sentinel:
+                path.append(SignalSchema._OPTIONAL_SENTINEL_FIELD)
+            result.append(row[DEFAULT_DELIMITER.join(path)])
+        return result
+
+    @staticmethod
     def _all_values_none(value: Any) -> bool:
         if isinstance(value, dict):
             return all(SignalSchema._all_values_none(v) for v in value.values())
@@ -782,9 +809,7 @@ class SignalSchema:
         set_stream: bool = False,
         label: str = "",
     ) -> tuple[Any, int]:
-        """Build a (possibly optional) model instance from the flat row at ``pos``,
-        returning ``(obj_or_None, next_pos)``. An absent optional or an all-None row
-        yields None."""
+        """Build a model from the flat row and return it with the next position."""
         if is_optional:
             absent, pos = read_optional_sentinel(fr, row, pos)
             if absent:
