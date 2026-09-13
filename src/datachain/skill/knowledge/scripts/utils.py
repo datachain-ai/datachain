@@ -451,9 +451,9 @@ def source_to_https(source: str) -> str | None:
     Returns None for local paths or unrecognized schemes.
 
     Examples:
-        s3://my-bucket/prefix/  -> https://my-bucket.s3.amazonaws.com
-        gs://demo/data/         -> https://storage.googleapis.com/demo
-        az://acct/container/    -> https://acct.blob.core.windows.net/container
+        s3://my-bucket/prefix/       -> https://my-bucket.s3.amazonaws.com
+        gs://demo/data/              -> https://storage.googleapis.com/demo
+        az://container@acct/prefix/  -> https://acct.blob.core.windows.net/container
     """
     parts = parse_uri(source)
     scheme = parts["scheme"]
@@ -464,11 +464,10 @@ def source_to_https(source: str) -> str | None:
     if scheme == "gs":
         return f"https://storage.googleapis.com/{bucket}"
     if scheme == "az":
-        # az://account/container/... -> bucket=account, prefix=container/...
-        # Azure needs account + container in the URL
-        prefix = parts["prefix"].rstrip("/")
-        container = prefix.split("/", 1)[0] if prefix else None
-        if container:
-            return f"https://{bucket}.blob.core.windows.net/{container}"
+        # Azure needs account + container in the URL.
+        container, _, account = bucket.partition("@")
+        account = account or os.environ.get("AZURE_STORAGE_ACCOUNT_NAME", "")
+        if container and account:
+            return f"https://{account}.blob.core.windows.net/{container}"
         return None
     return None

@@ -212,6 +212,51 @@ def test_azure_bucket_status(
 
 @patch("datachain.client.azure.BlobServiceClient")
 @patch.object(AzureClient, "create_fs")
+def test_azure_bucket_status_account_in_name(mock_create_fs, mock_blob_svc):
+    container = MagicMock()
+    mock_blob_svc.return_value.get_container_client.return_value = container
+    container.get_container_properties.side_effect = ClientAuthenticationError
+
+    auth_fs = MagicMock()
+    mock_create_fs.return_value = auth_fs
+    auth_fs._info = AsyncMock()
+
+    status = AzureClient.bucket_status("c@acct")
+
+    assert status == BucketStatus(True, "authenticated")
+    assert mock_blob_svc.call_args[1] == {
+        "account_url": "https://acct.blob.core.windows.net"
+    }
+    mock_blob_svc.return_value.get_container_client.assert_called_once_with("c")
+    assert mock_create_fs.call_args[1]["account_name"] == "acct"
+    auth_fs._info.assert_awaited_once_with("c")
+
+
+@patch("datachain.client.azure.BlobServiceClient")
+@patch.object(AzureClient, "create_fs")
+def test_azure_bucket_status_name_account_wins_over_kwargs(
+    _mock_create_fs, mock_blob_svc
+):
+    container = MagicMock()
+    mock_blob_svc.return_value.get_container_client.return_value = container
+
+    status = AzureClient.bucket_status("c@acct", account_name="other")
+
+    assert status == BucketStatus(True, "anonymous")
+    assert mock_blob_svc.call_args[1] == {
+        "account_url": "https://acct.blob.core.windows.net"
+    }
+
+
+def test_azure_bucket_status_conflicting_connection_string_raises(monkeypatch):
+    monkeypatch.delenv("AZURE_STORAGE_CONNECTION_STRING", raising=False)
+    conn = "DefaultEndpointsProtocol=https;AccountName=a;AccountKey=dGVzdA=="
+    with pytest.raises(ValueError, match="conflicts with"):
+        AzureClient.bucket_status("c@b", connection_string=conn)
+
+
+@patch("datachain.client.azure.BlobServiceClient")
+@patch.object(AzureClient, "create_fs")
 def test_azure_bucket_status_http_500_reraises(_mock_create_fs, mock_blob_svc):
     container = MagicMock()
     mock_blob_svc.return_value.get_container_client.return_value = container

@@ -131,7 +131,7 @@ to this skill.
 
 When any storage URI is encountered, enlist the whole bucket first.
 
-1. **Extract bucket root.** From any URI, derive `{scheme}://{bucket}/`.
+1. **Extract bucket root.** From any URI, derive `{scheme}://{bucket}/`. For Azure, keep the storage account in the URI (`az://container@account/`); without it, the account must come from the environment (`AZURE_STORAGE_ACCOUNT_NAME`, connection string) and anonymous-access detection and file links may be unavailable.
 2. **Check if already enlisted.** Look for `dc-knowledge/buckets/{scheme}/{bucket_slug}.md` or `.json`. If either exists, skip.
 3. **Access check.** Run `datachain bucket status {root_uri}`. If denied / not found, stop and ask.
 4. **Scan with timeout.** Default 60s; user can override:
@@ -139,7 +139,7 @@ When any storage URI is encountered, enlist the whole bucket first.
    python3 {skill_dir}/scripts/bucket_scan.py {root_uri} \
      --output dc-knowledge/buckets/{scheme}/{bucket_slug}.json --timeout 60
    ```
-5. **Handle timeout** (exit code 124). Run the hierarchical fallback:
+5. **Handle timeout** (exit code 124). Run the hierarchical fallback (add `--anon` if the access check reported anonymous):
    ```bash
    python3 {skill_dir}/scripts/bucket_overview.py {root_uri} \
      --bucket-json dc-knowledge/buckets/{scheme}/{bucket_slug}.json
