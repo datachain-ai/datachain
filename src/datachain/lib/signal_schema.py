@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     from collections.abc import MutableMapping
 
     from datachain.catalog import Catalog
+    from datachain.dataset import RowDict
 
 
 logger = logging.getLogger(__name__)
@@ -626,10 +627,8 @@ class SignalSchema:
                 res[db_name] = self._db_leaf_sql_type(path, type_)
         return res
 
-    def row_to_objs(self, row: Sequence[Any] | Mapping[str, Any]) -> list[Any]:
+    def row_to_objs(self, row_dict: "RowDict") -> list[Any]:
         self._init_setup_values()
-        if not isinstance(row, Mapping):
-            row = dict(zip(self.to_udf_spec(), row, strict=True))
 
         objs: list[Any] = []
         for name, fr_type in self.values.items():
@@ -637,11 +636,11 @@ class SignalSchema:
             if self.setup_values and name in self.setup_values:
                 objs.append(self.setup_values.get(name))
             elif (fr := ModelStore.to_pydantic(inner_type)) is not None:
-                sub = self._model_row_values(name, fr, is_optional, row)
-                obj, _ = self._hydrate_model(fr, is_optional, sub, 0, label=name)
+                row = self._model_row_values(name, fr, is_optional, row_dict)
+                obj, _ = self._hydrate_model(fr, is_optional, row, 0, label=name)
                 objs.append(obj)
             else:
-                value = row[DEFAULT_DELIMITER.join(name.split("."))]
+                value = row_dict[DEFAULT_DELIMITER.join(name.split("."))]
                 if self._row_conversion_required[name]:
                     value = self._convert_feature_value(
                         fr_type, value, catalog=None, cache=False
@@ -759,14 +758,20 @@ class SignalSchema:
     @staticmethod
     def _model_row_values(
         name: str,
-        fr: type[BaseModel],
+        model_type: type[BaseModel],
         is_optional: bool,
-        row: Mapping[str, Any],
+        row_dict: "RowDict",
     ) -> list[Any]:
-        """Gather a model's flattened values in hydration order.
+        """Pull one model's flat column values out of ``row_dict``.
 
-        For example, model ``fr`` reads ``fr__name`` and ``fr__deep__value``
-        from the row and returns their values in the model's field order.
+        Returns the values in the order ``_hydrate_model`` will consume
+        them: the ``_type_tag`` sentinel first when the field is Optional,
+        then one value per leaf column in the model's declared field order.
+
+        For a schema ``{"fr": MyModel}`` where ``MyModel`` has ``name: str``
+        and ``deep: Nested`` with ``Nested.value: int``, this reads keys
+        ``fr__name`` and ``fr__deep__value`` from ``row_dict`` and returns
+        ``[row_dict["fr__name"], row_dict["fr__deep__value"]]``.
         """
         parts = name.split(".")
         result = []
@@ -774,12 +779,12 @@ class SignalSchema:
             db_name = DEFAULT_DELIMITER.join(
                 [*parts, SignalSchema._OPTIONAL_SENTINEL_FIELD]
             )
-            result.append(row[db_name])
-        for col in iter_flat_columns(fr):
+            result.append(row_dict[db_name])
+        for col in iter_flat_columns(model_type):
             path = [*parts, *col.path]
             if col.is_sentinel:
                 path.append(SignalSchema._OPTIONAL_SENTINEL_FIELD)
-            result.append(row[DEFAULT_DELIMITER.join(path)])
+            result.append(row_dict[DEFAULT_DELIMITER.join(path)])
         return result
 
     @staticmethod

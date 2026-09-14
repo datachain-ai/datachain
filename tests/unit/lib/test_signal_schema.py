@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from typing_extensions import TypedDict
 
 from datachain import Column, DataModel, Sys, func
+from datachain.dataset import RowDict
 from datachain.lib.convert.flatten import flatten
 from datachain.lib.data_model import is_mapping_annotation
 from datachain.lib.file import File, TextFile
@@ -50,6 +51,10 @@ from datachain.sql.types import (
     UInt32,
     UInt64,
 )
+
+
+def _row(schema: SignalSchema, values) -> RowDict:
+    return RowDict(zip(schema.to_udf_spec(), values, strict=True))
 
 
 @pytest.fixture
@@ -1077,8 +1082,9 @@ def test_row_to_features_sets_stream_in_model_collection(test_session):
 
 def test_row_to_objs_preserves_plain_collection():
     values = [1.0, 2.0]
+    schema = SignalSchema({"values": list[float]})
 
-    (converted,) = SignalSchema({"values": list[float]}).row_to_objs((values,))
+    (converted,) = schema.row_to_objs(_row(schema, (values,)))
 
     assert converted is values
 
@@ -1109,7 +1115,9 @@ def test_row_to_objs_preserves_plain_collection():
     ],
 )
 def test_row_to_objs_dict_key_decoding_policy(key_type, raw, expected):
-    (converted,) = SignalSchema({"m": dict[key_type, int]}).row_to_objs((raw,))
+    schema = SignalSchema({"m": dict[key_type, int]})
+
+    (converted,) = schema.row_to_objs(_row(schema, (raw,)))
 
     assert converted == expected
 
@@ -1123,15 +1131,18 @@ def test_row_to_features_does_not_decode_string_keys(test_session):
 
 
 def test_row_to_objs_restores_variadic_tuple_shape():
-    (converted,) = SignalSchema({"t": tuple[int, ...]}).row_to_objs(([1, 2],))
+    schema = SignalSchema({"t": tuple[int, ...]})
+
+    (converted,) = schema.row_to_objs(_row(schema, ([1, 2],)))
 
     assert converted == (1, 2)
 
 
 def test_row_to_objs_converts_fixed_tuple_positionally():
     raw = [1, {"path": "a.txt"}]
+    schema = SignalSchema({"t": tuple[int, File]})
 
-    (converted,) = SignalSchema({"t": tuple[int, File]}).row_to_objs((raw,))
+    (converted,) = schema.row_to_objs(_row(schema, (raw,)))
 
     assert isinstance(converted, tuple)
     assert converted[0] == 1
@@ -1169,7 +1180,7 @@ def test_row_readers_hydrate_collection_members(annotation, make_raw, test_sessi
     schema = SignalSchema({"x": annotation})
 
     # a fresh value per reader, so neither can hydrate in place for the other
-    (from_objs,) = schema.row_to_objs((make_raw(),))
+    (from_objs,) = schema.row_to_objs(_row(schema, (make_raw(),)))
     (from_features,) = schema.row_to_features((make_raw(),), test_session.catalog)
 
     for converted in (from_objs, from_features):
@@ -1184,24 +1195,26 @@ def test_row_readers_hydrate_collection_members(annotation, make_raw, test_sessi
 
 
 def test_row_to_objs_keeps_sequence_as_a_list():
-    (converted,) = SignalSchema({"s": Sequence[MyType1]}).row_to_objs(
-        ([{"aa": 1, "bb": "b"}],)
-    )
+    schema = SignalSchema({"s": Sequence[MyType1]})
+
+    (converted,) = schema.row_to_objs(_row(schema, ([{"aa": 1, "bb": "b"}],)))
 
     assert isinstance(converted, list)
     assert isinstance(converted[0], MyType1)
 
 
 def test_row_to_objs_keeps_raw_key_when_json_decode_fails():
-    (converted,) = SignalSchema({"m": dict[int, int]}).row_to_objs(({"foo": 1},))
+    schema = SignalSchema({"m": dict[int, int]})
+
+    (converted,) = schema.row_to_objs(_row(schema, ({"foo": 1},)))
 
     assert converted == {"foo": 1}
 
 
 def test_row_to_objs_decodes_tuple_keys():
-    (converted,) = SignalSchema({"m": dict[tuple[str, int], int]}).row_to_objs(
-        ({'["a",1]': 2},)
-    )
+    schema = SignalSchema({"m": dict[tuple[str, int], int]})
+
+    (converted,) = schema.row_to_objs(_row(schema, ({'["a",1]': 2},)))
 
     assert converted == {("a", 1): 2}
 
@@ -1532,7 +1545,7 @@ def test_row_to_objs():
     val = MyType2(name="Fred", deep=MyType1(aa=129, bb="qwe"))
     row = ("myname", 12.5, *flatten(val), None)
 
-    res = schema.row_to_objs(row)
+    res = schema.row_to_objs(_row(schema, row))
 
     assert res == ["myname", 12.5, val, None]
 
@@ -1542,7 +1555,7 @@ def test_row_to_objs_all_none_returns_none():
 
     row = (None, None, None)
 
-    res = schema.row_to_objs(row)
+    res = schema.row_to_objs(_row(schema, row))
 
     assert res == [None]
 
@@ -1553,7 +1566,7 @@ def test_row_to_objs_some_none_values_raises():
     row = ("name", None, None)
 
     with pytest.raises(ValidationError):
-        schema.row_to_objs(row)
+        schema.row_to_objs(_row(schema, row))
 
 
 def test_row_to_objs_all_none_nested_collections():
@@ -1561,7 +1574,7 @@ def test_row_to_objs_all_none_nested_collections():
 
     row = (5, None, None, None, "tag")
 
-    res = schema.row_to_objs(row)
+    res = schema.row_to_objs(_row(schema, row))
 
     assert res == [5, None, "tag"]
 
@@ -1572,7 +1585,7 @@ def test_row_to_objs_nested_collections_some_values_missing_raises():
     row = (5, "component", ["bad"], {"key": "value"}, "tag")
 
     with pytest.raises(ValidationError):
-        schema.row_to_objs(row)
+        schema.row_to_objs(_row(schema, row))
 
 
 def test_row_to_objs_setup():
@@ -1586,9 +1599,9 @@ def test_row_to_objs_setup():
 
     # run twice to check that setup_values are cached
     assert schema.setup_values is None
-    schema.row_to_objs(row)
+    schema.row_to_objs(_row(schema, row))
     assert schema.setup_values is not None
-    res = schema.row_to_objs(row)
+    res = schema.row_to_objs(_row(schema, row))
     assert schema.setup_values is not None
 
     assert res == ["myname", 12.5, setup_value, val, {}]
@@ -1638,7 +1651,8 @@ def test_row_to_objs_setup():
     ],
 )
 def test_row_to_objs_parent_and_child_overlap(spec, row, expected):
-    assert SignalSchema(spec).row_to_objs(row) == expected
+    schema = SignalSchema(spec)
+    assert schema.row_to_objs(_row(schema, row)) == expected
 
 
 def test_setup_not_callable():
@@ -1649,7 +1663,7 @@ def test_setup_not_callable():
 def test_setup_error():
     schema = SignalSchema({"name": str, "value": int}, {"init": lambda: 1 / 0})
     with pytest.raises(SetupError):
-        schema.row_to_objs(("myname", 37))
+        schema.row_to_objs(_row(schema, ("myname", 37)))
 
 
 @pytest.mark.parametrize(
