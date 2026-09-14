@@ -519,12 +519,15 @@ class StudioClient:
         status: str | None = None,
         limit: int = 20,
         job_id: str | None = None,
+        include_steps: bool = False,
     ) -> Response[JobListData]:
         params: dict[str, Any] = {"limit": limit}
         if status is not None:
             params["status"] = status
         if job_id is not None:
             params["job_id"] = job_id
+        if include_steps:
+            params["include_steps"] = True
         return self._send_request("datachain/jobs/", params, method="GET")
 
     def cancel_job(
