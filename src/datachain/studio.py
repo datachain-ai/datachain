@@ -745,7 +745,7 @@ def list_jobs(
     status: str | None, team_name: str | None, limit: int, extended: bool = False
 ):
     client = StudioClient(team=team_name)
-    response = client.get_jobs(status, limit)
+    response = client.get_jobs(status, limit, include_steps=extended)
     if not response.ok:
         raise DataChainError(response.message)
 
@@ -765,9 +765,42 @@ def list_jobs(
         }
         if extended:
             row["Cluster"] = job.get("compute_cluster_name")
+            row["Stages"] = _format_stages(
+                job.get("steps") or [], job_finished=bool(job.get("finished_at"))
+            )
         rows.append(row)
 
     print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
+
+
+def _format_stages(steps: list[dict], job_finished: bool) -> str:
+    lines = []
+    for step in steps:
+        name = step.get("label") or step.get("name")
+        lines.append(f"{name}: {_stage_duration(step, job_finished)}")
+    return "\n".join(lines)
+
+
+def _stage_duration(step: dict, job_finished: bool) -> str:
+    started, finished = step.get("started_at"), step.get("finished_at")
+    if not started:
+        return "-"
+    if not finished:
+        # A job can stop without closing its stages, so an open stage on a job that
+        # has ended is one whose length was never recorded, not one still going.
+        return "-" if job_finished else "running"
+
+    seconds = int((_parse_iso(finished) - _parse_iso(started)).total_seconds())
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m {seconds % 60}s"
+    return f"{seconds // 3600}h {seconds % 3600 // 60}m"
+
+
+def _parse_iso(value: str) -> datetime:
+    # fromisoformat only accepts a trailing Z from 3.11, and we support 3.10.
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def show_job_logs(job_id: str, team_name: str | None):

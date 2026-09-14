@@ -167,7 +167,7 @@ def add_jobs_parser(subparsers, parent_parser) -> None:
         "--extended",
         action="store_true",
         default=False,
-        help="Show extra job details, such as the compute cluster",
+        help="Show extra job details",
     )
 
     studio_cancel_help = "Cancel a job in Studio"

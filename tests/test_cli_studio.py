@@ -693,20 +693,69 @@ def test_studio_list_jobs(capsys):
                 {
                     "id": "8bddde6c-c3ca-41b0-9d87-ee945bfdce70",
                     "name": "on-cluster",
-                    "status": "COMPLETE",
+                    "status": "FAILED",
                     "compute_cluster_id": 1,
                     "compute_cluster_name": "prod-cluster",
                     "created_at": "2021-01-01T00:00:00Z",
                     "created_by": "user",
+                    "finished_at": "2021-01-01T00:00:20Z",
+                    # A job can stop without closing its stages.
+                    "steps": [
+                        {
+                            "name": "waiting",
+                            "label": "Waiting in queue",
+                            "status": "STARTED",
+                            "started_at": "2021-01-01T00:00:00Z",
+                            "finished_at": None,
+                        },
+                    ],
                 },
                 {
                     "id": "0502eef6-a32e-45fa-8e3b-d20ec0abbcf0",
                     "name": "on-other-cluster",
-                    "status": "FAILED",
+                    "status": "RUNNING",
                     "compute_cluster_id": 2,
                     "compute_cluster_name": "dev-cluster",
                     "created_at": "2021-01-02T00:00:00Z",
                     "created_by": "user",
+                    "finished_at": None,
+                    "steps": [
+                        {
+                            "name": "waiting",
+                            "label": "Waiting in queue",
+                            "status": "FINISHED",
+                            "started_at": "2021-01-02T00:00:00Z",
+                            "finished_at": "2021-01-02T00:00:04Z",
+                        },
+                        {
+                            "name": "downloading_files",
+                            "label": "Downloading files",
+                            "status": "FINISHED",
+                            "started_at": "2021-01-02T00:00:04Z",
+                            "finished_at": "2021-01-02T01:05:04Z",
+                        },
+                        {
+                            "name": "dw_wake_up",
+                            "label": "Waking up data warehouse",
+                            "status": "FINISHED",
+                            "started_at": None,
+                            "finished_at": None,
+                        },
+                        {
+                            "name": "virtualenv",
+                            "label": "Installing dependencies",
+                            "status": "FINISHED",
+                            "started_at": "2021-01-02T01:05:04Z",
+                            "finished_at": "2021-01-02T01:07:34Z",
+                        },
+                        {
+                            "name": "running_query",
+                            "label": "Running query",
+                            "status": "STARTED",
+                            "started_at": "2021-01-02T01:07:34Z",
+                            "finished_at": None,
+                        },
+                    ],
                 },
             ],
         )
@@ -715,11 +764,21 @@ def test_studio_list_jobs(capsys):
         out = capsys.readouterr().out
         assert "Cluster" not in out
         assert "prod-cluster" not in out
+        assert "include_steps" not in m.last_request.qs
 
         assert main(["job", "ls", "--extended"]) == 0
         out = capsys.readouterr().out
-        assert "Cluster" in out
-        assert "prod-cluster" in out
+
+    assert "Cluster" in out
+    assert "prod-cluster" in out
+    assert m.last_request.qs["include_steps"] == ["true"]
+    assert "Waiting in queue: 4s" in out
+    assert "Downloading files: 1h 5m" in out
+    assert "Installing dependencies: 2m 30s" in out
+    assert "Running query: running" in out
+    # A stage with no start, and a stopped job's open stage, were never timed.
+    assert "Waking up data warehouse: -" in out
+    assert "Waiting in queue: -" in out
 
 
 def test_studio_cancel_job(capsys, mocker):
