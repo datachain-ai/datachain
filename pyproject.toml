@@ -8,7 +8,7 @@ description = "Wrangle unstructured AI data at scale"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-authors = [{ name = "Dmitry Petrov", email = "support@dvc.org" }]
+authors = [{name = "Dmitry Petrov", email = "support@dvc.org"}]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
