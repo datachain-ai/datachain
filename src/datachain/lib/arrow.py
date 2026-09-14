@@ -96,9 +96,13 @@ class ArrowGenerator(Generator):
         self.nrows = nrows
         self.parse_options = kwargs.pop("parse_options", None)
         self.kwargs = kwargs
+        self._identity_hash = self._calculate_identity_hash()
 
     def identity_hash(self) -> str:
-        """Return a stable identity for supported Arrow constructor values."""
+        """Return the identity calculated from this generator's constructor values."""
+        return self._identity_hash
+
+    def _calculate_identity_hash(self) -> str:
         input_schema = self.input_schema
         if input_schema is not None:
             input_schema = input_schema.serialize().to_pybytes()

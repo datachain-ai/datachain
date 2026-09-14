@@ -74,6 +74,7 @@ def test_arrow_generator_constructor_hash_with_closure_handler():
     comments = make_generator("#")
     metadata = make_generator("!")
 
+    assert comments.identity_hash() == comments.identity_hash()
     assert comments.identity_hash() != metadata.identity_hash()
 
 
