@@ -468,6 +468,46 @@ def test_class_udf_hashes_pydantic_class_arg(first_arg, second_arg, matches, cap
     assert "cache reuse across UDF instances is disabled" not in caplog.text
 
 
+class _DictSubclass(dict):
+    def __init__(self, tag):
+        super().__init__()
+        self.tag = tag
+
+
+class _ListSubclass(list):
+    def __init__(self, tag):
+        super().__init__()
+        self.tag = tag
+
+
+class _TupleSubclass(tuple):
+    __slots__ = ("tag",)
+
+    def __new__(cls, tag):
+        inst = super().__new__(cls)
+        inst.tag = tag
+        return inst
+
+
+@pytest.mark.parametrize(
+    "make",
+    [_DictSubclass, _ListSubclass, _TupleSubclass],
+    ids=["dict", "list", "tuple"],
+)
+def test_class_udf_hash_distinguishes_container_subclasses(make):
+    class Take(Mapper):
+        def __init__(self, cfg):
+            self.cfg = cfg
+
+        def process(self, x: int) -> int:
+            return x
+
+    first = Take(make("a"))
+    second = Take(make("b"))
+
+    assert first._constructor_identity_hash != second._constructor_identity_hash
+
+
 def test_class_udf_hash_survives_subclass_custom_new():
     class Custom(Mapper):
         def __new__(cls, limit):

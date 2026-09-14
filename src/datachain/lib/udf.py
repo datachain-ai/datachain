@@ -233,11 +233,11 @@ def _normalize_pydantic_in_args(value: Any) -> Any:
         custom_types: dict[str, Any] = {}
         type_name = SignalSchema._serialize_type(value, custom_types)
         return {"__pydantic_class__": type_name, "__custom_types__": custom_types}
-    if isinstance(value, dict):
+    if type(value) is dict:
         return {k: _normalize_pydantic_in_args(v) for k, v in value.items()}
-    if isinstance(value, list):
+    if type(value) is list:
         return [_normalize_pydantic_in_args(v) for v in value]
-    if isinstance(value, tuple):
+    if type(value) is tuple:
         return tuple(_normalize_pydantic_in_args(v) for v in value)
     return value
 
