@@ -35,7 +35,7 @@ from sqlalchemy.sql.elements import BinaryExpression, Grouping, Label
 from datachain import json
 from datachain.func import literal
 from datachain.func.func import Func
-from datachain.lib.convert.flatten import is_optional_model
+from datachain.lib.convert.flatten import is_optional_model, iter_flat_columns
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.convert.sql_to_python import sql_to_python
 from datachain.lib.convert.unflatten import (
@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     from collections.abc import MutableMapping
 
     from datachain.catalog import Catalog
+    from datachain.dataset import RowDict
 
 
 logger = logging.getLogger(__name__)
@@ -626,26 +627,25 @@ class SignalSchema:
                 res[db_name] = self._db_leaf_sql_type(path, type_)
         return res
 
-    def row_to_objs(self, row: Sequence[Any]) -> list[Any]:
+    def row_to_objs(self, row_dict: "RowDict") -> list[Any]:
         self._init_setup_values()
 
         objs: list[Any] = []
-        pos = 0
         for name, fr_type in self.values.items():
             inner_type, is_optional = unwrap_optional(fr_type)
             if self.setup_values and name in self.setup_values:
                 objs.append(self.setup_values.get(name))
             elif (fr := ModelStore.to_pydantic(inner_type)) is not None:
-                obj, pos = self._hydrate_model(fr, is_optional, row, pos, label=name)
+                row = self._model_row_values(name, fr, is_optional, row_dict)
+                obj, _ = self._hydrate_model(fr, is_optional, row, 0, label=name)
                 objs.append(obj)
             else:
-                value = row[pos]
+                value = row_dict[DEFAULT_DELIMITER.join(name.split("."))]
                 if self._row_conversion_required[name]:
                     value = self._convert_feature_value(
                         fr_type, value, catalog=None, cache=False
                     )
                 objs.append(value)
-                pos += 1
         return objs
 
     def set_file_streams(
@@ -756,6 +756,38 @@ class SignalSchema:
         return fields
 
     @staticmethod
+    def _model_row_values(
+        name: str,
+        model_type: type[BaseModel],
+        is_optional: bool,
+        row_dict: "RowDict",
+    ) -> list[Any]:
+        """Pull one model's flat column values out of ``row_dict``.
+
+        Returns the values in the order ``_hydrate_model`` will consume
+        them: the ``_type_tag`` sentinel first when the field is Optional,
+        then one value per leaf column in the model's declared field order.
+
+        For a schema ``{"fr": MyModel}`` where ``MyModel`` has ``name: str``
+        and ``deep: Nested`` with ``Nested.value: int``, this reads keys
+        ``fr__name`` and ``fr__deep__value`` from ``row_dict`` and returns
+        ``[row_dict["fr__name"], row_dict["fr__deep__value"]]``.
+        """
+        parts = name.split(".")
+        result = []
+        if is_optional:
+            db_name = DEFAULT_DELIMITER.join(
+                [*parts, SignalSchema._OPTIONAL_SENTINEL_FIELD]
+            )
+            result.append(row_dict[db_name])
+        for col in iter_flat_columns(model_type):
+            path = [*parts, *col.path]
+            if col.is_sentinel:
+                path.append(SignalSchema._OPTIONAL_SENTINEL_FIELD)
+            result.append(row_dict[DEFAULT_DELIMITER.join(path)])
+        return result
+
+    @staticmethod
     def _all_values_none(value: Any) -> bool:
         if isinstance(value, dict):
             return all(SignalSchema._all_values_none(v) for v in value.values())
@@ -782,9 +814,7 @@ class SignalSchema:
         set_stream: bool = False,
         label: str = "",
     ) -> tuple[Any, int]:
-        """Build a (possibly optional) model instance from the flat row at ``pos``,
-        returning ``(obj_or_None, next_pos)``. An absent optional or an all-None row
-        yields None."""
+        """Build a model from the flat row and return it with the next position."""
         if is_optional:
             absent, pos = read_optional_sentinel(fr, row, pos)
             if absent:
