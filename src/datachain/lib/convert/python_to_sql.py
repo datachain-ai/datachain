@@ -2,7 +2,7 @@ import inspect
 from datetime import datetime
 from enum import Enum
 from types import UnionType
-from typing import Annotated, Literal, Union, get_args, get_origin
+from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel
 from typing_extensions import Literal as LiteralEx
@@ -26,6 +26,16 @@ from datachain.sql.types import (
     String,
 )
 
+
+class UnstorableTypeError(TypeError):
+    """No column type holds these values faithfully.
+
+    Distinct from a type simply not resolving: a heterogeneous tuple falls back
+    to JSON, but a refusal must not, or the values it refuses would be stored
+    lossily by the fallback instead.
+    """
+
+
 PYTHON_TO_SQL = {
     int: Int64,
     str: String,
@@ -46,7 +56,7 @@ def python_to_sql(typ):  # noqa: PLR0911
         if issubclass(typ, SQLType):
             return typ
         if issubclass(typ, Enum):
-            return str
+            return _enum_to_sql(typ)
 
     res = PYTHON_TO_SQL.get(typ)
     if res:
@@ -55,7 +65,7 @@ def python_to_sql(typ):  # noqa: PLR0911
     orig = get_origin(typ)
 
     if orig in (Literal, LiteralEx):
-        return String
+        return _values_to_sql(get_args(typ))
 
     args = get_args(typ)
     if is_sequence_annotation(typ):
@@ -73,8 +83,27 @@ def python_to_sql(typ):  # noqa: PLR0911
             non_none_arg = args[0] if args[0] is not type(None) else args[1]
             return python_to_sql(non_none_arg)
 
+        if all(get_origin(arg) in (Literal, LiteralEx) for arg in args):
+            # Literal[1] | Literal[2] holds the same values as Literal[1, 2] and
+            # has to reach the same column type.
+            return _values_to_sql(value for arg in args for value in get_args(arg))
+
         if all(arg is str or get_origin(arg) in (Literal, LiteralEx) for arg in args):
-            return String
+            literal_values = [
+                value for arg in args if arg is not str for value in get_args(arg)
+            ]
+            if str in args and any(
+                isinstance(value, Enum) and isinstance(value, str)
+                for value in literal_values
+            ):
+                # A bare str arm claims every string, the enum member's value
+                # among them; stored, Kind.A and "a" are the same and the member
+                # would come back as the plain string.
+                raise UnstorableTypeError(
+                    "Cannot store a str-valued enum member beside a bare str arm"
+                )
+            # A str arm contributes str; a Literal arm contributes its values.
+            return _values_to_sql([""] * (str in args) + literal_values)
 
         if _is_json_inside_union(orig, args):
             return JSON
@@ -82,8 +111,80 @@ def python_to_sql(typ):  # noqa: PLR0911
     raise TypeError(f"Cannot recognize type {typ}")
 
 
+def _enum_to_sql(typ: Any) -> Any:
+    """The column type an enum stores as.
+
+    Read from the primitive it mixes in rather than from iterating its members,
+    which a zero-only IntFlag has none of. A plain enum's member is not its value
+    and nothing converts it through .value here, so it has no column type at all;
+    raising is what lets an array fall back to JSON.
+    """
+    for primitive in (bool, int, float, str):
+        if issubclass(typ, primitive):
+            return PYTHON_TO_SQL[primitive]
+    raise UnstorableTypeError(f"Cannot store enum {typ!r}: its members are not values")
+
+
+def _values_to_sql(values) -> Any:
+    """The column type for a set of literal or enum values.
+
+    By the exact type of each value, so a bool is not taken for an int, and
+    ignoring None -- whether the column is nullable is decided separately.
+    Values of more than one storage category have no single column type between
+    them and are carried as JSON.
+    """
+    kinds: set[type] = set()
+    member_values: set = set()
+    raw_values: set = set()
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, Enum):
+            if not isinstance(value, (bool, int, float, str)):
+                # A plain enum member is not its value and nothing converts it
+                # through .value on the way to the column.
+                raise UnstorableTypeError(f"Cannot store enum member {value!r}")
+            member_values.add(value.value)
+            kinds.add(type(value.value))
+        else:
+            raw_values.add(value)
+            kinds.add(type(value))
+
+    collisions = sorted(map(repr, member_values & raw_values))
+
+    if collisions:
+        # Stored, IntKind.ONE and 1 are the same value; reading cannot tell which
+        # was written, so the member would come back as the raw one. Members
+        # whose values nothing else claims are safe.
+        raise UnstorableTypeError(
+            f"Cannot store enum members beside the same raw values: {collisions}"
+        )
+    if not kinds:
+        # Nothing but None, so the column only ever holds NULL and any type
+        # would do; String is what it mapped to before.
+        return String
+    if len(kinds) != 1:
+        # No column type holds both faithfully, and JSON does not either: it
+        # cannot tell a stored "1" from the number, so refuse rather than
+        # corrupt one of the arms.
+        raise UnstorableTypeError(
+            f"Cannot resolve values {sorted(map(str, kinds))} to one type"
+        )
+    sql_type = PYTHON_TO_SQL.get(kinds.pop())
+    if sql_type is None:
+        raise UnstorableTypeError("Cannot resolve these values to a column type")
+    return sql_type
+
+
 def _list_to_array(typ, args):
     if args is None:
+        raise TypeError(f"Cannot resolve type '{typ}' for flattening features")
+    if get_origin(typ) is tuple and len(args) == 2 and args[1] is Ellipsis:
+        # tuple[T, ...] is a homogeneous tuple: the Ellipsis marks variable
+        # length rather than naming a second element type. Anywhere else it is
+        # not valid, and stays unresolvable.
+        args = args[:1]
+    if not args:
         raise TypeError(f"Cannot resolve type '{typ}' for flattening features")
     args0 = args[0]
     if ModelStore.is_pydantic(args0):
@@ -100,14 +201,19 @@ def _list_to_array(typ, args):
 
 def list_of_args_to_type(args) -> SQLType:
     first_type = python_to_sql(args[0])
+    heterogeneous = False
     for next_arg in args[1:]:
+        # Every slot is resolved even once the answer is known to be JSON: a
+        # later one may be refused outright, and returning early would store it
+        # lossily through the fallback instead.
         try:
-            next_type = python_to_sql(next_arg)
-            if next_type != first_type:
-                return JSON()
+            if python_to_sql(next_arg) != first_type:
+                heterogeneous = True
+        except UnstorableTypeError:
+            raise
         except TypeError:
-            return JSON()
-    return first_type
+            heterogeneous = True
+    return JSON() if heterogeneous else first_type
 
 
 def _is_json_inside_union(orig, args) -> bool:
