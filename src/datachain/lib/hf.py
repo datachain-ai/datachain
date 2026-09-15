@@ -105,9 +105,13 @@ class HFGenerator(Generator):
         self.limit = limit
         self.args = args
         self.kwargs = kwargs
+        self._identity_hash = self._calculate_identity_hash()
 
     def identity_hash(self) -> str:
         """Return a stable identity for the Hugging Face dataset configuration."""
+        return self._identity_hash
+
+    def _calculate_identity_hash(self) -> str:
         return _hash_constructor_args(
             {
                 "ds": _dataset_hash_args(self.ds),

@@ -1,5 +1,5 @@
 import pytest
-from datasets import Array2D, Dataset, DatasetDict, Sequence, Value
+from datasets import Array2D, Dataset, DatasetDict, DownloadConfig, Sequence, Value
 
 from datachain.lib.data_model import dict_to_data_model
 from datachain.lib.hf import (
@@ -26,6 +26,15 @@ def test_hf_generator_constructor_hash(as_dict):
 
     assert first.identity_hash() == second.identity_hash()
     assert first.identity_hash() != limited.identity_hash()
+
+
+def test_hf_generator_constructor_hash_with_unsupported_option():
+    schema = dict_to_data_model("Fixed", {"value": int})
+    first = HFGenerator("dataset-name", schema, download_config=DownloadConfig())
+    second = HFGenerator("dataset-name", schema, download_config=DownloadConfig())
+
+    assert first.identity_hash() == first.identity_hash()
+    assert first.identity_hash() != second.identity_hash()
 
 
 def test_hf():
