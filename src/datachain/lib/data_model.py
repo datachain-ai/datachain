@@ -329,9 +329,9 @@ def dict_to_data_model(
             return field_info
 
     # Derive a stable shape-based name if none provided, so two calls with the
-    # same fields produce classes that hash equal downstream.
+    # same ordered fields produce classes that hash equal downstream.
     if not name:
-        shape_repr = repr([(k, str(v[0])) for k, v in sorted(fields.items())])
+        shape_repr = repr([(k, str(v[0])) for k, v in fields.items()])
         name = f"DataModel_{hashlib.sha256(shape_repr.encode()).hexdigest()[:8]}"
 
     return create_model(
