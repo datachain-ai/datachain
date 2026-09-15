@@ -246,7 +246,7 @@ def test_class_udf_unsupported_constructor_value_disables_cache_reuse(caplog):
 
     assert udf_a.hash() == udf_a.hash()
     assert udf_a.hash() != udf_b.hash()
-    assert "cache reuse across UDF instances is disabled" in caplog.text
+    assert "automatic constructor identity is randomized" in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -336,7 +336,7 @@ def test_class_udf_identity_hash_overrides_opaque_constructor_fallback(
     udf_b = Mapper._create(sign_b, sign_b.output_schema)
 
     assert (udf_a.hash() == udf_b.hash()) is matches
-    assert "cache reuse across UDF instances is disabled" not in caplog.text
+    assert "automatic constructor identity is randomized" not in caplog.text
 
 
 def test_class_udf_identity_hash_replaces_automatic_constructor_hash():
@@ -465,7 +465,7 @@ def test_class_udf_hashes_pydantic_class_arg(first_arg, second_arg, matches, cap
     assert (
         first._constructor_identity_hash == second._constructor_identity_hash
     ) is matches
-    assert "cache reuse across UDF instances is disabled" not in caplog.text
+    assert "automatic constructor identity is randomized" not in caplog.text
 
 
 class _DictSubclass(dict):

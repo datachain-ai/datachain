@@ -242,17 +242,11 @@ def _normalize_pydantic_in_args(value: Any) -> Any:
     return value
 
 
-def _hash_constructor_args(
-    arguments: dict[str, Any], *, warn_on_unsupported: bool = True
-) -> str:
+def _hash_constructor_args(arguments: dict[str, Any]) -> str:
     try:
         return hash_value(_normalize_pydantic_in_args(arguments))
     except (TypeError, RecursionError) as exc:
-        if warn_on_unsupported:
-            logger.warning(
-                "%s; cache reuse across UDF instances is disabled",
-                exc,
-            )
+        logger.warning("%s; automatic constructor identity is randomized", exc)
         return hashlib.sha256(uuid4().bytes).hexdigest()
 
 
@@ -344,10 +338,7 @@ class UDFBase(AbstractUDF):
             return hashlib.sha256(uuid4().bytes).hexdigest()
 
         bound.apply_defaults()
-        return _hash_constructor_args(
-            dict(bound.arguments),
-            warn_on_unsupported=cls.hash is UDFBase.hash,
-        )
+        return _hash_constructor_args(dict(bound.arguments))
 
     def identity_hash(self) -> str:
         """Return a stable SHA-256 hash identifying this UDF instance for caching.

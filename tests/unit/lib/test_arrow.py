@@ -56,7 +56,7 @@ def test_arrow_generator_constructor_hash_with_partitioning(caplog):
 
     assert first.identity_hash() == second.identity_hash()
     assert first.identity_hash() != other.identity_hash()
-    assert "cache reuse across UDF instances is disabled" not in caplog.text
+    assert "automatic constructor identity is randomized" not in caplog.text
 
 
 def test_arrow_generator_constructor_hash_with_closure_handler():
