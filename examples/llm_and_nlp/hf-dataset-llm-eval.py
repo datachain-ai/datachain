@@ -65,7 +65,7 @@ def eval_dialog(
         "hf://datasets/infinite-dataset-hub/MobilePlanAssistant/data.csv", source=False
     )
     .settings(parallel=True)
-    .setup(client=lambda: InferenceClient(api_key=HF_TOKEN, provider="together"))
+    .setup(client=lambda: InferenceClient(api_key=HF_TOKEN, provider="groq"))
     .map(response=eval_dialog)
     .to_parquet("hf://datasets/dvcorg/test-datachain-llm-eval/data.parquet")
 )
