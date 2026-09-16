@@ -9,7 +9,7 @@ Any Python function works as an operation. The classes below are useful to imple
 operation where a plain function is insufficient, such as when additional `setup()` or `teardown()`
 steps need to happen before or after the processing function runs.
 
-## Cache identity
+## Cache identity of class-based operations
 
 DataChain hashes class operation code, schemas, and constructor arguments. Primitive
 values and nested built-in containers are handled automatically. Callables and custom

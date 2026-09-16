@@ -78,6 +78,22 @@ def test_arrow_generator_constructor_hash_with_closure_handler():
     assert comments.identity_hash() != metadata.identity_hash()
 
 
+def test_arrow_generator_process_record_does_not_mutate_kwargs():
+    csv_format = CsvFileFormat()
+    generator = ArrowGenerator(format=csv_format)
+
+    row = generator._process_record(
+        {"value": 1},
+        File(source="file:///tmp", path="example.csv"),
+        0,
+        None,
+        False,
+    )
+
+    assert generator.kwargs["format"] is csv_format
+    assert row[0].kwargs["format"] == "csv"
+
+
 @pytest.mark.parametrize("cache", [True, False])
 def test_arrow_generator(tmp_path, catalog, cache):
     ids = [12345, 67890, 34, 0xF0123]

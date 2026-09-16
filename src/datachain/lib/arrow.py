@@ -135,7 +135,7 @@ class ArrowGenerator(Generator):
         else:
             fs, fs_path = file.get_fs(), file.get_fs_path()
 
-        kwargs = self.kwargs
+        kwargs = self.kwargs.copy()
         if format := kwargs.get("format"):
             kwargs["format"] = fix_pyarrow_format(format, self.parse_options)
 
@@ -178,7 +178,7 @@ class ArrowGenerator(Generator):
             vals = self._process_non_datachain_record(record, hf_schema)
 
         if self.source:
-            kwargs: dict = self.kwargs
+            kwargs = self.kwargs.copy()
             # Can't serialize CsvFileFormat; may lose formatting options.
             if isinstance(kwargs.get("format"), CsvFileFormat):
                 kwargs["format"] = "csv"
