@@ -43,7 +43,10 @@ def eval_dialog(
             ],
             response_format={
                 "type": "json_schema",
-                "json_schema": {"schema": DialogEval.model_json_schema()},
+                "json_schema": {
+                    "name": "DialogEval",
+                    "schema": DialogEval.model_json_schema(),
+                },
             },
         )
     except HfHubHTTPError as e:
