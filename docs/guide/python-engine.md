@@ -158,8 +158,11 @@ from datachain.lib.udf import Mapper  # internal module name
 
 
 class ImageEncoder(Mapper):
+    def __init__(self, model_name: str):
+        self.model_name = model_name
+
     def setup(self):
-        self.model = load_model("ViT-B-32")
+        self.model = load_model(self.model_name)
 
     def process(self, file):
         return self.model.encode(file.read())
@@ -167,6 +170,13 @@ class ImageEncoder(Mapper):
     def teardown(self):
         del self.model
 ```
+
+The values you pass when creating a class-based operation, such as
+`ImageEncoder("ViT-B-32")`, are included in the hash DataChain uses to decide whether
+a checkpoint from a previous run can be reused. Changing a value causes the operation
+to recompute. If the class accepts callables or custom Python objects that DataChain
+cannot hash safely, see
+[custom cache identity](../references/udf.md#cache-identity-of-class-based-operations).
 
 Use class-based operations sparingly; `.setup()` covers most cases.
 
