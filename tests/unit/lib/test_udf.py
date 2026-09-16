@@ -480,9 +480,8 @@ class _ListSubclass(list):
         self.tag = tag
 
 
-class _TupleSubclass(tuple):
-    __slots__ = ("tag",)
-
+class _TupleSubclass(tuple):  # noqa: SLOT001
+    # This test needs state outside the tuple values; nonempty slots are unsupported.
     def __new__(cls, tag):
         inst = super().__new__(cls)
         inst.tag = tag
