@@ -10,7 +10,7 @@ import shutil
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterator, Sequence
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
 
@@ -42,6 +42,16 @@ DATA_SOURCE_URI_PATTERN = re.compile(r"^[\w]+:\/\/.*$")
 CLOUD_STORAGE_PROTOCOLS = {"s3", "gs", "az", "hf"}
 
 ResultQueue = asyncio.Queue[Sequence["File"] | None]
+
+
+def _format_etag(etag: str) -> str:
+    if etag.startswith(("0x", "-0x")):
+        try:
+            mtime = float.fromhex(etag)
+        except ValueError:
+            return etag
+        return datetime.fromtimestamp(mtime, timezone.utc).isoformat()
+    return etag
 
 
 def is_cloud_uri(uri: str) -> bool:
@@ -578,7 +588,10 @@ class Client(ABC):
             etag = await self.get_current_etag(file)
             if file.etag != etag:
                 raise FileNotFoundError(
-                    f"Invalid etag for {file.source}/{file.path}: "
-                    f"expected {file.etag}, got {etag}"
+                    f"{file.source}/{file.path} changed on the source since the "
+                    f"catalog was created (etag was {_format_etag(file.etag)}, now "
+                    f"{_format_etag(etag)}). "
+                    f"Run dc.read_storage('{file.source}', update=True) to refresh "
+                    f"the catalog."
                 )
         await self.cache.download(file, self, callback=callback)
