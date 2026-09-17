@@ -2500,8 +2500,8 @@ class AbstractDBMetastore(AbstractMetastore):
                 python_version=python_version,
                 error_message="",
                 error_stack="",
-                params=json.dumps(params or {}),
-                metrics=json.dumps({}),
+                params=params or {},
+                metrics={},
                 parent_job_id=parent_job_id,
                 rerun_from_job_id=rerun_from_job_id,
                 run_group_id=run_group_id,
@@ -2563,8 +2563,8 @@ class AbstractDBMetastore(AbstractMetastore):
             values["error_stack"] = error_stack
         if finished_at is not None:
             values["finished_at"] = finished_at
-        if metrics:
-            values["metrics"] = json.dumps(metrics)
+        if metrics is not None:
+            values["metrics"] = metrics
 
         if values:
             j = self._jobs
