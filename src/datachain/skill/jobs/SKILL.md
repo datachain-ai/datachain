@@ -16,6 +16,16 @@ triggers:
 
 You are now loaded with the datachain-jobs skill. Maintain a jobs analytics file at `dc-knowledge/jobs/index.md`. Follow the 3-step flow below exactly.
 
+## What Studio reports
+
+Two things are available, and the script fetches both. Know what is in them before telling a user something cannot be answered.
+
+**Clusters** (`--clusters`, and the `clusters` array of `--fetch`) — Studio's cluster payload unchanged, one entry per compute cluster: `id`, `uuid`, `name`, `status`, `cloud_provider`, `is_active`, `default`, `max_workers`, `active_workers`, `busy_workers`, and the cost-relevant `cloud_region`, `instance_type`, `compute_class`, `disk_size`, `job_quota`.
+
+**Jobs** (the `jobs` array of `--fetch`) — `id`, `name`, `status`, `created`, `created_by`, `finished`, `duration_seconds`/`duration_str`, `workers`, `cluster_name`, `python_version`. With `--enrich` each terminal job also carries `cluster_uuid` (joins to a cluster's `uuid`) and `stages`, a `{stage name: seconds}` map behind `queue_seconds` and `run_seconds`. The stages a job can have are `waiting`, `requesting_workers`, `preparation`, `virtualenv`, `downloading_files`, `dw_wake_up`, `running_query` — which ones it actually has depends on when it ran and how far it got.
+
+A null anywhere means Studio did not report it, never zero. The script's module docstring (`{skill_dir}/scripts/jobs.py`) is the authoritative field list.
+
 ---
 
 ## Step 1 — Check Staleness
@@ -37,7 +47,7 @@ python3 {skill_dir}/scripts/jobs.py --fetch [--days N] [--limit N] [--enrich]
 ```
 
 - Use `--days N` from the user's request if stated (e.g. "last 7 days" → `--days 7`). Default: `--days 30`.
-- Add `--enrich` only when the question requires duration, workers, or cluster data AND `enriched: false` in an existing index — tell the user it makes one API call per terminal job.
+- Add `--enrich` only when the question requires duration, workers, cluster, or stage timings AND `enriched: false` in an existing index — tell the user it makes one API call per terminal job.
 - If the script fails → report the error and stop.
 
 Write `dc-knowledge/jobs/index.md` using EXACTLY this format:
@@ -53,6 +63,7 @@ running_count: <running_count>
 other_count: <other_count>
 enriched: <true|false>
 duration_note: "Wall-clock duration (submit→finish). Null when enriched=false or job still running."
+stage_note: "Queue/Run come from job stages. Null when enriched=false, or when the job never reached that stage."
 truncated: <true|false>
 ---
 
@@ -60,20 +71,21 @@ truncated: <true|false>
 
 | Name | Cloud | Region | Instance Type | Compute Class | Disk | Job Quota | Max Workers | Default |
 |------|-------|--------|---------------|---------------|------|-----------|-------------|---------|
-| <name> | <cloud_provider> | <cloud_region or —> | <instance_type or —> | <compute_class or —> | <disk_size or —> | <job_quota or —> | <max_workers> | <yes if is_default else no> |
+| <name> | <cloud_provider> | <cloud_region or —> | <instance_type or —> | <compute_class or —> | <disk_size or —> | <job_quota or —> | <max_workers> | <yes if default else no> |
 
 ## Jobs
 
-| Date | ID | Name | Status | User | Workers | Duration | Cluster | Python |
-|------|----|------|--------|------|---------|----------|---------|--------|
-| <created_display> | <id> | <name> | <status> | <created_by> | <workers> | <duration_str or —> | <cluster_name or —> | <python_version or —> |
+| Date | ID | Name | Status | User | Workers | Duration | Queue | Run | Cluster | Python |
+|------|----|------|--------|------|---------|----------|-------|-----|---------|--------|
+| <created_display> | <id> | <name> | <status> | <created_by> | <workers> | <duration_str or —> | <queue_seconds as Ns, or —> | <run_seconds as Ns, or —> | <cluster_name or —> | <python_version or —> |
 ```
 
 **Section rules:**
 - Omit `## Clusters` if the `clusters` array is empty.
 - Cluster cells: use `—` when a field is null. A null instance type or region means Studio has no record of it, not that the cluster lacks one.
-- Job Quota is the configured cap on worker Jobs in the cluster's namespace — a limit on workers, which the cluster reports back as Max Workers. It is not a number of jobs per worker.
+- Job Quota is the configured limit on the cluster's workers, which the cluster reports live as Max Workers. It is not a number of jobs each worker runs.
 - Duration cell: `duration_str` value (e.g. `"9000s"`) when known, `—` when null.
+- Queue and Run: `queue_seconds` and `run_seconds` written as `Ns` (e.g. `4s`), `—` when null. They come from the job's stages, so they are `—` unless `enriched: true`. Duration covers everything from submit to finish, so Queue + Run is normally less than it — the difference is setup (`preparation`, `virtualenv`, `downloading_files`, `dw_wake_up`).
 - Workers: always a number (`workers` field, defaults to 1).
 - Cluster, Python: use `—` when null.
 - Date column: `created_display` (`YYYY-MM-DD HH:MM` UTC).
@@ -90,6 +102,13 @@ Read `dc-knowledge/jobs/index.md` and answer the user's question.
 Duration cells contain plain seconds strings like `"9000s"`. Parse the integer before `s`, sum, then convert:
 - Example: filter rows for user "alice" in the last 7 days, sum all Duration values → total seconds → divide by 3600 for hours.
 - If all Duration cells are `—` (enriched: false) → say: "Duration data requires enrichment. Re-fetch with: `python3 {skill_dir}/scripts/jobs.py --fetch --enrich`" and offer to do so.
+
+### Stage breakdown — where the time went
+The Queue and Run columns split a job's wall clock: `waiting` before it started, `running_query` doing the work. The remainder is setup.
+- "How long do jobs wait?" → sum or average the Queue column. A queue that rivals Run means the cluster is at its worker cap, not that jobs are slow.
+- "Why is this job slow?" → compare Queue, Run, and `Duration − Queue − Run` (setup: dependency installs, file downloads, warehouse wake-up).
+- All `—` → the index is not enriched. Say so and offer: `python3 {skill_dir}/scripts/jobs.py --fetch --enrich`.
+- For a finer split than Queue/Run, read the `stages` map from the script output directly rather than the index.
 
 ### Failure rate
 - Overall: `failed_count / total_jobs * 100` from frontmatter.

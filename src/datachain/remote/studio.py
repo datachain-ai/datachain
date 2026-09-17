@@ -9,7 +9,7 @@ from urllib.parse import urlparse, urlunparse
 
 import websockets
 from requests.exceptions import HTTPError, Timeout
-from typing_extensions import NotRequired, TypedDict
+from typing_extensions import TypedDict
 
 from datachain.config import Config
 from datachain.dataset import DatasetRecord
@@ -31,27 +31,26 @@ JobListData = list[dict[str, Any]]
 class ClusterData(TypedDict):
     """A compute cluster as Studio reports it.
 
-    Every field but the identity ones is NotRequired: an older Studio omits the
-    ones it does not know about, and the cloud details are null on a cluster whose
-    Helm values leave them to the chart.
+    The nullable fields are null on a cluster that does not configure them - null is
+    "not set", never zero.
     """
 
     id: int
-    uuid: NotRequired[str]
+    uuid: str
     name: str
     status: str
-    cloud_provider: NotRequired[str]
-    cloud_credentials: NotRequired[str | None]
-    is_active: NotRequired[bool]
-    default: NotRequired[bool]
-    max_workers: NotRequired[int]
-    active_workers: NotRequired[int]
-    busy_workers: NotRequired[int]
-    cloud_region: NotRequired[str | None]
-    instance_type: NotRequired[str | None]
-    compute_class: NotRequired[str | None]
-    disk_size: NotRequired[str | None]
-    job_quota: NotRequired[int | None]
+    cloud_provider: str
+    cloud_credentials: str | None
+    is_active: bool
+    default: bool
+    max_workers: int
+    active_workers: int
+    busy_workers: int
+    cloud_region: str | None
+    instance_type: str | None
+    compute_class: str | None
+    disk_size: str | None
+    job_quota: int | None
 
 
 ClusterListData = list[ClusterData]
@@ -550,6 +549,21 @@ class StudioClient:
         job_id: str | None = None,
         include_steps: bool = False,
     ) -> Response[JobListData]:
+        """The team's jobs, newest first, or one job when `job_id` is given.
+
+        Each job carries `id`, `name`, `status`, `created_at`, `created_by`,
+        `finished_at`, `workers`, `python_version`, `query`, `exit_code`,
+        `error_message`, `metrics`, and the cluster it ran on as
+        `compute_cluster_id`, `compute_cluster_uuid` (joins to a cluster's `uuid`)
+        and `compute_cluster_name`.
+
+        `include_steps` fills `steps` with the job's stages - `waiting`,
+        `requesting_workers`, `preparation`, `virtualenv`, `downloading_files`,
+        `dw_wake_up`, `running_query` - each with a `status`, `started_at` and
+        `finished_at`, which is how long a job spent queued as against running.
+        Without it `steps` is null; with it, a stage missing from the list means the
+        job never reached it, and one with no `finished_at` was still in it.
+        """
         params: dict[str, Any] = {"limit": limit}
         if status is not None:
             params["status"] = status
@@ -567,6 +581,13 @@ class StudioClient:
         return self._send_request(url, data={}, method="POST")
 
     def get_clusters(self) -> Response[ClusterListData]:
+        """The team's compute clusters, retired ones excluded.
+
+        See `ClusterData` for the fields. `uuid` is what a job's
+        `compute_cluster_uuid` points at, and `cloud_region`, `instance_type`,
+        `compute_class` and `disk_size` describe the machine a worker runs on, for
+        anything pricing a cluster.
+        """
         return self._send_request("datachain/clusters/", {}, method="GET")
 
     # Pipeline API

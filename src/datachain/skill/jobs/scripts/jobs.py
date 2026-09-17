@@ -5,12 +5,41 @@ Usage:
     python3 jobs.py --fetch [--days N] [--limit N]  # JSON: fetch jobs from Studio
     python3 jobs.py --fetch --enrich                # also fetch per-job details
     python3 jobs.py --clusters                      # JSON: list available clusters
+
+Output shapes
+-------------
+`--clusters` prints `{"clusters": [...]}`; `--fetch` prints the same list under
+`"clusters"` alongside `"jobs"` and the counts the index frontmatter records.
+
+Clusters are Studio's payload unchanged - `ClusterData` in
+`datachain.remote.studio` is the model, and these are the fields that matter here:
+    id, uuid            uuid is what a job's cluster_uuid points at
+    name, status, cloud_provider, is_active, default
+    cloud_region        where it runs, e.g. us-west-2
+    instance_type       machine type or family, e.g. m5.xlarge
+    compute_class       node class, e.g. Performance or gpu - NOT spot vs on-demand
+    disk_size           disk a worker gets, e.g. 100Gi
+    job_quota           configured limit on the cluster's workers
+    max_workers         the live value of that limit, as the cluster reports it
+
+Each job carries:
+    id, name, status, created, created_display, created_by, finished
+    duration_seconds    wall clock, submit to finish; null while running
+    duration_str        the same as "9000s"
+    workers             machines the job asked for, 1 when unreported
+    cluster_name        the cluster it ran on
+    cluster_uuid        joins to a cluster's uuid; --enrich only
+    python_version
+    stages              {stage name: seconds}; --enrich only, {} otherwise
+    queue_seconds       time in the `waiting` stage; null when unknown
+    run_seconds         time in the `running_query` stage; null when unknown
+
+A null is always "Studio did not report it", never zero.
 """
 
 import argparse
 import json
 import sys
-from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -118,30 +147,6 @@ def cmd_plan():
     print(json.dumps(result))
 
 
-def _cluster_entry(c: Mapping[str, Any]) -> dict:
-    """Flatten a Studio cluster, keeping what a cost estimate needs.
-
-    The machine and its region are what a price list is keyed on. job_quota is the
-    configured cap on worker Jobs in the cluster's namespace, which the cluster
-    reports back as max_workers. Older Studio versions omit these, so they come
-    back null rather than missing.
-    """
-    return {
-        "id": c.get("id"),
-        "uuid": c.get("uuid"),
-        "name": c.get("name"),
-        "cloud_provider": c.get("cloud_provider"),
-        "cloud_region": c.get("cloud_region"),
-        "instance_type": c.get("instance_type"),
-        "compute_class": c.get("compute_class"),
-        "disk_size": c.get("disk_size"),
-        "job_quota": c.get("job_quota"),
-        "max_workers": c.get("max_workers"),
-        "is_active": c.get("is_active", True),
-        "is_default": c.get("default", False),
-    }
-
-
 def cmd_clusters():
     """List available Studio clusters."""
     from datachain.remote.studio import StudioClient
@@ -155,9 +160,29 @@ def cmd_clusters():
         )
         sys.exit(1)
 
-    clusters = [_cluster_entry(c) for c in response.data or []]
+    # Studio's cluster payload as-is - see ClusterData in datachain.remote.studio.
+    print(json.dumps({"clusters": list(response.data or [])}))
 
-    print(json.dumps({"clusters": clusters}))
+
+def _stage_seconds(steps) -> dict:
+    """Seconds spent in each job stage, keyed by stage name.
+
+    Stages come from Studio only when asked for, and a job carries only the ones it
+    reached - `waiting`, `requesting_workers`, `preparation`, `virtualenv`,
+    `downloading_files`, `dw_wake_up`, `running_query`. A stage with no end (still
+    running, or a job that stopped mid-stage) is left out rather than counted as 0.
+    """
+    stages = {}
+    for step in steps or []:
+        started = _parse_dt(step.get("started_at"))
+        finished = _parse_dt(step.get("finished_at"))
+        name = step.get("name")
+        if not name or not started or not finished:
+            continue
+        seconds = int((finished - started).total_seconds())
+        if seconds >= 0:
+            stages[name] = seconds
+    return stages
 
 
 def _enrich_job(client, job: dict) -> dict:
@@ -166,7 +191,7 @@ def _enrich_job(client, job: dict) -> dict:
     if not job_id:
         return job
     try:
-        response = client.get_jobs(job_id=job_id)
+        response = client.get_jobs(job_id=job_id, include_steps=True)
         if response.ok and response.data and len(response.data) > 0:
             detail = response.data[0]
             # Merge fields that may be richer in the per-job response
@@ -177,6 +202,8 @@ def _enrich_job(client, job: dict) -> dict:
                 "cluster",
                 "compute_cluster_name",
                 "cluster_name",
+                "compute_cluster_uuid",
+                "steps",
             ):
                 if detail.get(field) is not None:
                     job[field] = detail[field]
@@ -200,7 +227,7 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
         cr = client.get_clusters()
         if cr.ok:
             for c in cr.data or []:
-                clusters_list.append(_cluster_entry(c))
+                clusters_list.append(dict(c))
                 if c.get("id"):
                     clusters_by_id[c["id"]] = c.get("name", c["id"])
                 if c.get("name"):
@@ -285,6 +312,9 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
             created_dt.strftime("%Y-%m-%d %H:%M") if created_dt else j.get("created_at")
         )
 
+        # Empty unless --enrich asked Studio for the job's stages.
+        stages = _stage_seconds(j.get("steps"))
+
         jobs_out.append(
             {
                 "id": job_id,
@@ -300,7 +330,11 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
                 else None,
                 "workers": j.get("workers") or 1,
                 "cluster_name": cluster_name,
+                "cluster_uuid": j.get("compute_cluster_uuid"),
                 "python_version": j.get("python_version"),
+                "stages": stages,
+                "queue_seconds": stages.get("waiting"),
+                "run_seconds": stages.get("running_query"),
             }
         )
 

@@ -238,5 +238,5 @@ def add_jobs_parser(subparsers, parent_parser) -> None:
         "--json",
         action="store_true",
         default=False,
-        help="Print Studio's cluster payload as JSON, including each cluster's UUID",
+        help="Print Studio's cluster payload as JSON",
     )

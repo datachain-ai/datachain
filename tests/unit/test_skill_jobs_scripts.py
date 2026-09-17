@@ -12,10 +12,10 @@ if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
 from jobs import (  # noqa: E402
-    _cluster_entry,
     _duration_str,
     _normalize_status,
     _parse_dt,
+    _stage_seconds,
     _strip_ordinal,
 )
 
@@ -112,49 +112,45 @@ class TestJobsReadFrontmatter:
         assert jobs_fm(str(p)) == read_frontmatter(str(p))
 
 
-class TestClusterEntry:
-    def test_keeps_what_a_cost_estimate_needs(self):
-        entry = _cluster_entry(
-            {
-                "id": 1,
-                "uuid": "550e8400-e29b-41d4-a716-446655440000",
-                "name": "prod-cluster",
-                "cloud_provider": "AWS",
-                "cloud_region": "us-west-2",
-                "instance_type": "m5.xlarge",
-                "compute_class": "Performance",
-                "disk_size": "100Gi",
-                "job_quota": 4,
-                "max_workers": 8,
-                "default": True,
-            }
+class TestStageSeconds:
+    def test_seconds_per_stage(self):
+        stages = _stage_seconds(
+            [
+                {
+                    "name": "waiting",
+                    "started_at": "2026-09-16T00:00:00Z",
+                    "finished_at": "2026-09-16T00:00:30Z",
+                },
+                {
+                    "name": "running_query",
+                    "started_at": "2026-09-16T00:02:30Z",
+                    "finished_at": "2026-09-16T00:20:00Z",
+                },
+            ]
         )
 
-        assert entry == {
-            "id": 1,
-            "uuid": "550e8400-e29b-41d4-a716-446655440000",
-            "name": "prod-cluster",
-            "cloud_provider": "AWS",
-            "cloud_region": "us-west-2",
-            "instance_type": "m5.xlarge",
-            "compute_class": "Performance",
-            "disk_size": "100Gi",
-            "job_quota": 4,
-            "max_workers": 8,
-            "is_active": True,
-            "is_default": True,
-        }
+        assert stages == {"waiting": 30, "running_query": 1050}
 
-    def test_older_studio_reports_nulls(self):
-        """Absent, not zero: a rate lookup has to ask rather than guess."""
-        entry = _cluster_entry(
-            {"id": 1, "name": "old-cluster", "cloud_provider": "AWS"}
+    def test_open_stage_is_left_out(self):
+        """Still running, or a job that stopped mid-stage: not a zero-length stage."""
+        stages = _stage_seconds(
+            [
+                {
+                    "name": "waiting",
+                    "started_at": "2026-09-16T00:00:00Z",
+                    "finished_at": "2026-09-16T00:00:30Z",
+                },
+                {
+                    "name": "running_query",
+                    "started_at": "2026-09-16T00:02:30Z",
+                    "finished_at": None,
+                },
+            ]
         )
 
-        assert entry["instance_type"] is None
-        assert entry["cloud_region"] is None
-        assert entry["compute_class"] is None
-        assert entry["disk_size"] is None
-        assert entry["job_quota"] is None
-        assert entry["uuid"] is None
-        assert entry["is_default"] is False
+        assert stages == {"waiting": 30}
+
+    def test_no_steps(self):
+        """What a job carries without --enrich."""
+        assert _stage_seconds(None) == {}
+        assert _stage_seconds([]) == {}

@@ -823,7 +823,7 @@ def _cluster_workers(cluster: "ClusterData") -> str:
         cluster.get("active_workers"),
         cluster.get("max_workers"),
     )
-    return "/".join("?" if count is None else str(count) for count in counts)
+    return "/".join("-" if count is None else str(count) for count in counts)
 
 
 def list_clusters(team_name: str | None, as_json: bool = False):
@@ -834,7 +834,7 @@ def list_clusters(team_name: str | None, as_json: bool = False):
 
     clusters = response.data or []
     if as_json:
-        # Studio's payload verbatim: what a cost calculation reads, uuid included.
+        # Studio's payload verbatim: what a cost calculation reads.
         print(json.dumps(clusters, indent=2))
         return
 

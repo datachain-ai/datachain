@@ -31,7 +31,7 @@ This command runs a job in Studio using the specified query file. You can config
 * `--team TEAM` - Team to run job for (default: from config)
 * `--env-file ENV_FILE` - File with environment variables for the job
 * `--env ENV` - Environment variables in KEY=VALUE format
-* `--cluster CLUSTER` - Compute cluster to run the job on
+* `--cluster CLUSTER` - Name of the compute cluster to run the job on, as [`datachain job clusters`](clusters.md) lists it. Omit it to use the team's default cluster
 * `--credentials-name CREDENTIALS_NAME` - Name of the credentials to use for the job
 * `--workers WORKERS` - Number of workers for the job
 * `--files FILES` - Additional files to include in the job
@@ -103,10 +103,10 @@ datachain job run --priority 2 query.py
 
 8. Run a job in a specific cluster
 ```bash
-# Get the cluster id using following command
+# Find an active cluster and note its name
 datachain job clusters
-# Use the id  of an active clusters from above
-datachain job run --cluster 1 query.py
+# Pass that name - not its ID
+datachain job run --cluster prod-cluster query.py
 ```
 
 9. Run a job with specific credentials
@@ -168,7 +168,7 @@ datachain job run query.py --no-follow
 * Closing the logs command (e.g., with Ctrl+C) will only stop displaying the logs but will not cancel the job execution
 * To cancel a running job, use the `datachain job cancel` command
 * The job will continue running in Studio even after you stop viewing the logs
-* You can get the list of compute clusters using `datachain job clusters` command.
+* You can get the list of compute clusters, with the machine and capacity of each, using the [`datachain job clusters`](clusters.md) command. `--cluster` takes a cluster's name
 * When using `--start-time` or `--cron` options, the job is scheduled as a task and will not show logs immediately. The job will be executed according to the schedule.
 * The `--start-time` option supports natural language parsing using the [dateparser](https://dateparser.readthedocs.io/en/latest/) library, allowing flexible time expressions like "tomorrow 3pm", "in 2 hours", "monday 9am", etc.
 * Cron expressions follow the standard format: minute hour day-of-month month day-of-week (e.g., "0 0 * * *" for daily at midnight) or Vixie cron-style “@” keyword expressions.

@@ -819,20 +819,20 @@ def test_studio_clusters_shows_what_a_worker_costs(capsys, studio_token):
     assert "Job Quota" in out
 
 
-def test_studio_clusters_without_the_pricing_fields(capsys, studio_token):
-    """A Studio too old to report them: the columns hold dashes, nothing breaks."""
+def test_studio_clusters_unset_fields_read_as_dashes(capsys, studio_token):
+    """A cluster that configures none of them. A dash is "not set", never zero."""
     with requests_mock.mock() as m:
         m.get(
             f"{STUDIO_URL}/api/datachain/clusters/",
             json=[
                 {
-                    "id": 1,
-                    "name": "old-cluster",
-                    "status": "ACTIVE",
-                    "cloud_provider": "AWS",
-                    "is_active": True,
-                    "default": False,
-                    "max_workers": 8,
+                    **CLUSTER_WITH_PRICING,
+                    "name": "plain-cluster",
+                    "cloud_region": None,
+                    "instance_type": None,
+                    "compute_class": None,
+                    "disk_size": None,
+                    "job_quota": None,
                 }
             ],
         )
@@ -840,13 +840,14 @@ def test_studio_clusters_without_the_pricing_fields(capsys, studio_token):
         assert main(["job", "clusters"]) == 0
 
     out = capsys.readouterr().out
-    assert "old-cluster" in out
-    # The counts it does not report read as unknown, not as zero.
-    assert "?/?/8" in out
+    assert "plain-cluster" in out
+    assert "us-west-2" not in out
+    # The counts are still reported, so they are still numbers.
+    assert "2/4/8" in out
 
 
-def test_studio_clusters_json_is_studios_payload(capsys, studio_token):
-    """What a cost calculation reads, uuid included."""
+def test_studio_clusters_json_prints_the_server_response(capsys, studio_token):
+    """`--json` prints what Studio returned, unchanged."""
     with requests_mock.mock() as m:
         m.get(f"{STUDIO_URL}/api/datachain/clusters/", json=[CLUSTER_WITH_PRICING])
 
