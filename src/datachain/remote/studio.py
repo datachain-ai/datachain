@@ -47,7 +47,6 @@ class ClusterData(TypedDict):
     max_workers: NotRequired[int]
     active_workers: NotRequired[int]
     busy_workers: NotRequired[int]
-    # What a worker costs: the machine, where it runs, and how many jobs share it.
     cloud_region: NotRequired[str | None]
     instance_type: NotRequired[str | None]
     compute_class: NotRequired[str | None]
