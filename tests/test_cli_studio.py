@@ -781,6 +781,89 @@ def test_studio_list_jobs(capsys):
     assert "Waiting in queue: -" in out
 
 
+CLUSTER_WITH_PRICING = {
+    "id": 1,
+    "uuid": "550e8400-e29b-41d4-a716-446655440000",
+    "name": "prod-cluster",
+    "status": "ACTIVE",
+    "cloud_provider": "AWS",
+    "cloud_credentials": "aws-creds",
+    "is_active": True,
+    "default": True,
+    "max_workers": 8,
+    "active_workers": 4,
+    "busy_workers": 2,
+    "cloud_region": "us-west-2",
+    "instance_type": "m5.xlarge",
+    "compute_class": "spot",
+    "disk_size": "100Gi",
+    "job_quota": 4,
+}
+
+
+def test_studio_clusters_shows_what_a_worker_costs(capsys, studio_token):
+    """The machine, where it runs, and how many jobs share it: what a rate needs."""
+    with requests_mock.mock() as m:
+        m.get(f"{STUDIO_URL}/api/datachain/clusters/", json=[CLUSTER_WITH_PRICING])
+
+        assert main(["job", "clusters"]) == 0
+
+    out = capsys.readouterr().out
+    assert "prod-cluster" in out
+    assert "us-west-2" in out
+    assert "m5.xlarge" in out
+    assert "spot" in out
+    assert "100Gi" in out
+    # busy/active/max, so capacity reads as one column.
+    assert "2/4/8" in out
+    assert "Jobs/Worker" in out
+
+
+def test_studio_clusters_without_the_pricing_fields(capsys, studio_token):
+    """A Studio too old to report them: the columns hold dashes, nothing breaks."""
+    with requests_mock.mock() as m:
+        m.get(
+            f"{STUDIO_URL}/api/datachain/clusters/",
+            json=[
+                {
+                    "id": 1,
+                    "name": "old-cluster",
+                    "status": "ACTIVE",
+                    "cloud_provider": "AWS",
+                    "is_active": True,
+                    "default": False,
+                    "max_workers": 8,
+                }
+            ],
+        )
+
+        assert main(["job", "clusters"]) == 0
+
+    out = capsys.readouterr().out
+    assert "old-cluster" in out
+    # The counts it does not report read as unknown, not as zero.
+    assert "?/?/8" in out
+
+
+def test_studio_clusters_json_is_studios_payload(capsys, studio_token):
+    """What a cost calculation reads, uuid included."""
+    with requests_mock.mock() as m:
+        m.get(f"{STUDIO_URL}/api/datachain/clusters/", json=[CLUSTER_WITH_PRICING])
+
+        assert main(["job", "clusters", "--json"]) == 0
+
+    assert json.loads(capsys.readouterr().out) == [CLUSTER_WITH_PRICING]
+
+
+def test_studio_clusters_none_found(capsys, studio_token):
+    with requests_mock.mock() as m:
+        m.get(f"{STUDIO_URL}/api/datachain/clusters/", json=[])
+
+        assert main(["job", "clusters"]) == 0
+
+    assert "No clusters found" in capsys.readouterr().out
+
+
 def test_studio_cancel_job(capsys, mocker):
     job_id = "8bddde6c-c3ca-41b0-9d87-ee945bfdce70"
     with requests_mock.mock() as m:

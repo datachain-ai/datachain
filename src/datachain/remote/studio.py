@@ -9,6 +9,7 @@ from urllib.parse import urlparse, urlunparse
 
 import websockets
 from requests.exceptions import HTTPError, Timeout
+from typing_extensions import NotRequired, TypedDict
 
 from datachain.config import Config
 from datachain.dataset import DatasetRecord
@@ -25,7 +26,36 @@ DatasetExportData = dict[str, Any]
 FileUploadData = dict[str, Any] | None
 JobData = dict[str, Any] | None
 JobListData = list[dict[str, Any]]
-ClusterListData = list[dict[str, Any]]
+
+
+class ClusterData(TypedDict):
+    """A compute cluster as Studio reports it.
+
+    Every field but the identity ones is NotRequired: an older Studio omits the
+    ones it does not know about, and the cloud details are null on a cluster whose
+    Helm values leave them to the chart.
+    """
+
+    id: int
+    uuid: NotRequired[str]
+    name: str
+    status: str
+    cloud_provider: NotRequired[str]
+    cloud_credentials: NotRequired[str | None]
+    is_active: NotRequired[bool]
+    default: NotRequired[bool]
+    max_workers: NotRequired[int]
+    active_workers: NotRequired[int]
+    busy_workers: NotRequired[int]
+    # What a worker costs: the machine, where it runs, and how many jobs share it.
+    cloud_region: NotRequired[str | None]
+    instance_type: NotRequired[str | None]
+    compute_class: NotRequired[str | None]
+    disk_size: NotRequired[str | None]
+    job_quota: NotRequired[int | None]
+
+
+ClusterListData = list[ClusterData]
 
 logger = logging.getLogger("datachain")
 

@@ -233,3 +233,10 @@ def add_jobs_parser(subparsers, parent_parser) -> None:
         default=None,
         help="Team to list clusters for (default: from config)",
     )
+
+    studio_clusters_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Print Studio's cluster payload as JSON, including each cluster's UUID",
+    )

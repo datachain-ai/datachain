@@ -10,7 +10,9 @@ Usage:
 import argparse
 import json
 import sys
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 STALE_AFTER_HOURS = 12
 DEFAULT_DAYS = 30
@@ -116,6 +118,29 @@ def cmd_plan():
     print(json.dumps(result))
 
 
+def _cluster_entry(c: Mapping[str, Any]) -> dict:
+    """Flatten a Studio cluster, keeping what a cost estimate needs.
+
+    The machine, its region and compute class set the hourly rate; job_quota says
+    how many jobs share one worker. Older Studio versions omit them, so they come
+    back null rather than missing.
+    """
+    return {
+        "id": c.get("id"),
+        "uuid": c.get("uuid"),
+        "name": c.get("name"),
+        "cloud_provider": c.get("cloud_provider"),
+        "cloud_region": c.get("cloud_region"),
+        "instance_type": c.get("instance_type"),
+        "compute_class": c.get("compute_class"),
+        "disk_size": c.get("disk_size"),
+        "job_quota": c.get("job_quota"),
+        "max_workers": c.get("max_workers"),
+        "is_active": c.get("is_active", True),
+        "is_default": c.get("default", False),
+    }
+
+
 def cmd_clusters():
     """List available Studio clusters."""
     from datachain.remote.studio import StudioClient
@@ -129,18 +154,7 @@ def cmd_clusters():
         )
         sys.exit(1)
 
-    clusters = []
-    for c in response.data or []:
-        clusters.append(
-            {
-                "id": c.get("id"),
-                "name": c.get("name"),
-                "cloud_provider": c.get("cloud_provider"),
-                "max_workers": c.get("max_workers"),
-                "is_active": c.get("is_active", True),
-                "is_default": c.get("default", False),
-            }
-        )
+    clusters = [_cluster_entry(c) for c in response.data or []]
 
     print(json.dumps({"clusters": clusters}))
 
@@ -178,22 +192,14 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
     now = datetime.now(tz=timezone.utc)
     cutoff = now - timedelta(days=days)
 
-    # Fetch clusters for name reference
-    clusters_by_id = {}
+    # Fetch clusters for name reference, keyed by both id and name.
+    clusters_by_id: dict[Any, Any] = {}
     clusters_list = []
     try:
         cr = client.get_clusters()
         if cr.ok:
             for c in cr.data or []:
-                entry = {
-                    "id": c.get("id"),
-                    "name": c.get("name"),
-                    "cloud_provider": c.get("cloud_provider"),
-                    "max_workers": c.get("max_workers"),
-                    "is_active": c.get("is_active", True),
-                    "is_default": c.get("default", False),
-                }
-                clusters_list.append(entry)
+                clusters_list.append(_cluster_entry(c))
                 if c.get("id"):
                     clusters_by_id[c["id"]] = c.get("name", c["id"])
                 if c.get("name"):

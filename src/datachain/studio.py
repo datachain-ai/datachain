@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import random
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
     from argparse import Namespace
 
     from datachain.catalog import Catalog
+    from datachain.remote.studio import ClusterData
 
 POST_LOGIN_MESSAGE = (
     "Once you've logged in, return here "
@@ -76,7 +78,7 @@ def process_jobs_args(args: "Namespace"):
         return list_jobs(args.status, args.team, args.limit, args.extended)
 
     if args.cmd == "clusters":
-        return list_clusters(args.team)
+        return list_clusters(args.team, args.json)
 
     raise DataChainError(f"Unknown command '{args.cmd}'.")
 
@@ -814,13 +816,28 @@ def show_job_logs(job_id: str, team_name: str | None):
     return show_logs_from_client(client, job_id)
 
 
-def list_clusters(team_name: str | None):
+def _cluster_workers(cluster: "ClusterData") -> str:
+    """Worker counts as busy/active/max, the shape a capacity question asks for."""
+    counts = (
+        cluster.get("busy_workers"),
+        cluster.get("active_workers"),
+        cluster.get("max_workers"),
+    )
+    return "/".join("?" if count is None else str(count) for count in counts)
+
+
+def list_clusters(team_name: str | None, as_json: bool = False):
     client = StudioClient(team=team_name)
     response = client.get_clusters()
     if not response.ok:
         raise DataChainError(response.message)
 
     clusters = response.data or []
+    if as_json:
+        # Studio's payload verbatim: what a cost calculation reads, uuid included.
+        print(json.dumps(clusters, indent=2))
+        return
+
     if not clusters:
         print("No clusters found")
         return
@@ -831,10 +848,13 @@ def list_clusters(team_name: str | None):
             "Name": cluster.get("name"),
             "Status": cluster.get("status"),
             "Cloud Provider": cluster.get("cloud_provider"),
-            "Cloud Credentials": cluster.get("cloud_credentials"),
-            "Is Active": cluster.get("is_active"),
+            "Region": cluster.get("cloud_region") or "-",
+            "Instance Type": cluster.get("instance_type") or "-",
+            "Compute Class": cluster.get("compute_class") or "-",
+            "Disk": cluster.get("disk_size") or "-",
+            "Busy/Active/Max": _cluster_workers(cluster),
+            "Jobs/Worker": cluster.get("job_quota") or "-",
             "Is Default": cluster.get("default"),
-            "Max Workers": cluster.get("max_workers"),
         }
         for cluster in clusters
     ]

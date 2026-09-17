@@ -12,6 +12,7 @@ if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
 from jobs import (  # noqa: E402
+    _cluster_entry,
     _duration_str,
     _normalize_status,
     _parse_dt,
@@ -109,3 +110,51 @@ class TestJobsReadFrontmatter:
         p.write_text(content)
 
         assert jobs_fm(str(p)) == read_frontmatter(str(p))
+
+
+class TestClusterEntry:
+    def test_keeps_what_a_cost_estimate_needs(self):
+        entry = _cluster_entry(
+            {
+                "id": 1,
+                "uuid": "550e8400-e29b-41d4-a716-446655440000",
+                "name": "prod-cluster",
+                "cloud_provider": "AWS",
+                "cloud_region": "us-west-2",
+                "instance_type": "m5.xlarge",
+                "compute_class": "spot",
+                "disk_size": "100Gi",
+                "job_quota": 4,
+                "max_workers": 8,
+                "default": True,
+            }
+        )
+
+        assert entry == {
+            "id": 1,
+            "uuid": "550e8400-e29b-41d4-a716-446655440000",
+            "name": "prod-cluster",
+            "cloud_provider": "AWS",
+            "cloud_region": "us-west-2",
+            "instance_type": "m5.xlarge",
+            "compute_class": "spot",
+            "disk_size": "100Gi",
+            "job_quota": 4,
+            "max_workers": 8,
+            "is_active": True,
+            "is_default": True,
+        }
+
+    def test_older_studio_reports_nulls(self):
+        """Absent, not zero: a rate lookup has to ask rather than guess."""
+        entry = _cluster_entry(
+            {"id": 1, "name": "old-cluster", "cloud_provider": "AWS"}
+        )
+
+        assert entry["instance_type"] is None
+        assert entry["cloud_region"] is None
+        assert entry["compute_class"] is None
+        assert entry["disk_size"] is None
+        assert entry["job_quota"] is None
+        assert entry["uuid"] is None
+        assert entry["is_default"] is False
