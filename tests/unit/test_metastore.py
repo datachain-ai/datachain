@@ -48,6 +48,13 @@ def test_sqlite_metastore(sqlite_db):
         obj2.close_on_exit()
 
 
+def test_record_dataset_version_access_is_noop(sqlite_db):
+    metastore = SQLiteMetastore(db=sqlite_db)
+    dataset = metastore.create_dataset("accessed")
+
+    assert metastore.record_dataset_version_access(dataset, "1.0.0") is None
+
+
 def test_outdated_schema_meta_not_present():
     metastore = SQLiteMetastore(db_file=":memory:")
     try:
