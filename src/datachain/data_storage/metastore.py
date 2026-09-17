@@ -331,6 +331,13 @@ class AbstractMetastore(ABC, Serializable):
         the UPDATE only applies if the row's current status equals that value;
         returns None if no row matched."""
 
+    def record_dataset_version_access(
+        self,
+        dataset: DatasetRecord,
+        version: str,
+    ) -> None:
+        """Record that a dataset version was accessed."""
+
     @abstractmethod
     def remove_dataset_version(
         self, dataset: DatasetRecord, version: str
