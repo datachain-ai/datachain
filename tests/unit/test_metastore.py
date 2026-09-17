@@ -55,6 +55,23 @@ def test_record_dataset_version_access_is_noop(sqlite_db):
     assert metastore.record_dataset_version_access(dataset, "1.0.0") is None
 
 
+def test_query_records_each_dataset_version_access(test_session, mocker):
+    first = dc.read_values(value=[1], session=test_session).save("first")
+    second = dc.read_values(value=[2], session=test_session).save("second")
+    recorder = mocker.spy(
+        test_session.catalog.metastore,
+        "record_dataset_version_access",
+    )
+
+    first.union(second).to_records()
+
+    assert recorder.call_count == 2
+    assert {(call.args[0].name, call.args[1]) for call in recorder.call_args_list} == {
+        ("first", first.version),
+        ("second", second.version),
+    }
+
+
 def test_outdated_schema_meta_not_present():
     metastore = SQLiteMetastore(db_file=":memory:")
     try:

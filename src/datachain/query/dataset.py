@@ -310,6 +310,10 @@ class QueryStep:
         def q(*columns):
             return sqlalchemy.select(*columns)
 
+        self.catalog.metastore.record_dataset_version_access(
+            self.dataset,
+            self.dataset_version,
+        )
         dr = self.catalog.warehouse.dataset_rows(self.dataset, self.dataset_version)
         # Use a short alias with dataset ID suffix for uniqueness and SQL brevity
         ds_id = dr.table.name.rsplit("_", 1)[-1]
