@@ -58,8 +58,8 @@ truncated: <true|false>
 
 ## Clusters
 
-| Name | Cloud | Region | Instance Type | Compute Class | Disk | Jobs per Worker | Max Workers | Default |
-|------|-------|--------|---------------|---------------|------|-----------------|-------------|---------|
+| Name | Cloud | Region | Instance Type | Compute Class | Disk | Job Quota | Max Workers | Default |
+|------|-------|--------|---------------|---------------|------|-----------|-------------|---------|
 | <name> | <cloud_provider> | <cloud_region or —> | <instance_type or —> | <compute_class or —> | <disk_size or —> | <job_quota or —> | <max_workers> | <yes if is_default else no> |
 
 ## Jobs
@@ -72,6 +72,7 @@ truncated: <true|false>
 **Section rules:**
 - Omit `## Clusters` if the `clusters` array is empty.
 - Cluster cells: use `—` when a field is null. A null instance type or region means Studio has no record of it, not that the cluster lacks one.
+- Job Quota is the configured cap on worker Jobs in the cluster's namespace — a limit on workers, which the cluster reports back as Max Workers. It is not a number of jobs per worker.
 - Duration cell: `duration_str` value (e.g. `"9000s"`) when known, `—` when null.
 - Workers: always a number (`workers` field, defaults to 1).
 - Cluster, Python: use `—` when null.
@@ -96,10 +97,10 @@ Duration cells contain plain seconds strings like `"9000s"`. Parse the integer b
 
 ### Price estimation
 When the user asks for cost:
-1. Establish the hourly rate per cluster from its Clusters row — instance type, region, and compute class are what a cloud price list is keyed on, and compute class says whether the rate is spot or on-demand. State the rate you used and where it came from. If the row's instance type is `—`, or you have no price for it, ask: "What is the hourly rate in $/hr for <cluster> (<instance type> in <region>)?"
-2. If Workers column is all `—` → ask: "How many workers per job?" or compute single-worker cost and note it.
-3. Compute per job: `duration_seconds / 3600 × rate × workers`. Group by user/day/cluster as requested.
-4. Where a cluster's Jobs per Worker is above 1, jobs share a worker: say so, and treat the per-job figure as an upper bound rather than silently dividing by it.
+1. Establish the hourly rate per cluster from its Clusters row — instance type and region are what a cloud price list is keyed on. State the rate you used and where it came from. If the row's instance type is `—`, or you have no price for it, ask: "What is the hourly rate in $/hr for <cluster> (<instance type> in <region>)?"
+2. Nothing in the index says whether a cluster runs on spot or on-demand capacity — Compute Class is a node class (e.g. `Performance`, `gpu`), not a purchase model. Spot can cost a fraction of on-demand, so when the answer turns on it, ask rather than assume: "Is <cluster> running spot or on-demand capacity?"
+3. If Workers column is all `—` → ask: "How many workers per job?" or compute single-worker cost and note it.
+4. Compute per job: `duration_seconds / 3600 × rate × workers`. Group by user/day/cluster as requested.
 5. Disk is the worker's disk request, not a separate billed volume — fold it in only if the user asks for storage cost, and say the rate is per-GB-month.
 6. Present as a table: User | Compute-hours | Est. cost (@$X/hr × N workers), with a line naming the rate and instance type per cluster.
 

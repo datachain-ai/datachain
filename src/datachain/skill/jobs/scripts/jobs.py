@@ -121,8 +121,9 @@ def cmd_plan():
 def _cluster_entry(c: Mapping[str, Any]) -> dict:
     """Flatten a Studio cluster, keeping what a cost estimate needs.
 
-    The machine, its region and compute class set the hourly rate; job_quota says
-    how many jobs share one worker. Older Studio versions omit them, so they come
+    The machine and its region are what a price list is keyed on. job_quota is the
+    configured cap on worker Jobs in the cluster's namespace, which the cluster
+    reports back as max_workers. Older Studio versions omit these, so they come
     back null rather than missing.
     """
     return {

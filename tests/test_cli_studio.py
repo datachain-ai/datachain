@@ -795,7 +795,7 @@ CLUSTER_WITH_PRICING = {
     "busy_workers": 2,
     "cloud_region": "us-west-2",
     "instance_type": "m5.xlarge",
-    "compute_class": "spot",
+    "compute_class": "Performance",
     "disk_size": "100Gi",
     "job_quota": 4,
 }
@@ -812,11 +812,11 @@ def test_studio_clusters_shows_what_a_worker_costs(capsys, studio_token):
     assert "prod-cluster" in out
     assert "us-west-2" in out
     assert "m5.xlarge" in out
-    assert "spot" in out
+    assert "Performance" in out
     assert "100Gi" in out
     # busy/active/max, so capacity reads as one column.
     assert "2/4/8" in out
-    assert "Jobs/Worker" in out
+    assert "Job Quota" in out
 
 
 def test_studio_clusters_without_the_pricing_fields(capsys, studio_token):
