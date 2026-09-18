@@ -105,5 +105,9 @@ datachain job clusters --json | jq -r '.[] | select(.default) | .instance_type'
 
 * To work out what a job cost, find the cluster it ran on with
   [`datachain job ls --extended`](ls.md), then price that cluster's instance type in
-  its region from your cloud provider's rates. Spot and on-demand are billed very
-  differently and are not reported here, so check which one the cluster uses
+  its region from your cloud provider's rates. Two things are not in this output and
+  you need both:
+    * Whether the cluster runs spot or on-demand capacity - the two rates differ a
+      lot
+    * The storage actually allocated to a worker, if you are pricing storage. Disk
+      Request is what a worker asks for, not what it gets
