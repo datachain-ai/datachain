@@ -102,14 +102,14 @@ Read `dc-knowledge/jobs/index.md` and answer the user's question.
 ### Duration arithmetic
 Duration cells contain plain seconds strings like `"9000s"`. Parse the integer before `s`, sum, then convert:
 - Example: filter rows for user "alice" in the last 7 days, sum all Duration values → total seconds → divide by 3600 for hours.
-- If all Duration cells are `—` (enriched: false) → say: "Duration data requires enrichment. Re-fetch with: `python3 {skill_dir}/scripts/jobs.py --fetch --enrich`" and offer to do so.
+- Missing durations: check `enriched` in the frontmatter. If it is `false`, re-run Step 2 with `--enrich` yourself rather than asking the user to run anything. If it is `true` and cells are still `—`, those jobs have no recorded finish — say so and state the coverage when aggregating.
 
 ### Stage breakdown — where the time went
-The Queue and Run columns split a job's wall clock: `waiting` before it started, `running_query` doing the work. The remainder is setup.
-- "How long do jobs wait?" → sum or average the Queue column. A queue that rivals Run means the cluster is at its worker cap, not that jobs are slow.
+The Queue and Run columns split a job's wall clock: waiting before it started, running the query. The remainder is setup.
+- "How long do jobs wait?" → sum or average the Queue column. That shows *where* the time went, not why. A long queue does not by itself establish that the cluster hit its worker limit — the index holds no capacity history, and scheduling can delay a job that had workers to spare. Check the cluster's capacity before explaining the wait, and never recommend more workers on queue time alone.
 - "Why is this job slow?" → compare Queue, Run, and `Duration − Queue − Run` (setup: dependency installs, file downloads, warehouse wake-up).
-- All `—` → the index is not enriched. Say so and offer: `python3 {skill_dir}/scripts/jobs.py --fetch --enrich`.
-- For a finer split than Queue/Run, read the `stages` map from the script output directly rather than the index.
+- Missing timings: check `enriched` in the frontmatter, not the cells. If it is `false`, re-run Step 2 with `--enrich` yourself as part of answering. If it is `true` and the cells are still `—`, the timings were never recorded for those jobs — say "Stage timings are unavailable for these jobs", and state the coverage (how many of how many) whenever you aggregate.
+- For a finer split than Queue/Run, use the `stages` map from Step 2's output.
 
 ### Failure rate
 - Overall: `failed_count / total_jobs * 100` from frontmatter.
