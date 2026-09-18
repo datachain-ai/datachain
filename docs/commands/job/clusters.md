@@ -37,24 +37,23 @@ Retired clusters are not listed.
 
 | Column | Meaning |
 |--------|---------|
-| `UUID` | The cluster's identifier. Use it to tell which cluster a job ran on - it is what a job's `compute_cluster_uuid` points at, and unlike a name it is never reused |
+| `UUID` | Identifies the cluster. Names can be reused; this cannot |
 | `Name` | Pass this to `datachain job run --cluster` |
 | `Status` | `ACTIVE` and `MODIFYING` clusters accept jobs; `INACTIVE` and `FAILED` do not |
 | `Cloud Provider` | `AWS`, `GCP`, `AZ` or `NB` |
 | `Region` | Where the cluster runs, e.g. `us-west-2` |
-| `Instance Type` | Machine type or family a worker runs on, e.g. `m5.xlarge` |
-| `Compute Class` | Node class a worker is scheduled onto, e.g. `Performance` or `gpu`. This is not a purchase model - spot capacity is configured separately, so it does not tell you whether the rate is spot or on-demand |
-| `Disk Request` | Temporary storage a worker asks for, e.g. `100Gi`. Not the capacity of the volumes it is given - those are sized separately, and a `1Gi` request can sit on a `500Gi` volume. It cannot be used to price storage |
-| `Busy/Active/Max` | Workers assigned to jobs / provisioned / the cap |
-| `Job Quota` | Configured limit on the cluster's workers, which the cluster reports live as its max workers. It is not a number of jobs each worker runs |
+| `Instance Type` | The machine a worker runs on, e.g. `m5.xlarge` |
+| `Compute Class` | The kind of machine a worker gets, e.g. `Performance` or `gpu`. It does not tell you whether you are paying spot or on-demand rates |
+| `Disk Request` | Temporary storage a worker asks for, e.g. `100Gi`. Not the size of its disk, and no basis for a storage bill |
+| `Busy/Active/Max` | Workers running jobs / started / allowed |
+| `Job Quota` | How many workers the cluster is allowed, as configured. It is not jobs per worker |
 | `Is Default` | The cluster a job runs on when `--cluster` is omitted |
 
-A `-` means the cluster does not configure that field, so Studio has no value to
-report. It never means zero.
+A `-` means the cluster does not set that field. It never means zero.
 
 ## All fields
 
-The table above is a readable summary. `--json` prints every field:
+The table is a summary. `--json` prints everything the cluster has:
 
 ```console
 $ datachain job clusters --json
@@ -80,14 +79,6 @@ $ datachain job clusters --json
 ]
 ```
 
-Three of these never appear in the table:
-
-| Field | Meaning |
-|-------|---------|
-| `cloud_credentials` | Name of the cloud credentials the cluster provisions with, or `null` |
-| `is_active` | True while the cluster accepts jobs - the same thing `status` says |
-| `id` | A legacy numeric identifier, kept for compatibility and due to be retired. Identify a cluster by its `uuid` |
-
 ## Examples
 
 1. List all clusters for the default team:
@@ -112,9 +103,7 @@ datachain job clusters --json | jq -r '.[] | select(.default) | .instance_type'
 
 ## Notes
 
-* Cluster names are what `datachain job run --cluster` expects
-* To price a job, find the cluster it ran on -
-  [`datachain job ls --extended`](ls.md) shows it by name, and the jobs API also
-  carries a `compute_cluster_uuid` that joins to a cluster's `uuid` - then take the
-  rate for that `instance_type` in that `cloud_region` from your cloud provider's
-  price list. Whether the cluster runs spot or on-demand capacity is not reported
+* To work out what a job cost, find the cluster it ran on with
+  [`datachain job ls --extended`](ls.md), then price that cluster's instance type in
+  its region from your cloud provider's rates. Spot and on-demand are billed very
+  differently and are not reported here, so check which one the cluster uses

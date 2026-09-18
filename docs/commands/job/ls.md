@@ -22,27 +22,24 @@ the compute cluster it ran on and a breakdown of its stages - see
 * `--status STATUS` - Status to filter jobs by
 * `--team TEAM` - Team to list jobs for (default: from config)
 * `--limit LIMIT` - Limit the number of jobs returned (default: 20)
-* `-e`, `--extended` - Show the compute cluster and per-stage timings ([details](#extended-output))
+* `-e`, `--extended` - Show [extra job details](#extended-output)
 * `-h`, `--help` - Show the help message and exit
 * `-v`, `--verbose` - Be verbose
 * `-q`, `--quiet` - Be quiet
 
 ## Extended output
 
-`--extended` adds two columns, and asks Studio for the per-stage timings that fill
-the second:
+`--extended` adds two columns:
 
 | Column | Meaning |
 |--------|---------|
-| `Cluster` | Name of the compute cluster the job ran on. [`datachain job clusters`](clusters.md) describes that cluster - its region, machine and capacity |
-| `Stages` | One line per stage, as `<label>: <duration>` |
+| `Cluster` | The compute cluster the job ran on. [`datachain job clusters`](clusters.md) shows what that cluster is - its region, machine and capacity |
+| `Stages` | How long the job spent in each stage |
 
-A job's stages are `waiting` (queued, before anything was provisioned),
-`requesting_workers`, `preparation`, `virtualenv` (installing dependencies),
-`downloading_files`, `dw_wake_up` (waking the data warehouse) and `running_query`
-(the script itself). Which of them a job has depends on when it ran - they were
-added over time - and on how far it got, so a missing stage means unknown, not
-zero.
+The stages are, in order: waiting in queue, requesting workers, preparation,
+installing dependencies, downloading files, waking up the data warehouse, and
+running the query. A job shows only the stages it reached, so a missing one means
+unknown, not zero.
 
 ```
 +--------------------------------------+----------+----------+-----------------+------------------------------+
@@ -126,9 +123,8 @@ datachain job ls --extended
 * The default limit of 20 jobs helps manage the output size and performance
 * Jobs are typically listed in reverse chronological order (newest first)
 * Use the `--status` filter to find jobs in specific states (e.g., running, completed, failed)
-* `--extended` costs an extra round trip for the stage data, so plain `job ls` stays
-  the quicker way to check what is running
-* Studio records more per job than this table shows - the exit code, error message,
-  Python version, requirements, worker count, metrics and the cluster's UUID among
-  them. [`datachain job logs`](logs.md) shows a job's output, and the
-  `StudioClient.get_jobs()` API returns all of it
+* `--extended` asks for more, so plain `job ls` stays the quicker way to check what
+  is running
+* Studio keeps more about a job than this table shows - why it failed, what it ran
+  with, how many workers it used. [`datachain job logs`](logs.md) shows its output,
+  and `StudioClient.get_jobs()` returns the rest
