@@ -69,8 +69,8 @@ truncated: <true|false>
 
 ## Clusters
 
-| Name | Cloud | Region | Instance Type | Compute Class | Disk | Job Quota | Max Workers | Default |
-|------|-------|--------|---------------|---------------|------|-----------|-------------|---------|
+| Name | Cloud | Region | Instance Type | Compute Class | Disk Request | Job Quota | Max Workers | Default |
+|------|-------|--------|---------------|---------------|--------------|-----------|-------------|---------|
 | <name> | <cloud_provider> | <cloud_region or —> | <instance_type or —> | <compute_class or —> | <disk_size or —> | <job_quota or —> | <max_workers> | <yes if default else no> |
 
 ## Jobs
@@ -84,6 +84,7 @@ truncated: <true|false>
 - Omit `## Clusters` if the `clusters` array is empty.
 - Cluster cells: use `—` when a field is null. A null instance type or region means Studio has no record of it, not that the cluster lacks one.
 - Job Quota is the configured limit on the cluster's workers, which the cluster reports live as Max Workers. It is not a number of jobs each worker runs.
+- Disk Request (`disk_size`) is temporary storage a worker asks for, not the capacity of the volumes it gets. It cannot price storage.
 - Duration cell: `duration_str` value (e.g. `"9000s"`) when known, `—` when null.
 - Queue and Run: `queue_seconds` and `run_seconds` written as `Ns` (e.g. `4s`), `—` when null. They come from the job's stages, so they are `—` unless `enriched: true`. Duration covers everything from submit to finish, so Queue + Run is normally less than it — the difference is setup (`preparation`, `virtualenv`, `downloading_files`, `dw_wake_up`).
 - Workers: always a number (`workers` field, defaults to 1).
@@ -120,7 +121,7 @@ When the user asks for cost:
 2. Nothing in the index says whether a cluster runs on spot or on-demand capacity — Compute Class is a node class (e.g. `Performance`, `gpu`), not a purchase model. Spot can cost a fraction of on-demand, so when the answer turns on it, ask rather than assume: "Is <cluster> running spot or on-demand capacity?"
 3. If Workers column is all `—` → ask: "How many workers per job?" or compute single-worker cost and note it.
 4. Compute per job: `duration_seconds / 3600 × rate × workers`. Group by user/day/cluster as requested.
-5. Disk is the worker's disk request, not a separate billed volume — fold it in only if the user asks for storage cost, and say the rate is per-GB-month.
+5. Do not derive storage cost from Disk Request. It is how much temporary storage a worker asks for, not how much it is given — a `1Gi` request can sit on volumes of `20Gi` or `500Gi`, and the request does not move when they change. If the user asks for storage cost, say the cluster data does not carry the billable capacity, and ask for the volume size and type and the applicable rate.
 6. Present as a table: User | Compute-hours | Est. cost (@$X/hr × N workers), with a line naming the rate and instance type per cluster.
 
 ### Per-cluster / per-user analytics

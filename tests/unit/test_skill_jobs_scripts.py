@@ -1,8 +1,10 @@
 """Tests for jobs skill script helpers."""
 
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import ClassVar
 
 # Insert the scripts directory so bare imports work.
 SCRIPTS_DIR = str(
@@ -154,3 +156,111 @@ class TestStageSeconds:
         """What a job carries without --enrich."""
         assert _stage_seconds(None) == {}
         assert _stage_seconds([]) == {}
+
+
+class TestFetchStageTimings:
+    def test_every_job_is_timed_past_the_enrich_limit(self, capsys, monkeypatch):
+        """Stages ride on the list call, so the per-job enrich cap does not bound them.
+
+        201 completed jobs against a cap of 200 used to leave the last one untimed
+        while the output still claimed `enriched: true`, so Queue/Run totals quietly
+        dropped it.
+        """
+        import jobs as jobs_module
+
+        total = jobs_module.ENRICH_LIMIT + 1
+        listed = [
+            {
+                "id": f"job-{i}",
+                "name": f"job-{i}",
+                "status": "COMPLETE",
+                "created_at": "2026-09-16T00:00:00Z",
+                "finished_at": "2026-09-16T00:20:00Z",
+                "created_by": "ivan",
+                "steps": [
+                    {
+                        "name": "waiting",
+                        "started_at": "2026-09-16T00:00:00Z",
+                        "finished_at": "2026-09-16T00:00:30Z",
+                    },
+                    {
+                        "name": "running_query",
+                        "started_at": "2026-09-16T00:02:30Z",
+                        "finished_at": "2026-09-16T00:20:00Z",
+                    },
+                ],
+            }
+            for i in range(total)
+        ]
+
+        class Response:
+            def __init__(self, data):
+                self.ok, self.data, self.message = True, data, ""
+
+        class FakeClient:
+            list_calls: ClassVar[list[bool]] = []
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get_clusters(self):
+                return Response([])
+
+            def get_jobs(self, *args, job_id=None, include_steps=False, **kwargs):
+                if job_id is not None:
+                    return Response([{"id": job_id, "workers": 2}])
+                FakeClient.list_calls.append(include_steps)
+                return Response(listed)
+
+        import datachain.remote.studio as studio_module
+
+        monkeypatch.setattr(studio_module, "StudioClient", FakeClient)
+
+        jobs_module.cmd_fetch(days=30, limit=500, enrich=True)
+        out = json.loads(capsys.readouterr().out)
+
+        assert FakeClient.list_calls == [True], "the list call must ask for steps"
+        assert len(out["jobs"]) == total
+        assert all(j["queue_seconds"] == 30 for j in out["jobs"])
+        assert all(j["run_seconds"] == 1050 for j in out["jobs"])
+
+    def test_stages_are_left_out_without_enrich(self, capsys, monkeypatch):
+        import jobs as jobs_module
+
+        class Response:
+            def __init__(self, data):
+                self.ok, self.data, self.message = True, data, ""
+
+        class FakeClient:
+            include_steps_asked = None
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get_clusters(self):
+                return Response([])
+
+            def get_jobs(self, *args, job_id=None, include_steps=False, **kwargs):
+                FakeClient.include_steps_asked = include_steps
+                return Response(
+                    [
+                        {
+                            "id": "job-1",
+                            "name": "job-1",
+                            "status": "COMPLETE",
+                            "created_at": "2026-09-16T00:00:00Z",
+                            "created_by": "ivan",
+                        }
+                    ]
+                )
+
+        import datachain.remote.studio as studio_module
+
+        monkeypatch.setattr(studio_module, "StudioClient", FakeClient)
+
+        jobs_module.cmd_fetch(days=30, limit=500, enrich=False)
+        out = json.loads(capsys.readouterr().out)
+
+        assert FakeClient.include_steps_asked is False
+        assert out["jobs"][0]["stages"] == {}
+        assert out["jobs"][0]["queue_seconds"] is None

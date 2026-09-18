@@ -28,11 +28,11 @@ Retired clusters are not listed.
 ## Output
 
 ```
-+--------------------------------------+--------------+----------+------------------+-----------+-----------------+-----------------+--------+-------------------+-------------+--------------+
-| UUID                                 | Name         | Status   | Cloud Provider   | Region    | Instance Type   | Compute Class   | Disk   | Busy/Active/Max   |   Job Quota | Is Default   |
-+======================================+==============+==========+==================+===========+=================+=================+========+===================+=============+==============+
-| 550e8400-e29b-41d4-a716-446655440000 | prod-cluster | ACTIVE   | AWS              | us-west-2 | m5.xlarge       | gpu             | 100Gi  | 2/4/8             |           8 | True         |
-+--------------------------------------+--------------+----------+------------------+-----------+-----------------+-----------------+--------+-------------------+-------------+--------------+
++--------------------------------------+--------------+----------+------------------+-----------+-----------------+-----------------+----------------+-------------------+-------------+--------------+
+| UUID                                 | Name         | Status   | Cloud Provider   | Region    | Instance Type   | Compute Class   | Disk Request   | Busy/Active/Max   |   Job Quota | Is Default   |
++======================================+==============+==========+==================+===========+=================+=================+================+===================+=============+==============+
+| 550e8400-e29b-41d4-a716-446655440000 | prod-cluster | ACTIVE   | AWS              | us-west-2 | m5.xlarge       | gpu             | 100Gi          | 2/4/8             |           8 | True         |
++--------------------------------------+--------------+----------+------------------+-----------+-----------------+-----------------+----------------+-------------------+-------------+--------------+
 ```
 
 | Column | Meaning |
@@ -44,7 +44,7 @@ Retired clusters are not listed.
 | `Region` | Where the cluster runs, e.g. `us-west-2` |
 | `Instance Type` | Machine type or family a worker runs on, e.g. `m5.xlarge` |
 | `Compute Class` | Node class a worker is scheduled onto, e.g. `Performance` or `gpu`. This is not a purchase model - spot capacity is configured separately, so it does not tell you whether the rate is spot or on-demand |
-| `Disk` | Disk a worker gets, e.g. `100Gi` |
+| `Disk Request` | Temporary storage a worker asks for, e.g. `100Gi`. Not the capacity of the volumes it is given - those are sized separately, and a `1Gi` request can sit on a `500Gi` volume. It cannot be used to price storage |
 | `Busy/Active/Max` | Workers assigned to jobs / provisioned / the cap |
 | `Job Quota` | Configured limit on the cluster's workers, which the cluster reports live as its max workers. It is not a number of jobs each worker runs |
 | `Is Default` | The cluster a job runs on when `--cluster` is omitted |

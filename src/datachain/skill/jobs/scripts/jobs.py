@@ -19,7 +19,9 @@ Clusters come back exactly as Studio returns them - `ClusterData` in
     cloud_region        where it runs, e.g. us-west-2
     instance_type       machine type or family, e.g. m5.xlarge
     compute_class       node class, e.g. Performance or gpu - NOT spot vs on-demand
-    disk_size           disk a worker gets, e.g. 100Gi
+    disk_size           temporary storage a worker requests, e.g. 100Gi. NOT the
+                        capacity of the volumes it is given, and no basis for a
+                        storage cost
     job_quota           configured limit on the cluster's workers
     max_workers         the live value of that limit, as the cluster reports it
 
@@ -31,7 +33,8 @@ Each job carries:
     cluster_name        the cluster it ran on
     cluster_uuid        joins to a cluster's uuid; --enrich only
     python_version
-    stages              {stage name: seconds}; --enrich only, {} otherwise
+    stages              {stage name: seconds}; --enrich only, {} otherwise.
+                        Every returned job has them, not just the enriched ones
     queue_seconds       time in the `waiting` stage; null when unknown
     run_seconds         time in the `running_query` stage; null when unknown
 
@@ -192,7 +195,7 @@ def _enrich_job(client, job: dict) -> dict:
     if not job_id:
         return job
     try:
-        response = client.get_jobs(job_id=job_id, include_steps=True)
+        response = client.get_jobs(job_id=job_id)
         if response.ok and response.data and len(response.data) > 0:
             detail = response.data[0]
             # Merge fields that may be richer in the per-job response
@@ -204,7 +207,6 @@ def _enrich_job(client, job: dict) -> dict:
                 "compute_cluster_name",
                 "cluster_name",
                 "compute_cluster_uuid",
-                "steps",
             ):
                 if detail.get(field) is not None:
                     job[field] = detail[field]
@@ -236,7 +238,9 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
     except Exception:  # noqa: BLE001, S110
         pass
 
-    response = client.get_jobs(limit=limit)
+    # include_steps fills every returned job's stages in this one call. Asking per
+    # job instead would cap them at ENRICH_LIMIT and leave later jobs untimed.
+    response = client.get_jobs(limit=limit, include_steps=enrich)
     if not response.ok:
         print(
             json.dumps({"error": response.message or "Failed to fetch jobs"}),
@@ -316,7 +320,7 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
             created_dt.strftime("%Y-%m-%d %H:%M") if created_dt else j.get("created_at")
         )
 
-        # Empty unless --enrich asked Studio for the job's stages.
+        # Empty unless --enrich asked the list call for the job's stages.
         stages = _stage_seconds(j.get("steps"))
 
         jobs_out.append(

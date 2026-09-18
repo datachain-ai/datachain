@@ -851,7 +851,7 @@ def list_clusters(team_name: str | None, as_json: bool = False):
             "Region": cluster.get("cloud_region") or "-",
             "Instance Type": cluster.get("instance_type") or "-",
             "Compute Class": cluster.get("compute_class") or "-",
-            "Disk": cluster.get("disk_size") or "-",
+            "Disk Request": cluster.get("disk_size") or "-",
             "Busy/Active/Max": _cluster_workers(cluster),
             "Job Quota": cluster.get("job_quota") or "-",
             "Is Default": cluster.get("default"),
