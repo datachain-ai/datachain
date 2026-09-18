@@ -810,6 +810,9 @@ def test_studio_clusters_shows_what_a_worker_costs(capsys, studio_token):
 
     out = capsys.readouterr().out
     assert "prod-cluster" in out
+    # The uuid identifies a cluster; the numeric id is legacy and stays out.
+    assert CLUSTER_WITH_PRICING["uuid"] in out
+    assert re.search(r"\|\s+ID\s+\|", out) is None
     assert "us-west-2" in out
     assert "m5.xlarge" in out
     assert "Performance" in out

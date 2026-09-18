@@ -28,16 +28,16 @@ Retired clusters are not listed.
 ## Output
 
 ```
-+------+--------------+----------+------------------+-------------+-----------------+-----------------+--------+-------------------+-------------+--------------+
-|   ID | Name         | Status   | Cloud Provider   | Region      | Instance Type   | Compute Class   | Disk   | Busy/Active/Max   | Job Quota   | Is Default   |
-+======+==============+==========+==================+=============+=================+=================+========+===================+=============+==============+
-|    1 | prod-cluster | ACTIVE   | AWS              | us-west-2   | m5.xlarge       | gpu             | 100Gi  | 2/4/8             | 8           | True         |
-+------+--------------+----------+------------------+-------------+-----------------+-----------------+--------+-------------------+-------------+--------------+
++--------------------------------------+--------------+----------+------------------+-----------+-----------------+-----------------+--------+-------------------+-------------+--------------+
+| UUID                                 | Name         | Status   | Cloud Provider   | Region    | Instance Type   | Compute Class   | Disk   | Busy/Active/Max   |   Job Quota | Is Default   |
++======================================+==============+==========+==================+===========+=================+=================+========+===================+=============+==============+
+| 550e8400-e29b-41d4-a716-446655440000 | prod-cluster | ACTIVE   | AWS              | us-west-2 | m5.xlarge       | gpu             | 100Gi  | 2/4/8             |           8 | True         |
++--------------------------------------+--------------+----------+------------------+-----------+-----------------+-----------------+--------+-------------------+-------------+--------------+
 ```
 
 | Column | Meaning |
 |--------|---------|
-| `ID` | Numeric cluster id. Every cluster also has a `uuid` - see [All fields](#all-fields) |
+| `UUID` | The cluster's identifier. Use it to tell which cluster a job ran on - it is what a job's `compute_cluster_uuid` points at, and unlike a name it is never reused |
 | `Name` | Pass this to `datachain job run --cluster` |
 | `Status` | `ACTIVE` and `MODIFYING` clusters accept jobs; `INACTIVE` and `FAILED` do not |
 | `Cloud Provider` | `AWS`, `GCP`, `AZ` or `NB` |
@@ -84,9 +84,9 @@ Three of these never appear in the table:
 
 | Field | Meaning |
 |-------|---------|
-| `uuid` | The cluster's stable identifier, and what a job's `compute_cluster_uuid` points at. Use it to tell which cluster a job ran on - names can be reused, and the numeric `id` is not durable |
 | `cloud_credentials` | Name of the cloud credentials the cluster provisions with, or `null` |
 | `is_active` | True while the cluster accepts jobs - the same thing `status` says |
+| `id` | A legacy numeric identifier, kept for compatibility and due to be retired. Identify a cluster by its `uuid` |
 
 ## Examples
 

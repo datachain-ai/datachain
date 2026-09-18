@@ -13,7 +13,8 @@ Output shapes
 
 Clusters come back exactly as Studio returns them - `ClusterData` in
 `datachain.remote.studio` is the model, and these are the fields that matter here:
-    id, uuid            uuid is what a job's cluster_uuid points at
+    uuid                the cluster's identifier, and what a job's cluster_uuid
+                        points at. Prefer it over the legacy numeric `id`
     name, status, cloud_provider, is_active, default
     cloud_region        where it runs, e.g. us-west-2
     instance_type       machine type or family, e.g. m5.xlarge
@@ -220,18 +221,18 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
     now = datetime.now(tz=timezone.utc)
     cutoff = now - timedelta(days=days)
 
-    # Fetch clusters for name reference, keyed by both id and name.
-    clusters_by_id: dict[Any, Any] = {}
+    # Fetch clusters for name reference, keyed by uuid and by name.
+    clusters_by_key: dict[Any, Any] = {}
     clusters_list = []
     try:
         cr = client.get_clusters()
         if cr.ok:
             for c in cr.data or []:
                 clusters_list.append(dict(c))
-                if c.get("id"):
-                    clusters_by_id[c["id"]] = c.get("name", c["id"])
+                if c.get("uuid"):
+                    clusters_by_key[c["uuid"]] = c.get("name") or c["uuid"]
                 if c.get("name"):
-                    clusters_by_id[c["name"]] = c["name"]
+                    clusters_by_key[c["name"]] = c["name"]
     except Exception:  # noqa: BLE001, S110
         pass
 
@@ -301,7 +302,8 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
         cluster_name = (
             j.get("cluster_name")
             or j.get("compute_cluster_name")
-            or clusters_by_id.get(j.get("cluster"))
+            or clusters_by_key.get(j.get("compute_cluster_uuid"))
+            or clusters_by_key.get(j.get("cluster"))
             or j.get("cluster")
         )
 

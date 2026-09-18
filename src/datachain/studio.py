@@ -844,7 +844,7 @@ def list_clusters(team_name: str | None, as_json: bool = False):
 
     rows = [
         {
-            "ID": cluster.get("id"),
+            "UUID": cluster.get("uuid"),
             "Name": cluster.get("name"),
             "Status": cluster.get("status"),
             "Cloud Provider": cluster.get("cloud_provider"),
