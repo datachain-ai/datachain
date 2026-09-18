@@ -287,7 +287,9 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
             for j in filtered
         ]
 
-    jobs_out = []
+    # Annotated because the rows hold a mix - strings, ints, the stages dict - and
+    # the sort below needs the inferred value type to stay comparable.
+    jobs_out: list[dict[str, Any]] = []
     for j in filtered:
         created_dt = _parse_dt(j.get("created_at"))
         finished_dt = _parse_dt(j.get("finished_at"))
