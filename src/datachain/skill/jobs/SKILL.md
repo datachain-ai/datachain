@@ -83,8 +83,8 @@ truncated: <true|false>
 **Section rules:**
 - Omit `## Clusters` if the `clusters` array is empty.
 - Cluster cells: use `—` when a field is null. A null instance type or region means Studio has no record of it, not that the cluster lacks one.
-- Job Quota is the configured limit on the cluster's workers, which the cluster reports live as Max Workers. It is not a number of jobs each worker runs.
-- Disk Request (`disk_size`) is temporary storage a worker asks for, not the capacity of the volumes it gets. It cannot price storage.
+- Job Quota is the configured worker limit, which the cluster reports live as Max Workers. It is not a number of jobs each worker runs.
+- Disk Request (`disk_size`) is requested temporary storage per worker; allocated capacity may differ.
 - Duration cell: `duration_str` value (e.g. `"9000s"`) when known, `—` when null.
 - Queue and Run: `queue_seconds` and `run_seconds` written as `Ns` (e.g. `4s`), `—` when null. They come from the job's stages, so they are `—` unless `enriched: true`. Duration covers everything from submit to finish, so Queue + Run is normally less than it — the difference is setup (`preparation`, `virtualenv`, `downloading_files`, `dw_wake_up`).
 - Workers: always a number (`workers` field, defaults to 1).

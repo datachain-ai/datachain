@@ -36,27 +36,24 @@ the compute cluster it ran on and a breakdown of its stages - see
 | `Cluster` | The compute cluster the job ran on. [`datachain job clusters`](clusters.md) shows what that cluster is - its region, machine and capacity |
 | `Stages` | How long the job spent in each stage |
 
-The stages are, in order: waiting in queue, requesting workers, preparation,
+```
++--------------------------------------+--------+----------+----------------------+--------------+--------------+---------------------------------+
+| ID                                   | Name   | Status   | Created at           | Created by   | Cluster      | Stages                          |
++======================================+========+==========+======================+==============+==============+=================================+
+| 0502eef6-a32e-45fa-8e3b-d20ec0abbcf0 | daily  | COMPLETE | 2026-09-16T00:00:00Z | alice        | prod-cluster | Waiting in queue: 4s            |
+|                                      |        |          |                      |              |              | Downloading files: 1h 5m        |
+|                                      |        |          |                      |              |              | Installing dependencies: 2m 30s |
+|                                      |        |          |                      |              |              | Running query: 12m 26s          |
++--------------------------------------+--------+----------+----------------------+--------------+--------------+---------------------------------+
+```
+
+A job passes through some of: waiting in queue, requesting workers, preparation,
 installing dependencies, downloading files, waking up the data warehouse, and
-running the query. A job shows only the stages it reached, so a missing one means
-unknown, not zero.
+running the query. Only the stages with a recorded time are listed - anything
+missing is unknown, not zero. A stage still going reads `running`.
 
-```
-+--------------------------------------+----------+----------+-----------------+------------------------------+
-| ID                                   | Name     | Status   | ...   | Cluster  | Stages                       |
-+======================================+==========+==========+=================+==============================+
-| 0502eef6-a32e-45fa-8e3b-d20ec0abbcf0 | daily    | COMPLETE | ...   | prod     | Waiting in queue: 4s         |
-|                                      |          |          |       |          | Downloading files: 1h 5m     |
-|                                      |          |          |       |          | Installing dependencies: 2m  |
-|                                      |          |          |       |          | Running query: 9m 12s        |
-+--------------------------------------+----------+----------+-----------------+------------------------------+
-```
-
-A stage reads `running` while it is still going, and `-` when its length was never
-recorded - it never started, or the job stopped without closing it.
-
-Comparing `Waiting in queue` against `Running query` is how you tell a slow job
-from a job that sat waiting for a worker.
+Comparing time queued against time running the query is how you tell a slow job
+from one that sat waiting for a worker.
 
 ## Status options
 

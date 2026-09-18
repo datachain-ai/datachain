@@ -18,11 +18,10 @@ Clusters come back exactly as Studio returns them - `ClusterData` in
     name, status, cloud_provider, is_active, default
     cloud_region        where it runs, e.g. us-west-2
     instance_type       machine type or family, e.g. m5.xlarge
-    compute_class       node class, e.g. Performance or gpu - NOT spot vs on-demand
-    disk_size           temporary storage a worker requests, e.g. 100Gi. NOT the
-                        capacity of the volumes it is given, and no basis for a
-                        storage cost
-    job_quota           configured limit on the cluster's workers
+    compute_class       worker class, e.g. Performance or gpu
+    disk_size           requested temporary storage per worker, e.g. 100Gi;
+                        allocated capacity may differ
+    job_quota           configured worker limit
     max_workers         the live value of that limit, as the cluster reports it
 
 Each job carries:

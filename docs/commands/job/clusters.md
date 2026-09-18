@@ -25,14 +25,30 @@ Retired clusters are not listed.
 * `-v`, `--verbose` - Be verbose
 * `-q`, `--quiet` - Be quiet
 
+## Picking a cluster
+
+List what your team has, then run on one by name:
+
+```bash
+datachain job clusters
+datachain job run analysis.py --cluster prod-cluster
+```
+
+Omit `--cluster` and the job runs on the team's default.
+
 ## Output
 
+An excerpt - the full table also carries Cloud Provider, Compute Class, Disk
+Request, Job Quota and Is Default:
+
 ```
-+--------------------------------------+--------------+----------+------------------+-----------+-----------------+-----------------+----------------+-------------------+-------------+--------------+
-| UUID                                 | Name         | Status   | Cloud Provider   | Region    | Instance Type   | Compute Class   | Disk Request   | Busy/Active/Max   |   Job Quota | Is Default   |
-+======================================+==============+==========+==================+===========+=================+=================+================+===================+=============+==============+
-| 550e8400-e29b-41d4-a716-446655440000 | prod-cluster | ACTIVE   | AWS              | us-west-2 | m5.xlarge       | gpu             | 100Gi          | 2/4/8             |           8 | True         |
-+--------------------------------------+--------------+----------+------------------+-----------+-----------------+-----------------+----------------+-------------------+-------------+--------------+
++--------------------------------------+--------------+----------+-------------+-----------------+-------------------+
+| UUID                                 | Name         | Status   | Region      | Instance Type   | Busy/Active/Max   |
++======================================+==============+==========+=============+=================+===================+
+| 550e8400-e29b-41d4-a716-446655440000 | prod-cluster | ACTIVE   | us-west-2   | m5.xlarge       | 2/4/8             |
++--------------------------------------+--------------+----------+-------------+-----------------+-------------------+
+| 6f1c2d90-8a71-4a3e-9f22-0b5d4e7c1a88 | gpu-a100     | INACTIVE | us-central1 | a2              | 0/0/16            |
++--------------------------------------+--------------+----------+-------------+-----------------+-------------------+
 ```
 
 | Column | Meaning |
@@ -41,19 +57,19 @@ Retired clusters are not listed.
 | `Name` | Pass this to `datachain job run --cluster` |
 | `Status` | `ACTIVE` and `MODIFYING` clusters accept jobs; `INACTIVE` and `FAILED` do not |
 | `Cloud Provider` | `AWS`, `GCP`, `AZ` or `NB` |
-| `Region` | Where the cluster runs, e.g. `us-west-2` |
-| `Instance Type` | The machine a worker runs on, e.g. `m5.xlarge` |
-| `Compute Class` | The kind of machine a worker gets, e.g. `Performance` or `gpu`. It does not tell you whether you are paying spot or on-demand rates |
-| `Disk Request` | Temporary storage a worker asks for, e.g. `100Gi`. Not the size of its disk, and no basis for a storage bill |
+| `Region` | Where the cluster runs |
+| `Instance Type` | Worker machine type or family |
+| `Compute Class` | Worker class, such as `Performance` or `gpu` |
+| `Disk Request` | Requested temporary storage per worker (allocated capacity may differ) |
 | `Busy/Active/Max` | Workers running jobs / started / allowed |
-| `Job Quota` | How many workers the cluster is allowed, as configured. It is not jobs per worker |
+| `Job Quota` | Configured worker limit |
 | `Is Default` | The cluster a job runs on when `--cluster` is omitted |
 
 A `-` means the cluster does not set that field. It never means zero.
 
 ## All fields
 
-The table is a summary. `--json` prints everything the cluster has:
+`--json` prints everything the cluster has, for scripting:
 
 ```console
 $ datachain job clusters --json
@@ -91,12 +107,7 @@ datachain job clusters
 datachain job clusters --team my-team
 ```
 
-3. Get every field as JSON:
-```bash
-datachain job clusters --json
-```
-
-4. Find the default cluster's instance type:
+3. Find the default cluster's instance type, for scripting:
 ```bash
 datachain job clusters --json | jq -r '.[] | select(.default) | .instance_type'
 ```
@@ -104,10 +115,7 @@ datachain job clusters --json | jq -r '.[] | select(.default) | .instance_type'
 ## Notes
 
 * To work out what a job cost, find the cluster it ran on with
-  [`datachain job ls --extended`](ls.md), then price that cluster's instance type in
-  its region from your cloud provider's rates. Two things are not in this output and
-  you need both:
-    * Whether the cluster runs spot or on-demand capacity - the two rates differ a
-      lot
-    * The storage actually allocated to a worker, if you are pricing storage. Disk
-      Request is what a worker asks for, not what it gets
+  [`datachain job ls --extended`](ls.md), then price its instance type in its region
+  from your cloud provider's rates. Two things you need are not here: whether the
+  cluster runs spot or on-demand capacity, and - for storage - the capacity a worker
+  is actually allocated, which Disk Request does not give you
