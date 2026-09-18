@@ -846,8 +846,8 @@ def test_studio_clusters_unset_fields_read_as_dashes(capsys, studio_token):
     assert "2/4/8" in out
 
 
-def test_studio_clusters_json_prints_the_server_response(capsys, studio_token):
-    """`--json` prints what Studio returned, unchanged."""
+def test_studio_clusters_json_prints_every_field(capsys, studio_token):
+    """`--json` prints the clusters exactly as Studio returned them."""
     with requests_mock.mock() as m:
         m.get(f"{STUDIO_URL}/api/datachain/clusters/", json=[CLUSTER_WITH_PRICING])
 

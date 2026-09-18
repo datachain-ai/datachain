@@ -20,7 +20,7 @@ Retired clusters are not listed.
 ## Options
 
 * `--team TEAM` - Team to list clusters for (default: from config)
-* `--json` - Print Studio's cluster payload as JSON
+* `--json` - Print the full cluster list as JSON, with every field
 * `-h`, `--help` - Show the help message and exit
 * `-v`, `--verbose` - Be verbose
 * `-q`, `--quiet` - Be quiet
@@ -37,7 +37,7 @@ Retired clusters are not listed.
 
 | Column | Meaning |
 |--------|---------|
-| `ID` | Numeric cluster id. The `--json` output also carries a `uuid`, which is what a job's `compute_cluster_uuid` points at |
+| `ID` | Numeric cluster id. Every cluster also has a `uuid` - see [All fields](#all-fields) |
 | `Name` | Pass this to `datachain job run --cluster` |
 | `Status` | `ACTIVE` and `MODIFYING` clusters accept jobs; `INACTIVE` and `FAILED` do not |
 | `Cloud Provider` | `AWS`, `GCP`, `AZ` or `NB` |
@@ -52,6 +52,42 @@ Retired clusters are not listed.
 A `-` means the cluster does not configure that field, so Studio has no value to
 report. It never means zero.
 
+## All fields
+
+The table above is a readable summary. `--json` prints every field:
+
+```console
+$ datachain job clusters --json
+[
+  {
+    "id": 1,
+    "uuid": "550e8400-e29b-41d4-a716-446655440000",
+    "name": "prod-cluster",
+    "status": "ACTIVE",
+    "cloud_provider": "AWS",
+    "cloud_credentials": "aws-creds",
+    "is_active": true,
+    "default": true,
+    "max_workers": 8,
+    "active_workers": 4,
+    "busy_workers": 2,
+    "cloud_region": "us-west-2",
+    "instance_type": "m5.xlarge",
+    "compute_class": "gpu",
+    "disk_size": "100Gi",
+    "job_quota": 8
+  }
+]
+```
+
+Three of these never appear in the table:
+
+| Field | Meaning |
+|-------|---------|
+| `uuid` | The cluster's stable identifier, and what a job's `compute_cluster_uuid` points at. Use it to tell which cluster a job ran on - names can be reused, and the numeric `id` is not durable |
+| `cloud_credentials` | Name of the cloud credentials the cluster provisions with, or `null` |
+| `is_active` | True while the cluster accepts jobs - the same thing `status` says |
+
 ## Examples
 
 1. List all clusters for the default team:
@@ -64,7 +100,7 @@ datachain job clusters
 datachain job clusters --team my-team
 ```
 
-3. Get the full payload as JSON:
+3. Get every field as JSON:
 ```bash
 datachain job clusters --json
 ```
@@ -77,9 +113,6 @@ datachain job clusters --json | jq -r '.[] | select(.default) | .instance_type'
 ## Notes
 
 * Cluster names are what `datachain job run --cluster` expects
-* `--json` is the machine-readable form: it prints Studio's payload unchanged, so it
-  carries every field, including ones the table leaves out such as `uuid`,
-  `cloud_credentials` and `is_active`
 * To price a job, find the cluster it ran on -
   [`datachain job ls --extended`](ls.md) shows it by name, and the jobs API also
   carries a `compute_cluster_uuid` that joins to a cluster's `uuid` - then take the

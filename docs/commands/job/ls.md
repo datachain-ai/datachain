@@ -131,4 +131,4 @@ datachain job ls --extended
 * Studio records more per job than this table shows - the exit code, error message,
   Python version, requirements, worker count, metrics and the cluster's UUID among
   them. [`datachain job logs`](logs.md) shows a job's output, and the
-  `StudioClient.get_jobs()` API returns the full payload
+  `StudioClient.get_jobs()` API returns all of it

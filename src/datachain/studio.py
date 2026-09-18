@@ -834,7 +834,7 @@ def list_clusters(team_name: str | None, as_json: bool = False):
 
     clusters = response.data or []
     if as_json:
-        # Studio's payload verbatim: what a cost calculation reads.
+        # Every field, exactly as Studio returned it: what a cost calculation reads.
         print(json.dumps(clusters, indent=2))
         return
 

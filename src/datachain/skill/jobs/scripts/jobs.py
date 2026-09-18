@@ -11,7 +11,7 @@ Output shapes
 `--clusters` prints `{"clusters": [...]}`; `--fetch` prints the same list under
 `"clusters"` alongside `"jobs"` and the counts the index frontmatter records.
 
-Clusters are Studio's payload unchanged - `ClusterData` in
+Clusters come back exactly as Studio returns them - `ClusterData` in
 `datachain.remote.studio` is the model, and these are the fields that matter here:
     id, uuid            uuid is what a job's cluster_uuid points at
     name, status, cloud_provider, is_active, default
@@ -160,7 +160,7 @@ def cmd_clusters():
         )
         sys.exit(1)
 
-    # Studio's cluster payload as-is - see ClusterData in datachain.remote.studio.
+    # Exactly as Studio returns it - see ClusterData in datachain.remote.studio.
     print(json.dumps({"clusters": list(response.data or [])}))
 
 

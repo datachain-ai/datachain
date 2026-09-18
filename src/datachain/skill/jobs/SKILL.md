@@ -20,7 +20,7 @@ You are now loaded with the datachain-jobs skill. Maintain a jobs analytics file
 
 Two things are available, and the script fetches both. Know what is in them before telling a user something cannot be answered.
 
-**Clusters** (`--clusters`, and the `clusters` array of `--fetch`) — Studio's cluster payload unchanged, one entry per compute cluster: `id`, `uuid`, `name`, `status`, `cloud_provider`, `is_active`, `default`, `max_workers`, `active_workers`, `busy_workers`, and the cost-relevant `cloud_region`, `instance_type`, `compute_class`, `disk_size`, `job_quota`.
+**Clusters** (`--clusters`, and the `clusters` array of `--fetch`) — one entry per compute cluster, exactly as Studio returns it: `id`, `uuid`, `name`, `status`, `cloud_provider`, `is_active`, `default`, `max_workers`, `active_workers`, `busy_workers`, and the cost-relevant `cloud_region`, `instance_type`, `compute_class`, `disk_size`, `job_quota`.
 
 **Jobs** (the `jobs` array of `--fetch`) — `id`, `name`, `status`, `created`, `created_by`, `finished`, `duration_seconds`/`duration_str`, `workers`, `cluster_name`, `python_version`. With `--enrich` each terminal job also carries `cluster_uuid` (joins to a cluster's `uuid`) and `stages`, a `{stage name: seconds}` map behind `queue_seconds` and `run_seconds`. The stages a job can have are `waiting`, `requesting_workers`, `preparation`, `virtualenv`, `downloading_files`, `dw_wake_up`, `running_query` — which ones it actually has depends on when it ran and how far it got.
 
