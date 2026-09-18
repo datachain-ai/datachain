@@ -159,16 +159,16 @@ class TestStageSeconds:
 
 
 class TestFetchStageTimings:
-    def test_every_job_is_timed_past_the_enrich_limit(self, capsys, monkeypatch):
-        """Stages ride on the list call, so the per-job enrich cap does not bound them.
+    def test_every_job_is_timed_in_one_call(self, capsys, monkeypatch):
+        """Stages ride on the list call, so no per-job cap can bound them.
 
-        201 completed jobs against a cap of 200 used to leave the last one untimed
-        while the output still claimed `enriched: true`, so Queue/Run totals quietly
-        dropped it.
+        These used to be fetched one job at a time, stopping at 200: past that,
+        jobs came back untimed while the output still claimed `enriched: true`,
+        so Queue/Run totals quietly dropped them.
         """
         import jobs as jobs_module
 
-        total = jobs_module.ENRICH_LIMIT + 1
+        total = 250
         listed = [
             {
                 "id": f"job-{i}",
@@ -207,8 +207,7 @@ class TestFetchStageTimings:
                 return Response([])
 
             def get_jobs(self, *args, job_id=None, include_steps=False, **kwargs):
-                if job_id is not None:
-                    return Response([{"id": job_id, "workers": 2}])
+                assert job_id is None, "no per-job request should be made"
                 FakeClient.list_calls.append(include_steps)
                 return Response(listed)
 
@@ -219,7 +218,8 @@ class TestFetchStageTimings:
         jobs_module.cmd_fetch(days=30, limit=500, enrich=True)
         out = json.loads(capsys.readouterr().out)
 
-        assert FakeClient.list_calls == [True], "the list call must ask for steps"
+        # One call, asking for steps - not one per job.
+        assert FakeClient.list_calls == [True]
         assert len(out["jobs"]) == total
         assert all(j["queue_seconds"] == 30 for j in out["jobs"])
         assert all(j["run_seconds"] == 1050 for j in out["jobs"])

@@ -12,8 +12,8 @@ usage: datachain job clusters [-h] [-v] [-q] [--team TEAM] [--json]
 
 This command lists the compute clusters your team can run jobs on, with the machine
 each one provisions and how busy it is. Use it to pick a cluster for
-[`datachain job run --cluster`](run.md), to check spare capacity before submitting,
-or to work out what a job costs.
+[`datachain job run --cluster`](run.md), or to check spare capacity before
+submitting.
 
 Retired clusters are not listed.
 
@@ -114,8 +114,12 @@ datachain job clusters --json | jq -r '.[] | select(.default) | .instance_type'
 
 ## Notes
 
-* To work out what a job cost, find the cluster it ran on with
-  [`datachain job ls --extended`](ls.md), then price its instance type in its region
-  from your cloud provider's rates. Two things you need are not here: whether the
-  cluster runs spot or on-demand capacity, and - for storage - the capacity a worker
-  is actually allocated, which Disk Request does not give you
+* **Working out a cost.** This tells you *what machine* a job ran on - its instance
+  type, region and provider, and how many workers - which is what you need to look a
+  rate up. It does not give you the rate, and two things it does not report change it:
+    * Whether the cluster runs spot or on-demand capacity
+    * The storage a worker is actually allocated, which Disk Request is not
+
+  So treat it as the input to a cost estimate, not the estimate. Pair it with
+  [`datachain job ls --extended`](ls.md) for the cluster and duration of a given job,
+  and your own rate card for the price.

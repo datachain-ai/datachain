@@ -818,12 +818,9 @@ def show_job_logs(job_id: str, team_name: str | None):
 
 def _cluster_workers(cluster: "ClusterData") -> str:
     """Worker counts as busy/active/max, the shape a capacity question asks for."""
-    counts = (
-        cluster.get("busy_workers"),
-        cluster.get("active_workers"),
-        cluster.get("max_workers"),
-    )
-    return "/".join("-" if count is None else str(count) for count in counts)
+    busy = cluster["busy_workers"]
+    active = cluster["active_workers"]
+    return f"{busy}/{active}/{cluster['max_workers']}"
 
 
 def list_clusters(team_name: str | None, as_json: bool = False):

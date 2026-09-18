@@ -3,7 +3,7 @@
 Usage:
     python3 jobs.py --plan                          # JSON: staleness check for index.md
     python3 jobs.py --fetch [--days N] [--limit N]  # JSON: fetch jobs from Studio
-    python3 jobs.py --fetch --enrich                # also fetch per-job details
+    python3 jobs.py --fetch --enrich                # also fetch each job's stages
     python3 jobs.py --clusters                      # JSON: list available clusters
 
 Output shapes
@@ -30,10 +30,9 @@ Each job carries:
     duration_str        the same as "9000s"
     workers             machines the job asked for, 1 when unreported
     cluster_name        the cluster it ran on
-    cluster_uuid        joins to a cluster's uuid; --enrich only
+    cluster_uuid        joins to a cluster's uuid
     python_version
-    stages              {stage name: seconds}; --enrich only, {} otherwise.
-                        Every returned job has them, not just the enriched ones
+    stages              {stage name: seconds}; --enrich only, {} otherwise
     queue_seconds       time in the `waiting` stage; null when unknown
     run_seconds         time in the `running_query` stage; null when unknown
 
@@ -49,10 +48,7 @@ from typing import Any
 STALE_AFTER_HOURS = 12
 DEFAULT_DAYS = 30
 DEFAULT_LIMIT = 500
-ENRICH_LIMIT = 200
 INDEX_PATH = "dc-knowledge/jobs/index.md"
-
-TERMINAL_STATUSES = {"complete", "failed", "canceled", "task"}
 
 
 def _studio_available() -> bool:
@@ -188,33 +184,7 @@ def _stage_seconds(steps) -> dict:
     return stages
 
 
-def _enrich_job(client, job: dict) -> dict:
-    """Fetch per-job details and merge into the job dict."""
-    job_id = job.get("id")
-    if not job_id:
-        return job
-    try:
-        response = client.get_jobs(job_id=job_id)
-        if response.ok and response.data and len(response.data) > 0:
-            detail = response.data[0]
-            # Merge fields that may be richer in the per-job response
-            for field in (
-                "workers",
-                "finished_at",
-                "python_version",
-                "cluster",
-                "compute_cluster_name",
-                "cluster_name",
-                "compute_cluster_uuid",
-            ):
-                if detail.get(field) is not None:
-                    job[field] = detail[field]
-    except Exception:  # noqa: BLE001, S110
-        pass
-    return job
-
-
-def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
+def cmd_fetch(days: int, limit: int, enrich: bool):
     """Fetch jobs from Studio and output JSON."""
     from datachain.remote.studio import StudioClient
 
@@ -223,7 +193,7 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
     cutoff = now - timedelta(days=days)
 
     # Fetch clusters for name reference, keyed by uuid and by name.
-    clusters_by_key: dict[Any, Any] = {}
+    clusters_by_key: dict[str, str] = {}
     clusters_list = []
     try:
         cr = client.get_clusters()
@@ -237,8 +207,9 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
     except Exception:  # noqa: BLE001, S110
         pass
 
-    # include_steps fills every returned job's stages in this one call. Asking per
-    # job instead would cap them at ENRICH_LIMIT and leave later jobs untimed.
+    # One call for everything. The list response already carries workers, duration
+    # and cluster, and include_steps adds each job's stages - the per-job endpoint
+    # is the same one filtered by id, so there is nothing more to ask it for.
     response = client.get_jobs(limit=limit, include_steps=enrich)
     if not response.ok:
         print(
@@ -260,36 +231,6 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
         elif created_dt is None:
             filtered.append(j)  # include if we can't parse date
 
-    to_enrich = []
-    if enrich:
-        to_enrich = [
-            j
-            for j in filtered
-            if _normalize_status(j.get("status")) in TERMINAL_STATUSES
-        ]
-        n = min(len(to_enrich), ENRICH_LIMIT)
-        if len(to_enrich) > ENRICH_LIMIT:
-            print(
-                f"Warning: {len(to_enrich)} terminal jobs found,"
-                f" enriching first {ENRICH_LIMIT} only.",
-                file=sys.stderr,
-            )
-            to_enrich = to_enrich[:ENRICH_LIMIT]
-        elif n > 100:
-            print(
-                f"Enriching {n} jobs with per-job API calls...",
-                file=sys.stderr,
-            )
-        to_enrich_ids = {j.get("id") for j in to_enrich}
-        enriched_map = {}
-        for j in to_enrich:
-            enriched_j = _enrich_job(client, dict(j))
-            enriched_map[j.get("id")] = enriched_j
-        filtered = [
-            enriched_map.get(j.get("id"), j) if j.get("id") in to_enrich_ids else j
-            for j in filtered
-        ]
-
     # Annotated because the rows hold a mix - strings, ints, the stages dict - and
     # the sort below needs the inferred value type to stay comparable.
     jobs_out: list[dict[str, Any]] = []
@@ -304,11 +245,14 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
                 duration_seconds = dur
 
         # Resolve cluster name: try multiple field names the API might use
+        cluster_key = j.get("compute_cluster_uuid") or j.get("cluster")
+        looked_up = (
+            clusters_by_key.get(cluster_key) if isinstance(cluster_key, str) else None
+        )
         cluster_name = (
             j.get("cluster_name")
             or j.get("compute_cluster_name")
-            or clusters_by_key.get(j.get("compute_cluster_uuid"))
-            or clusters_by_key.get(j.get("cluster"))
+            or looked_up
             or j.get("cluster")
         )
 
@@ -319,7 +263,7 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
             created_dt.strftime("%Y-%m-%d %H:%M") if created_dt else j.get("created_at")
         )
 
-        # Empty unless --enrich asked the list call for the job's stages.
+        # Empty unless --enrich asked for the job's stages.
         stages = _stage_seconds(j.get("steps"))
 
         jobs_out.append(
@@ -398,7 +342,7 @@ def main():
     parser.add_argument(
         "--enrich",
         action="store_true",
-        help="Fetch per-job details for workers/duration/cluster",
+        help="Also fetch each job's stage timings",
     )
 
     args = parser.parse_args()

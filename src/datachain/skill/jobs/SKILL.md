@@ -20,9 +20,9 @@ You are now loaded with the datachain-jobs skill. Maintain a jobs analytics file
 
 Two things are available, and the script fetches both. Know what is in them before telling a user something cannot be answered.
 
-**Clusters** (`--clusters`, and the `clusters` array of `--fetch`) — one entry per compute cluster, exactly as Studio returns it: `uuid`, `name`, `status`, `cloud_provider`, `is_active`, `default`, `max_workers`, `active_workers`, `busy_workers`, and the cost-relevant `cloud_region`, `instance_type`, `compute_class`, `disk_size`, `job_quota`. Identify a cluster by `uuid` — an `id` is also returned, but it is legacy and on its way out.
+**Clusters** (`--clusters`, and the `clusters` array of `--fetch`) — one entry per compute cluster, exactly as Studio returns it: `uuid`, `name`, `status`, `cloud_provider`, `is_active`, `default`, `max_workers`, `active_workers`, `busy_workers`, and what a worker is: `cloud_region`, `instance_type`, `compute_class`, `disk_size`, `job_quota`. That identifies the machine for a rate lookup; it is not a price, and does not say whether the cluster is billed spot or on-demand. Identify a cluster by `uuid` — an `id` is also returned, but it is legacy and on its way out.
 
-**Jobs** (the `jobs` array of `--fetch`) — `id`, `name`, `status`, `created`, `created_by`, `finished`, `duration_seconds`/`duration_str`, `workers`, `cluster_name`, `python_version`. With `--enrich` each terminal job also carries `cluster_uuid` (joins to a cluster's `uuid`) and `stages`, a `{stage name: seconds}` map behind `queue_seconds` and `run_seconds`. The stages a job can have are `waiting`, `requesting_workers`, `preparation`, `virtualenv`, `downloading_files`, `dw_wake_up`, `running_query` — which ones it actually has depends on when it ran and how far it got.
+**Jobs** (the `jobs` array of `--fetch`) — `id`, `name`, `status`, `created`, `created_by`, `finished`, `duration_seconds`/`duration_str`, `workers`, `cluster_name`, `python_version`. Every job also carries `cluster_uuid`, which joins to a cluster's `uuid`. With `--enrich` each one carries `stages` too, a `{stage name: seconds}` map behind `queue_seconds` and `run_seconds`. The stages a job can have are `waiting`, `requesting_workers`, `preparation`, `virtualenv`, `downloading_files`, `dw_wake_up`, `running_query` — which ones it actually has depends on when it ran and how far it got.
 
 A null anywhere means Studio did not report it, never zero. The script's module docstring (`{skill_dir}/scripts/jobs.py`) is the authoritative field list.
 
@@ -47,7 +47,7 @@ python3 {skill_dir}/scripts/jobs.py --fetch [--days N] [--limit N] [--enrich]
 ```
 
 - Use `--days N` from the user's request if stated (e.g. "last 7 days" → `--days 7`). Default: `--days 30`.
-- Add `--enrich` only when the question requires duration, workers, cluster, or stage timings AND `enriched: false` in an existing index — tell the user it makes one API call per terminal job.
+- Add `--enrich` when the question needs stage timings (Queue and Run). It costs one request either way — duration, workers and cluster come back without it.
 - If the script fails → report the error and stop.
 
 Write `dc-knowledge/jobs/index.md` using EXACTLY this format:
@@ -62,7 +62,7 @@ complete_count: <complete_count>
 running_count: <running_count>
 other_count: <other_count>
 enriched: <true|false>
-duration_note: "Wall-clock duration (submit→finish). Null when enriched=false or job still running."
+duration_note: "Wall-clock duration (submit→finish). Null while a job is still running."
 stage_note: "Queue/Run come from job stages. Null when enriched=false, or when the job never reached that stage."
 truncated: <true|false>
 ---
@@ -102,7 +102,7 @@ Read `dc-knowledge/jobs/index.md` and answer the user's question.
 ### Duration arithmetic
 Duration cells contain plain seconds strings like `"9000s"`. Parse the integer before `s`, sum, then convert:
 - Example: filter rows for user "alice" in the last 7 days, sum all Duration values → total seconds → divide by 3600 for hours.
-- Missing durations: check `enriched` in the frontmatter. If it is `false`, re-run Step 2 with `--enrich` yourself rather than asking the user to run anything. If it is `true` and cells are still `—`, those jobs have no recorded finish — say so and state the coverage when aggregating.
+- Missing durations do not mean the index needs re-fetching — duration does not depend on `--enrich`. A `—` means the job has no recorded finish, usually because it is still running. Say so, and state the coverage when aggregating.
 
 ### Stage breakdown — where the time went
 The Queue and Run columns split a job's wall clock: waiting before it started, running the query. The remainder is setup.
