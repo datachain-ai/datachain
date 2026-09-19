@@ -12,9 +12,7 @@ usage: datachain job ls [-h] [-v] [-q] [--status STATUS] [--team TEAM] [--limit 
 
 This command lists jobs in Studio. You can filter jobs by their status, specify a team, and limit the number of jobs returned. By default, it shows the 20 most recent jobs.
 
-Every job shows its ID, name, status, creation time and author. `--extended` adds
-the compute cluster it ran on and a breakdown of its stages - see
-[Extended output](#extended-output).
+Every job shows its ID, name, status, creation time and author. `--extended` adds the compute cluster it ran on and a breakdown of its stages - see [Extended output](#extended-output).
 
 
 ## Options
@@ -47,13 +45,9 @@ the compute cluster it ran on and a breakdown of its stages - see
 +--------------------------------------+--------+----------+----------------------+--------------+--------------+---------------------------------+
 ```
 
-A job passes through some of: waiting in queue, requesting workers, preparation,
-installing dependencies, downloading files, waking up the data warehouse, and
-running the query. A stage still going reads `running`, and one whose timing is
-unavailable reads `-` - never `0s`.
+A job passes through some of: waiting in queue, requesting workers, preparation, installing dependencies, downloading files, waking up the data warehouse, and running the query. A stage still going reads `running`, and one whose timing is unavailable reads `-` - never `0s`.
 
-Comparing time queued against time running the query is how you tell a slow job
-from one that sat waiting for a worker.
+Comparing time queued against time running the query is how you tell a slow job from one that sat waiting for a worker.
 
 ## Status options
 
@@ -120,8 +114,5 @@ datachain job ls --extended
 * The default limit of 20 jobs helps manage the output size and performance
 * Jobs are typically listed in reverse chronological order (newest first)
 * Use the `--status` filter to find jobs in specific states (e.g., running, completed, failed)
-* `--extended` asks for more, so plain `job ls` stays the quicker way to check what
-  is running
-* Studio keeps more about a job than this table shows - why it failed, what it ran
-  with, how many workers it used. [`datachain job logs`](logs.md) shows its output,
-  and `StudioClient.get_jobs()` returns the rest
+* `--extended` asks for more, so plain `job ls` stays the quicker way to check what is running
+* Studio keeps more about a job than this table shows - why it failed, what it ran with, how many workers it used. [`datachain job logs`](logs.md) shows its output, and `StudioClient.get_jobs()` returns the rest

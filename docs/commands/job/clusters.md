@@ -10,10 +10,7 @@ usage: datachain job clusters [-h] [-v] [-q] [--team TEAM] [--json]
 
 ## Description
 
-This command lists the compute clusters your team can run jobs on, with the machine
-each one provisions and how busy it is. Use it to pick a cluster for
-[`datachain job run --cluster`](run.md), or to check spare capacity before
-submitting.
+This command lists the compute clusters your team can run jobs on, with the machine each one provisions and how busy it is. Use it to pick a cluster for [`datachain job run --cluster`](run.md), or to check spare capacity before submitting.
 
 Retired clusters are not listed.
 
@@ -38,8 +35,7 @@ Omit `--cluster` and the job runs on the team's default.
 
 ## Output
 
-An excerpt - the full table also carries Cloud Provider, Compute Class, Disk
-Request, Job Quota and Is Default:
+An excerpt - the full table also carries Cloud Provider, Compute Class, Disk Request, Job Quota and Is Default:
 
 ```
 +--------------------------------------+--------------+----------+-------------+-----------------+-------------------+
@@ -114,6 +110,4 @@ datachain job clusters --json | jq -r '.[] | select(.default) | .instance_type'
 
 ## Notes
 
-* **Working out a cost.** Provider, region and machine information can help identify
-  a rate. Estimating a job's cost also requires its resource usage and the applicable
-  compute and storage rates, none of which this command reports.
+* **Working out a cost.** Provider, region and machine information can help identify a rate. Estimating a job's cost also requires its resource usage and the applicable compute and storage rates, none of which this command reports.
