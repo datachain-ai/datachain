@@ -20,7 +20,7 @@ Every job shows its ID, name, status, creation time and author. `--extended` add
 * `--status STATUS` - Status to filter jobs by
 * `--team TEAM` - Team to list jobs for (default: from config)
 * `--limit LIMIT` - Limit the number of jobs returned (default: 20)
-* `--json` - Print the full job list as JSON, with every field
+* `--json` - Print the job list as JSON
 * `-e`, `--extended` - Show [extra job details](#extended-output)
 * `-h`, `--help` - Show the help message and exit
 * `-v`, `--verbose` - Be verbose
@@ -52,10 +52,10 @@ Comparing time queued against time running the query is how you tell a slow job 
 
 ## All fields
 
-`--json` prints everything Studio holds about each job - the cluster it ran on and that cluster's UUID, the exit code and error message, workers, Python version, requirements, metrics - and the stages, without needing `--extended`:
+`--json` prints everything Studio holds about each job - the cluster it ran on and that cluster's UUID, the exit code and error message, workers, Python version, requirements, metrics. It changes the output format only, so the other flags still apply: add `--extended` for the stages, and `--status`, `--limit` and `--team` filter it as usual.
 
 ```bash
-datachain job ls --json
+datachain job ls --json --extended --status failed
 ```
 
 Match a job to a cluster on `compute_cluster_uuid`, not on the cluster's name. A retired cluster keeps its jobs but no longer appears in [`datachain job clusters`](clusters.md), and a later cluster can take its name, so matching on the name can attribute a job to a machine it never ran on.

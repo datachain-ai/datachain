@@ -782,7 +782,6 @@ def test_studio_list_jobs(capsys):
 
 
 CLUSTER_WITH_PRICING = {
-    "id": 1,
     "uuid": "550e8400-e29b-41d4-a716-446655440000",
     "name": "prod-cluster",
     "status": "ACTIVE",
@@ -899,8 +898,8 @@ def test_studio_clusters_none_found(capsys, studio_token):
     assert "No clusters found" in capsys.readouterr().out
 
 
-def test_studio_jobs_json_prints_every_field(capsys, studio_token):
-    """`--json` prints what Studio returned, stages included."""
+def test_studio_jobs_json_prints_the_response(capsys, studio_token):
+    """`--json` changes the format, not what is asked for: `--extended` still rules."""
     job = {
         "id": "0502eef6-a32e-45fa-8e3b-d20ec0abbcf0",
         "name": "daily",
@@ -925,9 +924,13 @@ def test_studio_jobs_json_prints_every_field(capsys, studio_token):
         route = m.get(f"{STUDIO_URL}/api/datachain/jobs/", json=[job])
 
         assert main(["job", "ls", "--json"]) == 0
+        assert "include_steps" not in route.last_request.qs
+        assert json.loads(capsys.readouterr().out) == [job]
 
-    # Stages come along without --extended: nothing has to render them in a cell.
+        assert main(["job", "ls", "--json", "--extended", "--limit", "5"]) == 0
+
     assert route.last_request.qs["include_steps"] == ["true"]
+    assert route.last_request.qs["limit"] == ["5"]
     assert json.loads(capsys.readouterr().out) == [job]
 
 

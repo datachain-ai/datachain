@@ -17,7 +17,7 @@ Retired clusters are not listed.
 ## Options
 
 * `--team TEAM` - Team to list clusters for (default: from config)
-* `--json` - Print the full cluster list as JSON, with every field
+* `--json` - Print the cluster list as JSON
 * `-h`, `--help` - Show the help message and exit
 * `-v`, `--verbose` - Be verbose
 * `-q`, `--quiet` - Be quiet
@@ -71,7 +71,6 @@ A `-` means the cluster does not set that field. It never means zero.
 $ datachain job clusters --json
 [
   {
-    "id": 1,
     "uuid": "550e8400-e29b-41d4-a716-446655440000",
     "name": "prod-cluster",
     "status": "ACTIVE",

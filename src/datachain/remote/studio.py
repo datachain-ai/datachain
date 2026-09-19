@@ -35,7 +35,6 @@ class ClusterData(TypedDict):
     "not set", never zero.
     """
 
-    id: int
     uuid: str
     name: str
     status: str

@@ -750,8 +750,7 @@ def list_jobs(
     as_json: bool = False,
 ):
     client = StudioClient(team=team_name)
-    # The stages are worth having whenever nothing has to render them in a cell.
-    response = client.get_jobs(status, limit, include_steps=extended or as_json)
+    response = client.get_jobs(status, limit, include_steps=extended)
     if not response.ok:
         raise DataChainError(response.message)
 

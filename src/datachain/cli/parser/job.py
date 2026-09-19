@@ -166,7 +166,7 @@ def add_jobs_parser(subparsers, parent_parser) -> None:
         "--json",
         action="store_true",
         default=False,
-        help="Print the full job list as JSON, with every field",
+        help="Print the job list as JSON",
     )
 
     studio_ls_parser.add_argument(
@@ -245,5 +245,5 @@ def add_jobs_parser(subparsers, parent_parser) -> None:
         "--json",
         action="store_true",
         default=False,
-        help="Print the full cluster list as JSON, with every field",
+        help="Print the cluster list as JSON",
     )
