@@ -557,12 +557,9 @@ class StudioClient:
         `compute_cluster_id`, `compute_cluster_uuid` (joins to a cluster's `uuid`)
         and `compute_cluster_name`.
 
-        `include_steps` fills `steps` with the job's stages - `waiting`,
-        `requesting_workers`, `preparation`, `virtualenv`, `downloading_files`,
-        `dw_wake_up`, `running_query` - each with a `status`, `started_at` and
-        `finished_at`, which is how long a job spent queued as against running.
-        Without it `steps` is null; with it, a stage missing from the list means the
-        job never reached it, and one with no `finished_at` was still in it.
+        With `include_steps`, `steps` holds the job's recorded stages and their
+        timestamps - how long it spent queued as against running. Missing timestamps
+        mean the duration is unavailable. Without it, `steps` is null.
         """
         params: dict[str, Any] = {"limit": limit}
         if status is not None:

@@ -801,8 +801,8 @@ CLUSTER_WITH_PRICING = {
 }
 
 
-def test_studio_clusters_shows_what_a_worker_costs(capsys, studio_token):
-    """The machine, where it runs, and how many jobs share it: what a rate needs."""
+def test_studio_clusters_shows_the_machine_and_its_limits(capsys, studio_token):
+    """The machine, where it runs, and how many workers it allows."""
     with requests_mock.mock() as m:
         m.get(f"{STUDIO_URL}/api/datachain/clusters/", json=[CLUSTER_WITH_PRICING])
 
@@ -822,8 +822,15 @@ def test_studio_clusters_shows_what_a_worker_costs(capsys, studio_token):
     assert "Job Quota" in out
 
 
+def quota_cell(out: str) -> str:
+    """The Job Quota cell of the single rendered row."""
+    header, row = [line for line in out.splitlines() if line.startswith("|")][:2]
+    column = [h.strip() for h in header.split("|")].index("Job Quota")
+    return [c.strip() for c in row.split("|")][column]
+
+
 def test_studio_clusters_unset_fields_read_as_dashes(capsys, studio_token):
-    """A cluster that configures none of them. A dash is "not set", never zero."""
+    """A cluster that configures none of them. A dash is "not set"."""
     with requests_mock.mock() as m:
         m.get(
             f"{STUDIO_URL}/api/datachain/clusters/",
@@ -845,8 +852,32 @@ def test_studio_clusters_unset_fields_read_as_dashes(capsys, studio_token):
     out = capsys.readouterr().out
     assert "plain-cluster" in out
     assert "us-west-2" not in out
+    assert quota_cell(out) == "-"
     # The counts are still reported, so they are still numbers.
     assert "2/4/8" in out
+
+
+def test_studio_clusters_zero_is_not_unknown(capsys, studio_token):
+    """A configured quota of 0 is a real limit - it must not read as unset."""
+    with requests_mock.mock() as m:
+        m.get(
+            f"{STUDIO_URL}/api/datachain/clusters/",
+            json=[
+                {
+                    **CLUSTER_WITH_PRICING,
+                    "job_quota": 0,
+                    "busy_workers": 0,
+                    "active_workers": 0,
+                    "max_workers": 0,
+                }
+            ],
+        )
+
+        assert main(["job", "clusters"]) == 0
+
+    out = capsys.readouterr().out
+    assert quota_cell(out) == "0"
+    assert "0/0/0" in out
 
 
 def test_studio_clusters_json_prints_every_field(capsys, studio_token):

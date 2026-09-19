@@ -2,9 +2,11 @@
 
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import ClassVar
+from typing import Any
+
+import pytest
 
 # Insert the scripts directory so bare imports work.
 SCRIPTS_DIR = str(
@@ -158,8 +160,56 @@ class TestStageSeconds:
         assert _stage_seconds([]) == {}
 
 
+@pytest.fixture
+def studio_jobs(mocker):
+    """Patch StudioClient, and hand back a setter for the job list it returns."""
+    from datachain.remote.studio import Response
+
+    client = mocker.patch("datachain.remote.studio.StudioClient").return_value
+    client.get_clusters.return_value = Response([], ok=True, message="", status=200)
+
+    def serve(jobs):
+        client.get_jobs.return_value = Response(jobs, ok=True, message="", status=200)
+        return client
+
+    return serve
+
+
+def a_job(index: int, created: datetime, *, stages: bool = True) -> dict:
+    """A completed job 20 minutes long: 30s queued, 2m setup, the rest running."""
+    finished = created + timedelta(minutes=20)
+    job: dict[str, Any] = {
+        "id": f"job-{index}",
+        "name": f"job-{index}",
+        "status": "COMPLETE",
+        "created_at": created.isoformat().replace("+00:00", "Z"),
+        "finished_at": finished.isoformat().replace("+00:00", "Z"),
+        "created_by": "ivan",
+    }
+    if stages:
+        job["steps"] = [
+            {
+                "name": "waiting",
+                "started_at": job["created_at"],
+                "finished_at": (created + timedelta(seconds=30))
+                .isoformat()
+                .replace("+00:00", "Z"),
+            },
+            {
+                "name": "running_query",
+                "started_at": (created + timedelta(minutes=2))
+                .isoformat()
+                .replace("+00:00", "Z"),
+                "finished_at": job["finished_at"],
+            },
+        ]
+    return job
+
+
 class TestFetchStageTimings:
-    def test_every_job_is_timed_in_one_call(self, capsys, monkeypatch):
+    """Jobs are dated off the fetcher's own clock, so these never age out."""
+
+    def test_every_job_is_timed_in_one_call(self, capsys, studio_jobs):
         """Stages ride on the list call, so no per-job cap can bound them.
 
         These used to be fetched one job at a time, stopping at 200: past that,
@@ -169,98 +219,29 @@ class TestFetchStageTimings:
         import jobs as jobs_module
 
         total = 250
-        listed = [
-            {
-                "id": f"job-{i}",
-                "name": f"job-{i}",
-                "status": "COMPLETE",
-                "created_at": "2026-09-16T00:00:00Z",
-                "finished_at": "2026-09-16T00:20:00Z",
-                "created_by": "ivan",
-                "steps": [
-                    {
-                        "name": "waiting",
-                        "started_at": "2026-09-16T00:00:00Z",
-                        "finished_at": "2026-09-16T00:00:30Z",
-                    },
-                    {
-                        "name": "running_query",
-                        "started_at": "2026-09-16T00:02:30Z",
-                        "finished_at": "2026-09-16T00:20:00Z",
-                    },
-                ],
-            }
-            for i in range(total)
-        ]
-
-        class Response:
-            def __init__(self, data):
-                self.ok, self.data, self.message = True, data, ""
-
-        class FakeClient:
-            list_calls: ClassVar[list[bool]] = []
-
-            def __init__(self, *args, **kwargs):
-                pass
-
-            def get_clusters(self):
-                return Response([])
-
-            def get_jobs(self, *args, job_id=None, include_steps=False, **kwargs):
-                assert job_id is None, "no per-job request should be made"
-                FakeClient.list_calls.append(include_steps)
-                return Response(listed)
-
-        import datachain.remote.studio as studio_module
-
-        monkeypatch.setattr(studio_module, "StudioClient", FakeClient)
+        yesterday = jobs_module.datetime.now(tz=timezone.utc) - timedelta(days=1)
+        client = studio_jobs([a_job(i, yesterday) for i in range(total)])
 
         jobs_module.cmd_fetch(days=30, limit=500, enrich=True)
         out = json.loads(capsys.readouterr().out)
 
         # One call, asking for steps - not one per job.
-        assert FakeClient.list_calls == [True]
+        client.get_jobs.assert_called_once_with(limit=500, include_steps=True)
         assert len(out["jobs"]) == total
         assert all(j["queue_seconds"] == 30 for j in out["jobs"])
-        assert all(j["run_seconds"] == 1050 for j in out["jobs"])
+        assert all(j["run_seconds"] == 1080 for j in out["jobs"])
 
-    def test_stages_are_left_out_without_enrich(self, capsys, monkeypatch):
+    def test_stages_are_left_out_without_enrich(self, capsys, studio_jobs):
         import jobs as jobs_module
 
-        class Response:
-            def __init__(self, data):
-                self.ok, self.data, self.message = True, data, ""
-
-        class FakeClient:
-            include_steps_asked = None
-
-            def __init__(self, *args, **kwargs):
-                pass
-
-            def get_clusters(self):
-                return Response([])
-
-            def get_jobs(self, *args, job_id=None, include_steps=False, **kwargs):
-                FakeClient.include_steps_asked = include_steps
-                return Response(
-                    [
-                        {
-                            "id": "job-1",
-                            "name": "job-1",
-                            "status": "COMPLETE",
-                            "created_at": "2026-09-16T00:00:00Z",
-                            "created_by": "ivan",
-                        }
-                    ]
-                )
-
-        import datachain.remote.studio as studio_module
-
-        monkeypatch.setattr(studio_module, "StudioClient", FakeClient)
+        yesterday = jobs_module.datetime.now(tz=timezone.utc) - timedelta(days=1)
+        client = studio_jobs([a_job(1, yesterday, stages=False)])
 
         jobs_module.cmd_fetch(days=30, limit=500, enrich=False)
         out = json.loads(capsys.readouterr().out)
 
-        assert FakeClient.include_steps_asked is False
+        client.get_jobs.assert_called_once_with(limit=500, include_steps=False)
         assert out["jobs"][0]["stages"] == {}
         assert out["jobs"][0]["queue_seconds"] is None
+        # Duration never depended on stages.
+        assert out["jobs"][0]["duration_seconds"] == 1200

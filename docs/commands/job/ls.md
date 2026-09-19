@@ -49,8 +49,8 @@ the compute cluster it ran on and a breakdown of its stages - see
 
 A job passes through some of: waiting in queue, requesting workers, preparation,
 installing dependencies, downloading files, waking up the data warehouse, and
-running the query. Only the stages with a recorded time are listed - anything
-missing is unknown, not zero. A stage still going reads `running`.
+running the query. A stage still going reads `running`, and one whose timing is
+unavailable reads `-` - never `0s`.
 
 Comparing time queued against time running the query is how you tell a slow job
 from one that sat waiting for a worker.

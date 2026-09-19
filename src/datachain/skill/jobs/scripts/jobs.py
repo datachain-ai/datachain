@@ -11,20 +11,10 @@ Output shapes
 `--clusters` prints `{"clusters": [...]}`; `--fetch` prints the same list under
 `"clusters"` alongside `"jobs"` and the counts the index frontmatter records.
 
-Clusters come back exactly as Studio returns them - `ClusterData` in
-`datachain.remote.studio` is the model, and these are the fields that matter here:
-    uuid                the cluster's identifier, and what a job's cluster_uuid
-                        points at. Prefer it over the legacy numeric `id`
-    name, status, cloud_provider, is_active, default
-    cloud_region        where it runs, e.g. us-west-2
-    instance_type       machine type or family, e.g. m5.xlarge
-    compute_class       worker class, e.g. Performance or gpu
-    disk_size           requested temporary storage per worker, e.g. 100Gi;
-                        allocated capacity may differ
-    job_quota           configured worker limit
-    max_workers         the live value of that limit, as the cluster reports it
+Clusters are Studio's own shape, unchanged: see `ClusterData` in
+`datachain.remote.studio`.
 
-Each job carries:
+Jobs are reshaped, so this is their field list:
     id, name, status, created, created_display, created_by, finished
     duration_seconds    wall clock, submit to finish; null while running
     duration_str        the same as "9000s"
@@ -33,8 +23,8 @@ Each job carries:
     cluster_uuid        joins to a cluster's uuid
     python_version
     stages              {stage name: seconds}; --enrich only, {} otherwise
-    queue_seconds       time in the `waiting` stage; null when unknown
-    run_seconds         time in the `running_query` stage; null when unknown
+    queue_seconds       time in the `waiting` stage; null when unavailable
+    run_seconds         time in the `running_query` stage; null when unavailable
 
 A null is always "Studio did not report it", never zero.
 """
@@ -159,17 +149,14 @@ def cmd_clusters():
         )
         sys.exit(1)
 
-    # Exactly as Studio returns it - see ClusterData in datachain.remote.studio.
-    print(json.dumps({"clusters": list(response.data or [])}))
+    print(json.dumps({"clusters": response.data or []}))
 
 
-def _stage_seconds(steps) -> dict:
+def _stage_seconds(steps) -> dict[str, int]:
     """Seconds spent in each job stage, keyed by stage name.
 
-    Stages come from Studio only when asked for, and a job carries only the ones it
-    reached - `waiting`, `requesting_workers`, `preparation`, `virtualenv`,
-    `downloading_files`, `dw_wake_up`, `running_query`. A stage with no end (still
-    running, or a job that stopped mid-stage) is left out rather than counted as 0.
+    Stages come from Studio only when asked for. A stage without both timestamps has
+    no duration to report, so it is left out rather than counted as 0.
     """
     stages = {}
     for step in steps or []:
@@ -192,18 +179,11 @@ def cmd_fetch(days: int, limit: int, enrich: bool):
     now = datetime.now(tz=timezone.utc)
     cutoff = now - timedelta(days=days)
 
-    # Fetch clusters for name reference, keyed by uuid and by name.
-    clusters_by_key: dict[str, str] = {}
     clusters_list = []
     try:
         cr = client.get_clusters()
         if cr.ok:
-            for c in cr.data or []:
-                clusters_list.append(dict(c))
-                if c.get("uuid"):
-                    clusters_by_key[c["uuid"]] = c.get("name") or c["uuid"]
-                if c.get("name"):
-                    clusters_by_key[c["name"]] = c["name"]
+            clusters_list = cr.data or []
     except Exception:  # noqa: BLE001, S110
         pass
 
@@ -231,8 +211,6 @@ def cmd_fetch(days: int, limit: int, enrich: bool):
         elif created_dt is None:
             filtered.append(j)  # include if we can't parse date
 
-    # Annotated because the rows hold a mix - strings, ints, the stages dict - and
-    # the sort below needs the inferred value type to stay comparable.
     jobs_out: list[dict[str, Any]] = []
     for j in filtered:
         created_dt = _parse_dt(j.get("created_at"))
@@ -243,18 +221,6 @@ def cmd_fetch(days: int, limit: int, enrich: bool):
             dur = int((finished_dt - created_dt).total_seconds())
             if dur >= 0:
                 duration_seconds = dur
-
-        # Resolve cluster name: try multiple field names the API might use
-        cluster_key = j.get("compute_cluster_uuid") or j.get("cluster")
-        looked_up = (
-            clusters_by_key.get(cluster_key) if isinstance(cluster_key, str) else None
-        )
-        cluster_name = (
-            j.get("cluster_name")
-            or j.get("compute_cluster_name")
-            or looked_up
-            or j.get("cluster")
-        )
 
         raw_id = j.get("id") or ""
         job_id = _strip_ordinal(raw_id) if raw_id else None
@@ -280,7 +246,7 @@ def cmd_fetch(days: int, limit: int, enrich: bool):
                 if duration_seconds is not None
                 else None,
                 "workers": j.get("workers") or 1,
-                "cluster_name": cluster_name,
+                "cluster_name": j.get("compute_cluster_name"),
                 "cluster_uuid": j.get("compute_cluster_uuid"),
                 "python_version": j.get("python_version"),
                 "stages": stages,

@@ -28,7 +28,6 @@ if TYPE_CHECKING:
     from argparse import Namespace
 
     from datachain.catalog import Catalog
-    from datachain.remote.studio import ClusterData
 
 POST_LOGIN_MESSAGE = (
     "Once you've logged in, return here "
@@ -816,13 +815,6 @@ def show_job_logs(job_id: str, team_name: str | None):
     return show_logs_from_client(client, job_id)
 
 
-def _cluster_workers(cluster: "ClusterData") -> str:
-    """Worker counts as busy/active/max, the shape a capacity question asks for."""
-    busy = cluster["busy_workers"]
-    active = cluster["active_workers"]
-    return f"{busy}/{active}/{cluster['max_workers']}"
-
-
 def list_clusters(team_name: str | None, as_json: bool = False):
     client = StudioClient(team=team_name)
     response = client.get_clusters()
@@ -841,22 +833,26 @@ def list_clusters(team_name: str | None, as_json: bool = False):
 
     rows = [
         {
-            "UUID": cluster.get("uuid"),
-            "Name": cluster.get("name"),
-            "Status": cluster.get("status"),
-            "Cloud Provider": cluster.get("cloud_provider"),
-            "Region": cluster.get("cloud_region") or "-",
-            "Instance Type": cluster.get("instance_type") or "-",
-            "Compute Class": cluster.get("compute_class") or "-",
-            "Disk Request": cluster.get("disk_size") or "-",
-            "Busy/Active/Max": _cluster_workers(cluster),
-            "Job Quota": cluster.get("job_quota") or "-",
-            "Is Default": cluster.get("default"),
+            "UUID": cluster["uuid"],
+            "Name": cluster["name"],
+            "Status": cluster["status"],
+            "Cloud Provider": cluster["cloud_provider"],
+            "Region": cluster["cloud_region"],
+            "Instance Type": cluster["instance_type"],
+            "Compute Class": cluster["compute_class"],
+            "Disk Request": cluster["disk_size"],
+            "Busy/Active/Max": (
+                f"{cluster['busy_workers']}/{cluster['active_workers']}"
+                f"/{cluster['max_workers']}"
+            ),
+            "Job Quota": cluster["job_quota"],
+            "Is Default": cluster["default"],
         }
         for cluster in clusters
     ]
 
-    print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
+    # missingval renders the unset fields, so a quota of 0 stays 0.
+    print(tabulate.tabulate(rows, headers="keys", tablefmt="grid", missingval="-"))
 
 
 def create_pipeline(

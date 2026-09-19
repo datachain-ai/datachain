@@ -114,12 +114,6 @@ datachain job clusters --json | jq -r '.[] | select(.default) | .instance_type'
 
 ## Notes
 
-* **Working out a cost.** This tells you *what machine* a job ran on - its instance
-  type, region and provider, and how many workers - which is what you need to look a
-  rate up. It does not give you the rate, and two things it does not report change it:
-    * Whether the cluster runs spot or on-demand capacity
-    * The storage a worker is actually allocated, which Disk Request is not
-
-  So treat it as the input to a cost estimate, not the estimate. Pair it with
-  [`datachain job ls --extended`](ls.md) for the cluster and duration of a given job,
-  and your own rate card for the price.
+* **Working out a cost.** Provider, region and machine information can help identify
+  a rate. Estimating a job's cost also requires its resource usage and the applicable
+  compute and storage rates, none of which this command reports.

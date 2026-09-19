@@ -20,9 +20,9 @@ You are now loaded with the datachain-jobs skill. Maintain a jobs analytics file
 
 Two things are available, and the script fetches both. Know what is in them before telling a user something cannot be answered.
 
-**Clusters** (`--clusters`, and the `clusters` array of `--fetch`) — one entry per compute cluster, exactly as Studio returns it: `uuid`, `name`, `status`, `cloud_provider`, `is_active`, `default`, `max_workers`, `active_workers`, `busy_workers`, and what a worker is: `cloud_region`, `instance_type`, `compute_class`, `disk_size`, `job_quota`. That identifies the machine for a rate lookup; it is not a price, and does not say whether the cluster is billed spot or on-demand. Identify a cluster by `uuid` — an `id` is also returned, but it is legacy and on its way out.
+**Clusters** (`--clusters`, and the `clusters` array of `--fetch`) — one entry per compute cluster, exactly as Studio returns it: `uuid`, `name`, `status`, `cloud_provider`, `is_active`, `default`, `max_workers`, `active_workers`, `busy_workers`, and what a worker is: `cloud_region`, `instance_type`, `compute_class`, `disk_size`, `job_quota`. That identifies the machine for a rate lookup; it is not a price. Identify a cluster by `uuid` — an `id` is also returned, but it is legacy and on its way out.
 
-**Jobs** (the `jobs` array of `--fetch`) — `id`, `name`, `status`, `created`, `created_by`, `finished`, `duration_seconds`/`duration_str`, `workers`, `cluster_name`, `python_version`. Every job also carries `cluster_uuid`, which joins to a cluster's `uuid`. With `--enrich` each one carries `stages` too, a `{stage name: seconds}` map behind `queue_seconds` and `run_seconds`. The stages a job can have are `waiting`, `requesting_workers`, `preparation`, `virtualenv`, `downloading_files`, `dw_wake_up`, `running_query` — which ones it actually has depends on when it ran and how far it got.
+**Jobs** (the `jobs` array of `--fetch`) — `id`, `name`, `status`, `created`, `created_by`, `finished`, `duration_seconds`/`duration_str`, `workers`, `cluster_name`, `python_version`. Every job also carries `cluster_uuid`, which joins to a cluster's `uuid`. With `--enrich` each one carries `stages` too, a `{stage name: seconds}` map behind `queue_seconds` and `run_seconds`. The stages are `waiting`, `requesting_workers`, `preparation`, `virtualenv`, `downloading_files`, `dw_wake_up`, `running_query`. A job carries the ones Studio recorded a timing for.
 
 A null anywhere means Studio did not report it, never zero. The script's module docstring (`{skill_dir}/scripts/jobs.py`) is the authoritative field list.
 
@@ -63,7 +63,7 @@ running_count: <running_count>
 other_count: <other_count>
 enriched: <true|false>
 duration_note: "Wall-clock duration (submit→finish). Null while a job is still running."
-stage_note: "Queue/Run come from job stages. Null when enriched=false, or when the job never reached that stage."
+stage_note: "Queue/Run come from job stages. Null when enriched=false, or when that timing is unavailable."
 truncated: <true|false>
 ---
 
@@ -106,7 +106,7 @@ Duration cells contain plain seconds strings like `"9000s"`. Parse the integer b
 
 ### Stage breakdown — where the time went
 The Queue and Run columns split a job's wall clock: waiting before it started, running the query. The remainder is setup.
-- "How long do jobs wait?" → sum or average the Queue column. That shows *where* the time went, not why. A long queue does not by itself establish that the cluster hit its worker limit — the index holds no capacity history, and scheduling can delay a job that had workers to spare. Check the cluster's capacity before explaining the wait, and never recommend more workers on queue time alone.
+- "How long do jobs wait?" → sum or average the Queue column. It shows where the time went, not why. Check cluster capacity or diagnostics before explaining a wait, and never recommend more workers on queue time alone.
 - "Why is this job slow?" → compare Queue, Run, and `Duration − Queue − Run` (setup: dependency installs, file downloads, warehouse wake-up).
 - Missing timings: check `enriched` in the frontmatter, not the cells. If it is `false`, re-run Step 2 with `--enrich` yourself as part of answering. If it is `true` and the cells are still `—`, the timings were never recorded for those jobs — say "Stage timings are unavailable for these jobs", and state the coverage (how many of how many) whenever you aggregate.
 - For a finer split than Queue/Run, use the `stages` map from Step 2's output.
@@ -121,7 +121,7 @@ When the user asks for cost:
 2. Nothing in the index says whether a cluster runs on spot or on-demand capacity — Compute Class is a node class (e.g. `Performance`, `gpu`), not a purchase model. Spot can cost a fraction of on-demand, so when the answer turns on it, ask rather than assume: "Is <cluster> running spot or on-demand capacity?"
 3. If Workers column is all `—` → ask: "How many workers per job?" or compute single-worker cost and note it.
 4. Compute per job: `duration_seconds / 3600 × rate × workers`. Group by user/day/cluster as requested.
-5. Do not derive storage cost from Disk Request. It is how much temporary storage a worker asks for, not how much it is given — a `1Gi` request can sit on volumes of `20Gi` or `500Gi`, and the request does not move when they change. If the user asks for storage cost, say the cluster data does not carry the billable capacity, and ask for the volume size and type and the applicable rate.
+5. Storage cost requires allocated capacity, storage type, and rate; Disk Request is insufficient. Ask for the three, or say the cluster data does not carry them.
 6. Present as a table: User | Compute-hours | Est. cost (@$X/hr × N workers), with a line naming the rate and instance type per cluster.
 
 ### Per-cluster / per-user analytics
