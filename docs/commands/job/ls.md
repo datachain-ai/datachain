@@ -52,7 +52,7 @@ Comparing time queued against time running the query is how you tell a slow job 
 
 ## All fields
 
-`--json` prints everything Studio holds about each job - the cluster it ran on and that cluster's UUID, the exit code and error message, workers, Python version, requirements, metrics. It changes the output format only, so the other flags still apply: add `--extended` for the stages, and `--status`, `--limit` and `--team` filter it as usual.
+`--json` returns the full job details as JSON. Add `--extended` for stage timestamps; `--status`, `--limit` and `--team` still apply.
 
 ```bash
 datachain job ls --json --extended --status failed
@@ -126,4 +126,4 @@ datachain job ls --extended
 * Jobs are typically listed in reverse chronological order (newest first)
 * Use the `--status` filter to find jobs in specific states (e.g., running, completed, failed)
 * `--extended` asks for more, so plain `job ls` stays the quicker way to check what is running
-* Studio keeps more about a job than this table shows - why it failed, what it ran with, how many workers it used. `--json` prints all of it, and [`datachain job logs`](logs.md) shows the job's output
+* [`datachain job logs`](logs.md) shows a job's output

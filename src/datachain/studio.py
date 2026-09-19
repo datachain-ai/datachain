@@ -831,7 +831,6 @@ def list_clusters(team_name: str | None, as_json: bool = False):
 
     clusters = response.data or []
     if as_json:
-        # Every field, exactly as Studio returned it: what a cost calculation reads.
         print(json.dumps(clusters, indent=2))
         return
 
@@ -858,7 +857,6 @@ def list_clusters(team_name: str | None, as_json: bool = False):
         for cluster in clusters
     ]
 
-    # missingval renders the unset fields, so a quota of 0 stays 0.
     print(tabulate.tabulate(rows, headers="keys", tablefmt="grid", missingval="-"))
 
 

@@ -70,6 +70,7 @@ A `-` means the cluster does not set that field. It never means zero.
 $ datachain job clusters --json
 [
   {
+    "id": 1,
     "uuid": "550e8400-e29b-41d4-a716-446655440000",
     "name": "prod-cluster",
     "status": "ACTIVE",
@@ -87,6 +88,8 @@ $ datachain job clusters --json
   }
 ]
 ```
+
+`id` is deprecated - identify a cluster by its `uuid`.
 
 ## Examples
 

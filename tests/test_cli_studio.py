@@ -781,7 +781,7 @@ def test_studio_list_jobs(capsys):
     assert "Waiting in queue: -" in out
 
 
-CLUSTER_WITH_PRICING = {
+CLUSTER = {
     "uuid": "550e8400-e29b-41d4-a716-446655440000",
     "name": "prod-cluster",
     "status": "ACTIVE",
@@ -802,14 +802,14 @@ CLUSTER_WITH_PRICING = {
 def test_studio_clusters_shows_the_machine_and_its_limits(capsys, studio_token):
     """The machine, where it runs, and how many workers it allows."""
     with requests_mock.mock() as m:
-        m.get(f"{STUDIO_URL}/api/datachain/clusters/", json=[CLUSTER_WITH_PRICING])
+        m.get(f"{STUDIO_URL}/api/datachain/clusters/", json=[CLUSTER])
 
         assert main(["job", "clusters"]) == 0
 
     out = capsys.readouterr().out
     assert "prod-cluster" in out
     # The uuid identifies a cluster; the numeric id is legacy and stays out.
-    assert CLUSTER_WITH_PRICING["uuid"] in out
+    assert CLUSTER["uuid"] in out
     assert re.search(r"\|\s+ID\s+\|", out) is None
     assert "us-west-2" in out
     assert "m5.xlarge" in out
@@ -833,7 +833,7 @@ def test_studio_clusters_unset_fields_read_as_dashes(capsys, studio_token):
             f"{STUDIO_URL}/api/datachain/clusters/",
             json=[
                 {
-                    **CLUSTER_WITH_PRICING,
+                    **CLUSTER,
                     "name": "plain-cluster",
                     "cloud_region": None,
                     "instance_type": None,
@@ -860,7 +860,7 @@ def test_studio_clusters_false_is_not_unknown(capsys, studio_token):
             f"{STUDIO_URL}/api/datachain/clusters/",
             json=[
                 {
-                    **CLUSTER_WITH_PRICING,
+                    **CLUSTER,
                     "default": False,
                     "busy_workers": 0,
                     "active_workers": 0,
@@ -879,11 +879,11 @@ def test_studio_clusters_false_is_not_unknown(capsys, studio_token):
 def test_studio_clusters_json_prints_every_field(capsys, studio_token):
     """`--json` prints the clusters exactly as Studio returned them."""
     with requests_mock.mock() as m:
-        m.get(f"{STUDIO_URL}/api/datachain/clusters/", json=[CLUSTER_WITH_PRICING])
+        m.get(f"{STUDIO_URL}/api/datachain/clusters/", json=[CLUSTER])
 
         assert main(["job", "clusters", "--json"]) == 0
 
-    assert json.loads(capsys.readouterr().out) == [CLUSTER_WITH_PRICING]
+    assert json.loads(capsys.readouterr().out) == [CLUSTER]
 
 
 def test_studio_clusters_none_found(capsys, studio_token):

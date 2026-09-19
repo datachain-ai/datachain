@@ -579,9 +579,7 @@ class StudioClient:
         """The team's compute clusters, retired ones excluded.
 
         See `ClusterData` for the fields. `uuid` is what a job's
-        `compute_cluster_uuid` points at, and `cloud_region`, `instance_type`,
-        `compute_class` and `disk_size` describe the machine a worker runs on, for
-        anything pricing a cluster.
+        `compute_cluster_uuid` points at.
         """
         return self._send_request("datachain/clusters/", {}, method="GET")
 
