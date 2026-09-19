@@ -69,26 +69,27 @@ truncated: <true|false>
 
 ## Clusters
 
-| Name | Cloud | Region | Instance Type | Compute Class | Disk Request | Job Quota | Max Workers | Default |
-|------|-------|--------|---------------|---------------|--------------|-----------|-------------|---------|
-| <name> | <cloud_provider> | <cloud_region or —> | <instance_type or —> | <compute_class or —> | <disk_size or —> | <job_quota or —> | <max_workers> | <yes if default else no> |
+| UUID | Name | Cloud | Region | Instance Type | Compute Class | Disk Request | Job Quota | Max Workers | Default |
+|------|------|-------|--------|---------------|---------------|--------------|-----------|-------------|---------|
+| <uuid> | <name> | <cloud_provider> | <cloud_region> | <instance_type> | <compute_class> | <disk_size> | <job_quota> | <max_workers> | <yes if default else no> |
 
 ## Jobs
 
-| Date | ID | Name | Status | User | Workers | Duration | Queue | Run | Cluster | Python |
-|------|----|------|--------|------|---------|----------|-------|-----|---------|--------|
-| <created_display> | <id> | <name> | <status> | <created_by> | <workers> | <duration_str or —> | <queue_seconds as Ns, or —> | <run_seconds as Ns, or —> | <cluster_name or —> | <python_version or —> |
+| Date | ID | Name | Status | User | Workers | Duration | Queue | Run | Cluster | Cluster UUID | Python |
+|------|----|------|--------|------|---------|----------|-------|-----|---------|--------------|--------|
+| <created_display> | <id> | <name> | <status> | <created_by> | <workers> | <duration_str> | <queue_seconds as Ns> | <run_seconds as Ns> | <cluster_name> | <cluster_uuid> | <python_version> |
 ```
 
 **Section rules:**
+- Every cell: write `—` when, and only when, the value is null. `0` and `false` are values — write them.
 - Omit `## Clusters` if the `clusters` array is empty.
-- Cluster cells: use `—` when a field is null. A null instance type or region means Studio has no record of it, not that the cluster lacks one.
+- A null instance type or region means Studio has no record of it, not that the cluster lacks one.
+- Carry both UUIDs through. They are what a job joins to its cluster on: names can be reused, and a retired cluster keeps its jobs while dropping out of the cluster list.
 - Job Quota is the configured worker limit, which the cluster reports live as Max Workers. It is not a number of jobs each worker runs.
 - Disk Request (`disk_size`) is requested temporary storage per worker; allocated capacity may differ.
-- Duration cell: `duration_str` value (e.g. `"9000s"`) when known, `—` when null.
-- Queue and Run: `queue_seconds` and `run_seconds` written as `Ns` (e.g. `4s`), `—` when null. They come from the job's stages, so they are `—` unless `enriched: true`. Duration covers everything from submit to finish, so Queue + Run is normally less than it — the difference is setup (`preparation`, `virtualenv`, `downloading_files`, `dw_wake_up`).
+- Duration cell: `duration_str` value, e.g. `"9000s"`.
+- Queue and Run: `queue_seconds` and `run_seconds` written as `Ns` (e.g. `4s`). They come from the job's stages, so they are `—` unless `enriched: true`. Duration covers everything from submit to finish, so Queue + Run is normally less than it — the difference is setup (`preparation`, `virtualenv`, `downloading_files`, `dw_wake_up`).
 - Workers: always a number (`workers` field, defaults to 1).
-- Cluster, Python: use `—` when null.
 - Date column: `created_display` (`YYYY-MM-DD HH:MM` UTC).
 - Rows: newest-first (already sorted by script).
 - If `truncated: true`, add after the table: `_(Results truncated at <limit> jobs. Use --limit N for more.)_`
@@ -109,7 +110,7 @@ The Queue and Run columns split a job's wall clock: waiting before it started, r
 - "How long do jobs wait?" → sum or average the Queue column. It shows where the time went, not why. Check cluster capacity or diagnostics before explaining a wait, and never recommend more workers on queue time alone.
 - "Why is this job slow?" → compare Queue, Run, and `Duration − Queue − Run` (setup: dependency installs, file downloads, warehouse wake-up).
 - Missing timings: check `enriched` in the frontmatter, not the cells. If it is `false`, re-run Step 2 with `--enrich` yourself as part of answering. If it is `true` and the cells are still `—`, the timings were never recorded for those jobs — say "Stage timings are unavailable for these jobs", and state the coverage (how many of how many) whenever you aggregate.
-- For a finer split than Queue/Run, use the `stages` map from Step 2's output.
+- For a stage the table does not hold - download time, dependency install - Queue and Run are not enough, and `enriched: true` does not help: it records that stages were fetched, not that all of them were saved. Re-run Step 2 with `--enrich` and answer from the `stages` map in its output.
 
 ### Failure rate
 - Overall: `failed_count / total_jobs * 100` from frontmatter.
@@ -117,12 +118,13 @@ The Queue and Run columns split a job's wall clock: waiting before it started, r
 
 ### Price estimation
 When the user asks for cost:
-1. Establish the hourly rate per cluster from its Clusters row — instance type and region are what a cloud price list is keyed on. State the rate you used and where it came from. If the row's instance type is `—`, or you have no price for it, ask: "What is the hourly rate in $/hr for <cluster> (<instance type> in <region>)?"
-2. Nothing in the index says whether a cluster runs on spot or on-demand capacity — Compute Class is a node class (e.g. `Performance`, `gpu`), not a purchase model. Spot can cost a fraction of on-demand, so when the answer turns on it, ask rather than assume: "Is <cluster> running spot or on-demand capacity?"
-3. If Workers column is all `—` → ask: "How many workers per job?" or compute single-worker cost and note it.
-4. Compute per job: `duration_seconds / 3600 × rate × workers`. Group by user/day/cluster as requested.
-5. Storage cost requires allocated capacity, storage type, and rate; Disk Request is insufficient. Ask for the three, or say the cluster data does not carry them.
-6. Present as a table: User | Compute-hours | Est. cost (@$X/hr × N workers), with a line naming the rate and instance type per cluster.
+1. Match each job to its cluster on the UUIDs, never on the name. A retired cluster keeps its jobs but drops out of the cluster list, and Studio lets a later cluster take its name — matching on name can price a job against a machine it never ran on. A job whose Cluster UUID is in no Clusters row ran on a cluster that is gone: say its details are unavailable rather than guessing one. Use the Cluster name for display either way.
+2. Establish the hourly rate from that row — instance type and region are what a cloud price list is keyed on. State the rate you used and where it came from. If the row's instance type is `—`, or you have no price for it, ask: "What is the hourly rate in $/hr for <cluster> (<instance type> in <region>)?"
+3. Nothing in the index says whether a cluster runs on spot or on-demand capacity — Compute Class is a node class (e.g. `Performance`, `gpu`), not a purchase model. Spot can cost a fraction of on-demand, so when the answer turns on it, ask rather than assume: "Is <cluster> running spot or on-demand capacity?"
+4. If Workers column is all `—` → ask: "How many workers per job?" or compute single-worker cost and note it.
+5. Compute per job: `duration_seconds / 3600 × rate × workers`. Group by user/day/cluster as requested.
+6. Storage cost requires allocated capacity, storage type, and rate; Disk Request is insufficient. Ask for the three, or say the cluster data does not carry them.
+7. Present as a table: User | Compute-hours | Est. cost (@$X/hr × N workers), with a line naming the rate and instance type per cluster.
 
 ### Per-cluster / per-user analytics
 Filter the Jobs table by the Cluster or User column. Aggregate `(Ns)` Duration values for totals.

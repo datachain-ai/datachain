@@ -160,13 +160,35 @@ class TestStageSeconds:
         assert _stage_seconds([]) == {}
 
 
+CLUSTER = {
+    "id": 1,
+    "uuid": "550e8400-e29b-41d4-a716-446655440000",
+    "name": "prod-cluster",
+    "status": "ACTIVE",
+    "cloud_provider": "AWS",
+    "cloud_credentials": "aws-creds",
+    "is_active": True,
+    "default": True,
+    "max_workers": 8,
+    "active_workers": 4,
+    "busy_workers": 2,
+    "cloud_region": "us-west-2",
+    "instance_type": "m5.xlarge",
+    "compute_class": "Performance",
+    "disk_size": "100Gi",
+    "job_quota": 8,
+}
+
+
 @pytest.fixture
 def studio_jobs(mocker):
     """Patch StudioClient, and hand back a setter for the job list it returns."""
     from datachain.remote.studio import Response
 
     client = mocker.patch("datachain.remote.studio.StudioClient").return_value
-    client.get_clusters.return_value = Response([], ok=True, message="", status=200)
+    client.get_clusters.return_value = Response(
+        [CLUSTER], ok=True, message="", status=200
+    )
 
     def serve(jobs):
         client.get_jobs.return_value = Response(jobs, ok=True, message="", status=200)
@@ -182,24 +204,24 @@ def a_job(index: int, created: datetime, *, stages: bool = True) -> dict:
         "id": f"job-{index}",
         "name": f"job-{index}",
         "status": "COMPLETE",
-        "created_at": created.isoformat().replace("+00:00", "Z"),
-        "finished_at": finished.isoformat().replace("+00:00", "Z"),
+        "created_at": created.isoformat(),
+        "finished_at": finished.isoformat(),
         "created_by": "ivan",
+        "workers": 4,
+        "python_version": "3.13",
+        "compute_cluster_name": CLUSTER["name"],
+        "compute_cluster_uuid": CLUSTER["uuid"],
     }
     if stages:
         job["steps"] = [
             {
                 "name": "waiting",
                 "started_at": job["created_at"],
-                "finished_at": (created + timedelta(seconds=30))
-                .isoformat()
-                .replace("+00:00", "Z"),
+                "finished_at": (created + timedelta(seconds=30)).isoformat(),
             },
             {
                 "name": "running_query",
-                "started_at": (created + timedelta(minutes=2))
-                .isoformat()
-                .replace("+00:00", "Z"),
+                "started_at": (created + timedelta(minutes=2)).isoformat(),
                 "finished_at": job["finished_at"],
             },
         ]
@@ -231,7 +253,8 @@ class TestFetchStageTimings:
         assert all(j["queue_seconds"] == 30 for j in out["jobs"])
         assert all(j["run_seconds"] == 1080 for j in out["jobs"])
 
-    def test_stages_are_left_out_without_enrich(self, capsys, studio_jobs):
+    def test_the_rest_of_a_job_does_not_need_enrich(self, capsys, studio_jobs):
+        """Everything but the stages comes off the list response."""
         import jobs as jobs_module
 
         yesterday = jobs_module.datetime.now(tz=timezone.utc) - timedelta(days=1)
@@ -241,7 +264,15 @@ class TestFetchStageTimings:
         out = json.loads(capsys.readouterr().out)
 
         client.get_jobs.assert_called_once_with(limit=500, include_steps=False)
-        assert out["jobs"][0]["stages"] == {}
-        assert out["jobs"][0]["queue_seconds"] is None
+        job = out["jobs"][0]
+        assert job["stages"] == {}
+        assert job["queue_seconds"] is None
         # Duration never depended on stages.
-        assert out["jobs"][0]["duration_seconds"] == 1200
+        assert job["duration_seconds"] == 1200
+        assert job["workers"] == 4
+        assert job["python_version"] == "3.13"
+        # Studio resolves the cluster name, and the uuid is what a job joins on.
+        assert job["cluster_name"] == CLUSTER["name"]
+        assert job["cluster_uuid"] == CLUSTER["uuid"]
+        # Clusters pass through untouched.
+        assert out["clusters"] == [CLUSTER]
