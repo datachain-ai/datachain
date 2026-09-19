@@ -10,7 +10,6 @@ def test_subtract_handles_duplicates_with_some_different_values(test_session):
         session_id=[1, 1, 2],
         value=[10, 20, 30],
         session=test_session,
-        in_memory=True,
     ).mutate(rnd=(func.rand() % 3) + 1)
 
     other = base.filter(C("session_id") == 1)
@@ -27,7 +26,6 @@ def test_subtract_defaults_to_common_columns(test_session):
         b=[1, 2, 1],
         c=[10, 20, 30],
         session=test_session,
-        in_memory=True,
     )
 
     other = dc.read_values(
@@ -35,7 +33,6 @@ def test_subtract_defaults_to_common_columns(test_session):
         b=[1, 9],
         d=["x", "y"],
         session=test_session,
-        in_memory=True,
     )
 
     result = base.subtract(other)
@@ -117,12 +114,11 @@ def test_subtract_chained(test_session):
     base = dc.read_values(
         x=[1, 2, 3, 4, 5],
         session=test_session,
-        in_memory=True,
     )
 
-    remove1 = dc.read_values(x=[1], session=test_session, in_memory=True)
-    remove2 = dc.read_values(x=[3], session=test_session, in_memory=True)
-    remove3 = dc.read_values(x=[5], session=test_session, in_memory=True)
+    remove1 = dc.read_values(x=[1], session=test_session)
+    remove2 = dc.read_values(x=[3], session=test_session)
+    remove3 = dc.read_values(x=[5], session=test_session)
 
     result = (
         base.subtract(remove1, on="x")
@@ -137,13 +133,11 @@ def test_subtract_after_mutate(test_session):
     base = dc.read_values(
         x=[1, 2, 3, 4],
         session=test_session,
-        in_memory=True,
     ).mutate(y=C("x") * 10)
 
     remove = dc.read_values(
         x=[2, 4],
         session=test_session,
-        in_memory=True,
     )
 
     result = base.subtract(remove, on="x")
@@ -156,7 +150,6 @@ def test_subtract_after_group_by(test_session):
         category=["a", "a", "b", "b", "c"],
         value=[1, 2, 3, 4, 5],
         session=test_session,
-        in_memory=True,
     ).group_by(
         total=func.sum(C("value")),
         partition_by="category",
@@ -165,7 +158,6 @@ def test_subtract_after_group_by(test_session):
     remove = dc.read_values(
         category=["b"],
         session=test_session,
-        in_memory=True,
     )
 
     result = base.subtract(remove, on="category")
@@ -181,13 +173,11 @@ def test_subtract_after_map(test_session):
     base = dc.read_values(
         x=[1, 2, 3, 4, 5],
         session=test_session,
-        in_memory=True,
     ).map(doubled=double, params=["x"])
 
     remove = dc.read_values(
         doubled=[4, 8],
         session=test_session,
-        in_memory=True,
     )
 
     result = base.subtract(remove, on="doubled")
@@ -199,13 +189,11 @@ def test_subtract_preserves_sys_columns(test_session):
     base = dc.read_values(
         x=[1, 2, 3],
         session=test_session,
-        in_memory=True,
     )
 
     remove = dc.read_values(
         x=[2],
         session=test_session,
-        in_memory=True,
     )
 
     result = base.subtract(remove, on="x")

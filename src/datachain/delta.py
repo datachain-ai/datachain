@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from datachain.lib.dc import DataChain
     from datachain.lib.signal_schema import SignalSchema
     from datachain.query.dataset import DatasetQuery, DeltaSpec
+    from datachain.query.session import Session
 
     P = ParamSpec("P")
 
@@ -138,6 +139,7 @@ def _safe_union(
 
 
 def _build_source_diff_chain(
+    session: "Session",
     source_ds_name: str,
     source_ds_project: Project,
     source_ds_version: str,
@@ -151,12 +153,14 @@ def _build_source_diff_chain(
         namespace=source_ds_project.namespace.name,
         project=source_ds_project.name,
         version=source_ds_version,
+        session=session,
     )
     source_dc_latest = datachain.read_dataset(
         source_ds_name,
         namespace=source_ds_project.namespace.name,
         project=source_ds_project.name,
         version=source_ds_latest_version,
+        session=session,
     )
 
     # Calculate diff between source versions
@@ -183,6 +187,7 @@ def _build_source_retry_chain(
         namespace=source_ds_project.namespace.name,
         project=source_ds_project.name,
         version=source_ds_version,
+        session=result_dataset.session,
     )
 
     # Handle error records if delta_retry is a string (column name)
@@ -323,6 +328,7 @@ def _build_source_replay_input(
     assert source_ds_latest_version is not None
 
     diff_chain = _build_source_diff_chain(
+        target_source_query.session,
         source_ds_name,
         source_ds_project,
         source_ds_version,
@@ -413,6 +419,7 @@ def delta_retry_update(
         namespace=namespace_name,
         project=project_name,
         version=latest_version,
+        session=dc.session,
     )
     updated_versions: dict[tuple[str, str, str], str] = {}
     result_key = _get_shared_result_key(delta_sources)
