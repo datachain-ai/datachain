@@ -49,7 +49,6 @@ class ClusterData(TypedDict):
     instance_type: str | None
     compute_class: str | None
     disk_size: str | None
-    job_quota: int | None
 
 
 ClusterListData = list[ClusterData]

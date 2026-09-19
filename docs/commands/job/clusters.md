@@ -35,7 +35,7 @@ Omit `--cluster` and the job runs on the team's default.
 
 ## Output
 
-An excerpt - the full table also carries Cloud Provider, Compute Class, Disk Request, Job Quota and Is Default:
+An excerpt - the full table also carries Cloud Provider, Compute Class, Disk Request and Is Default:
 
 ```
 +--------------------------------------+--------------+----------+-------------+-----------------+-------------------+
@@ -58,7 +58,6 @@ An excerpt - the full table also carries Cloud Provider, Compute Class, Disk Req
 | `Compute Class` | Worker class, such as `Performance` or `gpu` |
 | `Disk Request` | Requested temporary storage per worker (allocated capacity may differ) |
 | `Busy/Active/Max` | Workers running jobs / started / allowed |
-| `Job Quota` | Configured worker limit |
 | `Is Default` | The cluster a job runs on when `--cluster` is omitted |
 
 A `-` means the cluster does not set that field. It never means zero.
@@ -84,8 +83,7 @@ $ datachain job clusters --json
     "cloud_region": "us-west-2",
     "instance_type": "m5.xlarge",
     "compute_class": "gpu",
-    "disk_size": "100Gi",
-    "job_quota": 8
+    "disk_size": "100Gi"
   }
 ]
 ```

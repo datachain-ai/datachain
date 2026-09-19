@@ -853,7 +853,6 @@ def list_clusters(team_name: str | None, as_json: bool = False):
                 f"{cluster['busy_workers']}/{cluster['active_workers']}"
                 f"/{cluster['max_workers']}"
             ),
-            "Job Quota": cluster["job_quota"],
             "Is Default": cluster["default"],
         }
         for cluster in clusters
