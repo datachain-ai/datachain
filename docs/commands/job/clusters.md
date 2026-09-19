@@ -62,9 +62,9 @@ An excerpt - the full table also carries Cloud Provider, Compute Class, Disk Req
 
 A `-` means the cluster does not set that field. It never means zero.
 
-## All fields
+## JSON output
 
-`--json` prints the cluster as JSON, for scripting. Abbreviated here - the response also carries a deprecated `id`, which new code should ignore in favour of `uuid`:
+`--json` prints the clusters as JSON, for scripting. This example is abbreviated - the response also carries a deprecated `id`, which new code should ignore in favour of `uuid`:
 
 ```console
 $ datachain job clusters --json

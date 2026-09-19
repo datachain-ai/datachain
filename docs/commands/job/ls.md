@@ -50,7 +50,7 @@ A job passes through some of: waiting in queue, requesting workers, preparation,
 
 Comparing time queued against time running the query is how you tell a slow job from one that sat waiting for a worker.
 
-## All fields
+## JSON output
 
 `--json` returns the full job details as JSON. Add `--extended` for stage timestamps; `--status`, `--limit` and `--team` still apply.
 
