@@ -797,39 +797,3 @@ labels = dc.read_records([{"name": "a.jpg", "cls": "cat"}, ...])
 items = dc.read_storage("s3://bucket/data/")
 combined = items.merge(labels, on="file.name", right_on="labels.name")
 ```
-
----
-
-## Section 9 — Studio Jobs
-
-Submitting a script to Studio and inspecting what ran is not SDK work. Use whichever of these you actually have, in this order.
-
-**Studio's MCP tools, when you are connected to them.** `run_job`, `get_job`, `get_job_logs`, `cancel_job`, `list_clusters`. They return typed results, need no shell, and `get_job` gives more about a single job than anything else here: the dataset versions it produced, per-UDF row progress, and its error stack.
-
-**The one gap: MCP cannot list jobs.** For a question across many of them — what failed yesterday, what ran on a cluster, how long jobs waited — fall back to the CLI or `StudioClient`.
-
-```bash
-datachain job ls --json --status failed --limit 50   # every field, as JSON
-datachain job ls --json --extended                   # + each job's stages
-```
-
-```python
-from datachain.remote.studio import StudioClient
-
-client = StudioClient(team="team-name")  # team optional, falls back to config
-response = client.get_jobs(limit=50, include_steps=True)
-if response.ok:
-    jobs = response.data  # else response.message
-clusters = client.get_clusters().data  # see ClusterData for the fields
-```
-
-**Without MCP**, the CLI covers the rest: `datachain job run script.py --cluster NAME --workers N`, `job logs <id>`, `job cancel <id>`, `job clusters`. `--json` on `job ls` and `job clusters` is a format switch only — `--extended`, `--status`, `--limit` and `--team` still decide what is fetched.
-
-**Reading the values.** Each is a trap that produces a confident wrong answer, whichever route the data came by:
-
-- Match a job to its cluster on `compute_cluster_uuid`, never on the cluster's name. A retired cluster keeps its jobs but drops out of the cluster list, and a later cluster can take its name.
-- `job_quota` is the configured limit on a cluster's *workers*. It is not how many jobs share one.
-- `compute_class` (`Performance`, `gpu`) is a machine class, not a purchase model. Nothing reported says whether a cluster is billed spot or on-demand.
-- `disk_size` is the storage a worker requests, not what it is allocated, so it cannot price storage.
-- Stage timings are absent unless asked for (`include_steps`, or `--extended`). A stage with no recorded end has no duration — that is unknown, not zero.
-- `null` anywhere means Studio did not report a value. It never means `0`.

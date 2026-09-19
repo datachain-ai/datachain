@@ -1,9 +1,9 @@
 ---
 name: datachain-core
-description: Use ONLY for abstract DataChain SDK questions — API usage, method signatures, or code patterns — when no specific dataset or bucket is referenced, or for Studio jobs and compute clusters. If the request mentions creating, saving, listing, exploring datasets or buckets, use datachain-knowledge instead.
+description: Use ONLY for abstract DataChain SDK questions — API usage, method signatures, or code patterns — when no specific dataset or bucket is referenced. If the request mentions creating, saving, listing, exploring datasets or buckets, use datachain-knowledge instead.
 ---
 
-Read `{skill_dir}/SDK.md` in full before answering DataChain SDK questions or generating DataChain Python code. It holds the SDK rules: API usage, UDF signatures, settings, delta semantics, materialization patterns, saving, exporting. Its last section covers Studio jobs: which tool to reach for, and what the job and cluster values do and do not mean. The last section below holds the steps that need a local checkout and the `dc-knowledge/` knowledge base.
+Read `{skill_dir}/SDK.md` in full before answering DataChain SDK questions or generating DataChain Python code. It holds the SDK rules: API usage, UDF signatures, settings, delta semantics, materialization patterns, saving, exporting. The last section below holds the steps that need a local checkout and the `dc-knowledge/` knowledge base.
 
 ## Scope of this skill
 
