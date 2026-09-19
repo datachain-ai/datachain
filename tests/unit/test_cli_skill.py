@@ -551,3 +551,14 @@ def test_install_does_not_offer_a_retired_skill(tmp_path, fake_skills_src, fake_
         pytest.raises(ValueError, match=r"Unknown skill.*jobs"),
     ):
         install_skills(skills="jobs", target="cursor", local=False)
+
+
+def test_uninstall_error_names_the_retired_skill(tmp_path, fake_home):
+    """Anyone who installed `jobs` must be able to see it is still removable."""
+    from datachain.cli.commands.skill import uninstall_skills
+
+    with (
+        patch("pathlib.Path.home", return_value=fake_home),
+        pytest.raises(ValueError, match=r"Valid skills:.*jobs"),
+    ):
+        uninstall_skills(skills="nope", target="cursor", local=False)

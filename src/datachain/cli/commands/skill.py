@@ -259,7 +259,7 @@ def uninstall_skills(skills: str | None, target: str, local: bool) -> int:
         requested = [s.strip() for s in skills.split(",")]
         invalid = [s for s in requested if s not in SKILLS + RETIRED_SKILLS]
         if invalid:
-            valid = ", ".join(SKILLS)
+            valid = ", ".join(SKILLS + RETIRED_SKILLS)
             raise ValueError(
                 f"Unknown skill(s): {', '.join(invalid)}. Valid skills: {valid}"
             )

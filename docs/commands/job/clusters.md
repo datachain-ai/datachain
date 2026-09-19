@@ -64,7 +64,7 @@ A `-` means the cluster does not set that field. It never means zero.
 
 ## All fields
 
-`--json` prints the cluster as JSON, for scripting:
+`--json` prints the cluster as JSON, for scripting. Abbreviated here - the response also carries a deprecated `id`, which new code should ignore in favour of `uuid`:
 
 ```console
 $ datachain job clusters --json

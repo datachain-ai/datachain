@@ -72,7 +72,7 @@ def add_skill_parser(subparsers, parent_parser) -> None:
         default=None,
         metavar="SKILLS",
         help=(
-            "Comma-separated skill names to uninstall: core, knowledge "
+            "Comma-separated skill names to uninstall: core, knowledge, jobs "
             "(default: uninstall all)"
         ),
     )
