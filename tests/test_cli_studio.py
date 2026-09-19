@@ -899,6 +899,38 @@ def test_studio_clusters_none_found(capsys, studio_token):
     assert "No clusters found" in capsys.readouterr().out
 
 
+def test_studio_jobs_json_prints_every_field(capsys, studio_token):
+    """`--json` prints what Studio returned, stages included."""
+    job = {
+        "id": "0502eef6-a32e-45fa-8e3b-d20ec0abbcf0",
+        "name": "daily",
+        "status": "COMPLETE",
+        "created_at": "2026-09-16T00:00:00Z",
+        "finished_at": "2026-09-16T00:20:00Z",
+        "created_by": "alice",
+        "workers": 4,
+        "compute_cluster_name": "prod-cluster",
+        "compute_cluster_uuid": "550e8400-e29b-41d4-a716-446655440000",
+        "steps": [
+            {
+                "name": "waiting",
+                "label": "Waiting in queue",
+                "status": "FINISHED",
+                "started_at": "2026-09-16T00:00:00Z",
+                "finished_at": "2026-09-16T00:00:04Z",
+            }
+        ],
+    }
+    with requests_mock.mock() as m:
+        route = m.get(f"{STUDIO_URL}/api/datachain/jobs/", json=[job])
+
+        assert main(["job", "ls", "--json"]) == 0
+
+    # Stages come along without --extended: nothing has to render them in a cell.
+    assert route.last_request.qs["include_steps"] == ["true"]
+    assert json.loads(capsys.readouterr().out) == [job]
+
+
 def test_studio_cancel_job(capsys, mocker):
     job_id = "8bddde6c-c3ca-41b0-9d87-ee945bfdce70"
     with requests_mock.mock() as m:

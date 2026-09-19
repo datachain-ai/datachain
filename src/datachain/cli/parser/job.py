@@ -163,6 +163,13 @@ def add_jobs_parser(subparsers, parent_parser) -> None:
         help="Limit the number of jobs returned (default: 20)",
     )
     studio_ls_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Print the full job list as JSON, with every field",
+    )
+
+    studio_ls_parser.add_argument(
         "-e",
         "--extended",
         action="store_true",

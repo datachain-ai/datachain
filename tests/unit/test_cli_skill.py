@@ -78,7 +78,7 @@ def test_install_invalid_skill_raises(tmp_path, fake_skills_src, fake_home):
         install_skills(skills="nope", target="claude", local=False)
 
 
-ALL_SKILLS = ("core", "knowledge", "jobs")
+ALL_SKILLS = ("core", "knowledge")
 
 
 def _make_fake_skills_src(tmp_path: Path) -> Path:
@@ -176,7 +176,6 @@ def test_install_only_graph_claude_global(tmp_path, fake_skills_src, fake_home):
     skills_base = fake_home / ".claude" / "skills"
     assert (skills_base / "knowledge" / "SKILL.md").exists()
     assert (skills_base / "core" / "SDK.md").exists()
-    assert not (skills_base / "jobs").exists()
 
 
 def test_uninstall_core_refused_while_knowledge_installed(
@@ -382,7 +381,6 @@ def test_list_skills_output(capsys):
     out = capsys.readouterr().out
     assert "core" in out
     assert "knowledge" in out
-    assert "jobs" in out
     assert "claude" in out
     assert "cursor" in out
     assert "codex" in out
@@ -393,7 +391,7 @@ def test_install_missing_source_returns_nonzero(tmp_path, fake_home):
     """If a skill source dir is missing, install returns 1."""
     from datachain.cli.commands.skill import install_skills
 
-    # Create a skills_src with only "core" — graph and jobs missing
+    # Create a skills_src with only "core" — knowledge missing
     skills_src = tmp_path / "partial_src"
     core = skills_src / "core"
     core.mkdir(parents=True)
@@ -408,7 +406,7 @@ def test_install_missing_source_returns_nonzero(tmp_path, fake_home):
     ):
         result = install_skills(skills=None, target="claude", local=False)
 
-    # core installed, but graph+jobs missing → non-zero
+    # core installed, but knowledge missing → non-zero
     assert result == 1
     assert (fake_home / ".claude" / "skills" / "core" / "SKILL.md").exists()
 

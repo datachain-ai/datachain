@@ -5,7 +5,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import TypedDict
 
-SKILLS = ("core", "knowledge", "jobs")
+SKILLS = ("core", "knowledge")
 SKILL_DEPENDENCIES = {"knowledge": ("core",)}
 
 

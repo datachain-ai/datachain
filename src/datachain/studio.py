@@ -74,7 +74,7 @@ def process_jobs_args(args: "Namespace"):
         return show_job_logs(args.id, args.team)
 
     if args.cmd == "ls":
-        return list_jobs(args.status, args.team, args.limit, args.extended)
+        return list_jobs(args.status, args.team, args.limit, args.extended, args.json)
 
     if args.cmd == "clusters":
         return list_clusters(args.team, args.json)
@@ -743,14 +743,23 @@ def cancel_job(job_id: str, team_name: str | None):
 
 
 def list_jobs(
-    status: str | None, team_name: str | None, limit: int, extended: bool = False
+    status: str | None,
+    team_name: str | None,
+    limit: int,
+    extended: bool = False,
+    as_json: bool = False,
 ):
     client = StudioClient(team=team_name)
-    response = client.get_jobs(status, limit, include_steps=extended)
+    # The stages are worth having whenever nothing has to render them in a cell.
+    response = client.get_jobs(status, limit, include_steps=extended or as_json)
     if not response.ok:
         raise DataChainError(response.message)
 
     jobs = response.data or []
+    if as_json:
+        print(json.dumps(jobs, indent=2))
+        return
+
     if not jobs:
         print("No jobs found")
         return

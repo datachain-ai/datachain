@@ -5,7 +5,7 @@ List jobs in Studio.
 ## Synopsis
 
 ```usage
-usage: datachain job ls [-h] [-v] [-q] [--status STATUS] [--team TEAM] [--limit LIMIT] [-e]
+usage: datachain job ls [-h] [-v] [-q] [--status STATUS] [--team TEAM] [--limit LIMIT] [--json] [-e]
 ```
 
 ## Description
@@ -20,6 +20,7 @@ Every job shows its ID, name, status, creation time and author. `--extended` add
 * `--status STATUS` - Status to filter jobs by
 * `--team TEAM` - Team to list jobs for (default: from config)
 * `--limit LIMIT` - Limit the number of jobs returned (default: 20)
+* `--json` - Print the full job list as JSON, with every field
 * `-e`, `--extended` - Show [extra job details](#extended-output)
 * `-h`, `--help` - Show the help message and exit
 * `-v`, `--verbose` - Be verbose
@@ -48,6 +49,16 @@ Every job shows its ID, name, status, creation time and author. `--extended` add
 A job passes through some of: waiting in queue, requesting workers, preparation, installing dependencies, downloading files, waking up the data warehouse, and running the query. A stage still going reads `running`, and one whose timing is unavailable reads `-` - never `0s`.
 
 Comparing time queued against time running the query is how you tell a slow job from one that sat waiting for a worker.
+
+## All fields
+
+`--json` prints everything Studio holds about each job - the cluster it ran on and that cluster's UUID, the exit code and error message, workers, Python version, requirements, metrics - and the stages, without needing `--extended`:
+
+```bash
+datachain job ls --json
+```
+
+Match a job to a cluster on `compute_cluster_uuid`, not on the cluster's name. A retired cluster keeps its jobs but no longer appears in [`datachain job clusters`](clusters.md), and a later cluster can take its name, so matching on the name can attribute a job to a machine it never ran on.
 
 ## Status options
 
@@ -115,4 +126,4 @@ datachain job ls --extended
 * Jobs are typically listed in reverse chronological order (newest first)
 * Use the `--status` filter to find jobs in specific states (e.g., running, completed, failed)
 * `--extended` asks for more, so plain `job ls` stays the quicker way to check what is running
-* Studio keeps more about a job than this table shows - why it failed, what it ran with, how many workers it used. [`datachain job logs`](logs.md) shows its output, and `StudioClient.get_jobs()` returns the rest
+* Studio keeps more about a job than this table shows - why it failed, what it ran with, how many workers it used. `--json` prints all of it, and [`datachain job logs`](logs.md) shows the job's output
