@@ -797,3 +797,43 @@ labels = dc.read_records([{"name": "a.jpg", "cls": "cat"}, ...])
 items = dc.read_storage("s3://bucket/data/")
 combined = items.merge(labels, on="file.name", right_on="labels.name")
 ```
+
+---
+
+## Section 9 — Studio Jobs
+
+Running a script in Studio and inspecting what ran is CLI work, not SDK work.
+
+```bash
+datachain job run script.py --cluster prod-cluster --workers 4   # submit
+datachain job ls --status failed --limit 50                      # what ran
+datachain job ls --extended                                      # + cluster and stage timings
+datachain job logs <job-id>                                      # output of one job
+datachain job cancel <job-id>
+datachain job clusters                                           # where jobs can run
+```
+
+`--json` on `job ls` and `job clusters` prints Studio's response instead of a table — use it for anything that has to read the values rather than look at them. It is a format switch only: `--extended`, `--status`, `--limit` and `--team` still apply.
+
+For programmatic access, `StudioClient` wraps the same API:
+
+```python
+from datachain.remote.studio import StudioClient
+
+client = StudioClient(team="team-name")  # team optional, falls back to config
+response = client.get_jobs(limit=50, include_steps=True)
+if response.ok:
+    jobs = response.data  # else response.message
+clusters = client.get_clusters().data  # see ClusterData for the fields
+```
+
+**Reading the values.** Each is a trap that produces a confident wrong answer:
+
+- Match a job to its cluster on `compute_cluster_uuid`, never on the cluster's name. A retired cluster keeps its jobs but drops out of `get_clusters()`, and a later cluster can take its name.
+- `job_quota` is the configured limit on a cluster's *workers*. It is not how many jobs share one.
+- `compute_class` (`Performance`, `gpu`) is a machine class, not a purchase model. Nothing reported says whether a cluster is billed spot or on-demand.
+- `disk_size` is the storage a worker requests, not what it is allocated, so it cannot price storage.
+- Stage timings come only with `include_steps`. A stage with no recorded end has no duration — that is unknown, not zero.
+- `null` anywhere means Studio did not report a value. It never means `0`.
+
+Studio's MCP server covers the same ground for agents connected to it: `run_job`, `get_job`, `get_job_logs`, `cancel_job` and `list_clusters`. It has no job-listing tool, so use `job ls --json` or `StudioClient.get_jobs()` to look across many jobs.
