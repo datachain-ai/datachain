@@ -78,7 +78,7 @@ def test_install_invalid_skill_raises(tmp_path, fake_skills_src, fake_home):
         install_skills(skills="nope", target="claude", local=False)
 
 
-ALL_SKILLS = ("core", "knowledge", "jobs")
+ALL_SKILLS = ("core", "knowledge")
 
 
 def _make_fake_skills_src(tmp_path: Path) -> Path:
@@ -176,7 +176,6 @@ def test_install_only_graph_claude_global(tmp_path, fake_skills_src, fake_home):
     skills_base = fake_home / ".claude" / "skills"
     assert (skills_base / "knowledge" / "SKILL.md").exists()
     assert (skills_base / "core" / "SDK.md").exists()
-    assert not (skills_base / "jobs").exists()
 
 
 def test_uninstall_core_refused_while_knowledge_installed(
@@ -382,7 +381,6 @@ def test_list_skills_output(capsys):
     out = capsys.readouterr().out
     assert "core" in out
     assert "knowledge" in out
-    assert "jobs" in out
     assert "claude" in out
     assert "cursor" in out
     assert "codex" in out
@@ -393,7 +391,7 @@ def test_install_missing_source_returns_nonzero(tmp_path, fake_home):
     """If a skill source dir is missing, install returns 1."""
     from datachain.cli.commands.skill import install_skills
 
-    # Create a skills_src with only "core" — graph and jobs missing
+    # Create a skills_src with only "core" — knowledge missing
     skills_src = tmp_path / "partial_src"
     core = skills_src / "core"
     core.mkdir(parents=True)
@@ -408,7 +406,7 @@ def test_install_missing_source_returns_nonzero(tmp_path, fake_home):
     ):
         result = install_skills(skills=None, target="claude", local=False)
 
-    # core installed, but graph+jobs missing → non-zero
+    # core installed, but knowledge missing → non-zero
     assert result == 1
     assert (fake_home / ".claude" / "skills" / "core" / "SKILL.md").exists()
 
@@ -490,3 +488,66 @@ def test_skills_src_resolves_real_package():
     for skill_name in SKILLS:
         skill_md = src / skill_name / "SKILL.md"
         assert skill_md.exists(), f"Missing bundled {skill_name}/SKILL.md"
+
+
+def _seed_retired_install(fake_home: Path, target: str = "cursor") -> tuple[Path, Path]:
+    """A jobs skill left over from a release that still shipped one."""
+    from datachain.cli.commands.skill import TARGET_LAYOUT
+
+    layout = TARGET_LAYOUT[target]
+    commands_dir, command_ext = layout["commands_dir"], layout["command_ext"]
+    assert commands_dir and command_ext, f"{target} writes a command file"
+
+    skill_dir = fake_home / layout["skills_dir"] / "jobs"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\nname: datachain-jobs\n---\n# jobs\n")
+
+    command = fake_home / commands_dir / f"datachain-jobs{command_ext}"
+    command.parent.mkdir(parents=True, exist_ok=True)
+    command.write_text("# datachain-jobs\n")
+    return skill_dir, command
+
+
+def test_install_clears_a_retired_skill(tmp_path, fake_skills_src, fake_home):
+    """Upgrading over an install with `jobs` must not leave it instructing agents."""
+    skill_dir, command = _seed_retired_install(fake_home)
+
+    _run_install(fake_skills_src, fake_home, skills=None, target="cursor", local=False)
+
+    assert not skill_dir.exists()
+    assert not command.exists()
+    assert (fake_home / ".cursor" / "skills" / "core" / "SKILL.md").exists()
+
+
+def test_uninstall_all_clears_a_retired_skill(tmp_path, fake_skills_src, fake_home):
+    skill_dir, command = _seed_retired_install(fake_home)
+    from datachain.cli.commands.skill import uninstall_skills
+
+    with patch("pathlib.Path.home", return_value=fake_home):
+        assert uninstall_skills(skills=None, target="cursor", local=False) == 0
+
+    assert not skill_dir.exists()
+    assert not command.exists()
+
+
+def test_uninstall_names_a_retired_skill(tmp_path, fake_skills_src, fake_home):
+    """`uninstall jobs` has to keep working for anyone who installed it."""
+    skill_dir, command = _seed_retired_install(fake_home)
+    from datachain.cli.commands.skill import uninstall_skills
+
+    with patch("pathlib.Path.home", return_value=fake_home):
+        assert uninstall_skills(skills="jobs", target="cursor", local=False) == 0
+
+    assert not skill_dir.exists()
+    assert not command.exists()
+
+
+def test_install_does_not_offer_a_retired_skill(tmp_path, fake_skills_src, fake_home):
+    from datachain.cli.commands.skill import install_skills
+
+    with (
+        patch("datachain.cli.commands.skill._skills_src", return_value=fake_skills_src),
+        patch("pathlib.Path.home", return_value=fake_home),
+        pytest.raises(ValueError, match=r"Unknown skill.*jobs"),
+    ):
+        install_skills(skills="jobs", target="cursor", local=False)

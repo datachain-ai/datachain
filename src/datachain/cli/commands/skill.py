@@ -5,7 +5,10 @@ from importlib.resources import files
 from pathlib import Path
 from typing import TypedDict
 
-SKILLS = ("core", "knowledge", "jobs")
+SKILLS = ("core", "knowledge")
+# Installable once, retired since. An upgrade must still be able to remove these:
+# a stale skill directory keeps instructing the agent that reads it.
+RETIRED_SKILLS = ("jobs",)
 SKILL_DEPENDENCIES = {"knowledge": ("core",)}
 
 
@@ -113,6 +116,40 @@ def _transform_copilot_instructions(skill_md_path: Path) -> str:
     return f"---\napplyTo: '**/*.py'\n---\n{body}"
 
 
+def _remove_skill(
+    skills_dir: Path, commands_dir: Path | None, command_ext: str | None, name: str
+) -> bool:
+    """Delete a skill's directory and its command file. True if either existed."""
+    found = False
+    skill_dest = skills_dir / name
+    if skill_dest.exists():
+        shutil.rmtree(skill_dest)
+        found = True
+    if commands_dir and command_ext:
+        cmd_dest = commands_dir / f"datachain-{name}{command_ext}"
+        if cmd_dest.exists():
+            cmd_dest.unlink()
+            found = True
+    return found
+
+
+def _sweep_retired(
+    skills_dir: Path, commands_dir: Path | None, command_ext: str | None
+) -> None:
+    """Clear skills that no longer ship, left behind by an earlier install.
+
+    Without this an upgrade leaves a retired skill in place, still instructing
+    whichever agent reads that directory.
+    """
+    removed = [
+        name
+        for name in RETIRED_SKILLS
+        if _remove_skill(skills_dir, commands_dir, command_ext, name)
+    ]
+    if removed:
+        print(f"Removed retired skills: {', '.join(removed)}")
+
+
 def install_skills(skills: str | None, target: str, local: bool) -> int:
     layout = TARGET_LAYOUT[target]
     base = Path.cwd() if local else Path.home()
@@ -199,6 +236,8 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
 
         installed.append(f"  {skill_name} → {dest}")
 
+    _sweep_retired(skills_dir, commands_dir, command_ext)
+
     if installed:
         scope = "local" if local else "global"
         print(f"Installed skills ({scope}, target={target}):")
@@ -218,7 +257,7 @@ def uninstall_skills(skills: str | None, target: str, local: bool) -> int:
 
     if skills:
         requested = [s.strip() for s in skills.split(",")]
-        invalid = [s for s in requested if s not in SKILLS]
+        invalid = [s for s in requested if s not in SKILLS + RETIRED_SKILLS]
         if invalid:
             valid = ", ".join(SKILLS)
             raise ValueError(
@@ -226,7 +265,7 @@ def uninstall_skills(skills: str | None, target: str, local: bool) -> int:
             )
         skills_to_uninstall = requested
     else:
-        skills_to_uninstall = list(SKILLS)
+        skills_to_uninstall = list(SKILLS) + list(RETIRED_SKILLS)
 
     skills_dir_rel = (
         layout["skills_dir_local"]
@@ -267,24 +306,10 @@ def uninstall_skills(skills: str | None, target: str, local: bool) -> int:
     removed = []
     not_found = []
     for skill_name in skills_to_uninstall:
-        skill_dest = skills_dir / skill_name
-        cmd_dest = (
-            commands_dir / f"datachain-{skill_name}{command_ext}"
-            if commands_dir and command_ext
-            else None
-        )
-
-        found = False
-        if skill_dest.exists():
-            shutil.rmtree(skill_dest)
-            found = True
-        if cmd_dest and cmd_dest.exists():
-            cmd_dest.unlink()
-            found = True
-
-        if found:
+        if _remove_skill(skills_dir, commands_dir, command_ext, skill_name):
             removed.append(f"  {skill_name}")
-        else:
+        elif skill_name not in RETIRED_SKILLS or skills:
+            # A retired skill nobody installed is not news unless it was asked for.
             not_found.append(skill_name)
 
     if removed:
