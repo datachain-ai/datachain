@@ -519,6 +519,42 @@ def test_install_clears_a_retired_skill(tmp_path, fake_skills_src, fake_home):
     assert (fake_home / ".cursor" / "skills" / "core" / "SKILL.md").exists()
 
 
+def _seed_someone_elses_jobs_skill(fake_home: Path, target: str = "cursor") -> Path:
+    """A `jobs` skill datachain did not install. `skills/` is a shared namespace."""
+    from datachain.cli.commands.skill import TARGET_LAYOUT
+
+    skill_dir = fake_home / TARGET_LAYOUT[target]["skills_dir"] / "jobs"
+    (skill_dir / "scripts").mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\nname: my-own-jobs\n---\n# mine\n")
+    (skill_dir / "scripts" / "run.py").write_text("print('mine')\n")
+    return skill_dir
+
+
+def test_install_leaves_a_jobs_skill_we_did_not_install(
+    tmp_path, fake_skills_src, fake_home
+):
+    """The sweep takes the retired datachain skill, not whatever shares its directory
+    name. Deleting someone else's `jobs` would take their work with it."""
+    skill_dir = _seed_someone_elses_jobs_skill(fake_home)
+
+    _run_install(fake_skills_src, fake_home, skills=None, target="cursor", local=False)
+
+    assert "my-own-jobs" in (skill_dir / "SKILL.md").read_text()
+    assert (skill_dir / "scripts" / "run.py").exists()
+
+
+def test_uninstall_leaves_a_jobs_skill_we_did_not_install(
+    tmp_path, fake_skills_src, fake_home
+):
+    skill_dir = _seed_someone_elses_jobs_skill(fake_home)
+    from datachain.cli.commands.skill import uninstall_skills
+
+    with patch("pathlib.Path.home", return_value=fake_home):
+        assert uninstall_skills(skills="jobs", target="cursor", local=False) == 0
+
+    assert (skill_dir / "scripts" / "run.py").exists()
+
+
 def test_uninstall_all_clears_a_retired_skill(tmp_path, fake_skills_src, fake_home):
     skill_dir, command = _seed_retired_install(fake_home)
     from datachain.cli.commands.skill import uninstall_skills

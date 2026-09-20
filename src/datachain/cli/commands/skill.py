@@ -116,13 +116,36 @@ def _transform_copilot_instructions(skill_md_path: Path) -> str:
     return f"---\napplyTo: '**/*.py'\n---\n{body}"
 
 
+def _installed_by_datachain(skill_dest: Path, name: str) -> bool:
+    """Whether this directory holds the skill datachain installed under that name.
+
+    `skills/<name>` is a shared namespace - anything may keep a `jobs` skill there -
+    so ownership is read out of the frontmatter rather than assumed from the path.
+    Every skill we ship declares `name: datachain-<skill>`, and installing only
+    resolves placeholders, which leaves that line alone.
+    """
+    try:
+        frontmatter = (skill_dest / "SKILL.md").read_text()
+    except OSError:
+        return False
+    return bool(
+        re.search(
+            rf"^name:\s*datachain-{re.escape(name)}\s*$", frontmatter, re.MULTILINE
+        )
+    )
+
+
 def _remove_skill(
     skills_dir: Path, commands_dir: Path | None, command_ext: str | None, name: str
 ) -> bool:
-    """Delete a skill's directory and its command file. True if either existed."""
+    """Delete a skill's directory and its command file. True if either existed.
+
+    The directory goes only if we installed it; the command file is named
+    `datachain-<skill>`, so it can never be someone else's.
+    """
     found = False
     skill_dest = skills_dir / name
-    if skill_dest.exists():
+    if skill_dest.exists() and _installed_by_datachain(skill_dest, name):
         shutil.rmtree(skill_dest)
         found = True
     if commands_dir and command_ext:
