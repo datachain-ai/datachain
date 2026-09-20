@@ -50,25 +50,19 @@ Maintain a knowledge base at `dc-knowledge/`. `.md` files are the persistent
 output. `.json` files are intermediate (generated in Step 3, consumed in
 Step 4, then deleted).
 
-`CAST.md` (sibling to this file) is the canonical methodology — the four
-layers, naming + tagging, layer-ladder planning, calibration, dialogue
-template, reuse rules, methodology transmission. Mode B reads it in full
-as a precondition. When something methodology-related needs to change,
-change `CAST.md`, not this file.
+`{core_skill_dir}/SDK.md` owns how the pipeline code is written — dataset
+shape, row grain, provenance, naming. This file owns the knowledge base
+and how the work is run: what already exists, what a run will cost, and
+where the results land.
 
 ## Critical Rules
 
-`CAST.md` §6 owns the CAST-doctrine rules (follow CAST, never bypass
-DataChain, C/A/S substrate mandatory, one script per stage, one
-`.save()` per script). The rules below are operational additions unique
-to this skill.
-
 1. **Path is `dc-knowledge/`** — NOT `.datachain/`. The `.datachain/` directory is the internal database; the knowledge base lives at `dc-knowledge/`.
-2. **Never pass `update=True`** to `dc.read_storage()` in Task or exploration code unless the user explicitly asks to refresh the listing. L1/L2/L3 build scripts are the exception (`CAST.md` §5).
+2. **Never pass `update=True`** to `dc.read_storage()` in query or exploration code unless the user explicitly asks to refresh the listing. Build scripts that read storage are the exception — they pass `update=True, delta=True`.
 3. **Prefer DataChain operations** over plain Python for all metadata analysis.
 4. **Bounded output** — JSON and markdown files stay small regardless of data size.
 5. **Stop on auth/connection errors** — `bucket_scan.py` runs a fast access check. If it exits with an error JSON on stderr, **stop immediately** and show the error to the user. Do not retry with different regions, profiles, or endpoints — ask for the missing credentials.
-6. **Follow the enrichment prompt template literally** in Step 4. Downstream tooling (`render_index.py`, `cast_layer` resolution) parses the exact frontmatter the prompt prescribes.
+6. **Follow the enrichment prompt template literally** in Step 4. Downstream tooling (`render_index.py`) parses the exact frontmatter the prompt prescribes.
 
 ## Common gotchas in UDF scripts
 
@@ -77,6 +71,81 @@ to this skill.
 - **Type the UDF return precisely.** `Iterator[object]` / `Iterator[Any]` / bare `dict` fail schema resolution. Return a specific `Iterator[T]`, a Pydantic `BaseModel`, or a primitive.
 - **Generators aren't subscriptable.** Iterators returned by file APIs do not support `[:N]`. Use `enumerate` + `break`, or `list(...)` only when the result is genuinely small.
 - **Use `datachain.__version__` to get the package version** (e.g. `dc.__version__`).
+
+---
+
+## Running the work
+
+### Reuse before building
+
+Read `dc-knowledge/index.md` first. When an existing dataset covers the task —
+even partially — read it with `dc.read_dataset(...)` and filter / merge / extend
+from there instead of going back to raw storage. Re-running a pass that already
+ran is the most expensive mistake available here. Say which dataset was reused
+and what it saved.
+
+### Save what was expensive
+
+A UDF that ran a model, decoded file bodies, or called a paid API produces rows
+worth keeping: save that operation's **full** output, unfiltered, under a
+descriptive name with a `description=`. Chains that only list, filter, or select
+are cheap to recompute and need no dataset. Cost is the only criterion — there is
+no hierarchy of datasets that has to be built.
+
+### Estimate before a long run
+
+Quote a number before starting anything that may run for minutes:
+
+```
+wall ≈ files × per-row × 1.5 / parallel
+```
+
+| Op class | Per-row |
+|---|---|
+| header / metadata parse (bounded-prefix reads) | ~1 ms |
+| file-body decode | size / 10-50 MB/s |
+| small CPU model (text, light CV) | 5-50 ms |
+| mid CPU model (detection, segmentation) | 50-500 ms |
+| streaming CPU model (ASR, audio) | 0.1-0.5× realtime |
+| local GPU | 10-100× faster than the CPU row |
+| paid API (LLM / VLM) | $0.001-0.01 per row + 0.5-2 s, rate-limited |
+
+Measure instead of estimating when the implementation is untested, the model or
+library has no row in the table, or files are large enough that decode dominates:
+run 3-5 items with `.persist()` (never `.save()`), budget 60 s, and extrapolate
+`wall_full = (wall_sample / N) × total_files × 1.5`. Kill at 60 s and fall back to
+the estimate.
+
+Label which is which — `estimated ~X` or `measured on N=5: ~X`. Never present an
+estimate as a measurement, and write `not measured` literally when nothing was.
+
+### Watch the first minutes
+
+For any run estimated over 5 minutes, read the throughput line DataChain prints
+(`Processed: N rows [elapsed, rate]`) over the first 60-90 s:
+
+- at or above ~0.66× the expected rate → carry on;
+- below ~0.5× → kill it, report the gap and the revised estimate;
+- no throughput line within 2 minutes → kill it and investigate (model download,
+  auth retry, startup cost).
+
+### Results land in datasets
+
+Aggregations and final answers are DataChain chains — `.filter()`, `.group_by()`,
+`.mutate()`, `.distinct()` — ending in `.save()`. Two bypasses are forbidden:
+writing results to `.json` / `.csv` / `.parquet` through `open()`, `json.dump` or
+`pandas.to_csv`, and pulling rows out with `.to_iter()` / `.to_list()` to walk them
+in Python loops and print the answer. Both leave no dataset, no lineage and no KB
+record, so the next session recomputes everything. `.show()` on a saved dataset is
+fine. If answering needs a Python loop over nested lists, the row grain is wrong —
+see "Row shape" in `SDK.md`.
+
+### One script per stage
+
+A pipeline that produces several datasets is several scripts, each named after the
+dataset it produces, each with exactly one `.save()`. Never batch or shard by hand:
+DataChain checkpoints UDF progress, so re-running a killed script resumes where it
+stopped.
 
 ---
 
@@ -91,16 +160,11 @@ to this skill.
 > **Precondition (do this FIRST — before ANY tool call):**
 >
 >     $ cat dc-knowledge/index.md
->     $ cat {skill_dir}/CAST.md
 >
 > If `index.md` exists and the task can be solved by reading an existing
 > dataset, do not write a pipeline — read it directly with
 > `dc.read_dataset("name")` and filter/merge/extend from there. This avoids
 > recomputing expensive operations.
->
-> `CAST.md` drives every layer / scope / shape decision. Re-read on each
-> new task so the layer-ladder walk and dialogue template are in working
-> context when you plan.
 >
 > **Never parse files under `dc-knowledge/datasets/*.json` or
 > `dc-knowledge/buckets/**/*.json` directly** — those are pre-render
@@ -111,7 +175,7 @@ to this skill.
 → **If the pipeline reads from a bucket**, run **Step 1** (Bucket Enlistment) for the bucket root first.
 → **Run the access check** (if not already done in Step 1): `datachain bucket status <uri>`. If `not found` / `denied`, stop and ask for credentials.
 → Read `{core_skill_dir}/SDK.md` for DataChain SDK rules.
-→ Follow `CAST.md` §4 (planning) and §4.10 (dialogue) before writing pipeline code.
+→ Work through "Running the work" above — reuse, estimate, then write the script.
 → **While the pipeline is running**, enrich any Step 1 bucket JSON that does not yet have a `.md` (parallel work).
 → After the pipeline completes, run Steps 2–7 to update the knowledge base.
 → Report both: pipeline result AND knowledge base update status.

@@ -29,7 +29,7 @@ def _record(versions):
     return SimpleNamespace(
         name="pet_images",
         project=SimpleNamespace(name="proj", namespace=SimpleNamespace(name="ns")),
-        attrs=["cast:l1"],
+        attrs=["pets"],
         description="pets",
         versions=versions,
     )
@@ -62,7 +62,7 @@ def test_collect_dataset_snapshot_qualifies_name_and_loads_all_versions():
 
     assert snap["name"] == "ns.proj.pet_images"
     assert snap["source"] == "studio"
-    assert snap["attrs"] == ["cast:l1"]
+    assert snap["attrs"] == ["pets"]
     assert snap["description"] == "pets"
     assert [v["version"] for v in snap["versions"]] == ["1.0.0"]
     _, ns, proj, kwargs = ms.get_dataset_calls[0]
