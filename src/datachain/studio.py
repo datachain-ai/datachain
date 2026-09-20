@@ -779,7 +779,10 @@ def list_jobs(
             )
         rows.append(row)
 
-    print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
+    # As in list_clusters: a job or cluster named "1e5" would render as 100000.
+    print(
+        tabulate.tabulate(rows, headers="keys", tablefmt="grid", disable_numparse=True)
+    )
 
 
 def _format_stages(steps: list[dict], job_finished: bool) -> str:
@@ -857,7 +860,14 @@ def list_clusters(team_name: str | None, as_json: bool = False):
         for cluster in clusters
     ]
 
-    print(tabulate.tabulate(rows, headers="keys", tablefmt="grid", missingval="-"))
+    # Nothing in this table is a number, and both the id and the name can look
+    # like one: an id of "12345678e9" renders as 1.23457e+16 and a cluster named
+    # "1e5" as 100000, neither of which can be pasted back into a command.
+    print(
+        tabulate.tabulate(
+            rows, headers="keys", tablefmt="grid", missingval="-", disable_numparse=True
+        )
+    )
 
 
 def create_pipeline(

@@ -849,6 +849,23 @@ def test_studio_clusters_unset_fields_read_as_dashes(capsys, studio_token):
     assert "plain-cluster" in out
     assert "us-west-2" not in out
     assert cell(out, "Disk Request") == "-"
+
+
+def test_studio_clusters_do_not_read_an_id_or_name_as_a_number(capsys, studio_token):
+    """Ids come from [a-z0-9], so one can look like scientific notation, and a name is
+    whatever someone typed. tabulate would render "12345678e9" as 1.23457e+16 and a
+    cluster called "1e5" as 100000 - neither can be pasted back into a command."""
+    with requests_mock.mock() as m:
+        m.get(
+            f"{STUDIO_URL}/api/datachain/clusters/",
+            json=[{**CLUSTER, "id": "12345678e9", "name": "1e5"}],
+        )
+
+        assert main(["job", "clusters"]) == 0
+
+    out = capsys.readouterr().out
+    assert cell(out, "ID") == "12345678e9"
+    assert cell(out, "Name") == "1e5"
     # The counts are still reported, so they are still numbers.
     assert "2/4/8" in out
 
