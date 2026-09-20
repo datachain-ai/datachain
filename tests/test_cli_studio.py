@@ -782,7 +782,7 @@ def test_studio_list_jobs(capsys):
 
 
 CLUSTER = {
-    "uuid": "550e8400-e29b-41d4-a716-446655440000",
+    "id": "k3f9x2mq7a",
     "name": "prod-cluster",
     "status": "ACTIVE",
     "cloud_provider": "AWS",
@@ -808,9 +808,9 @@ def test_studio_clusters_shows_the_machine_and_its_limits(capsys, studio_token):
 
     out = capsys.readouterr().out
     assert "prod-cluster" in out
-    # The uuid identifies a cluster; the numeric id is legacy and stays out.
-    assert CLUSTER["uuid"] in out
-    assert re.search(r"\|\s+ID\s+\|", out) is None
+    # The id identifies a cluster; names can be reused, so it leads the table.
+    assert CLUSTER["id"] in out
+    assert re.search(r"\|\s+ID\s+\|", out) is not None
     assert "us-west-2" in out
     assert "m5.xlarge" in out
     assert "Performance" in out
@@ -906,7 +906,7 @@ def test_studio_jobs_json_prints_the_response(capsys, studio_token):
         "created_by": "alice",
         "workers": 4,
         "compute_cluster_name": "prod-cluster",
-        "compute_cluster_uuid": "550e8400-e29b-41d4-a716-446655440000",
+        "compute_cluster_id": "k3f9x2mq7a",
         "steps": [
             {
                 "name": "waiting",

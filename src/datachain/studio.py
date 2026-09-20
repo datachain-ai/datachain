@@ -840,7 +840,7 @@ def list_clusters(team_name: str | None, as_json: bool = False):
 
     rows = [
         {
-            "UUID": cluster["uuid"],
+            "ID": cluster["id"],
             "Name": cluster["name"],
             "Status": cluster["status"],
             "Cloud Provider": cluster["cloud_provider"],

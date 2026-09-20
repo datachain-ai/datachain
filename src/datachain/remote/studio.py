@@ -35,7 +35,7 @@ class ClusterData(TypedDict):
     "not set", never zero.
     """
 
-    uuid: str
+    id: str
     name: str
     status: str
     cloud_provider: str
@@ -552,8 +552,8 @@ class StudioClient:
         Each job carries `id`, `name`, `status`, `created_at`, `created_by`,
         `finished_at`, `workers`, `python_version`, `query`, `exit_code`,
         `error_message`, `metrics`, and the cluster it ran on as
-        `compute_cluster_id`, `compute_cluster_uuid` (joins to a cluster's `uuid`)
-        and `compute_cluster_name`.
+        `compute_cluster_id` (joins to a cluster's `id`) and
+        `compute_cluster_name`.
 
         With `include_steps`, `steps` holds the job's recorded stages and their
         timestamps - how long it spent queued as against running. Missing timestamps
@@ -578,8 +578,8 @@ class StudioClient:
     def get_clusters(self) -> Response[ClusterListData]:
         """The team's compute clusters, retired ones excluded.
 
-        See `ClusterData` for the fields. `uuid` is what a job's
-        `compute_cluster_uuid` points at.
+        See `ClusterData` for the fields. `id` is what a job's
+        `compute_cluster_id` points at.
         """
         return self._send_request("datachain/clusters/", {}, method="GET")
 

@@ -58,7 +58,7 @@ Comparing time queued against time running the query is how you tell a slow job 
 datachain job ls --json --extended --status failed
 ```
 
-Match a job to a cluster on `compute_cluster_uuid`, not on the cluster's name. A retired cluster keeps its jobs but no longer appears in [`datachain job clusters`](clusters.md), and a later cluster can take its name, so matching on the name can attribute a job to a machine it never ran on.
+Match a job to a cluster on `compute_cluster_id`, not on the cluster's name. A retired cluster keeps its jobs but no longer appears in [`datachain job clusters`](clusters.md), and a later cluster can take its name, so matching on the name can attribute a job to a machine it never ran on.
 
 ## Status options
 

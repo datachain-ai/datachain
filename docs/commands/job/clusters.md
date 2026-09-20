@@ -38,18 +38,18 @@ Omit `--cluster` and the job runs on the team's default.
 An excerpt - the full table also carries Cloud Provider, Compute Class, Disk Request and Is Default:
 
 ```
-+--------------------------------------+--------------+----------+-------------+-----------------+-------------------+
-| UUID                                 | Name         | Status   | Region      | Instance Type   | Busy/Active/Max   |
-+======================================+==============+==========+=============+=================+===================+
-| 550e8400-e29b-41d4-a716-446655440000 | prod-cluster | ACTIVE   | us-west-2   | m5.xlarge       | 2/4/8             |
-+--------------------------------------+--------------+----------+-------------+-----------------+-------------------+
-| 6f1c2d90-8a71-4a3e-9f22-0b5d4e7c1a88 | gpu-a100     | INACTIVE | us-central1 | a2              | 0/0/16            |
-+--------------------------------------+--------------+----------+-------------+-----------------+-------------------+
++------------+--------------+----------+-------------+-----------------+-------------------+
+| ID         | Name         | Status   | Region      | Instance Type   | Busy/Active/Max   |
++============+==============+==========+=============+=================+===================+
+| k3f9x2mq7a | prod-cluster | ACTIVE   | us-west-2   | m5.xlarge       | 2/4/8             |
++------------+--------------+----------+-------------+-----------------+-------------------+
+| p7w4nzx2qk | gpu-a100     | INACTIVE | us-central1 | a2              | 0/0/16            |
++------------+--------------+----------+-------------+-----------------+-------------------+
 ```
 
 | Column | Meaning |
 |--------|---------|
-| `UUID` | Identifies the cluster. Names can be reused; this cannot |
+| `ID` | Identifies the cluster. Names can be reused; this cannot |
 | `Name` | Pass this to `datachain job run --cluster` |
 | `Status` | `ACTIVE` and `MODIFYING` clusters accept jobs; `INACTIVE` and `FAILED` do not |
 | `Cloud Provider` | `AWS`, `GCP`, `AZ` or `NB` |
@@ -64,13 +64,13 @@ A `-` means the cluster does not set that field. It never means zero.
 
 ## JSON output
 
-`--json` prints the clusters as JSON, for scripting. This example is abbreviated - the response also carries a deprecated `id`, which new code should ignore in favour of `uuid`:
+`--json` prints the clusters as JSON, for scripting:
 
 ```console
 $ datachain job clusters --json
 [
   {
-    "uuid": "550e8400-e29b-41d4-a716-446655440000",
+    "id": "k3f9x2mq7a",
     "name": "prod-cluster",
     "status": "ACTIVE",
     "cloud_provider": "AWS",
