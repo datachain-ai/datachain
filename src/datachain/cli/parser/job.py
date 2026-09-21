@@ -163,11 +163,18 @@ def add_jobs_parser(subparsers, parent_parser) -> None:
         help="Limit the number of jobs returned (default: 20)",
     )
     studio_ls_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Print the job list as JSON",
+    )
+
+    studio_ls_parser.add_argument(
         "-e",
         "--extended",
         action="store_true",
         default=False,
-        help="Show extra job details, such as the compute cluster",
+        help="Show extra job details",
     )
 
     studio_cancel_help = "Cancel a job in Studio"
@@ -232,4 +239,11 @@ def add_jobs_parser(subparsers, parent_parser) -> None:
         action="store",
         default=None,
         help="Team to list clusters for (default: from config)",
+    )
+
+    studio_clusters_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Print the cluster list as JSON",
     )

@@ -148,9 +148,6 @@ class AbstractMetastore(ABC, Serializable):
     def cleanup_tables(self, temp_table_names: list[str]) -> None:
         """Cleanup temp tables."""
 
-    def cleanup_for_tests(self) -> None:
-        """Cleanup for tests."""
-
     #
     # Namespaces
     #

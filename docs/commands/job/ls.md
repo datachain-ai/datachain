@@ -5,12 +5,14 @@ List jobs in Studio.
 ## Synopsis
 
 ```usage
-usage: datachain job ls [-h] [-v] [-q] [--status STATUS] [--team TEAM] [--limit LIMIT] [-e]
+usage: datachain job ls [-h] [-v] [-q] [--status STATUS] [--team TEAM] [--limit LIMIT] [--json] [-e]
 ```
 
 ## Description
 
 This command lists jobs in Studio. You can filter jobs by their status, specify a team, and limit the number of jobs returned. By default, it shows the 20 most recent jobs.
+
+Every job shows its ID, name, status, creation time and author. `--extended` adds the compute cluster it ran on and a breakdown of its stages - see [Extended output](#extended-output).
 
 
 ## Options
@@ -18,10 +20,45 @@ This command lists jobs in Studio. You can filter jobs by their status, specify 
 * `--status STATUS` - Status to filter jobs by
 * `--team TEAM` - Team to list jobs for (default: from config)
 * `--limit LIMIT` - Limit the number of jobs returned (default: 20)
-* `-e`, `--extended` - Show extra job details, such as the compute cluster
+* `--json` - Print the job list as JSON
+* `-e`, `--extended` - Show [extra job details](#extended-output)
 * `-h`, `--help` - Show the help message and exit
 * `-v`, `--verbose` - Be verbose
 * `-q`, `--quiet` - Be quiet
+
+## Extended output
+
+`--extended` adds two columns:
+
+| Column | Meaning |
+|--------|---------|
+| `Cluster` | The compute cluster the job ran on. [`datachain job clusters`](clusters.md) shows what that cluster is - its region, machine and capacity |
+| `Stages` | How long the job spent in each stage |
+
+```
++--------------------------------------+--------+----------+----------------------+--------------+--------------+---------------------------------+
+| ID                                   | Name   | Status   | Created at           | Created by   | Cluster      | Stages                          |
++======================================+========+==========+======================+==============+==============+=================================+
+| 0502eef6-a32e-45fa-8e3b-d20ec0abbcf0 | daily  | COMPLETE | 2026-09-16T00:00:00Z | alice        | prod-cluster | Waiting in queue: 4s            |
+|                                      |        |          |                      |              |              | Downloading files: 1h 5m        |
+|                                      |        |          |                      |              |              | Installing dependencies: 2m 30s |
+|                                      |        |          |                      |              |              | Running query: 12m 26s          |
++--------------------------------------+--------+----------+----------------------+--------------+--------------+---------------------------------+
+```
+
+A job passes through some of: waiting in queue, requesting workers, preparation, installing dependencies, downloading files, waking up the data warehouse, and running the query. A stage still going reads `running`, and one whose timing is unavailable reads `-` - never `0s`.
+
+Comparing time queued against time running the query is how you tell a slow job from one that sat waiting for a worker.
+
+## JSON output
+
+`--json` returns the full job details as JSON. Add `--extended` for stage timestamps; `--status`, `--limit` and `--team` still apply.
+
+```bash
+datachain job ls --json --extended --status failed
+```
+
+Match a job to a cluster on `compute_cluster_id`, not on the cluster's name. A retired cluster keeps its jobs but no longer appears in [`datachain job clusters`](clusters.md), and a later cluster can take its name, so matching on the name can attribute a job to a machine it never ran on.
 
 ## Status options
 
@@ -88,3 +125,5 @@ datachain job ls --extended
 * The default limit of 20 jobs helps manage the output size and performance
 * Jobs are typically listed in reverse chronological order (newest first)
 * Use the `--status` filter to find jobs in specific states (e.g., running, completed, failed)
+* `--extended` asks for more, so plain `job ls` stays the quicker way to check what is running
+* [`datachain job logs`](logs.md) shows a job's output

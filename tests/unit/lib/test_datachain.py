@@ -1408,6 +1408,83 @@ def test_map_multiple_signals_single_stage(test_session):
     assert after - before == 1
 
 
+def test_map_multiple_signals_parent_and_child_overlap(test_session):
+    class ChildSpec(BoundSpec):
+        def bind(self, ctx: BindContext):
+            return lambda value: value.upper()
+
+        def input_columns(self):
+            return ["t1.nnn"]
+
+        @property
+        def output_count(self):
+            return 1
+
+    base = dc.read_values(t1=features, session=test_session)
+    before = len(base._query.steps)
+    chain = base.map(
+        child=ChildSpec(),
+        parent=lambda t1: f"{t1.nnn}:{t1.count}",
+    )
+
+    assert len(chain._query.steps) - before == 1
+    assert sorted(chain.to_iter("child", "parent")) == sorted(
+        (fr.nnn.upper(), f"{fr.nnn}:{fr.count}") for fr in features
+    )
+
+
+def test_to_iter_parent_and_child_overlap(test_session):
+    chain = dc.read_values(t1=features, session=test_session)
+    key = lambda r: (r[1].nnn, r[1].count)  # noqa: E731
+    rows = sorted(chain.to_iter("t1.nnn", "t1"), key=key)
+    expected = sorted(((fr.nnn, fr) for fr in features), key=key)
+    assert rows == expected
+
+
+def test_to_iter_parent_and_nested_child_overlap(test_session):
+    chain = dc.read_values(top=features_nested, session=test_session)
+    key = lambda r: r[1].label  # noqa: E731
+    rows = sorted(chain.to_iter("top.fr.nnn", "top"), key=key)
+    expected = sorted(((n.fr.nnn, n) for n in features_nested), key=key)
+    assert rows == expected
+
+
+def test_to_iter_parent_and_child_overlap_reversed(test_session):
+    chain = dc.read_values(t1=features, session=test_session)
+    key = lambda r: (r[0].nnn, r[0].count)  # noqa: E731
+    rows = sorted(chain.to_iter("t1", "t1.nnn"), key=key)
+    expected = sorted(((fr, fr.nnn) for fr in features), key=key)
+    assert rows == expected
+
+
+def test_map_params_parent_and_child_overlap(test_session):
+    def combine(nnn: str, t1: MyFr) -> str:
+        return f"{t1.nnn}:{nnn}:{t1.count}"
+
+    chain = dc.read_values(t1=features, session=test_session).map(
+        out=combine,
+        params=["t1.nnn", "t1"],
+        output={"out": str},
+    )
+    assert sorted(chain.to_values("out")) == sorted(
+        f"{fr.nnn}:{fr.nnn}:{fr.count}" for fr in features
+    )
+
+
+def test_map_params_parent_and_nested_child_overlap(test_session):
+    def combine(fr_nnn: str, top: MyNested) -> str:
+        return f"{top.label}:{top.fr.nnn}:{fr_nnn}"
+
+    chain = dc.read_values(top=features_nested, session=test_session).map(
+        out=combine,
+        params=["top.fr.nnn", "top"],
+        output={"out": str},
+    )
+    assert sorted(chain.to_values("out")) == sorted(
+        f"{n.label}:{n.fr.nnn}:{n.fr.nnn}" for n in features_nested
+    )
+
+
 def test_map_existing_column_after_step(test_session):
     chain = dc.read_values(t1=features, session=test_session).map(
         x=lambda _: "test",
