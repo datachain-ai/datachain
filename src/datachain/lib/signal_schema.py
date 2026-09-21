@@ -857,7 +857,7 @@ class SignalSchema:
                 return None, pos
         j, pos = unflatten_to_json_pos(fr, row, pos)
         try:
-            obj = fr(**j)
+            obj = fr.model_validate(j, by_alias=False, by_name=True)
             if set_stream:
                 assert catalog is not None
                 SignalSchema._set_file_stream(obj, catalog, cache)
@@ -984,10 +984,11 @@ class SignalSchema:
             origin = get_origin(annotation)
 
         if ModelStore.is_pydantic(annotation):
-            if isinstance(value, annotation):
+            model_cls: type[BaseModel] = annotation  # type: ignore[assignment]
+            if isinstance(value, model_cls):
                 obj = value
             elif isinstance(value, Mapping):
-                obj = annotation(**value)
+                obj = model_cls.model_validate(value, by_alias=False, by_name=True)
             else:
                 return result
             assert isinstance(obj, BaseModel)

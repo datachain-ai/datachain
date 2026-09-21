@@ -177,3 +177,52 @@ def test_nested_pydantic_class_identity_cross_process(tmp_dir, catalog_tmpfile):
         proc = run_test_subprocess((python_exc, "-c", script), env)
         rc, _, stderr = wait_for_test_subprocess(proc, timeout=60)
         assert rc == 0, stderr
+
+
+_ALIAS_WRITE_SCRIPT = """
+from pydantic import BaseModel, Field
+import datachain as dc
+
+
+class Aliased(BaseModel):
+    with_default: int = Field(0, alias="withDefault")
+    required: int = Field(alias="requiredField")
+
+
+dc.read_values(
+    settings={"prefetch": False},
+    item=[Aliased(withDefault=7, requiredField=42)],
+).save("alias_identity")
+"""
+
+
+_ALIAS_READ_SCRIPT = """
+from pydantic import BaseModel, Field
+import datachain as dc
+
+
+class Aliased(BaseModel):
+    with_default: int = Field(0, alias="withDefault")
+    required: int = Field(alias="requiredField")
+
+
+row = dc.read_dataset("alias_identity").to_list("item")[0][0]
+assert isinstance(row, Aliased), f"row is {type(row).__module__}.{type(row).__name__}"
+assert row.with_default == 7, f"defaulted alias not preserved: {row.with_default}"
+assert row.required == 42, f"required alias not preserved: {row.required}"
+"""
+
+
+@pytest.mark.e2e
+@pytest.mark.xdist_group(name="tmpfile")
+def test_pydantic_field_aliases_survive_cross_process(tmp_dir, catalog_tmpfile):
+    env = {
+        **os.environ,
+        "ITERATIVE_DO_NOT_TRACK": "1",
+        "DATACHAIN__METASTORE": catalog_tmpfile.metastore.serialize(),
+        "DATACHAIN__WAREHOUSE": catalog_tmpfile.warehouse.serialize(),
+    }
+    for script in (_ALIAS_WRITE_SCRIPT, _ALIAS_READ_SCRIPT):
+        proc = run_test_subprocess((python_exc, "-c", script), env)
+        rc, _, stderr = wait_for_test_subprocess(proc, timeout=60)
+        assert rc == 0, stderr
