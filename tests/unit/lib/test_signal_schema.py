@@ -18,7 +18,7 @@ from typing import (
 )
 
 import pytest
-from pydantic import BaseModel, ConfigDict, ValidationError, create_model
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
 from typing_extensions import TypedDict
 
 from datachain import Column, DataModel, Sys, func
@@ -1917,6 +1917,27 @@ def test_deserialize_rejects_nested_model_with_different_shape(monkeypatch, wrap
         restored = SignalSchema.deserialize(serialized).values["x"]
 
     assert restored is not current_outer
+
+
+def test_deserialize_falls_back_when_imported_model_became_recursive(monkeypatch):
+    monkeypatch.setattr(ModelStore, "store", {})
+    stored = create_model("RecursiveNodeDrift", __module__=__name__, value=(int, ...))
+    serialized = SignalSchema({"x": stored}).serialize()
+
+    class RecursiveNodeDrift(BaseModel):
+        value: int
+        children: list["RecursiveNodeDrift"] = Field(default_factory=list)
+
+    monkeypatch.setattr(
+        sys.modules[__name__], "RecursiveNodeDrift", RecursiveNodeDrift, raising=False
+    )
+    ModelStore.store.clear()
+
+    with pytest.warns(SignalSchemaWarning, match="recursive definition"):
+        restored = SignalSchema.deserialize(serialized).values["x"]
+
+    assert restored is not RecursiveNodeDrift
+    assert set(restored.model_fields) == {"value"}
 
 
 @pytest.mark.parametrize("schema_version", [1, 2])

@@ -252,9 +252,23 @@ def _resolve_from_sys_modules(
     if candidate is None or not ModelStore.is_pydantic(candidate):
         return None
     serialized: dict[str, Any] = {}
-    SignalSchema._serialize_custom_model(
-        ct.name, candidate, serialized, register_pydantic=False
-    )
+    try:
+        SignalSchema._serialize_custom_model(
+            ct.name, candidate, serialized, register_pydantic=False
+        )
+    except RecursionError:
+        # A recursive candidate that the stored (acyclic) schema does not describe:
+        # treat it as not comparable and let the caller fall back to the synthetic
+        # rebuild rather than blowing the stack.
+        warnings.warn(
+            f"class {candidate.__module__}.{candidate.__name__} has a recursive "
+            f"definition that does not match the stored schema for {ct.name!r}; "
+            "using a synthetic class, so isinstance checks against the imported "
+            "class will fail",
+            SignalSchemaWarning,
+            stacklevel=3,
+        )
+        return None
     matches = True
     for name, data in serialized.items():
         if name not in custom_types:
