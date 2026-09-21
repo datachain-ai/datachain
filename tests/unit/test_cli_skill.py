@@ -543,6 +543,28 @@ def test_install_leaves_a_jobs_skill_we_did_not_install(
     assert (skill_dir / "scripts" / "run.py").exists()
 
 
+def test_install_leaves_a_jobs_skill_that_only_writes_about_ours(
+    tmp_path, fake_skills_src, fake_home
+):
+    """Ownership is the frontmatter, not any `name:` in the document. A skill that
+    documents datachain's own would otherwise declare itself to be datachain's."""
+    from datachain.cli.commands.skill import TARGET_LAYOUT
+
+    skill_dir = fake_home / TARGET_LAYOUT["cursor"]["skills_dir"] / "jobs"
+    (skill_dir / "scripts").mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: my-own-jobs\n---\n"
+        "# notes\n\nThe retired skill declared itself:\n\n"
+        "```yaml\nname: datachain-jobs\n```\n"
+    )
+    (skill_dir / "scripts" / "run.py").write_text("print('mine')\n")
+
+    _run_install(fake_skills_src, fake_home, skills=None, target="cursor", local=False)
+
+    assert "my-own-jobs" in (skill_dir / "SKILL.md").read_text()
+    assert (skill_dir / "scripts" / "run.py").exists()
+
+
 def test_uninstall_leaves_a_jobs_skill_we_did_not_install(
     tmp_path, fake_skills_src, fake_home
 ):

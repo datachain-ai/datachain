@@ -116,6 +116,16 @@ def _transform_copilot_instructions(skill_md_path: Path) -> str:
     return f"---\napplyTo: '**/*.py'\n---\n{body}"
 
 
+def _frontmatter(text: str) -> str:
+    """The leading `---` block, empty if the document does not open with one.
+
+    Only the block counts: a `name:` further down is prose, and a skill that
+    documents ours would otherwise declare itself to be ours.
+    """
+    match = re.match(r"---\r?\n(.*?)\r?\n---\s*?(\r?\n|\Z)", text, re.DOTALL)
+    return match.group(1) if match else ""
+
+
 def _installed_by_datachain(skill_dest: Path, name: str) -> bool:
     """Whether this directory holds the skill datachain installed under that name.
 
@@ -125,12 +135,14 @@ def _installed_by_datachain(skill_dest: Path, name: str) -> bool:
     resolves placeholders, which leaves that line alone.
     """
     try:
-        frontmatter = (skill_dest / "SKILL.md").read_text()
+        text = (skill_dest / "SKILL.md").read_text()
     except OSError:
         return False
     return bool(
         re.search(
-            rf"^name:\s*datachain-{re.escape(name)}\s*$", frontmatter, re.MULTILINE
+            rf"^name:\s*datachain-{re.escape(name)}\s*$",
+            _frontmatter(text),
+            re.MULTILINE,
         )
     )
 
