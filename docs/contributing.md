@@ -142,4 +142,3 @@ When deprecating an existing API, parameter, command, or data format:
 
 5. **Removal Timeline**:
    Deprecated features should remain functional and emit warnings for at least two minor releases (or one major release) before actual removal.
-
