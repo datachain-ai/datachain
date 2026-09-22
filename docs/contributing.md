@@ -113,3 +113,32 @@ $ nox -s lint
 It is recommended to open an issue before starting work on anything.
 This will allow a chance to talk it over with the owners and validate
 your approach.
+
+## Deprecation Policy
+
+When deprecating an existing API, parameter, command, or data format:
+
+1. **Use the Unified Helper**:
+   Emit warnings using `datachain.warnings.warn_deprecated(what, *, instead=None, removal=None, once=False, category=None)`:
+   ```python
+   from datachain.warnings import warn_deprecated
+
+   warn_deprecated("DataChain.print_schema()", instead="print(chain.schema)")
+   ```
+
+2. **Warning Categories**:
+   - **`FutureWarning` (default)**: Used for all user-facing deprecations (public APIs, dataset storage formats, CLI flags). `FutureWarning` is visible by default in Python so end users are notified in their scripts and notebooks.
+   - **`DeprecationWarning`**: Pass explicitly (`category=DeprecationWarning`) for internal or developer-facing deprecations. `DeprecationWarning` is ignored by default outside the `__main__` module.
+
+3. **Message Format**:
+   All deprecation messages follow a standardized single-line format:
+   - `"X is deprecated; use Y instead."`
+   - `"X is deprecated and will be removed in Z; use Y instead."`
+   - `"X is deprecated and will be removed in Z."`
+   - `"X is deprecated."`
+
+4. **Hot Paths**:
+   For performance-sensitive paths executed in tight loops (such as row readers or deserialization routines), pass `once=True` to emit the warning only once per process.
+
+5. **Removal Timeline**:
+   Deprecated features should remain functional and emit warnings for at least two minor releases (or one major release) before actual removal.

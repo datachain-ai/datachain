@@ -3966,7 +3966,7 @@ def test_schema_flatten(test_session):
     assert {"sys.id", "sys.rand"} <= ds_sys.schema.flatten().keys()
 
     file = io.StringIO()
-    with pytest.warns(DeprecationWarning, match=r"print\(chain\.schema\)"):
+    with pytest.warns(FutureWarning, match=r"print\(chain\.schema\)"):
         ds.print_schema(file=file)
     assert file.getvalue() == f"{ds.schema}\n"
 
