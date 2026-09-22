@@ -51,6 +51,7 @@ from datachain.lib.udf import Aggregator, Generator, Mapper
 from datachain.lib.utils import AbstractUDF, DataChainError
 from datachain.query import metrics, param
 from datachain.query.session import Session
+from datachain.warnings import warn_deprecated
 
 __version__ = version("datachain")
 
@@ -110,4 +111,5 @@ __all__ = [
     "read_storage",
     "read_values",
     "read_zarr",
+    "warn_deprecated",
 ]

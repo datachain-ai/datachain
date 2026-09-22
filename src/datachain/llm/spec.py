@@ -46,6 +46,7 @@ def _canonical(value: Any) -> Any:
         warnings.warn(
             f"llm param {type(value).__name__!r} has no stable repr; it breaks "
             "caching (full recompute every run).",
+            UserWarning,
             stacklevel=2,
         )
     return value

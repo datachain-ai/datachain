@@ -6,7 +6,6 @@ import logging
 import os
 import os.path
 import sys
-import warnings
 from collections.abc import Callable, Iterator, Sequence
 from collections.abc import Generator as IteratorGenerator
 from contextlib import closing
@@ -88,6 +87,7 @@ from datachain.utils import (
     env2bool,
     inside_notebook,
 )
+from datachain.warnings import warn_deprecated
 
 from .database import DEFAULT_DATABASE_BATCH_SIZE
 from .utils import (
@@ -428,10 +428,9 @@ class DataChain:
 
     def print_schema(self, file: IO | None = None) -> None:
         """Deprecated. Use ``print(chain.schema)``."""
-        warnings.warn(
-            "DataChain.print_schema() is deprecated; use print(chain.schema) instead.",
-            DeprecationWarning,
-            stacklevel=2,
+        warn_deprecated(
+            "DataChain.print_schema()",
+            instead="print(chain.schema)",
         )
         print(self.schema, file=file)
 
