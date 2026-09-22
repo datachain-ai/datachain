@@ -239,6 +239,10 @@ class CustomType(BaseModel):
         return cls(**data)
 
 
+class _AmbiguousModelNameError(Exception):
+    """Distinct Pydantic classes share one serialized model name."""
+
+
 def _resolve_from_sys_modules(
     ct: CustomType, custom_types: dict[str, Any]
 ) -> type[BaseModel] | None:
@@ -255,17 +259,23 @@ def _resolve_from_sys_modules(
     serialized: dict[str, Any] = {}
     try:
         SignalSchema._serialize_custom_model(
-            ct.name, candidate, serialized, register_pydantic=False
+            ct.name,
+            candidate,
+            serialized,
+            register_pydantic=False,
+            serialized_models={},
         )
-    except RecursionError:
-        # A recursive candidate that the stored (acyclic) schema does not describe:
-        # treat it as not comparable and let the caller fall back to the synthetic
-        # rebuild rather than blowing the stack.
+    except (_AmbiguousModelNameError, RecursionError) as exc:
+        if isinstance(exc, _AmbiguousModelNameError):
+            reason = "has multiple nested classes sharing a serialized name"
+        else:
+            # A recursive candidate that the stored (acyclic) schema does not
+            # describe is not comparable to it.
+            reason = "has a recursive definition that does not match the stored schema"
         warnings.warn(
-            f"class {candidate.__module__}.{candidate.__name__} has a recursive "
-            f"definition that does not match the stored schema for {ct.name!r}; "
-            "using a synthetic class, so isinstance checks against the imported "
-            "class will fail",
+            f"class {candidate.__module__}.{candidate.__name__} {reason} for "
+            f"{ct.name!r}; using a synthetic class, so isinstance checks against "
+            "the imported class will fail",
             SignalSchemaWarning,
             stacklevel=3,
         )
@@ -418,8 +428,14 @@ class SignalSchema:
         custom_types: dict[str, Any],
         *,
         register_pydantic: bool = True,
+        serialized_models: dict[str, type[BaseModel]] | None = None,
     ) -> str:
         """Serialize a Pydantic model and its nested types into custom_types."""
+        if serialized_models is not None:
+            previous = serialized_models.get(version_name)
+            if previous is not None and previous is not fr:
+                raise _AmbiguousModelNameError(version_name)
+            serialized_models[version_name] = fr
         if version_name in custom_types:
             # This type is already stored in custom_types.
             return version_name
@@ -433,6 +449,7 @@ class SignalSchema:
                 field_type,
                 custom_types,
                 register_pydantic=register_pydantic,
+                serialized_models=serialized_models,
             )
 
         bases = SignalSchema._get_bases(fr)
@@ -455,6 +472,7 @@ class SignalSchema:
         custom_types: dict[str, Any],
         *,
         register_pydantic: bool = True,
+        serialized_models: dict[str, type[BaseModel]] | None = None,
     ) -> str:
         """Serialize a type and its nested Pydantic models into custom_types."""
         subtypes: list[Any] = []
@@ -476,6 +494,7 @@ class SignalSchema:
                 st,
                 custom_types,
                 register_pydantic=register_pydantic,
+                serialized_models=serialized_models,
             )
         return type_name
 

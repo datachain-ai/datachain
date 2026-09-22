@@ -2032,6 +2032,53 @@ def test_deserialize_rejects_nested_model_with_different_shape(monkeypatch, wrap
     assert restored is not current_outer
 
 
+def test_deserialize_rejects_imported_model_with_colliding_nested_names(monkeypatch):
+    monkeypatch.setattr(ModelStore, "store", {})
+    stored_left = create_model(
+        "CollidingLeaf", __module__="left_models", value=(int, ...)
+    )
+    stored_right = create_model(
+        "CollidingLeaf", __module__="right_models", value=(int, ...)
+    )
+    stored_outer = create_model(
+        "OuterWithCollidingLeaves",
+        __module__=__name__,
+        left=(stored_left, ...),
+        right=(stored_right, ...),
+    )
+    serialized = SignalSchema({"x": stored_outer}).serialize()
+    ModelStore.store.clear()
+
+    current_left = create_model(
+        "CollidingLeaf", __module__="left_models", value=(int, ...)
+    )
+    current_right = create_model(
+        "CollidingLeaf", __module__="right_models", value=(str, ...)
+    )
+    current_outer = create_model(
+        "OuterWithCollidingLeaves",
+        __module__=__name__,
+        left=(current_left, ...),
+        right=(current_right, ...),
+    )
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "OuterWithCollidingLeaves",
+        current_outer,
+        raising=False,
+    )
+
+    with pytest.warns(
+        SignalSchemaWarning, match="multiple nested classes sharing a serialized name"
+    ):
+        restored_schema = SignalSchema.deserialize(serialized)
+    restored = restored_schema.values["x"]
+
+    assert restored is not current_outer
+    row = restored_schema.row_to_objs(_row(restored_schema, (1, 2)))[0]
+    assert row.right.value == 2
+
+
 def test_deserialize_falls_back_when_imported_model_became_recursive(monkeypatch):
     monkeypatch.setattr(ModelStore, "store", {})
     stored = create_model("RecursiveNodeDrift", __module__=__name__, value=(int, ...))
