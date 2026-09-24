@@ -950,8 +950,9 @@ class SignalSchema:
         j = self._convert_model_collection_fields(
             fr, j, catalog if set_stream else None, cache
         )
+        validation_input = j["root"] if fr.__pydantic_root_model__ else j
         try:
-            obj = fr.model_validate(j, by_alias=False, by_name=True)
+            obj = fr.model_validate(validation_input, by_alias=False, by_name=True)
             if set_stream:
                 assert catalog is not None
                 SignalSchema._set_file_stream(obj, catalog, cache)

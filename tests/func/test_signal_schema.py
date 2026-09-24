@@ -2,7 +2,7 @@ import copy
 import uuid
 
 import pytest
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 import datachain as dc
 from datachain import DataModel, func
@@ -111,3 +111,20 @@ def test_serialized_aliases_readback(test_session, container, required):
         assert restored["a"].value == 7
     else:
         assert restored.values[0].value == 7
+
+
+def test_root_model_readback(test_session):
+    class Scalar(RootModel[int]):
+        pass
+
+    dc.read_values(
+        session=test_session,
+        settings={"prefetch": False},
+        item=[Scalar(7)],
+    ).save("root-model-readback")
+
+    restored = dc.read_dataset("root-model-readback", session=test_session).to_list(
+        "item"
+    )[0][0]
+
+    assert restored.root == 7
