@@ -1,12 +1,15 @@
 import copy
+import sys
 import uuid
+from collections.abc import Sequence
 
 import pytest
-from pydantic import BaseModel, ConfigDict, Field, RootModel
+from pydantic import BaseModel, ConfigDict, Field, RootModel, create_model
 
 import datachain as dc
 from datachain import DataModel, func
 from datachain.lib.model_store import ModelStore
+from datachain.lib.signal_schema import SignalSchemaWarning
 
 
 def test_partial_collision_on_dataset_reload(test_session):
@@ -128,3 +131,41 @@ def test_root_model_readback(test_session):
     )[0][0]
 
     assert restored.root == 7
+
+
+def test_saved_sequence_model_reads_with_drifted_child(test_session, monkeypatch):
+    child_name = "SequenceChildForReadRegression"
+    outer_name = "OuterSequenceForReadRegression"
+    stored_child = create_model(child_name, __module__=__name__, value=(int, ...))
+    stored_outer = create_model(
+        outer_name,
+        __module__=__name__,
+        items=(Sequence[stored_child], ...),  # type: ignore[valid-type]
+    )
+    dataset_name = f"sequence-child-drift-{uuid.uuid4()}"
+    dc.read_values(
+        session=test_session,
+        settings={"prefetch": False},
+        item=[stored_outer(items=[stored_child(value=7)])],
+    ).save(dataset_name)
+
+    current_child = create_model(child_name, __module__=__name__, value=(str, ...))
+    current_outer = create_model(
+        outer_name,
+        __module__=__name__,
+        items=(Sequence[current_child], ...),  # type: ignore[valid-type]
+    )
+    monkeypatch.setattr(sys.modules[__name__], child_name, current_child, raising=False)
+    monkeypatch.setattr(sys.modules[__name__], outer_name, current_outer, raising=False)
+    monkeypatch.setattr(ModelStore, "store", {})
+
+    with pytest.warns(SignalSchemaWarning) as caught_warnings:
+        restored = dc.read_dataset(dataset_name, session=test_session).to_list("item")[
+            0
+        ][0]
+
+    assert any(
+        "does not preserve its type arguments" in str(warning.message)
+        for warning in caught_warnings
+    )
+    assert restored.items == [{"value": 7}]

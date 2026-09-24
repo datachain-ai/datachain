@@ -7,9 +7,11 @@ inherits from Pydantic `BaseModel`.
 
 Pydantic models can group and nest multiple fields into one type. When reading a saved
 dataset, DataChain reuses a matching model class that is already imported. If the class
-is unavailable, DataChain rebuilds one from the stored schema. Models may alternatively
-inherit from [`DataModel`](#datachain.lib.data_model.DataModel), a lightweight
-`BaseModel` wrapper that registers subclasses automatically.
+is unavailable, DataChain rebuilds one from the stored schema. Reused classes run their
+current validators, so changing validation may transform or reject previously saved
+values even when the fields are unchanged. Models may alternatively inherit from
+[`DataModel`](#datachain.lib.data_model.DataModel), a lightweight `BaseModel` wrapper
+that registers subclasses automatically.
 
 ::: datachain.lib.data_model.DataModel
 
