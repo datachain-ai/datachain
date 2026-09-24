@@ -76,6 +76,22 @@ def test_scandir_alternate(client):
     match_entries(results, ENTRIES)
 
 
+@pytest.mark.parametrize("cloud_type", ["azure"], indirect=True)
+def test_scandir_azure_account_in_uri(cloud_server, cloud_server_credentials):
+    conn_str = cloud_server.client_config["connection_string"]
+    account = dict(p.split("=", 1) for p in conn_str.split(";") if p)["AccountName"]
+    uri = f"{cloud_server.src_uri}@{account}"
+
+    client = Client.get_implementation(uri).from_source(
+        uri, cache=None, **cloud_server.client_config
+    )
+
+    assert client.fs_kwargs["account_name"] == account
+    results = scandir(client, "")
+    match_entries(results, ENTRIES)
+    assert all(e.source == uri for e in results)
+
+
 def test_gcs_client_gets_credentials_from_env(monkeypatch, mocker):
     from datachain.client.gcs import GCSClient
 
