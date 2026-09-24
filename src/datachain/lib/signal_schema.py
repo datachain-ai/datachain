@@ -947,6 +947,9 @@ class SignalSchema:
             if absent:
                 return None, pos
         j, pos = unflatten_to_json_pos(fr, row, pos)
+        j = self._convert_model_collection_fields(
+            fr, j, catalog if set_stream else None, cache
+        )
         try:
             obj = fr.model_validate(j, by_alias=False, by_name=True)
             if set_stream:
@@ -958,6 +961,33 @@ class SignalSchema:
             logger.debug("Failed to create %s: %s", label, e)
             obj = None
         return obj, pos
+
+    def _convert_model_collection_fields(
+        self,
+        model: type[BaseModel],
+        value: dict[str, Any],
+        catalog: "Catalog | None",
+        cache: bool,
+    ) -> dict[str, Any]:
+        """Hydrate collection fields before validating a flattened model."""
+        result = value.copy()
+        for name, field in model.model_fields.items():
+            if name not in result or field.annotation is None:
+                continue
+            annotation, _ = unwrap_optional(field.annotation)
+            field_value = result[name]
+            nested_model = ModelStore.to_pydantic(annotation)
+            if nested_model is not None and isinstance(field_value, dict):
+                result[name] = self._convert_model_collection_fields(
+                    nested_model, field_value, catalog, cache
+                )
+            elif is_sequence_annotation(annotation) or is_mapping_annotation(
+                annotation
+            ):
+                result[name] = self._convert_feature_value(
+                    field.annotation, field_value, catalog, cache
+                )
+        return result
 
     def get_file_signal(self) -> str | None:
         for signal_name, signal_type in self.values.items():
@@ -1079,7 +1109,7 @@ class SignalSchema:
             if isinstance(value, model_cls):
                 obj = value
             elif isinstance(value, Mapping):
-                obj = model_cls.model_validate(value, by_alias=False, by_name=True)
+                obj = model_cls.model_validate(value)
             else:
                 return result
             assert isinstance(obj, BaseModel)
