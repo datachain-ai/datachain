@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import random
@@ -73,10 +74,10 @@ def process_jobs_args(args: "Namespace"):
         return show_job_logs(args.id, args.team)
 
     if args.cmd == "ls":
-        return list_jobs(args.status, args.team, args.limit, args.extended)
+        return list_jobs(args.status, args.team, args.limit, args.extended, args.json)
 
     if args.cmd == "clusters":
-        return list_clusters(args.team)
+        return list_clusters(args.team, args.json)
 
     raise DataChainError(f"Unknown command '{args.cmd}'.")
 
@@ -742,7 +743,11 @@ def cancel_job(job_id: str, team_name: str | None):
 
 
 def list_jobs(
-    status: str | None, team_name: str | None, limit: int, extended: bool = False
+    status: str | None,
+    team_name: str | None,
+    limit: int,
+    extended: bool = False,
+    as_json: bool = False,
 ):
     client = StudioClient(team=team_name)
     response = client.get_jobs(status, limit, include_steps=extended)
@@ -750,6 +755,10 @@ def list_jobs(
         raise DataChainError(response.message)
 
     jobs = response.data or []
+    if as_json:
+        print(json.dumps(jobs, indent=2))
+        return
+
     if not jobs:
         print("No jobs found")
         return
@@ -770,7 +779,10 @@ def list_jobs(
             )
         rows.append(row)
 
-    print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
+    # As in list_clusters: a job or cluster named "1e5" would render as 100000.
+    print(
+        tabulate.tabulate(rows, headers="keys", tablefmt="grid", disable_numparse=True)
+    )
 
 
 def _format_stages(steps: list[dict], job_finished: bool) -> str:
@@ -814,32 +826,48 @@ def show_job_logs(job_id: str, team_name: str | None):
     return show_logs_from_client(client, job_id)
 
 
-def list_clusters(team_name: str | None):
+def list_clusters(team_name: str | None, as_json: bool = False):
     client = StudioClient(team=team_name)
     response = client.get_clusters()
     if not response.ok:
         raise DataChainError(response.message)
 
     clusters = response.data or []
+    if as_json:
+        print(json.dumps(clusters, indent=2))
+        return
+
     if not clusters:
         print("No clusters found")
         return
 
     rows = [
         {
-            "ID": cluster.get("id"),
-            "Name": cluster.get("name"),
-            "Status": cluster.get("status"),
-            "Cloud Provider": cluster.get("cloud_provider"),
-            "Cloud Credentials": cluster.get("cloud_credentials"),
-            "Is Active": cluster.get("is_active"),
-            "Is Default": cluster.get("default"),
-            "Max Workers": cluster.get("max_workers"),
+            "ID": cluster["id"],
+            "Name": cluster["name"],
+            "Status": cluster["status"],
+            "Cloud Provider": cluster["cloud_provider"],
+            "Region": cluster["cloud_region"],
+            "Instance Type": cluster["instance_type"],
+            "Compute Class": cluster["compute_class"],
+            "Disk Request": cluster["disk_size"],
+            "Busy/Active/Max": (
+                f"{cluster['busy_workers']}/{cluster['active_workers']}"
+                f"/{cluster['max_workers']}"
+            ),
+            "Is Default": cluster["default"],
         }
         for cluster in clusters
     ]
 
-    print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
+    # Nothing in this table is a number, and both the id and the name can look
+    # like one: an id of "12345678e9" renders as 1.23457e+16 and a cluster named
+    # "1e5" as 100000, neither of which can be pasted back into a command.
+    print(
+        tabulate.tabulate(
+            rows, headers="keys", tablefmt="grid", missingval="-", disable_numparse=True
+        )
+    )
 
 
 def create_pipeline(
