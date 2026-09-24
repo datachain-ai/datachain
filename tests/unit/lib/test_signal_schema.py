@@ -2119,6 +2119,12 @@ def test_deserialize_falls_back_when_imported_model_became_recursive(monkeypatch
         value: int
         children: list["RecursiveNodeDrift"] = Field(default_factory=list)
 
+    RecursiveNodeDrift.model_rebuild(
+        _types_namespace={"RecursiveNodeDrift": RecursiveNodeDrift}
+    )
+    children_type = RecursiveNodeDrift.model_fields["children"].annotation
+    assert get_args(children_type)[0] is RecursiveNodeDrift
+
     monkeypatch.setattr(
         sys.modules[__name__], "RecursiveNodeDrift", RecursiveNodeDrift, raising=False
     )
