@@ -247,6 +247,10 @@ class _ErasedTypeArgumentsError(Exception):
     """An annotation's arguments are not represented in the stored schema."""
 
 
+class _RecursiveModelError(Exception):
+    """A model refers back to itself while its schema is being serialized."""
+
+
 def _has_erased_type_arguments(annotation: Any) -> bool:
     """Whether schema serialization drops a collection annotation's arguments."""
     parts = annotation_parts(annotation)
@@ -285,6 +289,7 @@ def _resolve_from_sys_modules(
     except (
         _AmbiguousModelNameError,
         _ErasedTypeArgumentsError,
+        _RecursiveModelError,
         RecursionError,
     ) as exc:
         if isinstance(exc, _AmbiguousModelNameError):
@@ -294,7 +299,7 @@ def _resolve_from_sys_modules(
                 "has an annotation whose serialization does not preserve its "
                 "type arguments"
             )
-        else:
+        elif isinstance(exc, (_RecursiveModelError, RecursionError)):
             # A recursive candidate that the stored (acyclic) schema does not
             # describe is not comparable to it.
             reason = "has a recursive definition that does not match the stored schema"
@@ -461,6 +466,8 @@ class SignalSchema:
             previous = serialized_models.get(version_name)
             if previous is not None and previous is not fr:
                 raise _AmbiguousModelNameError(version_name)
+            if previous is fr and version_name not in custom_types:
+                raise _RecursiveModelError(version_name)
             serialized_models[version_name] = fr
         if version_name in custom_types:
             # This type is already stored in custom_types.
