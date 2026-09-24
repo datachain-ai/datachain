@@ -790,21 +790,17 @@ def test_select_except_signals_error():
         schema.select_except_signals("address", 37)
 
 
-def test_deserialize_rebuilds_with_known_base_when_class_not_in_sys_modules():
-    class HiddenChild(MyType1):
-        name: str
-
-    schema = {"fr": HiddenChild}
+def test_deserialize_restores_known_base_type():
+    schema = {"fr": MyType3}
     signals = SignalSchema(schema).serialize()
-    ModelStore.remove(HiddenChild)
+    ModelStore.remove(MyType3)
 
-    # HiddenChild is defined inside this function, so sys.modules has no
-    # attribute for it; deserialization falls back to rebuilding and picks up
-    # MyType1 as the base from the stored bases list.
+    # Since MyType3 is removed, deserialization restores it
+    # from the meta information stored in the schema, including the base type
+    # that is still known - MyType1
     deserialized_schema = SignalSchema.deserialize(signals)
-    restored = deserialized_schema.values["fr"]
-    assert restored.__name__ == "HiddenChild_v1"
-    assert issubclass(restored, MyType1)
+    assert deserialized_schema.values["fr"].__name__ == "MyType3_v1"
+    assert issubclass(deserialized_schema.values["fr"], MyType1)
 
 
 def test_deserialize_custom_type_bad_schema():
