@@ -243,6 +243,23 @@ class _AmbiguousModelNameError(Exception):
     """Distinct Pydantic classes share one serialized model name."""
 
 
+class _ErasedTypeArgumentsError(Exception):
+    """An annotation's arguments are not represented in the stored schema."""
+
+
+def _has_erased_type_arguments(annotation: Any) -> bool:
+    """Whether schema serialization drops a collection annotation's arguments."""
+    parts = annotation_parts(annotation)
+    if not parts:
+        return False
+    origin = get_origin(annotation)
+    if is_sequence_annotation(annotation) and origin not in (list, tuple):
+        return True
+    if is_mapping_annotation(annotation) and origin is not dict:
+        return True
+    return any(_has_erased_type_arguments(part) for part in parts)
+
+
 def _resolve_from_sys_modules(
     ct: CustomType, custom_types: dict[str, Any]
 ) -> type[BaseModel] | None:
@@ -265,9 +282,18 @@ def _resolve_from_sys_modules(
             register_pydantic=False,
             serialized_models={},
         )
-    except (_AmbiguousModelNameError, RecursionError) as exc:
+    except (
+        _AmbiguousModelNameError,
+        _ErasedTypeArgumentsError,
+        RecursionError,
+    ) as exc:
         if isinstance(exc, _AmbiguousModelNameError):
             reason = "has multiple nested classes sharing a serialized name"
+        elif isinstance(exc, _ErasedTypeArgumentsError):
+            reason = (
+                "has an annotation whose serialization does not preserve its "
+                "type arguments"
+            )
         else:
             # A recursive candidate that the stored (acyclic) schema does not
             # describe is not comparable to it.
@@ -445,6 +471,8 @@ class SignalSchema:
             field_type = info.annotation
             # All fields should be typed.
             assert field_type
+            if serialized_models is not None and _has_erased_type_arguments(field_type):
+                raise _ErasedTypeArgumentsError(field_type)
             fields[field_name] = SignalSchema._serialize_type(
                 field_type,
                 custom_types,

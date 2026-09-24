@@ -2079,6 +2079,37 @@ def test_deserialize_rejects_imported_model_with_colliding_nested_names(monkeypa
     assert row.right.value == 2
 
 
+def test_deserialize_rejects_imported_model_with_erased_sequence_item(monkeypatch):
+    monkeypatch.setattr(ModelStore, "store", {})
+    stored_child = create_model("SequenceChild", __module__=__name__, value=(int, ...))
+    stored_outer = create_model(
+        "OuterWithSequence",
+        __module__=__name__,
+        items=(Sequence[stored_child], ...),  # type: ignore[valid-type]
+    )
+    serialized = SignalSchema({"x": stored_outer}).serialize()
+    ModelStore.store.clear()
+
+    current_child = create_model("SequenceChild", __module__=__name__, value=(str, ...))
+    current_outer = create_model(
+        "OuterWithSequence",
+        __module__=__name__,
+        items=(Sequence[current_child], ...),  # type: ignore[valid-type]
+    )
+    monkeypatch.setattr(
+        sys.modules[__name__], "OuterWithSequence", current_outer, raising=False
+    )
+
+    with pytest.warns(SignalSchemaWarning) as caught_warnings:
+        restored = SignalSchema.deserialize(serialized).values["x"]
+
+    assert any(
+        "does not preserve its type arguments" in str(warning.message)
+        for warning in caught_warnings
+    )
+    assert restored is not current_outer
+
+
 def test_deserialize_falls_back_when_imported_model_became_recursive(monkeypatch):
     monkeypatch.setattr(ModelStore, "store", {})
     stored = create_model("RecursiveNodeDrift", __module__=__name__, value=(int, ...))
