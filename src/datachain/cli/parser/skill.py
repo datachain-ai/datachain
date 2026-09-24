@@ -19,7 +19,7 @@ def add_skill_parser(subparsers, parent_parser) -> None:
 
     install_help = "Install DataChain skills into an AI coding tool"
     install_description = (
-        "Install DataChain skills (core, knowledge, jobs) into an AI coding tool "
+        "Install DataChain skills (core, knowledge) into an AI coding tool "
         "such as Claude Code, Cursor, Codex, GitHub Copilot, or Pi."
     )
     install_parser = skill_subparser.add_parser(
@@ -35,7 +35,7 @@ def add_skill_parser(subparsers, parent_parser) -> None:
         default=None,
         metavar="SKILLS",
         help=(
-            "Comma-separated skill names to install: core, knowledge, jobs "
+            "Comma-separated skill names to install: core, knowledge "
             "(default: install all)"
         ),
     )
