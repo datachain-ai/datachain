@@ -29,7 +29,7 @@ from typing import (
 )
 
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
-from pydantic import BaseModel, Field, ValidationError, create_model
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError, create_model
 from sqlalchemy import Cast, asc, cast, desc, nulls_last
 from sqlalchemy.sql.elements import BinaryExpression, Grouping, Label
 
@@ -1105,12 +1105,7 @@ class SignalSchema:
         origin = get_origin(annotation)
 
         if origin in (Union, types.UnionType):
-            inner, has_none = unwrap_optional(annotation)
-            # a None-free or multi-arm Union isn't converted to a single type
-            if not has_none or get_origin(inner) in (Union, types.UnionType):
-                return result
-            annotation = inner
-            origin = get_origin(annotation)
+            return self._convert_union_feature_value(annotation, value, catalog, cache)
 
         if ModelStore.is_pydantic(annotation):
             model_cls: type[BaseModel] = annotation  # type: ignore[assignment]
@@ -1168,6 +1163,38 @@ class SignalSchema:
                     )
                     result[converted_key] = converted_val
 
+        return result
+
+    @staticmethod
+    def _is_model_union(annotation: DataType) -> bool:
+        return any(
+            ModelStore.is_pydantic(part) for part in annotation_parts(annotation)
+        )
+
+    def _convert_union_feature_value(
+        self,
+        annotation: DataType,
+        value: Any,
+        catalog: "Catalog | None",
+        cache: bool,
+    ) -> Any:
+        inner, has_none = unwrap_optional(annotation)
+        if has_none and get_origin(inner) not in (Union, types.UnionType):
+            return self._convert_feature_value(inner, value, catalog, cache)
+        if isinstance(value, Mapping) and self._is_model_union(annotation):
+            return self._convert_union_model_value(annotation, value, catalog, cache)
+        return value
+
+    @staticmethod
+    def _convert_union_model_value(
+        annotation: DataType,
+        value: Mapping[str, Any],
+        catalog: "Catalog | None",
+        cache: bool,
+    ) -> Any:
+        result = TypeAdapter(annotation).validate_python(value)
+        if catalog is not None:
+            SignalSchema._set_file_stream(result, catalog, cache, annotation=annotation)
         return result
 
     @staticmethod

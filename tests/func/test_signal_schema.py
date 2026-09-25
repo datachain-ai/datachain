@@ -169,3 +169,39 @@ def test_saved_sequence_model_reads_with_drifted_child(test_session, monkeypatch
         for warning in caught_warnings
     )
     assert restored.items == [{"value": 7}]
+
+
+def test_serialized_aliases_readback_for_union_items(test_session):
+    class AliasedValue(BaseModel):
+        model_config = ConfigDict(serialize_by_alias=True)
+
+        value: int = Field(alias="externalValue")
+
+    class AliasedLabel(BaseModel):
+        model_config = ConfigDict(serialize_by_alias=True)
+
+        label: str = Field(alias="externalLabel")
+
+    class Wrapper(BaseModel):
+        items: list[AliasedValue | AliasedLabel]
+
+    dataset_name = f"serialized-alias-union-{uuid.uuid4()}"
+    dc.read_values(
+        session=test_session,
+        settings={"prefetch": False},
+        item=[
+            Wrapper(
+                items=[
+                    AliasedValue(externalValue=7),
+                    AliasedLabel(externalLabel="label"),
+                ]
+            )
+        ],
+    ).save(dataset_name)
+
+    restored = dc.read_dataset(dataset_name, session=test_session).to_list("item")[0][0]
+
+    assert isinstance(restored.items[0], AliasedValue)
+    assert restored.items[0].value == 7
+    assert isinstance(restored.items[1], AliasedLabel)
+    assert restored.items[1].label == "label"
