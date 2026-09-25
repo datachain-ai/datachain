@@ -27,7 +27,7 @@ Only go to raw storage when no existing dataset covers the needed data, or the u
 
 Datasets are the unit of reasoning. Chains that transform data through UDFs — or that produce a pipeline's final result — should be saved as named datasets.
 
-**Core rule: always `.save()`, never just `.show()`.** A pipeline's terminal operation is `.save("descriptive_name")`, followed by `.show()` on the saved result for display. Two exceptions: (1) one-off exploratory queries where the user explicitly asks to "show me" or "print"; (2) Task-layer outputs per the CAST methodology — persist by exception, not by default. The always-save rule is absolute for C/A/S substrate layers.
+**Core rule: always `.save()`, never just `.show()`.** A pipeline's terminal operation is `.save("descriptive_name")`, followed by `.show()` on the saved result for display. Two exceptions: (1) one-off exploratory queries where the user explicitly asks to "show me" or "print"; (2) a cheap final query whose result is a one-time answer. A chain that ran an expensive UDF is always saved.
 
 **Critical anti-pattern: bypassing `.save()` by dumping in-memory rows to a file.** Reading the chain via `.to_list()` / `.to_values()` and writing to disk via `open()`, `json.dump`, `pandas.to_csv`, or any Python-side file handle is forbidden for UDF-bearing pipelines. The pipeline result must land as a saved dataset first via `.save()`. Once saved, exporting via `chain.to_csv()`, `chain.to_parquet()`, `chain.to_storage()` is fine.
 
@@ -40,7 +40,7 @@ with open("similar_results.json", "w") as f:
     json.dump(results, f)
 
 # ✓ Save the dataset first, then export from it if needed.
-saved = chain.map(emb=encode_image).save("product_catalog_embeddings", attrs=[...])
+saved = chain.map(emb=encode_image).save("product_catalog_embeddings")
 saved.to_csv("similar_results.csv")
 ```
 
@@ -65,8 +65,8 @@ A multi-stage pipeline that produces multiple named datasets through expensive s
 **Naming:** each script is named after the dataset it produces.
 
 ```
-build_product_catalog_embeddings.py    →  l3_product_catalog_emb dataset
-build_product_catalog_metadata.py      →  l1_product_catalog_meta dataset
+build_product_catalog_embeddings.py    →  product_catalog_emb dataset
+build_product_catalog_metadata.py      →  product_catalog_meta dataset
 similar_to_query.py                     →  products_similar_to_query (or ad-hoc)
 ```
 
@@ -86,24 +86,23 @@ embeddings = (
     .filter(dc.C("width") > 400)  # ← problem-specific
     .setup(model=lambda: clip)
     .map(emb=encode_image)
-    .save("l3_product_catalog_clip")  # ← USELESS for next question
+    .save("product_catalog_clip")  # ← USELESS for next question
 )
 
-# ✓ Save embeddings over the WHOLE input, filter downstream as a Task.
+# ✓ Save embeddings over the WHOLE input, filter downstream.
 embeddings = (
     dc.read_storage("s3://product-catalog/images/")
     .setup(model=lambda: clip)
     .map(emb=encode_image)
     .save(
-        "l3_product_catalog_clip",
-        attrs=["cast:sense", "scope:bucket", "source:product_catalog"],
+        "product_catalog_clip",
         description="CLIP ViT-B-32 embeddings over the full product-catalog bucket.",
     )
 )
 
 ranked = (
-    dc.read_dataset("l3_product_catalog_clip")
-    .merge(dc.read_dataset("l1_product_catalog_meta"), on="file.stem")
+    dc.read_dataset("product_catalog_clip")
+    .merge(dc.read_dataset("product_catalog_meta"), on="file.stem")
     .filter(dc.C("condition") != "refurbished")  # ← problem-specific, downstream
     .filter(dc.C("width") > 400)
     .mutate(distance=dc.func.cosine_distance(dc.C("emb"), query_emb))
@@ -111,7 +110,6 @@ ranked = (
     .limit(5)
     .save(
         "products_similar_to_query",
-        attrs=["cast:task", "scope:onetime", "source:products_similar_to_query"],
         description="Top-5 catalog products visually closest to query.jpg under the filter set.",
     )
 )
@@ -129,41 +127,55 @@ embeddings = (
 )
 ```
 
-### CAST quick reference
+### Row shape — grain and provenance
 
-CAST is the four-layer pattern owned by the `datachain-knowledge` skill. The full doctrine (recall economics, layer-ladder walk, calibration, dialogue) lives there; when that skill is not installed, this section is all you need. This is just enough to recognize the layer names:
+**Grain: one row per unit the operation emits.** Object detection emits one detection per box → one row per detection; segmentation → one row per segment; LLM extraction → one row per response; header parsing → one row per file. At the operation's own grain every downstream question is one `.filter()` / `.group_by()`. At a coarser grain the answer sits inside `list[list[T]]` at the root, and every query needs a `.gen()` to fan it out first.
 
-- **Container** — typed index of what each file IS without full decode (paths, headers, sidecars).
-- **Asset** — raw extracted or mixed data in workable shape (decoded units, joined mixtures).
-- **Sense** — what a model said about the data (embeddings, classifications, transcriptions).
-- **Task** — task-specific composition on top of C/A/S. Persist by exception.
+Aggregating up from a fine grain costs one `.group_by()`; fanning down from a coarse one costs a `.gen()` per query, forever. The trap is matching the row to the first noun in the question ("find VIDEOS with people" → one row per video) and discovering at query time that the filter target (`label == "person"`) is nested two lists deep.
 
-**Naming convention:**
+```python
+# ✗ per-video rows — no filter reaches `label`.
+class VideoDetections(BaseModel):
+    frames: list[FrameDetections]  # each holds detections: list[Detection]
 
+
+# ✓ per-detection rows — every question is one filter / group_by.
+class Detection(BaseModel):
+    source: dc.VideoFile  # row provenance
+    frame_idx: int
+    timestamp: float
+    label: str
+    confidence: float
+    bbox: list[float]
 ```
-l1_<source>_<descriptor>      # Container — listings, headers, sidecar metadata
-l2_<source>_<descriptor>      # Asset — extracted/reshaped raw data
-l3_<source>_<descriptor>      # Sense — model-derived signals
-<descriptor>                  # Task — no prefix
+
+A coarser grain is right when the operation itself emits one unit per file (one classification per video, one embedding per document), or when the user asks for it.
+
+**Provenance: every emitted row carries its source file, typed.** A UDF that fans one file out into many rows puts the originating file on each emitted row as `dc.File` or a subclass (`dc.VideoFile`, `dc.ImageFile`, `dc.AudioFile`, `dc.TextFile`) — never `source: str`. A bare path loses etag-based change detection and the link back to the listing, loses Studio previews, loses `.read()` / `.open()` / `.get_info()` on the row, and loses the access config (`anon=True`, credentials) that travels with a typed file. Do not rely on parent-column propagation to carry it implicitly — the saved schema is the contract the next session reads.
+
+```python
+def detect_per_frame(file: dc.VideoFile, model) -> Iterator[Detection]:
+    for frame in file.get_frames(step=...):
+        for box in model(frame.get_np()).boxes:
+            yield Detection(source=file, frame_idx=..., ...)  # pass the source through
 ```
 
-The `l1_` / `l2_` / `l3_` prefix is enough; do NOT add layer-type infixes like `_container_`. Cap at 30 chars.
+When the user needs a plain string path, keep the typed file and add the string as a second column.
 
-**Tag every `.save()` with `attrs` and `description`** so the knowledge skill can resolve the layer:
+### Naming and description
+
+Names describe content: `product_catalog_clip`, `cik_text_stats`. Keep them under ~30 characters — longer names are truncated in dataset lists and table headers. Parameters (model id, preset, threshold) belong in the code, never in the name.
+
+Every `.save()` sets `description=` — one line on what the dataset holds and what it is good for. That line is what the next reader sees in `dc.datasets()` and in the knowledge-base index.
 
 ```python
 chain.save(
-    "l3_product_catalog_clip",
-    attrs=[
-        "cast:sense",  # container | asset | sense | task
-        "scope:bucket",  # bucket | directory | sample | onetime
-        "source:product_catalog",
-    ],
+    "product_catalog_clip",
     description="CLIP ViT-B-32 embeddings over the full product-catalog bucket.",
 )
 ```
 
-Lineage is tracked automatically; do NOT add `parent:` attrs.
+Lineage is tracked automatically when a chain reads one dataset and saves another — never encode a parent name by hand.
 
 ---
 
@@ -190,9 +202,9 @@ Lineage is tracked automatically; do NOT add `parent:` attrs.
     that calls `file.open()` in a new process makes a fresh HeadObject without
     anon → 403. Fix: pass anon into the downstream session via `client_config`:
     ✓ session = dc.Session.get(client_config={"anon": True})
-      (dc.read_dataset("l2_my_bucket_files", session=session)
+      (dc.read_dataset("my_bucket_files", session=session)
          .map(emb=encode_image)
-         .save("l3_my_bucket_emb"))
+         .save("my_bucket_emb"))
 
 2. EVERY UDF MUST HAVE A KNOWN OUTPUT TYPE. A UDF passed to map/gen/agg without
    a resolved return type defaults to str and crashes at runtime for any non-str
@@ -222,6 +234,11 @@ Lineage is tracked automatically; do NOT add `parent:` attrs.
    params= is allowed with any of the above to bind function parameters to specific
    columns (e.g., nested fields like "file.path"). Prefer matching function parameter
    names to column names when possible.
+
+   `.gen()` needs an explicit `-> Iterator[T]` — not a bare return, not `Iterator`,
+   not `Iterator[Any]`; a missing annotation collapses the saved schema to str over
+   every row. `T` is a primitive or a Pydantic model declared at module level, never
+   nested inside the function or imported lazily.
 
 3. AVOID FILE OBJECT WHEN CONTENT NOT NEEDED: Passing a File object to a UDF
     downloads the full content, even if the UDF only reads metadata. This applies
@@ -515,6 +532,8 @@ chain.avg("column")
 dc.read_storage("s3://bucket/", update=True, delta=True)
 # Defaults: delta_on=("file.path", "file.etag", "file.version"); delta_compare=None.
 # Override delta_compare="file.mtime" only when etag is unreliable (e.g. local FS).
+# Build scripts reading storage take this path; plain queries over an existing
+# listing do not — there, re-listing the bucket only costs time.
 ```
 
 ---
