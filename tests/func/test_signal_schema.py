@@ -1,9 +1,15 @@
 import copy
+import sys
 import uuid
+from collections.abc import Sequence
+
+import pytest
+from pydantic import BaseModel, ConfigDict, Field, RootModel, create_model
 
 import datachain as dc
 from datachain import DataModel, func
 from datachain.lib.model_store import ModelStore
+from datachain.lib.signal_schema import SignalSchemaWarning
 
 
 def test_partial_collision_on_dataset_reload(test_session):
@@ -74,3 +80,128 @@ def test_partial_collision_on_dataset_reload(test_session):
         assert actual_fields == [("a",), ("b",)]
     finally:
         ModelStore.store = original_store
+
+
+@pytest.mark.parametrize("container", ["list", "dict", "nested_list"])
+@pytest.mark.parametrize("required", [False, True], ids=["defaulted", "required"])
+def test_serialized_aliases_readback(test_session, container, required):
+    class Aliased(BaseModel):
+        model_config = ConfigDict(serialize_by_alias=True)
+
+        value: int = Field(... if required else 0, alias="externalValue")
+
+    class Wrapper(BaseModel):
+        values: list[Aliased]
+
+    aliased = Aliased(externalValue=7)
+    item = {
+        "list": [aliased],
+        "dict": {"a": aliased},
+        "nested_list": Wrapper(values=[aliased]),
+    }[container]
+    dataset_name = f"serialized-alias-{container}-{required}"
+    dc.read_values(
+        session=test_session,
+        settings={"prefetch": False},
+        item=[item],
+    ).save(dataset_name)
+
+    restored = dc.read_dataset(dataset_name, session=test_session).to_list("item")[0][0]
+
+    if container == "list":
+        assert restored[0].value == 7
+    elif container == "dict":
+        assert restored["a"].value == 7
+    else:
+        assert restored.values[0].value == 7
+
+
+def test_root_model_readback(test_session):
+    class Scalar(RootModel[int]):
+        pass
+
+    dc.read_values(
+        session=test_session,
+        settings={"prefetch": False},
+        item=[Scalar(7)],
+    ).save("root-model-readback")
+
+    restored = dc.read_dataset("root-model-readback", session=test_session).to_list(
+        "item"
+    )[0][0]
+
+    assert restored.root == 7
+
+
+def test_saved_sequence_model_reads_with_drifted_child(test_session, monkeypatch):
+    child_name = "SequenceChildForReadRegression"
+    outer_name = "OuterSequenceForReadRegression"
+    stored_child = create_model(child_name, __module__=__name__, value=(int, ...))
+    stored_outer = create_model(
+        outer_name,
+        __module__=__name__,
+        items=(Sequence[stored_child], ...),  # type: ignore[valid-type]
+    )
+    dataset_name = f"sequence-child-drift-{uuid.uuid4()}"
+    dc.read_values(
+        session=test_session,
+        settings={"prefetch": False},
+        item=[stored_outer(items=[stored_child(value=7)])],
+    ).save(dataset_name)
+
+    current_child = create_model(child_name, __module__=__name__, value=(str, ...))
+    current_outer = create_model(
+        outer_name,
+        __module__=__name__,
+        items=(Sequence[current_child], ...),  # type: ignore[valid-type]
+    )
+    monkeypatch.setattr(sys.modules[__name__], child_name, current_child, raising=False)
+    monkeypatch.setattr(sys.modules[__name__], outer_name, current_outer, raising=False)
+    monkeypatch.setattr(ModelStore, "store", {})
+
+    with pytest.warns(SignalSchemaWarning) as caught_warnings:
+        restored = dc.read_dataset(dataset_name, session=test_session).to_list("item")[
+            0
+        ][0]
+
+    assert any(
+        "does not preserve its type arguments" in str(warning.message)
+        for warning in caught_warnings
+    )
+    assert restored.items == [{"value": 7}]
+
+
+def test_serialized_aliases_readback_for_union_items(test_session):
+    class AliasedValue(BaseModel):
+        model_config = ConfigDict(serialize_by_alias=True)
+
+        value: int = Field(alias="externalValue")
+
+    class AliasedLabel(BaseModel):
+        model_config = ConfigDict(serialize_by_alias=True)
+
+        label: str = Field(alias="externalLabel")
+
+    class Wrapper(BaseModel):
+        items: list[AliasedValue | AliasedLabel]
+
+    dataset_name = f"serialized-alias-union-{uuid.uuid4()}"
+    dc.read_values(
+        session=test_session,
+        settings={"prefetch": False},
+        item=[
+            Wrapper(
+                items=[
+                    AliasedValue(externalValue=7),
+                    AliasedLabel(externalLabel="label"),
+                ]
+            )
+        ],
+    ).save(dataset_name)
+
+    restored = dc.read_dataset(dataset_name, session=test_session).to_list("item")[0][0]
+
+    assert isinstance(restored.items[0], AliasedValue)
+    assert restored.items[0].value == 7
+    assert isinstance(restored.items[1], AliasedLabel)
+    assert restored.items[1].label == "label"

@@ -2,6 +2,7 @@ import copy
 import hashlib
 import logging
 import math
+import sys
 import types
 import warnings
 import weakref
@@ -28,7 +29,7 @@ from typing import (
 )
 
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
-from pydantic import BaseModel, Field, ValidationError, create_model
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError, create_model
 from sqlalchemy import Cast, asc, cast, desc, nulls_last
 from sqlalchemy.sql.elements import BinaryExpression, Grouping, Label
 
@@ -238,6 +239,104 @@ class CustomType(BaseModel):
         return cls(**data)
 
 
+class _AmbiguousModelNameError(Exception):
+    """Distinct Pydantic classes share one serialized model name."""
+
+
+class _ErasedTypeArgumentsError(Exception):
+    """An annotation's arguments are not represented in the stored schema."""
+
+
+class _RecursiveModelError(Exception):
+    """A model refers back to itself while its schema is being serialized."""
+
+
+def _has_erased_type_arguments(annotation: Any) -> bool:
+    """Whether schema serialization drops a collection annotation's arguments."""
+    parts = annotation_parts(annotation)
+    if not parts:
+        return False
+    origin = get_origin(annotation)
+    if is_sequence_annotation(annotation) and origin not in (list, tuple):
+        return True
+    if is_mapping_annotation(annotation) and origin is not dict:
+        return True
+    return any(_has_erased_type_arguments(part) for part in parts)
+
+
+def _resolve_from_sys_modules(
+    ct: CustomType, custom_types: dict[str, Any]
+) -> type[BaseModel] | None:
+    """Reuse an already-imported plain Pydantic class when its schema matches."""
+    if not ct.bases or ct.bases[0][2] is not None:
+        return None
+    class_name, module_name, _ = ct.bases[0]
+    module = sys.modules.get(module_name)
+    if module is None:
+        return None
+    candidate = vars(module).get(class_name)
+    if candidate is None or not ModelStore.is_pydantic(candidate):
+        return None
+    serialized: dict[str, Any] = {}
+    try:
+        SignalSchema._serialize_custom_model(
+            ct.name,
+            candidate,
+            serialized,
+            register_pydantic=False,
+            serialized_models={},
+        )
+    except (
+        _AmbiguousModelNameError,
+        _ErasedTypeArgumentsError,
+        _RecursiveModelError,
+        RecursionError,
+    ) as exc:
+        if isinstance(exc, _AmbiguousModelNameError):
+            reason = "has multiple nested classes sharing a serialized name"
+        elif isinstance(exc, _ErasedTypeArgumentsError):
+            reason = (
+                "has an annotation whose serialization does not preserve its "
+                "type arguments"
+            )
+        elif isinstance(exc, (_RecursiveModelError, RecursionError)):
+            # A recursive candidate that the stored (acyclic) schema does not
+            # describe is not comparable to it.
+            reason = "has a recursive definition that does not match the stored schema"
+        warnings.warn(
+            f"class {candidate.__module__}.{candidate.__name__} {reason} for "
+            f"{ct.name!r}; using a synthetic class, so isinstance checks against "
+            "the imported class will fail",
+            SignalSchemaWarning,
+            stacklevel=3,
+        )
+        return None
+    matches = True
+    for name, data in serialized.items():
+        if name not in custom_types:
+            matches = False
+            break
+        try:
+            stored_type = CustomType.deserialize(custom_types[name], name)
+        except ValidationError as exc:
+            raise SignalSchemaError(
+                f"cannot deserialize custom type '{name}': {exc}"
+            ) from exc
+        if CustomType.deserialize(data, name) != stored_type:
+            matches = False
+            break
+    if matches:
+        return candidate
+    warnings.warn(
+        f"class {candidate.__module__}.{candidate.__name__} does not match the stored "
+        f"schema for {ct.name!r}; using a synthetic class, so isinstance checks "
+        "against the imported class will fail",
+        SignalSchemaWarning,
+        stacklevel=3,
+    )
+    return None
+
+
 def create_feature_model(
     name: str,
     fields: Mapping[str, Any],
@@ -355,10 +454,21 @@ class SignalSchema:
 
     @staticmethod
     def _serialize_custom_model(
-        version_name: str, fr: type[BaseModel], custom_types: dict[str, Any]
+        version_name: str,
+        fr: type[BaseModel],
+        custom_types: dict[str, Any],
+        *,
+        register_pydantic: bool = True,
+        serialized_models: dict[str, type[BaseModel]] | None = None,
     ) -> str:
-        """This serializes any custom type information to the provided custom_types
-        dict, and returns the name of the type serialized."""
+        """Serialize a Pydantic model and its nested types into custom_types."""
+        if serialized_models is not None:
+            previous = serialized_models.get(version_name)
+            if previous is not None and previous is not fr:
+                raise _AmbiguousModelNameError(version_name)
+            if previous is fr and version_name not in custom_types:
+                raise _RecursiveModelError(version_name)
+            serialized_models[version_name] = fr
         if version_name in custom_types:
             # This type is already stored in custom_types.
             return version_name
@@ -368,7 +478,14 @@ class SignalSchema:
             field_type = info.annotation
             # All fields should be typed.
             assert field_type
-            fields[field_name] = SignalSchema._serialize_type(field_type, custom_types)
+            if serialized_models is not None and _has_erased_type_arguments(field_type):
+                raise _ErasedTypeArgumentsError(field_type)
+            fields[field_name] = SignalSchema._serialize_type(
+                field_type,
+                custom_types,
+                register_pydantic=register_pydantic,
+                serialized_models=serialized_models,
+            )
 
         bases = SignalSchema._get_bases(fr)
 
@@ -385,11 +502,18 @@ class SignalSchema:
         return version_name
 
     @staticmethod
-    def _serialize_type(fr: type, custom_types: dict[str, Any]) -> str:
-        """Serialize a given type to a string, including automatic ModelStore
-        registration, and save this type and subtypes to custom_types as well."""
+    def _serialize_type(
+        fr: type,
+        custom_types: dict[str, Any],
+        *,
+        register_pydantic: bool = True,
+        serialized_models: dict[str, type[BaseModel]] | None = None,
+    ) -> str:
+        """Serialize a type and its nested Pydantic models into custom_types."""
         subtypes: list[Any] = []
-        type_name = SignalSchema._type_to_str(fr, subtypes)
+        type_name = SignalSchema._type_to_str(
+            fr, subtypes, register_pydantic=register_pydantic
+        )
         # Iterate over all subtypes (includes the input type).
         for st in subtypes:
             if st is None or not ModelStore.is_pydantic(st):
@@ -400,7 +524,13 @@ class SignalSchema:
                 # If the main type is Pydantic, then use the ModelStore version name.
                 type_name = st_version_name
             # Save this type to custom_types.
-            SignalSchema._serialize_custom_model(st_version_name, st, custom_types)
+            SignalSchema._serialize_custom_model(
+                st_version_name,
+                st,
+                custom_types,
+                register_pydantic=register_pydantic,
+                serialized_models=serialized_models,
+            )
         return type_name
 
     def serialize(self) -> dict[str, Any]:
@@ -444,9 +574,10 @@ class SignalSchema:
     def _deserialize_custom_type(
         type_name: str, custom_types: dict[str, Any]
     ) -> type | None:
-        """Given a type name like MyType@v1 gets a type from ModelStore or recreates
-        it based on the information from the custom types dict that includes fields and
-        bases."""
+        """Given a type name like MyType@v1, resolve it to a Python class in
+        this order: ModelStore hit, the already-imported class from
+        ``sys.modules`` (matched by shape), or a synthetic class rebuilt from
+        the stored fields/bases as a last resort."""
         model_name, target_version = ModelStore.parse_name_version(type_name)
 
         if type_name in custom_types:
@@ -458,6 +589,9 @@ class SignalSchema:
                 ) from exc
 
             if fr := ModelStore.get(model_name, target_version):
+                return fr
+
+            if fr := _resolve_from_sys_modules(ct, custom_types):
                 return fr
 
             fields = {
@@ -820,8 +954,12 @@ class SignalSchema:
             if absent:
                 return None, pos
         j, pos = unflatten_to_json_pos(fr, row, pos)
+        j = self._convert_model_collection_fields(
+            fr, j, catalog if set_stream else None, cache
+        )
+        validation_input = j["root"] if fr.__pydantic_root_model__ else j
         try:
-            obj = fr(**j)
+            obj = fr.model_validate(validation_input, by_alias=False, by_name=True)
             if set_stream:
                 assert catalog is not None
                 SignalSchema._set_file_stream(obj, catalog, cache)
@@ -831,6 +969,33 @@ class SignalSchema:
             logger.debug("Failed to create %s: %s", label, e)
             obj = None
         return obj, pos
+
+    def _convert_model_collection_fields(
+        self,
+        model: type[BaseModel],
+        value: dict[str, Any],
+        catalog: "Catalog | None",
+        cache: bool,
+    ) -> dict[str, Any]:
+        """Hydrate collection fields before validating a flattened model."""
+        result = value.copy()
+        for name, field in model.model_fields.items():
+            if name not in result or field.annotation is None:
+                continue
+            annotation, _ = unwrap_optional(field.annotation)
+            field_value = result[name]
+            nested_model = ModelStore.to_pydantic(annotation)
+            if nested_model is not None and isinstance(field_value, dict):
+                result[name] = self._convert_model_collection_fields(
+                    nested_model, field_value, catalog, cache
+                )
+            elif is_sequence_annotation(annotation) or is_mapping_annotation(
+                annotation
+            ):
+                result[name] = self._convert_feature_value(
+                    field.annotation, field_value, catalog, cache
+                )
+        return result
 
     def get_file_signal(self) -> str | None:
         for signal_name, signal_type in self.values.items():
@@ -940,18 +1105,14 @@ class SignalSchema:
         origin = get_origin(annotation)
 
         if origin in (Union, types.UnionType):
-            inner, has_none = unwrap_optional(annotation)
-            # a None-free or multi-arm Union isn't converted to a single type
-            if not has_none or get_origin(inner) in (Union, types.UnionType):
-                return result
-            annotation = inner
-            origin = get_origin(annotation)
+            return self._convert_union_feature_value(annotation, value, catalog, cache)
 
         if ModelStore.is_pydantic(annotation):
-            if isinstance(value, annotation):
+            model_cls: type[BaseModel] = annotation  # type: ignore[assignment]
+            if isinstance(value, model_cls):
                 obj = value
             elif isinstance(value, Mapping):
-                obj = annotation(**value)
+                obj = model_cls.model_validate(value)
             else:
                 return result
             assert isinstance(obj, BaseModel)
@@ -1002,6 +1163,38 @@ class SignalSchema:
                     )
                     result[converted_key] = converted_val
 
+        return result
+
+    @staticmethod
+    def _is_model_union(annotation: DataType) -> bool:
+        return any(
+            ModelStore.is_pydantic(part) for part in annotation_parts(annotation)
+        )
+
+    def _convert_union_feature_value(
+        self,
+        annotation: DataType,
+        value: Any,
+        catalog: "Catalog | None",
+        cache: bool,
+    ) -> Any:
+        inner, has_none = unwrap_optional(annotation)
+        if has_none and get_origin(inner) not in (Union, types.UnionType):
+            return self._convert_feature_value(inner, value, catalog, cache)
+        if isinstance(value, Mapping) and self._is_model_union(annotation):
+            return self._convert_union_model_value(annotation, value, catalog, cache)
+        return value
+
+    @staticmethod
+    def _convert_union_model_value(
+        annotation: DataType,
+        value: Mapping[str, Any],
+        catalog: "Catalog | None",
+        cache: bool,
+    ) -> Any:
+        result = TypeAdapter(annotation).validate_python(value)
+        if catalog is not None:
+            SignalSchema._set_file_stream(result, catalog, cache, annotation=annotation)
         return result
 
     @staticmethod
@@ -1591,7 +1784,10 @@ class SignalSchema:
 
     @staticmethod
     def _type_to_str(
-        type_: type | types.EllipsisType | None, subtypes: list | None = None
+        type_: type | types.EllipsisType | None,
+        subtypes: list | None = None,
+        *,
+        register_pydantic: bool = True,
     ) -> str:
         """Convert a type to a string-based representation."""
 
@@ -1602,7 +1798,7 @@ class SignalSchema:
             type_,
             subtypes,
             warn_with=_warn,
-            register_pydantic=True,
+            register_pydantic=register_pydantic,
         )
 
     # `_type_tag` = 0-based index of the active arm (Optional[X] == Union[X, None]:
