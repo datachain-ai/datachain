@@ -74,6 +74,7 @@ You will be able to filter the job with following status:
 * `CANCELING_SCHEDULED` - A scheduled job is being canceled
 * `CANCELING` - A running job is being canceled
 * `CANCELED` - Job has been canceled
+* `DID_NOT_RUN` - Pipeline job that never started because its pipeline stopped
 * `ACTIVE` - Job is in active state.
 * `INACTIVE` - Job is in inactive state.
 

@@ -1,3 +1,4 @@
+from datachain.data_storage.job import JobStatus
 from datachain.job import Job
 
 
@@ -26,3 +27,8 @@ def test_parse():
     assert job.name == "test-job"
     assert job.run_group_id == "group-1"
     assert job.rerun_from_job_id is None
+
+
+def test_did_not_run_is_finished():
+    assert JobStatus.DID_NOT_RUN in JobStatus.finished()
+    assert JobStatus.PENDING not in JobStatus.finished()
