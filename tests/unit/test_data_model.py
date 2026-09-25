@@ -10,6 +10,7 @@ from typing_extensions import TypedDict
 from datachain.lib.data_model import (
     DataModel,
     compute_model_fingerprint,
+    dict_to_data_model,
     is_chain_type,
 )
 from datachain.lib.model_store import ModelStore
@@ -23,6 +24,21 @@ def restore_model_store():
         yield
     finally:
         ModelStore.store = snapshot
+
+
+@pytest.mark.parametrize(
+    "second_fields,matches",
+    [
+        ({"a": int, "b": int}, True),
+        ({"b": int, "a": int}, False),
+    ],
+    ids=["same-order", "different-order"],
+)
+def test_anonymous_model_name_includes_field_order(second_fields, matches):
+    first = dict_to_data_model("", {"a": int, "b": int})
+    second = dict_to_data_model("", second_fields)
+
+    assert (first.__name__ == second.__name__) is matches
 
 
 def test_compute_model_fingerprint_missing_field():

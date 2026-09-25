@@ -1,11 +1,12 @@
 import math
+import pickle
 from collections.abc import Sequence
 from itertools import islice
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
 from pyarrow._csv import ParseOptions
-from pyarrow.dataset import CsvFileFormat, dataset
+from pyarrow.dataset import CsvFileFormat, Partitioning, dataset
 
 from datachain import json
 from datachain.fs.reference import ReferenceFileSystem
@@ -18,7 +19,7 @@ from datachain.lib.data_model import (
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.udf import Generator
+from datachain.lib.udf import Generator, _hash_constructor_args
 from datachain.lib.utils import normalize_col_names
 from datachain.progress import tqdm
 
@@ -31,6 +32,27 @@ if TYPE_CHECKING:
 
 
 DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY = b"DataChain SignalSchema"
+
+
+def _parse_options_hash_args(options: ParseOptions) -> dict[str, Any]:
+    return {
+        "delimiter": options.delimiter,
+        "double_quote": options.double_quote,
+        "escape_char": options.escape_char,
+        "ignore_empty_lines": options.ignore_empty_lines,
+        "invalid_row_handler": options.invalid_row_handler,
+        "newlines_in_values": options.newlines_in_values,
+        "quote_char": options.quote_char,
+    }
+
+
+def _csv_format_hash_args(format: CsvFileFormat) -> dict[str, Any]:
+    scan_options = format.default_fragment_scan_options
+    return {
+        "parse_options": _parse_options_hash_args(format.parse_options),
+        "read_options": pickle.dumps(scan_options.read_options),
+        "convert_options": pickle.dumps(scan_options.convert_options),
+    }
 
 
 def fix_pyarrow_format(format, parse_options=None):
@@ -74,6 +96,35 @@ class ArrowGenerator(Generator):
         self.nrows = nrows
         self.parse_options = kwargs.pop("parse_options", None)
         self.kwargs = kwargs
+        self._identity_hash = self._calculate_identity_hash()
+
+    def identity_hash(self) -> str:
+        """Return the identity calculated from this generator's constructor values."""
+        return self._identity_hash
+
+    def _calculate_identity_hash(self) -> str:
+        input_schema = self.input_schema
+        if input_schema is not None:
+            input_schema = input_schema.serialize().to_pybytes()
+        kwargs = self.kwargs.copy()
+        if self.parse_options is not None:
+            kwargs["parse_options"] = self.parse_options
+        for name, value in kwargs.items():
+            if isinstance(value, ParseOptions):
+                kwargs[name] = _parse_options_hash_args(value)
+            elif isinstance(value, CsvFileFormat):
+                kwargs[name] = _csv_format_hash_args(value)
+            elif isinstance(value, Partitioning):
+                kwargs[name] = pickle.dumps(value)
+        return _hash_constructor_args(
+            {
+                "input_schema": input_schema,
+                "output_schema": self.output_schema,
+                "source": self.source,
+                "nrows": self.nrows,
+                "kwargs": kwargs,
+            }
+        )
 
     def process(self, file: File):
         if file._caching_enabled:
@@ -84,7 +135,7 @@ class ArrowGenerator(Generator):
         else:
             fs, fs_path = file.get_fs(), file.get_fs_path()
 
-        kwargs = self.kwargs
+        kwargs = self.kwargs.copy()
         if format := kwargs.get("format"):
             kwargs["format"] = fix_pyarrow_format(format, self.parse_options)
 
@@ -127,7 +178,7 @@ class ArrowGenerator(Generator):
             vals = self._process_non_datachain_record(record, hf_schema)
 
         if self.source:
-            kwargs: dict = self.kwargs
+            kwargs = self.kwargs.copy()
             # Can't serialize CsvFileFormat; may lose formatting options.
             if isinstance(kwargs.get("format"), CsvFileFormat):
                 kwargs["format"] = "csv"
