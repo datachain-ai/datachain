@@ -47,6 +47,7 @@ Access processed data through the Studio interface, with datasets saved automati
 - **COMPLETE**: Job finished successfully
 - **FAILED**: Job encountered an error
 - **CANCELED**: Job was stopped by user
+- **DID_NOT_RUN**: Pipeline job that never started because its pipeline stopped
 
 ## Getting Started
 
