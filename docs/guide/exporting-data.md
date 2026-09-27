@@ -95,20 +95,20 @@ For processing chain results, prefer `map()`/`gen()` over extracting and looping
 import datachain as dc
 
 # Basic export
-chain.to_database("results_table", "postgresql+psycopg2://host/db")
+chain.to_database("results_table", "postgresql://host/db")
 
 # Round-trip: database -> enrich -> write back
 (
-    dc.read_database("SELECT id, text FROM reviews", "postgresql+psycopg2://host/db")
+    dc.read_database("SELECT id, text FROM reviews", "postgresql://host/db")
     .settings(parallel=8)
     .map(sentiment=classify_sentiment)
-    .to_database("review_sentiments", "postgresql+psycopg2://host/db")
+    .to_database("review_sentiments", "postgresql://host/db")
 )
 
 # Conflict handling
 chain.to_database(
     "products",
-    "postgresql+psycopg2://host/db",
+    "postgresql://host/db",
     on_conflict="update",
     conflict_columns=["id"],
 )

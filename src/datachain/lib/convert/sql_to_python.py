@@ -1,6 +1,8 @@
 from decimal import Decimal
 from typing import Any
 
+from sqlalchemy import JSON
+
 from datachain.query.schema import ColumnExpr
 
 
@@ -20,5 +22,5 @@ def sql_to_python(sql_exp: ColumnExpr) -> Any:
     except NotImplementedError:
         type_ = str
     if type_ is object:
-        type_ = str
+        type_ = dict if isinstance(sql_exp.type, JSON) else str
     return type_

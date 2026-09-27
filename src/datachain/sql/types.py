@@ -70,7 +70,7 @@ def datetime_cast_input_error_message(type_name: str) -> str:
 
 def validate_datetime_cast_input_type(type_) -> None:
     try:
-        python_type = type_.python_type
+        python_type = dict if isinstance(type_, types.JSON) else type_.python_type
     except (AttributeError, NotImplementedError):
         return
 
@@ -390,6 +390,10 @@ class Float64(Float):
 
 class Array(SQLType):
     impl = types.ARRAY
+
+    def __init__(self, item_type, *args, **kwargs):
+        self.item_type = item_type() if isinstance(item_type, type) else item_type
+        super().__init__(self.item_type, *args, **kwargs)
 
     @property
     def python_type(self) -> StandardType:

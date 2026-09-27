@@ -1,4 +1,5 @@
 import pytest
+from sqlalchemy import JSON
 from sqlalchemy.sql.sqltypes import NullType
 
 from datachain import Column
@@ -16,6 +17,7 @@ from datachain.sql.types import Array, Float, Int64, String
         (Column("age", Int64) - 2, int),
         # Default type
         (Column("null", NullType), str),
+        (Column("meta", JSON), dict),
         # List type
         (Column("tags", Array(Int64)), list[int]),
     ],

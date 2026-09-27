@@ -69,13 +69,13 @@ records = dc.read_database("SELECT * FROM experiments", "sqlite:///local.db")
 # Parameterized query -- prevents SQL injection
 chain = dc.read_database(
     "SELECT * FROM products WHERE category = :cat",
-    "postgresql+psycopg2://host/db",
+    "postgresql://host/db",
     params={"cat": "electronics"},
 )
 
 # Full enrichment pattern: query -> enrich with LLM -> save as dataset
 (
-    dc.read_database("SELECT id, name, raw_text FROM articles", "postgresql+psycopg2://host/db")
+    dc.read_database("SELECT id, name, raw_text FROM articles", "postgresql://host/db")
     .settings(parallel=8)
     .map(summary=generate_summary)
     .save("article_summaries")

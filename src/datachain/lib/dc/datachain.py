@@ -2820,7 +2820,7 @@ class DataChain:
 
             rows_affected = (dc
               .read_storage("s3://my-bucket/")
-              .to_database("files_table", "postgresql+psycopg2://user:pass@localhost/mydb")
+              .to_database("files_table", "postgresql://user:pass@localhost/mydb")
             )
             print(f"Inserted/updated {rows_affected} rows")
             ```
@@ -2864,10 +2864,7 @@ class DataChain:
 
             PostgreSQL with schema support:
             ```py
-            pg_url = (
-                "postgresql+psycopg2://user:pass@host/db"
-                "?options=-c search_path=analytics"
-            )
+            pg_url = "postgresql://user:pass@host/db?options=-c search_path=analytics"
             chain.to_database("processed_data", pg_url)
             ```
         """

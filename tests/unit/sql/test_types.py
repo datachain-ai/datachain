@@ -4,7 +4,13 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.exc import CompileError
 
-from datachain.sql.types import TypeReadConverter, validate_datetime_cast_input_type
+from datachain.sql.types import (
+    Array,
+    Int64,
+    String,
+    TypeReadConverter,
+    validate_datetime_cast_input_type,
+)
 
 
 @pytest.mark.parametrize(
@@ -130,3 +136,8 @@ def test_validate_datetime_cast_input_type_allows_date():
 
 def test_validate_datetime_cast_input_type_allows_unknown_types():
     validate_datetime_cast_input_type(sa.null().type)
+
+
+def test_array_cache_key_includes_item_type():
+    assert Array(String())._static_cache_key != Array(Int64())._static_cache_key
+    assert Array(String)._static_cache_key == Array(String())._static_cache_key
