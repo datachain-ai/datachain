@@ -169,7 +169,7 @@ class SQLType(TypeDecorator):
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        cls.cache_ok = cls.__dict__.get("cache_ok", True)
+        cls.cache_ok = cls.__dict__.get("cache_ok", cls.cache_ok)
 
     @property
     def _static_cache_key(self):

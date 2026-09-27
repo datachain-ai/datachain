@@ -148,3 +148,14 @@ def test_cache_key_includes_nullable():
     nullable = SQLType.as_nullable(Int64)
     assert Int64()._static_cache_key != nullable._static_cache_key
     assert Array(Int64)._static_cache_key != Array(nullable)._static_cache_key
+
+
+def test_cache_ok_opt_out_is_inherited():
+    class Uncached(String):
+        cache_ok = False
+
+    class Child(Uncached):
+        pass
+
+    assert Child.cache_ok is False
+    assert Int64.cache_ok is True
