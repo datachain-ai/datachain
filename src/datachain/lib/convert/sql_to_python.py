@@ -19,4 +19,6 @@ def sql_to_python(sql_exp: ColumnExpr) -> Any:
                 type_ = list
     except NotImplementedError:
         type_ = str
+    if type_ is object:
+        type_ = str
     return type_

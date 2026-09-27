@@ -66,7 +66,7 @@ chain = dc.read_json("gs://bucket/annotations.json", jmespath="images")
 chain = dc.read_parquet("s3://bucket/data/*.parquet")
 
 # SQL databases
-chain = dc.read_database("SELECT * FROM products", "postgresql://host/db")
+chain = dc.read_database("SELECT * FROM products", "postgresql+psycopg2://host/db")
 
 # In-memory data
 chain = dc.read_pandas(df)

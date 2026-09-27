@@ -15,7 +15,8 @@ import datachain as dc
 
 
 def get_postgres_uri():
-    return os.environ.get("TEST_POSTGRES_URI", "postgresql://test:test@localhost:5432")
+    uri = os.environ.get("TEST_POSTGRES_URI", "postgresql://test:test@localhost:5432")
+    return uri.replace("postgresql://", "postgresql+psycopg2://", 1)
 
 
 def is_postgres_available():

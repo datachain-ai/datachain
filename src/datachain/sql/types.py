@@ -22,9 +22,12 @@ from typing import Any, Union
 import sqlalchemy as sa
 from sqlalchemy import TypeDecorator, types
 from sqlalchemy.exc import CompileError
+from sqlalchemy.sql import operators
 
 from datachain import json as jsonlib
 from datachain.lib.data_model import StandardType
+
+_OperatorClass = getattr(operators, "OperatorClass", None)
 
 _registry: dict[str, "TypeConverter"] = {}
 registry = MappingProxyType(_registry)
@@ -71,7 +74,7 @@ def validate_datetime_cast_input_type(type_) -> None:
     except (AttributeError, NotImplementedError):
         return
 
-    if python_type in _DATETIME_CAST_INPUT_TYPES:
+    if python_type is object or python_type in _DATETIME_CAST_INPUT_TYPES:
         return
 
     python_type_name = getattr(python_type, "__name__", repr(python_type))
@@ -160,6 +163,13 @@ class SQLType(TypeDecorator):
 
     # Optional[scalar] marker -> backend emits a nullable column so None round-trips.
     dc_nullable: bool = False
+
+    if _OperatorClass is not None:
+        operator_classes = _OperatorClass.ANY
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        cls.cache_ok = cls.__dict__.get("cache_ok", True)
 
     def load_dialect_impl(self, dialect):
         impl = self._load_dialect_impl(dialect)
