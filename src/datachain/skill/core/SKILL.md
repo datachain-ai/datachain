@@ -7,11 +7,9 @@ Read `{skill_dir}/SDK.md` in full before answering DataChain SDK questions or ge
 
 ## Scope of this skill
 
-**This skill does not own methodology.** Decisions about *which* datasets to build, what scope, what shape (Container / Asset / Sense / Task), what fields to save, and when to dialogue with the user about layer choices — those are the CAST methodology, which lives in the **datachain-knowledge** skill at `{knowledge_skill_dir}/CAST.md`.
+`SDK.md` owns how DataChain code is written — API usage, UDF signatures, the shape of a saved dataset, saving and exporting. It is self-sufficient on its own.
 
-When knowledge is loaded, it is the orchestrator: it plans the layers (CAST §4), invokes the rules in `SDK.md` to write the code, then runs the KB pipeline. When knowledge is *not* loaded (raw SDK use, no `dc-knowledge/` directory), `SDK.md` is self-sufficient — CAST doctrine simply does not apply.
-
-If you find yourself reasoning about "should I build a Sense layer here?" or "should this be scoped to the bucket or the directory?" from inside this skill, stop — those questions belong upstream. Ask the user to load the knowledge skill, or fall through to a direct solve.
+The **datachain-knowledge** skill owns the knowledge base at `dc-knowledge/`: what datasets already exist, what each one holds, how long a run will take, and keeping that record current. When it is loaded, it drives the session and calls the rules here to write the code.
 
 ## Before writing any pipeline code
 

@@ -495,7 +495,7 @@ def test_fetch_all_versions_overlays_live_enrichment_on_latest(monkeypatch):
     import summary
 
     record = SimpleNamespace(
-        attrs=["cast:l1"],
+        attrs=["pets"],
         description="pets",
         versions=[_ds_version("1.0.1", 2, query_script="b"), _ds_version("1.0.0", 1)],
     )
@@ -597,15 +597,13 @@ def test_render_index_local_datasets():
     assert "db_last_updated: 2024-01-01T00:00:00Z" in result
     assert "## Datasets" in result
     assert "test_ds" in result
-    assert "Parents" in result
-    assert "Description" in result
-    assert "Updated" in result
+    assert "| Name | Updated | Records | Dependencies | Summary |" in result
     # Removed columns
     assert "| Last Ver |" not in result
     assert "| # Vers |" not in result
     assert "| Count |" not in result
-    assert "| Dependencies |" not in result
-    assert "| Summary |" not in result
+    assert "| Scope |" not in result
+    assert "| Parents |" not in result
     assert "## Buckets" not in result
 
 
@@ -697,13 +695,12 @@ def test_render_index_all_metadata_from_md(tmp_path, monkeypatch):
     (ds_dir / "my_ds.md").write_text(
         "---\nname: my_ds\nlast_version: 3.0.0\n"
         "records: 12000\nupdated: 2025-04-01T10:00:00Z\n"
-        "known_versions: [1.0.0, 2.0.0, 3.0.0]\n"
-        "cast_layer: task\n"
-        "cast_scope: onetime\n"
-        "cast_source: raw_images\n"
-        "cast_parents: [raw_images, labels]\n---\n\n"
+        "known_versions: [1.0.0, 2.0.0, 3.0.0]\n---\n\n"
         "# my_ds\n\n"
         "Image metadata with EXIF and GPS for 12k photos.\n\n"
+        "## Dependencies\n\n"
+        "- raw_images\n"
+        "- labels\n\n"
         "## Schema\n"
     )
     plan = {
@@ -719,14 +716,12 @@ def test_render_index_all_metadata_from_md(tmp_path, monkeypatch):
     result = ri.render_index(plan)
     # Description from md body
     assert "Image metadata with EXIF and GPS for 12k photos." in result
-    # Updated from frontmatter
+    # Updated and records from frontmatter
     assert "2025-04-01" in result
-    # Parents from cast_parents frontmatter
+    assert "12000" in result
+    # Dependencies from the md body
     assert "raw_images" in result
     assert "labels" in result
-    # CAST metadata propagated to the table
-    assert "onetime" in result
-    assert "12000" in result
 
 
 def test_render_index_escapes_pipe_in_table_cell(tmp_path, monkeypatch):
@@ -736,9 +731,11 @@ def test_render_index_escapes_pipe_in_table_cell(tmp_path, monkeypatch):
     ds_dir = tmp_path / "datasets"
     ds_dir.mkdir()
     (ds_dir / "piped.md").write_text(
-        "---\nname: piped\ncast_parents: [a | b]\n---\n\n"
+        "---\nname: piped\n---\n\n"
         "# piped\n\n"
         "Columns a | b | c split by pipes.\n\n"
+        "## Dependencies\n\n"
+        "- a | b\n\n"
         "## Schema\n"
     )
     plan = {
