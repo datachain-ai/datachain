@@ -171,6 +171,13 @@ class SQLType(TypeDecorator):
         super().__init_subclass__(**kwargs)
         cls.cache_ok = cls.__dict__.get("cache_ok", True)
 
+    @property
+    def _static_cache_key(self):
+        key = super()._static_cache_key
+        if self.dc_nullable and isinstance(key, tuple):
+            return (*key, ("dc_nullable", True))
+        return key
+
     def load_dialect_impl(self, dialect):
         impl = self._load_dialect_impl(dialect)
         if self.dc_nullable:

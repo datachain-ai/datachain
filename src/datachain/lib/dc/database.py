@@ -1,5 +1,5 @@
 import contextlib
-import importlib.util
+import importlib
 import itertools
 import os
 import sqlite3
@@ -76,7 +76,13 @@ def _connect(
 
 def _default_driver(connection: "str | sqlalchemy.URL") -> sqlalchemy.URL:
     url = sqlalchemy.make_url(connection)
-    if url.drivername == "postgresql" and importlib.util.find_spec("psycopg") is None:
+    if url.drivername != "postgresql":
+        return url
+    # SQLAlchemy >= 2.1 resolves a bare postgresql:// to psycopg 3, but the `postgres`
+    # extra ships psycopg2; keep psycopg2 unless psycopg 3 actually imports.
+    try:
+        importlib.import_module("psycopg")
+    except ImportError:
         return url.set(drivername="postgresql+psycopg2")
     return url
 

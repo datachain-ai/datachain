@@ -1,4 +1,4 @@
-import importlib.util
+import importlib
 
 import pytest
 
@@ -6,7 +6,7 @@ from datachain.lib.dc.database import _default_driver
 
 
 @pytest.mark.parametrize(
-    "psycopg_installed, url, expected",
+    "psycopg_importable, url, expected",
     [
         (False, "postgresql://u@h/db", "postgresql+psycopg2://u@h/db"),
         (True, "postgresql://u@h/db", "postgresql://u@h/db"),
@@ -14,10 +14,11 @@ from datachain.lib.dc.database import _default_driver
         (False, "sqlite:///x.db", "sqlite:///x.db"),
     ],
 )
-def test_default_driver(monkeypatch, psycopg_installed, url, expected):
-    monkeypatch.setattr(
-        importlib.util,
-        "find_spec",
-        lambda name: object() if psycopg_installed else None,
-    )
+def test_default_driver(monkeypatch, psycopg_importable, url, expected):
+    def import_module(name):
+        if psycopg_importable:
+            return object()
+        raise ImportError(name)
+
+    monkeypatch.setattr(importlib, "import_module", import_module)
     assert str(_default_driver(url)) == expected
