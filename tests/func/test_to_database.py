@@ -265,6 +265,26 @@ def test_basic_to_database(tmp_dir, connection):
     assert result[2] == (3, "Charlie", 35)
 
 
+@pytest.mark.parametrize("as_url", [False, True])
+def test_to_database_bare_postgresql_url(
+    postgres_session_database, postgres_connection, test_session, as_url
+):
+    bare_url = postgres_session_database["engine"].url.set(drivername="postgresql")
+    connection = bare_url if as_url else bare_url.render_as_string(hide_password=False)
+    table = f"bare_url_table_{int(as_url)}"
+    chain = dc.read_values(id=[1, 2], name=["Alice", "Bob"], session=test_session)
+
+    chain.to_database(table, connection)
+
+    assert _fetch_all_rows(postgres_connection, table) == [(1, "Alice"), (2, "Bob")]
+    read_back = dc.read_database(
+        f"SELECT id, name FROM {table} ORDER BY id",  # noqa: S608
+        connection,
+        session=test_session,
+    )
+    assert read_back.to_list("id", "name") == [(1, "Alice"), (2, "Bob")]
+
+
 def test_to_database_with_uri(sqlite_uri, ensure_sqlite_adapter):
     """Test basic functionality with URI connection string."""
     chain = dc.read_values(
