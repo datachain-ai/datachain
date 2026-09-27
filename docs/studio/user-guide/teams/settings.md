@@ -8,8 +8,9 @@ team and are thus different from
 Additionally, you can also
 [manage connections to self-hosted GitLab servers](#manage-connections-to-self-hosted-gitlab-servers),
 [configure sso](#configure-single-sign-on-sso),
-[edit collaborators](#edit-collaborators), and
-[set up permissions](permissions.md#permissions).
+[edit collaborators](#edit-collaborators),
+[set up permissions](permissions.md#permissions), and
+[connect AI agents through the MCP server](../ai/mcp.md).
 
 ## Manage connections to self-hosted GitLab servers
 

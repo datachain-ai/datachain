@@ -11,6 +11,7 @@ This section covers how to use DataChain Studio for managing your data processin
 
 - **[Jobs](jobs/index.md)** - Run and monitor data processing jobs
 - **[Git Connections](git-connections/index.md)** - Connect your Git repositories
+- **[AI features](ai/index.md)** - Generate a knowledge base of your datasets and connect agents through the MCP server
 
 ## Collaboration
 
