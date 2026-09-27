@@ -49,7 +49,7 @@ dependencies = [
   "Pillow>=12.1.1,<13",
   "msgpack>=1.0.4,<2",
   "psutil",
-  "huggingface_hub",
+  "huggingface_hub<2",
   "iterative-telemetry>=0.0.10",
   "platformdirs",
   "filelock",
