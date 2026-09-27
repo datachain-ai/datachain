@@ -2113,7 +2113,7 @@ def test_deserialize_falls_back_when_imported_model_became_recursive(monkeypatch
 
     class RecursiveNodeDrift(BaseModel):
         value: int
-        children: list["RecursiveNodeDrift"] = Field(default_factory=list)
+        children: list[ForwardRef("RecursiveNodeDrift")] = Field(default_factory=list)
 
     RecursiveNodeDrift.model_rebuild(
         _types_namespace={"RecursiveNodeDrift": RecursiveNodeDrift}
