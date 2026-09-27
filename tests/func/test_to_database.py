@@ -282,7 +282,7 @@ def test_to_database_bare_postgresql_url(
         connection,
         session=test_session,
     )
-    assert read_back.to_list("id", "name") == [(1, "Alice"), (2, "Bob")]
+    assert read_back.order_by("id").to_list("id", "name") == [(1, "Alice"), (2, "Bob")]
 
 
 def test_to_database_with_uri(sqlite_uri, ensure_sqlite_adapter):
