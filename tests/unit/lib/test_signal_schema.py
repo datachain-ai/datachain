@@ -1419,7 +1419,7 @@ def test_row_to_features_optional_collection(test_session, union_type):
     ids=["typing-union", "pep604-union"],
 )
 @pytest.mark.parametrize("optional", [False, True], ids=["required", "optional"])
-def test_row_to_features_top_level_model_union(test_session, union_style, optional):
+def test_row_readers_hydrate_top_level_model_union(test_session, union_style, optional):
     class First(BaseModel):
         first: int
 
@@ -1440,14 +1440,13 @@ def test_row_to_features_top_level_model_union(test_session, union_style, option
         assert schema.row_to_objs(_row(schema, (None,))) == [None]
 
     raw_value = {"second": "value"}
-    (result,) = schema.row_to_features((raw_value,), test_session.catalog)
+    (from_features,) = schema.row_to_features((raw_value,), test_session.catalog)
+    (from_objs,) = schema.row_to_objs(_row(schema, (raw_value,)))
 
-    assert isinstance(result, Second)
-    assert result.second == "value"
-    (result,) = schema.row_to_objs(_row(schema, (raw_value,)))
-
-    assert isinstance(result, Second)
-    assert result.second == "value"
+    assert isinstance(from_features, Second)
+    assert from_features.second == "value"
+    assert isinstance(from_objs, Second)
+    assert from_objs.second == "value"
 
 
 def test_row_to_features_top_level_model_union_accepts_alias(test_session):
