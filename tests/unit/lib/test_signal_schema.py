@@ -1469,6 +1469,28 @@ def test_row_to_features_top_level_model_union_accepts_alias(test_session):
     assert from_objs.full_name == "Ada"
 
 
+@pytest.mark.parametrize("union_style", ["typing", "pep604"])
+def test_row_readers_hydrate_union_members_in_list(test_session, union_style):
+    class Person(BaseModel):
+        name: str
+
+    class Company(BaseModel):
+        company_id: int
+
+    union_type = Union[Person, Company] if union_style == "typing" else Person | Company
+    schema = SignalSchema({"entities": list[union_type]})
+    raw_values = [{"name": "Ada"}, {"company_id": 42}]
+
+    (from_features,) = schema.row_to_features((raw_values,), test_session.catalog)
+    (from_objs,) = schema.row_to_objs(_row(schema, (raw_values,)))
+
+    for entities in (from_features, from_objs):
+        assert isinstance(entities[0], Person)
+        assert entities[0].name == "Ada"
+        assert isinstance(entities[1], Company)
+        assert entities[1].company_id == 42
+
+
 def test_get_signals_subclass(nested_file_schema):
     class NewFile(File):
         pass
