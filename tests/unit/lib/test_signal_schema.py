@@ -16,7 +16,7 @@ from typing import (
 )
 
 import pytest
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from typing_extensions import TypedDict
 
 from datachain import Column, DataModel, Sys, func
@@ -1448,6 +1448,25 @@ def test_row_to_features_top_level_model_union(test_session, union_style, option
 
     assert isinstance(result, Second)
     assert result.second == "value"
+
+
+def test_row_to_features_top_level_model_union_accepts_alias(test_session):
+    class Person(BaseModel):
+        full_name: str = Field(alias="name")
+
+    class Company(BaseModel):
+        company_id: int
+
+    schema = SignalSchema({"entity": Person | Company})
+    raw_value = {"name": "Ada"}
+
+    (from_features,) = schema.row_to_features((raw_value,), test_session.catalog)
+    (from_objs,) = schema.row_to_objs(_row(schema, (raw_value,)))
+
+    assert isinstance(from_features, Person)
+    assert from_features.full_name == "Ada"
+    assert isinstance(from_objs, Person)
+    assert from_objs.full_name == "Ada"
 
 
 def test_get_signals_subclass(nested_file_schema):
