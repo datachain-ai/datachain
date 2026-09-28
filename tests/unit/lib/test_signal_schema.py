@@ -1418,7 +1418,8 @@ def test_row_to_features_optional_collection(test_session, union_type):
     ["typing", "pep604"],
     ids=["typing-union", "pep604-union"],
 )
-def test_row_to_features_top_level_model_union(test_session, union_style):
+@pytest.mark.parametrize("optional", [False, True], ids=["required", "optional"])
+def test_row_to_features_top_level_model_union(test_session, union_style, optional):
     class First(BaseModel):
         first: int
 
@@ -1429,8 +1430,14 @@ def test_row_to_features_top_level_model_union(test_session, union_style):
         union_type = First | Second
     else:
         union_type = Union[First, Second]
+    if optional:
+        union_type = Optional[union_type]
 
     schema = SignalSchema({"result": union_type})
+
+    if optional:
+        assert schema.row_to_features((None,), test_session.catalog) == [None]
+        assert schema.row_to_objs(_row(schema, (None,))) == [None]
 
     raw_value = {"second": "value"}
     (result,) = schema.row_to_features((raw_value,), test_session.catalog)
