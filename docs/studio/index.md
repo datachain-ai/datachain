@@ -5,7 +5,7 @@ DataChain Studio is a web application that enables Machine Learning and Data tea
 - [Run and track jobs](user-guide/jobs/index.md)
 - [Track experiments and manage models](user-guide/experiments/index.md)
 - [Collaborate on data projects](user-guide/teams/index.md)
-- [Describe data for agents and connect them over MCP](user-guide/ai/index.md)
+- [Give agents the same data and jobs as people, over MCP](user-guide/agents/index.md)
 
 DataChain Studio helps with unstructured data processing and transformation.
 
@@ -38,10 +38,10 @@ New to DataChain Studio? Start with these guides:
 - Monitor job progress and logs
 - Schedule recurring data processing tasks
 
-### AI Features
-- Generate a knowledge base that describes every dataset and storage
+### Agents
 - Connect Claude Code, Codex, Cursor, and other agents through the MCP server
-- Let agents browse data and run jobs with your team permissions
+- Agents browse data and run jobs with the same permissions as the person behind them
+- A knowledge base tells them what the team already computed, so they build on it
 
 ### ML Experiment Tracking
 - Track and compare ML experiments

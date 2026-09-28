@@ -37,7 +37,7 @@ A small team can extend the Skill beyond solo work by **synchronizing both folde
 
 ## MCP (Studio)
 
-When the team outgrows file sync, the Dataset DB moves into Studio and the agent reads through MCP, the open Model Context Protocol with native client support in Claude Code, Cursor, and Codex. The Skill stays installed; it routes registry queries, schema introspection, and Dataset DB reads through the MCP endpoint instead of the local filesystem. See [MCP Server](../studio/user-guide/ai/mcp.md) for how to connect a client.
+When the team outgrows file sync, the Dataset DB moves into Studio and the agent reaches it through MCP, the open Model Context Protocol with native client support in Claude Code, Cursor, and Codex. The Skill and MCP work side by side. The Skill is instructions: check the Knowledge Base first, how to name and save datasets, caching, SDK rules. MCP is tools that act on shared Studio state: search the Knowledge Base, read datasets and storages, run jobs. The agent uses both; the Skill itself never calls MCP. See [MCP Server](../studio/user-guide/agents/mcp.md) for how to connect a client.
 
 Studio adds four capabilities the OSS path does not have:
 

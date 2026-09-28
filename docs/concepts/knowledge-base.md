@@ -8,7 +8,7 @@ The Knowledge Base is the compilation layer that turns persistent typed datasets
 
 ## Skill and MCP Layer
 
-The Knowledge Base reaches agents through the [Skill and MCP](skill-and-mcp.md) layer (in Studio, see [Knowledge Base](../studio/user-guide/ai/knowledge-base.md) for setup), architecturally separate from the [Compute Engine](compute-engine.md) and the [Dataset DB](dataset-db.md) that the Python library exposes. Pipelines run through compute and memory; agents read context through Skill and MCP. This separation reflects the two audiences: pipelines need a compute engine, agents need a context surface.
+The Knowledge Base reaches agents through the [Skill and MCP](skill-and-mcp.md) layer (in Studio, see [Knowledge Base](../studio/user-guide/agents/knowledge-base.md) for setup), architecturally separate from the [Compute Engine](compute-engine.md) and the [Dataset DB](dataset-db.md) that the Python library exposes. Pipelines run through compute and memory; agents read context through Skill and MCP. This separation reflects the two audiences: pipelines need a compute engine, agents need a context surface.
 
 ## Compilation Is What Makes the Store Readable
 

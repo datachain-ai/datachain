@@ -200,11 +200,11 @@ nav:
               - Authentication:
                   - Single Sign-on: studio/user-guide/authentication/single-sign-on.md
                   - OpenID Connect: studio/user-guide/authentication/openid-connect.md
-              - AI features:
-                  - Overview: studio/user-guide/ai/index.md
-                  - Knowledge Base: studio/user-guide/ai/knowledge-base.md
-                  - MCP Server: studio/user-guide/ai/mcp.md
-                  - MCP Tools: studio/user-guide/ai/mcp-tools.md
+              - Agents:
+                  - Overview: studio/user-guide/agents/index.md
+                  - Knowledge Base: studio/user-guide/agents/knowledge-base.md
+                  - MCP Server: studio/user-guide/agents/mcp.md
+                  - MCP Tools: studio/user-guide/agents/mcp-tools.md
               - Troubleshooting: studio/user-guide/troubleshooting.md
           - API: studio/api/index.md
           - Webhooks: studio/webhooks.md

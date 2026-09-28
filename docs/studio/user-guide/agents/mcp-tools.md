@@ -48,9 +48,16 @@ What datasets do we have about product images? Show the schema of the largest on
 Find storages with audio files and summarize what the knowledge base says about them.
 ```
 
+The loop that makes an agent and Studio worth combining: a question comes in, no
+existing column answers it, the agent runs a pass over the files, saves the result as a
+dataset, and the next person who asks gets it from the store.
+
 ```prompt
-Run a job that filters my-team.demo.pets to images wider than 400px and saves the
-result as my-team.demo.pets_large.
+Do we already have embeddings for the oxford-pets images?
+```
+
+```prompt
+Which pets in s3://dc-readme/oxford-pets-micro/ were photographed outdoors?
 ```
 
 ```prompt

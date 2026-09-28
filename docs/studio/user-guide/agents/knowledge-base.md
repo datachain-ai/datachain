@@ -4,12 +4,13 @@ title: Knowledge Base
 
 # Knowledge Base
 
-The Knowledge Base is a set of AI-written Markdown pages, one per dataset and one per
-indexed storage in the team. A page summarizes what the data contains, its schema,
-sample rows, version history, and the code that produced it. Agents read the pages
-through the [MCP server](mcp.md); people read them in the Studio UI.
+The Knowledge Base is how an agent knows what the team already has and what has
+already been computed, so it builds on that instead of redoing it. Every dataset and
+indexed storage in the team gets an enriched description: what the data contains, its
+schema, sample rows, version history, and the code that produced it. Agents read it
+through the [MCP server](mcp.md); people read it in the Studio UI.
 
-Generating a page is called *enrichment*. It runs only when someone asks for it and
+Producing a description is called *enrichment*. It runs when someone asks for it and
 uses an LLM provider account that the team supplies. For the concept behind it, see
 [Knowledge Base](../../../concepts/knowledge-base.md).
 
@@ -44,9 +45,11 @@ listing totals. Nothing else goes to the provider.
   **Update knowledge base** (Admin role). It enriches every dataset and storage that has
   no page or whose page is outdated, shows progress, and can be canceled.
 
-Pages are not regenerated automatically. When a new dataset version completes, the
-coverage bar in team settings counts the page as outdated; click **Re-enrich** on the
-dataset or **Update knowledge base** for the team.
+!!! note
+    Currently pages are refreshed manually: **Re-enrich** on a dataset, or
+    **Update knowledge base** for the team. When a new dataset version completes, the
+    coverage bar in team settings counts its page as outdated. Automatic refresh on new
+    dataset versions is coming.
 
 A page shows one of these statuses: `pending`, `collecting`, and `enriching` while it
 is being generated; `ready` when stored; `stale` when the budget was reached or a step
@@ -62,7 +65,7 @@ Admins can do everything below without grants.
 | Read a dataset's page | Viewer or Editor role and a `read` grant on the dataset |
 | Enrich one dataset | Editor role and a `write` grant on the dataset |
 | Read or enrich a storage's page | Viewer or Editor role to read, Editor role to enrich |
-| Manage providers, the AI toggle, the budget, and team-wide updates | Admin role |
+| Manage providers, the **Enable AI** toggle, the budget, and team-wide updates | Admin role |
 
 ## Troubleshooting
 

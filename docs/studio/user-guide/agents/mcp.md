@@ -5,9 +5,9 @@ title: MCP Server
 # MCP Server
 
 Studio exposes your team's datasets, storages, knowledge base, and jobs over
-[MCP (Model Context Protocol)](https://modelcontextprotocol.io). Any MCP client can
-connect. The agent acts with your Studio permissions and can run DataChain jobs on the
-team's clusters. See [Tools](mcp-tools.md) for what it can do.
+[MCP (Model Context Protocol)](https://modelcontextprotocol.io). Claude Code, Codex, Cursor, and other MCP clients
+connect to it. The agent acts with your Studio permissions and can run DataChain jobs
+on the team's clusters. See [Tools](mcp-tools.md) for what it can do.
 
 ## Prerequisites
 
@@ -17,6 +17,17 @@ team's clusters. See [Tools](mcp-tools.md) for what it can do.
    [Knowledge Base](knowledge-base.md).
 2. Copy the MCP URL from **Team settings → AI features → MCP server**. It looks like
    `https://studio.datachain.ai/api/mcp/<team>`.
+
+## Install the skill
+
+```bash
+pip install datachain
+datachain skill install --target claude   # also: --target cursor, --target codex
+```
+
+The skill is the instructions, MCP is the tools. The skill tells the agent to check the
+knowledge base before computing anything, how to name and save datasets, and which SDK
+rules a script must follow; MCP is how it acts on the team's data in Studio.
 
 ## Connect
 
@@ -110,8 +121,10 @@ approve once, and the client keeps the session.
 ### Access tokens
 
 For CI, scripts, or agents without a browser, create a token under **Personal settings
-→ Tokens** with the **DATASETS** and **JOBS** scopes, the token's **Write** role, and an
-expiration. Keep the token in an environment variable and reference it from the config.
+→ Tokens** with an expiration and only the scopes and role the agent's tools need, per
+the [tools table](mcp-tools.md): **DATASETS** with the Read role to browse, the Write
+role to enrich, **JOBS** with the Write role to run jobs; Admin only for team-wide
+enrichment. Keep the token in an environment variable and reference it from the config.
 
 === "Claude Code"
 

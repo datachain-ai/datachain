@@ -10,7 +10,7 @@ Additionally, you can also
 [configure sso](#configure-single-sign-on-sso),
 [edit collaborators](#edit-collaborators),
 [set up permissions](permissions.md#permissions), and
-[connect AI agents through the MCP server](../ai/mcp.md).
+[connect agents through the MCP server](../agents/mcp.md).
 
 ## Manage connections to self-hosted GitLab servers
 
