@@ -1219,6 +1219,23 @@ def test_row_to_objs_decodes_tuple_keys():
     assert converted == {("a", 1): 2}
 
 
+@pytest.mark.parametrize(
+    "annotation",
+    [Optional[dict[tuple[str, int], int]], dict[tuple[str, int], int] | None],
+    ids=["typing-optional", "pep604-optional"],
+)
+def test_optional_mapping_decodes_tuple_keys(annotation, test_session):
+    schema = SignalSchema({"m": annotation})
+    raw = {'["a",1]': 2}
+    expected = {("a", 1): 2}
+
+    (from_objs,) = schema.row_to_objs(_row(schema, (raw,)))
+    (from_features,) = schema.row_to_features((raw,), test_session.catalog)
+
+    assert from_objs == expected
+    assert from_features == expected
+
+
 def test_set_file_streams_rereads_fields_after_a_forward_ref_resolves(test_session):
     class Outer(BaseModel):
         child: "OuterInner | None" = None

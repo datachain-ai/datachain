@@ -1030,9 +1030,10 @@ class SignalSchema:
         catalog: "Catalog | None",
         cache: bool,
     ) -> tuple[bool, Any]:
+        # Collection and mapping arms need DataChain's own conversion rules,
+        # such as JSON-decoding serialized dictionary keys.
         if not any(
-            SignalSchema._requires_row_conversion(part)
-            for part in annotation_parts(annotation)
+            ModelStore.is_pydantic(part) for part in annotation_parts(annotation)
         ):
             return False, value
 
