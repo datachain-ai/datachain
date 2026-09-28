@@ -686,7 +686,7 @@ class AbstractWarehouse(ABC, Serializable):
         return self.get_nodes(
             self.expand_query(de, q, dr)
             .where(
-                (de.c(q, "path").op("GLOB")(path_glob))
+                (de.c(q, "path").op("GLOB", is_comparison=True)(path_glob))
                 & ~self.instr(relpath, "/")
                 & (de.c(q, "path") != dirpath)
             )
@@ -913,7 +913,8 @@ class AbstractWarehouse(ABC, Serializable):
         results = next(
             self.db.execute(
                 dr.select(*selections).where(
-                    (dr.c("path").op("GLOB")(sub_glob)) & (dr.c("is_latest") == true())
+                    (dr.c("path").op("GLOB", is_comparison=True)(sub_glob))
+                    & (dr.c("is_latest") == true())
                 )
             ),
             (0, 0),
@@ -945,7 +946,7 @@ class AbstractWarehouse(ABC, Serializable):
 
         if parent_path:
             sub_glob = posixpath.join(parent_path, "*")
-            conds.append(path.op("GLOB")(sub_glob))
+            conds.append(path.op("GLOB", is_comparison=True)(sub_glob))
         else:
             conds.append(path != "")
 
