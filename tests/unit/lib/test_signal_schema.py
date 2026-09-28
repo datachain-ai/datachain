@@ -1396,6 +1396,36 @@ def test_row_to_features_optional_collection(test_session, union_type):
     assert [(type(i), i.aa, i.bb) for i in items] == [(MyType1, 5, "test")]
 
 
+@pytest.mark.parametrize(
+    "union_style",
+    ["typing", "pep604"],
+    ids=["typing-union", "pep604-union"],
+)
+def test_row_to_features_top_level_model_union(test_session, union_style):
+    class First(BaseModel):
+        first: int
+
+    class Second(BaseModel):
+        second: str
+
+    if union_style == "pep604":
+        union_type = First | Second
+    else:
+        union_type = Union[First, Second]
+
+    schema = SignalSchema({"result": union_type})
+
+    raw_value = {"second": "value"}
+    (result,) = schema.row_to_features((raw_value,), test_session.catalog)
+
+    assert isinstance(result, Second)
+    assert result.second == "value"
+    (result,) = schema.row_to_objs(_row(schema, (raw_value,)))
+
+    assert isinstance(result, Second)
+    assert result.second == "value"
+
+
 def test_get_signals_subclass(nested_file_schema):
     class NewFile(File):
         pass
