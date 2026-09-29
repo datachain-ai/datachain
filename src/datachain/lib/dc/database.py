@@ -1,4 +1,5 @@
 import contextlib
+import importlib
 import itertools
 import os
 import sqlite3
@@ -40,7 +41,9 @@ def _connect(
     with contextlib.ExitStack() as stack:
         engine_kwargs = {"echo": bool(os.environ.get("DEBUG_SHOW_SQL_QUERIES"))}
         if isinstance(connection, (str, sqlalchemy.URL)):
-            engine = sqlalchemy.create_engine(connection, **engine_kwargs)
+            engine = sqlalchemy.create_engine(
+                _default_driver(connection), **engine_kwargs
+            )
             stack.callback(engine.dispose)
             yield stack.enter_context(engine.connect())
         elif isinstance(connection, sqlite3.Connection):
@@ -69,6 +72,19 @@ def _connect(
                 yield bind
         else:
             raise TypeError(f"Unsupported connection type: {type(connection).__name__}")
+
+
+def _default_driver(connection: "str | sqlalchemy.URL") -> sqlalchemy.URL:
+    url = sqlalchemy.make_url(connection)
+    if url.drivername != "postgresql":
+        return url
+    # SQLAlchemy >= 2.1 resolves a bare postgresql:// to psycopg 3, but the `postgres`
+    # extra ships psycopg2; keep psycopg2 unless psycopg 3 actually imports.
+    try:
+        importlib.import_module("psycopg")
+    except ImportError:
+        return url.set(drivername="postgresql+psycopg2")
+    return url
 
 
 def to_database(

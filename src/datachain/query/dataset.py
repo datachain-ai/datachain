@@ -1812,9 +1812,11 @@ class RowGenerator(UDFStep):
         """
         # labeling it with sys__processed_id to have common name since for udf signal
         # we use sys__id and in generator we use sys__input_id
-        return sa.select(
-            sa.distinct(partial_table.c.sys__input_id).label("sys__processed_id")
-        ).subquery()
+        return (
+            sa.select(partial_table.c.sys__input_id.label("sys__processed_id"))
+            .distinct()
+            .subquery()
+        )
 
     def find_incomplete_inputs(self, partial_table: "Table") -> list[int]:
         """
@@ -1825,10 +1827,14 @@ class RowGenerator(UDFStep):
         These inputs need to be re-processed and their partial results filtered out.
         """
         # Find inputs that don't have any row with sys__partial=False
-        incomplete_query = sa.select(sa.distinct(partial_table.c.sys__input_id)).where(
-            partial_table.c.sys__input_id.not_in(
-                sa.select(partial_table.c.sys__input_id).where(
-                    partial_table.c.sys__partial == False  # noqa: E712
+        incomplete_query = (
+            sa.select(partial_table.c.sys__input_id)
+            .distinct()
+            .where(
+                partial_table.c.sys__input_id.not_in(
+                    sa.select(partial_table.c.sys__input_id).where(
+                        partial_table.c.sys__partial == False  # noqa: E712
+                    )
                 )
             )
         )

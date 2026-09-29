@@ -71,11 +71,11 @@ class Column(sa.ColumnClause, metaclass=ColumnMeta):
 
     def glob(self, glob_str):
         """Search for matches using glob pattern matching."""
-        return self.op("GLOB")(glob_str)
+        return self.op("GLOB", is_comparison=True)(glob_str)
 
     def regexp(self, regexp_str):
         """Search for matches using regexp pattern matching."""
-        return self.op("REGEXP")(regexp_str)
+        return self.op("REGEXP", is_comparison=True)(regexp_str)
 
 
 class UDFParameter(ABC):
