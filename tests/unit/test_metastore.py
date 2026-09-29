@@ -11,6 +11,8 @@ from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SCHEMA_VERSION, SQLiteMetastore
 from datachain.dataset import DatasetStatus
 from datachain.error import DatasetStateNotLoadedError, OutdatedDatabaseSchemaError
+from datachain.lib.dc.listings import read_listing_dataset
+from datachain.lib.listing import parse_listing_uri
 from tests.conftest import cleanup_sqlite_db
 
 
@@ -70,6 +72,27 @@ def test_query_records_each_dataset_version_access(test_session, mocker):
         ("first", first.version),
         ("second", second.version),
     }
+
+
+def test_read_listing_dataset_records_listing_version_access(
+    test_session, tmp_dir, mocker
+):
+    (tmp_dir / "a.txt").write_text("a")
+    uri = tmp_dir.as_uri()
+    dc.read_storage(uri, session=test_session).exec()
+    ds_name, _, _ = parse_listing_uri(uri)
+    recorder = mocker.spy(
+        test_session.catalog.metastore,
+        "record_dataset_version_access",
+    )
+
+    chain, listing_version = read_listing_dataset(ds_name, session=test_session)
+    chain.to_values("file")
+
+    assert recorder.call_count == 1
+    dataset, version = recorder.call_args.args
+    assert dataset.name == ds_name
+    assert version == listing_version.version
 
 
 def test_outdated_schema_meta_not_present():
