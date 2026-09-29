@@ -21,6 +21,7 @@ lazy_modules = [
     "numpy",
     "pyarrow",
     "requests",
+    "sqlalchemy.dialects.postgresql",
     "s3fs",
     "torch",
 ]
