@@ -1,16 +1,13 @@
 import logging
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 
-import datachain as dc
-
 logger = logging.getLogger(__name__)
 
-MAX_ATTEMPTS = 3
-MAX_IMPORT_TIME_MS = 800
+MAX_ATTEMPTS = 5
+MAX_IMPORT_CPU_MS = 1
 
 lazy_modules = [
     "adlfs",
@@ -26,59 +23,59 @@ lazy_modules = [
 ]
 
 
-def _import_time_chain(test_session):
+def _import_datachain():
+    import resource
+
+    before = resource.getrusage(resource.RUSAGE_CHILDREN)
     proc = subprocess.run(
         [sys.executable, "-X", "importtime", "-c", "import datachain"],
         stderr=subprocess.PIPE,
+        text=True,
         check=True,
     )
-    out = proc.stderr.replace(b"import time:", b"").strip()
-    Path("import_time.csv").write_bytes(out)
+    after = resource.getrusage(resource.RUSAGE_CHILDREN)
+    cpu_ms = (
+        (after.ru_utime + after.ru_stime) - (before.ru_utime + before.ru_stime)
+    ) * 1000
 
-    try:
-        chain = dc.read_csv("import_time.csv", session=test_session, delimiter="|")
-    except Exception:
-        logger.error("Failed to parse output: %r", proc.stderr)
-        raise
-
-    chain = chain.save("import_time")
-    # TODO: use `mutate` instead of `map`
-    return (
-        chain.map(cumulative_ms=lambda cumulative: cumulative // 1000, output=int)
-        .map(self_ms=lambda self_us: self_us // 1000, output=int)
-        .map(**{"import": lambda imported_package: imported_package.lstrip()})
-        .select("self_ms", "cumulative_ms", "import")
-        .order_by("cumulative_ms", descending=True)
-    )
+    imports = []
+    for line in proc.stderr.splitlines():
+        if not line.startswith("import time:"):
+            continue
+        _, cumulative_us, name = (part.strip() for part in line[12:].split("|"))
+        if cumulative_us.isdigit():
+            imports.append((int(cumulative_us) // 1000, name))
+    return cpu_ms, imports
 
 
 # disable coverage for this test to minimize import time overhead
 @pytest.mark.no_cover
 @pytest.mark.skipif(sys.platform == "win32", reason="not reliable on Windows")
-def test_import_time(catalog, test_session):
+def test_import_time():
     """
     Outside of the test, you can measure the import time with:
         python -Ximporttime -c 'import datachain'
 
     To visualize the import profile, consider using `tuna`: https://github.com/nschloe/tuna.
     """
-    import_timings = []
+    attempts = []
     for attempt in range(MAX_ATTEMPTS):
-        chain = _import_time_chain(test_session)
-        (import_time_ms,) = chain.filter(
-            dc.C("import") == "datachain",
-        ).to_values("cumulative_ms")
-        import_timings.append((chain, import_time_ms))
+        cpu_ms, imports = _import_datachain()
+        attempts.append((cpu_ms, imports))
         # pass `--log-cli-level=info` to see these logs live
-        logger.info("attempt %d, import time: %dms", attempt + 1, import_time_ms)
+        logger.info("attempt %d, import CPU time: %dms", attempt + 1, cpu_ms)
 
-    chain, min_import_time = min(import_timings, key=lambda x: x[1])
-    # If there is a regression, uncomment the following to find the culprit:
-    # dc.show(limit=40)
+    min_cpu_ms, imports = min(attempts, key=lambda x: x[0])
     for module in lazy_modules:
-        assert not chain.filter(dc.C("import").startswith(module)).to_list(), (
+        assert not [name for _, name in imports if name.startswith(module)], (
             f"found {module} at import time"
         )
-    assert min_import_time < MAX_IMPORT_TIME_MS, (
-        f"Possible import time regression; took {min_import_time}ms"
+
+    culprits = "\n".join(
+        f"  {ms}ms {name}" for ms, name in sorted(imports, reverse=True)[:10]
+    )
+    all_cpu_ms = ", ".join(f"{cpu_ms:.0f}" for cpu_ms, _ in attempts)
+    assert min_cpu_ms < MAX_IMPORT_CPU_MS, (
+        f"Possible import time regression; took {min_cpu_ms:.0f}ms CPU "
+        f"(attempts: {all_cpu_ms}). Slowest imports (cumulative):\n{culprits}"
     )
