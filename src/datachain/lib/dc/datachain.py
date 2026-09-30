@@ -770,6 +770,31 @@ class DataChain:
         except ProjectNotFoundError as e:
             raise ProjectCreateNotAllowedError("Creating project is not allowed") from e
 
+    def _record_checkpoint_reuse_access(
+        self, dataset: DatasetRecord, version: str
+    ) -> None:
+        """Record access to a reused dataset version and its direct inputs."""
+        catalog = self.session.catalog
+        metastore = catalog.metastore
+        metastore.record_dataset_version_access(dataset, version)
+
+        for dependency in catalog.get_dataset_dependencies(
+            dataset.name,
+            version,
+            namespace_name=dataset.project.namespace.name,
+            project_name=dataset.project.name,
+        ):
+            if dependency is None or dependency.removed:
+                continue
+            source_dataset = catalog.get_dataset(
+                dependency.dataset_name,
+                namespace_name=dependency.namespace,
+                project_name=dependency.project,
+                versions=[dependency.version],
+                include_incomplete=False,
+            )
+            metastore.record_dataset_version_access(source_dataset, dependency.version)
+
     def _resolve_checkpoint(
         self,
         name: str,
@@ -851,6 +876,15 @@ class DataChain:
                 version=dataset_version.version,
                 **kwargs,
             )
+
+            # Reusing a completed save checkpoint skips QueryStep.apply(), so mark
+            # the reused output and its direct input versions as accessed here.
+            starting_step = chain._query.starting_step
+            if starting_step is not None:
+                self._record_checkpoint_reuse_access(
+                    starting_step.dataset,
+                    starting_step.dataset_version,
+                )
 
             # Link current job to this dataset version (not creator).
             # This also updates dataset_version.job_id.
