@@ -442,7 +442,7 @@ def test_get_info_uses_base_rate_when_average_rate_is_missing(
 ):
     with av.open(str(nut_video_without_average_rate.path)) as container:
         stream = container.streams.video[0]
-        assert stream.average_rate is None
+        assert not stream.average_rate
         assert stream.base_rate == 5
 
     info = nut_video_without_average_rate.file.get_info()

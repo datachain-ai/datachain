@@ -23,11 +23,12 @@ def validate(version: str) -> None:
     if len(parts) != 3:
         raise ValueError(error_message)
     for part in parts:
-        try:
-            val = int(part)
-            assert 0 <= val <= MAX_VERSION_NUMBER
-        except (ValueError, AssertionError):
-            raise ValueError(error_message) from None
+        if not (part.isascii() and part.isdigit()):
+            raise ValueError(error_message)
+        if len(part) > 1 and part[0] == "0":
+            raise ValueError(error_message)
+        if int(part) > MAX_VERSION_NUMBER:
+            raise ValueError(error_message)
 
 
 def create(major: int = 0, minor: int = 0, patch: int = 0) -> str:
