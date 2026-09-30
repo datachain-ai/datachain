@@ -787,7 +787,7 @@ class DataChain:
             if dependency is None or dependency.removed:
                 continue
             source_dataset = catalog.get_dataset(
-                dependency.dataset_name,
+                dependency.name,
                 namespace_name=dependency.namespace,
                 project_name=dependency.project,
                 versions=[dependency.version],
@@ -965,12 +965,19 @@ class DataChain:
             # would be the same as previous one. To avoid duplicating exact
             # datasets, we won't create new version of it and we will return
             # current latest version instead.
-            return read_dataset(
+            result = read_dataset(
                 name,
                 namespace=project.namespace.name,
                 project=project.name,
                 **kwargs,
             )
+            starting_step = result._query.starting_step
+            if starting_step is not None:
+                self.session.catalog.metastore.record_dataset_version_access(
+                    starting_step.dataset,
+                    starting_step.dataset_version,
+                )
+            return result
 
         # Case 3: first creation of dataset
         return None

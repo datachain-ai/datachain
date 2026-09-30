@@ -257,6 +257,34 @@ def test_checkpoint_reuse_records_output_and_direct_input_access(
     assert set(accessed) == {("nums", "1.0.0"), ("nums_checkpointed", "1.0.0")}
 
 
+def test_checkpoint_reuse_records_listing_input_access(
+    test_session, monkeypatch, tmp_dir
+):
+    catalog = test_session.catalog
+    metastore = catalog.metastore
+    (tmp_dir / "input.txt").write_text("data")
+    chain = dc.read_storage(tmp_dir.as_uri(), session=test_session)
+    output_name = "listing_checkpointed"
+
+    reset_session_job_state()
+    chain.save(output_name)
+
+    dependency = catalog.get_dataset_dependencies(output_name, "1.0.0")[0]
+    assert dependency is not None
+    accessed = []
+    monkeypatch.setattr(
+        metastore,
+        "record_dataset_version_access",
+        lambda dataset, version: accessed.append((dataset.name, version)),
+    )
+
+    reset_session_job_state()
+    chain.save(output_name)
+
+    assert (output_name, "1.0.0") in accessed
+    assert (dependency.name, dependency.version) in accessed
+
+
 def test_checkpoints_invalid_parent_job_id(test_session, monkeypatch, nums_dataset):
     # setting wrong job id
     reset_session_job_state()
