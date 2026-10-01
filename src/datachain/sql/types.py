@@ -22,9 +22,12 @@ from typing import Any, Union
 import sqlalchemy as sa
 from sqlalchemy import TypeDecorator, types
 from sqlalchemy.exc import CompileError
+from sqlalchemy.sql import operators
 
 from datachain import json as jsonlib
 from datachain.lib.data_model import StandardType
+
+_OperatorClass = getattr(operators, "OperatorClass", None)
 
 _registry: dict[str, "TypeConverter"] = {}
 registry = MappingProxyType(_registry)
@@ -67,11 +70,11 @@ def datetime_cast_input_error_message(type_name: str) -> str:
 
 def validate_datetime_cast_input_type(type_) -> None:
     try:
-        python_type = type_.python_type
+        python_type = dict if isinstance(type_, types.JSON) else type_.python_type
     except (AttributeError, NotImplementedError):
         return
 
-    if python_type in _DATETIME_CAST_INPUT_TYPES:
+    if python_type is object or python_type in _DATETIME_CAST_INPUT_TYPES:
         return
 
     python_type_name = getattr(python_type, "__name__", repr(python_type))
@@ -160,6 +163,20 @@ class SQLType(TypeDecorator):
 
     # Optional[scalar] marker -> backend emits a nullable column so None round-trips.
     dc_nullable: bool = False
+
+    if _OperatorClass is not None:
+        operator_classes = _OperatorClass.ANY
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        cls.cache_ok = cls.__dict__.get("cache_ok", cls.cache_ok)
+
+    @property
+    def _static_cache_key(self):
+        key = super()._static_cache_key
+        if self.dc_nullable and isinstance(key, tuple):
+            return (*key, ("dc_nullable", True))
+        return key
 
     def load_dialect_impl(self, dialect):
         impl = self._load_dialect_impl(dialect)
@@ -380,6 +397,10 @@ class Float64(Float):
 
 class Array(SQLType):
     impl = types.ARRAY
+
+    def __init__(self, item_type, *args, **kwargs):
+        self.item_type = item_type() if isinstance(item_type, type) else item_type
+        super().__init__(self.item_type, *args, **kwargs)
 
     @property
     def python_type(self) -> StandardType:

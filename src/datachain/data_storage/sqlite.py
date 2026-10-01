@@ -846,16 +846,17 @@ class SQLiteWarehouse(AbstractWarehouse):
             raise TableMissingError(f"Table '{name}' not found") from None
 
     def python_type(self, col_type: Union["TypeEngine", "SQLType"]) -> Any:
-        if isinstance(col_type, SQLType):
-            # converting our defined column types to dialect specific TypeEngine
-            col_type_cls = type(col_type)
-            if col_type_cls not in self._col_python_type:
-                self._col_python_type[col_type_cls] = col_type.type_engine(
-                    sqlite_dialect
-                )
-            col_type = self._col_python_type[col_type_cls]
+        if not isinstance(col_type, SQLType):
+            return col_type.python_type
 
-        return col_type.python_type
+        # converting our defined column types to dialect specific TypeEngine
+        col_type_cls = type(col_type)
+        if col_type_cls not in self._col_python_type:
+            self._col_python_type[col_type_cls] = col_type.type_engine(sqlite_dialect)
+        python_type = self._col_python_type[col_type_cls].python_type
+        if python_type is object:
+            return col_type.python_type
+        return python_type
 
     def export_dataset_table(
         self,
