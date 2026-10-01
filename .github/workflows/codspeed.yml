@@ -42,3 +42,36 @@ jobs:
           PYTHONHASHSEED: "0"
         with:
           mode: simulation
+
+  queries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: codspeed-queries
+          cache-dependency-glob: pyproject.toml
+
+      - name: Use CPU-only PyTorch
+        run: echo "UV_TORCH_BACKEND=cpu" >> "$GITHUB_ENV"
+
+      - name: Install datachain
+        run: uv pip install --system --compile-bytecode ".[tests]"
+
+      - name: Run benchmarks
+        uses: CodSpeedHQ/action@v5
+        env:
+          PYTHONHASHSEED: "0"
+        with:
+          mode: simulation
+          run: pytest tests/benchmarks/test_queries.py --codspeed -o addopts=""
