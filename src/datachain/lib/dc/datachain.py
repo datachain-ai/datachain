@@ -773,7 +773,9 @@ class DataChain:
     def _record_checkpoint_reuse_access(
         self, dataset: DatasetRecord, version: str
     ) -> None:
-        """Record access to a reused dataset version and its direct inputs."""
+        """Record access to a reused dataset version and the dataset versions
+        it depends on.
+        """
         catalog = self.session.catalog
         metastore = catalog.metastore
         metastore.record_dataset_version_access(dataset, version)
