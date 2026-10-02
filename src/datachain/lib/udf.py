@@ -435,8 +435,7 @@ class UDFBase(AbstractUDF):
         self, row_dict: RowDict, catalog: "Catalog", cache: bool, download_cb: Callback
     ) -> list[Any]:
         assert self.params
-        row = [row_dict[p] for p in self.params.to_udf_spec()]
-        obj_row = self.params.row_to_objs(row)
+        obj_row = self.params.row_to_objs(row_dict)
         self.params.set_file_streams(obj_row, catalog, cache, download_cb)
         return obj_row
 

@@ -30,7 +30,7 @@ jobs:
           - 5432:5432
         env:
           POSTGRES_USER: test
-          POSTGRES_DB: database
+          POSTGRES_DB: datachain_saas_test
           POSTGRES_HOST_AUTH_METHOD: trust
         options: >-
           --add-host=host.docker.internal:host-gateway
@@ -40,7 +40,7 @@ jobs:
           - 8123:8123
           - 9010:9000
         env:
-          CLICKHOUSE_DB: studio_local_db
+          CLICKHOUSE_DB: datachain_saas_test
           CLICKHOUSE_USER: studio_local
           CLICKHOUSE_PASSWORD: ch123456789!
           CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1

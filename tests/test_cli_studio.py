@@ -693,20 +693,69 @@ def test_studio_list_jobs(capsys):
                 {
                     "id": "8bddde6c-c3ca-41b0-9d87-ee945bfdce70",
                     "name": "on-cluster",
-                    "status": "COMPLETE",
+                    "status": "FAILED",
                     "compute_cluster_id": 1,
                     "compute_cluster_name": "prod-cluster",
                     "created_at": "2021-01-01T00:00:00Z",
                     "created_by": "user",
+                    "finished_at": "2021-01-01T00:00:20Z",
+                    # A job can stop without closing its stages.
+                    "steps": [
+                        {
+                            "name": "waiting",
+                            "label": "Waiting in queue",
+                            "status": "STARTED",
+                            "started_at": "2021-01-01T00:00:00Z",
+                            "finished_at": None,
+                        },
+                    ],
                 },
                 {
                     "id": "0502eef6-a32e-45fa-8e3b-d20ec0abbcf0",
                     "name": "on-other-cluster",
-                    "status": "FAILED",
+                    "status": "RUNNING",
                     "compute_cluster_id": 2,
                     "compute_cluster_name": "dev-cluster",
                     "created_at": "2021-01-02T00:00:00Z",
                     "created_by": "user",
+                    "finished_at": None,
+                    "steps": [
+                        {
+                            "name": "waiting",
+                            "label": "Waiting in queue",
+                            "status": "FINISHED",
+                            "started_at": "2021-01-02T00:00:00Z",
+                            "finished_at": "2021-01-02T00:00:04Z",
+                        },
+                        {
+                            "name": "downloading_files",
+                            "label": "Downloading files",
+                            "status": "FINISHED",
+                            "started_at": "2021-01-02T00:00:04Z",
+                            "finished_at": "2021-01-02T01:05:04Z",
+                        },
+                        {
+                            "name": "dw_wake_up",
+                            "label": "Waking up data warehouse",
+                            "status": "FINISHED",
+                            "started_at": None,
+                            "finished_at": None,
+                        },
+                        {
+                            "name": "virtualenv",
+                            "label": "Installing dependencies",
+                            "status": "FINISHED",
+                            "started_at": "2021-01-02T01:05:04Z",
+                            "finished_at": "2021-01-02T01:07:34Z",
+                        },
+                        {
+                            "name": "running_query",
+                            "label": "Running query",
+                            "status": "STARTED",
+                            "started_at": "2021-01-02T01:07:34Z",
+                            "finished_at": None,
+                        },
+                    ],
                 },
             ],
         )
@@ -715,11 +764,188 @@ def test_studio_list_jobs(capsys):
         out = capsys.readouterr().out
         assert "Cluster" not in out
         assert "prod-cluster" not in out
+        assert "include_steps" not in m.last_request.qs
 
         assert main(["job", "ls", "--extended"]) == 0
         out = capsys.readouterr().out
-        assert "Cluster" in out
-        assert "prod-cluster" in out
+
+    assert "Cluster" in out
+    assert "prod-cluster" in out
+    assert m.last_request.qs["include_steps"] == ["true"]
+    assert "Waiting in queue: 4s" in out
+    assert "Downloading files: 1h 5m" in out
+    assert "Installing dependencies: 2m 30s" in out
+    assert "Running query: running" in out
+    # A stage with no start, and a stopped job's open stage, were never timed.
+    assert "Waking up data warehouse: -" in out
+    assert "Waiting in queue: -" in out
+
+
+CLUSTER = {
+    "id": "k3f9x2mq7a",
+    "name": "prod-cluster",
+    "status": "ACTIVE",
+    "cloud_provider": "AWS",
+    "cloud_credentials": "aws-creds",
+    "is_active": True,
+    "default": True,
+    "max_workers": 8,
+    "active_workers": 4,
+    "busy_workers": 2,
+    "cloud_region": "us-west-2",
+    "instance_type": "m5.xlarge",
+    "compute_class": "Performance",
+    "disk_size": "100Gi",
+}
+
+
+def test_studio_clusters_shows_the_machine_and_its_limits(capsys, studio_token):
+    """The machine, where it runs, and how many workers it allows."""
+    with requests_mock.mock() as m:
+        m.get(f"{STUDIO_URL}/api/datachain/clusters/", json=[CLUSTER])
+
+        assert main(["job", "clusters"]) == 0
+
+    out = capsys.readouterr().out
+    assert "prod-cluster" in out
+    # The id identifies a cluster; names can be reused, so it leads the table.
+    assert CLUSTER["id"] in out
+    assert re.search(r"\|\s+ID\s+\|", out) is not None
+    assert "us-west-2" in out
+    assert "m5.xlarge" in out
+    assert "Performance" in out
+    assert "100Gi" in out
+    # busy/active/max, so capacity reads as one column.
+    assert "2/4/8" in out
+
+
+def cell(out: str, column: str) -> str:
+    """One named cell of the single rendered row."""
+    header, row = [line for line in out.splitlines() if line.startswith("|")][:2]
+    index = [h.strip() for h in header.split("|")].index(column)
+    return [c.strip() for c in row.split("|")][index]
+
+
+def test_studio_clusters_unset_fields_read_as_dashes(capsys, studio_token):
+    """A cluster that configures none of them. A dash is "not set"."""
+    with requests_mock.mock() as m:
+        m.get(
+            f"{STUDIO_URL}/api/datachain/clusters/",
+            json=[
+                {
+                    **CLUSTER,
+                    "name": "plain-cluster",
+                    "cloud_region": None,
+                    "instance_type": None,
+                    "compute_class": None,
+                    "disk_size": None,
+                }
+            ],
+        )
+
+        assert main(["job", "clusters"]) == 0
+
+    out = capsys.readouterr().out
+    assert "plain-cluster" in out
+    assert "us-west-2" not in out
+    assert cell(out, "Disk Request") == "-"
+
+
+def test_studio_clusters_do_not_read_an_id_or_name_as_a_number(capsys, studio_token):
+    """Ids come from [a-z0-9], so one can look like scientific notation, and a name is
+    whatever someone typed. tabulate would render "12345678e9" as 1.23457e+16 and a
+    cluster called "1e5" as 100000 - neither can be pasted back into a command."""
+    with requests_mock.mock() as m:
+        m.get(
+            f"{STUDIO_URL}/api/datachain/clusters/",
+            json=[{**CLUSTER, "id": "12345678e9", "name": "1e5"}],
+        )
+
+        assert main(["job", "clusters"]) == 0
+
+    out = capsys.readouterr().out
+    assert cell(out, "ID") == "12345678e9"
+    assert cell(out, "Name") == "1e5"
+    # The counts are still reported, so they are still numbers.
+    assert "2/4/8" in out
+
+
+def test_studio_clusters_false_is_not_unknown(capsys, studio_token):
+    """Only null reads as unset. A false flag and a zero count are values."""
+    with requests_mock.mock() as m:
+        m.get(
+            f"{STUDIO_URL}/api/datachain/clusters/",
+            json=[
+                {
+                    **CLUSTER,
+                    "default": False,
+                    "busy_workers": 0,
+                    "active_workers": 0,
+                    "max_workers": 0,
+                }
+            ],
+        )
+
+        assert main(["job", "clusters"]) == 0
+
+    out = capsys.readouterr().out
+    assert cell(out, "Is Default") == "False"
+    assert "0/0/0" in out
+
+
+def test_studio_clusters_json_prints_every_field(capsys, studio_token):
+    """`--json` prints the clusters exactly as Studio returned them."""
+    with requests_mock.mock() as m:
+        m.get(f"{STUDIO_URL}/api/datachain/clusters/", json=[CLUSTER])
+
+        assert main(["job", "clusters", "--json"]) == 0
+
+    assert json.loads(capsys.readouterr().out) == [CLUSTER]
+
+
+def test_studio_clusters_none_found(capsys, studio_token):
+    with requests_mock.mock() as m:
+        m.get(f"{STUDIO_URL}/api/datachain/clusters/", json=[])
+
+        assert main(["job", "clusters"]) == 0
+
+    assert "No clusters found" in capsys.readouterr().out
+
+
+def test_studio_jobs_json_prints_the_response(capsys, studio_token):
+    """`--json` changes the format, not what is asked for: `--extended` still rules."""
+    job = {
+        "id": "0502eef6-a32e-45fa-8e3b-d20ec0abbcf0",
+        "name": "daily",
+        "status": "COMPLETE",
+        "created_at": "2026-09-16T00:00:00Z",
+        "finished_at": "2026-09-16T00:20:00Z",
+        "created_by": "alice",
+        "workers": 4,
+        "compute_cluster_name": "prod-cluster",
+        "compute_cluster_id": "k3f9x2mq7a",
+        "steps": [
+            {
+                "name": "waiting",
+                "label": "Waiting in queue",
+                "status": "FINISHED",
+                "started_at": "2026-09-16T00:00:00Z",
+                "finished_at": "2026-09-16T00:00:04Z",
+            }
+        ],
+    }
+    with requests_mock.mock() as m:
+        route = m.get(f"{STUDIO_URL}/api/datachain/jobs/", json=[job])
+
+        assert main(["job", "ls", "--json"]) == 0
+        assert "include_steps" not in route.last_request.qs
+        assert json.loads(capsys.readouterr().out) == [job]
+
+        assert main(["job", "ls", "--json", "--extended", "--limit", "5"]) == 0
+
+    assert route.last_request.qs["include_steps"] == ["true"]
+    assert route.last_request.qs["limit"] == ["5"]
+    assert json.loads(capsys.readouterr().out) == [job]
 
 
 def test_studio_cancel_job(capsys, mocker):

@@ -9,6 +9,7 @@ from urllib.parse import urlparse, urlunparse
 
 import websockets
 from requests.exceptions import HTTPError, Timeout
+from typing_extensions import TypedDict
 
 from datachain.config import Config
 from datachain.dataset import DatasetRecord
@@ -25,7 +26,32 @@ DatasetExportData = dict[str, Any]
 FileUploadData = dict[str, Any] | None
 JobData = dict[str, Any] | None
 JobListData = list[dict[str, Any]]
-ClusterListData = list[dict[str, Any]]
+
+
+class ClusterData(TypedDict):
+    """A compute cluster as Studio reports it.
+
+    The nullable fields are null on a cluster that does not configure them - null is
+    "not set", never zero.
+    """
+
+    id: str
+    name: str
+    status: str
+    cloud_provider: str
+    cloud_credentials: str | None
+    is_active: bool
+    default: bool
+    max_workers: int
+    active_workers: int
+    busy_workers: int
+    cloud_region: str | None
+    instance_type: str | None
+    compute_class: str | None
+    disk_size: str | None
+
+
+ClusterListData = list[ClusterData]
 
 logger = logging.getLogger("datachain")
 
@@ -519,12 +545,27 @@ class StudioClient:
         status: str | None = None,
         limit: int = 20,
         job_id: str | None = None,
+        include_steps: bool = False,
     ) -> Response[JobListData]:
+        """The team's jobs, newest first, or one job when `job_id` is given.
+
+        Each job carries `id`, `name`, `status`, `created_at`, `created_by`,
+        `finished_at`, `workers`, `python_version`, `query`, `exit_code`,
+        `error_message`, `metrics`, and the cluster it ran on as
+        `compute_cluster_id` (joins to a cluster's `id`) and
+        `compute_cluster_name`.
+
+        With `include_steps`, `steps` holds the job's recorded stages and their
+        timestamps - how long it spent queued as against running. Missing timestamps
+        mean the duration is unavailable. Without it, `steps` is null.
+        """
         params: dict[str, Any] = {"limit": limit}
         if status is not None:
             params["status"] = status
         if job_id is not None:
             params["job_id"] = job_id
+        if include_steps:
+            params["include_steps"] = True
         return self._send_request("datachain/jobs/", params, method="GET")
 
     def cancel_job(
@@ -535,6 +576,11 @@ class StudioClient:
         return self._send_request(url, data={}, method="POST")
 
     def get_clusters(self) -> Response[ClusterListData]:
+        """The team's compute clusters, retired ones excluded.
+
+        See `ClusterData` for the fields. `id` is what a job's
+        `compute_cluster_id` points at.
+        """
         return self._send_request("datachain/clusters/", {}, method="GET")
 
     # Pipeline API

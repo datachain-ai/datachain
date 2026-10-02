@@ -37,6 +37,7 @@ from datachain.lib.dc import Sys
 from datachain.namespace import Namespace
 from datachain.project import Project
 from datachain.query.session import Session
+from datachain.testing import drop_all_tables
 from datachain.utils import (
     ENV_DATACHAIN_GLOBAL_CONFIG_DIR,
     ENV_DATACHAIN_SYSTEM_CONFIG_DIR,
@@ -203,7 +204,7 @@ def metastore(monkeypatch):
         yield _metastore
 
         Session.cleanup_for_tests()
-        _metastore.cleanup_for_tests()
+        drop_all_tables(_metastore.db)
     else:
         _metastore = SQLiteMetastore(db_file=":memory:")
         yield _metastore
@@ -253,7 +254,7 @@ def warehouse(metastore):
             check_temp_tables_cleaned_up(_warehouse)
         finally:
             cleanup_udf_tables(_warehouse)
-            _warehouse.cleanup_for_tests()
+            drop_all_tables(_warehouse.db)
         yield _warehouse
     else:
         _warehouse = SQLiteWarehouse(db_file=":memory:")
@@ -297,7 +298,7 @@ def metastore_tmpfile(monkeypatch, tmp_path):
         yield _metastore
 
         Session.cleanup_for_tests()
-        _metastore.cleanup_for_tests()
+        drop_all_tables(_metastore.db)
     else:
         _metastore = SQLiteMetastore(db_file=str(tmp_path / "test.db"))
         yield _metastore
@@ -319,7 +320,7 @@ def warehouse_tmpfile(tmp_path, metastore_tmpfile):
             check_temp_tables_cleaned_up(_warehouse)
         finally:
             cleanup_udf_tables(_warehouse)
-            _warehouse.cleanup_for_tests()
+            drop_all_tables(_warehouse.db)
         yield _warehouse
     else:
         _warehouse = SQLiteWarehouse(db_file=str(tmp_path / "test.db"))
