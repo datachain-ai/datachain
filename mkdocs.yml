@@ -122,6 +122,7 @@ nav:
               - ImageFile: references/data-types/imagefile.md
               - VideoFile: references/data-types/videofile.md
               - AudioFile: references/data-types/audiofile.md
+              - Hdf5File: references/data-types/hdf5file.md
               - TarVFile: references/data-types/tarvfile.md
               - ArrowRow: references/data-types/arrowrow.md
               - ZarrStore: references/data-types/zarrstore.md
