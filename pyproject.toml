@@ -119,6 +119,7 @@ tests = [
   "pytest-mock>=3.12.0",
   "pytest-servers[all]>=0.5.14",
   "pytest-benchmark[histogram]",
+  "pytest-codspeed",
   "pytest-xdist>=3.3.1",
   "pytest-dotenv",
   "virtualenv",
