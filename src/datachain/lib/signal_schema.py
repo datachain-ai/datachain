@@ -1117,7 +1117,7 @@ class SignalSchema:
             if isinstance(value, model_cls):
                 obj = value
             elif isinstance(value, Mapping):
-                obj = model_cls.model_validate(value)
+                obj = model_cls.model_validate(value, by_alias=True, by_name=True)
             else:
                 return result
             assert isinstance(obj, BaseModel)

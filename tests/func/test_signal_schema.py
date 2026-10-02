@@ -84,9 +84,12 @@ def test_partial_collision_on_dataset_reload(test_session):
 
 @pytest.mark.parametrize("container", ["list", "dict", "nested_list"])
 @pytest.mark.parametrize("required", [False, True], ids=["defaulted", "required"])
-def test_serialized_aliases_readback(test_session, container, required):
+@pytest.mark.parametrize("serialize_by_alias", [False, True])
+def test_serialized_aliases_readback(
+    test_session, container, required, serialize_by_alias
+):
     class Aliased(BaseModel):
-        model_config = ConfigDict(serialize_by_alias=True)
+        model_config = ConfigDict(serialize_by_alias=serialize_by_alias)
 
         value: int = Field(... if required else 0, alias="externalValue")
 
@@ -99,7 +102,7 @@ def test_serialized_aliases_readback(test_session, container, required):
         "dict": {"a": aliased},
         "nested_list": Wrapper(values=[aliased]),
     }[container]
-    dataset_name = f"serialized-alias-{container}-{required}"
+    dataset_name = f"serialized-alias-{container}-{required}-{serialize_by_alias}"
     dc.read_values(
         session=test_session,
         settings={"prefetch": False},
