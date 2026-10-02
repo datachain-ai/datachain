@@ -7,7 +7,12 @@ from typing import Annotated, Literal, Union, get_args, get_origin
 from pydantic import BaseModel
 from typing_extensions import Literal as LiteralEx
 
-from datachain.lib.data_model import NULLABLE_SCALARS, unwrap_optional
+from datachain.lib.data_model import (
+    NULLABLE_SCALARS,
+    is_mapping_annotation,
+    is_sequence_annotation,
+    unwrap_optional,
+)
 from datachain.lib.model_store import ModelStore
 from datachain.sql.types import (
     JSON,
@@ -53,14 +58,14 @@ def python_to_sql(typ):  # noqa: PLR0911
         return String
 
     args = get_args(typ)
-    if inspect.isclass(orig) and (issubclass(list, orig) or issubclass(tuple, orig)):
+    if is_sequence_annotation(typ):
         return _list_to_array(typ, args)
 
     if orig is Annotated:
         # Ignoring annotations
         return python_to_sql(args[0])
 
-    if inspect.isclass(orig) and issubclass(dict, orig):
+    if is_mapping_annotation(typ):
         return JSON
 
     if orig in (Union, UnionType):

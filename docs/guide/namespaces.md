@@ -143,8 +143,7 @@ import datachain as dc
 
 dc.create_project("prod", "analytics")
 
-dc.read_csv("gs://bucket/metrics.csv") \
-  .save("prod.analytics.metrics")
+dc.read_csv("gs://bucket/metrics.csv").save("prod.analytics.metrics")
 
 ds = dc.read_dataset("prod.analytics.metrics")
 ds.show()
@@ -180,5 +179,5 @@ def delete_namespace(name: str, session: Session | None) -> None:
 import datachain as dc
 
 dc.delete_namespace("dev.my-project")  # delete project
-dc.delete_namespace("dev")             # delete namespace
+dc.delete_namespace("dev")  # delete namespace
 ```

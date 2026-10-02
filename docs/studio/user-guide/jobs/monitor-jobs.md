@@ -247,6 +247,6 @@ Optimize your DataChain code:
 ## Next Steps
 
 - Set up [webhook notifications](../../webhooks.md) for job status updates
-- Configure [team collaboration](../team-collaboration.md) for shared job access
+- Configure [team permissions](../teams/permissions.md) for shared job access
 - Explore [DataChain operations](../../../references/datachain.md) for optimization
 - Review [account settings](../account-management.md) for credentials

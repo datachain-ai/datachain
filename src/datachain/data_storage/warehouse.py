@@ -86,9 +86,6 @@ class AbstractWarehouse(ABC, Serializable):
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         """Default behavior is to do nothing, as connections may be shared."""
 
-    def cleanup_for_tests(self):
-        """Cleanup for tests."""
-
     def normalize_limit_offset(self, query: GenerativeSelect) -> GenerativeSelect:
         """Return query adjusted for warehouse-specific LIMIT/OFFSET semantics."""
         return query
@@ -100,8 +97,9 @@ class AbstractWarehouse(ABC, Serializable):
 
         if ModelStore.is_pydantic(type(obj)):
             # Use Pydantic's JSON mode to ensure datetime and other non-JSON
-            # native types are serialized in a compatible way.
-            return obj.model_dump(mode="json")
+            # native types are serialized in a compatible way. Numpy is the one
+            # thing it refuses and this project's encoder handles.
+            return obj.model_dump(mode="json", fallback=json.numpy_to_python)
 
         if isinstance(obj, dict):
             out: dict[str, Any] = {}
@@ -688,7 +686,7 @@ class AbstractWarehouse(ABC, Serializable):
         return self.get_nodes(
             self.expand_query(de, q, dr)
             .where(
-                (de.c(q, "path").op("GLOB")(path_glob))
+                (de.c(q, "path").op("GLOB", is_comparison=True)(path_glob))
                 & ~self.instr(relpath, "/")
                 & (de.c(q, "path") != dirpath)
             )
@@ -915,7 +913,8 @@ class AbstractWarehouse(ABC, Serializable):
         results = next(
             self.db.execute(
                 dr.select(*selections).where(
-                    (dr.c("path").op("GLOB")(sub_glob)) & (dr.c("is_latest") == true())
+                    (dr.c("path").op("GLOB", is_comparison=True)(sub_glob))
+                    & (dr.c("is_latest") == true())
                 )
             ),
             (0, 0),
@@ -947,7 +946,7 @@ class AbstractWarehouse(ABC, Serializable):
 
         if parent_path:
             sub_glob = posixpath.join(parent_path, "*")
-            conds.append(path.op("GLOB")(sub_glob))
+            conds.append(path.op("GLOB", is_comparison=True)(sub_glob))
         else:
             conds.append(path != "")
 

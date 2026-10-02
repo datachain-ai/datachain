@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -681,6 +682,272 @@ def test_studio_rm_dataset(capsys, mocker):
         }
 
 
+def test_studio_list_jobs(capsys):
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"token": "isat_access_token", "team": "team_name"}
+
+    with requests_mock.mock() as m:
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[
+                {
+                    "id": "8bddde6c-c3ca-41b0-9d87-ee945bfdce70",
+                    "name": "on-cluster",
+                    "status": "FAILED",
+                    "compute_cluster_id": 1,
+                    "compute_cluster_name": "prod-cluster",
+                    "created_at": "2021-01-01T00:00:00Z",
+                    "created_by": "user",
+                    "finished_at": "2021-01-01T00:00:20Z",
+                    # A job can stop without closing its stages.
+                    "steps": [
+                        {
+                            "name": "waiting",
+                            "label": "Waiting in queue",
+                            "status": "STARTED",
+                            "started_at": "2021-01-01T00:00:00Z",
+                            "finished_at": None,
+                        },
+                    ],
+                },
+                {
+                    "id": "0502eef6-a32e-45fa-8e3b-d20ec0abbcf0",
+                    "name": "on-other-cluster",
+                    "status": "RUNNING",
+                    "compute_cluster_id": 2,
+                    "compute_cluster_name": "dev-cluster",
+                    "created_at": "2021-01-02T00:00:00Z",
+                    "created_by": "user",
+                    "finished_at": None,
+                    "steps": [
+                        {
+                            "name": "waiting",
+                            "label": "Waiting in queue",
+                            "status": "FINISHED",
+                            "started_at": "2021-01-02T00:00:00Z",
+                            "finished_at": "2021-01-02T00:00:04Z",
+                        },
+                        {
+                            "name": "downloading_files",
+                            "label": "Downloading files",
+                            "status": "FINISHED",
+                            "started_at": "2021-01-02T00:00:04Z",
+                            "finished_at": "2021-01-02T01:05:04Z",
+                        },
+                        {
+                            "name": "dw_wake_up",
+                            "label": "Waking up data warehouse",
+                            "status": "FINISHED",
+                            "started_at": None,
+                            "finished_at": None,
+                        },
+                        {
+                            "name": "virtualenv",
+                            "label": "Installing dependencies",
+                            "status": "FINISHED",
+                            "started_at": "2021-01-02T01:05:04Z",
+                            "finished_at": "2021-01-02T01:07:34Z",
+                        },
+                        {
+                            "name": "running_query",
+                            "label": "Running query",
+                            "status": "STARTED",
+                            "started_at": "2021-01-02T01:07:34Z",
+                            "finished_at": None,
+                        },
+                    ],
+                },
+            ],
+        )
+
+        assert main(["job", "ls"]) == 0
+        out = capsys.readouterr().out
+        assert "Cluster" not in out
+        assert "prod-cluster" not in out
+        assert "include_steps" not in m.last_request.qs
+
+        assert main(["job", "ls", "--extended"]) == 0
+        out = capsys.readouterr().out
+
+    assert "Cluster" in out
+    assert "prod-cluster" in out
+    assert m.last_request.qs["include_steps"] == ["true"]
+    assert "Waiting in queue: 4s" in out
+    assert "Downloading files: 1h 5m" in out
+    assert "Installing dependencies: 2m 30s" in out
+    assert "Running query: running" in out
+    # A stage with no start, and a stopped job's open stage, were never timed.
+    assert "Waking up data warehouse: -" in out
+    assert "Waiting in queue: -" in out
+
+
+CLUSTER = {
+    "id": "k3f9x2mq7a",
+    "name": "prod-cluster",
+    "status": "ACTIVE",
+    "cloud_provider": "AWS",
+    "cloud_credentials": "aws-creds",
+    "is_active": True,
+    "default": True,
+    "max_workers": 8,
+    "active_workers": 4,
+    "busy_workers": 2,
+    "cloud_region": "us-west-2",
+    "instance_type": "m5.xlarge",
+    "compute_class": "Performance",
+    "disk_size": "100Gi",
+}
+
+
+def test_studio_clusters_shows_the_machine_and_its_limits(capsys, studio_token):
+    """The machine, where it runs, and how many workers it allows."""
+    with requests_mock.mock() as m:
+        m.get(f"{STUDIO_URL}/api/datachain/clusters/", json=[CLUSTER])
+
+        assert main(["job", "clusters"]) == 0
+
+    out = capsys.readouterr().out
+    assert "prod-cluster" in out
+    # The id identifies a cluster; names can be reused, so it leads the table.
+    assert CLUSTER["id"] in out
+    assert re.search(r"\|\s+ID\s+\|", out) is not None
+    assert "us-west-2" in out
+    assert "m5.xlarge" in out
+    assert "Performance" in out
+    assert "100Gi" in out
+    # busy/active/max, so capacity reads as one column.
+    assert "2/4/8" in out
+
+
+def cell(out: str, column: str) -> str:
+    """One named cell of the single rendered row."""
+    header, row = [line for line in out.splitlines() if line.startswith("|")][:2]
+    index = [h.strip() for h in header.split("|")].index(column)
+    return [c.strip() for c in row.split("|")][index]
+
+
+def test_studio_clusters_unset_fields_read_as_dashes(capsys, studio_token):
+    """A cluster that configures none of them. A dash is "not set"."""
+    with requests_mock.mock() as m:
+        m.get(
+            f"{STUDIO_URL}/api/datachain/clusters/",
+            json=[
+                {
+                    **CLUSTER,
+                    "name": "plain-cluster",
+                    "cloud_region": None,
+                    "instance_type": None,
+                    "compute_class": None,
+                    "disk_size": None,
+                }
+            ],
+        )
+
+        assert main(["job", "clusters"]) == 0
+
+    out = capsys.readouterr().out
+    assert "plain-cluster" in out
+    assert "us-west-2" not in out
+    assert cell(out, "Disk Request") == "-"
+
+
+def test_studio_clusters_do_not_read_an_id_or_name_as_a_number(capsys, studio_token):
+    """Ids come from [a-z0-9], so one can look like scientific notation, and a name is
+    whatever someone typed. tabulate would render "12345678e9" as 1.23457e+16 and a
+    cluster called "1e5" as 100000 - neither can be pasted back into a command."""
+    with requests_mock.mock() as m:
+        m.get(
+            f"{STUDIO_URL}/api/datachain/clusters/",
+            json=[{**CLUSTER, "id": "12345678e9", "name": "1e5"}],
+        )
+
+        assert main(["job", "clusters"]) == 0
+
+    out = capsys.readouterr().out
+    assert cell(out, "ID") == "12345678e9"
+    assert cell(out, "Name") == "1e5"
+    # The counts are still reported, so they are still numbers.
+    assert "2/4/8" in out
+
+
+def test_studio_clusters_false_is_not_unknown(capsys, studio_token):
+    """Only null reads as unset. A false flag and a zero count are values."""
+    with requests_mock.mock() as m:
+        m.get(
+            f"{STUDIO_URL}/api/datachain/clusters/",
+            json=[
+                {
+                    **CLUSTER,
+                    "default": False,
+                    "busy_workers": 0,
+                    "active_workers": 0,
+                    "max_workers": 0,
+                }
+            ],
+        )
+
+        assert main(["job", "clusters"]) == 0
+
+    out = capsys.readouterr().out
+    assert cell(out, "Is Default") == "False"
+    assert "0/0/0" in out
+
+
+def test_studio_clusters_json_prints_every_field(capsys, studio_token):
+    """`--json` prints the clusters exactly as Studio returned them."""
+    with requests_mock.mock() as m:
+        m.get(f"{STUDIO_URL}/api/datachain/clusters/", json=[CLUSTER])
+
+        assert main(["job", "clusters", "--json"]) == 0
+
+    assert json.loads(capsys.readouterr().out) == [CLUSTER]
+
+
+def test_studio_clusters_none_found(capsys, studio_token):
+    with requests_mock.mock() as m:
+        m.get(f"{STUDIO_URL}/api/datachain/clusters/", json=[])
+
+        assert main(["job", "clusters"]) == 0
+
+    assert "No clusters found" in capsys.readouterr().out
+
+
+def test_studio_jobs_json_prints_the_response(capsys, studio_token):
+    """`--json` changes the format, not what is asked for: `--extended` still rules."""
+    job = {
+        "id": "0502eef6-a32e-45fa-8e3b-d20ec0abbcf0",
+        "name": "daily",
+        "status": "COMPLETE",
+        "created_at": "2026-09-16T00:00:00Z",
+        "finished_at": "2026-09-16T00:20:00Z",
+        "created_by": "alice",
+        "workers": 4,
+        "compute_cluster_name": "prod-cluster",
+        "compute_cluster_id": "k3f9x2mq7a",
+        "steps": [
+            {
+                "name": "waiting",
+                "label": "Waiting in queue",
+                "status": "FINISHED",
+                "started_at": "2026-09-16T00:00:00Z",
+                "finished_at": "2026-09-16T00:00:04Z",
+            }
+        ],
+    }
+    with requests_mock.mock() as m:
+        route = m.get(f"{STUDIO_URL}/api/datachain/jobs/", json=[job])
+
+        assert main(["job", "ls", "--json"]) == 0
+        assert "include_steps" not in route.last_request.qs
+        assert json.loads(capsys.readouterr().out) == [job]
+
+        assert main(["job", "ls", "--json", "--extended", "--limit", "5"]) == 0
+
+    assert route.last_request.qs["include_steps"] == ["true"]
+    assert route.last_request.qs["limit"] == ["5"]
+    assert json.loads(capsys.readouterr().out) == [job]
+
+
 def test_studio_cancel_job(capsys, mocker):
     job_id = "8bddde6c-c3ca-41b0-9d87-ee945bfdce70"
     with requests_mock.mock() as m:
@@ -1321,7 +1588,7 @@ def test_studio_run_log_blobs(capsys, mocker, tmp_dir, studio_token):
     )
     mocker.patch(
         "datachain.studio._fetch_log_blob",
-        return_value="fetched log content\n",
+        return_value=b"fetched log content\n",
     )
 
     with requests_mock.mock() as m:
@@ -1346,6 +1613,118 @@ def test_studio_run_log_blobs(capsys, mocker, tmp_dir, studio_token):
 
     out = capsys.readouterr().out
     assert "fetched log content" in out
+
+
+def test_studio_run_log_blobs_fetches_presigned_bytes(
+    capsysbinary, mocker, tmp_dir, studio_token
+):
+    job_id = str(uuid.uuid4())
+
+    async def mock_tail_job_logs(jid, no_follow=False):
+        yield {
+            "log_blobs": [
+                "https://example.com/blob1",
+                "https://example.com/blob2",
+            ]
+        }
+        yield {"job": {"status": "COMPLETE"}}
+
+    mocker.patch(
+        "datachain.studio.StudioClient.tail_job_logs",
+        side_effect=mock_tail_job_logs,
+    )
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={"id": job_id, "url": "https://example.com"},
+        )
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "COMPLETE"}],
+        )
+        m.get(
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
+            json={"dataset_versions": []},
+        )
+        blob1 = m.get(
+            "https://example.com/blob1",
+            content=b"signal:\xff at 5 \xc2\xb5S",
+            headers={"Content-Type": "text/plain"},
+        )
+        blob2 = m.get(
+            "https://example.com/blob2",
+            content=b"second blob\n",
+            headers={"Content-Type": "text/plain"},
+        )
+
+        (tmp_dir / "example_query.py").write_text("print(1)")
+
+        exit_code = main(["job", "run", "example_query.py"])
+
+        assert exit_code == 0
+        assert "Authorization" not in blob1.last_request.headers
+        assert "Authorization" not in blob2.last_request.headers
+
+    out = capsysbinary.readouterr().out
+    assert b"signal:\xff at 5 \xc2\xb5S\nsecond blob\n" in out
+
+
+def test_studio_run_log_blobs_http_error_detail(
+    capsys, caplog, mocker, tmp_dir, studio_token
+):
+    job_id = str(uuid.uuid4())
+
+    async def mock_tail_job_logs(jid, no_follow=False):
+        yield {"log_blobs": ["https://example.com/blob1?X-Amz-Signature=secretsig"]}
+        yield {"job": {"status": "COMPLETE"}}
+
+    mocker.patch(
+        "datachain.studio.StudioClient.tail_job_logs",
+        side_effect=mock_tail_job_logs,
+    )
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={"id": job_id, "url": "https://example.com"},
+        )
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "COMPLETE"}],
+        )
+        m.get(
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
+            json={"dataset_versions": []},
+        )
+        m.get(
+            "https://example.com/blob1?X-Amz-Signature=secretsig",
+            status_code=400,
+            text="<Error><Code>InvalidArgument</Code></Error>",
+        )
+
+        (tmp_dir / "example_query.py").write_text("print(1)")
+
+        with caplog.at_level(logging.DEBUG, logger="datachain"):
+            exit_code = main(["job", "run", "-v", "example_query.py"])
+
+        assert exit_code == 0
+
+    out = capsys.readouterr().out
+    assert "Warning: Failed to fetch logs from studio (HTTP 400)" in out
+    assert "secretsig" not in out
+    assert "<Error><Code>InvalidArgument</Code></Error>" in caplog.text
+
+
+def test_show_log_blobs_propagates_broken_pipe(mocker):
+    from datachain.studio import _show_log_blobs
+
+    mocker.patch("datachain.studio._fetch_log_blob", return_value=b"content\n")
+    stdout = mocker.patch("datachain.studio.sys.stdout")
+    stdout.buffer.write.side_effect = BrokenPipeError
+
+    with pytest.raises(BrokenPipeError):
+        asyncio.run(_show_log_blobs(["https://example.com/blob1"], mocker.MagicMock()))
 
 
 def test_studio_run_log_blobs_fetch_failure(capsys, mocker, tmp_dir, studio_token):
@@ -1596,6 +1975,182 @@ def test_studio_run_reconnect_resets_counter_on_streaming_data(
             assert main(["job", "run", "-v", "example_query.py"]) == 1
 
     assert "Max reconnect attempts reached:" in caplog.text
+
+
+def test_studio_job_logs_refused_handshake_aborts(capsys, mocker, studio_token):
+    from websockets.datastructures import Headers
+    from websockets.exceptions import InvalidStatus
+    from websockets.http11 import Response
+
+    def mock_connect(url, additional_headers):
+        raise InvalidStatus(Response(403, "Forbidden", Headers()))
+
+    mocker.patch("datachain.remote.studio.websockets.connect", side_effect=mock_connect)
+    mocker.patch("datachain.studio.RECONNECT_MAX_ATTEMPTS", 0)
+
+    with requests_mock.mock() as m:
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "RUNNING"}],
+        )
+
+        exit_code = main(["job", "logs", str(uuid.uuid4())])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "Studio refused the log stream connection (HTTP 403)" in captured.err
+    assert "team_name" in captured.err
+    assert "reconnecting in" not in captured.out
+
+
+def test_studio_job_logs_transient_handshake_failure_retries(
+    capsys, mocker, studio_token
+):
+    from websockets.datastructures import Headers
+    from websockets.exceptions import InvalidStatus
+    from websockets.http11 import Response
+
+    def mock_connect(url, additional_headers):
+        raise InvalidStatus(Response(503, "Service Unavailable", Headers()))
+
+    connect = mocker.patch(
+        "datachain.remote.studio.websockets.connect", side_effect=mock_connect
+    )
+    mocker.patch("datachain.studio.RECONNECT_MAX_ATTEMPTS", 1)
+    mocker.patch("datachain.studio.asyncio.sleep")
+
+    with requests_mock.mock() as m:
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            [
+                {"json": [{"status": "RUNNING"}]},
+                {"json": [{"status": "COMPLETE"}]},
+            ],
+        )
+        m.get(
+            re.compile(
+                rf"^{re.escape(STUDIO_URL)}/api/datachain/datasets/dataset_job_versions"
+            ),
+            json={"dataset_versions": []},
+        )
+
+        exit_code = main(["job", "logs", str(uuid.uuid4())])
+
+    assert exit_code == 0
+    assert connect.call_count == 2
+    captured = capsys.readouterr()
+    assert ">>>> Job is now in RUNNING status." in captured.out
+    assert ">>>> Job is now in COMPLETE status." in captured.out
+    assert "refused the log stream connection" not in captured.err
+
+
+def test_studio_job_logs_terminal_error_on_reconnect_clears_banner(
+    capsys, mocker, studio_token
+):
+    from websockets.datastructures import Headers
+    from websockets.exceptions import InvalidStatus
+    from websockets.http11 import Response
+
+    statuses = [503, 403]
+
+    def mock_connect(url, additional_headers):
+        raise InvalidStatus(Response(statuses.pop(0), "", Headers()))
+
+    mocker.patch("datachain.remote.studio.websockets.connect", side_effect=mock_connect)
+    mocker.patch("datachain.studio.RECONNECT_BACKOFF_BASE_SEC", 0)
+
+    with requests_mock.mock() as m:
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "RUNNING"}],
+        )
+
+        exit_code = main(["job", "logs", str(uuid.uuid4())])
+
+    assert exit_code == 1
+    assert not statuses
+    captured = capsys.readouterr()
+    assert "Studio refused the log stream connection (HTTP 403)" in captured.err
+    assert "reconnecting in" in captured.out
+    assert re.search(r" {10,}\r", captured.out)
+
+
+def test_studio_job_logs_interrupt_during_backoff_clears_banner(
+    capsys, mocker, studio_token
+):
+    async def mock_tail_job_logs(jid, no_follow=False):
+        return
+        yield
+
+    mocker.patch(
+        "datachain.studio.StudioClient.tail_job_logs",
+        side_effect=mock_tail_job_logs,
+    )
+    mocker.patch("datachain.studio.asyncio.sleep", side_effect=KeyboardInterrupt)
+
+    with requests_mock.mock() as m:
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "RUNNING"}],
+        )
+
+        exit_code = main(["job", "logs", str(uuid.uuid4())])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "reconnecting in" in captured.out
+    assert re.search(r" {10,}\r", captured.out)
+    assert "Operation cancelled by the user" in captured.err
+
+
+def test_studio_job_logs_legacy_status_code_attribute_aborts(
+    capsys, mocker, studio_token
+):
+    from websockets.exceptions import WebSocketException
+
+    class LegacyInvalidStatusCode(WebSocketException):
+        status_code = 403
+
+    def mock_connect(url, additional_headers):
+        raise LegacyInvalidStatusCode
+
+    mocker.patch("datachain.remote.studio.websockets.connect", side_effect=mock_connect)
+    mocker.patch("datachain.studio.RECONNECT_MAX_ATTEMPTS", 0)
+
+    with requests_mock.mock() as m:
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "RUNNING"}],
+        )
+
+        exit_code = main(["job", "logs", str(uuid.uuid4())])
+
+    assert exit_code == 1
+    assert "HTTP 403" in capsys.readouterr().err
+
+
+def test_studio_job_logs_server_error_frame_aborts(capsys, mocker, studio_token):
+    async def mock_tail_job_logs(jid, no_follow=False):
+        yield {"message": "Job ID is incorrect or not found"}
+
+    mocker.patch(
+        "datachain.studio.StudioClient.tail_job_logs",
+        side_effect=mock_tail_job_logs,
+    )
+    mocker.patch("datachain.studio.RECONNECT_MAX_ATTEMPTS", 0)
+
+    with requests_mock.mock() as m:
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "RUNNING"}],
+        )
+
+        exit_code = main(["job", "logs", str(uuid.uuid4())])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "Job ID is incorrect or not found" in captured.err
+    assert "Failed to reconnect" not in captured.out
 
 
 def test_unpacker_hook_unknown_ext_type():

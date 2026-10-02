@@ -17,6 +17,7 @@ concurrency:
 jobs:
   studio:
     if: '!github.event.pull_request.head.repo.fork'
+    timeout-minutes: 60
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -29,7 +30,7 @@ jobs:
           - 5432:5432
         env:
           POSTGRES_USER: test
-          POSTGRES_DB: database
+          POSTGRES_DB: datachain_saas_test
           POSTGRES_HOST_AUTH_METHOD: trust
         options: >-
           --add-host=host.docker.internal:host-gateway
@@ -39,7 +40,7 @@ jobs:
           - 8123:8123
           - 9010:9000
         env:
-          CLICKHOUSE_DB: studio_local_db
+          CLICKHOUSE_DB: datachain_saas_test
           CLICKHOUSE_USER: studio_local
           CLICKHOUSE_PASSWORD: ch123456789!
           CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
@@ -105,6 +106,7 @@ jobs:
         run: make update_datachain_deps "${{ env.BRANCH }}"
 
       - name: Install FFmpeg
+        timeout-minutes: 10
         run: |
           sudo apt update
           sudo apt install -y ffmpeg

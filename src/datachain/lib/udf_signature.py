@@ -5,7 +5,7 @@ from typing import Any, get_args, get_origin
 
 from datachain.lib.data_model import DataType, DataTypeNames, is_chain_type
 from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.udf import UDFBase
+from datachain.lib.udf import UDFBase, reject_var_params
 from datachain.lib.utils import AbstractUDF, DataChainParamsError, callable_name
 
 
@@ -68,6 +68,12 @@ class UdfSignature:  # noqa: PLW1641
             cls._func_signature(chain, udf_func)
         )
 
+        reject_var_params(
+            udf_func,
+            f"function '{callable_name(udf_func)}'",
+            columns_explicit=params is not None,
+        )
+
         # For generators/aggregators, users must return an Iterator/Generator.
         # Previously, this validation only happened when `output` was not explicitly
         # provided, which allowed easy-to-miss return-shape bugs (e.g. returning a
@@ -84,7 +90,7 @@ class UdfSignature:  # noqa: PLW1641
             )
 
         udf_params: dict[str, DataType | Any] = {}
-        if params:
+        if params is not None:
             udf_params = (
                 {params: Any} if isinstance(params, str) else dict.fromkeys(params, Any)
             )

@@ -81,22 +81,21 @@ def test_embed_output_is_list_float():
     assert llm.embed("text").output_type() == list[float]
 
 
-def test_bound_callable_declares_input_column_and_return_type():
+def test_spec_declares_input_column_and_return_type():
     import inspect
 
-    f = bind(llm.complete("file", schema=Scene), llm="m")
-    assert f.__datachain_params__ == ["file"]
+    spec = llm.complete("file", schema=Scene)
+    assert spec.input_columns() == ["file"]
+    f = bind(spec, llm="m")
     assert inspect.signature(f).return_annotation == (Scene | None)
 
 
-def test_bound_callable_declares_context_column():
-    f = bind(llm.complete("file", context="meta"), llm="m")
-    assert f.__datachain_params__ == ["file", "meta"]
+def test_spec_declares_context_column():
+    assert llm.complete("file", context="meta").input_columns() == ["file", "meta"]
 
 
 def test_nested_column_name_is_supported():
-    f = bind(llm.complete("file.path"), llm="m")
-    assert f.__datachain_params__ == ["file.path"]
+    assert llm.complete("file.path").input_columns() == ["file.path"]
 
 
 def test_per_call_model_overrides_settings(fake_llm):
@@ -220,6 +219,20 @@ def test_list_schema_tolerates_bare_array_response(fake_llm):
     fake_llm.structured_overrides["LLMListOutput"] = '[{"text": "a"}, {"text": "b"}]'
     out = bind(llm.complete("t", schema=list[Chunk]), llm="m")("doc")
     assert [c.text for c in out] == ["a", "b"]
+
+
+def test_list_schema_tolerates_double_encoded_items(fake_llm):
+    fake_llm.structured_overrides["LLMListOutput"] = (
+        '{"items": "[\\n  {\\"text\\": \\"a\\"},\\n  {\\"text\\": \\"b\\"}\\n]"}'
+    )
+    out = bind(llm.complete("t", schema=list[Chunk]), llm="m")("doc")
+    assert [c.text for c in out] == ["a", "b"]
+
+
+def test_list_schema_raises_on_invalid_double_encoded_items(fake_llm):
+    fake_llm.structured_overrides["LLMListOutput"] = '{"items": "[{\\"nope\\": 1}]"}'
+    with pytest.raises(engine.LLMError, match=r"list\[Chunk\]"):
+        bind(llm.complete("t", schema=list[Chunk], retries=0), llm="m")("doc")
 
 
 def test_list_schema_raises_on_unparsable_output(fake_llm):

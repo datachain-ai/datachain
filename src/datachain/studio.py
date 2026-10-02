@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import random
@@ -73,10 +74,10 @@ def process_jobs_args(args: "Namespace"):
         return show_job_logs(args.id, args.team)
 
     if args.cmd == "ls":
-        return list_jobs(args.status, args.team, args.limit)
+        return list_jobs(args.status, args.team, args.limit, args.extended, args.json)
 
     if args.cmd == "clusters":
-        return list_clusters(args.team)
+        return list_clusters(args.team, args.json)
 
     raise DataChainError(f"Unknown command '{args.cmd}'.")
 
@@ -405,14 +406,13 @@ def parse_start_time(start_time_str: str | None) -> str | None:
 
 
 # Sync usage
-async def _fetch_log_blob(blob_url: str, token: str, timeout: float) -> str:
-    """Fetch log content from a blob URL asynchronously."""
+async def _fetch_log_blob(blob_url: str, timeout: float) -> bytes:
+    """Return the log blob content as bytes."""
 
     def _fetch():
-        headers = {"Authorization": f"token {token}"}
-        response = requests.get(blob_url, headers=headers, timeout=timeout)
+        response = requests.get(blob_url, timeout=timeout)
         response.raise_for_status()
-        return response.text
+        return response.content
 
     return await asyncio.to_thread(_fetch)
 
@@ -420,11 +420,25 @@ async def _fetch_log_blob(blob_url: str, token: str, timeout: float) -> str:
 async def _show_log_blobs(log_blobs: list[str], client):
     for blob_url in log_blobs:
         try:
-            log_content = await _fetch_log_blob(blob_url, client.token, client.timeout)
+            log_content = await _fetch_log_blob(blob_url, client.timeout)
             if log_content:
-                print(log_content, end="")
-        except (requests.RequestException, OSError):
-            print("\n>>>> Warning: Failed to fetch logs from studio")
+                sys.stdout.flush()
+                sys.stdout.buffer.write(log_content)
+                if not log_content.endswith(b"\n"):
+                    sys.stdout.buffer.write(b"\n")
+                sys.stdout.buffer.flush()
+        except BrokenPipeError:
+            raise
+        except (requests.RequestException, OSError) as exc:
+            response = getattr(exc, "response", None)
+            detail = (
+                f"HTTP {response.status_code}"
+                if response is not None
+                else type(exc).__name__
+            )
+            print(f"\n>>>> Warning: Failed to fetch logs from studio ({detail})")
+            if response is not None and response.text:
+                logger.debug("Log blob fetch failed, response body: %s", response.text)
 
 
 def _get_job_status(client, job_id: str) -> str | None:
@@ -463,6 +477,27 @@ def _process_logs_message(
     return received, last_log_id
 
 
+async def _wait_before_reconnect(retry_count: int) -> str:
+    sleep_sec = min(
+        RECONNECT_BACKOFF_BASE_SEC * 2**retry_count,
+        RECONNECT_BACKOFF_MAX_SEC,
+    ) + random.uniform(0, 1)  # noqa: S311
+    logger.debug(
+        "WebSocket closed, reconnecting in %.1fs (attempt %d/%d)",
+        sleep_sec,
+        retry_count + 1,
+        RECONNECT_MAX_ATTEMPTS,
+    )
+    msg = _print_reconnect_msg(sleep_sec)
+    try:
+        await asyncio.sleep(sleep_sec)
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        _clear_line(msg)
+        raise
+
+    return msg
+
+
 def show_logs_from_client(  # noqa: C901
     client, job_id: str, no_follow: bool = False
 ):
@@ -474,8 +509,12 @@ def show_logs_from_client(  # noqa: C901
         while True:
             received_streaming_data = False
             session_start_id = last_log_id
+            reconnect_msg = _clear_line(reconnect_msg)
             async for message in client.tail_job_logs(job_id, no_follow=no_follow):
-                reconnect_msg = _clear_line(reconnect_msg)
+                # A bare {"message": ...} frame is Studio's terminal error.
+                if "message" in message:
+                    raise DataChainError(message["message"])
+
                 if "log_blobs" in message and not no_follow:
                     log_blobs = message.get("log_blobs", [])
                     if log_blobs and not log_blobs_processed:
@@ -512,19 +551,8 @@ def show_logs_from_client(  # noqa: C901
                 if retry_count >= RECONNECT_MAX_ATTEMPTS:
                     logger.debug("Max reconnect attempts reached: %d", retry_count)
                     break
-                sleep_sec = min(
-                    RECONNECT_BACKOFF_BASE_SEC * 2**retry_count,
-                    RECONNECT_BACKOFF_MAX_SEC,
-                ) + random.uniform(0, 1)  # noqa: S311
+                reconnect_msg = await _wait_before_reconnect(retry_count)
                 retry_count += 1
-                logger.debug(
-                    "WebSocket closed, reconnecting in %.1fs (attempt %d/%d)",
-                    sleep_sec,
-                    retry_count,
-                    RECONNECT_MAX_ATTEMPTS,
-                )
-                reconnect_msg = _print_reconnect_msg(sleep_sec)
-                await asyncio.sleep(sleep_sec)
             except KeyError:
                 break
 
@@ -714,29 +742,77 @@ def cancel_job(job_id: str, team_name: str | None):
     print(f"Job {job_id} canceled")
 
 
-def list_jobs(status: str | None, team_name: str | None, limit: int):
+def list_jobs(
+    status: str | None,
+    team_name: str | None,
+    limit: int,
+    extended: bool = False,
+    as_json: bool = False,
+):
     client = StudioClient(team=team_name)
-    response = client.get_jobs(status, limit)
+    response = client.get_jobs(status, limit, include_steps=extended)
     if not response.ok:
         raise DataChainError(response.message)
 
     jobs = response.data or []
+    if as_json:
+        print(json.dumps(jobs, indent=2))
+        return
+
     if not jobs:
         print("No jobs found")
         return
 
-    rows = [
-        {
+    rows = []
+    for job in jobs:
+        row = {
             "ID": job.get("id"),
             "Name": job.get("name"),
             "Status": job.get("status"),
             "Created at": job.get("created_at"),
             "Created by": job.get("created_by"),
         }
-        for job in jobs
-    ]
+        if extended:
+            row["Cluster"] = job.get("compute_cluster_name")
+            row["Stages"] = _format_stages(
+                job.get("steps") or [], job_finished=bool(job.get("finished_at"))
+            )
+        rows.append(row)
 
-    print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
+    # As in list_clusters: a job or cluster named "1e5" would render as 100000.
+    print(
+        tabulate.tabulate(rows, headers="keys", tablefmt="grid", disable_numparse=True)
+    )
+
+
+def _format_stages(steps: list[dict], job_finished: bool) -> str:
+    lines = []
+    for step in steps:
+        name = step.get("label") or step.get("name")
+        lines.append(f"{name}: {_stage_duration(step, job_finished)}")
+    return "\n".join(lines)
+
+
+def _stage_duration(step: dict, job_finished: bool) -> str:
+    started, finished = step.get("started_at"), step.get("finished_at")
+    if not started:
+        return "-"
+    if not finished:
+        # A job can stop without closing its stages, so an open stage on a job that
+        # has ended is one whose length was never recorded, not one still going.
+        return "-" if job_finished else "running"
+
+    seconds = int((_parse_iso(finished) - _parse_iso(started)).total_seconds())
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m {seconds % 60}s"
+    return f"{seconds // 3600}h {seconds % 3600 // 60}m"
+
+
+def _parse_iso(value: str) -> datetime:
+    # fromisoformat only accepts a trailing Z from 3.11, and we support 3.10.
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def show_job_logs(job_id: str, team_name: str | None):
@@ -750,32 +826,48 @@ def show_job_logs(job_id: str, team_name: str | None):
     return show_logs_from_client(client, job_id)
 
 
-def list_clusters(team_name: str | None):
+def list_clusters(team_name: str | None, as_json: bool = False):
     client = StudioClient(team=team_name)
     response = client.get_clusters()
     if not response.ok:
         raise DataChainError(response.message)
 
     clusters = response.data or []
+    if as_json:
+        print(json.dumps(clusters, indent=2))
+        return
+
     if not clusters:
         print("No clusters found")
         return
 
     rows = [
         {
-            "ID": cluster.get("id"),
-            "Name": cluster.get("name"),
-            "Status": cluster.get("status"),
-            "Cloud Provider": cluster.get("cloud_provider"),
-            "Cloud Credentials": cluster.get("cloud_credentials"),
-            "Is Active": cluster.get("is_active"),
-            "Is Default": cluster.get("default"),
-            "Max Workers": cluster.get("max_workers"),
+            "ID": cluster["id"],
+            "Name": cluster["name"],
+            "Status": cluster["status"],
+            "Cloud Provider": cluster["cloud_provider"],
+            "Region": cluster["cloud_region"],
+            "Instance Type": cluster["instance_type"],
+            "Compute Class": cluster["compute_class"],
+            "Disk Request": cluster["disk_size"],
+            "Busy/Active/Max": (
+                f"{cluster['busy_workers']}/{cluster['active_workers']}"
+                f"/{cluster['max_workers']}"
+            ),
+            "Is Default": cluster["default"],
         }
         for cluster in clusters
     ]
 
-    print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
+    # Nothing in this table is a number, and both the id and the name can look
+    # like one: an id of "12345678e9" renders as 1.23457e+16 and a cluster named
+    # "1e5" as 100000, neither of which can be pasted back into a command.
+    print(
+        tabulate.tabulate(
+            rows, headers="keys", tablefmt="grid", missingval="-", disable_numparse=True
+        )
+    )
 
 
 def create_pipeline(

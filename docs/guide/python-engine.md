@@ -35,13 +35,16 @@ import datachain as dc
 from pydantic import BaseModel
 from typing import Iterator
 
+
 class Chunk(BaseModel):
     text: str
     embeddings: list[float]
 
+
 def split_pdf(file: dc.File) -> Iterator[Chunk]:
     for page in extract_pages(file):
         yield Chunk(text=page.text, embeddings=embed(page.text))
+
 
 chain = dc.read_storage("s3://docs/*.pdf").gen(chunk=split_pdf).save("chunks")
 ```
@@ -53,10 +56,14 @@ Groups records by a key, then produces output records per group.
 ```python
 import datachain as dc
 
+
 def group_messages(text, sender) -> Iterator[Dialog]:
     yield Dialog(text="\n".join(text))
 
-chain = dc.read_csv("s3://logs.csv").agg(dialog=group_messages, partition_by="session_id")
+
+chain = dc.read_csv("s3://logs.csv").agg(
+    dialog=group_messages, partition_by="session_id"
+)
 ```
 
 ## Column Naming
@@ -80,6 +87,7 @@ DataChain infers parameters from the function signature and output types from re
 def classify(file: dc.File) -> str:
     return "positive"
 
+
 # BAD: no return type -- defaults to str, crashes with non-string returns
 def classify(file):
     return 0.95  # runtime error
@@ -99,15 +107,21 @@ When a Python function needs an expensive resource (model, tokenizer, API client
 from transformers import Pipeline, pipeline
 import datachain as dc
 
+
 def caption_image(file: dc.File, pipeline: Pipeline) -> str:
     image = file.read().convert("RGB")
     return pipeline(image)[0]["generated_text"]
+
 
 chain = (
     dc.read_storage("gs://bucket/images/", type="image", anon=True)
     .limit(5)
     .settings(cache=True)
-    .setup(pipeline=lambda: pipeline("image-to-text", model="Salesforce/blip-image-captioning-large"))
+    .setup(
+        pipeline=lambda: pipeline(
+            "image-to-text", model="Salesforce/blip-image-captioning-large"
+        )
+    )
     .map(caption=caption_image)
 )
 ```
@@ -120,10 +134,12 @@ Works the same for LLM API clients:
 import google.generativeai as genai
 import datachain as dc
 
+
 def classify(file: dc.File, model: genai.GenerativeModel) -> str:
     text = file.read_text()
     response = model.generate_content(f"Classify this document: {text}")
     return response.text
+
 
 chain = (
     dc.read_storage("s3://docs/")
@@ -139,6 +155,7 @@ When `.setup()` is not enough (you need `teardown()`, shared mutable state acros
 
 ```python
 from datachain.lib.udf import Mapper  # internal module name
+
 
 class ImageEncoder(Mapper):
     def setup(self):
@@ -195,9 +212,11 @@ For related fields produced together (e.g. by one LLM call), return a Pydantic m
 ```python
 from pydantic import BaseModel
 
+
 class Result(BaseModel):
     label: str
     confidence: float
+
 
 chain.map(result=classify)
 ```
@@ -207,11 +226,11 @@ are split into suffixed signals (`res_0`, `res_1`, ...) with no error, so name
 them explicitly with `output`:
 
 ```python
-def split(text) -> tuple[str, float]:
-    ...
+def split(text) -> tuple[str, float]: ...
 
-chain.map(res=split)                        # res_0: str, res_1: float
-chain.map(split, output={"label": str, "score": float})   # label, score
+
+chain.map(res=split)  # res_0: str, res_1: float
+chain.map(split, output={"label": str, "score": float})  # label, score
 ```
 
 ## Complete Examples
@@ -227,8 +246,14 @@ import datachain as dc
 chain = (
     dc.read_storage("s3://bucket/images/", type="image")
     .settings(parallel=8, cache=True)
-    .setup(pipe=lambda: pipeline("image-to-text", model="Salesforce/blip-image-captioning-large"))
-    .map(caption=lambda file, pipe: pipe(file.read().convert("RGB"))[0]["generated_text"])
+    .setup(
+        pipe=lambda: pipeline(
+            "image-to-text", model="Salesforce/blip-image-captioning-large"
+        )
+    )
+    .map(
+        caption=lambda file, pipe: pipe(file.read().convert("RGB"))[0]["generated_text"]
+    )
     .save("image_captions")
 )
 ```
@@ -244,14 +269,19 @@ import datachain as dc
 
 PROMPT = "Was this dialog successful? Answer in a single word: Success or Failure."
 
+
 def eval_dialogue(file: dc.File) -> bool:
     client = Mistral(api_key=os.environ["MISTRAL_API_KEY"])
     response = client.chat.complete(
         model="open-mixtral-8x22b",
-        messages=[{"role": "system", "content": PROMPT},
-                  {"role": "user", "content": file.read()}])
+        messages=[
+            {"role": "system", "content": PROMPT},
+            {"role": "user", "content": file.read()},
+        ],
+    )
     result = response.choices[0].message.content
     return result.lower().startswith("success")
+
 
 chain = (
     dc.read_storage("gs://datachain-demo/chatbot-KiT/", column="file", anon=True)
@@ -269,12 +299,17 @@ Save the entire LLM response object as a typed column. Nested fields become quer
 from mistralai.models import ChatCompletionResponse
 import datachain as dc
 
+
 def eval_dialog(file: dc.File) -> ChatCompletionResponse:
     client = Mistral(api_key=os.environ["MISTRAL_API_KEY"])
     return client.chat.complete(
         model="open-mixtral-8x22b",
-        messages=[{"role": "system", "content": PROMPT},
-                  {"role": "user", "content": file.read()}])
+        messages=[
+            {"role": "system", "content": PROMPT},
+            {"role": "user", "content": file.read()},
+        ],
+    )
+
 
 chain = (
     dc.read_storage("gs://datachain-demo/chatbot-KiT/", column="file", anon=True)

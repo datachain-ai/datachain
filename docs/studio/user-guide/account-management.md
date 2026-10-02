@@ -12,7 +12,7 @@ To open your account settings, click on your user icon on the top right corner o
     - [Client access tokens](#client-access-tokens) for dataset and job operations
 
 !!! note
-    This does not include managing your team plan (Free or Enterprise). Team plans are defined for each team separately. [Get Enterprise](team-collaboration.md#get-enterprise).
+    This does not include managing your team plan (Free or Enterprise). Team plans are defined for each team separately. [Get Enterprise](teams/settings.md#get-enterprise).
 
 ## General settings
 
@@ -82,7 +82,7 @@ In this section, you can view all the teams you are member of.
 
 Click on `select` to switch to the team's dashboard. Or, click on `manage` to go to the team settings page and manage the team.
 
-To create a new team, click on `Create a team` and enter the team name. You can invite members to the team by entering their email addresses. Find more details in the [team collaboration guide](team-collaboration.md#create-a-team).
+To create a new team, click on `Create a team` and enter the team name. You can invite members to the team by entering their email addresses. Find more details in the [teams guide](teams/index.md#create-a-team).
 
 ## Tokens
 

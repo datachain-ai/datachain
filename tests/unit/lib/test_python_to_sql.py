@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from typing import Literal
+from typing import Dict, Literal  # noqa: UP035
 
 import pytest
 
@@ -16,11 +16,23 @@ from tests.unit.lib.test_utils import MyModel
         (Literal["text"], String),
         (dict[str, int], JSON),
         (Mapping[str, int], JSON),
+        # a zero-argument mapping alias still needs a column
+        (Dict, JSON),  # noqa: UP006
         (str | None, String),
         (dict | list[dict], JSON),
     ),
+    ids=[
+        "str",
+        "String",
+        "Literal",
+        "dict",
+        "Mapping",
+        "bare-typing-Dict",
+        "optional-str",
+        "dict-or-list-of-dict",
+    ],
 )
-def test_convert_type_to_datachain(typ, expected):
+def test_python_to_sql_conversions(typ, expected):
     assert python_to_sql(typ) == expected
 
 
