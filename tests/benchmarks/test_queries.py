@@ -95,10 +95,10 @@ def test_sql_mutate(benchmark, files_uri, test_session):
                 is_dog=array.contains(parts, "dog"),
             )
             .select("file.path", "stem", "ext", "is_dog")
-            .count()
+            .to_list("stem", "ext", "is_dog")
         )
 
-    assert benchmark(run) == NUM_FILES
+    assert len(benchmark(run)) == NUM_FILES
 
 
 def test_map_save_read(benchmark, files_uri, test_session):
