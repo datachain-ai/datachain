@@ -22,6 +22,7 @@ from pydantic import BaseModel
 import datachain as dc
 import datachain.query.dataset as query_dataset
 from datachain import Column, func
+from datachain.data_storage.warehouse import AbstractWarehouse
 from datachain.dataset import DatasetStatus
 from datachain.error import (
     DatasetInvalidVersionError,
@@ -45,7 +46,7 @@ from datachain.lib.signal_schema import (
     SignalSchema,
     SignalSchemaWarning,
 )
-from datachain.lib.udf import BindContext, BoundSpec, UDFAdapter
+from datachain.lib.udf import BindContext, BoundSpec, UDFAdapter, UdfError
 from datachain.lib.udf_signature import UdfSignatureError
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 from datachain.sql.types import Array, Float, Float32, Int64, SQLType, String
@@ -964,6 +965,149 @@ def test_map_hydrates_models_in_variadic_tuple_param(test_session):
     ).map(count=total, params=["collection.items"])
 
     assert chain.to_values("count") == [9]
+
+
+@pytest.mark.parametrize("shape", ["bare", "in-a-list"])
+def test_save_refuses_colliding_dict_keys_inside_a_model(test_session, shape):
+    class Inner(DataModel):
+        lookup: dict[str | int, str]
+
+    inner = Inner(lookup=dict(_CLASHING))
+    annotation, value = {
+        "bare": (Inner, inner),
+        "in-a-list": (list[Inner], [inner]),
+    }[shape]
+    holder = type("Holder", (DataModel,), {"__annotations__": {"rows": annotation}})
+
+    chain = dc.read_values(collection=[holder(rows=value)], session=test_session)
+
+    with pytest.raises(UdfError, match="would be lost"):
+        chain.save("model_keys")
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="these shapes reach the converter as live model instances, and pydantic "
+    "merges colliding keys inside model_dump(mode='json') before anything here can "
+    "see them. model_dump_json keeps both, but reading it means serializing twice, "
+    "which re-runs field serializers -- draining a one-shot iterator and letting a "
+    "stateful one write different keys than were checked. Needs a single-pass hook "
+    "pydantic does not offer. Tracked on #1914.",
+)
+@pytest.mark.parametrize("shape", ["in-a-tuple", "in-a-dict-of-lists"])
+def test_save_refuses_colliding_dict_keys_inside_a_live_model(test_session, shape):
+    class Inner(DataModel):
+        lookup: dict[str | int, str]
+
+    inner = Inner(lookup=dict(_CLASHING))
+    annotation, value = {
+        "in-a-tuple": (tuple[Inner, ...], (inner,)),
+        "in-a-dict-of-lists": (dict[str, list[Inner]], {"k": [inner]}),
+    }[shape]
+    holder = type("Holder", (DataModel,), {"__annotations__": {"rows": annotation}})
+
+    chain = dc.read_values(collection=[holder(rows=value)], session=test_session)
+
+    with pytest.raises(UdfError, match="would be lost"):
+        chain.save("live_model_keys")
+
+
+@pytest.mark.parametrize(
+    "value", [float("nan"), float("inf"), float("-inf")], ids=["nan", "inf", "-inf"]
+)
+def test_save_keeps_a_model_float_json_cannot_spell(test_session, value):
+    class Measure(DataModel):
+        v: float
+
+    saved = dc.read_values(m=[Measure(v=value)], session=test_session).save("finite")
+
+    assert repr(saved.to_values("m.v")[0]) == repr(value)
+
+
+def test_save_writes_no_rows_when_a_later_row_has_colliding_keys(
+    test_session, monkeypatch
+):
+    monkeypatch.setattr(AbstractWarehouse, "INSERT_BATCH_SIZE", 4)
+
+    class Holder(DataModel):
+        rows: list[dict]
+
+    values = [Holder(rows=[{"a": i}]) for i in range(12)]
+    values[9] = Holder(rows=[dict(_CLASHING)])
+
+    chain = dc.read_values(collection=values, session=test_session)
+
+    with pytest.raises(UdfError, match="would be lost"):
+        chain.save("late_collision")
+
+    # read_dataset would fall back to Studio for a missing name
+    with pytest.raises(DatasetNotFoundError):
+        test_session.catalog.get_dataset("late_collision")
+
+
+@skip_if_not_sqlite
+def test_filter_matches_a_saved_list_of_dicts(test_session):
+    class Holder(dc.DataModel):
+        rows: list[dict[str, int]]
+
+    saved = dc.read_values(x=[Holder(rows=[{"a": 1}])], session=test_session).save(
+        "dict_rows"
+    )
+
+    assert saved.filter(C("x.rows") == [{"a": 1}]).count() == 1
+
+
+_CLASHING = {"1": "first", 1: "second"}
+
+
+def test_save_refuses_a_dict_whose_keys_collide_as_json(test_session):
+    class Ambiguous(DataModel):
+        lookup: dict[str | int, str]
+
+    chain = dc.read_values(
+        collection=[Ambiguous(lookup={"1": "first", 1: "second"})],
+        session=test_session,
+    )
+
+    # both keys become the JSON key "1", so one value would vanish with nothing
+    # on the read side able to recover it
+    with pytest.raises(UdfError, match="would be lost"):
+        chain.save("ambiguous_keys")
+
+
+def test_save_keeps_both_entries_when_dict_keys_do_not_collide(test_session):
+    class Ambiguous(DataModel):
+        lookup: dict[str | int, str]
+
+    saved = dc.read_values(
+        collection=[Ambiguous(lookup={"x": "a", 2: "b"})], session=test_session
+    ).save("no_clash")
+
+    # both entries survive, but the declared int key reads back as a JSON string
+    (out,) = saved.to_values("collection.lookup")
+    assert out == {"x": "a", "2": "b"}
+    assert [type(k) for k in out] == [str, str]
+
+
+@pytest.mark.parametrize(
+    "annotation,value",
+    [
+        (list[dict[str | int, str]], [_CLASHING]),
+        (list[list[dict[str | int, str]]], [[_CLASHING]]),
+        (tuple[dict[str | int, str], ...], (_CLASHING,)),
+        (dict[str, dict[str | int, str]], {"k": _CLASHING}),
+    ],
+    ids=["in-a-list", "in-a-nested-list", "in-a-tuple", "in-a-dict"],
+)
+def test_save_refuses_colliding_dict_keys_inside_a_collection(
+    test_session, annotation, value
+):
+    holder = type("Holder", (DataModel,), {"__annotations__": {"rows": annotation}})
+
+    chain = dc.read_values(collection=[holder(rows=value)], session=test_session)
+
+    with pytest.raises(UdfError, match="would be lost"):
+        chain.save("nested_keys")
 
 
 def test_map_preserves_json_looking_key_for_optional_str_key(test_session):
