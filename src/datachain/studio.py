@@ -589,7 +589,9 @@ def show_logs_from_client(  # noqa: C901
     else:
         print("\n\nNo dataset versions created during the job.")
 
-    return {"COMPLETE": 0, "FAILED": 1, "CANCELED": 2}.get(final_status.upper(), 0)
+    return {"COMPLETE": 0, "FAILED": 1, "CANCELED": 2, "DID_NOT_RUN": 2}.get(
+        final_status.upper(), 0
+    )
 
 
 def create_job(  # noqa: PLR0913
