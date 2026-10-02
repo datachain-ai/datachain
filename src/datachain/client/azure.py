@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -24,28 +25,50 @@ from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue
 if TYPE_CHECKING:
     from datachain.cache import Cache
     from datachain.client.writeconfig import WriteConfig
-    from datachain.dataset import StorageURI
+
+
+_ACCOUNT_HOST_RE = re.compile(r"(?P<account>[^.]+)\.(?:blob|dfs)\.core\.windows\.net")
+
+
+def split_netloc(netloc: str) -> tuple[str, str]:
+    """Return the container and account (empty if absent) of an ``az://`` netloc.
+
+    Accepts ``container@account`` and adlfs's full-host
+    ``container@account.blob.core.windows.net`` (or ``.dfs.``) form.
+    """
+    container, _, host = netloc.partition("@")
+    match = _ACCOUNT_HOST_RE.fullmatch(host)
+    return container, match["account"] if match else host
 
 
 def _reject_connection_string_mismatch(account: str, kwargs: dict[str, Any]) -> None:
     # adlfs gives a connection string precedence over account_name, which
     # would silently route the URI's account to the connection string's one.
+    # A connection string that doesn't name its account (explicit endpoint +
+    # SAS) can't be matched, so it is rejected too.
     conn = kwargs.get("connection_string") or os.getenv(
         "AZURE_STORAGE_CONNECTION_STRING"
     )
     if not conn:
         return
     try:
-        conn_account = parse_connection_string(conn, case_sensitive_keys=False).get(
-            "accountname"
-        )
+        parsed = parse_connection_string(conn, case_sensitive_keys=False)
     except ValueError:
         return
-    if conn_account and conn_account != account:
-        raise ValueError(
-            f"Azure account '{account}' from the URI conflicts with the"
-            f" configured connection string for account '{conn_account}'"
-        )
+
+    conn_account: str | None
+    if parsed.get("usedevelopmentstorage", "").lower() == "true":
+        conn_account = "devstoreaccount1"
+    else:
+        conn_account = parsed.get("accountname")
+    if conn_account == account:
+        return
+
+    target = f"account '{conn_account}'" if conn_account else "an unnamed account"
+    raise ValueError(
+        f"Azure account '{account}' from the URI conflicts with the"
+        f" configured connection string for {target}"
+    )
 
 
 # Streams larger than this spill to disk while being buffered for upload_blob;
@@ -84,22 +107,21 @@ class AzureClient(Client):
     )
 
     def __init__(self, name: str, fs_kwargs: dict[str, Any], cache: "Cache") -> None:
-        netloc = name.split("/", 1)[0]
-        self.container, _, account = netloc.partition("@")
+        self.container, account = split_netloc(name.split("/", 1)[0])
         if account:
             _reject_connection_string_mismatch(account, fs_kwargs)
             fs_kwargs = {**fs_kwargs, "account_name": account}
         super().__init__(name, fs_kwargs, cache)
 
     @classmethod
-    def from_source(cls, uri: "StorageURI", cache: "Cache", **kwargs) -> "AzureClient":
+    def storage_name(cls, uri: str) -> str:
         # adlfs._strip_protocol drops the "@account" part, so strip the
         # protocol manually to keep the account in the client name.
-        return cls(uri[len(cls.PREFIX) :].rstrip("/"), kwargs, cache)
+        return uri[len(cls.PREFIX) :].rstrip("/")
 
     @classmethod
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:
-        container, _, account = name.partition("@")
+        container, account = split_netloc(name)
         if account:
             _reject_connection_string_mismatch(account, kwargs)
             kwargs = {**kwargs, "account_name": account}

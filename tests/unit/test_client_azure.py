@@ -102,6 +102,49 @@ def test_malformed_connection_string_skips_conflict_check():
     assert client.fs_kwargs["account_name"] == "myaccount"
 
 
+@pytest.mark.parametrize("service", ["blob", "dfs"])
+def test_name_with_full_account_host(service):
+    client = AzureClient(
+        f"mycontainer@myaccount.{service}.core.windows.net", {}, MagicMock()
+    )
+    assert client.name == f"mycontainer@myaccount.{service}.core.windows.net"
+    assert client.container == "mycontainer"
+    assert client.fs_kwargs["account_name"] == "myaccount"
+
+
+def test_full_account_host_matching_connection_string_ok():
+    client = AzureClient(
+        "mycontainer@myaccount.blob.core.windows.net",
+        {"connection_string": _CONN_STR},
+        MagicMock(),
+    )
+    assert client.fs_kwargs["account_name"] == "myaccount"
+
+
+def test_uri_account_unnamed_connection_string_raises():
+    conn = "BlobEndpoint=https://other.example.test;SharedAccessSignature=sv=x&sig=y"
+    with pytest.raises(ValueError, match="an unnamed account"):
+        AzureClient("mycontainer@myaccount", {"connection_string": conn}, MagicMock())
+
+
+def test_uri_account_development_storage_raises():
+    with pytest.raises(ValueError, match="account 'devstoreaccount1'"):
+        AzureClient(
+            "mycontainer@myaccount",
+            {"connection_string": "UseDevelopmentStorage=true"},
+            MagicMock(),
+        )
+
+
+def test_devstoreaccount_development_storage_ok():
+    client = AzureClient(
+        "mycontainer@devstoreaccount1",
+        {"connection_string": "UseDevelopmentStorage=true"},
+        MagicMock(),
+    )
+    assert client.fs_kwargs["account_name"] == "devstoreaccount1"
+
+
 def test_parse_url_with_account():
     uri, rel_path = Client.parse_url("az://mycontainer@myaccount/dir/blob.txt")
     assert uri == "az://mycontainer@myaccount"

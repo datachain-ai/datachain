@@ -33,7 +33,9 @@ def _open(uri: str, anon: bool):
         if anon:
             kw = {"token": "anon"} if scheme == "gs" else {"anon": True}
         if scheme == "az":
-            account = urlparse(uri).netloc.partition("@")[2]
+            from datachain.client.azure import split_netloc
+
+            account = split_netloc(urlparse(uri).netloc)[1]
             if account:
                 kw["account_name"] = account
         return fsspec.filesystem(scheme, **kw), path, scheme

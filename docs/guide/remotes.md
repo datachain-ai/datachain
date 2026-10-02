@@ -250,7 +250,7 @@ An `az://` URI names only the container, so the storage account has to be provid
 az://container-name@account-name/path/to/data
 ```
 
-The embedded account takes precedence over `account_name` from the client config, so URIs pointing to different storage accounts can be mixed in a single run. Note that account keys, SAS tokens, and connection strings are account-specific — mixing accounts requires credentials valid for each account (e.g. Azure AD or anonymous access), and a connection string configured for a different account than the URI names raises an error.
+The adlfs full-host form `az://container-name@account-name.blob.core.windows.net/path/to/data` (or `.dfs.core.windows.net`) is accepted too. The embedded account takes precedence over `account_name` from the client config, so URIs pointing to different storage accounts can be mixed in a single run. Note that account keys, SAS tokens, and connection strings are account-specific — mixing accounts requires credentials valid for each account (e.g. Azure AD or anonymous access), and a connection string configured for a different account than the URI names, or one that doesn't name its account at all, raises an error.
 
 - `account_name`: `str` (default: `None`)
 

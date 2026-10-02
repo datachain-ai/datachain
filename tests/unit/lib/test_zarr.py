@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 import numpy as np
 import pytest
 
@@ -177,11 +175,36 @@ def test_zarr_store_open_passes_remote_storage_options(
     monkeypatch.setattr("datachain.lib.zarr.zarr.open", fake_open)
 
     file = File(source="s3://bucket", path="s.zarr")
-    file._catalog = SimpleNamespace(client_config={"key": "secret"})
+    file._catalog = test_session.catalog
+    monkeypatch.setattr(test_session.catalog, "client_config", {"key": "secret"})
     info = ZarrStore(file=file).get_info()
 
     assert captured["storage_options"] == {"key": "secret"}
     assert info.attrs == {"who": "s"}
+
+
+def test_zarr_store_open_passes_azure_uri_account(tmp_dir, test_session, monkeypatch):
+    from datachain.lib.file import File
+    from datachain.lib.zarr import ZarrStore
+
+    _make_store(tmp_dir / "s.zarr", "s")
+    captured = {}
+    real_open = zarr.open
+
+    def fake_open(url, mode="r", storage_options=None):
+        captured["url"] = url
+        captured["storage_options"] = storage_options
+        return real_open(str(tmp_dir / "s.zarr"), mode=mode)
+
+    monkeypatch.setattr("datachain.lib.zarr.zarr.open", fake_open)
+    monkeypatch.delenv("AZURE_STORAGE_CONNECTION_STRING", raising=False)
+
+    file = File(source="az://container@account", path="s.zarr")
+    file._catalog = test_session.catalog
+    ZarrStore(file=file).get_info()
+
+    assert captured["url"] == "az://container@account/s.zarr"
+    assert captured["storage_options"]["account_name"] == "account"
 
 
 @pytest.mark.parametrize(

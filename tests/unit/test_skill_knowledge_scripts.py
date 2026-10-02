@@ -388,6 +388,14 @@ def test_source_to_https_az(monkeypatch):
     )
 
 
+def test_source_to_https_az_full_account_host(monkeypatch):
+    monkeypatch.delenv("AZURE_STORAGE_ACCOUNT_NAME", raising=False)
+    assert (
+        source_to_https("az://container@account.blob.core.windows.net/prefix/")
+        == "https://account.blob.core.windows.net/container"
+    )
+
+
 def test_source_to_https_az_no_account_returns_none(monkeypatch):
     monkeypatch.delenv("AZURE_STORAGE_ACCOUNT_NAME", raising=False)
     assert source_to_https("az://container/prefix/") is None

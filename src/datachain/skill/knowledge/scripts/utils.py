@@ -464,8 +464,10 @@ def source_to_https(source: str) -> str | None:
     if scheme == "gs":
         return f"https://storage.googleapis.com/{bucket}"
     if scheme == "az":
+        from datachain.client.azure import split_netloc
+
         # Azure needs account + container in the URL.
-        container, _, account = bucket.partition("@")
+        container, account = split_netloc(bucket)
         account = account or os.environ.get("AZURE_STORAGE_ACCOUNT_NAME", "")
         if container and account:
             return f"https://{account}.blob.core.windows.net/{container}"

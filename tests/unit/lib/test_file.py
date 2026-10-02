@@ -345,6 +345,12 @@ def test_export_local_output_allows_literal_percent_encoded_traversal(
             False,
             "az://container/dir/file#frag.txt",
         ),
+        (
+            "az://container@account",
+            "dir/file.txt",
+            False,
+            "az://container@account/dir/file.txt",
+        ),
     ],
 )
 def test_get_fs_path_contract(
