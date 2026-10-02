@@ -506,6 +506,24 @@ def clone_catalog_with_cache(catalog: "Catalog", cache: "Cache") -> "Catalog":
     return clone
 
 
+def _copy_client_config(value):
+    """Recursively copy the mapping/sequence structure of a client config so
+    later caller-side mutation (including nested ``client_kwargs`` etc.)
+    cannot change a registered configuration. Leaf objects (credential
+    providers, SSL contexts, ...) are kept by reference."""
+    if isinstance(value, dict):
+        return {k: _copy_client_config(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_copy_client_config(v) for v in value)
+    return value
+
+
+# Auto-detected public-bucket access (see ``read_storage``). Unlike a
+# user-supplied config it is a derived guess, so an explicit config may
+# overwrite it in the registry.
+AUTO_ANON_CLIENT_CONFIG = {"anon": True}
+
+
 class Catalog:
     def __init__(
         self,
@@ -514,6 +532,7 @@ class Catalog:
         cache_dir=None,
         tmp_dir=None,
         client_config: dict[str, Any] | None = None,
+        source_client_configs: dict[str, dict[str, Any]] | None = None,
         in_memory: bool = False,
     ):
         datachain_dir = DataChainDir(cache=cache_dir, tmp=tmp_dir)
@@ -522,6 +541,11 @@ class Catalog:
         self.warehouse = warehouse
         self.cache = Cache(datachain_dir.cache, datachain_dir.tmp)
         self.client_config = client_config if client_config is not None else {}
+        # Per-source client configs: {File.source -> config}, registered by
+        # read_storage. An entry wins over `client_config` for its source.
+        self.source_client_configs: dict[str, dict[str, Any]] = dict(
+            source_client_configs or {}
+        )
         self._init_params = {
             "cache_dir": cache_dir,
             "tmp_dir": tmp_dir,
@@ -539,6 +563,7 @@ class Catalog:
         return {
             **self._init_params,
             "client_config": self.client_config,
+            "source_client_configs": self.source_client_configs,
         }
 
     def copy(self, cache=True, db=True):
@@ -575,11 +600,49 @@ class Catalog:
     def generate_query_dataset_name(cls) -> str:
         return f"{QUERY_DATASET_PREFIX}_{uuid4().hex}"
 
+    def register_client_config(
+        self, source: "str | os.PathLike[str]", config: dict[str, Any]
+    ) -> None:
+        """Register `config` for a storage source (a ``File.source`` value:
+        the bucket for cloud storage, the directory for local paths).
+
+        Re-registering the same config is a no-op. An auto-detected
+        ``{"anon": True}`` entry is a derived guess: an explicit config may
+        replace it, and it never replaces or conflicts with an existing
+        entry. Any other mismatch raises, because one catalog cannot hold
+        two configurations for the same source.
+        """
+        key = str(source).rstrip("/")
+        existing = self.source_client_configs.get(key)
+        if existing is not None and config == AUTO_ANON_CLIENT_CONFIG:
+            # A derived guess never overrides or conflicts with an existing
+            # entry.
+            return
+        if existing is not None and existing not in (config, AUTO_ANON_CLIENT_CONFIG):
+            raise ValueError(
+                f"{key} was already accessed with a different client_config "
+                "in this session; pass an explicit Session(client_config=...) "
+                "to isolate it"
+            )
+        self.source_client_configs[key] = _copy_client_config(config)
+
+    def client_config_for(self, source: "str | os.PathLike[str]") -> dict[str, Any]:
+        """The config registered for `source` (a ``File.source`` value), else
+        the catalog-wide default."""
+        config = self.source_client_configs.get(str(source).rstrip("/"))
+        if config is None:
+            return self.client_config
+        if config == AUTO_ANON_CLIENT_CONFIG:
+            # Auto-detected anon refines the default config (which may carry
+            # e.g. an endpoint URL); an explicit config replaces it.
+            return {**self.client_config, **config}
+        return config
+
     def get_client(self, uri: str, **config: Any) -> Client:
         """
         Return the client corresponding to the given source `uri`.
         """
-        config = config or self.client_config
+        config = config or self.client_config_for(uri)
         cls = Client.get_implementation(uri)
         return cls.from_source(StorageURI(uri), self.cache, **config)
 
