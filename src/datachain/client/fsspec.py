@@ -10,7 +10,7 @@ import shutil
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterator, Sequence
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
 
@@ -42,6 +42,41 @@ DATA_SOURCE_URI_PATTERN = re.compile(r"^[\w]+:\/\/.*$")
 CLOUD_STORAGE_PROTOCOLS = {"s3", "gs", "az", "hf"}
 
 ResultQueue = asyncio.Queue[Sequence["File"] | None]
+
+
+# Canonical form of ``float.hex()`` / ``st_mtime.hex()`` (e.g. ``0x1.2p+3``).
+_MTIME_HEX_RE = re.compile(r"^-?0x[0-9a-f]+(?:\.[0-9a-f]+)?p[+-]?\d+$")
+
+
+def _local_mtime_iso(etag: str) -> str | None:
+    """Return an ISO timestamp if *etag* is exactly ``st_mtime.hex()``."""
+    if not _MTIME_HEX_RE.fullmatch(etag):
+        return None
+    mtime = float.fromhex(etag)
+    if mtime.hex() != etag:
+        return None
+    try:
+        return datetime.fromtimestamp(mtime, timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _describe_etag(file: "File", etag: str | None = None) -> str:
+    """Describe an etag the same way ``dc.show()`` does.
+
+    Show and Studio print the stored etag string, so the error always includes
+    that value. Local listings store ``st_mtime.hex()``; only for local files
+    do we also append the timestamp, so the message stays readable without
+    inventing a format for cloud/HTTP etags.
+    """
+    value = file.etag if etag is None else etag
+    rendered = str(value)
+    if not (file.source or "").startswith("file://"):
+        return rendered
+    iso = _local_mtime_iso(rendered)
+    if iso is None:
+        return rendered
+    return f"{rendered} (mtime {iso})"
 
 
 def is_cloud_uri(uri: str) -> bool:
@@ -578,7 +613,10 @@ class Client(ABC):
             etag = await self.get_current_etag(file)
             if file.etag != etag:
                 raise FileNotFoundError(
-                    f"Invalid etag for {file.source}/{file.path}: "
-                    f"expected {file.etag}, got {etag}"
+                    f"{file.source}/{file.path} changed on the source since the "
+                    f"catalog was created (etag was {_describe_etag(file)}, now "
+                    f"{_describe_etag(file, etag)}). "
+                    "Re-run the original dc.read_storage(...) call with "
+                    "update=True to refresh the catalog."
                 )
         await self.cache.download(file, self, callback=callback)
