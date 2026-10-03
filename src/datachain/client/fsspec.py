@@ -44,25 +44,39 @@ CLOUD_STORAGE_PROTOCOLS = {"s3", "gs", "az", "hf"}
 ResultQueue = asyncio.Queue[Sequence["File"] | None]
 
 
-def _format_etag(etag: str) -> str:
-    """Render local mtime ETags as ISO-8601; leave other ETags unchanged.
+# Canonical form of ``float.hex()`` / ``st_mtime.hex()`` (e.g. ``0x1.2p+3``).
+_MTIME_HEX_RE = re.compile(r"^-?0x[0-9a-f]+(?:\.[0-9a-f]+)?p[+-]?\d+$")
 
-    Local listings store ``st_mtime.hex()``. Only that canonical form is
-    converted. A prefix check is not enough: HTTP metadata strips quotes, so an
-    ETag of ``"0x123"`` arrives as ``0x123``, which ``float.fromhex`` accepts
-    but is not an mtime. Conversion is also fail-safe if the timestamp is out
-    of range.
-    """
-    try:
-        mtime = float.fromhex(etag)
-    except ValueError:
-        return etag
+
+def _local_mtime_iso(etag: str) -> str | None:
+    """Return an ISO timestamp if *etag* is exactly ``st_mtime.hex()``."""
+    if not _MTIME_HEX_RE.fullmatch(etag):
+        return None
+    mtime = float.fromhex(etag)
     if mtime.hex() != etag:
-        return etag
+        return None
     try:
         return datetime.fromtimestamp(mtime, timezone.utc).isoformat()
     except (OverflowError, OSError, ValueError):
-        return etag
+        return None
+
+
+def _describe_etag(file: "File", etag: str | None = None) -> str:
+    """Describe an etag the same way ``dc.show()`` does.
+
+    Show and Studio print the stored etag string, so the error always includes
+    that value. Local listings store ``st_mtime.hex()``; only for local files
+    do we also append the timestamp, so the message stays readable without
+    inventing a format for cloud/HTTP etags.
+    """
+    value = file.etag if etag is None else etag
+    rendered = str(value)
+    if not (file.source or "").startswith("file://"):
+        return rendered
+    iso = _local_mtime_iso(rendered)
+    if iso is None:
+        return rendered
+    return f"{rendered} (mtime {iso})"
 
 
 def is_cloud_uri(uri: str) -> bool:
@@ -600,8 +614,8 @@ class Client(ABC):
             if file.etag != etag:
                 raise FileNotFoundError(
                     f"{file.source}/{file.path} changed on the source since the "
-                    f"catalog was created (etag was {_format_etag(file.etag)}, now "
-                    f"{_format_etag(etag)}). "
+                    f"catalog was created (etag was {_describe_etag(file)}, now "
+                    f"{_describe_etag(file, etag)}). "
                     "Re-run the original dc.read_storage(...) call with "
                     "update=True to refresh the catalog."
                 )
