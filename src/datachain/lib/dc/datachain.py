@@ -2604,7 +2604,9 @@ class DataChain:
                 **(fs_kwargs or {}),
             }
 
-            client = Client.get_implementation(path)
+            fsspec_fs = Client.get_client(
+                path, self._query.catalog.cache, **fs_kwargs
+            ).fs
 
             if path.startswith("file://"):
                 # pyarrow does not handle file:// uris, and needs a direct path instead.
@@ -2613,8 +2615,6 @@ class DataChain:
                 path = urlparse(path).path
                 if sys.platform == "win32":
                     path = os.path.normpath(path.lstrip("/"))
-
-            fsspec_fs = client.create_fs(**fs_kwargs)
 
         _partition_cols = list(partition_cols) if partition_cols else None
         signal_schema_metadata = json.dumps(

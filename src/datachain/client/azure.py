@@ -1,3 +1,4 @@
+import re
 import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -20,7 +21,51 @@ from datachain.progress import tqdm
 from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue
 
 if TYPE_CHECKING:
+    from datachain.cache import Cache
     from datachain.client.writeconfig import WriteConfig
+
+
+_ACCOUNT_RE = re.compile(
+    r"(?P<account>[a-z0-9]{3,24})(?:\.(?:blob|dfs)\.core\.windows\.net)?"
+)
+
+
+def split_netloc(netloc: str) -> tuple[str, str]:
+    """Return the container and account (empty if absent) of an ``az://`` netloc.
+
+    Accepts ``container@account`` and adlfs's full-host
+    ``container@account.blob.core.windows.net`` (or ``.dfs.``) form.
+    """
+    container, at, host = netloc.partition("@")
+    if not at:
+        return container, ""
+
+    match = _ACCOUNT_RE.fullmatch(host)
+    if not match:
+        raise ValueError(
+            f"Unsupported Azure storage account '{host}' in 'az://{netloc}':"
+            " use 'container@account' or 'container@account.blob.core.windows.net',"
+            " and configure other endpoints with a connection string or account_host"
+        )
+    return container, match["account"]
+
+
+def _check_account(fs: AzureBlobFileSystem, account: str) -> None:
+    # adlfs gives a connection string or account_host precedence over
+    # account_name, which would silently route the URI's account elsewhere.
+    # The SDK resolves the effective account from whichever one wins; for
+    # hosts it can't map to an account (custom domains, Azure Stack, DNS-zone
+    # endpoints) it reports None, and the explicitly configured endpoint is
+    # trusted.
+    actual = fs.service_client.account_name
+    if actual is None or actual == account:
+        return
+
+    raise ValueError(
+        f"Azure account '{account}' from the URI conflicts with the"
+        f" configured endpoint for account '{actual}'"
+    )
+
 
 # Streams larger than this spill to disk while being buffered for upload_blob;
 # smaller ones stay in memory.
@@ -57,8 +102,31 @@ class AzureClient(Client):
         }
     )
 
+    def __init__(self, name: str, fs_kwargs: dict[str, Any], cache: "Cache") -> None:
+        self.container, account = split_netloc(name.split("/", 1)[0])
+        if account:
+            fs_kwargs = {**fs_kwargs, "account_name": account}
+        super().__init__(name, fs_kwargs, cache)
+
+        # Checked eagerly: callers may forward fs_kwargs to their own
+        # filesystem (e.g. Zarr) without ever touching self.fs.
+        if account:
+            self._fs = self.create_fs(**fs_kwargs)
+            _check_account(self._fs, account)
+
+    @classmethod
+    def storage_name(cls, uri: str) -> str:
+        # adlfs._strip_protocol drops the "@account" part, so strip the
+        # protocol manually to keep the account in the client name.
+        return uri[len(cls.PREFIX) :].rstrip("/")
+
     @classmethod
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:
+        container, account = split_netloc(name)
+        if account:
+            kwargs = {**kwargs, "account_name": account}
+            _check_account(cls.create_fs(**kwargs), account)
+
         # Step 1: Anonymous probe — uses BlobServiceClient directly (not adlfs)
         # to avoid picking up credentials from environment variables like
         # AZURE_STORAGE_CONNECTION_STRING.
@@ -67,7 +135,7 @@ class AzureClient(Client):
             try:
                 url = f"https://{account_name}.blob.core.windows.net"
                 anon_client = BlobServiceClient(account_url=url)
-                anon_client.get_container_client(name).get_container_properties()
+                anon_client.get_container_client(container).get_container_properties()
                 return BucketStatus(exists=True, access="anonymous")
             except ClientAuthenticationError:
                 pass
@@ -75,7 +143,7 @@ class AzureClient(Client):
                 return BucketStatus(
                     exists=False,
                     access="denied",
-                    error=f"Azure container '{name}' not found",
+                    error=f"Azure container '{container}' not found",
                 )
             except HttpResponseError as e:
                 if e.status_code not in (401, 403):
@@ -84,20 +152,20 @@ class AzureClient(Client):
         # Step 2: Authenticated probe.
         try:
             auth_fs = cls.create_fs(**kwargs)
-            sync(get_loop(), auth_fs._info, name)
+            sync(get_loop(), auth_fs._info, container)
             return BucketStatus(exists=True, access="authenticated")
         except (PermissionError, ClientAuthenticationError):
             return BucketStatus(
                 exists=True,
                 access="denied",
-                error=f"Access denied to Azure container '{name}'"
+                error=f"Access denied to Azure container '{container}'"
                 " — check credentials/configuration",
             )
         except FileNotFoundError:
             return BucketStatus(
                 exists=False,
                 access="denied",
-                error=f"Azure container '{name}' not found",
+                error=f"Azure container '{container}' not found",
             )
         except ValueError as e:
             return BucketStatus(exists=False, access="denied", error=str(e))
@@ -260,7 +328,7 @@ class AzureClient(Client):
         try:
             with tqdm(desc=f"Listing {self.uri}", unit=" objects", leave=False) as pbar:
                 async with self.fs.service_client.get_container_client(
-                    container=self.name
+                    container=self.container
                 ) as container_client:
                     async for page in container_client.list_blobs(
                         include=["metadata", "versions"], name_starts_with=prefix
@@ -271,6 +339,8 @@ class AzureClient(Client):
                             if not self._is_valid_key(b["name"]):
                                 continue
                             info = (await self.fs._details([b]))[0]
+                            if info["type"] == "directory":
+                                continue
                             entries.append(
                                 self.info_to_file(info, self.rel_path(info["name"]))
                             )

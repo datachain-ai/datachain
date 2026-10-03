@@ -5,6 +5,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock, call
+
+import pytest
 
 # Insert the scripts directory so bare imports work (matches runtime behavior).
 SCRIPTS_DIR = str(
@@ -13,6 +16,7 @@ SCRIPTS_DIR = str(
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
+from bucket_overview import bucket_overview  # noqa: E402
 from changes import build_changes, compute_dep_changes  # noqa: E402
 from render_index import render_index  # noqa: E402
 from schema import parse_dataset_name, type_name  # noqa: E402
@@ -36,6 +40,17 @@ from utils import (  # noqa: E402
     source_to_https,
     split_frontmatter,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolated_azure_config(monkeypatch):
+    from adlfs import AzureBlobFileSystem
+
+    monkeypatch.delenv("AZURE_STORAGE_CONNECTION_STRING", raising=False)
+    monkeypatch.delenv("AZURE_STORAGE_ACCOUNT_NAME", raising=False)
+    AzureBlobFileSystem.clear_instance_cache()
+    yield
+    AzureBlobFileSystem.clear_instance_cache()
 
 
 def test_parse_semver_valid():
@@ -378,11 +393,74 @@ def test_source_to_https_gs():
     assert source_to_https("gs://demo") == "https://storage.googleapis.com/demo"
 
 
-def test_source_to_https_az():
+def test_source_to_https_az(monkeypatch):
+    monkeypatch.delenv("AZURE_STORAGE_ACCOUNT_NAME", raising=False)
     assert (
-        source_to_https("az://account/container")
+        source_to_https("az://container@account/prefix/")
         == "https://account.blob.core.windows.net/container"
     )
+
+
+def test_source_to_https_az_full_account_host(monkeypatch):
+    monkeypatch.delenv("AZURE_STORAGE_ACCOUNT_NAME", raising=False)
+    assert (
+        source_to_https("az://container@account.blob.core.windows.net/prefix/")
+        == "https://account.blob.core.windows.net/container"
+    )
+
+
+def test_source_to_https_az_unsupported_account_returns_none():
+    assert source_to_https("az://container@files.example.com/") is None
+
+
+def test_source_to_https_az_no_account_returns_none(monkeypatch):
+    monkeypatch.delenv("AZURE_STORAGE_ACCOUNT_NAME", raising=False)
+    assert source_to_https("az://container/prefix/") is None
+
+
+def test_source_to_https_az_account_from_env(monkeypatch):
+    monkeypatch.setenv("AZURE_STORAGE_ACCOUNT_NAME", "envacct")
+    assert (
+        source_to_https("az://container/")
+        == "https://envacct.blob.core.windows.net/container"
+    )
+
+
+def test_source_to_https_az_uri_account_wins_over_env(monkeypatch):
+    monkeypatch.setenv("AZURE_STORAGE_ACCOUNT_NAME", "envacct")
+    assert (
+        source_to_https("az://container@account/")
+        == "https://account.blob.core.windows.net/container"
+    )
+
+
+_CHINA_CONN_STR = (
+    "DefaultEndpointsProtocol=https;AccountName=account;AccountKey=dGVzdA==;"
+    "EndpointSuffix=core.chinacloudapi.cn"
+)
+_SAS_CONN_STR = (
+    "BlobEndpoint=https://account.blob.core.windows.net;"
+    "SharedAccessSignature=sv=x&sig=secret"
+)
+
+
+@pytest.mark.parametrize(
+    "conn,expected",
+    [
+        (_CHINA_CONN_STR, "https://account.blob.core.chinacloudapi.cn/container"),
+        (_SAS_CONN_STR, "https://account.blob.core.windows.net/container"),
+        (
+            "UseDevelopmentStorage=true",
+            "http://127.0.0.1:10000/devstoreaccount1/container",
+        ),
+    ],
+    ids=["sovereign", "sas-stripped", "azurite"],
+)
+def test_source_to_https_az_endpoint_from_connection_string(
+    monkeypatch, conn, expected
+):
+    monkeypatch.setenv("AZURE_STORAGE_CONNECTION_STRING", conn)
+    assert source_to_https("az://container/prefix/") == expected
 
 
 def test_source_to_https_local_returns_none():
@@ -391,6 +469,80 @@ def test_source_to_https_local_returns_none():
 
 def test_source_to_https_empty_returns_none():
     assert source_to_https("") is None
+
+
+def _overview_az_fs(monkeypatch, entries):
+    fs = MagicMock()
+    fs.ls.return_value = entries
+    fs.service_client.account_name = "account"
+    create_fs = MagicMock(return_value=fs)
+    monkeypatch.setattr("datachain.client.azure.AzureClient.create_fs", create_fs)
+    return create_fs
+
+
+def _capture_read_values(monkeypatch):
+    captured = {}
+
+    def fake_read_values(file, session=None):
+        captured["files"] = file
+        captured["session"] = session
+        return MagicMock()
+
+    monkeypatch.setattr("datachain.read_values", fake_read_values)
+    return captured
+
+
+def test_bucket_overview_az_account_in_uri(monkeypatch):
+    create_fs = _overview_az_fs(
+        monkeypatch, [{"name": "container/dir/blob.txt", "type": "file", "size": 5}]
+    )
+    captured = _capture_read_values(monkeypatch)
+
+    bucket_overview("az://container@account/", name="ds")
+
+    assert create_fs.call_args == call(account_name="account")
+    (f,) = captured["files"]
+    assert f.source == "az://container@account/"
+    assert f.path == "dir/blob.txt"
+    assert captured["session"] is None
+
+
+def test_bucket_overview_az_conflicting_connection_string_raises(monkeypatch):
+    conn = "DefaultEndpointsProtocol=https;AccountName=other;AccountKey=dGVzdA=="
+    monkeypatch.setenv("AZURE_STORAGE_CONNECTION_STRING", conn)
+
+    with pytest.raises(ValueError, match="conflicts with"):
+        bucket_overview("az://container@account/", name="ds")
+
+
+def test_bucket_overview_az_without_account(monkeypatch):
+    create_fs = _overview_az_fs(
+        monkeypatch, [{"name": "container/blob.txt", "type": "file", "size": 5}]
+    )
+    captured = _capture_read_values(monkeypatch)
+
+    bucket_overview("az://container/", name="ds")
+
+    assert create_fs.call_args == call()
+    (f,) = captured["files"]
+    assert f.source == "az://container/"
+    assert f.path == "blob.txt"
+
+
+def test_bucket_overview_anon_creates_anon_session(monkeypatch):
+    create_fs = _overview_az_fs(
+        monkeypatch, [{"name": "container/blob.txt", "type": "file", "size": 5}]
+    )
+    captured = _capture_read_values(monkeypatch)
+    fake_session = object()
+    session_get = MagicMock(return_value=fake_session)
+    monkeypatch.setattr("datachain.Session.get", session_get)
+
+    bucket_overview("az://container@account/", anon=True, name="ds")
+
+    assert create_fs.call_args == call(anon=True, account_name="account")
+    session_get.assert_called_once_with(client_config={"anon": True})
+    assert captured["session"] is fake_session
 
 
 def test_compute_dep_changes_added():

@@ -1000,7 +1000,7 @@ class File(DataModel):
             result = Path(base_path, *PurePosixPath(path).parts).as_posix()
         else:
             # Cloud: build a full URI.
-            name = client_cls.FS_CLASS._strip_protocol(self.source)
+            name = client_cls.storage_name(self.source)
             base = str(client_cls.storage_uri(name))
             if base.endswith("/"):
                 result = f"{base}{path}"
