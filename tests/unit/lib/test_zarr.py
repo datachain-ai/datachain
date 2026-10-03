@@ -1,3 +1,5 @@
+from unittest.mock import MagicMock
+
 import numpy as np
 import pytest
 
@@ -205,6 +207,22 @@ def test_zarr_store_open_passes_azure_uri_account(tmp_dir, test_session, monkeyp
 
     assert captured["url"] == "az://container@account/s.zarr"
     assert captured["storage_options"]["account_name"] == "account"
+
+
+def test_zarr_store_open_rejects_conflicting_azure_account(test_session, monkeypatch):
+    from datachain.lib.file import File
+    from datachain.lib.zarr import ZarrStore
+
+    conn = "DefaultEndpointsProtocol=https;AccountName=other;AccountKey=dGVzdA=="
+    monkeypatch.setattr(
+        test_session.catalog, "client_config", {"connection_string": conn}
+    )
+    monkeypatch.setattr("datachain.lib.zarr.zarr.open", MagicMock())
+
+    file = File(source="az://container@account", path="s.zarr")
+    file._catalog = test_session.catalog
+    with pytest.raises(ValueError, match="conflicts with"):
+        ZarrStore(file=file).get_info()
 
 
 @pytest.mark.parametrize(

@@ -17,6 +17,9 @@ from datachain.lib.file import File
 @pytest.fixture(autouse=True)
 def _no_env_connection_string(monkeypatch):
     monkeypatch.delenv("AZURE_STORAGE_CONNECTION_STRING", raising=False)
+    AzureBlobFileSystem.clear_instance_cache()
+    yield
+    AzureBlobFileSystem.clear_instance_cache()
 
 
 _FAKE_SAS = "https://account.blob.core.windows.net/mycontainer/blob.txt?sv=x&sig=y"
@@ -126,18 +129,16 @@ def test_uri_account_matching_endpoint_ok(fs_kwargs):
     ],
 )
 def test_uri_account_conflicting_endpoint_raises(fs_kwargs, target):
-    client = AzureClient("mycontainer@other", fs_kwargs, MagicMock())
     with pytest.raises(
         ValueError, match=f"conflicts with the configured endpoint for {target}"
     ):
-        _ = client.fs
+        AzureClient("mycontainer@other", fs_kwargs, MagicMock())
 
 
 def test_uri_account_conflicting_env_connection_string_raises(monkeypatch):
     monkeypatch.setenv("AZURE_STORAGE_CONNECTION_STRING", _CONN_STR)
-    client = AzureClient("mycontainer@other", {}, MagicMock())
     with pytest.raises(ValueError, match="conflicts with"):
-        _ = client.fs
+        AzureClient("mycontainer@other", {}, MagicMock())
 
 
 def test_devstoreaccount_development_storage_ok():
@@ -221,10 +222,9 @@ def test_get_uri_with_account():
 
 
 def test_create_fs_receives_account_name():
-    client = AzureClient("mycontainer@myaccount", {}, MagicMock())
     with patch.object(AzureClient, "FS_CLASS") as mock_fs_cls:
         mock_fs_cls.return_value.service_client.account_name = "myaccount"
-        _ = client.fs
+        AzureClient("mycontainer@myaccount", {}, MagicMock())
     assert mock_fs_cls.call_args[1]["account_name"] == "myaccount"
 
 

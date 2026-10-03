@@ -101,19 +101,16 @@ class AzureClient(Client):
     )
 
     def __init__(self, name: str, fs_kwargs: dict[str, Any], cache: "Cache") -> None:
-        self.container, self.account = split_netloc(name.split("/", 1)[0])
-        if self.account:
-            fs_kwargs = {**fs_kwargs, "account_name": self.account}
+        self.container, account = split_netloc(name.split("/", 1)[0])
+        if account:
+            fs_kwargs = {**fs_kwargs, "account_name": account}
         super().__init__(name, fs_kwargs, cache)
 
-    @property
-    def fs(self) -> AzureBlobFileSystem:
-        if not self._fs:
-            fs = self.create_fs(**self.fs_kwargs)
-            if self.account:
-                _check_account(fs, self.account)
-            self._fs = fs
-        return self._fs
+        # Checked eagerly: callers may forward fs_kwargs to their own
+        # filesystem (e.g. Zarr) without ever touching self.fs.
+        if account:
+            self._fs = self.create_fs(**fs_kwargs)
+            _check_account(self._fs, account)
 
     @classmethod
     def storage_name(cls, uri: str) -> str:

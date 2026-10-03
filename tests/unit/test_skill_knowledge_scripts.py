@@ -467,9 +467,13 @@ def test_bucket_overview_az_account_in_uri(monkeypatch):
     assert captured["session"] is None
 
 
-def test_bucket_overview_az_conflicting_connection_string_raises(monkeypatch):
+def test_bucket_overview_az_conflicting_connection_string_raises(request, monkeypatch):
+    from adlfs import AzureBlobFileSystem
+
     conn = "DefaultEndpointsProtocol=https;AccountName=other;AccountKey=dGVzdA=="
     monkeypatch.setenv("AZURE_STORAGE_CONNECTION_STRING", conn)
+    AzureBlobFileSystem.clear_instance_cache()
+    request.addfinalizer(AzureBlobFileSystem.clear_instance_cache)
 
     with pytest.raises(ValueError, match="conflicts with"):
         bucket_overview("az://container@account/", name="ds")
