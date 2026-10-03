@@ -1,3 +1,4 @@
+import asyncio
 import os
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -469,3 +470,51 @@ def test_get_file_key_and_version(char):
     assert container == "mycontainer"
     assert path == f"blob{char}file.txt"
     assert bc.download_blob.call_args[1].get("version_id") == _VER
+
+
+def _listed_blob(name, metadata):
+    from azure.storage.blob import BlobProperties
+
+    blob = BlobProperties()
+    blob.name = name
+    blob.container = "mycontainer"
+    blob.size = 0
+    blob.metadata = metadata
+    blob.etag = '"abc123"'
+    blob.last_modified = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    return blob
+
+
+class _AsyncItems:
+    def __init__(self, items):
+        self.items = items
+
+    async def __aiter__(self):
+        for item in self.items:
+            yield item
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [{"hdi_isfolder": "true"}, {"Hdi_isfolder": "true"}, {"is_directory": "true"}],
+)
+def test_fetch_flat_skips_directory_markers(metadata):
+    blobs = [_listed_blob("dir", metadata), _listed_blob("dir/a.txt", {})]
+    container_client = MagicMock()
+    container_client.__aenter__ = AsyncMock(return_value=container_client)
+    container_client.__aexit__ = AsyncMock(return_value=False)
+    container_client.list_blobs.return_value.by_page.return_value = _AsyncItems(
+        [_AsyncItems(blobs)]
+    )
+    service_client = MagicMock()
+    service_client.close = AsyncMock()
+    service_client.get_container_client.return_value = container_client
+    client = AzureClient("mycontainer", {"account_name": "myaccount"}, MagicMock())
+    client.fs.service_client = service_client
+
+    queue: asyncio.Queue = asyncio.Queue()
+    sync(get_loop(), client._fetch_flat, "", queue)
+
+    files = queue.get_nowait()
+    assert [f.path for f in files] == ["dir/a.txt"]
+    assert queue.get_nowait() is None

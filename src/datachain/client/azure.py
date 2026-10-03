@@ -337,6 +337,8 @@ class AzureClient(Client):
                             if not self._is_valid_key(b["name"]):
                                 continue
                             info = (await self.fs._details([b]))[0]
+                            if info["type"] == "directory":
+                                continue
                             entries.append(
                                 self.info_to_file(info, self.rel_path(info["name"]))
                             )
