@@ -464,15 +464,16 @@ def source_to_https(source: str) -> str | None:
     if scheme == "gs":
         return f"https://storage.googleapis.com/{bucket}"
     if scheme == "az":
-        from datachain.client.azure import split_netloc
+        from datachain.client.azure import AzureClient
 
-        # Azure needs account + container in the URL.
+        # The SDK resolves the endpoint (sovereign clouds, Azurite, custom
+        # hosts) from the URI account and the environment. Its URL carries the
+        # SAS token as a query, which must never end up in a link.
         try:
-            container, account = split_netloc(bucket)
+            client = AzureClient(bucket, {}, None)  # type: ignore[arg-type]
+            endpoint = urlparse(client.fs.service_client.primary_endpoint)
         except ValueError:
             return None
-        account = account or os.environ.get("AZURE_STORAGE_ACCOUNT_NAME", "")
-        if container and account:
-            return f"https://{account}.blob.core.windows.net/{container}"
-        return None
+        base = f"{endpoint.scheme}://{endpoint.netloc}{endpoint.path.rstrip('/')}"
+        return f"{base}/{client.container}"
     return None

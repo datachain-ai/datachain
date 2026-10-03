@@ -42,6 +42,17 @@ from utils import (  # noqa: E402
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolated_azure_config(monkeypatch):
+    from adlfs import AzureBlobFileSystem
+
+    monkeypatch.delenv("AZURE_STORAGE_CONNECTION_STRING", raising=False)
+    monkeypatch.delenv("AZURE_STORAGE_ACCOUNT_NAME", raising=False)
+    AzureBlobFileSystem.clear_instance_cache()
+    yield
+    AzureBlobFileSystem.clear_instance_cache()
+
+
 def test_parse_semver_valid():
     assert parse_semver("1.2.3") == (1, 2, 3)
 
@@ -423,6 +434,35 @@ def test_source_to_https_az_uri_account_wins_over_env(monkeypatch):
     )
 
 
+_CHINA_CONN_STR = (
+    "DefaultEndpointsProtocol=https;AccountName=account;AccountKey=dGVzdA==;"
+    "EndpointSuffix=core.chinacloudapi.cn"
+)
+_SAS_CONN_STR = (
+    "BlobEndpoint=https://account.blob.core.windows.net;"
+    "SharedAccessSignature=sv=x&sig=secret"
+)
+
+
+@pytest.mark.parametrize(
+    "conn,expected",
+    [
+        (_CHINA_CONN_STR, "https://account.blob.core.chinacloudapi.cn/container"),
+        (_SAS_CONN_STR, "https://account.blob.core.windows.net/container"),
+        (
+            "UseDevelopmentStorage=true",
+            "http://127.0.0.1:10000/devstoreaccount1/container",
+        ),
+    ],
+    ids=["sovereign", "sas-stripped", "azurite"],
+)
+def test_source_to_https_az_endpoint_from_connection_string(
+    monkeypatch, conn, expected
+):
+    monkeypatch.setenv("AZURE_STORAGE_CONNECTION_STRING", conn)
+    assert source_to_https("az://container/prefix/") == expected
+
+
 def test_source_to_https_local_returns_none():
     assert source_to_https("file:///home/user/data") is None
 
@@ -467,13 +507,9 @@ def test_bucket_overview_az_account_in_uri(monkeypatch):
     assert captured["session"] is None
 
 
-def test_bucket_overview_az_conflicting_connection_string_raises(request, monkeypatch):
-    from adlfs import AzureBlobFileSystem
-
+def test_bucket_overview_az_conflicting_connection_string_raises(monkeypatch):
     conn = "DefaultEndpointsProtocol=https;AccountName=other;AccountKey=dGVzdA=="
     monkeypatch.setenv("AZURE_STORAGE_CONNECTION_STRING", conn)
-    AzureBlobFileSystem.clear_instance_cache()
-    request.addfinalizer(AzureBlobFileSystem.clear_instance_cache)
 
     with pytest.raises(ValueError, match="conflicts with"):
         bucket_overview("az://container@account/", name="ds")
