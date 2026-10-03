@@ -97,6 +97,22 @@ def test_uri_account_matching_endpoint_ok(fs_kwargs):
 
 
 @pytest.mark.parametrize(
+    "fs_kwargs",
+    [
+        {"connection_string": _DOMAIN_CONN_STR},
+        {"account_host": "files.example.com"},
+        {"account_host": "myaccount.blob.local.azurestack.external"},
+        {"account_host": "myaccount.z1.blob.storage.azure.net"},
+    ],
+    ids=["custom-domain-conn", "custom-domain-host", "azure-stack", "dns-zone"],
+)
+def test_uri_account_unidentifiable_endpoint_trusted(fs_kwargs):
+    client = AzureClient("mycontainer@myaccount", fs_kwargs, MagicMock())
+    assert client.fs.service_client.account_name is None
+    assert client.fs_kwargs["account_name"] == "myaccount"
+
+
+@pytest.mark.parametrize(
     "fs_kwargs,target",
     [
         ({"connection_string": _CONN_STR}, "account 'myaccount'"),
@@ -113,10 +129,6 @@ def test_uri_account_matching_endpoint_ok(fs_kwargs):
             {"connection_string": "UseDevelopmentStorage=true"},
             "account 'devstoreaccount1'",
         ),
-        (
-            {"connection_string": _DOMAIN_CONN_STR},
-            "an unknown account",
-        ),
         ({"account_host": "myaccount.blob.core.windows.net"}, "account 'myaccount'"),
     ],
     ids=[
@@ -125,7 +137,6 @@ def test_uri_account_matching_endpoint_ok(fs_kwargs):
         "name-vs-endpoint",
         "duplicate-name",
         "dev-storage",
-        "custom-domain",
         "account-host",
     ],
 )

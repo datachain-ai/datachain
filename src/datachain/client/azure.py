@@ -53,15 +53,17 @@ def split_netloc(netloc: str) -> tuple[str, str]:
 def _check_account(fs: AzureBlobFileSystem, account: str) -> None:
     # adlfs gives a connection string or account_host precedence over
     # account_name, which would silently route the URI's account elsewhere.
-    # The SDK resolves the effective account from whichever one wins.
+    # The SDK resolves the effective account from whichever one wins; for
+    # hosts it can't map to an account (custom domains, Azure Stack, DNS-zone
+    # endpoints) it reports None, and the explicitly configured endpoint is
+    # trusted.
     actual = fs.service_client.account_name
-    if actual == account:
+    if actual is None or actual == account:
         return
 
-    target = f"account '{actual}'" if actual else "an unknown account"
     raise ValueError(
         f"Azure account '{account}' from the URI conflicts with the"
-        f" configured endpoint for {target}"
+        f" configured endpoint for account '{actual}'"
     )
 
 
