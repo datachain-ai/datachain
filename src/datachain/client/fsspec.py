@@ -45,13 +45,24 @@ ResultQueue = asyncio.Queue[Sequence["File"] | None]
 
 
 def _format_etag(etag: str) -> str:
-    if etag.startswith(("0x", "-0x")):
-        try:
-            mtime = float.fromhex(etag)
-        except ValueError:
-            return etag
+    """Render local mtime ETags as ISO-8601; leave other ETags unchanged.
+
+    Local listings store ``st_mtime.hex()``. Only that canonical form is
+    converted. A prefix check is not enough: HTTP metadata strips quotes, so an
+    ETag of ``"0x123"`` arrives as ``0x123``, which ``float.fromhex`` accepts
+    but is not an mtime. Conversion is also fail-safe if the timestamp is out
+    of range.
+    """
+    try:
+        mtime = float.fromhex(etag)
+    except ValueError:
+        return etag
+    if mtime.hex() != etag:
+        return etag
+    try:
         return datetime.fromtimestamp(mtime, timezone.utc).isoformat()
-    return etag
+    except (OverflowError, OSError, ValueError):
+        return etag
 
 
 def is_cloud_uri(uri: str) -> bool:
@@ -591,7 +602,7 @@ class Client(ABC):
                     f"{file.source}/{file.path} changed on the source since the "
                     f"catalog was created (etag was {_format_etag(file.etag)}, now "
                     f"{_format_etag(etag)}). "
-                    f"Run dc.read_storage('{file.source}', update=True) to refresh "
-                    f"the catalog."
+                    "Re-run the original dc.read_storage(...) call with "
+                    "update=True to refresh the catalog."
                 )
         await self.cache.download(file, self, callback=callback)

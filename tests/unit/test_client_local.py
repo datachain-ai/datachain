@@ -36,6 +36,10 @@ def test_format_etag_renders_mtime_hex_as_iso_timestamp():
         '"abc123"',
         "abc",
         "0xzz",
+        # HTTP ETags can look hex-prefixed after quote stripping, but are not
+        # the canonical float.hex() form emitted for local mtimes.
+        "0x123",
+        "-0x123",
     ],
 )
 def test_format_etag_passthrough_for_non_timestamp_etags(etag):
@@ -61,6 +65,9 @@ def test_put_in_cache_stale_etag_guides_update(tmp_path, catalog):
     message = str(excinfo.value)
     assert rel_path in message
     assert "update=True" in message
+    assert "original dc.read_storage" in message
+    # source is the storage root, not necessarily the URI that created the listing
+    assert f"read_storage('{client.uri}'" not in message
     assert stale_etag not in message
 
 
