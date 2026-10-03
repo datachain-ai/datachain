@@ -70,36 +70,89 @@ _CONN_STR = (
     "DefaultEndpointsProtocol=https;AccountName=myaccount;"
     "AccountKey=dGVzdA==;EndpointSuffix=core.windows.net"
 )
+_SAS = "SharedAccessSignature=sv=x&sig=y"
+_ENDPOINT_SAS = f"BlobEndpoint=https://myaccount.blob.core.windows.net;{_SAS}"
+_CHINA_CONN_STR = _CONN_STR.replace("core.windows.net", "chinacloudapi.cn")
+_DUP_CONN_STR = "AccountName=other;AccountName=myaccount;AccountKey=dGVzdA=="
+_DOMAIN_CONN_STR = f"BlobEndpoint=https://files.example.com;{_SAS}"
 
 
-def test_uri_account_conflicting_connection_string_raises():
-    with pytest.raises(ValueError, match="conflicts with"):
-        AzureClient("mycontainer@other", {"connection_string": _CONN_STR}, MagicMock())
+@pytest.mark.parametrize(
+    "fs_kwargs",
+    [
+        {"connection_string": _CONN_STR},
+        {"connection_string": _CHINA_CONN_STR},
+        {"connection_string": _ENDPOINT_SAS},
+        {"account_host": "myaccount.blob.core.windows.net"},
+    ],
+    ids=["named", "sovereign-suffix", "endpoint-sas", "account-host"],
+)
+def test_uri_account_matching_endpoint_ok(fs_kwargs):
+    client = AzureClient("mycontainer@myaccount", fs_kwargs, MagicMock())
+    assert client.fs.service_client.account_name == "myaccount"
 
 
-def test_uri_account_matching_connection_string_ok():
-    client = AzureClient(
-        "mycontainer@myaccount", {"connection_string": _CONN_STR}, MagicMock()
-    )
-    assert client.fs_kwargs["account_name"] == "myaccount"
+@pytest.mark.parametrize(
+    "fs_kwargs,target",
+    [
+        ({"connection_string": _CONN_STR}, "account 'myaccount'"),
+        ({"connection_string": _ENDPOINT_SAS}, "account 'myaccount'"),
+        (
+            {
+                "connection_string": "AccountName=other;"
+                f"BlobEndpoint=https://myaccount.blob.core.windows.net;{_SAS}"
+            },
+            "account 'myaccount'",
+        ),
+        ({"connection_string": _DUP_CONN_STR}, "account 'myaccount'"),
+        (
+            {"connection_string": "UseDevelopmentStorage=true"},
+            "account 'devstoreaccount1'",
+        ),
+        (
+            {"connection_string": _DOMAIN_CONN_STR},
+            "an unknown account",
+        ),
+        ({"account_host": "myaccount.blob.core.windows.net"}, "account 'myaccount'"),
+    ],
+    ids=[
+        "named",
+        "endpoint-sas",
+        "name-vs-endpoint",
+        "duplicate-name",
+        "dev-storage",
+        "custom-domain",
+        "account-host",
+    ],
+)
+def test_uri_account_conflicting_endpoint_raises(fs_kwargs, target):
+    client = AzureClient("mycontainer@other", fs_kwargs, MagicMock())
+    with pytest.raises(
+        ValueError, match=f"conflicts with the configured endpoint for {target}"
+    ):
+        _ = client.fs
 
 
 def test_uri_account_conflicting_env_connection_string_raises(monkeypatch):
     monkeypatch.setenv("AZURE_STORAGE_CONNECTION_STRING", _CONN_STR)
+    client = AzureClient("mycontainer@other", {}, MagicMock())
     with pytest.raises(ValueError, match="conflicts with"):
-        AzureClient("mycontainer@other", {}, MagicMock())
+        _ = client.fs
+
+
+def test_devstoreaccount_development_storage_ok():
+    client = AzureClient(
+        "mycontainer@devstoreaccount1",
+        {"connection_string": "UseDevelopmentStorage=true"},
+        MagicMock(),
+    )
+    assert client.fs.service_client.account_name == "devstoreaccount1"
 
 
 def test_no_uri_account_ignores_connection_string_account():
     client = AzureClient("mycontainer", {"connection_string": _CONN_STR}, MagicMock())
     assert "account_name" not in client.fs_kwargs
-
-
-def test_malformed_connection_string_skips_conflict_check():
-    client = AzureClient(
-        "mycontainer@myaccount", {"connection_string": "garbage"}, MagicMock()
-    )
-    assert client.fs_kwargs["account_name"] == "myaccount"
+    assert client.fs.service_client.account_name == "myaccount"
 
 
 @pytest.mark.parametrize("service", ["blob", "dfs"])
@@ -112,37 +165,22 @@ def test_name_with_full_account_host(service):
     assert client.fs_kwargs["account_name"] == "myaccount"
 
 
-def test_full_account_host_matching_connection_string_ok():
-    client = AzureClient(
-        "mycontainer@myaccount.blob.core.windows.net",
-        {"connection_string": _CONN_STR},
-        MagicMock(),
-    )
-    assert client.fs_kwargs["account_name"] == "myaccount"
-
-
-def test_uri_account_unnamed_connection_string_raises():
-    conn = "BlobEndpoint=https://other.example.test;SharedAccessSignature=sv=x&sig=y"
-    with pytest.raises(ValueError, match="an unnamed account"):
-        AzureClient("mycontainer@myaccount", {"connection_string": conn}, MagicMock())
-
-
-def test_uri_account_development_storage_raises():
-    with pytest.raises(ValueError, match="account 'devstoreaccount1'"):
-        AzureClient(
-            "mycontainer@myaccount",
-            {"connection_string": "UseDevelopmentStorage=true"},
-            MagicMock(),
-        )
-
-
-def test_devstoreaccount_development_storage_ok():
-    client = AzureClient(
-        "mycontainer@devstoreaccount1",
-        {"connection_string": "UseDevelopmentStorage=true"},
-        MagicMock(),
-    )
-    assert client.fs_kwargs["account_name"] == "devstoreaccount1"
+@pytest.mark.parametrize(
+    "netloc",
+    [
+        "mycontainer@myaccount.blob.core.chinacloudapi.cn",
+        "mycontainer@myaccount.z1.blob.storage.azure.net",
+        "mycontainer@myaccount.blob.core.windows.net:443",
+        "mycontainer@files.example.com",
+        "mycontainer@MyAccount",
+        "mycontainer@my-account",
+        "mycontainer@ab",
+        "mycontainer@",
+    ],
+)
+def test_unsupported_account_raises(netloc):
+    with pytest.raises(ValueError, match="Unsupported Azure storage account"):
+        AzureClient(netloc, {}, MagicMock())
 
 
 def test_parse_url_with_account():
@@ -185,6 +223,7 @@ def test_get_uri_with_account():
 def test_create_fs_receives_account_name():
     client = AzureClient("mycontainer@myaccount", {}, MagicMock())
     with patch.object(AzureClient, "FS_CLASS") as mock_fs_cls:
+        mock_fs_cls.return_value.service_client.account_name = "myaccount"
         _ = client.fs
     assert mock_fs_cls.call_args[1]["account_name"] == "myaccount"
 

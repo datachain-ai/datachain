@@ -218,6 +218,7 @@ def test_azure_bucket_status_account_in_name(mock_create_fs, mock_blob_svc):
     container.get_container_properties.side_effect = ClientAuthenticationError
 
     auth_fs = MagicMock()
+    auth_fs.service_client.account_name = "acct"
     mock_create_fs.return_value = auth_fs
     auth_fs._info = AsyncMock()
 
@@ -235,8 +236,9 @@ def test_azure_bucket_status_account_in_name(mock_create_fs, mock_blob_svc):
 @patch("datachain.client.azure.BlobServiceClient")
 @patch.object(AzureClient, "create_fs")
 def test_azure_bucket_status_name_account_wins_over_kwargs(
-    _mock_create_fs, mock_blob_svc
+    mock_create_fs, mock_blob_svc
 ):
+    mock_create_fs.return_value.service_client.account_name = "acct"
     container = MagicMock()
     mock_blob_svc.return_value.get_container_client.return_value = container
 
@@ -250,9 +252,9 @@ def test_azure_bucket_status_name_account_wins_over_kwargs(
 
 def test_azure_bucket_status_conflicting_connection_string_raises(monkeypatch):
     monkeypatch.delenv("AZURE_STORAGE_CONNECTION_STRING", raising=False)
-    conn = "DefaultEndpointsProtocol=https;AccountName=a;AccountKey=dGVzdA=="
+    conn = "DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=dGVzdA=="
     with pytest.raises(ValueError, match="conflicts with"):
-        AzureClient.bucket_status("c@b", connection_string=conn)
+        AzureClient.bucket_status("c@other", connection_string=conn)
 
 
 @patch("datachain.client.azure.BlobServiceClient")

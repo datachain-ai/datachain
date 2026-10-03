@@ -467,7 +467,10 @@ def source_to_https(source: str) -> str | None:
         from datachain.client.azure import split_netloc
 
         # Azure needs account + container in the URL.
-        container, account = split_netloc(bucket)
+        try:
+            container, account = split_netloc(bucket)
+        except ValueError:
+            return None
         account = account or os.environ.get("AZURE_STORAGE_ACCOUNT_NAME", "")
         if container and account:
             return f"https://{account}.blob.core.windows.net/{container}"

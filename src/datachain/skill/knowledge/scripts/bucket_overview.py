@@ -33,11 +33,10 @@ def _open(uri: str, anon: bool):
         if anon:
             kw = {"token": "anon"} if scheme == "gs" else {"anon": True}
         if scheme == "az":
-            from datachain.client.azure import split_netloc
+            from datachain.client.azure import AzureClient
 
-            account = split_netloc(urlparse(uri).netloc)[1]
-            if account:
-                kw["account_name"] = account
+            client = AzureClient(urlparse(uri).netloc, kw, None)  # type: ignore[arg-type]
+            return client.fs, path, scheme
         return fsspec.filesystem(scheme, **kw), path, scheme
     raw = uri.removeprefix("file://") if scheme == "file" else uri
     return (

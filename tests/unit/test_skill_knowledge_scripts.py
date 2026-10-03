@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call
 
+import pytest
+
 # Insert the scripts directory so bare imports work (matches runtime behavior).
 SCRIPTS_DIR = str(
     Path(__file__).resolve().parents[2] / "src/datachain/skill/knowledge/scripts"
@@ -396,6 +398,10 @@ def test_source_to_https_az_full_account_host(monkeypatch):
     )
 
 
+def test_source_to_https_az_unsupported_account_returns_none():
+    assert source_to_https("az://container@files.example.com/") is None
+
+
 def test_source_to_https_az_no_account_returns_none(monkeypatch):
     monkeypatch.delenv("AZURE_STORAGE_ACCOUNT_NAME", raising=False)
     assert source_to_https("az://container/prefix/") is None
@@ -425,12 +431,13 @@ def test_source_to_https_empty_returns_none():
     assert source_to_https("") is None
 
 
-def _overview_fs(monkeypatch, entries):
+def _overview_az_fs(monkeypatch, entries):
     fs = MagicMock()
     fs.ls.return_value = entries
-    filesystem = MagicMock(return_value=fs)
-    monkeypatch.setattr("fsspec.filesystem", filesystem)
-    return filesystem
+    fs.service_client.account_name = "account"
+    create_fs = MagicMock(return_value=fs)
+    monkeypatch.setattr("datachain.client.azure.AzureClient.create_fs", create_fs)
+    return create_fs
 
 
 def _capture_read_values(monkeypatch):
@@ -446,36 +453,44 @@ def _capture_read_values(monkeypatch):
 
 
 def test_bucket_overview_az_account_in_uri(monkeypatch):
-    filesystem = _overview_fs(
+    create_fs = _overview_az_fs(
         monkeypatch, [{"name": "container/dir/blob.txt", "type": "file", "size": 5}]
     )
     captured = _capture_read_values(monkeypatch)
 
     bucket_overview("az://container@account/", name="ds")
 
-    assert filesystem.call_args == call("az", account_name="account")
+    assert create_fs.call_args == call(account_name="account")
     (f,) = captured["files"]
     assert f.source == "az://container@account/"
     assert f.path == "dir/blob.txt"
     assert captured["session"] is None
 
 
+def test_bucket_overview_az_conflicting_connection_string_raises(monkeypatch):
+    conn = "DefaultEndpointsProtocol=https;AccountName=other;AccountKey=dGVzdA=="
+    monkeypatch.setenv("AZURE_STORAGE_CONNECTION_STRING", conn)
+
+    with pytest.raises(ValueError, match="conflicts with"):
+        bucket_overview("az://container@account/", name="ds")
+
+
 def test_bucket_overview_az_without_account(monkeypatch):
-    filesystem = _overview_fs(
+    create_fs = _overview_az_fs(
         monkeypatch, [{"name": "container/blob.txt", "type": "file", "size": 5}]
     )
     captured = _capture_read_values(monkeypatch)
 
     bucket_overview("az://container/", name="ds")
 
-    assert filesystem.call_args == call("az")
+    assert create_fs.call_args == call()
     (f,) = captured["files"]
     assert f.source == "az://container/"
     assert f.path == "blob.txt"
 
 
 def test_bucket_overview_anon_creates_anon_session(monkeypatch):
-    filesystem = _overview_fs(
+    create_fs = _overview_az_fs(
         monkeypatch, [{"name": "container/blob.txt", "type": "file", "size": 5}]
     )
     captured = _capture_read_values(monkeypatch)
@@ -485,7 +500,7 @@ def test_bucket_overview_anon_creates_anon_session(monkeypatch):
 
     bucket_overview("az://container@account/", anon=True, name="ds")
 
-    assert filesystem.call_args == call("az", anon=True, account_name="account")
+    assert create_fs.call_args == call(anon=True, account_name="account")
     session_get.assert_called_once_with(client_config={"anon": True})
     assert captured["session"] is fake_session
 

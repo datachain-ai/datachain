@@ -247,10 +247,10 @@ DataChain uses [adlfs](https://fsspec.github.io/adlfs/) to interact with Azure B
 An `az://` URI names only the container, so the storage account has to be provided separately (`account_name`, `AZURE_STORAGE_ACCOUNT_NAME`, or a connection string) — unless it is embedded in the URI itself:
 
 ```
-az://container-name@account-name/path/to/data
+az://mycontainer@myaccount/path/to/data
 ```
 
-The adlfs full-host form `az://container-name@account-name.blob.core.windows.net/path/to/data` (or `.dfs.core.windows.net`) is accepted too. The embedded account takes precedence over `account_name` from the client config, so URIs pointing to different storage accounts can be mixed in a single run. Note that account keys, SAS tokens, and connection strings are account-specific — mixing accounts requires credentials valid for each account (e.g. Azure AD or anonymous access), and a connection string configured for a different account than the URI names, or one that doesn't name its account at all, raises an error.
+The adlfs full-host form `az://mycontainer@myaccount.blob.core.windows.net/path/to/data` (or `.dfs.core.windows.net`) is accepted too. Other endpoints (sovereign clouds, Azure Stack, Azurite, custom domains) aren't parsed from the URI: use `container@account` and configure the endpoint with a connection string or `account_host`. The embedded account takes precedence over `account_name` from the client config, so URIs pointing to different storage accounts can be mixed in a single run. Note that account keys, SAS tokens, and connection strings are account-specific — mixing accounts requires credentials valid for each account (e.g. Azure AD or anonymous access), and if a connection string or `account_host` resolves to a different account than the URI names, the client raises an error instead of reading the wrong account.
 
 - `account_name`: `str` (default: `None`)
 

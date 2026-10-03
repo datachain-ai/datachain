@@ -1,4 +1,3 @@
-import os
 import re
 import shutil
 from collections.abc import Iterator
@@ -13,7 +12,6 @@ from azure.core.exceptions import (
     ResourceExistsError,
     ResourceNotFoundError,
 )
-from azure.core.utils import parse_connection_string
 from azure.storage.blob import BlobServiceClient
 from fsspec.asyn import get_loop, sync
 
@@ -27,7 +25,9 @@ if TYPE_CHECKING:
     from datachain.client.writeconfig import WriteConfig
 
 
-_ACCOUNT_HOST_RE = re.compile(r"(?P<account>[^.]+)\.(?:blob|dfs)\.core\.windows\.net")
+_ACCOUNT_RE = re.compile(
+    r"(?P<account>[a-z0-9]{3,24})(?:\.(?:blob|dfs)\.core\.windows\.net)?"
+)
 
 
 def split_netloc(netloc: str) -> tuple[str, str]:
@@ -36,38 +36,32 @@ def split_netloc(netloc: str) -> tuple[str, str]:
     Accepts ``container@account`` and adlfs's full-host
     ``container@account.blob.core.windows.net`` (or ``.dfs.``) form.
     """
-    container, _, host = netloc.partition("@")
-    match = _ACCOUNT_HOST_RE.fullmatch(host)
-    return container, match["account"] if match else host
+    container, at, host = netloc.partition("@")
+    if not at:
+        return container, ""
+
+    match = _ACCOUNT_RE.fullmatch(host)
+    if not match:
+        raise ValueError(
+            f"Unsupported Azure storage account '{host}' in 'az://{netloc}':"
+            " use 'container@account' or 'container@account.blob.core.windows.net',"
+            " and configure other endpoints with a connection string or account_host"
+        )
+    return container, match["account"]
 
 
-def _reject_connection_string_mismatch(account: str, kwargs: dict[str, Any]) -> None:
-    # adlfs gives a connection string precedence over account_name, which
-    # would silently route the URI's account to the connection string's one.
-    # A connection string that doesn't name its account (explicit endpoint +
-    # SAS) can't be matched, so it is rejected too.
-    conn = kwargs.get("connection_string") or os.getenv(
-        "AZURE_STORAGE_CONNECTION_STRING"
-    )
-    if not conn:
-        return
-    try:
-        parsed = parse_connection_string(conn, case_sensitive_keys=False)
-    except ValueError:
-        return
-
-    conn_account: str | None
-    if parsed.get("usedevelopmentstorage", "").lower() == "true":
-        conn_account = "devstoreaccount1"
-    else:
-        conn_account = parsed.get("accountname")
-    if conn_account == account:
+def _check_account(fs: AzureBlobFileSystem, account: str) -> None:
+    # adlfs gives a connection string or account_host precedence over
+    # account_name, which would silently route the URI's account elsewhere.
+    # The SDK resolves the effective account from whichever one wins.
+    actual = fs.service_client.account_name
+    if actual == account:
         return
 
-    target = f"account '{conn_account}'" if conn_account else "an unnamed account"
+    target = f"account '{actual}'" if actual else "an unknown account"
     raise ValueError(
         f"Azure account '{account}' from the URI conflicts with the"
-        f" configured connection string for {target}"
+        f" configured endpoint for {target}"
     )
 
 
@@ -107,11 +101,19 @@ class AzureClient(Client):
     )
 
     def __init__(self, name: str, fs_kwargs: dict[str, Any], cache: "Cache") -> None:
-        self.container, account = split_netloc(name.split("/", 1)[0])
-        if account:
-            _reject_connection_string_mismatch(account, fs_kwargs)
-            fs_kwargs = {**fs_kwargs, "account_name": account}
+        self.container, self.account = split_netloc(name.split("/", 1)[0])
+        if self.account:
+            fs_kwargs = {**fs_kwargs, "account_name": self.account}
         super().__init__(name, fs_kwargs, cache)
+
+    @property
+    def fs(self) -> AzureBlobFileSystem:
+        if not self._fs:
+            fs = self.create_fs(**self.fs_kwargs)
+            if self.account:
+                _check_account(fs, self.account)
+            self._fs = fs
+        return self._fs
 
     @classmethod
     def storage_name(cls, uri: str) -> str:
@@ -123,8 +125,8 @@ class AzureClient(Client):
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:
         container, account = split_netloc(name)
         if account:
-            _reject_connection_string_mismatch(account, kwargs)
             kwargs = {**kwargs, "account_name": account}
+            _check_account(cls.create_fs(**kwargs), account)
 
         # Step 1: Anonymous probe — uses BlobServiceClient directly (not adlfs)
         # to avoid picking up credentials from environment variables like
