@@ -58,7 +58,9 @@ dependencies = [
   "websockets",
   # >=1.83 excludes the compromised 1.82.7/1.82.8 releases;
   # <1.92 is the last pure-python release — 1.92.0 adds a Rust extension with
-  # no cp314/macOS/Windows wheels and an sdist that can't build on Python 3.14
+  # no cp314/macOS/Windows wheels and an sdist that can't build on Python 3.14;
+  # 1.98+ also requires boto3, which conflicts with aiobotocore's botocore cap
+  # (via s3fs) and makes pip backtrack for many minutes
   "litellm>=1.91.0,<1.92",
   "tomli;python_version<'3.11'"
 ]
@@ -117,6 +119,7 @@ tests = [
   "pytest-mock>=3.12.0",
   "pytest-servers[all]>=0.5.14",
   "pytest-benchmark[histogram]",
+  "pytest-codspeed",
   "pytest-xdist>=3.3.1",
   "pytest-dotenv",
   "virtualenv",
