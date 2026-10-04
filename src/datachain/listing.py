@@ -190,22 +190,28 @@ class Listing:
         if names:
             for name in names:
                 conds.append(
-                    pathfunc.name(Column(dr.col_name("path"))).op("GLOB")(name)
+                    pathfunc.name(Column(dr.col_name("path"))).op(
+                        "GLOB", is_comparison=True
+                    )(name)
                 )
         if inames:
             for iname in inames:
                 conds.append(
-                    func.lower(pathfunc.name(Column(dr.col_name("path")))).op("GLOB")(
-                        iname.lower()
-                    )
+                    func.lower(pathfunc.name(Column(dr.col_name("path")))).op(
+                        "GLOB", is_comparison=True
+                    )(iname.lower())
                 )
         if paths:
             for path in paths:
-                conds.append(Column(dr.col_name("path")).op("GLOB")(path))
+                conds.append(
+                    Column(dr.col_name("path")).op("GLOB", is_comparison=True)(path)
+                )
         if ipaths:
             for ipath in ipaths:
                 conds.append(
-                    func.lower(Column(dr.col_name("path"))).op("GLOB")(ipath.lower())
+                    func.lower(Column(dr.col_name("path"))).op(
+                        "GLOB", is_comparison=True
+                    )(ipath.lower())
                 )
 
         if size is not None:
