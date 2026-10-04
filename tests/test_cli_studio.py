@@ -781,6 +781,34 @@ def test_studio_list_jobs(capsys):
     assert "Waiting in queue: -" in out
 
 
+def test_studio_pipeline_status_did_not_run(capsys):
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"token": "isat_access_token", "team": "team_name"}
+
+    with requests_mock.mock() as m:
+        m.get(
+            f"{STUDIO_URL}/api/datachain/pipeline/status",
+            json={
+                "name": "rusty-vise",
+                "status": "FAILED",
+                "completed": 1,
+                "total": 3,
+                "job_runs": [
+                    {"name": "01.py", "status": "COMPLETE", "created_job_id": "j1"},
+                    {"name": "02.py", "status": "FAILED", "created_job_id": "j2"},
+                    {"name": "03.py", "status": "DID_NOT_RUN", "created_job_id": "j3"},
+                ],
+            },
+        )
+
+        assert main(["pipeline", "status", "rusty-vise"]) == 0
+
+    out = capsys.readouterr().out
+    assert "Status: FAILED" in out
+    assert "Progress: 1/3 jobs completed" in out
+    assert "DID_NOT_RUN" in out
+
+
 CLUSTER = {
     "id": "k3f9x2mq7a",
     "name": "prod-cluster",
@@ -1251,7 +1279,8 @@ def test_studio_run_reuses_previous_job_for_checkpoints(
 
 
 @pytest.mark.parametrize(
-    "status,expected_exit_code", [("FAILED", 1), ("CANCELED", 2), ("COMPLETE", 0)]
+    "status,expected_exit_code",
+    [("FAILED", 1), ("CANCELED", 2), ("DID_NOT_RUN", 2), ("COMPLETE", 0)],
 )
 def test_studio_run_non_zero_exit_code(
     capsys, mocker, tmp_dir, status, expected_exit_code, studio_token
