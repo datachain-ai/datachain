@@ -1,4 +1,6 @@
+import importlib
 from collections.abc import Iterator
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -9,6 +11,7 @@ from datachain.error import (
     DatasetNotFoundError,
     JobNotFoundError,
 )
+from datachain.lib.dc.datachain import DataChain
 from tests.utils import reset_session_job_state
 
 
@@ -283,6 +286,64 @@ def test_checkpoint_reuse_records_listing_input_access(
 
     assert (output_name, "1.0.0") in accessed
     assert (dependency.name, dependency.version) in accessed
+
+
+@pytest.mark.parametrize("dependency_kind", ["missing", "removed"])
+def test_checkpoint_reuse_skips_missing_or_removed_dependencies(
+    monkeypatch, dependency_kind
+):
+    dependency = None if dependency_kind == "missing" else SimpleNamespace(removed=True)
+    accessed = []
+    project = SimpleNamespace(
+        namespace=SimpleNamespace(name="namespace"), name="project"
+    )
+    dataset = SimpleNamespace(name="output", project=project)
+    metastore = SimpleNamespace(
+        record_dataset_version_access=lambda ds, version: accessed.append(
+            (ds.name, version)
+        )
+    )
+    catalog = SimpleNamespace(
+        metastore=metastore,
+        get_dataset_dependencies=lambda *args, **kwargs: [dependency],
+    )
+    instance = SimpleNamespace(session=SimpleNamespace(catalog=catalog))
+
+    DataChain._record_checkpoint_reuse_access(instance, dataset, "1.0.0")
+
+    assert accessed == [(dataset.name, "1.0.0")]
+
+
+def test_checkpoint_reuse_without_starting_step_skips_access_recording(monkeypatch):
+    dataset_version = SimpleNamespace(version="1.0.0", id=1)
+    reused = SimpleNamespace(_query=SimpleNamespace(starting_step=None))
+    project = SimpleNamespace(
+        namespace=SimpleNamespace(name="namespace"), name="project"
+    )
+    accessed = []
+    datasets_module = importlib.import_module("datachain.lib.dc.datasets")
+    monkeypatch.setattr(datasets_module, "read_dataset", lambda *args, **kwargs: reused)
+    metastore = SimpleNamespace(
+        find_checkpoint=lambda *args: True,
+        get_dataset_version_for_job_ancestry=lambda *args: dataset_version,
+        record_dataset_version_access=lambda *args: accessed.append(args),
+        link_dataset_version_to_job=lambda *args, **kwargs: None,
+        log_checkpoint_event=lambda **kwargs: None,
+    )
+    catalog = SimpleNamespace(metastore=metastore)
+    instance = SimpleNamespace(
+        session=SimpleNamespace(catalog=catalog),
+        _checkpoints_enabled=True,
+        _query=SimpleNamespace(delta_sources=list, delta_spec=None),
+        job=SimpleNamespace(id=1, rerun_from_job_id=None, run_group_id="group"),
+    )
+
+    resolved = DataChain._resolve_checkpoint(
+        instance, "output", project, "checkpoint-hash", {}
+    )
+
+    assert resolved is reused
+    assert accessed == []
 
 
 def test_checkpoints_invalid_parent_job_id(test_session, monkeypatch, nums_dataset):
