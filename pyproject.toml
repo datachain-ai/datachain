@@ -61,7 +61,7 @@ dependencies = [
   # no cp314/macOS/Windows wheels and an sdist that can't build on Python 3.14;
   # 1.98+ also requires boto3, which conflicts with aiobotocore's botocore cap
   # (via s3fs) and makes pip backtrack for many minutes
-  "litellm>=1.91.0,<1.92",
+  "litellm>=1.91.0,<1.104",
   "tomli;python_version<'3.11'"
 ]
 
