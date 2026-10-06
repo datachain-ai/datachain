@@ -770,6 +770,8 @@ def list_jobs(
             "Name": job.get("name"),
             "Status": job.get("status"),
             "Created at": job.get("created_at"),
+            # Null when no worker claimed the job, or from a Studio without the field.
+            "Started at": job.get("started_at") or "-",
             "Created by": job.get("created_by"),
         }
         if extended:

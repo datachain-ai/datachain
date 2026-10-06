@@ -718,6 +718,7 @@ def test_studio_list_jobs(capsys):
                     "compute_cluster_name": "dev-cluster",
                     "created_at": "2021-01-02T00:00:00Z",
                     "created_by": "user",
+                    "started_at": "2021-01-02T00:00:04Z",
                     "finished_at": None,
                     "steps": [
                         {
@@ -762,6 +763,8 @@ def test_studio_list_jobs(capsys):
 
         assert main(["job", "ls"]) == 0
         out = capsys.readouterr().out
+        assert "Started at" in out
+        assert "2021-01-02T00:00:04Z" in out
         assert "Cluster" not in out
         assert "prod-cluster" not in out
         assert "include_steps" not in m.last_request.qs
