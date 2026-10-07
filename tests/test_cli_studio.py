@@ -784,6 +784,30 @@ def test_studio_list_jobs(capsys):
     assert "Waiting in queue: -" in out
 
 
+def test_studio_list_jobs_without_start_time(capsys, studio_token):
+    job = {
+        "name": "daily",
+        "status": "CANCELED",
+        "created_at": "2026-09-16T00:00:00Z",
+        "created_by": "alice",
+    }
+    # No worker claimed the first job. An older Studio does not send the field.
+    jobs = [
+        {**job, "id": "never-claimed", "started_at": None},
+        {**job, "id": "old-studio"},
+    ]
+    with requests_mock.mock() as m:
+        m.get(f"{STUDIO_URL}/api/datachain/jobs/", json=jobs)
+
+        assert main(["job", "ls"]) == 0
+
+    rows = [line.split("|")[1:-1] for line in capsys.readouterr().out.splitlines()]
+    cells = {row[0].strip(): [cell.strip() for cell in row] for row in rows if row}
+    assert cells["ID"][4] == "Started at"
+    assert cells["never-claimed"][4] == "-"
+    assert cells["old-studio"][4] == "-"
+
+
 CLUSTER = {
     "id": "k3f9x2mq7a",
     "name": "prod-cluster",
