@@ -718,6 +718,7 @@ def test_studio_list_jobs(capsys):
                     "compute_cluster_name": "dev-cluster",
                     "created_at": "2021-01-02T00:00:00Z",
                     "created_by": "user",
+                    "started_at": "2021-01-02T00:00:04Z",
                     "finished_at": None,
                     "steps": [
                         {
@@ -762,6 +763,8 @@ def test_studio_list_jobs(capsys):
 
         assert main(["job", "ls"]) == 0
         out = capsys.readouterr().out
+        assert "Started at" in out
+        assert "2021-01-02T00:00:04Z" in out
         assert "Cluster" not in out
         assert "prod-cluster" not in out
         assert "include_steps" not in m.last_request.qs
@@ -779,6 +782,30 @@ def test_studio_list_jobs(capsys):
     # A stage with no start, and a stopped job's open stage, were never timed.
     assert "Waking up data warehouse: -" in out
     assert "Waiting in queue: -" in out
+
+
+def test_studio_list_jobs_without_start_time(capsys, studio_token):
+    job = {
+        "name": "daily",
+        "status": "CANCELED",
+        "created_at": "2026-09-16T00:00:00Z",
+        "created_by": "alice",
+    }
+    # No worker claimed the first job. An older Studio does not send the field.
+    jobs = [
+        {**job, "id": "never-claimed", "started_at": None},
+        {**job, "id": "old-studio"},
+    ]
+    with requests_mock.mock() as m:
+        m.get(f"{STUDIO_URL}/api/datachain/jobs/", json=jobs)
+
+        assert main(["job", "ls"]) == 0
+
+    rows = [line.split("|")[1:-1] for line in capsys.readouterr().out.splitlines()]
+    cells = {row[0].strip(): [cell.strip() for cell in row] for row in rows if row}
+    assert cells["ID"][4] == "Started at"
+    assert cells["never-claimed"][4] == "-"
+    assert cells["old-studio"][4] == "-"
 
 
 CLUSTER = {

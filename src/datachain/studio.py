@@ -770,6 +770,7 @@ def list_jobs(
             "Name": job.get("name"),
             "Status": job.get("status"),
             "Created at": job.get("created_at"),
+            "Started at": job.get("started_at") or "-",
             "Created by": job.get("created_by"),
         }
         if extended:
