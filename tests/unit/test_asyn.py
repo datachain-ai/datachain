@@ -11,7 +11,7 @@ from fsspec.asyn import sync
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
-from datachain.asyn import AsyncMapper, OrderedMapper, get_loop, iter_over_async
+from datachain.asyn import AsyncMapper, get_loop, iter_over_async
 
 
 async def fake_io(i):
@@ -64,24 +64,19 @@ def loop():
             join_all_tasks(loop)
 
 
-@pytest.mark.parametrize("create_mapper", [AsyncMapper, OrderedMapper])
-def test_mapper_fsspec(create_mapper, loop):
+def test_mapper_fsspec(loop):
     n_rows = 50
 
     async def process(row):
         await mapper.to_thread(functools.partial(sync, loop, fake_io, row))
         return row
 
-    mapper = create_mapper(process, range(n_rows), workers=10, loop=loop)
+    mapper = AsyncMapper(process, range(n_rows), workers=10, loop=loop)
     result = [sync(loop, fake_io, i + n_rows) for i in mapper.iterate(timeout=4)]
-    if mapper.order_preserving:
-        assert result == list(range(n_rows, 2 * n_rows))
-    else:
-        assert set(result) == set(range(n_rows, 2 * n_rows))
+    assert set(result) == set(range(n_rows, 2 * n_rows))
 
 
-@pytest.mark.parametrize("create_mapper", [AsyncMapper, OrderedMapper])
-def test_mapper_generator_shutdown(create_mapper, loop):
+def test_mapper_generator_shutdown(loop):
     """
     Check that throwing an exception into AsyncMapper.iterate() terminates it cleanly.
     Note that finalising a generator involves throwing StopIteration into it.
@@ -94,28 +89,26 @@ def test_mapper_generator_shutdown(create_mapper, loop):
     class MyError(Exception):
         pass
 
-    mapper = create_mapper(process, range(50), workers=10, loop=loop)
+    mapper = AsyncMapper(process, range(50), workers=10, loop=loop)
     iterator = mapper.iterate(timeout=4)
     next(iterator)
     with pytest.raises(MyError):
         iterator.throw(MyError)
 
 
-@pytest.mark.parametrize("create_mapper", [AsyncMapper, OrderedMapper])
-def test_mapper_exception_while_processing(create_mapper, loop):
+def test_mapper_exception_while_processing(loop):
     async def process(row):
         await mapper.to_thread(functools.partial(sync, loop, fake_io, row))
         if row == 12:
             raise RuntimeError
         return row
 
-    mapper = create_mapper(process, range(50), workers=10, loop=loop)
+    mapper = AsyncMapper(process, range(50), workers=10, loop=loop)
     with pytest.raises(RuntimeError):
         list(mapper.iterate(timeout=4))
 
 
-@pytest.mark.parametrize("create_mapper", [AsyncMapper, OrderedMapper])
-def test_mapper_deadlock(create_mapper):
+def test_mapper_deadlock():
     queue = Queue()
     inputs = range(50)
 
@@ -126,7 +119,7 @@ def test_mapper_deadlock(create_mapper):
     async def process(x):
         return x
 
-    mapper = create_mapper(process, as_iter(queue), workers=10, loop=get_loop())
+    mapper = AsyncMapper(process, as_iter(queue), workers=10, loop=get_loop())
     it = mapper.iterate(timeout=4)
     for i in inputs:
         queue.put(i)
@@ -135,19 +128,15 @@ def test_mapper_deadlock(create_mapper):
     result = []
     for _ in range(len(inputs)):
         result.append(next(it))
-    if mapper.order_preserving:
-        assert result == list(inputs)
-    else:
-        assert set(result) == set(inputs)
+    assert set(result) == set(inputs)
 
     # Check that iteration terminates cleanly
     queue.put(None)
     assert list(it) == []
 
 
-@pytest.mark.parametrize("create_mapper", [AsyncMapper, OrderedMapper])
 @pytest.mark.parametrize("stop_at", [10, None])
-def test_mapper_closes_iterable(create_mapper, stop_at):
+def test_mapper_closes_iterable(stop_at):
     """Test that the iterable is closed when the `.iterate()` is closed or exhausted."""
 
     async def process(x):
@@ -166,7 +155,7 @@ def test_mapper_closes_iterable(create_mapper, stop_at):
             iterable_closed = True
             close_thread = threading.get_ident()
 
-    mapper = create_mapper(process, gen(), workers=10, loop=get_loop())
+    mapper = AsyncMapper(process, gen(), workers=10, loop=get_loop())
     it = mapper.iterate()
     list(itertools.islice(it, stop_at))
     if stop_at is not None:
@@ -176,31 +165,26 @@ def test_mapper_closes_iterable(create_mapper, stop_at):
     assert start_thread != threading.get_ident()
 
 
-@pytest.mark.parametrize("create_mapper", [AsyncMapper, OrderedMapper])
 @settings(deadline=None)
 @given(
     inputs=st.lists(st.integers(min_value=0, max_value=100), max_size=20),
     workers=st.integers(min_value=1, max_value=5),
 )
-def test_mapper_hypothesis(inputs, workers, create_mapper):
+def test_mapper_hypothesis(inputs, workers):
     async def process(input):
         await asyncio.sleep(input)
         return input
 
     loop = get_loop()
-    mapper = create_mapper(process, inputs, workers=workers, loop=loop)
+    mapper = AsyncMapper(process, inputs, workers=workers, loop=loop)
     with mock_time(loop):
         try:
             result = list(mapper.iterate(timeout=4))
         finally:
             join_all_tasks(loop)
-    if mapper.order_preserving:
-        assert result == inputs
-    else:
-        assert Counter(result) == Counter(inputs)
+    assert Counter(result) == Counter(inputs)
 
 
-@pytest.mark.parametrize("create_mapper", [AsyncMapper, OrderedMapper])
 @settings(deadline=None)
 @given(
     inputs=st.lists(
@@ -208,7 +192,7 @@ def test_mapper_hypothesis(inputs, workers, create_mapper):
     ),
     workers=st.integers(min_value=1, max_value=5),
 )
-def test_mapper_exception_hypothesis(inputs, workers, create_mapper):
+def test_mapper_exception_hypothesis(inputs, workers):
     assume(any(n[0] for n in inputs))
 
     async def process(input):
@@ -219,7 +203,7 @@ def test_mapper_exception_hypothesis(inputs, workers, create_mapper):
         return input
 
     loop = get_loop()
-    mapper = create_mapper(process, inputs, workers=workers, loop=loop)
+    mapper = AsyncMapper(process, inputs, workers=workers, loop=loop)
     with mock_time(loop):
         try:
             with pytest.raises(RuntimeError):

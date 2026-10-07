@@ -76,6 +76,19 @@ def test_scandir_alternate(client):
     match_entries(results, ENTRIES)
 
 
+@pytest.mark.parametrize("cloud_type", ["gs"], indirect=True)
+def test_gcs_object_close_is_idempotent_on_event_loop(client):
+    file = client.get_file_info("dogs/dog1")
+    with client.open_object(file, use_cache=False) as stream:
+        assert stream.read() == b"woof"
+
+    async def close():
+        stream.close()
+
+    sync(get_loop(), close)
+    assert stream.closed
+
+
 def test_gcs_client_gets_credentials_from_env(monkeypatch, mocker):
     from datachain.client.gcs import GCSClient
 
