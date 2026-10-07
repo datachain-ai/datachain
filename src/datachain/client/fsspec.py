@@ -181,7 +181,12 @@ class Client(ABC):
         cache: Cache,
         **kwargs,
     ) -> "Client":
-        return cls(cls.FS_CLASS._strip_protocol(uri), kwargs, cache)
+        return cls(cls.storage_name(uri), kwargs, cache)
+
+    @classmethod
+    def storage_name(cls, uri: str) -> str:
+        """Return the storage name of a source URI, without the protocol."""
+        return cls.FS_CLASS._strip_protocol(uri)
 
     @classmethod
     def ls_buckets(cls, **kwargs) -> Iterator[Bucket]:

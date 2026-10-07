@@ -9,7 +9,7 @@ import re
 import uuid
 from collections import Counter
 from collections.abc import Generator, Iterator
-from unittest.mock import ANY, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import numpy as np
 import pandas as pd
@@ -2367,6 +2367,27 @@ def test_to_parquet_partitioned(tmp_dir, test_session):
     df1["first_name"] = df1["first_name"].astype("str")
     df1 = df1.sort_values("first_name").reset_index(drop=True)
     pd.testing.assert_frame_equal(df1, df)
+
+
+@pytest.mark.parametrize("partition_cols", (None, ["first_name"]))
+def test_to_parquet_azure_uri_account(test_session, partition_cols):
+    from fsspec.implementations.memory import MemoryFileSystem
+
+    from datachain.client.azure import AzureClient
+
+    fs = MemoryFileSystem()
+    fs.service_client = MagicMock(account_name="myaccount")
+    chain = dc.read_pandas(pd.DataFrame(DF_DATA), session=test_session)
+
+    with patch.object(AzureClient, "create_fs", return_value=fs) as create_fs:
+        chain.to_parquet(
+            "az://mycontainer@myaccount/out.parquet",
+            partition_cols=partition_cols,
+            fs_kwargs={"account_name": "other"},
+        )
+
+    assert create_fs.call_args.kwargs["account_name"] == "myaccount"
+    assert any("mycontainer@myaccount/out.parquet" in key for key in fs.store)
 
 
 @pytest.mark.parametrize("chunk_size", (1000, 2))

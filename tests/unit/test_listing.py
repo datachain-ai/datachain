@@ -318,6 +318,8 @@ def _ds_name(uri: str) -> str:
         ("s3://bucket/dir%20path/", "s3://bucket/dir_x2520path/"),
         # @ is encoded (_x40)
         ("s3://bucket/user@host/", "s3://bucket/user_x40host/"),
+        # Azure account in the netloc is encoded too
+        ("az://container@account/dir/", "az://container_x40account/dir/"),
         # Literal _x in path is doubled
         ("s3://bucket/export_xml/", "s3://bucket/export_x_xml/"),
     ],
@@ -341,6 +343,7 @@ def test_parse_listing_uri_no_collision_dot_vs_underscore():
         "s3://bucket/v1.0/",
         "s3://bucket/dir%25/",
         "s3://bucket/user@host/",
+        "az://container@account/dir/",
         "s3://bucket/export_xml/",
         "s3://my.company.data/path/to/files/",
         "gs://bucket-with_underscores_x_and.dots/",
