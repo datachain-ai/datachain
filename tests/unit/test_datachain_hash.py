@@ -107,6 +107,22 @@ def test_read_csv_single_file_is_deterministic(test_session, tmp_dir):
     assert h1 == h2
 
 
+def test_read_csv_user_output_model_shape_changes_hash(test_session, tmp_dir):
+    class RowA(BaseModel):
+        value: str
+
+    class RowB(BaseModel):
+        value: int
+
+    path = tmp_dir / "test.csv"
+    pd.DataFrame({"value": ["hi"]}).to_csv(path, index=False)
+
+    a = dc.read_csv(path.as_uri(), output=RowA, session=test_session)
+    b = dc.read_csv(path.as_uri(), output=RowB, session=test_session)
+
+    assert a._query.hash() != b._query.hash()
+
+
 def test_read_csv_multi_file_glob_is_deterministic(test_session, tmp_dir):
     pd.DataFrame({"a": [1, 2]}).to_csv(tmp_dir / "a.csv", index=False)
     pd.DataFrame({"a": [3, 4]}).to_csv(tmp_dir / "b.csv", index=False)

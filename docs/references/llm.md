@@ -141,7 +141,9 @@ Reliability is layered:
 Materialized `llm.*` columns are cached and versioned, so re-running a chain reads
 the stored result instead of re-calling the model; the cache invalidates when any
 output-affecting input changes (model, prompt, schema, the input column, `type`,
-params, ...).
+params, ...). Callables and custom Python objects passed as parameters can't be
+hashed deterministically, so cache reuse across separately constructed chains is
+disabled.
 
 ## No fused predicate
 
