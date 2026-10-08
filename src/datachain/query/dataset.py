@@ -7,7 +7,7 @@ import string
 import subprocess
 import sys
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from copy import copy
 from datetime import datetime, timezone
 from functools import wraps
@@ -27,7 +27,6 @@ from sqlalchemy.sql.expression import label
 from sqlalchemy.sql.selectable import GenerativeSelect, Select, TableClause
 from sqlalchemy.sql.visitors import replacement_traverse
 
-from datachain.asyn import ASYNC_WORKERS, AsyncMapper, OrderedMapper
 from datachain.catalog.catalog import clone_catalog_with_cache
 from datachain.checkpoint import Checkpoint, CheckpointStatus
 from datachain.checkpoint_event import (
@@ -40,7 +39,7 @@ from datachain.data_storage.schema import (
     partition_col_names,
     partition_columns,
 )
-from datachain.dataset import DatasetDependency, RowDict
+from datachain.dataset import DatasetDependency
 from datachain.error import (
     DatasetNotFoundError,
     QueryScriptAbortError,
@@ -61,13 +60,7 @@ from datachain.progress import (
     tqdm,
 )
 from datachain.project import Project
-from datachain.query.schema import (
-    DEFAULT_DELIMITER,
-    C,
-    ColumnExpr,
-    UDFParamSpec,
-    normalize_param,
-)
+from datachain.query.schema import DEFAULT_DELIMITER, C, ColumnExpr
 from datachain.query.session import Session
 from datachain.query.udf import UdfInfo
 from datachain.sql.functions.random import rand
@@ -306,10 +299,17 @@ class QueryStep:
     dataset: "DatasetRecord"
     dataset_version: str
 
+    def _record_access(self) -> None:
+        self.catalog.metastore.record_dataset_version_access(
+            self.dataset,
+            self.dataset_version,
+        )
+
     def apply(self) -> "StepResult":
         def q(*columns):
             return sqlalchemy.select(*columns)
 
+        self._record_access()
         dr = self.catalog.warehouse.dataset_rows(self.dataset, self.dataset_version)
         # Use a short alias with dataset ID suffix for uniqueness and SQL brevity
         ds_id = dr.table.name.rsplit("_", 1)[-1]
@@ -2884,48 +2884,6 @@ class DatasetQuery:
         finally:
             if result is not None:
                 result.close()
-            self.cleanup()
-
-    def extract(
-        self, *params: UDFParamSpec, workers=ASYNC_WORKERS, **kwargs
-    ) -> Iterable[tuple]:
-        """
-        Extract columns from each row in the query.
-
-        Returns an iterable of tuples matching the given params.
-
-        To ensure prompt resource cleanup, it is recommended to wrap this
-        with contextlib.closing().
-        """
-        actual_params = [normalize_param(p) for p in params]
-        try:
-            query = self.apply_steps().select()
-            query_fields = [str(c.name) for c in query.selected_columns]
-
-            def row_iter() -> Generator[Sequence, None, None]:
-                # warehouse isn't threadsafe, we need to clone() it
-                # in the thread that uses the results
-                with self.catalog.warehouse.clone() as warehouse:
-                    gen = warehouse.dataset_select_paginated(query)
-                    with contextlib.closing(gen) as rows:
-                        yield from rows
-
-            async def get_params(row: Sequence) -> tuple:
-                row_dict = RowDict(zip(query_fields, row, strict=False))
-                return tuple(
-                    [
-                        await p.get_value_async(
-                            self.catalog, row_dict, mapper, **kwargs
-                        )
-                        for p in actual_params
-                    ]
-                )
-
-            MapperCls = OrderedMapper if query._order_by_clauses else AsyncMapper  # noqa: N806
-            with contextlib.closing(row_iter()) as rows:
-                mapper = MapperCls(get_params, rows, workers=workers)
-                yield from mapper.iterate()
-        finally:
             self.cleanup()
 
     def sample(self, n) -> "Self":
