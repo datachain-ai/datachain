@@ -1680,6 +1680,28 @@ def test_row_to_objs_parent_and_child_overlap(spec, row, expected):
     assert schema.row_to_objs(_row(schema, row)) == expected
 
 
+@pytest.mark.parametrize(
+    "field_type,value,converted",
+    [
+        (list[float], [0.5, 1.5], False),
+        (dict[str, str], {"a": "b"}, False),
+        (list[MyType1], [{"aa": 1, "bb": "b"}], True),
+    ],
+    ids=["float-list", "str-dict", "model-list"],
+)
+def test_row_to_objs_converts_only_model_collections_that_need_it(
+    mocker, field_type, value, converted
+):
+    model = create_model("CollectionHolder", id=(int, ...), items=(field_type, ...))
+    schema = SignalSchema({"m": model})
+    spy = mocker.spy(schema, "_convert_feature_value")
+
+    (obj,) = schema.row_to_objs(_row(schema, (1, value)))
+
+    assert spy.called is converted
+    assert obj.model_dump()["items"] == value
+
+
 def test_setup_not_callable():
     with pytest.raises(SetupError):
         SignalSchema({"name": str}, {"init_val": "asdfd"})

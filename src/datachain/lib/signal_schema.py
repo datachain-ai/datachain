@@ -989,9 +989,9 @@ class SignalSchema:
                 result[name] = self._convert_model_collection_fields(
                     nested_model, field_value, catalog, cache
                 )
-            elif is_sequence_annotation(annotation) or is_mapping_annotation(
-                annotation
-            ):
+            elif (
+                is_sequence_annotation(annotation) or is_mapping_annotation(annotation)
+            ) and self._requires_row_conversion(field.annotation):
                 result[name] = self._convert_feature_value(
                     field.annotation, field_value, catalog, cache
                 )
