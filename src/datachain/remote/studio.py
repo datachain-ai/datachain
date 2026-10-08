@@ -550,9 +550,9 @@ class StudioClient:
         """The team's jobs, newest first, or one job when `job_id` is given.
 
         Each job carries `id`, `name`, `status`, `created_at`, `created_by`,
-        `finished_at`, `workers`, `python_version`, `query`, `exit_code`,
-        `error_message`, `metrics`, and the cluster it ran on as
-        `compute_cluster_id` (joins to a cluster's `id`) and
+        `started_at` (null if no worker claimed the job), `finished_at`, `workers`,
+        `python_version`, `query`, `exit_code`, `error_message`, `metrics`, and the
+        cluster it ran on as `compute_cluster_id` (joins to a cluster's `id`) and
         `compute_cluster_name`.
 
         With `include_steps`, `steps` holds the job's recorded stages and their

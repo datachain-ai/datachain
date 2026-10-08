@@ -293,6 +293,42 @@ def test_delta_returns_correct_dataset_on_no_changes(
             dc.read_dataset(delta_ds_name, version="1.0.1")
 
 
+def test_delta_no_change_records_reused_output_access(test_session, monkeypatch):
+    catalog = test_session.catalog
+    metastore = catalog.metastore
+    source_name = "delta_access_source"
+    output_name = "delta_access_output"
+
+    dc.read_values(id=[1, 2], session=test_session).save(source_name)
+    dc.read_dataset(
+        source_name,
+        session=test_session,
+        delta=True,
+        delta_on="id",
+        delta_compare="id",
+    ).save(output_name)
+
+    accessed = []
+    monkeypatch.setattr(
+        metastore,
+        "record_dataset_version_access",
+        lambda dataset, version: accessed.append((dataset.name, version)),
+    )
+
+    result = dc.read_dataset(
+        source_name,
+        session=test_session,
+        delta=True,
+        delta_on="id",
+        delta_compare="id",
+    ).save(output_name)
+
+    assert result.dataset is not None
+    assert result.dataset.latest_version == "1.0.0"
+    assert (source_name, "1.0.0") in accessed
+    assert (output_name, "1.0.0") in accessed
+
+
 def test_delta_update_unsafe(test_session):
     catalog = test_session.catalog
 
