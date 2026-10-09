@@ -1,6 +1,6 @@
 import os
-import re
 import posixpath
+import re
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
