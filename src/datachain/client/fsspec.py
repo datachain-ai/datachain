@@ -8,8 +8,14 @@ import posixpath
 import re
 import shutil
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterator,
+    Iterable,
+    Iterator,
+    Sequence,
+)
+from contextlib import aclosing, contextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
@@ -36,17 +42,42 @@ if TYPE_CHECKING:
 logger = logging.getLogger("datachain")
 
 FETCH_WORKERS = 100
+LIST_WORKERS = 32
 DELIMITER = "/"  # Path delimiter.
 
 DATA_SOURCE_URI_PATTERN = re.compile(r"^[\w]+:\/\/.*$")
 CLOUD_STORAGE_PROTOCOLS = {"s3", "gs", "az", "hf"}
 
 ResultQueue = asyncio.Queue[Sequence["File"] | None]
+Page = tuple[list["File"], str | None]  # files and the last key listed
 
 
 def is_cloud_uri(uri: str) -> bool:
     protocol = urlparse(uri).scheme
     return protocol in CLOUD_STORAGE_PROTOCOLS
+
+
+def key_midpoint(lo: str, hi: str | None, alphabet: Iterable[str]) -> str | None:
+    """Shortest key strictly between ``lo`` and ``hi`` (``None`` is the open end),
+    halfway between them in the base of the characters keys use."""
+    chars = sorted(set(alphabet) | set(lo) | set(hi or ""))
+    digit = {c: i + 1 for i, c in enumerate(chars)}
+    base, width = len(chars) + 1, max(len(lo), len(hi or "")) + 1
+
+    def value(key: str) -> int:
+        n = 0
+        for i in range(width):
+            n = n * base + (digit[key[i]] if i < len(key) else 0)
+        return n
+
+    n = (value(lo) + (base**width if hi is None else value(hi))) // 2
+    digits = []
+    for _ in range(width):
+        n, d = divmod(n, base)
+        digits.append(chars[max(d - 1, 0)])
+    mid = "".join(reversed(digits))
+    mid = next((mid[:k] for k in range(1, len(mid) + 1) if mid[:k] > lo), mid)
+    return mid if lo < mid and (hi is None or mid < hi) else None
 
 
 def get_cloud_schemes() -> list[str]:
@@ -73,6 +104,7 @@ class Client(ABC):
     protocol: ClassVar[str]
     # client_config keys this backend treats as credentials.
     CREDENTIAL_KEYS: ClassVar[frozenset[str]] = frozenset()
+    LIST_PAGE_SIZE: ClassVar[int] = 1000
 
     @classmethod
     def has_explicit_credentials(cls, client_config: dict | None) -> bool:
@@ -338,6 +370,71 @@ class Client(ABC):
             # This ensures the progress bar is closed before any exceptions are raised
             progress_bar.close()
             result_queue.put_nowait(None)
+
+    async def _fetch_ranges(self, start_prefix: str, result_queue: ResultQueue) -> None:
+        """List key ranges ``(lo, hi]`` in parallel; while a worker is idle, a
+        busy range hands over its upper half, split at a key midpoint."""
+        prefix = start_prefix.lstrip(DELIMITER) + DELIMITER if start_prefix else ""
+        queue: asyncio.Queue[tuple[str, str | None]] = asyncio.Queue()
+        queue.put_nowait(("", None))
+        alphabet: set[str] = set()
+        open_ranges, found, seeks = 1, False, True
+        pbar = tqdm(desc=f"Listing {self.uri}", unit=" objects", leave=False)
+
+        async def read(lo: str, hi: str | None) -> None:
+            nonlocal open_ranges, found, seeks
+            can_split = bool(lo)  # a one-page listing stays one request
+            async with aclosing(self._pages_after(prefix, lo)) as pages:
+                async for files, last in pages:
+                    if files and files[0].path < lo:  # the server ignores the start
+                        seeks = False
+                    files = [
+                        f for f in files if lo < f.path and (hi is None or f.path <= hi)
+                    ]
+                    if files:
+                        await result_queue.put(files)
+                        pbar.update(len(files))
+                    found = found or last is not None
+                    if last is None or last <= lo:
+                        continue
+                    alphabet.update(last)
+                    if hi is not None and last > hi:
+                        return
+                    if can_split and seeks and open_ranges < LIST_WORKERS:
+                        mid = key_midpoint(last, hi, alphabet)
+                        if mid is not None:
+                            queue.put_nowait((mid, hi))
+                            open_ranges += 1
+                            hi = mid
+                    can_split = True
+
+        async def worker() -> None:
+            nonlocal open_ranges
+            while True:
+                lo, hi = await queue.get()
+                try:
+                    await read(lo, hi)
+                finally:
+                    open_ranges -= 1
+                    queue.task_done()
+
+        workers = [asyncio.create_task(worker()) for _ in range(LIST_WORKERS)]
+        done = asyncio.create_task(queue.join())
+        try:
+            await asyncio.wait([done, *workers], return_when=asyncio.FIRST_COMPLETED)
+            if failed := next((w for w in workers if w.done()), None):
+                await failed
+            if not found and prefix:
+                raise FileNotFoundError(f"Unable to resolve remote path: {prefix}")
+        finally:
+            for task in [done, *workers]:
+                task.cancel()
+            pbar.close()
+            result_queue.put_nowait(None)
+
+    def _pages_after(self, prefix: str, start_after: str) -> AsyncGenerator[Page, None]:
+        """Pages under ``prefix`` after ``start_after``, in key order."""
+        raise NotImplementedError
 
     async def _fetch_default(
         self, start_prefix: str, result_queue: ResultQueue
