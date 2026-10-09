@@ -1928,6 +1928,11 @@ class VideoFragment(DataModel):
         If ``destination`` is a remote path, the video file will be uploaded
         to remote storage.
 
+        The output is named ``{stem}_{hash}_{start_ms}_{end_ms}.{format}``, where
+        ``hash`` is derived from the source video's ``source`` and ``path``, so
+        videos with the same name in different directories don't overwrite each
+        other.
+
         Args:
             destination: Output directory path or URI (e.g. ``s3://…``, ``gs://…``).
             format: Output video format (e.g., 'mp4', 'avi').
