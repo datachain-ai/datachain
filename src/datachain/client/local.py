@@ -1,5 +1,4 @@
 import os
-import posixpath
 import re
 from collections.abc import Iterator
 from datetime import datetime, timezone
