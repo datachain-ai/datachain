@@ -1961,7 +1961,7 @@ def test_parse_tabular_output_dict_columns_normalize_alike(tmp_dir, test_session
     assert sorted(exact.to_list("a_b", "c0_a_b")) == [(1, 10), (2, 20)]
 
     normalized = chain.parse_tabular(format="json", output={"a_b": int})
-    with pytest.raises(ValueError, match="matches columns"):
+    with pytest.raises(ValueError, match="None of the output fields"):
         normalized.to_values("a_b")
 
 
@@ -2101,16 +2101,14 @@ def test_read_csv_no_header_output_list(tmp_dir, test_session):
     assert (sort_df(df1).values != sort_df(df).values).sum() == 0
 
 
-@pytest.mark.parametrize(
-    "output",
-    [{"city": str, "first_name": str}, {"City": str, "First Name": str}],
-)
-def test_read_csv_output_by_header_name(tmp_dir, test_session, output):
+def test_read_csv_output_by_header_name(tmp_dir, test_session):
     df = pd.DataFrame(DF_DATA)
     df.columns = ["First Name", "Age", "City"]
     path = tmp_dir / "test.csv"
     df.to_csv(path, index=False)
-    chain = dc.read_csv(path.as_uri(), output=output, session=test_session)
+    chain = dc.read_csv(
+        path.as_uri(), output={"City": str, "First Name": str}, session=test_session
+    )
     assert sorted(chain.to_list("city", "first_name")) == sorted(
         zip(DF_DATA["city"], DF_DATA["first_name"], strict=True)
     )

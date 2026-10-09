@@ -20,7 +20,7 @@ from datachain.lib.file import ArrowRow, File
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.udf import Generator
-from datachain.lib.utils import normalize_col_name, normalize_col_names
+from datachain.lib.utils import normalize_col_names
 from datachain.progress import tqdm
 
 if TYPE_CHECKING:
@@ -130,35 +130,17 @@ class ArrowGenerator(Generator):
 
         fields = self.output_schema.model_fields
         present = set(names)
-        columns = {
-            field: next((n for n in _field_names(field, info) if n in present), None)
+        columns = [
+            next((n for n in _field_names(field, info) if n in present), None)
             for field, info in fields.items()
-        }
-
-        # A field like `first_name` can also read a column like "First Name",
-        # if no other field took that column and no other column normalizes alike.
-        taken = set(columns.values())
-        unclaimed: dict[str, list[str]] = {}
-        for name in names:
-            if name not in taken:
-                unclaimed.setdefault(normalize_col_name(name), []).append(name)
-        for field, column in columns.items():
-            if column is None and field in unclaimed:
-                if len(unclaimed[field]) > 1:
-                    raise ValueError(
-                        f"Output field '{field}' matches columns {unclaimed[field]} "
-                        f"of '{file.path}'. Name the column exactly, as a key or "
-                        "an alias."
-                    )
-                columns[field] = unclaimed[field][0]
-
-        if names and all(c is None for c in columns.values()):
+        ]
+        if names and all(c is None for c in columns):
             raise ValueError(
                 f"None of the output fields {list(fields)} match the columns "
                 f"{names} of '{file.path}'. Output fields are matched to columns "
                 "by name. To rename columns, pass a list of names."
             )
-        return list(columns.values())
+        return columns
 
     def _process_record(
         self,
