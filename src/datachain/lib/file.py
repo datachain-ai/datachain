@@ -1203,8 +1203,7 @@ class ImageFile(File):
         """
         Retrieves metadata and information about the image file.
 
-        Reads only the file header when prefetch and caching are off; otherwise
-        the whole file is downloaded first.
+        Reads only the file header if prefetch and cache are off.
 
         Returns:
             Image: A Model containing image metadata such as width, height and format.
@@ -1316,8 +1315,7 @@ class VideoFile(File):
         """
         Retrieves metadata and information about the video file.
 
-        Reads only the file header when prefetch and caching are off; otherwise
-        the whole file is downloaded first.
+        Reads only the file header if prefetch and cache are off.
 
         Args:
             video_stream_index: Zero-based index among video streams to inspect.
@@ -1494,8 +1492,7 @@ class AudioFile(File):
         """
         Retrieves metadata and information about the audio file.
 
-        Reads only the file header when prefetch and caching are off; otherwise
-        the whole file is downloaded first.
+        Reads only the file header if prefetch and cache are off.
 
         Returns:
             Audio: A Model containing audio metadata such as duration,
