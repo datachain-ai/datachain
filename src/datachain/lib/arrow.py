@@ -20,12 +20,13 @@ from datachain.lib.file import ArrowRow, File
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.udf import Generator
-from datachain.lib.utils import normalize_col_names
+from datachain.lib.utils import normalize_col_name, normalize_col_names
 from datachain.progress import tqdm
 
 if TYPE_CHECKING:
     from datasets.features.features import Features
     from pydantic import BaseModel
+    from pydantic.fields import FieldInfo
 
     from datachain.lib.data_model import DataType
     from datachain.lib.dc import DataChain
@@ -127,27 +128,37 @@ class ArrowGenerator(Generator):
         if self.source_columns is not None:
             return list(self.source_columns)
 
-        normalized = normalize_col_names(names)
+        fields = self.output_schema.model_fields
         present = set(names)
-        columns: list[str | None] = []
-        for field, field_info in self.output_schema.model_fields.items():
-            # A model from `dict_to_data_model` keeps the original column name
-            # as an alias of its normalized field name.
-            alias = field_info.validation_alias
-            aliases = alias.choices if isinstance(alias, AliasChoices) else []
-            candidates = [a for a in aliases if isinstance(a, str) and a != field]
-            column = next((c for c in [*candidates, field] if c in present), None)
-            if column is None:
-                column = normalized.get(field)
-            columns.append(column)
+        columns = {
+            field: next((n for n in _field_names(field, info) if n in present), None)
+            for field, info in fields.items()
+        }
 
-        if names and all(c is None for c in columns):
+        # A field like `first_name` can also read a column like "First Name",
+        # if no other field took that column and no other column normalizes alike.
+        taken = set(columns.values())
+        unclaimed: dict[str, list[str]] = {}
+        for name in names:
+            if name not in taken:
+                unclaimed.setdefault(normalize_col_name(name), []).append(name)
+        for field, column in columns.items():
+            if column is None and field in unclaimed:
+                if len(unclaimed[field]) > 1:
+                    raise ValueError(
+                        f"Output field '{field}' matches columns {unclaimed[field]} "
+                        f"of '{file.path}'. Name the column exactly, as a key or "
+                        "an alias."
+                    )
+                columns[field] = unclaimed[field][0]
+
+        if names and all(c is None for c in columns.values()):
             raise ValueError(
-                f"None of the output fields {list(self.output_schema.model_fields)} "
-                f"match the columns {names} of '{file.path}'. Output fields are "
-                "matched to columns by name. To rename columns, pass a list of names."
+                f"None of the output fields {list(fields)} match the columns "
+                f"{names} of '{file.path}'. Output fields are matched to columns "
+                "by name. To rename columns, pass a list of names."
             )
-        return columns
+        return list(columns.values())
 
     def _process_record(
         self,
@@ -206,6 +217,18 @@ class ArrowGenerator(Generator):
             else:
                 vals_dict[field] = val
         return [self.output_schema(**vals_dict)]
+
+
+def _field_names(field: str, field_info: "FieldInfo") -> list[str]:
+    """Return the column names a field reads from: its aliases, then its name."""
+    alias = field_info.validation_alias
+    if isinstance(alias, AliasChoices):
+        aliases = [a for a in alias.choices if isinstance(a, str)]
+    elif isinstance(alias, str):
+        aliases = [alias]
+    else:
+        aliases = []
+    return [*(a for a in aliases if a != field), field]
 
 
 def infer_schema(chain: "DataChain", **kwargs) -> pa.Schema:

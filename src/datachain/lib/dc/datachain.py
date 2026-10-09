@@ -2519,9 +2519,8 @@ class DataChain:
 
         Parameters:
             output: Dictionary or feature class defining column names and their
-                corresponding types. Its fields are matched to columns by name, so it
-                can select and reorder columns. List of column names is also accepted,
-                in which case columns are renamed in order and types are inferred.
+                corresponding types. List of column names is also accepted, in which
+                case columns are renamed in order and types are inferred.
             column: Generated column name.
             model_name: Generated model name.
             source: Whether to include info about the source file.
@@ -2581,7 +2580,7 @@ class DataChain:
                 output, _ = schema_to_output(schema, col_names)
             except ValueError as e:
                 raise DatasetPrepareError(self.name, e) from e
-            # The fields follow the schema's columns, renamed if names were given.
+            # Field i comes from schema column i, even when a list output renames it.
             source_columns = schema.names
 
         if isinstance(output, dict):

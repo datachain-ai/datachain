@@ -17,7 +17,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 import sqlalchemy
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 import datachain as dc
 import datachain.query.dataset as query_dataset
@@ -1925,6 +1925,46 @@ def test_parse_tabular_output_dict_missing_column(tmp_dir, test_session):
     assert chain.to_values("zip") == [None] * len(DF_DATA["first_name"])
 
 
+def test_parse_tabular_output_feature_alias(tmp_dir, test_session):
+    class Output(BaseModel):
+        model_config = ConfigDict(populate_by_name=True)
+        value: int = Field(alias="raw")
+
+    path = tmp_dir / "test.jsonl"
+    path.write_text('{"other": 1, "raw": 7}\n')
+    chain = dc.read_storage(path.as_uri(), session=test_session).parse_tabular(
+        format="json", output=Output
+    )
+    assert chain.to_values("value") == [7]
+
+
+def test_parse_tabular_output_dict_missing_column_normalizes_alike(
+    tmp_dir, test_session
+):
+    (tmp_dir / "1.jsonl").write_text('{"First Name": "Alice", "first_name": "Bob"}\n')
+    (tmp_dir / "2.jsonl").write_text('{"First Name": "Carol"}\n')
+    chain = dc.read_storage(tmp_dir.as_uri(), session=test_session).parse_tabular(
+        format="json", output={"First Name": str, "first_name": str}
+    )
+    assert sorted(chain.to_list("c0_first_name", "first_name")) == [
+        ("Alice", "Bob"),
+        ("Carol", None),
+    ]
+
+
+def test_parse_tabular_output_dict_columns_normalize_alike(tmp_dir, test_session):
+    (tmp_dir / "1.jsonl").write_text('{"A B": 1, "A-B": 10}\n')
+    (tmp_dir / "2.jsonl").write_text('{"A-B": 20, "A B": 2}\n')
+    chain = dc.read_storage(tmp_dir.as_uri(), session=test_session)
+
+    exact = chain.parse_tabular(format="json", output={"A B": int, "A-B": int})
+    assert sorted(exact.to_list("a_b", "c0_a_b")) == [(1, 10), (2, 20)]
+
+    normalized = chain.parse_tabular(format="json", output={"a_b": int})
+    with pytest.raises(ValueError, match="matches columns"):
+        normalized.to_values("a_b")
+
+
 def test_parse_tabular_output_dict_no_matching_columns(tmp_dir, test_session):
     df = pd.DataFrame(DF_DATA)
     path = tmp_dir / "test.jsonl"
@@ -2357,6 +2397,20 @@ def test_read_parquet_output_by_name(tmp_dir, test_session):
         (1.0, 10.0, 100.0),
         (2.0, 20.0, 200.0),
     ]
+
+
+def test_read_parquet_output_list(tmp_dir, test_session):
+    path = tmp_dir / "test.parquet"
+    pq.write_table(pa.table({"a": [1], "b": [10]}), path)
+    chain = dc.read_parquet(path.as_uri(), output=["x", "y"], session=test_session)
+    assert chain.to_list("x", "y") == [(1, 10)]
+
+
+def test_read_parquet_inferred_output_column_order_differs(tmp_dir, test_session):
+    pq.write_table(pa.table({"a": [1], "b": [10]}), tmp_dir / "1.parquet")
+    pq.write_table(pa.table({"b": [20], "a": [2]}), tmp_dir / "2.parquet")
+    chain = dc.read_parquet(tmp_dir.as_uri(), session=test_session)
+    assert sorted(chain.to_list("a", "b")) == [(1, 10), (2, 20)]
 
 
 def test_read_parquet_output_by_name_column_order_differs(tmp_dir, test_session):

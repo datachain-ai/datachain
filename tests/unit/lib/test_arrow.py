@@ -100,12 +100,25 @@ def test_arrow_generator_hf(tmp_path, catalog):
     stream = File(path=name, source=f"file://{tmp_path}")
     stream._set_stream(catalog, caching_enabled=False)
 
-    output, original_names = schema_to_output(ds._data.schema, ["col"])
+    output, original_names = schema_to_output(ds._data.schema)
 
     output_schema = dict_to_data_model("", output, original_names)
-    func = ArrowGenerator(output_schema=output_schema, source_columns=["pokemon"])
+    func = ArrowGenerator(output_schema=output_schema)
     for obj in func.process(stream):
-        assert isinstance(obj[1].col, HFClassLabel)
+        assert isinstance(obj[1].pokemon, HFClassLabel)
+
+
+def test_arrow_generator_source_columns(tmp_path, catalog):
+    name = "111.parquet"
+    pq.write_table(pa.table({"a": [1, 2], "b": [10, 20]}), tmp_path / name)
+    stream = File(path=name, source=f"file://{tmp_path}")
+    stream._set_stream(catalog, caching_enabled=False)
+
+    output_schema = dict_to_data_model("", {"x": int, "y": int})
+    func = ArrowGenerator(output_schema=output_schema, source_columns=["b", "a"])
+    objs = list(func.process(stream))
+
+    assert [(o[1].x, o[1].y) for o in objs] == [(10, 1), (20, 2)]
 
 
 @pytest.mark.parametrize("cache", [True, False])

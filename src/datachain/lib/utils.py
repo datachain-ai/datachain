@@ -57,6 +57,11 @@ def callable_name(obj: object) -> str:
     return str(obj)
 
 
+def normalize_col_name(col_name: str) -> str:
+    """Lowercase a column name and turn other characters into underscores."""
+    return re.sub("[^0-9a-z]+", "_", col_name.lower()).strip("_")
+
+
 def normalize_col_names(col_names: Sequence[str]) -> dict[str, str]:
     """Returns normalized_name -> original_name dict."""
     gen_col_counter = 0
@@ -64,9 +69,7 @@ def normalize_col_names(col_names: Sequence[str]) -> dict[str, str]:
     org_col_names = set(col_names)
 
     for org_column in col_names:
-        new_column = org_column.lower()
-        new_column = re.sub("[^0-9a-z]+", "_", new_column)
-        new_column = new_column.strip("_")
+        new_column = normalize_col_name(org_column)
 
         generated_column = new_column
 
