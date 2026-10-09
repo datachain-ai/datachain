@@ -485,10 +485,10 @@ class DataChain:
         Parameters:
             cache: Enable files caching to speed up subsequent accesses to the same
                 files from the same or different chains. Defaults to False.
-            prefetch: Enable prefetching of files. This will download files in
-                advance in parallel. If an integer is provided, it specifies the number
-                of files to prefetch concurrently for each process on each worker.
-                Defaults to 2. Set to 0 or False to disable prefetching.
+            prefetch: Number of files to download ahead, per process on each
+                worker. Files are downloaded whole. Defaults to 2; `None` keeps the
+                current value. Set to 0 or False for UDFs that read only metadata,
+                such as `get_info()`.
             parallel: Number of processes to use for processing user-defined functions
                 (UDFs) in parallel. If an integer is provided, it specifies the number
                 of CPUs to use. If True, all available CPUs are used. Defaults to 1.

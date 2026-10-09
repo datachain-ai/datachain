@@ -272,8 +272,13 @@ Lineage is tracked automatically when a chain reads one dataset and saves anothe
 
 7. PREFETCH FOR FILE-READING UDFs: Estimate avg file size and compute:
      prefetch = clamp(4MB / estimated_avg_size, 2, 128)
-   Only add .settings(prefetch=N) if N > 4 (default is 2). Skip for UDFs that
-   don't read file content. Skip if the user explicitly sets prefetch.
+   Only add .settings(prefetch=N) if N > 4 (default is 2). Prefetch downloads
+   file content, never attributes: file.path and file.size come from the
+   listing. Default prefetch=2 downloads the whole content of every File
+   argument. For UDFs that take a File but read only metadata (get_info(),
+   read_bytes(n)), set prefetch=0. UDFs that receive only file.path and/or
+   file.size via params= download nothing. Skip if the user explicitly sets
+   prefetch.
 
 8. CACHE ONLY WHEN NEEDED: Do not add cache=True by default. Use only when the
    same files are read multiple times (multi-stage pipelines), or the user asks.
