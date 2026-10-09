@@ -1,22 +1,14 @@
-import os
 import re
-import posixpath
-from collections.abc import Iterator
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fsspec.implementations.local import LocalFileSystem
-
-from datachain.fs.utils import path_to_fsspec_uri
-from datachain.lib.file import File
 
 from .fsspec import Client
 
 if TYPE_CHECKING:
     from datachain.cache import Cache
     from datachain.client.writeconfig import WriteConfig
-    from datachain.dataset import StorageURI
 
 
 # Canonical form of ``float.hex()`` / ``st_mtime.hex()`` (e.g. ``0x1.2p+3``).
