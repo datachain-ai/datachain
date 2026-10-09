@@ -203,7 +203,9 @@ def _list_adapter(item_type: type) -> "TypeAdapter[list[Any]]":
 
 @cache
 def _classification_model(categories: tuple[str, ...]) -> type[BaseModel]:
-    return create_model("LLMClassification", category=(Literal[categories], ...))
+    # Built at runtime, so type checkers can't read it as a type expression.
+    category: Any = Literal[categories]
+    return create_model("LLMClassification", category=(category, ...))
 
 
 @cache
