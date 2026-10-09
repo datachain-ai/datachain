@@ -1,12 +1,17 @@
 import os
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
 from datachain.client import Client
+from datachain.client.gcs import GCSClient
+from datachain.client.http import HTTPSClient
 from datachain.client.local import FileClient
+from datachain.client.s3 import ClientS3
 from datachain.client.writeconfig import WriteConfig
+from datachain.lib.file import File
 
 
 def test_bad_protocol():
@@ -50,3 +55,23 @@ def test_parse_file_path_ends_with_slash(cloud_type):
     uri, rel_part = Client.parse_url("./animals/".replace("/", os.sep))
     assert uri == (Path().absolute() / Path("animals")).as_uri()
     assert rel_part == ""
+
+
+@pytest.mark.parametrize(
+    "client_cls,source",
+    [
+        (ClientS3, "s3://bucket"),
+        (GCSClient, "gs://bucket"),
+        (HTTPSClient, "https://example.com"),
+    ],
+)
+@pytest.mark.parametrize("block_size", [None, 1024 * 1024])
+def test_open_object_passes_block_size(client_cls, source, block_size):
+    cache = MagicMock()
+    cache.get_path.return_value = None
+    client = client_cls("bucket", {}, cache)
+    client._fs = MagicMock()
+
+    client.open_object(File(source=source, path="a.mp4"), block_size=block_size)
+
+    assert client._fs.open.call_args.kwargs["block_size"] == block_size

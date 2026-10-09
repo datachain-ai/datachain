@@ -4,7 +4,7 @@ import os
 import posixpath
 import tarfile
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 from fsspec.implementations.local import LocalFileSystem
@@ -13,6 +13,7 @@ from PIL import Image
 from datachain.catalog import Catalog
 from datachain.fs.utils import path_to_fsspec_uri
 from datachain.lib.file import (
+    HEADER_READ_BLOCK_SIZE,
     Audio,
     AudioFile,
     File,
@@ -718,6 +719,26 @@ def test_read_bytes(tmp_path, catalog):
     file = File(path=file_name, source=f"file://{tmp_path}")
     file._set_stream(catalog, False)
     assert file.read_bytes() == data
+
+
+@pytest.mark.parametrize(
+    "length,block_size",
+    [
+        (-1, None),
+        (0, None),
+        (16, 16),
+        (HEADER_READ_BLOCK_SIZE + 1, HEADER_READ_BLOCK_SIZE),
+    ],
+)
+def test_read_bytes_block_size(tmp_path, catalog, length, block_size):
+    (tmp_path / "myfile").write_bytes(b"x" * 64)
+    file = File(path="myfile", source=f"file://{tmp_path}")
+    file._set_stream(catalog, False)
+
+    with patch.object(File, "open", wraps=file.open) as mock_open:
+        file.read_bytes(length)
+
+    assert mock_open.call_args.kwargs == {"mode": "rb", "block_size": block_size}
 
 
 def test_read_text(tmp_path, catalog):

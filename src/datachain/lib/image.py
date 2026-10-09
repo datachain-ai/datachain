@@ -3,7 +3,13 @@ from collections.abc import Callable
 import torch
 from PIL import Image as PILImage
 
-from datachain.lib.file import File, FileError, Image, ImageFile
+from datachain.lib.file import (
+    HEADER_READ_BLOCK_SIZE,
+    File,
+    FileError,
+    Image,
+    ImageFile,
+)
 
 
 def image_info(file: File | ImageFile) -> Image:
@@ -18,7 +24,9 @@ def image_info(file: File | ImageFile) -> Image:
         Image: Image file information.
     """
     try:
-        with file.as_image_file().open(mode="rb") as stream:
+        with file.as_image_file().open(
+            mode="rb", block_size=HEADER_READ_BLOCK_SIZE
+        ) as stream:
             with PILImage.open(stream) as img:
                 return Image(
                     width=img.width,

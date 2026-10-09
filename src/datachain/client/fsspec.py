@@ -439,7 +439,11 @@ class Client(ABC):
             shutil.copy2(src, dst)
 
     def open_object(
-        self, file: "File", use_cache: bool = True, cb: Callback = DEFAULT_CALLBACK
+        self,
+        file: "File",
+        use_cache: bool = True,
+        cb: Callback = DEFAULT_CALLBACK,
+        block_size: int | None = None,
     ) -> BinaryIO:
         """Open a file, including files in tar archives."""
         if use_cache and (cache_path := self.cache.get_path(file)):
@@ -448,7 +452,7 @@ class Client(ABC):
         kwargs = self._version_kwargs(file.version)
         full_path = file.get_fs_path()
         return FileWrapper(
-            self.fs.open(full_path, **kwargs),
+            self.fs.open(full_path, block_size=block_size, **kwargs),
             cb,
         )  # type: ignore[return-value]
 
