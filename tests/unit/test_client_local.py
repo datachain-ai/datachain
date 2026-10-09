@@ -28,9 +28,9 @@ def test_format_etag_appends_mtime_only_for_local_client():
     etag = mtime.hex()
     iso = datetime.fromtimestamp(mtime, timezone.utc).isoformat()
     # Local listings store st_mtime.hex(); FileClient explains that value.
-    assert FileClient._format_etag(etag) == f"{etag} (mtime {iso})"
+    assert FileClient.format_etag(etag) == f"{etag} (mtime {iso})"
     # Other clients leave the stored string alone, matching dc.show().
-    assert Client._format_etag(etag) == etag
+    assert Client.format_etag(etag) == etag
 
 
 @pytest.mark.parametrize(
@@ -47,8 +47,8 @@ def test_format_etag_appends_mtime_only_for_local_client():
     ],
 )
 def test_format_etag_keeps_non_mtime_values(etag):
-    assert FileClient._format_etag(etag) == etag
-    assert Client._format_etag(etag) == etag
+    assert FileClient.format_etag(etag) == etag
+    assert Client.format_etag(etag) == etag
 
 
 def test_put_in_cache_stale_local_etag_reports_raw_value_and_mtime(tmp_path, catalog):

@@ -89,8 +89,8 @@ class Client(ABC):
         self.uri = self.storage_uri(self.name)
 
     @staticmethod
-    def _format_etag(etag: str) -> str:
-        """Render an etag for error messages.
+    def format_etag(etag: str) -> str:
+        """Render an etag (e.g. for error messages).
 
         Default matches ``dc.show()`` / Studio (the stored string). Backends that
         encode extra meaning in the etag (local mtime) override this.
@@ -588,8 +588,8 @@ class Client(ABC):
             if file.etag != etag:
                 raise FileNotFoundError(
                     f"{file.source}/{file.path} changed on the source since the "
-                    f"catalog was created (etag was {self._format_etag(file.etag)}, now "
-                    f"{self._format_etag(etag)}). "
+                    f"catalog was created (etag was {self.format_etag(file.etag)}, now "
+                    f"{self.format_etag(etag)}). "
                     "Re-run the original dc.read_storage(...) call with "
                     "update=True to refresh the catalog."
                 )

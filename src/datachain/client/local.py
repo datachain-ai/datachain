@@ -42,7 +42,7 @@ class FileClient(Client):
     protocol = "file"
 
     @staticmethod
-    def _format_etag(etag: str) -> str:
+    def format_etag(etag: str) -> str:
         """Show the stored etag, plus mtime when it is ``st_mtime.hex()``.
 
         Local listings store mtime as ``float.hex()``. Conversion is limited to
