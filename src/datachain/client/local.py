@@ -1,5 +1,6 @@
 import os
 import posixpath
+import re
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,10 +19,40 @@ if TYPE_CHECKING:
     from datachain.dataset import StorageURI
 
 
+# Canonical form of ``float.hex()`` / ``st_mtime.hex()`` (e.g. ``0x1.2p+3``).
+_MTIME_HEX_RE = re.compile(r"^-?0x[0-9a-f]+(?:\.[0-9a-f]+)?p[+-]?\d+$")
+
+
+def _local_mtime_iso(etag: str) -> str | None:
+    """Return an ISO timestamp if *etag* is exactly ``st_mtime.hex()``."""
+    if not _MTIME_HEX_RE.fullmatch(etag):
+        return None
+    mtime = float.fromhex(etag)
+    if mtime.hex() != etag:
+        return None
+    try:
+        return datetime.fromtimestamp(mtime, timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 class FileClient(Client):
     FS_CLASS = LocalFileSystem
     PREFIX = "file://"
     protocol = "file"
+
+    @staticmethod
+    def _format_etag(etag: str) -> str:
+        """Show the stored etag, plus mtime when it is ``st_mtime.hex()``.
+
+        Local listings store mtime as ``float.hex()``. Conversion is limited to
+        that canonical shape so HTTP-like values such as ``0x123`` stay intact.
+        """
+        rendered = str(etag)
+        iso = _local_mtime_iso(rendered)
+        if iso is None:
+            return rendered
+        return f"{rendered} (mtime {iso})"
 
     def __init__(
         self,
@@ -39,173 +70,77 @@ class FileClient(Client):
         return {}
 
     def url(
-        self,
-        path: str,
-        expires: int = 3600,
-        version_id: str | None = None,
-        **kwargs,
+        self, path: str, expires: int = 3600, version_id: str | None = None, **kwargs
     ) -> str:
-        raise TypeError("Signed urls are not implemented for local file system")
+        raise NotImplementedError("Not available for local file systems")
 
     @classmethod
     def storage_uri(cls, storage_name: str) -> "StorageURI":
         from datachain.dataset import StorageURI
 
-        return StorageURI(path_to_fsspec_uri(storage_name))
+        return StorageURI(cls.PREFIX + Path(storage_name).as_posix())
 
     @classmethod
     def ls_buckets(cls, **kwargs) -> Iterator[Any]:
-        return iter(())
+        # Local filesystem has no concept of buckets
+        yield from ()
 
     @classmethod
     def split_url(cls, url: str) -> tuple[str, str]:
-        if not url.startswith("file://"):
-            url = path_to_fsspec_uri(url)
+        """Split a local path or file:// URI into (parent_dir, name).
 
-        os_path = LocalFileSystem._strip_protocol(url)
-        is_abs = os_path.startswith("/")
-
-        # Preserve "directory" semantics when a trailing slash is present.
-        if url.endswith("/"):
-            bucket = os_path.rstrip("/")
-            if is_abs and not bucket:
-                bucket = "/"
-            path = ""
-        else:
-            bucket, path = os_path.rsplit("/", 1)
-            if is_abs and not bucket:
-                bucket = "/"
-
-        if os.name == "nt":
-            bucket = bucket.removeprefix("/")
-
-        return bucket, path
+        Always returns the parent directory as the first element and the
+        final path component as the second, whether *url* points at a file
+        or a directory.  This matches the cloud-client convention where the
+        first element is the container (bucket) and the second is the key
+        within it.
+        """
+        path = Path(url.removeprefix(cls.PREFIX))
+        return str(path.parent), path.name
 
     @classmethod
     def from_name(cls, name: str, cache: "Cache", kwargs) -> "FileClient":
-        use_symlinks = kwargs.pop("use_symlinks", False)
-        return cls(name, kwargs, cache, use_symlinks=use_symlinks)
+        return cls(name, kwargs, cache)
 
     @classmethod
     def from_source(
         cls,
-        uri: str,
+        uri: str | os.PathLike[str],
         cache: "Cache",
         use_symlinks: bool = False,
         **kwargs,
     ) -> "FileClient":
-        return cls(
-            LocalFileSystem._strip_protocol(uri),
-            kwargs,
-            cache,
-            use_symlinks=use_symlinks,
-        )
+        host, path = cls.split_url(os.fspath(uri))
+        # Reconstruct absolute path for the client root
+        name = str(Path(host, path))
+        return cls(name, kwargs, cache, use_symlinks=use_symlinks)
 
     async def get_current_etag(self, file: "File") -> str:
-        info = self.fs.info(file.get_fs_path())
+        info = self.fs.info(self.get_full_path(file.path))
         return self.info_to_file(info, file.path).etag
 
-    @staticmethod
     def validate_file_path(path: str) -> None:
-        """Validate a file path for the local filesystem for safe IO.
+        Client.validate_file_path(path)
 
-        Extends the base cloud rules with local-specific checks: rejects
-        absolute paths, Windows drive-letter prefixes, and empty segments
-        (``//``).  On Windows, backslashes are treated as path separators.
-        """
-        if not path:
-            raise ValueError(f"unsafe file path {path!r}: must not be empty")
-
-        # On Windows, backslash is a path separator — normalize so the
-        # checks below work uniformly.  On Linux/macOS, backslash is a legal
-        # filename character and must not be reinterpreted as a separator.
-        if os.name == "nt":
-            canonical = path.replace("\\", "/")
-        else:
-            canonical = path
-
-        if canonical.endswith("/"):
-            raise ValueError(f"unsafe file path {path!r}: must not be a directory")
-
-        # Check dot segments before absolute-path check: traversal via '..' is
-        # always rejected, even when the path also happens to be absolute.
-        raw_parts = canonical.split("/")
-        if any(part in (".", "..") for part in raw_parts):
-            raise ValueError(f"unsafe file path {path!r}: must not contain '.' or '..'")
-
-        # Disallow absolute paths; local file paths are interpreted relative to
-        # the source/output prefix.
-        if canonical.startswith("/"):
-            raise ValueError(f"unsafe file path {path!r}: must not be absolute")
-
-        # On Windows, a drive-letter prefix like "C:/" is absolute even
-        # without a leading "/".  On Unix, colons are legal in filenames,
-        # so only enforce this on Windows.
-        if (
-            os.name == "nt"
-            and len(canonical) >= 2
-            and canonical[0].isalpha()
-            and canonical[1] == ":"
-        ):
-            raise ValueError(f"unsafe file path {path!r}: must not be absolute")
-
-        # Disallow empty segments (e.g. 'dir//file.txt') to avoid implicit
-        # normalization.
-        if "//" in canonical:
-            raise ValueError(
-                f"unsafe file path {path!r}: must not contain empty segments"
-            )
-
-    @classmethod
-    def validate_source(cls, source: str) -> None:
-        """On Windows, reject ``file://`` URIs without an explicit drive letter.
-
-        fsspec silently prepends the current drive to paths like
-        ``file:///bucket`` (→ ``C:/bucket``), which is ambiguous.
-        """
-        if os.name == "nt" and source.startswith("file://"):  # noqa: SIM102
-            if not cls._has_drive_letter(source):
-                raise ValueError(
-                    "file:// source must include a drive letter on Windows "
-                    "(e.g. file:///C:/path)"
-                )
-
-    @staticmethod
-    def _has_drive_letter(source: str) -> bool:
-        """Check whether a ``file://`` URI contains an explicit drive letter.
-
-        On Windows, fsspec silently prepends the current drive to paths like
-        ``file:///bucket`` (→ ``C:/bucket``).  We use this helper to detect
-        and reject such ambiguous URIs early.
-        """
-        rest = source[len("file://") :].lstrip("/")
-        return len(rest) >= 2 and rest[0].isalpha() and rest[1] == ":"
+    def get_full_path(self, rel_path: str) -> str:
+        return str(Path(self.name, rel_path))
 
     def get_file_info(self, path: str, version_id: str | None = None) -> File:
-        self.validate_file_path(path)
-        info = self.fs.info(self.get_uri(path))
+        info = self.fs.info(self.get_full_path(path))
         return self.info_to_file(info, path)
 
     async def get_size(self, file: File) -> int:
-        full_path = file.get_fs_path()
-
-        size = self.fs.size(full_path)
-        if size is None:
-            raise FileNotFoundError(full_path)
-        return int(size)
+        return file.size
 
     async def get_file(self, lpath, rpath, callback, version_id: str | None = None):
-        return self.fs.get_file(
-            lpath,
-            rpath,
-            callback=callback,
-        )
+        # Not used for local client in the same way; download is via cache
+        raise NotImplementedError
 
     async def ls_dir(self, path):
         return self.fs.ls(path, detail=True)
 
     def rel_path(self, path):
-        return posixpath.relpath(path, self.name)
+        return Path(path).relative_to(self.name).as_posix()
 
     def get_uri(self, rel_path):
         """Build a full file:// URI for *rel_path* within this client's storage."""
@@ -228,12 +163,14 @@ class FileClient(Client):
         self,
         nodes,
         shared_progress_bar=None,
-    ) -> None:
-        if not self.use_symlinks:
-            super().fetch_nodes(nodes, shared_progress_bar)
+    ):
+        return super().fetch_nodes(nodes, shared_progress_bar)
 
     def do_instantiate_object(self, file: File, dst: str) -> None:
+        src = self.get_full_path(file.path)
         if self.use_symlinks:
-            os.symlink(Path(self.name, file.path), dst)
+            os.symlink(src, dst)
         else:
-            super().do_instantiate_object(file, dst)
+            import shutil
+
+            shutil.copyfile(src, dst)
