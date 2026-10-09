@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from fsspec.utils import stringify_path
 
-from datachain.lib.file import FileError
+from datachain.lib.file import HEADER_READ_BLOCK_SIZE, FileError
 
 if TYPE_CHECKING:
     from numpy import ndarray
@@ -30,7 +30,7 @@ def audio_info(file: "File | AudioFile") -> "Audio":
     file = file.as_audio_file()
 
     try:
-        with file.open() as f:
+        with file.open(block_size=HEADER_READ_BLOCK_SIZE) as f:
             info = sf.info(f)
 
             sample_rate = int(info.samplerate)

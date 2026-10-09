@@ -11,7 +11,7 @@ from datachain.lib.audio import (
     audio_to_np,
     save_audio,
 )
-from datachain.lib.file import Audio, AudioFile, FileError
+from datachain.lib.file import HEADER_READ_BLOCK_SIZE, Audio, AudioFile, FileError
 
 
 def generate_test_wav(
@@ -54,6 +54,13 @@ def stereo_audio_file(tmp_path, catalog):
     file = AudioFile(path=audio_path.name, source=f"file://{tmp_path}")
     file._set_stream(catalog, caching_enabled=False)
     return file
+
+
+def test_audio_info_opens_with_header_block_size(audio_file):
+    with patch.object(AudioFile, "open", wraps=audio_file.open) as mock_open:
+        audio_info(audio_file)
+
+    assert mock_open.call_args.kwargs == {"block_size": HEADER_READ_BLOCK_SIZE}
 
 
 def test_audio_info(audio_file):

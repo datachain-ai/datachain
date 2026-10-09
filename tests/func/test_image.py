@@ -1,12 +1,13 @@
 import os
 from contextlib import contextmanager
+from unittest.mock import patch
 
 import pytest
 from PIL import Image as PILImage
 from torch import Tensor
 from torchvision.transforms import ToTensor
 
-from datachain.lib.file import File, FileError, ImageFile
+from datachain.lib.file import HEADER_READ_BLOCK_SIZE, File, FileError, ImageFile
 from datachain.lib.image import convert_image, image_info
 
 
@@ -90,6 +91,17 @@ def test_image_save_cloud(cloud_test_catalog_upload, image_file, format):
 def test_get_info(image_file):
     info = image_file.as_image_file().get_info()
     assert info.model_dump() == {"width": 256, "height": 256, "format": "JPEG"}
+
+
+def test_image_info_opens_with_header_block_size(image_file):
+    file = image_file.as_image_file()
+    with patch.object(ImageFile, "open", wraps=file.open) as mock_open:
+        image_info(file)
+
+    assert mock_open.call_args.kwargs == {
+        "mode": "rb",
+        "block_size": HEADER_READ_BLOCK_SIZE,
+    }
 
 
 def test_image_info_streams_does_not_slurp(image_file, monkeypatch):

@@ -49,6 +49,7 @@ ExportPlacement = Literal["filename", "etag", "fullpath", "checksum", "filepath"
 
 FileType = Literal["binary", "text", "image", "video", "audio"]
 EXPORT_FILES_MAX_THREADS = 5
+HEADER_READ_BLOCK_SIZE = 1024 * 1024
 
 
 class FileExporter(NodesThreadPool):
@@ -533,6 +534,7 @@ class File(DataModel):
         content_encoding: str | None = None,
         metadata: dict[str, str] | None = None,
         write_options: dict[str, Any] | None = None,
+        block_size: int | None = None,
         **open_kwargs,
     ) -> Iterator[Any]:
         """Open the file and return a file-like object.
@@ -547,6 +549,8 @@ class File(DataModel):
         ``cache_control``, ``content_encoding``, ``metadata`` and the raw
         ``write_options`` escape hatch set object metadata on the written
         object (mapped per backend, ignored on the local filesystem).
+
+        ``block_size`` sets the read-ahead block for uncached remote reads.
         """
         writing = any(ch in mode for ch in "wax+")
 
@@ -583,7 +587,9 @@ class File(DataModel):
                 return
             if self._caching_enabled:
                 self.ensure_cached()
-            with client.open_object(self, use_cache=True, cb=self._download_cb) as f:
+            with client.open_object(
+                self, use_cache=True, cb=self._download_cb, block_size=block_size
+            ) as f:
                 with self._wrap_text(f, mode, open_kwargs=open_kwargs) as wrapped:
                     yield wrapped
             return
@@ -650,7 +656,8 @@ class File(DataModel):
 
     def read_bytes(self, length: int = -1):
         """Returns file contents as bytes."""
-        with self.open(mode="rb") as stream:
+        block_size = min(length, HEADER_READ_BLOCK_SIZE) if length > 0 else None
+        with self.open(mode="rb", block_size=block_size) as stream:
             return stream.read(length)
 
     def read_text(self, **open_kwargs):
@@ -1196,6 +1203,8 @@ class ImageFile(File):
         """
         Retrieves metadata and information about the image file.
 
+        Reads only the file header if prefetch and cache are off.
+
         Returns:
             Image: A Model containing image metadata such as width, height and format.
         """
@@ -1306,9 +1315,7 @@ class VideoFile(File):
         """
         Retrieves metadata and information about the video file.
 
-        Metadata is read through ``File.open()``, so it can stream when caching
-        is disabled. When caching is enabled, opening the file may populate the
-        local cache first.
+        Reads only the file header if prefetch and cache are off.
 
         Args:
             video_stream_index: Zero-based index among video streams to inspect.
@@ -1485,10 +1492,7 @@ class AudioFile(File):
         """
         Retrieves metadata and information about the audio file.
 
-        Metadata is read through ``File.open()``, so it can stream when caching
-        is disabled. When caching is enabled, opening the file may populate the
-        local cache first. For UDFs that only need audio metadata, it can be
-        useful to disable caching and prefetching.
+        Reads only the file header if prefetch and cache are off.
 
         Returns:
             Audio: A Model containing audio metadata such as duration,
