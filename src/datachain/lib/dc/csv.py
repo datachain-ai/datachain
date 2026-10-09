@@ -36,8 +36,9 @@ def read_csv(
             specified in `parse_options`. Defaults to ",".
         header: Whether the files include a header row.
         output: Dictionary or feature class defining column names and their
-            corresponding types. List of column names is also accepted, in which
-            case types will be inferred.
+            corresponding types. Its fields are matched to columns by name, so it
+            can select and reorder columns. List of column names is also accepted,
+            in which case columns are renamed in order and types are inferred.
         column: Created column name.
         model_name: Generated model name.
         source: Whether to include info about the source file.

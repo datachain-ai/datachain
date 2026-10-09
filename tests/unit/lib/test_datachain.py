@@ -1890,20 +1890,19 @@ def test_parse_tabular_output_dict(tmp_dir, test_session):
     df = pd.DataFrame(DF_DATA)
     path = tmp_dir / "test.jsonl"
     path.write_text(df.to_json(orient="records", lines=True))
-    output = {"fname": str, "age": int, "loc": str}
+    output = {"city": str, "first_name": str}
     chain = dc.read_storage(path.as_uri(), session=test_session).parse_tabular(
         format="json", output=output
     )
-    df1 = chain.select("fname", "age", "loc").to_pandas()
-    df.columns = ["fname", "age", "loc"]
-    assert df_equal(df1, df)
+    df1 = chain.select("city", "first_name").to_pandas()
+    assert df_equal(df1, df[["city", "first_name"]])
 
 
 def test_parse_tabular_output_feature(tmp_dir, test_session):
     class Output(BaseModel):
-        fname: str
+        city: str
         age: int
-        loc: str
+        first_name: str
 
     df = pd.DataFrame(DF_DATA)
     path = tmp_dir / "test.jsonl"
@@ -1911,9 +1910,30 @@ def test_parse_tabular_output_feature(tmp_dir, test_session):
     chain = dc.read_storage(path.as_uri(), session=test_session).parse_tabular(
         format="json", output=Output
     )
-    df1 = chain.select("fname", "age", "loc").to_pandas()
-    df.columns = ["fname", "age", "loc"]
-    assert df_equal(df1, df)
+    df1 = chain.select("city", "age", "first_name").to_pandas()
+    assert df_equal(df1, df[["city", "age", "first_name"]])
+
+
+def test_parse_tabular_output_dict_missing_column(tmp_dir, test_session):
+    df = pd.DataFrame(DF_DATA)
+    path = tmp_dir / "test.jsonl"
+    path.write_text(df.to_json(orient="records", lines=True))
+    chain = dc.read_storage(path.as_uri(), session=test_session).parse_tabular(
+        format="json", output={"first_name": str, "zip": str}
+    )
+    assert sorted(chain.to_values("first_name")) == DF_DATA["first_name"]
+    assert chain.to_values("zip") == [None] * len(DF_DATA["first_name"])
+
+
+def test_parse_tabular_output_dict_no_matching_columns(tmp_dir, test_session):
+    df = pd.DataFrame(DF_DATA)
+    path = tmp_dir / "test.jsonl"
+    path.write_text(df.to_json(orient="records", lines=True))
+    chain = dc.read_storage(path.as_uri(), session=test_session).parse_tabular(
+        format="json", output={"fname": str, "loc": str}
+    )
+    with pytest.raises(ValueError, match="None of the output fields"):
+        chain.to_values("fname")
 
 
 def test_parse_tabular_output_list(tmp_dir, test_session):
@@ -2039,6 +2059,21 @@ def test_read_csv_no_header_output_list(tmp_dir, test_session):
     )
     df1 = chain.select("first_name", "age", "city").to_pandas()
     assert (sort_df(df1).values != sort_df(df).values).sum() == 0
+
+
+@pytest.mark.parametrize(
+    "output",
+    [{"city": str, "first_name": str}, {"City": str, "First Name": str}],
+)
+def test_read_csv_output_by_header_name(tmp_dir, test_session, output):
+    df = pd.DataFrame(DF_DATA)
+    df.columns = ["First Name", "Age", "City"]
+    path = tmp_dir / "test.csv"
+    df.to_csv(path, index=False)
+    chain = dc.read_csv(path.as_uri(), output=output, session=test_session)
+    assert sorted(chain.to_list("city", "first_name")) == sorted(
+        zip(DF_DATA["city"], DF_DATA["first_name"], strict=True)
+    )
 
 
 def test_read_csv_tab_delimited(tmp_dir, test_session):
@@ -2302,6 +2337,35 @@ def test_read_parquet(tmp_dir, test_session):
     df1 = chain.select("first_name", "age", "city").to_pandas()
 
     assert df_equal(df1, df)
+
+
+def test_read_parquet_output_by_name(tmp_dir, test_session):
+    path = tmp_dir / "test.parquet"
+    pq.write_table(
+        pa.table({"a": [1.0, 2.0], "b": [10.0, 20.0], "c": [100.0, 200.0]}), path
+    )
+
+    chain = dc.read_parquet(path.as_uri(), output={"c": float}, session=test_session)
+    assert sorted(chain.to_values("c")) == [100.0, 200.0]
+
+    chain = dc.read_parquet(
+        path.as_uri(),
+        output={"c": float, "b": float, "a": float},
+        session=test_session,
+    )
+    assert sorted(chain.to_list("a", "b", "c")) == [
+        (1.0, 10.0, 100.0),
+        (2.0, 20.0, 200.0),
+    ]
+
+
+def test_read_parquet_output_by_name_column_order_differs(tmp_dir, test_session):
+    pq.write_table(pa.table({"a": [1], "b": [10]}), tmp_dir / "1.parquet")
+    pq.write_table(pa.table({"b": [20], "a": [2]}), tmp_dir / "2.parquet")
+    chain = dc.read_parquet(
+        tmp_dir.as_uri(), output={"a": int, "b": int}, session=test_session
+    )
+    assert sorted(chain.to_list("a", "b")) == [(1, 10), (2, 20)]
 
 
 def test_read_parquet_exported_with_source(test_session, tmp_dir):

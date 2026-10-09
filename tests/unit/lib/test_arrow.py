@@ -103,7 +103,7 @@ def test_arrow_generator_hf(tmp_path, catalog):
     output, original_names = schema_to_output(ds._data.schema, ["col"])
 
     output_schema = dict_to_data_model("", output, original_names)
-    func = ArrowGenerator(output_schema=output_schema)
+    func = ArrowGenerator(output_schema=output_schema, source_columns=["pokemon"])
     for obj in func.process(stream):
         assert isinstance(obj[1].col, HFClassLabel)
 

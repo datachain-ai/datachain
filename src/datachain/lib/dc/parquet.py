@@ -36,6 +36,8 @@ def read_parquet(
               - `{1..9}` : brace numeric or alphabetic range
         partitioning: Any pyarrow partitioning schema.
         output: Dictionary defining column names and their corresponding types.
+            Its fields are matched to columns by name, so it can select and reorder
+            columns.
         column: Created column name.
         model_name: Generated model name.
         source: Whether to include info about the source file.

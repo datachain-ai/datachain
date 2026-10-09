@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 import pyarrow as pa
 from pyarrow._csv import ParseOptions
 from pyarrow.dataset import CsvFileFormat, dataset
+from pydantic import AliasChoices
 
 from datachain import json
 from datachain.fs.reference import ReferenceFileSystem
@@ -54,6 +55,7 @@ class ArrowGenerator(Generator):
         output_schema: type["BaseModel"] | None = None,
         source: bool = True,
         nrows: int | None = None,
+        source_columns: Sequence[str] | None = None,
         **kwargs,
     ):
         """
@@ -65,6 +67,8 @@ class ArrowGenerator(Generator):
         output_schema : Optional pydantic model for validation.
         source : Whether to include info about the source file.
         nrows : Optional row limit.
+        source_columns : Optional file column for each `output_schema` field, in
+            field order. When omitted, fields are matched to columns by name.
         kwargs: Parameters to pass to pyarrow.dataset.dataset.
         """
         super().__init__()
@@ -72,6 +76,7 @@ class ArrowGenerator(Generator):
         self.output_schema = output_schema
         self.source = source
         self.nrows = nrows
+        self.source_columns = source_columns
         self.parse_options = kwargs.pop("parse_options", None)
         self.kwargs = kwargs
 
@@ -95,6 +100,9 @@ class ArrowGenerator(Generator):
             bool(ds.schema.metadata)
             and DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY in ds.schema.metadata
         )
+        columns: list[str | None] = []
+        if self.output_schema and not use_datachain_schema:
+            columns = self._field_columns(ds.schema.names, file)
 
         kw = {}
         if self.nrows:
@@ -110,8 +118,36 @@ class ArrowGenerator(Generator):
         ) as pbar:
             for index, record in enumerate(pbar):
                 yield self._process_record(
-                    record, file, index, hf_schema, use_datachain_schema
+                    record, file, index, hf_schema, use_datachain_schema, columns
                 )
+
+    def _field_columns(self, names: list[str], file: File) -> list[str | None]:
+        """Return the file column for each output field, or None if it has none."""
+        assert self.output_schema
+        if self.source_columns is not None:
+            return list(self.source_columns)
+
+        normalized = normalize_col_names(names)
+        present = set(names)
+        columns: list[str | None] = []
+        for field, field_info in self.output_schema.model_fields.items():
+            # A model from `dict_to_data_model` keeps the original column name
+            # as an alias of its normalized field name.
+            alias = field_info.validation_alias
+            aliases = alias.choices if isinstance(alias, AliasChoices) else []
+            candidates = [a for a in aliases if isinstance(a, str) and a != field]
+            column = next((c for c in [*candidates, field] if c in present), None)
+            if column is None:
+                column = normalized.get(field)
+            columns.append(column)
+
+        if names and all(c is None for c in columns):
+            raise ValueError(
+                f"None of the output fields {list(self.output_schema.model_fields)} "
+                f"match the columns {names} of '{file.path}'. Output fields are "
+                "matched to columns by name. To rename columns, pass a list of names."
+            )
+        return columns
 
     def _process_record(
         self,
@@ -120,11 +156,12 @@ class ArrowGenerator(Generator):
         index: int,
         hf_schema: tuple["Features", dict[str, "DataType"]] | None,
         use_datachain_schema: bool,
+        columns: list[str | None],
     ):
         if use_datachain_schema and self.output_schema:
             vals = [_nested_model_instantiate(record, self.output_schema)]
         else:
-            vals = self._process_non_datachain_record(record, hf_schema)
+            vals = self._process_non_datachain_record(record, hf_schema, columns)
 
         if self.source:
             kwargs: dict = self.kwargs
@@ -148,22 +185,22 @@ class ArrowGenerator(Generator):
         self,
         record: dict[str, Any],
         hf_schema: tuple["Features", dict[str, "DataType"]] | None,
+        columns: list[str | None],
     ):
-        vals = list(record.values())
         if not self.output_schema:
-            return vals
+            return list(record.values())
 
         fields = self.output_schema.model_fields
         vals_dict = {}
-        for i, ((field, field_info), val) in enumerate(
-            zip(fields.items(), vals, strict=False)
-        ):
+        for (field, field_info), column in zip(fields.items(), columns, strict=False):
+            if column is None:
+                continue
+            val = record[column]
             anno = field_info.annotation
             if hf_schema:
                 from datachain.lib.hf import convert_feature
 
-                feat = list(hf_schema[0].values())[i]
-                vals_dict[field] = convert_feature(val, feat, anno)
+                vals_dict[field] = convert_feature(val, hf_schema[0][column], anno)
             elif ModelStore.is_pydantic(anno):
                 vals_dict[field] = anno(**val)  # type: ignore[misc]
             else:
