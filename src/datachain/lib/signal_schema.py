@@ -28,7 +28,7 @@ from typing import (
 )
 
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
-from pydantic import BaseModel, Field, ValidationError, create_model
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError, create_model
 from sqlalchemy import Cast, asc, cast, desc, nulls_last
 from sqlalchemy.sql.elements import BinaryExpression, Grouping, Label
 
@@ -688,14 +688,20 @@ class SignalSchema:
             for name, annotation in self.values.items()
         }
 
+    @cached_property
+    def _type_adapters(self) -> dict[DataType, TypeAdapter]:
+        return {}
+
     @classmethod
     def _requires_row_conversion(cls, annotation: DataType) -> bool:
         if ModelStore.is_pydantic(annotation):
             return True
 
         if get_origin(annotation) in (Union, types.UnionType):
-            inner, has_none = unwrap_optional(annotation)
-            return has_none and cls._requires_row_conversion(inner)
+            return any(
+                cls._requires_row_conversion(part)
+                for part in annotation_parts(annotation)
+            )
         parts = annotation_parts(annotation)
         if is_mapping_annotation(annotation):
             return len(parts) == 2 and (
@@ -940,12 +946,7 @@ class SignalSchema:
         origin = get_origin(annotation)
 
         if origin in (Union, types.UnionType):
-            inner, has_none = unwrap_optional(annotation)
-            # a None-free or multi-arm Union isn't converted to a single type
-            if not has_none or get_origin(inner) in (Union, types.UnionType):
-                return result
-            annotation = inner
-            origin = get_origin(annotation)
+            return self._convert_union_value(annotation, value, catalog, cache)
 
         if ModelStore.is_pydantic(annotation):
             if isinstance(value, annotation):
@@ -1003,6 +1004,46 @@ class SignalSchema:
                     result[converted_key] = converted_val
 
         return result
+
+    def _convert_union_value(
+        self,
+        annotation: DataType,
+        value: Any,
+        catalog: "Catalog | None",
+        cache: bool,
+    ) -> Any:
+        converted, result = self._convert_model_union(annotation, value, catalog, cache)
+        if converted:
+            return result
+
+        inner, has_none = unwrap_optional(annotation)
+        # A None-free or multi-arm Union without models cannot be converted to
+        # a single type.
+        if not has_none or get_origin(inner) in (Union, types.UnionType):
+            return value
+        return self._convert_feature_value(inner, value, catalog, cache)
+
+    def _convert_model_union(
+        self,
+        annotation: DataType,
+        value: Any,
+        catalog: "Catalog | None",
+        cache: bool,
+    ) -> tuple[bool, Any]:
+        # Collection and mapping arms need DataChain's own conversion rules,
+        # such as JSON-decoding serialized dictionary keys.
+        if not any(
+            ModelStore.is_pydantic(part) for part in annotation_parts(annotation)
+        ):
+            return False, value
+
+        adapter = self._type_adapters.get(annotation)
+        if adapter is None:
+            adapter = self._type_adapters[annotation] = TypeAdapter(annotation)
+        result = adapter.validate_python(value, by_alias=True, by_name=True)
+        if catalog is not None and isinstance(result, BaseModel):
+            SignalSchema._set_file_stream(result, catalog, cache)
+        return True, result
 
     @staticmethod
     def _set_file_stream(
