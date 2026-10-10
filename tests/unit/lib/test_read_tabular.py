@@ -299,3 +299,51 @@ def test_read_csv_no_header_every_file(tmp_dir, test_session):
     (tmp_dir / "2.csv").write_text("2,20\n")
     chain = dc.read_csv(tmp_dir.as_uri(), header=False, session=test_session)
     assert sorted(chain.to_list("f0", "f1")) == [(1, 10), (2, 20)]
+
+
+@pytest.fixture
+def exported(tmp_dir, test_session):
+    path = tmp_dir / "exported.parquet"
+    dc.read_values(x=[1, 2], y=["a", "b"], session=test_session).to_parquet(path)
+    return path.as_uri()
+
+
+def test_read_parquet_written_by_datachain_output_dict(exported, test_session):
+    chain = dc.read_parquet(exported, output={"y": str}, session=test_session)
+    assert sorted(chain.to_values("y")) == ["a", "b"]
+
+
+def test_read_parquet_written_by_datachain_column_types(exported, test_session):
+    with pytest.raises(DatasetPrepareError, match="files written by DataChain"):
+        dc.read_parquet(exported, column_types={"x": str}, session=test_session)
+
+
+def test_read_parquet_column_types_arrow_type(abc_parquet, test_session):
+    chain = dc.read_parquet(
+        abc_parquet, columns=["a"], column_types={"a": pa.int32()}, session=test_session
+    )
+    assert sorted(chain.to_values("a")) == [1, 2]
+
+
+def test_read_parquet_column_types_unsupported(abc_parquet, test_session):
+    with pytest.raises(DatasetPrepareError, match="Can't read a column as"):
+        dc.read_parquet(abc_parquet, column_types={"a": list}, session=test_session)
+
+
+def test_parse_tabular_output_unsupported(messy, test_session):
+    with pytest.raises(DatasetPrepareError, match="output can't be"):
+        dc.read_storage(messy, session=test_session).parse_tabular(
+            format="csv", output=int
+        )
+
+
+def test_parse_tabular_csv_format_name_types_while_parsing(messy, test_session):
+    chain = dc.read_storage(messy, session=test_session).parse_tabular(
+        format="csv", output={"ZIP Code": str}
+    )
+    assert sorted(chain.to_values("zip_code")) == ["02134", "10001"]
+
+
+def test_read_csv_no_header_output_unsupported(no_header, test_session):
+    with pytest.raises(DatasetPrepareError, match="incompatible output type"):
+        dc.read_csv(no_header, header=False, output=int, session=test_session)
