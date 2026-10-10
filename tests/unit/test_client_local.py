@@ -1,8 +1,10 @@
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
+from datachain.client.fsspec import Client
 from datachain.client.local import FileClient
 from datachain.client.writeconfig import WriteConfig
 from datachain.fs.utils import path_to_fsspec_uri
@@ -19,6 +21,61 @@ def test_write_kwargs_ignores_all_fields(streaming):
         write_options={"ACL": "public-read"},
     )
     assert FileClient._write_kwargs(cfg, streaming=streaming) == {}
+
+
+def test_format_etag_appends_mtime_only_for_local_client():
+    mtime = 1234567890.25
+    etag = mtime.hex()
+    iso = datetime.fromtimestamp(mtime, timezone.utc).isoformat()
+    # Local listings store st_mtime.hex(); FileClient explains that value.
+    assert FileClient.format_etag(etag) == f"{etag} (mtime {iso})"
+    # Other clients leave the stored string alone, matching dc.show().
+    assert Client.format_etag(etag) == etag
+
+
+@pytest.mark.parametrize(
+    "etag",
+    [
+        "d41d8cd98f00b204e9800998ecf8427e",
+        '"abc123"',
+        "abc",
+        "0xzz",
+        # HTTP ETags can look hex-prefixed after quote stripping, but are not
+        # the canonical float.hex() form emitted for local mtimes.
+        "0x123",
+        "-0x123",
+    ],
+)
+def test_format_etag_keeps_non_mtime_values(etag):
+    assert FileClient.format_etag(etag) == etag
+    assert Client.format_etag(etag) == etag
+
+
+def test_put_in_cache_stale_local_etag_reports_raw_value_and_mtime(tmp_path, catalog):
+    client = FileClient.from_source(str(tmp_path), catalog.cache)
+
+    rel_path = "folder/file.bin"
+    fpath = Path(tmp_path, rel_path)
+    fpath.parent.mkdir(parents=True)
+    fpath.write_bytes(b"hello")
+
+    current_etag = fpath.stat().st_mtime.hex()
+    stale_etag = (fpath.stat().st_mtime - 1).hex()
+    assert stale_etag != current_etag
+
+    file = File(source=client.uri, path=rel_path, etag=stale_etag)
+    with pytest.raises(FileNotFoundError) as excinfo:
+        client.put_in_cache(file)
+
+    message = str(excinfo.value)
+    assert rel_path in message
+    assert "update=True" in message
+    assert "original dc.read_storage" in message
+    # source is the storage root, not necessarily the URI that created the listing
+    assert f"read_storage('{client.uri}'" not in message
+    # raw etag matches what dc.show() prints; local files also include mtime
+    assert stale_etag in message
+    assert "mtime " in message
 
 
 def test_split_url_directory_preserves_leaf(tmp_path):
