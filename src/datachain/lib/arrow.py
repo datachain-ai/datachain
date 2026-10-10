@@ -128,6 +128,7 @@ class ArrowGenerator(Generator):
 
         if self.source:
             kwargs = self.kwargs
+            # Can't JSON-serialize CsvFileFormat; may lose formatting options.
             if isinstance(kwargs.get("format"), CsvFileFormat):
                 # A copy, so the files read after this one keep their CSV options.
                 kwargs = {**kwargs, "format": "csv"}
