@@ -2041,6 +2041,27 @@ def test_read_csv_no_header_output_list(tmp_dir, test_session):
     assert (sort_df(df1).values != sort_df(df).values).sum() == 0
 
 
+def test_read_csv_no_header_several_files(tmp_dir, test_session):
+    (tmp_dir / "1.csv").write_text("1,10\n")
+    (tmp_dir / "2.csv").write_text("2,20\n")
+    chain = dc.read_csv(
+        tmp_dir.as_uri(), header=False, output=["a", "b"], session=test_session
+    )
+    assert sorted(chain.to_list("a", "b")) == [(1, 10), (2, 20)]
+
+
+def test_read_csv_column_types_several_files(tmp_dir, test_session):
+    (tmp_dir / "1.csv").write_text("zip\n02134\n")
+    (tmp_dir / "2.csv").write_text("zip\n10001\n")
+    chain = dc.read_csv(
+        tmp_dir.as_uri(),
+        output={"zip": str},
+        column_types={"zip": "string"},
+        session=test_session,
+    )
+    assert sorted(chain.to_values("zip")) == ["02134", "10001"]
+
+
 def test_read_csv_tab_delimited(tmp_dir, test_session):
     df = pd.DataFrame(DF_DATA)
     path = tmp_dir / "test.csv"
