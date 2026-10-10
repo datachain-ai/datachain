@@ -129,14 +129,13 @@ class ArrowGenerator(Generator):
         if self.source:
             kwargs = self.kwargs
             if isinstance(kwargs.get("format"), CsvFileFormat):
-                # Preserve reader options when serializing source metadata as JSON.
+                # Store "csv" in the source row; CsvFileFormat isn't JSON-serializable.
+                # Use a copy so later files keep their CSV options.
                 kwargs = {**kwargs, "format": "csv"}
             arrow_file = ArrowRow(file=file, index=index, kwargs=kwargs)
 
             if self.output_schema and hasattr(vals[0], "source"):
-                # if we are reading parquet file written by datachain it might have
-                # source inside of it already, so we should not duplicate it, instead
-                # we are re-creating it of the self.source flag
+                # Replace the stored source field instead of adding another one.
                 vals[0].source = arrow_file  # type: ignore[attr-defined]
 
                 return vals
