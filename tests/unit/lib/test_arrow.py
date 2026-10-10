@@ -100,12 +100,12 @@ def test_arrow_generator_hf(tmp_path, catalog):
     stream = File(path=name, source=f"file://{tmp_path}")
     stream._set_stream(catalog, caching_enabled=False)
 
-    output, original_names = schema_to_output(ds._data.schema)
+    output, original_names = schema_to_output(ds._data.schema, ["col"])
 
     output_schema = dict_to_data_model("", output, original_names)
     func = ArrowGenerator(output_schema=output_schema)
     for obj in func.process(stream):
-        assert isinstance(obj[1].pokemon, HFClassLabel)
+        assert isinstance(obj[1].col, HFClassLabel)
 
 
 def test_arrow_generator_source_columns(tmp_path, catalog):

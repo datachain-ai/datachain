@@ -17,7 +17,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 import sqlalchemy
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 import datachain as dc
 import datachain.query.dataset as query_dataset
@@ -1914,20 +1914,17 @@ def test_parse_tabular_output_feature(tmp_dir, test_session):
     assert df_equal(df1, df[["city", "age", "first_name"]])
 
 
-def test_parse_tabular_output_dict_missing_column(tmp_dir, test_session):
-    df = pd.DataFrame(DF_DATA)
-    path = tmp_dir / "test.jsonl"
-    path.write_text(df.to_json(orient="records", lines=True))
-    chain = dc.read_storage(path.as_uri(), session=test_session).parse_tabular(
-        format="json", output={"first_name": str, "zip": str}
+def test_parse_tabular_output_dict_column_missing_in_a_file(tmp_dir, test_session):
+    (tmp_dir / "1.jsonl").write_text('{"name": "Alice", "zip": "02134"}\n')
+    (tmp_dir / "2.jsonl").write_text('{"name": "Bob"}\n')
+    chain = dc.read_storage(tmp_dir.as_uri(), session=test_session).parse_tabular(
+        format="json", output={"name": str, "zip": str}
     )
-    assert sorted(chain.to_values("first_name")) == DF_DATA["first_name"]
-    assert chain.to_values("zip") == [None] * len(DF_DATA["first_name"])
+    assert sorted(chain.to_list("name", "zip")) == [("Alice", "02134"), ("Bob", None)]
 
 
 def test_parse_tabular_output_feature_alias(tmp_dir, test_session):
     class Output(BaseModel):
-        model_config = ConfigDict(populate_by_name=True)
         value: int = Field(alias="raw")
 
     path = tmp_dir / "test.jsonl"
@@ -1960,30 +1957,66 @@ def test_parse_tabular_output_dict_columns_normalize_alike(tmp_dir, test_session
     exact = chain.parse_tabular(format="json", output={"A B": int, "A-B": int})
     assert sorted(exact.to_list("a_b", "c0_a_b")) == [(1, 10), (2, 20)]
 
-    normalized = chain.parse_tabular(format="json", output={"a_b": int})
-    with pytest.raises(ValueError, match="None of the output fields"):
-        normalized.to_values("a_b")
+    # The first column cleaned to "a_b" wins it; the other becomes "c0_a_b".
+    path = tmp_dir / "1.jsonl"
+    cleaned = dc.read_storage(path.as_uri(), session=test_session).parse_tabular(
+        format="json", output={"a_b": int, "c0_a_b": int}
+    )
+    assert cleaned.to_list("a_b", "c0_a_b") == [(1, 10)]
 
 
-def test_parse_tabular_output_dict_no_matching_columns(tmp_dir, test_session):
+def test_parse_tabular_output_dict_by_position_deprecated(tmp_dir, test_session):
     df = pd.DataFrame(DF_DATA)
     path = tmp_dir / "test.jsonl"
     path.write_text(df.to_json(orient="records", lines=True))
-    chain = dc.read_storage(path.as_uri(), session=test_session).parse_tabular(
-        format="json", output={"fname": str, "loc": str}
-    )
-    with pytest.raises(ValueError, match="None of the output fields"):
-        chain.to_values("fname")
+    output = {"fname": str, "age": int, "loc": str}
+    with pytest.warns(FutureWarning, match="by position"):
+        chain = dc.read_storage(path.as_uri(), session=test_session).parse_tabular(
+            format="json", output=output
+        )
+    df1 = chain.select("fname", "age", "loc").to_pandas()
+    df.columns = ["fname", "age", "loc"]
+    assert df_equal(df1, df)
+
+
+def test_parse_tabular_output_feature_by_position_deprecated(tmp_dir, test_session):
+    class Output(BaseModel):
+        fname: str
+        age: int
+        loc: str
+
+    df = pd.DataFrame(DF_DATA)
+    path = tmp_dir / "test.jsonl"
+    path.write_text(df.to_json(orient="records", lines=True))
+    with pytest.warns(FutureWarning, match="by position"):
+        chain = dc.read_storage(path.as_uri(), session=test_session).parse_tabular(
+            format="json", output=Output
+        )
+    df1 = chain.select("fname", "age", "loc").to_pandas()
+    df.columns = ["fname", "age", "loc"]
+    assert df_equal(df1, df)
 
 
 def test_parse_tabular_output_list(tmp_dir, test_session):
     df = pd.DataFrame(DF_DATA)
     path = tmp_dir / "test.jsonl"
     path.write_text(df.to_json(orient="records", lines=True))
-    output = ["fname", "age", "loc"]
     chain = dc.read_storage(path.as_uri(), session=test_session).parse_tabular(
-        format="json", output=output
+        format="json", output=["city", "first_name"]
     )
+    df1 = chain.select("city", "first_name").to_pandas()
+    assert df_equal(df1, df[["city", "first_name"]])
+
+
+def test_parse_tabular_output_list_by_position_deprecated(tmp_dir, test_session):
+    df = pd.DataFrame(DF_DATA)
+    path = tmp_dir / "test.jsonl"
+    path.write_text(df.to_json(orient="records", lines=True))
+    output = ["fname", "age", "loc"]
+    with pytest.warns(FutureWarning, match="by position"):
+        chain = dc.read_storage(path.as_uri(), session=test_session).parse_tabular(
+            format="json", output=output
+        )
     df1 = chain.select("fname", "age", "loc").to_pandas()
     df.columns = ["fname", "age", "loc"]
     assert df_equal(df1, df)
@@ -2049,24 +2082,26 @@ def test_to_read_csv_in_memory(tmp_dir):
     assert df_equal(df1, df)
 
 
-def test_read_csv_no_header_error(tmp_dir, test_session):
+def test_read_csv_no_header_generated_names(tmp_dir, test_session):
     df = pd.DataFrame(DF_DATA.values()).transpose()
     path = tmp_dir / "test.csv"
     df.to_csv(path, header=False, index=False)
-    with pytest.raises(DataChainParamsError):
-        dc.read_csv(path.as_uri(), header=False, session=test_session)
+    chain = dc.read_csv(path.as_uri(), header=False, session=test_session)
+    df1 = chain.select("f0", "f1", "f2").to_pandas()
+    assert (sort_df(df1).values != sort_df(df).values).sum() == 0
 
 
 def test_read_csv_no_header_output_dict(tmp_dir, test_session):
     df = pd.DataFrame(DF_DATA.values()).transpose()
     path = tmp_dir / "test.csv"
     df.to_csv(path, header=False, index=False)
-    chain = dc.read_csv(
-        path.as_uri(),
-        header=False,
-        output={"first_name": str, "age": int, "city": str},
-        session=test_session,
-    )
+    with pytest.warns(FutureWarning, match="column_names"):
+        chain = dc.read_csv(
+            path.as_uri(),
+            header=False,
+            output={"first_name": str, "age": int, "city": str},
+            session=test_session,
+        )
     df1 = chain.select("first_name", "age", "city").to_pandas()
     assert (sort_df(df1).values != sort_df(df).values).sum() == 0
 
@@ -2080,9 +2115,10 @@ def test_read_csv_no_header_output_feature(tmp_dir, test_session):
     df = pd.DataFrame(DF_DATA.values()).transpose()
     path = tmp_dir / "test.csv"
     df.to_csv(path, header=False, index=False)
-    chain = dc.read_csv(
-        path.as_uri(), header=False, output=Output, session=test_session
-    )
+    with pytest.warns(FutureWarning, match="column_names"):
+        chain = dc.read_csv(
+            path.as_uri(), header=False, output=Output, session=test_session
+        )
     df1 = chain.select("first_name", "age", "city").to_pandas()
     assert (sort_df(df1).values != sort_df(df).values).sum() == 0
 
@@ -2091,12 +2127,13 @@ def test_read_csv_no_header_output_list(tmp_dir, test_session):
     df = pd.DataFrame(DF_DATA.values()).transpose()
     path = tmp_dir / "test.csv"
     df.to_csv(path, header=False, index=False)
-    chain = dc.read_csv(
-        path.as_uri(),
-        header=False,
-        output=["first_name", "age", "city"],
-        session=test_session,
-    )
+    with pytest.warns(FutureWarning, match="column_names"):
+        chain = dc.read_csv(
+            path.as_uri(),
+            header=False,
+            output=["first_name", "age", "city"],
+            session=test_session,
+        )
     df1 = chain.select("first_name", "age", "city").to_pandas()
     assert (sort_df(df1).values != sort_df(df).values).sum() == 0
 
@@ -2400,7 +2437,12 @@ def test_read_parquet_output_by_name(tmp_dir, test_session):
 def test_read_parquet_output_list(tmp_dir, test_session):
     path = tmp_dir / "test.parquet"
     pq.write_table(pa.table({"a": [1], "b": [10]}), path)
-    chain = dc.read_parquet(path.as_uri(), output=["x", "y"], session=test_session)
+    chain = dc.read_parquet(path.as_uri(), output=["b"], session=test_session)
+    assert chain.to_list("b") == [(10,)]
+    assert "a" not in chain.schema
+
+    with pytest.warns(FutureWarning, match="by position"):
+        chain = dc.read_parquet(path.as_uri(), output=["x", "y"], session=test_session)
     assert chain.to_list("x", "y") == [(1, 10)]
 
 

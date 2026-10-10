@@ -2513,18 +2513,27 @@ class DataChain:
         model_name: str = "",
         source: bool = True,
         nrows: int | None = None,
+        columns: Sequence[str] | None = None,
+        column_types: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> "Self":
         """Generate chain from list of tabular files.
 
+        Columns are named by their file's column names, cleaned up to be valid
+        signal names: "Unit Price (USD)" becomes `unit_price_usd`. Wherever a column
+        is named below, either form works.
+
         Parameters:
-            output: Dictionary or feature class defining column names and their
-                corresponding types. List of column names is also accepted, in which
-                case columns are renamed in order and types are inferred.
+            output: Columns to read, by name. A dictionary or a model also gives
+                their types; with a list of names, types are inferred.
             column: Generated column name.
             model_name: Generated model name.
             source: Whether to include info about the source file.
             nrows: Optional row limit.
+            columns: Names of the columns to read, in this order. Can't be combined
+                with `output`.
+            column_types: Types for some columns, by name: a Python type, a pyarrow
+                type or a type name. The other columns' types are inferred.
             kwargs: Parameters to pass to pyarrow.dataset.dataset.
 
         Example:
@@ -2548,9 +2557,10 @@ class DataChain:
 
         from datachain.lib.arrow import (
             ArrowGenerator,
+            file_schemas,
             fix_pyarrow_format,
-            infer_schema,
-            schema_to_output,
+            plan_tabular_read,
+            with_column_types,
         )
 
         parse_options = kwargs.pop("parse_options", None)
@@ -2571,18 +2581,25 @@ class DataChain:
         if "file" not in self.schema or not self.count():
             raise DatasetPrepareError(self.name, "no files to parse.")
 
-        schema = None
-        source_columns = None
-        col_names = output if isinstance(output, Sequence) else None
-        if col_names or not output:
-            try:
-                schema = infer_schema(self, **kwargs, parse_options=parse_options)
-                output, _ = schema_to_output(schema, col_names)
-            except ValueError as e:
-                raise DatasetPrepareError(self.name, e) from e
-            # Field i comes from schema column i, even when a list output renames it.
-            source_columns = schema.names
+        if output is not None and columns is not None:
+            raise DatasetPrepareError(
+                self.name, "pass either output or columns, not both."
+            )
 
+        is_csv = format == "csv" or isinstance(format, CsvFileFormat)
+        try:
+            schemas = file_schemas(self, **kwargs, parse_options=parse_options)
+            read = plan_tabular_read(schemas, output, columns, column_types, is_csv)
+        except ValueError as e:
+            raise DatasetPrepareError(self.name, e) from e
+
+        cast_types = None
+        if read.column_types and is_csv:
+            kwargs["format"] = with_column_types(format, read.column_types)
+        elif read.column_types:
+            cast_types = read.column_types
+
+        output = read.output
         if isinstance(output, dict):
             model_name = model_name or column or ""
             model = dict_to_data_model(model_name, output)
@@ -2605,11 +2622,12 @@ class DataChain:
         settings = {"prefetch": 0} if nrows else {}
         return self.settings(**settings).gen(  # type: ignore[arg-type]
             ArrowGenerator(
-                schema,
+                read.schema,
                 model,
                 source,
                 nrows,
-                source_columns=source_columns,
+                source_columns=read.source_columns,
+                cast_types=cast_types,
                 parse_options=parse_options,
                 **kwargs,
             ),
