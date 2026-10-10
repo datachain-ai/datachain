@@ -33,6 +33,7 @@ class ReadOnlyQueryStep(QueryStep):
         def q(*columns):
             return sa.select(*columns)
 
+        self._record_access()
         table_name = self.catalog.warehouse.dataset_table_name(
             self.dataset, self.dataset_version
         )

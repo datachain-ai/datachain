@@ -12,7 +12,7 @@ usage: datachain job ls [-h] [-v] [-q] [--status STATUS] [--team TEAM] [--limit 
 
 This command lists jobs in Studio. You can filter jobs by their status, specify a team, and limit the number of jobs returned. By default, it shows the 20 most recent jobs.
 
-Every job shows its ID, name, status, creation time and author. `--extended` adds the compute cluster it ran on and a breakdown of its stages - see [Extended output](#extended-output).
+Every job shows its ID, name, status, creation time, start time and author. The start time is when a worker claimed the job, and `-` means no worker claimed it. `--extended` adds the compute cluster it ran on and a breakdown of its stages - see [Extended output](#extended-output).
 
 
 ## Options
@@ -36,14 +36,14 @@ Every job shows its ID, name, status, creation time and author. `--extended` add
 | `Stages` | How long the job spent in each stage |
 
 ```
-+--------------------------------------+--------+----------+----------------------+--------------+--------------+---------------------------------+
-| ID                                   | Name   | Status   | Created at           | Created by   | Cluster      | Stages                          |
-+======================================+========+==========+======================+==============+==============+=================================+
-| 0502eef6-a32e-45fa-8e3b-d20ec0abbcf0 | daily  | COMPLETE | 2026-09-16T00:00:00Z | alice        | prod-cluster | Waiting in queue: 4s            |
-|                                      |        |          |                      |              |              | Downloading files: 1h 5m        |
-|                                      |        |          |                      |              |              | Installing dependencies: 2m 30s |
-|                                      |        |          |                      |              |              | Running query: 12m 26s          |
-+--------------------------------------+--------+----------+----------------------+--------------+--------------+---------------------------------+
++--------------------------------------+--------+----------+----------------------+----------------------+--------------+--------------+---------------------------------+
+| ID                                   | Name   | Status   | Created at           | Started at           | Created by   | Cluster      | Stages                          |
++======================================+========+==========+======================+======================+==============+==============+=================================+
+| 0502eef6-a32e-45fa-8e3b-d20ec0abbcf0 | daily  | COMPLETE | 2026-09-16T00:00:00Z | 2026-09-16T00:00:04Z | alice        | prod-cluster | Waiting in queue: 4s            |
+|                                      |        |          |                      |                      |              |              | Downloading files: 1h 5m        |
+|                                      |        |          |                      |                      |              |              | Installing dependencies: 2m 30s |
+|                                      |        |          |                      |                      |              |              | Running query: 12m 26s          |
++--------------------------------------+--------+----------+----------------------+----------------------+--------------+--------------+---------------------------------+
 ```
 
 A job passes through some of: waiting in queue, requesting workers, preparation, installing dependencies, downloading files, waking up the data warehouse, and running the query. A stage still going reads `running`, and one whose timing is unavailable reads `-` - never `0s`.

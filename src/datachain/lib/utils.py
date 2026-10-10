@@ -171,7 +171,7 @@ def rebase_path(
 
 
 def type_to_str(  # noqa: C901, PLR0911, PLR0912
-    type_: type | types.EllipsisType | None,
+    type_: Any,
     subtypes: list | None = None,
     *,
     warn_with: Callable[[str], None] | None = None,

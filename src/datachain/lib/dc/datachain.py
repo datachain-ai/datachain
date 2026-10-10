@@ -770,6 +770,33 @@ class DataChain:
         except ProjectNotFoundError as e:
             raise ProjectCreateNotAllowedError("Creating project is not allowed") from e
 
+    def _record_checkpoint_reuse_access(
+        self, dataset: DatasetRecord, version: str
+    ) -> None:
+        """Record access to a reused dataset version and the dataset versions
+        it depends on.
+        """
+        catalog = self.session.catalog
+        metastore = catalog.metastore
+        metastore.record_dataset_version_access(dataset, version)
+
+        for dependency in catalog.get_dataset_dependencies(
+            dataset.name,
+            version,
+            namespace_name=dataset.project.namespace.name,
+            project_name=dataset.project.name,
+        ):
+            if dependency is None or dependency.removed:
+                continue
+            source_dataset = catalog.get_dataset(
+                dependency.name,
+                namespace_name=dependency.namespace,
+                project_name=dependency.project,
+                versions=[dependency.version],
+                include_incomplete=False,
+            )
+            metastore.record_dataset_version_access(source_dataset, dependency.version)
+
     def _resolve_checkpoint(
         self,
         name: str,
@@ -852,6 +879,15 @@ class DataChain:
                 **kwargs,
             )
 
+            # Reusing a completed save checkpoint skips QueryStep.apply(), so mark
+            # the reused output and its direct input versions as accessed here.
+            starting_step = chain._query.starting_step
+            if starting_step is not None:
+                self._record_checkpoint_reuse_access(
+                    starting_step.dataset,
+                    starting_step.dataset_version,
+                )
+
             # Link current job to this dataset version (not creator).
             # This also updates dataset_version.job_id.
             metastore.link_dataset_version_to_job(
@@ -931,12 +967,19 @@ class DataChain:
             # would be the same as previous one. To avoid duplicating exact
             # datasets, we won't create new version of it and we will return
             # current latest version instead.
-            return read_dataset(
+            result = read_dataset(
                 name,
                 namespace=project.namespace.name,
                 project=project.name,
                 **kwargs,
             )
+            starting_step = result._query.starting_step
+            if starting_step is not None:
+                self.session.catalog.metastore.record_dataset_version_access(
+                    starting_step.dataset,
+                    starting_step.dataset_version,
+                )
+            return result
 
         # Case 3: first creation of dataset
         return None
