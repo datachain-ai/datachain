@@ -1,16 +1,12 @@
-import dataclasses
 import math
 import warnings
 from collections.abc import Sequence
-from datetime import datetime
 from itertools import islice
-from types import UnionType
-from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
+from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
 from pyarrow._csv import ParseOptions
 from pyarrow.dataset import CsvFileFormat, dataset
-from pyarrow.lib import type_for_alias
 from pydantic import AliasChoices
 
 from datachain import json
@@ -35,7 +31,6 @@ if TYPE_CHECKING:
 
     from datachain.lib.data_model import DataType
     from datachain.lib.dc import DataChain
-    from datachain.lib.dc.utils import OutputType
 
 
 DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY = b"DataChain SignalSchema"
@@ -63,7 +58,6 @@ class ArrowGenerator(Generator):
         source: bool = True,
         nrows: int | None = None,
         source_columns: Sequence[str] | None = None,
-        cast_types: dict[str, pa.DataType] | None = None,
         **kwargs,
     ):
         """
@@ -77,7 +71,6 @@ class ArrowGenerator(Generator):
         nrows : Optional row limit.
         source_columns : Optional file column for each `output_schema` field, in
             field order. When omitted, fields take the file's columns in order.
-        cast_types : Optional types to cast columns to after reading them.
         kwargs: Parameters to pass to pyarrow.dataset.dataset.
         """
         super().__init__()
@@ -86,7 +79,6 @@ class ArrowGenerator(Generator):
         self.source = source
         self.nrows = nrows
         self.source_columns = source_columns
-        self.cast_types = cast_types or {}
         self.parse_options = kwargs.pop("parse_options", None)
         self.kwargs = kwargs
 
@@ -122,8 +114,6 @@ class ArrowGenerator(Generator):
 
         def iter_records():
             for record_batch in ds.to_batches(**kw):
-                if self.cast_types:
-                    record_batch = _cast_batch(record_batch, self.cast_types)
                 yield from record_batch.to_pylist()
 
         it = islice(iter_records(), self.nrows)
@@ -180,12 +170,14 @@ class ArrowGenerator(Generator):
         for (field, field_info), column in zip(
             fields.items(), self.source_columns, strict=True
         ):
-            if column not in record:
-                continue
-            vals_dict[field] = _convert_value(
-                record[column], field_info.annotation, hf_schema, column
-            )
-        return [self.output_schema.model_validate(vals_dict, by_name=True)]
+            if column in record:
+                vals_dict[field] = _convert_value(
+                    record[column], field_info.annotation, hf_schema, column
+                )
+        # Columns are already matched to fields, so aliases must not apply again.
+        return [
+            self.output_schema.model_validate(vals_dict, by_name=True, by_alias=False)
+        ]
 
     def _process_non_datachain_record(
         self,
@@ -223,14 +215,6 @@ def _convert_value(
     return val
 
 
-def _cast_batch(batch: pa.RecordBatch, types: dict[str, pa.DataType]) -> pa.RecordBatch:
-    arrays = [
-        col.cast(types[name]) if name in types else col
-        for name, col in zip(batch.schema.names, batch.columns, strict=True)
-    ]
-    return pa.RecordBatch.from_arrays(arrays, names=batch.schema.names)
-
-
 def file_schemas(chain: "DataChain", **kwargs) -> list[pa.Schema]:
     """Return the schema of each file in the chain."""
     parse_options = kwargs.pop("parse_options", None)
@@ -252,101 +236,50 @@ def infer_schema(chain: "DataChain", **kwargs) -> pa.Schema:
     return pa.unify_schemas(file_schemas(chain, **kwargs))
 
 
-@dataclasses.dataclass
-class TabularRead:
-    """How `parse_tabular` reads files: what to read and what to output."""
+def output_columns(
+    schemas: list[pa.Schema], output: "dict[str, DataType] | type[BaseModel]"
+) -> list[str] | None:
+    """Return the file column for each field of a dict or model output.
 
-    output: "dict[str, DataType] | type[BaseModel]"
-    # The schema to read every file with. None reads each file with its own.
-    schema: pa.Schema | None = None
-    # The file column for each output field. None takes columns in file order.
-    source_columns: list[str] | None = None
-    # Column types to apply when `schema` is None.
-    column_types: dict[str, pa.DataType] = dataclasses.field(default_factory=dict)
-
-
-def plan_tabular_read(
-    schemas: list[pa.Schema],
-    output: "OutputType",
-    columns: Sequence[str] | None,
-    column_types: dict[str, Any] | None,
-    is_csv: bool,
-) -> TabularRead:
-    """Resolve the columns and types to read from files with these schemas.
-
-    Names in `output`, `columns` and `column_types` can be a file's column name or
-    DataChain's cleaned version of it, e.g. "Unit Price (USD)" or "unit_price_usd".
+    A field's name can be a file's column name or DataChain's cleaned version of
+    it, e.g. "Unit Price (USD)" or "unit_price_usd". Returns None when some name
+    isn't a column, so the output keeps its old meaning: fields take the file's
+    columns in order.
     """
-    signal_schema = _get_datachain_schema(schemas[0])
-    if signal_schema and column_types:
-        raise ValueError("column_types can't be used with files written by DataChain")
-    names = (
-        list(signal_schema.values)
-        if signal_schema
-        else list(dict.fromkeys(n for s in schemas for n in s.names))
-    )
-    lookup = _ColumnLookup(names)
-    types = lookup.resolve_types(column_types or {})
-
-    if isinstance(output, Sequence):
-        if unknown := [n for n in output if lookup.find(n) is None]:
-            _warn_positional_output(unknown, names)
-            schema = _with_types(pa.unify_schemas(schemas), types)
-            out, _ = schema_to_output(schema, output)
-            return TabularRead(out, schema, schema.names)
-        columns, output = output, None
-
-    if output is None:
-        schema = _with_types(pa.unify_schemas(schemas), types)
-        out, originals = schema_to_output(schema)
-        if columns is None:
-            return TabularRead(out, schema, originals)
-        selected = lookup.select(columns)
-        by_column = dict(zip(originals, out.items(), strict=True))
-        out = dict(by_column[c] for c in selected)
-        if not signal_schema:
-            schema = pa.schema(
-                [schema.field(c) for c in selected], metadata=schema.metadata
-            )
-        return TabularRead(out, schema, selected)
-
-    spec: dict[str, DataType] | type[BaseModel] | None = (
-        output if isinstance(output, dict) else ModelStore.to_pydantic(output)
-    )
-    if spec is None:
-        raise ValueError(f"output can't be {output!r}")
-    if signal_schema:
+    if _get_datachain_schema(schemas[0]):
         # Files written by DataChain store their own schema and match it by name.
-        return TabularRead(spec)
-
-    fields = _output_fields(spec)
+        return None
+    names = list(dict.fromkeys(n for s in schemas for n in s.names))
+    lookup = _ColumnLookup(names)
+    fields = _output_fields(output)
     found = [
         next((c for n in candidates if (c := lookup.find(n)) is not None), None)
-        for _, candidates, _ in fields
+        for _, candidates in fields
     ]
     if None in found:
-        unknown = [f[1][-1] for f, c in zip(fields, found, strict=True) if c is None]
-        _warn_positional_output(unknown, names)
-        return TabularRead(spec, column_types=types)
-
-    resolved = [c for c in found if c is not None]
-    if len(set(resolved)) < len(resolved):
+        unknown = [f[1][0] for f, c in zip(fields, found, strict=True) if c is None]
+        warnings.warn(
+            f"output names {unknown} are not columns of the file, so output is "
+            "applied to the columns in order. Applying output by position is "
+            "deprecated and will become an error. Name output by the file's "
+            "columns and rename them after reading, e.g. with mutate(). "
+            f"Available columns: {names}",
+            FutureWarning,
+            stacklevel=4,
+        )
+        return None
+    columns = [c for c in found if c is not None]
+    if len(set(columns)) < len(columns):
         raise ValueError(
             f"output names the same column twice: {[f[0] for f in fields]}"
         )
-    if is_csv:
-        # Read text columns as text, so values like "02134" keep their zeros.
-        for (_, _, anno), column in zip(fields, resolved, strict=True):
-            if column not in types and _is_str(anno):
-                types[column] = pa.string()
-    return TabularRead(spec, source_columns=resolved, column_types=types)
+    return columns
 
 
 class _ColumnLookup:
     """Finds a file's columns by their name or by DataChain's cleaned name."""
 
     def __init__(self, names: list[str]):
-        self.names = names
         self.raw = normalize_col_names(names)
         self.cleaned = {raw: clean for clean, raw in self.raw.items()}
 
@@ -355,109 +288,28 @@ class _ColumnLookup:
             return name
         return self.raw.get(name)
 
-    def select(self, names: Sequence[str]) -> list[str]:
-        if missing := [n for n in names if self.find(n) is None]:
-            raise ValueError(
-                f"Columns {missing} not found. Available columns: {self.names}"
-            )
-        return list(dict.fromkeys(self.find(n) for n in names))  # type: ignore[misc]
-
-    def resolve_types(self, types: dict[str, Any]) -> dict[str, pa.DataType]:
-        if unknown := [n for n in types if self.find(n) is None]:
-            warnings.warn(
-                f"column_types names {unknown} are not columns of the file and are "
-                f"ignored. Available columns: {self.names}",
-                stacklevel=4,
-            )
-        return {
-            self.find(n): to_arrow_type(t)  # type: ignore[misc]
-            for n, t in types.items()
-            if self.find(n) is not None
-        }
-
-
-def _warn_positional_output(unknown: list[str], names: list[str]) -> None:
-    warnings.warn(
-        f"output names {unknown} are not columns of the file, so output is applied "
-        "to the columns in order. Applying output by position is deprecated and "
-        "will become an error. To name columns by position, pass column_names=. "
-        f"Available columns: {names}",
-        FutureWarning,
-        stacklevel=4,
-    )
-
 
 def _output_fields(
     output: "dict[str, DataType] | type[BaseModel]",
-) -> list[tuple[str, list[str], Any]]:
-    """Return each output field's name, the names it may read, and its type."""
+) -> list[tuple[str, list[str]]]:
+    """Return each output field's name and the column names it may read."""
     if isinstance(output, dict):
-        return [(name, [name], typ) for name, typ in output.items()]
+        return [(name, [name]) for name in output]
     return [
-        (name, _field_names(name, info), info.annotation)
-        for name, info in output.model_fields.items()
+        (name, _field_names(name, info)) for name, info in output.model_fields.items()
     ]
 
 
 def _field_names(field: str, field_info: "FieldInfo") -> list[str]:
-    """Return the column names a field reads from: its aliases, then its name."""
+    """Return the column names a model field reads, in the model's alias order."""
     alias = field_info.validation_alias
     if isinstance(alias, AliasChoices):
-        aliases = [a for a in alias.choices if isinstance(a, str)]
+        names = [a for a in alias.choices if isinstance(a, str)]
     elif isinstance(alias, str):
-        aliases = [alias]
+        names = [alias]
     else:
-        aliases = []
-    return [*(a for a in aliases if a != field), field]
-
-
-def _is_str(anno: Any) -> bool:
-    args = [a for a in get_args(anno) if a is not type(None)]
-    return anno is str or (get_origin(anno) in (Union, UnionType) and args == [str])
-
-
-def _with_types(schema: pa.Schema, types: dict[str, pa.DataType]) -> pa.Schema:
-    if not types:
-        return schema
-    return pa.schema(
-        [f.with_type(types[f.name]) if f.name in types else f for f in schema],
-        metadata=schema.metadata,
-    )
-
-
-def to_arrow_type(typ: Any) -> pa.DataType:
-    """Return the pyarrow type for a pyarrow type, a type name or a Python type."""
-    if isinstance(typ, pa.DataType):
-        return typ
-    if isinstance(typ, str):
-        return type_for_alias(typ)
-    if typ in _ARROW_TYPES:
-        return _ARROW_TYPES[typ]
-    raise ValueError(f"Can't read a column as {typ!r}")
-
-
-_ARROW_TYPES: dict[Any, pa.DataType] = {
-    str: pa.string(),
-    int: pa.int64(),
-    float: pa.float64(),
-    bool: pa.bool_(),
-    bytes: pa.binary(),
-    datetime: pa.timestamp("us"),
-}
-
-
-def with_column_types(format: Any, types: dict[str, pa.DataType]) -> Any:
-    """Return a CSV format that parses these columns with these types."""
-    if format == "csv":
-        format = CsvFileFormat()
-    opts = format.default_fragment_scan_options
-    convert = opts.convert_options
-    convert.column_types = {**dict(convert.column_types), **types}
-    return CsvFileFormat(
-        parse_options=format.parse_options,
-        read_options=opts.read_options,
-        convert_options=convert,
-    )
+        names = []
+    return names if field in names else [*names, field]
 
 
 def schema_to_output(
@@ -499,6 +351,8 @@ def schema_to_output(
 
 def arrow_type_mapper(col_type: pa.DataType, column: str = "") -> type:  # noqa: PLR0911
     """Convert pyarrow types to basic types."""
+    from datetime import datetime
+
     if pa.types.is_timestamp(col_type):
         return datetime
     if pa.types.is_binary(col_type):

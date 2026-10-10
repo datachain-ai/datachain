@@ -17,7 +17,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 import sqlalchemy
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 import datachain as dc
 import datachain.query.dataset as query_dataset
@@ -1935,6 +1935,41 @@ def test_parse_tabular_output_feature_alias(tmp_dir, test_session):
     assert chain.to_values("value") == [7]
 
 
+def test_parse_tabular_output_feature_aliases_apply_once(tmp_dir, test_session):
+    class Output(BaseModel):
+        model_config = ConfigDict(populate_by_name=True)
+        a: int = Field(alias="b")
+        b: int = Field(alias="a")
+
+    path = tmp_dir / "test.jsonl"
+    path.write_text('{"a": 1, "b": 2}\n')
+    chain = dc.read_storage(path.as_uri(), session=test_session).parse_tabular(
+        format="json", output=Output
+    )
+    assert chain.to_list("a", "b") == [(2, 1)]
+
+
+def test_parse_tabular_output_feature_alias_choices_order(tmp_dir, test_session):
+    class Output(BaseModel):
+        a: int = Field(validation_alias=AliasChoices("a", "b"))
+
+    path = tmp_dir / "test.jsonl"
+    path.write_text('{"a": 1, "b": 2}\n')
+    chain = dc.read_storage(path.as_uri(), session=test_session).parse_tabular(
+        format="json", output=Output
+    )
+    assert chain.to_values("a") == [1]
+
+
+def test_parse_tabular_output_dict_same_column_twice(tmp_dir, test_session):
+    path = tmp_dir / "test.jsonl"
+    path.write_text('{"ZIP Code": "02134"}\n')
+    with pytest.raises(DatasetPrepareError, match="same column twice"):
+        dc.read_storage(path.as_uri(), session=test_session).parse_tabular(
+            format="json", output={"ZIP Code": str, "zip_code": str}
+        )
+
+
 def test_parse_tabular_output_dict_missing_column_normalizes_alike(
     tmp_dir, test_session
 ):
@@ -2001,22 +2036,10 @@ def test_parse_tabular_output_list(tmp_dir, test_session):
     df = pd.DataFrame(DF_DATA)
     path = tmp_dir / "test.jsonl"
     path.write_text(df.to_json(orient="records", lines=True))
-    chain = dc.read_storage(path.as_uri(), session=test_session).parse_tabular(
-        format="json", output=["city", "first_name"]
-    )
-    df1 = chain.select("city", "first_name").to_pandas()
-    assert df_equal(df1, df[["city", "first_name"]])
-
-
-def test_parse_tabular_output_list_by_position_deprecated(tmp_dir, test_session):
-    df = pd.DataFrame(DF_DATA)
-    path = tmp_dir / "test.jsonl"
-    path.write_text(df.to_json(orient="records", lines=True))
     output = ["fname", "age", "loc"]
-    with pytest.warns(FutureWarning, match="by position"):
-        chain = dc.read_storage(path.as_uri(), session=test_session).parse_tabular(
-            format="json", output=output
-        )
+    chain = dc.read_storage(path.as_uri(), session=test_session).parse_tabular(
+        format="json", output=output
+    )
     df1 = chain.select("fname", "age", "loc").to_pandas()
     df.columns = ["fname", "age", "loc"]
     assert df_equal(df1, df)
@@ -2082,26 +2105,24 @@ def test_to_read_csv_in_memory(tmp_dir):
     assert df_equal(df1, df)
 
 
-def test_read_csv_no_header_generated_names(tmp_dir, test_session):
+def test_read_csv_no_header_error(tmp_dir, test_session):
     df = pd.DataFrame(DF_DATA.values()).transpose()
     path = tmp_dir / "test.csv"
     df.to_csv(path, header=False, index=False)
-    chain = dc.read_csv(path.as_uri(), header=False, session=test_session)
-    df1 = chain.select("f0", "f1", "f2").to_pandas()
-    assert (sort_df(df1).values != sort_df(df).values).sum() == 0
+    with pytest.raises(DataChainParamsError):
+        dc.read_csv(path.as_uri(), header=False, session=test_session)
 
 
 def test_read_csv_no_header_output_dict(tmp_dir, test_session):
     df = pd.DataFrame(DF_DATA.values()).transpose()
     path = tmp_dir / "test.csv"
     df.to_csv(path, header=False, index=False)
-    with pytest.warns(FutureWarning, match="column_names"):
-        chain = dc.read_csv(
-            path.as_uri(),
-            header=False,
-            output={"first_name": str, "age": int, "city": str},
-            session=test_session,
-        )
+    chain = dc.read_csv(
+        path.as_uri(),
+        header=False,
+        output={"first_name": str, "age": int, "city": str},
+        session=test_session,
+    )
     df1 = chain.select("first_name", "age", "city").to_pandas()
     assert (sort_df(df1).values != sort_df(df).values).sum() == 0
 
@@ -2115,10 +2136,9 @@ def test_read_csv_no_header_output_feature(tmp_dir, test_session):
     df = pd.DataFrame(DF_DATA.values()).transpose()
     path = tmp_dir / "test.csv"
     df.to_csv(path, header=False, index=False)
-    with pytest.warns(FutureWarning, match="column_names"):
-        chain = dc.read_csv(
-            path.as_uri(), header=False, output=Output, session=test_session
-        )
+    chain = dc.read_csv(
+        path.as_uri(), header=False, output=Output, session=test_session
+    )
     df1 = chain.select("first_name", "age", "city").to_pandas()
     assert (sort_df(df1).values != sort_df(df).values).sum() == 0
 
@@ -2127,13 +2147,12 @@ def test_read_csv_no_header_output_list(tmp_dir, test_session):
     df = pd.DataFrame(DF_DATA.values()).transpose()
     path = tmp_dir / "test.csv"
     df.to_csv(path, header=False, index=False)
-    with pytest.warns(FutureWarning, match="column_names"):
-        chain = dc.read_csv(
-            path.as_uri(),
-            header=False,
-            output=["first_name", "age", "city"],
-            session=test_session,
-        )
+    chain = dc.read_csv(
+        path.as_uri(),
+        header=False,
+        output=["first_name", "age", "city"],
+        session=test_session,
+    )
     df1 = chain.select("first_name", "age", "city").to_pandas()
     assert (sort_df(df1).values != sort_df(df).values).sum() == 0
 
@@ -2149,6 +2168,31 @@ def test_read_csv_output_by_header_name(tmp_dir, test_session):
     assert sorted(chain.to_list("city", "first_name")) == sorted(
         zip(DF_DATA["city"], DF_DATA["first_name"], strict=True)
     )
+
+
+@pytest.mark.parametrize("key", ["", "c0"])
+def test_read_csv_output_blank_header(tmp_dir, test_session, key):
+    # pandas writes its index under a blank header, which DataChain names c0.
+    path = tmp_dir / "indexed.csv"
+    path.write_text(",value\n0,10\n1,20\n")
+    chain = dc.read_csv(
+        path.as_uri(), output={key: int, "value": int}, session=test_session
+    )
+    assert sorted(chain.to_list("c0", "value")) == [(0, 10), (1, 20)]
+
+
+def test_read_csv_output_model_cleaned_names(tmp_dir, test_session):
+    class Order(BaseModel):
+        unit_price_usd: float
+        customer_first_name: str
+
+    path = tmp_dir / "messy.csv"
+    path.write_text("Customer First Name,Unit Price (USD)\nAlice,19.99\nBob,5\n")
+    chain = dc.read_csv(path.as_uri(), output=Order, session=test_session)
+    assert sorted(chain.to_list("customer_first_name", "unit_price_usd")) == [
+        ("Alice", 19.99),
+        ("Bob", 5.0),
+    ]
 
 
 def test_read_csv_tab_delimited(tmp_dir, test_session):
@@ -2437,12 +2481,7 @@ def test_read_parquet_output_by_name(tmp_dir, test_session):
 def test_read_parquet_output_list(tmp_dir, test_session):
     path = tmp_dir / "test.parquet"
     pq.write_table(pa.table({"a": [1], "b": [10]}), path)
-    chain = dc.read_parquet(path.as_uri(), output=["b"], session=test_session)
-    assert chain.to_list("b") == [(10,)]
-    assert "a" not in chain.schema
-
-    with pytest.warns(FutureWarning, match="by position"):
-        chain = dc.read_parquet(path.as_uri(), output=["x", "y"], session=test_session)
+    chain = dc.read_parquet(path.as_uri(), output=["x", "y"], session=test_session)
     assert chain.to_list("x", "y") == [(1, 10)]
 
 

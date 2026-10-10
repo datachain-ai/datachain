@@ -1,5 +1,4 @@
 import os
-from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from datachain.lib.dc.utils import OutputType
@@ -22,15 +21,9 @@ def read_parquet(
     source: bool = True,
     session: Session | None = None,
     settings: dict | None = None,
-    columns: Sequence[str] | None = None,
-    column_types: dict[str, Any] | None = None,
     **kwargs,
 ) -> "DataChain":
     """Generate chain from parquet files.
-
-    Columns are named by the file's column names, cleaned up to be valid signal
-    names: "Unit Price (USD)" becomes `unit_price_usd`. Wherever a column is named
-    below, either form works.
 
     Parameters:
         path: Storage path(s) or URI(s). Can be a local path or start with a
@@ -42,17 +35,14 @@ def read_parquet(
               - `{a,b}` : brace expansion list
               - `{1..9}` : brace numeric or alphabetic range
         partitioning: Any pyarrow partitioning schema.
-        output: Columns to read, by name. A dictionary or a model also gives
-            their types; with a list of names, types are inferred.
+        output: Dictionary or feature class defining column names and their
+            corresponding types. List of column names is also accepted, in which
+            case types will be inferred.
         column: Created column name.
         model_name: Generated model name.
         source: Whether to include info about the source file.
         session: Session to use for the chain.
         settings: Settings to use for the chain.
-        columns: Names of the columns to read, in this order. Can't be combined
-            with `output`.
-        column_types: Types to cast some columns to, by name: a Python type, a
-            pyarrow type or a type name.
 
     Example:
         Reading a single file:
@@ -84,8 +74,6 @@ def read_parquet(
         column=column,
         model_name=model_name,
         source=source,
-        columns=columns,
-        column_types=column_types,
         format="parquet",
         partitioning=partitioning,
     )
