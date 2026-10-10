@@ -62,7 +62,7 @@ class ArrowGenerator(Generator):
         output_schema: type["BaseModel"] | None = None,
         source: bool = True,
         nrows: int | None = None,
-        source_columns: Sequence[str] | None = None,
+        source_columns: Sequence[str | Sequence[str]] | None = None,
         cast_types: dict[str, pa.DataType] | None = None,
         **kwargs,
     ):
@@ -76,7 +76,8 @@ class ArrowGenerator(Generator):
         source : Whether to include info about the source file.
         nrows : Optional row limit.
         source_columns : Optional file column for each `output_schema` field, in
-            field order. When omitted, fields take the file's columns in order.
+            field order, or several to try in turn: each file uses the first it
+            has. When omitted, fields take the file's columns in order.
         cast_types : Optional types to cast columns to after reading them.
         kwargs: Parameters to pass to pyarrow.dataset.dataset.
         """
@@ -85,7 +86,11 @@ class ArrowGenerator(Generator):
         self.output_schema = output_schema
         self.source = source
         self.nrows = nrows
-        self.source_columns = source_columns
+        self.source_columns = (
+            None
+            if source_columns is None
+            else [[c] if isinstance(c, str) else list(c) for c in source_columns]
+        )
         self.cast_types = cast_types or {}
         self.parse_options = kwargs.pop("parse_options", None)
         self.kwargs = kwargs
@@ -114,11 +119,15 @@ class ArrowGenerator(Generator):
         kw: dict[str, Any] = {}
         if self.nrows:
             kw["batch_size"] = min(self.DEFAULT_BATCH_SIZE, self.nrows)
+        columns: list[str | None] = []
         if self.source_columns is not None and not use_datachain_schema:
-            # A file may lack some columns when several files are read together.
+            # Files read together may lack some columns, or name them differently.
             present = set(ds.schema.names)
-            columns = dict.fromkeys(self.source_columns)
-            kw["columns"] = [c for c in columns if c in present]
+            columns = [
+                next((c for c in candidates if c in present), None)
+                for candidates in self.source_columns
+            ]
+            kw["columns"] = [c for c in dict.fromkeys(columns) if c is not None]
 
         def iter_records():
             for record_batch in ds.to_batches(**kw):
@@ -132,7 +141,7 @@ class ArrowGenerator(Generator):
         ) as pbar:
             for index, record in enumerate(pbar):
                 yield self._process_record(
-                    record, file, index, hf_schema, use_datachain_schema
+                    record, file, index, hf_schema, use_datachain_schema, columns
                 )
 
     def _process_record(
@@ -142,11 +151,12 @@ class ArrowGenerator(Generator):
         index: int,
         hf_schema: tuple["Features", dict[str, "DataType"]] | None,
         use_datachain_schema: bool,
+        columns: list[str | None],
     ):
         if use_datachain_schema and self.output_schema:
             vals = [_nested_model_instantiate(record, self.output_schema)]
         elif self.source_columns is not None:
-            vals = self._process_record_by_name(record, hf_schema)
+            vals = self._process_record_by_name(record, hf_schema, columns)
         else:
             vals = self._process_non_datachain_record(record, hf_schema)
 
@@ -172,19 +182,16 @@ class ArrowGenerator(Generator):
         self,
         record: dict[str, Any],
         hf_schema: tuple["Features", dict[str, "DataType"]] | None,
+        columns: list[str | None],
     ):
         assert self.output_schema
-        assert self.source_columns is not None
         fields = self.output_schema.model_fields
         vals_dict = {}
-        for (field, field_info), column in zip(
-            fields.items(), self.source_columns, strict=True
-        ):
-            if column not in record:
-                continue
-            vals_dict[field] = _convert_value(
-                record[column], field_info.annotation, hf_schema, column
-            )
+        for (field, field_info), column in zip(fields.items(), columns, strict=True):
+            if column is not None:
+                vals_dict[field] = _convert_value(
+                    record[column], field_info.annotation, hf_schema, column
+                )
         # Columns are already matched to fields, so aliases must not apply again.
         return [
             self.output_schema.model_validate(vals_dict, by_name=True, by_alias=False)
@@ -265,8 +272,8 @@ class TabularRead:
     output: "dict[str, DataType] | type[BaseModel]"
     # The schema to read every file with. None reads each file with its own.
     schema: pa.Schema | None = None
-    # The file column for each output field. None takes columns in file order.
-    source_columns: list[str] | None = None
+    # The file columns each output field can read. None takes them in file order.
+    source_columns: Sequence[str | Sequence[str]] | None = None
     # Column types to apply when `schema` is None.
     column_types: dict[str, pa.DataType] = dataclasses.field(default_factory=dict)
 
@@ -302,7 +309,7 @@ def plan_tabular_read(
             return read
         columns, output = output, None
     if output is None:
-        return _plan_columns(schemas, columns, lookup, types, by_signals)
+        return _plan_columns(schemas, columns, lookup, types, signal_schema)
     return _plan_output(output, lookup, types, is_csv, by_signals)
 
 
@@ -337,7 +344,7 @@ def _plan_columns(
     columns: Sequence[str] | None,
     lookup: "_ColumnLookup",
     types: dict[str, pa.DataType],
-    by_signals: bool,
+    signal_schema: SignalSchema | None,
 ) -> TabularRead:
     """Plan reading all columns, or the selected ones, with inferred types."""
     if columns is None:
@@ -345,26 +352,28 @@ def _plan_columns(
         out, originals = schema_to_output(schema)
         return TabularRead(out, schema, originals)
     selected = lookup.select(columns)
-    if by_signals or _get_hf_schema(schemas[0]):
-        # These map all columns together, so select from the full output.
-        schema = _merge(schemas, types)
-        out, originals = schema_to_output(schema)
-        by_column = dict(zip(originals, out.items(), strict=True))
-        out = dict(by_column[c] for c in selected)
-        if not by_signals:
-            schema = pa.schema(
-                [schema.field(c) for c in selected], metadata=schema.metadata
-            )
-        return TabularRead(out, schema, selected)
+
+    def keep(name: str) -> bool:
+        if signal_schema:
+            # A DataChain signal is stored as its nested `signal.field` columns.
+            return any(name == c or name.startswith(f"{c}.") for c in selected)
+        return name in selected
+
     # Only the selected columns need compatible, supported types.
     projected = [
-        pa.schema([s.field(c) for c in selected if c in s.names]) for s in schemas
+        pa.schema([f for f in s if keep(f.name)], metadata=s.metadata) for s in schemas
     ]
-    merged = _merge(projected, types)
-    schema = pa.schema([merged.field(c) for c in selected])
+    merged = _merge(projected, types).with_metadata(schemas[0].metadata)
+    if signal_schema:
+        out = {c: signal_schema.values[c] for c in selected}
+        return TabularRead(out, merged, selected)
+    schema = pa.schema(
+        [merged.field(c) for c in selected], metadata=schemas[0].metadata
+    )
+    out, originals = schema_to_output(schema)
+    # Signals keep the names cleaned over the full header, as without selection.
     out = {
-        lookup.cleaned[c]: _arrow_field_type_mapper(schema.field(c), lookup.cleaned[c])
-        for c in selected
+        lookup.cleaned[c]: typ for c, typ in zip(originals, out.values(), strict=True)
     }
     return TabularRead(out, schema, selected)
 
@@ -388,25 +397,22 @@ def _plan_output(
 
     fields = _output_fields(spec)
     found = [
-        next((c for n in candidates if (c := lookup.find(n)) is not None), None)
+        list(dict.fromkeys(c for n in candidates if (c := lookup.find(n)) is not None))
         for _, candidates, _ in fields
     ]
-    if None in found:
-        unknown = [f[0] for f, c in zip(fields, found, strict=True) if c is None]
+    if not all(found):
+        unknown = [f[0] for f, c in zip(fields, found, strict=True) if not c]
         _warn_positional_output(unknown, lookup.names)
         return TabularRead(spec, column_types=types)
-
-    resolved = [c for c in found if c is not None]
-    if len(set(resolved)) < len(resolved):
-        raise ValueError(
-            f"output names the same column twice: {[f[0] for f in fields]}"
-        )
+    if isinstance(spec, dict) and len({c[0] for c in found}) < len(found):
+        raise ValueError(f"output names the same column twice: {list(spec)}")
     if is_csv:
         # Read text columns as text, so values like "02134" keep their zeros.
-        for (_, _, anno), column in zip(fields, resolved, strict=True):
-            if column not in types and _is_str(anno):
-                types[column] = pa.string()
-    return TabularRead(spec, source_columns=resolved, column_types=types)
+        for (_, _, anno), candidates in zip(fields, found, strict=True):
+            for column in candidates:
+                if column not in types and _is_str(anno):
+                    types[column] = pa.string()
+    return TabularRead(spec, source_columns=found, column_types=types)
 
 
 class _ColumnLookup:
@@ -460,8 +466,9 @@ def _output_fields(
     """Return each output field's name, the names it may read, and its type."""
     if isinstance(output, dict):
         return [(name, [name], typ) for name, typ in output.items()]
+    by_alias = output.model_config.get("validate_by_alias", True)
     return [
-        (name, _field_names(name, info), info.annotation)
+        (name, _field_names(name, info) if by_alias else [name], info.annotation)
         for name, info in output.model_fields.items()
     ]
 

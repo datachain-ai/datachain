@@ -1961,6 +1961,33 @@ def test_parse_tabular_output_feature_alias_choices_order(tmp_dir, test_session)
     assert chain.to_values("a") == [1]
 
 
+def test_parse_tabular_output_feature_alias_per_file(tmp_dir, test_session):
+    class Output(BaseModel):
+        model_config = ConfigDict(populate_by_name=True)
+        value: int = Field(default=0, validation_alias=AliasChoices("a", "b"))
+
+    (tmp_dir / "1.jsonl").write_text('{"a": 1}\n')
+    (tmp_dir / "2.jsonl").write_text('{"b": 2}\n')
+    chain = dc.read_storage(tmp_dir.as_uri(), session=test_session).parse_tabular(
+        format="json", output=Output
+    )
+    assert sorted(chain.to_values("value")) == [1, 2]
+
+
+def test_parse_tabular_output_feature_aliases_disabled(tmp_dir, test_session):
+    class Output(BaseModel):
+        model_config = ConfigDict(validate_by_alias=False, validate_by_name=True)
+        a: int = Field(alias="b")
+        b: int = Field(alias="a")
+
+    path = tmp_dir / "test.jsonl"
+    path.write_text('{"a": 1, "b": 2}\n')
+    chain = dc.read_storage(path.as_uri(), session=test_session).parse_tabular(
+        format="json", output=Output
+    )
+    assert chain.to_list("a", "b") == [(1, 2)]
+
+
 def test_parse_tabular_output_dict_same_column_twice(tmp_dir, test_session):
     path = tmp_dir / "test.jsonl"
     path.write_text('{"ZIP Code": "02134"}\n')

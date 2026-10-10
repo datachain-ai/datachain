@@ -261,3 +261,22 @@ def test_read_parquet_columns_ignore_unselected_types(tmp_dir, test_session):
     pq.write_table(pa.table({"a": [8], "d": ["text"]}), tmp_dir / "2.parquet")
     chain = dc.read_parquet(tmp_dir.as_uri(), columns=["a"], session=test_session)
     assert sorted(chain.to_values("a")) == [7, 8]
+
+
+@pytest.mark.parametrize("writer", ["datachain", "huggingface"])
+def test_read_parquet_columns_ignore_unselected_types_with_metadata(
+    tmp_dir, test_session, writer
+):
+    rows = [{"a": 1, "other": 123}, {"a": 2, "other": "text"}]
+    for i, row in enumerate(rows):
+        path = tmp_dir / f"{i}.parquet"
+        if writer == "datachain":
+            values = {k: [v] for k, v in row.items()}
+            dc.read_values(**values, session=test_session).to_parquet(path)
+        else:
+            from datasets import Dataset
+
+            Dataset.from_dict({k: [v] for k, v in row.items()}).to_parquet(path)
+    chain = dc.read_parquet(tmp_dir.as_uri(), columns=["a"], session=test_session)
+    assert signals(chain) == ["a"]
+    assert sorted(chain.to_values("a")) == [1, 2]
