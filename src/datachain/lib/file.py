@@ -2057,15 +2057,23 @@ class ArrowRow(DataModel):
     @contextmanager
     def open(self):
         """Stream row contents from indexed file."""
-        from pyarrow.dataset import dataset
+        from pyarrow.csv import ParseOptions, ReadOptions
+        from pyarrow.dataset import CsvFileFormat, dataset
+
+        kwargs = dict(self.kwargs)
+        if csv := kwargs.pop("csv", None):
+            kwargs["format"] = CsvFileFormat(
+                read_options=ReadOptions(**csv["read_options"]),
+                parse_options=ParseOptions(**csv["parse_options"]),
+            )
 
         if self.file._caching_enabled:
             self.file.ensure_cached()
             path = self.file.get_local_path()
-            ds = dataset(path, **self.kwargs)
+            ds = dataset(path, **kwargs)
         else:
             path = self.file.get_fs_path()
-            ds = dataset(path, filesystem=self.file.get_fs(), **self.kwargs)
+            ds = dataset(path, filesystem=self.file.get_fs(), **kwargs)
 
         return ds.take([self.index]).to_reader()
 

@@ -2062,6 +2062,30 @@ def test_read_csv_column_types_several_files(tmp_dir, test_session):
     assert sorted(chain.to_values("zip")) == ["02134", "10001"]
 
 
+@pytest.mark.parametrize(
+    "content,kwargs,expected",
+    [
+        ("1,10\n2,20\n", {"header": False, "output": ["a", "b"]}, None),
+        ("a;b\n1;10\n2;20\n", {"delimiter": ";"}, None),
+        (
+            "a,b\n'x\ny',10\n'z',20\n",
+            {"parse_options": {"quote_char": "'", "newlines_in_values": True}},
+            [{"a": "x\ny", "b": 10}, {"a": "z", "b": 20}],
+        ),
+    ],
+)
+def test_read_csv_source_reads_its_row(
+    tmp_dir, test_session, content, kwargs, expected
+):
+    path = tmp_dir / "test.csv"
+    path.write_text(content)
+    chain = dc.read_csv(path.as_uri(), session=test_session, **kwargs)
+    rows = chain.order_by("source.index").to_values("source")
+    expected = expected or [{"a": 1, "b": 10}, {"a": 2, "b": 20}]
+    assert [row.read() for row in rows] == expected
+    assert [row.read() for row in rows] == expected  # a source can be read again
+
+
 def test_read_csv_tab_delimited(tmp_dir, test_session):
     df = pd.DataFrame(DF_DATA)
     path = tmp_dir / "test.csv"
