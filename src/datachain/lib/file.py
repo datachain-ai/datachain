@@ -2078,7 +2078,12 @@ class ArrowRow(DataModel):
         return ds.take([self.index]).to_reader()
 
     def read(self):
-        """Returns row contents as dict."""
+        """Returns row contents as dict.
+
+        Best effort, with no guarantee to match the stored row: it parses the
+        file again from the start up to this row, and not every reader option is
+        kept, e.g. column types or an `invalid_row_handler`.
+        """
         with self.open() as record_batch:
             return record_batch.to_pylist()[0]
 
