@@ -657,7 +657,7 @@ def save_video_fragment(
 
     start_ms = int(start * 1000)
     end_ms = int(end * 1000)
-    path_hash = sha256(f"{video.source}/{video.path}".encode()).hexdigest()[:8]
+    path_hash = sha256(f"{video.source}/{video.path}".encode()).hexdigest()[:16]
     output_file = posixpath.join(
         destination,
         f"{video.get_file_stem()}_{path_hash}_{start_ms:06d}_{end_ms:06d}.{format}",
