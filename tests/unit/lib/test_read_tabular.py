@@ -280,3 +280,22 @@ def test_read_parquet_columns_ignore_unselected_types_with_metadata(
     chain = dc.read_parquet(tmp_dir.as_uri(), columns=["a"], session=test_session)
     assert signals(chain) == ["a"]
     assert sorted(chain.to_values("a")) == [1, 2]
+
+
+def test_read_csv_options_apply_to_every_file(tmp_dir, test_session):
+    (tmp_dir / "1.csv").write_text("x,y\n1,02134\n")
+    (tmp_dir / "2.csv").write_text("x,y\n2,10001\n")
+    chain = dc.read_csv(
+        tmp_dir.as_uri(),
+        column_names=["a", "b"],
+        column_types={"b": str},
+        session=test_session,
+    )
+    assert sorted(chain.to_list("a", "b")) == [(1, "02134"), (2, "10001")]
+
+
+def test_read_csv_no_header_every_file(tmp_dir, test_session):
+    (tmp_dir / "1.csv").write_text("1,10\n")
+    (tmp_dir / "2.csv").write_text("2,20\n")
+    chain = dc.read_csv(tmp_dir.as_uri(), header=False, session=test_session)
+    assert sorted(chain.to_list("f0", "f1")) == [(1, 10), (2, 20)]
