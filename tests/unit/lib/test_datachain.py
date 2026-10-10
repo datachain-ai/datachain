@@ -2078,7 +2078,7 @@ def test_read_csv_source_reads_its_row(
     tmp_dir, test_session, content, kwargs, expected
 ):
     path = tmp_dir / "test.csv"
-    path.write_text(content)
+    path.write_bytes(content.encode())  # "\n" line ends on every platform
     chain = dc.read_csv(path.as_uri(), session=test_session, **kwargs)
     rows = chain.order_by("source.index").to_values("source")
     expected = expected or [{"a": 1, "b": 10}, {"a": 2, "b": 20}]
