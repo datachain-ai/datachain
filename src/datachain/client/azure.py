@@ -1,8 +1,11 @@
 import shutil
-from collections.abc import Iterator
+from collections.abc import AsyncGenerator, Iterator
 from contextlib import contextmanager
+from email.utils import parsedate_to_datetime
 from tempfile import SpooledTemporaryFile
 from typing import TYPE_CHECKING, Any
+from urllib.parse import unquote
+from xml.etree.ElementTree import Element
 
 from adlfs import AzureBlobFileSystem
 from azure.core.exceptions import (
@@ -15,9 +18,8 @@ from azure.storage.blob import BlobServiceClient
 from fsspec.asyn import get_loop, sync
 
 from datachain.lib.file import File
-from datachain.progress import tqdm
 
-from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue
+from .fsspec import BucketStatus, Client, Page
 
 if TYPE_CHECKING:
     from datachain.client.writeconfig import WriteConfig
@@ -45,6 +47,7 @@ class AzureClient(Client):
     FS_CLASS = AzureBlobFileSystem
     PREFIX = "az://"
     protocol = "az"
+    LIST_PAGE_SIZE = 5000
     CREDENTIAL_KEYS = frozenset(
         {
             "account_key",
@@ -252,36 +255,42 @@ class AzureClient(Client):
             lpath = f"{lpath}?versionid={version_id}"
         await self.fs._get_file(lpath, rpath, callback=callback)
 
-    async def _fetch_flat(self, start_prefix: str, result_queue: ResultQueue) -> None:
-        prefix = start_prefix
-        if prefix:
-            prefix = prefix.lstrip(DELIMITER) + DELIMITER
-        found = False
-        try:
-            with tqdm(desc=f"Listing {self.uri}", unit=" objects", leave=False) as pbar:
-                async with self.fs.service_client.get_container_client(
-                    container=self.name
-                ) as container_client:
-                    async for page in container_client.list_blobs(
-                        include=["metadata", "versions"], name_starts_with=prefix
-                    ).by_page():
-                        entries = []
-                        async for b in page:
-                            found = True
-                            if not self._is_valid_key(b["name"]):
-                                continue
-                            info = (await self.fs._details([b]))[0]
-                            entries.append(
-                                self.info_to_file(info, self.rel_path(info["name"]))
-                            )
-                        if entries:
-                            await result_queue.put(entries)
-                            pbar.update(len(entries))
-                    if not found and prefix:
-                        raise FileNotFoundError(
-                            f"Unable to resolve remote path: {prefix}"
-                        )
-        finally:
-            result_queue.put_nowait(None)
+    _fetch_default = Client._fetch_ranges
 
-    _fetch_default = _fetch_flat
+    async def _pages_after(
+        self, prefix: str, start_after: str
+    ) -> AsyncGenerator[Page, None]:
+        kwargs = {"start_from": start_after} if start_after else {}
+        async with self.fs.service_client.get_container_client(
+            container=self.name
+        ) as container:
+            # raw page XML: the SDK's deserializer is most of the listing's CPU
+            pages = container.list_blob_names(
+                include=["versions"],
+                name_starts_with=prefix,
+                results_per_page=self.LIST_PAGE_SIZE,
+                **kwargs,
+            ).by_page()
+            async for _ in pages:
+                blobs = pages._response.find("Blobs").findall("Blob")
+                files = [self._xml_to_file(b) for b in blobs]
+                yield (
+                    [f for f in files if self._is_valid_key(f.path)],
+                    files[-1].path if files else None,
+                )
+
+    def _xml_to_file(self, blob: Element) -> File:
+        name, props = blob.find("Name"), blob.find("Properties")
+        assert name is not None and props is not None
+        version = blob.findtext("VersionId") if self._is_version_aware() else None
+        return File(
+            source=self.uri,
+            path=unquote(name.text or "")
+            if name.get("Encoded") == "true"
+            else name.text,
+            etag=props.findtext("Etag", "").strip('"'),
+            version=version or "",
+            is_latest=version is None or blob.findtext("IsCurrentVersion") == "true",
+            last_modified=parsedate_to_datetime(props.findtext("Last-Modified", "")),
+            size=int(props.findtext("Content-Length", "0")),
+        )

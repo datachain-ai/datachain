@@ -1,20 +1,112 @@
-import asyncio
+import functools
 import os
+from collections.abc import AsyncGenerator, Callable
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
+from xml.etree.ElementTree import Element, fromstring, tostring
 
+from aiobotocore.parsers import AioResponseParserFactory, AioRestXMLParser
+from aiobotocore.session import AioSession
 from botocore.exceptions import NoCredentialsError
+from botocore.model import Shape
+from botocore.utils import parse_timestamp
 from fsspec.asyn import get_loop, sync
 from s3fs import S3FileSystem
 
 from datachain.lib.file import File
-from datachain.progress import tqdm
 
-from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue
+from .fsspec import DELIMITER, BucketStatus, Client, Page, ResultQueue, iso_timestamp
 
 if TYPE_CHECKING:
     from datachain.client.writeconfig import WriteConfig
 
-UPDATE_CHUNKSIZE = 1000
+
+def _parse_timestamp(value: Any) -> datetime:
+    """botocore's timestamp parser, fast for ISO 8601."""
+    parsed = iso_timestamp(value) if isinstance(value, str) else None
+    return parsed or parse_timestamp(value)
+
+
+_NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
+_LISTINGS = ("ListObjectsV2Output", "ListObjectVersionsOutput")
+
+
+_SCALARS: dict[str, Callable[[str], Any]] = {
+    "integer": int,
+    "long": int,
+    "boolean": lambda text: text == "true",
+    "timestamp": _parse_timestamp,
+}
+Fields = dict[str, tuple[str, Callable[[Element], Any], bool]]
+
+
+@functools.cache
+def _fields(shape: Shape) -> Fields:
+    """Readers of a structure's child elements by XML tag."""
+    fields = {}
+    for name, member in shape.members.items():
+        repeated = member.type_name == "list"
+        fields[member.serialization.get("name", name)] = (
+            name,
+            _reader(member.member if repeated else member),
+            repeated,
+        )
+    return fields
+
+
+def _reader(shape: Shape) -> Callable[[Element], Any]:
+    if shape.type_name == "structure":
+        return lambda node: _read(node, _fields(shape))
+    convert = _SCALARS.get(shape.type_name, str)
+    return lambda node: convert(node.text or "")
+
+
+def _read(node: Element, fields: Fields) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for child in node:
+        if field := fields.get(child.tag.removeprefix(_NS)):
+            key, read, repeated = field
+            if repeated:
+                out.setdefault(key, []).append(read(child))
+            else:
+                out[key] = read(child)
+    return out
+
+
+class _ListingParser(AioRestXMLParser):
+    """Reads object listing entries straight from the XML, skipping botocore's
+    model walk."""
+
+    async def parse(self, response, shape):
+        if (
+            response["status_code"] != 200
+            or getattr(shape, "name", "") not in _LISTINGS
+        ):
+            return await super().parse(response, shape)
+        fields = {t: f for t, f in _fields(shape).items() if f[2]}
+        root = fromstring(response["body"])  # noqa: S314
+        entries = _read(root, fields)
+        for node in [n for n in root if n.tag.removeprefix(_NS) in fields]:
+            root.remove(node)
+        parsed = await super().parse({**response, "body": tostring(root)}, shape)
+        return parsed | entries
+
+
+class _ParserFactory(AioResponseParserFactory):
+    def create_parser(self, protocol_name):
+        if protocol_name == "rest-xml":
+            return _ListingParser(**self._defaults)
+        return super().create_parser(protocol_name)
+
+
+@functools.cache
+def _session(profile: str | None) -> AioSession:
+    """One per profile, so fsspec reuses filesystem instances."""
+    session = AioSession(profile=profile)
+    factory = _ParserFactory()
+    factory.set_parser_defaults(timestamp_parser=_parse_timestamp)
+    session.register_component("response_parser_factory", factory)
+    return session
 
 
 class ClientS3(Client):
@@ -50,6 +142,9 @@ class ClientS3(Client):
 
         if "region_name" in kwargs:
             kwargs["config_kwargs"].setdefault("region_name", kwargs.pop("region_name"))
+
+        if "session" not in kwargs:
+            kwargs["session"] = _session(kwargs.pop("profile", None))
 
         # remove this `if` when https://github.com/fsspec/s3fs/pull/929 lands
         if not os.environ.get("AWS_REGION") and not os.environ.get("AWS_ENDPOINT_URL"):
@@ -151,67 +246,36 @@ class ClientS3(Client):
 
         return self.fs.sign(self.get_uri(path), expiration=expires, **kwargs)
 
-    async def _fetch_flat(self, start_prefix: str, result_queue: ResultQueue) -> None:
-        async def get_pages(it, page_queue):
-            try:
-                async for page in it:
-                    await page_queue.put(page.get(contents_key, []))
-            finally:
-                await page_queue.put(None)
+    _fetch_default = Client._fetch_ranges
 
-        async def process_pages(page_queue, result_queue, prefix):
-            found = False
-            with tqdm(desc=f"Listing {self.uri}", unit=" objects", leave=False) as pbar:
-                while (res := await page_queue.get()) is not None:
-                    if res:
-                        found = True
-                    entries = [
-                        self._entry_from_boto(d, self.name, versions)
-                        for d in res
-                        if self._is_valid_key(d["Key"])
-                    ]
-                    if entries:
-                        await result_queue.put(entries)
-                        pbar.update(len(entries))
-            if not found and prefix:
-                raise FileNotFoundError(f"Unable to resolve remote path: {prefix}")
-
-        try:
-            prefix = start_prefix
-            if prefix:
-                prefix = prefix.lstrip(DELIMITER) + DELIMITER
-            versions = self._is_version_aware()
-            fs = self.fs
-            await fs.set_session()
-            s3 = await fs.get_s3(self.name)
-            if versions:
-                method = "list_object_versions"
-                contents_key = "Versions"
-            else:
-                method = "list_objects_v2"
-                contents_key = "Contents"
-            pag = s3.get_paginator(method)
-            it = pag.paginate(
-                Bucket=self.name,
-                Prefix=prefix,
-                Delimiter="",
+    async def _pages_after(
+        self, prefix: str, start_after: str
+    ) -> AsyncGenerator[Page, None]:
+        versions = self._is_version_aware()
+        method, key, start = (
+            ("list_object_versions", "Versions", "KeyMarker")
+            if versions
+            else ("list_objects_v2", "Contents", "StartAfter")
+        )
+        await self.fs.set_session()
+        s3 = await self.fs.get_s3(self.name)
+        kwargs = {start: start_after} if start_after else {}
+        async for page in s3.get_paginator(method).paginate(
+            Bucket=self.name,
+            Prefix=prefix,
+            PaginationConfig={"PageSize": self.LIST_PAGE_SIZE},
+            **kwargs,
+        ):
+            entries = page.get(key, [])
+            keys = [d["Key"] for d in entries + page.get("DeleteMarkers", [])]
+            yield (
+                [
+                    self._entry_from_boto(d, self.name, versions)
+                    for d in entries
+                    if self._is_valid_key(d["Key"])
+                ],
+                max(keys, default=None),
             )
-            page_queue: asyncio.Queue[list] = asyncio.Queue(2)
-            consumer = asyncio.create_task(
-                process_pages(page_queue, result_queue, prefix)
-            )
-            try:
-                await get_pages(it, page_queue)
-                await consumer
-            finally:
-                consumer.cancel()  # In case get_pages() raised
-        finally:
-            result_queue.put_nowait(None)
-
-    async def _fetch_default(
-        self, start_prefix: str, result_queue: ResultQueue
-    ) -> None:
-        await self._fetch_flat(start_prefix, result_queue)
 
     def _entry_from_boto(self, v, bucket, versions=False) -> File:
         return File(

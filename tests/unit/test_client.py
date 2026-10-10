@@ -3,8 +3,11 @@ import sys
 from pathlib import Path
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from datachain.client import Client
+from datachain.client.fsspec import key_midpoint
 from datachain.client.local import FileClient
 from datachain.client.writeconfig import WriteConfig
 
@@ -50,3 +53,33 @@ def test_parse_file_path_ends_with_slash(cloud_type):
     uri, rel_part = Client.parse_url("./animals/".replace("/", os.sep))
     assert uri == (Path().absolute() / Path("animals")).as_uri()
     assert rel_part == ""
+
+
+@given(st.text(min_size=1), st.text(min_size=1), st.text())
+def test_key_midpoint_is_strictly_inside(a, b, alphabet):
+    lo, hi = sorted([a, b])
+    mid = key_midpoint(lo, hi, alphabet)
+    assert mid is None or lo < mid < hi
+    assert lo < key_midpoint(lo, None, alphabet)
+
+
+@pytest.mark.parametrize(
+    "lo,hi,alphabet,expected",
+    [
+        ("a", "c", "abc", "b"),
+        ("img/0001.jpg", "img/9999.jpg", "img/.jpg0123456789", "img/4"),
+        ("a", "a\0", "a", None),
+    ],
+)
+def test_key_midpoint(lo, hi, alphabet, expected):
+    assert key_midpoint(lo, hi, alphabet) == expected
+
+
+def test_key_midpoint_stays_near_dense_keys():
+    alphabet = "img/.jpg0123456789"
+    assert key_midpoint("img/0999.jpg", None, alphabet) > "img/z"
+    assert (
+        "img/0999.jpg"
+        < key_midpoint("img/0999.jpg", None, alphabet, first="img/0000.jpg")
+        < "img/5"
+    )

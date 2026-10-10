@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+from datetime import timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -69,6 +70,80 @@ def test_scandir_not_dir(client):
 def test_scandir_success(client):
     results = scandir(client, "")
     match_entries(results, ENTRIES)
+
+
+def _paths(tree, prefix=""):
+    for name, value in tree.items():
+        if isinstance(value, dict):
+            yield from _paths(value, f"{prefix}{name}/")
+        else:
+            yield prefix + name
+
+
+RANGE_TREES = {
+    "skewed": {"a": "1", "big": {f"{i:03}": "x" for i in range(80)}, "z": "1"},
+    "flat": {f"{i * 7919 % 4096:03x}": "x" for i in range(80)},
+    "siblings": {"a": {"b": "x"}, "a-b": "x", "a.c": "x", "a0": "x", "ab": {"c": "x"}},
+}
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize(
+    "tree", list(RANGE_TREES.values()), ids=list(RANGE_TREES), indirect=True
+)
+@pytest.mark.parametrize("prefix", ["", "big"])
+def test_scandir_ranges_are_exact(client, tree, prefix, mocker):
+    mocker.patch.object(type(client), "LIST_PAGE_SIZE", 4)
+    mocker.patch("datachain.client.fsspec.LIST_WORKERS", 3)
+    ranges = mocker.spy(client, "_pages_after")
+    expected = [p for p in _paths(tree) if p.startswith(prefix)]
+    if not expected:
+        with pytest.raises(FileNotFoundError):
+            scandir(client, prefix)
+        return
+
+    paths = [e.path for e in scandir(client, prefix)]
+
+    assert sorted(paths) == sorted(expected)
+    assert ranges.call_count > 1
+
+
+UNLISTED_TREE = {"a": {f"{i:02}": "x" for i in range(40)}, "z": {"0": "x"}}
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("tree", [UNLISTED_TREE], indirect=True)
+def test_scandir_ranges_see_past_unlisted_keys(client, tree, mocker):
+    for i in range(60):
+        client.fs.pipe_file(f"{client.uri}/m//{i:02}", b"x")
+    mocker.patch.object(type(client), "LIST_PAGE_SIZE", 4)
+    mocker.patch("datachain.client.fsspec.LIST_WORKERS", 3)
+    pages = 0
+    pages_after = type(client)._pages_after
+
+    async def counted(self, prefix, start_after):
+        nonlocal pages
+        async for page in pages_after(self, prefix, start_after):
+            pages += 1
+            yield page
+
+    mocker.patch.object(type(client), "_pages_after", counted)
+
+    expected = sorted(_paths(tree))
+    assert sorted(e.path for e in scandir(client, "")) == expected
+    assert pages <= 2 * (len(expected) + 60) // 4
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+def test_scandir_one_page_is_one_range(client, mocker):
+    ranges = mocker.spy(client, "_pages_after")
+    match_entries(scandir(client, ""), ENTRIES)
+    assert ranges.call_count == 1
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+def test_listing_parses_timestamps_without_dateutil(client):
+    assert {e.last_modified.tzinfo for e in scandir(client, "")} == {timezone.utc}
 
 
 def test_scandir_alternate(client):
