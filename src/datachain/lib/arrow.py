@@ -127,11 +127,10 @@ class ArrowGenerator(Generator):
             vals = self._process_non_datachain_record(record, hf_schema)
 
         if self.source:
-            # A copy, so the files read after this one keep their CSV options.
-            kwargs: dict = dict(self.kwargs)
-            # Can't serialize CsvFileFormat; may lose formatting options.
+            kwargs = self.kwargs
             if isinstance(kwargs.get("format"), CsvFileFormat):
-                kwargs["format"] = "csv"
+                # Preserve reader options when serializing source metadata as JSON.
+                kwargs = {**kwargs, "format": "csv"}
             arrow_file = ArrowRow(file=file, index=index, kwargs=kwargs)
 
             if self.output_schema and hasattr(vals[0], "source"):
