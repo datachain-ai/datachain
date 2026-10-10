@@ -298,12 +298,18 @@ class Session:
         client_config: dict | None = None,
         in_memory: bool = False,
     ) -> "Session":
-        """Creates a Session() object from a catalog.
+        """Resolve the session to use: an explicit `session`, else the active
+        context, else the process-global session (created on first use).
 
         Parameters:
-            session (Session): Optional Session(). If not provided a new session will
-                    be created. It's needed mostly for simple API purposes.
-            catalog (Catalog): Optional catalog. By default, a new catalog is created.
+            session (Session): Optional Session(). If not provided the ambient
+                    session is resolved as described above.
+            catalog (Catalog): Optional catalog; used only when this call
+                    creates the global session.
+            client_config (dict): Optional storage client config; used only
+                    when this call creates the global session. Per-source
+                    configs never fork a session — they are registered on the
+                    catalog (see `Catalog.register_client_config`).
         """
         if session:
             return session
@@ -326,15 +332,6 @@ class Session:
             sys.excepthook = cls.except_hook
         else:
             session = cls.GLOBAL_SESSION_CTX
-
-        if client_config and session.catalog.client_config != client_config:
-            session = Session(
-                "session" + uuid4().hex[:4],
-                catalog,
-                client_config=client_config,
-                in_memory=in_memory,
-            )
-            session.__enter__()
 
         return session
 
