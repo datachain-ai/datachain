@@ -1,7 +1,7 @@
 import os
 from typing import TYPE_CHECKING, Any
 
-from datachain.lib.data_model import DataType
+from datachain.lib.dc.utils import OutputType
 from datachain.query import Session
 
 if TYPE_CHECKING:
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 def read_parquet(
     path: str | os.PathLike[str] | list[str] | list[os.PathLike[str]],
     partitioning: Any = "hive",
-    output: dict[str, DataType] | None = None,
+    output: OutputType = None,
     column: str = "",
     model_name: str = "",
     source: bool = True,
@@ -35,7 +35,9 @@ def read_parquet(
               - `{a,b}` : brace expansion list
               - `{1..9}` : brace numeric or alphabetic range
         partitioning: Any pyarrow partitioning schema.
-        output: Dictionary defining column names and their corresponding types.
+        output: Dictionary or feature class defining column names and their
+            corresponding types. List of column names is also accepted, in which
+            case types will be inferred.
         column: Created column name.
         model_name: Generated model name.
         source: Whether to include info about the source file.

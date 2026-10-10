@@ -2548,8 +2548,10 @@ class DataChain:
 
         from datachain.lib.arrow import (
             ArrowGenerator,
+            file_schemas,
             fix_pyarrow_format,
             infer_schema,
+            output_columns,
             schema_to_output,
         )
 
@@ -2572,11 +2574,19 @@ class DataChain:
             raise DatasetPrepareError(self.name, "no files to parse.")
 
         schema = None
+        source_columns = None
         col_names = output if isinstance(output, Sequence) else None
         if col_names or not output:
             try:
                 schema = infer_schema(self, **kwargs, parse_options=parse_options)
                 output, _ = schema_to_output(schema, col_names)
+            except ValueError as e:
+                raise DatasetPrepareError(self.name, e) from e
+        elif isinstance(output, dict) or ModelStore.is_pydantic(output):
+            # Fields of a dict or model are matched to the file's columns by name.
+            try:
+                schemas = file_schemas(self, **kwargs, parse_options=parse_options)
+                source_columns = output_columns(schemas, output)  # type: ignore[arg-type]
             except ValueError as e:
                 raise DatasetPrepareError(self.name, e) from e
 
@@ -2606,6 +2616,7 @@ class DataChain:
                 model,
                 source,
                 nrows,
+                source_columns=source_columns,
                 parse_options=parse_options,
                 **kwargs,
             ),

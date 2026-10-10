@@ -108,6 +108,19 @@ def test_arrow_generator_hf(tmp_path, catalog):
         assert isinstance(obj[1].col, HFClassLabel)
 
 
+def test_arrow_generator_source_columns(tmp_path, catalog):
+    name = "111.parquet"
+    pq.write_table(pa.table({"a": [1, 2], "b": [10, 20]}), tmp_path / name)
+    stream = File(path=name, source=f"file://{tmp_path}")
+    stream._set_stream(catalog, caching_enabled=False)
+
+    output_schema = dict_to_data_model("", {"x": int, "y": int})
+    func = ArrowGenerator(output_schema=output_schema, source_columns=["b", "a"])
+    objs = list(func.process(stream))
+
+    assert [(o[1].x, o[1].y) for o in objs] == [(10, 1), (20, 2)]
+
+
 @pytest.mark.parametrize("cache", [True, False])
 def test_arrow_generator_partitioned(tmp_path, catalog, cache):
     pq_path = tmp_path / "parquets"

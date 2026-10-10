@@ -1,4 +1,5 @@
 import math
+import warnings
 from collections.abc import Sequence
 from itertools import islice
 from typing import TYPE_CHECKING, Any
@@ -6,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 import pyarrow as pa
 from pyarrow._csv import ParseOptions
 from pyarrow.dataset import CsvFileFormat, dataset
+from pydantic import AliasChoices
 
 from datachain import json
 from datachain.fs.reference import ReferenceFileSystem
@@ -25,6 +27,7 @@ from datachain.progress import tqdm
 if TYPE_CHECKING:
     from datasets.features.features import Features
     from pydantic import BaseModel
+    from pydantic.fields import FieldInfo
 
     from datachain.lib.data_model import DataType
     from datachain.lib.dc import DataChain
@@ -54,6 +57,7 @@ class ArrowGenerator(Generator):
         output_schema: type["BaseModel"] | None = None,
         source: bool = True,
         nrows: int | None = None,
+        source_columns: Sequence[str | Sequence[str]] | None = None,
         **kwargs,
     ):
         """
@@ -65,6 +69,9 @@ class ArrowGenerator(Generator):
         output_schema : Optional pydantic model for validation.
         source : Whether to include info about the source file.
         nrows : Optional row limit.
+        source_columns : Optional file column for each `output_schema` field, in
+            field order, or several to try in turn: each file uses the first it
+            has. When omitted, fields take the file's columns in order.
         kwargs: Parameters to pass to pyarrow.dataset.dataset.
         """
         super().__init__()
@@ -72,6 +79,11 @@ class ArrowGenerator(Generator):
         self.output_schema = output_schema
         self.source = source
         self.nrows = nrows
+        self.source_columns = (
+            None
+            if source_columns is None
+            else [[c] if isinstance(c, str) else list(c) for c in source_columns]
+        )
         self.parse_options = kwargs.pop("parse_options", None)
         self.kwargs = kwargs
 
@@ -96,9 +108,18 @@ class ArrowGenerator(Generator):
             and DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY in ds.schema.metadata
         )
 
-        kw = {}
+        kw: dict[str, Any] = {}
         if self.nrows:
-            kw = {"batch_size": min(self.DEFAULT_BATCH_SIZE, self.nrows)}
+            kw["batch_size"] = min(self.DEFAULT_BATCH_SIZE, self.nrows)
+        columns: list[str | None] = []
+        if self.source_columns is not None and not use_datachain_schema:
+            # Files read together may lack some columns, or name them differently.
+            present = set(ds.schema.names)
+            columns = [
+                next((c for c in candidates if c in present), None)
+                for candidates in self.source_columns
+            ]
+            kw["columns"] = [c for c in dict.fromkeys(columns) if c is not None]
 
         def iter_records():
             for record_batch in ds.to_batches(**kw):
@@ -110,7 +131,7 @@ class ArrowGenerator(Generator):
         ) as pbar:
             for index, record in enumerate(pbar):
                 yield self._process_record(
-                    record, file, index, hf_schema, use_datachain_schema
+                    record, file, index, hf_schema, use_datachain_schema, columns
                 )
 
     def _process_record(
@@ -120,9 +141,12 @@ class ArrowGenerator(Generator):
         index: int,
         hf_schema: tuple["Features", dict[str, "DataType"]] | None,
         use_datachain_schema: bool,
+        columns: list[str | None],
     ):
         if use_datachain_schema and self.output_schema:
             vals = [_nested_model_instantiate(record, self.output_schema)]
+        elif self.source_columns is not None:
+            vals = self._process_record_by_name(record, hf_schema, columns)
         else:
             vals = self._process_non_datachain_record(record, hf_schema)
 
@@ -144,6 +168,25 @@ class ArrowGenerator(Generator):
 
         return vals
 
+    def _process_record_by_name(
+        self,
+        record: dict[str, Any],
+        hf_schema: tuple["Features", dict[str, "DataType"]] | None,
+        columns: list[str | None],
+    ):
+        assert self.output_schema
+        fields = self.output_schema.model_fields
+        vals_dict = {}
+        for (field, field_info), column in zip(fields.items(), columns, strict=True):
+            if column is not None:
+                vals_dict[field] = _convert_value(
+                    record[column], field_info.annotation, hf_schema, column
+                )
+        # Columns are already matched to fields, so aliases must not apply again.
+        return [
+            self.output_schema.model_validate(vals_dict, by_name=True, by_alias=False)
+        ]
+
     def _process_non_datachain_record(
         self,
         record: dict[str, Any],
@@ -158,20 +201,30 @@ class ArrowGenerator(Generator):
         for i, ((field, field_info), val) in enumerate(
             zip(fields.items(), vals, strict=False)
         ):
-            anno = field_info.annotation
-            if hf_schema:
-                from datachain.lib.hf import convert_feature
-
-                feat = list(hf_schema[0].values())[i]
-                vals_dict[field] = convert_feature(val, feat, anno)
-            elif ModelStore.is_pydantic(anno):
-                vals_dict[field] = anno(**val)  # type: ignore[misc]
-            else:
-                vals_dict[field] = val
+            column = list(hf_schema[0])[i] if hf_schema else ""
+            vals_dict[field] = _convert_value(
+                val, field_info.annotation, hf_schema, column
+            )
         return [self.output_schema(**vals_dict)]
 
 
-def infer_schema(chain: "DataChain", **kwargs) -> pa.Schema:
+def _convert_value(
+    val: Any,
+    anno: Any,
+    hf_schema: tuple["Features", dict[str, "DataType"]] | None,
+    column: str,
+) -> Any:
+    if hf_schema:
+        from datachain.lib.hf import convert_feature
+
+        return convert_feature(val, hf_schema[0][column], anno)
+    if ModelStore.is_pydantic(anno):
+        return anno(**val)  # type: ignore[misc]
+    return val
+
+
+def file_schemas(chain: "DataChain", **kwargs) -> list[pa.Schema]:
+    """Return the schema of each file in the chain."""
     parse_options = kwargs.pop("parse_options", None)
     if format := kwargs.get("format"):
         kwargs["format"] = fix_pyarrow_format(format, parse_options)
@@ -184,7 +237,87 @@ def infer_schema(chain: "DataChain", **kwargs) -> pa.Schema:
         raise ValueError(
             "Cannot infer schema (no files to process or can't access them)"
         )
-    return pa.unify_schemas(schemas)
+    return schemas
+
+
+def infer_schema(chain: "DataChain", **kwargs) -> pa.Schema:
+    return pa.unify_schemas(file_schemas(chain, **kwargs))
+
+
+def output_columns(
+    schemas: list[pa.Schema], output: "dict[str, DataType] | type[BaseModel]"
+) -> list[list[str]] | None:
+    """Return the file columns each field of a dict or model output can read.
+
+    A field's name can be a file's column name or DataChain's cleaned version of
+    it, e.g. "Unit Price (USD)" or "unit_price_usd". A model field lists its
+    aliases in the model's order, and each file uses the first one it has.
+    Returns None when some name isn't a column, so the output keeps its old
+    meaning: fields take the file's columns in order.
+    """
+    if _get_datachain_schema(schemas[0]):
+        # Files written by DataChain store their own schema and match it by name.
+        return None
+    names = list(dict.fromkeys(n for s in schemas for n in s.names))
+    lookup = _ColumnLookup(names)
+    fields = _output_fields(output)
+    found = [
+        list(dict.fromkeys(c for n in candidates if (c := lookup.find(n)) is not None))
+        for _, candidates in fields
+    ]
+    if not all(found):
+        unknown = [f[0] for f, c in zip(fields, found, strict=True) if not c]
+        warnings.warn(
+            f"output names {unknown} are not columns of the file, so output is "
+            "applied to the columns in order. Applying output by position is "
+            "deprecated and will become an error. Name output by the file's "
+            "columns and rename them after reading, e.g. with mutate(). "
+            f"Available columns: {names}",
+            FutureWarning,
+            stacklevel=4,
+        )
+        return None
+    if isinstance(output, dict) and len({c[0] for c in found}) < len(found):
+        raise ValueError(f"output names the same column twice: {list(output)}")
+    return found
+
+
+class _ColumnLookup:
+    """Finds a file's columns by their name or by DataChain's cleaned name."""
+
+    def __init__(self, names: list[str]):
+        self.raw = normalize_col_names(names)
+        self.cleaned = {raw: clean for clean, raw in self.raw.items()}
+
+    def find(self, name: str) -> str | None:
+        if name in self.cleaned:
+            return name
+        return self.raw.get(name)
+
+
+def _output_fields(
+    output: "dict[str, DataType] | type[BaseModel]",
+) -> list[tuple[str, list[str]]]:
+    """Return each output field's name and the column names it may read."""
+    if isinstance(output, dict):
+        return [(name, [name]) for name in output]
+    by_alias = output.model_config.get("validate_by_alias", True)
+    return [
+        (name, _field_names(name, info) if by_alias else [name])
+        for name, info in output.model_fields.items()
+    ]
+
+
+def _field_names(field: str, field_info: "FieldInfo") -> list[str]:
+    """Return the column names a model field reads, in the model's alias order."""
+    alias = field_info.validation_alias
+    if isinstance(alias, AliasChoices):
+        names = [a for a in alias.choices if isinstance(a, str)]
+    elif isinstance(alias, str):
+        names = [alias]
+    else:
+        names = []
+    return names if field in names else [*names, field]
 
 
 def schema_to_output(
