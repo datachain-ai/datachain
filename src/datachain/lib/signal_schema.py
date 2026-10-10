@@ -385,7 +385,7 @@ class SignalSchema:
         return version_name
 
     @staticmethod
-    def _serialize_type(fr: type, custom_types: dict[str, Any]) -> str:
+    def _serialize_type(fr: Any, custom_types: dict[str, Any]) -> str:
         """Serialize a given type to a string, including automatic ModelStore
         registration, and save this type and subtypes to custom_types as well."""
         subtypes: list[Any] = []
@@ -1010,7 +1010,7 @@ class SignalSchema:
         catalog: "Catalog",
         cache: bool = False,
         download_cb: Callback = DEFAULT_CALLBACK,
-        annotation: DataType | None = None,
+        annotation: Any = None,
         _seen: set[int] | None = None,
     ) -> None:
         seen = _seen if _seen is not None else set()
