@@ -14,7 +14,7 @@ from gcsfs.retry import HttpError
 from datachain.client.fileslice import FileWrapper
 from datachain.lib.file import File
 
-from .fsspec import BucketStatus, Client, Page
+from .fsspec import BucketStatus, Client, Page, iso_timestamp
 
 if TYPE_CHECKING:
     from datachain.client.writeconfig import WriteConfig
@@ -213,7 +213,7 @@ class GCSClient(Client):
 
         This ensures that the passed timestamp is timezone aware.
         """
-        dt = isoparse(timestamp)
+        dt = iso_timestamp(timestamp) or isoparse(timestamp)
         assert dt.tzinfo is not None
         return dt
 
@@ -249,8 +249,7 @@ class GCSClient(Client):
                 return
 
     def _entry_from_dict(self, d: dict[str, Any]) -> File:
-        info = self.fs._process_object(self.name, d)
-        return self.info_to_file(info, self.rel_path(info["name"]))
+        return self.info_to_file(d, d["name"])
 
     def info_to_file(self, v: dict[str, Any], path: str) -> File:
         return File(

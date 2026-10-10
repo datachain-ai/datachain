@@ -15,7 +15,7 @@ from collections.abc import (
     Iterator,
     Sequence,
 )
-from contextlib import aclosing, contextmanager
+from contextlib import aclosing, contextmanager, suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
@@ -43,6 +43,7 @@ logger = logging.getLogger("datachain")
 
 FETCH_WORKERS = 100
 LIST_WORKERS = 32
+SPLIT_PAGES = 4
 DELIMITER = "/"  # Path delimiter.
 
 DATA_SOURCE_URI_PATTERN = re.compile(r"^[\w]+:\/\/.*$")
@@ -57,12 +58,22 @@ def is_cloud_uri(uri: str) -> bool:
     return protocol in CLOUD_STORAGE_PROTOCOLS
 
 
-def key_midpoint(lo: str, hi: str | None, alphabet: Iterable[str]) -> str | None:
-    """Shortest key strictly between ``lo`` and ``hi`` (``None`` is the open end),
-    halfway between them in the base of the characters keys use."""
-    chars = sorted(set(alphabet) | set(lo) | set(hi or ""))
+def iso_timestamp(value: str) -> datetime | None:
+    """ISO 8601 timestamp, parsed without dateutil."""
+    with suppress(ValueError):
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return None
+
+
+def key_midpoint(
+    lo: str, hi: str | None, alphabet: Iterable[str], first: str | None = None
+) -> str | None:
+    """Shortest key strictly between ``lo`` and ``hi`` (``None`` is the open end);
+    with ``first``, at most ``SPLIT_PAGES`` pages of ``first..lo`` past ``lo``."""
+    chars = sorted(set(alphabet) | set(lo) | set(hi or "") | set(first or ""))
     digit = {c: i + 1 for i, c in enumerate(chars)}
-    base, width = len(chars) + 1, max(len(lo), len(hi or "")) + 1
+    base = len(chars) + 1
+    width = max(len(lo), len(hi or ""), len(first or "")) + 1
 
     def value(key: str) -> int:
         n = 0
@@ -71,6 +82,8 @@ def key_midpoint(lo: str, hi: str | None, alphabet: Iterable[str]) -> str | None
         return n
 
     n = (value(lo) + (base**width if hi is None else value(hi))) // 2
+    if first is not None and first < lo:
+        n = min(n, value(lo) + (value(lo) - value(first)) * SPLIT_PAGES)
     digits = []
     for _ in range(width):
         n, d = divmod(n, base)
@@ -386,7 +399,8 @@ class Client(ABC):
             can_split = bool(lo)  # a one-page listing stays one request
             async with aclosing(self._pages_after(prefix, lo)) as pages:
                 async for files, last in pages:
-                    if files and files[0].path < lo:  # the server ignores the start
+                    first = files[0].path if files else None
+                    if first is not None and first < lo:  # the server ignores the start
                         seeks = False
                     files = [
                         f for f in files if lo < f.path and (hi is None or f.path <= hi)
@@ -401,7 +415,7 @@ class Client(ABC):
                     if hi is not None and last > hi:
                         return
                     if can_split and seeks and open_ranges < LIST_WORKERS:
-                        mid = key_midpoint(last, hi, alphabet)
+                        mid = key_midpoint(last, hi, alphabet, first)
                         if mid is not None:
                             queue.put_nowait((mid, hi))
                             open_ranges += 1

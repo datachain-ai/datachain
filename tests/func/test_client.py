@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+from datetime import timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -138,6 +139,11 @@ def test_scandir_one_page_is_one_range(client, mocker):
     ranges = mocker.spy(client, "_pages_after")
     match_entries(scandir(client, ""), ENTRIES)
     assert ranges.call_count == 1
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+def test_listing_parses_timestamps_without_dateutil(client):
+    assert {e.last_modified.tzinfo for e in scandir(client, "")} == {timezone.utc}
 
 
 def test_scandir_alternate(client):

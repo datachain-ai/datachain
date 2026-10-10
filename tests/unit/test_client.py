@@ -73,3 +73,13 @@ def test_key_midpoint_is_strictly_inside(a, b, alphabet):
 )
 def test_key_midpoint(lo, hi, alphabet, expected):
     assert key_midpoint(lo, hi, alphabet) == expected
+
+
+def test_key_midpoint_stays_near_dense_keys():
+    alphabet = "img/.jpg0123456789"
+    assert key_midpoint("img/0999.jpg", None, alphabet) > "img/z"
+    assert (
+        "img/0999.jpg"
+        < key_midpoint("img/0999.jpg", None, alphabet, first="img/0000.jpg")
+        < "img/5"
+    )

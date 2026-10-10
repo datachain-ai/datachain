@@ -1,6 +1,7 @@
 import os
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
+from xml.etree.ElementTree import fromstring
 
 import pytest
 from adlfs import AzureBlobFileSystem
@@ -261,3 +262,22 @@ def test_get_file_key_and_version(char):
     assert container == "mycontainer"
     assert path == f"blob{char}file.txt"
     assert bc.download_blob.call_args[1].get("version_id") == _VER
+
+
+def test_xml_to_file_decodes_names():
+    client = AzureClient("container", {}, None)
+    client._fs = MagicMock(version_aware=True)
+    blob = fromstring(  # noqa: S314
+        "<Blob><Name Encoded='true'>a%01b</Name><VersionId>v1</VersionId>"
+        "<IsCurrentVersion>true</IsCurrentVersion><Properties>"
+        "<Last-Modified>Wed, 30 Sep 2026 23:00:00 GMT</Last-Modified>"
+        "<Etag>0x8DC</Etag><Content-Length>7</Content-Length></Properties></Blob>"
+    )
+    assert client._xml_to_file(blob) == File(
+        source="az://container",
+        path="a\x01b",
+        etag="0x8DC",
+        version="v1",
+        last_modified=datetime(2026, 9, 30, 23, tzinfo=timezone.utc),
+        size=7,
+    )

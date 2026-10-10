@@ -1,6 +1,7 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from dateutil.parser import isoparse
 from fsspec.asyn import sync
 from fsspec.callbacks import DEFAULT_CALLBACK
 
@@ -217,3 +218,11 @@ def test_get_file_qmark_in_key_with_version():
     args, kwargs = client._fs._get_file.call_args
     assert args[0] == f"gs://foo/blob?file.txt#{_VER}"
     assert kwargs.get("generation") is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["2026-09-30T23:00:00.123Z", "2026-09-30T23:00:00Z", "2026-09-30T23:00:00+02:00"],
+)
+def test_parse_timestamp_matches_isoparse(value):
+    assert GCSClient.parse_timestamp(value) == isoparse(value)

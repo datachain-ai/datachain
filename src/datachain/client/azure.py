@@ -1,8 +1,11 @@
 import shutil
 from collections.abc import AsyncGenerator, Iterator
 from contextlib import contextmanager
+from email.utils import parsedate_to_datetime
 from tempfile import SpooledTemporaryFile
 from typing import TYPE_CHECKING, Any
+from urllib.parse import unquote
+from xml.etree.ElementTree import Element
 
 from adlfs import AzureBlobFileSystem
 from azure.core.exceptions import (
@@ -261,19 +264,33 @@ class AzureClient(Client):
         async with self.fs.service_client.get_container_client(
             container=self.name
         ) as container:
-            listing = container.list_blobs(
-                include=["metadata", "versions"],
+            # raw page XML: the SDK's deserializer is most of the listing's CPU
+            pages = container.list_blob_names(
+                include=["versions"],
                 name_starts_with=prefix,
                 results_per_page=self.LIST_PAGE_SIZE,
                 **kwargs,
-            )
-            async for page in listing.by_page():
-                blobs = [b async for b in page]
-                valid = [b for b in blobs if self._is_valid_key(b["name"])]
+            ).by_page()
+            async for _ in pages:
+                blobs = pages._response.find("Blobs").findall("Blob")
+                files = [self._xml_to_file(b) for b in blobs]
                 yield (
-                    [
-                        self.info_to_file(info, self.rel_path(info["name"]))
-                        for info in await self.fs._details(valid)
-                    ],
-                    blobs[-1]["name"] if blobs else None,
+                    [f for f in files if self._is_valid_key(f.path)],
+                    files[-1].path if files else None,
                 )
+
+    def _xml_to_file(self, blob: Element) -> File:
+        name, props = blob.find("Name"), blob.find("Properties")
+        assert name is not None and props is not None
+        version = blob.findtext("VersionId") if self._is_version_aware() else None
+        return File(
+            source=self.uri,
+            path=unquote(name.text or "")
+            if name.get("Encoded") == "true"
+            else name.text,
+            etag=props.findtext("Etag", "").strip('"'),
+            version=version or "",
+            is_latest=version is None or blob.findtext("IsCurrentVersion") == "true",
+            last_modified=parsedate_to_datetime(props.findtext("Last-Modified", "")),
+            size=int(props.findtext("Content-Length", "0")),
+        )
