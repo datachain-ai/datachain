@@ -903,7 +903,13 @@ class SQLiteWarehouse(AbstractWarehouse):
 
         for batch in batched_it(ids, self.INSERT_BATCH_SIZE):
             batch_ids = [row[0] for row in batch]
-            select_q._where_criteria = (col_id.in_(batch_ids),)
+            low, high = min(batch_ids), max(batch_ids)
+            # binding thousands of ids dominates the copy: a batch that is a whole
+            # range of ids is copied as that range
+            if high - low + 1 == len(batch_ids) == len(set(batch_ids)):
+                select_q._where_criteria = (col_id.between(low, high),)
+            else:
+                select_q._where_criteria = (col_id.in_(batch_ids),)
             q = table.insert().from_select(list(select_q.selected_columns), select_q)
 
             self.db.execute(q)
