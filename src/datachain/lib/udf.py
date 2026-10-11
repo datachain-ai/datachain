@@ -540,6 +540,7 @@ class Mapper(UDFBase):
         processed_cb: Callback = DEFAULT_CALLBACK,
     ) -> Iterator[Iterable[UDFResult]]:
         self.setup()
+        signal_names = list(self.signal_names)
 
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
             with safe_closing(udf_inputs):
@@ -561,8 +562,7 @@ class Mapper(UDFBase):
                 result_objs = self.process(*udf_args)
                 udf_output = self._flatten_row(result_objs)
                 output = [
-                    {"sys__id": id_}
-                    | dict(zip(self.signal_names, udf_output, strict=False))
+                    {"sys__id": id_} | dict(zip(signal_names, udf_output, strict=False))
                 ]
                 processed_cb.relative_update(1)
                 yield output
@@ -767,6 +767,7 @@ class Generator(UDFBase):
         processed_cb: Callback = DEFAULT_CALLBACK,
     ) -> Iterator[Iterable[UDFResult]]:
         self.setup()
+        signal_names = list(self.signal_names)
 
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
             with safe_closing(udf_inputs):
@@ -785,7 +786,7 @@ class Generator(UDFBase):
                 for result_obj, is_last in with_last_flag(result_objs):
                     has_output = True
                     udf_output = self._flatten_row(result_obj)
-                    udf_output = dict(zip(self.signal_names, udf_output, strict=False))
+                    udf_output = dict(zip(signal_names, udf_output, strict=False))
                     udf_output["sys__input_id"] = row_id
                     udf_output["sys__partial"] = not is_last
                     udf_output["sys__empty"] = None
@@ -832,6 +833,7 @@ class Aggregator(UDFBase):
         from datachain.data_storage.schema import PARTITION_COLUMN_ID
 
         self.setup()
+        signal_names = list(self.signal_names)
 
         # Check if partition_id is available (when partition_by is used)
         partition_id_idx = None
@@ -864,7 +866,7 @@ class Aggregator(UDFBase):
                 has_output = False
                 for row, is_last in with_last_flag(udf_outputs):
                     has_output = True
-                    udf_output = dict(zip(self.signal_names, row, strict=False))
+                    udf_output = dict(zip(signal_names, row, strict=False))
                     udf_output["sys__input_id"] = input_id
                     udf_output["sys__partial"] = not is_last
                     udf_output["sys__empty"] = None

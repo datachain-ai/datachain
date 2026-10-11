@@ -6454,3 +6454,61 @@ def test_tuple_of_models_stores_numpy_held_in_a_field(test_session):
             ),
         )
     ]
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda chain: chain.filter(C("n") % 3 == 0),
+        lambda chain: chain.filter(C("n") < 30),
+        # rows picked by a scrambled order are not a contiguous sys__id range
+        lambda chain: chain.order_by("k").offset(5).limit(11),
+    ],
+    ids=["filter", "contiguous-filter", "offset-limit"],
+)
+def test_save_copies_exact_rows_in_batches(test_session, monkeypatch, build):
+    monkeypatch.setattr(type(test_session.catalog.warehouse), "INSERT_BATCH_SIZE", 4)
+    n = list(range(40))
+    chain = build(dc.read_values(n=n, k=[i * 7 % 40 for i in n], session=test_session))
+    expected = sorted(chain.to_values("n"))
+
+    chain.save("batched")
+
+    assert sorted(dc.read_dataset("batched", session=test_session).to_values("n")) == (
+        expected
+    )
+
+
+@pytest.mark.parametrize(
+    "build, size",
+    [
+        (lambda chain: chain.order_by("k"), 40),
+        (lambda chain: chain.order_by("k").limit(30).filter(C("k") >= 0), 30),
+    ],
+    ids=["ordered", "ordered-subquery"],
+)
+def test_save_keeps_order_across_batches(test_session, monkeypatch, build, size):
+    monkeypatch.setattr(type(test_session.catalog.warehouse), "INSERT_BATCH_SIZE", 4)
+    k = [i * 7 % 40 for i in range(40)]
+
+    build(dc.read_values(k=k, session=test_session)).save("ordered")
+
+    saved = dc.read_dataset("ordered", session=test_session).order_by("sys.id")
+    assert saved.to_values("k") == sorted(k)[:size]
+
+
+def test_adjust_outputs_calls_an_overridden_convert_type(test_session, mocker):
+    from datachain.query.dataset import adjust_outputs, get_col_types
+    from datachain.sql.types import DateTime
+
+    def normalizing(self, val, *args):
+        return val.astimezone(dt.UTC).replace(tzinfo=None)
+
+    warehouse = test_session.catalog.warehouse
+    mocker.patch.object(type(warehouse), "convert_type", normalizing)
+    when = dt.datetime(2026, 1, 1, 12, tzinfo=dt.timezone(dt.timedelta(hours=2)))
+    col_types = get_col_types(warehouse, {"x": DateTime})
+
+    row = adjust_outputs(warehouse, {"x": when}, col_types, None)  # type: ignore[arg-type]
+
+    assert row["x"] == dt.datetime(2026, 1, 1, 10)

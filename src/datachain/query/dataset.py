@@ -12,7 +12,7 @@ from copy import copy
 from datetime import UTC, datetime
 from functools import wraps
 from types import GeneratorType
-from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, Protocol, TypeVar, cast
 from uuid import uuid4
 
 import attrs
@@ -450,10 +450,19 @@ class Subtract(DatasetDiffOperation):
         )
 
 
+class ColType(NamedTuple):
+    name: str
+    sql_type: SQLType
+    python_type: type
+    type_name: str
+    default: Any
+    kept_as_is: bool  # a value of python_type goes in unconverted
+
+
 def adjust_outputs(
     warehouse: "AbstractWarehouse",
     row: dict[str, Any],
-    col_types: list[tuple[str, SQLType, type, str, Any]],
+    col_types: list[ColType],
     signal_schema: SignalSchema,
     udf_kind: str | None = None,
 ) -> dict[str, Any]:
@@ -471,6 +480,7 @@ def adjust_outputs(
         col_python_type,
         col_type_name,
         default_value,
+        kept_as_is,
     ) in col_types:
         # Fill missing values with defaults
         if col_name not in row:
@@ -482,6 +492,9 @@ def adjust_outputs(
         # Fill explicit None values with defaults
         if row_val is None:
             row[col_name] = default_value
+            continue
+
+        if kept_as_is and type(row_val) is col_python_type:
             continue
 
         # Validate and convert type if needed and possible
@@ -530,23 +543,28 @@ def adjust_outputs(
 
 def get_col_types(
     warehouse: "AbstractWarehouse", output: "Mapping[str, Any]"
-) -> list[tuple]:
-    """Optimization: Precompute column types so these don't have to be computed
-    in the convert_type function for each row in a loop."""
+) -> list[ColType]:
+    """Column types, computed once per run rather than once per row."""
+    from datachain.data_storage.warehouse import AbstractWarehouse
+
     dialect = warehouse.db.dialect
-    return [
-        (
-            col_name,
-            # Check if type is already instantiated or not
-            col_type_inst := col_type() if isinstance(col_type, type) else col_type,
-            warehouse.python_type(col_type_inst),
-            type(col_type_inst).__name__,
+    # a warehouse's own convert_type sees every value
+    exact = type(warehouse).convert_type is AbstractWarehouse.convert_type
+    col_types = []
+    for name, col_type in output.items():
+        sql_type = col_type() if isinstance(col_type, type) else col_type
+        python_type = warehouse.python_type(sql_type)
+        type_name = type(sql_type).__name__
+        default = (
             None
-            if getattr(col_type_inst, "dc_nullable", False)
-            else col_type.default_value(dialect),
+            if getattr(sql_type, "dc_nullable", False)
+            else col_type.default_value(dialect)
         )
-        for col_name, col_type in output.items()
-    ]
+        kept_as_is = exact and python_type not in (list, dict) and type_name != "JSON"
+        col_types.append(
+            ColType(name, sql_type, python_type, type_name, default, kept_as_is)
+        )
+    return col_types
 
 
 def process_udf_outputs(

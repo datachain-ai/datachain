@@ -45,6 +45,15 @@ logger = logging.getLogger("datachain")
 
 _SOURCE_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 
+
+_FILE_STATE = {
+    "_catalog": None,
+    "_caching_enabled": False,
+    "_download_cb": DEFAULT_CALLBACK,
+    "_fs_path_cache": None,
+}
+
+
 # how to create file path when exporting
 ExportPlacement = Literal["filename", "etag", "fullpath", "checksum", "filepath"]
 
@@ -327,10 +336,17 @@ class File(DataModel):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._catalog = None
-        self._caching_enabled: bool = False
-        self._download_cb: Callback = DEFAULT_CALLBACK
-        self._fs_path_cache: tuple[str, str, str] | None = None
+        # not in the class body: the pydantic mypy plugin makes them fields
+        self._caching_enabled: bool
+        self._download_cb: Callback
+        self._fs_path_cache: tuple[str, str, str] | None
+        # one dict update: pydantic's __setattr__ is slow, and listings build millions;
+        # a subclass declaring them as private attributes keeps them in pydantic
+        if _FILE_STATE.keys() & self.__private_attributes__.keys():
+            for name, value in _FILE_STATE.items():
+                setattr(self, name, value)
+        else:
+            self.__dict__.update(_FILE_STATE)
 
     def __getstate__(self):
         state = super().__getstate__()
