@@ -1,8 +1,11 @@
 import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
+from email.utils import parsedate_to_datetime
 from tempfile import SpooledTemporaryFile
 from typing import TYPE_CHECKING, Any
+from urllib.parse import unquote
+from xml.etree.ElementTree import Element
 
 from adlfs import AzureBlobFileSystem
 from azure.core.exceptions import (
@@ -263,18 +266,19 @@ class AzureClient(Client):
                 async with self.fs.service_client.get_container_client(
                     container=self.name
                 ) as container_client:
-                    async for page in container_client.list_blobs(
+                    # raw page XML: the SDK's deserializer is most of the listing's CPU
+                    pages = container_client.list_blob_names(
                         include=include, name_starts_with=prefix
-                    ).by_page():
-                        entries = []
-                        async for b in page:
-                            found = True
-                            if not self._is_valid_key(b["name"]):
-                                continue
-                            info = (await self.fs._details([b]))[0]
-                            entries.append(
-                                self.info_to_file(info, self.rel_path(info["name"]))
-                            )
+                    ).by_page()
+                    async for _ in pages:
+                        blobs = pages._response.find("Blobs").findall("Blob")
+                        found = found or bool(blobs)
+                        entries = [
+                            self._xml_to_file(b, name)
+                            for b in blobs
+                            if self._is_valid_key(name := self._blob_name(b))
+                            and not self._is_directory(b)
+                        ]
                         if entries:
                             await result_queue.put(entries)
                             pbar.update(len(entries))
@@ -286,3 +290,33 @@ class AzureClient(Client):
             result_queue.put_nowait(None)
 
     _fetch_default = _fetch_flat
+
+    @staticmethod
+    def _is_directory(blob: Element) -> bool:
+        """A folder listed as a blob: on a hierarchical namespace, or as the empty
+        marker Hadoop tools leave in a flat container."""
+        return (
+            blob.findtext("Properties/ResourceType") == "directory"
+            or blob.findtext("Metadata/hdi_isfolder") == "true"
+        )
+
+    @staticmethod
+    def _blob_name(blob: Element) -> str:
+        name = blob.find("Name")
+        assert name is not None
+        text = name.text or ""
+        return unquote(text) if name.get("Encoded") == "true" else text
+
+    def _xml_to_file(self, blob: Element, name: str) -> File:
+        props = blob.find("Properties")
+        assert props is not None
+        version = blob.findtext("VersionId") if self._is_version_aware() else None
+        return File(
+            source=self.uri,
+            path=name,
+            etag=props.findtext("Etag", "").strip('"'),
+            version=version or "",
+            is_latest=version is None or blob.findtext("IsCurrentVersion") == "true",
+            last_modified=parsedate_to_datetime(props.findtext("Last-Modified", "")),
+            size=int(props.findtext("Content-Length", "0")),
+        )

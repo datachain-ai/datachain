@@ -6,7 +6,6 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, BinaryIO, cast
 from urllib.parse import quote
 
-from dateutil.parser import isoparse
 from fsspec.asyn import get_loop, sync
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from gcsfs import GCSFileSystem
@@ -33,6 +32,8 @@ class GCSClient(Client):
     PREFIX = "gs://"
     protocol = "gs"
     CREDENTIAL_KEYS = frozenset({"token"})
+    # the fields a listing asks for: GCS sends every field otherwise
+    LIST_FIELDS = "items(name,size,generation,etag,timeDeleted,updated),nextPageToken"
 
     @classmethod
     def create_fs(cls, **kwargs) -> GCSFileSystem:
@@ -216,7 +217,7 @@ class GCSClient(Client):
 
         This ensures that the passed timestamp is timezone aware.
         """
-        dt = isoparse(timestamp)
+        dt = datetime.fromisoformat(timestamp)
         assert dt.tzinfo is not None
         return dt
 
@@ -273,10 +274,10 @@ class GCSClient(Client):
                     prefix=path,
                     maxResults=page_size,
                     pageToken=next_page_token,
+                    fields=self.LIST_FIELDS,
                     json_out=True,
                     versions="true" if self._is_version_aware() else "false",
                 )
-                assert page["kind"] == "storage#objects"
                 await page_queue.put(page.get("items", []))
                 next_page_token = page.get("nextPageToken")
                 if next_page_token is None:
@@ -285,8 +286,7 @@ class GCSClient(Client):
             await page_queue.put(None)
 
     def _entry_from_dict(self, d: dict[str, Any]) -> File:
-        info = self.fs._process_object(self.name, d)
-        return self.info_to_file(info, self.rel_path(info["name"]))
+        return self.info_to_file(d, d["name"])
 
     def info_to_file(self, v: dict[str, Any], path: str) -> File:
         return File(

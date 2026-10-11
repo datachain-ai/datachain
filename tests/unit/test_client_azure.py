@@ -1,6 +1,7 @@
 import os
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
+from xml.etree.ElementTree import fromstring
 
 import pytest
 from adlfs import AzureBlobFileSystem
@@ -263,6 +264,26 @@ def test_get_file_key_and_version(char):
     assert bc.download_blob.call_args[1].get("version_id") == _VER
 
 
+def test_blob_name_is_decoded():
+    client = AzureClient("container", {}, None)
+    client._fs = MagicMock(version_aware=True)
+    blob = fromstring(  # noqa: S314
+        "<Blob><Name Encoded='true'>a%01b</Name><VersionId>v1</VersionId>"
+        "<IsCurrentVersion>true</IsCurrentVersion><Properties>"
+        "<Last-Modified>Wed, 30 Sep 2026 23:00:00 GMT</Last-Modified>"
+        "<Etag>0x8DC</Etag><Content-Length>7</Content-Length></Properties></Blob>"
+    )
+    assert client._blob_name(blob) == "a\x01b"
+    assert client._xml_to_file(blob, "a\x01b") == File(
+        source="az://container",
+        path="a\x01b",
+        etag="0x8DC",
+        version="v1",
+        last_modified=datetime(2026, 9, 30, 23, tzinfo=UTC),
+        size=7,
+    )
+
+
 @pytest.mark.parametrize(
     "version_aware,include",
     [(True, ["metadata", "versions"]), (False, ["metadata"])],
@@ -275,7 +296,7 @@ def test_listing_asks_for_versions_only_when_version_aware(version_aware, includ
     container = MagicMock()
     container.__aenter__ = AsyncMock(return_value=container)
     container.__aexit__ = AsyncMock(return_value=False)
-    container.list_blobs.return_value.by_page.return_value = no_pages()
+    container.list_blob_names.return_value.by_page.return_value = no_pages()
     client = AzureClient("mycontainer", {}, MagicMock())
     client._fs = MagicMock(version_aware=version_aware)
     client._fs.service_client.get_container_client.return_value = container
@@ -286,4 +307,4 @@ def test_listing_asks_for_versions_only_when_version_aware(version_aware, includ
 
     sync(get_loop(), list_all)
 
-    assert container.list_blobs.call_args.kwargs["include"] == include
+    assert container.list_blob_names.call_args.kwargs["include"] == include

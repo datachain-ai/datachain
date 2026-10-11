@@ -1,10 +1,18 @@
 import asyncio
 import errno
 import os
+from collections.abc import Callable
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
+from xml.etree.ElementTree import Element, ParseError, fromstring
 
+from aiobotocore.parsers import AioResponseParserFactory, AioRestXMLParser
+from aiobotocore.session import AioSession
+from botocore import handlers
 from botocore.exceptions import ClientError, NoCredentialsError
-from fsspec.asyn import get_loop, sync
+from botocore.model import Shape
+from botocore.utils import parse_timestamp
+from fsspec.asyn import get_loop, sync, sync_wrapper
 from s3fs import S3FileSystem
 
 from datachain.lib.file import File
@@ -18,8 +26,116 @@ if TYPE_CHECKING:
 UPDATE_CHUNKSIZE = 1000
 
 
+def _parse_timestamp(value: Any) -> datetime:
+    try:
+        return datetime.fromisoformat(value)
+    except (TypeError, ValueError):  # header dates and epoch seconds
+        return parse_timestamp(value)
+
+
+_LISTINGS = ("ListObjectsV2Output", "ListObjectVersionsOutput")
+_SCALARS: dict[str, Callable[[str], Any]] = {
+    "integer": int,
+    "long": int,
+    "boolean": lambda text: text == "true",
+    "timestamp": _parse_timestamp,
+}
+Fields = dict[str, tuple[str, Callable[[Element], Any], bool]]
+_FIELDS: dict[tuple[str, str], Fields] = {}  # every client builds its own shapes
+
+
+def _fields(shape: Shape, ns: str) -> Fields:
+    """Readers of a structure's child elements by tag, in namespace ``ns``."""
+    if (shape.name, ns) not in _FIELDS:
+        _FIELDS[shape.name, ns] = {
+            ns + member.serialization.get("name", name): (
+                name,
+                _reader(member.member if member.type_name == "list" else member, ns),
+                member.type_name == "list",
+            )
+            for name, member in shape.members.items()
+        }
+    return _FIELDS[shape.name, ns]
+
+
+def _reader(shape: Shape, ns: str) -> Callable[[Element], Any]:
+    if shape.type_name == "structure":
+        return lambda node: _read(node, _fields(shape, ns))
+    convert = _SCALARS.get(shape.type_name, str)
+    return lambda node: convert(node.text or "")
+
+
+def _read(node: Element, fields: Fields) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for child in node:
+        if field := fields.get(child.tag):
+            key, read, repeated = field
+            if repeated:
+                out.setdefault(key, []).append(read(child))
+            else:
+                out[key] = read(child)
+    return out
+
+
+class _ListingParser(AioRestXMLParser):
+    """Reads listing pages straight from the XML, without botocore's model walk.
+    A page that does not parse, or holds an error, is a 500 that botocore retries."""
+
+    def _do_parse(self, response, shape):
+        if getattr(shape, "name", "") not in _LISTINGS or not response["body"]:
+            return super()._do_parse(response, shape)
+        try:
+            root = fromstring(response["body"])  # noqa: S314
+            ns = root.tag[: root.tag.find("}") + 1]  # the page's namespace, or ""
+        except ParseError:
+            root, ns = None, ""
+        if root is None or root.tag == f"{ns}Error":
+            response["status_code"] = 500
+            return self._do_error_parse(response, shape)
+        parsed = {"ResponseMetadata": self._populate_response_metadata(response)}
+        self._parse_non_payload_attrs(response, shape, shape.members, parsed)
+        return parsed | _read(root, _fields(shape, ns))
+
+
+class _ParserFactory(AioResponseParserFactory):
+    def create_parser(self, protocol_name):
+        if protocol_name == "rest-xml":
+            return _ListingParser(**self._defaults)
+        return super().create_parser(protocol_name)
+
+
+def _handle_200_error(operation_model, response_dict, **kwargs) -> None:
+    """botocore's 200-error check; a listing page is checked by its parser."""
+    if getattr(operation_model.output_shape, "name", "") not in _LISTINGS:
+        handlers._handle_200_error(operation_model, response_dict, **kwargs)
+
+
+class _ListingSession(AioSession):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        factory = _ParserFactory()
+        factory.set_parser_defaults(timestamp_parser=_parse_timestamp)
+        self.register_component("response_parser_factory", factory)
+        self.unregister("before-parse.s3.*", handlers._handle_200_error)
+        self.register("before-parse.s3.*", _handle_200_error)
+
+
+class _S3FileSystem(S3FileSystem):
+    """Every session it makes parses listings with ``_ListingParser``."""
+
+    async def set_session(self, refresh=False, kwargs={}):  # noqa: B006
+        mine = isinstance(self.session, _ListingSession)
+        if self.session is None or (refresh and mine):
+            self.session = _ListingSession(**self.kwargs)
+        self._session_is_owned = False  # s3fs keeps the session, even on refresh
+        return await super().set_session(refresh, kwargs)
+
+    _connect = set_session
+    connect = sync_wrapper(set_session)
+
+
 class ClientS3(Client):
-    FS_CLASS = S3FileSystem
+    FS_CLASS = _S3FileSystem
     PREFIX = "s3://"
     protocol = "s3"
     CREDENTIAL_KEYS = frozenset(
@@ -244,36 +360,6 @@ class ClientS3(Client):
             last_modified=v.get("LastModified", ""),
             size=v["Size"],
         )
-
-    async def _fetch_dir(
-        self,
-        prefix,
-        pbar,
-        result_queue: ResultQueue,
-    ) -> set[str]:
-        if prefix:
-            prefix = prefix.lstrip(DELIMITER) + DELIMITER
-        files = []
-        subdirs = set()
-        found = False
-        async for info in self.fs._iterdir(self.name, prefix=prefix, versions=True):
-            full_path = info["name"]
-            _, subprefix, _ = self.fs.split_path(full_path)
-            if prefix.strip(DELIMITER) == subprefix.strip(DELIMITER):
-                found = True
-                continue
-            if info["type"] == "directory":
-                subdirs.add(subprefix)
-            else:
-                files.append(self.info_to_file(info, subprefix))
-                pbar.update()
-            found = True
-        if not found:
-            raise FileNotFoundError(f"Unable to resolve remote path: {prefix}")
-        if files:
-            await result_queue.put(files)
-        pbar.update(len(subdirs))
-        return subdirs
 
     @staticmethod
     def clean_s3_version(ver: str | None) -> str:
