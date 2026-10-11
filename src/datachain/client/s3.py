@@ -1,15 +1,23 @@
 import asyncio
 import os
+from collections.abc import Callable
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
+from xml.etree.ElementTree import Element, ParseError, fromstring
 
+from aiobotocore.parsers import AioResponseParserFactory, AioRestXMLParser
+from aiobotocore.session import AioSession
+from botocore import handlers
 from botocore.exceptions import NoCredentialsError
-from fsspec.asyn import get_loop, sync
+from botocore.model import Shape
+from botocore.utils import parse_timestamp
+from fsspec.asyn import get_loop, sync, sync_wrapper
 from s3fs import S3FileSystem
 
 from datachain.lib.file import File
 from datachain.progress import tqdm
 
-from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue
+from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue, iso_timestamp
 
 if TYPE_CHECKING:
     from datachain.client.writeconfig import WriteConfig
@@ -17,8 +25,131 @@ if TYPE_CHECKING:
 UPDATE_CHUNKSIZE = 1000
 
 
+def _parse_timestamp(value: Any) -> datetime:
+    parsed = iso_timestamp(value) if isinstance(value, str) else None
+    return parsed or parse_timestamp(value)
+
+
+_NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
+_LISTINGS = ("ListObjectsV2Output", "ListObjectVersionsOutput")
+_LISTING_OPS = ("ListObjectsV2", "ListObjectVersions")
+
+
+_SCALARS: dict[str, Callable[[str], Any]] = {
+    "integer": int,
+    "long": int,
+    "boolean": lambda text: text == "true",
+    "timestamp": _parse_timestamp,
+}
+Fields = dict[str, tuple[str, Callable[[Element], Any], bool]]
+
+
+_FIELDS: dict[str, Fields] = {}  # by shape name: every client builds its own shapes
+
+
+def _fields(shape: Shape) -> Fields:
+    """Readers of a structure's child elements by XML tag."""
+    if (fields := _FIELDS.get(shape.name)) is not None:
+        return fields
+    fields = {}
+    for name, member in shape.members.items():
+        repeated = member.type_name == "list"
+        fields[member.serialization.get("name", name)] = (
+            name,
+            _reader(member.member if repeated else member),
+            repeated,
+        )
+    _FIELDS[shape.name] = fields
+    return fields
+
+
+def _reader(shape: Shape) -> Callable[[Element], Any]:
+    if shape.type_name == "structure":
+        return lambda node: _read(node, _fields(shape))
+    convert = _SCALARS.get(shape.type_name, str)
+    return lambda node: convert(node.text or "")
+
+
+def _read(node: Element, fields: Fields) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for child in node:
+        if field := fields.get(child.tag.removeprefix(_NS)):
+            key, read, repeated = field
+            if repeated:
+                out.setdefault(key, []).append(read(child))
+            else:
+                out[key] = read(child)
+    return out
+
+
+class _ListingParser(AioRestXMLParser):
+    """Reads object listing entries straight from the XML, skipping botocore's
+    model walk. A listing page that does not parse, or holds an error, is a 500
+    that botocore retries."""
+
+    def _do_parse(self, response, shape):
+        if getattr(shape, "name", "") not in _LISTINGS or not response["body"]:
+            return super()._do_parse(response, shape)
+        try:
+            root = fromstring(response["body"])  # noqa: S314
+        except ParseError:
+            root = None
+        if root is None or root.tag.removeprefix(_NS) == "Error":
+            response["status_code"] = 500
+            return self._do_error_parse(response, shape)
+        fields = {t: f for t, f in _fields(shape).items() if f[2]}
+        entries = _read(root, fields)
+        for node in [n for n in root if n.tag.removeprefix(_NS) in fields]:
+            root.remove(node)
+        return super()._do_parse({**response, "body": root}, shape) | entries
+
+    def _initial_body_parse(self, xml_string):
+        if isinstance(xml_string, Element):
+            return xml_string
+        return super()._initial_body_parse(xml_string)
+
+
+class _ParserFactory(AioResponseParserFactory):
+    def create_parser(self, protocol_name):
+        if protocol_name == "rest-xml":
+            return _ListingParser(**self._defaults)
+        return super().create_parser(protocol_name)
+
+
+def _handle_200_error(operation_model, response_dict, **kwargs) -> None:
+    """botocore's 200-error check; a listing page is checked by its parser."""
+    if getattr(operation_model, "name", "") not in _LISTING_OPS:
+        handlers._handle_200_error(operation_model, response_dict, **kwargs)
+
+
+class _ListingSession(AioSession):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        factory = _ParserFactory()
+        factory.set_parser_defaults(timestamp_parser=_parse_timestamp)
+        self.register_component("response_parser_factory", factory)
+        self.unregister("before-parse.s3.*", handlers._handle_200_error)
+        self.register("before-parse.s3.*", _handle_200_error)
+
+
+class _S3FileSystem(S3FileSystem):
+    """Every session it makes parses listings with ``_ListingParser``."""
+
+    _owns_session = False
+
+    async def set_session(self, refresh=False, kwargs={}):  # noqa: B006
+        if self.session is None or (refresh and self._owns_session):
+            self.session = _ListingSession(**self.kwargs)
+            self._owns_session = True
+        self._session_is_owned = False  # s3fs keeps the session, even on refresh
+        return await super().set_session(refresh, kwargs)
+
+    _connect = set_session
+    connect = sync_wrapper(set_session)
+
+
 class ClientS3(Client):
-    FS_CLASS = S3FileSystem
+    FS_CLASS = _S3FileSystem
     PREFIX = "s3://"
     protocol = "s3"
     CREDENTIAL_KEYS = frozenset(

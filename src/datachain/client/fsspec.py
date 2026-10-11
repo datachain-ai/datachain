@@ -9,7 +9,7 @@ import re
 import shutil
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
@@ -47,6 +47,12 @@ ResultQueue = asyncio.Queue[Sequence["File"] | None]
 def is_cloud_uri(uri: str) -> bool:
     protocol = urlparse(uri).scheme
     return protocol in CLOUD_STORAGE_PROTOCOLS
+
+
+def iso_timestamp(value: str) -> datetime | None:
+    with suppress(ValueError):
+        return datetime.fromisoformat(value)
+    return None
 
 
 def get_cloud_schemes() -> list[str]:

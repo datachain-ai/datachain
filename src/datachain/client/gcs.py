@@ -3,7 +3,7 @@ import json
 import os
 from collections.abc import Iterable
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, BinaryIO, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, cast
 from urllib.parse import quote
 
 from dateutil.parser import isoparse
@@ -16,7 +16,7 @@ from datachain.client.fileslice import FileWrapper
 from datachain.lib.file import File
 from datachain.progress import tqdm
 
-from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue
+from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue, iso_timestamp
 
 if TYPE_CHECKING:
     from datachain.client.writeconfig import WriteConfig
@@ -33,6 +33,15 @@ class GCSClient(Client):
     PREFIX = "gs://"
     protocol = "gs"
     CREDENTIAL_KEYS = frozenset({"token"})
+    # GCS sends every field otherwise
+    LIST_FIELDS: ClassVar[tuple[str, ...]] = (
+        "name",
+        "size",
+        "generation",
+        "etag",
+        "timeDeleted",
+        "updated",
+    )
 
     @classmethod
     def create_fs(cls, **kwargs) -> GCSFileSystem:
@@ -216,7 +225,7 @@ class GCSClient(Client):
 
         This ensures that the passed timestamp is timezone aware.
         """
-        dt = isoparse(timestamp)
+        dt = iso_timestamp(timestamp) or isoparse(timestamp)
         assert dt.tzinfo is not None
         return dt
 
@@ -273,10 +282,10 @@ class GCSClient(Client):
                     prefix=path,
                     maxResults=page_size,
                     pageToken=next_page_token,
+                    fields=f"items({','.join(self.LIST_FIELDS)}),nextPageToken",
                     json_out=True,
                     versions="true" if self._is_version_aware() else "false",
                 )
-                assert page["kind"] == "storage#objects"
                 await page_queue.put(page.get("items", []))
                 next_page_token = page.get("nextPageToken")
                 if next_page_token is None:
@@ -285,8 +294,7 @@ class GCSClient(Client):
             await page_queue.put(None)
 
     def _entry_from_dict(self, d: dict[str, Any]) -> File:
-        info = self.fs._process_object(self.name, d)
-        return self.info_to_file(info, self.rel_path(info["name"]))
+        return self.info_to_file(d, d["name"])
 
     def info_to_file(self, v: dict[str, Any], path: str) -> File:
         return File(

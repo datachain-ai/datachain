@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+from datetime import UTC
 from pathlib import Path
 from uuid import uuid4
 
@@ -69,6 +70,11 @@ def test_scandir_not_dir(client):
 def test_scandir_success(client):
     results = scandir(client, "")
     match_entries(results, ENTRIES)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+def test_listing_parses_timestamps_without_dateutil(client):
+    assert {e.last_modified.tzinfo for e in scandir(client, "")} == {UTC}
 
 
 def test_scandir_alternate(client):
