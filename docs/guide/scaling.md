@@ -46,7 +46,7 @@ Prefetch downloads file content ahead of the UDF that reads it. `prefetch=N` dow
 
 Prefetch runs only when a UDF receives a `File` object. Attributes such as `file.path` and `file.size` come from the listing, so a UDF that receives only them through `params=` downloads nothing.
 
-Set `prefetch=0` for UDFs that read only part of a file, such as `get_info()` or `read_bytes(n)`. They then fetch the byte ranges they need instead of the whole file.
+For partial reads (`get_info()` or `read_bytes(n)` with `n > 0`), use `.settings(prefetch=0, cache=False)`. Transfer size depends on the format and read-ahead; `cache=True` downloads whole files on cache misses.
 
 ## File Cache
 

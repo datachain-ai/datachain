@@ -740,16 +740,43 @@ def _noise_mp4() -> bytes:
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
 @pytest.mark.parametrize(
-    "name,make,read",
+    "name,make,read,expected",
     [
-        ("img.png", _noise_png, lambda f: f.as_image_file().get_info()),
-        ("audio.wav", _noise_wav, lambda f: f.as_audio_file().get_info()),
-        ("video.mp4", _noise_mp4, lambda f: f.as_video_file().get_info()),
-        ("img.png", _noise_png, lambda f: f.read_bytes(16)),
+        (
+            "img.png",
+            _noise_png,
+            lambda f: f.as_image_file().get_info(),
+            {"width": 1500, "height": 1500, "format": "PNG"},
+        ),
+        (
+            "audio.wav",
+            _noise_wav,
+            lambda f: f.as_audio_file().get_info(),
+            {
+                "sample_rate": 48000,
+                "channels": 1,
+                "samples": 48000 * 40,
+                "duration": 40,
+                "format": "wav",
+            },
+        ),
+        (
+            "video.mp4",
+            _noise_mp4,
+            lambda f: f.as_video_file().get_info(),
+            {
+                "width": 640,
+                "height": 480,
+                "fps": 30,
+                "frames": 60,
+                "duration": 2,
+                "codec": "mpeg4",
+            },
+        ),
     ],
 )
 def test_partial_reads_fetch_part_of_file(
-    cloud_test_catalog_upload, fetched_bytes, tmp_path, name, make, read
+    cloud_test_catalog_upload, fetched_bytes, tmp_path, name, make, read, expected
 ):
     ctc = cloud_test_catalog_upload
     data = make()
@@ -759,10 +786,40 @@ def test_partial_reads_fetch_part_of_file(
     file = File(source=ctc.src_uri, path=name)
     file._set_stream(ctc.catalog, caching_enabled=False)
 
-    read(file)
+    info = read(file)
 
     assert len(data) > 4 * 1024 * 1024
     assert 0 < fetched_bytes[0] < len(data) // 2
+    assert {field: getattr(info, field) for field in expected} == expected
+
+
+@pytest.mark.filterwarnings("ignore:Sending a large body:ResourceWarning")
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize("length", [0, 16, 2 * 1024 * 1024, -1])
+def test_read_bytes_fetch_budget(
+    cloud_test_catalog_upload, fetched_bytes, tmp_path, length
+):
+    ctc = cloud_test_catalog_upload
+    data = _noise_png()
+    local = tmp_path / "img.png"
+    local.write_bytes(data)
+    ctc.src.fs.put_file(str(local), str(ctc.src / local.name))
+    file = File(source=ctc.src_uri, path=local.name)
+    file._set_stream(ctc.catalog, caching_enabled=False)
+
+    result = file.read_bytes(length)
+
+    assert result == (data if length < 0 else data[:length])
+    if length == 0:
+        assert fetched_bytes[0] == 0
+    elif length == 16:
+        assert 0 < fetched_bytes[0] <= 64 * 1024
+    elif length > 0:
+        # Allow one 1 MiB read-ahead block and modest backend overhead.
+        assert length <= fetched_bytes[0] <= length + 1024 * 1024 + 64 * 1024
+    else:
+        assert fetched_bytes[0] == len(data)
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
@@ -782,9 +839,10 @@ def test_tar_member_partial_read(cloud_test_catalog_upload, fetched_bytes, tmp_p
     member._set_stream(ctc.catalog, caching_enabled=False)
     fetched_bytes[0] = 0
 
-    member.get_info()
+    info = member.get_info()
 
     assert 0 < fetched_bytes[0] < len(data) // 2
+    assert (info.width, info.height, info.format) == (1500, 1500, "PNG")
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
@@ -809,3 +867,4 @@ def test_open_write_passes_block_size(cloud_test_catalog_upload, monkeypatch):
             f.write(b"x" * 1024 * 1024)
 
     assert parts.count(False) == 2
+    assert file.read_bytes() == b"x" * (11 * 1024 * 1024)
