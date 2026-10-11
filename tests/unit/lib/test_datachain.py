@@ -2072,6 +2072,11 @@ def test_read_csv_column_types_several_files(tmp_dir, test_session):
             {"parse_options": {"quote_char": "'", "newlines_in_values": True}},
             [{"a": "x\ny", "b": 10}, {"a": "z", "b": 20}],
         ),
+        (
+            "a,b\n1,10\n# comment\n2,20\n",
+            {"parse_options": {"invalid_row_handler": lambda row: "skip"}},
+            None,
+        ),
     ],
 )
 def test_read_csv_source_reads_its_row(

@@ -2060,11 +2060,19 @@ class ArrowRow(DataModel):
         from pyarrow.csv import ParseOptions, ReadOptions
         from pyarrow.dataset import CsvFileFormat, dataset
 
+        from datachain.lib.arrow import fix_pyarrow_format
+
         kwargs = dict(self.kwargs)
         if csv := kwargs.pop("csv", None):
-            kwargs["format"] = CsvFileFormat(
-                read_options=ReadOptions(**csv["read_options"]),
-                parse_options=ParseOptions(**csv["parse_options"]),
+            parse = ParseOptions(**csv["parse_options"])
+            if csv.get("skip_invalid_rows"):
+                parse.invalid_row_handler = lambda _row: "skip"
+            kwargs["format"] = fix_pyarrow_format(
+                CsvFileFormat(
+                    read_options=ReadOptions(**csv["read_options"]),
+                    parse_options=parse,
+                ),
+                parse,
             )
 
         if self.file._caching_enabled:
@@ -2082,7 +2090,7 @@ class ArrowRow(DataModel):
 
         Best effort, with no guarantee to match the stored row: it parses the
         file again from the start up to this row, and not every reader option is
-        kept, e.g. column types or an `invalid_row_handler`.
+        kept, e.g. column types.
         """
         with self.open() as record_batch:
             return record_batch.to_pylist()[0]

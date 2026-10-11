@@ -151,9 +151,14 @@ class ArrowGenerator(Generator):
                 # columns, so the row can be found again.
                 read = format.default_fragment_scan_options.read_options
                 parse = format.parse_options
+                # The format doesn't return its handler (ARROW-17641).
+                handler = getattr(self.parse_options, "invalid_row_handler", None)
                 csv = {
                     "read_options": {n: getattr(read, n) for n in _CSV_READ_OPTIONS},
                     "parse_options": {n: getattr(parse, n) for n in _CSV_PARSE_OPTIONS},
+                    # A read that finished skipped every invalid row, so the
+                    # handler can be replaced by skipping them all.
+                    "skip_invalid_rows": handler is not None,
                 }
                 # A copy, so the files read after this one keep their CSV options.
                 kwargs = {**kwargs, "format": "csv", "csv": csv}
