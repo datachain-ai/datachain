@@ -275,7 +275,7 @@ Lineage is tracked automatically when a chain reads one dataset and saves anothe
    Only add .settings(prefetch=N) if N > 4 (default is 2). Prefetch downloads
    file content, never attributes: file.path and file.size come from the
    listing. Default prefetch=2 downloads the whole content of every File
-   argument. For UDFs that take a File but read only metadata (get_info(),
+   argument. For UDFs that take a File but read only part of it (get_info(),
    read_bytes(n)), set prefetch=0. UDFs that receive only file.path and/or
    file.size via params= download nothing. Skip if the user explicitly sets
    prefetch.

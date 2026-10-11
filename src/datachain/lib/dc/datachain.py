@@ -487,7 +487,7 @@ class DataChain:
                 files from the same or different chains. Defaults to False.
             prefetch: Number of files to download whole ahead of the UDF, per
                 process on each worker. Defaults to 2. Set to 0 or False for UDFs
-                that read only metadata, such as `get_info()`.
+                that read only part of a file, such as `get_info()`.
             parallel: Number of processes to use for processing user-defined functions
                 (UDFs) in parallel. If an integer is provided, it specifies the number
                 of CPUs to use. If True, all available CPUs are used. Defaults to 1.

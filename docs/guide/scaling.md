@@ -42,19 +42,11 @@ DataChain's storage-native architecture means files live in cloud storage and ar
 
 ## Async Prefetch
 
-Prefetch downloads file content ahead of the UDF that reads it. `prefetch=N` downloads the next N files while the current one is processed. Default is 2; `prefetch=0` disables it.
+Prefetch downloads file content ahead of the UDF that reads it. `prefetch=N` downloads the next N files whole while the current one is processed. Default is 2; `prefetch=0` disables it. Tune by file size: ~10-16 for small files, 1 for large files.
 
-File attributes such as `file.path`, `file.size` and `file.etag` come from the listing, so reading them never downloads anything. Prefetch runs only when a UDF receives a `File` object, and then downloads its whole content. A UDF that receives `file.path` and/or `file.size` through `params=` downloads nothing.
+Prefetch runs only when a UDF receives a `File` object. Attributes such as `file.path` and `file.size` come from the listing, so a UDF that receives only them through `params=` downloads nothing.
 
-Tune by file size: ~10-16 for small files, 1 for large files.
-
-Disable prefetch for UDFs that read only part of the content: `get_info()`, `read_bytes(n)`, or a header read through `file.open()`. These then read only the bytes they need, about 1 MiB per file instead of the whole file.
-
-```python
-chain.settings(prefetch=0).map(info=lambda file: file.get_info(), output=dc.Video)
-```
-
-`cache=True` also downloads a file whole on first open.
+Set `prefetch=0` for UDFs that read only part of a file, such as `get_info()` or `read_bytes(n)`. They then fetch the byte ranges they need instead of the whole file.
 
 ## File Cache
 

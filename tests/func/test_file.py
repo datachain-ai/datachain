@@ -2,6 +2,7 @@ import io
 import tarfile
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 import datachain as dc
@@ -680,3 +681,131 @@ def test_open_exclusive_azure_conflict(cloud_test_catalog_upload, meta):
         with File.at(path, ctc.session).open("xb", **meta) as f:
             f.write(b"second")
     assert File.at(path, ctc.session).read() == b"first"
+
+
+@pytest.fixture
+def fetched_bytes(monkeypatch):
+    from adlfs.spec import AzureBlobFile
+    from gcsfs.core import GCSFile
+    from s3fs.core import S3File
+
+    fetched = [0]
+    for cls in (S3File, GCSFile, AzureBlobFile):
+
+        def fetch_range(self, *args, _orig=cls._fetch_range, **kwargs):
+            data = _orig(self, *args, **kwargs)
+            fetched[0] += len(data)
+            return data
+
+        monkeypatch.setattr(cls, "_fetch_range", fetch_range)
+    return fetched
+
+
+def _noise_png() -> bytes:
+    from PIL import Image
+
+    pixels = np.random.default_rng(0).integers(0, 256, (1500, 1500, 3), np.uint8)
+    buf = io.BytesIO()
+    Image.fromarray(pixels).save(buf, format="PNG", compress_level=0)
+    return buf.getvalue()
+
+
+def _noise_wav() -> bytes:
+    import soundfile as sf
+
+    samples = np.random.default_rng(0).uniform(-1, 1, 48000 * 40).astype(np.float32)
+    buf = io.BytesIO()
+    sf.write(buf, samples, 48000, format="WAV", subtype="FLOAT")
+    return buf.getvalue()
+
+
+def _noise_mp4() -> bytes:
+    import av
+
+    buf = io.BytesIO()
+    with av.open(buf, "w", format="mp4") as container:
+        stream = container.add_stream("mpeg4", rate=30)
+        stream.width, stream.height, stream.pix_fmt = 640, 480, "yuv420p"
+        stream.bit_rate = 100_000_000
+        rng = np.random.default_rng(0)
+        for _ in range(60):
+            pixels = rng.integers(0, 256, (480, 640, 3), np.uint8)
+            frame = av.VideoFrame.from_ndarray(pixels, format="rgb24")
+            container.mux(stream.encode(frame))
+        container.mux(stream.encode())
+    return buf.getvalue()
+
+
+@pytest.mark.filterwarnings("ignore:Sending a large body:ResourceWarning")
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize(
+    "name,make,read",
+    [
+        ("img.png", _noise_png, lambda f: f.as_image_file().get_info()),
+        ("audio.wav", _noise_wav, lambda f: f.as_audio_file().get_info()),
+        ("video.mp4", _noise_mp4, lambda f: f.as_video_file().get_info()),
+        ("img.png", _noise_png, lambda f: f.read_bytes(16)),
+    ],
+)
+def test_partial_reads_fetch_part_of_file(
+    cloud_test_catalog_upload, fetched_bytes, tmp_path, name, make, read
+):
+    ctc = cloud_test_catalog_upload
+    data = make()
+    local = tmp_path / name
+    local.write_bytes(data)
+    ctc.src.fs.put_file(str(local), str(ctc.src / name))
+    file = File(source=ctc.src_uri, path=name)
+    file._set_stream(ctc.catalog, caching_enabled=False)
+
+    read(file)
+
+    assert len(data) > 4 * 1024 * 1024
+    assert 0 < fetched_bytes[0] < len(data) // 2
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_tar_member_partial_read(cloud_test_catalog_upload, fetched_bytes, tmp_path):
+    ctc = cloud_test_catalog_upload
+    data = _noise_png()
+    tar_path = tmp_path / "a.tar"
+    with tarfile.open(tar_path, "w") as tar:
+        info = tarfile.TarInfo("img.png")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    ctc.src.fs.put_file(str(tar_path), str(ctc.src / "a.tar"))
+    tar_file = File(source=ctc.src_uri, path="a.tar")
+    tar_file._set_stream(ctc.catalog, caching_enabled=False)
+    member = next(process_tar(tar_file)).as_image_file()
+    member._set_stream(ctc.catalog, caching_enabled=False)
+    fetched_bytes[0] = 0
+
+    member.get_info()
+
+    assert 0 < fetched_bytes[0] < len(data) // 2
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_open_write_passes_block_size(cloud_test_catalog_upload, monkeypatch):
+    from s3fs.core import S3File
+
+    ctc = cloud_test_catalog_upload
+    parts = []
+    upload_chunk = S3File._upload_chunk
+
+    def count_parts(self, final=False):
+        parts.append(final)
+        return upload_chunk(self, final=final)
+
+    monkeypatch.setattr(S3File, "_upload_chunk", count_parts)
+    file = File(source=ctc.src_uri, path="big.bin")
+    file._set_stream(ctc.catalog)
+
+    with file.open("wb", block_size=5 * 1024 * 1024) as f:
+        for _ in range(11):
+            f.write(b"x" * 1024 * 1024)
+
+    assert parts.count(False) == 2

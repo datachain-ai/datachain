@@ -9,7 +9,6 @@ from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import patch
 
 import av
 import ffmpeg
@@ -19,13 +18,7 @@ from numpy import ndarray
 from PIL import Image
 
 from datachain import VideoFragment, VideoFrame
-from datachain.lib.file import (
-    HEADER_READ_BLOCK_SIZE,
-    File,
-    FileError,
-    ImageFile,
-    VideoFile,
-)
+from datachain.lib.file import File, FileError, ImageFile, VideoFile
 from datachain.lib.tar import process_tar
 from datachain.lib.video import save_video_fragment, video_frame_np
 
@@ -412,15 +405,6 @@ def test_get_info(video_file):
         "format": "mov,mp4,m4a,3gp,3g2,mj2",
         "codec": "h264",
     }
-
-
-@requires_ffmpeg
-def test_get_info_opens_with_header_block_size(video_file):
-    file = video_file.as_video_file()
-    with patch.object(VideoFile, "open", wraps=file.open) as mock_open:
-        file.get_info()
-
-    assert mock_open.call_args.kwargs == {"block_size": HEADER_READ_BLOCK_SIZE}
 
 
 def test_get_info_error():
