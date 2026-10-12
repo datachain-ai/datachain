@@ -197,6 +197,13 @@ def test_200_error_check(operation, body, status):
     assert response["status_code"] == status
 
 
+@pytest.mark.parametrize(
+    "bucket, in_order", [("bucket", True), ("bucket--usw2-az1--x-s3", False)]
+)
+def test_directory_buckets_list_out_of_key_order(bucket, in_order):
+    assert ClientS3(bucket, {}, None)._lists_in_key_order() is in_order
+
+
 def test_listing_fields_are_kept_once_per_shape_name():
     def shape():
         model = botocore.session.get_session().get_service_model("s3")

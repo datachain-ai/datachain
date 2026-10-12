@@ -1,4 +1,3 @@
-import asyncio
 import os
 from collections.abc import Callable
 from datetime import datetime
@@ -15,14 +14,18 @@ from fsspec.asyn import get_loop, sync, sync_wrapper
 from s3fs import S3FileSystem
 
 from datachain.lib.file import File
-from datachain.progress import tqdm
 
-from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue, iso_timestamp
+from .fsspec import (
+    DELIMITER,
+    BucketStatus,
+    RangeListedClient,
+    ResultQueue,
+    iso_timestamp,
+)
+from .ranges import Page
 
 if TYPE_CHECKING:
     from datachain.client.writeconfig import WriteConfig
-
-UPDATE_CHUNKSIZE = 1000
 
 
 def _parse_timestamp(value: Any) -> datetime:
@@ -148,7 +151,7 @@ class _S3FileSystem(S3FileSystem):
     connect = sync_wrapper(set_session)
 
 
-class ClientS3(Client):
+class ClientS3(RangeListedClient):
     FS_CLASS = _S3FileSystem
     PREFIX = "s3://"
     protocol = "s3"
@@ -282,69 +285,57 @@ class ClientS3(Client):
 
         return self.fs.sign(self.get_uri(path), expiration=expires, **kwargs)
 
-    async def _fetch_flat(self, start_prefix: str, result_queue: ResultQueue) -> None:
-        async def get_pages(it, page_queue):
-            try:
-                async for page in it:
-                    await page_queue.put(page.get(contents_key, []))
-            finally:
-                await page_queue.put(None)
+    def _lists_in_key_order(self) -> bool:
+        # directory buckets neither sort keys nor take StartAfter
+        return not self.name.endswith("--x-s3")
 
-        async def process_pages(page_queue, result_queue, prefix):
-            found = False
-            with tqdm(desc=f"Listing {self.uri}", unit=" objects", leave=False) as pbar:
-                while (res := await page_queue.get()) is not None:
-                    if res:
-                        found = True
-                    entries = [
-                        self._entry_from_boto(d, self.name, versions)
-                        for d in res
-                        if self._is_valid_key(d["Key"])
-                    ]
-                    if entries:
-                        await result_queue.put(entries)
-                        pbar.update(len(entries))
-            if not found and prefix:
-                raise FileNotFoundError(f"Unable to resolve remote path: {prefix}")
+    async def _list_page(
+        self,
+        prefix: str,
+        start_after: str,
+        token: Any,
+        keep: Callable[[str], bool],
+        page_size: int | None = None,
+        hi: str | None = None,
+    ) -> Page:
+        versions = self._is_version_aware()
+        kwargs: dict[str, Any] = {}
+        if versions:
+            if token is not None:
+                kwargs["KeyMarker"], version_marker = token
+                if version_marker:
+                    kwargs["VersionIdMarker"] = version_marker
+            elif start_after:
+                kwargs["KeyMarker"] = start_after
+        elif token is not None:
+            kwargs["ContinuationToken"] = token
+        elif start_after:
+            kwargs["StartAfter"] = start_after
+        await self.fs.set_session()
+        s3 = await self.fs.get_s3(self.name)
+        list_page = s3.list_object_versions if versions else s3.list_objects_v2
+        page = await list_page(
+            Bucket=self.name,
+            Prefix=prefix,
+            MaxKeys=page_size or self.LIST_PAGE_SIZE,
+            **kwargs,
+        )
+        entries = page.get("Versions" if versions else "Contents", [])
+        keys = [d["Key"] for d in entries + page.get("DeleteMarkers", [])]
+        if not page.get("IsTruncated"):
+            token = None
+        elif versions:
+            token = page["NextKeyMarker"], page.get("NextVersionIdMarker")
+        else:
+            token = page["NextContinuationToken"]
+        return Page(
+            [self._entry_from_boto(d, versions) for d in entries if keep(d["Key"])],
+            entries[0]["Key"] if entries else None,
+            max(keys, default=None),
+            token,
+        )
 
-        try:
-            prefix = start_prefix
-            if prefix:
-                prefix = prefix.lstrip(DELIMITER) + DELIMITER
-            versions = self._is_version_aware()
-            fs = self.fs
-            await fs.set_session()
-            s3 = await fs.get_s3(self.name)
-            if versions:
-                method = "list_object_versions"
-                contents_key = "Versions"
-            else:
-                method = "list_objects_v2"
-                contents_key = "Contents"
-            pag = s3.get_paginator(method)
-            it = pag.paginate(
-                Bucket=self.name,
-                Prefix=prefix,
-                Delimiter="",
-            )
-            page_queue: asyncio.Queue[list] = asyncio.Queue(2)
-            consumer = asyncio.create_task(
-                process_pages(page_queue, result_queue, prefix)
-            )
-            try:
-                await get_pages(it, page_queue)
-                await consumer
-            finally:
-                consumer.cancel()  # In case get_pages() raised
-        finally:
-            result_queue.put_nowait(None)
-
-    async def _fetch_default(
-        self, start_prefix: str, result_queue: ResultQueue
-    ) -> None:
-        await self._fetch_flat(start_prefix, result_queue)
-
-    def _entry_from_boto(self, v, bucket, versions=False) -> File:
+    def _entry_from_boto(self, v, versions: bool) -> File:
         return File(
             source=self.uri,
             path=v["Key"],
@@ -353,7 +344,7 @@ class ClientS3(Client):
                 ClientS3.clean_s3_version(v.get("VersionId", "")) if versions else ""
             ),
             is_latest=v.get("IsLatest", True),
-            last_modified=v.get("LastModified", ""),
+            last_modified=v["LastModified"],
             size=v["Size"],
         )
 

@@ -8,7 +8,12 @@ import posixpath
 import re
 import shutil
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Iterator, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Callable,
+    Iterator,
+    Sequence,
+)
 from contextlib import contextmanager, suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, Literal, NamedTuple
@@ -24,6 +29,8 @@ from datachain.fs.utils import is_win_local_path
 from datachain.nodes_fetcher import NodesFetcher
 from datachain.nodes_thread_pool import NodeChunk
 from datachain.progress import tqdm
+
+from .ranges import LIST_WORKERS, Page, RangeListing
 
 if TYPE_CHECKING:
     from fsspec.spec import AbstractFileSystem
@@ -79,6 +86,7 @@ class Client(ABC):
     protocol: ClassVar[str]
     # client_config keys this backend treats as credentials.
     CREDENTIAL_KEYS: ClassVar[frozenset[str]] = frozenset()
+    LIST_PAGE_SIZE: ClassVar[int] = 1000
 
     @classmethod
     def has_explicit_credentials(cls, client_config: dict | None) -> bool:
@@ -303,12 +311,26 @@ class Client(ABC):
             impl = getattr(self, f"_fetch_{method}")
         except AttributeError:
             raise ValueError(f"Unknown indexing method '{method}'") from None
-        result_queue: ResultQueue = asyncio.Queue()
-        loop = get_loop()
-        main_task = loop.create_task(impl(start_prefix, result_queue))
-        while (entry := await result_queue.get()) is not None:
-            yield entry
-        await main_task
+        result_queue: ResultQueue = asyncio.Queue(2 * LIST_WORKERS)
+
+        async def listing() -> None:
+            try:
+                await impl(start_prefix, result_queue)
+            except asyncio.CancelledError:
+                raise
+            except BaseException:
+                await result_queue.put(None)
+                raise
+            await result_queue.put(None)
+
+        main_task = get_loop().create_task(listing())
+        try:
+            while (page := await result_queue.get()) is not None:
+                yield page
+            await main_task
+        finally:
+            main_task.cancel()
+            await asyncio.gather(main_task, return_exceptions=True)
 
     async def _fetch_nested(self, start_prefix: str, result_queue: ResultQueue) -> None:
         progress_bar = tqdm(desc=f"Listing {self.uri}", unit=" objects", leave=False)
@@ -333,26 +355,18 @@ class Client(ABC):
                 finally:
                     queue.task_done()
 
+        workers: list[asyncio.Task] = []
         try:
-            workers: list[asyncio.Task] = [
-                loop.create_task(process(queue)) for _ in range(FETCH_WORKERS)
-            ]
-
-            # Wait for all fetch tasks to complete
+            workers = [loop.create_task(process(queue)) for _ in range(FETCH_WORKERS)]
             await queue.join()
-            # Stop the workers
-            excs = []
             for worker in workers:
                 if worker.done() and (exc := worker.exception()):
-                    excs.append(exc)
-                else:
-                    worker.cancel()
-            if excs:
-                raise excs[0]
+                    raise exc
         finally:
-            # This ensures the progress bar is closed before any exceptions are raised
+            for worker in workers:
+                worker.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
             progress_bar.close()
-            result_queue.put_nowait(None)
 
     async def _fetch_default(
         self, start_prefix: str, result_queue: ResultQueue
@@ -604,3 +618,42 @@ class Client(ABC):
                     "update=True to refresh the catalog."
                 )
         await self.cache.download(file, self, callback=callback)
+
+
+class RangeListedClient(Client):
+    """A client that lists in parallel key ranges (``RangeListing``)."""
+
+    @staticmethod
+    def key_order(key: str) -> Any:
+        """The sort key of the order the server lists keys in."""
+        return key
+
+    async def _fetch_ranges(self, start_prefix: str, result_queue: ResultQueue) -> None:
+        prefix = start_prefix.lstrip(DELIMITER) + DELIMITER if start_prefix else ""
+        await RangeListing(self, prefix, result_queue).run()
+
+    _fetch_default = _fetch_ranges
+
+    def _lists_in_key_order(self) -> bool:
+        return True
+
+    def _keeps(self, hi: str | None) -> Callable[[str], bool]:
+        if hi is None:
+            return self._is_valid_key
+        hi_key = self.key_order(hi)
+        order = self.key_order
+        return lambda key: self._is_valid_key(key) and order(key) <= hi_key
+
+    async def _list_page(
+        self,
+        prefix: str,
+        start_after: str,
+        token: Any,
+        keep: Callable[[str], bool],
+        page_size: int | None = None,
+        hi: str | None = None,
+    ) -> Page:
+        """One page under ``prefix``, in key order: the one after ``token``, or
+        the first after ``start_after``. Only keys to ``keep`` become rows. A
+        backend that can end a listing at a key ends it after ``hi``."""
+        raise NotImplementedError
