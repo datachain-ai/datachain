@@ -49,7 +49,7 @@ ExportPlacement = Literal["filename", "etag", "fullpath", "checksum", "filepath"
 
 FileType = Literal["binary", "text", "image", "video", "audio"]
 EXPORT_FILES_MAX_THREADS = 5
-HEADER_READ_BLOCK_SIZE = 1024 * 1024
+PARTIAL_READ_BLOCK_SIZE = 1024 * 1024
 
 
 class FileExporter(NodesThreadPool):
@@ -663,7 +663,7 @@ class File(DataModel):
 
     def read_bytes(self, length: int = -1):
         """Returns file contents as bytes."""
-        block_size = min(length, HEADER_READ_BLOCK_SIZE) if length > 0 else None
+        block_size = min(length, PARTIAL_READ_BLOCK_SIZE) if length > 0 else None
         with self.open(mode="rb", block_size=block_size) as stream:
             return stream.read(length)
 

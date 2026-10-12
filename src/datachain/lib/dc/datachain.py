@@ -485,7 +485,7 @@ class DataChain:
         Parameters:
             cache: Enable files caching to speed up subsequent accesses to the same
                 files from the same or different chains. Defaults to False.
-            prefetch: Number of files to download whole ahead of the UDF, per
+            prefetch: Number of files to download in full ahead of the UDF, per
                 process on each worker. Defaults to 2. Set to 0 or False for UDFs
                 that read only part of a file, such as `get_info()`.
             parallel: Number of processes to use for processing user-defined functions

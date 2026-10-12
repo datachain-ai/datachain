@@ -4,7 +4,7 @@ import torch
 from PIL import Image as PILImage
 
 from datachain.lib.file import (
-    HEADER_READ_BLOCK_SIZE,
+    PARTIAL_READ_BLOCK_SIZE,
     File,
     FileError,
     Image,
@@ -25,7 +25,7 @@ def image_info(file: File | ImageFile) -> Image:
     """
     try:
         with file.as_image_file().open(
-            mode="rb", block_size=HEADER_READ_BLOCK_SIZE
+            mode="rb", block_size=PARTIAL_READ_BLOCK_SIZE
         ) as stream:
             with PILImage.open(stream) as img:
                 return Image(
