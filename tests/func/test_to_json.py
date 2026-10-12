@@ -1,4 +1,4 @@
-import datetime
+import datetime as dt
 import json
 import uuid
 
@@ -8,10 +8,10 @@ import datachain as dc
 from datachain.lib.file import File
 
 
-def _parse_isoformat(value: str) -> datetime.datetime:
+def _parse_isoformat(value: str) -> dt.datetime:
     if value.endswith("Z"):
         value = value[:-1] + "+00:00"
-    return datetime.datetime.fromisoformat(value)
+    return dt.datetime.fromisoformat(value)
 
 
 def test_to_json_storage_files(tmp_dir, test_session):
@@ -45,12 +45,8 @@ def test_to_json_storage_files(tmp_dir, test_session):
     } == expected_sizes
 
     expected_last_modified = {
-        a_path.name: datetime.datetime.fromtimestamp(
-            a_path.stat().st_mtime, datetime.timezone.utc
-        ),
-        b_path.name: datetime.datetime.fromtimestamp(
-            b_path.stat().st_mtime, datetime.timezone.utc
-        ),
+        a_path.name: dt.datetime.fromtimestamp(a_path.stat().st_mtime, dt.timezone.utc),
+        b_path.name: dt.datetime.fromtimestamp(b_path.stat().st_mtime, dt.timezone.utc),
     }
 
     for row in values:
@@ -61,7 +57,7 @@ def test_to_json_storage_files(tmp_dir, test_session):
 
         last_modified = file_info.get("last_modified")
         assert last_modified is not None
-        parsed_last_modified = datetime.datetime.fromisoformat(
+        parsed_last_modified = dt.datetime.fromisoformat(
             last_modified.replace("Z", "+00:00")
         )
         assert parsed_last_modified == expected_last_modified[path]
