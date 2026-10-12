@@ -14,7 +14,7 @@ from collections.abc import (
     Iterator,
     Sequence,
 )
-from contextlib import contextmanager, suppress
+from contextlib import aclosing, contextmanager, suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
@@ -48,7 +48,7 @@ DELIMITER = "/"  # Path delimiter.
 DATA_SOURCE_URI_PATTERN = re.compile(r"^[\w]+:\/\/.*$")
 CLOUD_STORAGE_PROTOCOLS = {"s3", "gs", "az", "hf"}
 
-ResultQueue = asyncio.Queue[Sequence["File"] | None]
+ResultQueue = asyncio.Queue[Sequence[Any] | None]
 
 
 def is_cloud_uri(uri: str) -> bool:
@@ -305,12 +305,22 @@ class Client(ABC):
         )
 
     async def scandir(
-        self, start_prefix: str, method: str = "default"
-    ) -> AsyncIterator[Sequence["File"]]:
+        self,
+        start_prefix: str,
+        method: str = "default",
+        processes: bool = False,
+    ) -> AsyncIterator[Sequence[Any]]:
+        """Pages of ``File`` objects; with ``processes``, a range listing may parse
+        pages in child processes, which yield ``FileRow`` rows instead."""
         try:
             impl = getattr(self, f"_fetch_{method}")
         except AttributeError:
             raise ValueError(f"Unknown indexing method '{method}'") from None
+        if (
+            processes
+            and getattr(impl, "__func__", None) is RangeListedClient._fetch_ranges
+        ):
+            impl = functools.partial(impl, processes=True)
         result_queue: ResultQueue = asyncio.Queue(2 * LIST_WORKERS)
 
         async def listing() -> None:
@@ -628,9 +638,17 @@ class RangeListedClient(Client):
         """The sort key of the order the server lists keys in."""
         return key
 
-    async def _fetch_ranges(self, start_prefix: str, result_queue: ResultQueue) -> None:
+    async def _fetch_ranges(
+        self,
+        start_prefix: str,
+        result_queue: ResultQueue,
+        processes: bool = False,
+    ) -> None:
+        from .listing_worker import LIST_PROCESSES, Pool
+
         prefix = start_prefix.lstrip(DELIMITER) + DELIMITER if start_prefix else ""
-        await RangeListing(self, prefix, result_queue).run()
+        pool = Pool(self, prefix, LIST_PROCESSES) if processes else None
+        await RangeListing(self, prefix, result_queue, pool).run()
 
     _fetch_default = _fetch_ranges
 
@@ -657,3 +675,30 @@ class RangeListedClient(Client):
         the first after ``start_after``. Only keys to ``keep`` become rows. A
         backend that can end a listing at a key ends it after ``hi``."""
         raise NotImplementedError
+
+    async def _pages_after(
+        self,
+        prefix: str,
+        start_after: str,
+        keep: Callable[[str], bool],
+        page_size: int | None = None,
+        hi: str | None = None,
+    ) -> AsyncIterator[Page]:
+        token = None
+        while True:
+            page = await self._list_page(
+                prefix, start_after, token, keep, page_size=page_size, hi=hi
+            )
+            yield page
+            if (token := page.token) is None:
+                return
+
+    async def _probe(self, prefix: str, start_after: str) -> str | None:
+        """The first key after ``start_after``, of any kind, even a delete marker;
+        ``None`` only when the listing ends there."""
+        pages = self._pages_after(prefix, start_after, lambda _: False, page_size=1)
+        async with aclosing(pages):  # type: ignore[type-var]
+            async for page in pages:
+                if page.last is not None:  # a page may be empty and still not the last
+                    return page.last
+        return None

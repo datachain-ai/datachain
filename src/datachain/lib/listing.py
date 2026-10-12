@@ -90,11 +90,12 @@ def list_bucket(uri: str, cache, client_config=None) -> Callable:
     from bucket where each File represents one bucket entry.
     """
 
-    def list_func() -> Iterator[File]:
+    def list_func() -> Iterator[File]:  # also FileRow rows
         config = client_config or {}
         client = Client.get_client(uri, cache, **config)  # type: ignore[arg-type]
         _, path = Client.parse_url(uri)
-        for entries in iter_over_async(client.scandir(path.rstrip("/")), get_loop()):
+        pages = client.scandir(path.rstrip("/"), processes=True)
+        for entries in iter_over_async(pages, get_loop()):
             yield from entries
 
     list_func.__name__ = "read_storage"

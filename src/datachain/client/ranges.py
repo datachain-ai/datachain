@@ -1,21 +1,24 @@
 import asyncio
 import operator
 from collections.abc import Callable, Iterable
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from datachain.progress import tqdm
 
 if TYPE_CHECKING:
     from .fsspec import RangeListedClient, ResultQueue
+    from .listing_worker import Pool
 
 LIST_WORKERS = 16
+PROCESS_LIST_WORKERS = 64  # in flight once child processes parse the pages
 SPLIT_PAGES = 4  # a range splits at most this many pages ahead
 
 
 class Page(NamedTuple):
     """One listing request's reply."""
 
-    rows: list[Any]  # File objects of the keys kept
+    rows: list[Any]  # the keys kept: File objects, FileRow rows from a child
     first: str | None  # the first object's key
     last: str | None  # the last key of any kind, delete markers included
     token: Any  # resumes after this page; None on the last page
@@ -95,7 +98,8 @@ class RangeListing:
     """One listing of a prefix as key ranges ``(lo, hi]`` read in parallel.
 
     While a worker is idle, a busy range hands over its upper part, split at a key
-    midpoint (``key_midpoint``). It keeps these rules:
+    midpoint (``key_midpoint``). With a pool, child processes fetch pages; the
+    parent owns every range. The fuzz tests check these rules:
 
     - the ranges cover the listing without overlap;
     - ``hi`` only shrinks;
@@ -107,23 +111,27 @@ class RangeListing:
         client: "RangeListedClient",
         prefix: str,
         result_queue: "ResultQueue",
+        pool: "Pool | None",
     ) -> None:
         self.client = client
         self.prefix = prefix
         self.result_queue = result_queue
+        self.pool = pool
         self.order = client.key_order
         self.queue: asyncio.Queue[tuple[str, str | None]] = asyncio.Queue()  # lo, hi
         self.queue.put_nowait(("", None))
         self.alphabet: set[str] = set()
         self.open_ranges = 1
+        self.max_ranges = PROCESS_LIST_WORKERS if pool and pool.size else LIST_WORKERS
         self.listed_any = False
         self.server_seeks = True
         self.server_sorts = True
         self.has_split = False
+        self.local = asyncio.Semaphore(LIST_WORKERS)  # requests from this process
         self.pbar = tqdm(desc=f"Listing {client.uri}", unit=" objects", leave=False)
 
     async def run(self) -> None:
-        workers = [asyncio.create_task(self._worker()) for _ in range(LIST_WORKERS)]
+        workers = [asyncio.create_task(self._worker()) for _ in range(self.max_ranges)]
         all_read = asyncio.create_task(self.queue.join())
         try:
             await asyncio.wait(
@@ -138,6 +146,8 @@ class RangeListing:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            if self.pool:
+                self.pool.close()
             self.pbar.close()
 
     async def _worker(self) -> None:
@@ -150,9 +160,19 @@ class RangeListing:
                 self.queue.task_done()
 
     async def _fetch(self, lo: str, token: Any, key_range: KeyRange) -> Page:
-        return await self.client._list_page(
-            self.prefix, lo, token, self.client._keeps(key_range.hi), hi=key_range.hi
-        )
+        from .listing_worker import ChildDied
+
+        while self.pool and self.pool.ready():
+            with suppress(ChildDied):
+                return await self.pool.list_page(self.prefix, lo, token, key_range.hi)
+        async with self.local:
+            return await self.client._list_page(
+                self.prefix,
+                lo,
+                token,
+                self.client._keeps(key_range.hi),
+                hi=key_range.hi,
+            )
 
     async def _read(self, lo: str, key_range: KeyRange) -> None:
         order = self.order
@@ -193,6 +213,8 @@ class RangeListing:
                         and self.client._lists_in_key_order()
                     )
                     if token is not None and in_key_order and may_split:
+                        if self.pool:
+                            self.pool.start()  # more than a page: worth a process
                         self._maybe_split(key_range, read_to, page_start)
                     may_split = True
                 if token is not None:
@@ -226,7 +248,7 @@ class RangeListing:
     def _maybe_split(
         self, key_range: KeyRange, read_to: str, page_start: str | None
     ) -> None:
-        if self.open_ranges >= LIST_WORKERS:
+        if self.open_ranges >= self.max_ranges:
             return
         mid = key_midpoint(
             read_to, key_range.hi, self.alphabet, page_start, self.prefix, self.order

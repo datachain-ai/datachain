@@ -112,19 +112,30 @@ def test_scandir_ranges_are_exact(client, tree, prefix, mocker):
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 @pytest.mark.parametrize("tree", [{f"{i:03}": "x" for i in range(200)}], indirect=True)
-def test_scandir_is_exact_when_the_reader_is_slow(client, tree, mocker):
+@pytest.mark.parametrize("processes", [False, True])
+def test_scandir_is_exact_when_the_reader_is_slow(client, tree, processes, mocker):
     # pages wait for room in the result queue while ranges keep splitting
     mocker.patch.object(type(client), "LIST_PAGE_SIZE", 4)
     mocker.patch("datachain.client.ranges.LIST_WORKERS", 4)
 
     async def slow_reader():
         paths = []
-        async for entries in client.scandir(""):
+        async for entries in client.scandir("", processes=processes):
             paths.extend(e.path for e in entries)
             await asyncio.sleep(0.02)
         return paths
 
     assert sorted(sync(get_loop(), slow_reader)) == sorted(tree)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+@pytest.mark.parametrize("tree", [{"a": "x", "z": "x"}], indirect=True)
+def test_probe_sees_a_key_behind_a_delete_marker(client, tree):
+    client.fs.rm_file(f"{client.uri}/z")
+
+    assert sync(get_loop(), client._probe, "", "m") == "z"
+    assert sync(get_loop(), client._probe, "", "z") is None
 
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
@@ -205,11 +216,8 @@ def test_gcs_listing_ends_at_hi(client, tree, mocker):
     mocker.patch.object(client.fs, "_call", counted)
 
     async def listed():
-        token = None
-        while True:
-            page = await client._list_page("", lo, token, lambda _: True, hi=hi)
-            if (token := page.token) is None:
-                return
+        pages = client._pages_after("", lo, lambda _: True, hi=hi)
+        return [p.rows async for p in pages]
 
     sync(get_loop(), listed)
     assert read == keys[10:21]  # startOffset includes the start key
@@ -244,13 +252,14 @@ PREFIXED_TREE = {
     ],
     indirect=True,
 )
-def test_scandir_requests_stay_inside_the_prefix(client, tree, mocker):
+@pytest.mark.parametrize("processes", [False, True])
+def test_scandir_requests_stay_inside_the_prefix(client, tree, processes, mocker):
     mocker.patch.object(type(client), "LIST_PAGE_SIZE", 4)
     calls = mocker.spy(client, "_list_page")
 
     async def listed():
         paths = []
-        async for entries in client.scandir("n2"):
+        async for entries in client.scandir("n2", processes=processes):
             paths.extend(e.path for e in entries)
         return paths
 
@@ -285,13 +294,16 @@ EMOJI_TREE = {
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 @pytest.mark.parametrize("tree", [EMOJI_TREE], indirect=True)
-def test_scandir_lists_keys_past_the_basic_multilingual_plane(client, tree, mocker):
+@pytest.mark.parametrize("processes", [False, True])
+def test_scandir_lists_keys_past_the_basic_multilingual_plane(
+    client, tree, processes, mocker
+):
     mocker.patch.object(type(client), "LIST_PAGE_SIZE", 4)
     mocker.patch("datachain.client.ranges.LIST_WORKERS", 4)
 
     async def listed():
         paths = []
-        async for entries in client.scandir(""):
+        async for entries in client.scandir("", processes=processes):
             paths.extend(e.path for e in entries)
         return paths
 

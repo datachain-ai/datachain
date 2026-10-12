@@ -22,7 +22,7 @@ from .fsspec import (
     ResultQueue,
     iso_timestamp,
 )
-from .ranges import Page
+from .ranges import PROCESS_LIST_WORKERS, Page
 
 if TYPE_CHECKING:
     from datachain.client.writeconfig import WriteConfig
@@ -181,6 +181,8 @@ class ClientS3(RangeListedClient):
         # 2014 are not going to support v2 which is the older one.
         # All regions support v4.
         kwargs.setdefault("config_kwargs", {}).setdefault("signature_version", "s3v4")
+        # a connection for each listing request in flight
+        kwargs["config_kwargs"].setdefault("max_pool_connections", PROCESS_LIST_WORKERS)
 
         if "region_name" in kwargs:
             kwargs["config_kwargs"].setdefault("region_name", kwargs.pop("region_name"))
