@@ -261,3 +261,29 @@ def test_get_file_key_and_version(char):
     assert container == "mycontainer"
     assert path == f"blob{char}file.txt"
     assert bc.download_blob.call_args[1].get("version_id") == _VER
+
+
+@pytest.mark.parametrize(
+    "version_aware,include",
+    [(True, ["metadata", "versions"]), (False, ["metadata"])],
+)
+def test_listing_asks_for_versions_only_when_version_aware(version_aware, include):
+    async def no_pages():
+        return
+        yield
+
+    container = MagicMock()
+    container.__aenter__ = AsyncMock(return_value=container)
+    container.__aexit__ = AsyncMock(return_value=False)
+    container.list_blobs.return_value.by_page.return_value = no_pages()
+    client = AzureClient("mycontainer", {}, MagicMock())
+    client._fs = MagicMock(version_aware=version_aware)
+    client._fs.service_client.get_container_client.return_value = container
+
+    async def list_all():
+        async for _ in client.scandir(""):
+            pass
+
+    sync(get_loop(), list_all)
+
+    assert container.list_blobs.call_args.kwargs["include"] == include

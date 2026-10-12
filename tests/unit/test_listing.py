@@ -298,6 +298,19 @@ def test_listing_uri_from_name():
         listing_uri_from_name("s3://my-bucket")
 
 
+def test_listing_of_current_objects_has_its_own_name():
+    full, lst_uri, path = parse_listing_uri("s3://bucket/v1.0/dir")
+    current, cur_uri, cur_path = parse_listing_uri("s3://bucket/v1.0/dir", False)
+
+    assert current == "lst__current__s3://bucket/v1_x2e0/dir/"
+    assert (cur_uri, cur_path) == (lst_uri, path)
+    assert is_listing_dataset(current)
+    assert listing_uri_from_name(current) == listing_uri_from_name(full)
+    # neither listing is a prefix of the other, so one is never reused for the other
+    assert not current.startswith(full)
+    assert not full.startswith(current)
+
+
 def _ds_name(uri: str) -> str:
     name, _, _ = parse_listing_uri(uri)
     return name
