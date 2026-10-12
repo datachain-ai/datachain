@@ -12,7 +12,7 @@ from datetime import datetime
 from functools import partial
 from io import BytesIO
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
 
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
@@ -1159,6 +1159,19 @@ class File(DataModel):
             ```
         """
         return rebase_path(self.get_fs_path(), old_base, new_base, suffix, extension)
+
+
+class FileRow(NamedTuple):
+    """A ``File`` as its flat columns, in DB order; listing yields these."""
+
+    source: str
+    path: str
+    size: int = 0
+    version: str = ""
+    etag: str = ""
+    is_latest: bool = True
+    last_modified: datetime = TIME_ZERO
+    location: dict | list[dict] | None = None
 
 
 class TextFile(File):

@@ -47,7 +47,7 @@ DELIMITER = "/"  # Path delimiter.
 DATA_SOURCE_URI_PATTERN = re.compile(r"^[\w]+:\/\/.*$")
 CLOUD_STORAGE_PROTOCOLS = {"s3", "gs", "az", "hf"}
 
-ResultQueue = asyncio.Queue[Sequence["File"] | None]
+ResultQueue = asyncio.Queue[Sequence[Any] | None]
 
 
 def is_cloud_uri(uri: str) -> bool:
@@ -299,7 +299,9 @@ class Client(ABC):
 
     async def scandir(
         self, start_prefix: str, method: str = "default"
-    ) -> AsyncIterator[Sequence["File"]]:
+    ) -> AsyncIterator[Sequence[Any]]:
+        """Pages of ``File`` objects; a range listing that parses pages in child
+        processes yields ``FileRow`` rows instead."""
         try:
             impl = getattr(self, f"_fetch_{method}")
         except AttributeError:
@@ -622,8 +624,11 @@ class RangeListedClient(Client):
         return key
 
     async def _fetch_ranges(self, start_prefix: str, result_queue: ResultQueue) -> None:
+        from .listing_worker import LIST_PROCESSES, Pool
+
         prefix = start_prefix.lstrip(DELIMITER) + DELIMITER if start_prefix else ""
-        await RangeListing(self, prefix, result_queue).run()
+        pool = Pool(self, prefix, LIST_PROCESSES) if LIST_PROCESSES else None
+        await RangeListing(self, prefix, result_queue, pool).run()
 
     _fetch_default = _fetch_ranges
 

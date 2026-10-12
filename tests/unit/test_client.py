@@ -111,6 +111,11 @@ def test_splits_stay_inside_the_prefix():
     assert mid.startswith("n2/")
 
 
+@pytest.fixture(autouse=True)
+def _one_process(mocker):
+    mocker.patch("datachain.client.listing_worker.LIST_PROCESSES", 0)  # fakes stay here
+
+
 class _Row(NamedTuple):
     path: str
 

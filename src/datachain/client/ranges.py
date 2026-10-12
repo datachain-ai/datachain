@@ -8,15 +8,18 @@ from datachain.utils import getenv_bool
 
 if TYPE_CHECKING:
     from .fsspec import RangeListedClient, ResultQueue
+    from .listing_worker import Pool
 
-LIST_WORKERS = 16  # ranges read at once
+LIST_WORKERS = 16  # ranges, and requests at once, in one process
+PROCESS_LIST_WORKERS = 64  # ranges once child processes fetch the pages
+POOL_ROWS = 100_000  # children pay once one process is CPU-bound
 SPLIT_PAGES = 4  # a range splits at most this many pages ahead
 
 
 class Page(NamedTuple):
     """One listing request's reply."""
 
-    rows: list[Any]  # File objects of the keys kept
+    rows: list[Any]  # the keys kept: File objects, FileRow rows from a child
     first: str | None  # the first object's key; None when the page has none
     last: str | None  # the last key of any kind, delete markers included
     token: Any  # resumes after this page; None on the last page
@@ -126,7 +129,8 @@ class RangeListing:
     """One listing of a prefix as key ranges ``(lo, hi]`` read in parallel.
 
     When a page arrives and a worker is idle, its range hands its upper part
-    over, split at a key midpoint (``key_midpoint``). It keeps these rules:
+    over, split at a key midpoint (``key_midpoint``). With a pool, child processes
+    fetch pages; the parent owns every range. The fuzz tests check these rules:
 
     - the ranges cover the listing without overlap;
     - ``hi`` only shrinks, and only before the range's next page is asked for;
@@ -138,25 +142,30 @@ class RangeListing:
         client: "RangeListedClient",
         prefix: str,
         result_queue: "ResultQueue",
+        pool: "Pool | None",
     ) -> None:
         self.client = client
         self.prefix = prefix
         self.result_queue = result_queue
+        self.pool = pool
         self.order = client.key_order
         self.ranges: asyncio.Queue[KeyRange] = asyncio.Queue()
         self.ranges.put_nowait(KeyRange("", None, self.order, 0))
         self.open_ranges = 1  # queued or being read
+        self.max_ranges = PROCESS_LIST_WORKERS if pool and pool.size else LIST_WORKERS
         self.alphabet: set[str] = set()
         self.listed_any = False
+        self.rows = 0
         # off when the server ignores start keys or lists keys out of order
         self.splits = getenv_bool("DATACHAIN_RANGE_LISTING", default=True)
         self.has_split = False
         # the first key past a range start: as read from below it, and from above
         self.seams: dict[str, list[str | None]] = {}
+        self.own_requests = asyncio.Semaphore(LIST_WORKERS)  # this process's
         self.pbar = tqdm(desc=f"Listing {client.uri}", unit=" objects", leave=False)
 
     async def run(self) -> None:
-        workers = [asyncio.create_task(self._worker()) for _ in range(LIST_WORKERS)]
+        workers = [asyncio.create_task(self._worker()) for _ in range(self.max_ranges)]
         all_read = asyncio.create_task(self.ranges.join())
         try:
             await asyncio.wait(
@@ -169,6 +178,8 @@ class RangeListing:
         finally:
             for task in (all_read, *workers):
                 task.cancel()
+            if self.pool:  # before the await: gc may close this coroutine
+                self.pool.close()
             await asyncio.gather(all_read, *workers, return_exceptions=True)
             self.pbar.close()
 
@@ -183,7 +194,10 @@ class RangeListing:
 
     async def _fetch(self, key_range: KeyRange, token: Any) -> Page:
         lo, hi = key_range.lo, key_range.hi
-        page = await self.client._list_page(self.prefix, lo, token, hi)
+        page = await self.pool.list_page(lo, token, hi) if self.pool else None
+        if page is None:
+            async with self.own_requests:
+                page = await self.client._list_page(self.prefix, lo, token, hi)
         if hi is not None and page.past_hi is not None:
             await self._seam(hi, 0, page.past_hi)
         if lo and (page.past_lo or page.token is None):
@@ -203,6 +217,7 @@ class RangeListing:
                 if rows:
                     await self.result_queue.put(rows)
                     self.pbar.update(len(rows))
+                    self.rows += len(rows)
                 if next_page is None:
                     return
                 page, next_page = await next_page, None
@@ -235,6 +250,8 @@ class RangeListing:
             self.alphabet.update(last)
             past_first_page = bool(key_range.lo) or key_range.age > 1
             if page.token is not None and past_first_page and self._may_split():
+                if self.pool and self.rows >= POOL_ROWS:
+                    self.pool.start()
                 page_start = page.rows[0].path if page.rows else None
                 self._split(key_range, last, page_start)
         return rows, page.token
@@ -244,7 +261,7 @@ class RangeListing:
 
     def _split(self, key_range: KeyRange, read_to: str, page_start: str | None) -> None:
         """Hands the range's upper part over to an idle worker."""
-        if self.open_ranges >= LIST_WORKERS:
+        if self.open_ranges >= self.max_ranges:
             return
         mid = key_midpoint(
             read_to, key_range.hi, self.alphabet, page_start, self.prefix, self.order
@@ -270,10 +287,11 @@ class RangeListing:
             return
         if above and self.order(above) <= self.order(below):
             return  # nothing the range below saw is missing above
-        above = await self.client._probe(self.prefix, start) or ""
-        skipped = not above or self.order(above) > self.order(below)
-        # a key deleted meanwhile was not skipped
-        skipped = skipped and await self.client._probe(below, "") == below
+        async with self.own_requests:
+            above = await self.client._probe(self.prefix, start) or ""
+            skipped = not above or self.order(above) > self.order(below)
+            # a key deleted meanwhile was not skipped
+            skipped = skipped and await self.client._probe(below, "") == below
         seen[1] = above
         if skipped:
             raise RuntimeError(

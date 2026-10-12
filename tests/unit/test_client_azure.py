@@ -23,6 +23,11 @@ _INFO = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _one_process(mocker):
+    mocker.patch("datachain.client.listing_worker.LIST_PROCESSES", 0)  # mocks stay here
+
+
 def _make_client() -> AzureClient:
     client = AzureClient("mycontainer", {}, MagicMock())
     client._fs = MagicMock()

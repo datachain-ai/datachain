@@ -24,7 +24,8 @@ _non_null_text = st.text(
 
 
 @pytest.fixture
-def client(cloud_server, cloud_server_credentials):
+def client(cloud_server, cloud_server_credentials, mocker):
+    mocker.patch("datachain.client.listing_worker.LIST_PROCESSES", 0)
     uri = cloud_server.src_uri
     return Client.get_implementation(uri).from_source(
         uri, cache=None, **cloud_server.client_config
@@ -124,8 +125,10 @@ def test_scandir_splits_past_the_data_are_few(client, tree, mocker):
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 @pytest.mark.parametrize("tree", [{f"{i:03}": "x" for i in range(200)}], indirect=True)
-def test_scandir_is_exact_when_the_reader_is_slow(client, tree, mocker):
-    # pages wait for room in the result queue while ranges keep splitting
+@pytest.mark.parametrize("processes", [False, True])
+def test_scandir_is_exact_when_the_reader_is_slow(client, tree, processes, mocker):
+    mocker.patch("datachain.client.listing_worker.LIST_PROCESSES", 2 * processes)
+    # pages wait for room in the result queue while other ranges split
     mocker.patch.object(type(client), "LIST_PAGE_SIZE", 4)
     mocker.patch("datachain.client.ranges.LIST_WORKERS", 4)
 
@@ -268,7 +271,9 @@ PREFIXED_TREE = {
     ],
     indirect=True,
 )
-def test_scandir_requests_stay_inside_the_prefix(client, tree, mocker):
+@pytest.mark.parametrize("processes", [False, True])
+def test_scandir_requests_stay_inside_the_prefix(client, tree, processes, mocker):
+    mocker.patch("datachain.client.listing_worker.LIST_PROCESSES", 2 * processes)
     mocker.patch.object(type(client), "LIST_PAGE_SIZE", 4)
     calls = mocker.spy(client, "_list_page")
 
@@ -309,7 +314,11 @@ EMOJI_TREE = {
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 @pytest.mark.parametrize("tree", [EMOJI_TREE], indirect=True)
-def test_scandir_lists_keys_past_the_basic_multilingual_plane(client, tree, mocker):
+@pytest.mark.parametrize("processes", [False, True])
+def test_scandir_lists_keys_past_the_basic_multilingual_plane(
+    client, tree, processes, mocker
+):
+    mocker.patch("datachain.client.listing_worker.LIST_PROCESSES", 2 * processes)
     mocker.patch.object(type(client), "LIST_PAGE_SIZE", 4)
     mocker.patch("datachain.client.ranges.LIST_WORKERS", 4)
 
