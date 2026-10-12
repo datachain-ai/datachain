@@ -18,25 +18,6 @@ if TYPE_CHECKING:
     from datachain.dataset import StorageURI
 
 
-def _local_mtime_iso(etag: str) -> str | None:
-    """Return an ISO timestamp if *etag* is exactly ``st_mtime.hex()``.
-
-    Local listings always store ``float.hex()`` / ``st_mtime.hex()``. We still
-    require a successful round-trip through ``float.fromhex`` + ``.hex()`` so
-    accidental non-canonical values (e.g. ``0x123``) are left unchanged.
-    """
-    try:
-        mtime = float.fromhex(etag)
-    except ValueError:
-        return None
-    if mtime.hex() != etag:
-        return None
-    try:
-        return datetime.fromtimestamp(mtime, timezone.utc).isoformat()
-    except (OverflowError, OSError, ValueError):
-        return None
-
-
 class FileClient(Client):
     FS_CLASS = LocalFileSystem
     PREFIX = "file://"
@@ -50,10 +31,18 @@ class FileClient(Client):
         that canonical shape so HTTP-like values such as ``0x123`` stay intact.
         """
         rendered = str(etag)
-        iso = _local_mtime_iso(rendered)
-        if iso is None:
+        try:
+            mtime = float.fromhex(rendered)
+        except ValueError:
+            return rendered
+        if mtime.hex() != rendered:
+            return rendered
+        try:
+            iso = datetime.fromtimestamp(mtime, timezone.utc).isoformat()
+        except (OverflowError, OSError, ValueError):
             return rendered
         return f"{rendered} (mtime {iso})"
+
 
     def __init__(
         self,
