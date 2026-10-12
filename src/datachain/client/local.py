@@ -43,7 +43,6 @@ class FileClient(Client):
             return rendered
         return f"{rendered} (mtime {iso})"
 
-
     def __init__(
         self,
         name: str,
