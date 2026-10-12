@@ -175,7 +175,7 @@ class HTTPClient(Client):
 
         assert not file.location
         return FileWrapper(
-            self.fs.open(file.get_fs_path(), block_size=block_size),
+            self.fs.open(file.get_fs_path()),
             cb or (lambda x: None),
         )
 

@@ -1,5 +1,9 @@
+import functools
+import http.server
 import io
+import socketserver
 import tarfile
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -868,3 +872,39 @@ def test_open_write_passes_block_size(cloud_test_catalog_upload, monkeypatch):
 
     assert parts.count(False) == 2
     assert file.read_bytes() == b"x" * (11 * 1024 * 1024)
+
+
+class _NoRangeHandler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+
+    def handle_error(self, request, client_address):
+        pass
+
+
+def test_video_info_http_server_without_range_support(tmp_path, test_session):
+    import av
+
+    with av.open(str(tmp_path / "v.mp4"), "w") as container:
+        stream = container.add_stream("mpeg4", rate=30)
+        stream.width, stream.height, stream.pix_fmt = 320, 240, "yuv420p"
+        stream.bit_rate = 20_000_000
+        rng = np.random.default_rng(0)
+        for _ in range(30):
+            pixels = rng.integers(0, 256, (240, 320, 3), np.uint8)
+            frame = av.VideoFrame.from_ndarray(pixels, format="rgb24")
+            container.mux(stream.encode(frame))
+        container.mux(stream.encode())
+    assert 1024 * 1024 < (tmp_path / "v.mp4").stat().st_size < 5 * 1024 * 1024
+
+    handler = functools.partial(_NoRangeHandler, directory=str(tmp_path))
+    with socketserver.TCPServer(("127.0.0.1", 0), handler) as server:
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        source = f"http://127.0.0.1:{server.server_address[1]}"
+        file = File(source=source, path="v.mp4").as_video_file()
+        file._set_stream(test_session.catalog, caching_enabled=False)
+
+        info = file.get_info()
+        server.shutdown()
+
+    assert info.duration == pytest.approx(1.0, abs=0.1)
