@@ -201,6 +201,10 @@ def test_read_storage_versions(cloud_test_catalog):
     assert listing(True).uri == listing(False).uri == f"{uri}/"
     assert listing(False).num_objects == 1
     assert listing(True).num_objects > 1
+    assert {ls.name for ls in session.catalog.listings(prefix=f"{uri}/")} == {
+        listing(True).name,
+        listing(False).name,
+    }
 
 
 @pytest.mark.parametrize(

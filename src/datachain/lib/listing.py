@@ -236,6 +236,13 @@ def parse_listing_uri(uri: str, versions: bool = True) -> tuple[str, str, str]:
     return ds_name, lst_uri, path
 
 
+def listing_name_prefixes(prefix: str) -> list[str]:
+    """Listing-name prefixes that match a storage URI prefix, one per mode."""
+    if prefix.startswith(LISTING_PREFIX):
+        return [prefix]
+    return [LISTING_PREFIX + prefix, CURRENT_LISTING_PREFIX + prefix]
+
+
 def is_listing_dataset(name: str) -> bool:
     """Returns True if it's special listing dataset"""
     return name.startswith(LISTING_PREFIX)

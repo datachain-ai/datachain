@@ -257,13 +257,14 @@ class AzureClient(Client):
         if prefix:
             prefix = prefix.lstrip(DELIMITER) + DELIMITER
         found = False
+        include = ["metadata", "versions"] if self._is_version_aware() else ["metadata"]
         try:
             with tqdm(desc=f"Listing {self.uri}", unit=" objects", leave=False) as pbar:
                 async with self.fs.service_client.get_container_client(
                     container=self.name
                 ) as container_client:
                     async for page in container_client.list_blobs(
-                        include=["metadata", "versions"], name_starts_with=prefix
+                        include=include, name_starts_with=prefix
                     ).by_page():
                         entries = []
                         async for b in page:
