@@ -18,9 +18,9 @@ from azure.storage.blob import BlobServiceClient
 from fsspec.asyn import get_loop, sync
 
 from datachain.lib.file import File
-from datachain.progress import tqdm
 
-from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue
+from .fsspec import BucketStatus, RangeListedClient
+from .ranges import Keep, Page, utf16_units
 
 if TYPE_CHECKING:
     from datachain.client.writeconfig import WriteConfig
@@ -44,10 +44,11 @@ class _AzureWriteBuffer(SpooledTemporaryFile):
     version_id: str | None = None
 
 
-class AzureClient(Client):
+class AzureClient(RangeListedClient):
     FS_CLASS = AzureBlobFileSystem
     PREFIX = "az://"
     protocol = "az"
+    LIST_PAGE_SIZE = 5000
     CREDENTIAL_KEYS = frozenset(
         {
             "account_key",
@@ -255,41 +256,58 @@ class AzureClient(Client):
             lpath = f"{lpath}?versionid={version_id}"
         await self.fs._get_file(lpath, rpath, callback=callback)
 
-    async def _fetch_flat(self, start_prefix: str, result_queue: ResultQueue) -> None:
-        prefix = start_prefix
-        if prefix:
-            prefix = prefix.lstrip(DELIMITER) + DELIMITER
-        found = False
-        include = ["metadata", "versions"] if self._is_version_aware() else ["metadata"]
-        try:
-            with tqdm(desc=f"Listing {self.uri}", unit=" objects", leave=False) as pbar:
-                async with self.fs.service_client.get_container_client(
-                    container=self.name
-                ) as container_client:
-                    # raw page XML: the SDK's deserializer is most of the listing's CPU
-                    pages = container_client.list_blob_names(
-                        include=include, name_starts_with=prefix
-                    ).by_page()
-                    async for _ in pages:
-                        blobs = pages._response.find("Blobs").findall("Blob")
-                        found = found or bool(blobs)
-                        entries = [
-                            self._xml_to_file(b, name)
-                            for b in blobs
-                            if self._is_valid_key(name := self._blob_name(b))
-                            and not self._is_directory(b)
-                        ]
-                        if entries:
-                            await result_queue.put(entries)
-                            pbar.update(len(entries))
-                    if not found and prefix:
-                        raise FileNotFoundError(
-                            f"Unable to resolve remote path: {prefix}"
-                        )
-        finally:
-            result_queue.put_nowait(None)
+    _hns = False
 
-    _fetch_default = _fetch_flat
+    @staticmethod
+    def key_order(key: str) -> Any:
+        return utf16_units(key)
+
+    def _lists_in_key_order(self) -> bool:
+        # a hierarchical namespace lists "/" before every other character
+        return not self._hns
+
+    async def _list_page(
+        self,
+        prefix: str,
+        start_after: str,
+        token: Any,
+        hi: str | None = None,
+        page_size: int | None = None,
+    ) -> Page:
+        kwargs = {"start_from": start_after} if start_after and token is None else {}
+        include = ["metadata", "versions"] if self._is_version_aware() else ["metadata"]
+        async with self.fs.service_client.get_container_client(
+            container=self.name
+        ) as container:
+            # raw page XML: the SDK's deserializer is most of the listing's CPU
+            pages = container.list_blob_names(
+                include=include,
+                name_starts_with=prefix,
+                results_per_page=page_size or self.LIST_PAGE_SIZE,
+                **kwargs,
+            ).by_page(continuation_token=token)
+            await anext(pages)
+            blobs = pages._response.find("Blobs").findall("Blob")
+            next_token = pages.continuation_token or None
+            pages._response = None  # the pager is in a cycle: free the page now
+        # only a hierarchical namespace reports a resource type
+        if blobs and blobs[0].find("Properties/ResourceType") is not None:
+            self._hns = True
+        names = [self._blob_name(b) for b in blobs]
+        keep = Keep(self, start_after, hi)
+        return Page(
+            [
+                self._xml_to_file(b, n)
+                for b, n in zip(blobs, names, strict=True)
+                if keep(n) and not self._is_directory(b)
+            ],
+            names[0] if names else None,
+            names[-1] if names else None,
+            next_token,
+            keep.past_lo,
+            keep.past_hi,
+            keep.in_order,
+        )
 
     @staticmethod
     def _is_directory(blob: Element) -> bool:

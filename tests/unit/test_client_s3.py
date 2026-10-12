@@ -1,4 +1,3 @@
-import asyncio
 import inspect
 import pickle
 import threading
@@ -199,6 +198,39 @@ def test_200_error_check(operation, body, status):
     assert response["status_code"] == status
 
 
+@pytest.mark.parametrize(
+    "bucket, in_order", [("bucket", True), ("bucket--usw2-az1--x-s3", False)]
+)
+def test_directory_buckets_list_out_of_key_order(bucket, in_order):
+    assert ClientS3(bucket, {}, None)._lists_in_key_order() is in_order
+
+
+def test_r2_lists_out_of_key_order(mocker):
+    client = ClientS3("bucket", {}, None)
+    endpoint = "https://a.r2.cloudflarestorage.com"
+    client._fs = mocker.Mock(_s3=mocker.Mock(meta=mocker.Mock(endpoint_url=endpoint)))
+    assert not client._lists_in_key_order()
+
+
+@pytest.mark.parametrize("versions", [False, True])
+@pytest.mark.parametrize("requester_pays", [False, True])
+def test_listing_pays_as_requester_when_asked(versions, requester_pays):
+    s3 = MagicMock()
+    s3.list_objects_v2 = s3.list_object_versions = AsyncMock(return_value={})
+    client = ClientS3("bucket", {}, None)
+    client._fs = MagicMock(
+        version_aware=versions,
+        req_kw={"RequestPayer": "requester"} if requester_pays else {},
+        set_session=AsyncMock(),
+        get_s3=AsyncMock(return_value=s3),
+    )
+
+    sync(get_loop(), client._list_page, "", "", None, lambda _: True)
+
+    sent = s3.list_objects_v2.call_args.kwargs
+    assert sent.get("RequestPayer") == ("requester" if requester_pays else None)
+
+
 def test_listing_fields_are_kept_once_per_shape_name():
     def shape():
         model = botocore.session.get_session().get_service_model("s3")
@@ -367,32 +399,55 @@ def test_listing_parser_hooks_only_the_synchronous_parse():
     assert not inspect.iscoroutinefunction(_ListingParser._do_parse)
 
 
-@pytest.mark.parametrize(
-    "versions, pages, code",
-    [
-        (True, [], "AccessDenied"),
-        (True, [{"Versions": []}], "NotImplemented"),
-        (False, [], "NotImplemented"),
-    ],
-    ids=["other-error", "after-first-page", "non-versioned"],
-)
-@pytest.mark.asyncio
-async def test_fetch_flat_listing_errors(versions, pages, code):
-    async def paginate(**kwargs):
-        for page in pages:
-            yield page
-        raise ClientError({"Error": {"Code": code}}, "ListObjectVersions")
-
-    s3 = MagicMock()
-    s3.get_paginator.return_value.paginate = paginate
+def _listing_client(versions, s3):
     client = ClientS3("bucket", {}, None)
     client._fs = MagicMock(
         version_aware=versions,
+        req_kw={},
         set_session=AsyncMock(),
         get_s3=AsyncMock(return_value=s3),
     )
-    with pytest.raises(ClientError, match=code):
-        await client._fetch_flat("", asyncio.Queue())
-    s3.get_paginator.assert_called_once_with(
-        "list_object_versions" if versions else "list_objects_v2"
+    return client
+
+
+@pytest.mark.parametrize(
+    "versions, token, code",
+    [
+        (True, None, "AccessDenied"),
+        (True, ("k", "v"), "NotImplemented"),
+        (False, None, "NotImplemented"),
+    ],
+    ids=["other-error", "after-first-page", "non-versioned"],
+)
+def test_list_page_errors(versions, token, code):
+    error = ClientError({"Error": {"Code": code}}, "ListObjectVersions")
+    s3 = MagicMock(
+        list_object_versions=AsyncMock(side_effect=error),
+        list_objects_v2=AsyncMock(side_effect=error),
     )
+    client = _listing_client(versions, s3)
+
+    with pytest.raises(ClientError, match=code):
+        sync(get_loop(), client._list_page, "", "", token)
+    assert not s3.list_objects_v2.call_count if versions else True
+
+
+def test_list_page_falls_back_to_current_objects_without_version_support():
+    error = ClientError({"Error": {"Code": "NotImplemented"}}, "ListObjectVersions")
+    contents = [
+        {"Key": "a", "Size": 1, "ETag": '"e"', "LastModified": parse_timestamp(0)}
+    ]
+    s3 = MagicMock(
+        list_object_versions=AsyncMock(side_effect=error),
+        list_objects_v2=AsyncMock(
+            return_value={"Contents": contents, "IsTruncated": False}
+        ),
+    )
+    client = _listing_client(True, s3)
+
+    for _ in range(2):  # the second page goes straight to the current objects
+        page = sync(get_loop(), client._list_page, "", "", None)
+        assert [(r.path, r.version, r.is_latest) for r in page.rows] == [
+            ("a", "", True)
+        ]
+    assert s3.list_object_versions.call_count == 1

@@ -8,6 +8,7 @@ List of environment variables used to configure DataChain behavior.
 - `DATACHAIN_SYSTEM_CONFIG_DIR` – Overrides the system-wide configuration directory (default depends on the platform).
 - `DATACHAIN_GLOBAL_CONFIG_DIR` – Overrides the user's global configuration directory (default depends on the platform).
 - `DATACHAIN_NO_ANALYTICS` – Disables telemetry.
+- `DATACHAIN_RANGE_LISTING` – Set to `0` or `false` to list each bucket in one sequential pass, without parallel key ranges or listing processes. Use it for S3-compatible servers that sort keys, or start from a key, differently from AWS S3.
 
 ### Studio Integration
 

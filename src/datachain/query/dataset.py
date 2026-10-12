@@ -603,13 +603,11 @@ def process_udf_outputs(
                         udf_kind=udf_kind,
                     )
 
+    rows = _insert_rows()
     try:
-        warehouse.insert_rows(
-            udf_table,
-            _insert_rows(),
-            batch_size=batch_size,
-        )
+        warehouse.insert_rows(udf_table, rows, batch_size=batch_size)
     finally:
+        rows.close()  # an error mid-insert closes the UDF's outputs now, not at GC
         # Always flush the buffer even if an exception occurs
         # This ensures partial results are visible for checkpoint continuation
         warehouse.insert_rows_done(udf_table)

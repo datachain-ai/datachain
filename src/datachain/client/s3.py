@@ -1,4 +1,3 @@
-import asyncio
 import errno
 import os
 from collections.abc import Callable
@@ -16,14 +15,12 @@ from fsspec.asyn import get_loop, sync, sync_wrapper
 from s3fs import S3FileSystem
 
 from datachain.lib.file import File
-from datachain.progress import tqdm
 
-from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue
+from .fsspec import BucketStatus, RangeListedClient
+from .ranges import Keep, Page
 
 if TYPE_CHECKING:
     from datachain.client.writeconfig import WriteConfig
-
-UPDATE_CHUNKSIZE = 1000
 
 
 def _parse_timestamp(value: Any) -> datetime:
@@ -134,13 +131,14 @@ class _S3FileSystem(S3FileSystem):
     connect = sync_wrapper(set_session)
 
 
-class ClientS3(Client):
+class ClientS3(RangeListedClient):
     FS_CLASS = _S3FileSystem
     PREFIX = "s3://"
     protocol = "s3"
     CREDENTIAL_KEYS = frozenset(
         {"key", "secret", "token", "aws_key", "aws_secret", "aws_token"}
     )
+    _unversioned = False  # the server can't list versions
 
     @staticmethod
     def _normalize_s3_kwargs(kwargs: dict) -> dict:
@@ -272,83 +270,71 @@ class ClientS3(Client):
 
         return self.fs.sign(self.get_uri(path), expiration=expires, **kwargs)
 
-    async def _fetch_flat(self, start_prefix: str, result_queue: ResultQueue) -> None:
-        async def get_pages(it, page_queue):
-            can_fallback = versions
-            try:
-                async for page in it:
-                    can_fallback = False
-                    await page_queue.put(page.get(contents_key, []))
-            except ClientError as e:
-                if (
-                    not can_fallback
-                    or e.response.get("Error", {}).get("Code") != "NotImplemented"
-                ):
-                    raise
-                # Stores without version support contain only current objects.
-                it = s3.get_paginator("list_objects_v2").paginate(
-                    Bucket=self.name, Prefix=prefix, Delimiter=""
-                )
-                async for page in it:
-                    await page_queue.put(page.get("Contents", []))
-            finally:
-                await page_queue.put(None)
+    def _lists_in_key_order(self) -> bool:
+        # directory buckets and R2 don't list keys in code point order
+        s3 = self._fs and self._fs._s3  # a listing has made it
+        endpoint = s3.meta.endpoint_url if s3 else ""
+        return not (self.name.endswith("--x-s3") or "r2.cloudflarestorage" in endpoint)
 
-        async def process_pages(page_queue, result_queue, prefix):
-            found = False
-            with tqdm(desc=f"Listing {self.uri}", unit=" objects", leave=False) as pbar:
-                while (res := await page_queue.get()) is not None:
-                    if res:
-                        found = True
-                    entries = [
-                        self._entry_from_boto(d, self.name, versions)
-                        for d in res
-                        if self._is_valid_key(d["Key"])
-                    ]
-                    if entries:
-                        await result_queue.put(entries)
-                        pbar.update(len(entries))
-            if not found and prefix:
-                raise FileNotFoundError(f"Unable to resolve remote path: {prefix}")
-
+    async def _list_page(
+        self,
+        prefix: str,
+        start_after: str,
+        token: Any,
+        hi: str | None = None,
+        page_size: int | None = None,
+    ) -> Page:
+        versions = self._is_version_aware() and not self._unversioned
+        kwargs: dict[str, Any] = {}
+        if versions:
+            if token is not None:
+                kwargs["KeyMarker"], version_marker = token
+                if version_marker:
+                    kwargs["VersionIdMarker"] = version_marker
+            elif start_after:
+                kwargs["KeyMarker"] = start_after
+        elif token is not None:
+            kwargs["ContinuationToken"] = token
+        elif start_after:
+            kwargs["StartAfter"] = start_after
+        await self.fs.set_session()
+        s3 = await self.fs.get_s3(self.name)
+        list_page = s3.list_object_versions if versions else s3.list_objects_v2
         try:
-            prefix = start_prefix
-            if prefix:
-                prefix = prefix.lstrip(DELIMITER) + DELIMITER
-            versions = self._is_version_aware()
-            fs = self.fs
-            await fs.set_session()
-            s3 = await fs.get_s3(self.name)
-            if versions:
-                method = "list_object_versions"
-                contents_key = "Versions"
-            else:
-                method = "list_objects_v2"
-                contents_key = "Contents"
-            pag = s3.get_paginator(method)
-            it = pag.paginate(
+            page = await list_page(
                 Bucket=self.name,
                 Prefix=prefix,
-                Delimiter="",
+                MaxKeys=page_size or self.LIST_PAGE_SIZE,
+                **kwargs,
+                **self.fs.req_kw,  # requester_pays
             )
-            page_queue: asyncio.Queue[list] = asyncio.Queue(2)
-            consumer = asyncio.create_task(
-                process_pages(page_queue, result_queue, prefix)
-            )
-            try:
-                await get_pages(it, page_queue)
-                await consumer
-            finally:
-                consumer.cancel()  # In case get_pages() raised
-        finally:
-            result_queue.put_nowait(None)
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code")
+            if not versions or token is not None or code != "NotImplemented":
+                raise
+            # stores without version support, such as R2, hold only current objects
+            self._unversioned = True
+            return await self._list_page(prefix, start_after, None, hi, page_size)
+        entries = page.get("Versions" if versions else "Contents", [])
+        keys = [d["Key"] for d in entries + page.get("DeleteMarkers", [])]
+        if not page.get("IsTruncated"):
+            token = None
+        elif versions:
+            token = page["NextKeyMarker"], page.get("NextVersionIdMarker")
+        else:
+            token = page["NextContinuationToken"]
+        keep = Keep(self, start_after, hi)
+        return Page(
+            [self._entry_from_boto(d, versions) for d in entries if keep(d["Key"])],
+            entries[0]["Key"] if entries else None,
+            max(keys, default=None),
+            token,
+            keep.past_lo,
+            keep.past_hi,
+            keep.in_order,
+        )
 
-    async def _fetch_default(
-        self, start_prefix: str, result_queue: ResultQueue
-    ) -> None:
-        await self._fetch_flat(start_prefix, result_queue)
-
-    def _entry_from_boto(self, v, bucket, versions=False) -> File:
+    def _entry_from_boto(self, v, versions: bool) -> File:
         return File(
             source=self.uri,
             path=v["Key"],
@@ -357,7 +343,7 @@ class ClientS3(Client):
                 ClientS3.clean_s3_version(v.get("VersionId", "")) if versions else ""
             ),
             is_latest=v.get("IsLatest", True),
-            last_modified=v.get("LastModified", ""),
+            last_modified=v["LastModified"],
             size=v["Size"],
         )
 

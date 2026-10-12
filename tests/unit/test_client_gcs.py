@@ -260,10 +260,7 @@ def test_listing_asks_for_every_field_it_reads(version_aware):
     )
     client._fs._call = AsyncMock(return_value={"items": [item]})
 
-    async def list_all():
-        return [f async for page in client.scandir("") for f in page]
-
-    sync(get_loop(), list_all)
+    sync(get_loop(), client._list_page, "", "", None)
 
     fields = client._fs._call.call_args.kwargs["fields"]
     assert fields == GCSClient.LIST_FIELDS
