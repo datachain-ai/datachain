@@ -226,3 +226,83 @@ def test_pydantic_field_aliases_survive_cross_process(tmp_dir, catalog_tmpfile):
         proc = run_test_subprocess((python_exc, "-c", script), env)
         rc, _, stderr = wait_for_test_subprocess(proc, timeout=60)
         assert rc == 0, stderr
+
+
+_COLLECTION_ALIAS_WRITE_SCRIPT = """
+from pydantic import BaseModel, ConfigDict, Field
+import datachain as dc
+
+
+class Aliased(BaseModel):
+    model_config = ConfigDict(serialize_by_alias=True)
+
+    with_default: int = Field(0, alias="withDefault")
+    required: int = Field(alias="requiredField")
+
+
+class Wrapper(BaseModel):
+    values: list[Aliased]
+
+
+class Payload(BaseModel):
+    list_items: list[Aliased]
+    dict_items: dict[str, Aliased]
+    wrapper: Wrapper
+
+
+item = Aliased(withDefault=7, requiredField=42)
+payload = Payload(
+    list_items=[item],
+    dict_items={"item": item},
+    wrapper=Wrapper(values=[item]),
+)
+dc.read_values(settings={"prefetch": False}, item=[payload]).save(
+    "collection_alias_identity"
+)
+"""
+
+
+_COLLECTION_ALIAS_READ_SCRIPT = """
+from pydantic import BaseModel, ConfigDict, Field
+import datachain as dc
+
+
+class Aliased(BaseModel):
+    model_config = ConfigDict(serialize_by_alias=True)
+
+    with_default: int = Field(0, alias="withDefault")
+    required: int = Field(alias="requiredField")
+
+
+class Wrapper(BaseModel):
+    values: list[Aliased]
+
+
+class Payload(BaseModel):
+    list_items: list[Aliased]
+    dict_items: dict[str, Aliased]
+    wrapper: Wrapper
+
+
+row = dc.read_dataset("collection_alias_identity").to_list("item")[0][0]
+assert isinstance(row, Payload)
+for item in [row.list_items[0], row.dict_items["item"], row.wrapper.values[0]]:
+    assert isinstance(item, Aliased), f"unexpected item type: {type(item)}"
+    assert item.with_default == 7, f"defaulted alias lost: {item.with_default}"
+    assert item.required == 42, f"required alias lost: {item.required}"
+"""
+
+
+@pytest.mark.e2e
+@pytest.mark.xdist_group(name="tmpfile")
+def test_model_collections_with_aliases_survive_cross_process(tmp_dir, catalog_tmpfile):
+    env = {
+        **os.environ,
+        "ITERATIVE_DO_NOT_TRACK": "1",
+        "DATACHAIN__METASTORE": catalog_tmpfile.metastore.serialize(),
+        "DATACHAIN__WAREHOUSE": catalog_tmpfile.warehouse.serialize(),
+    }
+    for script in (_COLLECTION_ALIAS_WRITE_SCRIPT, _COLLECTION_ALIAS_READ_SCRIPT):
+        proc = run_test_subprocess((python_exc, "-c", script), env)
+        rc, _, stderr = wait_for_test_subprocess(proc, timeout=60)
+        assert rc == 0, stderr
