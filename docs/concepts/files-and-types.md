@@ -161,17 +161,40 @@ class Dog(dc.DataModel):
     breed: str = ""
 
 
+class Sighting(dc.DataModel):
+    pet: Cat | Dog  # one of two models
+    weight: int | float  # one of two scalars
+    note: str | None = None  # optional
+
+
 chain = dc.read_values(
     id=[1, 2],
-    pet=[Cat(name="Tom"), Dog(name="Rex", breed="lab")],
-    output={"id": int, "pet": Cat | Dog},
+    sighting=[
+        Sighting(pet=Cat(name="Tom"), weight=4),
+        Sighting(pet=Dog(name="Rex", breed="lab"), weight=12.5, note="stray"),
+    ],
+    output={"id": int, "sighting": Sighting},
 )
 
-chain.filter(dc.C("pet.Cat.name") == "Tom")  # type-qualified path
-chain.filter(
-    dc.C("pet.breed") == "lab"
-)  # the type name is optional when one type has the field
-chain.filter(dc.func.isnone("pet"))  # reads the discriminator
+seen = chain.order_by("id").to_values("sighting")
+seen[0].pet  # Cat(name='Tom', lives=9) -- the model type is preserved
+seen[1].weight  # 12.5, a float; seen[0].weight is 4, an int
+```
+
+A union is also a signal type on its own, and a UDF can return one:
+
+```python
+chain = dc.read_values(value=[42, "hello"], output={"value": int | str})
+chain.map(pet=classify, output={"pet": Cat | Dog})
+```
+
+To reference one of the types, name it in the path; the name can be dropped when a
+single type has that field. Functions read the discriminator rather than a column:
+
+```python
+chain.filter(dc.C("sighting.pet.Cat.name") == "Tom")  # type-qualified path
+chain.filter(dc.C("sighting.pet.breed") == "lab")  # only Dog has `breed`
+chain.filter(dc.func.isnone("sighting.note"))  # rows where the field is None
 ```
 
 `select()`, `distinct()` and `group_by()` carry the whole union, so a value is never
