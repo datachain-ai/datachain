@@ -154,6 +154,7 @@ def slow_client(seed: int) -> KeysClient:
 @pytest.mark.parametrize("seed", range(40))
 def test_ranges_that_split_while_pages_are_in_flight_are_exact(seed, mocker):
     mocker.patch("datachain.client.ranges.LIST_WORKERS", 8)
+    mocker.patch("datachain.client.ranges.YOUNG_PAGES", 1)
     client = slow_client(seed)
 
     pages = _listed(client, processes=False)

@@ -12,7 +12,14 @@ from datachain.asyn import get_loop
 from datachain.client import Client
 from datachain.client.fsspec import RangeListedClient
 from datachain.client.local import FileClient
-from datachain.client.ranges import Keep, Page, key_midpoint
+from datachain.client.ranges import (
+    Keep,
+    KeyRange,
+    Page,
+    code_points,
+    key_midpoint,
+    split_points,
+)
 from datachain.client.writeconfig import WriteConfig
 
 
@@ -104,11 +111,40 @@ def test_key_midpoint_leaves_two_steps():
     assert key_midpoint("img/0003.jpg", "img/0004.jpg", alphabet, first) is None
 
 
-def test_splits_stay_inside_the_prefix():
-    mid = key_midpoint("n2/b.txt", None, "n2/.btx", prefix="n2/")
+def _range(lo, hi, age):
+    return KeyRange(lo, hi, code_points, age)
 
-    assert mid is not None
-    assert mid.startswith("n2/")
+
+def test_young_ranges_split_close_ahead():
+    (mid,) = split_points(
+        _range("", None, 1), "img/0003.jpg", "img/0000.jpg", "img/.jpg0123"
+    )
+
+    assert "img/0003.jpg" < mid < "img/1"
+
+
+def test_old_ranges_split_far_by_their_start_and_near_by_their_last_page():
+    # folders of a page each: the range starts in the gap before folder f2
+    far, near = split_points(
+        _range("f1/9", None, 9), "f2/0999", "f2/0000", "f/0123456789"
+    )
+
+    assert far > "f3"
+    assert "f2/0999" < near < far
+
+
+def test_the_first_range_splits_far_at_its_midpoint():
+    assert split_points(_range("", "c", 9), "a", "a", "abc")[0] == "b"
+
+
+@pytest.mark.parametrize("age", [1, 9])
+def test_splits_stay_inside_the_prefix(age):
+    mids = split_points(
+        _range("n2/a", None, age), "n2/b.txt", "n2/b.txt", "n2/.btx", "n2/"
+    )
+
+    assert mids
+    assert all(mid.startswith("n2/") for mid in mids)
 
 
 @pytest.fixture(autouse=True)

@@ -13,7 +13,8 @@ if TYPE_CHECKING:
 LIST_WORKERS = 16  # ranges, and requests at once, in one process
 PROCESS_LIST_WORKERS = 64  # ranges once child processes fetch the pages
 POOL_ROWS = 100_000  # children pay once one process is CPU-bound
-SPLIT_PAGES = 4  # a range splits at most this many pages ahead
+SPLIT_PAGES = 4  # a young range splits at most this many pages ahead
+YOUNG_PAGES = 4  # a range is young until it and its parents read this many pages
 
 
 class Page(NamedTuple):
@@ -83,11 +84,12 @@ def key_midpoint(
     hi: str | None,
     alphabet: Iterable[str],
     first: str | None = None,
+    pages: int = SPLIT_PAGES,
     prefix: str = "",
     order: Callable[[str], Any] = code_points,
 ) -> str | None:
     """Shortest key strictly between ``lo`` and ``hi`` in ``order`` (``None`` is
-    the end of ``prefix``). With ``first``, at most ``SPLIT_PAGES`` steps of
+    the end of ``prefix``). With ``first``, at most ``pages`` steps of
     ``first..lo`` past ``lo``, and none when under two steps are left."""
     chars = sorted(
         set(alphabet) | set(lo) | set(hi or "") | set(first or "") | set(prefix),
@@ -109,7 +111,7 @@ def key_midpoint(
         step = value(lo) - value(first)
         if end - value(lo) < 2 * step:
             return None  # a split this close adds a request, not speed
-        n = min(n, value(lo) + step * SPLIT_PAGES)
+        n = min(n, value(lo) + step * pages)
     digits = []
     for _ in range(width):
         n, d = divmod(n, base)
@@ -125,12 +127,37 @@ def key_midpoint(
     return mid if inside and after not in ("Mn", "Me", "Cf", "Lm", "Sk") else None
 
 
+def split_points(
+    key_range: KeyRange,
+    read_to: str,
+    page_start: str | None,
+    alphabet: Iterable[str],
+    prefix: str = "",
+) -> list[str]:
+    """Where a range that read to ``read_to`` splits, farthest first. A young
+    range splits close ahead, so a small listing stays a few requests. An old
+    range splits at its age times as far as it read from ``lo``, which jumps over
+    folders of a page or so, and then at its age squared pages ahead, which stays
+    in data that ends or clusters."""
+    if key_range.age <= YOUNG_PAGES:
+        steps = [(page_start, SPLIT_PAGES)]
+    else:  # the first range has no lo to measure from: its midpoint
+        steps = [(key_range.lo or None, key_range.age), (page_start, key_range.age**2)]
+    points: list[str] = []
+    hi = key_range.hi
+    for first, pages in steps:
+        mid = key_midpoint(read_to, hi, alphabet, first, pages, prefix, key_range.order)
+        if mid is not None:
+            points.append(hi := mid)
+    return points
+
+
 class RangeListing:
     """One listing of a prefix as key ranges ``(lo, hi]`` read in parallel.
 
-    When a page arrives and a worker is idle, its range hands its upper part
-    over, split at a key midpoint (``key_midpoint``). With a pool, child processes
-    fetch pages; the parent owns every range. The fuzz tests check these rules:
+    When a page arrives and workers are idle, its range hands upper parts over
+    (``split_points``). With a pool, child processes fetch pages; the parent owns
+    every range. The fuzz tests check these rules:
 
     - the ranges cover the listing without overlap;
     - ``hi`` only shrinks, and only before the range's next page is asked for;
@@ -260,13 +287,12 @@ class RangeListing:
         return self.splits and self.client._lists_in_key_order()
 
     def _split(self, key_range: KeyRange, read_to: str, page_start: str | None) -> None:
-        """Hands the range's upper part over to an idle worker."""
-        if self.open_ranges >= self.max_ranges:
-            return
-        mid = key_midpoint(
-            read_to, key_range.hi, self.alphabet, page_start, self.prefix, self.order
-        )
-        if mid is not None:
+        """Hands the range's upper parts over to idle workers."""
+        for mid in split_points(
+            key_range, read_to, page_start, self.alphabet, self.prefix
+        ):
+            if self.open_ranges >= self.max_ranges:
+                return
             self.open_ranges += 1
             self.has_split = True
             self.ranges.put_nowait(

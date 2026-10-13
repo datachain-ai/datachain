@@ -15,6 +15,7 @@ from tqdm import tqdm
 
 from datachain.asyn import get_loop
 from datachain.client import Client
+from datachain.client.ranges import RangeListing
 from datachain.lib.file import File, FileError
 from tests.data import ENTRIES
 
@@ -109,6 +110,23 @@ def test_scandir_ranges_are_exact(client, tree, prefix, mocker):
 
     assert sorted(paths) == sorted(expected)
     assert ranges.call_count > 1
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "azure"], indirect=True)
+@pytest.mark.parametrize("tree", [{f"{i:03}": "x" for i in range(200)}], indirect=True)
+@pytest.mark.parametrize("workers", [2, 16])
+@pytest.mark.parametrize("young_pages", [4, 10**6])
+def test_scandir_young_and_old_ranges_are_exact(
+    client, tree, workers, young_pages, mocker
+):
+    # a range split off another inherits its age, so old ranges split twice
+    mocker.patch.object(type(client), "LIST_PAGE_SIZE", 4)
+    mocker.patch("datachain.client.ranges.LIST_WORKERS", workers)
+    mocker.patch("datachain.client.ranges.YOUNG_PAGES", young_pages)
+    split = mocker.spy(RangeListing, "_split")
+
+    assert sorted(e.path for e in scandir(client, "")) == sorted(tree)
+    assert split.call_count
 
 
 @pytest.mark.parametrize("cloud_type", ["s3", "azure"], indirect=True)
