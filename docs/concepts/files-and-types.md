@@ -150,13 +150,16 @@ single-type case of the same mechanism.
 ```python
 import datachain as dc
 
+
 class Cat(dc.DataModel):
     name: str
     lives: int = 9
 
+
 class Dog(dc.DataModel):
     name: str
     breed: str = ""
+
 
 chain = dc.read_values(
     id=[1, 2],
@@ -165,8 +168,10 @@ chain = dc.read_values(
 )
 
 chain.filter(dc.C("pet.Cat.name") == "Tom")  # type-qualified path
-chain.filter(dc.C("pet.breed") == "lab")     # the type name is optional when one type has the field
-chain.filter(dc.func.isnone("pet"))          # reads the discriminator
+chain.filter(
+    dc.C("pet.breed") == "lab"
+)  # the type name is optional when one type has the field
+chain.filter(dc.func.isnone("pet"))  # reads the discriminator
 ```
 
 `select()`, `distinct()` and `group_by()` carry the whole union, so a value is never
