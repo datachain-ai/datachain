@@ -28,18 +28,15 @@ class FileClient(Client):
         """Show the stored etag, plus mtime when it is ``st_mtime.hex()``.
 
         Local listings store mtime as ``float.hex()``. Conversion is limited to
-        that canonical shape so HTTP-like values such as ``0x123`` stay intact.
+        that canonical shape so non-canonical values stay intact.
         """
         rendered = str(etag)
         try:
             mtime = float.fromhex(rendered)
-        except ValueError:
-            return rendered
-        if mtime.hex() != rendered:
-            return rendered
-        try:
+            if mtime.hex() != rendered:
+                return rendered
             iso = datetime.fromtimestamp(mtime, timezone.utc).isoformat()
-        except (OverflowError, OSError, ValueError):
+        except (ValueError, OverflowError, OSError):
             return rendered
         return f"{rendered} (mtime {iso})"
 
