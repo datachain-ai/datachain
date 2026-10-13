@@ -140,6 +140,45 @@ chain = (
 
 For external Pydantic models (like Mistral's `ChatCompletionResponse`), register them explicitly: `dc.DataModel.register(MistralResponse)`.
 
+## Union and Optional Fields
+
+A field or a signal can hold one of several types. Each type gets its own columns,
+plus a hidden discriminator naming the type a row carries, so values keep their type
+through saving, reading and exporting. `X | None` (the same as `Optional[X]`) is the
+single-type case of the same mechanism.
+
+```python
+import datachain as dc
+
+class Cat(dc.DataModel):
+    name: str
+    lives: int = 9
+
+class Dog(dc.DataModel):
+    name: str
+    breed: str = ""
+
+chain = dc.read_values(
+    id=[1, 2],
+    pet=[Cat(name="Tom"), Dog(name="Rex", breed="lab")],
+    output={"id": int, "pet": Cat | Dog},
+)
+
+chain.filter(dc.C("pet.Cat.name") == "Tom")  # type-qualified path
+chain.filter(dc.C("pet.breed") == "lab")     # the type name is optional when one type has the field
+chain.filter(dc.func.isnone("pet"))          # reads the discriminator
+```
+
+`select()`, `distinct()` and `group_by()` carry the whole union, so a value is never
+separated from the type it belongs to; for the same reason a union cannot be a key
+for `diff()` or `subtract()`.
+
+Inside a `list` or a `dict` there are no per-element columns — the collection is one
+JSON value — so types that JSON stores alike are rejected when the chain is created:
+models whose field names are the same or a subset of one another, `datetime | str`,
+and a union as a dict key. Give such models a `kind: Literal["..."]` field to tell
+them apart. A collection as one of the types (`str | list[str]`) is not supported.
+
 ## Core Classes
 
 - **DataChain**: the core class for composing queries with 60+ methods
