@@ -174,6 +174,7 @@ class HTTPClient(Client):
             return open(cache_path, mode="rb")
 
         assert not file.location
+        # block_size is ignored: servers without range support fail on small blocks
         return FileWrapper(
             self.fs.open(file.get_fs_path()),
             cb or (lambda x: None),

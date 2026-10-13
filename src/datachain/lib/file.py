@@ -551,7 +551,7 @@ class File(DataModel):
         object (mapped per backend, ignored on the local filesystem).
 
         ``block_size`` sets the read-ahead block for uncached remote reads, and
-        the upload part size for writes.
+        the upload part size for writes. HTTP(S) reads ignore it.
         """
         writing = any(ch in mode for ch in "wax+")
 

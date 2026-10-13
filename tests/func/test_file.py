@@ -899,12 +899,15 @@ def test_video_info_http_server_without_range_support(tmp_path, test_session):
 
     handler = functools.partial(_NoRangeHandler, directory=str(tmp_path))
     with socketserver.TCPServer(("127.0.0.1", 0), handler) as server:
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        source = f"http://127.0.0.1:{server.server_address[1]}"
-        file = File(source=source, path="v.mp4").as_video_file()
-        file._set_stream(test_session.catalog, caching_enabled=False)
-
-        info = file.get_info()
-        server.shutdown()
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            source = f"http://127.0.0.1:{server.server_address[1]}"
+            file = File(source=source, path="v.mp4").as_video_file()
+            file._set_stream(test_session.catalog, caching_enabled=False)
+            info = file.get_info()
+        finally:
+            server.shutdown()
+            thread.join()
 
     assert info.duration == pytest.approx(1.0, abs=0.1)
