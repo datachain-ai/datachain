@@ -95,7 +95,8 @@ def read_storage(  # noqa: PLR0913
               - `?` : single character
               - `{a,b}` : brace expansion list
               - `{1..9}` : brace numeric or alphabetic range
-        type: read file as "binary", "text", or "image" data. Default is "binary".
+        type: read file as "binary", "text", "image", "video", "audio" or "hdf5"
+            data. Default is "binary".
         recursive: search recursively for the given path.
         column: Column name that will contain File objects. Default is "file".
         update: force storage reindexing. Default is False.
