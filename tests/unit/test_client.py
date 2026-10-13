@@ -12,7 +12,13 @@ from datachain.asyn import get_loop
 from datachain.client import Client
 from datachain.client.fsspec import RangeListedClient
 from datachain.client.local import FileClient
-from datachain.client.ranges import Page, key_midpoint
+from datachain.client.ranges import (
+    KeyRange,
+    Page,
+    code_points,
+    key_midpoint,
+    split_point,
+)
 from datachain.client.writeconfig import WriteConfig
 
 
@@ -89,8 +95,29 @@ def test_key_midpoint_stays_near_dense_keys():
     )
 
 
+def _range(hi, age):
+    return KeyRange(hi, code_points, age)
+
+
+def test_young_ranges_split_close_ahead():
+    mid = split_point(_range(None, 1), "img/0003.jpg", "img/0000.jpg", "img/.jpg0123")
+
+    assert "img/0003.jpg" < mid < "img/1"
+
+
+def test_old_open_ranges_split_further_with_age():
+    young = split_point(_range(None, 5), "img/0003.jpg", "img/0000.jpg", "img/.jpg0123")
+    old = split_point(_range(None, 50), "img/0003.jpg", "img/0000.jpg", "img/.jpg0123")
+
+    assert "img/0003.jpg" < young < old
+
+
+def test_old_bounded_ranges_split_at_the_midpoint():
+    assert split_point(_range("c", 9), "a", "a", "abc") == "b"
+
+
 def test_splits_stay_inside_the_prefix():
-    mid = key_midpoint("n2/b.txt", None, "n2/.btx", prefix="n2/")
+    mid = split_point(_range(None, 1), "n2/b.txt", "n2/b.txt", "n2/.btx", "n2/")
 
     assert mid is not None
     assert mid.startswith("n2/")

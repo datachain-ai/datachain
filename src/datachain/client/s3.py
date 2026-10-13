@@ -158,6 +158,7 @@ class ClientS3(RangeListedClient):
     CREDENTIAL_KEYS = frozenset(
         {"key", "secret", "token", "aws_key", "aws_secret", "aws_token"}
     )
+    PROBE_BOUNDED_SPLITS = False
 
     @staticmethod
     def _normalize_s3_kwargs(kwargs: dict) -> dict:
