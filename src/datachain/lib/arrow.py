@@ -261,9 +261,19 @@ def merge_schemas(
     if columns is None:
         return pa.unify_schemas(schemas), None
 
-    if any(_get_datachain_schema(s) for s in schemas):
-        raise ValueError("columns can't be used with files written by DataChain")
-    names = list(dict.fromkeys(n for s in schemas for n in s.names))
+    # Files written by DataChain are picked by signal; a signal is stored as its
+    # nested `signal.field` columns.
+    signal_schemas = [_get_datachain_schema(s) for s in schemas]
+    if any(signal_schemas) and not all(signal_schemas):
+        raise ValueError(
+            "columns can't mix files written by DataChain with other files"
+        )
+    signal_schema = signal_schemas[0]
+    names = (
+        list(signal_schema.values)
+        if signal_schema
+        else list(dict.fromkeys(n for s in schemas for n in s.names))
+    )
     cleaned = normalize_col_names(names)
     raw = {n: n for n in names} | cleaned
     if missing := [c for c in columns if c not in raw]:
@@ -271,10 +281,25 @@ def merge_schemas(
     selected = [raw[c] for c in columns]
     if len(set(selected)) < len(selected):
         raise ValueError(f"Columns {list(columns)} name a column more than once")
+
+    def keep(name: str) -> bool:
+        if name in selected:
+            return True
+        return signal_schema is not None and any(
+            name.startswith(f"{c}.") for c in selected
+        )
+
     # Only the selected columns need compatible types across files.
     merged = pa.unify_schemas(
-        [pa.schema([s.field(c) for c in selected if c in s.names]) for s in schemas]
+        [pa.schema([f for f in s if keep(f.name)]) for s in schemas]
     )
+    if signal_schema:
+        picked = SignalSchema({c: signal_schema.values[c] for c in selected})
+        metadata = {
+            **schemas[0].metadata,
+            DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY: json.dumps(picked.serialize()),
+        }
+        return merged.with_metadata(metadata), selected
     schema = pa.schema(
         [merged.field(c) for c in selected], metadata=schemas[0].metadata
     )
