@@ -23,7 +23,7 @@ from sqlalchemy.dialects import sqlite
 from sqlalchemy.schema import CreateIndex, CreateTable, DropTable
 from sqlalchemy.sql import func
 from sqlalchemy.sql.elements import BinaryExpression, BooleanClauseList
-from sqlalchemy.sql.expression import bindparam, cast
+from sqlalchemy.sql.expression import cast
 from sqlalchemy.sql.selectable import Select
 
 import datachain.sql.sqlite
@@ -256,7 +256,8 @@ class SQLiteDatabaseEngine(DatabaseEngine):
 
     @retry_sqlite_locks
     def executemany(self, query, params) -> None:
-        self.db.executemany(self.compile(query).string, params)
+        sql = query if isinstance(query, str) else self.compile(query).string
+        self.db.executemany(sql, params)
 
     @retry_sqlite_locks
     def execute_str(self, sql: str, parameters=None) -> sqlite3.Cursor:
@@ -794,24 +795,30 @@ class SQLiteWarehouse(AbstractWarehouse):
     def _insert_from_buffer(
         self,
         table: Table,
-        entries: list[dict[str, Any]],
+        columns: Sequence[str],
+        entries: list[tuple],
         final: bool = False,
         cursor: Any = None,
     ) -> None:
         """Callback for InsertBuffer to insert a batch of entries."""
         if not entries:
             return
+        quote = self.db.dialect.identifier_preparer.quote
+        sql = (
+            f"INSERT INTO {quote(table.name)} ({', '.join(map(quote, columns))}) "  # noqa: S608
+            f"VALUES ({', '.join('?' * len(columns))})"
+            if columns
+            else f"INSERT INTO {quote(table.name)} DEFAULT VALUES"
+        )
         with self.db.transaction():
             # transactions speeds up inserts significantly as there is no separate
             # transaction created for each insert row
-            self.db.executemany(
-                table.insert().values({f: bindparam(f) for f in entries[0]}),
-                entries,
-            )
+            self.db.executemany(sql, entries)
 
     def get_buffer(
         self,
         table: Table,
+        columns: Sequence[str],
         buffer_size: int,
         flush_interval: float,
     ) -> InsertBuffer:
@@ -819,6 +826,7 @@ class SQLiteWarehouse(AbstractWarehouse):
         if table.name not in self.buffers:
             self.buffers[table.name] = InsertBuffer(
                 table,
+                columns,
                 self._insert_from_buffer,
                 buffer_size,
                 flush_interval=flush_interval,

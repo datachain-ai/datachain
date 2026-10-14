@@ -573,6 +573,32 @@ def get_col_types(
     return col_types
 
 
+def _tuple_adjuster(col_types: list[ColType]) -> Callable[[tuple], tuple | None]:
+    """For a gen or agg row of the output columns, then ``sys__input_id``,
+    ``sys__partial`` and ``sys__empty``: the row with column defaults in place of
+    None, or None when ``adjust_outputs`` must convert it."""
+    kept_types = [
+        frozenset({type(None), c.python_type} if c.kept_as_is else {type(None)})
+        for c in col_types
+    ] + [frozenset({int, bool, type(None)})] * 3
+    defaults = [
+        (i, c.default) for i, c in enumerate(col_types) if c.default is not None
+    ]
+
+    def adjust(row: tuple) -> tuple | None:
+        if not all(map(frozenset.__contains__, kept_types, map(type, row))):
+            return None
+        if not defaults or None not in row:
+            return row
+        values = list(row)
+        for i, default in defaults:
+            if values[i] is None:
+                values[i] = default
+        return tuple(values)
+
+    return adjust
+
+
 def process_udf_outputs(
     warehouse: "AbstractWarehouse",
     udf_table: "Table",
@@ -593,6 +619,13 @@ def process_udf_outputs(
     else:
         udf_kind = "map"
 
+    if udf_kind == "map":
+        columns = ["sys__id", *udf.output]
+    else:
+        columns = [*udf.output, "sys__input_id", "sys__partial", "sys__empty"]
+
+    adjust_tuple = _tuple_adjuster(udf_col_types)
+
     def _insert_rows():
         for udf_output in udf_results:
             if not udf_output:
@@ -601,17 +634,27 @@ def process_udf_outputs(
             with safe_closing(udf_output):
                 for row in udf_output:
                     cb.relative_update()
-                    yield adjust_outputs(
+                    if type(row) is tuple:
+                        if (
+                            udf_kind != "map"
+                            and (fast := adjust_tuple(row)) is not None
+                        ):
+                            yield fast
+                            continue
+                        row = dict(zip(columns, row, strict=True))
+                    row = adjust_outputs(
                         warehouse,
                         row,
                         udf_col_types,
                         udf_signal_schema,
                         udf_kind=udf_kind,
                     )
+                    yield tuple(map(row.__getitem__, columns))
 
     try:
-        warehouse.insert_rows(
+        warehouse.insert_tuples(
             udf_table,
+            columns,
             _insert_rows(),
             batch_size=batch_size,
         )

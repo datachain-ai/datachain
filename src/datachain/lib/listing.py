@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 LISTING_TTL = 4 * 60 * 60  # cached listing lasts 4 hours
 LISTING_PREFIX = "lst__"  # listing datasets start with this name
+LISTING_BATCH_SIZE = 50_000  # rows per insert: listing rows are small
 # listing of current objects only, read_storage(versions=False)
 CURRENT_LISTING_PREFIX = f"{LISTING_PREFIX}current__"
 

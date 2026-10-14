@@ -310,8 +310,9 @@ class Client(ABC):
         method: str = "default",
         processes: bool = False,
     ) -> AsyncIterator[Sequence[Any]]:
-        """Pages of ``File`` objects; with ``processes``, a range listing may parse
-        pages in child processes, which yield ``FileRow`` rows instead."""
+        """Pages of entries: ``FileRow`` rows from a range listing, ``File``
+        objects otherwise. With ``processes``, a range listing may parse pages in
+        child processes."""
         try:
             impl = getattr(self, f"_fetch_{method}")
         except AttributeError:
