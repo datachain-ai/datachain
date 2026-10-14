@@ -11,6 +11,7 @@ from datachain.asyn import get_loop
 from datachain.client import Client, listing_worker
 from datachain.client.listing_worker import Pool
 from datachain.lib.convert.flatten import flatten
+from datachain.lib.file import File, FileRow
 from datachain.lib.listing import list_bucket
 
 TREE = {
@@ -245,6 +246,16 @@ def test_read_storage_rows_from_children(client, tree, children):
 
     assert children
     assert sorted(flatten(f) for f in files) == listing(client, processes=False)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("tree", [TREE], indirect=True)
+def test_listing_rows_are_normalized_files(client, tree):
+    rows = items(client, processes=False)
+
+    assert rows
+    assert all(type(r) is FileRow for r in rows)
+    assert [flatten(File(**r._asdict())) for r in rows] == [tuple(r) for r in rows]
 
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)

@@ -300,8 +300,8 @@ class Client(ABC):
     async def scandir(
         self, start_prefix: str, method: str = "default"
     ) -> AsyncIterator[Sequence[Any]]:
-        """Pages of ``File`` objects; a range listing that parses pages in child
-        processes yields ``FileRow`` rows instead."""
+        """Pages of entries: ``FileRow`` rows from a range listing, ``File``
+        objects otherwise."""
         try:
             impl = getattr(self, f"_fetch_{method}")
         except AttributeError:

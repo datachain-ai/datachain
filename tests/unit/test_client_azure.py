@@ -11,7 +11,7 @@ from fsspec.callbacks import DEFAULT_CALLBACK
 
 from datachain.asyn import get_loop
 from datachain.client.azure import AzureClient
-from datachain.lib.file import File
+from datachain.lib.file import File, FileRow
 
 _FAKE_SAS = "https://account.blob.core.windows.net/mycontainer/blob.txt?sv=x&sig=y"
 _VER = "ver-abc-123"
@@ -280,7 +280,7 @@ def test_blob_name_is_decoded():
         "<Etag>0x8DC</Etag><Content-Length>7</Content-Length></Properties></Blob>"
     )
     assert client._blob_name(blob) == "a\x01b"
-    assert client._xml_to_file(blob, "a\x01b") == File(
+    assert client._file_row(blob, "a\x01b") == FileRow(
         source="az://container",
         path="a\x01b",
         etag="0x8DC",

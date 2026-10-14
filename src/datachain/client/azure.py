@@ -17,7 +17,7 @@ from azure.core.exceptions import (
 from azure.storage.blob import BlobServiceClient
 from fsspec.asyn import get_loop, sync
 
-from datachain.lib.file import File
+from datachain.lib.file import File, FileRow
 
 from .fsspec import BucketStatus, RangeListedClient
 from .ranges import Keep, Page, utf16_units
@@ -297,7 +297,7 @@ class AzureClient(RangeListedClient):
         keep = Keep(self, start_after, hi)
         return Page(
             [
-                self._xml_to_file(b, n)
+                self._file_row(b, n)
                 for b, n in zip(blobs, names, strict=True)
                 if keep(n) and not self._is_directory(b)
             ],
@@ -325,16 +325,16 @@ class AzureClient(RangeListedClient):
         text = name.text or ""
         return unquote(text) if name.get("Encoded") == "true" else text
 
-    def _xml_to_file(self, blob: Element, name: str) -> File:
+    def _file_row(self, blob: Element, name: str) -> tuple:
         props = blob.find("Properties")
         assert props is not None
         version = blob.findtext("VersionId") if self._is_version_aware() else None
-        return File(
-            source=self.uri,
-            path=name,
-            etag=props.findtext("Etag", "").strip('"'),
-            version=version or "",
-            is_latest=version is None or blob.findtext("IsCurrentVersion") == "true",
-            last_modified=parsedate_to_datetime(props.findtext("Last-Modified", "")),
-            size=int(props.findtext("Content-Length", "0")),
+        return FileRow(
+            self.uri,
+            name,
+            int(props.findtext("Content-Length", "0")),
+            version or "",
+            props.findtext("Etag", "").strip('"'),
+            version is None or blob.findtext("IsCurrentVersion") == "true",
+            parsedate_to_datetime(props.findtext("Last-Modified", "")),
         )

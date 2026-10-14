@@ -224,8 +224,6 @@ def main(out_fd: int) -> None:
 async def _serve(
     client: "RangeListedClient", prefix: str, inp: BinaryIO, out: BinaryIO
 ) -> None:
-    from datachain.lib.convert.flatten import flatten
-
     loop = asyncio.get_running_loop()
     requests: asyncio.Queue = asyncio.Queue()
 
@@ -246,8 +244,8 @@ async def _serve(
             page = await client._list_page(prefix, start_after, token, hi)
         except Exception:  # noqa: BLE001
             write((rid, None))  # the parent fetches it and raises a lasting error
-        else:  # flat rows: a File would unpickle per row in Python
-            write((rid, ([flatten(f) for f in page.rows], *page[1:])))
+        else:  # plain tuples: a row type would unpickle per row in Python
+            write((rid, ([tuple(r) for r in page.rows], *page[1:])))
 
     try:  # warm up DNS, TLS, credentials and the bucket region before taking work
         await client._list_page(prefix, "", None, page_size=1)

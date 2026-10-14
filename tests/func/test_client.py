@@ -15,8 +15,9 @@ from tqdm import tqdm
 
 from datachain.asyn import get_loop
 from datachain.client import Client
+from datachain.client.fsspec import RangeListedClient
 from datachain.client.ranges import RangeListing
-from datachain.lib.file import File, FileError
+from datachain.lib.file import File, FileError, FileRow
 from tests.data import ENTRIES
 
 _non_null_text = st.text(
@@ -73,7 +74,8 @@ def test_scandir_not_dir(client):
 def test_scandir_success(client):
     results = scandir(client, "")
     match_entries(results, ENTRIES)
-    assert {type(e) for e in results} == {File}
+    row = FileRow if isinstance(client, RangeListedClient) else File
+    assert {type(e) for e in results} == {row}
 
 
 def _paths(tree, prefix=""):

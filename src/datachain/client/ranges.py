@@ -20,7 +20,7 @@ YOUNG_PAGES = 4  # a range is young until it and its parents read this many page
 class Page(NamedTuple):
     """One listing request's reply."""
 
-    rows: list[Any]  # the keys kept: File objects, FileRow rows from a child
+    rows: list[Any]  # FileRow rows of the keys kept
     first: str | None  # the first object's key; None when the page has none
     last: str | None  # the last key of any kind, delete markers included
     token: Any  # resumes after this page; None on the last page

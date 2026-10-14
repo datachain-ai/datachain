@@ -27,7 +27,7 @@ from datachain.client.listing_worker import (
     usable_cpus,
 )
 from datachain.client.ranges import Keep, Page
-from datachain.lib.file import File
+from datachain.lib.file import FileRow
 
 ROOT = os.path.dirname(os.path.dirname(datachain.__file__))
 
@@ -121,11 +121,7 @@ class KeysClient(RangeListedClient):
         end = token + len(chunk)
         keep = Keep(self, start_after, hi)
         return Page(
-            [
-                File(source="fake://bucket", path=k, size=1, version=v)
-                for k, v in chunk
-                if keep(k)
-            ],
+            [FileRow("fake://bucket", k, 1, v) for k, v in chunk if keep(k)],
             chunk[0][0] if chunk else None,
             max((k for k, _ in chunk), default=None),
             end if end < len(self.keys) else None,

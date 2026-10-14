@@ -14,13 +14,13 @@ def test_an_insert_error_closes_the_udf_outputs(test_session, mocker):
         finally:
             closed.append(n)
 
-    def failing_insert(self, table, rows, batch_size=None):
+    def failing_insert(self, table, columns, rows, batch_size=None):
         next(iter(rows))
         raise OSError(28, "No space left on device")
 
     chain = dc.read_values(n=[1000], session=test_session).save("inputs")
     mocker.patch.object(
-        type(test_session.catalog.warehouse), "insert_rows", failing_insert
+        type(test_session.catalog.warehouse), "insert_tuples", failing_insert
     )
     with pytest.raises(OSError, match="No space left") as error:
         chain.gen(x=numbers, output=int).save("numbers")

@@ -505,24 +505,51 @@ class AbstractWarehouse(ABC, Serializable):
         ((nrows, *rest),) = self.db.execute(query)
         return nrows, rest[0] if rest else 0
 
-    @abstractmethod
-    def prepare_entries(self, entries: "Iterable[File]") -> Iterable[dict[str, Any]]:
-        """Convert File entries so they can be passed on to `insert_rows()`"""
-
     def insert_rows(
         self,
         table: sa.Table,
         rows: Iterable[dict[str, Any]],
         batch_size: int | None = None,
     ) -> None:
-        """Does batch inserts of any kind of rows into table.
+        """Does batch inserts of dict rows into table, with the keys of the first
+        row as the columns.
 
         `insert_rows_done` must be called after this function is used
         (and all rows have been inserted).
         """
+        rows = iter(rows)
+        first = next(rows, None)
+        if first is None:
+            return
+        columns = list(first)
+        self.insert_tuples(
+            table,
+            columns,
+            (tuple(row[c] for c in columns) for row in itertools.chain([first], rows)),
+            batch_size,
+        )
+
+    def insert_tuples(
+        self,
+        table: sa.Table,
+        columns: Sequence[str],
+        rows: Iterable[tuple],
+        batch_size: int | None = None,
+    ) -> None:
+        """Does batch inserts of tuple rows, in the order of `columns`, into table.
+
+        `insert_rows_done` must be called after this function is used
+        (and all rows have been inserted).
+        """
+        buffer = self.buffers.get(table.name)
+        if buffer is not None and buffer.columns != list(columns):
+            self.close_buffer(table)
         buffer_size = batch_size if batch_size is not None else self.INSERT_BATCH_SIZE
         buffer = self.get_buffer(
-            table, buffer_size=buffer_size, flush_interval=self.INSERT_FLUSH_INTERVAL
+            table,
+            columns,
+            buffer_size=buffer_size,
+            flush_interval=self.INSERT_FLUSH_INTERVAL,
         )
         buffer.insert_many(rows)
 
@@ -530,6 +557,7 @@ class AbstractWarehouse(ABC, Serializable):
     def get_buffer(
         self,
         table: sa.Table,
+        columns: Sequence[str],
         buffer_size: int,
         flush_interval: float,
     ) -> "InsertBuffer":

@@ -12,7 +12,13 @@ from datachain.lib.dc.storage_pattern import (
     validate_cloud_bucket_name,
 )
 from datachain.lib.file import FileType, get_file_type
-from datachain.lib.listing import get_file_info, get_listing, list_bucket, ls
+from datachain.lib.listing import (
+    LISTING_BATCH_SIZE,
+    get_file_info,
+    get_listing,
+    list_bucket,
+    ls,
+)
 from datachain.query import Session
 
 if TYPE_CHECKING:
@@ -281,6 +287,7 @@ def read_storage(  # noqa: PLR0913
                 )
                 .settings(
                     prefetch=0,
+                    batch_size=(settings or {}).get("batch_size", LISTING_BATCH_SIZE),
                     namespace=listing_namespace_name,
                     project=listing_project_name,
                 )

@@ -498,7 +498,8 @@ class DataChain:
                 processing by UDFs. Defaults to 1.
             batch_size: Number of rows per insert by UDF to fine tune and balance speed
                 and memory usage. This might be useful when processing large rows
-                or when running into memory issues. Defaults to 2000.
+                or when running into memory issues. Defaults to the warehouse's
+                insert batch size.
             ephemeral: If True, no persistent objects are created in the metastore
                 (no jobs, checkpoints, or datasets). UDF execution still uses
                 temporary tables. Calling .save() in ephemeral mode will raise

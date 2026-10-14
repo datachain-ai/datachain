@@ -23,7 +23,7 @@ from datachain.lib.convert.flatten import (
     flatten_value,
     is_optional_model,
 )
-from datachain.lib.file import File, FileError
+from datachain.lib.file import File, FileError, FileRow
 from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.utils import AbstractUDF, DataChainParamsError
 from datachain.query.batch import (
@@ -426,6 +426,14 @@ class UDFBase(AbstractUDF):
             return flatten_value(row, single_type)
         return tuple(self._obj_to_list(row))
 
+    def _file_row_output(self) -> bool:
+        """Whether a ``FileRow`` is a whole output row: one output with
+        ``FileRow``'s columns."""
+        if len(self.output.values) != 1:
+            return False
+        name = next(iter(self.output.values))
+        return list(self.signal_names) == [f"{name}__{f}" for f in FileRow._fields]
+
     @staticmethod
     def _obj_to_list(obj):
         return flatten(obj) if isinstance(obj, BaseModel) else [obj]
@@ -768,6 +776,7 @@ class Generator(UDFBase):
     ) -> Iterator[Iterable[UDFResult]]:
         self.setup()
         signal_names = list(self.signal_names)
+        file_row = FileRow if self._file_row_output() else None
 
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
             with safe_closing(udf_inputs):
@@ -785,6 +794,9 @@ class Generator(UDFBase):
             with safe_closing(result) as result_objs:
                 for result_obj, is_last in with_last_flag(result_objs):
                     has_output = True
+                    if type(result_obj) is file_row:
+                        yield result_obj + (row_id, not is_last, None)  # noqa: RUF005
+                        continue
                     udf_output = self._flatten_row(result_obj)
                     udf_output = dict(zip(signal_names, udf_output, strict=False))
                     udf_output["sys__input_id"] = row_id

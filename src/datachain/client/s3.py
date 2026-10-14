@@ -14,7 +14,7 @@ from botocore.utils import parse_timestamp
 from fsspec.asyn import get_loop, sync, sync_wrapper
 from s3fs import S3FileSystem
 
-from datachain.lib.file import File
+from datachain.lib.file import File, FileRow
 
 from .fsspec import BucketStatus, RangeListedClient
 from .ranges import PROCESS_LIST_WORKERS, Keep, Page
@@ -327,7 +327,7 @@ class ClientS3(RangeListedClient):
             token = page["NextContinuationToken"]
         keep = Keep(self, start_after, hi)
         return Page(
-            [self._entry_from_boto(d, versions) for d in entries if keep(d["Key"])],
+            [self._file_row(d, versions) for d in entries if keep(d["Key"])],
             entries[0]["Key"] if entries else None,
             max(keys, default=None),
             token,
@@ -336,17 +336,15 @@ class ClientS3(RangeListedClient):
             keep.in_order,
         )
 
-    def _entry_from_boto(self, v, versions: bool) -> File:
-        return File(
-            source=self.uri,
-            path=v["Key"],
-            etag=v.get("ETag", "").strip('"'),
-            version=(
-                ClientS3.clean_s3_version(v.get("VersionId", "")) if versions else ""
-            ),
-            is_latest=v.get("IsLatest", True),
-            last_modified=v["LastModified"],
-            size=v["Size"],
+    def _file_row(self, v, versions: bool) -> tuple:
+        return FileRow(
+            self.uri,
+            v["Key"],
+            v["Size"],
+            ClientS3.clean_s3_version(v.get("VersionId", "")) if versions else "",
+            v.get("ETag", "").strip('"'),
+            v.get("IsLatest", True),
+            v["LastModified"],
         )
 
     @staticmethod

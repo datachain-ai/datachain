@@ -10,7 +10,7 @@ from gcsfs import GCSFileSystem
 from gcsfs.retry import HttpError
 
 from datachain.client.fileslice import FileWrapper
-from datachain.lib.file import File
+from datachain.lib.file import File, FileRow
 
 from .fsspec import BucketStatus, RangeListedClient
 from .ranges import Keep, Page
@@ -244,7 +244,7 @@ class GCSClient(RangeListedClient):
         items = page.get("items", [])
         keep = Keep(self, start_after, hi)
         return Page(
-            [self._entry_from_dict(d) for d in items if keep(d["name"])],
+            [self._file_row(d) for d in items if keep(d["name"])],
             items[0]["name"] if items else None,
             items[-1]["name"] if items else None,
             page.get("nextPageToken"),
@@ -253,8 +253,16 @@ class GCSClient(RangeListedClient):
             keep.in_order,
         )
 
-    def _entry_from_dict(self, d: dict[str, Any]) -> File:
-        return self.info_to_file(d, d["name"])
+    def _file_row(self, d: dict[str, Any]) -> tuple:
+        return FileRow(
+            self.uri,
+            d["name"],
+            int(d.get("size", 0)),
+            d.get("generation", "") if self._is_version_aware() else "",
+            d.get("etag", ""),
+            not d.get("timeDeleted"),
+            self.parse_timestamp(d["updated"]),
+        )
 
     def info_to_file(self, v: dict[str, Any], path: str) -> File:
         return File(
