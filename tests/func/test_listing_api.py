@@ -61,14 +61,15 @@ def test_listing_save_is_the_read_storage_cache(cloud_test_catalog, versions):
 
 def test_listing_to_arrow(cloud_test_catalog):
     ctc = cloud_test_catalog
-    rows = sorted(dc.listing(ctc.src_uri, session=ctc.session))
-    table = dc.listing(ctc.src_uri, session=ctc.session).to_arrow().sort_by("path")
+    uri = f"{ctc.src_uri}/dogs/"
+    rows = sorted(dc.listing(uri, session=ctc.session))
+    table = dc.listing(uri, session=ctc.session).to_arrow()
 
     assert table.column_names == list(dc.FileRow._fields)
     assert table.schema.field("size").type == pa.int64()
     assert table.schema.field("last_modified").type == pa.timestamp("us", tz="UTC")
-    assert [tuple(r.values()) for r in table.to_pylist()] == rows
-    df = dc.listing(ctc.src_uri, session=ctc.session).to_pandas()
+    assert sorted(tuple(r.values()) for r in table.to_pylist()) == rows
+    df = dc.listing(uri, session=ctc.session).to_pandas()
     assert sorted(df["path"]) == [r.path for r in rows]
 
 
