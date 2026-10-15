@@ -154,7 +154,7 @@ examples = [
 ]
 
 [project.urls]
-Documentation = "https://datachain.dvc.ai"
+Documentation = "https://www.datachain.ai/docs"
 Issues = "https://github.com/datachain-ai/datachain/issues"
 Source = "https://github.com/datachain-ai/datachain"
 
