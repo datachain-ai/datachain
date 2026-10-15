@@ -22,9 +22,9 @@ Rows have `File`'s columns (`f.path`, `f.size`, `f.etag`, `f.last_modified`, ...
 
 ```python
 rows = dc.listing(uri).to_list()
-table = dc.listing(uri).to_arrow()               # pyarrow.Table; to_pandas() for a DataFrame
+table = dc.listing(uri).to_arrow()  # pyarrow.Table; to_pandas() for a DataFrame
 images = dc.listing(uri).to_objects(type="image")  # ImageFile objects that read files
-chain = dc.listing(uri).save()                   # the snapshot read_storage(uri) reuses
+chain = dc.listing(uri).save()  # the snapshot read_storage(uri) reuses
 ```
 
 Call `dc.listing()` again to list the storage again.
@@ -100,9 +100,9 @@ To save snapshots in a session of your own, open it with `with`; everything insi
 
 ```python
 with dc.Session("ingest", client_config=minio):
-    rows = dc.listing("s3://my-bucket/data/").to_list()      # lists with minio
-    chain = dc.listing("s3://my-bucket/data/").save()        # saved in "ingest"
-    same = dc.read_storage("s3://my-bucket/data/")           # reuses that snapshot
+    rows = dc.listing("s3://my-bucket/data/").to_list()  # lists with minio
+    chain = dc.listing("s3://my-bucket/data/").save()  # saved in "ingest"
+    same = dc.read_storage("s3://my-bucket/data/")  # reuses that snapshot
 ```
 
 Or pass it as `session=`:
