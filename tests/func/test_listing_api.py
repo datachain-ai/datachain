@@ -318,9 +318,10 @@ def test_listing_probes_and_keeps_active_session_config(catalog, mocker):
 
     with dc.Session("ingest", catalog=configured):
         lst = dc.listing("s3://bucket/data/")
-        _, read_config = storage._storage_session(
+        read_session, read_config = storage._storage_session(
             ["s3://bucket/data/"], None, None, None, False, True
         )
+        read_session.__exit__(None, None, None)
 
     assert probe.call_args.args[1] == config
     assert lst.client_config == config | {"anon": True}
