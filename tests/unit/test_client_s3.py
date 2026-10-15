@@ -361,3 +361,20 @@ def test_s3_injected_session_refreshes():
     fs.connect(refresh=True)
 
     assert fs.session is session
+
+
+@pytest.mark.parametrize("list_deleted,version", [(False, ""), (True, "null")])
+def test_null_version_is_kept_with_delete_rows(list_deleted, version):
+    client = ClientS3("bucket", {}, None)
+    client.list_deleted = list_deleted
+    entry = {
+        "Key": "a",
+        "Size": 1,
+        "VersionId": "null",
+        "ETag": '"e"',
+        "IsLatest": True,
+        "LastModified": parse_timestamp("2026-10-01T00:00:00Z"),
+    }
+
+    assert client._file_row(entry, versions=True).version == version
+    assert client._file_row(entry, versions=False).version == ""

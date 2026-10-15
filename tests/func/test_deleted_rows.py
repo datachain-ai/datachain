@@ -1,3 +1,6 @@
+import os
+import time
+import uuid
 from datetime import datetime, timezone
 
 import pytest
@@ -147,9 +150,109 @@ def test_delete_row_has_no_content(history, tmp_path, use):
     assert not (tmp_path / "out").exists()
 
 
+@pytest.mark.xfail(
+    bool(os.environ.get("DATACHAIN_WAREHOUSE")),
+    reason="ClickHouse reads an empty JSON column as '', not None",
+    strict=True,
+)
 def test_delete_rows_round_trip_through_parquet(history, tmp_path):
     history.to_parquet(tmp_path / "history.parquet")
     back = dc.read_parquet(str(tmp_path / "history.parquet"), session=history.session)
 
     assert deleted_paths(back) == [("b.txt", "m1")]
     assert back.filter(func.is_deleted("file")).to_values("file.version") == ["m1"]
+
+
+# phase: (writes before the cutoff, writes after it); "-" deletes
+SCENARIOS = {
+    "unchanged": ("A", ""),
+    "overwritten_after": ("A", "C"),
+    "deleted_after": ("A", "-"),
+    "deleted_before": ("A-", ""),
+    "deleted_before_recreated_after": ("A-", "C"),
+    "overwritten_before": ("AB", ""),
+    "overwritten_twice_after": ("A", "CD"),
+    "overwritten_then_deleted_after": ("A", "C-"),
+    "created_after": ("", "C"),
+}
+
+
+def _write_history(root, phases):
+    # moto keeps whole seconds: one write per key per second keeps the order
+    steps = max(len(p) for p in phases.values())
+    for step in range(steps):
+        for key, writes in phases.items():
+            if step < len(writes):
+                if writes[step] == "-":
+                    (root / key).unlink()
+                else:
+                    (root / key).write_text(writes[step])
+        time.sleep(1.1)
+
+
+@pytest.mark.parametrize("cloud_type,version_aware", [("s3", True)], indirect=True)
+def test_changes_since_a_cutoff(cloud_test_catalog):
+    ctc = cloud_test_catalog
+    prefix = f"history-{uuid.uuid4().hex[:8]}"
+    root = ctc.src / prefix
+    _write_history(root, {k: before for k, (before, _) in SCENARIOS.items()})
+    cutoff = datetime.now(timezone.utc)
+    time.sleep(1.1)
+    _write_history(root, {k: after for k, (_, after) in SCENARIOS.items()})
+
+    history = dc.read_storage(
+        f"{ctc.src_uri}/{prefix}", session=ctc.session, versions="all"
+    )
+    newest = func.window(
+        partition_by="file.path", order_by="file.last_modified", desc=True
+    )
+    then = (
+        history.filter(dc.C("file.last_modified") <= cutoff)
+        .mutate(rank=func.row_number().over(newest))
+        .filter(dc.C("rank") == 1)
+        .filter(func.is_deleted("file") == False)  # noqa: E712
+    )
+    now = history.filter(dc.C("file.is_latest"))
+    diff = then.merge(now, on="file.path", full=True, rname="now_")
+
+    def name(path):
+        return path.rsplit("/", 1)[-1]
+
+    changes = {}
+    for old, new in diff.to_list("file", "now_file"):
+        key = name((old or new).path)
+        if not old:
+            changes[key] = "created"
+        elif not new:
+            changes[key] = ("deleted", old.read_text())
+        elif old.version != new.version:
+            changes[key] = ("overwritten", old.read_text())
+        else:
+            changes[key] = "unchanged"
+
+    assert changes == {
+        "unchanged": "unchanged",
+        "overwritten_before": "unchanged",
+        "overwritten_after": ("overwritten", "A"),
+        "overwritten_twice_after": ("overwritten", "A"),
+        "deleted_after": ("deleted", "A"),
+        "overwritten_then_deleted_after": ("deleted", "A"),
+        "deleted_before_recreated_after": "created",
+        "created_after": "created",
+    }
+    deleted_now = history.group_by(
+        latest=func.max(dc.C("file.is_latest")), partition_by="file.path"
+    ).filter(dc.C("latest") == False)  # noqa: E712
+    assert sorted(name(p) for p in deleted_now.to_values("file.path")) == [
+        "deleted_after",
+        "deleted_before",
+        "overwritten_then_deleted_after",
+    ]
+    assert sorted(
+        name(f.path) for f in history.filter(func.is_deleted("file")).to_values("file")
+    ) == [
+        "deleted_after",
+        "deleted_before",
+        "deleted_before_recreated_after",
+        "overwritten_then_deleted_after",
+    ]
