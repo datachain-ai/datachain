@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, TypeVar
 
 from fsspec.asyn import get_loop
-from sqlalchemy.sql.expression import and_, or_, true
+from sqlalchemy.sql.expression import or_, true
 
 import datachain.fs.utils as fsutils
 from datachain.asyn import iter_over_async
@@ -143,8 +143,9 @@ def ls(
 def select_paths(dc: D, paths: "PathFilter", column: str = "file") -> D:
     """The latest files of a listing chain whose paths ``paths`` selects."""
     dc = dc.filter(Column(f"{column}.is_latest") == true())
-    condition = paths.sql(Column(f"{column}.path"))
-    return dc if condition is None else dc.filter(condition)
+    for condition in paths.sql(Column(f"{column}.path")):
+        dc = dc.filter(condition)
+    return dc
 
 
 @dataclass(frozen=True)
@@ -169,7 +170,10 @@ class PathFilter:
     def glob(self, pattern: str) -> "PathFilter":
         return PathFilter(self.any_of, (*self.all_of, ("glob", pattern)))
 
-    def sql(self, path: Column) -> "ColumnElement | None":
+    def sql(self, path: Column) -> "list[ColumnElement]":
+        """One condition per filter step: ``any_of`` combined, then each of
+        ``all_of``. The steps feed chain hashes, so their split is kept."""
+
         def cond(op: str, value: str) -> "ColumnElement":
             if op == "eq":
                 return path == value
@@ -177,13 +181,8 @@ class PathFilter:
                 return path.glob(value)
             return pathfunc.parent(path) == value
 
-        any_of = [cond(*c) for c in self.any_of]
-        all_of = [cond(*c) for c in self.all_of]
-        if not any_of and not all_of:
-            return None
-        if all_of:
-            return and_(*([or_(*any_of)] if any_of else []), *all_of)
-        return or_(*any_of)
+        steps = [or_(*(cond(*c) for c in self.any_of))] if self.any_of else []
+        return steps + [cond(*c) for c in self.all_of]
 
     def __call__(self, path: str) -> bool:
         def cond(op: str, value: str) -> bool:
