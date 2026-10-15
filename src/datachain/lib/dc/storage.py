@@ -14,6 +14,7 @@ from datachain.lib.dc.storage_pattern import (
 from datachain.lib.file import FileType, get_file_type
 from datachain.lib.listing import (
     LISTING_BATCH_SIZE,
+    Versions,
     get_file_info,
     get_listing,
     list_bucket,
@@ -65,6 +66,13 @@ def _all_buckets_anonymous(uris, client_config: dict | None) -> bool:
     return True
 
 
+def _validate_versions(versions: Versions, delta: bool | None) -> None:
+    if versions not in (True, False, "all"):
+        raise ValueError(f"versions must be True, False or 'all', got {versions!r}")
+    if versions == "all" and delta:
+        raise ValueError("delta is not supported with versions='all'")
+
+
 def read_storage(  # noqa: PLR0913
     uri: str | os.PathLike[str] | list[str] | list[os.PathLike[str]],
     *,
@@ -76,7 +84,7 @@ def read_storage(  # noqa: PLR0913
     column: str = "file",
     update: bool = False,
     anon: bool | None = None,
-    versions: bool = True,
+    versions: Versions = True,
     delta: bool | None = False,
     delta_on: str | Sequence[str] | None = (
         "file.path",
@@ -107,6 +115,8 @@ def read_storage(  # noqa: PLR0913
         update: force storage reindexing. Default is False.
         anon: If True, we will treat cloud bucket as public one.
         versions: If False, list only current objects, without versions.
+            If True, list every version and return the latest ones. If "all",
+            return every version and one delete row per delete (see Notes).
         client_config: Optional client configuration for the storage client.
         delta: If True, only process new or changed files instead of reprocessing
             everything. This saves time by skipping files that were already processed in
@@ -135,6 +145,25 @@ def read_storage(  # noqa: PLR0913
 
     Returns:
         DataChain: A DataChain object containing the file information.
+
+    Notes:
+        With ``versions="all"``, a delete row is a ``File`` whose
+        ``is_deleted`` is True: ``last_modified`` is the time of the delete,
+        ``version`` the delete marker id, ``size`` 0, ``etag`` empty and
+        ``is_latest`` False. Opening it raises an error. Only delete rows have
+        an empty etag, so ``func.is_deleted("file")`` and
+        ``C("file.etag") == ""`` select them in queries. A key is deleted now
+        when none of its rows has ``is_latest`` True.
+
+        - The history is what the storage still keeps: permanently deleted
+          versions and expired delete markers leave no row.
+        - Rows of one key can share ``last_modified`` (S3 keeps whole
+          seconds, and a multipart upload is stamped with its start time),
+          so ordering by time may not match the order of the writes.
+        - Azure does not keep the time of a delete: its delete rows have
+          ``last_modified`` set to 1970-01-01 (epoch 0).
+        - A URI that names a single object returns its current version only.
+        - ``delta`` is not supported.
 
     Examples:
         Simple call from s3:
@@ -168,6 +197,12 @@ def read_storage(  # noqa: PLR0913
         dc.read_storage("s3://my-bucket/my-dir", versions=False)
         ```
 
+        Every version and every delete of a versioned bucket:
+        ```python
+        history = dc.read_storage("s3://my-bucket/my-dir", versions="all")
+        deleted = history.filter(dc.func.is_deleted("file"))
+        ```
+
         With AWS S3-compatible storage:
         ```python
         dc.read_storage(
@@ -185,6 +220,8 @@ def read_storage(  # noqa: PLR0913
 
     if not uris:
         raise ValueError("No URIs provided")
+
+    _validate_versions(versions, delta)
 
     for single_uri in uris:
         validate_cloud_bucket_name(str(single_uri))
@@ -213,6 +250,7 @@ def read_storage(  # noqa: PLR0913
         client_config = client_config | {"anon": anon}
     if not versions:
         client_config = client_config | {"version_aware": False}
+    with_deleted = versions == "all"
     listing_namespace_name = catalog.metastore.system_namespace_name
     listing_project_name = catalog.metastore.listing_project_name
 
@@ -292,7 +330,12 @@ def read_storage(  # noqa: PLR0913
                     project=listing_project_name,
                 )
                 .gen(
-                    list_bucket(lst_uri, cache, client_config=client_config),
+                    list_bucket(
+                        lst_uri,
+                        cache,
+                        client_config=client_config,
+                        deleted=with_deleted,
+                    ),
                     output={f"{column}": file_type},
                 )
                 # for internal listing datasets, we always bump major version
@@ -312,12 +355,20 @@ def read_storage(  # noqa: PLR0913
 
             # Apply glob filter - no need for brace expansion here as it's done above
             chain = apply_glob_filter(
-                dc, glob_pattern, list_path, use_recursive, column
+                dc, glob_pattern, list_path, use_recursive, column, not with_deleted
             )
             chains.append(chain)
         else:
             # No glob pattern detected, use normal ls behavior
-            chains.append(ls(dc, list_path, recursive=recursive, column=column))
+            chains.append(
+                ls(
+                    dc,
+                    list_path,
+                    recursive=recursive,
+                    column=column,
+                    latest=not with_deleted,
+                )
+            )
 
         listed_ds_name.add(list_ds_name)
 

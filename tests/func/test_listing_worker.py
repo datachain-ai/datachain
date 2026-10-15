@@ -1,4 +1,5 @@
 import asyncio
+import io
 import time
 from contextlib import aclosing
 
@@ -8,7 +9,7 @@ from fsspec.asyn import sync
 import datachain as dc
 from datachain.asyn import get_loop
 from datachain.client import Client
-from datachain.client.listing_worker import Child, Pool
+from datachain.client.listing_worker import Child, Pool, load
 from datachain.lib.convert.flatten import flatten
 from datachain.lib.file import File, FileRow
 from datachain.lib.listing import list_bucket
@@ -365,3 +366,13 @@ def test_children_take_credentials_from_a_credential_process(
     in_children = [fifo for ppid, fifo in calls if int(ppid) != os.getpid()]
     assert in_children
     assert set(in_children) == {"False"}  # the frame pipe is not their stdin
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("list_deleted", [False, True])
+def test_children_get_list_deleted(client, list_deleted):
+    client.list_deleted = list_deleted
+
+    *_, sent, _ = load(io.BytesIO(Pool(client, "", 2).spec))
+
+    assert sent is list_deleted

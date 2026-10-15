@@ -87,6 +87,7 @@ class Client(ABC):
     # client_config keys this backend treats as credentials.
     CREDENTIAL_KEYS: ClassVar[frozenset[str]] = frozenset()
     LIST_PAGE_SIZE: ClassVar[int] = 1000
+    list_deleted: bool = False  # listings also yield delete rows
 
     @classmethod
     def has_explicit_credentials(cls, client_config: dict | None) -> bool:

@@ -208,6 +208,63 @@ def test_read_storage_versions(cloud_test_catalog, cloud_prefix):
 
 
 @pytest.mark.parametrize(
+    "cloud_type,version_aware",
+    [("s3", True), ("gs", True)],
+    indirect=True,
+)
+def test_read_storage_all_versions(cloud_test_catalog):
+    ctc = cloud_test_catalog
+    session = ctc.session
+    prefix = f"history-{uuid.uuid4().hex[:8]}"
+    (ctc.src / prefix / "kept").write_text("1")
+    (ctc.src / prefix / "kept").write_text("22")
+    (ctc.src / prefix / "empty").write_text("")
+    uri = f"{ctc.src_uri}/{prefix}"
+
+    every = dc.read_storage(uri, session=session, versions="all")
+
+    assert not every.filter(dc.func.is_deleted("file")).count()
+    assert sorted(every.to_list("file.path", "file.size", "file.is_latest")) == [
+        (f"{prefix}/empty", 0, True),
+        (f"{prefix}/kept", 1, False),
+        (f"{prefix}/kept", 2, True),
+    ]
+    assert sorted(dc.read_storage(uri, session=session).to_list("file.size")) == [
+        (0,),
+        (2,),
+    ]
+    assert {ls.name for ls in session.catalog.listings(prefix=f"{uri}/")} == {
+        parse_listing_uri(uri, versions="all")[0],
+        parse_listing_uri(uri)[0],
+    }
+
+
+def test_read_storage_all_versions_of_unversioned_storage(tmp_dir, test_session):
+    (tmp_dir / "a.txt").write_text("a")
+    uri = tmp_dir.as_uri()
+
+    every = dc.read_storage(uri, session=test_session, versions="all")
+
+    assert every.to_list("file.path", "file.is_latest") == [("a.txt", True)]
+    assert [ls.name for ls in test_session.catalog.listings()] == [
+        parse_listing_uri(f"{uri}/")[0]
+    ]
+
+
+@pytest.mark.parametrize("versions", ["latest", None, 2])
+def test_read_storage_rejects_unknown_versions(tmp_dir, test_session, versions):
+    with pytest.raises(ValueError, match="versions must be"):
+        dc.read_storage(tmp_dir.as_uri(), session=test_session, versions=versions)
+
+
+def test_read_storage_all_versions_refuses_delta(tmp_dir, test_session):
+    with pytest.raises(ValueError, match="delta is not supported"):
+        dc.read_storage(
+            tmp_dir.as_uri(), session=test_session, versions="all", delta=True
+        )
+
+
+@pytest.mark.parametrize(
     "cloud_type",
     ["s3", "azure", "gs"],
     indirect=True,

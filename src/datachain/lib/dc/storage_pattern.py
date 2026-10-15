@@ -237,11 +237,12 @@ def apply_glob_filter(
     list_path: str,
     use_recursive: bool,
     column: str,
+    latest: bool = True,
 ) -> "DataChain":
     """List ``list_path`` and filter the resulting chain by the glob ``pattern``."""
     from datachain.query.schema import Column
 
-    chain = ls(dc, list_path, recursive=use_recursive, column=column)
+    chain = ls(dc, list_path, recursive=use_recursive, column=column, latest=latest)
 
     glob_pattern = convert_globstar_to_glob(pattern)
     if subpath := list_path.strip("/"):

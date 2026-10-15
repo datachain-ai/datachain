@@ -17,7 +17,17 @@ from .aggregate import (
     xor_agg,
 )
 from .array import contains, cosine_distance, euclidean_distance, length, sip_hash_64
-from .conditional import and_, case, greatest, ifelse, isnone, least, not_, or_
+from .conditional import (
+    and_,
+    case,
+    greatest,
+    ifelse,
+    is_deleted,
+    isnone,
+    least,
+    not_,
+    or_,
+)
 from .func import cast
 from .numeric import bit_and, bit_hamming_distance, bit_or, bit_xor, int_hash_64
 from .path import file_ext, file_stem, name, parent
@@ -50,6 +60,7 @@ __all__ = [
     "greatest",
     "ifelse",
     "int_hash_64",
+    "is_deleted",
     "isnone",
     "least",
     "length",
