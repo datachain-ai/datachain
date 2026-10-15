@@ -9,7 +9,7 @@ from fsspec.asyn import sync
 from fsspec.callbacks import DEFAULT_CALLBACK
 
 from datachain.asyn import get_loop
-from datachain.client.azure import AzureClient
+from datachain.client.azure import EPOCH, AzureClient
 from datachain.lib.file import File, FileRow
 
 _FAKE_SAS = "https://account.blob.core.windows.net/mycontainer/blob.txt?sv=x&sig=y"
@@ -372,3 +372,83 @@ def test_hierarchical_namespace_directories_are_not_files():
     _, paths = _listed("".join(blobs))
 
     assert paths == ["dir/f1", "dir/sub/f2"]
+
+
+def _version_blob(name, second, current):
+    flag = "<IsCurrentVersion>true</IsCurrentVersion>" if current else ""
+    return (
+        f"<Blob><Name>{name}</Name>"
+        f"<VersionId>2026-10-01T00:00:0{second}.0000000Z</VersionId>{flag}"
+        "<Properties><Last-Modified>Thu, 01 Oct 2026 00:00:00 GMT</Last-Modified>"
+        "<Etag>0x8DC</Etag><Content-Length>1</Content-Length></Properties></Blob>"
+    )
+
+
+def _listed_versions(pages, list_deleted):
+    class Pages:
+        def __init__(self, at):
+            self.at = at
+            self.continuation_token = str(at + 1) if at + 1 < len(pages) else None
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            blobs = "".join(pages[self.at])
+            self._response = fromstring(  # noqa: S314
+                f"<EnumerationResults><Blobs>{blobs}</Blobs></EnumerationResults>"
+            )
+            return self._response
+
+    container = MagicMock()
+    container.__aenter__ = AsyncMock(return_value=container)
+    container.__aexit__ = AsyncMock(return_value=False)
+    container.list_blob_names.return_value.by_page.side_effect = (
+        lambda continuation_token=None: Pages(int(continuation_token or 0))
+    )
+    client = AzureClient("mycontainer", {}, MagicMock())
+    client._fs = MagicMock(version_aware=True)
+    client._fs.service_client.get_container_client.return_value = container
+    client.list_deleted = list_deleted
+
+    async def all_pages():
+        listing = client._pages_after("", "", lambda _: True)
+        return [page.rows async for page in listing]
+
+    return [r for page in sync(get_loop(), all_pages) for r in page]
+
+
+@pytest.mark.parametrize("list_deleted", [False, True])
+def test_delete_rows_for_keys_without_a_current_version(list_deleted):
+    pages = [
+        [_version_blob("a", 1, False), _version_blob("a", 2, False)],
+        [_version_blob("a", 3, False), _version_blob("b", 1, True)],
+        [
+            _version_blob("c", 1, False),
+            _version_blob("c", 2, True),
+            _version_blob("d", 1, False),
+        ],
+    ]
+
+    rows = _listed_versions(pages, list_deleted)
+    deleted = [(r.path, r.version, r.last_modified) for r in rows if r.location]
+
+    assert sorted(r.path for r in rows if not r.location) == list("aaabccd")
+    if list_deleted:
+        assert deleted == [
+            ("a", "deleted:2026-10-01T00:00:03.0000000Z", EPOCH),
+            ("d", "deleted:2026-10-01T00:00:01.0000000Z", EPOCH),
+        ]
+        assert all(
+            (r.size, r.etag, r.is_latest) == (0, "", False) for r in rows if r.location
+        )
+    else:
+        assert deleted == []
+
+
+def test_an_empty_page_keeps_a_key_open():
+    pages = [[_version_blob("a", 1, False)], [], [_version_blob("a", 2, True)]]
+
+    rows = _listed_versions(pages, True)
+
+    assert [(r.path, bool(r.location)) for r in rows] == [("a", False), ("a", False)]

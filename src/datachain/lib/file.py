@@ -574,7 +574,7 @@ class File(DataModel):
         """True for a delete row of ``read_storage(versions="all")``.
 
         Such a row records that the object was deleted: ``last_modified`` is the
-        time of the delete and ``version`` the delete marker id. It has no
+        time of the delete and ``version`` the id of the delete. It has no
         content, so opening, reading or exporting it raises an error.
         """
         loc = self.location

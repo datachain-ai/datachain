@@ -190,7 +190,9 @@ def _write_history(root, phases):
         time.sleep(1.1)
 
 
-@pytest.mark.parametrize("cloud_type,version_aware", [("s3", True)], indirect=True)
+@pytest.mark.parametrize(
+    "cloud_type,version_aware", [("s3", True), ("gs", True)], indirect=True
+)
 def test_changes_since_a_cutoff(cloud_test_catalog):
     ctc = cloud_test_catalog
     prefix = f"history-{uuid.uuid4().hex[:8]}"
@@ -256,3 +258,25 @@ def test_changes_since_a_cutoff(cloud_test_catalog):
         "deleted_before_recreated_after",
         "overwritten_then_deleted_after",
     ]
+
+
+@pytest.mark.parametrize(
+    "cloud_type,version_aware", [("s3", True), ("gs", True)], indirect=True
+)
+@pytest.mark.parametrize("versions", [True, "all"])
+def test_update_after_a_delete_drops_the_file(cloud_test_catalog, versions):
+    ctc = cloud_test_catalog
+    prefix = f"update-{uuid.uuid4().hex[:8]}"
+    (ctc.src / prefix / "a").write_text("1")
+    (ctc.src / prefix / "b").write_text("1")
+    uri = f"{ctc.src_uri}/{prefix}"
+
+    def latest(update):
+        chain = dc.read_storage(
+            uri, session=ctc.session, versions=versions, update=update
+        )
+        return sorted(chain.filter(dc.C("file.is_latest")).to_values("file.path"))
+
+    assert latest(False) == [f"{prefix}/a", f"{prefix}/b"]
+    (ctc.src / prefix / "a").unlink()
+    assert latest(True) == [f"{prefix}/b"]

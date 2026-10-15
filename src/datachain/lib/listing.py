@@ -45,7 +45,8 @@ logging.getLogger("gcsfs").setLevel(logging.CRITICAL)
 def calc_fingerprint(session: "Session", dataset: "DatasetRecord", version: str) -> int:
     """Compute an order-independent content fingerprint for a listing version.
 
-    Uses file path + version (if available) or etag as the content identifier.
+    Uses file path + version (if available) or etag as the content identifier,
+    plus ``is_latest``, which a delete changes without adding a version.
     Version is preferred over etag because etags can be unstable on some cloud
     providers (GCS, Azure) due to internal operations like storage class changes.
     """
@@ -75,7 +76,7 @@ def calc_fingerprint(session: "Session", dataset: "DatasetRecord", version: str)
         else_=C("file.etag"),
     )
     return chain.group_by(  # type: ignore[return-value]
-        fp=xor_agg(string_hash(C("file.path"), identifier)),
+        fp=xor_agg(string_hash(C("file.path"), identifier, C("file.is_latest"))),
     ).to_values("fp")[0]
 
 

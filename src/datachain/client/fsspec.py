@@ -421,13 +421,10 @@ class Client(ABC):
 
     def _deleted_row(self, path: str, version: str, last_modified: datetime) -> tuple:
         """A delete row: ``path`` was deleted at ``last_modified``."""
-        from datachain.lib.convert.flatten import row_type
-        from datachain.lib.file import DeletedVFile, File
+        from datachain.lib.file import DeletedVFile, FileRow
 
         location = [{"vtype": DeletedVFile.get_vtype()}]
-        return row_type(File)(
-            self.uri, path, 0, version, "", False, last_modified, location
-        )
+        return FileRow(self.uri, path, 0, version, "", False, last_modified, location)
 
     def _version_kwargs(self, version_id: str | None) -> dict[str, Any]:
         if version_id:

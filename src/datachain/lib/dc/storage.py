@@ -149,7 +149,8 @@ def read_storage(  # noqa: PLR0913
     Notes:
         With ``versions="all"``, a delete row is a ``File`` whose
         ``is_deleted`` is True: ``last_modified`` is the time of the delete,
-        ``version`` the delete marker id, ``size`` 0, ``etag`` empty and
+        ``version`` the id of the delete (the delete marker id on S3,
+        ``deleted:<deleted version>`` on GCS and Azure), ``size`` 0, ``etag`` empty and
         ``is_latest`` False. Opening it raises an error. Only delete rows have
         an empty etag, so ``func.is_deleted("file")`` and
         ``C("file.etag") == ""`` select them in queries. A key is deleted now
@@ -160,8 +161,9 @@ def read_storage(  # noqa: PLR0913
         - Rows of one key can share ``last_modified`` (S3 keeps whole
           seconds, and a multipart upload is stamped with its start time),
           so ordering by time may not match the order of the writes.
-        - Azure does not keep the time of a delete: its delete rows have
-          ``last_modified`` set to 1970-01-01 (epoch 0).
+        - Azure keeps neither past deletes nor the time of a delete: a key
+          that is deleted now gets one delete row, with ``last_modified``
+          set to 1970-01-01 (epoch 0).
         - A URI that names a single object returns its current version only.
         - ``delta`` is not supported.
 

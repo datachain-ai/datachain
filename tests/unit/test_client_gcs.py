@@ -251,17 +251,76 @@ class _Recording(dict):
         return super().get(key, default)
 
 
-@pytest.mark.parametrize("version_aware", [False, True])
-def test_listing_asks_for_every_field_it_reads(version_aware):
+@pytest.mark.parametrize(
+    "version_aware, list_deleted", [(False, False), (True, False), (True, True)]
+)
+def test_listing_asks_for_every_field_it_reads(version_aware, list_deleted):
     client = _make_client()
     client._fs.version_aware = version_aware
-    item = _Recording(
-        name="a", size="1", generation="7", etag="e", updated="2026-10-01T00:00:00Z"
-    )
-    client._fs._call = AsyncMock(return_value={"items": [item]})
+    client.list_deleted = list_deleted
+    items = [
+        _Recording(_gen("a", 1, 1, deleted=2)),
+        _Recording(_gen("a", 2, 2)),
+    ]
+    client._fs._call = AsyncMock(return_value={"items": items})
 
     sync(get_loop(), client._list_page, "", "", None, lambda _: True)
 
     fields = client._fs._call.call_args.kwargs["fields"]
-    assert fields == f"items({','.join(GCSClient.LIST_FIELDS)}),nextPageToken"
-    assert item.read <= set(GCSClient.LIST_FIELDS)
+    sent = set(fields.removeprefix("items(").split(")")[0].split(","))
+    assert set().union(*(i.read for i in items)) <= sent
+
+
+def _gen(name, generation, created, deleted=None):
+    item = {
+        "name": name,
+        "generation": str(generation),
+        "etag": f"e{generation}",
+        "size": "1",
+        "timeCreated": f"2026-10-01T00:00:0{created}Z",
+        "updated": f"2026-10-01T00:00:0{created}Z",
+    }
+    if deleted is not None:
+        item["timeDeleted"] = f"2026-10-01T00:00:0{deleted}Z"
+    return item
+
+
+async def _all_pages(client):
+    pages = client._pages_after("", "", lambda _: True)
+    return [(page.rows, page.last) async for page in pages]
+
+
+@pytest.mark.parametrize("list_deleted", [False, True])
+def test_delete_rows_from_generations_across_pages(list_deleted):
+    client = _make_client()
+    client._fs.version_aware = True
+    client._fs._call = AsyncMock(
+        side_effect=[
+            # overwritten at 2, deleted at 3, recreated at 4, deleted at 5
+            {"items": [_gen("a", 1, 1, 2), _gen("a", 2, 2, 3)], "nextPageToken": "t"},
+            {"items": [_gen("a", 3, 4, 5), _gen("b", 9, 1)]},
+        ]
+    )
+    client.list_deleted = list_deleted
+
+    pages = sync(get_loop(), _all_pages, client)
+    rows = [
+        (r.path, r.version, bool(r.location), r.last_modified.second)
+        for page, _ in pages
+        for r in page
+    ]
+
+    assert [last for _, last in pages] == ["a", "b"]
+    versions = [("a", "1", False, 1), ("a", "2", False, 2)]
+    if not list_deleted:
+        assert [len(page) for page, _ in pages] == [2, 2]
+        assert rows == [*versions, ("a", "3", False, 4), ("b", "9", False, 1)]
+    else:
+        assert [len(page) for page, _ in pages] == [1, 5]  # a's last generation waits
+        assert rows == [
+            *versions,
+            ("a", "deleted:2", True, 3),
+            ("a", "3", False, 4),
+            ("a", "deleted:3", True, 5),
+            ("b", "9", False, 1),
+        ]
