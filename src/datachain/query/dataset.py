@@ -2483,8 +2483,8 @@ class SQLGroupBy(SQLClause):
                 key = c.name
                 value = c.get_column()
             elif isinstance(c, (str, C)):
-                key = str(c)
-                value = subquery.c[str(c)]
+                key = c.name if isinstance(c, C) else str(c)  # str() quotes names
+                value = subquery.c[key]
             else:
                 key = c.name
                 value = c  # type: ignore[assignment]

@@ -1750,7 +1750,7 @@ def test_unsupported_output_type(test_session):
     def get_vector(key) -> list[np.float64]:
         return [vector]
 
-    with pytest.raises(TypeError):
+    with pytest.raises(UdfSignatureError, match="is not supported"):
         dc.read_values(key=[123], session=test_session).map(emd=get_vector)
 
 
