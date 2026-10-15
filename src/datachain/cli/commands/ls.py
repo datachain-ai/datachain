@@ -45,7 +45,7 @@ def ls_local(
     client_config=None,
     **kwargs,
 ):
-    from datachain import listings
+    from datachain import listing_datasets
 
     if sources:
         session = Session.get(catalog=catalog, client_config=client_config)
@@ -69,7 +69,7 @@ def ls_local(
                     print(format_ls_entry(entry))
     else:
         # Collect results in a list here to prevent interference from `tqdm` and `print`
-        listing = listings().to_list("listing")
+        listing = listing_datasets().to_list("listing")
         for (ls,) in listing:
             print(format_ls_entry(f"{ls.uri}@v{ls.version}"))  # type: ignore[union-attr]
 

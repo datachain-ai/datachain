@@ -8,23 +8,111 @@ DataChain reads data from many sources and formats through a family of `read_*` 
 
 ## Storage Files
 
-`read_storage()` connects to any supported storage provider and returns a chain of File objects. It is the primary entry point for unstructured data: images, video, audio, PDFs, text. Always include a trailing slash in bucket and prefix URIs.
+Two functions read a storage. `dc.listing()` lists it: the objects of a bucket, a prefix or a single object, as rows to iterate, collect or turn into a table. `dc.read_storage()` lists it and saves the listing as a dataset: a snapshot of the storage that chains filter, process and join, that later runs reuse, and that records which files a result was computed from. Always include a trailing slash in bucket and prefix URIs.
+
+### Listing a Storage
 
 ```python
 import datachain as dc
 
+total = sum(f.size for f in dc.listing("s3://bucket/episodes/"))
+```
+
+Rows have `File`'s columns (`f.path`, `f.size`, `f.etag`, `f.last_modified`, ...) and attributes such as `f.name` and `f.get_file_ext()`. A listing is listed once: iterate it, or take it whole with one of
+
+```python
+rows = dc.listing(uri).to_list()
+table = dc.listing(uri).to_arrow()               # pyarrow.Table; to_pandas() for a DataFrame
+images = dc.listing(uri).to_objects(type="image")  # ImageFile objects that read files
+chain = dc.listing(uri).save()                   # the snapshot read_storage(uri) reuses
+```
+
+Call `dc.listing()` again to list the storage again.
+
+### Versioned Buckets
+
+On a bucket with versioning enabled (S3, GCS, Azure), a listing has every version of every object by default, the current one with `is_latest`, so counts and sums over its rows include old versions. Pass `versions=False` to list current objects only, which is also faster:
+
+```python
+total = sum(f.size for f in dc.listing("s3://versioned-bucket/data/", versions=False))
+```
+
+`read_storage()` returns current objects either way; there `versions=False` only makes listing faster and leaves old versions out of the snapshot. A snapshot from `save()` is reused by `read_storage()` with the same `versions`:
+
+```python
+dc.listing("s3://versioned-bucket/data/", versions=False).save()
+chain = dc.read_storage("s3://versioned-bucket/data/", versions=False)  # reuses it
+```
+
+Buckets without versioning, local files and HTTP storages have one kind of listing, and `versions` changes nothing there.
+
+### Saving a Storage Snapshot
+
+`read_storage()` returns a chain of `File` objects over a saved listing. A saved listing of the URI, or of a prefix above it, younger than 4 hours is reused; otherwise the storage is listed and saved, and `update=True` lists it again. It takes globs and several URIs, filters the snapshot by them, and returns current objects; `versions=True` (the default) keeps every version in the snapshot.
+
+```python
 images = dc.read_storage("s3://bucket/images/**/*.jpg", type="image")
 videos = dc.read_storage("gs://bucket/clips/", type="video")
 all_files = dc.read_storage("az://container/data/")
 ```
 
-The `type=` parameter selects the right File subclass (`ImageFile`, `VideoFile`, `AudioFile`, `TextFile`). Without it, files are plain `File` objects with binary access.
+The `type=` parameter selects the right File subclass (`ImageFile`, `VideoFile`, `AudioFile`, `TextFile`). Without it, files are plain `File` objects with binary access. `dc.listing_datasets()` shows the saved listings.
 
-For public buckets, pass `anon=True` explicitly:
+### Credentials
+
+By default a storage is reached with the provider's standard credentials (AWS profile and environment variables, `gcloud` login, Azure environment). Both `dc.listing()` and `dc.read_storage()` take the same two parameters to change that.
+
+A public bucket, without credentials:
 
 ```python
-chain = dc.read_storage("gs://datachain-demo/dogs-and-cats/", anon=True)
+lst = dc.listing("gs://datachain-demo/dogs-and-cats/", anon=True)
 ```
+
+With `anon=None`, the default, a bucket that needs no credentials is detected and read anonymously.
+
+Explicit keys, or an S3-compatible storage such as MinIO:
+
+```python
+minio = {
+    "endpoint_url": "https://minio.example.com",
+    "key": "access-key",
+    "secret": "secret-key",
+}
+lst = dc.listing("s3://my-bucket/data/", client_config=minio)
+chain = dc.read_storage("s3://my-bucket/data/", client_config=minio)
+```
+
+Files from `to_objects()` read with the credentials of their listing, so nothing else is needed to open them:
+
+```python
+lst = dc.listing("s3://my-bucket/data/", client_config=minio)
+for img in lst.to_objects(type="image"):
+    print(img.path, img.read().size)
+```
+
+Rows from iterating a listing do not read files; use `to_objects()` for that.
+
+### Sessions
+
+A session holds datasets, the saved snapshots among them. Listing a storage and reading its files do not use one, so a session matters only for `save()` and `read_storage()`. Without one, both use the default session: nothing to set up.
+
+To save snapshots in a session of your own, open it with `with`; everything inside uses it, including its credentials:
+
+```python
+with dc.Session("ingest", client_config=minio):
+    rows = dc.listing("s3://my-bucket/data/").to_list()      # lists with minio
+    chain = dc.listing("s3://my-bucket/data/").save()        # saved in "ingest"
+    same = dc.read_storage("s3://my-bucket/data/")           # reuses that snapshot
+```
+
+Or pass it as `session=`:
+
+```python
+session = dc.Session("ingest", client_config=minio)
+chain = dc.listing("s3://my-bucket/data/", session=session).save()
+```
+
+A session passed as `session=` brings its own credentials, and `client_config` is then ignored; `anon` still applies.
 
 ## Structured Formats
 

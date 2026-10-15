@@ -591,7 +591,7 @@ def test_listings(test_session, tmp_dir):
         for n in dc.datasets(session=test_session).to_values("name")
     )
 
-    listings = list(dc.listings(session=test_session).to_values("listing"))
+    listings = list(dc.listing_datasets(session=test_session).to_values("listing"))
     assert len(listings) == 1
     listing = listings[0]
     assert isinstance(listing, ListingInfo)
@@ -613,13 +613,17 @@ def test_listings_reindex(test_session, tmp_dir):
     uri = tmp_dir.as_uri()
 
     dc.read_storage(uri, session=test_session).exec()
-    assert len(list(dc.listings(session=test_session).to_values("listing"))) == 1
+    assert (
+        len(list(dc.listing_datasets(session=test_session).to_values("listing"))) == 1
+    )
 
     dc.read_storage(uri, session=test_session).exec()
-    assert len(list(dc.listings(session=test_session).to_values("listing"))) == 1
+    assert (
+        len(list(dc.listing_datasets(session=test_session).to_values("listing"))) == 1
+    )
 
     dc.read_storage(uri, session=test_session, update=True).exec()
-    listings = list(dc.listings(session=test_session).to_values("listing"))
+    listings = list(dc.listing_datasets(session=test_session).to_values("listing"))
     assert len(listings) == 1
     assert listings[0].uri.rstrip("/") == uri
     assert listings[0].version == "1.0.0"

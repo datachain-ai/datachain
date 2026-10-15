@@ -1,9 +1,12 @@
+import itertools
+import json
 import os
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from functools import reduce
 from typing import TYPE_CHECKING
 
 from datachain.client import Client
+from datachain.lib.convert.unflatten import unflatten_to_json
 from datachain.lib.dc.storage_pattern import (
     apply_glob_filter,
     expand_brace_pattern,
@@ -11,17 +14,27 @@ from datachain.lib.dc.storage_pattern import (
     split_uri_pattern,
     validate_cloud_bucket_name,
 )
-from datachain.lib.file import FileType, get_file_type
+from datachain.lib.file import File, FileRow, FileType, get_file_type
 from datachain.lib.listing import (
     LISTING_BATCH_SIZE,
+    file_row,
     get_file_info,
     get_listing,
     list_bucket,
+    list_pages,
     ls,
+    names_object,
+    parse_listing_uri,
 )
 from datachain.query import Session
+from datachain.utils import uses_glob
 
 if TYPE_CHECKING:
+    import pandas as pd
+    import pyarrow as pa
+
+    from datachain.catalog import Catalog
+
     from .datachain import DataChain
 
 
@@ -89,8 +102,12 @@ def read_storage(  # noqa: PLR0913
     delta_unsafe: bool = False,
     client_config: dict | None = None,
 ) -> "DataChain":
-    """Get data from storage(s) as a list of file with all file attributes.
-    It returns the chain itself as usual.
+    """A chain of the files of storage(s), over a saved snapshot of a listing.
+
+    A saved listing of the URI, or of a prefix above it, younger than 4 hours
+    is reused; otherwise the storage is listed and saved, as
+    `dc.listing(uri).save()` does. The chain holds current objects. To list a
+    storage without saving it, use `dc.listing()`.
 
     Parameters:
         uri: Storage path(s) or URI(s). Can be a local path or start with a
@@ -104,9 +121,12 @@ def read_storage(  # noqa: PLR0913
         type: read file as "binary", "text", or "image" data. Default is "binary".
         recursive: search recursively for the given path.
         column: Column name that will contain File objects. Default is "file".
-        update: force storage reindexing. Default is False.
+        update: list the storage again instead of reusing a saved listing.
+            Default is False.
         anon: If True, we will treat cloud bucket as public one.
-        versions: If False, list only current objects, without versions.
+        versions: If False, list only current objects, without versions. If
+            True, the snapshot keeps every version; the chain holds current
+            objects either way.
         client_config: Optional client configuration for the storage client.
         delta: If True, only process new or changed files instead of reprocessing
             everything. This saves time by skipping files that were already processed in
@@ -176,16 +196,39 @@ def read_storage(  # noqa: PLR0913
         )
         ```
     """
-    from .datasets import read_dataset
-    from .records import create_records_dataset, read_records
-
-    file_type = get_file_type(type)
-
     uris = uri if isinstance(uri, (list, tuple)) else [uri]
-
     if not uris:
         raise ValueError("No URIs provided")
+    session, client_config = _storage_session(
+        uris, session, anon, client_config, in_memory, versions
+    )
+    return _read_storage(
+        uris,
+        session,
+        client_config,
+        type=type,
+        settings=settings,
+        in_memory=in_memory,
+        recursive=recursive,
+        column=column,
+        update=update,
+        versions=versions,
+        delta=delta,
+        delta_on=delta_on,
+        delta_result_on=delta_result_on,
+        delta_compare=delta_compare,
+        delta_retry=delta_retry,
+        delta_unsafe=delta_unsafe,
+    )
 
+
+def _resolve_anon(
+    uris: Sequence,
+    session: Session | None,
+    anon: bool | None,
+    client_config: dict | None,
+) -> bool | None:
+    """``anon``, or True when every bucket is public and has no credentials."""
     for single_uri in uris:
         validate_cloud_bucket_name(str(single_uri))
 
@@ -198,21 +241,73 @@ def read_storage(  # noqa: PLR0913
         and not _backends_have_credentials(uris, probe_config)
         and _all_buckets_anonymous(uris, probe_config)
     ):
-        anon = True
+        return True
+    return anon
 
+
+def _listing_config(config: dict, anon: bool | None, versions: bool) -> dict:
+    if anon is not None:
+        config = config | {"anon": anon}
+    if not versions:
+        config = config | {"version_aware": False}
+    return config
+
+
+def _storage_session(
+    uris: Sequence,
+    session: Session | None,
+    anon: bool | None,
+    client_config: dict | None,
+    in_memory: bool,
+    versions: bool,
+) -> tuple[Session, dict]:
+    """The session and the client config to list ``uris`` with."""
+    anon = _resolve_anon(uris, session, anon, client_config)
     if anon is not None:
         client_config = (client_config or {}) | {"anon": anon}
     session = Session.get(session, client_config=client_config, in_memory=in_memory)
+    # Session.get discards our client_config when an existing session is
+    # passed, so anon is applied again without mutating the caller's session.
+    return session, _listing_config(session.catalog.client_config, anon, versions)
+
+
+def _session_client_config(session: Session | None, client_config: dict | None) -> dict:
+    """The client config ``Session.get`` would use, without creating a session."""
+    if session is None and not client_config:
+        if Session.SESSION_CONTEXTS:
+            session = Session.SESSION_CONTEXTS[-1]
+        else:
+            session = Session.GLOBAL_SESSION_CTX
+    if session is not None:
+        return session.catalog.client_config
+    return client_config or {}
+
+
+def _read_storage(
+    uris: Sequence,
+    session: Session,
+    client_config: dict,
+    *,
+    type: FileType = "binary",
+    settings: dict | None = None,
+    in_memory: bool = False,
+    recursive: bool | None = True,
+    column: str = "file",
+    update: bool = False,
+    versions: bool = True,
+    delta: bool | None = False,
+    delta_on: str | Sequence[str] | None = None,
+    delta_result_on: str | Sequence[str] | None = None,
+    delta_compare: str | Sequence[str] | None = None,
+    delta_retry: bool | str | None = None,
+    delta_unsafe: bool = False,
+) -> "DataChain":
+    from .datasets import read_dataset
+    from .records import read_records
+
+    file_type = get_file_type(type)
     catalog = session.catalog
     cache = catalog.cache
-    client_config = session.catalog.client_config
-    if anon is not None:
-        # Session.get discards our client_config when an existing session is
-        # passed. Re-apply anon locally for the listing path without mutating
-        # the caller's session.
-        client_config = client_config | {"anon": anon}
-    if not versions:
-        client_config = client_config | {"version_aware": False}
     listing_namespace_name = catalog.metastore.system_namespace_name
     listing_project_name = catalog.metastore.listing_project_name
 
@@ -271,37 +366,18 @@ def read_storage(  # noqa: PLR0913
         dc._query.update = update
         dc.signals_schema = dc.signals_schema.mutate({f"{column}": file_type})
 
-        def lst_fn(ds_name, lst_uri):
-            # Seed for .gen() iteration. content_hash=None because hash_callable
-            # doesn't capture list_func's closure (which holds `lst_uri`, `cache`,
-            # `client_config`) -- auto-hashing the seed would let the UDF
-            # checkpoint cache return a stale listing across URIs/runs.
-            (
-                create_records_dataset(
-                    [{"seed": 0}],
-                    schema={"seed": int},
-                    content_hash=None,
-                    session=session,
-                    settings=settings,
-                    in_memory=in_memory,
-                )
-                .settings(
-                    prefetch=0,
-                    batch_size=(settings or {}).get("batch_size", LISTING_BATCH_SIZE),
-                    namespace=listing_namespace_name,
-                    project=listing_project_name,
-                )
-                .gen(
-                    list_bucket(lst_uri, cache, client_config=client_config),
-                    output={f"{column}": file_type},
-                )
-                # for internal listing datasets, we always bump major version
-                .save(ds_name, listing=True, update_version="major")
-            )
-
+        lst = Listing(
+            list_uri, versions=versions, client_config=client_config, session=session
+        )
         # Always attach listing_fn so resolve_listing can refresh stale listings.
         dc._query.set_listing_fn(
-            lambda ds_name=list_ds_name, lst_uri=list_uri: lst_fn(ds_name, lst_uri)
+            lambda ds_name=list_ds_name, lst=lst: lst._write(
+                ds_name,
+                column=column,
+                file_type=file_type,
+                settings=settings,
+                in_memory=in_memory,
+            )
         )
 
         # If a glob pattern was detected, use it for filtering
@@ -343,3 +419,279 @@ def read_storage(  # noqa: PLR0913
     assert storage_chain is not None
 
     return storage_chain
+
+
+def listing(
+    uri: str | os.PathLike[str],
+    *,
+    versions: bool = True,
+    anon: bool | None = None,
+    client_config: dict | None = None,
+    session: Session | None = None,
+    in_memory: bool = False,
+) -> "Listing":
+    """List a storage: the objects of a bucket, a prefix or a single object.
+
+    The listing yields one row per object, of `dc.FileRow`: named tuples
+    with `File`'s columns (`f.path`, `f.size`, `f.etag`, `f.last_modified`, ...)
+    that also take `File`'s attributes (`f.name`, `f.get_file_ext()`).
+    `to_objects()` returns `File` objects that read files, and `save()` saves the
+    listing as the snapshot `read_storage` returns.
+
+    A listing is listed once: iterate it or call one `to_*` method or `save()`.
+    Call `dc.listing()` again to list the storage again.
+
+    Parameters:
+        uri: A bucket, a prefix or a single object, such as `s3://bucket/dir/`
+            or a local path. Globs and lists of URIs are for `read_storage`.
+        versions: If True, the default as in `read_storage`, list every version
+            of a versioned bucket, the current one with `is_latest`, so counts
+            and sums include old versions. If False, list current objects
+            only, which is faster.
+        anon: If True, treat the bucket as public. If None, a bucket that
+            needs no credentials is detected.
+        client_config: Optional client configuration for the storage client.
+            Ignored when `session` is passed.
+        session: A session to take the client configuration from, and where
+            `save()` saves the snapshot. Listing itself needs no session;
+            `save()` uses the active or the default session if none is passed.
+        in_memory: Keep the session `save()` creates in memory.
+
+    Returns:
+        Listing: The listing of `uri`.
+
+    Example:
+        ```py
+        import datachain as dc
+
+        uri = "s3://my-bucket/dir/"
+        total = sum(f.size for f in dc.listing(uri))
+        images = dc.listing(uri).to_objects(type="image")  # ImageFile objects
+        table = dc.listing(uri).to_arrow()
+        chain = dc.listing(uri).save()  # the snapshot read_storage(uri) reuses
+        ```
+
+        On a versioned bucket, current objects only:
+        ```py
+        total = sum(f.size for f in dc.listing(uri, versions=False))
+        ```
+    """
+    if isinstance(uri, (list, tuple)):
+        raise TypeError("listing() takes one URI; use read_storage() for several")
+    uri = os.fspath(uri)
+    if uses_glob(uri) or expand_brace_pattern(uri) != [uri]:
+        raise ValueError(
+            f"listing() does not take glob patterns, got {uri!r}; "
+            "use read_storage() to filter a listing with a glob"
+        )
+    anon = _resolve_anon([uri], session, anon, client_config)
+    if anon is not None:
+        client_config = (client_config or {}) | {"anon": anon}
+    config = _session_client_config(session, client_config)
+    return Listing(
+        uri,
+        versions=versions,
+        client_config=_listing_config(config, anon, versions),
+        session=session,
+        session_config=client_config,
+        in_memory=in_memory,
+    )
+
+
+class Listing:
+    """One listing of a storage URI, created by `dc.listing()`.
+
+    It is listed once: iterate over it for `dc.FileRow` rows, or call one
+    of `to_list()`, `to_objects()`, `to_arrow()`, `to_pandas()` and `save()`.
+    """
+
+    def __init__(
+        self,
+        uri: str,
+        *,
+        versions: bool,
+        client_config: dict,
+        session: Session | None = None,
+        session_config: dict | None = None,
+        in_memory: bool = False,
+    ) -> None:
+        """Use `dc.listing()` to create a listing."""
+        self.uri = uri
+        self.versions = versions
+        self.client_config = client_config
+        self._session = session
+        self._session_config = session_config
+        self._in_memory = in_memory
+        self._listed = False
+
+    @property
+    def session(self) -> Session:
+        """The session `save()` writes with, created on first use."""
+        if self._session is None:
+            self._session = Session.get(
+                client_config=self._session_config, in_memory=self._in_memory
+            )
+        return self._session
+
+    def __repr__(self) -> str:  # noqa: D105
+        return f"Listing({self.uri!r}, versions={self.versions})"
+
+    def __iter__(self) -> Iterator[tuple]:
+        """List the storage, yielding `dc.FileRow` rows."""
+        return itertools.chain.from_iterable(self._list())
+
+    def _list(self) -> Iterator[Sequence[tuple]]:
+        self._mark_listed()
+        return self._pages()
+
+    def _mark_listed(self) -> None:
+        if self._listed:
+            raise RuntimeError(
+                f"{self!r} is already listed; call dc.listing() to list it again"
+            )
+        self._listed = True
+
+    def _pages(self) -> Iterator[Sequence[tuple]]:
+        cache = self._session.catalog.cache if self._session else None
+        client = Client.get_client(self.uri, cache, **self.client_config)  # type: ignore[arg-type]
+        if names_object(client, self.uri):
+            yield [file_row(get_file_info(self.uri, cache, self.client_config))]
+            return
+        _, list_uri, _ = parse_listing_uri(self.uri)
+        yield from list_pages(list_uri, cache, self.client_config)
+
+    def to_list(self) -> list[tuple]:
+        """List the storage into a list of `dc.FileRow` rows."""
+        return list(self)
+
+    def to_objects(self, type: FileType = "binary") -> list[File]:
+        """List the storage into `File` objects that read files with this
+        listing's client config.
+
+        Parameters:
+            type: "binary", "text", "image", "video" or "audio", as in
+                `read_storage`, for `File`, `TextFile`, `ImageFile`, ...
+        """
+        file_type = get_file_type(type)
+        catalog = self._file_catalog()
+        files = []
+        for row in self:
+            file = file_type(**unflatten_to_json(File, row))
+            file._set_stream(catalog)
+            files.append(file)
+        return files
+
+    def _file_catalog(self) -> "Catalog":
+        from datachain.catalog import Catalog
+
+        if self._session is None:
+            catalog = Catalog(None, None)  # type: ignore[arg-type]
+        else:
+            catalog = self._session.catalog.copy(db=False)
+        catalog.client_config = self.client_config
+        return catalog
+
+    def to_arrow(self) -> "pa.Table":
+        """List the storage into a `pyarrow.Table` with `File`'s columns.
+
+        `location` holds JSON text.
+        """
+        import pyarrow as pa
+
+        schema = _arrow_schema()
+        batches = (_record_batch(page, schema) for page in self._list() if page)
+        return pa.Table.from_batches(batches, schema=schema)
+
+    def to_pandas(self) -> "pd.DataFrame":
+        """List the storage into a `pandas.DataFrame` with `File`'s columns."""
+        return self.to_arrow().to_pandas()
+
+    def save(self, settings: dict | None = None) -> "DataChain":
+        """List the storage and save the listing as its snapshot, the listing
+        dataset `read_storage` reads, replacing an older one.
+
+        Returns:
+            DataChain: The chain `read_storage` returns for this URI.
+        """
+        self._mark_listed()
+        chain = _read_storage(
+            [self.uri],
+            self.session,
+            self.client_config,
+            settings=settings,
+            in_memory=self._in_memory,
+            update=True,
+            versions=self.versions,
+        )
+        chain._query.resolve_listing()
+        chain._query.update = False
+        return chain
+
+    def _write(
+        self,
+        ds_name: str,
+        *,
+        column: str = "file",
+        file_type: type[File] = File,
+        settings: dict | None = None,
+        in_memory: bool = False,
+    ) -> None:
+        """Store the listing of a prefix as the listing dataset ``ds_name``."""
+        from .records import create_records_dataset
+
+        namespace = self.session.catalog.metastore.system_namespace_name
+        project = self.session.catalog.metastore.listing_project_name
+        list_func = list_bucket(
+            self.uri, self.session.catalog.cache, client_config=self.client_config
+        )
+        # content_hash=None because hash_callable doesn't capture list_func's
+        # closure (which holds the URI and the client config) -- auto-hashing
+        # the seed would let the UDF checkpoint cache return a stale listing
+        # across URIs/runs.
+        (
+            create_records_dataset(
+                [{"seed": 0}],
+                schema={"seed": int},
+                content_hash=None,
+                session=self.session,
+                settings=settings,
+                in_memory=in_memory,
+            )
+            .settings(
+                prefetch=0,
+                batch_size=(settings or {}).get("batch_size", LISTING_BATCH_SIZE),
+                namespace=namespace,
+                project=project,
+            )
+            .gen(list_func, output={column: file_type})
+            # for internal listing datasets, we always bump major version
+            .save(ds_name, listing=True, update_version="major")
+        )
+
+
+def _arrow_schema() -> "pa.Schema":
+    import pyarrow as pa
+
+    types = {
+        "source": pa.string(),
+        "path": pa.string(),
+        "size": pa.int64(),
+        "version": pa.string(),
+        "etag": pa.string(),
+        "is_latest": pa.bool_(),
+        "last_modified": pa.timestamp("us", tz="UTC"),
+        "location": pa.string(),
+    }
+    return pa.schema([(name, types[name]) for name in FileRow._fields])
+
+
+def _record_batch(page: Sequence[tuple], schema: "pa.Schema") -> "pa.RecordBatch":
+    import pyarrow as pa
+
+    columns = list(zip(*page, strict=True))
+    loc = schema.get_field_index("location")
+    columns[loc] = tuple(None if v is None else json.dumps(v) for v in columns[loc])
+    return pa.RecordBatch.from_arrays(
+        [pa.array(col, type=t) for col, t in zip(columns, schema.types, strict=True)],
+        schema=schema,
+    )

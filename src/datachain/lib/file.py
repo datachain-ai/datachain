@@ -1178,6 +1178,12 @@ class FileRow(NamedTuple):
     last_modified: datetime = TIME_ZERO
     location: dict | list[dict] | None = None
 
+    def __getattr__(self, name: str) -> Any:
+        """What a row lacks comes from the ``File`` built from it."""
+        if name.startswith("_") or not hasattr(File, name):
+            raise AttributeError(f"'FileRow' object has no attribute '{name}'")
+        return getattr(File(**self._asdict()), name)
+
 
 class TextFile(File):
     """`DataModel` for reading text files."""

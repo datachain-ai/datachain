@@ -59,12 +59,12 @@ from .dependency import build_dependency_hierarchy, populate_nested_dependencies
 if TYPE_CHECKING:
     import pandas as pd
 
+    from datachain.catalog.listing import Listing
     from datachain.data_storage import AbstractMetastore, AbstractWarehouse
     from datachain.dataset import DatasetListVersion
     from datachain.job import Job
     from datachain.lib.dc.datachain import DataChain
     from datachain.lib.listing_info import ListingInfo
-    from datachain.listing import Listing
     from datachain.remote.studio import StudioClient
 
 logger = logging.getLogger("datachain")
@@ -587,7 +587,7 @@ class Catalog:
         skip_indexing=False,
     ) -> tuple["Listing | None", Client, str]:
         from datachain import read_storage
-        from datachain.listing import Listing
+        from datachain.catalog.listing import Listing
 
         read_storage(source, session=self.session, update=update, column=column).exec()
 
@@ -659,7 +659,7 @@ class Catalog:
         no_glob: bool = False,
         client_config=None,
     ) -> list[NodeGroup]:
-        from datachain.listing import Listing
+        from datachain.catalog.listing import Listing
         from datachain.query.dataset import DatasetQuery
 
         def _row_to_node(d: dict[str, Any]) -> Node:

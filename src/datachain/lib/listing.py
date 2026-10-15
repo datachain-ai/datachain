@@ -3,7 +3,7 @@ import logging
 import os
 import posixpath
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, TypeVar
@@ -15,7 +15,8 @@ import datachain.fs.utils as fsutils
 from datachain.asyn import iter_over_async
 from datachain.client import Client
 from datachain.error import ClientError
-from datachain.lib.file import File
+from datachain.lib.convert.flatten import flatten
+from datachain.lib.file import File, FileRow
 from datachain.query.schema import C, Column
 from datachain.sql.functions import path as pathfunc
 from datachain.utils import uses_glob
@@ -85,19 +86,26 @@ def listing_dataset_expired(lst_ds) -> bool:
     return datetime.now(UTC) > expires
 
 
-def list_bucket(uri: str, cache, client_config=None) -> Callable:
-    """
-    Function that returns another generator function that yields File objects
-    from bucket where each File represents one bucket entry.
-    """
+def list_pages(uri: str, cache, client_config=None) -> Iterator[Sequence[tuple]]:
+    """Pages of ``FileRow`` rows of every object under the ``uri`` prefix."""
+    config = client_config or {}
+    client = Client.get_client(uri, cache, **config)  # type: ignore[arg-type]
+    _, path = Client.parse_url(uri)
+    pages = client.scandir(path.rstrip("/"), processes=True)
+    for page in iter_over_async(pages, get_loop()):
+        yield [*map(file_row, page)] if page and isinstance(page[0], File) else page
 
-    def list_func() -> Iterator[File]:  # also FileRow rows
-        config = client_config or {}
-        client = Client.get_client(uri, cache, **config)  # type: ignore[arg-type]
-        _, path = Client.parse_url(uri)
-        pages = client.scandir(path.rstrip("/"), processes=True)
-        for entries in iter_over_async(pages, get_loop()):
-            yield from entries
+
+def file_row(file: File) -> FileRow:
+    return FileRow(*flatten(file))
+
+
+def list_bucket(uri: str, cache, client_config=None) -> Callable:
+    """A generator function, for ``gen()``, of the rows of ``list_pages``."""
+
+    def list_func() -> Iterator[File]:  # FileRow rows
+        for page in list_pages(uri, cache, client_config):
+            yield from page  # type: ignore[misc]
 
     list_func.__name__ = "read_storage"
 
@@ -270,6 +278,12 @@ def _reraise_as_client_error() -> Iterator[None]:
         raise ClientError(message=str(e), error_code=getattr(e, "code", None)) from e
 
 
+def names_object(client: Client, uri: str) -> bool:
+    """True if ``uri`` names a single object rather than a prefix or a glob."""
+    isfile = _reraise_as_client_error()(fsutils.isfile)
+    return not glob.has_magic(uri) and not uri.endswith("/") and isfile(client.fs, uri)
+
+
 def get_listing(
     uri: str | os.PathLike[str],
     session: "Session",
@@ -298,8 +312,7 @@ def get_listing(
         uri = os.fspath(uri)
 
     # we don't want to use cached dataset (e.g. for a single file listing)
-    isfile = _reraise_as_client_error()(fsutils.isfile)
-    if not glob.has_magic(uri) and not uri.endswith("/") and isfile(client.fs, uri):
+    if names_object(client, uri):
         _, path = Client.parse_url(uri)
         return None, uri, path, False
 

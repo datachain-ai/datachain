@@ -22,7 +22,7 @@ def test_listing_dataset_lifecycle(tmp_path, catalog):
     dataset = catalog.get_dataset(ds_name)
     assert dataset is not None
 
-    assert dc.listings(catalog=catalog).count() == 1
+    assert dc.listing_datasets(catalog=catalog).count() == 1
 
     # Cleanup for test
     catalog.remove_dataset(ds_name, force=True)
