@@ -229,9 +229,7 @@ def _resolve_anon(
     for single_uri in uris:
         validate_cloud_bucket_name(str(single_uri))
 
-    probe_config = client_config or (
-        session.catalog.client_config if session is not None else None
-    )
+    probe_config = client_config or _session_client_config(session, None)
 
     if (
         anon is None
@@ -260,12 +258,20 @@ def _storage_session(
 ) -> tuple[Session, dict]:
     """The session and the client config to list ``uris`` with."""
     anon = _resolve_anon(uris, session, anon, client_config)
-    if anon is not None:
-        client_config = (client_config or {}) | {"anon": anon}
+    client_config = _with_anon(session, anon, client_config)
     session = Session.get(session, client_config=client_config, in_memory=in_memory)
     # Session.get discards our client_config when an existing session is
     # passed, so anon is applied again without mutating the caller's session.
     return session, _listing_config(session.catalog.client_config, anon, versions)
+
+
+def _with_anon(
+    session: Session | None, anon: bool | None, client_config: dict | None
+) -> dict | None:
+    """``client_config``, or the active session's, with ``anon`` set."""
+    if anon is None:
+        return client_config
+    return (client_config or _session_client_config(session, None)) | {"anon": anon}
 
 
 def _session_client_config(session: Session | None, client_config: dict | None) -> dict:
@@ -418,7 +424,8 @@ def listing(
         versions: If True, the default as in `read_storage`, list every version
             of a versioned bucket, the current one with `is_latest`, so counts
             and sums include old versions. If False, list current objects
-            only, which is faster.
+            only, which is faster. A URI of a single object gives its current
+            version either way.
         anon: If True, treat the bucket as public. If None, a bucket that
             needs no credentials is detected.
         client_config: Optional client configuration for the storage client.
@@ -451,8 +458,7 @@ def listing(
     if not uris:
         raise ValueError("No URIs provided")
     anon = _resolve_anon(uris, session, anon, client_config)
-    if anon is not None:
-        client_config = (client_config or {}) | {"anon": anon}
+    client_config = _with_anon(session, anon, client_config)
     config = _session_client_config(session, client_config)
     return Listing(
         uris,
@@ -549,10 +555,12 @@ class Listing:
                 sources.append((uri, None))
                 continue
             _, list_uri, list_path = described
-            # the listing of a prefix holds only paths under it
+            # the listing of a prefix holds only paths under it, so a recursive
+            # filter by that same prefix selects them all
+            whole = list_path == Client.parse_url(list_uri)[1]
             paths = (
                 None
-                if pattern is None and self.recursive
+                if pattern is None and self.recursive and whole
                 else path_filter(list_path, pattern, self.recursive)
             )
             if list_uri not in groups:

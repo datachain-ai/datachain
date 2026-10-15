@@ -45,7 +45,7 @@ dc.listing("s3://versioned-bucket/data/", versions=False).save()
 chain = dc.read_storage("s3://versioned-bucket/data/", versions=False)  # reuses it
 ```
 
-Buckets without versioning, local files and HTTP storages have one kind of listing, and `versions` changes nothing there.
+A URI of a single object gives its current version either way. Buckets without versioning, local files and HTTP storages have one kind of listing, and `versions` changes nothing there.
 
 ### Saving a Storage Snapshot
 

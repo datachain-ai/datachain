@@ -1,4 +1,5 @@
 import posixpath
+from contextlib import closing
 
 import pytest
 
@@ -478,10 +479,10 @@ _GLOB_PATHS = [
 def test_glob_match_is_sqlite_glob(pattern):
     import sqlite3
 
-    conn = sqlite3.connect(":memory:")
-    for path in _GLOB_PATHS:
-        (expected,) = conn.execute("SELECT ? GLOB ?", (path, pattern)).fetchone()
-        assert glob_match(path, pattern) == bool(expected), (path, pattern)
+    with closing(sqlite3.connect(":memory:")) as conn:
+        for path in _GLOB_PATHS:
+            (expected,) = conn.execute("SELECT ? GLOB ?", (path, pattern)).fetchone()
+            assert glob_match(path, pattern) == bool(expected), (path, pattern)
 
 
 @pytest.mark.parametrize(
@@ -510,12 +511,12 @@ def test_glob_match_is_sqlite_glob_on_random_patterns():
     import sqlite3
 
     rng = random.Random(0)  # noqa: S311
-    conn = sqlite3.connect(":memory:")
-    for _ in range(3000):
-        pattern = "".join(rng.choices("ab-]^[*?/!", k=rng.randint(0, 7)))
-        path = "".join(rng.choices("ab-]^[/!", k=rng.randint(0, 5)))
-        (expected,) = conn.execute("SELECT ? GLOB ?", (path, pattern)).fetchone()
-        assert glob_match(path, pattern) == bool(expected), (path, pattern)
+    with closing(sqlite3.connect(":memory:")) as conn:
+        for _ in range(3000):
+            pattern = "".join(rng.choices("ab-]^[*?/!", k=rng.randint(0, 7)))
+            path = "".join(rng.choices("ab-]^[/!", k=rng.randint(0, 5)))
+            (expected,) = conn.execute("SELECT ? GLOB ?", (path, pattern)).fetchone()
+            assert glob_match(path, pattern) == bool(expected), (path, pattern)
 
 
 @pytest.mark.parametrize(
