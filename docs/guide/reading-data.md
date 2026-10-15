@@ -8,7 +8,7 @@ DataChain reads data from many sources and formats through a family of `read_*` 
 
 ## Storage Files
 
-Two functions read a storage. `dc.listing()` lists it: the objects of a bucket, a prefix or a single object, as rows to iterate, collect or turn into a table. `dc.read_storage()` lists it and saves the listing as a dataset: a snapshot of the storage that chains filter, process and join, that later runs reuse, and that records which files a result was computed from. Always include a trailing slash in bucket and prefix URIs.
+Two functions read a storage. `dc.listing()` lists it: the objects of buckets, prefixes or single objects, as rows to iterate, collect or turn into a table. `dc.read_storage()` lists it and saves the listing as a dataset: a snapshot of the storage that chains filter, process and join, that later runs reuse, and that records which files a result was computed from. Both take the same URIs: one or a list, with glob patterns (`*`, `**`, `?`, `{a,b}`, `{1..9}`) and `recursive=False` for the first level only. Always include a trailing slash in bucket and prefix URIs.
 
 ### Listing a Storage
 
@@ -16,6 +16,7 @@ Two functions read a storage. `dc.listing()` lists it: the objects of a bucket, 
 import datachain as dc
 
 total = sum(f.size for f in dc.listing("s3://bucket/episodes/"))
+images = dc.listing("s3://bucket/images/**/*.{jpg,png}").to_objects(type="image")
 ```
 
 Rows have `File`'s columns (`f.path`, `f.size`, `f.etag`, `f.last_modified`, ...) and attributes such as `f.name` and `f.get_file_ext()`. A listing is listed once: iterate it, or take it whole with one of
@@ -48,7 +49,7 @@ Buckets without versioning, local files and HTTP storages have one kind of listi
 
 ### Saving a Storage Snapshot
 
-`read_storage()` returns a chain of `File` objects over a saved listing. A saved listing of the URI, or of a prefix above it, younger than 4 hours is reused; otherwise the storage is listed and saved, and `update=True` lists it again. It takes globs and several URIs, filters the snapshot by them, and returns current objects; `versions=True` (the default) keeps every version in the snapshot.
+`read_storage()` returns a chain of `File` objects over a saved listing. A saved listing of the URI, or of a prefix above it, younger than 4 hours is reused; otherwise the storage is listed and saved, and `update=True` lists it again. A glob lists its base, the part before the first pattern, and filters the snapshot by it; the chain holds current objects, and `versions=True` (the default) keeps every version in the snapshot.
 
 ```python
 images = dc.read_storage("s3://bucket/images/**/*.jpg", type="image")

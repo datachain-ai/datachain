@@ -8,9 +8,8 @@ from typing import TYPE_CHECKING
 from datachain.client import Client
 from datachain.lib.convert.unflatten import unflatten_to_json
 from datachain.lib.dc.storage_pattern import (
-    apply_glob_filter,
     expand_brace_pattern,
-    should_use_recursion,
+    path_filter,
     split_uri_pattern,
     validate_cloud_bucket_name,
 )
@@ -22,18 +21,18 @@ from datachain.lib.listing import (
     get_listing,
     list_bucket,
     list_pages,
-    ls,
     names_object,
     parse_listing_uri,
+    select_paths,
 )
 from datachain.query import Session
-from datachain.utils import uses_glob
 
 if TYPE_CHECKING:
     import pandas as pd
     import pyarrow as pa
 
     from datachain.catalog import Catalog
+    from datachain.lib.listing import PathFilter
 
     from .datachain import DataChain
 
@@ -380,20 +379,9 @@ def _read_storage(
             )
         )
 
-        # If a glob pattern was detected, use it for filtering
-        # Otherwise, use the original list_path from get_listing
-        if glob_pattern:
-            # Determine if we should use recursive listing based on the pattern
-            use_recursive = should_use_recursion(glob_pattern, recursive or False)
-
-            # Apply glob filter - no need for brace expansion here as it's done above
-            chain = apply_glob_filter(
-                dc, glob_pattern, list_path, use_recursive, column
-            )
-            chains.append(chain)
-        else:
-            # No glob pattern detected, use normal ls behavior
-            chains.append(ls(dc, list_path, recursive=recursive, column=column))
+        chains.append(
+            select_paths(dc, path_filter(list_path, glob_pattern, recursive), column)
+        )
 
         listed_ds_name.add(list_ds_name)
 
@@ -422,15 +410,16 @@ def _read_storage(
 
 
 def listing(
-    uri: str | os.PathLike[str],
+    uri: str | os.PathLike[str] | list[str] | list[os.PathLike[str]],
     *,
+    recursive: bool | None = True,
     versions: bool = True,
     anon: bool | None = None,
     client_config: dict | None = None,
     session: Session | None = None,
     in_memory: bool = False,
 ) -> "Listing":
-    """List a storage: the objects of a bucket, a prefix or a single object.
+    """List a storage: the objects of buckets, prefixes or objects.
 
     The listing yields one row per object, of `dc.FileRow`: named tuples
     with `File`'s columns (`f.path`, `f.size`, `f.etag`, `f.last_modified`, ...)
@@ -442,8 +431,10 @@ def listing(
     Call `dc.listing()` again to list the storage again.
 
     Parameters:
-        uri: A bucket, a prefix or a single object, such as `s3://bucket/dir/`
-            or a local path. Globs and lists of URIs are for `read_storage`.
+        uri: Storage path(s) or URI(s), as in `read_storage`: buckets, prefixes
+            or objects, with glob patterns (`*`, `**`, `?`, `{a,b}`, `{1..9}`).
+        recursive: List recursively; if False, only the first level under a
+            prefix.
         versions: If True, the default as in `read_storage`, list every version
             of a versioned bucket, the current one with `is_latest`, so counts
             and sums include old versions. If False, list current objects
@@ -476,20 +467,16 @@ def listing(
         total = sum(f.size for f in dc.listing(uri, versions=False))
         ```
     """
-    if isinstance(uri, (list, tuple)):
-        raise TypeError("listing() takes one URI; use read_storage() for several")
-    uri = os.fspath(uri)
-    if uses_glob(uri) or expand_brace_pattern(uri) != [uri]:
-        raise ValueError(
-            f"listing() does not take glob patterns, got {uri!r}; "
-            "use read_storage() to filter a listing with a glob"
-        )
-    anon = _resolve_anon([uri], session, anon, client_config)
+    uris = [os.fspath(u) for u in (uri if isinstance(uri, (list, tuple)) else [uri])]
+    if not uris:
+        raise ValueError("No URIs provided")
+    anon = _resolve_anon(uris, session, anon, client_config)
     if anon is not None:
         client_config = (client_config or {}) | {"anon": anon}
     config = _session_client_config(session, client_config)
     return Listing(
-        uri,
+        uris,
+        recursive=recursive,
         versions=versions,
         client_config=_listing_config(config, anon, versions),
         session=session,
@@ -507,8 +494,9 @@ class Listing:
 
     def __init__(
         self,
-        uri: str,
+        uri: str | list[str],
         *,
+        recursive: bool | None = True,
         versions: bool,
         client_config: dict,
         session: Session | None = None,
@@ -517,6 +505,8 @@ class Listing:
     ) -> None:
         """Use `dc.listing()` to create a listing."""
         self.uri = uri
+        self.uris = uri if isinstance(uri, list) else [uri]
+        self.recursive = recursive
         self.versions = versions
         self.client_config = client_config
         self._session = session
@@ -553,12 +543,44 @@ class Listing:
 
     def _pages(self) -> Iterator[Sequence[tuple]]:
         cache = self._session.catalog.cache if self._session else None
-        client = Client.get_client(self.uri, cache, **self.client_config)  # type: ignore[arg-type]
-        if names_object(client, self.uri):
-            yield [file_row(get_file_info(self.uri, cache, self.client_config))]
-            return
-        _, list_uri, _ = parse_listing_uri(self.uri)
-        yield from list_pages(list_uri, cache, self.client_config)
+        for list_uri, filters in self._sources(cache):
+            if filters is None:
+                info = get_file_info(list_uri, cache, self.client_config)
+                yield [file_row(info)]
+                continue
+            pages = list_pages(list_uri, cache, self.client_config)
+            if filters == [None]:
+                yield from pages
+                continue
+            for page in pages:
+                yield [r for r in page for f in filters if f is None or f(r[_PATH])]
+
+    def _sources(self, cache) -> list[tuple[str, "list[PathFilter | None] | None"]]:
+        """What to list, as ``read_storage`` lists it: each listing URI with the
+        filters of the URIs that share it (None selects all), or None for a
+        single object.
+        """
+        sources: list[tuple[str, list[PathFilter | None] | None]] = []
+        groups: dict[str, list[PathFilter | None]] = {}
+        for uri in itertools.chain.from_iterable(map(expand_brace_pattern, self.uris)):
+            base_uri, pattern = split_uri_pattern(uri)
+            list_uri = base_uri if pattern else uri
+            client = Client.get_client(list_uri, cache, **self.client_config)  # type: ignore[arg-type]
+            if names_object(client, list_uri):
+                sources.append((list_uri, None))
+                continue
+            _, list_uri, list_path = parse_listing_uri(list_uri)
+            # the listing of a prefix holds only paths under it
+            paths = (
+                None
+                if pattern is None and self.recursive
+                else path_filter(list_path, pattern, self.recursive)
+            )
+            if list_uri not in groups:
+                groups[list_uri] = []
+                sources.append((list_uri, groups[list_uri]))
+            groups[list_uri].append(paths)
+        return sources
 
     def to_list(self) -> list[tuple]:
         """List the storage into a list of `dc.FileRow` rows."""
@@ -615,15 +637,16 @@ class Listing:
         """
         self._mark_listed()
         chain = _read_storage(
-            [self.uri],
+            self.uris,
             self.session,
             self.client_config,
+            recursive=self.recursive,
             settings=settings,
             in_memory=self._in_memory,
             update=True,
             versions=self.versions,
         )
-        chain._query.resolve_listing()
+        chain._query.resolve_all_listings()
         chain._query.update = False
         return chain
 
@@ -642,7 +665,7 @@ class Listing:
         namespace = self.session.catalog.metastore.system_namespace_name
         project = self.session.catalog.metastore.listing_project_name
         list_func = list_bucket(
-            self.uri, self.session.catalog.cache, client_config=self.client_config
+            self.uris[0], self.session.catalog.cache, client_config=self.client_config
         )
         # content_hash=None because hash_callable doesn't capture list_func's
         # closure (which holds the URI and the client config) -- auto-hashing
@@ -667,6 +690,9 @@ class Listing:
             # for internal listing datasets, we always bump major version
             .save(ds_name, listing=True, update_version="major")
         )
+
+
+_PATH = FileRow._fields.index("path")
 
 
 def _arrow_schema() -> "pa.Schema":

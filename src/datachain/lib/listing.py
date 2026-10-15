@@ -1,3 +1,4 @@
+import functools
 import glob
 import logging
 import os
@@ -5,11 +6,12 @@ import posixpath
 import re
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, TypeVar
 
 from fsspec.asyn import get_loop
-from sqlalchemy.sql.expression import true
+from sqlalchemy.sql.expression import and_, or_, true
 
 import datachain.fs.utils as fsutils
 from datachain.asyn import iter_over_async
@@ -22,6 +24,8 @@ from datachain.sql.functions import path as pathfunc
 from datachain.utils import uses_glob
 
 if TYPE_CHECKING:
+    from sqlalchemy import ColumnElement
+
     from datachain.dataset import DatasetRecord
     from datachain.lib.dc import DataChain
     from datachain.query.session import Session
@@ -133,29 +137,111 @@ def ls(
     If recursive is set to False, only first level children will be returned by
     specified path
     """
+    return select_paths(dc, PathFilter.ls(path, recursive), column)
 
-    def _file_c(name: str) -> Column:
-        return Column(f"{column}.{name}")
 
-    dc = dc.filter(_file_c("is_latest") == true())
+def select_paths(dc: D, paths: "PathFilter", column: str = "file") -> D:
+    """The latest files of a listing chain whose paths ``paths`` selects."""
+    dc = dc.filter(Column(f"{column}.is_latest") == true())
+    condition = paths.sql(Column(f"{column}.path"))
+    return dc if condition is None else dc.filter(condition)
 
-    if recursive:
+
+@dataclass(frozen=True)
+class PathFilter:
+    """The paths of a listing that a URI selects: any of ``any_of`` and all of
+    ``all_of``, each an ``(op, value)`` with op ``eq``, ``glob`` or ``parent``.
+    ``read_storage`` applies it in SQL, ``dc.listing`` in Python."""
+
+    any_of: tuple[tuple[str, str], ...] = ()
+    all_of: tuple[tuple[str, str], ...] = ()
+
+    @classmethod
+    def ls(cls, path: str, recursive: bool | None) -> "PathFilter":
+        if not recursive:
+            return cls(any_of=(("parent", path.lstrip("/").rstrip("/*")),))
         if not path or path == "/":
-            # root of a bucket, returning all latest files from it
-            return dc
+            return cls()
+        if uses_glob(path):
+            return cls(any_of=(("glob", path),))
+        return cls(any_of=(("eq", path), ("glob", path.rstrip("/") + "/*")))
 
-        if not uses_glob(path):
-            # path is not glob, so it's pointing to some directory or a specific
-            # file and we are adding proper filter for it
-            return dc.filter(
-                (_file_c("path") == path)
-                | (_file_c("path").glob(path.rstrip("/") + "/*"))
-            )
+    def glob(self, pattern: str) -> "PathFilter":
+        return PathFilter(self.any_of, (*self.all_of, ("glob", pattern)))
 
-        # path has glob syntax so we are returning glob filter
-        return dc.filter(_file_c("path").glob(path))
-    # returning only first level children by path
-    return dc.filter(pathfunc.parent(_file_c("path")) == path.lstrip("/").rstrip("/*"))
+    def sql(self, path: Column) -> "ColumnElement | None":
+        def cond(op: str, value: str) -> "ColumnElement":
+            if op == "eq":
+                return path == value
+            if op == "glob":
+                return path.glob(value)
+            return pathfunc.parent(path) == value
+
+        any_of = [cond(*c) for c in self.any_of]
+        all_of = [cond(*c) for c in self.all_of]
+        if not any_of and not all_of:
+            return None
+        if all_of:
+            return and_(*([or_(*any_of)] if any_of else []), *all_of)
+        return or_(*any_of)
+
+    def __call__(self, path: str) -> bool:
+        def cond(op: str, value: str) -> bool:
+            if op == "eq":
+                return path == value
+            if op == "glob":
+                return glob_match(path, value)
+            return path.rstrip(path.replace("/", "")).rstrip("/") == value
+
+        return (not self.any_of or any(cond(*c) for c in self.any_of)) and all(
+            cond(*c) for c in self.all_of
+        )
+
+
+@functools.lru_cache(maxsize=256)
+def _glob_regex(pattern: str) -> "re.Pattern | None":
+    """SQLite's GLOB as a regex: ``*``, ``?`` and ``[...]`` sets, ``^`` negating;
+    None for an unclosed set, which matches nothing."""
+    out, i, n = [], 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        i += 1
+        if c == "*":
+            out.append(".*")
+        elif c == "?":
+            out.append(".")
+        elif c == "[":
+            negate = i < n and pattern[i] == "^"
+            j = i + negate
+            members, prior = [], None
+            if j < n and pattern[j] == "]":
+                members.append("\\]")
+                j += 1
+            while j < n and pattern[j] != "]":
+                c = pattern[j]
+                if c == "-" and prior and j + 1 < n and pattern[j + 1] != "]":
+                    if prior <= pattern[j + 1]:
+                        members.append(
+                            f"{re.escape(prior)}-{re.escape(pattern[j + 1])}"
+                        )
+                    prior = None
+                    j += 2
+                else:
+                    members.append(re.escape(c))
+                    prior = c
+                    j += 1
+            if j >= n:
+                return None
+            out.append(f"[{'^' if negate else ''}{''.join(members)}]")
+            i = j + 1
+        else:
+            out.append(re.escape(c))
+    return re.compile("".join(out), re.DOTALL)
+
+
+def glob_match(path: str, pattern: str) -> bool:
+    regex = _glob_regex(pattern)
+    return regex is not None and regex.fullmatch(path) is not None
 
 
 _DS_ENCODE_RE = re.compile(r"[^a-zA-Z0-9_/:\-]")

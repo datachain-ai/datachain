@@ -11,9 +11,11 @@ from datachain.lib.dc.storage_pattern import split_uri_pattern
 from datachain.lib.file import File
 from datachain.lib.listing import (
     LISTING_PREFIX,
+    PathFilter,
     _desanitize_ds_name,
     _sanitize_ds_name,
     get_listing,
+    glob_match,
     is_listing_dataset,
     listing_uri_from_name,
     parse_listing_uri,
@@ -405,3 +407,112 @@ def test_desanitize_old_xhh_still_works():
     # Simulate an old stored name: s3://my.bucket/ -> lst__s3://my_x2ebucket/
     old_encoded = "lst__s3://my_x2ebucket/"
     assert _desanitize_ds_name(old_encoded) == "lst__s3://my.bucket/"
+
+
+_GLOB_PATTERNS = [
+    "*",
+    "a*",
+    "*b",
+    "a?c",
+    "?",
+    "[abc]",
+    "[^abc]",
+    "[a-c]x",
+    "[]a]",
+    "[^]a]",
+    "[a-]",
+    "[-a]",
+    "a/*",
+    "*/b",
+    "a.b",
+    "a\\b",
+    "[",
+    "a[b",
+    "[!a]",
+    "**",
+    "a*b*c",
+    "[z-a]",
+    "[a-c-e]",
+    "[]-a]",
+    "[^a-]",
+    "*.[ch]",
+    "x?y*",
+    "a+b",
+    "(a)",
+    "a$",
+    "^a",
+]
+_GLOB_PATHS = [
+    "",
+    "a",
+    "b",
+    "abc",
+    "ab",
+    "a/b",
+    "a/b/c",
+    "x/a.b",
+    "]",
+    "-",
+    "!",
+    "a-",
+    "a\\b",
+    "aXc",
+    "ac",
+    "a[b",
+    "c",
+    "z",
+    "a.c",
+    "a.h",
+    "xyz",
+    "a+b",
+    "(a)",
+    "a$",
+    "^a",
+    "\n",
+    "a\nb",
+]
+
+
+@pytest.mark.parametrize("pattern", _GLOB_PATTERNS)
+def test_glob_match_is_sqlite_glob(pattern):
+    import sqlite3
+
+    conn = sqlite3.connect(":memory:")
+    for path in _GLOB_PATHS:
+        (expected,) = conn.execute("SELECT ? GLOB ?", (path, pattern)).fetchone()
+        assert glob_match(path, pattern) == bool(expected), (path, pattern)
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [
+        PathFilter(),
+        PathFilter.ls("dir/", True),
+        PathFilter.ls("dir/", False),
+        PathFilter.ls("", False),
+        PathFilter.ls("d*/x", True),
+        PathFilter.ls("dir/", True).glob("dir/*.txt"),
+        PathFilter.ls("", False).glob("a?"),
+    ],
+)
+def test_path_filter_python_matches_sql(test_session, paths):
+    names = ["a", "ab", "x.txt", "dir", "dir/x.txt", "dir/a/x.txt", "dirx/x", "d/x"]
+    chain = dc.read_values(path=names, session=test_session)
+    condition = paths.sql(dc.C("path"))
+    if condition is not None:
+        chain = chain.filter(condition)
+
+    assert sorted(chain.to_values("path")) == sorted(filter(paths, names))
+
+
+def test_glob_match_is_sqlite_glob_on_random_patterns():
+    import random
+    import sqlite3
+
+    rng = random.Random(0)  # noqa: S311
+    conn = sqlite3.connect(":memory:")
+    for _ in range(3000):
+        pattern = "".join(rng.choices("ab-]^[*?/!", k=rng.randint(0, 7)))
+        path = "".join(rng.choices("ab-]^[/!", k=rng.randint(0, 5)))
+        (expected,) = conn.execute("SELECT ? GLOB ?", (path, pattern)).fetchone()
+        assert glob_match(path, pattern) == bool(expected), (path, pattern)

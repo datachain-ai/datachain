@@ -171,15 +171,76 @@ def test_listing_single_object(cloud_test_catalog, versions):
     assert not dc.listing_datasets(session=ctc.session).count()
 
 
-@pytest.mark.parametrize("uri", ["s3://b/*.jpg", "s3://b/{a,b}/", "s3://b/x?"])
-def test_listing_rejects_globs(test_session, uri):
-    with pytest.raises(ValueError, match="glob"):
-        dc.listing(uri, session=test_session)
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "cats/",
+        "cats",
+        "*",
+        "**/*",
+        "dogs/*",
+        "dogs/**/*",
+        "dogs/dog?",
+        "**/dog*",
+        "{cats,dogs}/*",
+        "dogs/dog{1..3}",
+        "*/cat1",
+        "none/*",
+    ],
+)
+@pytest.mark.parametrize("recursive", [True, False])
+def test_listing_patterns_match_read_storage(cloud_test_catalog, pattern, recursive):
+    ctc = cloud_test_catalog
+    uri = f"{ctc.src_uri}/{pattern}"
+
+    try:
+        expected = sorted(
+            flatten(f)
+            for f in dc.read_storage(
+                uri, recursive=recursive, session=ctc.session
+            ).to_values("file")
+        )
+    except FileNotFoundError:
+        with pytest.raises(FileNotFoundError):
+            dc.listing(uri, recursive=recursive, session=ctc.session).to_list()
+        return
+    rows = dc.listing(uri, recursive=recursive, session=ctc.session)
+
+    assert sorted(r for r in rows if r.is_latest) == expected
 
 
-def test_listing_rejects_uri_lists(test_session):
-    with pytest.raises(TypeError, match="one URI"):
-        dc.listing(["s3://a/", "s3://b/"], session=test_session)  # type: ignore[arg-type]
+@pytest.mark.parametrize(
+    "patterns",
+    [
+        ["cats/", "dogs/"],
+        ["cats/", "cats/"],
+        ["dogs/*", "dogs/dog1"],
+        ["description", "dogs/"],
+    ],
+)
+def test_listing_uri_lists_match_read_storage(cloud_test_catalog, patterns):
+    ctc = cloud_test_catalog
+    uris = [f"{ctc.src_uri}/{p}" for p in patterns]
+
+    expected = sorted(
+        flatten(f) for f in dc.read_storage(uris, session=ctc.session).to_values("file")
+    )
+    rows = dc.listing(uris, session=ctc.session)
+
+    assert sorted(r for r in rows if r.is_latest) == expected
+
+
+def test_listing_save_with_pattern(cloud_test_catalog):
+    ctc = cloud_test_catalog
+    uri = f"{ctc.src_uri}/dogs/dog?"
+
+    saved = dc.listing(uri, session=ctc.session).save()
+
+    assert sorted(f.path.rsplit("/", 1)[-1] for f in saved.to_values("file")) == [
+        "dog1",
+        "dog2",
+        "dog3",
+    ]
 
 
 def test_listings_is_deprecated(test_session, tmp_dir):
@@ -219,9 +280,11 @@ def test_listing_save_stores_every_version(cloud_test_catalog_upload):
     ]
 
 
-def test_listing_takes_client_config_of_active_session(tmp_dir):
+def test_listing_takes_client_config_of_active_session(catalog, tmp_dir):
     config = {"endpoint_url": "https://minio.example.com"}
-    with dc.Session("ingest", client_config=config, in_memory=True):
+    configured = catalog.copy()
+    configured.client_config = config
+    with dc.Session("ingest", catalog=configured):
         assert dc.listing(tmp_dir).client_config == config
     own = {"endpoint_url": "https://other.example.com"}
     assert (
