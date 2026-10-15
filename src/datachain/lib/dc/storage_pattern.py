@@ -1,4 +1,5 @@
 import glob
+from collections.abc import Sequence
 
 from datachain.client.fsspec import is_cloud_uri
 from datachain.lib.listing import PathFilter
@@ -225,6 +226,19 @@ def convert_globstar_to_glob(filter_pattern: str) -> str:
             result = f"*{middle_pattern}*"
 
     return result
+
+
+def storage_sources(uris: Sequence) -> list[tuple[str, str | None]]:
+    """The URIs to list for ``uris``, in order and with repeats, each with the
+    glob pattern that selects from its listing: braces expanded, a glob listed
+    from its base.
+    """
+    sources = []
+    for uri in uris:
+        for expanded in expand_brace_pattern(str(uri)):
+            base_uri, pattern = split_uri_pattern(expanded)
+            sources.append((base_uri if pattern else expanded, pattern))
+    return sources
 
 
 def path_filter(

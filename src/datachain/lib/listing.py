@@ -369,6 +369,18 @@ def names_object(client: Client, uri: str) -> bool:
     return not glob.has_magic(uri) and not uri.endswith("/") and isfile(client.fs, uri)
 
 
+def describe_listing(
+    client: Client, uri: str, versions: bool = True
+) -> tuple[str, str, str] | None:
+    """The listing dataset name, listing URI and listing path of ``uri``, or
+    None when it names a single object."""
+    if names_object(client, uri):
+        return None
+    # local, HF and HTTP storages have no versions: one kind of listing
+    versions = versions or not hasattr(client.fs, "version_aware")
+    return parse_listing_uri(uri, versions=versions)
+
+
 def get_listing(
     uri: str | os.PathLike[str],
     session: "Session",
@@ -397,13 +409,12 @@ def get_listing(
         uri = os.fspath(uri)
 
     # we don't want to use cached dataset (e.g. for a single file listing)
-    if names_object(client, uri):
+    described = describe_listing(client, uri, versions)
+    if described is None:
         _, path = Client.parse_url(uri)
         return None, uri, path, False
 
-    # local, HF and HTTP storages have no versions: one kind of listing
-    versions = versions or not hasattr(client.fs, "version_aware")
-    ds_name, list_uri, list_path = parse_listing_uri(uri, versions=versions)
+    ds_name, list_uri, list_path = described
     listing = None
     listings = [
         ls for ls in catalog.listings() if not ls.is_expired and ls.contains(ds_name)

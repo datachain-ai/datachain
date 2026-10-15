@@ -8,21 +8,19 @@ from typing import TYPE_CHECKING
 from datachain.client import Client
 from datachain.lib.convert.unflatten import unflatten_to_json
 from datachain.lib.dc.storage_pattern import (
-    expand_brace_pattern,
     path_filter,
-    split_uri_pattern,
+    storage_sources,
     validate_cloud_bucket_name,
 )
 from datachain.lib.file import File, FileRow, FileType, get_file_type
 from datachain.lib.listing import (
     LISTING_BATCH_SIZE,
+    describe_listing,
     file_row,
     get_file_info,
     get_listing,
     list_bucket,
     list_pages,
-    names_object,
-    parse_listing_uri,
     select_paths,
 )
 from datachain.query import Session
@@ -310,27 +308,11 @@ def _read_storage(
     listing_namespace_name = catalog.metastore.system_namespace_name
     listing_project_name = catalog.metastore.listing_project_name
 
-    # Then expand all URIs that contain brace patterns
-    expanded_uris = []
-    for single_uri in uris:
-        uri_str = str(single_uri)
-        expanded_uris.extend(expand_brace_pattern(uri_str))
-
-    # Now process each expanded URI
     chains = []
-    listed_ds_name = set()
     file_values = []
-
     updated_uris = set()
 
-    for single_uri in expanded_uris:
-        # Check if URI contains glob patterns and split them
-        base_uri, glob_pattern = split_uri_pattern(single_uri)
-
-        # If a pattern is found, use the base_uri for listing
-        # The pattern will be used for filtering later
-        list_uri_to_use = base_uri if glob_pattern else single_uri
-
+    for list_uri_to_use, glob_pattern in storage_sources(uris):
         # Avoid double updates for the same URI
         update_single_uri = False
         if update and (list_uri_to_use not in updated_uris):
@@ -382,8 +364,6 @@ def _read_storage(
         chains.append(
             select_paths(dc, path_filter(list_path, glob_pattern, recursive), column)
         )
-
-        listed_ds_name.add(list_ds_name)
 
     storage_chain = None if not chains else reduce(lambda x, y: x.union(y), chains)
 
@@ -562,14 +542,13 @@ class Listing:
         """
         sources: list[tuple[str, list[PathFilter | None] | None]] = []
         groups: dict[str, list[PathFilter | None]] = {}
-        for uri in itertools.chain.from_iterable(map(expand_brace_pattern, self.uris)):
-            base_uri, pattern = split_uri_pattern(uri)
-            list_uri = base_uri if pattern else uri
-            client = Client.get_client(list_uri, cache, **self.client_config)  # type: ignore[arg-type]
-            if names_object(client, list_uri):
-                sources.append((list_uri, None))
+        for uri, pattern in storage_sources(self.uris):
+            client = Client.get_client(uri, cache, **self.client_config)  # type: ignore[arg-type]
+            described = describe_listing(client, uri, self.versions)
+            if described is None:
+                sources.append((uri, None))
                 continue
-            _, list_uri, list_path = parse_listing_uri(list_uri)
+            _, list_uri, list_path = described
             # the listing of a prefix holds only paths under it
             paths = (
                 None
