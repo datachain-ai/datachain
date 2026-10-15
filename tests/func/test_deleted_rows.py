@@ -1,6 +1,5 @@
 import os
 import time
-import uuid
 from datetime import datetime, timezone
 
 import pytest
@@ -193,9 +192,9 @@ def _write_history(root, phases):
 @pytest.mark.parametrize(
     "cloud_type,version_aware", [("s3", True), ("gs", True)], indirect=True
 )
-def test_changes_since_a_cutoff(cloud_test_catalog):
+def test_changes_since_a_cutoff(cloud_test_catalog, cloud_prefix):
     ctc = cloud_test_catalog
-    prefix = f"history-{uuid.uuid4().hex[:8]}"
+    prefix = cloud_prefix
     root = ctc.src / prefix
     _write_history(root, {k: before for k, (before, _) in SCENARIOS.items()})
     cutoff = datetime.now(timezone.utc)
@@ -264,9 +263,11 @@ def test_changes_since_a_cutoff(cloud_test_catalog):
     "cloud_type,version_aware", [("s3", True), ("gs", True)], indirect=True
 )
 @pytest.mark.parametrize("versions", [True, "all"])
-def test_update_after_a_delete_drops_the_file(cloud_test_catalog, versions):
+def test_update_after_a_delete_drops_the_file(
+    cloud_test_catalog, cloud_prefix, versions
+):
     ctc = cloud_test_catalog
-    prefix = f"update-{uuid.uuid4().hex[:8]}"
+    prefix = cloud_prefix
     (ctc.src / prefix / "a").write_text("1")
     (ctc.src / prefix / "b").write_text("1")
     uri = f"{ctc.src_uri}/{prefix}"

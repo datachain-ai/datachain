@@ -212,10 +212,10 @@ def test_read_storage_versions(cloud_test_catalog, cloud_prefix):
     [("s3", True), ("gs", True)],
     indirect=True,
 )
-def test_read_storage_all_versions(cloud_test_catalog):
+def test_read_storage_all_versions(cloud_test_catalog, cloud_prefix):
     ctc = cloud_test_catalog
     session = ctc.session
-    prefix = f"history-{uuid.uuid4().hex[:8]}"
+    prefix = cloud_prefix
     (ctc.src / prefix / "kept").write_text("1")
     (ctc.src / prefix / "kept").write_text("22")
     (ctc.src / prefix / "empty").write_text("")
