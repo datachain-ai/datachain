@@ -565,6 +565,16 @@ def cloud_server(request, tmp_upath_factory, cloud_type, version_aware, tree):
 
 
 @pytest.fixture
+def cloud_prefix(cloud_test_catalog):
+    """A fresh prefix in the session's shared bucket, removed after the test."""
+    prefix = f"scratch-{uuid.uuid4().hex[:8]}"
+    yield prefix
+    path = cloud_test_catalog.src / prefix
+    if path.exists():
+        path.fs.rm(str(path), recursive=True)
+
+
+@pytest.fixture
 def datachain_job_id(test_session, monkeypatch):
     yield _create_job(test_session.catalog.metastore)
 
