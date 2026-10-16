@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import importlib
 import io
 import logging
 import multiprocessing
@@ -60,6 +61,17 @@ class Bucket(NamedTuple):
     created: datetime | None
 
 
+CLIENTS = {
+    "s3": (".s3", "ClientS3"),
+    "gs": (".gcs", "GCSClient"),
+    "az": (".azure", "AzureClient"),
+    "file": (".local", "FileClient"),
+    "hf": (".hf", "HfClient"),
+    "http": (".http", "HTTPClient"),
+    "https": (".http", "HTTPSClient"),
+}
+
+
 class BucketStatus(NamedTuple):
     exists: bool
     access: Literal["anonymous", "authenticated", "denied"]
@@ -98,34 +110,16 @@ class Client(ABC):
         return str(etag)
 
     @staticmethod
-    def get_implementation(url: str | os.PathLike[str]) -> type["Client"]:  # noqa: PLR0911
-        from .azure import AzureClient
-        from .gcs import GCSClient
-        from .hf import HfClient
-        from .http import HTTPClient, HTTPSClient
-        from .local import FileClient
-        from .s3 import ClientS3
-
-        protocol = urlparse(os.fspath(url)).scheme
-
-        if not protocol or is_win_local_path(os.fspath(url)):
-            return FileClient
-        if protocol == ClientS3.protocol:
-            return ClientS3
-        if protocol == GCSClient.protocol:
-            return GCSClient
-        if protocol == AzureClient.protocol:
-            return AzureClient
-        if protocol == FileClient.protocol:
-            return FileClient
-        if protocol == HfClient.protocol:
-            return HfClient
-        if protocol == HTTPClient.protocol:
-            return HTTPClient
-        if protocol == HTTPSClient.protocol:
-            return HTTPSClient
-
-        raise NotImplementedError(f"Unsupported protocol: {protocol}")
+    def get_implementation(url: str | os.PathLike[str]) -> type["Client"]:
+        url = os.fspath(url)
+        protocol = urlparse(url).scheme
+        if not protocol or is_win_local_path(url):
+            protocol = "file"
+        try:
+            module, name = CLIENTS[protocol]
+        except KeyError:
+            raise NotImplementedError(f"Unsupported protocol: {protocol}") from None
+        return getattr(importlib.import_module(module, __package__), name)
 
     @staticmethod
     def is_data_source_uri(name: str) -> bool:

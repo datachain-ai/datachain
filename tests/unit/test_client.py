@@ -1,9 +1,11 @@
 import os
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+import datachain as dc
 from datachain.client import Client
 from datachain.client.local import FileClient
 from datachain.client.writeconfig import WriteConfig
@@ -50,3 +52,20 @@ def test_parse_file_path_ends_with_slash(cloud_type):
     uri, rel_part = Client.parse_url("./animals/".replace("/", os.sep))
     assert uri == (Path().absolute() / Path("animals")).as_uri()
     assert rel_part == ""
+
+
+def test_s3_client_loads_no_other_backend():
+    code = (
+        "import sys\n"
+        "from datachain.client import Client\n"
+        "Client.get_implementation('s3://bucket/key')\n"
+        "print(sorted({'gcsfs', 'adlfs', 'huggingface_hub'} & set(sys.modules)))"
+    )
+    root = os.path.dirname(os.path.dirname(dc.__file__))
+    out = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", code],
+        capture_output=True,
+        check=True,
+        env={**os.environ, "PYTHONPATH": root},
+    )
+    assert out.stdout.strip() == b"[]"
