@@ -5,7 +5,7 @@ import posixpath
 import re
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, TypeVar
 
 from fsspec.asyn import get_loop
@@ -81,7 +81,7 @@ def listing_dataset_expired(lst_ds) -> bool:
         return False
 
     expires = lst_version.finished_at + timedelta(seconds=LISTING_TTL)
-    return datetime.now(timezone.utc) > expires
+    return datetime.now(UTC) > expires
 
 
 def list_bucket(uri: str, cache, client_config=None) -> Callable:

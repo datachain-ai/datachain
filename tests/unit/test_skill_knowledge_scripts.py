@@ -2,7 +2,7 @@
 
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -322,7 +322,7 @@ def test_serialize_primitives():
 
 
 def test_serialize_object():
-    result = serialize(datetime(2024, 1, 1, tzinfo=timezone.utc))
+    result = serialize(datetime(2024, 1, 1, tzinfo=UTC))
     assert isinstance(result, str)
 
 
@@ -481,8 +481,8 @@ def _ds_version(version, version_value, *, query_script=""):
         uuid=f"uuid-{version}",
         num_objects=1,
         size=1,
-        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        finished_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        finished_at=datetime(2026, 1, 2, tzinfo=UTC),
         query_script=query_script,
         schema={},
         feature_schema=None,

@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, cast
 from urllib.parse import quote, urlparse
 
@@ -129,11 +129,11 @@ class HTTPClient(Client):
 
                     last_modified = parsedate_to_datetime(last_modified)
                 except (ValueError, TypeError):
-                    last_modified = datetime.now(timezone.utc)
+                    last_modified = datetime.now(UTC)
             elif isinstance(last_modified, (int, float)):
-                last_modified = datetime.fromtimestamp(last_modified, timezone.utc)
+                last_modified = datetime.fromtimestamp(last_modified, UTC)
         else:
-            last_modified = datetime.now(timezone.utc)
+            last_modified = datetime.now(UTC)
 
         return File(
             source=self.uri,

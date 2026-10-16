@@ -1,14 +1,8 @@
 import glob
 import os
-import sys
 from collections.abc import Iterable, Iterator
 from functools import cached_property
-from typing import TYPE_CHECKING
-
-if sys.version_info >= (3, 11):
-    from typing import Self
-else:
-    from typing_extensions import Self
+from typing import TYPE_CHECKING, Self
 
 from sqlalchemy import Column
 from sqlalchemy.sql import func

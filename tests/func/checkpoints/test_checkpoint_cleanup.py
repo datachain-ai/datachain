@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import sqlalchemy as sa
@@ -38,7 +38,7 @@ def test_cleanup_checkpoints_with_ttl(test_session, nums_dataset):
     assert len(warehouse.db.list_tables(pattern="udf_%")) > 0
 
     # Make all checkpoints older than the default TTL (4h)
-    old_time = datetime.now(timezone.utc) - timedelta(hours=5)
+    old_time = datetime.now(UTC) - timedelta(hours=5)
     metastore.db.execute(metastore._checkpoints.update().values(created_at=old_time))
 
     catalog.cleanup_checkpoints()
@@ -71,7 +71,7 @@ def test_cleanup_partition_tables(test_session):
     partition_tables = warehouse.db.list_tables(pattern="udf_%_partition")
     assert len(partition_tables) > 0
 
-    old_time = datetime.now(timezone.utc) - timedelta(hours=5)
+    old_time = datetime.now(UTC) - timedelta(hours=5)
     metastore.db.execute(metastore._checkpoints.update().values(created_at=old_time))
 
     catalog.cleanup_checkpoints()
@@ -93,7 +93,7 @@ def test_cleanup_checkpoints_with_custom_ttl(test_session, nums_dataset):
     assert len(list(metastore.list_checkpoints([job_id]))) == 2
 
     # Make checkpoints 2 hours old, then clean with 1h TTL
-    old_time = datetime.now(timezone.utc) - timedelta(hours=2)
+    old_time = datetime.now(UTC) - timedelta(hours=2)
     metastore.db.execute(metastore._checkpoints.update().values(created_at=old_time))
 
     catalog.cleanup_checkpoints(ttl_seconds=3600)
@@ -141,7 +141,7 @@ def test_cleanup_does_not_remove_unrelated_tables(test_session, nums_dataset):
     assert warehouse.db.has_table(fake_table_name)
 
     # Make checkpoints outdated and clean up
-    old_time = datetime.now(timezone.utc) - timedelta(hours=5)
+    old_time = datetime.now(UTC) - timedelta(hours=5)
     metastore.db.execute(metastore._checkpoints.update().values(created_at=old_time))
 
     catalog.cleanup_checkpoints()
@@ -174,7 +174,7 @@ def test_cleanup_checkpoints_multiple_jobs(test_session, nums_dataset):
     finish_job(metastore, job3_id)
 
     # Make ALL checkpoints outdated
-    old_time = datetime.now(timezone.utc) - timedelta(hours=5)
+    old_time = datetime.now(UTC) - timedelta(hours=5)
     metastore.db.execute(metastore._checkpoints.update().values(created_at=old_time))
 
     catalog.cleanup_checkpoints()
@@ -201,7 +201,7 @@ def test_cleanup_skips_job_with_active_checkpoints(test_session, nums_dataset):
     mixed_job_id = test_session.get_or_create_job().id
     finish_job(metastore, mixed_job_id)
 
-    old_time = datetime.now(timezone.utc) - timedelta(hours=5)
+    old_time = datetime.now(UTC) - timedelta(hours=5)
     for ch in metastore.list_checkpoints([old_job_id]):
         metastore.db.execute(
             metastore._checkpoints.update()
@@ -244,7 +244,7 @@ def test_cleanup_skips_running_jobs(test_session, nums_dataset):
     assert len(checkpoints_before) == 2
 
     # Make checkpoints older than TTL
-    old_time = datetime.now(timezone.utc) - timedelta(hours=5)
+    old_time = datetime.now(UTC) - timedelta(hours=5)
     metastore.db.execute(metastore._checkpoints.update().values(created_at=old_time))
 
     catalog.cleanup_checkpoints()
@@ -294,7 +294,7 @@ def test_cleanup_preserves_input_tables_when_run_group_active(
     assert len(job1_output_tables) > 0
 
     # Make only job 1's checkpoints outdated
-    old_time = datetime.now(timezone.utc) - timedelta(hours=5)
+    old_time = datetime.now(UTC) - timedelta(hours=5)
     for ch in metastore.list_checkpoints([job1_id]):
         metastore.db.execute(
             metastore._checkpoints.update()

@@ -9,7 +9,7 @@ import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from copy import copy
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import wraps
 from types import GeneratorType
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypeVar, cast
@@ -77,11 +77,11 @@ from datachain.utils import (
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
-    from typing import Concatenate
+    from typing import Concatenate, Self
 
     from sqlalchemy.sql.elements import KeyedColumnElement
     from sqlalchemy.sql.schema import Table
-    from typing_extensions import ParamSpec, Self
+    from typing_extensions import ParamSpec
 
     from datachain.catalog import Catalog
     from datachain.data_storage import AbstractWarehouse
@@ -3467,7 +3467,7 @@ class DatasetQuery:
         self.catalog.remove_dataset_version(full_dataset, version, keep_metadata=False)
         # updating TTL of a bucket listing
         self.catalog.metastore.update_dataset_version(
-            full_dataset, prev_version, finished_at=datetime.now(timezone.utc)
+            full_dataset, prev_version, finished_at=datetime.now(UTC)
         )
         return self.__class__(
             name=name,

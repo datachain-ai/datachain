@@ -5,7 +5,7 @@ import sqlite3
 import warnings
 from collections.abc import Callable, Iterable
 from contextlib import closing
-from datetime import MAXYEAR, MINYEAR, date, datetime, timezone
+from datetime import MAXYEAR, MINYEAR, UTC, date, datetime
 from functools import cache
 from types import MappingProxyType
 
@@ -299,26 +299,26 @@ def _normalize_datetime_for_storage(value: datetime) -> datetime:
         return value
 
     try:
-        return value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value.astimezone(UTC).replace(tzinfo=None)
     except (OverflowError, ValueError, OSError):
         if value.year == MAXYEAR:
-            return datetime.max.replace(tzinfo=timezone.utc).replace(tzinfo=None)
+            return datetime.max.replace(tzinfo=UTC).replace(tzinfo=None)
         if value.year == MINYEAR:
-            return datetime.min.replace(tzinfo=timezone.utc).replace(tzinfo=None)
+            return datetime.min.replace(tzinfo=UTC).replace(tzinfo=None)
         raise
 
 
 def _normalize_datetime_for_read(value: datetime) -> datetime:
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
+        return value.replace(tzinfo=UTC)
 
     try:
-        return value.astimezone(timezone.utc)
+        return value.astimezone(UTC)
     except (OverflowError, ValueError, OSError):
         if value.year == MAXYEAR:
-            return datetime.max.replace(tzinfo=timezone.utc)
+            return datetime.max.replace(tzinfo=UTC)
         if value.year == MINYEAR:
-            return datetime.min.replace(tzinfo=timezone.utc)
+            return datetime.min.replace(tzinfo=UTC)
         raise
 
 

@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -26,7 +26,7 @@ def test_write_kwargs_ignores_all_fields(streaming):
 def test_format_etag_appends_mtime_only_for_local_client():
     mtime = 1234567890.25
     etag = mtime.hex()
-    iso = datetime.fromtimestamp(mtime, timezone.utc).isoformat()
+    iso = datetime.fromtimestamp(mtime, UTC).isoformat()
     # Local listings store st_mtime.hex(); FileClient explains that value.
     assert FileClient.format_etag(etag) == f"{etag} (mtime {iso})"
     # Other clients leave the stored string alone, matching dc.show().

@@ -13,7 +13,6 @@ for sqlite we can use `sqlite.register_converter`
 """
 
 import numbers
-import re
 from copy import copy
 from datetime import date, datetime
 from types import MappingProxyType
@@ -43,22 +42,11 @@ db_defaults_registry = MappingProxyType(_db_defaults_registry)
 
 NullType = types.NullType
 
-_DATETIME_EXTRA_FRACTION_RE = re.compile(r"(\.\d{6})\d+")
 _DATETIME_CAST_INPUT_TYPES = frozenset({str, bytes, date, datetime})
 
 
 def parse_datetime_text(value: str) -> datetime:
-    normalized = value.replace("Z", "+00:00") if value.endswith("Z") else value
-    try:
-        return datetime.fromisoformat(normalized)
-    except ValueError:
-        # Python 3.10 rejects ISO timestamps with more than 6 fractional digits,
-        # while newer versions truncate them to microseconds. Trim and retry so
-        # parsing stays compatible across our supported Python versions.
-        truncated = _DATETIME_EXTRA_FRACTION_RE.sub(r"\1", normalized)
-        if truncated == normalized:
-            raise
-        return datetime.fromisoformat(truncated)
+    return datetime.fromisoformat(value)
 
 
 def datetime_cast_input_error_message(type_name: str) -> str:

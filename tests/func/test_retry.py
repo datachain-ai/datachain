@@ -1,5 +1,5 @@
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
 import pytest
@@ -25,7 +25,7 @@ def _process_with_errors(id: int, content: str, attempt: int) -> ProcessingResul
     error = id % 2 == 1 and attempt == 1
     return ProcessingResult(
         processed_content="" if error else content.upper(),
-        processed_at=datetime.now(tz=timezone.utc).isoformat(),
+        processed_at=datetime.now(tz=UTC).isoformat(),
         error=f"Processing error for item {id}" if error else "",
         attempt=attempt,
     )
@@ -42,7 +42,7 @@ def _simple_process(id: int, content: str, attempt: int = 1) -> ProcessingResult
     """Helper function for simple processing in retry tests."""
     return ProcessingResult(
         processed_content=content.upper(),
-        processed_at=datetime.now(tz=timezone.utc).isoformat(),
+        processed_at=datetime.now(tz=UTC).isoformat(),
         error="",
         attempt=attempt,
     )
@@ -185,7 +185,7 @@ def test_retry_no_records_to_retry(test_session, no_studio_dataset):
     def successful_process(id: int, content: str) -> ProcessingResult:
         return ProcessingResult(
             processed_content=content.upper(),
-            processed_at=datetime.now(tz=timezone.utc).isoformat(),
+            processed_at=datetime.now(tz=UTC).isoformat(),
             error="",  # No errors
             attempt=1,
         )
@@ -250,7 +250,7 @@ def test_retry_with_multiple_match_fields(test_session):
         error = category == "A" and id % 2 == 1 and attempt == 1
         return ProcessingResult(
             processed_content="" if error else f"{category}-{content}".upper(),
-            processed_at=datetime.now(tz=timezone.utc).isoformat(),
+            processed_at=datetime.now(tz=UTC).isoformat(),
             error=f"Error for {category}-{id}" if error else "",
             attempt=attempt,
         )

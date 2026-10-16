@@ -1,20 +1,14 @@
 import copy
 import logging
 import os
-import sys
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from functools import cached_property
 from itertools import groupby
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 from uuid import UUID, uuid4
-
-if sys.version_info >= (3, 11):
-    from typing import Self
-else:
-    from typing_extensions import Self
 
 from sqlalchemy import (
     JSON,
@@ -1069,7 +1063,7 @@ class AbstractDBMetastore(AbstractMetastore):
         query = self._namespaces_insert().values(
             name=name,
             uuid=uuid or str(uuid4()),
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             description=description,
         )
         if ignore_if_exists:
@@ -1147,7 +1141,7 @@ class AbstractDBMetastore(AbstractMetastore):
             namespace_id=namespace.id,
             uuid=uuid or str(uuid4()),
             name=name,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             description=description,
         )
         if ignore_if_exists:
@@ -1292,7 +1286,7 @@ class AbstractDBMetastore(AbstractMetastore):
             project_id=project.id,
             status=status,
             feature_schema=json.dumps(feature_schema or {}),
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             error_message="",
             error_stack="",
             script_output="",
@@ -1346,7 +1340,7 @@ class AbstractDBMetastore(AbstractMetastore):
             version already existed (only possible when ignore_if_exists=True).
         """
         if status in [DatasetStatus.COMPLETE, DatasetStatus.FAILED]:
-            finished_at = finished_at or datetime.now(timezone.utc)
+            finished_at = finished_at or datetime.now(UTC)
         else:
             finished_at = None
 
@@ -1358,7 +1352,7 @@ class AbstractDBMetastore(AbstractMetastore):
             version=version,
             status=status,
             feature_schema=json.dumps(feature_schema or {}),
-            created_at=created_at or datetime.now(timezone.utc),
+            created_at=created_at or datetime.now(UTC),
             finished_at=finished_at,
             error_message=error_message,
             error_stack=error_stack,
@@ -1971,7 +1965,7 @@ class AbstractDBMetastore(AbstractMetastore):
                             and_(
                                 dv.c.job_id.is_(None),
                                 dv.c.created_at
-                                < datetime.now(timezone.utc)
+                                < datetime.now(UTC)
                                 - timedelta(hours=STALE_CREATED_THRESHOLD_HOURS),
                             ),
                         ),
@@ -2016,7 +2010,7 @@ class AbstractDBMetastore(AbstractMetastore):
         dv = self._datasets_versions
         dd = self._datasets_dependencies
 
-        cutoff = datetime.now(timezone.utc) - timedelta(seconds=min_age_seconds)
+        cutoff = datetime.now(UTC) - timedelta(seconds=min_age_seconds)
 
         newer = dv.alias("dv_newer")
         has_newer_complete_version = (
@@ -2101,7 +2095,7 @@ class AbstractDBMetastore(AbstractMetastore):
         update_data: dict[str, Any] = {"status": status}
         if status in [DatasetStatus.COMPLETE, DatasetStatus.FAILED]:
             # if in final state, updating finished_at datetime
-            update_data["finished_at"] = datetime.now(timezone.utc)
+            update_data["finished_at"] = datetime.now(UTC)
             if script_output:
                 update_data["script_output"] = script_output
 
@@ -2150,7 +2144,7 @@ class AbstractDBMetastore(AbstractMetastore):
             .where((dv.c.job_id == job_id) & (dv.c.status == DatasetStatus.CREATED))
             .values(
                 status=DatasetStatus.FAILED,
-                finished_at=datetime.now(timezone.utc),
+                finished_at=datetime.now(UTC),
             )
         )
 
@@ -2500,7 +2494,7 @@ class AbstractDBMetastore(AbstractMetastore):
                 id=job_id,
                 name=name,
                 status=status,
-                created_at=datetime.now(timezone.utc),
+                created_at=datetime.now(UTC),
                 query=query,
                 query_type=query_type.value,
                 workers=workers,
@@ -2591,7 +2585,7 @@ class AbstractDBMetastore(AbstractMetastore):
         """Set the status of the given job."""
         values: dict = {"status": status}
         if status in JobStatus.finished():
-            values["finished_at"] = datetime.now(timezone.utc)
+            values["finished_at"] = datetime.now(UTC)
         if error_message:
             values["error_message"] = error_message
         if error_stack:
@@ -2781,7 +2775,7 @@ class AbstractDBMetastore(AbstractMetastore):
                 job_id=job_id,
                 hash=_hash,
                 partial=partial,
-                created_at=datetime.now(timezone.utc),
+                created_at=datetime.now(UTC),
                 status=CheckpointStatus.ACTIVE,
             )
 
@@ -2791,7 +2785,7 @@ class AbstractDBMetastore(AbstractMetastore):
                 index_elements=["job_id", "hash"],
                 set_={
                     "status": CheckpointStatus.ACTIVE,
-                    "created_at": datetime.now(timezone.utc),
+                    "created_at": datetime.now(UTC),
                 },
             )
 
@@ -2867,7 +2861,7 @@ class AbstractDBMetastore(AbstractMetastore):
     ) -> CheckpointEvent:
         """Log a checkpoint event."""
         event_id = str(uuid4())
-        timestamp = datetime.now(timezone.utc)
+        timestamp = datetime.now(UTC)
 
         query = self._checkpoint_events_insert().values(
             id=event_id,
@@ -2944,7 +2938,7 @@ class AbstractDBMetastore(AbstractMetastore):
                 dataset_version_id=dataset_version_id,
                 job_id=job_id,
                 is_creator=is_creator,
-                created_at=datetime.now(timezone.utc),
+                created_at=datetime.now(UTC),
             )
             query = query.on_conflict_do_nothing(  # type: ignore[attr-defined]
                 index_elements=["dataset_version_id", "job_id"]

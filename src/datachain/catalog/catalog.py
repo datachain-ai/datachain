@@ -9,15 +9,10 @@ from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from copy import copy
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from functools import cached_property, reduce
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 from uuid import uuid4
-
-if sys.version_info >= (3, 11):
-    from typing import Self
-else:
-    from typing_extensions import Self
 
 import sqlalchemy as sa
 from sqlalchemy import Column
@@ -1216,7 +1211,7 @@ class Catalog:
             version,
             expected_status=expected_status,
             status=DatasetStatus.REMOVING,
-            removed_at=v.removed_at or datetime.now(timezone.utc),
+            removed_at=v.removed_at or datetime.now(UTC),
             pending_metadata_drop=not keep_metadata,
         )
         if claimed is None:
@@ -2420,7 +2415,7 @@ class Catalog:
         if ttl_seconds is None:
             ttl_seconds = CHECKPOINTS_TTL
 
-        ttl_threshold = datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds)
+        ttl_threshold = datetime.now(UTC) - timedelta(seconds=ttl_seconds)
 
         # Expire + collect everything in one metastore call
         checkpoints, inactive_group_ids = self.metastore.expire_checkpoints(

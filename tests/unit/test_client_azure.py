@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -17,7 +17,7 @@ _INFO = {
     "name": "az://mycontainer/blob.txt",
     "size": 42,
     "etag": '"abc123"',
-    "last_modified": datetime(2024, 1, 1, tzinfo=timezone.utc),
+    "last_modified": datetime(2024, 1, 1, tzinfo=UTC),
 }
 
 
@@ -105,7 +105,7 @@ _DETAILS_MOCK = [
         "size": 42,
         "type": "file",
         "etag": '"abc123"',
-        "last_modified": datetime(2024, 1, 1, tzinfo=timezone.utc),
+        "last_modified": datetime(2024, 1, 1, tzinfo=UTC),
     }
 ]
 
@@ -124,7 +124,7 @@ def _make_client_sdk():
     blob_props.name = "blob.txt"
     blob_props.size = 42
     blob_props.etag = '"abc123"'
-    blob_props.last_modified = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    blob_props.last_modified = datetime(2024, 1, 1, tzinfo=UTC)
     blob_props.metadata = None
     bc.get_blob_properties = AsyncMock(return_value=blob_props)
     stream = AsyncMock()

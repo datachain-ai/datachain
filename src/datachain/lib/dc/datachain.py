@@ -117,10 +117,11 @@ SIMILARITY_SCORE_COL_NAME = "sim_a4f74e9a"
 
 if TYPE_CHECKING:
     import sqlite3
+    from typing import Self
 
     import pandas as pd
     from sqlalchemy.orm import Session as OrmSession
-    from typing_extensions import ParamSpec, Self
+    from typing_extensions import ParamSpec
 
     from datachain.lib.settings import LLMParams
 

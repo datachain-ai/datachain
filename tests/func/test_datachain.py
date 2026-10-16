@@ -5,7 +5,7 @@ import posixpath
 import re
 import uuid
 from collections.abc import Iterator
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from unittest.mock import patch
 
@@ -125,7 +125,7 @@ def test_read_storage_reindex_expired(tmp_dir, test_session):
     test_session.catalog.metastore.update_dataset_version(
         test_session.catalog.get_dataset(lst_ds_name, versions=["1.0.0"]),
         "1.0.0",
-        finished_at=datetime.now(timezone.utc) - timedelta(seconds=LISTING_TTL + 20),
+        finished_at=datetime.now(UTC) - timedelta(seconds=LISTING_TTL + 20),
     )
 
     # listing was updated because listing dataset was expired
@@ -414,7 +414,7 @@ def test_show_preserves_none(capsys, test_session):
     chain = dc.read_values(
         score=[1, None],
         ts=[
-            datetime(2020, 1, 1, tzinfo=timezone.utc),
+            datetime(2020, 1, 1, tzinfo=UTC),
             None,
         ],
         session=test_session,
@@ -627,7 +627,7 @@ def test_read_storage_check_rows(tmp_dir, test_session):
             version="",
             etag=stat.st_mtime.hex(),
             is_latest=True,
-            last_modified=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
+            last_modified=datetime.fromtimestamp(stat.st_mtime, tz=UTC),
             location=None,
         )
 

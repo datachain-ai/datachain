@@ -1,7 +1,7 @@
 import os
 import posixpath
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -35,7 +35,7 @@ class FileClient(Client):
             mtime = float.fromhex(rendered)
             if mtime.hex() != rendered:
                 return rendered
-            iso = datetime.fromtimestamp(mtime, timezone.utc).isoformat()
+            iso = datetime.fromtimestamp(mtime, UTC).isoformat()
         except (ValueError, OverflowError, OSError):
             return rendered
         return f"{rendered} (mtime {iso})"
@@ -238,7 +238,7 @@ class FileClient(Client):
             size=v.get("size", ""),
             etag=v["mtime"].hex(),
             is_latest=True,
-            last_modified=datetime.fromtimestamp(v["mtime"], timezone.utc),
+            last_modified=datetime.fromtimestamp(v["mtime"], UTC),
         )
 
     def fetch_nodes(
