@@ -4,7 +4,7 @@ List of environment variables used to configure DataChain behavior.
 
 ### Core Configuration
 
-- `DATACHAIN_ROOT_DIR` – Specifies the root directory where DataChain will create the `.datachain` folder to store its internal data. (default: user home directory).
+- `DATACHAIN_ROOT_DIR` – Specifies the root directory where DataChain will create the `.datachain` folder to store its internal data. (default: the current working directory).
 - `DATACHAIN_SYSTEM_CONFIG_DIR` – Overrides the system-wide configuration directory (default depends on the platform).
 - `DATACHAIN_GLOBAL_CONFIG_DIR` – Overrides the user's global configuration directory (default depends on the platform).
 - `DATACHAIN_NO_ANALYTICS` – Disables telemetry.
