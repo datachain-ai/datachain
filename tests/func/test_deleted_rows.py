@@ -1,6 +1,6 @@
 import os
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -9,7 +9,7 @@ from datachain import func
 from datachain.lib.file import File, VFileError
 
 DELETED = [{"vtype": "deleted"}]
-T0 = datetime(2026, 10, 1, tzinfo=timezone.utc)
+T0 = datetime(2026, 10, 1, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -197,7 +197,7 @@ def test_changes_since_a_cutoff(cloud_test_catalog, cloud_prefix):
     prefix = cloud_prefix
     root = ctc.src / prefix
     _write_history(root, {k: before for k, (before, _) in SCENARIOS.items()})
-    cutoff = datetime.now(timezone.utc)
+    cutoff = datetime.now(UTC)
     time.sleep(1.1)
     _write_history(root, {k: after for k, (_, after) in SCENARIOS.items()})
 

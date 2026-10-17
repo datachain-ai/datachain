@@ -1,6 +1,6 @@
 import asyncio
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -332,7 +332,7 @@ def _random_generations(rng):
     """Generations of random names: each is overwritten or deleted after a
     while, or stays live; and the delete rows they make."""
     t0, items, deletes, generation = (
-        datetime(2026, 10, 1, tzinfo=timezone.utc),
+        datetime(2026, 10, 1, tzinfo=UTC),
         [],
         [],
         0,
