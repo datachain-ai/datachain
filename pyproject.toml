@@ -251,7 +251,6 @@ ignore = [
   "PLW2901",  # redefined-loop-name
   "ISC001",  # single-line-implicit-string-concatenation, incompatible with ruff format
   "RET502",  # implicit-return-value
-  "UP042",  # replace-str-enum, StrEnum changes what str() of a member returns
   "RET503",  # implicit-return
   "SIM105",  # suppressible-exception
   "SIM108",  # if-else-block-instead-of-if-exp
