@@ -1,4 +1,5 @@
 import asyncio
+import io
 import time
 from contextlib import aclosing
 
@@ -8,7 +9,7 @@ from fsspec.asyn import sync
 import datachain as dc
 from datachain.asyn import get_loop
 from datachain.client import Client
-from datachain.client.listing_worker import Child, Pool
+from datachain.client.listing_worker import Child, Pool, load
 from datachain.lib.convert.flatten import flatten
 from datachain.lib.file import File, FileRow
 from datachain.lib.listing import list_bucket
@@ -110,6 +111,24 @@ def test_listing_in_children_is_exact(
     assert remote_rows
     assert not died
     assert rows(items) == listing(client, prefix, processes=False)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize("tree", [TREE], indirect=True)
+def test_listing_with_delete_rows_in_children_keeps_every_object(
+    client, tree, children, remote_rows
+):
+    def objects(items):  # S3 keeps the "null" version of unversioned objects
+        return sorted((i.path, i.size, i.etag, i.location) for i in items)
+
+    plain = sync(get_loop(), _items, client, "", False)
+    client.list_deleted = True
+
+    items = sync(get_loop(), _items, client, "", True)
+
+    assert remote_rows
+    assert objects(items) == objects(plain)  # without versions nothing is deleted
 
 
 # fake-gcs-server repeats a page forever when one key's versions span pages
@@ -365,3 +384,71 @@ def test_children_take_credentials_from_a_credential_process(
     in_children = [fifo for ppid, fifo in calls if int(ppid) != os.getpid()]
     assert in_children
     assert set(in_children) == {"False"}  # the frame pipe is not their stdin
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("list_deleted", [False, True])
+def test_children_get_list_deleted(client, list_deleted):
+    client.list_deleted = list_deleted
+
+    *_, sent, _, _ = load(io.BytesIO(Pool(client, "", 2).spec))
+
+    assert sent is list_deleted
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+@pytest.mark.parametrize("tree", [TREE], indirect=True)
+def test_deletes_across_pages_are_exact(
+    client, tree, cloud_prefix, children, remote_rows
+):
+    key, markers_only = f"{cloud_prefix}/031", f"{cloud_prefix}/0315"
+    for i in range(4):
+        client.fs.pipe_file(f"{client.uri}/{key}", str(i).encode())
+        client.fs.rm_file(f"{client.uri}/{key}")
+    client.fs.pipe_file(f"{client.uri}/{markers_only}", b"x")
+    for _ in range(6):  # the newest entries fill pages with delete markers only
+        sync(
+            get_loop(),
+            client.fs._call_s3,
+            "delete_object",
+            Bucket=client.name,
+            Key=markers_only,
+        )
+    client.list_deleted = True
+
+    items = sync(get_loop(), _items, client, "", True)
+    deleted = [i for i in items if i.location and i.path.startswith(cloud_prefix)]
+
+    assert remote_rows
+    assert rows(items) == listing(client, processes=False)
+    assert sum(i.path == key for i in items) == 8  # 4 versions
+    assert sum(i.path == markers_only for i in items) == 7
+    assert sorted(i.path for i in deleted) == [key] * 4 + [markers_only] * 6
+    assert {(i.size, i.etag, i.is_latest) for i in deleted} == {(0, "", False)}
+    assert len({i.version for i in deleted}) == 10
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+@pytest.mark.parametrize("tree", [TREE], indirect=True)
+def test_pages_with_deletes_keep_keys_in_order(client, tree, cloud_prefix):
+    a, b = f"{cloud_prefix}/a", f"{cloud_prefix}/b"
+    client.fs.pipe_file(f"{client.uri}/{a}", b"1")
+    client.fs.rm_file(f"{client.uri}/{a}")
+    for i in range(3):
+        client.fs.pipe_file(f"{client.uri}/{b}", str(i).encode())
+    client.list_deleted = True
+
+    pages = sync(get_loop(), _pages, client, f"{cloud_prefix}/")
+
+    assert [[(r.path, bool(r.location)) for r in page] for page in pages] == [
+        [(a, False), (a, True), (b, False), (b, False)],
+        [(b, False)],
+    ]
+
+
+async def _pages(client, prefix):
+    pages = client._pages_after(prefix, "", lambda _: True)
+    async with aclosing(pages):
+        return [page.rows async for page in pages]

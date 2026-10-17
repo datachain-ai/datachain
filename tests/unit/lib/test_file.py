@@ -1108,3 +1108,18 @@ def test_subclass_private_attributes_keep_their_values():
 
     assert file._catalog is catalog
     assert file._caching_enabled
+
+
+@pytest.mark.parametrize(
+    "location,is_deleted",
+    [
+        (None, False),
+        ([{"vtype": "deleted"}], True),
+        ({"vtype": "deleted"}, True),
+        ('[{"vtype": "deleted"}]', True),
+        ([{"vtype": "tar", "parent": {}, "offset": 0, "size": 1}], False),
+        ([], False),
+    ],
+)
+def test_file_is_deleted(location, is_deleted):
+    assert File(source="s3://b", path="a", location=location).is_deleted is is_deleted
