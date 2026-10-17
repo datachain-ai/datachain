@@ -4,16 +4,10 @@ import logging
 import posixpath
 import secrets
 import string
-import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
-from typing import TYPE_CHECKING, Any, Union, cast
+from typing import TYPE_CHECKING, Any, Self, Union, cast
 from urllib.parse import urlparse
-
-if sys.version_info >= (3, 11):
-    from typing import Self
-else:
-    from typing_extensions import Self
 
 import attrs
 import sqlalchemy as sa

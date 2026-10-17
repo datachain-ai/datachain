@@ -1,4 +1,4 @@
-from datetime import timezone
+from datetime import UTC
 
 import pytest
 from pydantic import BaseModel
@@ -10,7 +10,7 @@ from tests.utils import sorted_dicts
 
 
 def _as_utc(d):
-    return d.replace(tzinfo=timezone.utc)
+    return d.replace(tzinfo=UTC)
 
 
 @pytest.fixture

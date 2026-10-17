@@ -1,13 +1,7 @@
 import logging
-import sys
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
-from typing import TYPE_CHECKING, Any, ClassVar
-
-if sys.version_info >= (3, 11):
-    from typing import Self
-else:
-    from typing_extensions import Self
+from typing import TYPE_CHECKING, Any, ClassVar, Self
 
 import sqlalchemy as sa
 from sqlalchemy.sql import FROM_LINTING

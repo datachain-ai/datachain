@@ -1,6 +1,6 @@
 """Tests for dataset status management and failed version cleanup."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import sqlalchemy as sa
@@ -443,7 +443,7 @@ def test_get_dataset_versions_to_clean_finds_no_job_id(test_session):
     test_session.catalog.metastore.db.execute(
         dv.update()
         .where(dv.c.dataset_id == dataset.id)
-        .values(created_at=datetime.now(timezone.utc) - timedelta(hours=2))
+        .values(created_at=datetime.now(UTC) - timedelta(hours=2))
     )
 
     # Now it should be returned

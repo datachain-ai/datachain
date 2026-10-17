@@ -4,7 +4,7 @@ import sqlite3
 import time
 import uuid
 from contextlib import closing
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 import sqlalchemy
@@ -126,7 +126,7 @@ def _parse_datetime_if_needed(connection, value, expected_timezone=None):
     if engine.name == "sqlite" and isinstance(value, str):
         # SQLite stores naive datetime strings that represent UTC time
         parsed = datetime.fromisoformat(value)
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
         if expected_timezone is not None:
             return parsed.astimezone(expected_timezone)
         return parsed

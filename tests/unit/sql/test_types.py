@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 import sqlalchemy as sa
@@ -59,7 +59,7 @@ def test_type_read_converter_boolean_passthrough_for_unknown_strings():
         ),
         pytest.param(
             "2024-01-02T03:04:05Z",
-            datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 3, 4, 5, tzinfo=UTC),
             id="z_suffix",
         ),
         pytest.param(
@@ -74,7 +74,7 @@ def test_type_read_converter_boolean_passthrough_for_unknown_strings():
         ),
         pytest.param(
             "2024-01-02 03:04:05.123456789+00:00",
-            datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=UTC),
             id="extra_fraction_with_offset",
         ),
     ],
@@ -87,7 +87,7 @@ def test_type_read_converter_datetime_parses_valid_strings(value, expected):
 
 def test_type_read_converter_datetime_passthrough_for_datetime_values():
     converter = TypeReadConverter()
-    value = datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+    value = datetime(2024, 1, 2, 3, 4, 5, tzinfo=UTC)
 
     assert converter.datetime(value) is value
 

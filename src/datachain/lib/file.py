@@ -30,8 +30,9 @@ from datachain.sql.types import JSON, Boolean, DateTime, Int, String
 from datachain.utils import TIME_ZERO
 
 if TYPE_CHECKING:
+    from typing import Self
+
     from numpy import ndarray
-    from typing_extensions import Self
 
     from datachain.catalog import Catalog
     from datachain.client.fsspec import Client

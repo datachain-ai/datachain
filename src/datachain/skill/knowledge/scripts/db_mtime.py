@@ -1,7 +1,7 @@
 """Print max mtime of .datachain/db* files as ISO-8601 UTC."""
 
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from glob import glob
 
 from utils import studio_available
@@ -19,7 +19,7 @@ def cmd_db_mtime():
             print("1970-01-01T00:00:00Z")
         return
     mtime = max(os.path.getmtime(p) for p in matches)
-    dt = datetime.fromtimestamp(mtime, tz=timezone.utc)
+    dt = datetime.fromtimestamp(mtime, tz=UTC)
     print(dt.strftime("%Y-%m-%dT%H:%M:%SZ"))
 
 

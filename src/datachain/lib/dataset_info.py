@@ -17,7 +17,7 @@ from datachain.query.session import Session
 from datachain.utils import TIME_ZERO
 
 if TYPE_CHECKING:
-    from typing_extensions import Self
+    from typing import Self
 
 
 class DatasetInfo(DataModel):

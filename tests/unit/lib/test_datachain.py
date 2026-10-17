@@ -774,7 +774,7 @@ def test_from_features_simple_types_in_memory():
 
 @skip_if_not_sqlite
 def test_to_pandas_as_object_preserves_none(test_session):
-    timestamp = dt.datetime(2020, 1, 1, tzinfo=dt.timezone.utc)
+    timestamp = dt.datetime(2020, 1, 1, tzinfo=dt.UTC)
     chain = dc.read_values(
         id=[1, None],
         value=[3.14, None],
@@ -2254,7 +2254,7 @@ def test_to_json_features_nested(tmp_dir, test_session):
 
 
 def test_to_json_datetime(tmp_dir, test_session):
-    timestamp = dt.datetime.now(dt.timezone.utc)
+    timestamp = dt.datetime.now(dt.UTC)
     chain = dc.read_values(ts=[timestamp], session=test_session)
 
     path = tmp_dir / "dt.json"
@@ -2265,9 +2265,7 @@ def test_to_json_datetime(tmp_dir, test_session):
 
     expected_ts = timestamp.isoformat().replace("+00:00", "Z")
     assert values == [{"ts": expected_ts}]
-    assert (
-        dt.datetime.fromisoformat(values[0]["ts"].replace("Z", "+00:00")) == timestamp
-    )
+    assert dt.datetime.fromisoformat(values[0]["ts"]) == timestamp
 
 
 # These deprecation warnings occur in the datamodel-code-generator package.

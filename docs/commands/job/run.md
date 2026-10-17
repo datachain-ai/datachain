@@ -35,7 +35,7 @@ This command runs a job in Studio using the specified query file. You can config
 * `--credentials-name CREDENTIALS_NAME` - Name of the credentials to use for the job
 * `--workers WORKERS` - Number of workers for the job
 * `--files FILES` - Additional files to include in the job
-* `--python-version PYTHON_VERSION` - Python version for the job (e.g., 3.10, 3.11, 3.12, 3.13)
+* `--python-version PYTHON_VERSION` - Python version for the job (e.g., 3.11, 3.12, 3.13)
 * `--repository REPOSITORY` - Repository URL to clone before running the job
 * `--req-file REQ_FILE` - Python requirements file
 * `--req REQ` - Python package requirements

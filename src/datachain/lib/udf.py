@@ -40,8 +40,7 @@ logger = logging.getLogger("datachain")
 if TYPE_CHECKING:
     from collections import abc
     from contextlib import AbstractContextManager
-
-    from typing_extensions import Self
+    from typing import Self
 
     from datachain.cache import Cache
     from datachain.catalog import Catalog

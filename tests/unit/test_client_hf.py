@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -13,7 +13,7 @@ from datachain.client.hf import HfClient
 def test_info_to_file_uses_last_commit_metadata_when_present():
     cache = Mock(spec=Cache)
     client = HfClient("datasets/org/repo", {}, cache)
-    commit_date = datetime(2024, 10, 12, 7, 28, tzinfo=timezone.utc)
+    commit_date = datetime(2024, 10, 12, 7, 28, tzinfo=UTC)
 
     file = client.info_to_file(
         {
@@ -62,7 +62,7 @@ def test_ls_dir_requests_expanded_info():
 def test_get_file_info_requests_expanded_info():
     cache = Mock(spec=Cache)
     client = HfClient("datasets/org/repo", {}, cache)
-    commit_date = datetime(2024, 10, 12, 7, 28, tzinfo=timezone.utc)
+    commit_date = datetime(2024, 10, 12, 7, 28, tzinfo=UTC)
     client._fs = Mock()
     client._fs._info = AsyncMock(
         return_value={
@@ -84,7 +84,7 @@ def test_get_file_info_requests_expanded_info():
 def test_upload_requests_expanded_info_for_returned_file():
     cache = Mock(spec=Cache)
     client = HfClient("datasets/org/repo", {}, cache)
-    commit_date = datetime(2024, 10, 12, 7, 28, tzinfo=timezone.utc)
+    commit_date = datetime(2024, 10, 12, 7, 28, tzinfo=UTC)
     client._fs = Mock()
     client._fs.info.return_value = {
         "size": 4,

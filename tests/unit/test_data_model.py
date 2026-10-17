@@ -1,11 +1,8 @@
 import copy
 from collections.abc import Collection, Iterable, Mapping, Sequence
-from typing import Dict, Generic, List, TypeVar  # noqa: UP035
+from typing import Dict, Generic, List, TypedDict, TypeVar  # noqa: UP035
 
 import pytest
-
-# typing.TypedDict cannot be combined with Generic on Python 3.10
-from typing_extensions import TypedDict
 
 from datachain.lib.data_model import (
     DataModel,

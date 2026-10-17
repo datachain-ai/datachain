@@ -1,7 +1,7 @@
 import argparse
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from glob import glob
 
 from utils import (
@@ -208,7 +208,7 @@ def cmd_plan(studio: bool = False, output: str | None = None):
         db_last_updated = "1970-01-01T00:00:00Z"
     else:
         mtime = max(os.path.getmtime(p) for p in matches)
-        dt = datetime.fromtimestamp(mtime, tz=timezone.utc)
+        dt = datetime.fromtimestamp(mtime, tz=UTC)
         db_last_updated = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     datasets_out, datasets_up_to_date = plan_datasets(dc, db_last_updated, studio)

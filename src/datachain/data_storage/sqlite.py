@@ -93,13 +93,7 @@ SQLITE_LOCKED = 6
 
 def _is_sqlite_lock_error(exc: sqlite3.OperationalError) -> bool:
     """Return True if the OperationalError is a transient lock/busy error."""
-    code = getattr(exc, "sqlite_errorcode", None)
-    if code is not None:
-        # Python >=3.11: use the precise error code
-        return code in (SQLITE_BUSY, SQLITE_LOCKED)
-    # Python 3.10: fall back to message matching
-    msg = str(exc).lower()
-    return "locked" in msg or "busy" in msg
+    return getattr(exc, "sqlite_errorcode", None) in (SQLITE_BUSY, SQLITE_LOCKED)
 
 
 def retry_sqlite_locks(func):

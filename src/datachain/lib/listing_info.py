@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from datachain.lib.dataset_info import DatasetInfo
 from datachain.lib.listing import (
@@ -26,7 +26,7 @@ class ListingInfo(DatasetInfo):
 
     @property
     def is_expired(self) -> bool:
-        return datetime.now(timezone.utc) > self.expires if self.expires else False
+        return datetime.now(UTC) > self.expires if self.expires else False
 
     @property
     def last_inserted_at(self):

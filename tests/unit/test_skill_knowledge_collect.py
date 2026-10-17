@@ -1,6 +1,6 @@
 """Tests for the metastore-driven KB collectors."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -16,8 +16,8 @@ def _version(version, *, query_script="", status=DatasetStatus.COMPLETE):
         uuid=f"uuid-{version}",
         num_objects=10,
         size=100,
-        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        finished_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        finished_at=datetime(2026, 1, 2, tzinfo=UTC),
         query_script=query_script,
         schema={},
         feature_schema=None,
