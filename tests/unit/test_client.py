@@ -1,11 +1,24 @@
 import os
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
+from fsspec.asyn import sync
+from hypothesis import given
+from hypothesis import strategies as st
 
+from datachain.asyn import get_loop
 from datachain.client import Client
+from datachain.client.fsspec import RangeListedClient
 from datachain.client.local import FileClient
+from datachain.client.ranges import (
+    KeyRange,
+    Page,
+    code_points,
+    key_midpoint,
+    split_point,
+)
 from datachain.client.writeconfig import WriteConfig
 
 
@@ -50,3 +63,126 @@ def test_parse_file_path_ends_with_slash(cloud_type):
     uri, rel_part = Client.parse_url("./animals/".replace("/", os.sep))
     assert uri == (Path().absolute() / Path("animals")).as_uri()
     assert rel_part == ""
+
+
+@given(st.text(min_size=1), st.text(min_size=1), st.text())
+def test_key_midpoint_is_strictly_inside(a, b, alphabet):
+    lo, hi = sorted([a, b])
+    mid = key_midpoint(lo, hi, alphabet)
+    assert mid is None or lo < mid < hi
+    assert lo < key_midpoint(lo, None, alphabet)
+
+
+@pytest.mark.parametrize(
+    "lo,hi,alphabet,expected",
+    [
+        ("a", "c", "abc", "b"),
+        ("img/0001.jpg", "img/9999.jpg", "img/.jpg0123456789", "img/4"),
+        ("a", "a\0", "a", None),
+    ],
+)
+def test_key_midpoint(lo, hi, alphabet, expected):
+    assert key_midpoint(lo, hi, alphabet) == expected
+
+
+def test_key_midpoint_stays_near_dense_keys():
+    alphabet = "img/.jpg0123456789"
+    assert key_midpoint("img/0999.jpg", None, alphabet) > "img/z"
+    assert (
+        "img/0999.jpg"
+        < key_midpoint("img/0999.jpg", None, alphabet, first="img/0000.jpg")
+        < "img/5"
+    )
+
+
+def _range(hi, age):
+    return KeyRange(hi, code_points, age)
+
+
+def test_young_ranges_split_close_ahead():
+    mid = split_point(_range(None, 1), "img/0003.jpg", "img/0000.jpg", "img/.jpg0123")
+
+    assert "img/0003.jpg" < mid < "img/1"
+
+
+def test_old_open_ranges_split_further_with_age():
+    young = split_point(_range(None, 5), "img/0003.jpg", "img/0000.jpg", "img/.jpg0123")
+    old = split_point(_range(None, 50), "img/0003.jpg", "img/0000.jpg", "img/.jpg0123")
+
+    assert "img/0003.jpg" < young < old
+
+
+def test_old_bounded_ranges_split_at_the_midpoint():
+    assert split_point(_range("c", 9), "a", "a", "abc") == "b"
+
+
+def test_splits_stay_inside_the_prefix():
+    mid = split_point(_range(None, 1), "n2/b.txt", "n2/b.txt", "n2/.btx", "n2/")
+
+    assert mid is not None
+    assert mid.startswith("n2/")
+
+
+class _Row(NamedTuple):
+    path: str
+
+
+class _ReorderingClient(RangeListedClient):
+    """Keys ``000``..``039`` in pages of 4; pages from ``reversed_from`` on come
+    back in reverse order."""
+
+    PREFIX = "fake://"
+    protocol = "fake"
+    LIST_PAGE_SIZE = 4
+
+    def __init__(self, reversed_from: str) -> None:
+        super().__init__("bucket", {}, None)  # type: ignore[arg-type]
+        self.keys = [f"{i:03}" for i in range(40)]
+        self.reversed_from = reversed_from
+        self.starts: list[str] = []
+
+    def info_to_file(self, v, path):
+        raise NotImplementedError
+
+    async def _list_page(
+        self, prefix, start_after, token, keep, page_size=None, hi=None
+    ) -> Page:
+        if token is None:
+            self.starts.append(start_after)
+            token = next(
+                (i for i, k in enumerate(self.keys) if k > start_after), len(self.keys)
+            )
+        chunk = self.keys[token : token + (page_size or self.LIST_PAGE_SIZE)]
+        end = token + len(chunk)
+        if chunk and chunk[0] >= self.reversed_from:
+            chunk = chunk[::-1]
+        return Page(
+            [_Row(k) for k in chunk if keep(k)],
+            chunk[0] if chunk else None,
+            max(chunk, default=None),
+            end if end < len(self.keys) else None,
+        )
+
+
+def _listed_paths(client: Client) -> list[str]:
+    async def paths():
+        return [r.path async for page in client.scandir("") for r in page]
+
+    return sync(get_loop(), paths)
+
+
+def test_keys_out_of_order_turn_splitting_off(mocker):
+    mocker.patch("datachain.client.ranges.LIST_WORKERS", 4)
+    client = _ReorderingClient(reversed_from="")
+
+    assert sorted(_listed_paths(client)) == client.keys
+    assert client.starts == [""]  # one range
+
+
+def test_keys_out_of_order_after_a_split_fail_the_listing(mocker):
+    mocker.patch("datachain.client.ranges.LIST_WORKERS", 4)
+    client = _ReorderingClient(reversed_from="020")
+
+    with pytest.raises(RuntimeError, match="out of order"):
+        _listed_paths(client)
+    assert len(client.starts) > 1

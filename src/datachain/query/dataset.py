@@ -1,4 +1,5 @@
 import contextlib
+import functools
 import hashlib
 import logging
 import os
@@ -12,7 +13,7 @@ from copy import copy
 from datetime import UTC, datetime
 from functools import wraps
 from types import GeneratorType
-from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, Protocol, TypeVar, cast
 from uuid import uuid4
 
 import attrs
@@ -450,10 +451,27 @@ class Subtract(DatasetDiffOperation):
         )
 
 
+@functools.cache
+def _keeps_exact_types(warehouse_type: type["AbstractWarehouse"]) -> bool:
+    """Whether the warehouse converts values of the column's exact type as they are."""
+    from datachain.data_storage.warehouse import AbstractWarehouse
+
+    return warehouse_type.convert_type is AbstractWarehouse.convert_type
+
+
+class ColType(NamedTuple):
+    name: str
+    sql_type: SQLType
+    python_type: type
+    type_name: str
+    default: Any
+    kept_as_is: bool  # a value of python_type goes in unconverted
+
+
 def adjust_outputs(
     warehouse: "AbstractWarehouse",
     row: dict[str, Any],
-    col_types: list[tuple[str, SQLType, type, str, Any]],
+    col_types: list[ColType],
     signal_schema: SignalSchema,
     udf_kind: str | None = None,
 ) -> dict[str, Any]:
@@ -471,6 +489,7 @@ def adjust_outputs(
         col_python_type,
         col_type_name,
         default_value,
+        kept_as_is,
     ) in col_types:
         # Fill missing values with defaults
         if col_name not in row:
@@ -482,6 +501,9 @@ def adjust_outputs(
         # Fill explicit None values with defaults
         if row_val is None:
             row[col_name] = default_value
+            continue
+
+        if kept_as_is and type(row_val) is col_python_type:
             continue
 
         # Validate and convert type if needed and possible
@@ -530,23 +552,51 @@ def adjust_outputs(
 
 def get_col_types(
     warehouse: "AbstractWarehouse", output: "Mapping[str, Any]"
-) -> list[tuple]:
-    """Optimization: Precompute column types so these don't have to be computed
-    in the convert_type function for each row in a loop."""
+) -> list[ColType]:
+    """Column types, computed once per run rather than once per row."""
     dialect = warehouse.db.dialect
-    return [
-        (
-            col_name,
-            # Check if type is already instantiated or not
-            col_type_inst := col_type() if isinstance(col_type, type) else col_type,
-            warehouse.python_type(col_type_inst),
-            type(col_type_inst).__name__,
+    exact = _keeps_exact_types(type(warehouse))
+    col_types = []
+    for name, col_type in output.items():
+        sql_type = col_type() if isinstance(col_type, type) else col_type
+        python_type = warehouse.python_type(sql_type)
+        type_name = type(sql_type).__name__
+        default = (
             None
-            if getattr(col_type_inst, "dc_nullable", False)
-            else col_type.default_value(dialect),
+            if getattr(sql_type, "dc_nullable", False)
+            else col_type.default_value(dialect)
         )
-        for col_name, col_type in output.items()
+        kept_as_is = exact and python_type not in (list, dict) and type_name != "JSON"
+        col_types.append(
+            ColType(name, sql_type, python_type, type_name, default, kept_as_is)
+        )
+    return col_types
+
+
+def _tuple_adjuster(col_types: list[ColType]) -> Callable[[tuple], tuple | None]:
+    """For a gen or agg row of the output columns, then ``sys__input_id``,
+    ``sys__partial`` and ``sys__empty``: the row with column defaults in place of
+    None, or None when ``adjust_outputs`` must convert it."""
+    kept_types = [
+        frozenset({type(None), c.python_type} if c.kept_as_is else {type(None)})
+        for c in col_types
+    ] + [frozenset({int, bool, type(None)})] * 3
+    defaults = [
+        (i, c.default) for i, c in enumerate(col_types) if c.default is not None
     ]
+
+    def adjust(row: tuple) -> tuple | None:
+        if not all(map(frozenset.__contains__, kept_types, map(type, row))):
+            return None
+        if not defaults or None not in row:
+            return row
+        values = list(row)
+        for i, default in defaults:
+            if values[i] is None:
+                values[i] = default
+        return tuple(values)
+
+    return adjust
 
 
 def process_udf_outputs(
@@ -569,6 +619,13 @@ def process_udf_outputs(
     else:
         udf_kind = "map"
 
+    if udf_kind == "map":
+        columns = ["sys__id", *udf.output]
+    else:
+        columns = [*udf.output, "sys__input_id", "sys__partial", "sys__empty"]
+
+    adjust_tuple = _tuple_adjuster(udf_col_types)
+
     def _insert_rows():
         for udf_output in udf_results:
             if not udf_output:
@@ -577,17 +634,27 @@ def process_udf_outputs(
             with safe_closing(udf_output):
                 for row in udf_output:
                     cb.relative_update()
-                    yield adjust_outputs(
+                    if type(row) is tuple:
+                        if (
+                            udf_kind != "map"
+                            and (fast := adjust_tuple(row)) is not None
+                        ):
+                            yield fast
+                            continue
+                        row = dict(zip(columns, row, strict=True))
+                    row = adjust_outputs(
                         warehouse,
                         row,
                         udf_col_types,
                         udf_signal_schema,
                         udf_kind=udf_kind,
                     )
+                    yield tuple(map(row.__getitem__, columns))
 
     try:
-        warehouse.insert_rows(
+        warehouse.insert_tuples(
             udf_table,
+            columns,
             _insert_rows(),
             batch_size=batch_size,
         )

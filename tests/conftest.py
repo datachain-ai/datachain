@@ -491,6 +491,42 @@ class CloudTestCatalog:
         return Session("CTCSession", catalog=self.catalog)
 
 
+AZURITE_IMAGE = "mcr.microsoft.com/azure-storage/azurite:3.37.0"
+
+
+@pytest.fixture(scope="session")
+def azurite(docker_client, tmp_path_factory):
+    """pytest-servers' Azurite at a release that honors ``startFrom``."""
+    import requests
+    from docker.errors import NotFound
+    from filelock import FileLock
+    from pytest_servers.azure import AZURITE_CONNECTION_STRING, AZURITE_URL
+    from pytest_servers.utils import wait_until, wait_until_running
+
+    name = "datachain-azurite-" + AZURITE_IMAGE.rsplit(":", 1)[1]
+    with FileLock(tmp_path_factory.getbasetemp().parent / f"{name}.lock"):
+        try:
+            container = docker_client.containers.get(name)
+        except NotFound:
+            container = docker_client.containers.run(
+                AZURITE_IMAGE,
+                command="azurite-blob --loose --blobHost 0.0.0.0 --skipApiVersionCheck",
+                name=name,
+                detach=True,
+                remove=True,
+                ports={"10000/tcp": None},
+            )
+        wait_until_running(container)
+        port = container.ports.get("10000/tcp")[0]["HostPort"]
+
+    def is_healthy() -> bool:
+        r = requests.get(AZURITE_URL.format(port=port), timeout=3)
+        return r.status_code == 400 and "Azurite" in r.headers.get("Server", "")
+
+    wait_until(is_healthy, timeout=30)
+    return AZURITE_CONNECTION_STRING.format(port=port)
+
+
 cloud_types = ["s3", "gs", "azure"]
 
 
@@ -547,8 +583,33 @@ def pytest_collection_modifyitems(config, items):
                 item.add_marker(pytest.mark.skip(reason=reason))
 
 
+def _moto_lists_after_key_marker(monkeypatch):
+    """moto drops the first version after a KeyMarker that names no key; S3 lists
+    everything after it. Resume moto after the last key at or before the marker."""
+    from moto.s3.models import S3Backend
+
+    list_versions = S3Backend.list_object_versions
+
+    def list_object_versions(self, bucket_name, key_marker=None, **kwargs):
+        if key_marker and not kwargs.get("version_id_marker"):
+            keys = self.get_bucket(bucket_name).keys
+            if before := [name for name in keys if name <= key_marker]:
+                key_marker = max(before)
+                oldest = min(keys.getlist(key_marker), key=lambda v: v.last_modified)
+                kwargs["version_id_marker"] = oldest.version_id
+            else:
+                key_marker = None
+        return list_versions(self, bucket_name, key_marker=key_marker, **kwargs)
+
+    monkeypatch.setattr(S3Backend, "list_object_versions", list_object_versions)
+
+
 @pytest.fixture(scope="session")
-def cloud_server(request, tmp_upath_factory, cloud_type, version_aware, tree):
+def cloud_server(
+    request, tmp_upath_factory, cloud_type, version_aware, tree, monkeypatch_session
+):
+    if cloud_type == "s3":
+        _moto_lists_after_key_marker(monkeypatch_session)
     if cloud_type == "azure" and version_aware:
         if conn_str := request.config.getoption("--azure-connection-string"):
             src_path = tmp_upath_factory.azure(conn_str)

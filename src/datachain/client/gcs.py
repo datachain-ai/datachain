@@ -1,9 +1,8 @@
-import asyncio
 import json
 import os
-from collections.abc import Iterable
+from collections.abc import Callable
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, BinaryIO, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, cast
 from urllib.parse import quote
 
 from dateutil.parser import isoparse
@@ -13,10 +12,10 @@ from gcsfs import GCSFileSystem
 from gcsfs.retry import HttpError
 
 from datachain.client.fileslice import FileWrapper
-from datachain.lib.file import File
-from datachain.progress import tqdm
+from datachain.lib.file import File, FileRow
 
-from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue
+from .fsspec import BucketStatus, RangeListedClient, iso_timestamp
+from .ranges import Page
 
 if TYPE_CHECKING:
     from datachain.client.writeconfig import WriteConfig
@@ -25,14 +24,23 @@ if TYPE_CHECKING:
 GCSFileSystem.set_session = GCSFileSystem._set_session
 # Skip the GCE metadata check — it adds latency and hangs outside GCE.
 os.environ.setdefault("NO_GCE_CHECK", "true")
-PageQueue = asyncio.Queue[Iterable[dict[str, Any]] | None]
 
 
-class GCSClient(Client):
+class GCSClient(RangeListedClient):
     FS_CLASS = GCSFileSystem
     PREFIX = "gs://"
     protocol = "gs"
     CREDENTIAL_KEYS = frozenset({"token"})
+    LIST_PAGE_SIZE = 5000
+    # GCS sends every field otherwise
+    LIST_FIELDS: ClassVar[tuple[str, ...]] = (
+        "name",
+        "size",
+        "generation",
+        "etag",
+        "timeDeleted",
+        "updated",
+    )
 
     @classmethod
     def create_fs(cls, **kwargs) -> GCSFileSystem:
@@ -216,77 +224,51 @@ class GCSClient(Client):
 
         This ensures that the passed timestamp is timezone aware.
         """
-        dt = isoparse(timestamp)
+        dt = iso_timestamp(timestamp) or isoparse(timestamp)
         assert dt.tzinfo is not None
         return dt
 
-    async def _fetch_flat(self, start_prefix: str, result_queue: ResultQueue) -> None:
-        prefix = start_prefix
-        if prefix:
-            prefix = prefix.lstrip(DELIMITER) + DELIMITER
-        found = False
-        try:
-            page_queue: PageQueue = asyncio.Queue(2)
-            consumer = asyncio.create_task(
-                self._process_pages(page_queue, result_queue)
-            )
-            try:
-                await self._get_pages(prefix, page_queue)
-                found = await consumer
-                if not found and prefix:
-                    raise FileNotFoundError(f"Unable to resolve remote path: {prefix}")
-            finally:
-                consumer.cancel()  # In case _get_pages() raised
-        finally:
-            result_queue.put_nowait(None)
+    async def _list_page(
+        self,
+        prefix: str,
+        start_after: str,
+        token: Any,
+        keep: Callable[[str], bool],
+        page_size: int | None = None,
+        hi: str | None = None,
+    ) -> Page:
+        page = await self.fs._call(
+            "GET",
+            "b/{}/o",
+            self.name,
+            delimiter="",
+            prefix=prefix,
+            startOffset=start_after or None,
+            endOffset=None if hi is None else f"{hi}\0",  # exclusive
+            maxResults=page_size or self.LIST_PAGE_SIZE,
+            pageToken=token,
+            fields=f"items({','.join(self.LIST_FIELDS)}),nextPageToken",
+            json_out=True,
+            versions="true" if self._is_version_aware() else "false",
+        )
+        items = page.get("items", [])
+        return Page(
+            [self._file_row(d) for d in items if keep(d["name"])],
+            items[0]["name"] if items else None,
+            items[-1]["name"] if items else None,
+            page.get("nextPageToken"),
+        )
 
-    _fetch_default = _fetch_flat
-
-    async def _process_pages(
-        self, page_queue: PageQueue, result_queue: ResultQueue
-    ) -> bool:
-        found = False
-        with tqdm(desc=f"Listing {self.uri}", unit=" objects", leave=False) as pbar:
-            while (page := await page_queue.get()) is not None:
-                if page:
-                    found = True
-                entries = [
-                    self._entry_from_dict(d)
-                    for d in page
-                    if self._is_valid_key(d["name"])
-                ]
-                if entries:
-                    await result_queue.put(entries)
-                    pbar.update(len(entries))
-        return found
-
-    async def _get_pages(self, path: str, page_queue: PageQueue) -> None:
-        page_size = 5000
-        try:
-            next_page_token = None
-            while True:
-                page = await self.fs._call(
-                    "GET",
-                    "b/{}/o",
-                    self.name,
-                    delimiter="",
-                    prefix=path,
-                    maxResults=page_size,
-                    pageToken=next_page_token,
-                    json_out=True,
-                    versions="true" if self._is_version_aware() else "false",
-                )
-                assert page["kind"] == "storage#objects"
-                await page_queue.put(page.get("items", []))
-                next_page_token = page.get("nextPageToken")
-                if next_page_token is None:
-                    break
-        finally:
-            await page_queue.put(None)
-
-    def _entry_from_dict(self, d: dict[str, Any]) -> File:
-        info = self.fs._process_object(self.name, d)
-        return self.info_to_file(info, self.rel_path(info["name"]))
+    def _file_row(self, d: dict[str, Any]) -> tuple:
+        return FileRow(
+            self.uri,
+            d["name"],
+            int(d.get("size", 0)),
+            d.get("generation", "") if self._is_version_aware() else "",
+            d.get("etag", ""),
+            not d.get("timeDeleted"),
+            self.parse_timestamp(d["updated"]),
+        )
 
     def info_to_file(self, v: dict[str, Any], path: str) -> File:
         return File(

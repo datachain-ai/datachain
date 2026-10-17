@@ -8,8 +8,13 @@ import posixpath
 import re
 import shutil
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import (
+    AsyncIterator,
+    Callable,
+    Iterator,
+    Sequence,
+)
+from contextlib import aclosing, contextmanager, suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
@@ -24,6 +29,8 @@ from datachain.fs.utils import is_win_local_path
 from datachain.nodes_fetcher import NodesFetcher
 from datachain.nodes_thread_pool import NodeChunk
 from datachain.progress import tqdm
+
+from .ranges import LIST_WORKERS, Page, RangeListing
 
 if TYPE_CHECKING:
     from fsspec.spec import AbstractFileSystem
@@ -41,12 +48,18 @@ DELIMITER = "/"  # Path delimiter.
 DATA_SOURCE_URI_PATTERN = re.compile(r"^[\w]+:\/\/.*$")
 CLOUD_STORAGE_PROTOCOLS = {"s3", "gs", "az", "hf"}
 
-ResultQueue = asyncio.Queue[Sequence["File"] | None]
+ResultQueue = asyncio.Queue[Sequence[Any] | None]
 
 
 def is_cloud_uri(uri: str) -> bool:
     protocol = urlparse(uri).scheme
     return protocol in CLOUD_STORAGE_PROTOCOLS
+
+
+def iso_timestamp(value: str) -> datetime | None:
+    with suppress(ValueError):
+        return datetime.fromisoformat(value)
+    return None
 
 
 def get_cloud_schemes() -> list[str]:
@@ -73,6 +86,7 @@ class Client(ABC):
     protocol: ClassVar[str]
     # client_config keys this backend treats as credentials.
     CREDENTIAL_KEYS: ClassVar[frozenset[str]] = frozenset()
+    LIST_PAGE_SIZE: ClassVar[int] = 1000
 
     @classmethod
     def has_explicit_credentials(cls, client_config: dict | None) -> bool:
@@ -291,18 +305,43 @@ class Client(ABC):
         )
 
     async def scandir(
-        self, start_prefix: str, method: str = "default"
-    ) -> AsyncIterator[Sequence["File"]]:
+        self,
+        start_prefix: str,
+        method: str = "default",
+        processes: bool = False,
+    ) -> AsyncIterator[Sequence[Any]]:
+        """Pages of entries: ``FileRow`` rows from a range listing, ``File``
+        objects otherwise. With ``processes``, a range listing may parse pages in
+        child processes."""
         try:
             impl = getattr(self, f"_fetch_{method}")
         except AttributeError:
             raise ValueError(f"Unknown indexing method '{method}'") from None
-        result_queue: ResultQueue = asyncio.Queue()
-        loop = get_loop()
-        main_task = loop.create_task(impl(start_prefix, result_queue))
-        while (entry := await result_queue.get()) is not None:
-            yield entry
-        await main_task
+        if (
+            processes
+            and getattr(impl, "__func__", None) is RangeListedClient._fetch_ranges
+        ):
+            impl = functools.partial(impl, processes=True)
+        result_queue: ResultQueue = asyncio.Queue(2 * LIST_WORKERS)
+
+        async def listing() -> None:
+            try:
+                await impl(start_prefix, result_queue)
+            except asyncio.CancelledError:
+                raise
+            except BaseException:
+                await result_queue.put(None)
+                raise
+            await result_queue.put(None)
+
+        main_task = get_loop().create_task(listing())
+        try:
+            while (page := await result_queue.get()) is not None:
+                yield page
+            await main_task
+        finally:
+            main_task.cancel()
+            await asyncio.gather(main_task, return_exceptions=True)
 
     async def _fetch_nested(self, start_prefix: str, result_queue: ResultQueue) -> None:
         progress_bar = tqdm(desc=f"Listing {self.uri}", unit=" objects", leave=False)
@@ -327,26 +366,18 @@ class Client(ABC):
                 finally:
                     queue.task_done()
 
+        workers: list[asyncio.Task] = []
         try:
-            workers: list[asyncio.Task] = [
-                loop.create_task(process(queue)) for _ in range(FETCH_WORKERS)
-            ]
-
-            # Wait for all fetch tasks to complete
+            workers = [loop.create_task(process(queue)) for _ in range(FETCH_WORKERS)]
             await queue.join()
-            # Stop the workers
-            excs = []
             for worker in workers:
                 if worker.done() and (exc := worker.exception()):
-                    excs.append(exc)
-                else:
-                    worker.cancel()
-            if excs:
-                raise excs[0]
+                    raise exc
         finally:
-            # This ensures the progress bar is closed before any exceptions are raised
+            for worker in workers:
+                worker.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
             progress_bar.close()
-            result_queue.put_nowait(None)
 
     async def _fetch_default(
         self, start_prefix: str, result_queue: ResultQueue
@@ -598,3 +629,79 @@ class Client(ABC):
                     "update=True to refresh the catalog."
                 )
         await self.cache.download(file, self, callback=callback)
+
+
+class RangeListedClient(Client):
+    """A client that lists in parallel key ranges (``RangeListing``)."""
+
+    PROBE_BOUNDED_SPLITS: ClassVar[bool] = True  # pays off with large pages
+
+    @staticmethod
+    def key_order(key: str) -> Any:
+        """The sort key of the order the server lists keys in."""
+        return key
+
+    async def _fetch_ranges(
+        self,
+        start_prefix: str,
+        result_queue: ResultQueue,
+        processes: bool = False,
+    ) -> None:
+        from .listing_worker import LIST_PROCESSES, Pool
+
+        prefix = start_prefix.lstrip(DELIMITER) + DELIMITER if start_prefix else ""
+        pool = Pool(self, prefix, LIST_PROCESSES) if processes else None
+        await RangeListing(self, prefix, result_queue, pool).run()
+
+    _fetch_default = _fetch_ranges
+
+    def _lists_in_key_order(self) -> bool:
+        return True
+
+    def _keeps(self, hi: str | None) -> Callable[[str], bool]:
+        if hi is None:
+            return self._is_valid_key
+        hi_key = self.key_order(hi)
+        order = self.key_order
+        return lambda key: self._is_valid_key(key) and order(key) <= hi_key
+
+    async def _list_page(
+        self,
+        prefix: str,
+        start_after: str,
+        token: Any,
+        keep: Callable[[str], bool],
+        page_size: int | None = None,
+        hi: str | None = None,
+    ) -> Page:
+        """One page under ``prefix``, in key order: the one after ``token``, or
+        the first after ``start_after``. Only keys to ``keep`` become rows. A
+        backend that can end a listing at a key ends it after ``hi``."""
+        raise NotImplementedError
+
+    async def _pages_after(
+        self,
+        prefix: str,
+        start_after: str,
+        keep: Callable[[str], bool],
+        page_size: int | None = None,
+        hi: str | None = None,
+    ) -> AsyncIterator[Page]:
+        token = None
+        while True:
+            page = await self._list_page(
+                prefix, start_after, token, keep, page_size=page_size, hi=hi
+            )
+            yield page
+            if (token := page.token) is None:
+                return
+
+    async def _probe(self, prefix: str, start_after: str) -> str | None:
+        """The first key after ``start_after``, of any kind, even a delete marker;
+        ``None`` only when the listing ends there."""
+        pages = self._pages_after(prefix, start_after, lambda _: False, page_size=1)
+        async with aclosing(pages):  # type: ignore[type-var]
+            async for page in pages:
+                if page.last is not None:  # a page may be empty and still not the last
+                    return page.last
+        return None

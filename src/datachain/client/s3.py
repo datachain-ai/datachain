@@ -1,29 +1,164 @@
-import asyncio
 import os
+from collections.abc import Callable
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
+from xml.etree.ElementTree import Element, ParseError, fromstring
 
+from aiobotocore.parsers import AioResponseParserFactory, AioRestXMLParser
+from aiobotocore.session import AioSession
+from botocore import handlers
 from botocore.exceptions import NoCredentialsError
-from fsspec.asyn import get_loop, sync
+from botocore.model import Shape
+from botocore.utils import parse_timestamp
+from fsspec.asyn import get_loop, sync, sync_wrapper
 from s3fs import S3FileSystem
 
-from datachain.lib.file import File
-from datachain.progress import tqdm
+from datachain.lib.file import File, FileRow
 
-from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue
+from .fsspec import (
+    DELIMITER,
+    BucketStatus,
+    RangeListedClient,
+    ResultQueue,
+    iso_timestamp,
+)
+from .ranges import PROCESS_LIST_WORKERS, Page
 
 if TYPE_CHECKING:
     from datachain.client.writeconfig import WriteConfig
 
-UPDATE_CHUNKSIZE = 1000
+
+def _parse_timestamp(value: Any) -> datetime:
+    parsed = iso_timestamp(value) if isinstance(value, str) else None
+    return parsed or parse_timestamp(value)
 
 
-class ClientS3(Client):
-    FS_CLASS = S3FileSystem
+_NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
+_LISTINGS = ("ListObjectsV2Output", "ListObjectVersionsOutput")
+_LISTING_OPS = ("ListObjectsV2", "ListObjectVersions")
+
+
+_SCALARS: dict[str, Callable[[str], Any]] = {
+    "integer": int,
+    "long": int,
+    "boolean": lambda text: text == "true",
+    "timestamp": _parse_timestamp,
+}
+Fields = dict[str, tuple[str, Callable[[Element], Any], bool]]
+
+
+_FIELDS: dict[str, Fields] = {}  # by shape name: every client builds its own shapes
+
+
+def _fields(shape: Shape) -> Fields:
+    """Readers of a structure's child elements by XML tag."""
+    if (fields := _FIELDS.get(shape.name)) is not None:
+        return fields
+    fields = {}
+    for name, member in shape.members.items():
+        repeated = member.type_name == "list"
+        fields[member.serialization.get("name", name)] = (
+            name,
+            _reader(member.member if repeated else member),
+            repeated,
+        )
+    _FIELDS[shape.name] = fields
+    return fields
+
+
+def _reader(shape: Shape) -> Callable[[Element], Any]:
+    if shape.type_name == "structure":
+        return lambda node: _read(node, _fields(shape))
+    convert = _SCALARS.get(shape.type_name, str)
+    return lambda node: convert(node.text or "")
+
+
+def _read(node: Element, fields: Fields) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for child in node:
+        if field := fields.get(child.tag.removeprefix(_NS)):
+            key, read, repeated = field
+            if repeated:
+                out.setdefault(key, []).append(read(child))
+            else:
+                out[key] = read(child)
+    return out
+
+
+class _ListingParser(AioRestXMLParser):
+    """Reads object listing entries straight from the XML, skipping botocore's
+    model walk. A listing page that does not parse, or holds an error, is a 500
+    that botocore retries."""
+
+    def _do_parse(self, response, shape):
+        if getattr(shape, "name", "") not in _LISTINGS or not response["body"]:
+            return super()._do_parse(response, shape)
+        try:
+            root = fromstring(response["body"])  # noqa: S314
+        except ParseError:
+            root = None
+        if root is None or root.tag.removeprefix(_NS) == "Error":
+            response["status_code"] = 500
+            return self._do_error_parse(response, shape)
+        fields = {t: f for t, f in _fields(shape).items() if f[2]}
+        entries = _read(root, fields)
+        for node in [n for n in root if n.tag.removeprefix(_NS) in fields]:
+            root.remove(node)
+        return super()._do_parse({**response, "body": root}, shape) | entries
+
+    def _initial_body_parse(self, xml_string):
+        if isinstance(xml_string, Element):
+            return xml_string
+        return super()._initial_body_parse(xml_string)
+
+
+class _ParserFactory(AioResponseParserFactory):
+    def create_parser(self, protocol_name):
+        if protocol_name == "rest-xml":
+            return _ListingParser(**self._defaults)
+        return super().create_parser(protocol_name)
+
+
+def _handle_200_error(operation_model, response_dict, **kwargs) -> None:
+    """botocore's 200-error check; a listing page is checked by its parser."""
+    if getattr(operation_model, "name", "") not in _LISTING_OPS:
+        handlers._handle_200_error(operation_model, response_dict, **kwargs)
+
+
+class _ListingSession(AioSession):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        factory = _ParserFactory()
+        factory.set_parser_defaults(timestamp_parser=_parse_timestamp)
+        self.register_component("response_parser_factory", factory)
+        self.unregister("before-parse.s3.*", handlers._handle_200_error)
+        self.register("before-parse.s3.*", _handle_200_error)
+
+
+class _S3FileSystem(S3FileSystem):
+    """Every session it makes parses listings with ``_ListingParser``."""
+
+    _owns_session = False
+
+    async def set_session(self, refresh=False, kwargs={}):  # noqa: B006
+        if self.session is None or (refresh and self._owns_session):
+            self.session = _ListingSession(**self.kwargs)
+            self._owns_session = True
+        self._session_is_owned = False  # s3fs keeps the session, even on refresh
+        return await super().set_session(refresh, kwargs)
+
+    _connect = set_session
+    connect = sync_wrapper(set_session)
+
+
+class ClientS3(RangeListedClient):
+    FS_CLASS = _S3FileSystem
     PREFIX = "s3://"
     protocol = "s3"
     CREDENTIAL_KEYS = frozenset(
         {"key", "secret", "token", "aws_key", "aws_secret", "aws_token"}
     )
+    PROBE_BOUNDED_SPLITS = False
 
     @staticmethod
     def _normalize_s3_kwargs(kwargs: dict) -> dict:
@@ -47,6 +182,8 @@ class ClientS3(Client):
         # 2014 are not going to support v2 which is the older one.
         # All regions support v4.
         kwargs.setdefault("config_kwargs", {}).setdefault("signature_version", "s3v4")
+        # a connection for each listing request in flight
+        kwargs["config_kwargs"].setdefault("max_pool_connections", PROCESS_LIST_WORKERS)
 
         if "region_name" in kwargs:
             kwargs["config_kwargs"].setdefault("region_name", kwargs.pop("region_name"))
@@ -151,79 +288,65 @@ class ClientS3(Client):
 
         return self.fs.sign(self.get_uri(path), expiration=expires, **kwargs)
 
-    async def _fetch_flat(self, start_prefix: str, result_queue: ResultQueue) -> None:
-        async def get_pages(it, page_queue):
-            try:
-                async for page in it:
-                    await page_queue.put(page.get(contents_key, []))
-            finally:
-                await page_queue.put(None)
+    def _lists_in_key_order(self) -> bool:
+        # directory buckets neither sort keys nor take StartAfter
+        return not self.name.endswith("--x-s3")
 
-        async def process_pages(page_queue, result_queue, prefix):
-            found = False
-            with tqdm(desc=f"Listing {self.uri}", unit=" objects", leave=False) as pbar:
-                while (res := await page_queue.get()) is not None:
-                    if res:
-                        found = True
-                    entries = [
-                        self._entry_from_boto(d, self.name, versions)
-                        for d in res
-                        if self._is_valid_key(d["Key"])
-                    ]
-                    if entries:
-                        await result_queue.put(entries)
-                        pbar.update(len(entries))
-            if not found and prefix:
-                raise FileNotFoundError(f"Unable to resolve remote path: {prefix}")
+    async def _list_page(
+        self,
+        prefix: str,
+        start_after: str,
+        token: Any,
+        keep: Callable[[str], bool],
+        page_size: int | None = None,
+        hi: str | None = None,
+    ) -> Page:
+        versions = self._is_version_aware()
+        kwargs: dict[str, Any] = {}
+        if versions:
+            if token is not None:
+                kwargs["KeyMarker"], version_marker = token
+                if version_marker:
+                    kwargs["VersionIdMarker"] = version_marker
+            elif start_after:
+                kwargs["KeyMarker"] = start_after
+        elif token is not None:
+            kwargs["ContinuationToken"] = token
+        elif start_after:
+            kwargs["StartAfter"] = start_after
+        await self.fs.set_session()
+        s3 = await self.fs.get_s3(self.name)
+        list_page = s3.list_object_versions if versions else s3.list_objects_v2
+        page = await list_page(
+            Bucket=self.name,
+            Prefix=prefix,
+            MaxKeys=page_size or self.LIST_PAGE_SIZE,
+            **kwargs,
+        )
+        entries = page.get("Versions" if versions else "Contents", [])
+        keys = [d["Key"] for d in entries + page.get("DeleteMarkers", [])]
+        if not page.get("IsTruncated"):
+            token = None
+        elif versions:
+            token = page["NextKeyMarker"], page.get("NextVersionIdMarker")
+        else:
+            token = page["NextContinuationToken"]
+        return Page(
+            [self._file_row(d, versions) for d in entries if keep(d["Key"])],
+            entries[0]["Key"] if entries else None,
+            max(keys, default=None),
+            token,
+        )
 
-        try:
-            prefix = start_prefix
-            if prefix:
-                prefix = prefix.lstrip(DELIMITER) + DELIMITER
-            versions = self._is_version_aware()
-            fs = self.fs
-            await fs.set_session()
-            s3 = await fs.get_s3(self.name)
-            if versions:
-                method = "list_object_versions"
-                contents_key = "Versions"
-            else:
-                method = "list_objects_v2"
-                contents_key = "Contents"
-            pag = s3.get_paginator(method)
-            it = pag.paginate(
-                Bucket=self.name,
-                Prefix=prefix,
-                Delimiter="",
-            )
-            page_queue: asyncio.Queue[list] = asyncio.Queue(2)
-            consumer = asyncio.create_task(
-                process_pages(page_queue, result_queue, prefix)
-            )
-            try:
-                await get_pages(it, page_queue)
-                await consumer
-            finally:
-                consumer.cancel()  # In case get_pages() raised
-        finally:
-            result_queue.put_nowait(None)
-
-    async def _fetch_default(
-        self, start_prefix: str, result_queue: ResultQueue
-    ) -> None:
-        await self._fetch_flat(start_prefix, result_queue)
-
-    def _entry_from_boto(self, v, bucket, versions=False) -> File:
-        return File(
-            source=self.uri,
-            path=v["Key"],
-            etag=v.get("ETag", "").strip('"'),
-            version=(
-                ClientS3.clean_s3_version(v.get("VersionId", "")) if versions else ""
-            ),
-            is_latest=v.get("IsLatest", True),
-            last_modified=v.get("LastModified", ""),
-            size=v["Size"],
+    def _file_row(self, v, versions: bool) -> tuple:
+        return FileRow(
+            self.uri,
+            v["Key"],
+            v["Size"],
+            ClientS3.clean_s3_version(v.get("VersionId", "")) if versions else "",
+            v.get("ETag", "").strip('"'),
+            v.get("IsLatest", True),
+            v["LastModified"],
         )
 
     async def _fetch_dir(

@@ -379,3 +379,12 @@ def test_map_prefetch_skips_invalid_path_files(
 
     assert result == [(bad_path,)] * 3
     assert any("Skipping prefetch" in m for m in caplog.messages)
+
+
+def test_output_schema_is_built_once_per_run(test_session, mocker):
+    spec = mocker.spy(SignalSchema, "to_udf_spec")
+    chain = dc.read_values(x=list(range(200)), session=test_session)
+    chain.map(y=lambda x: x + 1, output=int).gen(
+        z=lambda y: iter([y]), output=int
+    ).save("udf_spec")
+    assert spec.call_count < 20

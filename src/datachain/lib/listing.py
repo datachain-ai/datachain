@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 LISTING_TTL = 4 * 60 * 60  # cached listing lasts 4 hours
 LISTING_PREFIX = "lst__"  # listing datasets start with this name
+LISTING_BATCH_SIZE = 50_000  # rows per insert: listing rows are small
 # listing of current objects only, read_storage(versions=False)
 CURRENT_LISTING_PREFIX = f"{LISTING_PREFIX}current__"
 
@@ -90,11 +91,12 @@ def list_bucket(uri: str, cache, client_config=None) -> Callable:
     from bucket where each File represents one bucket entry.
     """
 
-    def list_func() -> Iterator[File]:
+    def list_func() -> Iterator[File]:  # also FileRow rows
         config = client_config or {}
         client = Client.get_client(uri, cache, **config)  # type: ignore[arg-type]
         _, path = Client.parse_url(uri)
-        for entries in iter_over_async(client.scandir(path.rstrip("/")), get_loop()):
+        pages = client.scandir(path.rstrip("/"), processes=True)
+        for entries in iter_over_async(pages, get_loop()):
             yield from entries
 
     list_func.__name__ = "read_storage"

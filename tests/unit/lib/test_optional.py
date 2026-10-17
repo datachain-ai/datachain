@@ -10,13 +10,13 @@ nullable-object coverage in one place.
 
 import copy
 import io
-from typing import Optional, Union
+from typing import Annotated, Optional, Union
 
 import pytest
 from pydantic import BaseModel
 
 from datachain.dataset import RowDict
-from datachain.lib.convert.flatten import flatten
+from datachain.lib.convert.flatten import FieldKind, classify_field, flatten
 from datachain.lib.convert.unflatten import unflatten_to_json
 from datachain.lib.convert.values_to_tuples import _infer_type_from_sequence
 from datachain.lib.data_model import DataModel, is_chain_type, unwrap_optional
@@ -394,3 +394,10 @@ def test_nested_optional_datamodel_roundtrip():
     )  # sentinel + (inner sentinel + 2 addr leaves + tag) placeholders
     rec2 = unflatten_to_json(Top, flat2)
     assert rec2 == {"mid": None}
+
+
+def test_classify_field_handles_unhashable_annotations():
+    unhashable = Annotated[int, []]
+    assert classify_field(unhashable) == FieldKind(unhashable, False, False)
+    optional = Optional[unhashable]
+    assert classify_field(optional) == FieldKind(unhashable, True, False)
