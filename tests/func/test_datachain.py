@@ -170,6 +170,28 @@ def test_read_storage_rfc_encoded_uri_targets_literal_path(tmp_dir, test_session
 
 @pytest.mark.parametrize(
     "cloud_type,version_aware",
+    [("s3", True), ("gs", False), ("gs", True), ("azure", False)],
+    indirect=True,
+)
+def test_read_storage_reads_keys_with_double_slash(cloud_test_catalog):
+    ctc = cloud_test_catalog
+    client = ctc.catalog.get_client(ctc.src_uri)
+    prefix = f"double-slash-{uuid.uuid4().hex[:8]}"
+    client.fs.pipe_file(f"{client.name}/{prefix}/d//e.txt", b"inside")
+    client.fs.invalidate_cache()
+    try:
+        chain = dc.read_storage(f"{ctc.src_uri}/{prefix}", session=ctc.session)
+        (file,) = chain.to_values("file")
+        file._set_stream(ctc.catalog)
+        assert file.path == f"{prefix}/d//e.txt"
+        assert file.read() == b"inside"
+    finally:
+        client.fs.rm(f"{client.name}/{prefix}", recursive=True)
+        client.fs.invalidate_cache()
+
+
+@pytest.mark.parametrize(
+    "cloud_type,version_aware",
     [("s3", True), ("gs", True)],
     indirect=True,
 )
@@ -177,10 +199,6 @@ def test_read_storage_versions(cloud_test_catalog):
     ctc = cloud_test_catalog
     session = ctc.session
     prefix = f"history-{uuid.uuid4().hex[:8]}"
-    (ctc.src / prefix / "kept").write_text("1")
-    (ctc.src / prefix / "kept").write_text("22")  # a second version
-    (ctc.src / prefix / "gone").write_text("x")
-    (ctc.src / prefix / "gone").unlink()  # a deleted object
     uri = f"{ctc.src_uri}/{prefix}"
 
     def listing(versions):
@@ -188,23 +206,30 @@ def test_read_storage_versions(cloud_test_catalog):
         (info,) = [ls for ls in session.catalog.listings() if ls.name == name]
         return info
 
-    full = dc.read_storage(uri, session=session).to_list("file.path", "file.size")
-    current = dc.read_storage(uri, session=session, versions=False)
+    (ctc.src / prefix / "kept").write_text("1")
+    (ctc.src / prefix / "kept").write_text("22")  # a second version
+    (ctc.src / prefix / "gone").write_text("x")
+    (ctc.src / prefix / "gone").unlink()  # a deleted object
+    try:
+        full = dc.read_storage(uri, session=session).to_list("file.path", "file.size")
+        current = dc.read_storage(uri, session=session, versions=False)
 
-    assert full == [(f"{prefix}/kept", 2)]
-    assert current.to_list("file.path", "file.size", "file.version") == [
-        (f"{prefix}/kept", 2, "")
-    ]
-    # the two listings are cached apart and hold different rows
-    assert listing(True).versions
-    assert not listing(False).versions
-    assert listing(True).uri == listing(False).uri == f"{uri}/"
-    assert listing(False).num_objects == 1
-    assert listing(True).num_objects > 1
-    assert {ls.name for ls in session.catalog.listings(prefix=f"{uri}/")} == {
-        listing(True).name,
-        listing(False).name,
-    }
+        assert full == [(f"{prefix}/kept", 2)]
+        assert current.to_list("file.path", "file.size", "file.version") == [
+            (f"{prefix}/kept", 2, "")
+        ]
+        # the two listings are cached apart and hold different rows
+        assert listing(True).versions
+        assert not listing(False).versions
+        assert listing(True).uri == listing(False).uri == f"{uri}/"
+        assert listing(False).num_objects == 1
+        assert listing(True).num_objects > 1
+        assert {ls.name for ls in session.catalog.listings(prefix=f"{uri}/")} == {
+            listing(True).name,
+            listing(False).name,
+        }
+    finally:
+        (ctc.src / prefix / "kept").unlink()
 
 
 @pytest.mark.parametrize(

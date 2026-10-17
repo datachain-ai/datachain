@@ -71,6 +71,22 @@ def test_scandir_success(client):
     match_entries(results, ENTRIES)
 
 
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("tree", [{"a": "x"}], indirect=True)
+def test_scandir_keeps_keys_with_empty_segments(client):
+    keys = ["d//e.txt", "/lead.txt", "folder/"]
+    for key in keys:
+        body = b"" if key.endswith("/") else b"x"
+        client.fs.pipe_file(f"{client.name}/{key}", body)
+    try:
+        paths = sorted(e.path for e in scandir(client, ""))
+        assert paths == ["a", "d//e.txt"]
+    finally:
+        for key in keys:
+            client.fs.rm_file(f"{client.name}/{key}")
+        client.fs.invalidate_cache()
+
+
 def test_scandir_alternate(client):
     results = scandir(client, "", method="nested")
     match_entries(results, ENTRIES)

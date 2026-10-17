@@ -44,6 +44,13 @@ sha256 = partial(hashlib.sha256, usedforsecurity=False)
 logger = logging.getLogger("datachain")
 
 _SOURCE_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+_EMPTY_SEGMENTS_RE = re.compile(r"/{2,}")
+
+
+def collapse_empty_segments(path: str) -> str:
+    """Turn ``a//b`` into ``a/b``: a local disk cannot hold an empty segment."""
+    return _EMPTY_SEGMENTS_RE.sub("/", path)
+
 
 # how to create file path when exporting
 ExportPlacement = Literal["filename", "etag", "fullpath", "checksum", "filepath"]
@@ -51,6 +58,33 @@ ExportPlacement = Literal["filename", "etag", "fullpath", "checksum", "filepath"
 FileType = Literal["binary", "text", "image", "video", "audio"]
 EXPORT_FILES_MAX_THREADS = 5
 PARTIAL_READ_BLOCK_SIZE = 1024 * 1024
+
+
+def drop_collisions(
+    files: list["File"], placement: ExportPlacement, taken: dict[str, str]
+) -> list["File"]:
+    """Keep one file per collapsed path: none if a real file took it (``taken``
+    maps path to its key), else the smallest key. Warns about every file dropped."""
+    by_target: dict[str, list[File]] = {}
+    for file in files:
+        target = collapse_empty_segments(file._get_destination_suffix(placement))
+        by_target.setdefault(target, []).append(file)
+
+    kept = []
+    for target, group in sorted(by_target.items()):
+        group.sort(key=lambda f: (f.source, f.path))
+        if target not in taken:
+            kept.append(group[0])
+            taken[target] = group.pop(0).path
+        for file in group:
+            logger.warning("File '%s' has an empty segment ('//')", file.path)
+            logger.warning(
+                "File '%s' not exported: '%s' belongs to '%s'",
+                file.path,
+                target,
+                taken[target],
+            )
+    return kept
 
 
 class FileExporter(NodesThreadPool):
@@ -521,7 +555,8 @@ class File(DataModel):
             file.parent  # 'data/subdir'
             ```
         """
-        return str(PurePosixPath(self.path).parent)
+        # not PurePosixPath: it drops the '//' that the key and SQL keep
+        return posixpath.dirname(self.path) or "."
 
     @contextmanager
     def open(
@@ -861,6 +896,13 @@ class File(DataModel):
             output_abs = os.path.abspath(output_os)
             if os.name == "nt":
                 output_abs = output_abs.replace("\\", "/")
+            if "//" in suffix:
+                suffix = collapse_empty_segments(suffix)
+                logger.warning(
+                    "File '%s' has an empty segment ('//'), exported as '%s'",
+                    self.path,
+                    suffix,
+                )
             dst = posixpath.join(output_abs, suffix)
 
             try:

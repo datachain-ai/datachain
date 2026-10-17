@@ -357,3 +357,68 @@ def test_cross_cloud_transfer(
             gcloud_client.fs.rm(dest_dir, recursive=True)
         except FileNotFoundError:
             pass
+
+
+@pytest.mark.parametrize("num_threads", [1, 4])
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_to_storage_collapses_empty_segments_locally(
+    cloud_test_catalog, tmp_dir, num_threads, caplog
+):
+    ctc = cloud_test_catalog
+    client = ctc.catalog.get_client(ctc.src_uri)
+    prefix = f"empty-seg-{num_threads}"
+    keys = {
+        "x//alone.txt": b"alone",
+        "r/b.txt": b"real",
+        "r//b.txt": b"odd",
+        "p//q.txt": b"two slashes",
+        "p///q.txt": b"three slashes",
+    }
+    for key, data in keys.items():
+        client.fs.pipe_file(f"{client.name}/{prefix}/{key}", data)
+    client.fs.invalidate_cache()
+    out = tmp_dir / f"out-{num_threads}"
+    try:
+        with caplog.at_level("WARNING", logger="datachain"):
+            dc.read_storage(f"{ctc.src_uri}/{prefix}", session=ctc.session).to_storage(
+                out, placement="filepath", num_threads=num_threads
+            )
+    finally:
+        for key in keys:
+            client.fs.rm_file(f"{client.name}/{prefix}/{key}")
+        client.fs.invalidate_cache()
+
+    assert (out / prefix / "x" / "alone.txt").read_bytes() == b"alone"
+    assert (out / prefix / "r" / "b.txt").read_bytes() == b"real"
+    assert (out / prefix / "p" / "q.txt").read_bytes() == b"three slashes"
+    messages = [r.getMessage() for r in caplog.records]
+    assert f"File '{prefix}/x//alone.txt' has an empty segment ('//'), " in "\n".join(
+        messages
+    )
+    assert (
+        f"File '{prefix}/r//b.txt' not exported: '{prefix}/r/b.txt' belongs to "
+        f"'{prefix}/r/b.txt'" in messages
+    )
+    assert (
+        f"File '{prefix}/p//q.txt' not exported: '{prefix}/p/q.txt' belongs to "
+        f"'{prefix}/p///q.txt'" in messages
+    )
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_to_storage_keeps_empty_segments_in_cloud(cloud_test_catalog):
+    ctc = cloud_test_catalog
+    client = ctc.catalog.get_client(ctc.src_uri)
+    src, dst = "empty-seg-src", "empty-seg-dst"
+    client.fs.pipe_file(f"{client.name}/{src}/x//a.txt", b"a")
+    client.fs.invalidate_cache()
+    try:
+        dc.read_storage(f"{ctc.src_uri}/{src}", session=ctc.session).to_storage(
+            f"{ctc.src_uri}/{dst}", placement="filepath"
+        )
+        client.fs.invalidate_cache()
+        assert client.fs.cat_file(f"{client.name}/{dst}/{src}/x//a.txt") == b"a"
+    finally:
+        client.fs.rm(f"{client.name}/{src}", recursive=True)
+        client.fs.rm(f"{client.name}/{dst}", recursive=True)
+        client.fs.invalidate_cache()
