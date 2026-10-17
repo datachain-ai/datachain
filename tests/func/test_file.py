@@ -5,11 +5,13 @@ import socketserver
 import tarfile
 import threading
 from pathlib import Path
+from uuid import uuid4
 
 import numpy as np
 import pytest
 
 import datachain as dc
+from datachain.client import Client
 from datachain.lib.file import File, FileError
 from datachain.lib.tar import process_tar
 from datachain.query import C
@@ -417,6 +419,35 @@ def test_file_save_roundtrip(cloud_test_catalog_upload, version_aware):
     assert dest.read() == data
     if version_aware:
         assert dest.version, "versioned backend must capture a version on save"
+
+
+@pytest.mark.parametrize("cloud_type", ["gs"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_read_storage_without_versions_reads_hash_generation_suffix(
+    cloud_test_catalog_upload,
+):
+    ctc = cloud_test_catalog_upload
+    rel_path = f"hash-key/{uuid4().hex}#0"
+    contents = b"object contents"
+    writer = Client.get_client(
+        ctc.src_uri,
+        ctc.catalog.cache,
+        **(ctc.client_config | {"version_aware": False}),
+    )
+    writer.upload(contents, rel_path)
+
+    try:
+        files = dc.read_storage(
+            ctc.src_uri,
+            session=ctc.session,
+            versions=False,
+        ).to_values("file")
+        file = next(file for file in files if file.path == rel_path)
+
+        assert not file.version
+        assert file.read() == contents
+    finally:
+        writer.fs.rm(writer.get_uri(rel_path))
 
 
 CT = "application/pdf"

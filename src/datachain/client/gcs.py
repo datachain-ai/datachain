@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import threading
 from collections.abc import Iterable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, BinaryIO, cast
@@ -12,6 +13,7 @@ from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from gcsfs import GCSFileSystem
 from gcsfs.retry import HttpError
 
+from datachain.cache import Cache
 from datachain.client.fileslice import FileWrapper
 from datachain.lib.file import File
 from datachain.progress import tqdm
@@ -34,6 +36,11 @@ class GCSClient(Client):
     protocol = "gs"
     CREDENTIAL_KEYS = frozenset({"token"})
 
+    def __init__(self, name: str, fs_kwargs: dict[str, Any], cache: Cache) -> None:
+        super().__init__(name, fs_kwargs, cache)
+        self._unversioned_fs: GCSFileSystem | None = None
+        self._unversioned_fs_lock = threading.Lock()
+
     @classmethod
     def create_fs(cls, **kwargs) -> GCSFileSystem:
         if os.environ.get("DATACHAIN_GCP_CREDENTIALS"):
@@ -42,6 +49,19 @@ class GCSClient(Client):
             kwargs["token"] = "anon"  # noqa: S105
 
         return cast("GCSFileSystem", super().create_fs(**kwargs))
+
+    def _fs_for_path(self, path: str, version_id: str | None) -> GCSFileSystem:
+        fs = self.fs
+        if version_id or not fs.version_aware or fs.split_path(path)[2] is None:
+            return fs
+
+        if self._unversioned_fs is None:
+            with self._unversioned_fs_lock:
+                if self._unversioned_fs is None:
+                    self._unversioned_fs = self.create_fs(
+                        **(self.fs_kwargs | {"version_aware": False})
+                    )
+        return self._unversioned_fs
 
     @classmethod
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:  # noqa: PLR0911
@@ -133,8 +153,9 @@ class GCSClient(Client):
             encoded_path = quote(path, safe="/")
             return f"https://storage.googleapis.com/{self.name}/{encoded_path}{query}"
         full_path = self.get_uri(path)
+        fs = self._fs_for_path(full_path, version_id)
         full_path = self._path_with_generation(full_path, version_id)
-        return self.fs.sign(
+        return fs.sign(
             full_path,
             expiration=expires,
             response_disposition=content_disposition,
@@ -168,23 +189,27 @@ class GCSClient(Client):
         # Workaround: gcsfs._get_file() silently ignores the generation= kwarg.
         # Embed it in the path as `path#generation` instead.
         # Remove the whole override once gcsfs supports generation in _get_file()
+        fs = self._fs_for_path(lpath, version_id)
         path = self._path_with_generation(lpath, version_id)
-        await self.fs._get_file(path, rpath, callback=callback)
+        await fs._get_file(path, rpath, callback=callback)
 
     async def get_current_etag(self, file: File) -> str:
         path = self._path_with_generation(file.get_fs_path(), file.version)
-        info = await self.fs._info(path)
+        fs = self._fs_for_path(path, file.version)
+        info = await fs._info(path)
         return self.info_to_file(info, file.path).etag
 
     def get_file_info(self, path: str, version_id: str | None = None) -> File:
         self.validate_file_path(path)
         fs_path = self._path_with_generation(self.get_uri(path), version_id)
-        info = sync(get_loop(), self.fs._info, fs_path)
+        fs = self._fs_for_path(fs_path, version_id)
+        info = sync(get_loop(), fs._info, fs_path)
         return self.info_to_file(info, path)
 
     async def get_size(self, file: File) -> int:
         path = self._path_with_generation(file.get_fs_path(), file.version)
-        info = await self.fs._info(path)
+        fs = self._fs_for_path(path, file.version)
+        info = await fs._info(path)
         size = info.get("size")
         if size is None:
             raise FileNotFoundError(file.get_fs_path())
@@ -204,8 +229,9 @@ class GCSClient(Client):
             file.get_fs_path(),
             file.version,
         )
+        fs = self._fs_for_path(full_path, file.version)
         return FileWrapper(
-            self.fs.open(full_path, block_size=block_size),
+            fs.open(full_path, block_size=block_size),
             cb,
         )  # type: ignore[return-value]
 
