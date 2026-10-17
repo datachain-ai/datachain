@@ -45,10 +45,6 @@ NullType = types.NullType
 _DATETIME_CAST_INPUT_TYPES = frozenset({str, bytes, date, datetime})
 
 
-def parse_datetime_text(value: str) -> datetime:
-    return datetime.fromisoformat(value)
-
-
 def datetime_cast_input_error_message(type_name: str) -> str:
     return (
         "func.cast(..., datetime) only supports string, bytes, date, or "
@@ -587,7 +583,7 @@ class TypeReadConverter:
             return value
 
         if isinstance(value, str):
-            return parse_datetime_text(value)
+            return datetime.fromisoformat(value)
 
         raise TypeError(
             "datetime read converter expected str, datetime, or None; "

@@ -37,7 +37,6 @@ from datachain.sql.types import (
     DBDefaults,
     TypeDefaults,
     datetime_cast_input_error_message,
-    parse_datetime_text,
     register_backend_types,
     register_db_defaults,
     register_type_defaults,
@@ -290,7 +289,7 @@ def sqlite_datetime_cast(value):
     if not isinstance(value, str):
         raise TypeError(datetime_cast_input_error_message(type(value).__name__))
 
-    parsed = parse_datetime_text(value)
+    parsed = datetime.fromisoformat(value)
     return _serialize_datetime(parsed)
 
 
@@ -441,7 +440,7 @@ def adapt_datetime(val: datetime) -> str:
 
 
 def convert_datetime(val: bytes) -> datetime:
-    parsed = parse_datetime_text(val.decode())
+    parsed = datetime.fromisoformat(val.decode())
     return _normalize_datetime_for_read(parsed)
 
 

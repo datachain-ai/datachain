@@ -274,15 +274,11 @@ def test_convert_datetime_falls_back_for_boundary_years(value, expected):
     assert convert_datetime(value) == expected
 
 
-def test_convert_datetime_reraises_other_errors(monkeypatch):
-    monkeypatch.setattr(
-        sqlite_base,
-        "parse_datetime_text",
-        lambda _value: datetime(2024, 1, 2, 3, 4, 5, tzinfo=ValueErrorTZ()),
-    )
+def test_normalize_datetime_for_read_reraises_other_errors():
+    value = datetime(2024, 1, 2, 3, 4, 5, tzinfo=ValueErrorTZ())
 
     with pytest.raises(ValueError, match="boom"):
-        convert_datetime(b"ignored")
+        sqlite_base._normalize_datetime_for_read(value)
 
 
 def test_sqlite_datetime_cast_returns_none_for_none():
