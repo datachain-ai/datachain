@@ -25,6 +25,7 @@ def read_csv(
     settings: dict | None = None,
     column_types: dict[str, "str | ArrowDataType"] | None = None,
     parse_options: dict[str, str | bool | Callable] | None = None,
+    columns: Sequence[str] | None = None,
     **kwargs,
 ) -> "DataChain":
     """Generate chain from csv files.
@@ -37,7 +38,8 @@ def read_csv(
         header: Whether the files include a header row.
         output: Dictionary or feature class defining column names and their
             corresponding types. List of column names is also accepted, in which
-            case types will be inferred.
+            case types will be inferred. Its fields name the columns read, in
+            order.
         column: Created column name.
         model_name: Generated model name.
         source: Whether to include info about the source file.
@@ -49,6 +51,8 @@ def read_csv(
             inference is disabled.
         parse_options: Tells the parser how to process lines.
             See https://arrow.apache.org/docs/python/generated/pyarrow.csv.ParseOptions.html
+        columns: Names of the columns to read, in this order. Without a header,
+            the columns are named f0, f1, and so on.
 
     Example:
         Reading a csv file:
@@ -87,9 +91,10 @@ def read_csv(
     chain = read_storage(path, session=session, settings=settings, **kwargs)
 
     column_names = None
-    if not header:
+    # With columns=, a file without a header is read with generated names.
+    if not header and columns is None:
         if not output:
-            msg = "error parsing csv - provide output if no header"
+            msg = "error parsing csv - provide output or columns if no header"
             raise DatasetPrepareError(chain.name, msg)
         if isinstance(output, Sequence):
             column_names = output  # type: ignore[assignment]
@@ -102,7 +107,10 @@ def read_csv(
             raise DatasetPrepareError(chain.name, msg)
 
     parse_options = ParseOptions(**parse_options)
-    read_options = ReadOptions(column_names=column_names)
+    read_options = ReadOptions(
+        column_names=column_names,
+        autogenerate_column_names=not header and columns is not None,
+    )
     convert_options = ConvertOptions(
         strings_can_be_null=True,
         null_values=STR_NA_VALUES,
@@ -119,6 +127,7 @@ def read_csv(
         model_name=model_name,
         source=source,
         nrows=nrows,
+        columns=columns,
         format=format,
         parse_options=parse_options,
     )

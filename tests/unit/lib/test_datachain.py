@@ -2091,6 +2091,56 @@ def test_read_csv_source_reads_its_row(
     assert [row.read() for row in rows] == expected  # a source can be read again
 
 
+def test_read_csv_columns(tmp_dir, test_session):
+    path = tmp_dir / "messy.csv"
+    path.write_text("Customer First Name,ZIP Code,Notes\nAlice,02134,first\n")
+    chain = dc.read_csv(
+        path.as_uri(),
+        columns=["ZIP Code", "customer_first_name"],
+        column_types={"ZIP Code": "string"},
+        session=test_session,
+    )
+    assert chain.to_list("zip_code", "customer_first_name") == [("02134", "Alice")]
+
+
+def test_read_csv_columns_keep_cleaned_names(tmp_dir, test_session):
+    # A full read names these first_name (Alice) and c0_first_name (Bob).
+    path = tmp_dir / "names.csv"
+    path.write_text("First Name,First-Name\nAlice,Bob\n")
+    chain = dc.read_csv(
+        path.as_uri(), columns=["c0_first_name", "first_name"], session=test_session
+    )
+    assert chain.to_list("first_name", "c0_first_name") == [("Alice", "Bob")]
+    chain = dc.read_csv(path.as_uri(), columns=["c0_first_name"], session=test_session)
+    assert chain.to_values("c0_first_name") == ["Bob"]
+
+
+@pytest.mark.parametrize("columns", [["b", "b"], ["First Name", "first_name"]])
+def test_read_csv_columns_repeated(tmp_dir, test_session, columns):
+    path = tmp_dir / "test.csv"
+    path.write_text("First Name,b\nAlice,2\n")
+    with pytest.raises(DatasetPrepareError, match="name a column more than once"):
+        dc.read_csv(path.as_uri(), columns=columns, session=test_session)
+
+
+def test_read_csv_no_header_columns(tmp_dir, test_session):
+    path = tmp_dir / "test.csv"
+    path.write_text("1,2,3\n")
+    chain = dc.read_csv(
+        path.as_uri(),
+        header=False,
+        columns=["f2", "f0"],
+        output=["c", "a"],
+        session=test_session,
+    )
+    assert chain.to_list("c", "a") == [(3, 1)]
+
+    chain = dc.read_csv(
+        path.as_uri(), header=False, columns=["f2"], session=test_session
+    )
+    assert chain.to_values("f2") == [3]
+
+
 def test_read_csv_tab_delimited(tmp_dir, test_session):
     df = pd.DataFrame(DF_DATA)
     path = tmp_dir / "test.csv"
@@ -2349,6 +2399,82 @@ def test_read_parquet(tmp_dir, test_session):
     df1 = chain.select("first_name", "age", "city").to_pandas()
 
     assert df_equal(df1, df)
+
+
+@pytest.fixture
+def abc_parquet(tmp_dir):
+    path = tmp_dir / "abc.parquet"
+    pq.write_table(pa.table({"a": [1.0], "b": [10.0], "c": [100.0]}), path)
+    return path.as_uri()
+
+
+def test_read_parquet_columns(abc_parquet, test_session):
+    chain = dc.read_parquet(abc_parquet, columns=["c", "a"], session=test_session)
+    assert [s for s in chain.schema if s != "source"] == ["c", "a"]
+    assert chain.to_list("c", "a") == [(100.0, 1.0)]
+
+
+def test_read_parquet_columns_with_output(abc_parquet, test_session):
+    chain = dc.read_parquet(
+        abc_parquet,
+        columns=["c", "a"],
+        output={"x": float, "y": float},
+        session=test_session,
+    )
+    assert chain.to_list("x", "y") == [(100.0, 1.0)]
+
+
+def test_read_parquet_columns_files_in_different_order(tmp_dir, test_session):
+    pq.write_table(pa.table({"a": [1], "b": [10]}), tmp_dir / "1.parquet")
+    pq.write_table(pa.table({"b": [20], "a": [2]}), tmp_dir / "2.parquet")
+    chain = dc.read_parquet(tmp_dir.as_uri(), columns=["a", "b"], session=test_session)
+    assert sorted(chain.to_list("a", "b")) == [(1, 10), (2, 20)]
+
+
+def test_read_parquet_columns_not_found(abc_parquet, test_session):
+    with pytest.raises(DatasetPrepareError, match=r"Columns \['x'\] not found"):
+        dc.read_parquet(abc_parquet, columns=["x"], session=test_session)
+
+
+@pytest.mark.parametrize("exported", ["1.parquet", "2.parquet"])
+def test_read_parquet_columns_some_files_written_by_datachain(
+    tmp_dir, test_session, exported
+):
+    plain = "2.parquet" if exported == "1.parquet" else "1.parquet"
+    pq.write_table(pa.table({"x": [1]}), tmp_dir / plain)
+    dc.read_values(x=[2], session=test_session).to_parquet(tmp_dir / exported)
+    with pytest.raises(DatasetPrepareError, match="written by DataChain"):
+        dc.read_parquet(tmp_dir.as_uri(), columns=["x"], session=test_session)
+
+
+def test_read_parquet_columns_written_by_datachain(tmp_dir, test_session):
+    path = tmp_dir / "exported.parquet"
+    dc.read_values(x=[1], session=test_session).to_parquet(path)
+    with pytest.raises(DatasetPrepareError, match="written by DataChain"):
+        dc.read_parquet(path.as_uri(), columns=["x"], session=test_session)
+
+
+def test_read_parquet_output_must_fit_columns_read(abc_parquet, test_session):
+    chain = dc.read_parquet(abc_parquet, output={"c": float}, session=test_session)
+    with pytest.raises(ValueError, match=r"output has 1 fields but .* has 3 columns"):
+        chain.to_list()
+
+
+def test_read_parquet_output_renames_by_position(abc_parquet, test_session):
+    output = {"c": float, "b": float, "a": float}
+    chain = dc.read_parquet(abc_parquet, output=output, session=test_session)
+    assert chain.to_list("c", "b", "a") == [(1.0, 10.0, 100.0)]
+
+
+def test_read_parquet_columns_are_part_of_the_step(abc_parquet, test_session):
+    # Reads that differ only in columns must not reuse each other's results.
+    def read(column):
+        return dc.read_parquet(
+            abc_parquet, columns=[column], output={"x": float}, session=test_session
+        ).to_values("x")
+
+    assert read("a") == [1.0]
+    assert read("b") == [10.0]
 
 
 def test_read_parquet_exported_with_source(test_session, tmp_dir):

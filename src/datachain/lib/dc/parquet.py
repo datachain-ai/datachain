@@ -1,4 +1,5 @@
 import os
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from datachain.lib.data_model import DataType
@@ -21,6 +22,7 @@ def read_parquet(
     source: bool = True,
     session: Session | None = None,
     settings: dict | None = None,
+    columns: Sequence[str] | None = None,
     **kwargs,
 ) -> "DataChain":
     """Generate chain from parquet files.
@@ -36,11 +38,13 @@ def read_parquet(
               - `{1..9}` : brace numeric or alphabetic range
         partitioning: Any pyarrow partitioning schema.
         output: Dictionary defining column names and their corresponding types.
+            Its fields name the columns read, in order.
         column: Created column name.
         model_name: Generated model name.
         source: Whether to include info about the source file.
         session: Session to use for the chain.
         settings: Settings to use for the chain.
+        columns: Names of the columns to read, in this order.
 
     Example:
         Reading a single file:
@@ -72,6 +76,7 @@ def read_parquet(
         column=column,
         model_name=model_name,
         source=source,
+        columns=columns,
         format="parquet",
         partitioning=partitioning,
     )

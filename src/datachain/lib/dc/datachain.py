@@ -2513,6 +2513,7 @@ class DataChain:
         model_name: str = "",
         source: bool = True,
         nrows: int | None = None,
+        columns: Sequence[str] | None = None,
         **kwargs: Any,
     ) -> "Self":
         """Generate chain from list of tabular files.
@@ -2520,11 +2521,13 @@ class DataChain:
         Parameters:
             output: Dictionary or feature class defining column names and their
                 corresponding types. List of column names is also accepted, in which
-                case types will be inferred.
+                case types will be inferred. Its fields name the columns read, in
+                order.
             column: Generated column name.
             model_name: Generated model name.
             source: Whether to include info about the source file.
             nrows: Optional row limit.
+            columns: Names of the columns to read, in this order.
             kwargs: Parameters to pass to pyarrow.dataset.dataset.
 
         Example:
@@ -2548,8 +2551,9 @@ class DataChain:
 
         from datachain.lib.arrow import (
             ArrowGenerator,
+            file_schemas,
             fix_pyarrow_format,
-            infer_schema,
+            merge_schemas,
             schema_to_output,
         )
 
@@ -2573,10 +2577,12 @@ class DataChain:
 
         schema = None
         col_names = output if isinstance(output, Sequence) else None
-        if col_names or not output:
+        if col_names or not output or columns is not None:
             try:
-                schema = infer_schema(self, **kwargs, parse_options=parse_options)
-                output, _ = schema_to_output(schema, col_names)
+                schemas = file_schemas(self, **kwargs, parse_options=parse_options)
+                schema, names = merge_schemas(schemas, columns)
+                if col_names or not output:
+                    output, _ = schema_to_output(schema, col_names or names)
             except ValueError as e:
                 raise DatasetPrepareError(self.name, e) from e
 
