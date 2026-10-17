@@ -129,7 +129,7 @@ def test_listing_rows_take_file_attributes(test_session, tmp_dir):
     (row,) = dc.listing(tmp_dir, session=test_session)
 
     assert row.get_file_ext() == "txt"
-    with pytest.raises(RuntimeError, match="catalog is not set"):
+    with pytest.raises(AttributeError, match=r"Listing\.to_objects"):
         row.read_text()
 
 
@@ -326,3 +326,32 @@ def test_listing_probes_and_keeps_active_session_config(catalog, mocker):
     assert probe.call_args.args[1] == config
     assert lst.client_config == config | {"anon": True}
     assert read_config == config | {"anon": True}
+
+
+def test_listing_save_lists_a_shared_listing_once(test_session, tmp_dir, mocker):
+    (tmp_dir / "a.txt").write_text("a")
+    (tmp_dir / "b.csv").write_text("b")
+    write = mocker.spy(dc.Listing, "_write")
+
+    saved = dc.listing(f"{tmp_dir.as_uri()}/*.{{txt,csv}}", session=test_session)
+    chain = saved.save()
+
+    assert write.call_count == 1
+    assert sorted(f.path for f in chain.to_values("file")) == ["a.txt", "b.csv"]
+    assert dc.listing_datasets(session=test_session).count() == 1
+    (listing,) = dc.listing_datasets(session=test_session).to_values("listing")
+    assert listing.version == "1.0.0"
+
+
+def test_listing_uses_cache_of_active_session(test_session, tmp_dir, mocker):
+    from datachain.lib.dc import storage
+
+    (tmp_dir / "a.txt").write_text("a")
+    pages = mocker.spy(storage, "list_pages")
+
+    catalog = test_session.catalog.copy()
+    with dc.Session("active", catalog=catalog):
+        (file,) = dc.listing(tmp_dir).to_objects()
+
+    assert pages.call_args.args[1] is catalog.cache
+    assert file._catalog.cache is catalog.cache

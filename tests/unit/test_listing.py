@@ -513,10 +513,17 @@ def test_glob_match_is_sqlite_glob_on_random_patterns():
     rng = random.Random(0)  # noqa: S311
     with closing(sqlite3.connect(":memory:")) as conn:
         for _ in range(3000):
-            pattern = "".join(rng.choices("ab-]^[*?/!", k=rng.randint(0, 7)))
-            path = "".join(rng.choices("ab-]^[/!", k=rng.randint(0, 5)))
+            pattern = "".join(rng.choices("ab-]^[*?/!", k=rng.randint(0, 9)))
+            path = "".join(rng.choices("ab-]^[/!", k=rng.randint(0, 9)))
             (expected,) = conn.execute("SELECT ? GLOB ?", (path, pattern)).fetchone()
             assert glob_match(path, pattern) == bool(expected), (path, pattern)
+
+
+def test_glob_match_is_linear_in_stars():
+    path = "a" * 1000 + ".txt"
+
+    assert not glob_match(path, "*a" * 30 + "b.txt")
+    assert glob_match(path, "*a" * 30 + "*.txt")
 
 
 @pytest.mark.parametrize(

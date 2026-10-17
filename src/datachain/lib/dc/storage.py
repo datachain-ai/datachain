@@ -317,6 +317,7 @@ def _read_storage(
     chains = []
     file_values = []
     updated_uris = set()
+    updated_listings: set[str] = set()
 
     for list_uri_to_use, glob_pattern in storage_sources(uris):
         # Avoid double updates for the same URI
@@ -350,7 +351,9 @@ def _read_storage(
             delta_retry=delta_retry,
             delta_unsafe=delta_unsafe,
         )
-        dc._query.update = update
+        # a listing shared by several URIs is refreshed once, so all read one snapshot
+        dc._query.update = update and list_ds_name not in updated_listings
+        updated_listings.add(list_ds_name)
         dc.signals_schema = dc.signals_schema.mutate({f"{column}": file_type})
 
         lst = Listing(
@@ -409,7 +412,8 @@ def listing(
 
     The listing yields one row per object, of `dc.FileRow`: named tuples
     with `File`'s columns (`f.path`, `f.size`, `f.etag`, `f.last_modified`, ...)
-    that also take `File`'s attributes (`f.name`, `f.get_file_ext()`).
+    and its path helpers (`f.name`, `f.get_file_ext()`), which build a `File`
+    per call, so filters over many rows are faster on the columns.
     `to_objects()` returns `File` objects that read files, and `save()` saves the
     listing as the snapshot `read_storage` returns.
 
@@ -527,8 +531,17 @@ class Listing:
             )
         self._listed = True
 
+    def _open_session(self) -> Session | None:
+        """The passed or the active session, without creating one."""
+        if self._session is not None:
+            return self._session
+        if Session.SESSION_CONTEXTS:
+            return Session.SESSION_CONTEXTS[-1]
+        return Session.GLOBAL_SESSION_CTX
+
     def _pages(self) -> Iterator[Sequence[tuple]]:
-        cache = self._session.catalog.cache if self._session else None
+        session = self._open_session()
+        cache = session.catalog.cache if session else None
         for list_uri, filters in self._sources(cache):
             if filters is None:
                 info = get_file_info(list_uri, cache, self.client_config)
@@ -593,10 +606,11 @@ class Listing:
     def _file_catalog(self) -> "Catalog":
         from datachain.catalog import Catalog
 
-        if self._session is None:
+        session = self._open_session()
+        if session is None:
             catalog = Catalog(None, None)  # type: ignore[arg-type]
         else:
-            catalog = self._session.catalog.copy(db=False)
+            catalog = session.catalog.copy(db=False)
         catalog.client_config = self.client_config
         return catalog
 

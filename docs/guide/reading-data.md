@@ -19,7 +19,7 @@ total = sum(f.size for f in dc.listing("s3://bucket/episodes/"))
 images = dc.listing("s3://bucket/images/**/*.{jpg,png}").to_objects(type="image")
 ```
 
-Rows have `File`'s columns (`f.path`, `f.size`, `f.etag`, `f.last_modified`, ...) and attributes such as `f.name` and `f.get_file_ext()`. A listing is listed once: iterate it, or take it whole with one of
+Rows are plain tuples with `File`'s columns (`f.path`, `f.size`, `f.etag`, `f.last_modified`, ...) and its path helpers (`f.name`, `f.parent`, `f.get_file_ext()`), which build a `File` on each call: on large listings, prefer the columns, such as `f.path.endswith(".jpg")`. Rows don't read files; `to_objects()` gives `File` objects that do. A listing is listed once: iterate it, or take it whole with one of
 
 ```python
 rows = dc.listing(uri).to_list()

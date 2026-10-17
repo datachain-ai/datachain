@@ -198,15 +198,19 @@ class PathFilter:
 
 
 @functools.lru_cache(maxsize=256)
-def _glob_regex(pattern: str) -> "re.Pattern | None":
-    """SQLite's GLOB as a regex: ``*``, ``?`` and ``[...]`` sets, ``^`` negating;
-    None for an unclosed set, which matches nothing."""
-    out, i, n = [], 0, len(pattern)
+def _glob_parts(pattern: str) -> "list[tuple[re.Pattern, int]] | None":
+    """SQLite's GLOB split at ``*`` into regexes of one character per token:
+    ``?`` and ``[...]`` sets, ``^`` negating; None for an unclosed set, which
+    matches nothing. Each part comes with its length in characters."""
+    parts: list[list[str]] = []
+    out: list[str] = []
+    i, n = 0, len(pattern)
     while i < n:
         c = pattern[i]
         i += 1
         if c == "*":
-            out.append(".*")
+            parts.append(out)
+            out = []
         elif c == "?":
             out.append(".")
         elif c == "[":
@@ -235,12 +239,30 @@ def _glob_regex(pattern: str) -> "re.Pattern | None":
             i = j + 1
         else:
             out.append(re.escape(c))
-    return re.compile("".join(out), re.DOTALL)
+    parts.append(out)
+    return [(re.compile("".join(p), re.DOTALL), len(p)) for p in parts]
 
 
 def glob_match(path: str, pattern: str) -> bool:
-    regex = _glob_regex(pattern)
-    return regex is not None and regex.fullmatch(path) is not None
+    """SQLite's GLOB in O(len(path) * len(pattern)): the parts between ``*``
+    have fixed lengths, so the leftmost match of each is the one to take."""
+    parts = _glob_parts(pattern)
+    if parts is None:
+        return False
+    (head, head_len), *middle = parts
+    if not middle:
+        return head.fullmatch(path) is not None
+    *middle, (tail, tail_len) = middle
+    end = len(path) - tail_len
+    if end < head_len or not head.match(path) or not tail.fullmatch(path, end):
+        return False
+    pos = head_len
+    for part, _ in middle:
+        found = part.search(path, pos, end)
+        if found is None:
+            return False
+        pos = found.end()
+    return True
 
 
 _DS_ENCODE_RE = re.compile(r"[^a-zA-Z0-9_/:\-]")

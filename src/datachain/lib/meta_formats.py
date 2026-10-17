@@ -2,7 +2,6 @@ import csv
 import sys
 import tempfile
 import uuid
-import warnings
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -110,11 +109,7 @@ def gen_datamodel_code(
 
     input_file_types = {i.value: i for i in datamodel_code_generator.InputFileType}
     input_file_type = input_file_types[format]
-    with tempfile.TemporaryDirectory() as tmpdir, warnings.catch_warnings():
-        # 0.84+ warns on every run under Python 3.10; users of read_json can't act on it
-        warnings.filterwarnings(
-            "ignore", "Running datamodel-code-generator on Python 3.10", FutureWarning
-        )
+    with tempfile.TemporaryDirectory() as tmpdir:
         output = Path(tmpdir) / "model.py"
         datamodel_code_generator.generate(
             data_string,
