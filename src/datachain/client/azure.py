@@ -1,8 +1,9 @@
+import logging
 import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
 from tempfile import SpooledTemporaryFile
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from adlfs import AzureBlobFileSystem
 from azure.core.exceptions import (
@@ -27,6 +28,23 @@ if TYPE_CHECKING:
 _SPOOL_MAX_SIZE = 128 * 1024 * 1024
 # Copy chunk size when spooling a source stream, matching the fsspec upload path.
 _COPY_BUFFER_SIZE = 8 * 1024 * 1024
+
+
+def _has_default_token(fs: AzureBlobFileSystem) -> bool:
+    """Whether the ``DefaultAzureCredential`` adlfs built for ``fs`` gets a token."""
+    # fsspec reuses fs instances, so the probe runs once per config.
+    if not hasattr(fs, "_dc_has_default_token"):
+        identity_logger = logging.getLogger("azure.identity")
+        level = identity_logger.level
+        identity_logger.setLevel(logging.ERROR)
+        try:
+            fs.sync_credential.get_token("https://storage.azure.com/.default")
+            fs._dc_has_default_token = True
+        except ClientAuthenticationError:
+            fs._dc_has_default_token = False
+        finally:
+            identity_logger.setLevel(level)
+    return fs._dc_has_default_token
 
 
 class _AzureWriteBuffer(SpooledTemporaryFile):
@@ -58,6 +76,21 @@ class AzureClient(Client):
     )
 
     @classmethod
+    def create_fs(cls, **kwargs) -> AzureBlobFileSystem:
+        from azure.identity import DefaultAzureCredential
+
+        fs = cast("AzureBlobFileSystem", super().create_fs(**kwargs))
+        # No credentials configured: adlfs falls back to DefaultAzureCredential,
+        # which fails on every request when it finds nothing; go anonymous instead.
+        if (
+            fs.connection_string is None
+            and isinstance(getattr(fs, "sync_credential", None), DefaultAzureCredential)
+            and not _has_default_token(fs)
+        ):
+            fs = cast("AzureBlobFileSystem", super().create_fs(**kwargs, anon=True))
+        return fs
+
+    @classmethod
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:
         # Step 1: Anonymous probe — uses BlobServiceClient directly (not adlfs)
         # to avoid picking up credentials from environment variables like
@@ -81,9 +114,9 @@ class AzureClient(Client):
                 if e.status_code not in (401, 403):
                     raise
 
-        # Step 2: Authenticated probe.
+        # Step 2: Authenticated probe, bypassing create_fs()'s auto-anon fallback.
         try:
-            auth_fs = cls.create_fs(**kwargs)
+            auth_fs = super().create_fs(**kwargs)
             sync(get_loop(), auth_fs._info, name)
             return BucketStatus(exists=True, access="authenticated")
         except (PermissionError, ClientAuthenticationError):

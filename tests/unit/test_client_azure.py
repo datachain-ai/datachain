@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from adlfs import AzureBlobFileSystem
+from azure.core.exceptions import ClientAuthenticationError
 from fsspec.asyn import sync
 from fsspec.callbacks import DEFAULT_CALLBACK
 
@@ -287,3 +288,55 @@ def test_listing_asks_for_versions_only_when_version_aware(version_aware, includ
     sync(get_loop(), list_all)
 
     assert container.list_blobs.call_args.kwargs["include"] == include
+
+
+def _no_token(*args, **kwargs):
+    raise ClientAuthenticationError("no credential")
+
+
+@pytest.fixture
+def no_azure_env(monkeypatch):
+    for var in list(os.environ):
+        if var.startswith("AZURE_"):
+            monkeypatch.delenv(var)
+
+
+@pytest.mark.parametrize("has_token", [True, False])
+def test_create_fs_anon_when_no_default_credential(no_azure_env, has_token):
+    get_token = MagicMock(side_effect=None if has_token else _no_token)
+    with patch("azure.identity.DefaultAzureCredential.get_token", get_token):
+        fs = AzureClient.create_fs(account_name=f"acc{has_token}")
+        AzureClient.create_fs(account_name=f"acc{has_token}")
+    assert fs.anon is not has_token
+    get_token.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"anon": False, "credential": "c"},
+        {"account_key": "k"},
+        {"sas_token": "s"},
+        {
+            "connection_string": "DefaultEndpointsProtocol=https;AccountName=acc;"
+            "AccountKey=a2V5;EndpointSuffix=core.windows.net"
+        },
+    ],
+)
+def test_create_fs_explicit_config_skips_credential_check(no_azure_env, kwargs):
+    with patch("azure.identity.DefaultAzureCredential.get_token") as get_token:
+        fs = AzureClient.create_fs(account_name="acc", **kwargs)
+    get_token.assert_not_called()
+    assert not fs.anon
+
+
+@pytest.mark.parametrize(
+    "var,value", [("AZURE_STORAGE_ACCOUNT_KEY", "a2V5"), ("AZURE_STORAGE_ANON", "1")]
+)
+def test_create_fs_env_config_skips_credential_check(
+    no_azure_env, monkeypatch, var, value
+):
+    monkeypatch.setenv(var, value)
+    with patch("azure.identity.DefaultAzureCredential.get_token") as get_token:
+        AzureClient.create_fs(account_name="acc")
+    get_token.assert_not_called()

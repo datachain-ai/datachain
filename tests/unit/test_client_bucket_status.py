@@ -46,6 +46,38 @@ def test_normalize_s3_kwargs_secret_and_token():
 
 
 @pytest.mark.parametrize(
+    "alias,name",
+    [
+        ("aws_access_key_id", "key"),
+        ("aws_secret_access_key", "secret"),
+        ("aws_session_token", "token"),
+    ],
+)
+def test_normalize_s3_kwargs_boto3_names(alias, name):
+    assert ClientS3._normalize_s3_kwargs({alias: "v"}) == {name: "v"}
+    assert ClientS3.has_explicit_credentials({alias: "v"})
+
+
+def test_create_fs_accepts_boto3_credential_names():
+    creds = {
+        "aws_access_key_id": "AKIAEXAMPLE",
+        "aws_secret_access_key": "secret",
+        "aws_session_token": "token",
+    }
+    with patch.object(ClientS3, "FS_CLASS") as fs_cls:
+        ClientS3.create_fs(**creds)
+
+    kwargs = fs_cls.call_args.kwargs
+    assert (kwargs["key"], kwargs["secret"], kwargs["token"]) == (
+        "AKIAEXAMPLE",
+        "secret",
+        "token",
+    )
+    assert not set(creds) & set(kwargs)
+    assert not kwargs.get("anon")
+
+
+@pytest.mark.parametrize(
     "anon_effect, auth_effect, expected",
     [
         (None, None, BucketStatus(True, "anonymous")),
@@ -72,6 +104,16 @@ def test_s3_bucket_status(mock_fs_cls, anon_effect, auth_effect, expected):
     anon_fs._info = AsyncMock(side_effect=anon_effect)
     auth_fs._info = AsyncMock(side_effect=auth_effect)
     assert ClientS3.bucket_status("b") == expected
+
+
+@patch("datachain.client.s3.S3FileSystem")
+def test_s3_bucket_status_anon_probe_keeps_profile(mock_fs_cls):
+    mock_fs_cls.return_value._info = AsyncMock()
+    ClientS3.bucket_status("b", profile="minio", key="k")
+    kwargs = mock_fs_cls.call_args.kwargs
+    assert kwargs["profile"] == "minio"
+    assert kwargs["anon"] is True
+    assert "key" not in kwargs
 
 
 @pytest.mark.parametrize(
@@ -193,7 +235,7 @@ def test_gcs_bucket_status(mock_create_fs, anon_effect, auth_effect, expected):
     ],
 )
 @patch("datachain.client.azure.BlobServiceClient")
-@patch.object(AzureClient, "create_fs")
+@patch("datachain.client.fsspec.Client.create_fs")
 def test_azure_bucket_status(
     mock_create_fs, mock_blob_svc, anon_effect, auth_effect, kwargs, expected
 ):
@@ -211,7 +253,7 @@ def test_azure_bucket_status(
 
 
 @patch("datachain.client.azure.BlobServiceClient")
-@patch.object(AzureClient, "create_fs")
+@patch("datachain.client.fsspec.Client.create_fs")
 def test_azure_bucket_status_http_500_reraises(_mock_create_fs, mock_blob_svc):
     container = MagicMock()
     mock_blob_svc.return_value.get_container_client.return_value = container
