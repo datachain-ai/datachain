@@ -391,7 +391,7 @@ def test_children_take_credentials_from_a_credential_process(
 def test_children_get_list_deleted(client, list_deleted):
     client.list_deleted = list_deleted
 
-    *_, sent, _ = load(io.BytesIO(Pool(client, "", 2).spec))
+    *_, sent, _, _ = load(io.BytesIO(Pool(client, "", 2).spec))
 
     assert sent is list_deleted
 

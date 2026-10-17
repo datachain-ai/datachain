@@ -409,7 +409,7 @@ def test_child_logs_at_the_parents_level(level, logged, tmp_path):
     from datachain.client.local import FileClient
 
     spec = dump(
-        (FileClient, str(tmp_path), {}, None, 4, "", logging.getLevelName(level))
+        (FileClient, str(tmp_path), {}, None, 4, False, "", logging.getLevelName(level))
     )
     code = "from datachain.client.listing_worker import main; main()"
     out = subprocess.run(  # noqa: S603

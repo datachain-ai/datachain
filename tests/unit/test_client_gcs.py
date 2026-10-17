@@ -367,7 +367,7 @@ def _random_generations(rng):
 @pytest.mark.parametrize("seed", range(20))
 def test_delete_rows_survive_ranges_that_split_in_flight(seed, mocker):
     mocker.patch("datachain.client.fsspec.LIST_WORKERS", 8)
-    mocker.patch("datachain.client.fsspec.YOUNG_PAGES", 1)
+    mocker.patch("datachain.client.ranges.YOUNG_PAGES", 1)
     rng = random.Random(seed)  # noqa: S311
     items, deletes = _random_generations(rng)
 
@@ -393,7 +393,7 @@ def test_delete_rows_survive_ranges_that_split_in_flight(seed, mocker):
     client.list_deleted = True
 
     async def listed():
-        return [r async for page in client.scandir("", rows=True) for r in page]
+        return [r async for page in client.scandir("") for r in page]
 
     rows = sync(get_loop(), listed)
 
