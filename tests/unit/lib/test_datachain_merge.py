@@ -534,3 +534,117 @@ def test_merge_with_drops_sys_columns(test_session):
 
     sys_rand = list(df_with_sys[sys_rand_col])
     assert len(sys_rand) == len(set(sys_rand))
+
+
+def _shared_name_chains(session, right_paths=("x", "y"), right_sizes=(3, 1)):
+    left = dc.read_values(path=["x", "y"], size=[1, 2], session=session)
+    right = dc.read_values(
+        path=list(right_paths), size=list(right_sizes), session=session
+    )
+    return left, right
+
+
+@pytest.mark.parametrize(
+    "expr,expected",
+    [
+        (lambda: C("size") > 1, "y"),
+        (lambda: C("right_size") > 1, "x"),
+        (lambda: C("size") > C("right_size"), "y"),
+        (lambda: C("right_size") > C("size"), "x"),
+    ],
+    ids=["left", "right", "left-vs-right", "right-vs-left"],
+)
+def test_merge_filter_shared_column_name(test_session, expr, expected):
+    left, right = _shared_name_chains(test_session)
+    merged = left.merge(right, on="path")
+    assert merged.filter(expr()).to_list("path") == [(expected,)]
+
+
+def test_merge_order_by_shared_column_name(test_session):
+    left, right = _shared_name_chains(test_session)
+    merged = left.merge(right, on="path")
+    top = merged.order_by("size", descending=True).limit(1)
+    assert top.to_list("path") == [("y",)]
+
+
+def test_merge_select_shared_column_name(test_session):
+    left, right = _shared_name_chains(test_session)
+    merged = left.merge(right, on="path")
+    assert sorted(merged.select("size", "right_size").to_list()) == [(1, 3), (2, 1)]
+
+
+def test_merge_group_by_shared_column_name(test_session):
+    left, right = _shared_name_chains(test_session, right_sizes=(5, 5))
+    merged = left.merge(right, on="path")
+    grouped = merged.group_by(total=dc.func.sum("size"), partition_by="right_size")
+    assert grouped.to_list("right_size", "total") == [(5, 3)]
+
+    grouped = merged.group_by(cnt=dc.func.count(), partition_by="size")
+    assert sorted(grouped.to_list("size", "cnt")) == [(1, 1), (2, 1)]
+
+
+def test_merge_chained_ops_on_shared_column_name(test_session):
+    left, right = _shared_name_chains(test_session)
+    merged = left.merge(right, on="path")
+    result = (
+        merged.filter(C("size") >= 1)
+        .order_by("size")
+        .mutate(diff=C("right_size") - C("size"))
+        .to_list("path", "size", "diff")
+    )
+    assert result == [("x", 1, 2), ("y", 2, -1)]
+
+
+def test_merge_right_on_shared_column_name(test_session):
+    left = dc.read_values(path=["x", "y"], size=[1, 2], session=test_session)
+    right = dc.read_values(name=["x", "y"], size=[3, 1], session=test_session)
+    merged = left.merge(right, on="path", right_on="name")
+    assert merged.filter(C("size") > C("right_size")).to_list("path") == [("y",)]
+
+
+@pytest.mark.parametrize("inner", [True, False])
+def test_merge_shared_column_name_join_type(test_session, inner):
+    left, right = _shared_name_chains(
+        test_session, right_paths=("x",), right_sizes=(1,)
+    )
+    merged = left.merge(right, on="path", inner=inner)
+    assert merged.filter(C("size") == C("right_size")).to_list("path") == [("x",)]
+    expected = [] if inner else [("y", None)]
+    assert merged.filter(C("size") > 1).to_list("path", "right_size") == expected
+
+
+def test_merge_full_shared_column_name_with_nulls(test_session):
+    left, right = _shared_name_chains(
+        test_session, right_paths=("x", "z"), right_sizes=(1, 3)
+    )
+    merged = left.merge(right, on="path", full=True)
+    assert merged.filter(C("size") > 1).to_list("path", "right_path") == [("y", None)]
+    assert merged.filter(C("right_size") > 1).to_list("path", "right_path") == [
+        (None, "z")
+    ]
+    assert merged.filter(C("size") == C("right_size")).to_list("path") == [("x",)]
+
+
+def test_merge_self_shared_column_name(test_session):
+    chain = dc.read_values(path=["x", "y"], size=[1, 2], session=test_session)
+    merged = chain.merge(chain, on="path")
+    assert merged.filter(C("size") > 1).to_list("path", "right_size") == [("y", 2)]
+
+
+def test_merge_nested_file_shared_column_name(test_session):
+    left = dc.read_values(
+        file=[dc.File(path="a", size=1), dc.File(path="b", size=2)],
+        session=test_session,
+    )
+    right = dc.read_values(
+        file=[dc.File(path="a", size=3), dc.File(path="b", size=1)],
+        session=test_session,
+    )
+    merged = left.merge(right, on="file.path")
+    diff = merged.filter(C("file.size") > C("right_file.size"))
+    assert diff.to_list("file.path", "file.size", "right_file.size") == [("b", 2, 1)]
+    assert merged.filter(C("file.size") > 1).to_list("file.path") == [("b",)]
+    assert merged.order_by("file.size", descending=True).to_list("file.path") == [
+        ("b",),
+        ("a",),
+    ]

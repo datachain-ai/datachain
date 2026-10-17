@@ -2438,19 +2438,23 @@ class SQLJoin(Step):
 
         join_expression = sqlalchemy.and_(*expressions)
 
+        # Wrapped so later steps resolve names against the joined output only,
+        # not against both join sides (e.g. `size` exists in q1 and q2).
+        joined = self.catalog.warehouse.join(
+            q1,
+            q2,
+            join_expression,
+            inner=self.inner,
+            full=self.full,
+            columns=res_columns,
+        ).subquery()
+
         def q(*columns):
-            return self.catalog.warehouse.join(
-                q1,
-                q2,
-                join_expression,
-                inner=self.inner,
-                full=self.full,
-                columns=columns,
-            )
+            return sqlalchemy.select(*columns).select_from(joined)
 
         return step_result(
             q,
-            res_columns,
+            joined.c,
             dependencies=self.query1.dependencies | self.query2.dependencies,
         )
 
