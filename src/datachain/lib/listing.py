@@ -1,26 +1,31 @@
+import functools
 import glob
 import logging
 import os
 import posixpath
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, TypeVar
 
 from fsspec.asyn import get_loop
-from sqlalchemy.sql.expression import true
+from sqlalchemy.sql.expression import or_, true
 
 import datachain.fs.utils as fsutils
 from datachain.asyn import iter_over_async
 from datachain.client import Client
 from datachain.error import ClientError
-from datachain.lib.file import File
+from datachain.lib.convert.flatten import flatten
+from datachain.lib.file import File, FileRow
 from datachain.query.schema import C, Column
 from datachain.sql.functions import path as pathfunc
 from datachain.utils import uses_glob
 
 if TYPE_CHECKING:
+    from sqlalchemy import ColumnElement
+
     from datachain.dataset import DatasetRecord
     from datachain.lib.dc import DataChain
     from datachain.query.session import Session
@@ -85,19 +90,26 @@ def listing_dataset_expired(lst_ds) -> bool:
     return datetime.now(UTC) > expires
 
 
-def list_bucket(uri: str, cache, client_config=None) -> Callable:
-    """
-    Function that returns another generator function that yields File objects
-    from bucket where each File represents one bucket entry.
-    """
+def list_pages(uri: str, cache, client_config=None) -> Iterator[Sequence[tuple]]:
+    """Pages of ``FileRow`` rows of every object under the ``uri`` prefix."""
+    config = client_config or {}
+    client = Client.get_client(uri, cache, **config)  # type: ignore[arg-type]
+    _, path = Client.parse_url(uri)
+    pages = client.scandir(path.rstrip("/"), processes=True)
+    for page in iter_over_async(pages, get_loop()):
+        yield [*map(file_row, page)] if page and isinstance(page[0], File) else page
 
-    def list_func() -> Iterator[File]:  # also FileRow rows
-        config = client_config or {}
-        client = Client.get_client(uri, cache, **config)  # type: ignore[arg-type]
-        _, path = Client.parse_url(uri)
-        pages = client.scandir(path.rstrip("/"), processes=True)
-        for entries in iter_over_async(pages, get_loop()):
-            yield from entries
+
+def file_row(file: File) -> FileRow:
+    return FileRow(*flatten(file))
+
+
+def list_bucket(uri: str, cache, client_config=None) -> Callable:
+    """A generator function, for ``gen()``, of the rows of ``list_pages``."""
+
+    def list_func() -> Iterator[File]:  # FileRow rows
+        for page in list_pages(uri, cache, client_config):
+            yield from page  # type: ignore[misc]
 
     list_func.__name__ = "read_storage"
 
@@ -125,29 +137,130 @@ def ls(
     If recursive is set to False, only first level children will be returned by
     specified path
     """
+    return select_paths(dc, PathFilter.ls(path, recursive), column)
 
-    def _file_c(name: str) -> Column:
-        return Column(f"{column}.{name}")
 
-    dc = dc.filter(_file_c("is_latest") == true())
+def select_paths(dc: D, paths: "PathFilter", column: str = "file") -> D:
+    """The latest files of a listing chain whose paths ``paths`` selects."""
+    dc = dc.filter(Column(f"{column}.is_latest") == true())
+    for condition in paths.sql(Column(f"{column}.path")):
+        dc = dc.filter(condition)
+    return dc
 
-    if recursive:
+
+@dataclass(frozen=True)
+class PathFilter:
+    """The paths of a listing that a URI selects: any of ``any_of`` and all of
+    ``all_of``, each an ``(op, value)`` with op ``eq``, ``glob`` or ``parent``.
+    ``read_storage`` applies it in SQL, ``dc.listing`` in Python."""
+
+    any_of: tuple[tuple[str, str], ...] = ()
+    all_of: tuple[tuple[str, str], ...] = ()
+
+    @classmethod
+    def ls(cls, path: str, recursive: bool | None) -> "PathFilter":
+        if not recursive:
+            return cls(any_of=(("parent", path.lstrip("/").rstrip("/*")),))
         if not path or path == "/":
-            # root of a bucket, returning all latest files from it
-            return dc
+            return cls()
+        if uses_glob(path):
+            return cls(any_of=(("glob", path),))
+        return cls(any_of=(("eq", path), ("glob", path.rstrip("/") + "/*")))
 
-        if not uses_glob(path):
-            # path is not glob, so it's pointing to some directory or a specific
-            # file and we are adding proper filter for it
-            return dc.filter(
-                (_file_c("path") == path)
-                | (_file_c("path").glob(path.rstrip("/") + "/*"))
-            )
+    def glob(self, pattern: str) -> "PathFilter":
+        return PathFilter(self.any_of, (*self.all_of, ("glob", pattern)))
 
-        # path has glob syntax so we are returning glob filter
-        return dc.filter(_file_c("path").glob(path))
-    # returning only first level children by path
-    return dc.filter(pathfunc.parent(_file_c("path")) == path.lstrip("/").rstrip("/*"))
+    def sql(self, path: Column) -> "list[ColumnElement]":
+        """One condition per filter step: ``any_of`` combined, then each of
+        ``all_of``. The steps feed chain hashes, so their split is kept."""
+
+        def cond(op: str, value: str) -> "ColumnElement":
+            if op == "eq":
+                return path == value
+            if op == "glob":
+                return path.glob(value)
+            return pathfunc.parent(path) == value
+
+        steps = [or_(*(cond(*c) for c in self.any_of))] if self.any_of else []
+        return steps + [cond(*c) for c in self.all_of]
+
+    def __call__(self, path: str) -> bool:
+        def cond(op: str, value: str) -> bool:
+            if op == "eq":
+                return path == value
+            if op == "glob":
+                return glob_match(path, value)
+            return path.rstrip(path.replace("/", "")).rstrip("/") == value
+
+        return (not self.any_of or any(cond(*c) for c in self.any_of)) and all(
+            cond(*c) for c in self.all_of
+        )
+
+
+@functools.lru_cache(maxsize=256)
+def _glob_parts(pattern: str) -> "list[tuple[re.Pattern, int]] | None":
+    """SQLite's GLOB split at ``*`` into (regex, length); None matches nothing."""
+    parts: list[list[str]] = []
+    out: list[str] = []
+    i, n = 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        i += 1
+        if c == "*":
+            parts.append(out)
+            out = []
+        elif c == "?":
+            out.append(".")
+        elif c == "[":
+            negate = i < n and pattern[i] == "^"
+            j = i + negate
+            members, prior = [], None
+            if j < n and pattern[j] == "]":
+                members.append("\\]")
+                j += 1
+            while j < n and pattern[j] != "]":
+                c = pattern[j]
+                if c == "-" and prior and j + 1 < n and pattern[j + 1] != "]":
+                    if prior <= pattern[j + 1]:
+                        members.append(
+                            f"{re.escape(prior)}-{re.escape(pattern[j + 1])}"
+                        )
+                    prior = None
+                    j += 2
+                else:
+                    members.append(re.escape(c))
+                    prior = c
+                    j += 1
+            if j >= n:
+                return None
+            out.append(f"[{'^' if negate else ''}{''.join(members)}]")
+            i = j + 1
+        else:
+            out.append(re.escape(c))
+    parts.append(out)
+    return [(re.compile("".join(p), re.DOTALL), len(p)) for p in parts]
+
+
+def glob_match(path: str, pattern: str) -> bool:
+    """SQLite's GLOB in O(len(path) * len(pattern)): the parts between ``*``
+    have fixed lengths, so the leftmost match of each is the one to take."""
+    parts = _glob_parts(pattern)
+    if parts is None:
+        return False
+    (head, head_len), *middle = parts
+    if not middle:
+        return head.fullmatch(path) is not None
+    *middle, (tail, tail_len) = middle
+    end = len(path) - tail_len
+    if end < head_len or not head.match(path) or not tail.fullmatch(path, end):
+        return False
+    pos = head_len
+    for part, _ in middle:
+        found = part.search(path, pos, end)
+        if found is None:
+            return False
+        pos = found.end()
+    return True
 
 
 _DS_ENCODE_RE = re.compile(r"[^a-zA-Z0-9_/:\-]")
@@ -270,6 +383,24 @@ def _reraise_as_client_error() -> Iterator[None]:
         raise ClientError(message=str(e), error_code=getattr(e, "code", None)) from e
 
 
+def names_object(client: Client, uri: str) -> bool:
+    """True if ``uri`` names a single object rather than a prefix or a glob."""
+    isfile = _reraise_as_client_error()(fsutils.isfile)
+    return not glob.has_magic(uri) and not uri.endswith("/") and isfile(client.fs, uri)
+
+
+def describe_listing(
+    client: Client, uri: str, versions: bool = True
+) -> tuple[str, str, str] | None:
+    """The listing dataset name, listing URI and listing path of ``uri``, or
+    None when it names a single object."""
+    if names_object(client, uri):
+        return None
+    # local, HF and HTTP storages have no versions: one kind of listing
+    versions = versions or not hasattr(client.fs, "version_aware")
+    return parse_listing_uri(uri, versions=versions)
+
+
 def get_listing(
     uri: str | os.PathLike[str],
     session: "Session",
@@ -298,14 +429,12 @@ def get_listing(
         uri = os.fspath(uri)
 
     # we don't want to use cached dataset (e.g. for a single file listing)
-    isfile = _reraise_as_client_error()(fsutils.isfile)
-    if not glob.has_magic(uri) and not uri.endswith("/") and isfile(client.fs, uri):
+    described = describe_listing(client, uri, versions)
+    if described is None:
         _, path = Client.parse_url(uri)
         return None, uri, path, False
 
-    # local, HF and HTTP storages have no versions: one kind of listing
-    versions = versions or not hasattr(client.fs, "version_aware")
-    ds_name, list_uri, list_path = parse_listing_uri(uri, versions=versions)
+    ds_name, list_uri, list_path = described
     listing = None
     listings = [
         ls for ls in catalog.listings() if not ls.is_expired and ls.contains(ds_name)

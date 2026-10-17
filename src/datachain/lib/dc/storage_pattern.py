@@ -1,11 +1,8 @@
 import glob
-from typing import TYPE_CHECKING
+from collections.abc import Sequence
 
 from datachain.client.fsspec import is_cloud_uri
-from datachain.lib.listing import ls
-
-if TYPE_CHECKING:
-    from .datachain import DataChain
+from datachain.lib.listing import PathFilter
 
 
 def validate_cloud_bucket_name(uri: str) -> None:
@@ -231,20 +228,33 @@ def convert_globstar_to_glob(filter_pattern: str) -> str:
     return result
 
 
-def apply_glob_filter(
-    dc: "DataChain",
-    pattern: str,
-    list_path: str,
-    use_recursive: bool,
-    column: str,
-) -> "DataChain":
-    """List ``list_path`` and filter the resulting chain by the glob ``pattern``."""
-    from datachain.query.schema import Column
+def storage_sources(uris: Sequence) -> list[tuple[str, str | None]]:
+    """The URIs to list for ``uris``, in order and with repeats, each with the
+    glob pattern that selects from its listing: braces expanded, a glob listed
+    from its base.
+    """
+    sources = []
+    for uri in uris:
+        for expanded in expand_brace_pattern(str(uri)):
+            base_uri, pattern = split_uri_pattern(expanded)
+            sources.append((base_uri if pattern else expanded, pattern))
+    return sources
 
-    chain = ls(dc, list_path, recursive=use_recursive, column=column)
 
+def path_filter(
+    list_path: str, pattern: str | None, recursive: bool | None
+) -> PathFilter:
+    """The paths a URI with glob ``pattern`` selects from its base's listing."""
+    if pattern is None:
+        return PathFilter.ls(list_path, recursive)
+    use_recursive = should_use_recursion(pattern, recursive or False)
+    return PathFilter.ls(list_path, use_recursive).glob(
+        _glob_pattern(pattern, list_path)
+    )
+
+
+def _glob_pattern(pattern: str, list_path: str) -> str:
     glob_pattern = convert_globstar_to_glob(pattern)
     if subpath := list_path.strip("/"):
         glob_pattern = f"{subpath}/{glob_pattern}"
-
-    return chain.filter(Column(f"{column}.path").glob(glob_pattern))
+    return glob_pattern

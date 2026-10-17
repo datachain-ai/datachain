@@ -574,9 +574,7 @@ def get_col_types(
 
 
 def _tuple_adjuster(col_types: list[ColType]) -> Callable[[tuple], tuple | None]:
-    """For a gen or agg row of the output columns, then ``sys__input_id``,
-    ``sys__partial`` and ``sys__empty``: the row with column defaults in place of
-    None, or None when ``adjust_outputs`` must convert it."""
+    # None: the row needs adjust_outputs; it ends with input_id, partial, empty
     kept_types = [
         frozenset({type(None), c.python_type} if c.kept_as_is else {type(None)})
         for c in col_types

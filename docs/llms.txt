@@ -18,7 +18,8 @@ Never use: `from datachain import File, C, func`
 ## Key Patterns
 
 ### Read data
-- `dc.read_storage("s3://bucket/path/", type="image")` -- files from cloud storage
+- `dc.listing("s3://bucket/path/")` -- list a bucket once: iterate rows, `to_list()`, `to_arrow()`, `to_objects()`, `save()`; on a versioned bucket pass `versions=False` for current objects only
+- `dc.read_storage("s3://bucket/path/", type="image")` -- a chain of files over a saved snapshot of a bucket
 - `dc.read_csv()`, `dc.read_json()`, `dc.read_parquet()` -- structured formats
 - `dc.read_database(query, connection_string)` -- SQL databases
 - `dc.read_dataset("name")` -- previously saved datasets

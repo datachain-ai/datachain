@@ -111,10 +111,8 @@ def split_point(
     alphabet: Iterable[str],
     prefix: str = "",
 ) -> str | None:
-    """Where a range that read to ``read_to`` splits. A young range splits close
-    ahead, so a small listing stays a few requests. An old range with an open end
-    splits at most age squared pages ahead, so a large listing soon reaches its
-    end; an old bounded range splits at its midpoint."""
+    """Close ahead for a young range, age² pages ahead for an open-ended one,
+    else the midpoint."""
     order = key_range.order
     if key_range.age <= YOUNG_PAGES:
         return key_midpoint(
@@ -313,9 +311,8 @@ class RangeListing:
             task.add_done_callback(self.probes.discard)
 
     async def _split(self, mid: str, key_range: KeyRange) -> None:
-        """Open ``(mid, hi]`` if a probe finds a key there. If not, the range ends
-        at ``mid`` and splits where its keys are dense instead: keys that cluster
-        leave most midpoints empty."""
+        """Open ``(mid, hi]`` if a probe finds a key there, else split where keys
+        are dense."""
         order = self.order
         try:
             async with self.local:

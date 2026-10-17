@@ -317,16 +317,11 @@ class Client(ABC):
             impl = getattr(self, f"_fetch_{method}")
         except AttributeError:
             raise ValueError(f"Unknown indexing method '{method}'") from None
-        if (
-            processes
-            and getattr(impl, "__func__", None) is RangeListedClient._fetch_ranges
-        ):
-            impl = functools.partial(impl, processes=True)
         result_queue: ResultQueue = asyncio.Queue(2 * LIST_WORKERS)
 
         async def listing() -> None:
             try:
-                await impl(start_prefix, result_queue)
+                await impl(start_prefix, result_queue, processes=processes)
             except asyncio.CancelledError:
                 raise
             except BaseException:
@@ -343,7 +338,9 @@ class Client(ABC):
             main_task.cancel()
             await asyncio.gather(main_task, return_exceptions=True)
 
-    async def _fetch_nested(self, start_prefix: str, result_queue: ResultQueue) -> None:
+    async def _fetch_nested(
+        self, start_prefix: str, result_queue: ResultQueue, processes: bool = False
+    ) -> None:
         progress_bar = tqdm(desc=f"Listing {self.uri}", unit=" objects", leave=False)
         loop = get_loop()
 
@@ -380,7 +377,7 @@ class Client(ABC):
             progress_bar.close()
 
     async def _fetch_default(
-        self, start_prefix: str, result_queue: ResultQueue
+        self, start_prefix: str, result_queue: ResultQueue, processes: bool = False
     ) -> None:
         await self._fetch_nested(start_prefix, result_queue)
 

@@ -27,14 +27,14 @@ def test_map_with_default_batch_size(test_session, warehouse):
 
     with patch.object(
         warehouse,
-        attribute="insert_rows",
-        wraps=warehouse.insert_rows,
-    ) as mock_insert_rows:
+        attribute="insert_tuples",
+        wraps=warehouse.insert_tuples,
+    ) as mock_insert_tuples:
         dc.read_values(value=list(range(100)), session=test_session).map(
             result=simple_udf
         ).save("map_default")
 
-        assert mock_insert_rows.call_count >= 1
+        assert mock_insert_tuples.call_count >= 1
 
 
 def test_map_with_custom_batch_size(test_session, warehouse):
@@ -70,14 +70,14 @@ def test_gen_with_default_batch_size(test_session, warehouse):
 
     with patch.object(
         warehouse,
-        attribute="insert_rows",
-        wraps=warehouse.insert_rows,
-    ) as mock_insert_rows:
+        attribute="insert_tuples",
+        wraps=warehouse.insert_tuples,
+    ) as mock_insert_tuples:
         dc.read_values(value=list(range(50)), session=test_session).gen(
             result=gen_udf
         ).save("gen_default")
 
-        assert mock_insert_rows.call_count >= 1
+        assert mock_insert_tuples.call_count >= 1
 
 
 def test_gen_with_custom_batch_size(test_session, warehouse):
