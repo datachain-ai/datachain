@@ -1,8 +1,12 @@
+from concurrent.futures import ThreadPoolExecutor
+from io import BytesIO
+from threading import Barrier, Event
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fsspec.asyn import sync
 from fsspec.callbacks import DEFAULT_CALLBACK
+from gcsfs import GCSFileSystem
 
 from datachain.asyn import get_loop
 from datachain.client import Client
@@ -57,6 +61,7 @@ _INFO = {
 def _make_client() -> GCSClient:
     client = GCSClient("foo", {}, MagicMock())
     client._fs = MagicMock()
+    client._fs.version_aware = False
     client._fs.storage_options = {}  # non-anon
     client._fs.sign.return_value = _FAKE_SAS
     client._fs._info = AsyncMock(return_value=_INFO)
@@ -185,6 +190,79 @@ def test_get_file_with_version():
     args, kwargs = client._fs._get_file.call_args
     assert args[0] == f"gs://foo/blob.txt#{_VER}"
     assert kwargs.get("generation") is None
+
+
+def test_hash_generation_suffix_is_literal_for_unversioned_reads(tmp_path, monkeypatch):
+    path = "gs://foo/dir/#0"
+    client = _make_client()
+    client.fs_kwargs = {"token": "anon", "version_aware": True}
+    split_path = GCSFileSystem._split_path(path, version_aware=True)
+    assert split_path == ("foo", "dir/", "0")
+    client._fs.version_aware = True
+    client._fs.split_path.return_value = split_path
+
+    unversioned_fs = MagicMock()
+    unversioned_fs._get_file = AsyncMock(return_value=None)
+    unversioned_fs.open.return_value = BytesIO(b"object contents")
+    create_fs = MagicMock(return_value=unversioned_fs)
+    monkeypatch.setattr(client, "create_fs", create_fs)
+    client.cache.get_path.return_value = None
+
+    sync(
+        get_loop(),
+        client.get_file,
+        path,
+        str(tmp_path / "download"),
+        DEFAULT_CALLBACK,
+    )
+    with client.open_object(
+        File(source="gs://foo", path="dir/#0"), use_cache=False
+    ) as f:
+        assert f.read() == b"object contents"
+
+    create_fs.assert_called_once_with(token="anon", version_aware=False)  # noqa: S106
+    unversioned_fs._get_file.assert_awaited_once_with(
+        path, str(tmp_path / "download"), callback=DEFAULT_CALLBACK
+    )
+    unversioned_fs.open.assert_called_once_with(path, block_size=None)
+
+
+def test_unversioned_filesystem_is_cached_during_concurrent_reads(monkeypatch):
+    path = "gs://foo/dir/#0"
+    client = _make_client()
+    client.fs_kwargs = {"token": "anon", "version_aware": True}
+    client._fs.version_aware = True
+    split_barrier = Barrier(8)
+
+    def split_path(_):
+        split_barrier.wait(timeout=5)
+        return "foo", "dir/", "0"
+
+    client._fs.split_path.side_effect = split_path
+
+    unversioned_fs = MagicMock()
+    create_started = Event()
+    release_create = Event()
+
+    def create_unversioned_fs(**kwargs):
+        create_started.set()
+        if not release_create.wait(timeout=5):
+            raise TimeoutError("filesystem creation was not released")
+        return unversioned_fs
+
+    create_fs = MagicMock(side_effect=create_unversioned_fs)
+    monkeypatch.setattr(client, "create_fs", create_fs)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(client._fs_for_path, path, None) for _ in range(8)]
+        try:
+            assert create_started.wait(timeout=5)
+        finally:
+            release_create.set()
+        filesystems = [future.result(timeout=5) for future in futures]
+
+    assert all(fs is unversioned_fs for fs in filesystems)
+    create_fs.assert_called_once_with(token="anon", version_aware=False)  # noqa: S106
 
 
 @_xfail_special_char_versioned
