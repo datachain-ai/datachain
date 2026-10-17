@@ -1,4 +1,6 @@
+import asyncio
 import os
+import random
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from xml.etree.ElementTree import fromstring
@@ -452,3 +454,82 @@ def test_an_empty_page_keeps_a_key_open():
     rows = _listed_versions(pages, True)
 
     assert [(r.path, bool(r.location)) for r in rows] == [("a", False), ("a", False)]
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_delete_rows_survive_ranges_that_split_in_flight(seed, mocker):
+    mocker.patch("datachain.client.fsspec.LIST_WORKERS", 8)
+    mocker.patch("datachain.client.fsspec.YOUNG_PAGES", 1)
+    rng = random.Random(seed)  # noqa: S311
+    names = sorted(
+        {"".join(rng.choices("ab0123", k=rng.randint(1, 5))) for _ in range(150)}
+    )
+    blobs, versions, deletes, at = [], [], [], 0
+    for name in names:
+        live = rng.random() < 0.6
+        count = rng.choice([1, 1, 2, 4, 9])
+        for i in range(count):
+            at += 1
+            version = f"2026-10-01T00:00:00.{at:07}Z"
+            current = live and i == count - 1
+            flag = "<IsCurrentVersion>true</IsCurrentVersion>" if current else ""
+            blobs.append(
+                (
+                    name,
+                    (
+                        f"<Blob><Name>{name}</Name><VersionId>{version}</VersionId>"
+                        f"{flag}<Properties><Last-Modified>Thu, 01 Oct 2026"
+                        " 00:00:00 GMT</Last-Modified><Content-Length>1"
+                        "</Content-Length></Properties></Blob>"
+                    ),
+                )
+            )
+            versions.append((name, version))
+        if not live:
+            deletes.append((name, f"deleted:{version}"))
+
+    class Pages:
+        """Tokens are positions in the container, as on Azure."""
+
+        def __init__(self, start_from, page_size, token):
+            self.page_size = page_size
+            self.at = int(token) if token else sum(n < start_from for n, _ in blobs)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.sleep(rng.random() / 200)
+            end = self.at + self.page_size
+            self.continuation_token = str(end) if end < len(blobs) else None
+            self._response = fromstring(  # noqa: S314
+                "<EnumerationResults><Blobs>"
+                f"{''.join(b for _, b in blobs[self.at : end])}"
+                "</Blobs></EnumerationResults>"
+            )
+            return self._response
+
+    def list_blob_names(*, results_per_page, start_from="", **_):
+        lister = MagicMock()
+        lister.by_page.side_effect = lambda continuation_token=None: Pages(
+            start_from, results_per_page, continuation_token
+        )
+        return lister
+
+    container = MagicMock()
+    container.__aenter__ = AsyncMock(return_value=container)
+    container.__aexit__ = AsyncMock(return_value=False)
+    container.list_blob_names.side_effect = list_blob_names
+    client = AzureClient("mycontainer", {}, MagicMock())
+    client._fs = MagicMock(version_aware=True)
+    client._fs.service_client.get_container_client.return_value = container
+    client.LIST_PAGE_SIZE = 4
+    client.list_deleted = True
+
+    async def listed():
+        return [r async for page in client.scandir("", rows=True) for r in page]
+
+    rows = sync(get_loop(), listed)
+
+    assert sorted((r.path, r.version) for r in rows if not r.location) == versions
+    assert sorted((r.path, r.version) for r in rows if r.location) == deletes

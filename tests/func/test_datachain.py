@@ -251,10 +251,18 @@ def test_read_storage_all_versions_of_unversioned_storage(tmp_dir, test_session)
     ]
 
 
-@pytest.mark.parametrize("versions", ["latest", None, 2])
+@pytest.mark.parametrize("versions", ["latest", 2])
 def test_read_storage_rejects_unknown_versions(tmp_dir, test_session, versions):
     with pytest.raises(ValueError, match="versions must be"):
         dc.read_storage(tmp_dir.as_uri(), session=test_session, versions=versions)
+
+
+def test_read_storage_versions_none_lists_current_objects(tmp_dir, test_session):
+    (tmp_dir / "a.txt").write_text("a")
+
+    chain = dc.read_storage(tmp_dir.as_uri(), session=test_session, versions=None)
+
+    assert chain.to_values("file.path") == ["a.txt"]
 
 
 def test_read_storage_all_versions_refuses_delta(tmp_dir, test_session):

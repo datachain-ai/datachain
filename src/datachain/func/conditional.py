@@ -312,8 +312,8 @@ def is_deleted(file: str = "file") -> Func:
     """
     Selects the delete rows of ``read_storage(versions="all")``.
 
-    In that listing only delete rows have an empty etag, so this is the same
-    as ``C(f"{file}.etag") == ""``. In Python, use ``File.is_deleted``.
+    A delete row has a version and an empty etag; a listed object always has
+    an etag. In Python, use ``File.is_deleted``.
 
     Args:
         file (str): Name of the `File` signal. Defaults to "file".
@@ -333,8 +333,10 @@ def is_deleted(file: str = "file") -> Func:
     """
     return Func(
         "is_deleted",
-        inner=lambda c: sql_case((c == "", True), else_=False),
-        cols=[Column(f"{file}.etag")],
+        inner=lambda etag, version: sql_case(
+            (sql_and(etag == "", version != ""), True), else_=False
+        ),
+        cols=[Column(f"{file}.etag"), Column(f"{file}.version")],
         result_type=bool,
     )
 

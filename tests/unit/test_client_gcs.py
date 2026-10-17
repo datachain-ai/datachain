@@ -1,4 +1,6 @@
-from datetime import timezone
+import asyncio
+import random
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -324,3 +326,78 @@ def test_delete_rows_from_generations_across_pages(list_deleted):
             ("a", "deleted:3", True, 5),
             ("b", "9", False, 1),
         ]
+
+
+def _random_generations(rng):
+    """Generations of random names: each is overwritten or deleted after a
+    while, or stays live; and the delete rows they make."""
+    t0, items, deletes, generation = (
+        datetime(2026, 10, 1, tzinfo=timezone.utc),
+        [],
+        [],
+        0,
+    )
+    for name in sorted(
+        {"".join(rng.choices("ab0123", k=rng.randint(1, 5))) for _ in range(150)}
+    ):
+        t = 0
+        count = rng.choice([1, 1, 2, 4, 9])
+        for i in range(count):
+            generation += 1
+            item = {
+                "name": name,
+                "generation": str(generation),
+                "etag": "e",
+                "size": "1",
+            }
+            item["timeCreated"] = item["updated"] = (
+                t0 + timedelta(seconds=t)
+            ).isoformat()
+            t += 1
+            if i < count - 1 or rng.random() < 0.5:
+                deleted = rng.random() < 0.5 or i == count - 1
+                item["timeDeleted"] = (t0 + timedelta(seconds=t)).isoformat()
+                if deleted:
+                    deletes.append((name, f"deleted:{generation}"))
+                    t += 1  # the next generation comes later
+            items.append(item)
+    return items, deletes
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_delete_rows_survive_ranges_that_split_in_flight(seed, mocker):
+    mocker.patch("datachain.client.fsspec.LIST_WORKERS", 8)
+    mocker.patch("datachain.client.fsspec.YOUNG_PAGES", 1)
+    rng = random.Random(seed)  # noqa: S311
+    items, deletes = _random_generations(rng)
+
+    async def call(*_, **query):
+        await asyncio.sleep(rng.random() / 200)
+        start, end = query["startOffset"], query["endOffset"]
+        chosen = [
+            d
+            for d in items
+            if (start is None or d["name"] >= start)
+            and (end is None or d["name"] < end)
+        ]
+        at, size = int(query["pageToken"] or 0), query["maxResults"]
+        page = {"items": chosen[at : at + size]}
+        if at + size < len(chosen):
+            page["nextPageToken"] = str(at + size)
+        return page
+
+    client = _make_client()
+    client._fs.version_aware = True
+    client._fs._call = call
+    client.LIST_PAGE_SIZE = 4
+    client.list_deleted = True
+
+    async def listed():
+        return [r async for page in client.scandir("", rows=True) for r in page]
+
+    rows = sync(get_loop(), listed)
+
+    assert sorted((r.path, r.version) for r in rows if not r.location) == sorted(
+        (d["name"], d["generation"]) for d in items
+    )
+    assert sorted((r.path, r.version) for r in rows if r.location) == sorted(deletes)

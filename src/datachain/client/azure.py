@@ -1,7 +1,7 @@
 import shutil
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from tempfile import SpooledTemporaryFile
 from typing import TYPE_CHECKING, Any
@@ -45,7 +45,7 @@ class _AzureWriteBuffer(SpooledTemporaryFile):
     version_id: str | None = None
 
 
-EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 class AzureClient(RangeListedClient):

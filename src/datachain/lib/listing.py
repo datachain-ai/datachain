@@ -71,8 +71,9 @@ def calc_fingerprint(session: "Session", dataset: "DatasetRecord", version: str)
     signal_schema = SignalSchema({"sys": Sys, "file": File})
     chain = DataChain(query, Settings(), signal_schema)
 
+    # S3 names every unversioned object's version "null"
     identifier = case(
-        (C("file.version") != "", C("file.version")),
+        (C("file.version").not_in(["", "null"]), C("file.version")),
         else_=C("file.etag"),
     )
     return chain.group_by(  # type: ignore[return-value]

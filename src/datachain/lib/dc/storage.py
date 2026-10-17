@@ -67,7 +67,7 @@ def _all_buckets_anonymous(uris, client_config: dict | None) -> bool:
 
 
 def _validate_versions(versions: Versions, delta: bool | None) -> None:
-    if versions not in (True, False, "all"):
+    if versions not in (True, False, None, "all"):
         raise ValueError(f"versions must be True, False or 'all', got {versions!r}")
     if versions == "all" and delta:
         raise ValueError("delta is not supported with versions='all'")
@@ -116,7 +116,8 @@ def read_storage(  # noqa: PLR0913
         anon: If True, we will treat cloud bucket as public one.
         versions: If False, list only current objects, without versions.
             If True, list every version and return the latest ones. If "all",
-            return every version and one delete row per delete (see Notes).
+            return every version and a delete row for each delete the storage
+            records (see Notes).
         client_config: Optional client configuration for the storage client.
         delta: If True, only process new or changed files instead of reprocessing
             everything. This saves time by skipping files that were already processed in
@@ -151,10 +152,9 @@ def read_storage(  # noqa: PLR0913
         ``is_deleted`` is True: ``last_modified`` is the time of the delete,
         ``version`` the id of the delete (the delete marker id on S3,
         ``deleted:<deleted version>`` on GCS and Azure), ``size`` 0, ``etag`` empty and
-        ``is_latest`` False. Opening it raises an error. Only delete rows have
-        an empty etag, so ``func.is_deleted("file")`` and
-        ``C("file.etag") == ""`` select them in queries. A key is deleted now
-        when none of its rows has ``is_latest`` True.
+        ``is_latest`` False. Opening it raises an error.
+        ``func.is_deleted("file")`` selects them in queries. A key is deleted
+        now when none of its rows has ``is_latest`` True.
 
         - The history is what the storage still keeps: permanently deleted
           versions and expired delete markers leave no row.
@@ -164,7 +164,12 @@ def read_storage(  # noqa: PLR0913
         - Azure keeps neither past deletes nor the time of a delete: a key
           that is deleted now gets one delete row, with ``last_modified``
           set to 1970-01-01 (epoch 0).
-        - A URI that names a single object returns its current version only.
+        - S3 records a delete marker for every delete, also of a key that is
+          already deleted or never existed; GCS records only the delete of a
+          live object.
+        - A URI that names a single object returns its current version only;
+          one that names a key deleted now returns no rows. Its prefix lists
+          the key's history.
         - ``delta`` is not supported.
 
     Examples:

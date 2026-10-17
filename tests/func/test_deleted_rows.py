@@ -281,3 +281,64 @@ def test_update_after_a_delete_drops_the_file(
     assert latest(False) == [f"{prefix}/a", f"{prefix}/b"]
     (ctc.src / prefix / "a").unlink()
     assert latest(True) == [f"{prefix}/b"]
+
+
+def test_parse_tabular_refuses_a_delete_row(history):
+    deleted = history.filter(func.is_deleted("file"))
+
+    with pytest.raises(VFileError, match="object was deleted"):
+        deleted.parse_tabular(format="csv").to_list()
+
+
+@pytest.mark.parametrize(
+    "cloud_type,version_aware", [("s3", True), ("gs", True)], indirect=True
+)
+def test_parse_tabular_reads_each_version(cloud_test_catalog, cloud_prefix):
+    ctc = cloud_test_catalog
+    for row in ("1", "2"):
+        (ctc.src / cloud_prefix / "t.csv").write_text(f"x\n{row}\n")
+        time.sleep(1.1)  # moto keeps whole seconds
+
+    rows = (
+        dc.read_storage(
+            f"{ctc.src_uri}/{cloud_prefix}", session=ctc.session, versions="all"
+        )
+        .settings(prefetch=0)  # nothing in the cache
+        .parse_tabular(format="csv")
+        .to_values("x")
+    )
+
+    assert sorted(rows) == [1, 2]
+
+
+@pytest.mark.parametrize("cloud_type,version_aware", [("s3", False)], indirect=True)
+def test_update_sees_an_overwrite_of_an_unversioned_object(
+    cloud_test_catalog, cloud_prefix
+):
+    ctc = cloud_test_catalog
+    path = ctc.src / cloud_prefix / "a"
+    uri = f"{ctc.src_uri}/{cloud_prefix}"
+
+    def sizes(update):
+        chain = dc.read_storage(uri, session=ctc.session, versions="all", update=update)
+        return chain.to_values("file.size")
+
+    path.write_text("1")
+    assert sizes(False) == [1]
+    path.write_text("22")
+    assert sizes(True) == [2]
+
+
+def test_is_deleted_ignores_files_without_an_etag(history, files, test_session):
+    plain = File(source=files[0].source, path="c.txt")  # no etag, no version
+    chain = history.union(dc.read_values(file=[plain], session=test_session))
+
+    assert chain.filter(func.is_deleted("file")).to_values("file.path") == ["b.txt"]
+    assert not plain.is_deleted
+
+
+def test_a_delete_row_is_not_downloaded(files, test_session):
+    client = test_session.catalog.get_client(files[2].source)
+
+    with pytest.raises(VFileError, match="object was deleted"):
+        client.put_in_cache(files[2])

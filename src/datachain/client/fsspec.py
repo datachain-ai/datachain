@@ -625,6 +625,7 @@ class Client(ABC):
         sync(get_loop(), functools.partial(self._put_in_cache, file, callback=callback))
 
     async def _put_in_cache(self, file: "File", *, callback: "Callback" = None) -> None:
+        file._raise_if_deleted()
         assert not file.location
         if file.etag:
             etag = await self.get_current_etag(file)
