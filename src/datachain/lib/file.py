@@ -2155,7 +2155,7 @@ class ArrowRow(DataModel):
         from pyarrow.csv import ParseOptions, ReadOptions
         from pyarrow.dataset import CsvFileFormat, dataset
 
-        from datachain.lib.arrow import fix_pyarrow_format
+        from datachain.lib.arrow import fix_pyarrow_format, fs_and_path
 
         kwargs = dict(self.kwargs)
         if csv := kwargs.pop("csv", None):
@@ -2172,11 +2172,8 @@ class ArrowRow(DataModel):
 
         if self.file._caching_enabled:
             self.file.ensure_cached()
-            path = self.file.get_local_path()
-            ds = dataset(path, **kwargs)
-        else:
-            path = self.file.get_fs_path()
-            ds = dataset(path, filesystem=self.file.get_fs(), **kwargs)
+        fs, path = fs_and_path(self.file)
+        ds = dataset(path, filesystem=fs, **kwargs)
 
         return ds.take([self.index]).to_reader()
 

@@ -93,7 +93,9 @@ class ArrowGenerator(Generator):
         self.kwargs = kwargs
 
     def process(self, file: File):
-        fs, fs_path = _fs_and_path(file)
+        if file._caching_enabled:
+            file.ensure_cached()
+        fs, fs_path = fs_and_path(file)
 
         kwargs = self.kwargs
         if format := kwargs.get("format"):
@@ -201,11 +203,11 @@ class ArrowGenerator(Generator):
         return [self.output_schema(**vals_dict)]
 
 
-def _fs_and_path(file: File) -> tuple[Any, str]:
+def fs_and_path(file: File) -> tuple[Any, str]:
     """Where pyarrow reads ``file``: a version that is not current is read from
     the cache, since the storage path names the current one."""
     file._raise_if_deleted()
-    if file._caching_enabled or not file.is_latest:
+    if not file.is_latest:
         file.ensure_cached()
     if cache_path := file.get_local_path():
         return ReferenceFileSystem({file.path: [cache_path]}), file.path
@@ -219,7 +221,7 @@ def infer_schema(chain: "DataChain", **kwargs) -> pa.Schema:
 
     schemas = []
     for (file,) in chain.to_iter("file"):
-        fs, fs_path = _fs_and_path(file)  # type: ignore[arg-type]
+        fs, fs_path = fs_and_path(file)  # type: ignore[arg-type]
         ds = dataset(fs_path, filesystem=fs, **kwargs)
         schemas.append(ds.schema)
     if not schemas:

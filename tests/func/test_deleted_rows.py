@@ -6,6 +6,7 @@ import pytest
 
 import datachain as dc
 from datachain import func
+from datachain.lib.dc.listings import read_listing_dataset
 from datachain.lib.file import File, VFileError
 
 DELETED = [{"vtype": "deleted"}]
@@ -304,11 +305,12 @@ def test_parse_tabular_reads_each_version(cloud_test_catalog, cloud_prefix):
             f"{ctc.src_uri}/{cloud_prefix}", session=ctc.session, versions="all"
         )
         .settings(prefetch=0)  # nothing in the cache
-        .parse_tabular(format="csv")
-        .to_values("x")
+        .parse_tabular(format="csv", source=True)
+        .to_list("x", "source")
     )
 
-    assert sorted(rows) == [1, 2]
+    assert sorted(x for x, _ in rows) == [1, 2]
+    assert sorted(source.read()["x"] for _, source in rows) == [1, 2]
 
 
 @pytest.mark.parametrize("cloud_type,version_aware", [("s3", False)], indirect=True)
@@ -342,3 +344,17 @@ def test_a_delete_row_is_not_downloaded(files, test_session):
 
     with pytest.raises(VFileError, match="object was deleted"):
         client.put_in_cache(files[2])
+
+
+@pytest.mark.parametrize("cloud_type,version_aware", [("s3", True)], indirect=True)
+def test_read_listing_dataset_keeps_delete_rows(cloud_test_catalog, cloud_prefix):
+    ctc = cloud_test_catalog
+    (ctc.src / cloud_prefix / "a").write_text("1")
+    (ctc.src / cloud_prefix / "a").unlink()
+    uri = f"{ctc.src_uri}/{cloud_prefix}/"
+    dc.read_storage(uri, session=ctc.session, versions="all").exec()
+    (name,) = [ls.name for ls in ctc.catalog.listings() if ls.versions == "all"]
+
+    chain, _ = read_listing_dataset(name, session=ctc.session)
+
+    assert sorted(f.is_deleted for f in chain.to_values("file")) == [False, True]
