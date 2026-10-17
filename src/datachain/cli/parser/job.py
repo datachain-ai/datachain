@@ -84,7 +84,7 @@ def add_jobs_parser(subparsers, parent_parser) -> None:
     studio_run_parser.add_argument(
         "--python-version",
         action="store",
-        help="Python version for the job (e.g., 3.10, 3.11, 3.12, 3.13)",
+        help="Python version for the job (e.g., 3.11, 3.12, 3.13)",
     )
     studio_run_parser.add_argument(
         "--repository",

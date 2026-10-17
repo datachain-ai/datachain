@@ -968,7 +968,7 @@ def test_create_and_get_job(metastore):
         query_type=JobQueryType.PYTHON,
         status=JobStatus.CREATED,
         workers=2,
-        python_version="3.10",
+        python_version="3.11",
         params={"foo": "bar"},
     )
     assert job_id
@@ -980,7 +980,7 @@ def test_create_and_get_job(metastore):
     assert job.query_type == JobQueryType.PYTHON
     assert job.status == JobStatus.CREATED
     assert job.workers == 2
-    assert job.python_version == "3.10"
+    assert job.python_version == "3.11"
     assert job.params == {"foo": "bar"}
 
 

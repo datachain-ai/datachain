@@ -61,9 +61,9 @@ Click the run settings button to configure your job execution parameters.
 ### Python Version
 
 Select the Python version for your job environment:
-- Python 3.12 (recommended)
+- Python 3.13 (default)
+- Python 3.12
 - Python 3.11
-- Python 3.10
 
 ### Workers
 
