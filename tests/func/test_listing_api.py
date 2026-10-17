@@ -355,3 +355,35 @@ def test_listing_uses_cache_of_active_session(test_session, tmp_dir, mocker):
 
     assert pages.call_args.args[1] is catalog.cache
     assert file._catalog.cache is catalog.cache
+
+
+def _write_tree(tmp_dir):
+    for path in ["a.txt", "d/c.txt", "d/e.jpg"]:
+        (tmp_dir / path).parent.mkdir(exist_ok=True)
+        (tmp_dir / path).write_text(path)
+
+
+def test_listing_save_with_patterns_keeps_a_newer_parent_listing(test_session, tmp_dir):
+    _write_tree(tmp_dir)
+    dc.read_storage(f"{tmp_dir.as_uri()}/d/", session=test_session).count()
+    dc.read_storage(tmp_dir.as_uri(), session=test_session).count()
+
+    chain = dc.listing(f"{tmp_dir.as_uri()}/d/*.{{txt,jpg}}", session=test_session)
+    root = dc.read_storage(tmp_dir.as_uri(), session=test_session)
+
+    assert sorted(chain.save().to_values("file.path")) == ["c.txt", "e.jpg"]
+    assert sorted(root.to_values("file.path")) == ["a.txt", "d/c.txt", "d/e.jpg"]
+
+
+def test_expired_parent_listing_is_listed_whole(test_session, tmp_dir, mocker):
+    _write_tree(tmp_dir)
+    dc.read_storage(tmp_dir.as_uri(), session=test_session).count()
+    chain = dc.read_storage(f"{tmp_dir.as_uri()}/d/", session=test_session)
+
+    mocker.patch(
+        "datachain.query.dataset.listing_dataset_expired", side_effect=[True, False]
+    )
+    assert sorted(chain.to_values("file.path")) == ["d/c.txt", "d/e.jpg"]
+
+    root = dc.read_storage(tmp_dir.as_uri(), session=test_session)
+    assert sorted(root.to_values("file.path")) == ["a.txt", "d/c.txt", "d/e.jpg"]

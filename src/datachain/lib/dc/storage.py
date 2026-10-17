@@ -21,6 +21,7 @@ from datachain.lib.listing import (
     get_listing,
     list_bucket,
     list_pages,
+    listing_uri_from_name,
     select_paths,
 )
 from datachain.query import Session
@@ -274,16 +275,21 @@ def _with_anon(
     return (client_config or _session_client_config(session, None)) | {"anon": anon}
 
 
+def _open_session(session: Session | None) -> Session | None:
+    """``session``, or the active one, without creating one."""
+    if session is not None:
+        return session
+    if Session.SESSION_CONTEXTS:
+        return Session.SESSION_CONTEXTS[-1]
+    return Session.GLOBAL_SESSION_CTX
+
+
 def _session_client_config(session: Session | None, client_config: dict | None) -> dict:
     """The client config ``Session.get`` would use, without creating a session."""
-    if session is None and not client_config:
-        if Session.SESSION_CONTEXTS:
-            session = Session.SESSION_CONTEXTS[-1]
-        else:
-            session = Session.GLOBAL_SESSION_CTX
-    if session is not None:
-        return session.catalog.client_config
-    return client_config or {}
+    if session is None and client_config:
+        return client_config
+    session = _open_session(session)
+    return session.catalog.client_config if session else {}
 
 
 def _read_storage(
@@ -316,18 +322,11 @@ def _read_storage(
 
     chains = []
     file_values = []
-    updated_uris = set()
     updated_listings: set[str] = set()
 
     for list_uri_to_use, glob_pattern in storage_sources(uris):
-        # Avoid double updates for the same URI
-        update_single_uri = False
-        if update and (list_uri_to_use not in updated_uris):
-            updated_uris.add(list_uri_to_use)
-            update_single_uri = True
-
         list_ds_name, list_uri, list_path, _ = get_listing(
-            list_uri_to_use, session, update=update_single_uri, versions=versions
+            list_uri_to_use, session, update=update, versions=versions
         )
 
         # list_ds_name is None if object is a file, we don't want to use cache
@@ -356,8 +355,12 @@ def _read_storage(
         updated_listings.add(list_ds_name)
         dc.signals_schema = dc.signals_schema.mutate({f"{column}": file_type})
 
+        # a reused snapshot may cover a parent of list_uri: refresh all of it
         lst = Listing(
-            list_uri, versions=versions, client_config=client_config, session=session
+            listing_uri_from_name(list_ds_name),
+            versions=versions,
+            client_config=client_config,
+            session=session,
         )
         # Always attach listing_fn so resolve_listing can refresh stale listings.
         dc._query.set_listing_fn(
@@ -531,16 +534,8 @@ class Listing:
             )
         self._listed = True
 
-    def _open_session(self) -> Session | None:
-        """The passed or the active session, without creating one."""
-        if self._session is not None:
-            return self._session
-        if Session.SESSION_CONTEXTS:
-            return Session.SESSION_CONTEXTS[-1]
-        return Session.GLOBAL_SESSION_CTX
-
     def _pages(self) -> Iterator[Sequence[tuple]]:
-        session = self._open_session()
+        session = _open_session(self._session)
         cache = session.catalog.cache if session else None
         for list_uri, filters in self._sources(cache):
             if filters is None:
@@ -606,7 +601,7 @@ class Listing:
     def _file_catalog(self) -> "Catalog":
         from datachain.catalog import Catalog
 
-        session = self._open_session()
+        session = _open_session(self._session)
         if session is None:
             catalog = Catalog(None, None)  # type: ignore[arg-type]
         else:

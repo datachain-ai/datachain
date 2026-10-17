@@ -81,7 +81,7 @@ def _pickles(value: Any) -> bool:
     return True
 
 
-def picklable(e: Exception) -> Exception:
+def picklable(e: BaseException) -> BaseException:
     """``e``, or a copy of it that pickles: of its nearest class that pickles,
     with each attribute that does not pickle set to ``None``."""
     if _pickles(e):
@@ -287,7 +287,7 @@ async def _serve(
         try:
             out.write(dump(frame))
             out.flush()
-        except BrokenPipeError:
+        except Exception:  # noqa: BLE001  # the parent is gone or the reply does not pickle
             os._exit(0)
 
     async def run(rid: int, prefix: str, start_after: str, token: Any, hi) -> None:
@@ -295,7 +295,7 @@ async def _serve(
             page = await client._list_page(
                 prefix, start_after, token, client._keeps(hi), hi=hi
             )
-        except Exception as e:  # noqa: BLE001
+        except (Exception, asyncio.CancelledError) as e:  # noqa: BLE001
             write("error", rid, picklable(e))
         else:
             # plain tuples: a row type would unpickle per row in Python

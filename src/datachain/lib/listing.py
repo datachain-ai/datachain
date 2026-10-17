@@ -199,9 +199,7 @@ class PathFilter:
 
 @functools.lru_cache(maxsize=256)
 def _glob_parts(pattern: str) -> "list[tuple[re.Pattern, int]] | None":
-    """SQLite's GLOB split at ``*`` into regexes of one character per token:
-    ``?`` and ``[...]`` sets, ``^`` negating; None for an unclosed set, which
-    matches nothing. Each part comes with its length in characters."""
+    """SQLite's GLOB split at ``*`` into (regex, length); None matches nothing."""
     parts: list[list[str]] = []
     out: list[str] = []
     i, n = 0, len(pattern)
