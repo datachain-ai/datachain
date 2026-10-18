@@ -1,4 +1,5 @@
 import asyncio
+import errno
 import os
 from typing import TYPE_CHECKING, Any, cast
 
@@ -87,9 +88,12 @@ class ClientS3(Client):
             return BucketStatus(
                 exists=False, access="denied", error=f"S3 bucket '{name}' not found"
             )
-        except OSError:
-            # AWS answers 403; some S3-compatible stores, such as R2, answer 400.
+        except PermissionError:
             pass
+        except OSError as e:
+            # Cloudflare R2 answers anonymous requests with 400
+            if e.errno != errno.EINVAL:
+                raise
 
         # Step 2: Authenticated probe.
         # Use raw S3FileSystem to bypass ClientS3.create_fs()'s auto-anon fallback.

@@ -7,9 +7,10 @@ from azure.core.exceptions import (
     HttpResponseError,
     ResourceNotFoundError,
 )
-from botocore.exceptions import NoCredentialsError
+from botocore.exceptions import ClientError, NoCredentialsError
 from gcsfs.retry import HttpError
 from google.api_core import exceptions as google_exceptions
+from s3fs.errors import translate_boto_error
 
 from datachain.cli import handle_bucket_command, handle_command
 from datachain.client import bucket_status
@@ -86,6 +87,18 @@ def test_s3_bucket_status(mock_fs_cls, anon_effect, auth_effect, expected):
     anon_fs._info = AsyncMock(side_effect=anon_effect)
     auth_fs._info = AsyncMock(side_effect=auth_effect)
     assert ClientS3.bucket_status("b") == expected
+
+
+@patch("datachain.client.s3.S3FileSystem")
+def test_s3_bucket_status_anon_service_error_reraises(mock_fs_cls):
+    anon_fs, auth_fs = MagicMock(), MagicMock()
+    mock_fs_cls.side_effect = [anon_fs, auth_fs]
+    server_error = ClientError({"Error": {"Code": "500"}}, "HeadBucket")
+    anon_fs._info = AsyncMock(side_effect=translate_boto_error(server_error))
+    auth_fs._info = AsyncMock()
+    with pytest.raises(OSError, match="500"):
+        ClientS3.bucket_status("b")
+    auth_fs._info.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
