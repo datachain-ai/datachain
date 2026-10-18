@@ -86,3 +86,27 @@ def test_file_validators_are_known():
     validators = dc.File.__pydantic_decorators__
     assert set(validators.field_validators) == {"validate_location", "validate_source"}
     assert set(validators.model_validators) == {"_normalize_path"}
+
+
+def test_file_rows_take_file_attributes():
+    row = FileRow("s3://bucket", "dir/a.txt", 3)
+
+    assert row.get_fs_path() == "s3://bucket/dir/a.txt"
+    assert row.name == "a.txt"
+    assert row.get_file_ext() == "txt"
+    with pytest.raises(AttributeError):
+        row.missing  # noqa: B018
+
+
+def test_file_rows_only_take_path_helpers():
+    row = FileRow("s3://bucket", "dir/a.txt")
+
+    assert row.parent == "dir"
+    assert not hasattr(row, "read")
+    assert not hasattr(row, "model_dump")
+    with pytest.raises(AttributeError, match=r"Listing\.to_objects"):
+        row.open()
+
+
+def test_invalid_file_rows_have_no_helpers():
+    assert not hasattr(FileRow("no-scheme", "a.txt"), "name")

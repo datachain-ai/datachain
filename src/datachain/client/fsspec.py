@@ -619,19 +619,42 @@ class Client(ABC):
 class RangeListedClient(Client):
     """A client that lists in parallel key ranges (``RangeListing``)."""
 
+    LISTS_LEVELS: ClassVar[bool] = False  # whether _list_page takes a delimiter
+
     @staticmethod
     def key_order(key: str) -> Any:
         """The sort key of the order the server lists keys in."""
         return key
 
     async def _fetch_ranges(self, start_prefix: str, result_queue: ResultQueue) -> None:
+        prefix = start_prefix.lstrip(DELIMITER) + DELIMITER if start_prefix else ""
+        await self._fetch_prefix(prefix, result_queue)
+
+    _fetch_default = _fetch_ranges
+
+    async def _fetch_prefix(self, start_prefix: str, result_queue: ResultQueue) -> None:
+        """Keys that start with ``start_prefix``, which needn't end a folder."""
         from .listing_worker import LIST_PROCESSES, Pool
 
-        prefix = start_prefix.lstrip(DELIMITER) + DELIMITER if start_prefix else ""
+        prefix = start_prefix.lstrip(DELIMITER)
         pool = Pool(self, prefix, LIST_PROCESSES) if LIST_PROCESSES else None
         await RangeListing(self, prefix, result_queue, pool).run()
 
-    _fetch_default = _fetch_ranges
+    async def level_rows(self, prefix: str, max_pages: int) -> list | None:
+        """Rows of the keys under ``prefix`` with no delimiter past it, or None
+        when they take more than ``max_pages`` pages."""
+        rows: list = []
+        token = None
+        for _ in range(max_pages):
+            page = await self._list_page(prefix, "", token, delimiter=DELIMITER)
+            rows += page.rows
+            if (token := page.token) is None:
+                return rows
+        return None
+
+    async def has_keys(self, prefix: str) -> bool:
+        page = await self._list_page(prefix, "", None, page_size=1)
+        return page.last is not None or page.token is not None
 
     def _lists_in_key_order(self) -> bool:
         return True
@@ -643,10 +666,12 @@ class RangeListedClient(Client):
         token: Any,
         hi: str | None = None,
         page_size: int | None = None,
+        delimiter: str = "",
     ) -> Page:
         """One page under ``prefix``, in key order: the one after ``token``, or
         the first after ``start_after``. Keys past ``hi`` make no rows; a backend
-        that can end a listing at a key ends it after ``hi``."""
+        that can end a listing at a key ends it after ``hi``. With ``delimiter``
+        (``LISTS_LEVELS``), keys with it past ``prefix`` are skipped."""
         raise NotImplementedError
 
     async def _probe(self, prefix: str, start_after: str) -> str | None:

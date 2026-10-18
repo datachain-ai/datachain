@@ -27,6 +27,7 @@ os.environ.setdefault("NO_GCE_CHECK", "true")
 class GCSClient(RangeListedClient):
     FS_CLASS = GCSFileSystem
     PREFIX = "gs://"
+    LISTS_LEVELS = True
     protocol = "gs"
     CREDENTIAL_KEYS = frozenset({"token"})
     LIST_PAGE_SIZE = 5000
@@ -236,12 +237,13 @@ class GCSClient(RangeListedClient):
         token: Any,
         hi: str | None = None,
         page_size: int | None = None,
+        delimiter: str = "",
     ) -> Page:
         page = await self.fs._call(
             "GET",
             "b/{}/o",
             self.name,
-            delimiter="",
+            delimiter=delimiter,
             prefix=prefix,
             startOffset=start_after or None,
             endOffset=None if hi is None else f"{hi}\0",  # exclusive

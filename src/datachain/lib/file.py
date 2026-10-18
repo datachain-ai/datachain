@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from fsspec.utils import stringify_path
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 
 from datachain import json
 from datachain.client.fileslice import FileSlice
@@ -1176,6 +1176,32 @@ class FileRow(NamedTuple):
     is_latest: bool = True
     last_modified: datetime = TIME_ZERO
     location: dict | list[dict] | None = None
+
+    def __getattr__(self, name: str) -> Any:
+        """``File``'s path helpers, from the ``File`` built from the row."""
+        if name not in _FILE_ROW_HELPERS:
+            hint = " (rows don't read files; see Listing.to_objects())"
+            hint = hint if hasattr(File, name) and not name.startswith("_") else ""
+            raise AttributeError(f"'FileRow' object has no attribute '{name}'{hint}")
+        try:
+            file = File(**self._asdict())
+        except ValidationError as exc:
+            raise AttributeError(f"'FileRow' {name}: {exc}") from None
+        return getattr(file, name)
+
+
+_FILE_ROW_HELPERS = frozenset(
+    {
+        "name",
+        "parent",
+        "get_file_ext",
+        "get_file_stem",
+        "get_file_suffix",
+        "get_fs_path",
+        "get_hash",
+        "rebase",
+    }
+)
 
 
 class TextFile(File):
