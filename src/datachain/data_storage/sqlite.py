@@ -888,7 +888,8 @@ class SQLiteWarehouse(AbstractWarehouse):
             return
 
         select_ids = query.with_only_columns(col_id)
-        ids = self.db.execute(select_ids).fetchall()
+        # Iterate the cursor lazily so only one batch of ids is held in memory.
+        ids = self.db.execute(select_ids)
 
         if preserve_sys_ids:
             select_q = query.offset(None).limit(None)
