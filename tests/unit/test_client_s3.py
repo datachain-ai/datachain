@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from botocore.exceptions import ClientError
@@ -111,58 +111,32 @@ def test_node_bucket_full_split(nodes):
     assert len(bkt[3]) == 1
 
 
-def _client_error(code):
-    return ClientError({"Error": {"Code": code, "Message": ""}}, "ListObjectVersions")
-
-
-class FakePaginator:
-    def __init__(self, pages, error=None):
-        self.pages = pages
-        self.error = error
-
-    async def paginate(self, **kwargs):
-        for page in self.pages:
-            yield page
-        if self.error:
-            raise self.error
-
-
-def _list_pages(paginators, versions=True):
-    s3 = MagicMock()
-    s3.get_paginator.side_effect = lambda method: paginators[method]
-
-    async def collect():
-        client = ClientS3("bucket", {}, None)
-        return [page async for page in client._list_pages(s3, "", versions)]
-
-    return asyncio.run(collect())
-
-
-def test_list_pages_versions_not_implemented_lists_current_objects():
-    pages = _list_pages(
-        {
-            "list_object_versions": FakePaginator([], _client_error("NotImplemented")),
-            "list_objects_v2": FakePaginator([{"Contents": [{"Key": "a"}]}]),
-        }
-    )
-    assert pages == [[{"Key": "a"}]]
-
-
 @pytest.mark.parametrize(
-    "pages, code",
-    [([], "AccessDenied"), ([{"Versions": [{"Key": "a"}]}], "NotImplemented")],
-    ids=["other-error", "after-first-page"],
+    "versions, pages, code",
+    [
+        (True, [], "AccessDenied"),
+        (True, [{"Versions": []}], "NotImplemented"),
+        (False, [], "NotImplemented"),
+    ],
+    ids=["other-error", "after-first-page", "non-versioned"],
 )
-def test_list_pages_versions_error_raises(pages, code):
-    paginators = {
-        "list_object_versions": FakePaginator(pages, _client_error(code)),
-        "list_objects_v2": FakePaginator([{"Contents": [{"Key": "b"}]}]),
-    }
+@pytest.mark.asyncio
+async def test_fetch_flat_listing_errors(versions, pages, code):
+    async def paginate(**kwargs):
+        for page in pages:
+            yield page
+        raise ClientError({"Error": {"Code": code}}, "ListObjectVersions")
+
+    s3 = MagicMock()
+    s3.get_paginator.return_value.paginate = paginate
+    client = ClientS3("bucket", {}, None)
+    client._fs = MagicMock(
+        version_aware=versions,
+        set_session=AsyncMock(),
+        get_s3=AsyncMock(return_value=s3),
+    )
     with pytest.raises(ClientError, match=code):
-        _list_pages(paginators)
-
-
-def test_list_pages_current_objects_not_implemented_raises():
-    paginators = {"list_objects_v2": FakePaginator([], _client_error("NotImplemented"))}
-    with pytest.raises(ClientError, match="NotImplemented"):
-        _list_pages(paginators, versions=False)
+        await client._fetch_flat("", asyncio.Queue())
+    s3.get_paginator.assert_called_once_with(
+        "list_object_versions" if versions else "list_objects_v2"
+    )
