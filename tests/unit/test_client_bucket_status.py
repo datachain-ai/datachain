@@ -1,3 +1,4 @@
+import errno
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -55,6 +56,12 @@ def test_normalize_s3_kwargs_secret_and_token():
             BucketStatus(False, "denied", "S3 bucket 'b' not found"),
         ),
         (PermissionError, None, BucketStatus(True, "authenticated")),
+        (
+            OSError(errno.EINVAL, "Bad Request"),
+            None,
+            BucketStatus(True, "authenticated"),
+        ),
+        (OSError(errno.EIO, "boom"), None, BucketStatus(True, "authenticated")),
         (PermissionError, NoCredentialsError, BucketStatus(True, "denied", S3_DENIED)),
         (PermissionError, PermissionError, BucketStatus(True, "denied", S3_DENIED)),
         (
@@ -63,7 +70,16 @@ def test_normalize_s3_kwargs_secret_and_token():
             BucketStatus(False, "denied", "S3 bucket 'b' not found"),
         ),
     ],
-    ids=["anon-ok", "anon-404", "auth-ok", "auth-no-creds", "auth-perm", "auth-404"],
+    ids=[
+        "anon-ok",
+        "anon-404",
+        "auth-ok",
+        "anon-400",
+        "anon-oserror",
+        "auth-no-creds",
+        "auth-perm",
+        "auth-404",
+    ],
 )
 @patch("datachain.client.s3.S3FileSystem")
 def test_s3_bucket_status(mock_fs_cls, anon_effect, auth_effect, expected):

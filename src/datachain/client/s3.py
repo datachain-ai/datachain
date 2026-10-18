@@ -1,8 +1,9 @@
 import asyncio
 import os
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, cast
 
-from botocore.exceptions import NoCredentialsError
+from botocore.exceptions import ClientError, NoCredentialsError
 from fsspec.asyn import get_loop, sync
 from s3fs import S3FileSystem
 
@@ -83,12 +84,14 @@ class ClientS3(Client):
         try:
             sync(get_loop(), anon_fs._info, name)
             return BucketStatus(exists=True, access="anonymous")
-        except PermissionError:
-            pass
         except FileNotFoundError:
             return BucketStatus(
                 exists=False, access="denied", error=f"S3 bucket '{name}' not found"
             )
+        except OSError:
+            # 403 on AWS; other S3-compatible stores (e.g. Cloudflare R2) answer
+            # anonymous requests with other errors, such as 400.
+            pass
 
         # Step 2: Authenticated probe.
         # Use raw S3FileSystem to bypass ClientS3.create_fs()'s auto-anon fallback.
@@ -155,7 +158,7 @@ class ClientS3(Client):
         async def get_pages(it, page_queue):
             try:
                 async for page in it:
-                    await page_queue.put(page.get(contents_key, []))
+                    await page_queue.put(page)
             finally:
                 await page_queue.put(None)
 
@@ -166,7 +169,7 @@ class ClientS3(Client):
                     if res:
                         found = True
                     entries = [
-                        self._entry_from_boto(d, self.name, versions)
+                        self._entry_from_boto(d, self.name)
                         for d in res
                         if self._is_valid_key(d["Key"])
                     ]
@@ -180,22 +183,10 @@ class ClientS3(Client):
             prefix = start_prefix
             if prefix:
                 prefix = prefix.lstrip(DELIMITER) + DELIMITER
-            versions = self._is_version_aware()
             fs = self.fs
             await fs.set_session()
             s3 = await fs.get_s3(self.name)
-            if versions:
-                method = "list_object_versions"
-                contents_key = "Versions"
-            else:
-                method = "list_objects_v2"
-                contents_key = "Contents"
-            pag = s3.get_paginator(method)
-            it = pag.paginate(
-                Bucket=self.name,
-                Prefix=prefix,
-                Delimiter="",
-            )
+            it = self._list_pages(s3, prefix, self._is_version_aware())
             page_queue: asyncio.Queue[list] = asyncio.Queue(2)
             consumer = asyncio.create_task(
                 process_pages(page_queue, result_queue, prefix)
@@ -208,19 +199,42 @@ class ClientS3(Client):
         finally:
             result_queue.put_nowait(None)
 
+    async def _list_pages(
+        self, s3, prefix: str, versions: bool
+    ) -> AsyncIterator[list[dict[str, Any]]]:
+        method = "list_object_versions" if versions else "list_objects_v2"
+        contents_key = "Versions" if versions else "Contents"
+        pages = s3.get_paginator(method).paginate(
+            Bucket=self.name, Prefix=prefix, Delimiter=""
+        )
+        listed = False
+        try:
+            async for page in pages:
+                listed = True
+                yield page.get(contents_key, [])
+        except ClientError as e:
+            if (
+                not versions
+                or listed
+                or e.response.get("Error", {}).get("Code") != "NotImplemented"
+            ):
+                raise
+            # a store without object versions (e.g. Cloudflare R2) holds
+            # current objects only, so they are all of its versions
+            async for page in self._list_pages(s3, prefix, False):
+                yield page
+
     async def _fetch_default(
         self, start_prefix: str, result_queue: ResultQueue
     ) -> None:
         await self._fetch_flat(start_prefix, result_queue)
 
-    def _entry_from_boto(self, v, bucket, versions=False) -> File:
+    def _entry_from_boto(self, v, bucket) -> File:
         return File(
             source=self.uri,
             path=v["Key"],
             etag=v.get("ETag", "").strip('"'),
-            version=(
-                ClientS3.clean_s3_version(v.get("VersionId", "")) if versions else ""
-            ),
+            version=ClientS3.clean_s3_version(v.get("VersionId", "")),
             is_latest=v.get("IsLatest", True),
             last_modified=v.get("LastModified", ""),
             size=v["Size"],

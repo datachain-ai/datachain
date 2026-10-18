@@ -173,7 +173,7 @@ Each provider uses standard credential locations by default. For non-default con
 ```python
 import datachain as dc
 
-# S3-compatible (MinIO, Ceph, etc.)
+# S3-compatible (MinIO, Ceph, Cloudflare R2, etc.)
 chain = dc.read_storage(
     "s3://my-bucket/data/",
     client_config={
