@@ -889,7 +889,6 @@ class DataChain:
                 )
 
             # Link current job to this dataset version (not creator).
-            # This also updates dataset_version.job_id.
             metastore.link_dataset_version_to_job(
                 dataset_version.id,
                 self.job.id,
