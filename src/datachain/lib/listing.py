@@ -86,12 +86,10 @@ def listing_dataset_expired(lst_ds) -> bool:
 
 
 def list_bucket(uri: str, cache, client_config=None) -> Callable:
-    """
-    Function that returns another generator function that yields File objects
-    from bucket where each File represents one bucket entry.
-    """
+    """A generator function, for ``gen()``, of the bucket's entries under ``uri``:
+    ``FileRow`` rows from S3, GCS and Azure, ``File`` objects from other clients."""
 
-    def list_func() -> Iterator[File]:  # also FileRow rows
+    def list_func() -> Iterator[File]:
         config = client_config or {}
         client = Client.get_client(uri, cache, **config)  # type: ignore[arg-type]
         _, path = Client.parse_url(uri)

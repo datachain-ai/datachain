@@ -79,3 +79,10 @@ def test_file_row_is_no_optional_file(test_session):
 
     with pytest.raises(UdfError, match="returned 8 values while 9 are expected"):
         chain.save("optional")
+
+
+def test_file_validators_are_known():
+    # FileRow rows skip File's validators: a new one must hold for listing rows too
+    validators = dc.File.__pydantic_decorators__
+    assert set(validators.field_validators) == {"validate_location", "validate_source"}
+    assert set(validators.model_validators) == {"_normalize_path"}

@@ -10,9 +10,12 @@ if TYPE_CHECKING:
     from .fsspec import RangeListedClient, ResultQueue
     from .listing_worker import Pool
 
-LIST_WORKERS = 16  # ranges, and requests at once, in one process
-PROCESS_LIST_WORKERS = 64  # ranges once child processes fetch the pages
-POOL_ROWS = 100_000  # children pay once one process is CPU-bound
+# A range has one request in flight, so these cap both open ranges and requests.
+LIST_WORKERS = 16  # while this process fetches every page
+PROCESS_LIST_WORKERS = 64  # once child processes fetch pages: they parse in parallel
+# Child processes start once a listing has this many rows; below it one process
+# keeps up with the network, and children would only cost CPU and memory.
+POOL_ROWS = 100_000
 SPLIT_PAGES = 4  # a young range splits at most this many pages ahead
 YOUNG_PAGES = 4  # a range is young until it and its parents read this many pages
 
@@ -207,7 +210,16 @@ class RangeListing:
                 task.cancel()
             if self.pool:  # before the await: gc may close this coroutine
                 self.pool.close()
-            await asyncio.gather(all_read, *workers, return_exceptions=True)
+            # again until they end: a library that loses a cancel must not hang this
+            pending = {all_read, *workers}
+            while pending := (await asyncio.wait(pending, timeout=1))[1]:
+                for task in pending:
+                    task.cancel()
+            for task in (all_read, *workers):
+                if not task.cancelled():
+                    task.exception()  # retrieved: the first failure is raised above
+            if self.pool:
+                await self.pool.wait_closed()
             self.pbar.close()
 
     async def _worker(self) -> None:
@@ -225,6 +237,11 @@ class RangeListing:
         if page is None:
             async with self.own_requests:
                 page = await self.client._list_page(self.prefix, lo, token, hi)
+        if token is not None and page.token == token:
+            raise RuntimeError(
+                f"Listing {self.client.uri}: the server returned the page token it"
+                " was given, so the listing would never end."
+            )
         if hi is not None and page.past_hi is not None:
             await self._seam(hi, 0, page.past_hi)
         if lo and (page.past_lo or page.token is None):

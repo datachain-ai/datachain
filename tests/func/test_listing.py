@@ -292,14 +292,12 @@ def test_read_storage_mixed_single_file_and_dir_deterministic(test_session, tmp_
     assert chain1._query.hash() == chain2._query.hash()
 
 
-@pytest.mark.parametrize(
-    "settings, expected",
-    [(None, LISTING_BATCH_SIZE), ({"batch_size": 7}, 7)],
-)
-def test_listing_insert_batch_size(test_session, tmp_dir, mocker, settings, expected):
+@pytest.mark.parametrize("settings", [None, {"batch_size": 7}])
+def test_listing_insert_batch_size(test_session, tmp_dir, mocker, settings):
+    # the user's batch_size tunes their UDFs, not the listing
     (tmp_dir / "a.txt").write_text("hello")
     spy = mocker.spy(dataset, "process_udf_outputs")
 
     dc.read_storage(tmp_dir.as_uri(), session=test_session, settings=settings).exec()
 
-    assert spy.call_args.kwargs["batch_size"] == expected
+    assert spy.call_args.kwargs["batch_size"] == LISTING_BATCH_SIZE

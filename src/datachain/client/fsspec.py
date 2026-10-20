@@ -311,10 +311,11 @@ class Client(ABC):
         async def listing() -> None:
             try:
                 await impl(start_prefix, result_queue)
-            except asyncio.CancelledError:
-                raise
-            except BaseException:
-                await result_queue.put(None)
+            except BaseException as e:
+                # the reader stops at None, unless it cancelled this task itself
+                task = asyncio.current_task()
+                if not (isinstance(e, asyncio.CancelledError) and task.cancelling()):  # type: ignore[union-attr]
+                    await result_queue.put(None)
                 raise
             await result_queue.put(None)
 
@@ -655,4 +656,9 @@ class RangeListedClient(Client):
             page = await self._list_page(prefix, start_after, token, page_size=1)
             if page.last is not None or page.token is None:
                 return page.last
+            if page.token == token:
+                raise RuntimeError(
+                    f"Listing {self.uri}: the server returned the page token it was"
+                    " given, so the listing would never end."
+                )
             token = page.token

@@ -428,7 +428,8 @@ class UDFBase(AbstractUDF):
 
     def _file_row_output(self) -> bool:
         """Whether a ``FileRow`` is a whole output row: one output with
-        ``FileRow``'s columns."""
+        ``FileRow``'s columns. Listing's fast path: its rows are stored as they
+        come, without a ``File`` built and flattened per row."""
         if len(self.output.values) != 1:
             return False
         name = next(iter(self.output.values))

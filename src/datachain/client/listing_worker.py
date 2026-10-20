@@ -1,10 +1,12 @@
 """Child processes that fetch and parse listing pages; the parent owns the ranges."""
 
 import asyncio
+import atexit
 import itertools
 import logging
 import os
 import pickle
+import signal
 import struct
 import sys
 import threading
@@ -66,8 +68,13 @@ def usable_cpus() -> int:
     return max(min([cpus, *(quota // period for quota, period in _cpu_quotas())]), 1)
 
 
-LIST_PROCESSES = min(4, cpus) if (cpus := usable_cpus()) > 1 else 0
+# a frozen app's executable starts the app, not Python's "-c"
+_SPAWNS = bool(sys.executable) and not getattr(sys, "frozen", False)
+LIST_PROCESSES = min(4, cpus) if _SPAWNS and (cpus := usable_cpus()) > 1 else 0
 HEADER = struct.Struct("<Q")  # the size of the pickle that follows
+# a child that doesn't answer a page in time is stuck (stopped, deadlocked): the
+# parent kills it and lists the page itself; a page normally takes under a second
+REPLY_TIMEOUT = float(os.environ.get("DATACHAIN_LISTING_REPLY_TIMEOUT", "300"))
 _as_file_row = partial(tuple.__new__, FileRow)  # skips FileRow's argument handling
 
 
@@ -93,27 +100,61 @@ async def _receive(stream: asyncio.StreamReader) -> Any:
 
 def _command() -> list[str]:
     path = [p for p in sys.path if isinstance(p, str)]  # the parent's imports
-    code = (
-        # before any import: ignore Ctrl-C, and send stray prints to stderr
-        "import os, signal, sys; signal.signal(signal.SIGINT, signal.SIG_IGN); "
-        "out = os.dup(1); os.dup2(2, 1); "
-        f"sys.path[:] = {path!r}; from {__name__} import main; main(out)"
-    )
+    code = f"""
+# before any import: ignore Ctrl-C, and send stray prints to stderr
+import os, signal, sys
+signal.signal(signal.SIGINT, signal.SIG_IGN)
+out = os.dup(1)
+os.dup2(2, 1)
+sys.path[:] = {path!r}  # also before ctypes: not a ctypes.py in the cwd
+if sys.platform == "linux":  # killed when the parent dies, even if stopped or stuck
+    __import__("ctypes").CDLL(None).prctl(1, 9)  # PR_SET_PDEATHSIG, SIGKILL
+    if os.getppid() != {os.getpid()}:  # the parent died already
+        os._exit(0)
+from {__name__} import main
+main(out)
+"""
     return [sys.executable, "-c", code]
 
 
+# children alive in this process; at exit the loop that would close them is gone
+_children: set[asyncio.subprocess.Process] = set()
+
+
 async def _spawn() -> asyncio.subprocess.Process:
-    return await asyncio.create_subprocess_exec(
+    proc = await asyncio.create_subprocess_exec(
         *_command(),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         start_new_session=True,  # no terminal: its Ctrl-C and prompts are the parent's
     )
+    _children.add(proc)
+    return proc
 
 
 def _kill(proc: asyncio.subprocess.Process) -> None:
-    if proc.returncode is None:
-        proc.kill()
+    """Kills a child and what it started, such as a credential process: each child
+    leads a process group of its own."""
+    _children.discard(proc)
+    if proc.returncode is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except AttributeError:  # Windows: no process groups
+        with suppress(ProcessLookupError):
+            proc.kill()
+    except OSError:  # no group left, or only a zombie in it (EPERM on macOS)
+        # not proc.kill(): its poll() reaps the child before asyncio's watcher,
+        # which then reports returncode 255
+        with suppress(OSError):
+            os.kill(proc.pid, signal.SIGKILL)
+
+
+@atexit.register
+def _kill_children() -> None:
+    """Stopped or blocked children don't see the parent exit."""
+    for proc in list(_children):
+        _kill(proc)
 
 
 class Pool:
@@ -190,13 +231,30 @@ class Pool:
         replies[rid] = reply = asyncio.get_running_loop().create_future()
         try:
             proc.stdin.write(dump((rid, start_after, token, hi)))
-            page = await reply
+            # not wait_for: on Python 3.11 it drops a cancel that comes with the
+            # reply, as when the pool closes, and the cancelled listing hangs
+            await asyncio.wait([reply], timeout=REPLY_TIMEOUT)
+            if not reply.done():  # a parent paused that long reads its replies first
+                await asyncio.wait([reply], timeout=1)
         finally:
             replies.pop(rid, None)
-        if page is None:
+        if not reply.done():
+            self._drop(proc, replies)
+            return None
+        if (page := reply.result()) is None:
             return None
         rows, *rest = page
         return Page(list(map(_as_file_row, rows)), *rest)
+
+    def _drop(self, proc: asyncio.subprocess.Process, replies: dict) -> None:
+        """Kills a stuck child; its pending pages come back None now, as the kill
+        may not end it (uninterruptible sleep) and it takes no new ones."""
+        if self.children.pop(proc, None) is not None:
+            logger.warning("Listing process %s is stuck: listing without it", proc.pid)
+        _kill(proc)
+        for reply in replies.values():
+            if not reply.done():
+                reply.set_result(None)
 
     def close(self) -> None:
         self.closed = True
@@ -204,6 +262,12 @@ class Pool:
             task.cancel()
         for proc in self.procs:
             _kill(proc)
+
+    async def wait_closed(self) -> None:
+        """Waits a few seconds at most for the children ``close`` killed to exit."""
+        waits = [*self.tasks, *(asyncio.ensure_future(p.wait()) for p in self.procs)]
+        if waits:
+            await asyncio.wait(waits, timeout=5)
 
 
 def main(out_fd: int) -> None:
@@ -214,11 +278,23 @@ def main(out_fd: int) -> None:
     inp = os.fdopen(os.dup(0), "rb")
     with open(os.devnull, "rb") as devnull:  # a credential process must not read it
         os.dup2(devnull.fileno(), 0)
-    if (spec := load(inp)) is not None:
-        cls, name, fs_kwargs, cache, page_size, prefix = spec
-        client = cls(name, fs_kwargs, cache)
-        client.LIST_PAGE_SIZE = page_size
+    try:
+        if (spec := load(inp)) is not None:
+            cls, name, fs_kwargs, cache, page_size, prefix = spec
+            client = cls(name, fs_kwargs, cache)
+            client.LIST_PAGE_SIZE = page_size
+    except Exception as e:  # noqa: BLE001
+        spec = None  # such as a class in the parent's __main__: the parent lists alone
+        with suppress(OSError):
+            out.write(dump("".join(traceback.format_exception(e))))
+            out.flush()
+    if spec is not None:
         sync(get_loop(), _serve, client, prefix, inp, out)
+    os._exit(0)  # not waiting for threads stuck in the network, such as a DNS lookup
+
+
+async def _warm_up(client: "RangeListedClient", prefix: str) -> None:
+    await client._list_page(prefix, "", None, page_size=1)
 
 
 async def _serve(
@@ -227,33 +303,55 @@ async def _serve(
     loop = asyncio.get_running_loop()
     requests: asyncio.Queue = asyncio.Queue()
 
-    def pump() -> None:  # blocking reads, also on Windows
-        while (request := load(inp)) is not None:
-            loop.call_soon_threadsafe(requests.put_nowait, request)
-        loop.call_soon_threadsafe(requests.put_nowait, None)
+    closed = asyncio.Event()
 
-    def write(message: Any) -> None:
+    def put(request: Any) -> None:
+        with suppress(RuntimeError):  # the loop is closed
+            loop.call_soon_threadsafe(requests.put_nowait, request)
+
+    def pump() -> None:  # blocking reads, also on Windows
+        # ends when the parent closes the pipe, is gone or sends garbage
+        with suppress(Exception):
+            while (request := load(inp)) is not None:
+                put(request)
+        put(None)
+        with suppress(RuntimeError):
+            loop.call_soon_threadsafe(closed.set)
+
+    def write_frame(frame: bytes) -> None:
         try:
-            out.write(dump(message))
+            out.write(frame)
             out.flush()
-        except BrokenPipeError:  # the parent is gone
+        except OSError:  # the parent is gone; Windows says EINVAL, not EPIPE
             os._exit(0)
 
-    async def reply(rid: int, start_after: str, token: Any, hi: str | None) -> None:
-        try:
-            page = await client._list_page(prefix, start_after, token, hi)
-        except Exception:  # noqa: BLE001
-            write((rid, None))  # the parent fetches it and raises a lasting error
-        else:  # plain tuples: a row type would unpickle per row in Python
-            write((rid, ([tuple(r) for r in page.rows], *page[1:])))
+    def write(message: Any) -> None:
+        write_frame(dump(message))
 
-    try:  # warm up DNS, TLS, credentials and the bucket region before taking work
-        await client._list_page(prefix, "", None, page_size=1)
-    except Exception as e:  # noqa: BLE001
-        write("".join(traceback.format_exception(e)))  # the parent lists alone
+    async def reply(rid: int, start_after: str, token: Any, hi: str | None) -> None:
+        # None, also when a page fails to pickle: the parent fetches it and raises
+        # a lasting error; every request gets an answer
+        answer = None
+        with suppress(Exception):
+            page = await client._list_page(prefix, start_after, token, hi)
+            # plain tuples: a row type would unpickle per row in Python
+            answer = dump((rid, ([tuple(r) for r in page.rows], *page[1:])))
+        write_frame(answer or dump((rid, None)))
+
+    # read from the start: a parent gone during the warm-up ends this child
+    threading.Thread(target=pump, daemon=True).start()
+    # warm up DNS, TLS, credentials and the bucket region before taking work
+    warm_up = asyncio.ensure_future(_warm_up(client, prefix))
+    gone = asyncio.ensure_future(closed.wait())
+    await asyncio.wait([warm_up, gone], return_when=asyncio.FIRST_COMPLETED)
+    gone.cancel()
+    if not warm_up.done():
+        warm_up.cancel()
+        return
+    if error := warm_up.exception():
+        write("".join(traceback.format_exception(error)))  # the parent lists alone
         return
     write(None)
-    threading.Thread(target=pump, daemon=True).start()
     tasks: set[asyncio.Task] = set()
     while (request := await requests.get()) is not None:
         tasks.add(task := asyncio.create_task(reply(*request)))

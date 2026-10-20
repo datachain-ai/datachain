@@ -1,4 +1,7 @@
 import asyncio
+import os
+import signal
+import sys
 import time
 from contextlib import aclosing
 from unittest import mock
@@ -370,3 +373,30 @@ def test_children_take_credentials_from_a_credential_process(
     in_children = [fifo for ppid, fifo in calls if int(ppid) != os.getpid()]
     assert in_children
     assert set(in_children) == {"False"}  # the frame pipe is not their stdin
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+@pytest.mark.skipif(
+    sys.platform == "darwin" and sys.version_info >= (3, 14),
+    reason="asyncio takes a stopped child for an exited one and blocks reaping it",
+)
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("tree", [TREE], indirect=True)
+def test_a_stopped_child_does_not_hang_the_listing(
+    client, tree, children, remote_rows, mocker
+):
+    mocker.patch.object(listing_worker, "REPLY_TIMEOUT", 2)
+    stopped: list = []
+    list_page = Pool.list_page
+
+    async def stop_one(self, *args):
+        if not stopped and self.children:
+            stopped.append(proc := next(iter(self.children)))
+            os.kill(proc.pid, signal.SIGSTOP)  # alive, but never answers
+        return await list_page(self, *args)
+
+    mocker.patch.object(Pool, "list_page", stop_one)
+
+    assert listing(client) == listing(client, processes=False)
+    assert stopped
+    assert stopped[0].returncode == -9

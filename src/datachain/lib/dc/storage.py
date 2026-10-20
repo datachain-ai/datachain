@@ -287,7 +287,7 @@ def read_storage(  # noqa: PLR0913
                 )
                 .settings(
                     prefetch=0,
-                    batch_size=(settings or {}).get("batch_size", LISTING_BATCH_SIZE),
+                    batch_size=LISTING_BATCH_SIZE,
                     namespace=listing_namespace_name,
                     project=listing_project_name,
                 )

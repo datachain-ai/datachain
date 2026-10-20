@@ -336,12 +336,14 @@ class File(DataModel):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        # not in the class body: the pydantic mypy plugin makes them fields
+        # Annotations only: in the class body the pydantic mypy plugin would take
+        # them for fields.
         self._caching_enabled: bool
         self._download_cb: Callback
         self._fs_path_cache: tuple[str, str, str] | None
-        # one dict update: pydantic's __setattr__ is slow, and listings build millions;
-        # a subclass declaring them as private attributes keeps them in pydantic
+        # The runtime state, set in one __dict__ update: pydantic's __setattr__ per
+        # attribute is slow when millions of Files are built. A subclass that
+        # declares them as private attributes needs pydantic's setattr instead.
         if _FILE_STATE.keys() & self.__private_attributes__.keys():
             for name, value in _FILE_STATE.items():
                 setattr(self, name, value)
@@ -1162,7 +1164,9 @@ class File(DataModel):
 
 
 class FileRow(NamedTuple):
-    """A ``File`` as its flat columns, in DB order; listing yields these."""
+    """A ``File`` as its flat columns, in DB order. Range listings yield these and
+    they go to the DB as they are, so ``File``'s validators don't run on them: the
+    listing clients make valid rows (a scheme in ``source``, no ``location``)."""
 
     source: str
     path: str

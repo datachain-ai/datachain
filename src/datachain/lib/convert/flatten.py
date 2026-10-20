@@ -19,7 +19,7 @@ class FieldKind(NamedTuple):
 def classify_field(annotation: Any) -> FieldKind:
     try:
         return _classify_field(annotation)
-    except TypeError:  # unhashable annotation
+    except TypeError:  # rare: e.g. Annotated with dict metadata; the hash fails fast
         return _classify_field.__wrapped__(annotation)
 
 
