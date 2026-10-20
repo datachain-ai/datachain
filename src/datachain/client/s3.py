@@ -91,7 +91,7 @@ class ClientS3(Client):
         except PermissionError:
             pass
         except OSError as e:
-            # Cloudflare R2 answers anonymous requests with 400
+            # s3fs maps R2's anonymous HTTP 400 response to EINVAL.
             if e.errno != errno.EINVAL:
                 raise
 
