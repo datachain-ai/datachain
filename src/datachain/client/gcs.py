@@ -11,6 +11,7 @@ from fsspec.asyn import get_loop, sync
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from gcsfs import GCSFileSystem
 from gcsfs.retry import HttpError
+from google.auth.credentials import AnonymousCredentials
 
 from datachain.client.fileslice import FileWrapper
 from datachain.lib.file import File
@@ -41,7 +42,11 @@ class GCSClient(Client):
         if kwargs.pop("anon", False):
             kwargs["token"] = "anon"  # noqa: S105
 
-        return cast("GCSFileSystem", super().create_fs(**kwargs))
+        fs = cast("GCSFileSystem", super().create_fs(**kwargs))
+        if getattr(fs, "credential", False) is None and fs.credentials.method == "anon":
+            # gcsfs leaves its gRPC clients without credentials: fsspec/gcsfs#1109
+            fs.credential = AnonymousCredentials()
+        return fs
 
     @classmethod
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:  # noqa: PLR0911

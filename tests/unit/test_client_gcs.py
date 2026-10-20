@@ -1,8 +1,9 @@
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fsspec.asyn import sync
 from fsspec.callbacks import DEFAULT_CALLBACK
+from google.auth.credentials import AnonymousCredentials
 
 from datachain.asyn import get_loop
 from datachain.client import Client
@@ -217,3 +218,24 @@ def test_get_file_qmark_in_key_with_version():
     args, kwargs = client._fs._get_file.call_args
     assert args[0] == f"gs://foo/blob?file.txt#{_VER}"
     assert kwargs.get("generation") is None
+
+
+def _create_fs(method, credential, monkeypatch, **kwargs):
+    monkeypatch.delenv("DATACHAIN_GCP_CREDENTIALS", raising=False)
+    with patch.object(GCSClient, "FS_CLASS") as fs_cls:
+        fs_cls.return_value.credentials.method = method
+        fs_cls.return_value.credential = credential
+        return GCSClient.create_fs(**kwargs)
+
+
+def test_create_fs_without_credentials_sets_anonymous_grpc_credential(monkeypatch):
+    fs = _create_fs("anon", None, monkeypatch)
+    assert isinstance(fs.credential, AnonymousCredentials)
+
+
+@pytest.mark.parametrize(
+    "method,credential",
+    [("google_default", None), ("google_default", "creds"), ("anon", "creds")],
+)
+def test_create_fs_keeps_grpc_credential(monkeypatch, method, credential):
+    assert _create_fs(method, credential, monkeypatch).credential == credential
