@@ -1,8 +1,10 @@
+import os
 import shutil
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from tempfile import SpooledTemporaryFile
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from adlfs import AzureBlobFileSystem
 from azure.core.exceptions import (
@@ -27,6 +29,48 @@ if TYPE_CHECKING:
 _SPOOL_MAX_SIZE = 128 * 1024 * 1024
 # Copy chunk size when spooling a source stream, matching the fsspec upload path.
 _COPY_BUFFER_SIZE = 8 * 1024 * 1024
+
+
+_SCOPE = "https://storage.azure.com/.default"
+_NO_IDENTITY_TTL = 60.0  # seconds: an az login or an identity may come later
+
+
+def _finds_no_identity(credential: Any) -> bool:
+    """Whether every credential in a ``DefaultAzureCredential`` chain is unavailable,
+    that is, nothing is configured. An identity that fails to authenticate is
+    found: its error must reach the user."""
+    from azure.identity import CredentialUnavailableError
+    from azure.identity._internal import within_credential_chain
+
+    in_chain = within_credential_chain.set(True)  # unavailable, as the chain sees it
+    try:
+        for each in credential.credentials:
+            try:
+                each.get_token(_SCOPE)
+            except CredentialUnavailableError:
+                continue
+            except Exception:  # noqa: BLE001
+                return False
+            return False
+        return True
+    finally:
+        within_credential_chain.reset(in_chain)
+
+
+def _no_identity(fs: AzureBlobFileSystem) -> bool:
+    """``_finds_no_identity`` for the credential adlfs built for ``fs``. fsspec
+    reuses fs instances: a found identity holds, no identity is asked again later."""
+    if getattr(fs, "_dc_has_identity", False):
+        return False
+    checked = getattr(fs, "_dc_no_identity_at", None)
+    if checked is not None and time.monotonic() - checked < _NO_IDENTITY_TTL:
+        return True
+    absent = _finds_no_identity(fs.sync_credential)
+    if absent:
+        fs._dc_no_identity_at = time.monotonic()
+    else:
+        fs._dc_has_identity = True
+    return absent
 
 
 class _AzureWriteBuffer(SpooledTemporaryFile):
@@ -58,6 +102,23 @@ class AzureClient(Client):
     )
 
     @classmethod
+    def create_fs(cls, **kwargs) -> AzureBlobFileSystem:
+        from azure.identity import DefaultAzureCredential
+
+        fs = cast("AzureBlobFileSystem", super().create_fs(**kwargs))
+        # Nothing configured: adlfs falls back to DefaultAzureCredential, which
+        # then fails every request, public containers included; go anonymous.
+        if (
+            "anon" not in kwargs
+            and "AZURE_STORAGE_ANON" not in os.environ
+            and fs.connection_string is None
+            and isinstance(getattr(fs, "sync_credential", None), DefaultAzureCredential)
+            and _no_identity(fs)
+        ):
+            fs = cast("AzureBlobFileSystem", super().create_fs(**kwargs, anon=True))
+        return fs
+
+    @classmethod
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:
         # Step 1: Anonymous probe — uses BlobServiceClient directly (not adlfs)
         # to avoid picking up credentials from environment variables like
@@ -81,9 +142,9 @@ class AzureClient(Client):
                 if e.status_code not in (401, 403):
                     raise
 
-        # Step 2: Authenticated probe.
+        # Step 2: Authenticated probe, bypassing create_fs()'s auto-anon fallback.
         try:
-            auth_fs = cls.create_fs(**kwargs)
+            auth_fs = super().create_fs(**kwargs)
             sync(get_loop(), auth_fs._info, name)
             return BucketStatus(exists=True, access="authenticated")
         except (PermissionError, ClientAuthenticationError):
