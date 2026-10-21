@@ -200,7 +200,7 @@ def select_paths(dc: D, paths: "PathFilter", column: str = "file") -> D:
 class PathFilter:
     """The paths of a listing that a URI selects: any of ``any_of`` and all of
     ``all_of``, each an ``(op, value)`` with op ``eq``, ``glob`` or ``parent``.
-    ``read_storage`` applies it in SQL, ``dc.listing`` in Python."""
+    ``read_storage`` applies it in SQL, ``dc.list_storage`` in Python."""
 
     any_of: tuple[tuple[str, str], ...] = ()
     all_of: tuple[tuple[str, str], ...] = ()

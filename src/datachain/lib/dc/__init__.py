@@ -6,11 +6,11 @@ from .datachain import C, Column, ColumnExpr, DataChain, DataChainSchema
 from .datasets import datasets, delete_dataset, move_dataset, read_dataset
 from .hf import read_hf
 from .json import read_json
-from .listings import listing_datasets, listings
+from .listings import listings
 from .pandas import read_pandas
 from .parquet import read_parquet
 from .records import read_records
-from .storage import Listing, listing, read_storage
+from .storage import Listing, list_storage, read_storage
 from .utils import DatasetMergeError, DatasetPrepareError, Sys, is_local, is_studio
 from .values import read_values
 from .zarr import read_zarr
@@ -29,8 +29,7 @@ __all__ = [
     "delete_dataset",
     "is_local",
     "is_studio",
-    "listing",
-    "listing_datasets",
+    "list_storage",
     "listings",
     "move_dataset",
     "read_csv",

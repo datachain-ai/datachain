@@ -28,8 +28,8 @@ def test_listing_rows_match_saved_listing(cloud_test_catalog, versions):
     ctc = cloud_test_catalog
     uri = f"{ctc.src_uri}/cats"
 
-    rows = sorted(dc.listing(uri, versions=versions, session=ctc.session))
-    chain = dc.listing(uri, versions=versions, session=ctc.session).save()
+    rows = sorted(dc.list_storage(uri, versions=versions, session=ctc.session))
+    chain = dc.list_storage(uri, versions=versions, session=ctc.session).save()
 
     assert {type(r) for r in rows} == {dc.FileRow}
     assert {r.path.removeprefix("cats/") for r in rows} == {"cat1", "cat2"}
@@ -44,7 +44,7 @@ def test_listing_save_is_the_read_storage_cache(cloud_test_catalog, versions):
     ctc = cloud_test_catalog
     uri = f"{ctc.src_uri}/dogs/"
 
-    saved = dc.listing(uri, versions=versions, session=ctc.session).save()
+    saved = dc.list_storage(uri, versions=versions, session=ctc.session).save()
     _, _, _, reused = get_listing(uri, ctc.session, versions=versions)
     read = dc.read_storage(uri, versions=versions, session=ctc.session)
 
@@ -52,24 +52,21 @@ def test_listing_save_is_the_read_storage_cache(cloud_test_catalog, versions):
     assert saved.order_by("file.path").to_values("file") == read.order_by(
         "file.path"
     ).to_values("file")
-    names = [
-        lst.name
-        for lst in dc.listing_datasets(session=ctc.session).to_values("listing")
-    ]
+    names = [lst.name for lst in dc.listings(session=ctc.session).to_values("listing")]
     assert len(names) == 1
 
 
 def test_listing_to_arrow(cloud_test_catalog):
     ctc = cloud_test_catalog
     uri = f"{ctc.src_uri}/dogs/"
-    rows = sorted(dc.listing(uri, session=ctc.session))
-    table = dc.listing(uri, session=ctc.session).to_arrow()
+    rows = sorted(dc.list_storage(uri, session=ctc.session))
+    table = dc.list_storage(uri, session=ctc.session).to_arrow()
 
     assert table.column_names == list(dc.FileRow._fields)
     assert table.schema.field("size").type == pa.int64()
     assert table.schema.field("last_modified").type == pa.timestamp("us", tz="UTC")
     assert sorted(tuple(r.values()) for r in table.to_pylist()) == rows
-    df = dc.listing(uri, session=ctc.session).to_pandas()
+    df = dc.list_storage(uri, session=ctc.session).to_pandas()
     assert sorted(df["path"]) == [r.path for r in rows]
 
 
@@ -78,7 +75,7 @@ def test_listing_to_arrow_location_is_json(test_session, tmp_dir, mocker):
     row = dc.FileRow("file:///d", "a", location=location)
     mocker.patch.object(dc.Listing, "_pages", return_value=iter([[row], []]))
 
-    table = dc.listing(tmp_dir, session=test_session).to_arrow()
+    table = dc.list_storage(tmp_dir, session=test_session).to_arrow()
 
     assert table.column("location").to_pylist() == [json.dumps(location)]
 
@@ -86,7 +83,7 @@ def test_listing_to_arrow_location_is_json(test_session, tmp_dir, mocker):
 def test_listing_empty_to_arrow(test_session, tmp_dir):
     (tmp_dir / "empty").mkdir()
 
-    table = dc.listing(tmp_dir / "empty", session=test_session).to_arrow()
+    table = dc.list_storage(tmp_dir / "empty", session=test_session).to_arrow()
 
     assert table.num_rows == 0
     assert table.column_names == list(dc.FileRow._fields)
@@ -105,28 +102,30 @@ def test_listing_empty_to_arrow(test_session, tmp_dir):
 )
 def test_listing_is_listed_once(test_session, tmp_dir, use):
     (tmp_dir / "a.txt").write_text("a")
-    lst = dc.listing(tmp_dir, session=test_session)
+    lst = dc.list_storage(tmp_dir, session=test_session)
     list(lst)
 
-    with pytest.raises(RuntimeError, match=r"already listed; call dc\.listing\(\)"):
+    with pytest.raises(
+        RuntimeError, match=r"already listed; call dc\.list_storage\(\)"
+    ):
         use(lst)
 
 
 def test_listing_lists_again_when_called_again(test_session, tmp_dir):
     (tmp_dir / "a.txt").write_text("a")
-    assert [r.path for r in dc.listing(tmp_dir, session=test_session)] == ["a.txt"]
+    assert [r.path for r in dc.list_storage(tmp_dir, session=test_session)] == ["a.txt"]
 
     (tmp_dir / "b.txt").write_text("bb")
-    rows = dc.listing(tmp_dir, session=test_session).to_list()
+    rows = dc.list_storage(tmp_dir, session=test_session).to_list()
 
     assert sorted(r.path for r in rows) == ["a.txt", "b.txt"]
-    assert not dc.listing_datasets(session=test_session).count()
+    assert not dc.listings(session=test_session).count()
 
 
 def test_listing_rows_take_file_attributes(test_session, tmp_dir):
     (tmp_dir / "a.txt").write_text("hello")
 
-    (row,) = dc.listing(tmp_dir, session=test_session)
+    (row,) = dc.list_storage(tmp_dir, session=test_session)
 
     assert row.get_file_ext() == "txt"
     with pytest.raises(AttributeError, match=r"Listing\.to_objects"):
@@ -137,11 +136,13 @@ def test_listing_to_objects(cloud_test_catalog):
     ctc = cloud_test_catalog
     uri = f"{ctc.src_uri}/cats"
 
-    files = dc.listing(uri, session=ctc.session).to_objects(type="text")
+    files = dc.list_storage(uri, session=ctc.session).to_objects(type="text")
     files.sort(key=lambda f: f.path)
 
     assert all(type(f) is dc.TextFile for f in files)
-    assert [flatten(f) for f in files] == sorted(dc.listing(uri, session=ctc.session))
+    assert [flatten(f) for f in files] == sorted(
+        dc.list_storage(uri, session=ctc.session)
+    )
     assert [f.read() for f in files] == ["meow", "mrow"]
 
 
@@ -149,7 +150,7 @@ def test_listing_to_objects_needs_no_session(tmp_dir, mocker):
     (tmp_dir / "a.txt").write_text("hello")
     mocker.patch.object(Session, "get", side_effect=AssertionError("no session"))
 
-    (file,) = dc.listing(tmp_dir).to_objects()
+    (file,) = dc.list_storage(tmp_dir).to_objects()
 
     assert type(file) is File
     assert file.read() == b"hello"
@@ -160,15 +161,15 @@ def test_listing_single_object(cloud_test_catalog, versions):
     ctc = cloud_test_catalog
     uri = f"{ctc.src_uri}/description"
 
-    (row,) = dc.listing(uri, versions=versions, session=ctc.session)
+    (row,) = dc.list_storage(uri, versions=versions, session=ctc.session)
     (file,) = dc.read_storage(uri, versions=versions, session=ctc.session).to_values(
         "file"
     )
 
     assert row == flatten(file)
-    saved = dc.listing(uri, versions=versions, session=ctc.session).save()
+    saved = dc.list_storage(uri, versions=versions, session=ctc.session).save()
     assert saved.to_values("file") == [file]
-    assert not dc.listing_datasets(session=ctc.session).count()
+    assert not dc.listings(session=ctc.session).count()
 
 
 @pytest.mark.parametrize(
@@ -210,9 +211,9 @@ def test_listing_patterns_match_read_storage(cloud_test_catalog, pattern, recurs
         )
     except FileNotFoundError:
         with pytest.raises(FileNotFoundError):
-            dc.listing(uri, recursive=recursive, session=ctc.session).to_list()
+            dc.list_storage(uri, recursive=recursive, session=ctc.session).to_list()
         return
-    rows = dc.listing(uri, recursive=recursive, session=ctc.session)
+    rows = dc.list_storage(uri, recursive=recursive, session=ctc.session)
 
     assert sorted(r for r in rows if r.is_latest) == expected
 
@@ -237,7 +238,7 @@ def test_listing_uri_lists_match_read_storage(cloud_test_catalog, patterns):
     expected = sorted(
         flatten(f) for f in dc.read_storage(uris, session=ctc.session).to_values("file")
     )
-    rows = dc.listing(uris, session=ctc.session)
+    rows = dc.list_storage(uris, session=ctc.session)
 
     assert sorted(r for r in rows if r.is_latest) == expected
 
@@ -246,7 +247,7 @@ def test_listing_save_with_pattern(cloud_test_catalog):
     ctc = cloud_test_catalog
     uri = f"{ctc.src_uri}/dogs/dog?"
 
-    saved = dc.listing(uri, session=ctc.session).save()
+    saved = dc.list_storage(uri, session=ctc.session).save()
 
     assert sorted(f.path.rsplit("/", 1)[-1] for f in saved.to_values("file")) == [
         "dog1",
@@ -255,23 +256,12 @@ def test_listing_save_with_pattern(cloud_test_catalog):
     ]
 
 
-def test_listings_is_deprecated(test_session, tmp_dir):
-    (tmp_dir / "a.txt").write_text("a")
-    dc.read_storage(tmp_dir, session=test_session).exec()
-
-    with pytest.warns(DeprecationWarning, match="listing_datasets"):
-        old = dc.listings(session=test_session).to_values("listing")
-
-    assert old == dc.listing_datasets(session=test_session).to_values("listing")
-    assert len(old) == 1
-
-
 def test_listing_needs_no_session(tmp_dir, mocker):
     (tmp_dir / "a.txt").write_text("a")
     mocker.patch.object(Session, "get", side_effect=AssertionError("no session"))
 
-    assert [r.path for r in dc.listing(tmp_dir)] == ["a.txt"]
-    assert dc.listing(tmp_dir).to_arrow().num_rows == 1
+    assert [r.path for r in dc.list_storage(tmp_dir)] == ["a.txt"]
+    assert dc.list_storage(tmp_dir).to_arrow().num_rows == 1
 
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
@@ -282,8 +272,8 @@ def test_listing_save_stores_every_version(cloud_test_catalog_upload):
     File.upload(b"v1", f"{uri}a.txt", ctc.catalog)
     File.upload(b"v2", f"{uri}a.txt", ctc.catalog)
 
-    rows = sorted(dc.listing(uri, versions=True, session=ctc.session))
-    saved = dc.listing(uri, versions=True, session=ctc.session).save()
+    rows = sorted(dc.list_storage(uri, versions=True, session=ctc.session))
+    saved = dc.list_storage(uri, versions=True, session=ctc.session).save()
 
     assert [r.is_latest for r in rows].count(False) == 1
     assert sorted(flatten(f) for f in _read_listing(ctc.session, uri, True)) == rows
@@ -297,10 +287,10 @@ def test_listing_takes_client_config_of_active_session(catalog, tmp_dir):
     configured = catalog.copy()
     configured.client_config = config
     with dc.Session("ingest", catalog=configured):
-        assert dc.listing(tmp_dir).client_config == config
+        assert dc.list_storage(tmp_dir).client_config == config
     own = {"endpoint_url": "https://other.example.com"}
     assert (
-        dc.listing(tmp_dir, client_config=own).client_config["endpoint_url"]
+        dc.list_storage(tmp_dir, client_config=own).client_config["endpoint_url"]
         == (own["endpoint_url"])
     )
 
@@ -309,13 +299,13 @@ def test_read_storage_reuses_listing_saved_with_defaults(cloud_test_catalog):
     ctc = cloud_test_catalog
     uri = f"{ctc.src_uri}/dogs/"
 
-    saved = dc.listing(uri, session=ctc.session).save()
+    saved = dc.list_storage(uri, session=ctc.session).save()
     read = dc.read_storage(uri, session=ctc.session)
 
     assert read.order_by("file.path").to_values("file") == saved.order_by(
         "file.path"
     ).to_values("file")
-    assert dc.listing_datasets(session=ctc.session).count() == 1
+    assert dc.listings(session=ctc.session).count() == 1
 
 
 def test_listing_probes_and_keeps_active_session_config(catalog, mocker):
@@ -327,7 +317,7 @@ def test_listing_probes_and_keeps_active_session_config(catalog, mocker):
     probe = mocker.patch.object(storage, "_all_buckets_anonymous", return_value=True)
 
     with dc.Session("ingest", catalog=configured):
-        lst = dc.listing("s3://bucket/data/")
+        lst = dc.list_storage("s3://bucket/data/")
         read_session, read_config = storage._storage_session(
             ["s3://bucket/data/"], None, None, None, False, True
         )
@@ -343,13 +333,13 @@ def test_listing_save_lists_a_shared_listing_once(test_session, tmp_dir, mocker)
     (tmp_dir / "b.csv").write_text("b")
     write = mocker.spy(dc.Listing, "_write")
 
-    saved = dc.listing(f"{tmp_dir.as_uri()}/*.{{txt,csv}}", session=test_session)
+    saved = dc.list_storage(f"{tmp_dir.as_uri()}/*.{{txt,csv}}", session=test_session)
     chain = saved.save()
 
     assert write.call_count == 1
     assert sorted(f.path for f in chain.to_values("file")) == ["a.txt", "b.csv"]
-    assert dc.listing_datasets(session=test_session).count() == 1
-    (listing,) = dc.listing_datasets(session=test_session).to_values("listing")
+    assert dc.listings(session=test_session).count() == 1
+    (listing,) = dc.listings(session=test_session).to_values("listing")
     assert listing.version == "1.0.0"
 
 
@@ -361,7 +351,7 @@ def test_listing_uses_cache_of_active_session(test_session, tmp_dir, mocker):
 
     catalog = test_session.catalog.copy()
     with dc.Session("active", catalog=catalog):
-        (file,) = dc.listing(tmp_dir).to_objects()
+        (file,) = dc.list_storage(tmp_dir).to_objects()
 
     assert pages.call_args.args[1] is catalog.cache
     assert file._catalog.cache is catalog.cache
@@ -378,7 +368,7 @@ def test_listing_save_with_patterns_keeps_a_newer_parent_listing(test_session, t
     dc.read_storage(f"{tmp_dir.as_uri()}/d/", session=test_session).count()
     dc.read_storage(tmp_dir.as_uri(), session=test_session).count()
 
-    chain = dc.listing(f"{tmp_dir.as_uri()}/d/*.{{txt,jpg}}", session=test_session)
+    chain = dc.list_storage(f"{tmp_dir.as_uri()}/d/*.{{txt,jpg}}", session=test_session)
     root = dc.read_storage(tmp_dir.as_uri(), session=test_session)
 
     assert sorted(chain.save().to_values("file.path")) == ["c.txt", "e.jpg"]
@@ -417,7 +407,7 @@ def test_listing_one_level(cloud_test_catalog, mocker, level_pages):
     level = mocker.spy(RangeListedClient, "level_rows")
     ranges = mocker.spy(RangeListedClient, "_fetch_prefix")
 
-    rows = dc.listing(f"{ctc.src_uri}/dogs/", recursive=False, session=ctc.session)
+    rows = dc.list_storage(f"{ctc.src_uri}/dogs/", recursive=False, session=ctc.session)
 
     assert sorted(r for r in rows if r.is_latest) == sorted(map(flatten, expected))
     assert level.call_count == 1

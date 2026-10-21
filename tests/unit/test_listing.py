@@ -5,7 +5,6 @@ import pytest
 
 import datachain as dc
 from datachain.catalog.catalog import DataSource
-from datachain.catalog.listing import Listing
 from datachain.client import Client
 from datachain.fs.utils import path_to_fsspec_uri
 from datachain.lib.dc.storage_pattern import split_uri_pattern
@@ -22,6 +21,7 @@ from datachain.lib.listing import (
     parse_listing_uri,
     select_paths,
 )
+from datachain.listing import Listing
 from datachain.node import DirType
 from tests.utils import skip_if_not_sqlite
 

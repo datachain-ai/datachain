@@ -1,4 +1,3 @@
-import warnings
 from typing import TYPE_CHECKING
 
 from datachain.lib.listing import LISTING_PREFIX, ls
@@ -54,7 +53,7 @@ class ReadOnlyQueryStep(QueryStep):
         )
 
 
-def listing_datasets(
+def listings(
     session: Session | None = None,
     in_memory: bool = False,
     column: str = "listing",
@@ -67,7 +66,7 @@ def listing_datasets(
     Example:
         ```py
         import datachain as dc
-        dc.listing_datasets().show()
+        dc.listings().show()
         ```
     """
     session = Session.get(session, in_memory=in_memory)
@@ -79,21 +78,6 @@ def listing_datasets(
         output={column: ListingInfo},
         **{column: catalog.listings()},  # type: ignore[arg-type]
     )
-
-
-def listings(
-    session: Session | None = None,
-    in_memory: bool = False,
-    column: str = "listing",
-    **kwargs,
-) -> "DataChain":
-    """Deprecated alias of `listing_datasets()`."""
-    warnings.warn(
-        "listings() is deprecated, use listing_datasets() instead",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return listing_datasets(session, in_memory, column, **kwargs)
 
 
 def read_listing_dataset(

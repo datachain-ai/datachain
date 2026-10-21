@@ -10,9 +10,9 @@ for examples of how to create a chain.
 ::: datachain.lib.dc.database.ConnectionType
 
 
-::: datachain.lib.dc.listings.listing_datasets
+::: datachain.lib.dc.listings.listings
 
-::: datachain.lib.dc.storage.listing
+::: datachain.lib.dc.storage.list_storage
 
 ::: datachain.lib.dc.storage.Listing
 

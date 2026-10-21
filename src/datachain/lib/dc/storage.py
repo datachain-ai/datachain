@@ -106,8 +106,8 @@ def read_storage(  # noqa: PLR0913
 
     A saved listing of the URI, or of a prefix above it, younger than 4 hours
     is reused; otherwise the storage is listed and saved, as
-    `dc.listing(uri).save()` does. The chain holds current objects. To list a
-    storage without saving it, use `dc.listing()`.
+    `dc.list_storage(uri).save()` does. The chain holds current objects. To list a
+    storage without saving it, use `dc.list_storage()`.
 
     Parameters:
         uri: Storage path(s) or URI(s). Can be a local path or start with a
@@ -403,7 +403,7 @@ def _read_storage(
     return storage_chain
 
 
-def listing(
+def list_storage(
     uri: str | os.PathLike[str] | list[str] | list[os.PathLike[str]],
     *,
     recursive: bool | None = True,
@@ -413,7 +413,10 @@ def listing(
     session: Session | None = None,
     in_memory: bool = False,
 ) -> "Listing":
-    """List a storage: the objects of buckets, prefixes or objects.
+    """List a storage: rows of the objects of buckets, prefixes or objects.
+
+    Not a chain: the rows come to Python, nothing is saved, and no query runs
+    over them. For a chain of files over a saved snapshot, use `read_storage`.
 
     The listing yields one row per object, of `dc.FileRow`: named tuples
     with `File`'s columns (`f.path`, `f.size`, `f.etag`, `f.last_modified`, ...)
@@ -423,7 +426,7 @@ def listing(
     listing as the snapshot `read_storage` returns.
 
     A listing is listed once: iterate it or call one `to_*` method or `save()`.
-    Call `dc.listing()` again to list the storage again.
+    Call `dc.list_storage()` again to list the storage again.
 
     Parameters:
         uri: Storage path(s) or URI(s), as in `read_storage`: buckets, prefixes
@@ -453,15 +456,15 @@ def listing(
         import datachain as dc
 
         uri = "s3://my-bucket/dir/"
-        total = sum(f.size for f in dc.listing(uri))
-        images = dc.listing(uri).to_objects(type="image")  # ImageFile objects
-        table = dc.listing(uri).to_arrow()
-        chain = dc.listing(uri).save()  # the snapshot read_storage(uri) reuses
+        total = sum(f.size for f in dc.list_storage(uri))
+        images = dc.list_storage(uri).to_objects(type="image")  # ImageFile objects
+        table = dc.list_storage(uri).to_arrow()
+        chain = dc.list_storage(uri).save()  # the snapshot read_storage(uri) reuses
         ```
 
         On a versioned bucket, current objects only:
         ```py
-        total = sum(f.size for f in dc.listing(uri, versions=False))
+        total = sum(f.size for f in dc.list_storage(uri, versions=False))
         ```
     """
     uris = [os.fspath(u) for u in (uri if isinstance(uri, (list, tuple)) else [uri])]
@@ -482,7 +485,7 @@ def listing(
 
 
 class Listing:
-    """One listing of a storage URI, created by `dc.listing()`.
+    """One listing of a storage URI, created by `dc.list_storage()`.
 
     It is listed once: iterate over it for `dc.FileRow` rows, or call one
     of `to_list()`, `to_objects()`, `to_arrow()`, `to_pandas()` and `save()`.
@@ -499,7 +502,7 @@ class Listing:
         session_config: dict | None = None,
         in_memory: bool = False,
     ) -> None:
-        """Use `dc.listing()` to create a listing."""
+        """Use `dc.list_storage()` to create a listing."""
         self.uri = uri
         self.uris = uri if isinstance(uri, list) else [uri]
         self.recursive = recursive
@@ -533,7 +536,7 @@ class Listing:
     def _mark_listed(self) -> None:
         if self._listed:
             raise RuntimeError(
-                f"{self!r} is already listed; call dc.listing() to list it again"
+                f"{self!r} is already listed; call dc.list_storage() to list it again"
             )
         self._listed = True
 
