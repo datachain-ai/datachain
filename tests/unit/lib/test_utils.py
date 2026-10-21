@@ -133,6 +133,30 @@ def test_normalize_column_names_repeat_generated_after_normalize():
     assert res == {"c0_column": "c0_CoLuMn", "c1_column": "_column", "column": "column"}
 
 
+def test_rebase_path_keeps_empty_segments_of_cloud_keys():
+    targets = [
+        rebase_path(f"s3://src/{key}", "s3://src", "s3://dst/new")
+        for key in ("d/e.txt", "d//e.txt", "d///e.txt")
+    ]
+
+    assert targets == [
+        "s3://dst/new/d/e.txt",
+        "s3://dst/new/d//e.txt",
+        "s3://dst/new/d///e.txt",
+    ]
+
+
+@pytest.mark.parametrize(
+    "new_base,kwargs,expected",
+    [
+        ("/out", {}, "/out/d//e.txt"),
+        ("s3://dst/", {"suffix": "_x", "extension": "npy"}, "s3://dst/d//e_x.npy"),
+    ],
+)
+def test_rebase_path_keeps_an_empty_segment_for_any_base(new_base, kwargs, expected):
+    assert rebase_path("s3://src/d//e.txt", "s3://src", new_base, **kwargs) == expected
+
+
 def test_rebase_path_basic():
     result = rebase_path(
         "/data/audio/folder1/file.wav", "/data/audio", "/output/waveforms"

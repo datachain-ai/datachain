@@ -866,8 +866,13 @@ class AbstractWarehouse(ABC, Serializable):
         inner_query = self.expand_query(de, q, dr).where(where_cond).subquery()
 
         def field_to_expr(f):
+            path = de.c(inner_query, "path")
+            if f == "name" and parent_path:
+                # the path past the folder: d//e.txt in d is /e.txt, apart from e.txt
+                start = sa.func.length(sa.literal(f"{parent_path}/")) + 1
+                return sa.func.substr(path, start)
             if f == "name":
-                return pathfunc.name(de.c(inner_query, "path"))
+                return pathfunc.name(path)
             return de.c(inner_query, f)
 
         return self.db.execute(

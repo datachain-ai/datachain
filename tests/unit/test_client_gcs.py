@@ -98,43 +98,30 @@ def test_url_unversioned_sign_called_with_clean_path():
     assert "#" not in client._fs.sign.call_args[0][0]
 
 
-# '#' and '?' are valid GCS object key characters, but gcsfs split_path uses
-# urlsplit() to extract the generation fragment, which misparses keys that
-# contain those characters.  Until that is fixed upstream we raise early with
-# a clear error.  The tests below document the *desired* behavior and are
-# marked xfail so they become regular passes once the upstream is fixed and our
-# guard is removed.
-_xfail_special_char_versioned = pytest.mark.xfail(
-    reason="gcsfs split_path breaks with '#'/'?' in versioned key names",
-    strict=True,
-)
+# '#' and '?' are valid GCS object key characters: a generation is read only
+# from the last '#', so keys keep them
 
 
-@_xfail_special_char_versioned
 def test_url_versioned_hash_in_key():
     client = _make_client()
     client.url("dir/file#variant.txt", version_id=_VER)
 
 
-@_xfail_special_char_versioned
 def test_url_versioned_qmark_in_key():
     client = _make_client()
     client.url("dir/file?variant.txt", version_id=_VER)
 
 
-@_xfail_special_char_versioned
 def test_get_file_info_hash_in_key_with_version():
     client = _make_client()
     client.get_file_info("blob#file.txt", version_id=_VER)
 
 
-@_xfail_special_char_versioned
 def test_get_file_info_qmark_in_key_with_version():
     client = _make_client()
     client.get_file_info("blob?file.txt", version_id=_VER)
 
 
-@_xfail_special_char_versioned
 def test_get_size_hash_in_key_with_version():
     client = _make_client()
     sync(
@@ -144,7 +131,6 @@ def test_get_size_hash_in_key_with_version():
     )
 
 
-@_xfail_special_char_versioned
 def test_get_size_qmark_in_key_with_version():
     client = _make_client()
     sync(
@@ -154,7 +140,6 @@ def test_get_size_qmark_in_key_with_version():
     )
 
 
-@_xfail_special_char_versioned
 def test_get_current_etag_hash_in_key_with_version():
     client = _make_client()
     sync(
@@ -164,7 +149,6 @@ def test_get_current_etag_hash_in_key_with_version():
     )
 
 
-@_xfail_special_char_versioned
 def test_get_current_etag_qmark_in_key_with_version():
     client = _make_client()
     sync(
@@ -189,7 +173,6 @@ def test_get_file_with_version():
     assert kwargs.get("generation") is None
 
 
-@_xfail_special_char_versioned
 def test_get_file_hash_in_key_with_version():
     client = _make_client()
     sync(
@@ -205,7 +188,6 @@ def test_get_file_hash_in_key_with_version():
     assert kwargs.get("generation") is None
 
 
-@_xfail_special_char_versioned
 def test_get_file_qmark_in_key_with_version():
     client = _make_client()
     sync(
