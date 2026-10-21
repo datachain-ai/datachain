@@ -37,3 +37,17 @@ def test_is_listing_expired(date, is_expired):
 def test_listing_subset(ds1_name, ds2_name, contains):
     listing_info = ListingInfo(name=ds1_name, namespace="dev", project="my-project")
     assert listing_info.contains(ds2_name) is contains
+
+
+@pytest.mark.parametrize(
+    "name,versions",
+    [
+        ("lst__s3://b/dir/", True),
+        ("lst__current__s3://b/dir/", False),
+        ("lst__all__s3://b/dir/", "all"),
+    ],
+)
+def test_listing_versions_mode(name, versions):
+    info = ListingInfo(name=name, namespace="dev", project="my-project")
+    assert info.versions == versions
+    assert info.uri == "s3://b/dir/"

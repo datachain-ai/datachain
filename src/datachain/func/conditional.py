@@ -308,6 +308,39 @@ def isnone(col: str | ColumnExpr) -> Func:
     )
 
 
+def is_deleted(file: str = "file") -> Func:
+    """
+    Selects the delete rows of ``read_storage(versions="all")``.
+
+    A delete row has a version and an empty etag; a listed object always has
+    an etag. In Python, use ``File.is_deleted``.
+
+    Args:
+        file (str): Name of the `File` signal. Defaults to "file".
+
+    Returns:
+        Func: A `Func` object that represents the is_deleted function.
+
+    Example:
+        ```py
+        history = dc.read_storage("s3://bucket/data/", versions="all")
+        deleted = history.filter(func.is_deleted("file"))
+        live = history.filter(func.is_deleted("file") == False)  # noqa: E712
+        ```
+
+    Notes:
+        - The result column will always be of type bool.
+    """
+    return Func(
+        "is_deleted",
+        inner=lambda etag, version: sql_case(
+            (sql_and(etag == "", version != ""), True), else_=False
+        ),
+        cols=[Column(f"{file}.etag"), Column(f"{file}.version")],
+        result_type=bool,
+    )
+
+
 def or_(*args: ColumnExpr | Func) -> Func:
     """
     Returns the function that produces conjunction of expressions joined by OR

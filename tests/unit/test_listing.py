@@ -14,6 +14,7 @@ from datachain.lib.listing import (
     _sanitize_ds_name,
     get_listing,
     is_listing_dataset,
+    listing_name_prefixes,
     listing_uri_from_name,
     parse_listing_uri,
 )
@@ -309,6 +310,24 @@ def test_listing_of_current_objects_has_its_own_name():
     # neither listing is a prefix of the other, so one is never reused for the other
     assert not current.startswith(full)
     assert not full.startswith(current)
+
+
+def test_listing_with_delete_rows_has_its_own_name():
+    full, lst_uri, path = parse_listing_uri("s3://bucket/v1.0/dir")
+    current = parse_listing_uri("s3://bucket/v1.0/dir", False)[0]
+    every, all_uri, all_path = parse_listing_uri("s3://bucket/v1.0/dir", "all")
+
+    assert every == "lst__all__s3://bucket/v1_x2e0/dir/"
+    assert (all_uri, all_path) == (lst_uri, path)
+    assert is_listing_dataset(every)
+    assert listing_uri_from_name(every) == listing_uri_from_name(full)
+    for a, b in [(every, full), (full, every), (every, current), (current, every)]:
+        assert not a.startswith(b)
+    assert listing_name_prefixes("s3://bucket/") == [
+        "lst__s3://bucket/",
+        "lst__current__s3://bucket/",
+        "lst__all__s3://bucket/",
+    ]
 
 
 def _ds_name(uri: str) -> str:

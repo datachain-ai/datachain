@@ -80,6 +80,7 @@ class Client(ABC):
     # client_config keys this backend treats as credentials.
     CREDENTIAL_KEYS: ClassVar[frozenset[str]] = frozenset()
     LIST_PAGE_SIZE: ClassVar[int] = 1000
+    list_deleted: bool = False  # listings also yield delete rows
 
     @classmethod
     def has_explicit_credentials(cls, client_config: dict | None) -> bool:
@@ -403,6 +404,13 @@ class Client(ABC):
     def _is_version_aware(self) -> bool:
         return getattr(self.fs, "version_aware", False)
 
+    def _deleted_row(self, path: str, version: str, last_modified: datetime) -> tuple:
+        """A delete row: ``path`` was deleted at ``last_modified``."""
+        from datachain.lib.file import DeletedVFile, FileRow
+
+        location = [{"vtype": DeletedVFile.get_vtype()}]
+        return FileRow(self.uri, path, 0, version, "", False, last_modified, location)
+
     def _version_kwargs(self, version_id: str | None) -> dict[str, Any]:
         if version_id:
             return {"version_id": version_id}
@@ -602,6 +610,7 @@ class Client(ABC):
         sync(get_loop(), functools.partial(self._put_in_cache, file, callback=callback))
 
     async def _put_in_cache(self, file: "File", *, callback: "Callback" = None) -> None:
+        file._raise_if_deleted()
         assert not file.location
         if file.etag:
             etag = await self.get_current_etag(file)

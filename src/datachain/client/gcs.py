@@ -227,6 +227,13 @@ class GCSClient(RangeListedClient):
         hi: str | None = None,
         page_size: int | None = None,
     ) -> Page:
+        page_token, held = (
+            token if self.list_deleted and token is not None else (token, None)
+        )
+        # a generation's delete time reads the next generation's creation time
+        fields = self.LIST_FIELDS
+        if self.list_deleted:
+            fields = fields.replace("updated)", "updated,timeCreated)")
         page = await self.fs._call(
             "GET",
             "b/{}/o",
@@ -236,22 +243,65 @@ class GCSClient(RangeListedClient):
             startOffset=start_after or None,
             endOffset=None if hi is None else f"{hi}\0",  # exclusive
             maxResults=page_size or self.LIST_PAGE_SIZE,
-            pageToken=token,
-            fields=self.LIST_FIELDS,
+            pageToken=page_token,
+            fields=fields,
             json_out=True,
             versions="true" if self._is_version_aware() else "false",
         )
         items = page.get("items", [])
         keep = Keep(self, start_after, hi)
+        first = items[0]["name"] if items else None
+        last = items[-1]["name"] if items else None
+        next_token = page.get("nextPageToken")
+        if self.list_deleted:
+            # a generation's delete time depends on the next generation of its key
+            items = ([held] if held else []) + items
+            held = items[-1] if next_token is not None and items else None
+            rows = self._rows([d for d in items if keep(d["name"])], held)
+            next_token = None if next_token is None else (next_token, held)
+        else:
+            rows = [self._file_row(d) for d in items if keep(d["name"])]
         return Page(
-            [self._file_row(d) for d in items if keep(d["name"])],
-            items[0]["name"] if items else None,
-            items[-1]["name"] if items else None,
-            page.get("nextPageToken"),
+            rows,
+            first,
+            last,
+            next_token,
             keep.past_lo,
             keep.past_hi,
             keep.in_order,
         )
+
+    def _rows(
+        self, items: list[dict[str, Any]], held: dict[str, Any] | None
+    ) -> list[tuple]:
+        """Rows of ``items`` with their delete rows; ``held`` waits for the next
+        page."""
+        items = sorted(items, key=lambda d: (d["name"], int(d["generation"])))
+        rows = []
+        for i, d in enumerate(items):
+            if d is held:
+                continue
+            rows.append(self._file_row(d))
+            after = items[i + 1] if i + 1 < len(items) else None
+            if deleted_at := self._deleted_at(d, after):
+                version = f"deleted:{d['generation']}"
+                rows.append(self._deleted_row(d["name"], version, deleted_at))
+        return rows
+
+    def _deleted_at(
+        self, d: dict[str, Any], after: dict[str, Any] | None
+    ) -> datetime | None:
+        """When generation ``d`` was deleted; None while it is live or after the
+        next generation replaced it (an overwrite)."""
+        if not (deleted := d.get("timeDeleted")):
+            return None
+        deleted_at = self.parse_timestamp(deleted)
+        replaced = (
+            after is not None
+            and after["name"] == d["name"]
+            and self.parse_timestamp(after["timeCreated"]) <= deleted_at
+        )
+        return None if replaced else deleted_at
 
     def _file_row(self, d: dict[str, Any]) -> tuple:
         return FileRow(

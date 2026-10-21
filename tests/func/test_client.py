@@ -369,6 +369,8 @@ def test_prefix_of_only_delete_markers_is_not_found(client, tree):
 
     with pytest.raises(FileNotFoundError):
         scandir(client, "dm")
+    client.list_deleted = True
+    assert sorted(e.path for e in scandir(client, "dm")) == ["dm/a", "dm/b"]
 
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)

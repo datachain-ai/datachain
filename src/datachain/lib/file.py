@@ -180,8 +180,33 @@ class TarVFile(VFile):
         return tar_file
 
 
+class DeletedVFile(VFile):
+    """A delete row of a version listing: the object has no content."""
+
+    @classmethod
+    def get_vtype(cls) -> str:
+        return "deleted"
+
+    @classmethod
+    def open(cls, file: "File", location: list[dict], block_size: int | None = None):
+        raise cls.error(file)
+
+    @classmethod
+    def parent(cls, file: "File", location: list[dict]) -> "File":
+        raise cls.error(file)
+
+    @classmethod
+    def error(cls, file: "File") -> VFileError:
+        return VFileError(
+            "object was deleted", file.source, file.path, vtype=cls.get_vtype()
+        )
+
+
 class VFileRegistry:
-    _vtype_readers: ClassVar[dict[str, type["VFile"]]] = {"tar": TarVFile}
+    _vtype_readers: ClassVar[dict[str, type["VFile"]]] = {
+        "tar": TarVFile,
+        "deleted": DeletedVFile,
+    }
 
     @classmethod
     def register(cls, reader: type["VFile"]):
@@ -541,6 +566,23 @@ class File(DataModel):
         """
         return str(PurePosixPath(self.path).parent)
 
+    @property
+    def is_deleted(self) -> bool:
+        """True for a delete row of ``read_storage(versions="all")``.
+
+        Such a row records that the object was deleted: ``last_modified`` is the
+        time of the delete and ``version`` the id of the delete. It has no
+        content, so opening, reading or exporting it raises an error.
+        """
+        loc = self.location
+        if isinstance(loc, list):
+            loc = loc[0] if loc else None
+        return isinstance(loc, dict) and loc.get("vtype") == DeletedVFile.get_vtype()
+
+    def _raise_if_deleted(self) -> None:
+        if self.is_deleted:
+            raise DeletedVFile.error(self)
+
     @contextmanager
     def open(
         self,
@@ -585,6 +627,7 @@ class File(DataModel):
         if not writing and not write_cfg.is_empty():
             raise ValueError("write metadata options are only valid in write modes")
 
+        self._raise_if_deleted()
         if self.location and writing:
             raise VFileError(
                 "Writing to virtual file is not supported",
@@ -786,6 +829,7 @@ class File(DataModel):
         return client, rel_path
 
     def _symlink_to(self, destination: str) -> None:
+        self._raise_if_deleted()
         if self.location:
             raise OSError(errno.ENOTSUP, "Symlinking virtual file is not supported")
 
@@ -859,6 +903,7 @@ class File(DataModel):
         """
         if self._catalog is None:
             raise RuntimeError("Cannot export file: catalog is not set")
+        self._raise_if_deleted()
 
         self._caching_enabled = use_cache
 
@@ -945,12 +990,15 @@ class File(DataModel):
             raise RuntimeError(
                 "cannot download file to cache because catalog is not setup"
             )
+        self._raise_if_deleted()
         client = self._catalog.get_client(self.source)
         client.download(self, callback=self._download_cb)
 
     async def _prefetch(self, download_cb: "Callback | None" = None) -> bool:
         if self._catalog is None:
             raise RuntimeError("cannot prefetch file because catalog is not setup")
+        if self.is_deleted:
+            return False
 
         file = self
         if self.location:
@@ -1085,6 +1133,7 @@ class File(DataModel):
         if self._catalog is None:
             raise RuntimeError("Cannot resolve file: catalog is not set")
 
+        self._raise_if_deleted()
         if self.location:
             raise VFileError(
                 "Resolving a virtual file is not supported",
@@ -2105,7 +2154,7 @@ class ArrowRow(DataModel):
         from pyarrow.csv import ParseOptions, ReadOptions
         from pyarrow.dataset import CsvFileFormat, dataset
 
-        from datachain.lib.arrow import fix_pyarrow_format
+        from datachain.lib.arrow import fix_pyarrow_format, fs_and_path
 
         kwargs = dict(self.kwargs)
         if csv := kwargs.pop("csv", None):
@@ -2122,11 +2171,8 @@ class ArrowRow(DataModel):
 
         if self.file._caching_enabled:
             self.file.ensure_cached()
-            path = self.file.get_local_path()
-            ds = dataset(path, **kwargs)
-        else:
-            path = self.file.get_fs_path()
-            ds = dataset(path, filesystem=self.file.get_fs(), **kwargs)
+        fs, path = fs_and_path(self.file)
+        ds = dataset(path, filesystem=fs, **kwargs)
 
         return ds.take([self.index]).to_reader()
 

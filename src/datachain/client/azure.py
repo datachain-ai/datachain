@@ -1,6 +1,7 @@
 import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from tempfile import SpooledTemporaryFile
 from typing import TYPE_CHECKING, Any
@@ -42,6 +43,9 @@ class _AzureWriteBuffer(SpooledTemporaryFile):
     """
 
     version_id: str | None = None
+
+
+EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 class AzureClient(RangeListedClient):
@@ -274,6 +278,9 @@ class AzureClient(RangeListedClient):
         hi: str | None = None,
         page_size: int | None = None,
     ) -> Page:
+        continuation, key = (
+            token if self.list_deleted and token is not None else (token, None)
+        )
         kwargs = {"start_from": start_after} if start_after and token is None else {}
         include = ["metadata", "versions"] if self._is_version_aware() else ["metadata"]
         async with self.fs.service_client.get_container_client(
@@ -285,7 +292,7 @@ class AzureClient(RangeListedClient):
                 name_starts_with=prefix,
                 results_per_page=page_size or self.LIST_PAGE_SIZE,
                 **kwargs,
-            ).by_page(continuation_token=token)
+            ).by_page(continuation_token=continuation)
             await anext(pages)
             blobs = pages._response.find("Blobs").findall("Blob")
             next_token = pages.continuation_token or None
@@ -295,12 +302,22 @@ class AzureClient(RangeListedClient):
             self._hns = True
         names = [self._blob_name(b) for b in blobs]
         keep = Keep(self, start_after, hi)
+        rows = [
+            self._file_row(b, n)
+            for b, n in zip(blobs, names, strict=True)
+            if keep(n) and not self._is_directory(b)
+        ]
+        if self.list_deleted:
+            if next_token is None:
+                last = None
+            elif names:
+                last = names[-1]
+            else:  # an empty page leaves the key open
+                last = key[0] if key else None
+            rows, key = self._with_deleted(rows, key, last)
+            next_token = None if next_token is None else (next_token, key)
         return Page(
-            [
-                self._file_row(b, n)
-                for b, n in zip(blobs, names, strict=True)
-                if keep(n) and not self._is_directory(b)
-            ],
+            rows,
             names[0] if names else None,
             names[-1] if names else None,
             next_token,
@@ -317,6 +334,30 @@ class AzureClient(RangeListedClient):
             blob.findtext("Properties/ResourceType") == "directory"
             or blob.findtext("Metadata/hdi_isfolder") == "true"
         )
+
+    def _with_deleted(
+        self, rows: list[Any], key: tuple | None, last: str | None
+    ) -> tuple[list[Any], tuple | None]:
+        """``rows`` plus a delete row after each key that has no current version,
+        and the key the next page may go on with, ``(path, any current, newest
+        version)``: the page's ``last`` name, if a page follows. Azure keeps no
+        delete time: it is epoch 0."""
+        out = []
+        for row in rows:
+            if key is not None and key[0] != row.path:
+                out += self._delete_row_of(key)
+                key = None
+            path, current, newest = key or (row.path, False, row.version)
+            key = (path, current or row.is_latest, max(newest, row.version))
+            out.append(row)
+        if key is not None and key[0] != last:
+            out += self._delete_row_of(key)
+            key = None
+        return out, key
+
+    def _delete_row_of(self, key: tuple) -> list[Any]:
+        path, current, newest = key
+        return [] if current else [self._deleted_row(path, f"deleted:{newest}", EPOCH)]
 
     @staticmethod
     def _blob_name(blob: Element) -> str:
