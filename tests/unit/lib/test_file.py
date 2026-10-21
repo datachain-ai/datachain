@@ -210,6 +210,14 @@ def test_export_rejects_empty_segments(create_file, tmp_path):
         file.export(output, placement="filepath", use_cache=False)
 
 
+@pytest.mark.parametrize(
+    "path,parent",
+    [("x.txt", "."), ("a/b.txt", "a"), ("d//e.txt", "d"), ("a/b//c/d.txt", "a/b//c")],
+)
+def test_parent_keeps_empty_segments(path, parent):
+    assert File(source="s3://bkt", path=path).parent == parent
+
+
 def _uri_via_helper(p: Path) -> str:
     return path_to_fsspec_uri(str(p))
 
