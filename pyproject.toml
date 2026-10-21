@@ -45,7 +45,7 @@ dependencies = [
   "pydantic>=2.11",
   "jmespath>=1.0",
   "datamodel-code-generator>=0.28.4",
-  "Pillow>=12.1.1,<13",
+  "Pillow>=13.0.0,<14",
   "msgpack>=1.0.4,<2",
   "psutil",
   "huggingface_hub",
