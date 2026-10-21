@@ -31,7 +31,9 @@ A listing is listed once: iterate it, or take it whole with one of
 ```python
 rows = dc.list_storage(uri).to_list()
 table = dc.list_storage(uri).to_arrow()  # pyarrow.Table; to_pandas() for a DataFrame
-images = dc.list_storage(uri).to_objects(type="image")  # ImageFile objects that read files
+images = dc.list_storage(uri).to_objects(
+    type="image"
+)  # ImageFile objects that read files
 chain = dc.list_storage(uri).save()  # the snapshot read_storage(uri) reuses
 ```
 
@@ -42,7 +44,9 @@ Call `dc.list_storage()` again to list the storage again. A listing reads only w
 On a bucket with versioning enabled (S3, GCS, Azure), a listing has every version of every object by default, the current one with `is_latest`, so counts and sums over its rows include old versions. Pass `versions=False` to list current objects only, which is also faster:
 
 ```python
-total = sum(f.size for f in dc.list_storage("s3://versioned-bucket/data/", versions=False))
+total = sum(
+    f.size for f in dc.list_storage("s3://versioned-bucket/data/", versions=False)
+)
 ```
 
 A snapshot from `save()` is reused by `read_storage()` with the same `versions`. A URI of a single object gives its current version either way. Buckets without versioning, local files and HTTP storages have one kind of listing, and `versions` changes nothing there.
@@ -52,7 +56,11 @@ A snapshot from `save()` is reused by `read_storage()` with the same `versions`.
 `dc.list_storage()` takes `anon` and `client_config` as `read_storage()` does. With `anon=None`, the default, a bucket that needs no credentials is detected and read anonymously. Files from `to_objects()` read with the credentials of their listing:
 
 ```python
-minio = {"endpoint_url": "https://minio.example.com", "key": "access-key", "secret": "secret-key"}
+minio = {
+    "endpoint_url": "https://minio.example.com",
+    "key": "access-key",
+    "secret": "secret-key",
+}
 lst = dc.list_storage("s3://my-bucket/data/", client_config=minio)
 for img in lst.to_objects(type="image"):
     print(img.path, img.read().size)
