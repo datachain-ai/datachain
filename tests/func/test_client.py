@@ -203,8 +203,8 @@ UNLISTED_TREE = {"a": {f"{i:02}": "x" for i in range(40)}, "z": {"0": "x"}}
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 @pytest.mark.parametrize("tree", [UNLISTED_TREE], indirect=True)
 def test_scandir_ranges_see_past_unlisted_keys(client, tree, mocker):
-    for i in range(60):
-        client.fs.pipe_file(f"{client.uri}/m//{i:02}", b"x")
+    for i in range(60):  # folder markers: listed, never rows
+        client.fs.pipe_file(f"{client.uri}/m/{i:02}/", b"")
     mocker.patch.object(type(client), "LIST_PAGE_SIZE", 4)
     mocker.patch("datachain.client.ranges.LIST_WORKERS", 3)
     calls = mocker.spy(client, "_list_page")
@@ -381,6 +381,24 @@ def test_scandir_one_page_is_one_range(client, mocker):
 @pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
 def test_listing_parses_timestamps_without_dateutil(client):
     assert {e.last_modified.tzinfo for e in scandir(client, "")} == {UTC}
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("tree", [{"a": "x"}], indirect=True)
+def test_scandir_lists_double_slash_keys_but_not_leading_slash_or_folder_markers(
+    client,
+):
+    keys = ["d//e.txt", "/lead.txt", "folder/"]
+    for key in keys:
+        body = b"" if key.endswith("/") else b"x"
+        client.fs.pipe_file(f"{client.name}/{key}", body)
+    try:
+        paths = sorted(e.path for e in scandir(client, ""))
+        assert paths == ["a", "d//e.txt"]
+    finally:
+        for key in keys:
+            client.fs.rm_file(f"{client.name}/{key}")
+        client.fs.invalidate_cache()
 
 
 def test_scandir_alternate(client):

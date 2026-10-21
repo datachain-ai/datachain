@@ -124,7 +124,7 @@ class SavedListing:
             node = src.node
             if recursive and src.is_container():
                 dir_path = []
-                if not copy_dir_contents:
+                if not copy_dir_contents and node.name:
                     dir_path.append(node.name)
                 subtree_nodes = src.find(sort=["path"])
                 all_nodes.extend(

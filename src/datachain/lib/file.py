@@ -74,12 +74,16 @@ class FileExporter(NodesThreadPool):
         max_threads: int = EXPORT_FILES_MAX_THREADS,
         client_config: dict | None = None,
     ):
+        from datachain.client.fsspec import Client
+        from datachain.client.local import FileClient
+
         super().__init__(max_threads)
         self.output = output
         self.placement = placement
         self.use_cache = use_cache
         self.link_type = link_type
         self.client_config = client_config
+        self.is_local = Client.get_implementation(output) is FileClient
 
     def done_task(self, done):
         for task in done:
@@ -87,13 +91,17 @@ class FileExporter(NodesThreadPool):
 
     def do_task(self, file: "File | None"):
         if file is not None:
-            file.export(
-                self.output,
-                self.placement,
-                self.use_cache,
-                link_type=self.link_type,
-                client_config=self.client_config,
-            )
+            # a local disk cannot hold an empty path segment
+            if self.is_local and "//" in file._get_destination_suffix(self.placement):
+                logger.warning("File '%s' not exported: path has '//'", file.path)
+            else:
+                file.export(
+                    self.output,
+                    self.placement,
+                    self.use_cache,
+                    link_type=self.link_type,
+                    client_config=self.client_config,
+                )
         self.increase_counter(1)
 
 
