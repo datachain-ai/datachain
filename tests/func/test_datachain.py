@@ -192,6 +192,61 @@ def test_read_storage_reads_keys_with_double_slash(cloud_test_catalog):
 
 @pytest.mark.parametrize(
     "cloud_type,version_aware",
+    [("s3", True), ("gs", False), ("gs", True), ("azure", False)],
+    indirect=True,
+)
+def test_read_storage_reads_keys_like_urls_and_with_hash_or_question_mark(
+    cloud_test_catalog,
+):
+    ctc = cloud_test_catalog
+    client = ctc.catalog.get_client(ctc.src_uri)
+    prefix = f"url-keys-{uuid.uuid4().hex[:8]}"
+    names = ["http://example.com/a.txt", "b#1.txt", "c?d=1.txt"]
+    for name in names:
+        client.fs.pipe_file(f"{client.name}/{prefix}/{name}", name.encode())
+    client.fs.invalidate_cache()
+    try:
+        chain = dc.read_storage(f"{ctc.src_uri}/{prefix}", session=ctc.session)
+        files = {f.path: f for f in chain.to_values("file")}
+        assert sorted(files) == sorted(f"{prefix}/{name}" for name in names)
+        for name in names:
+            file = files[f"{prefix}/{name}"]
+            file._set_stream(ctc.catalog)
+            assert file.read() == name.encode()
+    finally:
+        client.fs.rm(f"{client.name}/{prefix}", recursive=True)
+        client.fs.invalidate_cache()
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_the_parent_of_a_key_with_empty_segments_has_no_trailing_slash(
+    cloud_test_catalog,
+):
+    ctc = cloud_test_catalog
+    client = ctc.catalog.get_client(ctc.src_uri)
+    prefix = f"parents-{uuid.uuid4().hex[:8]}"
+    keys = ["d/e.txt", "d//e.txt", "d///f.txt"]
+    for key in keys:
+        client.fs.pipe_file(f"{client.name}/{prefix}/{key}", b"x")
+    client.fs.invalidate_cache()
+    try:
+        glob = dc.read_storage(f"{ctc.src_uri}/{prefix}/d/*.txt", session=ctc.session)
+        parents = dc.read_storage(
+            f"{ctc.src_uri}/{prefix}", session=ctc.session
+        ).mutate(parent=dc.func.path.parent("file.path"))
+
+        assert sorted(glob.to_values("file.path")) == sorted(
+            f"{prefix}/{k}" for k in keys
+        )
+        assert set(parents.to_values("parent")) == {f"{prefix}/d"}
+        assert {f.parent for f in parents.to_values("file")} == {f"{prefix}/d"}
+    finally:
+        client.fs.rm(f"{client.name}/{prefix}", recursive=True)
+        client.fs.invalidate_cache()
+
+
+@pytest.mark.parametrize(
+    "cloud_type,version_aware",
     [("s3", True), ("gs", True)],
     indirect=True,
 )

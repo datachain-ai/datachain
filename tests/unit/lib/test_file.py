@@ -481,6 +481,17 @@ def test_save_binary_data(tmp_path, catalog: Catalog):
     assert result.read() == data
 
 
+@pytest.mark.parametrize("prefix", ["", "file://"])
+def test_save_refuses_a_local_path_with_an_empty_segment(tmp_path, catalog, prefix):
+    (tmp_path / "src.bin").write_bytes(b"x")
+    file = File(path="src.bin", source=f"file://{tmp_path}")
+    file._set_stream(catalog, False)
+
+    with pytest.raises(ValueError, match="must not contain empty segments"):
+        file.save(f"{prefix}{tmp_path}/out/d//e.txt")  # the OS writes out/d/e.txt
+    assert not (tmp_path / "out").exists()
+
+
 def test_save_accepts_file_fsspec_uri_destination(tmp_path, catalog: Catalog):
     data = b"uri destination test"
     (tmp_path / "src.bin").write_bytes(data)

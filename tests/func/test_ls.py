@@ -390,3 +390,21 @@ REMOTE_DATA: dict[str, list[dict[str, Any]]] = {
         },
     ],
 }
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_ls_tells_keys_with_empty_segments_apart(cloud_test_catalog, capsys):
+    ctc = cloud_test_catalog
+    client = ctc.catalog.get_client(ctc.src_uri)
+    keys = ["d/e.txt", "d//e.txt", "d///f.txt", "x/y/w.txt", "x//y/z.txt"]
+    for key in keys:
+        client.fs.pipe_file(f"{client.name}/empty-segments/{key}", b"x")
+    client.fs.invalidate_cache()
+    try:
+        ls([f"{ctc.src_uri}/empty-segments/d/"], catalog=ctc.catalog)
+        assert same_lines(capsys.readouterr().out, "e.txt\n/e.txt\n//f.txt\n")
+        ls([f"{ctc.src_uri}/empty-segments/x/"], catalog=ctc.catalog)
+        assert same_lines(capsys.readouterr().out, "y/\n/y/\n")
+    finally:
+        client.fs.rm(f"{client.name}/empty-segments", recursive=True)
+        client.fs.invalidate_cache()

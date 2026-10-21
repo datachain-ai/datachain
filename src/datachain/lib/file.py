@@ -224,6 +224,22 @@ class VFileRegistry:
         return reader.parent(file, location)
 
 
+def _check_local_segments(destination: str) -> None:
+    """A local path with an empty segment, such as ``out/d//e.txt``, is written
+    to ``out/d/e.txt``: it would overwrite another file without a word."""
+    from datachain.fs.utils import _URI_SCHEME_RE, is_win_local_path
+
+    path = destination.removeprefix("file://")
+    if path != destination or not (
+        _URI_SCHEME_RE.match(destination) and not is_win_local_path(destination)
+    ):
+        canonical = path.replace("\\", "/") if os.name == "nt" else path
+        if "//" in canonical.lstrip("/"):
+            raise ValueError(
+                f"unsafe file path {destination!r}: must not contain empty segments"
+            )
+
+
 class File(DataModel):
     """
     `DataModel` for reading binary files.
@@ -765,6 +781,7 @@ class File(DataModel):
             raise RuntimeError("Cannot save file: catalog is not set")
 
         destination = stringify_path(destination)
+        _check_local_segments(destination)
         client, rel_path = self._resolve_destination(destination, client_config)
         write_config = WriteConfig(
             content_type=content_type,

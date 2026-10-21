@@ -24,8 +24,23 @@ GCSFileSystem.set_session = GCSFileSystem._set_session
 os.environ.setdefault("NO_GCE_CHECK", "true")
 
 
+class _GCSFileSystem(GCSFileSystem):
+    """Reads a generation only from a trailing ``#<digits>``. gcsfs parses the key
+    as a URL, so keys like ``http://x/a.txt`` lose their start and ``#`` or ``?``
+    in a key read as a fragment or a query."""
+
+    @classmethod
+    def _split_path(cls, path, version_aware=False):
+        if version_aware:
+            base, sep, generation = path.rpartition("#")
+            if sep and generation.isdigit():
+                bucket, key, _ = super()._split_path(base)
+                return bucket, key, generation
+        return super()._split_path(path)
+
+
 class GCSClient(RangeListedClient):
-    FS_CLASS = GCSFileSystem
+    FS_CLASS = _GCSFileSystem
     PREFIX = "gs://"
     protocol = "gs"
     CREDENTIAL_KEYS = frozenset({"token"})
@@ -147,15 +162,8 @@ class GCSClient(RangeListedClient):
 
     @staticmethod
     def _path_with_generation(path: str, generation: str | None) -> str:
-        if generation:
-            for char in ("#", "?"):
-                if char in path:
-                    raise ValueError(
-                        f"Versioned access is not supported for GCS keys "
-                        f"containing {char!r}: {path!r}"
-                    )
-            return f"{path}#{generation}"
-        return path
+        # _GCSFileSystem reads it back from the last '#', whatever the key holds
+        return f"{path}#{generation}" if generation else path
 
     async def get_file(
         self,
