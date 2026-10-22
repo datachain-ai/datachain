@@ -24,7 +24,12 @@ from sqlalchemy import Column
 from sqlalchemy.sql import func as f
 from sqlalchemy.sql.elements import ColumnClause, ColumnElement, Label
 from sqlalchemy.sql.expression import label
-from sqlalchemy.sql.selectable import GenerativeSelect, Select, TableClause
+from sqlalchemy.sql.selectable import (
+    GenerativeSelect,
+    Select,
+    SelectBase,
+    TableClause,
+)
 from sqlalchemy.sql.visitors import replacement_traverse
 
 from datachain.catalog.catalog import clone_catalog_with_cache
@@ -160,6 +165,39 @@ def step_result(
     return StepResult(
         query_generator=QueryGenerator(func=func, columns=tuple(columns)),
         dependencies=tuple(dependencies),
+    )
+
+
+def _bind_shared_names(cols: Iterable[Any], query: Select) -> tuple[Any, ...]:
+    """Bind bare names that several of the query's sources have, like both
+    sides of a join, to the columns the query selects under those names."""
+    seen: set[str] = set()
+    shared: set[str] = set()
+    for source in query.columns_clause_froms:
+        shared |= seen & set(source.c.keys())
+        seen |= set(source.c.keys())
+    names = {
+        name: c.element if isinstance(c, Label) else c
+        for name, c in query.selected_columns.items()
+        if name in shared
+    }
+    if not names:
+        return tuple(cols)
+
+    def bind(element, **_kwargs):
+        # A nested SELECT resolves names against its own FROM. Artificial for
+        # now: only hand-written SQLAlchemy puts one in these clauses.
+        if isinstance(element, SelectBase):
+            return element
+        if isinstance(element, C) and element.table is None:
+            return names.get(element.name)
+        return None
+
+    return tuple(
+        names.get(C(c).name, c)
+        if isinstance(c, str)
+        else replacement_traverse(c, {}, bind)
+        for c in cols
     )
 
 
@@ -2087,7 +2125,7 @@ class SQLFilter(SQLClause):
 
     def apply_sql_clause(self, query: Select) -> Select:
         expressions = self.parse_cols(self.expressions)
-        return query.filter(*expressions)
+        return query.filter(*_bind_shared_names(expressions, query))
 
     def requires_boundary(self, state: "QueryState") -> bool:
         # WHERE applied after GROUP BY / LIMIT / OFFSET / DISTINCT would filter
@@ -2109,7 +2147,7 @@ class SQLOrderBy(SQLClause):
 
     def apply_sql_clause(self, query: Select) -> Select:
         args = self.parse_cols(self.args)
-        return query.order_by(*args)
+        return query.order_by(*_bind_shared_names(args, query))
 
     def requires_boundary(self, state: "QueryState") -> bool:
         # Re-ordering after LIMIT/OFFSET would change which rows are kept.
@@ -2177,10 +2215,11 @@ class SQLDistinct(SQLClause):
         return hash_column_elements(self.args)
 
     def apply_sql_clause(self, query):
+        args = _bind_shared_names(self.args, query)
         if self.dialect == "sqlite":
-            return query.group_by(*self.args)
+            return query.group_by(*args)
 
-        return query.distinct(*self.args)
+        return query.distinct(*args)
 
     def requires_boundary(self, state: "QueryState") -> bool:
         # DISTINCT after GROUP BY / LIMIT / OFFSET should de-duplicate the

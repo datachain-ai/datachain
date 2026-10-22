@@ -47,13 +47,23 @@ class GCSClient(RangeListedClient):
         from google.api_core import exceptions as google_exceptions
 
         # Step 1: Anonymous probe.
-        # Use _ls (objects.list API) not _info (buckets.get API): GCS does not
-        # grant storage.buckets.get anonymously even for public buckets.
+        # Use _call with maxResults=1 (objects.list API) not _info (buckets.get API)
+        # or _ls: GCS does not grant storage.buckets.get anonymously even for public
+        # buckets, and _ls lists the whole bucket root and triggers unnecessary
+        # gRPC calls.
         anon_kwargs = {k: v for k, v in kwargs.items() if k != "anon"}
         anon_kwargs["anon"] = True
         anon_fs = cls.create_fs(**anon_kwargs)
         try:
-            sync(get_loop(), anon_fs._ls, name)
+            sync(
+                get_loop(),
+                anon_fs._call,
+                "GET",
+                "b/{}/o",
+                name,
+                maxResults=1,
+                json_out=True,
+            )
             return BucketStatus(exists=True, access="anonymous")
         except FileNotFoundError:
             return BucketStatus(

@@ -1406,7 +1406,9 @@ class DataChain:
             if wrapped is not None:
                 resolved.append(wrapped)
             elif descending:
-                resolved.append(sqlalchemy.desc(arg))
+                resolved.append(
+                    sqlalchemy.desc(Column(arg) if isinstance(arg, str) else arg)
+                )
             else:
                 resolved.append(arg)
 
