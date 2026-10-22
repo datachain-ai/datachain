@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from fsspec.utils import stringify_path
-from pydantic import Field, ValidationError, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from datachain import json
 from datachain.client.fileslice import FileSlice
@@ -214,23 +214,6 @@ class VFileRegistry:
     def parent(cls, file: "File", location: list[dict]) -> "File":
         reader = cls._get_reader(file, location)
         return reader.parent(file, location)
-
-
-# path helpers of File and FileRow
-def _path_name(path: str) -> str:
-    return PurePosixPath(path).name
-
-
-def _path_parent(path: str) -> str:
-    return str(PurePosixPath(path).parent)
-
-
-def _path_suffix(path: str) -> str:
-    return PurePosixPath(path).suffix
-
-
-def _path_stem(path: str) -> str:
-    return PurePosixPath(path).stem
 
 
 class File(DataModel):
@@ -544,7 +527,7 @@ class File(DataModel):
             file.name  # 'image.jpg'
             ```
         """
-        return _path_name(self.path)
+        return PurePosixPath(self.path).name
 
     @property
     def parent(self) -> str:
@@ -556,7 +539,7 @@ class File(DataModel):
             file.parent  # 'data/subdir'
             ```
         """
-        return _path_parent(self.path)
+        return str(PurePosixPath(self.path).parent)
 
     @contextmanager
     def open(
@@ -993,13 +976,13 @@ class File(DataModel):
         return self._catalog.cache.get_path(self)
 
     def get_file_suffix(self):
-        return _path_suffix(self.path)
+        return PurePosixPath(self.path).suffix
 
     def get_file_ext(self):
-        return _path_suffix(self.path).lstrip(".")
+        return PurePosixPath(self.path).suffix.lstrip(".")
 
     def get_file_stem(self):
-        return _path_stem(self.path)
+        return PurePosixPath(self.path).stem
 
     def get_fs_path(self) -> str:
         """Combine ``source`` and ``path`` into the full location string.
@@ -1197,35 +1180,30 @@ class FileRow(NamedTuple):
     # File's path helpers, which read only ``path``: no File is built
     @property
     def name(self) -> str:
-        return _path_name(self.path)
+        return PurePosixPath(self.path).name
 
     @property
     def parent(self) -> str:
-        return _path_parent(self.path)
+        return str(PurePosixPath(self.path).parent)
 
     def get_file_suffix(self) -> str:
-        return _path_suffix(self.path)
+        return PurePosixPath(self.path).suffix
 
     def get_file_ext(self) -> str:
-        return _path_suffix(self.path).lstrip(".")
+        return PurePosixPath(self.path).suffix.lstrip(".")
 
     def get_file_stem(self) -> str:
-        return _path_stem(self.path)
+        return PurePosixPath(self.path).stem
 
-    def __getattr__(self, name: str) -> Any:
-        """``File``'s other helpers, from the ``File`` built from the row."""
-        if name not in _FILE_ROW_HELPERS:
-            hint = " (rows don't read files; see Listing.to_objects())"
-            hint = hint if hasattr(File, name) and not name.startswith("_") else ""
-            raise AttributeError(f"'FileRow' object has no attribute '{name}'{hint}")
-        try:
-            file = File(**self._asdict())
-        except ValidationError as exc:
-            raise AttributeError(f"'FileRow' {name}: {exc}") from None
-        return getattr(file, name)
+    # File's helpers that need a File: one is built from the row
+    def get_fs_path(self) -> str:
+        return File(**self._asdict()).get_fs_path()
 
+    def get_hash(self) -> str:
+        return File(**self._asdict()).get_hash()
 
-_FILE_ROW_HELPERS = frozenset({"get_fs_path", "get_hash", "rebase"})
+    def rebase(self, *args, **kwargs) -> str:
+        return File(**self._asdict()).rebase(*args, **kwargs)
 
 
 class TextFile(File):

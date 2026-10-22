@@ -1,13 +1,21 @@
 import posixpath
+import random
+import sqlite3
 from contextlib import closing
 
 import pytest
+from sqlalchemy import true
 
 import datachain as dc
 from datachain.catalog.catalog import DataSource
 from datachain.client import Client
 from datachain.fs.utils import path_to_fsspec_uri
-from datachain.lib.dc.storage_pattern import split_uri_pattern
+from datachain.lib.dc.storage_pattern import (
+    convert_globstar_to_glob,
+    path_filter,
+    should_use_recursion,
+    split_uri_pattern,
+)
 from datachain.lib.file import File
 from datachain.lib.listing import (
     LISTING_PREFIX,
@@ -23,6 +31,8 @@ from datachain.lib.listing import (
 )
 from datachain.listing import Listing
 from datachain.node import DirType
+from datachain.sql.functions import path as pathfunc
+from datachain.utils import uses_glob
 from tests.utils import skip_if_not_sqlite
 
 TREE = {
@@ -477,8 +487,6 @@ _GLOB_PATHS = [
 
 @pytest.mark.parametrize("pattern", _GLOB_PATTERNS)
 def test_glob_match_is_sqlite_glob(pattern):
-    import sqlite3
-
     with closing(sqlite3.connect(":memory:")) as conn:
         for path in _GLOB_PATHS:
             (expected,) = conn.execute("SELECT ? GLOB ?", (path, pattern)).fetchone()
@@ -503,13 +511,10 @@ def test_path_filter_python_matches_sql(test_session, paths):
     for condition in paths.sql(dc.C("path")):
         chain = chain.filter(condition)
 
-    assert sorted(chain.to_values("path")) == sorted(filter(paths, names))
+    assert sorted(chain.to_values("path")) == sorted(filter(paths.matcher(), names))
 
 
 def test_glob_match_is_sqlite_glob_on_random_patterns():
-    import random
-    import sqlite3
-
     rng = random.Random(0)  # noqa: S311
     with closing(sqlite3.connect(":memory:")) as conn:
         for _ in range(3000):
@@ -539,16 +544,6 @@ def test_glob_match_is_linear_in_stars():
     ],
 )
 def test_select_paths_keeps_filter_steps(test_session, list_path, pattern, recursive):
-    from sqlalchemy import true
-
-    from datachain.lib.dc.storage_pattern import (
-        convert_globstar_to_glob,
-        path_filter,
-        should_use_recursion,
-    )
-    from datachain.sql.functions import path as pathfunc
-    from datachain.utils import uses_glob
-
     chain = dc.read_values(file=[File(path="dir/x.txt")], session=test_session)
     path = dc.C("file.path")
     rec = should_use_recursion(pattern, recursive) if pattern else recursive

@@ -7,7 +7,6 @@ from functools import reduce
 from typing import TYPE_CHECKING
 
 from datachain.client import Client
-from datachain.lib.convert.unflatten import unflatten_to_json
 from datachain.lib.dc.storage_pattern import (
     list_scope,
     path_filter,
@@ -126,9 +125,10 @@ def read_storage(  # noqa: PLR0913
         update: list the storage again instead of reusing a saved listing.
             Default is False.
         anon: If True, we will treat cloud bucket as public one.
-        versions: If False, list only current objects, without versions. If
-            True, the snapshot keeps every version; the chain holds current
-            objects either way.
+        versions: The chain holds current files either way: old versions are
+            not included. If True, the default, on a versioned bucket each file
+            carries its version id, and the saved listing keeps old versions
+            too. If False, no version ids, and the listing is faster.
         client_config: Optional client configuration for the storage client.
         delta: If True, only process new or changed files instead of reprocessing
             everything. This saves time by skipping files that were already processed in
@@ -201,9 +201,10 @@ def read_storage(  # noqa: PLR0913
     uris = uri if isinstance(uri, (list, tuple)) else [uri]
     if not uris:
         raise ValueError("No URIs provided")
-    session, client_config = _storage_session(
-        uris, session, anon, client_config, in_memory, versions
+    session_config, client_config = _client_configs(
+        uris, session, anon, client_config, versions
     )
+    session = Session.get(session, client_config=session_config, in_memory=in_memory)
     return _read_storage(
         uris,
         session,
@@ -224,63 +225,44 @@ def read_storage(  # noqa: PLR0913
     )
 
 
-def _anon_config(
+def _client_configs(
     uris: Sequence,
     session: Session | None,
     anon: bool | None,
     client_config: dict | None,
-) -> tuple[bool | None, dict | None]:
-    """``anon`` and the client config a session for ``uris`` is made with.
+    versions: bool,
+) -> tuple[dict | None, dict]:
+    """The client config a session is made with, if not the active one's, and
+    the client config to list ``uris`` with.
 
-    A listing's client config is, by precedence: an explicit ``session``'s
-    own, else ``client_config``, else the active session's; with ``anon`` set,
-    True when it is None and every bucket is public and has no credentials;
-    and ``version_aware=False`` without versions (``_listing_config``). The
-    caller's session is never changed.
+    By precedence, as ``Session.get`` picks: an explicit ``session``'s own
+    config, else ``client_config``, else the active session's. ``anon`` is set
+    on it, True when None and every bucket is public and has no credentials,
+    and ``version_aware=False`` without ``versions``. An explicit session is
+    never changed.
     """
     for single_uri in uris:
         validate_cloud_bucket_name(str(single_uri))
-    probe_config = client_config or _session_client_config(session, None)
+    config = _session_client_config(session, client_config)
     if (
         anon is None
-        and not _backends_have_credentials(uris, probe_config)
-        and _all_buckets_anonymous(uris, probe_config)
+        and not _backends_have_credentials(uris, config)
+        and _all_buckets_anonymous(uris, config)
     ):
         anon = True
     if anon is not None:
-        client_config = probe_config | {"anon": anon}
-    return anon, client_config
-
-
-def _listing_config(config: dict, anon: bool | None, versions: bool) -> dict:
-    if anon is not None:
         config = config | {"anon": anon}
+    session_config = config if client_config or anon is not None else None
     if not versions:
         config = config | {"version_aware": False}
-    return config
-
-
-def _storage_session(
-    uris: Sequence,
-    session: Session | None,
-    anon: bool | None,
-    client_config: dict | None,
-    in_memory: bool,
-    versions: bool,
-) -> tuple[Session, dict]:
-    """The session and the client config to list ``uris`` with."""
-    anon, client_config = _anon_config(uris, session, anon, client_config)
-    session = Session.get(session, client_config=client_config, in_memory=in_memory)
-    # Session.get discards our client_config when an existing session is
-    # passed, so anon is applied again without mutating the caller's session.
-    return session, _listing_config(session.catalog.client_config, anon, versions)
+    return session_config, config
 
 
 def _session_client_config(session: Session | None, client_config: dict | None) -> dict:
     """The client config ``Session.get`` would use, without creating a session."""
     if session is None and client_config:
         return client_config
-    session = Session.active(session)
+    session = session or Session.active()
     return session.catalog.client_config if session else {}
 
 
@@ -399,44 +381,35 @@ def list_storage(
     client_config: dict | None = None,
     session: Session | None = None,
     in_memory: bool = False,
-) -> "Listing":
-    """List a storage: rows of the objects of buckets, prefixes or objects.
+) -> "StorageListing":
+    """List the files in a storage and get them as rows in Python.
 
-    Not a chain: the rows come to Python, nothing is saved, and no query runs
-    over them. For a chain of files over a saved snapshot, use `read_storage`.
+    Unlike `read_storage`, this returns no chain and saves nothing: it lists
+    the storage each time you use the result. Use it to count, sum or check
+    files; use `read_storage` to process them.
 
-    The listing yields one row per object, of `dc.FileRow`: named tuples
-    with `File`'s columns (`f.path`, `f.size`, `f.etag`, `f.last_modified`, ...)
-    and its path helpers (`f.name`, `f.get_file_ext()`), which build a `File`
-    per call, so filters over many rows are faster on the columns.
-    `to_objects()` returns `File` objects that read files, and `save()` saves the
-    listing as the snapshot `read_storage` returns.
-
-    A listing is listed once: iterate it or call one `to_*` method or `save()`.
-    Call `dc.list_storage()` again to list the storage again.
+    Each row is a `dc.FileRow` with the columns of `File` (`path`, `size`,
+    `etag`, `last_modified`, ...) and its path helpers (`name`, `parent`,
+    `get_file_ext()`). Rows don't read files: `to_objects()` gives `File`
+    objects that do.
 
     Parameters:
-        uri: Storage path(s) or URI(s), as in `read_storage`: buckets, prefixes
-            or objects, with glob patterns (`*`, `**`, `?`, `{a,b}`, `{1..9}`).
-        recursive: List recursively; if False, only the first level under a
-            prefix. On S3 and GCS, a first level, or a pattern's fixed start
-            such as `logs/2024-*`, is all that is read of the storage.
-        versions: If True, the default as in `read_storage`, list every version
-            of a versioned bucket, the current one with `is_latest`, so counts
-            and sums include old versions. If False, list current objects
-            only, which is faster. A URI of a single object gives its current
-            version either way.
-        anon: If True, treat the bucket as public. If None, a bucket that
-            needs no credentials is detected.
-        client_config: Optional client configuration for the storage client.
-            Ignored when `session` is passed.
-        session: A session to take the client configuration from, and where
-            `save()` saves the snapshot. Listing itself needs no session;
-            `save()` uses the active or the default session if none is passed.
-        in_memory: Keep the session `save()` creates in memory.
+        uri: Storage URI(s), as in `read_storage`: buckets, folders or files,
+            with glob patterns (`*`, `**`, `?`, `{a,b}`, `{1..9}`).
+        recursive: If False, list only the files directly in the folder.
+        versions: As in `read_storage`, the rows are current files. If True,
+            the default, on a versioned bucket they carry their version id. If
+            False, they don't, and the listing is faster.
+        anon: If True, read the bucket as public, without credentials. If
+            None, the default, a public bucket is detected.
+        client_config: Client configuration, such as credentials or an
+            endpoint. Ignored when `session` is passed.
+        session: The session to take the client configuration from and to
+            save into with `save()`.
+        in_memory: Make the session that `save()` creates, if any, in memory.
 
     Returns:
-        Listing: The listing of `uri`.
+        StorageListing: The files of `uri`.
 
     Example:
         ```py
@@ -444,28 +417,25 @@ def list_storage(
 
         uri = "s3://my-bucket/dir/"
         total = sum(f.size for f in dc.list_storage(uri))
-        images = dc.list_storage(uri).to_objects(type="image")  # ImageFile objects
+        jpgs = [f.path for f in dc.list_storage(f"{uri}*.jpg")]
+        # ImageFile objects, which read the images
+        images = dc.list_storage(uri).to_objects(type="image")
         table = dc.list_storage(uri).to_arrow()
-        chain = dc.list_storage(uri).save()  # the snapshot read_storage(uri) reuses
-        ```
-
-        On a versioned bucket, current objects only:
-        ```py
-        total = sum(f.size for f in dc.list_storage(uri, versions=False))
         ```
     """
     uris = [os.fspath(u) for u in (uri if isinstance(uri, (list, tuple)) else [uri])]
     if not uris:
         raise ValueError("No URIs provided")
-    anon, client_config = _anon_config(uris, session, anon, client_config)
-    config = _session_client_config(session, client_config)
-    return Listing(
+    session_config, config = _client_configs(
+        uris, session, anon, client_config, versions
+    )
+    return StorageListing(
         uris,
         recursive=recursive,
         versions=versions,
-        client_config=_listing_config(config, anon, versions),
+        client_config=config,
         session=session,
-        session_config=client_config,
+        session_config=session_config,
         in_memory=in_memory,
     )
 
@@ -489,16 +459,15 @@ class _Scan:
     scope: "ListScope | None" = None
 
 
-class Listing:
-    """One listing of a storage URI, created by `dc.list_storage()`.
-
-    It is listed once: iterate over it for `dc.FileRow` rows, or call one
-    of `to_list()`, `to_objects()`, `to_arrow()`, `to_pandas()` and `save()`.
+class StorageListing:
+    """The objects of storage URIs, from `dc.list_storage()`: iterate over it
+    for `dc.FileRow` rows, or call `to_list()`, `to_objects()`, `to_arrow()`,
+    `to_pandas()` or `save()`. Each of them lists the storage again.
     """
 
     def __init__(
         self,
-        uri: str | list[str],
+        uris: list[str],
         *,
         recursive: bool | None = True,
         versions: bool,
@@ -508,15 +477,13 @@ class Listing:
         in_memory: bool = False,
     ) -> None:
         """Use `dc.list_storage()` to create a listing."""
-        self.uri = uri
-        self.uris = uri if isinstance(uri, list) else [uri]
+        self.uris = uris
         self.recursive = recursive
         self.versions = versions
         self.client_config = client_config
         self._session = session
         self._session_config = session_config
         self._in_memory = in_memory
-        self._listed = False
 
     @property
     def session(self) -> Session:
@@ -528,25 +495,14 @@ class Listing:
         return self._session
 
     def __repr__(self) -> str:  # noqa: D105
-        return f"Listing({self.uri!r}, versions={self.versions})"
+        return f"StorageListing({self.uris!r}, versions={self.versions})"
 
-    def __iter__(self) -> Iterator[tuple]:
+    def __iter__(self) -> Iterator[FileRow]:
         """List the storage, yielding `dc.FileRow` rows."""
-        return itertools.chain.from_iterable(self._list())
-
-    def _list(self) -> Iterator[Sequence[tuple]]:
-        self._mark_listed()
-        return self._pages()
-
-    def _mark_listed(self) -> None:
-        if self._listed:
-            raise RuntimeError(
-                f"{self!r} is already listed; call dc.list_storage() to list it again"
-            )
-        self._listed = True
+        return itertools.chain.from_iterable(self._pages())  # type: ignore[arg-type]
 
     def _pages(self) -> Iterator[Sequence[tuple]]:
-        session = Session.active(self._session)
+        session = self._session or Session.active()
         cache = session.catalog.cache if session else None
         for source in self._sources(cache):
             if isinstance(source, _Object):
@@ -565,13 +521,14 @@ class Listing:
             if source.filters == (PathFilter(),) and not latest:
                 yield from pages
                 continue
+            matchers = [f.matcher() for f in source.filters]
             for page in pages:
                 yield [
                     r
                     for r in page
                     if not latest or r[_IS_LATEST]
-                    for f in source.filters
-                    if f(r[_PATH])
+                    for match in matchers
+                    if match(r[_PATH])
                 ]
 
     def _sources(self, cache) -> "list[_Object | _Scan]":
@@ -613,7 +570,7 @@ class Listing:
             sources += [_Scan(list_uri, tuple(fs), s) for s, fs in by_scope.items()]
         return sources + objects
 
-    def to_list(self) -> list[tuple]:
+    def to_list(self) -> list[FileRow]:
         """List the storage into a list of `dc.FileRow` rows."""
         return list(self)
 
@@ -629,7 +586,7 @@ class Listing:
         catalog = self._file_catalog()
         files = []
         for row in self:
-            file = file_type(**unflatten_to_json(File, row))
+            file = file_type(**row._asdict())
             file._set_stream(catalog)
             files.append(file)
         return files
@@ -637,7 +594,7 @@ class Listing:
     def _file_catalog(self) -> "Catalog":
         from datachain.catalog import Catalog
 
-        session = Session.active(self._session)
+        session = self._session or Session.active()
         if session is None:
             catalog = Catalog(None, None)  # type: ignore[arg-type]
         else:
@@ -653,7 +610,7 @@ class Listing:
         import pyarrow as pa
 
         schema = _arrow_schema()
-        batches = (_record_batch(page, schema) for page in self._list() if page)
+        batches = (_record_batch(page, schema) for page in self._pages() if page)
         return pa.Table.from_batches(batches, schema=schema)
 
     def to_pandas(self) -> "pd.DataFrame":
@@ -661,13 +618,16 @@ class Listing:
         return self.to_arrow().to_pandas()
 
     def save(self, settings: dict | None = None) -> "DataChain":
-        """List the storage and save the listing as its snapshot, the listing
-        dataset `read_storage` reads, replacing an older one.
+        """List the storage again and save it, as `read_storage(uri,
+        update=True)` does, for later `read_storage(uri)` calls to reuse.
+
+        Parameters:
+            settings: Keyword arguments of `DataChain.settings()` for the job
+                that lists and saves, such as `{"cache": True}`.
 
         Returns:
-            DataChain: The chain `read_storage` returns for this URI.
+            DataChain: The chain `read_storage(uri)` returns.
         """
-        self._mark_listed()
         chain = _read_storage(
             self.uris,
             self.session,
@@ -679,7 +639,6 @@ class Listing:
             versions=self.versions,
         )
         chain._query.resolve_all_listings()
-        chain._query.update = False
         return chain
 
 

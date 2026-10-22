@@ -247,9 +247,15 @@ def path_filter(
     """The paths a URI with glob ``pattern`` selects from its base's listing."""
     if pattern is None:
         return PathFilter.ls(list_path, recursive)
-    use_recursive = should_use_recursion(pattern, recursive or False)
-    return PathFilter.ls(list_path, use_recursive).glob(
-        _glob_pattern(pattern, list_path)
+    glob, use_recursive = _pattern(pattern, list_path, recursive)
+    return PathFilter.ls(list_path, use_recursive).glob(glob)
+
+
+def _pattern(pattern: str, list_path: str, recursive: bool | None) -> tuple[str, bool]:
+    """``pattern`` as a glob of full paths, and whether it recurses."""
+    return (
+        _glob_pattern(pattern, list_path),
+        should_use_recursion(pattern, recursive or False),
     )
 
 
@@ -264,11 +270,11 @@ def list_scope(
     folder = f"{folder}/" if folder else ""
     if pattern is None:
         return None if recursive else ListScope(folder, folder, True)
-    head = _glob_pattern(pattern, list_path)
+    head, use_recursive = _pattern(pattern, list_path, recursive)
     magic = [i for c in "*?[" if (i := head.find(c)) >= 0]
     head = head[: min(magic, default=len(head))]
     prefix = head if head.startswith(folder) else folder
-    one_level = not should_use_recursion(pattern, recursive or False)
+    one_level = not use_recursive
     if not one_level and prefix == folder:
         return None
     return ListScope(folder, prefix, one_level)

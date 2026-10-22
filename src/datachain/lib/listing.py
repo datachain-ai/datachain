@@ -124,7 +124,8 @@ def _check_folder(client, folder: str) -> None:
     """Raise, as a listing of ``folder`` would, when it holds no keys. The probe
     also raises the backend's error for a missing bucket, when ``folder`` is
     its root."""
-    if not sync(get_loop(), client.has_keys, folder) and folder:
+    has_keys = sync(get_loop(), client.has_keys, folder)  # a missing bucket raises
+    if folder and not has_keys:
         raise FileNotFoundError(f"Unable to resolve remote path: {folder}")
 
 
@@ -222,22 +223,34 @@ class PathFilter:
         steps = [or_(*(cond(*c) for c in self.any_of))] if self.any_of else []
         return steps + [cond(*c) for c in self.all_of]
 
-    def __call__(self, path: str) -> bool:
-        def cond(op: str, value: str) -> bool:
-            if op == "eq":
-                return path == value
-            if op == "glob":
-                return glob_match(path, value)
-            return path.rstrip(path.replace("/", "")).rstrip("/") == value
+    def matcher(self) -> "Callable[[str], bool]":
+        """The filter as a function of a path, built once for many rows."""
 
-        return (not self.any_of or any(cond(*c) for c in self.any_of)) and all(
-            cond(*c) for c in self.all_of
+        def check(op: str, value: str) -> "Callable[[str], bool]":
+            if op == "eq":
+                return value.__eq__
+            if op == "glob":
+                regex = _glob_regex(value)
+                return lambda path: regex is not None and bool(regex.fullmatch(path))
+            return lambda path: _parent(path) == value
+
+        any_of = [check(*c) for c in self.any_of]
+        all_of = [check(*c) for c in self.all_of]
+        return lambda path: (
+            (not any_of or any(c(path) for c in any_of))
+            and all(c(path) for c in all_of)
         )
 
 
+def _parent(path: str) -> str:
+    """SQLite's ``path_parent``: the path without its name and the slashes
+    before it."""
+    return path.rstrip(path.replace("/", "")).rstrip("/")
+
+
 @functools.lru_cache(maxsize=256)
-def _glob_parts(pattern: str) -> "list[tuple[re.Pattern, int]] | None":
-    """SQLite's GLOB split at ``*`` into (regex, length); None matches nothing."""
+def _glob_parts(pattern: str) -> "list[str] | None":
+    """SQLite's GLOB split at ``*`` into regexes; None matches nothing."""
     parts: list[list[str]] = []
     out: list[str] = []
     i, n = 0, len(pattern)
@@ -276,29 +289,27 @@ def _glob_parts(pattern: str) -> "list[tuple[re.Pattern, int]] | None":
         else:
             out.append(re.escape(c))
     parts.append(out)
-    return [(re.compile("".join(p), re.DOTALL), len(p)) for p in parts]
+    return ["".join(p) for p in parts]
+
+
+@functools.lru_cache(maxsize=256)
+def _glob_regex(pattern: str) -> "re.Pattern | None":
+    """SQLite's GLOB as a regex; None matches nothing. ``(?>...)`` keeps the
+    leftmost match of each part between stars, so matching stays linear."""
+    parts = _glob_parts(pattern)
+    if parts is None:
+        return None
+    head, *rest = parts
+    if rest:
+        *middle, tail = rest
+        head += "".join(f"(?>.*?{m})" for m in middle) + f".*{tail}"
+    return re.compile(head, re.DOTALL)
 
 
 def glob_match(path: str, pattern: str) -> bool:
-    """SQLite's GLOB in O(len(path) * len(pattern)): the parts between ``*``
-    have fixed lengths, so the leftmost match of each is the one to take."""
-    parts = _glob_parts(pattern)
-    if parts is None:
-        return False
-    (head, head_len), *middle = parts
-    if not middle:
-        return head.fullmatch(path) is not None
-    *middle, (tail, tail_len) = middle
-    end = len(path) - tail_len
-    if end < head_len or not head.match(path) or not tail.fullmatch(path, end):
-        return False
-    pos = head_len
-    for part, _ in middle:
-        found = part.search(path, pos, end)
-        if found is None:
-            return False
-        pos = found.end()
-    return True
+    """SQLite's GLOB."""
+    regex = _glob_regex(pattern)
+    return regex is not None and regex.fullmatch(path) is not None
 
 
 _DS_ENCODE_RE = re.compile(r"[^a-zA-Z0-9_/:\-]")

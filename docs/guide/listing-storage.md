@@ -8,7 +8,7 @@ title: Listing Storage
 
 | | `dc.list_storage(uri)` | `dc.read_storage(uri)` |
 |---|---|---|
-| Returns | rows to iterate once | a chain of `File` objects |
+| Returns | rows to iterate | a chain of `File` objects |
 | Lists the storage | every call | once, then reuses the saved snapshot |
 | Saves a dataset | only with `save()` | always, the snapshot |
 | Use it for | totals, inventories, checks, a table of the objects | processing files: filter, map, join, save results |
@@ -24,24 +24,26 @@ total = sum(f.size for f in dc.list_storage("s3://bucket/episodes/"))
 images = dc.list_storage("s3://bucket/images/**/*.{jpg,png}").to_objects(type="image")
 ```
 
-Rows are plain tuples with `File`'s columns (`f.path`, `f.size`, `f.etag`, `f.last_modified`, ...) and its path helpers (`f.name`, `f.parent`, `f.get_file_ext()`), which build a `File` on each call: on large listings, prefer the columns, such as `f.path.endswith(".jpg")`. Rows don't read files; `to_objects()` gives `File` objects that do.
+Rows are plain tuples with `File`'s columns (`f.path`, `f.size`, `f.etag`, `f.last_modified`, ...) and its path helpers (`f.name`, `f.parent`, `f.get_file_ext()`). Rows don't read files; `to_objects()` gives `File` objects that do.
 
-A listing is listed once: iterate it, or take it whole with one of
+Iterate a listing, or take it whole:
 
 ```python
 rows = dc.list_storage(uri).to_list()
 table = dc.list_storage(uri).to_arrow()  # pyarrow.Table; to_pandas() for a DataFrame
-images = dc.list_storage(uri).to_objects(
-    type="image"
-)  # ImageFile objects that read files
-chain = dc.list_storage(uri).save()  # the snapshot read_storage(uri) reuses
+# ImageFile objects, which read the images
+images = dc.list_storage(uri).to_objects(type="image")
+chain = dc.list_storage(uri).save()  # saved for read_storage(uri) to reuse
 ```
 
-Call `dc.list_storage()` again to list the storage again. A listing reads only what its URI selects: with `recursive=False`, or a pattern with a fixed start such as `s3://bucket/logs/2024-*`, it reads that level or those keys, not the whole prefix (S3 and GCS). On S3, GCS and Azure, iterating holds a few pages at a time however large the storage is, while a local folder is read whole; `to_list()`, `to_arrow()`, `to_pandas()` and `to_objects()` hold every row.
+Each use lists the storage again: iterating the same listing twice lists it twice. A listing reads only what its URI selects: with `recursive=False`, or a pattern with a fixed start such as `s3://bucket/logs/2024-*`, it reads that level or those keys, not the whole prefix (S3 and GCS). On S3, GCS and Azure, iterating holds a few pages at a time however large the storage is, while a local folder is read whole; `to_list()`, `to_arrow()`, `to_pandas()` and `to_objects()` hold every row.
 
 ## Versioned Buckets
 
-On a bucket with versioning enabled (S3, GCS, Azure), a listing has every version of every object by default, the current one with `is_latest`, so counts and sums over its rows include old versions. Pass `versions=False` to list current objects only, which is also faster:
+On a bucket with versioning enabled (S3, GCS, Azure), `list_storage()` and `read_storage()` give the current files only: old versions are not included, so counts and sums are over current files. `versions` decides only whether the rows carry version ids:
+
+- `versions=True`, the default: each file has its `version` id. The listing asks the storage for versions, so it is slower, and `save()` keeps old versions in the saved listing too.
+- `versions=False`: no version ids; a faster listing.
 
 ```python
 total = sum(
@@ -49,7 +51,7 @@ total = sum(
 )
 ```
 
-A snapshot from `save()` is reused by `read_storage()` with the same `versions`. A URI of a single object gives its current version either way. Buckets without versioning, local files and HTTP storages have one kind of listing, and `versions` changes nothing there.
+`read_storage()` reuses a listing from `save()` made with the same `versions`. Buckets without versioning, local files and HTTP storages have one kind of listing, and `versions` changes nothing there.
 
 ## Credentials
 

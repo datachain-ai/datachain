@@ -3,10 +3,12 @@ import uuid
 
 import pyarrow as pa
 import pytest
+from botocore.exceptions import ClientError
 
 import datachain as dc
+from datachain.client.fsspec import RangeListedClient
 from datachain.lib.convert.flatten import flatten
-from datachain.lib.dc import DataChain
+from datachain.lib.dc import DataChain, storage
 from datachain.lib.file import File, FileRow
 from datachain.lib.listing import get_listing
 from datachain.lib.settings import Settings
@@ -74,7 +76,7 @@ def test_listing_to_arrow(cloud_test_catalog):
 def test_listing_to_arrow_location_is_json(test_session, tmp_dir, mocker):
     location = {"vtype": "tar", "offset": 1}
     row = dc.FileRow("file:///d", "a", location=location)
-    mocker.patch.object(dc.Listing, "_pages", return_value=iter([[row], []]))
+    mocker.patch.object(dc.StorageListing, "_pages", return_value=iter([[row], []]))
 
     table = dc.list_storage(tmp_dir, session=test_session).to_arrow()
 
@@ -94,22 +96,22 @@ def test_listing_empty_to_arrow(test_session, tmp_dir):
     "use",
     [
         list,
-        dc.Listing.to_list,
-        dc.Listing.to_objects,
-        dc.Listing.to_arrow,
-        dc.Listing.to_pandas,
-        dc.Listing.save,
+        dc.StorageListing.to_list,
+        dc.StorageListing.to_objects,
+        dc.StorageListing.to_arrow,
+        dc.StorageListing.to_pandas,
+        dc.StorageListing.save,
     ],
 )
-def test_listing_is_listed_once(test_session, tmp_dir, use):
+def test_each_use_of_a_listing_lists_again(test_session, tmp_dir, use):
     (tmp_dir / "a.txt").write_text("a")
     lst = dc.list_storage(tmp_dir, session=test_session)
     list(lst)
+    (tmp_dir / "b.txt").write_text("b")
 
-    with pytest.raises(
-        RuntimeError, match=r"already listed; call dc\.list_storage\(\)"
-    ):
-        use(lst)
+    result = use(lst)
+    count = result.count() if isinstance(result, DataChain) else len(result)
+    assert count == 2  # b.txt too: it lists the storage again
 
 
 def test_listing_lists_again_when_called_again(test_session, tmp_dir):
@@ -129,7 +131,7 @@ def test_listing_rows_take_file_attributes(test_session, tmp_dir):
     (row,) = dc.list_storage(tmp_dir, session=test_session)
 
     assert row.get_file_ext() == "txt"
-    with pytest.raises(AttributeError, match=r"Listing\.to_objects"):
+    with pytest.raises(AttributeError):  # rows read no files: see to_objects()
         row.read_text()
 
 
@@ -313,8 +315,6 @@ def test_read_storage_reuses_listing_saved_with_defaults(cloud_test_catalog):
 
 
 def test_listing_probes_and_keeps_active_session_config(catalog, mocker):
-    from datachain.lib.dc import storage
-
     config = {"endpoint_url": "https://minio.example.com"}
     configured = catalog.copy()
     configured.client_config = config
@@ -322,21 +322,35 @@ def test_listing_probes_and_keeps_active_session_config(catalog, mocker):
 
     with dc.Session("ingest", catalog=configured):
         lst = dc.list_storage("s3://bucket/data/")
-        read_session, read_config = storage._storage_session(
-            ["s3://bucket/data/"], None, None, None, False, True
+        _, read_config = storage._client_configs(
+            ["s3://bucket/data/"], None, None, None, True
         )
-        read_session.__exit__(None, None, None)
 
     assert probe.call_args.args[1] == config
     assert lst.client_config == config | {"anon": True}
     assert read_config == config | {"anon": True}
 
 
+def test_an_explicit_session_decides_the_anonymous_probe(catalog, mocker):
+    own = {"endpoint_url": "https://a.example.com", "key": "k", "secret": "s"}
+    configured = catalog.copy()
+    configured.client_config = own
+    probe = mocker.patch.object(storage, "_all_buckets_anonymous", return_value=True)
+    session = dc.Session("explicit", catalog=configured)
+
+    lst = dc.list_storage(
+        "s3://bucket/data/",
+        session=session,
+        client_config={"endpoint_url": "https://b.example.com"},  # ignored
+    )
+
+    assert lst.client_config == own  # its credentials: no anonymous probe
+    assert not probe.call_count
+
+
 def test_listing_save_lists_a_shared_listing_once(test_session, tmp_dir, mocker):
     (tmp_dir / "a.txt").write_text("a")
     (tmp_dir / "b.csv").write_text("b")
-    from datachain.lib.dc import storage
-
     write = mocker.spy(storage, "_write_listing")
 
     saved = dc.list_storage(f"{tmp_dir.as_uri()}/*.{{txt,csv}}", session=test_session)
@@ -350,8 +364,6 @@ def test_listing_save_lists_a_shared_listing_once(test_session, tmp_dir, mocker)
 
 
 def test_listing_uses_cache_of_active_session(test_session, tmp_dir, mocker):
-    from datachain.lib.dc import storage
-
     (tmp_dir / "a.txt").write_text("a")
     pages = mocker.spy(storage, "list_pages")
 
@@ -398,8 +410,6 @@ def test_expired_parent_listing_is_listed_whole(test_session, tmp_dir, mocker):
 @pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
 def test_listing_one_level_reads_nothing_below_it(cloud_test_catalog, mocker):
-    from datachain.client.fsspec import RangeListedClient
-
     ctc = cloud_test_catalog
     client = ctc.catalog.get_client(ctc.src_uri)
     prefix = f"level-{uuid.uuid4().hex[:8]}"
@@ -441,8 +451,6 @@ def test_listing_one_level_reads_nothing_below_it(cloud_test_catalog, mocker):
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
 def test_listing_a_missing_bucket_raises(cloud_test_catalog):
-    from botocore.exceptions import ClientError
-
     missing = cloud_test_catalog.src_uri.replace("://", "://missing-")
     lst = dc.list_storage(f"{missing}/a*/**", session=cloud_test_catalog.session)
 
@@ -453,8 +461,6 @@ def test_listing_a_missing_bucket_raises(cloud_test_catalog):
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
 def test_brace_alternatives_of_one_folder_list_it_once(cloud_test_catalog, mocker):
-    from datachain.client.fsspec import RangeListedClient
-
     ctc = cloud_test_catalog
     client = ctc.catalog.get_client(ctc.src_uri)
     prefix = f"braces-{uuid.uuid4().hex[:8]}"

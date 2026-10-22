@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 import sqlalchemy as sa
+from pydantic import ValidationError
 
 import datachain as dc
 from datachain.lib.convert.flatten import iter_flat_columns
@@ -104,7 +105,7 @@ def test_file_rows_only_take_path_helpers():
     assert row.parent == "dir"
     assert not hasattr(row, "read")
     assert not hasattr(row, "model_dump")
-    with pytest.raises(AttributeError, match=r"Listing\.to_objects"):
+    with pytest.raises(AttributeError):  # rows read no files: see to_objects()
         row.open()
 
 
@@ -112,7 +113,8 @@ def test_invalid_file_rows_have_path_helpers_only():
     row = FileRow("no-scheme", "d/a.txt")
 
     assert (row.name, row.parent, row.get_file_ext()) == ("a.txt", "d", "txt")
-    assert not hasattr(row, "get_fs_path")  # it needs a valid File
+    with pytest.raises(ValidationError):  # it needs a valid File
+        row.get_fs_path()
 
 
 @pytest.mark.parametrize("path", ["d/e.tar.gz", "e", "d//e.txt", "a/b/.hidden", ""])
