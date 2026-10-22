@@ -640,17 +640,21 @@ class RangeListedClient(Client):
         pool = Pool(self, prefix, LIST_PROCESSES) if LIST_PROCESSES else None
         await RangeListing(self, prefix, result_queue, pool).run()
 
-    async def level_rows(self, prefix: str, max_pages: int) -> list | None:
-        """Rows of the keys under ``prefix`` with no delimiter past it, or None
-        when they take more than ``max_pages`` pages."""
-        rows: list = []
+    async def level_pages(self, prefix: str) -> AsyncIterator[list]:
+        """Pages of rows of the keys under ``prefix`` with no delimiter past it:
+        however many pages a level takes, nothing below it is listed."""
         token = None
-        for _ in range(max_pages):
+        while True:
             page = await self._list_page(prefix, "", token, delimiter=DELIMITER)
-            rows += page.rows
-            if (token := page.token) is None:
-                return rows
-        return None
+            yield page.rows
+            if page.token is None:
+                return
+            if page.token == token:
+                raise RuntimeError(
+                    f"Listing {self.uri}: the server returned the page token it was"
+                    " given, so the listing would never end."
+                )
+            token = page.token
 
     async def has_keys(self, prefix: str) -> bool:
         page = await self._list_page(prefix, "", None, page_size=1)

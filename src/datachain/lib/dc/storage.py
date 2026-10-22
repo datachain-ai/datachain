@@ -597,7 +597,11 @@ class Listing:
             if isinstance(group, str):
                 out.append((group, None, None))  # a single object
             elif all(scope is not None for _, _, scope in group):
-                out += [(u, [paths], scope) for u, paths, scope in group]
+                # one scan per scope: braces expand to URIs of the same scope
+                scans: dict[ListScope, list[PathFilter | None]] = {}
+                for _, paths, scope in group:
+                    scans.setdefault(scope, []).append(paths)
+                out += [(group[0][0], filters, s) for s, filters in scans.items()]
             else:
                 out.append((group[0][0], [paths for _, paths, _ in group], None))
         return out

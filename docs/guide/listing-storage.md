@@ -8,7 +8,7 @@ title: Listing Storage
 
 | | `dc.list_storage(uri)` | `dc.read_storage(uri)` |
 |---|---|---|
-| Returns | an iterator of rows | a chain of `File` objects |
+| Returns | rows to iterate once | a chain of `File` objects |
 | Lists the storage | every call | once, then reuses the saved snapshot |
 | Saves a dataset | only with `save()` | always, the snapshot |
 | Use it for | totals, inventories, checks, a table of the objects | processing files: filter, map, join, save results |
@@ -37,7 +37,7 @@ images = dc.list_storage(uri).to_objects(
 chain = dc.list_storage(uri).save()  # the snapshot read_storage(uri) reuses
 ```
 
-Call `dc.list_storage()` again to list the storage again. A listing reads only what its URI selects: with `recursive=False`, or a pattern with a fixed start such as `s3://bucket/logs/2024-*`, it reads that level or those keys, not the whole prefix (S3 and GCS). Iterating keeps memory flat however large the storage is; `to_list()`, `to_arrow()` and `to_objects()` hold every row.
+Call `dc.list_storage()` again to list the storage again. A listing reads only what its URI selects: with `recursive=False`, or a pattern with a fixed start such as `s3://bucket/logs/2024-*`, it reads that level or those keys, not the whole prefix (S3 and GCS). On S3, GCS and Azure, iterating holds a few pages at a time however large the storage is, while a local folder is read whole; `to_list()`, `to_arrow()`, `to_pandas()` and `to_objects()` hold every row.
 
 ## Versioned Buckets
 

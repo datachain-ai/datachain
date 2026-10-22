@@ -216,6 +216,23 @@ class VFileRegistry:
         return reader.parent(file, location)
 
 
+# path helpers of File and FileRow
+def _path_name(path: str) -> str:
+    return PurePosixPath(path).name
+
+
+def _path_parent(path: str) -> str:
+    return str(PurePosixPath(path).parent)
+
+
+def _path_suffix(path: str) -> str:
+    return PurePosixPath(path).suffix
+
+
+def _path_stem(path: str) -> str:
+    return PurePosixPath(path).stem
+
+
 class File(DataModel):
     """
     `DataModel` for reading binary files.
@@ -527,7 +544,7 @@ class File(DataModel):
             file.name  # 'image.jpg'
             ```
         """
-        return PurePosixPath(self.path).name
+        return _path_name(self.path)
 
     @property
     def parent(self) -> str:
@@ -539,7 +556,7 @@ class File(DataModel):
             file.parent  # 'data/subdir'
             ```
         """
-        return str(PurePosixPath(self.path).parent)
+        return _path_parent(self.path)
 
     @contextmanager
     def open(
@@ -976,13 +993,13 @@ class File(DataModel):
         return self._catalog.cache.get_path(self)
 
     def get_file_suffix(self):
-        return PurePosixPath(self.path).suffix
+        return _path_suffix(self.path)
 
     def get_file_ext(self):
-        return PurePosixPath(self.path).suffix.lstrip(".")
+        return _path_suffix(self.path).lstrip(".")
 
     def get_file_stem(self):
-        return PurePosixPath(self.path).stem
+        return _path_stem(self.path)
 
     def get_fs_path(self) -> str:
         """Combine ``source`` and ``path`` into the full location string.
@@ -1177,8 +1194,26 @@ class FileRow(NamedTuple):
     last_modified: datetime = TIME_ZERO
     location: dict | list[dict] | None = None
 
+    # File's path helpers, which read only ``path``: no File is built
+    @property
+    def name(self) -> str:
+        return _path_name(self.path)
+
+    @property
+    def parent(self) -> str:
+        return _path_parent(self.path)
+
+    def get_file_suffix(self) -> str:
+        return _path_suffix(self.path)
+
+    def get_file_ext(self) -> str:
+        return _path_suffix(self.path).lstrip(".")
+
+    def get_file_stem(self) -> str:
+        return _path_stem(self.path)
+
     def __getattr__(self, name: str) -> Any:
-        """``File``'s path helpers, from the ``File`` built from the row."""
+        """``File``'s other helpers, from the ``File`` built from the row."""
         if name not in _FILE_ROW_HELPERS:
             hint = " (rows don't read files; see Listing.to_objects())"
             hint = hint if hasattr(File, name) and not name.startswith("_") else ""
@@ -1190,18 +1225,7 @@ class FileRow(NamedTuple):
         return getattr(file, name)
 
 
-_FILE_ROW_HELPERS = frozenset(
-    {
-        "name",
-        "parent",
-        "get_file_ext",
-        "get_file_stem",
-        "get_file_suffix",
-        "get_fs_path",
-        "get_hash",
-        "rebase",
-    }
-)
+_FILE_ROW_HELPERS = frozenset({"get_fs_path", "get_hash", "rebase"})
 
 
 class TextFile(File):

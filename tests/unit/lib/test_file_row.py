@@ -7,7 +7,7 @@ import sqlalchemy as sa
 
 import datachain as dc
 from datachain.lib.convert.flatten import iter_flat_columns
-from datachain.lib.file import FileRow
+from datachain.lib.file import File, FileRow
 from datachain.lib.udf import UdfError
 from datachain.query import dataset
 
@@ -108,5 +108,18 @@ def test_file_rows_only_take_path_helpers():
         row.open()
 
 
-def test_invalid_file_rows_have_no_helpers():
-    assert not hasattr(FileRow("no-scheme", "a.txt"), "name")
+def test_invalid_file_rows_have_path_helpers_only():
+    row = FileRow("no-scheme", "d/a.txt")
+
+    assert (row.name, row.parent, row.get_file_ext()) == ("a.txt", "d", "txt")
+    assert not hasattr(row, "get_fs_path")  # it needs a valid File
+
+
+@pytest.mark.parametrize("path", ["d/e.tar.gz", "e", "d//e.txt", "a/b/.hidden", ""])
+def test_file_row_path_helpers_match_file(path):
+    row = FileRow("s3://b", path)
+    file = File(source="s3://b", path=path)
+
+    assert (row.name, row.parent) == (file.name, file.parent)
+    for helper in ("get_file_ext", "get_file_stem", "get_file_suffix"):
+        assert getattr(row, helper)() == getattr(file, helper)()

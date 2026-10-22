@@ -100,9 +100,6 @@ def list_pages(uri: str, cache, client_config=None) -> Iterator[Sequence[tuple]]
         yield [*map(file_row, page)] if page and isinstance(page[0], File) else page
 
 
-LEVEL_PAGES = 5  # a level of more keys lists faster in key ranges
-
-
 def list_scope_pages(
     uri: str, scope: "ListScope", cache, client_config=None
 ) -> Iterator[Sequence[tuple]] | None:
@@ -114,14 +111,18 @@ def list_scope_pages(
     client = Client.get_client(uri, cache, **config)  # type: ignore[arg-type]
     if not isinstance(client, RangeListedClient):
         return None
-    loop = get_loop()
     if scope.one_level and client.LISTS_LEVELS:
-        rows = sync(loop, client.level_rows, scope.prefix, LEVEL_PAGES)
-        if rows is not None:
-            if not rows:
-                _check_folder(client, scope.folder)
-            return iter([rows])
+        return _level_pages(client, scope)
     return _prefix_pages(client, scope)
+
+
+def _level_pages(client, scope: "ListScope") -> Iterator[Sequence[tuple]]:
+    listed = False
+    for rows in iter_over_async(client.level_pages(scope.prefix), get_loop()):
+        listed = listed or bool(rows)
+        yield rows
+    if not listed:
+        _check_folder(client, scope.folder)
 
 
 def _prefix_pages(client, scope: "ListScope") -> Iterator[Sequence[tuple]]:
@@ -133,8 +134,10 @@ def _prefix_pages(client, scope: "ListScope") -> Iterator[Sequence[tuple]]:
 
 
 def _check_folder(client, folder: str) -> None:
-    """Raise, as a listing of ``folder`` would, when it holds no keys."""
-    if folder and not sync(get_loop(), client.has_keys, folder):
+    """Raise, as a listing of ``folder`` would, when it holds no keys. The probe
+    also raises the backend's error for a missing bucket, when ``folder`` is
+    its root."""
+    if not sync(get_loop(), client.has_keys, folder) and folder:
         raise FileNotFoundError(f"Unable to resolve remote path: {folder}")
 
 

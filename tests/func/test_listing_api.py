@@ -1,4 +1,5 @@
 import json
+import uuid
 
 import pyarrow as pa
 import pytest
@@ -391,25 +392,64 @@ def test_expired_parent_listing_is_listed_whole(test_session, tmp_dir, mocker):
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
-@pytest.mark.parametrize("level_pages", [1, 5])
-def test_listing_one_level(cloud_test_catalog, mocker, level_pages):
+def test_listing_one_level_reads_nothing_below_it(cloud_test_catalog, mocker):
     from datachain.client.fsspec import RangeListedClient
-    from datachain.lib import listing
 
     ctc = cloud_test_catalog
-    if level_pages == 1 and ctc.src_uri.startswith("gs://"):
-        pytest.skip("the fake GCS server lists a level in one page")
-    mocker.patch.object(listing, "LEVEL_PAGES", level_pages)
+    client = ctc.catalog.get_client(ctc.src_uri)
+    prefix = f"level-{uuid.uuid4().hex[:8]}"
+    top = [f"{prefix}/{i:02}.txt" for i in range(12)]  # pages of 2: past 5 pages
+    for key in [*top, f"{prefix}/sub/deep.txt"]:
+        client.fs.pipe_file(f"{client.name}/{key}", b"x")
+    client.fs.invalidate_cache()
     mocker.patch.object(RangeListedClient, "LIST_PAGE_SIZE", 2)
-    expected = dc.read_storage(
-        f"{ctc.src_uri}/dogs/", recursive=False, session=ctc.session
-    ).to_values("file")
-    level = mocker.spy(RangeListedClient, "level_rows")
+    pages = mocker.spy(type(client), "_list_page")
     ranges = mocker.spy(RangeListedClient, "_fetch_prefix")
+    try:
+        rows = dc.list_storage(
+            f"{ctc.src_uri}/{prefix}/", recursive=False, session=ctc.session
+        )
+        paths = sorted(r.path for r in rows)
+    finally:
+        client.fs.rm(f"{client.name}/{prefix}", recursive=True)
+        client.fs.invalidate_cache()
 
-    rows = dc.list_storage(f"{ctc.src_uri}/dogs/", recursive=False, session=ctc.session)
+    assert paths == top
+    assert not ranges.call_count  # the subfolder is never listed
+    assert all(c.kwargs.get("delimiter") == "/" for c in pages.call_args_list)
 
-    assert sorted(r for r in rows if r.is_latest) == sorted(map(flatten, expected))
-    assert level.call_count == 1
-    # dogs/ holds 4 keys a level: past one page of 2, it lists in key ranges
-    assert ranges.call_count == (level_pages == 1)
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+def test_listing_a_missing_bucket_raises(cloud_test_catalog):
+    from botocore.exceptions import ClientError
+
+    missing = cloud_test_catalog.src_uri.replace("://", "://missing-")
+    lst = dc.list_storage(f"{missing}/a*/**", session=cloud_test_catalog.session)
+
+    # the backend's error (NoSuchBucket on S3), not an empty listing
+    with pytest.raises((FileNotFoundError, ClientError)):
+        lst.to_list()
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+def test_brace_alternatives_of_one_folder_list_it_once(cloud_test_catalog, mocker):
+    from datachain.client.fsspec import RangeListedClient
+
+    ctc = cloud_test_catalog
+    client = ctc.catalog.get_client(ctc.src_uri)
+    prefix = f"braces-{uuid.uuid4().hex[:8]}"
+    for name in ("a.jpg", "b.png", "c.gif", "d.txt"):
+        client.fs.pipe_file(f"{client.name}/{prefix}/{name}", b"x")
+    client.fs.invalidate_cache()
+    level = mocker.spy(RangeListedClient, "level_pages")
+    try:
+        rows = dc.list_storage(
+            f"{ctc.src_uri}/{prefix}/*.{{jpg,png,gif}}", session=ctc.session
+        )
+        paths = sorted(r.path for r in rows)
+    finally:
+        client.fs.rm(f"{client.name}/{prefix}", recursive=True)
+        client.fs.invalidate_cache()
+
+    assert paths == [f"{prefix}/a.jpg", f"{prefix}/b.png", f"{prefix}/c.gif"]
+    assert level.call_count == 1  # one scan for the three alternatives
