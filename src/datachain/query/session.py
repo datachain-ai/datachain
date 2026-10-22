@@ -291,6 +291,16 @@ class Session:
             pass
 
     @classmethod
+    def active(cls, session: "Session | None" = None) -> "Session | None":
+        """``session``, or the one ``get()`` would return, without creating one:
+        None when no session exists yet."""
+        if session is not None:
+            return session
+        if cls.SESSION_CONTEXTS:
+            return cls.SESSION_CONTEXTS[-1]
+        return cls.GLOBAL_SESSION_CTX
+
+    @classmethod
     def get(
         cls,
         session: "Session | None" = None,

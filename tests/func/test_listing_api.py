@@ -332,7 +332,9 @@ def test_listing_probes_and_keeps_active_session_config(catalog, mocker):
 def test_listing_save_lists_a_shared_listing_once(test_session, tmp_dir, mocker):
     (tmp_dir / "a.txt").write_text("a")
     (tmp_dir / "b.csv").write_text("b")
-    write = mocker.spy(dc.Listing, "_write")
+    from datachain.lib.dc import storage
+
+    write = mocker.spy(storage, "_write_listing")
 
     saved = dc.list_storage(f"{tmp_dir.as_uri()}/*.{{txt,csv}}", session=test_session)
     chain = saved.save()

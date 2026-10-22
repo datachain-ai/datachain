@@ -2,6 +2,7 @@ import itertools
 import json
 import os
 from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from functools import reduce
 from typing import TYPE_CHECKING
 
@@ -16,6 +17,7 @@ from datachain.lib.dc.storage_pattern import (
 from datachain.lib.file import File, FileRow, FileType, get_file_type
 from datachain.lib.listing import (
     LISTING_BATCH_SIZE,
+    PathFilter,
     describe_listing,
     file_row,
     get_file_info,
@@ -33,7 +35,7 @@ if TYPE_CHECKING:
     import pyarrow as pa
 
     from datachain.catalog import Catalog
-    from datachain.lib.listing import ListScope, PathFilter
+    from datachain.lib.listing import ListScope
 
     from .datachain import DataChain
 
@@ -222,25 +224,32 @@ def read_storage(  # noqa: PLR0913
     )
 
 
-def _resolve_anon(
+def _anon_config(
     uris: Sequence,
     session: Session | None,
     anon: bool | None,
     client_config: dict | None,
-) -> bool | None:
-    """``anon``, or True when every bucket is public and has no credentials."""
+) -> tuple[bool | None, dict | None]:
+    """``anon`` and the client config a session for ``uris`` is made with.
+
+    A listing's client config is, by precedence: an explicit ``session``'s
+    own, else ``client_config``, else the active session's; with ``anon`` set,
+    True when it is None and every bucket is public and has no credentials;
+    and ``version_aware=False`` without versions (``_listing_config``). The
+    caller's session is never changed.
+    """
     for single_uri in uris:
         validate_cloud_bucket_name(str(single_uri))
-
     probe_config = client_config or _session_client_config(session, None)
-
     if (
         anon is None
         and not _backends_have_credentials(uris, probe_config)
         and _all_buckets_anonymous(uris, probe_config)
     ):
-        return True
-    return anon
+        anon = True
+    if anon is not None:
+        client_config = probe_config | {"anon": anon}
+    return anon, client_config
 
 
 def _listing_config(config: dict, anon: bool | None, versions: bool) -> dict:
@@ -260,37 +269,18 @@ def _storage_session(
     versions: bool,
 ) -> tuple[Session, dict]:
     """The session and the client config to list ``uris`` with."""
-    anon = _resolve_anon(uris, session, anon, client_config)
-    client_config = _with_anon(session, anon, client_config)
+    anon, client_config = _anon_config(uris, session, anon, client_config)
     session = Session.get(session, client_config=client_config, in_memory=in_memory)
     # Session.get discards our client_config when an existing session is
     # passed, so anon is applied again without mutating the caller's session.
     return session, _listing_config(session.catalog.client_config, anon, versions)
 
 
-def _with_anon(
-    session: Session | None, anon: bool | None, client_config: dict | None
-) -> dict | None:
-    """``client_config``, or the active session's, with ``anon`` set."""
-    if anon is None:
-        return client_config
-    return (client_config or _session_client_config(session, None)) | {"anon": anon}
-
-
-def _open_session(session: Session | None) -> Session | None:
-    """``session``, or the active one, without creating one."""
-    if session is not None:
-        return session
-    if Session.SESSION_CONTEXTS:
-        return Session.SESSION_CONTEXTS[-1]
-    return Session.GLOBAL_SESSION_CTX
-
-
 def _session_client_config(session: Session | None, client_config: dict | None) -> dict:
     """The client config ``Session.get`` would use, without creating a session."""
     if session is None and client_config:
         return client_config
-    session = _open_session(session)
+    session = Session.active(session)
     return session.catalog.client_config if session else {}
 
 
@@ -357,17 +347,14 @@ def _read_storage(
         updated_listings.add(list_ds_name)
         dc.signals_schema = dc.signals_schema.mutate({f"{column}": file_type})
 
+        # Always attach listing_fn so resolve_listing can refresh stale listings;
         # a reused snapshot may cover a parent of list_uri: refresh all of it
-        lst = Listing(
-            listing_uri_from_name(list_ds_name),
-            versions=versions,
-            client_config=client_config,
-            session=session,
-        )
-        # Always attach listing_fn so resolve_listing can refresh stale listings.
         dc._query.set_listing_fn(
-            lambda ds_name=list_ds_name, lst=lst: lst._write(
+            lambda ds_name=list_ds_name: _write_listing(
+                listing_uri_from_name(ds_name),
                 ds_name,
+                session,
+                client_config,
                 column=column,
                 file_type=file_type,
                 settings=settings,
@@ -470,8 +457,7 @@ def list_storage(
     uris = [os.fspath(u) for u in (uri if isinstance(uri, (list, tuple)) else [uri])]
     if not uris:
         raise ValueError("No URIs provided")
-    anon = _resolve_anon(uris, session, anon, client_config)
-    client_config = _with_anon(session, anon, client_config)
+    anon, client_config = _anon_config(uris, session, anon, client_config)
     config = _session_client_config(session, client_config)
     return Listing(
         uris,
@@ -482,6 +468,25 @@ def list_storage(
         session_config=client_config,
         in_memory=in_memory,
     )
+
+
+@dataclass(frozen=True)
+class _Object:
+    """A URI of a single object: read its info, not a listing."""
+
+    uri: str
+
+
+@dataclass(frozen=True)
+class _Scan:
+    """One read of the listing of ``uri``: of the part ``scope`` holds, or all
+    of it if None. A row comes once per filter of ``filters`` it passes;
+    ``PathFilter()`` passes every row.
+    """
+
+    uri: str
+    filters: "tuple[PathFilter, ...]"
+    scope: "ListScope | None" = None
 
 
 class Listing:
@@ -541,70 +546,72 @@ class Listing:
         self._listed = True
 
     def _pages(self) -> Iterator[Sequence[tuple]]:
-        session = _open_session(self._session)
+        session = Session.active(self._session)
         cache = session.catalog.cache if session else None
-        for list_uri, filters, scope in self._sources(cache):
-            if filters is None:
-                info = get_file_info(list_uri, cache, self.client_config)
+        for source in self._sources(cache):
+            if isinstance(source, _Object):
+                info = get_file_info(source.uri, cache, self.client_config)
                 yield [file_row(info)]
                 continue
             pages = None
-            if scope is not None:
-                pages = list_scope_pages(list_uri, scope, cache, self.client_config)
+            if source.scope is not None:
+                pages = list_scope_pages(
+                    source.uri, source.scope, cache, self.client_config
+                )
             if pages is None:
-                pages = list_pages(list_uri, cache, self.client_config)
-            if filters == [None]:
+                pages = list_pages(source.uri, cache, self.client_config)
+            if source.filters == (PathFilter(),):
                 yield from pages
                 continue
             for page in pages:
-                yield [r for r in page for f in filters if f is None or f(r[_PATH])]
+                yield [r for r in page for f in source.filters if f(r[_PATH])]
 
-    def _sources(
-        self, cache
-    ) -> list[tuple[str, "list[PathFilter | None] | None", "ListScope | None"]]:
-        """What to list, as ``read_storage`` lists it: each listing URI with the
-        filters of the URIs it serves (None selects all), or None for a single
-        object, and the part of the listing they need (None for all of it).
-        URIs whose parts are all known list them one by one; others that share
-        a listing read it once, whole.
+    def _sources(self, cache) -> "list[_Object | _Scan]":
+        """What to list, as ``read_storage`` lists it. URIs whose parts of a
+        listing are all known scan those parts, one scan per part; others that
+        share a listing scan it once, whole.
         """
-        sources: list = []
-        groups: dict[str, list] = {}
+        order: list[_Object | str] = []
+        groups: dict[str, list[tuple[PathFilter, ListScope | None]]] = {}
         described: dict[str, tuple[str, str, str] | None] = {}
         for uri, pattern in storage_sources(self.uris):
             if uri not in described:  # braces expand to URIs with one base
                 client = Client.get_client(uri, cache, **self.client_config)  # type: ignore[arg-type]
                 described[uri] = describe_listing(client, uri, self.versions)
-            if described[uri] is None:
-                sources.append(uri)
+            if (listing := described[uri]) is None:
+                order.append(_Object(uri))
                 continue
-            _, list_uri, list_path = described[uri]  # type: ignore[misc]
+            _, list_uri, list_path = listing
             # the listing of a prefix holds only paths under it, so a recursive
             # filter by that same prefix selects them all
             whole = list_path == Client.parse_url(list_uri)[1]
             paths = (
-                None
+                PathFilter()
                 if pattern is None and self.recursive and whole
                 else path_filter(list_path, pattern, self.recursive)
             )
-            scope = list_scope(list_path, pattern, self.recursive)
             if list_uri not in groups:
                 groups[list_uri] = []
-                sources.append(groups[list_uri])
-            groups[list_uri].append((list_uri, paths, scope))
-        out: list[tuple[str, list[PathFilter | None] | None, ListScope | None]] = []
-        for group in sources:
-            if isinstance(group, str):
-                out.append((group, None, None))  # a single object
-            elif all(scope is not None for _, _, scope in group):
-                # one scan per scope: braces expand to URIs of the same scope
-                scans: dict[ListScope, list[PathFilter | None]] = {}
-                for _, paths, scope in group:
-                    scans.setdefault(scope, []).append(paths)
-                out += [(group[0][0], filters, s) for s, filters in scans.items()]
-            else:
-                out.append((group[0][0], [paths for _, paths, _ in group], None))
-        return out
+                order.append(list_uri)
+            groups[list_uri].append(
+                (paths, list_scope(list_path, pattern, self.recursive))
+            )
+        sources: list[_Object | _Scan] = []
+        for item in order:
+            if isinstance(item, _Object):
+                sources.append(item)
+                continue
+            group = groups[item]
+            scopes = [scope for _, scope in group]
+            if None in scopes:  # one of them needs it whole
+                sources.append(_Scan(item, tuple(paths for paths, _ in group)))
+                continue
+            # one scan per scope: braces expand to URIs of the same scope
+            scans: dict[ListScope, list[PathFilter]] = {}
+            for paths, scope in group:
+                scans.setdefault(scope, []).append(paths)  # type: ignore[arg-type]
+            sources += [_Scan(item, tuple(f), s) for s, f in scans.items()]
+        return sources
 
     def to_list(self) -> list[tuple]:
         """List the storage into a list of `dc.FileRow` rows."""
@@ -630,7 +637,7 @@ class Listing:
     def _file_catalog(self) -> "Catalog":
         from datachain.catalog import Catalog
 
-        session = _open_session(self._session)
+        session = Session.active(self._session)
         if session is None:
             catalog = Catalog(None, None)  # type: ignore[arg-type]
         else:
@@ -675,46 +682,49 @@ class Listing:
         chain._query.update = False
         return chain
 
-    def _write(
-        self,
-        ds_name: str,
-        *,
-        column: str = "file",
-        file_type: type[File] = File,
-        settings: dict | None = None,
-        in_memory: bool = False,
-    ) -> None:
-        """Store the listing of a prefix as the listing dataset ``ds_name``."""
-        from .records import create_records_dataset
 
-        namespace = self.session.catalog.metastore.system_namespace_name
-        project = self.session.catalog.metastore.listing_project_name
-        list_func = list_bucket(
-            self.uris[0], self.session.catalog.cache, client_config=self.client_config
+def _write_listing(
+    uri: str,
+    ds_name: str,
+    session: Session,
+    client_config: dict,
+    *,
+    column: str = "file",
+    file_type: type[File] = File,
+    settings: dict | None = None,
+    in_memory: bool = False,
+) -> None:
+    """Store the listing of the prefix ``uri``, whole, as the listing dataset
+    ``ds_name``: the snapshot ``read_storage`` reads and reuses.
+    """
+    from .records import create_records_dataset
+
+    namespace = session.catalog.metastore.system_namespace_name
+    project = session.catalog.metastore.listing_project_name
+    list_func = list_bucket(uri, session.catalog.cache, client_config=client_config)
+    # content_hash=None because hash_callable doesn't capture list_func's
+    # closure (which holds the URI and the client config) -- auto-hashing
+    # the seed would let the UDF checkpoint cache return a stale listing
+    # across URIs/runs.
+    (
+        create_records_dataset(
+            [{"seed": 0}],
+            schema={"seed": int},
+            content_hash=None,
+            session=session,
+            settings=settings,
+            in_memory=in_memory,
         )
-        # content_hash=None because hash_callable doesn't capture list_func's
-        # closure (which holds the URI and the client config) -- auto-hashing
-        # the seed would let the UDF checkpoint cache return a stale listing
-        # across URIs/runs.
-        (
-            create_records_dataset(
-                [{"seed": 0}],
-                schema={"seed": int},
-                content_hash=None,
-                session=self.session,
-                settings=settings,
-                in_memory=in_memory,
-            )
-            .settings(
-                prefetch=0,
-                batch_size=LISTING_BATCH_SIZE,
-                namespace=namespace,
-                project=project,
-            )
-            .gen(list_func, output={column: file_type})
-            # for internal listing datasets, we always bump major version
-            .save(ds_name, listing=True, update_version="major")
+        .settings(
+            prefetch=0,
+            batch_size=LISTING_BATCH_SIZE,
+            namespace=namespace,
+            project=project,
         )
+        .gen(list_func, output={column: file_type})
+        # for internal listing datasets, we always bump major version
+        .save(ds_name, listing=True, update_version="major")
+    )
 
 
 _PATH = FileRow._fields.index("path")
