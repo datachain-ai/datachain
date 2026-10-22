@@ -1,3 +1,4 @@
+import logging
 import os
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -5,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 import attrs
 
 from datachain.dataset import StorageURI
+from datachain.fs.utils import is_subpath
 from datachain.lib.file import File
 from datachain.utils import TIME_ZERO, time_to_str
 
@@ -12,6 +14,8 @@ if TYPE_CHECKING:
     from typing import Self
 
     from datachain.client import Client
+
+logger = logging.getLogger("datachain")
 
 
 class DirType:
@@ -179,7 +183,17 @@ class NodeWithPath:
     def instantiate(
         self, client: "Client", output: str, progress_bar, *, force: bool = False
     ):
+        rel_path = "/".join(self.path)
         dst = os.path.join(output, *self.path)
+        if any(part in (".", "..") for part in rel_path.split("/")) or not is_subpath(
+            os.path.abspath(output), os.path.abspath(dst)
+        ):
+            logger.warning(
+                "Skipping %r: destination is not within output directory %r",
+                rel_path,
+                output,
+            )
+            return
         dst_dir = os.path.dirname(dst)
         os.makedirs(dst_dir, exist_ok=True)
         file = self.n.to_file(client.uri)
