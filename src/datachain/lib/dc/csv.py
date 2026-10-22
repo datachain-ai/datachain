@@ -28,93 +28,53 @@ def read_csv(
     columns: Sequence[str] | None = None,
     **kwargs,
 ) -> "DataChain":
-    """Generate chain from csv files.
+    """Generate chain from CSV files.
 
     Parameters:
         path: Storage URI with directory. URI must start with storage prefix such
             as `s3://`, `gs://`, `az://` or "file:///".
         delimiter: Character for delimiting columns. Takes precedence if also
             specified in `parse_options`. Defaults to ",".
-        header: Whether the files include a header row.
-        output: Result column names and Python types, given as a dictionary or
-            Pydantic model class. A list of names infers the types. Fields are
-            assigned by position: dictionary insertion order, model field order,
-            or list order. Names do not select or match input columns; use
-            `columns` to select them. There must be exactly one output field per
-            column read (all columns by default, or those selected by `columns`).
-            With no output, names and types are inferred. With `header=False`
-            and no `columns`, output is required and supplies the file's column
-            names. To control CSV parsing types, use `column_types`.
+        header: Whether files include a header row. If False, provide `output`
+            for all columns or select generated names ("f0", "f1", etc.) with `columns`.
+        output: Result names and Python types as a dictionary or Pydantic model.
+            A list of names infers types. Fields map by position, with exactly one
+            field per column read. Use `columns` to select inputs by name.
+            Omit to infer names and types.
         column: Created column name.
         model_name: Generated model name.
         source: Whether to include info about the source file.
         nrows: Optional row limit.
         session: Session to use for the chain.
         settings: Settings to use for the chain.
-        column_types: CSV parsing types keyed by input column name, before
-            normalization or renaming with `output`. Values are Arrow type names
-            (e.g. "string") or Arrow data types. Overrides inference for those
-            columns without selecting or renaming them. Use this to preserve
-            values such as ZIP codes with leading zeros.
+        column_types: CSV parsing types keyed by input name, before normalization
+            or output renaming. Accepts Arrow type names or data types; e.g.
+            `{"ZIP Code": "string"}` preserves leading zeros. Does not select columns.
         parse_options: Tells the parser how to process lines.
             See https://arrow.apache.org/docs/python/generated/pyarrow.csv.ParseOptions.html
-        columns: Input columns to read, in this order; reads all if omitted.
-            Accepts original names or DataChain-normalized names, e.g. "ZIP Code"
-            or "zip_code". Unknown or repeated columns raise an error. With
-            `header=False`, select using generated names "f0", "f1", etc., and
-            optionally rename them with `output`.
+        columns: Input columns to read, in order; all if omitted. Accepts original
+            or normalized names, e.g. "ZIP Code" or "zip_code".
 
     Example:
-        Reading a csv file:
+        Read a file or directory:
         ```py
         import datachain as dc
+
         chain = dc.read_csv("s3://mybucket/file.csv")
+        chain = dc.read_csv("s3://mybucket/dir/")
         ```
 
-        Reading csv files from a directory as a combined dataset:
+        Select and rename columns with a Pydantic model (CSV header: `a,b,c`):
         ```py
-        import datachain as dc
-        chain = dc.read_csv("s3://mybucket/dir")
-        ```
+        from pydantic import BaseModel
 
-        Selecting and renaming columns from a CSV with header `a,b,c`:
-        ```py
-        chain = dc.read_csv("s3://mybucket/file.csv", columns=["c", "a"])
+        class Row(BaseModel):
+            x: float
+            y: float
+
         chain = dc.read_csv(
-            "s3://mybucket/file.csv",
-            columns=["c", "a"],
-            output={"x": float, "y": float},
+            "s3://mybucket/file.csv", columns=["c", "a"], output=Row
         )  # x receives c; y receives a
-        ```
-
-        `output` alone renames every column by position. For header `a,b,c`,
-        the following puts a's values in c and c's values in a:
-        ```py
-        chain = dc.read_csv(
-            "s3://mybucket/file.csv", output={"c": float, "b": float, "a": float}
-        )
-        ```
-        `output={"c": float}` alone raises an error when the chain is executed:
-        it supplies one field for three columns. Use `columns=["c"]` to read c.
-
-        Preserving ZIP codes as strings while selecting and renaming a column:
-        ```py
-        chain = dc.read_csv(
-            "s3://mybucket/customers.csv",
-            columns=["zip_code"],
-            column_types={"ZIP Code": "string"},
-            output={"postal_code": str},
-        )  # "02134" keeps its leading zero
-        ```
-
-        Selecting the third and first columns from a file without a header:
-        ```py
-        chain = dc.read_csv(
-            "s3://mybucket/no-header.csv",
-            header=False,
-            columns=["f2", "f0"],
-            output=["c", "a"],
-        )
         ```
     """
     from pandas._libs.parsers import STR_NA_VALUES

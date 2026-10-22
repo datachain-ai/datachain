@@ -25,79 +25,44 @@ def read_parquet(
     columns: Sequence[str] | None = None,
     **kwargs,
 ) -> "DataChain":
-    """Generate chain from parquet files.
+    """Generate chain from Parquet files.
 
     Parameters:
-        path: Storage path(s) or URI(s). Can be a local path or start with a
-            storage prefix like `s3://`, `gs://`, `az://`, `hf://` or "file:///".
-            Supports glob patterns:
-              - `*` : wildcard
-              - `**` : recursive wildcard
-              - `?` : single character
-              - `{a,b}` : brace expansion list
-              - `{1..9}` : brace numeric or alphabetic range
+        path: Local path or storage URI, e.g. `s3://`, `gs://`, `az://`, `hf://`.
+            Supports `*`, `**`, `?`, `{a,b}`, and `{1..9}` glob patterns.
         partitioning: Any pyarrow partitioning schema.
-        output: Result column names and Python types as an ordered dictionary.
-            For ordinary Parquet files, fields are assigned by position in
-            dictionary insertion order. Names do not select or match input
-            columns; use `columns` to select them. There must be exactly one
-            output field per column read (all columns by default, or those
-            selected by `columns`). With no output, names and types are inferred.
-            Parquet files exported by DataChain restore their saved schema.
+        output: Result names and Python types as a dictionary, assigned by
+            insertion order with exactly one field per column read. Use `columns`
+            to select inputs by name. Omit to infer names and types. Parquet
+            exported by DataChain restores its saved schema.
         column: Created column name.
         model_name: Generated model name.
         source: Whether to include info about the source file.
         session: Session to use for the chain.
         settings: Settings to use for the chain.
-        columns: Input columns to read, in this order; reads all if omitted.
-            Accepts original names or DataChain-normalized names, e.g. "ZIP Code"
-            or "zip_code". Unknown or repeated columns raise an error. Unsupported
-            for Parquet files exported by DataChain; read them without `columns`
-            and use `.select(...)` on the resulting chain.
+        columns: Input columns to read, in order; all if omitted. Accepts original
+            or normalized names, e.g. "ZIP Code" or "zip_code". For Parquet exported
+            by DataChain, omit this parameter and use `.select(...)` after reading.
 
     Example:
-        Reading a single file:
+        Read a file or files matching a pattern:
         ```py
         import datachain as dc
-        dc.read_parquet("s3://mybucket/file.parquet")
+
+        chain = dc.read_parquet("s3://mybucket/file.parquet")
+        chain = dc.read_parquet("s3://mybucket/dir/**/*.parquet")
         ```
 
-        All files from a directory:
+        Select and rename columns from an ordinary Parquet file with `a, b, c`:
         ```py
-        dc.read_parquet("s3://mybucket/dir/")
-        ```
-
-        Only parquet files from a directory, and all it's subdirectories:
-        ```py
-        dc.read_parquet("s3://mybucket/dir/**/*.parquet")
-        ```
-
-        Using filename patterns - numeric, list, starting with zeros:
-        ```py
-        dc.read_parquet("s3://mybucket/202{1..4}/{yellow,green}-{01..12}.parquet")
-        ```
-
-        Selecting and renaming columns from an ordinary Parquet file with
-        columns `a, b, c`:
-        ```py
-        chain = dc.read_parquet("s3://mybucket/file.parquet", columns=["c", "a"])
         chain = dc.read_parquet(
             "s3://mybucket/file.parquet",
             columns=["c", "a"],
             output={"x": float, "y": float},
         )  # x receives c; y receives a
         ```
-
-        `output` alone renames every column by position. For columns `a, b, c`,
-        the following puts a's values in c and c's values in a:
-        ```py
-        chain = dc.read_parquet(
-            "s3://mybucket/file.parquet",
-            output={"c": float, "b": float, "a": float},
-        )
-        ```
-        `output={"c": float}` alone raises an error when the chain is executed:
-        it supplies one field for three columns. Use `columns=["c"]` to read c.
+        `output={"c": float}` alone supplies one field for three columns and raises
+        an error. Use `columns=["c"]` to select c.
     """
     from .storage import read_storage
 

@@ -2517,58 +2517,38 @@ class DataChain:
         columns: Sequence[str] | None = None,
         **kwargs: Any,
     ) -> "Self":
-        """Generate chain from list of tabular files.
+        """Generate chain from a list of tabular files.
 
         Parameters:
-            output: Result column names and Python types, given as a dictionary
-                or Pydantic model class. A list of names infers the types. For
-                files without a saved DataChain schema, fields are assigned by
-                position in dictionary insertion order, model field order, or
-                list order. Names do not select or match input columns; use
-                `columns` to select them. There must be exactly one output field
-                per column read (all columns by default, or those selected by
-                `columns`). With no output, names and types are inferred.
+            output: Result names and Python types as a dictionary or Pydantic model.
+                A list of names infers types. Fields map by position, with exactly one
+                field per column read. Use `columns` to select inputs by name.
+                Omit to infer names and types or restore a saved DataChain schema.
             column: Generated column name.
             model_name: Generated model name.
             source: Whether to include info about the source file.
             nrows: Optional row limit.
-            columns: Input columns to read, in this order; reads all if omitted.
-                Accepts original names or DataChain-normalized names, e.g.
-                "ZIP Code" or "zip_code". Unknown or repeated columns raise an
-                error. Unsupported for Parquet files exported by DataChain;
-                parse them without `columns` and use `.select(...)` afterwards.
+            columns: Input columns to read, in order; all if omitted. Accepts original
+                or normalized names, e.g. "ZIP Code" or "zip_code". For Parquet exported
+                by DataChain, omit this parameter and use `.select(...)` after parsing.
             kwargs: Parameters to pass to pyarrow.dataset.dataset.
 
         Example:
-            Reading a json lines file:
-            ```py
-            import datachain as dc
-            chain = dc.read_storage("s3://mybucket/file.jsonl")
-            chain = chain.parse_tabular(format="json")
-            ```
-
-            Reading a filtered list of files as a dataset:
+            Parse a filtered list of JSONL files:
             ```py
             import datachain as dc
 
-            chain = dc.read_storage("s3://mybucket")
+            chain = dc.read_storage("s3://mybucket/")
             chain = chain.filter(dc.C("file.path").glob("*.jsonl"))
             chain = chain.parse_tabular(format="json")
             ```
 
-            Selecting and renaming columns from ordinary Parquet files with
-            columns `a, b, c`:
+            Select and rename columns from ordinary Parquet files with `a, b, c`:
             ```py
-            import datachain as dc
-
             chain = dc.read_storage("s3://mybucket/*.parquet").parse_tabular(
-                format="parquet",
-                columns=["c", "a"],
-                output={"x": float, "y": float},
+                format="parquet", columns=["c", "a"], output={"x": float, "y": float}
             )  # x receives c; y receives a
             ```
-            `output={"c": float}` without `columns` supplies one field for three
-            columns and raises an error when the chain is executed.
         """
         from pyarrow.dataset import CsvFileFormat, JsonFileFormat
 
