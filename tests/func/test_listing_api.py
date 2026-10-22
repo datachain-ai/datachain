@@ -7,7 +7,7 @@ import pytest
 import datachain as dc
 from datachain.lib.convert.flatten import flatten
 from datachain.lib.dc import DataChain
-from datachain.lib.file import File
+from datachain.lib.file import File, FileRow
 from datachain.lib.listing import get_listing
 from datachain.lib.settings import Settings
 from datachain.lib.signal_schema import SignalSchema
@@ -275,12 +275,15 @@ def test_listing_save_stores_every_version(cloud_test_catalog_upload):
 
     rows = sorted(dc.list_storage(uri, versions=True, session=ctc.session))
     saved = dc.list_storage(uri, versions=True, session=ctc.session).save()
+    snapshot = sorted(
+        FileRow(*flatten(f)) for f in _read_listing(ctc.session, uri, True)
+    )
 
-    assert [r.is_latest for r in rows].count(False) == 1
-    assert sorted(flatten(f) for f in _read_listing(ctc.session, uri, True)) == rows
-    assert [flatten(f) for f in saved.to_values("file")] == [
-        r for r in rows if r.is_latest
-    ]
+    assert [r.is_latest for r in snapshot].count(False) == 1  # the old one stays
+    # rows are current objects, as read_storage's, with their version ids
+    assert rows == [r for r in snapshot if r.is_latest]
+    assert rows[0].version
+    assert [flatten(f) for f in saved.to_values("file")] == rows
 
 
 def test_listing_takes_client_config_of_active_session(catalog, tmp_dir):
@@ -400,12 +403,24 @@ def test_listing_one_level_reads_nothing_below_it(cloud_test_catalog, mocker):
     ctc = cloud_test_catalog
     client = ctc.catalog.get_client(ctc.src_uri)
     prefix = f"level-{uuid.uuid4().hex[:8]}"
-    top = [f"{prefix}/{i:02}.txt" for i in range(12)]  # pages of 2: past 5 pages
+    top = [f"{prefix}/{i:02}.txt" for i in range(12)]
     for key in [*top, f"{prefix}/sub/deep.txt"]:
         client.fs.pipe_file(f"{client.name}/{key}", b"x")
     client.fs.invalidate_cache()
-    mocker.patch.object(RangeListedClient, "LIST_PAGE_SIZE", 2)
-    pages = mocker.spy(type(client), "_list_page")
+    mocker.patch.object(type(client), "LIST_PAGE_SIZE", 2)  # pages of 2: 6 or more
+    list_page = type(client)._list_page
+    calls, in_flight = [], [0, 0]
+
+    async def counted(self, *args, **kwargs):
+        calls.append(kwargs.get("delimiter"))
+        in_flight[0] += 1
+        in_flight[1] = max(in_flight)
+        try:
+            return await list_page(self, *args, **kwargs)
+        finally:
+            in_flight[0] -= 1
+
+    mocker.patch.object(type(client), "_list_page", counted)
     ranges = mocker.spy(RangeListedClient, "_fetch_prefix")
     try:
         rows = dc.list_storage(
@@ -418,7 +433,10 @@ def test_listing_one_level_reads_nothing_below_it(cloud_test_catalog, mocker):
 
     assert paths == top
     assert not ranges.call_count  # the subfolder is never listed
-    assert all(c.kwargs.get("delimiter") == "/" for c in pages.call_args_list)
+    assert len(calls) > 5
+    assert set(calls) == {"/"}
+    if ctc.src_uri.startswith("s3://"):  # fake-gcs-server ignores startOffset
+        assert in_flight[1] > 1  # the level lists in parallel key ranges
 
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
@@ -443,7 +461,7 @@ def test_brace_alternatives_of_one_folder_list_it_once(cloud_test_catalog, mocke
     for name in ("a.jpg", "b.png", "c.gif", "d.txt"):
         client.fs.pipe_file(f"{client.name}/{prefix}/{name}", b"x")
     client.fs.invalidate_cache()
-    level = mocker.spy(RangeListedClient, "level_pages")
+    level = mocker.spy(RangeListedClient, "_fetch_level")
     try:
         rows = dc.list_storage(
             f"{ctc.src_uri}/{prefix}/*.{{jpg,png,gif}}", session=ctc.session

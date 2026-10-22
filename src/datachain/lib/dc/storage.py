@@ -553,33 +553,43 @@ class Listing:
                 info = get_file_info(source.uri, cache, self.client_config)
                 yield [file_row(info)]
                 continue
-            pages = None
-            if source.scope is not None:
+            if source.scope is None:
+                pages = list_pages(source.uri, cache, self.client_config)
+            else:
                 pages = list_scope_pages(
                     source.uri, source.scope, cache, self.client_config
                 )
-            if pages is None:
-                pages = list_pages(source.uri, cache, self.client_config)
-            if source.filters == (PathFilter(),):
+            # current objects, as read_storage's chain: a listing with versions
+            # holds old ones too, listed for the version ids of current ones
+            latest = self.versions
+            if source.filters == (PathFilter(),) and not latest:
                 yield from pages
                 continue
             for page in pages:
-                yield [r for r in page for f in source.filters if f(r[_PATH])]
+                yield [
+                    r
+                    for r in page
+                    if not latest or r[_IS_LATEST]
+                    for f in source.filters
+                    if f(r[_PATH])
+                ]
 
     def _sources(self, cache) -> "list[_Object | _Scan]":
-        """What to list, as ``read_storage`` lists it. URIs whose parts of a
-        listing are all known scan those parts, one scan per part; others that
-        share a listing scan it once, whole.
+        """What to list: one scan per part of a listing that a client can list
+        alone (S3, GCS, Azure), or one whole scan when a URI needs all of it.
+        URIs of single objects come last, as ``read_storage`` unions them.
         """
-        order: list[_Object | str] = []
-        groups: dict[str, list[tuple[PathFilter, ListScope | None]]] = {}
+        from datachain.client.fsspec import RangeListedClient
+
+        scans: dict[str, dict[ListScope | None, list[PathFilter]]] = {}
+        objects: list[_Object | _Scan] = []
         described: dict[str, tuple[str, str, str] | None] = {}
         for uri, pattern in storage_sources(self.uris):
+            client = Client.get_client(uri, cache, **self.client_config)  # type: ignore[arg-type]
             if uri not in described:  # braces expand to URIs with one base
-                client = Client.get_client(uri, cache, **self.client_config)  # type: ignore[arg-type]
                 described[uri] = describe_listing(client, uri, self.versions)
             if (listing := described[uri]) is None:
-                order.append(_Object(uri))
+                objects.append(_Object(uri))
                 continue
             _, list_uri, list_path = listing
             # the listing of a prefix holds only paths under it, so a recursive
@@ -590,28 +600,18 @@ class Listing:
                 if pattern is None and self.recursive and whole
                 else path_filter(list_path, pattern, self.recursive)
             )
-            if list_uri not in groups:
-                groups[list_uri] = []
-                order.append(list_uri)
-            groups[list_uri].append(
-                (paths, list_scope(list_path, pattern, self.recursive))
+            scope = (
+                list_scope(list_path, pattern, self.recursive)
+                if isinstance(client, RangeListedClient)
+                else None
             )
+            scans.setdefault(list_uri, {}).setdefault(scope, []).append(paths)
         sources: list[_Object | _Scan] = []
-        for item in order:
-            if isinstance(item, _Object):
-                sources.append(item)
-                continue
-            group = groups[item]
-            scopes = [scope for _, scope in group]
-            if None in scopes:  # one of them needs it whole
-                sources.append(_Scan(item, tuple(paths for paths, _ in group)))
-                continue
-            # one scan per scope: braces expand to URIs of the same scope
-            scans: dict[ListScope, list[PathFilter]] = {}
-            for paths, scope in group:
-                scans.setdefault(scope, []).append(paths)  # type: ignore[arg-type]
-            sources += [_Scan(item, tuple(f), s) for s, f in scans.items()]
-        return sources
+        for list_uri, by_scope in scans.items():
+            if None in by_scope:  # one of them needs it whole: read it once
+                by_scope = {None: [f for fs in by_scope.values() for f in fs]}
+            sources += [_Scan(list_uri, tuple(fs), s) for s, fs in by_scope.items()]
+        return sources + objects
 
     def to_list(self) -> list[tuple]:
         """List the storage into a list of `dc.FileRow` rows."""
@@ -728,6 +728,7 @@ def _write_listing(
 
 
 _PATH = FileRow._fields.index("path")
+_IS_LATEST = FileRow._fields.index("is_latest")
 
 
 def _arrow_schema() -> "pa.Schema":

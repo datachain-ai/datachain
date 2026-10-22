@@ -323,6 +323,8 @@ class ClientS3(RangeListedClient):
             )
         entries = page.get("Versions" if versions else "Contents", [])
         keys = [d["Key"] for d in entries + page.get("DeleteMarkers", [])]
+        # folders past a delimiter: listed past, though they make no rows
+        keys += [p["Prefix"] for p in page.get("CommonPrefixes", [])]
         if not page.get("IsTruncated"):
             token = None
         elif versions:

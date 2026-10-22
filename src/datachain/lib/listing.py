@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, TypeVar, cast
 
 from fsspec.asyn import get_loop, sync
 from sqlalchemy.sql.expression import or_, true
@@ -26,6 +26,7 @@ from datachain.utils import uses_glob
 if TYPE_CHECKING:
     from sqlalchemy import ColumnElement
 
+    from datachain.client.fsspec import RangeListedClient
     from datachain.dataset import DatasetRecord
     from datachain.lib.dc import DataChain
     from datachain.query.session import Session
@@ -102,31 +103,17 @@ def list_pages(uri: str, cache, client_config=None) -> Iterator[Sequence[tuple]]
 
 def list_scope_pages(
     uri: str, scope: "ListScope", cache, client_config=None
-) -> Iterator[Sequence[tuple]] | None:
+) -> Iterator[Sequence[tuple]]:
     """Pages of ``FileRow`` rows of the keys ``scope`` holds in the storage of
-    ``uri``, or None when its client lists whole folders only."""
-    from datachain.client.fsspec import RangeListedClient
-
+    ``uri``, whose client lists parts of a folder (S3, GCS, Azure)."""
     config = client_config or {}
-    client = Client.get_client(uri, cache, **config)  # type: ignore[arg-type]
-    if not isinstance(client, RangeListedClient):
-        return None
-    if scope.one_level and client.LISTS_LEVELS:
-        return _level_pages(client, scope)
-    return _prefix_pages(client, scope)
+    client = cast("RangeListedClient", Client.get_client(uri, cache, **config))  # type: ignore[arg-type]
+    method = "level" if scope.one_level and client.LISTS_LEVELS else "prefix"
+    return _scope_pages(client, scope, method)
 
 
-def _level_pages(client, scope: "ListScope") -> Iterator[Sequence[tuple]]:
-    listed = False
-    for rows in iter_over_async(client.level_pages(scope.prefix), get_loop()):
-        listed = listed or bool(rows)
-        yield rows
-    if not listed:
-        _check_folder(client, scope.folder)
-
-
-def _prefix_pages(client, scope: "ListScope") -> Iterator[Sequence[tuple]]:
-    pages = client.scandir(scope.prefix, method="prefix")
+def _scope_pages(client, scope: "ListScope", method: str) -> Iterator[Sequence[tuple]]:
+    pages = client.scandir(scope.prefix, method=method)
     try:
         yield from iter_over_async(pages, get_loop())
     except FileNotFoundError:  # nothing under the prefix: fine in a folder
