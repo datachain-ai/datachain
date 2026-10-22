@@ -37,14 +37,23 @@ def read_parquet(
               - `{a,b}` : brace expansion list
               - `{1..9}` : brace numeric or alphabetic range
         partitioning: Any pyarrow partitioning schema.
-        output: Dictionary defining column names and their corresponding types.
-            Its fields name the columns read, in order.
+        output: Result column names and Python types as an ordered dictionary.
+            For ordinary Parquet files, fields are assigned by position in
+            dictionary insertion order. Names do not select or match input
+            columns; use `columns` to select them. There must be exactly one
+            output field per column read (all columns by default, or those
+            selected by `columns`). With no output, names and types are inferred.
+            Parquet files exported by DataChain restore their saved schema.
         column: Created column name.
         model_name: Generated model name.
         source: Whether to include info about the source file.
         session: Session to use for the chain.
         settings: Settings to use for the chain.
-        columns: Names of the columns to read, in this order.
+        columns: Input columns to read, in this order; reads all if omitted.
+            Accepts original names or DataChain-normalized names, e.g. "ZIP Code"
+            or "zip_code". Unknown or repeated columns raise an error. Unsupported
+            for Parquet files exported by DataChain; read them without `columns`
+            and use `.select(...)` on the resulting chain.
 
     Example:
         Reading a single file:
@@ -67,6 +76,28 @@ def read_parquet(
         ```py
         dc.read_parquet("s3://mybucket/202{1..4}/{yellow,green}-{01..12}.parquet")
         ```
+
+        Selecting and renaming columns from an ordinary Parquet file with
+        columns `a, b, c`:
+        ```py
+        chain = dc.read_parquet("s3://mybucket/file.parquet", columns=["c", "a"])
+        chain = dc.read_parquet(
+            "s3://mybucket/file.parquet",
+            columns=["c", "a"],
+            output={"x": float, "y": float},
+        )  # x receives c; y receives a
+        ```
+
+        `output` alone renames every column by position. For columns `a, b, c`,
+        the following puts a's values in c and c's values in a:
+        ```py
+        chain = dc.read_parquet(
+            "s3://mybucket/file.parquet",
+            output={"c": float, "b": float, "a": float},
+        )
+        ```
+        `output={"c": float}` alone raises an error when the chain is executed:
+        it supplies one field for three columns. Use `columns=["c"]` to read c.
     """
     from .storage import read_storage
 
