@@ -72,6 +72,7 @@ class ArrowGenerator(Generator):
         output_schema: type["BaseModel"] | None = None,
         source: bool = True,
         nrows: int | None = None,
+        columns: list[str] | None = None,
         **kwargs,
     ):
         """
@@ -83,6 +84,7 @@ class ArrowGenerator(Generator):
         output_schema : Optional pydantic model for validation.
         source : Whether to include info about the source file.
         nrows : Optional row limit.
+        columns : Optional columns to read from each file by name, in output order.
         kwargs: Parameters to pass to pyarrow.dataset.dataset.
         """
         super().__init__()
@@ -90,16 +92,16 @@ class ArrowGenerator(Generator):
         self.output_schema = output_schema
         self.source = source
         self.nrows = nrows
+        self.columns = columns
         self.parse_options = kwargs.pop("parse_options", None)
         self.kwargs = kwargs
 
     def hash(self, include_body: bool = True) -> str:
-        # The read schema decides which columns are read and how, so reads that
-        # differ only in it must not reuse each other's results.
+        # The read schema and columns decide what is read, so reads that differ
+        # only in them must not reuse each other's results.
         schema = self.input_schema.to_string() if self.input_schema else ""
-        return hashlib.sha256(
-            (super().hash(include_body) + schema).encode()
-        ).hexdigest()
+        read = schema + json.dumps(self.columns)
+        return hashlib.sha256((super().hash(include_body) + read).encode()).hexdigest()
 
     def process(self, file: File):
         if file._caching_enabled:
@@ -122,9 +124,12 @@ class ArrowGenerator(Generator):
             and DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY in ds.schema.metadata
         )
 
-        kw = {}
+        kw: dict[str, Any] = {}
         if self.nrows:
             kw = {"batch_size": min(self.DEFAULT_BATCH_SIZE, self.nrows)}
+        if self.columns is not None and not use_datachain_schema:
+            present = set(ds.schema.names)
+            kw["columns"] = [c for c in self.columns if c in present]
 
         def iter_records():
             for record_batch in ds.to_batches(**kw):
@@ -194,21 +199,23 @@ class ArrowGenerator(Generator):
         record: dict[str, Any],
         hf_schema: tuple["Features", dict[str, "DataType"]] | None,
     ):
-        vals = list(record.values())
+        names = self.columns or list(record)
+        vals = [record.get(name) for name in names]
         if not self.output_schema:
             return vals
 
         fields = self.output_schema.model_fields
         vals_dict = {}
-        for i, ((field, field_info), val) in enumerate(
-            zip(fields.items(), vals, strict=False)
+        for (field, field_info), name, val in zip(
+            fields.items(), names, vals, strict=False
         ):
             anno = field_info.annotation
-            if hf_schema:
+            if hf_schema and (feat := hf_schema[0].get(name)) is not None:
                 from datachain.lib.hf import convert_feature
 
-                feat = list(hf_schema[0].values())[i]
                 vals_dict[field] = convert_feature(val, feat, anno)
+            elif val is None:
+                vals_dict[field] = val
             elif ModelStore.is_pydantic(anno):
                 vals_dict[field] = anno(**val)  # type: ignore[misc]
             else:
@@ -234,14 +241,14 @@ def file_schemas(chain: "DataChain", **kwargs) -> list[pa.Schema]:
     return schemas
 
 
-def read_schema(
+def read_columns(
     chain: "DataChain", columns: Sequence[str] | None, fields: int, **kwargs
-) -> pa.Schema | None:
-    """Return the schema to read the files with when output gives their types.
+) -> list[str] | None:
+    """Return the columns to read from each file when output gives their types.
 
-    Like pyarrow, it takes the columns from the first file (by path) and reads
-    every file by those names. Partition and pandas index columns at the end are
-    left out when output has no fields for them.
+    Like pyarrow, they come from the first file (by path). Each file is read by
+    these names with its own types. Partition and pandas index columns at the end
+    are left out when output has no fields for them.
     """
     ds = next(_file_datasets(chain.order_by("file.path").limit(1), **kwargs))
     schema = ds.schema
@@ -255,13 +262,13 @@ def read_schema(
         index = (schema.pandas_metadata or {}).get("index_columns", [])
         extra |= {c for c in index if isinstance(c, str)}
         if set(schema.names[fields:]) <= extra:
-            schema = pa.schema(list(schema)[:fields], metadata=schema.metadata)
+            schema = pa.schema(list(schema)[:fields])
     if len(schema) != fields:
         raise ValueError(
             f"output has {fields} fields but {len(schema)} columns are read. "
             "output names the columns read, in order; pick columns with columns=."
         )
-    return schema
+    return schema.names
 
 
 def merge_schemas(

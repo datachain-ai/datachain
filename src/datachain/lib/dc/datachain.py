@@ -2558,7 +2558,7 @@ class DataChain:
             file_schemas,
             fix_pyarrow_format,
             merge_schemas,
-            read_schema,
+            read_columns,
             schema_to_output,
         )
 
@@ -2580,6 +2580,7 @@ class DataChain:
         if "file" not in self.schema or not self.count():
             raise DatasetPrepareError(self.name, "no files to parse.")
 
+        schema, read = None, None
         col_names = output if isinstance(output, Sequence) else None
         infer = bool(col_names) or not output
         try:
@@ -2597,7 +2598,7 @@ class DataChain:
 
             if not infer:
                 fields = len(model.model_fields)
-                schema = read_schema(
+                read = read_columns(
                     self, columns, fields, **kwargs, parse_options=parse_options
                 )
         except (ValueError, pa.ArrowTypeError) as e:
@@ -2622,6 +2623,7 @@ class DataChain:
                 model,
                 source,
                 nrows,
+                columns=read,
                 parse_options=parse_options,
                 **kwargs,
             ),

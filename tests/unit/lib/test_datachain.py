@@ -2465,11 +2465,13 @@ def test_read_parquet_columns_with_output_and_mixed_integer_widths(
     tmp_dir, test_session
 ):
     pq.write_table(pa.table({"a": pa.array([1], pa.int32())}), tmp_dir / "1.parquet")
-    pq.write_table(pa.table({"a": pa.array([2], pa.int64())}), tmp_dir / "2.parquet")
+    pq.write_table(
+        pa.table({"a": pa.array([2**40], pa.int64())}), tmp_dir / "2.parquet"
+    )
     chain = dc.read_parquet(
         tmp_dir.as_uri(), columns=["a"], output={"x": int}, session=test_session
     )
-    assert sorted(chain.to_values("x")) == [1, 2]
+    assert sorted(chain.to_values("x")) == [1, 2**40]
 
 
 @pytest.mark.parametrize("exported", ["1.parquet", "2.parquet"])
@@ -2509,6 +2511,51 @@ def test_read_parquet_output_reads_files_by_the_first_file_columns(
         tmp_dir.as_uri(), output={"x": int, "y": int}, session=test_session
     )
     assert sorted(chain.to_list("x", "y")) == [(1, 10), (2, 20)]
+
+
+@pytest.mark.parametrize(
+    "first,second,output,expected",
+    [
+        (pa.array([1]), pa.array([1.5]), float, [1.0, 1.5]),
+        (pa.array([1], pa.int32()), pa.array([2**40]), int, [1, 2**40]),
+    ],
+)
+def test_read_parquet_output_keeps_each_file_types(
+    tmp_dir, test_session, first, second, output, expected
+):
+    pq.write_table(pa.table({"a": first}), tmp_dir / "1.parquet")
+    pq.write_table(pa.table({"a": second}), tmp_dir / "2.parquet")
+    chain = dc.read_parquet(
+        tmp_dir.as_uri(), output={"a": output}, session=test_session
+    )
+    assert sorted(chain.to_values("a")) == expected
+
+
+def test_read_parquet_output_keeps_each_file_struct_fields(tmp_dir, test_session):
+    class Item(DataModel):
+        a: int
+        b: int | None = None
+
+    pq.write_table(pa.table({"item": [{"a": 1}]}), tmp_dir / "1.parquet")
+    pq.write_table(pa.table({"item": [{"a": 2, "b": 3}]}), tmp_dir / "2.parquet")
+    chain = dc.read_parquet(
+        tmp_dir.as_uri(), output={"item": Item}, session=test_session
+    )
+    assert chain.order_by("item.a").to_list("item.a", "item.b") == [(1, None), (2, 3)]
+
+
+def test_read_parquet_output_decodes_each_file_hf_labels(tmp_dir, test_session):
+    from datasets import ClassLabel, Dataset, Features
+
+    from datachain.lib.hf import HFClassLabel
+
+    for name, labels in [("1.parquet", ["no", "yes"]), ("2.parquet", ["yes", "no"])]:
+        features = Features({"label": ClassLabel(names=labels)})
+        Dataset.from_dict({"label": [0]}, features=features).to_parquet(tmp_dir / name)
+    chain = dc.read_parquet(
+        tmp_dir.as_uri(), output={"label": HFClassLabel}, session=test_session
+    )
+    assert sorted(chain.to_values("label.string")) == ["no", "yes"]
 
 
 def test_read_parquet_output_skips_partition_columns(tmp_dir, test_session):
