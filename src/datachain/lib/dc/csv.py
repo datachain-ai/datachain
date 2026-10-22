@@ -66,9 +66,7 @@ def read_csv(
 
         Select and rename columns with a Pydantic model (CSV header: `a,b,c`):
         ```py
-        from pydantic import BaseModel
-
-        class Row(BaseModel):
+        class Row(dc.DataModel):
             x: float
             y: float
 
