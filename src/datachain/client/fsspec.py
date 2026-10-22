@@ -8,7 +8,11 @@ import posixpath
 import re
 import shutil
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Iterator, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Iterator,
+    Sequence,
+)
 from contextlib import contextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, Literal, NamedTuple
@@ -24,6 +28,8 @@ from datachain.fs.utils import is_win_local_path
 from datachain.nodes_fetcher import NodesFetcher
 from datachain.nodes_thread_pool import NodeChunk
 from datachain.progress import tqdm
+
+from .ranges import LIST_WORKERS, Page, RangeListing
 
 if TYPE_CHECKING:
     from fsspec.spec import AbstractFileSystem
@@ -41,7 +47,7 @@ DELIMITER = "/"  # Path delimiter.
 DATA_SOURCE_URI_PATTERN = re.compile(r"^[\w]+:\/\/.*$")
 CLOUD_STORAGE_PROTOCOLS = {"s3", "gs", "az", "hf"}
 
-ResultQueue = asyncio.Queue[Sequence["File"] | None]
+ResultQueue = asyncio.Queue[Sequence[Any] | None]
 
 
 def is_cloud_uri(uri: str) -> bool:
@@ -73,6 +79,7 @@ class Client(ABC):
     protocol: ClassVar[str]
     # client_config keys this backend treats as credentials.
     CREDENTIAL_KEYS: ClassVar[frozenset[str]] = frozenset()
+    LIST_PAGE_SIZE: ClassVar[int] = 1000
 
     @classmethod
     def has_explicit_credentials(cls, client_config: dict | None) -> bool:
@@ -87,6 +94,15 @@ class Client(ABC):
         self._fs: AbstractFileSystem | None = None
         self.cache = cache
         self.uri = self.storage_uri(self.name)
+
+    @staticmethod
+    def format_etag(etag: str) -> str:
+        """Render an etag (e.g. for error messages).
+
+        Default matches ``dc.show()`` / Studio (the stored string). Backends that
+        encode extra meaning in the etag (local mtime) override this.
+        """
+        return str(etag)
 
     @staticmethod
     def get_implementation(url: str | os.PathLike[str]) -> type["Client"]:  # noqa: PLR0911
@@ -283,17 +299,34 @@ class Client(ABC):
 
     async def scandir(
         self, start_prefix: str, method: str = "default"
-    ) -> AsyncIterator[Sequence["File"]]:
+    ) -> AsyncIterator[Sequence[Any]]:
+        """Pages of entries: ``FileRow`` rows from a range listing, ``File``
+        objects otherwise."""
         try:
             impl = getattr(self, f"_fetch_{method}")
         except AttributeError:
             raise ValueError(f"Unknown indexing method '{method}'") from None
-        result_queue: ResultQueue = asyncio.Queue()
-        loop = get_loop()
-        main_task = loop.create_task(impl(start_prefix, result_queue))
-        while (entry := await result_queue.get()) is not None:
-            yield entry
-        await main_task
+        result_queue: ResultQueue = asyncio.Queue(2 * LIST_WORKERS)
+
+        async def listing() -> None:
+            try:
+                await impl(start_prefix, result_queue)
+            except BaseException as e:
+                # the reader stops at None, unless it cancelled this task itself
+                task = asyncio.current_task()
+                if not (isinstance(e, asyncio.CancelledError) and task.cancelling()):  # type: ignore[union-attr]
+                    await result_queue.put(None)
+                raise
+            await result_queue.put(None)
+
+        main_task = get_loop().create_task(listing())
+        try:
+            while (page := await result_queue.get()) is not None:
+                yield page
+            await main_task
+        finally:
+            main_task.cancel()
+            await asyncio.gather(main_task, return_exceptions=True)
 
     async def _fetch_nested(self, start_prefix: str, result_queue: ResultQueue) -> None:
         progress_bar = tqdm(desc=f"Listing {self.uri}", unit=" objects", leave=False)
@@ -318,26 +351,18 @@ class Client(ABC):
                 finally:
                     queue.task_done()
 
+        workers: list[asyncio.Task] = []
         try:
-            workers: list[asyncio.Task] = [
-                loop.create_task(process(queue)) for _ in range(FETCH_WORKERS)
-            ]
-
-            # Wait for all fetch tasks to complete
+            workers = [loop.create_task(process(queue)) for _ in range(FETCH_WORKERS)]
             await queue.join()
-            # Stop the workers
-            excs = []
             for worker in workers:
                 if worker.done() and (exc := worker.exception()):
-                    excs.append(exc)
-                else:
-                    worker.cancel()
-            if excs:
-                raise excs[0]
+                    raise exc
         finally:
-            # This ensures the progress bar is closed before any exceptions are raised
+            for worker in workers:
+                worker.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
             progress_bar.close()
-            result_queue.put_nowait(None)
 
     async def _fetch_default(
         self, start_prefix: str, result_queue: ResultQueue
@@ -439,7 +464,11 @@ class Client(ABC):
             shutil.copy2(src, dst)
 
     def open_object(
-        self, file: "File", use_cache: bool = True, cb: Callback = DEFAULT_CALLBACK
+        self,
+        file: "File",
+        use_cache: bool = True,
+        cb: Callback = DEFAULT_CALLBACK,
+        block_size: int | None = None,
     ) -> BinaryIO:
         """Open a file, including files in tar archives."""
         if use_cache and (cache_path := self.cache.get_path(file)):
@@ -448,7 +477,7 @@ class Client(ABC):
         kwargs = self._version_kwargs(file.version)
         full_path = file.get_fs_path()
         return FileWrapper(
-            self.fs.open(full_path, **kwargs),
+            self.fs.open(full_path, block_size=block_size, **kwargs),
             cb,
         )  # type: ignore[return-value]
 
@@ -578,7 +607,58 @@ class Client(ABC):
             etag = await self.get_current_etag(file)
             if file.etag != etag:
                 raise FileNotFoundError(
-                    f"Invalid etag for {file.source}/{file.path}: "
-                    f"expected {file.etag}, got {etag}"
+                    f"{file.source}/{file.path} changed on the source since the "
+                    f"catalog was created (etag was {self.format_etag(file.etag)}, now "
+                    f"{self.format_etag(etag)}). "
+                    "Re-run the original dc.read_storage(...) call with "
+                    "update=True to refresh the catalog."
                 )
         await self.cache.download(file, self, callback=callback)
+
+
+class RangeListedClient(Client):
+    """A client that lists in parallel key ranges (``RangeListing``)."""
+
+    @staticmethod
+    def key_order(key: str) -> Any:
+        """The sort key of the order the server lists keys in."""
+        return key
+
+    async def _fetch_ranges(self, start_prefix: str, result_queue: ResultQueue) -> None:
+        from .listing_worker import LIST_PROCESSES, Pool
+
+        prefix = start_prefix.lstrip(DELIMITER) + DELIMITER if start_prefix else ""
+        pool = Pool(self, prefix, LIST_PROCESSES) if LIST_PROCESSES else None
+        await RangeListing(self, prefix, result_queue, pool).run()
+
+    _fetch_default = _fetch_ranges
+
+    def _lists_in_key_order(self) -> bool:
+        return True
+
+    async def _list_page(
+        self,
+        prefix: str,
+        start_after: str,
+        token: Any,
+        hi: str | None = None,
+        page_size: int | None = None,
+    ) -> Page:
+        """One page under ``prefix``, in key order: the one after ``token``, or
+        the first after ``start_after``. Keys past ``hi`` make no rows; a backend
+        that can end a listing at a key ends it after ``hi``."""
+        raise NotImplementedError
+
+    async def _probe(self, prefix: str, start_after: str) -> str | None:
+        """The first key after ``start_after``, of any kind; None at the end."""
+        token = None
+        while True:
+            page = await self._list_page(prefix, start_after, token, page_size=1)
+            if page.last is not None or page.token is None:
+                return page.last
+            if page.token == token:
+                raise RuntimeError(
+                    f"Listing {self.uri}: the server returned the page token it was"
+                    " given, so the listing would never end."
+                )
+            token = page.token

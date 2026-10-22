@@ -1,4 +1,4 @@
-import datetime
+import datetime as dt
 import enum
 import hashlib
 import io
@@ -774,7 +774,7 @@ def test_from_features_simple_types_in_memory():
 
 @skip_if_not_sqlite
 def test_to_pandas_as_object_preserves_none(test_session):
-    timestamp = datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)
+    timestamp = dt.datetime(2020, 1, 1, tzinfo=dt.UTC)
     chain = dc.read_values(
         id=[1, None],
         value=[3.14, None],
@@ -810,9 +810,9 @@ def test_from_features_more_simple_types(test_session):
         nn=[None, None, None],
         ss=["x", None, "y"],
         time=[
-            datetime.datetime.now(),
-            datetime.datetime.today(),
-            datetime.datetime.today(),
+            dt.datetime.now(),
+            dt.datetime.today(),
+            dt.datetime.today(),
         ],
         f=[3.14, 2.72, 1.62],
         session=test_session,
@@ -841,7 +841,7 @@ def test_from_features_more_simple_types(test_session):
         list[int],  # from ll
         str,  # from nn (all None -> defaults to str)
         str | None,  # from ss (has a None -> inferred Optional)
-        datetime.datetime,
+        dt.datetime,
         float,
     }
 
@@ -2304,7 +2304,7 @@ def test_to_json_features_nested(tmp_dir, test_session):
 
 
 def test_to_json_datetime(tmp_dir, test_session):
-    timestamp = datetime.datetime.now(datetime.timezone.utc)
+    timestamp = dt.datetime.now(dt.UTC)
     chain = dc.read_values(ts=[timestamp], session=test_session)
 
     path = tmp_dir / "dt.json"
@@ -2315,10 +2315,7 @@ def test_to_json_datetime(tmp_dir, test_session):
 
     expected_ts = timestamp.isoformat().replace("+00:00", "Z")
     assert values == [{"ts": expected_ts}]
-    assert (
-        datetime.datetime.fromisoformat(values[0]["ts"].replace("Z", "+00:00"))
-        == timestamp
-    )
+    assert dt.datetime.fromisoformat(values[0]["ts"]) == timestamp
 
 
 # These deprecation warnings occur in the datamodel-code-generator package.
@@ -2478,6 +2475,23 @@ def test_read_parquet_columns_are_part_of_the_step(abc_parquet, test_session):
 
     assert read("a") == [1.0]
     assert read("b") == [10.0]
+
+
+@pytest.mark.parametrize("written_by_datachain", [False, True])
+@pytest.mark.parametrize(
+    "kwargs,signal",
+    [({}, "b"), ({"output": {"b": int}}, "b"), ({"column": "t"}, "t.b")],
+)
+def test_read_parquet_one_column_without_source(
+    tmp_dir, test_session, kwargs, signal, written_by_datachain
+):
+    path = tmp_dir / "one.parquet"
+    if written_by_datachain:
+        dc.read_values(b=[2], session=test_session).to_parquet(path)
+    else:
+        pq.write_table(pa.table({"b": [2]}), path)
+    chain = dc.read_parquet(path.as_uri(), source=False, session=test_session, **kwargs)
+    assert chain.to_values(signal) == [2]
 
 
 def test_read_parquet_exported_with_source(test_session, tmp_dir):
@@ -4098,7 +4112,7 @@ def test_schema_flatten(test_session):
         "file.version": str,
         "file.etag": str,
         "file.is_latest": bool,
-        "file.last_modified": datetime.datetime,
+        "file.last_modified": dt.datetime,
         "file.location": File.model_fields["location"].annotation,
         "nested.label": str,
         "nested.fr.nnn": str,
@@ -6566,3 +6580,61 @@ def test_tuple_of_models_stores_numpy_held_in_a_field(test_session):
             ),
         )
     ]
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda chain: chain.filter(C("n") % 3 == 0),
+        lambda chain: chain.filter(C("n") < 30),
+        # rows picked by a scrambled order are not a contiguous sys__id range
+        lambda chain: chain.order_by("k").offset(5).limit(11),
+    ],
+    ids=["filter", "contiguous-filter", "offset-limit"],
+)
+def test_save_copies_exact_rows_in_batches(test_session, monkeypatch, build):
+    monkeypatch.setattr(type(test_session.catalog.warehouse), "INSERT_BATCH_SIZE", 4)
+    n = list(range(40))
+    chain = build(dc.read_values(n=n, k=[i * 7 % 40 for i in n], session=test_session))
+    expected = sorted(chain.to_values("n"))
+
+    chain.save("batched")
+
+    assert sorted(dc.read_dataset("batched", session=test_session).to_values("n")) == (
+        expected
+    )
+
+
+@pytest.mark.parametrize(
+    "build, size",
+    [
+        (lambda chain: chain.order_by("k"), 40),
+        (lambda chain: chain.order_by("k").limit(30).filter(C("k") >= 0), 30),
+    ],
+    ids=["ordered", "ordered-subquery"],
+)
+def test_save_keeps_order_across_batches(test_session, monkeypatch, build, size):
+    monkeypatch.setattr(type(test_session.catalog.warehouse), "INSERT_BATCH_SIZE", 4)
+    k = [i * 7 % 40 for i in range(40)]
+
+    build(dc.read_values(k=k, session=test_session)).save("ordered")
+
+    saved = dc.read_dataset("ordered", session=test_session).order_by("sys.id")
+    assert saved.to_values("k") == sorted(k)[:size]
+
+
+def test_adjust_outputs_calls_an_overridden_convert_type(test_session, mocker):
+    from datachain.query.dataset import adjust_outputs, get_col_types
+    from datachain.sql.types import DateTime
+
+    def normalizing(self, val, *args):
+        return val.astimezone(dt.UTC).replace(tzinfo=None)
+
+    warehouse = test_session.catalog.warehouse
+    mocker.patch.object(type(warehouse), "convert_type", normalizing)
+    when = dt.datetime(2026, 1, 1, 12, tzinfo=dt.timezone(dt.timedelta(hours=2)))
+    col_types = get_col_types(warehouse, {"x": DateTime})
+
+    row = adjust_outputs(warehouse, {"x": when}, col_types, None)  # type: ignore[arg-type]
+
+    assert row["x"] == dt.datetime(2026, 1, 1, 10)

@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import Mock, mock_open, patch
 
 import pytest
@@ -101,13 +101,13 @@ def test_info_to_file():
     # Test with int timestamp
     info = {"last_modified": 1700000000}
     file = client.info_to_file(info, "file1.txt")
-    expected = datetime.fromtimestamp(1700000000, timezone.utc)
+    expected = datetime.fromtimestamp(1700000000, UTC)
     assert file.last_modified == expected
 
     # Test with float timestamp
     info = {"last_modified": 1700000000.5}
     file = client.info_to_file(info, "file2.txt")
-    expected = datetime.fromtimestamp(1700000000.5, timezone.utc)
+    expected = datetime.fromtimestamp(1700000000.5, UTC)
     assert file.last_modified == expected
 
     # Test with invalid date string (triggers ValueError)
@@ -116,7 +116,7 @@ def test_info_to_file():
     assert isinstance(file.last_modified, datetime)  # Falls back to current time
 
 
-def test_open_object():
+def test_open_object(monkeypatch):
     cache = Mock(spec=Cache)
     client = HTTPSClient("example.com", {}, cache)
 
@@ -130,13 +130,13 @@ def test_open_object():
 
     # Test without cache (cache miss)
     cache.get_path.return_value = None
-    client.fs.open = Mock()
+    monkeypatch.setattr(client.fs, "open", Mock())
     client.open_object(file, use_cache=True)
     client.fs.open.assert_called_once()
 
     # Test with use_cache=False (bypass cache)
     cache.get_path.return_value = "/cache/path/file.txt"
-    client.fs.open = Mock()
+    monkeypatch.setattr(client.fs, "open", Mock())
     client.open_object(file, use_cache=False)
     client.fs.open.assert_called_once()  # Should fetch from remote, not cache
 
@@ -147,10 +147,10 @@ def test_url():
     assert client.url("file.txt") == "https://example.com/file.txt"
 
 
-def test_get_file_info():
+def test_get_file_info(monkeypatch):
     cache = Mock(spec=Cache)
     client = HTTPSClient("example.com", {}, cache)
-    client.fs.info = Mock(return_value={"size": 2048})
+    monkeypatch.setattr(client.fs, "info", Mock(return_value={"size": 2048}))
 
     file = client.get_file_info("file.txt")
     assert file.path == "file.txt"

@@ -12,7 +12,13 @@ from datachain.lib.dc.storage_pattern import (
     validate_cloud_bucket_name,
 )
 from datachain.lib.file import FileType, get_file_type
-from datachain.lib.listing import get_file_info, get_listing, list_bucket, ls
+from datachain.lib.listing import (
+    LISTING_BATCH_SIZE,
+    get_file_info,
+    get_listing,
+    list_bucket,
+    ls,
+)
 from datachain.query import Session
 
 if TYPE_CHECKING:
@@ -59,7 +65,7 @@ def _all_buckets_anonymous(uris, client_config: dict | None) -> bool:
     return True
 
 
-def read_storage(
+def read_storage(  # noqa: PLR0913
     uri: str | os.PathLike[str] | list[str] | list[os.PathLike[str]],
     *,
     type: FileType = "binary",
@@ -70,6 +76,7 @@ def read_storage(
     column: str = "file",
     update: bool = False,
     anon: bool | None = None,
+    versions: bool = True,
     delta: bool | None = False,
     delta_on: str | Sequence[str] | None = (
         "file.path",
@@ -99,6 +106,7 @@ def read_storage(
         column: Column name that will contain File objects. Default is "file".
         update: force storage reindexing. Default is False.
         anon: If True, we will treat cloud bucket as public one.
+        versions: If False, list only current objects, without versions.
         client_config: Optional client configuration for the storage client.
         delta: If True, only process new or changed files instead of reprocessing
             everything. This saves time by skipping files that were already processed in
@@ -155,6 +163,11 @@ def read_storage(
         dc.read_storage(["s3://my-bkt/dir1", "s3://bucket2/dir2/dir3"])
         ```
 
+        Current objects only, without the history of a versioned bucket:
+        ```python
+        dc.read_storage("s3://my-bucket/my-dir", versions=False)
+        ```
+
         With AWS S3-compatible storage:
         ```python
         dc.read_storage(
@@ -198,6 +211,8 @@ def read_storage(
         # passed. Re-apply anon locally for the listing path without mutating
         # the caller's session.
         client_config = client_config | {"anon": anon}
+    if not versions:
+        client_config = client_config | {"version_aware": False}
     listing_namespace_name = catalog.metastore.system_namespace_name
     listing_project_name = catalog.metastore.listing_project_name
 
@@ -229,7 +244,7 @@ def read_storage(
             update_single_uri = True
 
         list_ds_name, list_uri, list_path, _ = get_listing(
-            list_uri_to_use, session, update=update_single_uri
+            list_uri_to_use, session, update=update_single_uri, versions=versions
         )
 
         # list_ds_name is None if object is a file, we don't want to use cache
@@ -272,6 +287,7 @@ def read_storage(
                 )
                 .settings(
                     prefetch=0,
+                    batch_size=LISTING_BATCH_SIZE,
                     namespace=listing_namespace_name,
                     project=listing_project_name,
                 )

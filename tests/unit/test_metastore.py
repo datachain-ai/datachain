@@ -1,6 +1,6 @@
 import base64
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -130,7 +130,7 @@ def test_outdated_schema():
 def test_expire_checkpoints():
     metastore = SQLiteMetastore(db_file=":memory:")
     try:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         old = now - timedelta(hours=2)
         ttl_threshold = now - timedelta(hours=1)
 

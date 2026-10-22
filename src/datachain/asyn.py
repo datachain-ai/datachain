@@ -207,8 +207,17 @@ def iter_over_async(ait: AsyncIterable[T], loop) -> Iterator[T]:
             return True, None
 
     # actual sync iterator
-    while True:
-        done, obj = asyncio.run_coroutine_threadsafe(get_next(), loop).result()
-        if done:
-            break
-        yield obj
+    fetch = None
+    try:
+        while True:
+            fetch = asyncio.run_coroutine_threadsafe(get_next(), loop)
+            done, obj = fetch.result()
+            if done:
+                break
+            yield obj
+    finally:
+        if fetch is not None:
+            fetch.cancel()
+        if (aclose := getattr(ait, "aclose", None)) and loop.is_running():
+            # not awaited: at shutdown, or on the loop's own thread, it never ends
+            asyncio.run_coroutine_threadsafe(aclose(), loop)

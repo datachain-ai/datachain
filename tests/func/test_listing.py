@@ -6,12 +6,14 @@ import pytest
 import datachain as dc
 from datachain.lib.file import File
 from datachain.lib.listing import (
+    LISTING_BATCH_SIZE,
     _sanitize_ds_name,
     calc_fingerprint,
     get_listing,
     list_bucket,
     parse_listing_uri,
 )
+from datachain.query import dataset
 from tests.data import ENTRIES
 
 
@@ -288,3 +290,14 @@ def test_read_storage_mixed_single_file_and_dir_deterministic(test_session, tmp_
     chain1._query.resolve_all_listings()
     chain2._query.resolve_all_listings()
     assert chain1._query.hash() == chain2._query.hash()
+
+
+@pytest.mark.parametrize("settings", [None, {"batch_size": 7}])
+def test_listing_insert_batch_size(test_session, tmp_dir, mocker, settings):
+    # the user's batch_size tunes their UDFs, not the listing
+    (tmp_dir / "a.txt").write_text("hello")
+    spy = mocker.spy(dataset, "process_udf_outputs")
+
+    dc.read_storage(tmp_dir.as_uri(), session=test_session, settings=settings).exec()
+
+    assert spy.call_args.kwargs["batch_size"] == LISTING_BATCH_SIZE

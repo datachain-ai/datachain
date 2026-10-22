@@ -10,7 +10,7 @@ import time
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import cloudpickle
@@ -19,8 +19,9 @@ from dateutil.parser import isoparse
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
+    from typing import Self
+
     import pandas as pd
-    from typing_extensions import Self
 
     from datachain.dataset import DatasetDependency
 
@@ -31,7 +32,7 @@ logger = logging.getLogger("datachain")
 
 
 NUL = b"\0"
-TIME_ZERO = datetime.fromtimestamp(0, tz=timezone.utc)
+TIME_ZERO = datetime.fromtimestamp(0, tz=UTC)
 
 APPNAME = "datachain"
 APPAUTHOR = "iterative"

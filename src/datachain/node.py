@@ -9,7 +9,7 @@ from datachain.lib.file import File
 from datachain.utils import TIME_ZERO, time_to_str
 
 if TYPE_CHECKING:
-    from typing_extensions import Self
+    from typing import Self
 
     from datachain.client import Client
 

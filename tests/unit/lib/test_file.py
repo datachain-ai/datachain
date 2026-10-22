@@ -1091,3 +1091,20 @@ def test_video_frame_save_forwards_write_config(tmp_path, catalog, monkeypatch):
     assert cfg.content_type == "image/png"
     assert cfg.content_disposition == "attachment"
     assert cfg.metadata == {"k": "v"}
+
+
+def test_subclass_private_attributes_keep_their_values():
+    from typing import Any
+
+    from pydantic import PrivateAttr
+
+    class CustomFile(File):
+        _catalog: Any = PrivateAttr(default=None)
+        _caching_enabled: bool = PrivateAttr(default=False)
+
+    catalog = Mock()
+    file = CustomFile(path="a")
+    file._set_stream(catalog, caching_enabled=True)
+
+    assert file._catalog is catalog
+    assert file._caching_enabled

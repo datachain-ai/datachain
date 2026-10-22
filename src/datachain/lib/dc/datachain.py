@@ -117,10 +117,11 @@ SIMILARITY_SCORE_COL_NAME = "sim_a4f74e9a"
 
 if TYPE_CHECKING:
     import sqlite3
+    from typing import Self
 
     import pandas as pd
     from sqlalchemy.orm import Session as OrmSession
-    from typing_extensions import ParamSpec, Self
+    from typing_extensions import ParamSpec
 
     from datachain.lib.settings import LLMParams
 
@@ -485,10 +486,9 @@ class DataChain:
         Parameters:
             cache: Enable files caching to speed up subsequent accesses to the same
                 files from the same or different chains. Defaults to False.
-            prefetch: Enable prefetching of files. This will download files in
-                advance in parallel. If an integer is provided, it specifies the number
-                of files to prefetch concurrently for each process on each worker.
-                Defaults to 2. Set to 0 or False to disable prefetching.
+            prefetch: Number of files to download in full ahead of the UDF, per
+                process on each worker. Defaults to 2. Set to 0 or False for UDFs
+                that read only part of a file, such as `get_info()`.
             parallel: Number of processes to use for processing user-defined functions
                 (UDFs) in parallel. If an integer is provided, it specifies the number
                 of CPUs to use. If True, all available CPUs are used. Defaults to 1.
@@ -498,7 +498,7 @@ class DataChain:
                 processing by UDFs. Defaults to 1.
             batch_size: Number of rows per insert by UDF to fine tune and balance speed
                 and memory usage. This might be useful when processing large rows
-                or when running into memory issues. Defaults to 2000.
+                or when running into memory issues. Defaults to 10,000.
             ephemeral: If True, no persistent objects are created in the metastore
                 (no jobs, checkpoints, or datasets). UDF execution still uses
                 temporary tables. Calling .save() in ephemeral mode will raise
@@ -889,7 +889,6 @@ class DataChain:
                 )
 
             # Link current job to this dataset version (not creator).
-            # This also updates dataset_version.job_id.
             metastore.link_dataset_version_to_job(
                 dataset_version.id,
                 self.job.id,
@@ -1407,7 +1406,9 @@ class DataChain:
             if wrapped is not None:
                 resolved.append(wrapped)
             elif descending:
-                resolved.append(sqlalchemy.desc(arg))
+                resolved.append(
+                    sqlalchemy.desc(Column(arg) if isinstance(arg, str) else arg)
+                )
             else:
                 resolved.append(arg)
 

@@ -5,7 +5,7 @@ import posixpath
 import re
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, TypeVar
 
 from fsspec.asyn import get_loop
@@ -27,6 +27,9 @@ if TYPE_CHECKING:
 
 LISTING_TTL = 4 * 60 * 60  # cached listing lasts 4 hours
 LISTING_PREFIX = "lst__"  # listing datasets start with this name
+LISTING_BATCH_SIZE = 50_000  # rows per insert: listing rows are small
+# listing of current objects only, read_storage(versions=False)
+CURRENT_LISTING_PREFIX = f"{LISTING_PREFIX}current__"
 
 D = TypeVar("D", bound="DataChain")
 
@@ -79,14 +82,12 @@ def listing_dataset_expired(lst_ds) -> bool:
         return False
 
     expires = lst_version.finished_at + timedelta(seconds=LISTING_TTL)
-    return datetime.now(timezone.utc) > expires
+    return datetime.now(UTC) > expires
 
 
 def list_bucket(uri: str, cache, client_config=None) -> Callable:
-    """
-    Function that returns another generator function that yields File objects
-    from bucket where each File represents one bucket entry.
-    """
+    """A generator function, for ``gen()``, of the bucket's entries under ``uri``:
+    ``FileRow`` rows from S3, GCS and Azure, ``File`` objects from other clients."""
 
     def list_func() -> Iterator[File]:
         config = client_config or {}
@@ -210,9 +211,10 @@ def _desanitize_ds_name(encoded: str) -> str:
     return _DS_DECODE_RE.sub(_repl, encoded)
 
 
-def parse_listing_uri(uri: str) -> tuple[str, str, str]:
+def parse_listing_uri(uri: str, versions: bool = True) -> tuple[str, str, str]:
     """
-    Parsing uri and returns listing dataset name, listing uri and listing path
+    Parsing uri and returns listing dataset name, listing uri and listing path.
+    A listing of current objects only (``versions=False``) gets its own name.
     """
     storage_uri, path = Client.parse_url(uri)
     if uses_glob(path):
@@ -227,8 +229,17 @@ def parse_listing_uri(uri: str) -> tuple[str, str, str]:
     )
 
     ds_name = _sanitize_ds_name(ds_name)
+    if not versions:
+        ds_name = CURRENT_LISTING_PREFIX + ds_name.removeprefix(LISTING_PREFIX)
 
     return ds_name, lst_uri, path
+
+
+def listing_name_prefixes(prefix: str) -> list[str]:
+    """Listing-name prefixes that match a storage URI prefix, one per mode."""
+    if prefix.startswith(LISTING_PREFIX):
+        return [prefix]
+    return [LISTING_PREFIX + prefix, CURRENT_LISTING_PREFIX + prefix]
 
 
 def is_listing_dataset(name: str) -> bool:
@@ -244,7 +255,8 @@ def listing_uri_from_name(dataset_name: str) -> str:
     """
     if not is_listing_dataset(dataset_name):
         raise ValueError(f"Dataset {dataset_name} is not a listing")
-    return _desanitize_ds_name(dataset_name.removeprefix(LISTING_PREFIX))
+    name = dataset_name.removeprefix(CURRENT_LISTING_PREFIX)
+    return _desanitize_ds_name(name.removeprefix(LISTING_PREFIX))
 
 
 @contextmanager
@@ -256,14 +268,19 @@ def _reraise_as_client_error() -> Iterator[None]:
 
 
 def get_listing(
-    uri: str | os.PathLike[str], session: "Session", update: bool = False
+    uri: str | os.PathLike[str],
+    session: "Session",
+    update: bool = False,
+    versions: bool = True,
 ) -> tuple[str | None, str, str, bool]:
     """Returns correct listing dataset name that must be used for saving listing
     operation. It takes into account existing listings and reusability of those.
     It also returns boolean saying if returned dataset name is reused / already
     exists or not (on update it always returns False - just because there was no
     reason to complicate it so far). And it returns correct listing path that should
-    be used to find rows based on uri.
+    be used to find rows based on uri. With ``versions=False`` on a storage
+    that keeps object versions, the listing holds current objects only and
+    neither reuses nor is reused by a listing of all versions.
     """
     from datachain.client.local import FileClient
     from datachain.telemetry import telemetry
@@ -283,7 +300,9 @@ def get_listing(
         _, path = Client.parse_url(uri)
         return None, uri, path, False
 
-    ds_name, list_uri, list_path = parse_listing_uri(uri)
+    # local, HF and HTTP storages have no versions: one kind of listing
+    versions = versions or not hasattr(client.fs, "version_aware")
+    ds_name, list_uri, list_path = parse_listing_uri(uri, versions=versions)
     listing = None
     listings = [
         ls for ls in catalog.listings() if not ls.is_expired and ls.contains(ds_name)

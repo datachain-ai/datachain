@@ -2,7 +2,7 @@ import argparse
 import json
 import os
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from utils import (
     bucket_file_path,
@@ -165,7 +165,7 @@ def render_index(plan: dict) -> str:
     local_ds = [d for d in datasets if d["source"] == "local"]
     studio_ds = [d for d in datasets if d["source"] == "studio"]
 
-    now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
     lines = ["---"]
     lines.append(f"generated: {now}")
     if "db_last_updated" in plan:

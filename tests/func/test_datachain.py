@@ -5,7 +5,7 @@ import posixpath
 import re
 import uuid
 from collections.abc import Iterator
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from unittest.mock import patch
 
@@ -125,7 +125,7 @@ def test_read_storage_reindex_expired(tmp_dir, test_session):
     test_session.catalog.metastore.update_dataset_version(
         test_session.catalog.get_dataset(lst_ds_name, versions=["1.0.0"]),
         "1.0.0",
-        finished_at=datetime.now(timezone.utc) - timedelta(seconds=LISTING_TTL + 20),
+        finished_at=datetime.now(UTC) - timedelta(seconds=LISTING_TTL + 20),
     )
 
     # listing was updated because listing dataset was expired
@@ -166,6 +166,45 @@ def test_read_storage_rfc_encoded_uri_targets_literal_path(tmp_dir, test_session
         "file.path"
     )
     assert listed == ["wrong.txt"]
+
+
+@pytest.mark.parametrize(
+    "cloud_type,version_aware",
+    [("s3", True), ("gs", True)],
+    indirect=True,
+)
+def test_read_storage_versions(cloud_test_catalog, cloud_prefix):
+    ctc = cloud_test_catalog
+    session = ctc.session
+    prefix = cloud_prefix
+    (ctc.src / prefix / "kept").write_text("1")
+    (ctc.src / prefix / "kept").write_text("22")  # a second version
+    (ctc.src / prefix / "gone").write_text("x")
+    (ctc.src / prefix / "gone").unlink()  # a deleted object
+    uri = f"{ctc.src_uri}/{prefix}"
+
+    def listing(versions):
+        name = parse_listing_uri(uri, versions=versions)[0]
+        (info,) = [ls for ls in session.catalog.listings() if ls.name == name]
+        return info
+
+    full = dc.read_storage(uri, session=session).to_list("file.path", "file.size")
+    current = dc.read_storage(uri, session=session, versions=False)
+
+    assert full == [(f"{prefix}/kept", 2)]
+    assert current.to_list("file.path", "file.size", "file.version") == [
+        (f"{prefix}/kept", 2, "")
+    ]
+    # the two listings are cached apart and hold different rows
+    assert listing(True).versions
+    assert not listing(False).versions
+    assert listing(True).uri == listing(False).uri == f"{uri}/"
+    assert listing(False).num_objects == 1
+    assert listing(True).num_objects > 1
+    assert {ls.name for ls in session.catalog.listings(prefix=f"{uri}/")} == {
+        listing(True).name,
+        listing(False).name,
+    }
 
 
 @pytest.mark.parametrize(
@@ -375,7 +414,7 @@ def test_show_preserves_none(capsys, test_session):
     chain = dc.read_values(
         score=[1, None],
         ts=[
-            datetime(2020, 1, 1, tzinfo=timezone.utc),
+            datetime(2020, 1, 1, tzinfo=UTC),
             None,
         ],
         session=test_session,
@@ -588,7 +627,7 @@ def test_read_storage_check_rows(tmp_dir, test_session):
             version="",
             etag=stat.st_mtime.hex(),
             is_latest=True,
-            last_modified=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
+            last_modified=datetime.fromtimestamp(stat.st_mtime, tz=UTC),
             location=None,
         )
 

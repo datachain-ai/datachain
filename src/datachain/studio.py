@@ -4,7 +4,7 @@ import logging
 import os
 import random
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import dateparser
@@ -406,11 +406,11 @@ def parse_start_time(start_time_str: str | None) -> str | None:
 
 
 # Sync usage
-async def _fetch_log_blob(blob_url: str, timeout: float) -> bytes:
+async def _fetch_log_blob(blob_url: str, request_timeout: float) -> bytes:
     """Return the log blob content as bytes."""
 
     def _fetch():
-        response = requests.get(blob_url, timeout=timeout)
+        response = requests.get(blob_url, timeout=request_timeout)
         response.raise_for_status()
         return response.content
 
@@ -644,7 +644,7 @@ def create_job(  # noqa: PLR0913
     # Parse start_time if provided
     parsed_start_time = parse_start_time(start_time)
     if cron and parsed_start_time is None:
-        parsed_start_time = datetime.now(timezone.utc).isoformat()
+        parsed_start_time = datetime.now(UTC).isoformat()
 
     response = client.create_job(
         query=query,
@@ -803,17 +803,13 @@ def _stage_duration(step: dict, job_finished: bool) -> str:
         # has ended is one whose length was never recorded, not one still going.
         return "-" if job_finished else "running"
 
-    seconds = int((_parse_iso(finished) - _parse_iso(started)).total_seconds())
+    duration = datetime.fromisoformat(finished) - datetime.fromisoformat(started)
+    seconds = int(duration.total_seconds())
     if seconds < 60:
         return f"{seconds}s"
     if seconds < 3600:
         return f"{seconds // 60}m {seconds % 60}s"
     return f"{seconds // 3600}h {seconds % 3600 // 60}m"
-
-
-def _parse_iso(value: str) -> datetime:
-    # fromisoformat only accepts a trailing Z from 3.11, and we support 3.10.
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def show_job_logs(job_id: str, team_name: str | None):

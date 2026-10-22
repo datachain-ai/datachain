@@ -295,8 +295,8 @@ def test_type_to_str_matrix(type_, expected):
 def test_type_to_str_typing_module_vs_builtin_generics():
     """Ensure typing.List/Dict and built-in generics stringify identically.
 
-    Confirms Python 3.10+ behavior where get_origin() normalizes both forms
-    to built-ins, and type_to_str produces the same string.
+    get_origin() normalizes both forms to built-ins, so type_to_str produces the
+    same string.
     """
     from typing import get_origin
 

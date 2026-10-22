@@ -185,6 +185,11 @@ class ArrowGenerator(Generator):
                 return vals
             return [arrow_file, *vals]
 
+        if self.output is not None and len(self.output.values) == 1:
+            # A single output signal takes its value itself, not a list of values.
+            ((name, signal_type),) = self.output.values.items()
+            row = vals[0]
+            return row if type(row) is signal_type else getattr(row, name)
         return vals
 
     def _process_non_datachain_record(

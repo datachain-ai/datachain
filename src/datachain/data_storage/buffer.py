@@ -1,5 +1,5 @@
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 if TYPE_CHECKING:
@@ -20,6 +20,7 @@ class InsertBuffer(Generic[T]):
     def __init__(
         self,
         table: "sa.Table",
+        columns: Sequence[str],
         execute_callback: Callable[..., None],
         buffer_size: int,
         flush_interval: float | None = None,
@@ -30,8 +31,9 @@ class InsertBuffer(Generic[T]):
 
         Args:
             table: SQLAlchemy table to insert into
+            columns: Columns of the entries, which are tuples in this order
             execute_callback: Callback function to execute inserts.
-                Signature: (table, entries, final=False, cursor=None) -> None
+                Signature: (table, columns, entries, final=False, cursor=None)
             buffer_size: Number of entries to accumulate before flushing
             flush_interval: Optional time in seconds between flushes.
                 If set, buffer will flush when this interval elapses,
@@ -39,18 +41,19 @@ class InsertBuffer(Generic[T]):
             cursor: Optional database cursor for the callback
         """
         self.table = table
+        self.columns = list(columns)
         self.execute_callback = execute_callback
         self.buffer_size = buffer_size
         self.flush_interval = flush_interval
-        self.buffer: list[dict[str, Any]] = []
+        self.buffer: list[tuple] = []
         self.cursor = cursor
         self._last_flush_time: float = time.monotonic()
 
-    def insert(self, entry: dict[str, Any]) -> None:
+    def insert(self, entry: tuple) -> None:
         self.buffer.append(entry)
         self._process_blocks()
 
-    def insert_many(self, entries: Iterable[dict[str, Any]]) -> None:
+    def insert_many(self, entries: Iterable[tuple]) -> None:
         """Add many entries to the insert buffer (lazy iteration)."""
         for entry in entries:
             self.buffer.append(entry)
@@ -64,10 +67,12 @@ class InsertBuffer(Generic[T]):
         elapsed = time.monotonic() - self._last_flush_time
         return elapsed >= self.flush_interval
 
-    def _do_flush(self, entries: list[dict[str, Any]], final: bool = False) -> None:
+    def _do_flush(self, entries: list[tuple], final: bool = False) -> None:
         if not entries:
             return
-        self.execute_callback(self.table, entries, final=final, cursor=self.cursor)
+        self.execute_callback(
+            self.table, self.columns, entries, final=final, cursor=self.cursor
+        )
         self._last_flush_time = time.monotonic()
 
     def _process_blocks(self) -> None:

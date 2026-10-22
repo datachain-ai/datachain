@@ -4,9 +4,9 @@ The prompts in `../prompts/` (`enrich_bucket.md`, `enrich.md`) are the authorita
 spec for what each field means and how it renders.
 """
 
-from typing import Any
+from typing import Any, NotRequired
 
-from typing_extensions import NotRequired, TypedDict
+from typing_extensions import TypedDict
 
 
 class PreviewData(TypedDict):

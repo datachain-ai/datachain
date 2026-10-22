@@ -542,7 +542,7 @@ class Func(Function):  # noqa: PLW1641
                 raise DataChainParamsError(
                     f"Window function {self} requires over() clause with a window spec",
                 )
-            ordering = (
+            ordering: ColumnElement[Any] = (
                 desc(self.window.order_by)
                 if self.window.desc
                 else asc(self.window.order_by)
