@@ -2474,15 +2474,18 @@ def test_read_parquet_columns_with_output_and_mixed_integer_widths(
     assert sorted(chain.to_values("x")) == [1, 2**40]
 
 
+@pytest.mark.parametrize("output", [None, {"y": int}])
 @pytest.mark.parametrize("exported", ["1.parquet", "2.parquet"])
 def test_read_parquet_columns_some_files_written_by_datachain(
-    tmp_dir, test_session, exported
+    tmp_dir, test_session, exported, output
 ):
     plain = "2.parquet" if exported == "1.parquet" else "1.parquet"
-    pq.write_table(pa.table({"x": [1]}), tmp_dir / plain)
-    dc.read_values(x=[2], session=test_session).to_parquet(tmp_dir / exported)
-    with pytest.raises(DatasetPrepareError, match="written by DataChain"):
-        dc.read_parquet(tmp_dir.as_uri(), columns=["x"], session=test_session)
+    pq.write_table(pa.table({"x": [1], "y": [10]}), tmp_dir / plain)
+    dc.read_values(x=[2], y=[20], session=test_session).to_parquet(tmp_dir / exported)
+    with pytest.raises((DatasetPrepareError, ValueError), match="written by DataChain"):
+        dc.read_parquet(
+            tmp_dir.as_uri(), columns=["x"], output=output, session=test_session
+        ).to_list()
 
 
 def test_read_parquet_columns_written_by_datachain(tmp_dir, test_session):

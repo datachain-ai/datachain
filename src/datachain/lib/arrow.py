@@ -124,10 +124,16 @@ class ArrowGenerator(Generator):
             and DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY in ds.schema.metadata
         )
 
+        if self.columns is not None and use_datachain_schema:
+            raise ValueError(
+                f"'{file.path}' was written by DataChain, so it can't be read "
+                "by column names with other files. Read it separately."
+            )
+
         kw: dict[str, Any] = {}
         if self.nrows:
             kw = {"batch_size": min(self.DEFAULT_BATCH_SIZE, self.nrows)}
-        if self.columns is not None and not use_datachain_schema:
+        if self.columns is not None:
             present = set(ds.schema.names)
             kw["columns"] = [c for c in self.columns if c in present]
 
