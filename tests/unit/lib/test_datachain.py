@@ -2104,7 +2104,6 @@ def test_read_csv_columns(tmp_dir, test_session):
 
 
 def test_read_csv_columns_keep_cleaned_names(tmp_dir, test_session):
-    # A full read names these first_name (Alice) and c0_first_name (Bob).
     path = tmp_dir / "names.csv"
     path.write_text("First Name,First-Name\nAlice,Bob\n")
     chain = dc.read_csv(
@@ -2436,6 +2435,43 @@ def test_read_parquet_columns_not_found(abc_parquet, test_session):
         dc.read_parquet(abc_parquet, columns=["x"], session=test_session)
 
 
+@pytest.mark.parametrize("columns", ["ca", []])
+def test_read_parquet_columns_must_be_a_list_of_names(
+    abc_parquet, test_session, columns
+):
+    with pytest.raises(DatasetPrepareError, match="non-empty list of column names"):
+        dc.read_parquet(abc_parquet, columns=columns, session=test_session)
+
+
+@pytest.mark.parametrize("missing", ["1.parquet", "2.parquet"])
+def test_read_parquet_columns_missing_in_some_files(tmp_dir, test_session, missing):
+    full = "2.parquet" if missing == "1.parquet" else "1.parquet"
+    pq.write_table(pa.table({"a": [1], "b": [10]}), tmp_dir / full)
+    pq.write_table(pa.table({"b": [20]}), tmp_dir / missing)
+    chain = dc.read_parquet(tmp_dir.as_uri(), columns=["a"], session=test_session)
+    values = chain.to_values("a")
+    assert len(values) == 2
+    assert set(values) == {1, None}
+
+
+def test_read_parquet_columns_with_incompatible_types(tmp_dir, test_session):
+    pq.write_table(pa.table({"a": [1]}), tmp_dir / "1.parquet")
+    pq.write_table(pa.table({"a": ["x"]}), tmp_dir / "2.parquet")
+    with pytest.raises(DatasetPrepareError, match="Unable to merge"):
+        dc.read_parquet(tmp_dir.as_uri(), columns=["a"], session=test_session)
+
+
+def test_read_parquet_columns_with_output_and_mixed_integer_widths(
+    tmp_dir, test_session
+):
+    pq.write_table(pa.table({"a": pa.array([1], pa.int32())}), tmp_dir / "1.parquet")
+    pq.write_table(pa.table({"a": pa.array([2], pa.int64())}), tmp_dir / "2.parquet")
+    chain = dc.read_parquet(
+        tmp_dir.as_uri(), columns=["a"], output={"x": int}, session=test_session
+    )
+    assert sorted(chain.to_values("x")) == [1, 2]
+
+
 @pytest.mark.parametrize("exported", ["1.parquet", "2.parquet"])
 def test_read_parquet_columns_some_files_written_by_datachain(
     tmp_dir, test_session, exported
@@ -2454,10 +2490,44 @@ def test_read_parquet_columns_written_by_datachain(tmp_dir, test_session):
         dc.read_parquet(path.as_uri(), columns=["x"], session=test_session)
 
 
-def test_read_parquet_output_must_fit_columns_read(abc_parquet, test_session):
-    chain = dc.read_parquet(abc_parquet, output={"c": float}, session=test_session)
-    with pytest.raises(ValueError, match=r"output has 1 fields but .* has 3 columns"):
-        chain.to_list()
+@pytest.mark.parametrize("columns,read", [(None, 3), (["c", "a"], 2)])
+def test_read_parquet_output_must_fit_columns_read(
+    abc_parquet, test_session, columns, read
+):
+    with pytest.raises(DatasetPrepareError, match=f"1 fields but {read} columns"):
+        dc.read_parquet(
+            abc_parquet, columns=columns, output={"c": float}, session=test_session
+        )
+
+
+def test_read_parquet_output_reads_files_by_the_first_file_columns(
+    tmp_dir, test_session
+):
+    pq.write_table(pa.table({"a": [1], "b": [10]}), tmp_dir / "1.parquet")
+    pq.write_table(pa.table({"b": [20], "a": [2]}), tmp_dir / "2.parquet")
+    chain = dc.read_parquet(
+        tmp_dir.as_uri(), output={"x": int, "y": int}, session=test_session
+    )
+    assert sorted(chain.to_list("x", "y")) == [(1, 10), (2, 20)]
+
+
+def test_read_parquet_output_skips_partition_columns(tmp_dir, test_session):
+    (tmp_dir / "year=2024").mkdir()
+    pq.write_table(pa.table({"a": [1], "b": [2]}), tmp_dir / "year=2024" / "p.parquet")
+    uri = tmp_dir.as_uri()
+    chain = dc.read_parquet(uri, output={"a": int, "b": int}, session=test_session)
+    assert chain.to_list("a", "b") == [(1, 2)]
+    output = {"a": int, "b": int, "year": int}
+    chain = dc.read_parquet(uri, output=output, session=test_session)
+    assert chain.to_list("a", "b", "year") == [(1, 2, 2024)]
+
+
+def test_read_parquet_output_skips_pandas_index(tmp_dir, test_session):
+    path = tmp_dir / "indexed.parquet"
+    pd.DataFrame({"a": [1], "b": [2]}, index=["r1"]).to_parquet(path)
+    output = {"a": int, "b": int}
+    chain = dc.read_parquet(path.as_uri(), output=output, session=test_session)
+    assert chain.to_list("a", "b") == [(1, 2)]
 
 
 def test_read_parquet_output_renames_by_position(abc_parquet, test_session):
@@ -2467,7 +2537,6 @@ def test_read_parquet_output_renames_by_position(abc_parquet, test_session):
 
 
 def test_read_parquet_columns_are_part_of_the_step(abc_parquet, test_session):
-    # Reads that differ only in columns must not reuse each other's results.
     def read(column):
         return dc.read_parquet(
             abc_parquet, columns=[column], output={"x": float}, session=test_session

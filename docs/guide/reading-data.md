@@ -58,17 +58,11 @@ code = gen_datamodel_code("s3://bucket/data.json", jmespath="images")
 
 ### Selecting and naming CSV and Parquet columns
 
-For `read_csv()`, `read_parquet()`, and `parse_tabular()`, use `columns=` to
-select input columns by name and set their order. Names may be written as in
-the file or as DataChain normalizes them: `"ZIP Code"` and `"zip_code"` refer
-to the same column. Unknown or repeated columns raise an error.
+For `read_csv()`, `read_parquet()`, and `parse_tabular()`, use `columns=` to select input columns by name and set their order. Names may be written as in the file or as DataChain normalizes them: `"ZIP Code"` and `"zip_code"` refer to the same column. Unknown or repeated columns raise an error.
 
-`output=` defines the result's names and Python types **by position**. A
-dictionary uses insertion order; CSV and `parse_tabular()` also accept a
-Pydantic model (field order) or a list of names (types inferred). Output names
-do not select or match input names. Supply exactly one output field for each
-column read: all input columns if `columns` is omitted, or just the selected
-columns if it is provided. Omit `output` to infer names and types.
+`output=` defines the result's names and Python types **by position**. A dictionary uses insertion order; CSV and `parse_tabular()` also accept a Pydantic model (field order) or a list of names (types inferred). Output names do not select or match input names. Supply exactly one output field for each column read: the selected columns if `columns` is provided, or all input columns if it is omitted. Omit `output` to infer names and types.
+
+With an `output` dictionary or model and no `columns`, the columns come from the first file by path, and every file is read by those names. Partition columns (from folders like `year=2024/`) and a pandas index saved as a column can be left out of `output` when they come last.
 
 For an ordinary Parquet file with columns `a, b, c`:
 
@@ -85,14 +79,9 @@ data = dc.read_parquet(
 )  # Renames a, b, c to c, b, a by position
 ```
 
-An `output={"c": float}` without `columns` supplies only one field for three
-columns and raises an error when the chain is executed. Replace partial
-`output` schemas with `columns=["c"]`; add `output={"c": float}` only if you
-also need to specify the result type. The same rules apply to CSV files.
+An `output={"c": float}` without `columns` supplies only one field for three columns and raises an error. Replace partial `output` schemas with `columns=["c"]`; add `output={"c": float}` only if you also need to specify the result type. The same rules apply to CSV files.
 
-CSV's `column_types=` controls parsing before `output` is applied. Its keys
-are input names, before normalization or renaming, and it does not select
-columns. For example, preserve the leading zero in `02134`:
+CSV's `column_types=` controls parsing before `output` is applied. Its keys are input names, before normalization or renaming, and it does not select columns. For example, preserve the leading zero in `02134`:
 
 ```python
 labels = dc.read_csv(
@@ -103,8 +92,7 @@ labels = dc.read_csv(
 )
 ```
 
-For CSV without a header, use generated input names `f0`, `f1`, etc. when
-selecting columns, then optionally rename them:
+For CSV without a header, use generated input names `f0`, `f1`, etc. when selecting columns, then optionally rename them:
 
 ```python
 data = dc.read_csv(
@@ -115,11 +103,9 @@ data = dc.read_csv(
 )
 ```
 
-With `header=False` and no `columns`, `output` is required and supplies names
-for every input column.
+With `header=False` and no `columns`, `output` is required and supplies names for every input column.
 
-Parquet exported by DataChain restores its saved schema and does not support
-`columns=`. Read it without `columns` and use `.select(...)` on the chain.
+Parquet exported by DataChain restores its saved schema and does not support `columns=`. Read it without `columns` and use `.select(...)` on the chain.
 
 ## SQL Databases
 

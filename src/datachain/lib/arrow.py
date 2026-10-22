@@ -1,12 +1,12 @@
 import hashlib
 import math
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from itertools import islice
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
 from pyarrow._csv import ParseOptions
-from pyarrow.dataset import CsvFileFormat, dataset
+from pyarrow.dataset import CsvFileFormat, Dataset, dataset
 
 from datachain import json
 from datachain.fs.reference import ReferenceFileSystem
@@ -122,9 +122,6 @@ class ArrowGenerator(Generator):
             and DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY in ds.schema.metadata
         )
 
-        if self.output_schema and not use_datachain_schema:
-            _check_output(self.output_schema, ds.schema.names, file)
-
         kw = {}
         if self.nrows:
             kw = {"batch_size": min(self.DEFAULT_BATCH_SIZE, self.nrows)}
@@ -219,29 +216,17 @@ class ArrowGenerator(Generator):
         return [self.output_schema(**vals_dict)]
 
 
-def _check_output(
-    output_schema: type["BaseModel"], columns: list[str], file: File
-) -> None:
-    """Fail when output doesn't have one field per column read."""
-    fields = len(output_schema.model_fields)
-    if fields != len(columns):
-        raise ValueError(
-            f"output has {fields} fields but '{file.path}' has {len(columns)} "
-            "columns. output names the columns read, in order; pick columns with "
-            "columns=."
-        )
+def _file_datasets(chain: "DataChain", **kwargs) -> Iterator[Dataset]:
+    parse_options = kwargs.pop("parse_options", None)
+    if format := kwargs.get("format"):
+        kwargs["format"] = fix_pyarrow_format(format, parse_options)
+    for (file,) in chain.to_iter("file"):
+        yield dataset(file.get_fs_path(), filesystem=file.get_fs(), **kwargs)  # type: ignore[union-attr]
 
 
 def file_schemas(chain: "DataChain", **kwargs) -> list[pa.Schema]:
     """Return the schema of each file in the chain."""
-    parse_options = kwargs.pop("parse_options", None)
-    if format := kwargs.get("format"):
-        kwargs["format"] = fix_pyarrow_format(format, parse_options)
-
-    schemas = []
-    for (file,) in chain.to_iter("file"):
-        ds = dataset(file.get_fs_path(), filesystem=file.get_fs(), **kwargs)  # type: ignore[union-attr]
-        schemas.append(ds.schema)
+    schemas = [ds.schema for ds in _file_datasets(chain, **kwargs)]
     if not schemas:
         raise ValueError(
             "Cannot infer schema (no files to process or can't access them)"
@@ -249,8 +234,34 @@ def file_schemas(chain: "DataChain", **kwargs) -> list[pa.Schema]:
     return schemas
 
 
-def infer_schema(chain: "DataChain", **kwargs) -> pa.Schema:
-    return pa.unify_schemas(file_schemas(chain, **kwargs))
+def read_schema(
+    chain: "DataChain", columns: Sequence[str] | None, fields: int, **kwargs
+) -> pa.Schema | None:
+    """Return the schema to read the files with when output gives their types.
+
+    Like pyarrow, it takes the columns from the first file (by path) and reads
+    every file by those names. Partition and pandas index columns at the end are
+    left out when output has no fields for them.
+    """
+    ds = next(_file_datasets(chain.order_by("file.path").limit(1), **kwargs))
+    schema = ds.schema
+    if columns is not None:
+        schema, _ = merge_schemas([schema], columns)
+    elif _get_datachain_schema(schema):
+        return None
+    elif len(schema) > fields:
+        physical = next(ds.get_fragments()).physical_schema
+        extra = set(schema.names) - set(physical.names)
+        index = (schema.pandas_metadata or {}).get("index_columns", [])
+        extra |= {c for c in index if isinstance(c, str)}
+        if set(schema.names[fields:]) <= extra:
+            schema = pa.schema(list(schema)[:fields], metadata=schema.metadata)
+    if len(schema) != fields:
+        raise ValueError(
+            f"output has {fields} fields but {len(schema)} columns are read. "
+            "output names the columns read, in order; pick columns with columns=."
+        )
+    return schema
 
 
 def merge_schemas(
@@ -265,6 +276,8 @@ def merge_schemas(
     """
     if columns is None:
         return pa.unify_schemas(schemas), None
+    if isinstance(columns, str) or not columns:
+        raise ValueError("columns must be a non-empty list of column names")
 
     if any(_get_datachain_schema(s) for s in schemas):
         raise ValueError("columns can't be used with files written by DataChain")
@@ -277,8 +290,9 @@ def merge_schemas(
     if len(set(selected)) < len(selected):
         raise ValueError(f"Columns {list(columns)} name a column more than once")
     # Only the selected columns need compatible types across files.
+    wanted = set(selected)
     merged = pa.unify_schemas(
-        [pa.schema([s.field(c) for c in selected if c in s.names]) for s in schemas]
+        [pa.schema([f for f in s if f.name in wanted]) for s in schemas]
     )
     schema = pa.schema(
         [merged.field(c) for c in selected], metadata=schemas[0].metadata

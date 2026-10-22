@@ -2550,6 +2550,7 @@ class DataChain:
             )  # x receives c; y receives a
             ```
         """
+        import pyarrow as pa
         from pyarrow.dataset import CsvFileFormat, JsonFileFormat
 
         from datachain.lib.arrow import (
@@ -2557,6 +2558,7 @@ class DataChain:
             file_schemas,
             fix_pyarrow_format,
             merge_schemas,
+            read_schema,
             schema_to_output,
         )
 
@@ -2578,23 +2580,28 @@ class DataChain:
         if "file" not in self.schema or not self.count():
             raise DatasetPrepareError(self.name, "no files to parse.")
 
-        schema = None
         col_names = output if isinstance(output, Sequence) else None
-        if col_names or not output or columns is not None:
-            try:
+        infer = bool(col_names) or not output
+        try:
+            if infer:
                 schemas = file_schemas(self, **kwargs, parse_options=parse_options)
                 schema, names = merge_schemas(schemas, columns)
-                if col_names or not output:
-                    output, _ = schema_to_output(schema, col_names or names)
-            except ValueError as e:
-                raise DatasetPrepareError(self.name, e) from e
+                output, _ = schema_to_output(schema, col_names or names)
 
-        if isinstance(output, dict):
-            model_name = model_name or column or ""
-            model = dict_to_data_model(model_name, output)
-            output = model
-        else:
-            model = output  # type: ignore[assignment]
+            if isinstance(output, dict):
+                model_name = model_name or column or ""
+                model = dict_to_data_model(model_name, output)
+                output = model
+            else:
+                model = output  # type: ignore[assignment]
+
+            if not infer:
+                fields = len(model.model_fields)
+                schema = read_schema(
+                    self, columns, fields, **kwargs, parse_options=parse_options
+                )
+        except (ValueError, pa.ArrowTypeError) as e:
+            raise DatasetPrepareError(self.name, e) from e
 
         if column:
             output = {column: model}  # type: ignore[dict-item]
