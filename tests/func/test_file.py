@@ -693,12 +693,13 @@ def fetched_bytes(monkeypatch):
     from gcsfs.core import GCSFile
     from s3fs.core import S3File
 
-    fetched = [0]
+    fetched = [0, 0]
     for cls in (S3File, GCSFile, AzureBlobFile):
 
         def fetch_range(self, *args, _orig=cls._fetch_range, **kwargs):
             data = _orig(self, *args, **kwargs)
             fetched[0] += len(data)
+            fetched[1] += 1
             return data
 
         monkeypatch.setattr(cls, "_fetch_range", fetch_range)
@@ -847,6 +848,95 @@ def test_tar_member_partial_read(cloud_test_catalog_upload, fetched_bytes, tmp_p
 
     assert 0 < fetched_bytes[0] < len(data) // 2
     assert (info.width, info.height, info.format) == (1500, 1500, "PNG")
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize("size", [0, 100 * 1024])
+@pytest.mark.parametrize("block_size", [None, 0, 256 * 1024])
+def test_tar_member_open_read_ahead(
+    cloud_test_catalog_upload,
+    fetched_bytes,
+    tmp_path,
+    size,
+    block_size,
+    record_property,
+):
+    ctc = cloud_test_catalog_upload
+    data = b"m" * size
+    padding = tmp_path / "padding.bin"
+    with padding.open("wb") as stream:
+        stream.truncate(60 * 1024 * 1024)
+    tar_path = tmp_path / "member.tar"
+    with tarfile.open(tar_path, "w") as archive:
+        info = tarfile.TarInfo("member.bin")
+        info.size = size
+        archive.addfile(info, io.BytesIO(data))
+        archive.add(padding, arcname=padding.name)
+    ctc.src.fs.put_file(str(tar_path), str(ctc.src / tar_path.name))
+    parent = File(source=ctc.src_uri, path=tar_path.name)
+    parent._set_stream(ctc.catalog, caching_enabled=False)
+    member = next(process_tar(parent))
+    member._set_stream(ctc.catalog, caching_enabled=False)
+    fetched_bytes[:] = [0, 0]
+
+    with member.open(block_size=block_size) as stream:
+        assert stream.read() == data
+
+    record_property("fetched_bytes", fetched_bytes[0])
+    record_property("range_fetches", fetched_bytes[1])
+    if not size:
+        assert fetched_bytes == [0, 0]
+    else:
+        expected_block = size if block_size is None else block_size
+        assert (
+            size <= fetched_bytes[0] <= size + expected_block + io.DEFAULT_BUFFER_SIZE
+        )
+        if block_size == 0:
+            assert fetched_bytes[0] == size
+        elif block_size is not None:
+            assert fetched_bytes[0] >= block_size
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_tar_member_large_sequential_read_ahead(
+    cloud_test_catalog_upload, fetched_bytes, tmp_path, record_property
+):
+    from datachain.client.fileslice import FileSlice
+
+    ctc = cloud_test_catalog_upload
+    size = 100 * 1024 * 1024
+    data_path = tmp_path / "large.bin"
+    with data_path.open("wb") as stream:
+        stream.truncate(size)
+    tar_path = tmp_path / "large.tar"
+    with tarfile.open(tar_path, "w") as archive:
+        archive.add(data_path, arcname=data_path.name)
+    ctc.src.fs.put_file(str(tar_path), str(ctc.src / tar_path.name))
+    parent = File(source=ctc.src_uri, path=tar_path.name)
+    parent._set_stream(ctc.catalog, caching_enabled=False)
+    member = next(process_tar(parent))
+    member._set_stream(ctc.catalog, caching_enabled=False)
+    client = ctc.catalog.get_client(parent.source)
+    fetched_bytes[:] = [0, 0]
+    with FileSlice(
+        client.open_object(parent), member.location[0]["offset"], size, member.name
+    ) as stream:
+        normal = stream.read()
+    normal_fetches = fetched_bytes.copy()
+    assert len(normal) == size
+    fetched_bytes[:] = [0, 0]
+
+    with member.open() as stream:
+        assert stream.read() == normal
+
+    record_property("normal_fetched_bytes", normal_fetches[0])
+    record_property("normal_range_fetches", normal_fetches[1])
+    record_property("fetched_bytes", fetched_bytes[0])
+    record_property("range_fetches", fetched_bytes[1])
+    assert size <= fetched_bytes[0] <= normal_fetches[0]
+    assert 0 < fetched_bytes[1] <= normal_fetches[1]
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)

@@ -4,7 +4,8 @@ import os
 import posixpath
 import tarfile
 from pathlib import Path
-from unittest.mock import Mock
+from types import SimpleNamespace
+from unittest.mock import Mock, PropertyMock
 
 import pytest
 from fsspec.implementations.local import LocalFileSystem
@@ -22,7 +23,7 @@ from datachain.lib.file import (
     VFileError,
     VideoFile,
 )
-from datachain.lib.tar import process_tar
+from datachain.lib.tar import build_tar_member, process_tar
 
 
 @pytest.fixture
@@ -753,6 +754,122 @@ def test_read_text_virtual_tar_file(tmp_path, catalog):
         assert stream.read() == data
 
     assert member.read_text(encoding="utf-8") == data
+
+
+@pytest.mark.parametrize(
+    "size,fs,block_size,expected",
+    [
+        (0, SimpleNamespace(default_block_size=50 * 1024 * 1024), None, 0),
+        (
+            100 * 1024,
+            SimpleNamespace(default_block_size=50 * 1024 * 1024),
+            None,
+            100 * 1024,
+        ),
+        (
+            100 * 1024 * 1024,
+            SimpleNamespace(default_block_size=50 * 1024 * 1024),
+            None,
+            50 * 1024 * 1024,
+        ),
+        (
+            100 * 1024 * 1024,
+            SimpleNamespace(default_block_size=2 * 1024 * 1024),
+            None,
+            2 * 1024 * 1024,
+        ),
+        (
+            100 * 1024 * 1024,
+            SimpleNamespace(blocksize=4 * 1024 * 1024),
+            None,
+            4 * 1024 * 1024,
+        ),
+        (
+            100 * 1024 * 1024,
+            SimpleNamespace(sync_fs=SimpleNamespace(block_size=5 * 1024 * 1024)),
+            None,
+            5 * 1024 * 1024,
+        ),
+        (100 * 1024, SimpleNamespace(sync_fs=SimpleNamespace(block_size=0)), None, 0),
+        (
+            100 * 1024,
+            SimpleNamespace(
+                sync_fs=SimpleNamespace(block_size=None, blocksize=4 * 1024 * 1024),
+                block_size=8192,
+            ),
+            None,
+            None,
+        ),
+        (
+            100 * 1024,
+            SimpleNamespace(default_block_size=None, block_size=8192),
+            None,
+            None,
+        ),
+        (100 * 1024, SimpleNamespace(default_block_size=0, block_size=8192), None, 0),
+        (100 * 1024, SimpleNamespace(default_block_size="auto"), None, None),
+        (100 * 1024, SimpleNamespace(), None, None),
+        (100 * 1024, None, 0, 0),
+        (100 * 1024, None, 256 * 1024, 256 * 1024),
+    ],
+)
+def test_tar_member_backend_read_ahead(size, fs, block_size, expected):
+    client = Mock()
+    client.cache.get_path.return_value = None
+    if block_size is None:
+        client.fs = fs
+    else:
+        type(client).fs = PropertyMock(
+            side_effect=AssertionError("explicit block size")
+        )
+    client.open_object.return_value = io.BytesIO()
+    catalog = Mock(client_config={})
+    catalog.get_client.return_value = client
+    member = File(
+        source="s3://bucket",
+        path="archive.tar/member.bin",
+        location=[
+            {
+                "vtype": "tar",
+                "parent": {"source": "s3://bucket", "path": "archive.tar"},
+                "offset": 512,
+                "size": size,
+            }
+        ],
+    )
+    member._set_stream(catalog, caching_enabled=False)
+
+    with member.open(block_size=block_size):
+        pass
+
+    assert client.open_object.call_args.kwargs["block_size"] == expected
+
+
+def test_tar_member_cached_parent_skips_backend(catalog, monkeypatch):
+    from datachain.client.s3 import ClientS3
+
+    data = b"cached tar member"
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        info = tarfile.TarInfo("member.bin")
+        info.size = len(data)
+        archive.addfile(info, io.BytesIO(data))
+    raw = buffer.getvalue()
+    parent = File(
+        source="s3://bucket", path="archive.tar", size=len(raw), etag="cached"
+    )
+    catalog.cache.store_data(parent, raw)
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        member = build_tar_member(parent, archive.getmember("member.bin"))
+    member._set_stream(catalog, caching_enabled=False)
+
+    def no_backend(*args, **kwargs):
+        raise AssertionError("cached parent initialized the backend")
+
+    monkeypatch.setattr(ClientS3, "create_fs", no_backend)
+
+    with member.open() as stream:
+        assert stream.read() == data
 
 
 def test_resolve_unsupported_protocol():
