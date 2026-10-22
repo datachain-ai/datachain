@@ -1061,9 +1061,17 @@ def test_row_to_features_parent_and_child_overlap(test_session, spec, row, expec
     assert SignalSchema(spec).row_to_features(row, test_session.catalog) == expected
 
 
-def test_row_to_features_list_of_models(test_session):
+@pytest.mark.parametrize(
+    "raw_items",
+    [
+        [{"aa": 1, "bb": "x"}, {"aa": 2, "bb": "y"}],
+        [MyType1(aa=1, bb="x"), MyType1(aa=2, bb="y")],
+    ],
+    ids=["dict-values", "model-instances"],
+)
+def test_row_to_features_list_of_models(test_session, raw_items):
     schema = SignalSchema({"items": list[MyType1]})
-    row = ([{"aa": 1, "bb": "x"}, {"aa": 2, "bb": "y"}],)
+    row = (raw_items,)
 
     features = schema.row_to_features(row, test_session.catalog)
 
@@ -1072,6 +1080,15 @@ def test_row_to_features_list_of_models(test_session):
     assert isinstance(items, list)
     assert [item.aa for item in items] == [1, 2]
     assert all(isinstance(item, MyType1) for item in items)
+
+
+def test_convert_model_collection_fields_skips_missing_fields():
+    class Holder(BaseModel):
+        items: list[MyType1]
+
+    schema = SignalSchema({"holder": Holder})
+
+    assert schema._convert_model_collection_fields(Holder, {}, None, False) == {}
 
 
 def test_row_to_features_dict_of_models(test_session):
@@ -1678,6 +1695,28 @@ def test_row_to_objs_setup():
 def test_row_to_objs_parent_and_child_overlap(spec, row, expected):
     schema = SignalSchema(spec)
     assert schema.row_to_objs(_row(schema, row)) == expected
+
+
+@pytest.mark.parametrize(
+    "field_type,value,converted",
+    [
+        (list[float], [0.5, 1.5], False),
+        (dict[str, str], {"a": "b"}, False),
+        (list[MyType1], [{"aa": 1, "bb": "b"}], True),
+    ],
+    ids=["float-list", "str-dict", "model-list"],
+)
+def test_row_to_objs_converts_only_model_collections_that_need_it(
+    mocker, field_type, value, converted
+):
+    model = create_model("CollectionHolder", id=(int, ...), items=(field_type, ...))
+    schema = SignalSchema({"m": model})
+    spy = mocker.spy(schema, "_convert_feature_value")
+
+    (obj,) = schema.row_to_objs(_row(schema, (1, value)))
+
+    assert spy.called is converted
+    assert obj.model_dump()["items"] == value
 
 
 def test_setup_not_callable():

@@ -4,7 +4,7 @@ import uuid
 from collections.abc import Sequence
 
 import pytest
-from pydantic import RootModel, create_model
+from pydantic import BaseModel, ConfigDict, Field, RootModel, create_model
 
 import datachain as dc
 from datachain import DataModel, func
@@ -80,6 +80,43 @@ def test_partial_collision_on_dataset_reload(test_session):
         assert actual_fields == [("a",), ("b",)]
     finally:
         ModelStore.store = original_store
+
+
+@pytest.mark.parametrize("container", ["list", "dict", "nested_list"])
+@pytest.mark.parametrize("required", [False, True], ids=["defaulted", "required"])
+@pytest.mark.parametrize("serialize_by_alias", [False, True])
+def test_serialized_aliases_readback(
+    test_session, container, required, serialize_by_alias
+):
+    class Aliased(BaseModel):
+        model_config = ConfigDict(serialize_by_alias=serialize_by_alias)
+
+        value: int = Field(... if required else 0, alias="externalValue")
+
+    class Wrapper(BaseModel):
+        values: list[Aliased]
+
+    aliased = Aliased(externalValue=7)
+    item = {
+        "list": [aliased],
+        "dict": {"a": aliased},
+        "nested_list": Wrapper(values=[aliased]),
+    }[container]
+    dataset_name = f"serialized-alias-{container}-{required}-{serialize_by_alias}"
+    dc.read_values(
+        session=test_session,
+        settings={"prefetch": False},
+        item=[item],
+    ).save(dataset_name)
+
+    restored = dc.read_dataset(dataset_name, session=test_session).to_list("item")[0][0]
+
+    if container == "list":
+        assert restored[0].value == 7
+    elif container == "dict":
+        assert restored["a"].value == 7
+    else:
+        assert restored.values[0].value == 7
 
 
 def test_root_model_readback(test_session):
