@@ -118,7 +118,6 @@ class ArrowGenerator(Generator):
 
         ds = dataset(fs_path, schema=self.input_schema, filesystem=fs, **kwargs)
 
-        hf_schema = _get_hf_schema(ds.schema)
         use_datachain_schema = (
             bool(ds.schema.metadata)
             and DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY in ds.schema.metadata
@@ -130,12 +129,17 @@ class ArrowGenerator(Generator):
                 "by column names with other files. Read it separately."
             )
 
+        schema = ds.schema
         kw: dict[str, Any] = {}
         if self.nrows:
             kw = {"batch_size": min(self.DEFAULT_BATCH_SIZE, self.nrows)}
         if self.columns is not None:
-            present = set(ds.schema.names)
+            present = set(schema.names)
             kw["columns"] = [c for c in self.columns if c in present]
+            # Decode Hugging Face features only for the columns being read.
+            fields = [schema.field(c) for c in kw["columns"]]
+            schema = pa.schema(fields, metadata=schema.metadata)
+        hf_schema = _get_hf_schema(schema)
 
         def iter_records():
             for record_batch in ds.to_batches(**kw):

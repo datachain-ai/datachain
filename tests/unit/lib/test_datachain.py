@@ -17,6 +17,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 import sqlalchemy
+from datasets import ClassLabel, Dataset, Features, Translation, Value
 from pydantic import BaseModel
 
 import datachain as dc
@@ -37,6 +38,7 @@ from datachain.lib.data_model import DataModel
 from datachain.lib.dc import C, DatasetPrepareError, Sys
 from datachain.lib.dc.listings import read_listing_dataset
 from datachain.lib.file import File
+from datachain.lib.hf import HFClassLabel
 from datachain.lib.listing import LISTING_PREFIX, parse_listing_uri
 from datachain.lib.listing_info import ListingInfo
 from datachain.lib.signal_schema import (
@@ -2548,10 +2550,6 @@ def test_read_parquet_output_keeps_each_file_struct_fields(tmp_dir, test_session
 
 
 def test_read_parquet_output_decodes_each_file_hf_labels(tmp_dir, test_session):
-    from datasets import ClassLabel, Dataset, Features
-
-    from datachain.lib.hf import HFClassLabel
-
     for name, labels in [("1.parquet", ["no", "yes"]), ("2.parquet", ["yes", "no"])]:
         features = Features({"label": ClassLabel(names=labels)})
         Dataset.from_dict({"label": [0]}, features=features).to_parquet(tmp_dir / name)
@@ -2559,6 +2557,19 @@ def test_read_parquet_output_decodes_each_file_hf_labels(tmp_dir, test_session):
         tmp_dir.as_uri(), output={"label": HFClassLabel}, session=test_session
     )
     assert sorted(chain.to_values("label.string")) == ["no", "yes"]
+
+
+def test_read_parquet_columns_with_output_skip_unread_hf_features(
+    tmp_dir, test_session
+):
+    features = Features({"text": Value("string"), "tr": Translation(["en", "fr"])})
+    path = tmp_dir / "hf.parquet"
+    data = {"text": ["hi"], "tr": [{"en": "a", "fr": "b"}]}
+    Dataset.from_dict(data, features=features).to_parquet(path)
+    chain = dc.read_parquet(
+        path.as_uri(), columns=["text"], output={"text": str}, session=test_session
+    )
+    assert chain.to_values("text") == ["hi"]
 
 
 def test_read_parquet_output_skips_partition_columns(tmp_dir, test_session):
