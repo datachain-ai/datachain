@@ -51,7 +51,7 @@ total = sum(
 )
 ```
 
-`read_storage()` reuses a listing from `save()` made with the same `versions`. Buckets without versioning, local files and HTTP storages have one kind of listing, and `versions` changes nothing there.
+`read_storage()` reuses a listing from `save()` made with the same `versions`, on S3, GCS and Azure even when the bucket has no versioning. Local files, Hugging Face and HTTP storages have one kind of listing, and `versions` changes nothing there.
 
 ## Credentials
 

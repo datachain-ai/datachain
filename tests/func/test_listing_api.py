@@ -348,6 +348,33 @@ def test_an_explicit_session_decides_the_anonymous_probe(catalog, mocker):
     assert not probe.call_count
 
 
+def test_save_of_an_explicit_session_lists_with_anon(test_session, tmp_dir, mocker):
+    (tmp_dir / "a.txt").write_text("a")
+    spy = mocker.spy(storage, "get_listing")
+
+    chain = dc.list_storage(f"{tmp_dir}/", session=test_session, anon=True).save()
+
+    assert spy.call_args.args[1].catalog.client_config["anon"] is True
+    assert "anon" not in test_session.catalog.client_config  # left unchanged
+    assert chain.to_values("file")[0].read_text() == "a"
+    assert any(
+        d.name.startswith("lst__")
+        for d in test_session.catalog.ls_datasets(include_listing=True)
+    )  # saved in the session's database
+
+
+def test_read_storage_of_an_explicit_session_lists_with_anon(
+    test_session, tmp_dir, mocker
+):
+    (tmp_dir / "a.txt").write_text("a")
+    spy = mocker.spy(storage, "get_listing")
+
+    chain = dc.read_storage(f"{tmp_dir}/", session=test_session, anon=True)
+
+    assert spy.call_args.args[1].catalog.client_config["anon"] is True
+    assert chain.to_values("file")[0].read_text() == "a"
+
+
 def test_listing_save_lists_a_shared_listing_once(test_session, tmp_dir, mocker):
     (tmp_dir / "a.txt").write_text("a")
     (tmp_dir / "b.csv").write_text("b")

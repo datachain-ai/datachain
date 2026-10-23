@@ -5,6 +5,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from functools import reduce
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 from datachain.client import Client
 from datachain.lib.dc.storage_pattern import (
@@ -204,7 +205,7 @@ def read_storage(  # noqa: PLR0913
     session_config, client_config = _client_configs(
         uris, session, anon, client_config, versions
     )
-    session = Session.get(session, client_config=session_config, in_memory=in_memory)
+    session = _session_for(session, session_config, in_memory)
     return _read_storage(
         uris,
         session,
@@ -256,6 +257,20 @@ def _client_configs(
     if not versions:
         config = config | {"version_aware": False}
     return session_config, config
+
+
+def _session_for(
+    session: Session | None, client_config: dict | None, in_memory: bool
+) -> Session:
+    """``Session.get(session)`` with ``client_config``, if any: an explicit
+    session is never changed, so a session over a copy of its catalog.
+    """
+    session = Session.get(session, client_config=client_config, in_memory=in_memory)
+    if client_config is None or session.catalog.client_config == client_config:
+        return session
+    catalog = session.catalog.copy()
+    catalog.client_config = client_config
+    return Session("session" + uuid4().hex[:4], catalog, in_memory=in_memory)
 
 
 def _session_client_config(session: Session | None, client_config: dict | None) -> dict:
@@ -483,16 +498,17 @@ class StorageListing:
         self.client_config = client_config
         self._session = session
         self._session_config = session_config
+        self._save_session: Session | None = None
         self._in_memory = in_memory
 
     @property
     def session(self) -> Session:
         """The session `save()` writes with, created on first use."""
-        if self._session is None:
-            self._session = Session.get(
-                client_config=self._session_config, in_memory=self._in_memory
+        if self._save_session is None:
+            self._save_session = _session_for(
+                self._session, self._session_config, self._in_memory
             )
-        return self._session
+        return self._save_session
 
     def __repr__(self) -> str:  # noqa: D105
         return f"StorageListing({self.uris!r}, versions={self.versions})"
