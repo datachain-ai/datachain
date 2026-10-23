@@ -136,20 +136,34 @@ def convert_feature(val: Any, feat: Any, anno: Any) -> Any:  # noqa: PLR0911
         item_anno = _list_item_type(anno)
         return [convert_feature(v, feat.feature, item_anno) for v in val]
     if isinstance(feat, ClassLabel):
+        if HFClassLabel not in (anno, *get_args(anno)):
+            return val
         return HFClassLabel(string=feat.names[val], integer=val)
     if isinstance(feat, dict):
+        model = _generated_model(anno)
+        if model is None:
+            return val
         sdict = {}
-        model_fields = anno._model_fields_by_aliases()  # type: ignore[attr-defined]
+        model_fields = model._model_fields_by_aliases()
         for sname in val:
             norm_name, info = model_fields[sname]
             sdict[norm_name] = convert_feature(val[sname], feat[sname], info.annotation)
-        return anno(**sdict)
+        return model(**sdict)
     if isinstance(feat, Image):
         if isinstance(val, dict):
             return HFImage(img=val["bytes"])
         return HFImage(img=image_to_bytes(val))
     if isinstance(feat, Audio):
         return HFAudio(array=val["array"], sampling_rate=val["sampling_rate"])
+
+
+def _generated_model(anno: Any) -> Any:
+    """Return the model generated for a dict feature, if it is the requested type.
+
+    Other requested types, such as `dict` or a user's model, take the raw dict.
+    """
+    types = (anno, *get_args(anno))
+    return next((t for t in types if hasattr(t, "_model_fields_by_aliases")), None)
 
 
 def _list_item_type(anno: Any) -> Any:

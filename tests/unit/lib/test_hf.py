@@ -1,3 +1,4 @@
+import pytest
 from datasets import (
     Array2D,
     ClassLabel,
@@ -10,7 +11,7 @@ from datasets import (
 )
 
 import datachain as dc
-from datachain.lib.data_model import dict_to_data_model
+from datachain.lib.data_model import DataModel, dict_to_data_model
 from datachain.lib.hf import (
     HFClassLabel,
     HFGenerator,
@@ -103,6 +104,46 @@ def test_hf_list_of_class_labels():
     ds = Dataset.from_dict({"labels": [[0, 1]]}, features=features)
     row = _first_row(ds)
     assert [(c.string, c.integer) for c in row.labels] == [("cat", 0), ("dog", 1)]
+
+
+def test_read_hf_list_of_class_labels(test_session):
+    labels = List(ClassLabel(names=["cat", "dog"]))
+    features = Features({"id": Value("int64"), "labels": labels})
+    ds = Dataset.from_dict({"id": [1], "labels": [[0, 1]]}, features=features)
+    (labels,) = dc.read_hf(ds, session=test_session).to_values("labels")
+    assert [c.string for c in labels] == ["cat", "dog"]
+
+
+class Tag(DataModel):
+    name: str
+
+
+TAGS = ({"tags": List({"name": Value("string")})}, {"tags": [[{"name": "x"}]]})
+LABELS = ({"labels": List(ClassLabel(names=["a", "b"]))}, {"labels": [[0, 1]]})
+LABEL = ({"label": ClassLabel(names=["a", "b"])}, {"label": [1]})
+META = ({"meta": {"name": Value("string")}}, {"meta": [{"name": "x"}]})
+
+
+@pytest.mark.parametrize(
+    "features,data,output,expected",
+    [
+        (*TAGS, list[dict], [{"name": "x"}]),
+        (*TAGS, list[dict[str, str]], [{"name": "x"}]),
+        (*TAGS, list[Tag], [Tag(name="x")]),
+        (*LABELS, list[int], [0, 1]),
+        (*LABELS, list[int] | None, [0, 1]),
+        (*LABEL, int, 1),
+        (*META, dict, {"name": "x"}),
+    ],
+)
+def test_read_parquet_hf_explicit_output(
+    tmp_path, test_session, features, data, output, expected
+):
+    (name,) = features
+    path = tmp_path / "hf.parquet"
+    Dataset.from_dict(data, features=Features(features)).to_parquet(path)
+    chain = dc.read_parquet(path.as_uri(), output={name: output}, session=test_session)
+    assert chain.to_values(name) == [expected]
 
 
 def test_hf_list_of_class_labels_missing():
