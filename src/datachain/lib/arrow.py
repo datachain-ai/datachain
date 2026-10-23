@@ -5,8 +5,11 @@ from itertools import islice
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
+from fsspec.implementations.http import HTTPFileSystem
+from fsspec.implementations.local import LocalFileSystem
 from pyarrow._csv import ParseOptions
-from pyarrow.dataset import CsvFileFormat, Dataset, dataset
+from pyarrow.dataset import CsvFileFormat, Dataset, ParquetFileFormat, dataset
+from pyarrow.fs import FSSpecHandler, PyFileSystem
 
 from datachain import json
 from datachain.fs.reference import ReferenceFileSystem
@@ -63,6 +66,21 @@ _CSV_PARSE_OPTIONS = (
 )
 
 
+def is_parquet(format: Any) -> bool:
+    """Whether a pyarrow dataset `format` reads Parquet, which is its default."""
+    if isinstance(format, str):
+        return format == "parquet"
+    return format is None or isinstance(format, ParquetFileFormat)
+
+
+class _PartialReadHandler(FSSpecHandler):
+    """Opens files without read-ahead, so reading some columns of a Parquet file
+    fetches only those columns. pyarrow merges nearby reads itself."""
+
+    def open_input_file(self, path):
+        return pa.PythonFile(self.fs.open(path, mode="rb", cache_type="none"), mode="r")
+
+
 class ArrowGenerator(Generator):
     DEFAULT_BATCH_SIZE = 2**17  # same as `pyarrow._dataset._DEFAULT_BATCH_SIZE`
 
@@ -111,6 +129,11 @@ class ArrowGenerator(Generator):
             fs = ReferenceFileSystem({fs_path: [cache_path]})
         else:
             fs, fs_path = file.get_fs(), file.get_fs_path()
+            # pyarrow reads local files natively, and HTTP servers without range
+            # support need read-ahead blocks.
+            parquet = is_parquet(self.kwargs.get("format"))
+            if parquet and not isinstance(fs, (LocalFileSystem, HTTPFileSystem)):
+                fs = PyFileSystem(_PartialReadHandler(fs))
 
         kwargs = self.kwargs
         if format := kwargs.get("format"):

@@ -7,6 +7,8 @@ import threading
 from pathlib import Path
 
 import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 import datachain as dc
@@ -795,6 +797,28 @@ def test_partial_reads_fetch_part_of_file(
     assert len(data) > 4 * 1024 * 1024
     assert 0 < fetched_bytes[0] < len(data) // 2
     assert {field: getattr(info, field) for field in expected} == expected
+
+
+@pytest.mark.filterwarnings("ignore:Sending a large body:ResourceWarning")
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_read_parquet_columns_fetch_only_those_columns(
+    cloud_test_catalog_upload, fetched_bytes, tmp_path
+):
+    ctc = cloud_test_catalog_upload
+    rng = np.random.default_rng(0)
+    table = pa.table({f"c{i}": rng.random(50_000) for i in range(10)})
+    local = tmp_path / "wide.parquet"
+    pq.write_table(table, local, row_group_size=10_000)
+    ctc.src.fs.put_file(str(local), str(ctc.src / local.name))
+    uri = f"{ctc.src_uri}/{local.name}"
+    chain = dc.read_parquet(uri, columns=["c3"], session=ctc.session)
+    fetched_bytes[0] = 0
+
+    values = chain.order_by("source.index").to_values("c3")
+
+    assert values == table["c3"].to_pylist()
+    assert 0 < fetched_bytes[0] < local.stat().st_size // 4
 
 
 @pytest.mark.filterwarnings("ignore:Sending a large body:ResourceWarning")

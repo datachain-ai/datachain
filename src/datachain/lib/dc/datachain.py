@@ -2557,6 +2557,7 @@ class DataChain:
             ArrowGenerator,
             file_schemas,
             fix_pyarrow_format,
+            is_parquet,
             merge_schemas,
             read_columns,
             schema_to_output,
@@ -2615,8 +2616,9 @@ class DataChain:
         if source:
             output = {"source": ArrowRow} | output  # type: ignore[assignment,operator]
 
-        # disable prefetch if nrows is set
-        settings = {"prefetch": 0} if nrows else {}
+        # Prefetch downloads whole files, so skip it when only part is read.
+        partial = nrows or (columns is not None and is_parquet(format))
+        settings = {"prefetch": 0} if partial else {}
         return self.settings(**settings).gen(  # type: ignore[arg-type]
             ArrowGenerator(
                 schema,
