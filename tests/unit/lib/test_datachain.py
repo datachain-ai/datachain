@@ -2489,9 +2489,25 @@ def test_read_parquet_columns_some_files_written_by_datachain(
 
 
 def test_read_parquet_columns_written_by_datachain(tmp_dir, test_session):
+    class Point(DataModel):
+        x: int
+        y: int
+
     path = tmp_dir / "exported.parquet"
-    dc.read_values(x=[1], session=test_session).to_parquet(path)
-    with pytest.raises(DatasetPrepareError, match="written by DataChain"):
+    dc.read_values(
+        a=[1], p=[Point(x=2, y=3)], b=["z"], session=test_session
+    ).to_parquet(path)
+    chain = dc.read_parquet(path.as_uri(), columns=["p", "a"], session=test_session)
+    assert [s for s in chain.schema if s != "source"] == ["p", "a"]
+    ((p, a),) = chain.to_list("p", "a")
+    assert (p.x, p.y, a) == (2, 3, 1)
+
+    with pytest.raises(DatasetPrepareError, match="can't be used with output"):
+        dc.read_parquet(
+            path.as_uri(), columns=["p"], output={"p": Point}, session=test_session
+        )
+
+    with pytest.raises(DatasetPrepareError, match=r"Columns \['x'\] not found"):
         dc.read_parquet(path.as_uri(), columns=["x"], session=test_session)
 
 

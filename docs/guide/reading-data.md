@@ -105,7 +105,7 @@ data = dc.read_csv(
 
 With `header=False` and no `columns`, `output` is required and supplies names for every input column.
 
-Parquet exported by DataChain restores its saved schema and does not support `columns=`. Read it without `columns` and use `.select(...)` on the chain. With `columns` or `output`, read it separately from other Parquet files.
+Parquet exported by DataChain restores its saved schema. There, `columns=` picks top-level signals, such as `columns=["p"]` for a model signal `p`; omit `output` with it. With `columns` or `output`, read it separately from other Parquet files.
 
 ## SQL Databases
 

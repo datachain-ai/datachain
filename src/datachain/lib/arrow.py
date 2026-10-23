@@ -258,10 +258,15 @@ def read_columns(
     """
     ds = next(_file_datasets(chain.order_by("file.path").limit(1), **kwargs))
     schema = ds.schema
+    if _get_datachain_schema(schema):
+        if columns is not None:
+            raise ValueError(
+                "columns can't be used with output on files written by DataChain; "
+                "omit output to restore their signals"
+            )
+        return None
     if columns is not None:
         schema, _ = merge_schemas([schema], columns)
-    elif _get_datachain_schema(schema):
-        return None
     elif len(schema) > fields:
         physical = next(ds.get_fragments()).physical_schema
         extra = set(schema.names) - set(physical.names)
@@ -292,9 +297,19 @@ def merge_schemas(
     if isinstance(columns, str) or not columns:
         raise ValueError("columns must be a non-empty list of column names")
 
-    if any(_get_datachain_schema(s) for s in schemas):
-        raise ValueError("columns can't be used with files written by DataChain")
-    names = list(dict.fromkeys(n for s in schemas for n in s.names))
+    # Files written by DataChain are picked by signal; a signal is stored as its
+    # nested `signal.field` columns.
+    signal_schemas = [_get_datachain_schema(s) for s in schemas]
+    if any(signal_schemas) and not all(signal_schemas):
+        raise ValueError(
+            "columns can't mix files written by DataChain with other files"
+        )
+    signal_schema = signal_schemas[0]
+    names = (
+        list(signal_schema.values)
+        if signal_schema
+        else list(dict.fromkeys(n for s in schemas for n in s.names))
+    )
     cleaned = normalize_col_names(names)
     raw = {n: n for n in names} | cleaned
     if missing := [c for c in columns if c not in raw]:
@@ -302,11 +317,23 @@ def merge_schemas(
     selected = [raw[c] for c in columns]
     if len(set(selected)) < len(selected):
         raise ValueError(f"Columns {list(columns)} name a column more than once")
+
     # Only the selected columns need compatible types across files.
     wanted = set(selected)
+
+    def keep(name: str) -> bool:
+        return (name.split(".", 1)[0] if signal_schema else name) in wanted
+
     merged = pa.unify_schemas(
-        [pa.schema([f for f in s if f.name in wanted]) for s in schemas]
+        [pa.schema([f for f in s if keep(f.name)]) for s in schemas]
     )
+    if signal_schema:
+        picked = SignalSchema({c: signal_schema.values[c] for c in selected})
+        metadata = {
+            **schemas[0].metadata,
+            DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY: json.dumps(picked.serialize()),
+        }
+        return merged.with_metadata(metadata), selected
     schema = pa.schema(
         [merged.field(c) for c in selected], metadata=schemas[0].metadata
     )

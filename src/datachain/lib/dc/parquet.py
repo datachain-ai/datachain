@@ -42,7 +42,7 @@ def read_parquet(
         settings: Settings to use for the chain.
         columns: Input columns to read, in order; all if omitted. Accepts original
             or normalized names, e.g. "ZIP Code" or "zip_code". For Parquet exported
-            by DataChain, omit this parameter and use `.select(...)` after reading.
+            by DataChain, it picks top-level signals; omit `output` with it.
 
     Example:
         Read a file or files matching a pattern:

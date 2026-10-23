@@ -465,7 +465,7 @@ dc.read_parquet(
 )  # x receives c; y receives a
 ```
 
-`output={"c": float}` alone on a three-column file raises an error; use `columns=["c"]` to select c. CSV's `column_types` controls parsing by input name before normalization or output renaming, e.g. `column_types={"ZIP Code": "string"}` preserves leading zeros. It does not select columns. With `header=False`, `columns` uses `f0`, `f1`, etc.; `output` can rename the selection. Without `columns`, a headerless CSV requires `output` naming every column. Parquet exported by DataChain restores its saved schema and rejects `columns`; read it on its own and use `.select(...)`.
+`output={"c": float}` alone on a three-column file raises an error; use `columns=["c"]` to select c. CSV's `column_types` controls parsing by input name before normalization or output renaming, e.g. `column_types={"ZIP Code": "string"}` preserves leading zeros. It does not select columns. With `header=False`, `columns` uses `f0`, `f1`, etc.; `output` can rename the selection. Without `columns`, a headerless CSV requires `output` naming every column. Parquet exported by DataChain restores its saved schema; there `columns` picks top-level signals, without `output`. Read it on its own.
 
 **Data Memory (SQL, fast).** `C` = `dc.C`, `func` = `dc.func`.
 

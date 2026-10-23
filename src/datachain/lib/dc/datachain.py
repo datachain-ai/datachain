@@ -2530,7 +2530,7 @@ class DataChain:
             nrows: Optional row limit.
             columns: Input columns to read, in order; all if omitted. Accepts original
                 or normalized names, e.g. "ZIP Code" or "zip_code". For Parquet exported
-                by DataChain, omit this parameter and use `.select(...)` after parsing.
+                by DataChain, it picks top-level signals; omit `output` with it.
             kwargs: Parameters to pass to pyarrow.dataset.dataset.
 
         Example:
