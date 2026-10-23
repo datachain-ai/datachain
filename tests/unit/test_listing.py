@@ -29,7 +29,7 @@ from datachain.lib.listing import (
     parse_listing_uri,
     select_paths,
 )
-from datachain.listing import Listing
+from datachain.listing import SavedListing
 from datachain.node import DirType
 from datachain.sql.functions import path as pathfunc
 from datachain.utils import uses_glob
@@ -74,7 +74,7 @@ def listing(test_session):
         .save(dataset_name, listing=True)
     )
 
-    with Listing(
+    with SavedListing(
         catalog.metastore.clone(),
         catalog.warehouse.clone(),
         Client.get_client(fake_uri, catalog.cache, **catalog.client_config),

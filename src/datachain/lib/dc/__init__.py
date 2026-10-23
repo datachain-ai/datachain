@@ -10,7 +10,7 @@ from .listings import listings
 from .pandas import read_pandas
 from .parquet import read_parquet
 from .records import read_records
-from .storage import StorageListing, list_storage, read_storage
+from .storage import Listing, list_storage, read_storage
 from .utils import DatasetMergeError, DatasetPrepareError, Sys, is_local, is_studio
 from .values import read_values
 from .zarr import read_zarr
@@ -23,7 +23,7 @@ __all__ = [
     "DataChainSchema",
     "DatasetMergeError",
     "DatasetPrepareError",
-    "StorageListing",
+    "Listing",
     "Sys",
     "datasets",
     "delete_dataset",

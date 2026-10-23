@@ -76,7 +76,7 @@ def test_listing_to_arrow(cloud_test_catalog):
 def test_listing_to_arrow_location_is_json(test_session, tmp_dir, mocker):
     location = {"vtype": "tar", "offset": 1}
     row = dc.FileRow("file:///d", "a", location=location)
-    mocker.patch.object(dc.StorageListing, "_pages", return_value=iter([[row], []]))
+    mocker.patch.object(dc.Listing, "_pages", return_value=iter([[row], []]))
 
     table = dc.list_storage(tmp_dir, session=test_session).to_arrow()
 
@@ -96,11 +96,11 @@ def test_listing_empty_to_arrow(test_session, tmp_dir):
     "use",
     [
         list,
-        dc.StorageListing.to_list,
-        dc.StorageListing.to_objects,
-        dc.StorageListing.to_arrow,
-        dc.StorageListing.to_pandas,
-        dc.StorageListing.save,
+        dc.Listing.to_list,
+        dc.Listing.to_objects,
+        dc.Listing.to_arrow,
+        dc.Listing.to_pandas,
+        dc.Listing.save,
     ],
 )
 def test_each_use_of_a_listing_lists_again(test_session, tmp_dir, use):

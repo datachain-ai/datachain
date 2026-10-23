@@ -14,7 +14,7 @@ for examples of how to create a chain.
 
 ::: datachain.lib.dc.storage.list_storage
 
-::: datachain.lib.dc.storage.StorageListing
+::: datachain.lib.dc.storage.Listing
 
 ::: datachain.lib.dc.csv.read_csv
 

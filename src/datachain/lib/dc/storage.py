@@ -397,7 +397,7 @@ def list_storage(
     client_config: dict | None = None,
     session: Session | None = None,
     in_memory: bool = False,
-) -> "StorageListing":
+) -> "Listing":
     """List the files in a storage and get them as rows in Python.
 
     Unlike `read_storage`, this returns no chain and saves nothing: it lists
@@ -425,7 +425,7 @@ def list_storage(
         in_memory: Make the session that `save()` creates, if any, in memory.
 
     Returns:
-        StorageListing: The files of `uri`.
+        Listing: The files of `uri`.
 
     Example:
         ```py
@@ -445,7 +445,7 @@ def list_storage(
     session_config, config = _client_configs(
         uris, session, anon, client_config, versions
     )
-    return StorageListing(
+    return Listing(
         uris,
         recursive=recursive,
         versions=versions,
@@ -475,10 +475,11 @@ class _Scan:
     scope: "ListScope | None" = None
 
 
-class StorageListing:
+class Listing:
     """The objects of storage URIs, from `dc.list_storage()`: iterate over it
     for `dc.FileRow` rows, or call `to_list()`, `to_objects()`, `to_arrow()`,
-    `to_pandas()` or `save()`. Each of them lists the storage again.
+    `to_pandas()` or `save()`. Each of them lists the storage again; `save()`
+    stores the saved listing that `read_storage` reuses.
     """
 
     def __init__(
@@ -512,7 +513,7 @@ class StorageListing:
         return self._save_session
 
     def __repr__(self) -> str:  # noqa: D105
-        return f"StorageListing({self.uris!r}, versions={self.versions})"
+        return f"Listing({self.uris!r}, versions={self.versions})"
 
     def __iter__(self) -> Iterator[FileRow]:
         """List the storage, yielding `dc.FileRow` rows."""
