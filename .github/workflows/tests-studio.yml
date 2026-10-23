@@ -105,11 +105,23 @@ jobs:
         working-directory: backend
         run: make update_datachain_deps "${{ env.BRANCH }}"
 
+      - name: Cache FFmpeg packages
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/apt-archives
+          key: ffmpeg-debs-${{ runner.os }}-${{ runner.arch }}-v1
+
       - name: Install FFmpeg
         timeout-minutes: 10
+        # Packages come from the cache when it has them, so a slow Ubuntu mirror
+        # doesn't stall the job.
         run: |
-          sudo apt update
-          sudo apt install -y ffmpeg
+          archives="$HOME/.cache/apt-archives"
+          mkdir -p "$archives/partial"
+          sudo apt-get update
+          sudo apt-get install -y -o Dir::Cache::Archives="$archives" \
+            -o APT::Keep-Downloaded-Packages=true ffmpeg
+          sudo chown -R "$USER" "$archives"
 
       - name: Install dependencies
         run: uv pip install --system ./datachain_saas[tests] ./datachain[tests]
