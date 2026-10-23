@@ -5,10 +5,8 @@ from unittest.mock import Mock
 import pytest
 from fsspec.caching import BlockCache, ReadAheadCache, caches
 from gcsfs.core import GCSFile
-from huggingface_hub.hf_file_system import (
-    HfFileSystemFile,
-    HfFileSystemResolvedPath,
-)
+from huggingface_hub import hf_file_system
+from huggingface_hub.hf_file_system import HfFileSystemFile
 from s3fs.core import S3File
 
 from datachain.cache import Cache
@@ -74,6 +72,63 @@ def test_open_object_preserves_smaller_backend_default(tmp_path, monkeypatch):
         assert stream.read(1) == b"\0"
 
 
+@pytest.mark.parametrize(
+    "blocksize,cache_blocksize",
+    [
+        (None, 4096),
+        (4096, None),
+        ("default", 4096),
+        (4096, "default"),
+        (8192.0, 4096),
+        (4096, 8192.0),
+        (True, 4096),
+        (4096, True),
+        (-1, 4096),
+        (4096, -1),
+    ],
+)
+def test_open_object_preserves_delegated_read_ahead(
+    tmp_path, monkeypatch, blocksize, cache_blocksize
+):
+    data = b"12345678" * 1024
+    client = ClientS3(
+        "bucket",
+        {"anon": True, "default_block_size": 4096},
+        Cache(str(tmp_path / "cache"), str(tmp_path / "tmp")),
+    )
+    fs = client.fs
+    monkeypatch.setattr(fs, "info", lambda *a, **kw: {"size": len(data)})
+    monkeypatch.setattr(
+        S3File, "_fetch_range", lambda file, start, end: data[start:end]
+    )
+    open_file = fs.open
+    opened = []
+
+    def open_delegated(path, **kwargs):
+        stream = open_file(path, **kwargs)
+        assert isinstance(stream, S3File)
+        assert type(stream.cache) is ReadAheadCache
+        stream.blocksize = blocksize
+        stream.cache.blocksize = cache_blocksize
+        opened.append(stream)
+        return stream
+
+    monkeypatch.setattr(fs, "open", open_delegated)
+    file = File(source=client.uri, path="archive.tar")
+    try:
+        for ceiling in (None, 1024):
+            with client.open_object(file, max_block_size=ceiling) as stream:
+                assert stream.fileobj.blocksize == blocksize
+                assert type(stream.fileobj.blocksize) is type(blocksize)
+                assert stream.fileobj.cache.blocksize == cache_blocksize
+                assert type(stream.fileobj.cache.blocksize) is type(cache_blocksize)
+                if type(cache_blocksize) is int and cache_blocksize >= 0:
+                    assert stream.read(3) == data[:3]
+    finally:
+        for stream in opened:
+            stream.close()
+
+
 @pytest.mark.parametrize("cache_type", ["blockcache", "custom-readahead"])
 def test_open_object_preserves_other_cache_policies(tmp_path, monkeypatch, cache_type):
     class CustomReadAheadCache(ReadAheadCache):
@@ -123,11 +178,19 @@ def test_tar_member_resolves_huggingface_file_default(tmp_path, monkeypatch):
     )
     fs = client.fs.sync_fs
     assert fs.block_size is None
+    resolved_path_type = getattr(
+        hf_file_system,
+        "HfFileSystemResolvedRepositoryPath",
+        hf_file_system.HfFileSystemResolvedPath,
+    )
     monkeypatch.setattr(
         fs,
         "resolve_path",
-        lambda *a, **kw: HfFileSystemResolvedPath(
-            "datasets/fictional/fixture", "archive.tar"
+        lambda *a, **kw: resolved_path_type(
+            repo_type="dataset",
+            repo_id="fictional/fixture",
+            revision="main",
+            path_in_repo="archive.tar",
         ),
     )
     monkeypatch.setattr(fs, "info", lambda *a, **kw: {"size": len(raw), "type": "file"})

@@ -503,6 +503,10 @@ class Client(ABC):
             and max_block_size is not None
             and isinstance(stream, AbstractBufferedFile)
             and type(stream.cache) in (ReadAheadCache, BytesCache)
+            and type(stream.blocksize) is int
+            and stream.blocksize >= 0
+            and type(stream.cache.blocksize) is int
+            and stream.cache.blocksize >= 0
         ):
             stream.blocksize = min(stream.blocksize, max_block_size)
             stream.cache.blocksize = min(stream.cache.blocksize, max_block_size)
