@@ -2535,6 +2535,20 @@ def test_read_parquet_columns_written_by_datachain(point_parquet, test_session):
         dc.read_parquet(point_parquet, columns=["x"], session=test_session)
 
 
+def test_read_parquet_list_output_written_by_datachain(point_parquet, test_session):
+    chain = dc.read_parquet(
+        point_parquet, columns=["p.x", "a"], output=["q", "n"], session=test_session
+    )
+    ((q, n),) = chain.to_list("q", "n")
+    assert (q.model_dump(), n) == ({"x": 2}, 1)
+
+    chain = dc.read_parquet(point_parquet, output=["n", "q", "s"], session=test_session)
+    assert chain.to_list("n", "q.y", "s") == [(1, 3, "z")]
+
+    with pytest.raises(DatasetPrepareError, match="3 signals but got 1"):
+        dc.read_parquet(point_parquet, output=["n"], session=test_session)
+
+
 def test_read_parquet_columns_with_output_written_by_datachain(
     point_parquet, test_session
 ):

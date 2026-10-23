@@ -363,7 +363,14 @@ def schema_to_output(
     """
     signal_schema = _get_datachain_schema(schema)
     if signal_schema:
-        return signal_schema.values, list(signal_schema.values)
+        signals = signal_schema.values
+        if col_names and len(col_names) != len(signals):
+            raise ValueError(
+                "Error generating output from Arrow schema - Schema has "
+                f"{len(signals)} signals but got {len(col_names)} column names."
+            )
+        names = col_names or list(signals)
+        return dict(zip(names, signals.values(), strict=True)), list(signals)
 
     if col_names and (len(schema) != len(col_names)):
         raise ValueError(

@@ -2554,6 +2554,7 @@ class DataChain:
         from pyarrow.dataset import CsvFileFormat, JsonFileFormat
 
         from datachain.lib.arrow import (
+            DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY,
             ArrowGenerator,
             file_schemas,
             fix_pyarrow_format,
@@ -2587,7 +2588,11 @@ class DataChain:
             if infer:
                 schemas = file_schemas(self, **kwargs, parse_options=parse_options)
                 schema, names = merge_schemas(schemas, columns)
-                output, _ = schema_to_output(schema, col_names or names)
+                output, stored = schema_to_output(schema, col_names or names)
+                metadata = schema.metadata or {}
+                if col_names and DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY in metadata:
+                    # Signals renamed by a list output are read from stored names.
+                    read = stored
 
             if isinstance(output, dict):
                 model_name = model_name or column or ""
