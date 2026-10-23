@@ -16,7 +16,7 @@ from typing import (
 )
 
 import pytest
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from typing_extensions import TypedDict
 
 from datachain import Column, DataModel, Sys, func
@@ -1219,6 +1219,23 @@ def test_row_to_objs_decodes_tuple_keys():
     assert converted == {("a", 1): 2}
 
 
+@pytest.mark.parametrize(
+    "annotation",
+    [Optional[dict[tuple[str, int], int]], dict[tuple[str, int], int] | None],
+    ids=["typing-optional", "pep604-optional"],
+)
+def test_optional_mapping_decodes_tuple_keys(annotation, test_session):
+    schema = SignalSchema({"m": annotation})
+    raw = {'["a",1]': 2}
+    expected = {("a", 1): 2}
+
+    (from_objs,) = schema.row_to_objs(_row(schema, (raw,)))
+    (from_features,) = schema.row_to_features((raw,), test_session.catalog)
+
+    assert from_objs == expected
+    assert from_features == expected
+
+
 def test_set_file_streams_rereads_fields_after_a_forward_ref_resolves(test_session):
     class Outer(BaseModel):
         child: "OuterInner | None" = None
@@ -1394,6 +1411,83 @@ def test_row_to_features_optional_collection(test_session, union_type):
 
     assert isinstance(items, list)
     assert [(type(i), i.aa, i.bb) for i in items] == [(MyType1, 5, "test")]
+
+
+@pytest.mark.parametrize(
+    "union_style",
+    ["typing", "pep604"],
+    ids=["typing-union", "pep604-union"],
+)
+@pytest.mark.parametrize("optional", [False, True], ids=["required", "optional"])
+def test_row_readers_hydrate_top_level_model_union(test_session, union_style, optional):
+    class First(BaseModel):
+        first: int
+
+    class Second(BaseModel):
+        second: str
+
+    if union_style == "pep604":
+        union_type = First | Second
+    else:
+        union_type = Union[First, Second]
+    if optional:
+        union_type = Optional[union_type]
+
+    schema = SignalSchema({"result": union_type})
+
+    if optional:
+        assert schema.row_to_features((None,), test_session.catalog) == [None]
+        assert schema.row_to_objs(_row(schema, (None,))) == [None]
+
+    raw_value = {"second": "value"}
+    (from_features,) = schema.row_to_features((raw_value,), test_session.catalog)
+    (from_objs,) = schema.row_to_objs(_row(schema, (raw_value,)))
+
+    assert isinstance(from_features, Second)
+    assert from_features.second == "value"
+    assert isinstance(from_objs, Second)
+    assert from_objs.second == "value"
+
+
+def test_row_to_features_top_level_model_union_accepts_alias(test_session):
+    class Person(BaseModel):
+        full_name: str = Field(alias="name")
+
+    class Company(BaseModel):
+        company_id: int
+
+    schema = SignalSchema({"entity": Person | Company})
+    raw_value = {"name": "Ada"}
+
+    (from_features,) = schema.row_to_features((raw_value,), test_session.catalog)
+    (from_objs,) = schema.row_to_objs(_row(schema, (raw_value,)))
+
+    assert isinstance(from_features, Person)
+    assert from_features.full_name == "Ada"
+    assert isinstance(from_objs, Person)
+    assert from_objs.full_name == "Ada"
+
+
+@pytest.mark.parametrize("union_style", ["typing", "pep604"])
+def test_row_readers_hydrate_union_members_in_list(test_session, union_style):
+    class Person(BaseModel):
+        name: str
+
+    class Company(BaseModel):
+        company_id: int
+
+    union_type = Union[Person, Company] if union_style == "typing" else Person | Company
+    schema = SignalSchema({"entities": list[union_type]})
+    raw_values = [{"name": "Ada"}, {"company_id": 42}]
+
+    (from_features,) = schema.row_to_features((raw_values,), test_session.catalog)
+    (from_objs,) = schema.row_to_objs(_row(schema, (raw_values,)))
+
+    for entities in (from_features, from_objs):
+        assert isinstance(entities[0], Person)
+        assert entities[0].name == "Ada"
+        assert isinstance(entities[1], Company)
+        assert entities[1].company_id == 42
 
 
 def test_get_signals_subclass(nested_file_schema):
