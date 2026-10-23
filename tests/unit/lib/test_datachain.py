@@ -2474,25 +2474,90 @@ def test_read_parquet_columns_with_output_and_mixed_integer_widths(
     assert sorted(chain.to_values("x")) == [1, 2**40]
 
 
-@pytest.mark.parametrize("output", [None, {"y": int}])
-@pytest.mark.parametrize("exported", ["1.parquet", "2.parquet"])
-def test_read_parquet_columns_some_files_written_by_datachain(
-    tmp_dir, test_session, exported, output
-):
+@pytest.fixture(params=["1.parquet", "2.parquet"])
+def some_files_written_by_datachain(tmp_dir, test_session, request):
+    exported = request.param
     plain = "2.parquet" if exported == "1.parquet" else "1.parquet"
     pq.write_table(pa.table({"x": [1], "y": [10]}), tmp_dir / plain)
     dc.read_values(x=[2], y=[20], session=test_session).to_parquet(tmp_dir / exported)
-    with pytest.raises((DatasetPrepareError, ValueError), match="written by DataChain"):
-        dc.read_parquet(
-            tmp_dir.as_uri(), columns=["x"], output=output, session=test_session
-        ).to_list()
+    return tmp_dir.as_uri()
 
 
-def test_read_parquet_columns_written_by_datachain(tmp_dir, test_session):
-    path = tmp_dir / "exported.parquet"
-    dc.read_values(x=[1], session=test_session).to_parquet(path)
+def test_read_parquet_columns_some_files_written_by_datachain(
+    some_files_written_by_datachain, test_session
+):
     with pytest.raises(DatasetPrepareError, match="written by DataChain"):
-        dc.read_parquet(path.as_uri(), columns=["x"], session=test_session)
+        dc.read_parquet(
+            some_files_written_by_datachain, columns=["x"], session=test_session
+        )
+
+
+def test_read_parquet_columns_with_output_some_files_written_by_datachain(
+    some_files_written_by_datachain, test_session
+):
+    chain = dc.read_parquet(
+        some_files_written_by_datachain,
+        columns=["x"],
+        output={"y": int},
+        session=test_session,
+    )
+    assert sorted(chain.to_values("y")) == [1, 2]
+
+
+class Point(DataModel):
+    x: int
+    y: int
+
+
+class PointX(DataModel):
+    x: int
+
+
+@pytest.fixture
+def point_parquet(tmp_dir, test_session):
+    path = tmp_dir / "exported.parquet"
+    dc.read_values(
+        a=[1], p=[Point(x=2, y=3)], b=["z"], session=test_session
+    ).to_parquet(path)
+    return path.as_uri()
+
+
+def test_read_parquet_columns_written_by_datachain(point_parquet, test_session):
+    chain = dc.read_parquet(point_parquet, columns=["p", "a"], session=test_session)
+    assert [s for s in chain.schema if s != "source"] == ["p", "a"]
+    ((p, a),) = chain.to_list("p", "a")
+    assert (p.x, p.y, a) == (2, 3, 1)
+
+    chain = dc.read_parquet(point_parquet, columns=["p.x"], session=test_session)
+    assert [p.model_dump() for p in chain.to_values("p")] == [{"x": 2}]
+
+    with pytest.raises(DatasetPrepareError, match="x not found"):
+        dc.read_parquet(point_parquet, columns=["x"], session=test_session)
+
+
+def test_read_parquet_list_output_written_by_datachain(point_parquet, test_session):
+    chain = dc.read_parquet(
+        point_parquet, columns=["p.x", "a"], output=["q", "n"], session=test_session
+    )
+    ((q, n),) = chain.to_list("q", "n")
+    assert (q.model_dump(), n) == ({"x": 2}, 1)
+
+    chain = dc.read_parquet(point_parquet, output=["n", "q", "s"], session=test_session)
+    assert chain.to_list("n", "q.y", "s") == [(1, 3, "z")]
+
+    with pytest.raises(DatasetPrepareError, match="3 signals but got 1"):
+        dc.read_parquet(point_parquet, output=["n"], session=test_session)
+
+
+def test_read_parquet_columns_with_output_written_by_datachain(
+    point_parquet, test_session
+):
+    output = {"q": PointX, "n": int, "y": int}
+    chain = dc.read_parquet(
+        point_parquet, columns=["p", "a", "p.y"], output=output, session=test_session
+    )
+    ((q, n, y),) = chain.to_list("q", "n", "y")
+    assert (q.model_dump(), n, y) == ({"x": 2}, 1, 3)
 
 
 @pytest.mark.parametrize("columns,read", [(None, 3), (["c", "a"], 2)])
