@@ -1,5 +1,15 @@
-from datasets import Array2D, Dataset, DatasetDict, Sequence, Value
+from datasets import (
+    Array2D,
+    ClassLabel,
+    Dataset,
+    DatasetDict,
+    Features,
+    List,
+    Sequence,
+    Value,
+)
 
+import datachain as dc
 from datachain.lib.data_model import dict_to_data_model
 from datachain.lib.hf import (
     HFClassLabel,
@@ -79,6 +89,44 @@ def test_hf_sequence_dict():
     gen.setup()
     row = next(iter(gen.process()))
     assert row.pokemon.name == ["bulbasaur"]
+
+
+def _first_row(ds):
+    schema, norm_names = get_output_schema(ds.features)
+    gen = HFGenerator(ds, dict_to_data_model("", schema, list(norm_names.values())))
+    gen.setup()
+    return next(iter(gen.process()))
+
+
+def test_hf_list_of_class_labels():
+    features = Features({"labels": List(ClassLabel(names=["cat", "dog"]))})
+    ds = Dataset.from_dict({"labels": [[0, 1]]}, features=features)
+    row = _first_row(ds)
+    assert [(c.string, c.integer) for c in row.labels] == [("cat", 0), ("dog", 1)]
+
+
+def test_hf_list_of_dicts_with_class_label():
+    tag = {"name": Value("string"), "kind": ClassLabel(names=["a", "b"])}
+    features = Features({"tags": List(tag)})
+    ds = Dataset.from_dict({"tags": [[{"name": "x", "kind": 1}]]}, features=features)
+    row = _first_row(ds)
+    assert [(t.name, t.kind.string) for t in row.tags] == [("x", "b")]
+
+
+def test_hf_sequence_dict_with_class_label():
+    tag = {"kind": ClassLabel(names=["a", "b"])}
+    features = Features({"tags": Sequence(tag)})
+    ds = Dataset.from_dict({"tags": [{"kind": [1, 0]}]}, features=features)
+    row = _first_row(ds)
+    assert [k.string for k in row.tags.kind] == ["b", "a"]
+
+
+def test_read_parquet_hf_list_of_class_labels(tmp_path, test_session):
+    features = Features({"labels": List(ClassLabel(names=["cat", "dog"]))})
+    path = tmp_path / "labels.parquet"
+    Dataset.from_dict({"labels": [[1, 0]]}, features=features).to_parquet(path)
+    (labels,) = dc.read_parquet(path.as_uri(), session=test_session).to_values("labels")
+    assert [c.string for c in labels] == ["dog", "cat"]
 
 
 def test_hf_array():
