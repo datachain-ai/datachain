@@ -167,8 +167,6 @@ class HTTPClient(Client):
         use_cache: bool = True,
         cb=None,
         block_size: int | None = None,
-        *,
-        max_block_size: int | None = None,
     ):
         from datachain.client.fileslice import FileWrapper
 
@@ -176,7 +174,7 @@ class HTTPClient(Client):
             return open(cache_path, mode="rb")
 
         assert not file.location
-        # Read-ahead overrides are ignored for servers without range support.
+        # block_size is ignored: servers without range support fail on small blocks
         return FileWrapper(
             self.fs.open(file.get_fs_path()),
             cb or (lambda x: None),

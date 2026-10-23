@@ -4,7 +4,7 @@ import os
 import posixpath
 import tarfile
 from pathlib import Path
-from unittest.mock import Mock, PropertyMock
+from unittest.mock import Mock
 
 import pytest
 from fsspec.implementations.local import LocalFileSystem
@@ -753,38 +753,6 @@ def test_read_text_virtual_tar_file(tmp_path, catalog):
         assert stream.read() == data
 
     assert member.read_text(encoding="utf-8") == data
-
-
-@pytest.mark.parametrize("block_size", [None, 0, 256 * 1024])
-def test_tar_member_passes_read_ahead_constraint(block_size):
-    client = Mock()
-    type(client).fs = PropertyMock(side_effect=AssertionError("backend access"))
-    client.open_object.return_value = io.BytesIO()
-    catalog = Mock(client_config={})
-    catalog.get_client.return_value = client
-    member = File(
-        source="s3://bucket",
-        path="archive.tar/member.bin",
-        location=[
-            {
-                "vtype": "tar",
-                "parent": {"source": "s3://bucket", "path": "archive.tar"},
-                "offset": 512,
-                "size": 100 * 1024,
-            }
-        ],
-    )
-    member._set_stream(catalog, caching_enabled=False)
-
-    with member.open(block_size=block_size):
-        pass
-
-    assert client.open_object.call_args.kwargs == {
-        "use_cache": True,
-        "block_size": block_size,
-        "max_block_size": 100 * 1024,
-    }
-    client.cache.get_path.assert_not_called()
 
 
 def test_tar_member_cached_parent_skips_backend(catalog, monkeypatch):

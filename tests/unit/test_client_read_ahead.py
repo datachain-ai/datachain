@@ -3,164 +3,114 @@ import tarfile
 from unittest.mock import Mock
 
 import pytest
-from fsspec.caching import BlockCache, ReadAheadCache, caches
 from gcsfs.core import GCSFile
 from huggingface_hub import hf_file_system
 from huggingface_hub.hf_file_system import HfFileSystemFile
 from s3fs.core import S3File
 
 from datachain.cache import Cache
+from datachain.client.fileslice import FileSlice
 from datachain.client.gcs import GCSClient
 from datachain.client.hf import HfClient
 from datachain.client.s3 import ClientS3
 from datachain.lib.file import File
-from datachain.lib.tar import process_tar
+from datachain.lib.tar import build_tar_member, process_tar
 
 
-@pytest.mark.parametrize("cache_type", ["readahead", "bytes"])
-@pytest.mark.parametrize("block_size", [None, 0, 256 * 1024])
-def test_open_object_resolved_read_ahead(tmp_path, monkeypatch, cache_type, block_size):
-    data = b"01234567" * (256 * 1024)
-    default = 512 * 1024
-    ceiling = 100 * 1024
+def _tar_bytes(data):
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        for name, payload in (
+            ("prefix.bin", b"p" * 1024),
+            ("member.bin", data),
+            ("padding.bin", bytes(4 * 1024 * 1024)),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+    return buffer.getvalue()
+
+
+def _tar_member(client, raw, version=""):
+    catalog = Mock(client_config={})
+    catalog.get_client.return_value = client
+    parent = File(source=client.uri, path="archive.tar", size=len(raw), version=version)
+    parent._set_stream(catalog, caching_enabled=False)
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        member = build_tar_member(parent, archive.getmember("member.bin"))
+    member._set_stream(catalog, caching_enabled=False)
+    return parent, member
+
+
+def _s3_tar(tmp_path, monkeypatch, data):
+    raw = _tar_bytes(data)
     client = ClientS3(
         "bucket",
-        {"anon": True, "default_block_size": default, "default_cache_type": cache_type},
+        {"anon": True, "default_block_size": 2 * 1024 * 1024},
         Cache(str(tmp_path / "cache"), str(tmp_path / "tmp")),
     )
-    fs = client.fs
-    monkeypatch.setattr(fs, "info", lambda *a, **kw: {"size": len(data)})
+    monkeypatch.setattr(client.fs, "info", lambda *a, **kw: {"size": len(raw)})
     calls = []
 
     def fetch_range(file, start, end):
-        calls.append((start, min(end, len(data))))
-        return data[start:end]
+        assert isinstance(file, S3File)
+        calls.append((start, min(end, len(raw))))
+        return raw[start:end]
 
     monkeypatch.setattr(S3File, "_fetch_range", fetch_range)
-    file = File(source=client.uri, path="archive.tar")
-    with client.open_object(
-        file, block_size=block_size, max_block_size=ceiling
-    ) as stream:
-        opened = stream.fileobj
-        assert isinstance(opened, S3File)
-        expected = ceiling if block_size is None else block_size
-        assert opened.blocksize == expected
-        assert opened.cache.blocksize == expected
-        stream.seek(512)
-        assert stream.read(ceiling) == data[512 : 512 + ceiling]
-        stream.seek(len(data) - 17)
-        assert stream.read() == data[-17:]
+    parent, member = _tar_member(client, raw)
+    return client, parent, member, calls
+
+
+@pytest.mark.parametrize("size", [100 * 1024, 6 * 1024 * 1024])
+@pytest.mark.parametrize("block_size", [None, 0, 256 * 1024])
+def test_tar_member_s3_read_ahead(tmp_path, monkeypatch, size, block_size):
+    data = b"m" * size
+    _, _, member, calls = _s3_tar(tmp_path, monkeypatch, data)
+
+    with member.open(block_size=block_size) as stream:
+        assert stream.read() == data
         assert stream.read() == b""
-    assert opened.closed
-    assert calls[0][1] - calls[0][0] <= ceiling + expected
+
+    assert calls[0][0] == member.location[0]["offset"] > 0
+    fetched = sum(end - start for start, end in calls)
+    expected_block = min(size, 5 * 1024 * 1024) if block_size is None else block_size
+    assert size <= fetched <= size + expected_block + io.DEFAULT_BUFFER_SIZE
+    if block_size == 0:
+        assert fetched == size
+    elif block_size is not None:
+        assert fetched >= block_size
 
 
-def test_open_object_preserves_smaller_backend_default(tmp_path, monkeypatch):
-    client = ClientS3(
-        "bucket",
-        {"anon": True, "default_block_size": 4096},
-        Cache(str(tmp_path / "cache"), str(tmp_path / "tmp")),
+def _read_chunks(stream):
+    return b"".join(iter(lambda: stream.read(128 * 1024), b""))
+
+
+def test_tar_member_large_sequential_read_ahead(tmp_path, monkeypatch):
+    data = b"m" * (6 * 1024 * 1024)
+    client, parent, member, calls = _s3_tar(tmp_path, monkeypatch, data)
+    with FileSlice(
+        client.open_object(parent), member.location[0]["offset"], len(data), member.name
+    ) as stream:
+        assert _read_chunks(stream) == data
+    normal_fetches = len(calls)
+    assert normal_fetches == 3
+    calls.clear()
+
+    with member.open() as stream:
+        assert _read_chunks(stream) == data
+        assert stream.read() == b""
+
+    assert calls[0][0] == member.location[0]["offset"] > 0
+    assert 0 < len(calls) <= 2 < normal_fetches
+    assert (
+        len(data)
+        <= sum(end - start for start, end in calls)
+        <= (len(data) + 5 * 1024 * 1024 + 128 * 1024)
     )
-    monkeypatch.setattr(client.fs, "info", lambda *a, **kw: {"size": 1024 * 1024})
-    monkeypatch.setattr(
-        S3File, "_fetch_range", lambda file, start, end: bytes(end - start)
-    )
-    file = File(source=client.uri, path="archive.tar")
-    with client.open_object(file, max_block_size=100 * 1024) as stream:
-        assert stream.fileobj.blocksize == 4096
-        assert stream.fileobj.cache.blocksize == 4096
-        assert stream.read(1) == b"\0"
 
 
-@pytest.mark.parametrize(
-    "blocksize,cache_blocksize",
-    [
-        (None, 4096),
-        (4096, None),
-        ("default", 4096),
-        (4096, "default"),
-        (8192.0, 4096),
-        (4096, 8192.0),
-        (True, 4096),
-        (4096, True),
-        (-1, 4096),
-        (4096, -1),
-    ],
-)
-def test_open_object_preserves_delegated_read_ahead(
-    tmp_path, monkeypatch, blocksize, cache_blocksize
-):
-    data = b"12345678" * 1024
-    client = ClientS3(
-        "bucket",
-        {"anon": True, "default_block_size": 4096},
-        Cache(str(tmp_path / "cache"), str(tmp_path / "tmp")),
-    )
-    fs = client.fs
-    monkeypatch.setattr(fs, "info", lambda *a, **kw: {"size": len(data)})
-    monkeypatch.setattr(
-        S3File, "_fetch_range", lambda file, start, end: data[start:end]
-    )
-    open_file = fs.open
-    opened = []
-
-    def open_delegated(path, **kwargs):
-        stream = open_file(path, **kwargs)
-        assert isinstance(stream, S3File)
-        assert type(stream.cache) is ReadAheadCache
-        stream.blocksize = blocksize
-        stream.cache.blocksize = cache_blocksize
-        opened.append(stream)
-        return stream
-
-    monkeypatch.setattr(fs, "open", open_delegated)
-    file = File(source=client.uri, path="archive.tar")
-    try:
-        for ceiling in (None, 1024):
-            with client.open_object(file, max_block_size=ceiling) as stream:
-                assert stream.fileobj.blocksize == blocksize
-                assert type(stream.fileobj.blocksize) is type(blocksize)
-                assert stream.fileobj.cache.blocksize == cache_blocksize
-                assert type(stream.fileobj.cache.blocksize) is type(cache_blocksize)
-                if type(cache_blocksize) is int and cache_blocksize >= 0:
-                    assert stream.read(3) == data[:3]
-    finally:
-        for stream in opened:
-            stream.close()
-
-
-@pytest.mark.parametrize("cache_type", ["blockcache", "custom-readahead"])
-def test_open_object_preserves_other_cache_policies(tmp_path, monkeypatch, cache_type):
-    class CustomReadAheadCache(ReadAheadCache):
-        pass
-
-    monkeypatch.setitem(caches, "custom-readahead", CustomReadAheadCache)
-    data = b"abcdefgh" * (128 * 1024)
-    default = 256 * 1024
-    client = ClientS3(
-        "bucket",
-        {"anon": True, "default_block_size": default, "default_cache_type": cache_type},
-        Cache(str(tmp_path / "cache"), str(tmp_path / "tmp")),
-    )
-    monkeypatch.setattr(client.fs, "info", lambda *a, **kw: {"size": len(data)})
-    monkeypatch.setattr(
-        S3File, "_fetch_range", lambda file, start, end: data[start:end]
-    )
-    file = File(source=client.uri, path="archive.tar")
-    with client.open_object(file, max_block_size=4096) as stream:
-        cache = stream.fileobj.cache
-        assert type(cache) is (
-            BlockCache if cache_type == "blockcache" else CustomReadAheadCache
-        )
-        assert stream.fileobj.blocksize == default
-        assert cache.blocksize == default
-        stream.seek(len(data) - 17)
-        assert stream.read() == data[-17:]
-        stream.seek(3)
-        assert stream.read(9) == data[3:12]
-
-
-def test_tar_member_resolves_huggingface_file_default(tmp_path, monkeypatch):
+def test_tar_member_huggingface_read_ahead(tmp_path, monkeypatch):
     data = b"m" * (100 * 1024)
     archive = io.BytesIO()
     with tarfile.open(fileobj=archive, mode="w") as tar:
@@ -213,35 +163,46 @@ def test_tar_member_resolves_huggingface_file_default(tmp_path, monkeypatch):
         calls.clear()
         with member.open(block_size=block_size) as stream:
             assert stream.read() == data
+            assert stream.read() == b""
         fetched.append(sum(end - start for start, end in calls))
     assert 0 < fetched[0] <= fetched[1] < len(raw) // 2
 
 
-def test_versioned_gcs_resolved_read_ahead(tmp_path, monkeypatch):
-    data = b"01234567" * (128 * 1024)
+@pytest.mark.parametrize("block_size", [None, 256 * 1024])
+def test_tar_member_versioned_gcs_read_ahead(tmp_path, monkeypatch, block_size):
+    data = b"m" * (100 * 1024)
+    raw = _tar_bytes(data)
     client = GCSClient(
         "bucket",
-        {"token": "anon", "default_block_size": 512 * 1024, "version_aware": True},
+        {"token": "anon", "default_block_size": 2 * 1024 * 1024, "version_aware": True},
         Cache(str(tmp_path / "cache"), str(tmp_path / "tmp")),
     )
     fs = client.fs
-    monkeypatch.setattr(fs, "info", lambda *a, **kw: {"size": len(data)})
+    monkeypatch.setattr(fs, "info", lambda *a, **kw: {"size": len(raw)})
     open_file = fs.open
 
     def open_readahead(path, **kwargs):
         return open_file(path, cache_type="readahead", **kwargs)
 
     monkeypatch.setattr(fs, "open", open_readahead)
-    monkeypatch.setattr(
-        GCSFile, "_fetch_range", lambda file, start, end: data[start:end]
-    )
-    file = File(source=client.uri, path="archive.tar", version="123")
-    with client.open_object(file, max_block_size=4096) as stream:
-        opened = stream.fileobj
-        assert isinstance(opened, GCSFile)
-        assert opened.path == "bucket/archive.tar#123"
-        assert opened.generation == "123"
-        assert opened.blocksize == opened.cache.blocksize == 4096
-        stream.seek(len(data) - 17)
-        assert stream.read() == data[-17:]
-    assert opened.closed
+    calls = []
+
+    def fetch_range(file, start, end):
+        assert isinstance(file, GCSFile)
+        assert file.path == "bucket/archive.tar#123"
+        assert file.generation == "123"
+        calls.append((start, min(end, len(raw))))
+        return raw[start:end]
+
+    monkeypatch.setattr(GCSFile, "_fetch_range", fetch_range)
+    _, member = _tar_member(client, raw, version="123")
+    with member.open(block_size=block_size) as stream:
+        assert stream.read() == data
+        assert stream.read() == b""
+
+    assert calls[0][0] == member.location[0]["offset"] > 0
+    fetched = sum(end - start for start, end in calls)
+    expected_block = len(data) if block_size is None else block_size
+    assert len(data) <= fetched <= len(data) + expected_block + io.DEFAULT_BUFFER_SIZE
+    if block_size is not None:
+        assert fetched >= block_size

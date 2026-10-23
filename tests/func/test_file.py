@@ -909,7 +909,7 @@ def test_tar_member_large_sequential_read_ahead(
     from datachain.client.fileslice import FileSlice
 
     ctc = cloud_test_catalog_upload
-    size = 4 * 1024 * 1024
+    size = 6 * 1024 * 1024
     data_path = tmp_path / "large.bin"
     with data_path.open("wb") as stream:
         stream.truncate(size)
@@ -927,21 +927,23 @@ def test_tar_member_large_sequential_read_ahead(
     with FileSlice(
         client.open_object(parent), member.location[0]["offset"], size, member.name
     ) as stream:
-        normal = stream.read()
+        normal = b"".join(iter(lambda: stream.read(128 * 1024), b""))
     normal_fetches = fetched_bytes.copy()
     assert normal == bytes(size)
     del normal
     fetched_bytes[:] = [0, 0]
 
     with member.open() as stream:
-        assert stream.read() == bytes(size)
+        assert b"".join(iter(lambda: stream.read(128 * 1024), b"")) == bytes(size)
+        assert stream.read() == b""
 
     record_property("normal_fetched_bytes", normal_fetches[0])
     record_property("normal_range_fetches", normal_fetches[1])
     record_property("fetched_bytes", fetched_bytes[0])
     record_property("range_fetches", fetched_bytes[1])
-    assert size <= fetched_bytes[0] <= normal_fetches[0]
-    assert 0 < fetched_bytes[1] <= normal_fetches[1]
+    assert normal_fetches[1] == 3
+    assert size <= fetched_bytes[0] <= size + 5 * 1024 * 1024 + 128 * 1024
+    assert 0 < fetched_bytes[1] <= 2 < normal_fetches[1]
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
