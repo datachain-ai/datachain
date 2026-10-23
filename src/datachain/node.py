@@ -1,3 +1,4 @@
+import logging
 import os
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -7,6 +8,8 @@ import attrs
 from datachain.dataset import StorageURI
 from datachain.lib.file import File
 from datachain.utils import TIME_ZERO, time_to_str
+
+logger = logging.getLogger("datachain")
 
 if TYPE_CHECKING:
     from typing import Self
@@ -179,6 +182,10 @@ class NodeWithPath:
     def instantiate(
         self, client: "Client", output: str, progress_bar, *, force: bool = False
     ):
+        # a local disk cannot hold an empty path segment
+        if "//" in self.n.path:
+            logger.warning("File '%s' not copied: path has '//'", self.n.path)
+            return
         dst = os.path.join(output, *self.path)
         dst_dir = os.path.dirname(dst)
         os.makedirs(dst_dir, exist_ok=True)

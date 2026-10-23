@@ -274,11 +274,13 @@ class NodeGroup:
         return bool(self.dataset_name)
 
     def iternodes(self, recursive: bool = False):
+        # 'a//b' is never copied to a local disk, so it is not downloaded either
         for src in self.sources:
             if recursive and src.is_container():
                 for nwp in src.find():
-                    yield nwp.n
-            else:
+                    if "//" not in nwp.n.path:
+                        yield nwp.n
+            elif "//" not in src.node.path:
                 yield src.node
 
     def download(self, recursive: bool = False, pbar=None) -> None:
