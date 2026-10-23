@@ -2561,6 +2561,21 @@ def test_read_parquet_output_decodes_each_file_hf_labels(tmp_dir, test_session):
     assert sorted(chain.to_values("label.string")) == ["no", "yes"]
 
 
+def test_read_parquet_columns_with_output_skip_unread_hf_features(
+    tmp_dir, test_session
+):
+    from datasets import Dataset, Features, Translation, Value
+
+    features = Features({"text": Value("string"), "tr": Translation(["en", "fr"])})
+    path = tmp_dir / "hf.parquet"
+    data = {"text": ["hi"], "tr": [{"en": "a", "fr": "b"}]}
+    Dataset.from_dict(data, features=features).to_parquet(path)
+    chain = dc.read_parquet(
+        path.as_uri(), columns=["text"], output={"text": str}, session=test_session
+    )
+    assert chain.to_values("text") == ["hi"]
+
+
 def test_read_parquet_output_skips_partition_columns(tmp_dir, test_session):
     (tmp_dir / "year=2024").mkdir()
     pq.write_table(pa.table({"a": [1], "b": [2]}), tmp_dir / "year=2024" / "p.parquet")
