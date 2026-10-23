@@ -136,7 +136,7 @@ class ArrowGenerator(Generator):
         if self.columns is not None:
             present = set(schema.names)
             kw["columns"] = [c for c in self.columns if c in present]
-            # Only the columns read need their Hugging Face features.
+            # Decode Hugging Face features only for the columns being read.
             fields = [schema.field(c) for c in kw["columns"]]
             schema = pa.schema(fields, metadata=schema.metadata)
         hf_schema = _get_hf_schema(schema)
