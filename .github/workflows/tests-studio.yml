@@ -108,8 +108,10 @@ jobs:
       - name: Install FFmpeg
         timeout-minutes: 10
         run: |
+          # the runners' default mirror, azure.archive.ubuntu.com, can be too slow
+          sudo grep -rlI azure.archive.ubuntu.com /etc/apt | xargs -r sudo sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g'
           sudo apt update
-          sudo apt install -y ffmpeg
+          sudo apt install -y --no-install-recommends ffmpeg
 
       - name: Install dependencies
         run: uv pip install --system ./datachain_saas[tests] ./datachain[tests]

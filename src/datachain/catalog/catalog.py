@@ -64,7 +64,7 @@ if TYPE_CHECKING:
     from datachain.job import Job
     from datachain.lib.dc.datachain import DataChain
     from datachain.lib.listing_info import ListingInfo
-    from datachain.listing import Listing
+    from datachain.listing import SavedListing
     from datachain.remote.studio import StudioClient
 
 logger = logging.getLogger("datachain")
@@ -258,7 +258,7 @@ class DatasetRowsFetcher(NodesThreadPool):
 class NodeGroup:
     """Class for a group of nodes from the same source"""
 
-    listing: "Listing | None"
+    listing: "SavedListing | None"
     client: Client
     sources: list[DataSource]
 
@@ -353,7 +353,7 @@ def collect_nodes_for_cp(
 
     # Collect all sources to process
     for node_group in node_groups:
-        listing: Listing | None = node_group.listing
+        listing: SavedListing | None = node_group.listing
         valid_sources: list[DataSource] = []
         for dsrc in node_group.sources:
             if dsrc.is_single_object():
@@ -425,7 +425,7 @@ def instantiate_node_groups(
     for node_group in node_groups:
         if not node_group.sources:
             continue
-        listing: Listing | None = node_group.listing
+        listing: SavedListing | None = node_group.listing
         source_path: str = node_group.source_path
 
         copy_dir_contents = always_copy_dir_contents or source_path.endswith("/")
@@ -585,9 +585,9 @@ class Catalog:
         client_config=None,
         column="file",
         skip_indexing=False,
-    ) -> tuple["Listing | None", Client, str]:
+    ) -> tuple["SavedListing | None", Client, str]:
         from datachain import read_storage
-        from datachain.listing import Listing
+        from datachain.listing import SavedListing
 
         read_storage(source, session=self.session, update=update, column=column).exec()
 
@@ -598,7 +598,7 @@ class Catalog:
         client = Client.get_client(list_uri, self.cache, **self.client_config)
 
         if list_ds_name:
-            lst = Listing(
+            lst = SavedListing(
                 self.metastore.clone(),
                 self.warehouse.clone(),
                 client,
@@ -617,7 +617,7 @@ class Catalog:
         client_config=None,
         only_index=False,
     ) -> Iterator[list["DataSource"] | None]:
-        enlisted_sources: list[tuple[Listing | None, Client, str]] = []
+        enlisted_sources: list[tuple[SavedListing | None, Client, str]] = []
         try:
             for src in sources:  # Opt: parallel
                 listing, client, file_path = self.enlist_source(
@@ -659,7 +659,7 @@ class Catalog:
         no_glob: bool = False,
         client_config=None,
     ) -> list[NodeGroup]:
-        from datachain.listing import Listing
+        from datachain.listing import SavedListing
         from datachain.query.dataset import DatasetQuery
 
         def _row_to_node(d: dict[str, Any]) -> Node:
@@ -669,7 +669,7 @@ class Catalog:
         enlisted_sources: list[tuple[bool, bool, Any]] = []
         client_config = client_config or self.client_config
         for src in sources:  # Opt: parallel
-            listing: Listing | None
+            listing: SavedListing | None
             if src.startswith("ds://"):
                 (ds_namespace, ds_project, ds_name, ds_version) = parse_dataset_uri(src)
                 dataset = self.get_dataset(
@@ -691,7 +691,7 @@ class Catalog:
                     uri = client.uri
                     dataset_name, _, _, _ = get_listing(uri, self.session)
                     assert dataset_name
-                    listing = Listing(
+                    listing = SavedListing(
                         self.metastore.clone(),
                         self.warehouse.clone(),
                         client,

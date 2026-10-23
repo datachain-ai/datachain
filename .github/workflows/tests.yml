@@ -136,8 +136,10 @@ jobs:
         if: runner.os == 'Linux'
         timeout-minutes: 10
         run: |
+          # the runners' default mirror, azure.archive.ubuntu.com, can be too slow
+          sudo grep -rlI azure.archive.ubuntu.com /etc/apt | xargs -r sudo sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g'
           sudo apt update
-          sudo apt install -y ffmpeg
+          sudo apt install -y --no-install-recommends ffmpeg
 
       - name: Install nox
         run: uv pip install nox --system
@@ -229,8 +231,10 @@ jobs:
         if: runner.os == 'Linux'
         timeout-minutes: 10
         run: |
+          # the runners' default mirror, azure.archive.ubuntu.com, can be too slow
+          sudo grep -rlI azure.archive.ubuntu.com /etc/apt | xargs -r sudo sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g'
           sudo apt update
-          sudo apt install -y ffmpeg
+          sudo apt install -y --no-install-recommends ffmpeg
 
       - name: Run examples
         env:

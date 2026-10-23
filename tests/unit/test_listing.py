@@ -1,24 +1,38 @@
 import posixpath
+import random
+import sqlite3
+from contextlib import closing
 
 import pytest
+from sqlalchemy import true
 
 import datachain as dc
 from datachain.catalog.catalog import DataSource
 from datachain.client import Client
 from datachain.fs.utils import path_to_fsspec_uri
-from datachain.lib.dc.storage_pattern import split_uri_pattern
+from datachain.lib.dc.storage_pattern import (
+    convert_globstar_to_glob,
+    path_filter,
+    should_use_recursion,
+    split_uri_pattern,
+)
 from datachain.lib.file import File
 from datachain.lib.listing import (
     LISTING_PREFIX,
+    PathFilter,
     _desanitize_ds_name,
     _sanitize_ds_name,
     get_listing,
+    glob_match,
     is_listing_dataset,
     listing_uri_from_name,
     parse_listing_uri,
+    select_paths,
 )
-from datachain.listing import Listing
+from datachain.listing import SavedListing
 from datachain.node import DirType
+from datachain.sql.functions import path as pathfunc
+from datachain.utils import uses_glob
 from tests.utils import skip_if_not_sqlite
 
 TREE = {
@@ -60,7 +74,7 @@ def listing(test_session):
         .save(dataset_name, listing=True)
     )
 
-    with Listing(
+    with SavedListing(
         catalog.metastore.clone(),
         catalog.warehouse.clone(),
         Client.get_client(fake_uri, catalog.cache, **catalog.client_config),
@@ -405,3 +419,153 @@ def test_desanitize_old_xhh_still_works():
     # Simulate an old stored name: s3://my.bucket/ -> lst__s3://my_x2ebucket/
     old_encoded = "lst__s3://my_x2ebucket/"
     assert _desanitize_ds_name(old_encoded) == "lst__s3://my.bucket/"
+
+
+_GLOB_PATTERNS = [
+    "*",
+    "a*",
+    "*b",
+    "a?c",
+    "?",
+    "[abc]",
+    "[^abc]",
+    "[a-c]x",
+    "[]a]",
+    "[^]a]",
+    "[a-]",
+    "[-a]",
+    "a/*",
+    "*/b",
+    "a.b",
+    "a\\b",
+    "[",
+    "a[b",
+    "[!a]",
+    "**",
+    "a*b*c",
+    "[z-a]",
+    "[a-c-e]",
+    "[]-a]",
+    "[^a-]",
+    "*.[ch]",
+    "x?y*",
+    "a+b",
+    "(a)",
+    "a$",
+    "^a",
+]
+_GLOB_PATHS = [
+    "",
+    "a",
+    "b",
+    "abc",
+    "ab",
+    "a/b",
+    "a/b/c",
+    "x/a.b",
+    "]",
+    "-",
+    "!",
+    "a-",
+    "a\\b",
+    "aXc",
+    "ac",
+    "a[b",
+    "c",
+    "z",
+    "a.c",
+    "a.h",
+    "xyz",
+    "a+b",
+    "(a)",
+    "a$",
+    "^a",
+    "\n",
+    "a\nb",
+]
+
+
+@pytest.mark.parametrize("pattern", _GLOB_PATTERNS)
+def test_glob_match_is_sqlite_glob(pattern):
+    with closing(sqlite3.connect(":memory:")) as conn:
+        for path in _GLOB_PATHS:
+            (expected,) = conn.execute("SELECT ? GLOB ?", (path, pattern)).fetchone()
+            assert glob_match(path, pattern) == bool(expected), (path, pattern)
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [
+        PathFilter(),
+        PathFilter.ls("dir/", True),
+        PathFilter.ls("dir/", False),
+        PathFilter.ls("", False),
+        PathFilter.ls("d*/x", True),
+        PathFilter.ls("dir/", True).glob("dir/*.txt"),
+        PathFilter.ls("", False).glob("a?"),
+    ],
+)
+def test_path_filter_python_matches_sql(test_session, paths):
+    names = ["a", "ab", "x.txt", "dir", "dir/x.txt", "dir/a/x.txt", "dirx/x", "d/x"]
+    chain = dc.read_values(path=names, session=test_session)
+    for condition in paths.sql(dc.C("path")):
+        chain = chain.filter(condition)
+
+    assert sorted(chain.to_values("path")) == sorted(filter(paths.matcher(), names))
+
+
+def test_glob_match_is_sqlite_glob_on_random_patterns():
+    rng = random.Random(0)  # noqa: S311
+    with closing(sqlite3.connect(":memory:")) as conn:
+        for _ in range(3000):
+            pattern = "".join(rng.choices("ab-]^[*?/!", k=rng.randint(0, 9)))
+            path = "".join(rng.choices("ab-]^[/!", k=rng.randint(0, 9)))
+            (expected,) = conn.execute("SELECT ? GLOB ?", (path, pattern)).fetchone()
+            assert glob_match(path, pattern) == bool(expected), (path, pattern)
+
+
+def test_glob_match_is_linear_in_stars():
+    path = "a" * 1000 + ".txt"
+
+    assert not glob_match(path, "*a" * 30 + "b.txt")
+    assert glob_match(path, "*a" * 30 + "*.txt")
+
+
+@pytest.mark.parametrize(
+    "list_path,pattern,recursive",
+    [
+        ("dir/", None, True),
+        ("dir/", None, False),
+        ("", None, True),
+        ("d*/x", None, True),
+        ("dir/", "*.txt", True),
+        ("dir/", "**/*.txt", True),
+        ("", "a?", False),
+    ],
+)
+def test_select_paths_keeps_filter_steps(test_session, list_path, pattern, recursive):
+    chain = dc.read_values(file=[File(path="dir/x.txt")], session=test_session)
+    path = dc.C("file.path")
+    rec = should_use_recursion(pattern, recursive) if pattern else recursive
+    expected = chain.filter(dc.C("file.is_latest") == true())
+    if not rec:
+        expected = expected.filter(
+            pathfunc.parent(path) == list_path.lstrip("/").rstrip("/*")
+        )
+    elif list_path and list_path != "/":
+        expected = expected.filter(
+            path.glob(list_path)
+            if uses_glob(list_path)
+            else (path == list_path) | path.glob(list_path.rstrip("/") + "/*")
+        )
+    if pattern:
+        glob = convert_globstar_to_glob(pattern)
+        if subpath := list_path.strip("/"):
+            glob = f"{subpath}/{glob}"
+        expected = expected.filter(path.glob(glob))
+
+    actual = select_paths(chain, path_filter(list_path, pattern, recursive))
+
+    assert [s.hash() for s in actual._query.steps] == [
+        s.hash() for s in expected._query.steps
+    ]

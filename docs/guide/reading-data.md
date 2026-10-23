@@ -20,11 +20,22 @@ all_files = dc.read_storage("az://container/data/")
 
 The `type=` parameter selects the right File subclass (`ImageFile`, `VideoFile`, `AudioFile`, `TextFile`). Without it, files are plain `File` objects with binary access.
 
-For public buckets, pass `anon=True` explicitly:
+The chain runs over a saved listing of the storage, a snapshot that later runs reuse. A saved listing of the URI, or of a prefix above it, younger than 4 hours is reused; otherwise the storage is listed and saved, and `update=True` lists it again. `dc.listings()` shows the saved listings. On a versioned bucket the chain holds current objects; `versions=False` lists faster and leaves old versions out of the snapshot.
+
+For public buckets, pass `anon=True` explicitly; for explicit keys or an S3-compatible storage such as MinIO, pass `client_config`:
 
 ```python
 chain = dc.read_storage("gs://datachain-demo/dogs-and-cats/", anon=True)
+
+minio = {
+    "endpoint_url": "https://minio.example.com",
+    "key": "access-key",
+    "secret": "secret-key",
+}
+chain = dc.read_storage("s3://my-bucket/data/", client_config=minio)
 ```
+
+To get the objects of a storage as rows in Python, without a chain or a saved snapshot, use `dc.list_storage()`: see [Listing Storage](listing-storage.md).
 
 ## Structured Formats
 
