@@ -205,6 +205,8 @@ class GCSClient(RangeListedClient):
         use_cache: bool = True,
         cb: Callback = DEFAULT_CALLBACK,
         block_size: int | None = None,
+        *,
+        max_block_size: int | None = None,
     ) -> BinaryIO:
         if use_cache and (cache_path := self.cache.get_path(file)):
             return open(cache_path, mode="rb")
@@ -214,7 +216,9 @@ class GCSClient(RangeListedClient):
             file.version,
         )
         return FileWrapper(
-            self.fs.open(full_path, block_size=block_size),
+            self._open_file(
+                full_path, block_size=block_size, max_block_size=max_block_size
+            ),
             cb,
         )  # type: ignore[return-value]
 

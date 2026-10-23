@@ -858,15 +858,18 @@ def test_tar_member_open_read_ahead(
     cloud_test_catalog_upload,
     fetched_bytes,
     tmp_path,
+    monkeypatch,
     size,
     block_size,
     record_property,
 ):
     ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+    monkeypatch.setattr(client.fs, "default_block_size", 2 * 1024 * 1024)
     data = b"m" * size
     padding = tmp_path / "padding.bin"
     with padding.open("wb") as stream:
-        stream.truncate(60 * 1024 * 1024)
+        stream.truncate(4 * 1024 * 1024)
     tar_path = tmp_path / "member.tar"
     with tarfile.open(tar_path, "w") as archive:
         info = tarfile.TarInfo("member.bin")
@@ -901,12 +904,12 @@ def test_tar_member_open_read_ahead(
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
 def test_tar_member_large_sequential_read_ahead(
-    cloud_test_catalog_upload, fetched_bytes, tmp_path, record_property
+    cloud_test_catalog_upload, fetched_bytes, tmp_path, monkeypatch, record_property
 ):
     from datachain.client.fileslice import FileSlice
 
     ctc = cloud_test_catalog_upload
-    size = 100 * 1024 * 1024
+    size = 4 * 1024 * 1024
     data_path = tmp_path / "large.bin"
     with data_path.open("wb") as stream:
         stream.truncate(size)
@@ -919,17 +922,19 @@ def test_tar_member_large_sequential_read_ahead(
     member = next(process_tar(parent))
     member._set_stream(ctc.catalog, caching_enabled=False)
     client = ctc.catalog.get_client(parent.source)
+    monkeypatch.setattr(client.fs, "default_block_size", 2 * 1024 * 1024)
     fetched_bytes[:] = [0, 0]
     with FileSlice(
         client.open_object(parent), member.location[0]["offset"], size, member.name
     ) as stream:
         normal = stream.read()
     normal_fetches = fetched_bytes.copy()
-    assert len(normal) == size
+    assert normal == bytes(size)
+    del normal
     fetched_bytes[:] = [0, 0]
 
     with member.open() as stream:
-        assert stream.read() == normal
+        assert stream.read() == bytes(size)
 
     record_property("normal_fetched_bytes", normal_fetches[0])
     record_property("normal_range_fetches", normal_fetches[1])

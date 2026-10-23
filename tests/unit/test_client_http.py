@@ -137,8 +137,8 @@ def test_open_object(monkeypatch):
     # Test with use_cache=False (bypass cache)
     cache.get_path.return_value = "/cache/path/file.txt"
     monkeypatch.setattr(client.fs, "open", Mock())
-    client.open_object(file, use_cache=False)
-    client.fs.open.assert_called_once()  # Should fetch from remote, not cache
+    client.open_object(file, use_cache=False, block_size=1024, max_block_size=512)
+    client.fs.open.assert_called_once_with(file.get_fs_path())
 
 
 def test_url():

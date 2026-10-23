@@ -147,8 +147,8 @@ class TarVFile(VFile):
 
         Reads always consult the cache (hit → local, miss → remote stream);
         ``_caching_enabled`` only governs whether a miss is also persisted.
-        An integer backend read-ahead default is capped at the member size.
-        Backend-resolved defaults and explicit ``block_size`` values are retained.
+        The client caps default read-ahead at the member size after opening.
+        Explicit ``block_size`` values and other cache policies are retained.
         Read-ahead is not a total-transfer limit; HTTP(S) clients ignore the cap.
         """
         tar_file = cls.parent(file, location)
@@ -162,17 +162,9 @@ class TarVFile(VFile):
             raise VFileError("'size' is not specified", file.source, file.path)
 
         client = file._catalog.get_client(tar_file.source)
-        if block_size is None and client.cache.get_path(tar_file) is None:
-            fs = client.fs
-            fs = getattr(fs, "sync_fs", fs)
-            default_block_size = getattr(
-                fs,
-                "default_block_size",
-                getattr(fs, "block_size", getattr(fs, "blocksize", None)),
-            )
-            if isinstance(default_block_size, int):
-                block_size = min(size, default_block_size)
-        fd = client.open_object(tar_file, use_cache=True, block_size=block_size)
+        fd = client.open_object(
+            tar_file, use_cache=True, block_size=block_size, max_block_size=size
+        )
         return FileSlice(fd, offset, size, file.name)
 
     @classmethod

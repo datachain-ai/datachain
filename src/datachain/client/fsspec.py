@@ -20,7 +20,9 @@ from urllib.parse import urlparse
 
 from dvc_objects.fs.system import reflink
 from fsspec.asyn import get_loop, sync
+from fsspec.caching import BytesCache, ReadAheadCache
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
+from fsspec.spec import AbstractBufferedFile
 
 from datachain.cache import Cache
 from datachain.client.fileslice import FileWrapper
@@ -469,6 +471,8 @@ class Client(ABC):
         use_cache: bool = True,
         cb: Callback = DEFAULT_CALLBACK,
         block_size: int | None = None,
+        *,
+        max_block_size: int | None = None,
     ) -> BinaryIO:
         """Open a file, including files in tar archives."""
         if use_cache and (cache_path := self.cache.get_path(file)):
@@ -477,9 +481,32 @@ class Client(ABC):
         kwargs = self._version_kwargs(file.version)
         full_path = file.get_fs_path()
         return FileWrapper(
-            self.fs.open(full_path, block_size=block_size, **kwargs),
+            self._open_file(
+                full_path,
+                block_size=block_size,
+                max_block_size=max_block_size,
+                **kwargs,
+            ),
             cb,
         )  # type: ignore[return-value]
+
+    def _open_file(
+        self,
+        path: str,
+        block_size: int | None = None,
+        max_block_size: int | None = None,
+        **kwargs,
+    ) -> BinaryIO:
+        stream = self.fs.open(path, block_size=block_size, **kwargs)
+        if (
+            block_size is None
+            and max_block_size is not None
+            and isinstance(stream, AbstractBufferedFile)
+            and type(stream.cache) in (ReadAheadCache, BytesCache)
+        ):
+            stream.blocksize = min(stream.blocksize, max_block_size)
+            stream.cache.blocksize = min(stream.cache.blocksize, max_block_size)
+        return stream
 
     def upload(
         self,
