@@ -115,7 +115,13 @@ class HFGenerator(Generator):
                     output_dict[normalized_name] = convert_feature(
                         row[name], feat, anno
                     )
-                yield self.output_schema(**output_dict)
+                row = self.output_schema(**output_dict)
+                if self.output is not None and len(self.output.values) == 1:
+                    # A single output signal takes its value, not the whole row.
+                    ((name, signal_type),) = self.output.values.items()
+                    if type(row) is not signal_type:
+                        row = getattr(row, name)
+                yield row
                 pbar.update(1)
 
 
