@@ -331,21 +331,20 @@ def test_listing_probes_and_keeps_active_session_config(catalog, mocker):
     assert read_config == config | {"anon": True}
 
 
-def test_an_explicit_session_decides_the_anonymous_probe(catalog, mocker):
+def test_client_config_replaces_the_session_config(catalog, mocker):
     own = {"endpoint_url": "https://a.example.com", "key": "k", "secret": "s"}
+    given = {"endpoint_url": "https://b.example.com"}
     configured = catalog.copy()
     configured.client_config = own
     probe = mocker.patch.object(storage, "_all_buckets_anonymous", return_value=True)
     session = dc.Session("explicit", catalog=configured)
 
-    lst = dc.list_storage(
-        "s3://bucket/data/",
-        session=session,
-        client_config={"endpoint_url": "https://b.example.com"},  # ignored
-    )
+    lst = dc.list_storage("s3://bucket/data/", session=session, client_config=given)
 
-    assert lst.client_config == own  # its credentials: no anonymous probe
-    assert not probe.call_count
+    assert probe.call_args.args[1] == given  # probed where it lists
+    assert lst.client_config == given | {"anon": True}
+    assert lst.session.catalog.client_config == given | {"anon": True}
+    assert configured.client_config == own  # the session is left unchanged
 
 
 def test_save_of_an_explicit_session_lists_with_anon(test_session, tmp_dir, mocker):

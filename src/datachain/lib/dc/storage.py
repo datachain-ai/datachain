@@ -131,6 +131,7 @@ def read_storage(  # noqa: PLR0913
             carries its version id, and the saved listing keeps old versions
             too. If False, no version ids, and the listing is faster.
         client_config: Optional client configuration for the storage client.
+            Replaces the session's.
         delta: If True, only process new or changed files instead of reprocessing
             everything. This saves time by skipping files that were already processed in
             previous versions. The optimization is working when a new version of the
@@ -236,8 +237,8 @@ def _client_configs(
     """The client config a session is made with, if not the active one's, and
     the client config to list ``uris`` with.
 
-    By precedence, as ``Session.get`` picks: an explicit ``session``'s own
-    config, else ``client_config``, else the active session's. ``anon`` is set
+    ``client_config`` if given, else the config of ``session`` or the active
+    session. ``anon`` is set
     on it, True when None and every bucket is public and has no credentials,
     and ``version_aware=False`` without ``versions``. An explicit session is
     never changed.
@@ -274,8 +275,8 @@ def _session_for(
 
 
 def _session_client_config(session: Session | None, client_config: dict | None) -> dict:
-    """The client config ``Session.get`` would use, without creating a session."""
-    if session is None and client_config:
+    """``client_config`` if given, else the session's, without creating one."""
+    if client_config:
         return client_config
     session = session or Session.active()
     return session.catalog.client_config if session else {}
@@ -418,7 +419,7 @@ def list_storage(
         anon: If True, read the bucket as public, without credentials. If
             None, the default, a public bucket is detected.
         client_config: Client configuration, such as credentials or an
-            endpoint. Ignored when `session` is passed.
+            endpoint. Replaces the session's.
         session: The session to take the client configuration from and to
             save into with `save()`.
         in_memory: Make the session that `save()` creates, if any, in memory.

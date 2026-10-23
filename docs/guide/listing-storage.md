@@ -70,7 +70,7 @@ for img in lst.to_objects(type="image"):
 
 ## Sessions
 
-Listing a storage and reading its files do not use a session, so a session matters only for `save()`. Without one, `save()` uses the default session. To save in a session of your own, open it with `with`, or pass it as `session=`, which also brings its credentials:
+Listing a storage and reading its files do not use a session, so a session matters only for `save()`. Without one, `save()` uses the default session. To save in a session of your own, open it with `with`, or pass it as `session=`, which also brings its credentials; `client_config`, if given, replaces them:
 
 ```python
 with dc.Session("ingest", client_config=minio):
