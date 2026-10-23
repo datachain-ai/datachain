@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from datasets.features.features import Features
     from pydantic import BaseModel
 
+    from datachain.client import Client
     from datachain.lib.data_model import DataType
     from datachain.lib.dc import DataChain
 
@@ -74,11 +75,18 @@ def is_parquet(format: Any) -> bool:
 
 
 class _PartialReadHandler(FSSpecHandler):
-    """Opens files without read-ahead, so reading some columns of a Parquet file
-    fetches only those columns. pyarrow merges nearby reads itself."""
+    """Opens the recorded version of a file without read-ahead, so reading some
+    columns of a Parquet file fetches only those columns. pyarrow merges nearby
+    reads itself."""
+
+    def __init__(self, client: "Client", file: File):
+        super().__init__(client.fs)
+        self.client = client
+        self.file = file
 
     def open_input_file(self, path):
-        return pa.PythonFile(self.fs.open(path, mode="rb", cache_type="none"), mode="r")
+        f = self.client.open_object(self.file, use_cache=False, cache_type="none")
+        return pa.PythonFile(f, mode="r")
 
 
 class ArrowGenerator(Generator):
@@ -133,7 +141,10 @@ class ArrowGenerator(Generator):
             # support need read-ahead blocks.
             parquet = is_parquet(self.kwargs.get("format"))
             if parquet and not isinstance(fs, (LocalFileSystem, HTTPFileSystem)):
-                fs = PyFileSystem(_PartialReadHandler(fs))
+                client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
+                # Prefetch would check this before downloading the file.
+                client.check_unchanged(file)
+                fs = PyFileSystem(_PartialReadHandler(client, file))
 
         kwargs = self.kwargs
         if format := kwargs.get("format"):

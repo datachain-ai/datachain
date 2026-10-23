@@ -2616,10 +2616,11 @@ class DataChain:
         if source:
             output = {"source": ArrowRow} | output  # type: ignore[assignment,operator]
 
-        # Prefetch downloads whole files, so skip it when only part is read.
+        # Prefetch downloads whole files, so skip it when only part is read. Only
+        # this step skips it: the returned chain keeps the caller's settings.
         partial = nrows or (columns is not None and is_parquet(format))
-        settings = {"prefetch": 0} if partial else {}
-        return self.settings(**settings).gen(  # type: ignore[arg-type]
+        chain = self.settings(prefetch=0) if partial else self
+        return chain.gen(  # type: ignore[arg-type]
             ArrowGenerator(
                 schema,
                 model,
@@ -2630,7 +2631,7 @@ class DataChain:
                 **kwargs,
             ),
             output=output,
-        )
+        )._evolve(settings=self._settings)
 
     def to_parquet(
         self,

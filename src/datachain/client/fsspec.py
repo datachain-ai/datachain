@@ -469,12 +469,19 @@ class Client(ABC):
         use_cache: bool = True,
         cb: Callback = DEFAULT_CALLBACK,
         block_size: int | None = None,
+        cache_type: str | None = None,
     ) -> BinaryIO:
-        """Open a file, including files in tar archives."""
+        """Open a file, including files in tar archives.
+
+        ``cache_type="none"`` turns off read-ahead for callers that merge their
+        own range reads.
+        """
         if use_cache and (cache_path := self.cache.get_path(file)):
             return open(cache_path, mode="rb")
         assert not file.location
         kwargs = self._version_kwargs(file.version)
+        if cache_type:
+            kwargs["cache_type"] = cache_type
         full_path = file.get_fs_path()
         return FileWrapper(
             self.fs.open(full_path, block_size=block_size, **kwargs),
@@ -603,6 +610,14 @@ class Client(ABC):
 
     async def _put_in_cache(self, file: "File", *, callback: "Callback" = None) -> None:
         assert not file.location
+        await self._check_unchanged(file)
+        await self.cache.download(file, self, callback=callback)
+
+    def check_unchanged(self, file: "File") -> None:
+        """Fail if the file changed on the source since the catalog listed it."""
+        sync(get_loop(), self._check_unchanged, file)
+
+    async def _check_unchanged(self, file: "File") -> None:
         if file.etag:
             etag = await self.get_current_etag(file)
             if file.etag != etag:
@@ -613,7 +628,6 @@ class Client(ABC):
                     "Re-run the original dc.read_storage(...) call with "
                     "update=True to refresh the catalog."
                 )
-        await self.cache.download(file, self, callback=callback)
 
 
 class RangeListedClient(Client):

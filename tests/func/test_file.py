@@ -821,6 +821,48 @@ def test_read_parquet_columns_fetch_only_those_columns(
     assert 0 < fetched_bytes[0] < local.stat().st_size // 4
 
 
+def _put_parquet(ctc, tmp_path, name, values):
+    local = tmp_path / name
+    pq.write_table(pa.table({"value": values}), local)
+    ctc.src.fs.put_file(str(local), str(ctc.src / name))
+    return f"{ctc.src_uri}/{name}"
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_read_parquet_columns_read_the_recorded_version(
+    cloud_test_catalog_upload, tmp_path
+):
+    ctc = cloud_test_catalog_upload
+    uri = _put_parquet(ctc, tmp_path, "v.parquet", [1])
+    old = File.at(uri, session=ctc.session).resolve()
+    _put_parquet(ctc, tmp_path, "v.parquet", [2, 2, 2])
+
+    chain = dc.read_values(file=[old], session=ctc.session).parse_tabular(
+        format="parquet", columns=["value"]
+    )
+
+    assert chain.to_values("value") == [1]
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_read_parquet_columns_reject_a_changed_file(
+    cloud_test_catalog_upload, tmp_path
+):
+    ctc = cloud_test_catalog_upload
+    uri = _put_parquet(ctc, tmp_path, "c.parquet", [1])
+    old = File.at(uri, session=ctc.session).resolve()
+    _put_parquet(ctc, tmp_path, "c.parquet", [2, 2, 2])
+
+    chain = dc.read_values(file=[old], session=ctc.session).parse_tabular(
+        format="parquet", columns=["value"]
+    )
+
+    with pytest.raises(FileNotFoundError):
+        chain.to_values("value")
+
+
 @pytest.mark.filterwarnings("ignore:Sending a large body:ResourceWarning")
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
