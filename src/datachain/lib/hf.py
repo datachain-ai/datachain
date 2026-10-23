@@ -26,7 +26,7 @@ except ImportError as exc:
     ) from exc
 
 from io import BytesIO
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias, get_args, get_origin
 
 import PIL
 
@@ -127,24 +127,22 @@ def stream_splits(ds: HFDatasetType, *args, **kwargs):
     return {"": ds}
 
 
-def convert_feature(val: Any, feat: Any, anno: Any) -> Any:
-    if isinstance(feat, (Value, Array2D, Array3D, Array4D, Array5D, List)):
+def convert_feature(val: Any, feat: Any, anno: Any) -> Any:  # noqa: PLR0911
+    if isinstance(feat, (Value, Array2D, Array3D, Array4D, Array5D)):
         return val
+    if isinstance(feat, List):
+        if val is None or isinstance(feat.feature, Value):
+            return val
+        item_anno = _list_item_type(anno)
+        return [convert_feature(v, feat.feature, item_anno) for v in val]
     if isinstance(feat, ClassLabel):
         return HFClassLabel(string=feat.names[val], integer=val)
     if isinstance(feat, dict):
         sdict = {}
         model_fields = anno._model_fields_by_aliases()  # type: ignore[attr-defined]
         for sname in val:
-            sfeat = feat[sname]
             norm_name, info = model_fields[sname]
-            sanno = info.annotation
-            if isinstance(val[sname], list):
-                sdict[norm_name] = [
-                    convert_feature(v, sfeat, sanno) for v in val[sname]
-                ]
-            else:
-                sdict[norm_name] = convert_feature(val[sname], sfeat, sanno)
+            sdict[norm_name] = convert_feature(val[sname], feat[sname], info.annotation)
         return anno(**sdict)
     if isinstance(feat, Image):
         if isinstance(val, dict):
@@ -152,6 +150,14 @@ def convert_feature(val: Any, feat: Any, anno: Any) -> Any:
         return HFImage(img=image_to_bytes(val))
     if isinstance(feat, Audio):
         return HFAudio(array=val["array"], sampling_rate=val["sampling_rate"])
+
+
+def _list_item_type(anno: Any) -> Any:
+    """Return X for list[X], also when the list is optional."""
+    for tp in (anno, *get_args(anno)):
+        if get_origin(tp) is list:
+            return get_args(tp)[0]
+    return Any
 
 
 def get_output_schema(
