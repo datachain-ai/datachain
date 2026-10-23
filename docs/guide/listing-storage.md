@@ -24,7 +24,7 @@ total = sum(f.size for f in dc.list_storage("s3://bucket/episodes/"))
 images = dc.list_storage("s3://bucket/images/**/*.{jpg,png}").to_objects(type="image")
 ```
 
-Rows are plain tuples with `File`'s columns (`f.path`, `f.size`, `f.etag`, `f.last_modified`, ...) and its path helpers (`f.name`, `f.parent`, `f.get_file_ext()`). Rows don't read files; `to_objects()` gives `File` objects that do.
+Rows are plain tuples with `File`'s columns (`f.path`, `f.size`, `f.etag`, `f.last_modified`, ...) and its path helpers (`f.name`, `f.parent`, `f.get_file_ext()`). `row.to_file()` converts one row to a `File`; `listing.to_objects()` converts all rows and configures them to read with the listing's credentials.
 
 Iterate a listing, or take it whole:
 
@@ -37,6 +37,8 @@ chain = dc.list_storage(uri).save()  # saved for read_storage(uri) to reuse
 ```
 
 Each use lists the storage again: iterating the same listing twice lists it twice. A listing reads only what its URI selects: with `recursive=False`, or a pattern with a fixed start such as `s3://bucket/logs/2024-*`, it reads that level or those keys, not the whole prefix (S3 and GCS). On S3, GCS and Azure, iterating holds a few pages at a time however large the storage is, while a local folder is read whole; `to_list()`, `to_arrow()`, `to_pandas()` and `to_objects()` hold every row.
+
+The CLI commands `datachain ls`, `du` and `find` use saved listings so they can query directories and aggregate sizes in the database. They reuse snapshots; pass `--update` to refresh them.
 
 ## Versioned Buckets
 

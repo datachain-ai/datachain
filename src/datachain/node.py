@@ -4,7 +4,6 @@ from typing import TYPE_CHECKING, Any
 
 import attrs
 
-from datachain.dataset import StorageURI
 from datachain.lib.file import File
 from datachain.utils import TIME_ZERO, time_to_str
 
@@ -49,16 +48,18 @@ class DirTypeGroup:
 
 @attrs.define
 class Node:
+    """A saved file row with database identity and tree metadata."""
+
     sys__id: int = 0
     sys__rand: int = 0
     path: str = ""
     etag: str = ""
-    version: str | None = None
+    version: str = ""
     is_latest: bool = True
-    last_modified: datetime | None = None
+    last_modified: datetime = TIME_ZERO
     size: int = 0
-    location: str | None = None
-    source: StorageURI = StorageURI("")  # noqa: RUF009
+    location: dict | list[dict] | None = None
+    source: str = ""
     dir_type: int = DirType.FILE
 
     @property
@@ -90,11 +91,9 @@ class Node:
             return self.path + "/"
         return self.path
 
-    def to_file(self, source: StorageURI | None = None) -> File:
-        if source is None:
-            source = self.source
+    def to_file(self, source: str | None = None) -> File:
         return File(
-            source=source,
+            source=self.source if source is None else source,
             path=self.path,
             size=self.size,
             version=self.version or "",
@@ -106,35 +105,25 @@ class Node:
 
     @classmethod
     def from_file(cls, f: File) -> "Self":
-        return cls(
-            source=StorageURI(f.source),
-            path=f.path,
-            etag=f.etag,
-            is_latest=f.is_latest,
-            size=f.size,
-            last_modified=f.last_modified,
-            version=f.version,
-            location=str(f.location) if f.location else None,
-            dir_type=DirType.FILE,
-        )
+        return cls(**{name: getattr(f, name) for name in File.model_fields})
 
     @classmethod
     def from_row(cls, d: dict[str, Any], file_prefix: str = "file") -> "Self":
-        def _dval(field_name: str):
-            return d.get(f"{file_prefix}__{field_name}")
-
+        location = d.get(f"{file_prefix}__location")
+        if location == "":
+            location = None
         return cls(
             sys__id=d["sys__id"],
             sys__rand=d["sys__rand"],
-            source=_dval("source"),
-            path=_dval("path"),
-            etag=_dval("etag"),
-            is_latest=_dval("is_latest"),
-            size=_dval("size"),
-            last_modified=_dval("last_modified"),
-            version=_dval("version"),
-            location=_dval("location"),
-            dir_type=DirType.FILE,
+            source=d[f"{file_prefix}__source"],
+            path=d[f"{file_prefix}__path"],
+            etag=d.get(f"{file_prefix}__etag", ""),
+            is_latest=d.get(f"{file_prefix}__is_latest", True),
+            size=d.get(f"{file_prefix}__size", 0),
+            last_modified=d.get(f"{file_prefix}__last_modified") or TIME_ZERO,
+            version=d.get(f"{file_prefix}__version") or "",
+            location=location,
+            dir_type=d.get(f"{file_prefix}__dir_type", DirType.FILE),
         )
 
     @classmethod
@@ -145,6 +134,7 @@ class Node:
     def root(cls) -> "Node":
         return cls(sys__id=-1, dir_type=DirType.DIR)
 
+    # Tree keys retain empty segments, including trailing directory markers.
     @property
     def name(self):
         return self.path.rsplit("/", 1)[-1]

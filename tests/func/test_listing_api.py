@@ -6,6 +6,7 @@ import pytest
 from botocore.exceptions import ClientError
 
 import datachain as dc
+from datachain.client import Client
 from datachain.client.fsspec import RangeListedClient
 from datachain.lib.convert.flatten import flatten
 from datachain.lib.dc import DataChain, storage
@@ -13,6 +14,7 @@ from datachain.lib.file import File, FileRow
 from datachain.lib.listing import get_listing
 from datachain.lib.settings import Settings
 from datachain.lib.signal_schema import SignalSchema
+from datachain.listing import SavedListing
 from datachain.query.dataset import DatasetQuery
 from datachain.query.session import Session
 
@@ -40,6 +42,21 @@ def test_listing_rows_match_saved_listing(cloud_test_catalog, versions):
     assert sorted(flatten(f) for f in chain.to_values("file")) == [
         r for r in rows if r.is_latest
     ]
+
+    name, _, _, reused = get_listing(uri, ctc.session, versions=versions)
+    assert reused
+    catalog = ctc.catalog
+    with SavedListing(
+        catalog.metastore.clone(),
+        catalog.warehouse.clone(),
+        Client.get_client(uri, catalog.cache, **catalog.client_config),
+        dataset_name=name,
+    ) as saved:
+        nodes = [saved.resolve_path(row.path) for row in rows]
+
+    assert [node.to_file() for node in nodes] == [row.to_file() for row in rows]
+    assert all(node.sys__id > 0 and isinstance(node.sys__rand, int) for node in nodes)
+    assert [node.name for node in nodes] == [row.name for row in rows]
 
 
 @pytest.mark.parametrize("versions", [False, True])

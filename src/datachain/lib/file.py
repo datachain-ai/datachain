@@ -1195,15 +1195,20 @@ class FileRow(NamedTuple):
     def get_file_stem(self) -> str:
         return PurePosixPath(self.path).stem
 
-    # File's helpers that need a File: one is built from the row
+    def to_file(self, source: str | None = None) -> File:
+        values = self._asdict()
+        if source is not None:
+            values["source"] = source
+        return File(**values)
+
     def get_fs_path(self) -> str:
-        return File(**self._asdict()).get_fs_path()
+        return self.to_file().get_fs_path()
 
     def get_hash(self) -> str:
-        return File(**self._asdict()).get_hash()
+        return self.to_file().get_hash()
 
     def rebase(self, *args, **kwargs) -> str:
-        return File(**self._asdict()).rebase(*args, **kwargs)
+        return self.to_file().rebase(*args, **kwargs)
 
 
 class TextFile(File):

@@ -662,10 +662,6 @@ class Catalog:
         from datachain.listing import SavedListing
         from datachain.query.dataset import DatasetQuery
 
-        def _row_to_node(d: dict[str, Any]) -> Node:
-            del d["file__source"]
-            return Node.from_row(d)
-
         enlisted_sources: list[tuple[bool, bool, Any]] = []
         client_config = client_config or self.client_config
         for src in sources:  # Opt: parallel
@@ -709,7 +705,7 @@ class Catalog:
                             listing,
                             client,
                             source,
-                            [_row_to_node(r) for r in rows],
+                            [Node.from_row(r) for r in rows],
                             ds_name,
                             ds_version,
                         )  # type: ignore [arg-type]
@@ -1449,7 +1445,6 @@ class Catalog:
         include_removed: bool = False,
         include_preview: bool = False,
     ) -> DatasetRecord:
-
         namespace_name = namespace_name or self.metastore.default_namespace_name
         project_name = project_name or self.metastore.default_project_name
 

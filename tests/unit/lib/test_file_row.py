@@ -125,3 +125,12 @@ def test_file_row_path_helpers_match_file(path):
     assert (row.name, row.parent) == (file.name, file.parent)
     for helper in ("get_file_ext", "get_file_stem", "get_file_suffix"):
         assert getattr(row, helper)() == getattr(file, helper)()
+
+
+def test_file_row_to_file_uses_only_file_columns():
+    row = FileRow("s3://bucket", "d/a.txt", size=3)
+
+    assert row.to_file() == File(source="s3://bucket", path="d/a.txt", size=3)
+    assert row.to_file("s3://other").source == "s3://other"
+    assert row.source == "s3://bucket"
+    assert not hasattr(row, "__dict__")
