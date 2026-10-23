@@ -154,10 +154,9 @@ def convert_feature(val: Any, feat: Any, anno: Any) -> Any:  # noqa: PLR0911
 
 def _list_item_type(anno: Any) -> Any:
     """Return X for list[X], also when the list is optional."""
-    for tp in (anno, *get_args(anno)):
-        if get_origin(tp) is list:
-            return get_args(tp)[0]
-    return Any
+    return next(
+        get_args(t)[0] for t in (anno, *get_args(anno)) if get_origin(t) is list
+    )
 
 
 def get_output_schema(
