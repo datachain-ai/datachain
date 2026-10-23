@@ -5,8 +5,11 @@ from itertools import islice
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
+from fsspec.implementations.http import HTTPFileSystem
+from fsspec.implementations.local import LocalFileSystem
 from pyarrow._csv import ParseOptions
-from pyarrow.dataset import CsvFileFormat, Dataset, dataset
+from pyarrow.dataset import CsvFileFormat, Dataset, ParquetFileFormat, dataset
+from pyarrow.fs import FSSpecHandler, PyFileSystem
 
 from datachain import json
 from datachain.fs.reference import ReferenceFileSystem
@@ -27,6 +30,7 @@ if TYPE_CHECKING:
     from datasets.features.features import Features
     from pydantic import BaseModel
 
+    from datachain.client import Client
     from datachain.lib.data_model import DataType
     from datachain.lib.dc import DataChain
 
@@ -61,6 +65,28 @@ _CSV_PARSE_OPTIONS = (
     "newlines_in_values",
     "ignore_empty_lines",
 )
+
+
+def is_parquet(format: Any) -> bool:
+    """Whether a pyarrow dataset `format` reads Parquet, which is its default."""
+    if isinstance(format, str):
+        return format == "parquet"
+    return format is None or isinstance(format, ParquetFileFormat)
+
+
+class _PartialReadHandler(FSSpecHandler):
+    """Opens the recorded version of a file without read-ahead, so reading some
+    columns of a Parquet file fetches only those columns. pyarrow merges nearby
+    reads itself."""
+
+    def __init__(self, client: "Client", file: File):
+        super().__init__(client.fs)
+        self.client = client
+        self.file = file
+
+    def open_input_file(self, path):
+        f = self.client.open_object(self.file, use_cache=False, cache_type="none")
+        return pa.PythonFile(f, mode="r")
 
 
 class ArrowGenerator(Generator):
@@ -111,6 +137,14 @@ class ArrowGenerator(Generator):
             fs = ReferenceFileSystem({fs_path: [cache_path]})
         else:
             fs, fs_path = file.get_fs(), file.get_fs_path()
+            # pyarrow reads local files natively, and HTTP servers without range
+            # support need read-ahead blocks.
+            parquet = is_parquet(self.kwargs.get("format"))
+            if parquet and not isinstance(fs, (LocalFileSystem, HTTPFileSystem)):
+                client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
+                # Prefetch would check this before downloading the file.
+                client.check_unchanged(file)
+                fs = PyFileSystem(_PartialReadHandler(client, file))
 
         kwargs = self.kwargs
         if format := kwargs.get("format"):
