@@ -105,6 +105,12 @@ def test_hf_list_of_class_labels():
     assert [(c.string, c.integer) for c in row.labels] == [("cat", 0), ("dog", 1)]
 
 
+def test_hf_list_of_class_labels_missing():
+    features = Features({"labels": List(ClassLabel(names=["cat", "dog"]))})
+    ds = Dataset.from_dict({"labels": [None]}, features=features)
+    assert _first_row(ds).labels is None
+
+
 def test_hf_list_of_dicts_with_class_label():
     tag = {"name": Value("string"), "kind": ClassLabel(names=["a", "b"])}
     features = Features({"tags": List(tag)})
