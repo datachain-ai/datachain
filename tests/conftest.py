@@ -1319,7 +1319,7 @@ def compressed_parquet_data():
         adapted_data = [_adapt_row(row) for row in data]
         df = pd.DataFrame.from_records(adapted_data)
         buffer = io.BytesIO()
-        df.to_parquet(buffer, engine="auto")
+        df.to_parquet(buffer)
 
         return lz4.frame.compress(buffer.getvalue())
 
