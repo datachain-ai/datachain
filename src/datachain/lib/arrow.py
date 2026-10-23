@@ -18,7 +18,7 @@ from datachain.lib.data_model import (
 )
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.model_store import ModelStore
-from datachain.lib.signal_schema import SignalSchema
+from datachain.lib.signal_schema import SignalSchema, SignalSchemaError
 from datachain.lib.udf import Generator
 from datachain.lib.utils import normalize_col_names
 from datachain.progress import tqdm
@@ -124,16 +124,13 @@ class ArrowGenerator(Generator):
             and DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY in ds.schema.metadata
         )
 
-        if self.columns is not None and use_datachain_schema:
-            raise ValueError(
-                f"'{file.path}' was written by DataChain, so it can't be read "
-                "by column names with other files. Read it separately."
-            )
-
         kw: dict[str, Any] = {}
         if self.nrows:
             kw = {"batch_size": min(self.DEFAULT_BATCH_SIZE, self.nrows)}
-        if self.columns is not None:
+        if self.columns is not None and use_datachain_schema:
+            names = ds.schema.names
+            kw["columns"] = [c for c in names if _in_signals(c, self.columns)]
+        elif self.columns is not None:
             present = set(ds.schema.names)
             kw["columns"] = [c for c in self.columns if c in present]
 
@@ -159,7 +156,8 @@ class ArrowGenerator(Generator):
         use_datachain_schema: bool,
     ):
         if use_datachain_schema and self.output_schema:
-            vals = [_nested_model_instantiate(record, self.output_schema)]
+            model = self.output_schema
+            vals = [_nested_model_instantiate(record, model, paths=self.columns)]
         else:
             vals = self._process_non_datachain_record(record, hf_schema)
 
@@ -259,27 +257,27 @@ def read_columns(
     ds = next(_file_datasets(chain.order_by("file.path").limit(1), **kwargs))
     schema = ds.schema
     if _get_datachain_schema(schema):
-        if columns is not None:
-            raise ValueError(
-                "columns can't be used with output on files written by DataChain; "
-                "omit output to restore their signals"
-            )
-        return None
-    if columns is not None:
-        schema, _ = merge_schemas([schema], columns)
-    elif len(schema) > fields:
-        physical = next(ds.get_fragments()).physical_schema
-        extra = set(schema.names) - set(physical.names)
-        index = (schema.pandas_metadata or {}).get("index_columns", [])
-        extra |= {c for c in index if isinstance(c, str)}
-        if set(schema.names[fields:]) <= extra:
-            schema = pa.schema(list(schema)[:fields])
-    if len(schema) != fields:
+        if columns is None:
+            return None
+        merge_schemas([schema], columns)
+        names = list(columns)
+    elif columns is not None:
+        names = merge_schemas([schema], columns)[0].names
+    else:
+        names = schema.names
+        if len(names) > fields:
+            physical = next(ds.get_fragments()).physical_schema
+            extra = set(names) - set(physical.names)
+            index = (schema.pandas_metadata or {}).get("index_columns", [])
+            extra |= {c for c in index if isinstance(c, str)}
+            if set(names[fields:]) <= extra:
+                names = names[:fields]
+    if len(names) != fields:
         raise ValueError(
-            f"output has {fields} fields but {len(schema)} columns are read. "
+            f"output has {fields} fields but {len(names)} columns are read. "
             "output names the columns read, in order; pick columns with columns=."
         )
-    return schema.names
+    return names
 
 
 def merge_schemas(
@@ -297,19 +295,14 @@ def merge_schemas(
     if isinstance(columns, str) or not columns:
         raise ValueError("columns must be a non-empty list of column names")
 
-    # Files written by DataChain are picked by signal; a signal is stored as its
-    # nested `signal.field` columns.
     signal_schemas = [_get_datachain_schema(s) for s in schemas]
-    if any(signal_schemas) and not all(signal_schemas):
+    if signal_schemas[0] is not None and all(signal_schemas):
+        return _pick_signals(schemas, signal_schemas[0], columns)
+    if any(signal_schemas):
         raise ValueError(
             "columns can't mix files written by DataChain with other files"
         )
-    signal_schema = signal_schemas[0]
-    names = (
-        list(signal_schema.values)
-        if signal_schema
-        else list(dict.fromkeys(n for s in schemas for n in s.names))
-    )
+    names = list(dict.fromkeys(n for s in schemas for n in s.names))
     cleaned = normalize_col_names(names)
     raw = {n: n for n in names} | cleaned
     if missing := [c for c in columns if c not in raw]:
@@ -320,25 +313,44 @@ def merge_schemas(
 
     # Only the selected columns need compatible types across files.
     wanted = set(selected)
-
-    def keep(name: str) -> bool:
-        return (name.split(".", 1)[0] if signal_schema else name) in wanted
-
     merged = pa.unify_schemas(
-        [pa.schema([f for f in s if keep(f.name)]) for s in schemas]
+        [pa.schema([f for f in s if f.name in wanted]) for s in schemas]
     )
-    if signal_schema:
-        picked = SignalSchema({c: signal_schema.values[c] for c in selected})
-        metadata = {
-            **schemas[0].metadata,
-            DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY: json.dumps(picked.serialize()),
-        }
-        return merged.with_metadata(metadata), selected
     schema = pa.schema(
         [merged.field(c) for c in selected], metadata=schemas[0].metadata
     )
     clean = {r: c for c, r in cleaned.items()}
     return schema, [clean[c] for c in selected]
+
+
+def _pick_signals(
+    schemas: list[pa.Schema], signal_schema: SignalSchema, columns: Sequence[str]
+) -> tuple[pa.Schema, list[str]]:
+    """Pick signals from files written by DataChain, as `select()` does.
+
+    A nested name like "p.x" keeps its parent as a partial model. A signal is
+    stored as its nested `signal.field` columns.
+    """
+    if len(set(columns)) < len(columns):
+        raise ValueError(f"Columns {list(columns)} name a column more than once")
+    try:
+        picked = signal_schema.to_partial(*columns)
+    except SignalSchemaError as e:
+        signals = list(signal_schema.values)
+        raise ValueError(f"{e}. Available signals: {signals}") from e
+    merged = pa.unify_schemas(
+        [pa.schema([f for f in s if _in_signals(f.name, columns)]) for s in schemas]
+    )
+    metadata = {
+        **schemas[0].metadata,
+        DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY: json.dumps(picked.serialize()),
+    }
+    return merged.with_metadata(metadata), list(picked.values)
+
+
+def _in_signals(column: str, signals: Sequence[str]) -> bool:
+    """Whether a stored column belongs to one of the signals, e.g. "p.x" to "p"."""
+    return any(column == s or column.startswith(f"{s}.") for s in signals)
 
 
 def schema_to_output(
@@ -481,14 +493,21 @@ def _optional_absent(
 
 
 def _nested_model_instantiate(
-    column_values: dict[str, Any], model: type["BaseModel"], prefix: str = ""
+    column_values: dict[str, Any],
+    model: type["BaseModel"],
+    prefix: str = "",
+    paths: Sequence[str] | None = None,
 ) -> "BaseModel":
     """Instantiate the given model and all sub-models/fields based on the provided
-    column values."""
+    column values. With `paths`, each field is read from its path, in order,
+    instead of from its own name."""
     vals_dict: dict[str, Any] = {}
-    for field, field_info in model.model_fields.items():
+    for i, (field, field_info) in enumerate(model.model_fields.items()):
         kind = classify_field(field_info.annotation)
-        cur_path = f"{prefix}.{field}" if prefix else field
+        if paths is not None:
+            cur_path = paths[i]
+        else:
+            cur_path = f"{prefix}.{field}" if prefix else field
         if kind.is_model:
             if kind.is_optional and _optional_absent(
                 column_values, kind.inner, cur_path
