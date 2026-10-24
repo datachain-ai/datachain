@@ -107,9 +107,7 @@ jobs:
 
       - name: Install FFmpeg
         timeout-minutes: 10
-        run: |
-          sudo apt update
-          sudo apt install -y ffmpeg
+        uses: ./datachain/.github/actions/install-ffmpeg
 
       - name: Install dependencies
         run: uv pip install --system ./datachain_saas[tests] ./datachain[tests]
