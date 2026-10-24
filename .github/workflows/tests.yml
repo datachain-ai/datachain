@@ -132,25 +132,10 @@ jobs:
           brew install ffmpeg@7
           echo 'DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/opt/ffmpeg@7/lib' >> "$GITHUB_ENV"
 
-      - name: Cache FFmpeg packages
-        if: runner.os == 'Linux'
-        uses: actions/cache@v6
-        with:
-          path: ~/.cache/apt-archives
-          key: ffmpeg-debs-${{ runner.os }}-${{ runner.arch }}-v1
-
       - name: Install FFmpeg on Ubuntu
         if: runner.os == 'Linux'
         timeout-minutes: 10
-        # Packages come from the cache when it has them, so a slow Ubuntu mirror
-        # doesn't stall the job.
-        run: |
-          archives="$HOME/.cache/apt-archives"
-          mkdir -p "$archives/partial"
-          sudo apt-get update
-          sudo apt-get install -y -o Dir::Cache::Archives="$archives" \
-            -o APT::Keep-Downloaded-Packages=true ffmpeg
-          sudo chown -R "$USER" "$archives"
+        uses: ./.github/actions/install-ffmpeg
 
       - name: Install nox
         run: uv pip install nox --system
@@ -238,25 +223,10 @@ jobs:
           brew install ffmpeg
           echo 'DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib' >> "$GITHUB_ENV"
 
-      - name: Cache FFmpeg packages
-        if: runner.os == 'Linux'
-        uses: actions/cache@v6
-        with:
-          path: ~/.cache/apt-archives
-          key: ffmpeg-debs-${{ runner.os }}-${{ runner.arch }}-v1
-
       - name: Install FFmpeg on Ubuntu
         if: runner.os == 'Linux'
         timeout-minutes: 10
-        # Packages come from the cache when it has them, so a slow Ubuntu mirror
-        # doesn't stall the job.
-        run: |
-          archives="$HOME/.cache/apt-archives"
-          mkdir -p "$archives/partial"
-          sudo apt-get update
-          sudo apt-get install -y -o Dir::Cache::Archives="$archives" \
-            -o APT::Keep-Downloaded-Packages=true ffmpeg
-          sudo chown -R "$USER" "$archives"
+        uses: ./.github/actions/install-ffmpeg
 
       - name: Run examples
         env:
