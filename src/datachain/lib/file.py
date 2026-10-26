@@ -1177,6 +1177,34 @@ class FileRow(NamedTuple):
     last_modified: datetime = TIME_ZERO
     location: dict | list[dict] | None = None
 
+    # File's path helpers, which read only ``path``: no File is built
+    @property
+    def name(self) -> str:
+        return PurePosixPath(self.path).name
+
+    @property
+    def parent(self) -> str:
+        return str(PurePosixPath(self.path).parent)
+
+    def get_file_suffix(self) -> str:
+        return PurePosixPath(self.path).suffix
+
+    def get_file_ext(self) -> str:
+        return PurePosixPath(self.path).suffix.lstrip(".")
+
+    def get_file_stem(self) -> str:
+        return PurePosixPath(self.path).stem
+
+    # File's helpers that need a File: one is built from the row
+    def get_fs_path(self) -> str:
+        return File(**self._asdict()).get_fs_path()
+
+    def get_hash(self) -> str:
+        return File(**self._asdict()).get_hash()
+
+    def rebase(self, *args, **kwargs) -> str:
+        return File(**self._asdict()).rebase(*args, **kwargs)
+
 
 class TextFile(File):
     """`DataModel` for reading text files."""

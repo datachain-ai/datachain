@@ -27,11 +27,14 @@ os.environ.setdefault("NO_GCE_CHECK", "true")
 class GCSClient(RangeListedClient):
     FS_CLASS = GCSFileSystem
     PREFIX = "gs://"
+    LISTS_LEVELS = True
     protocol = "gs"
     CREDENTIAL_KEYS = frozenset({"token"})
     LIST_PAGE_SIZE = 5000
     # the fields a listing asks for: GCS sends every field otherwise
-    LIST_FIELDS = "items(name,size,generation,etag,timeDeleted,updated),nextPageToken"
+    LIST_FIELDS = (
+        "items(name,size,generation,etag,timeDeleted,updated),nextPageToken,prefixes"
+    )
 
     @classmethod
     def create_fs(cls, **kwargs) -> GCSFileSystem:
@@ -236,12 +239,13 @@ class GCSClient(RangeListedClient):
         token: Any,
         hi: str | None = None,
         page_size: int | None = None,
+        delimiter: str = "",
     ) -> Page:
         page = await self.fs._call(
             "GET",
             "b/{}/o",
             self.name,
-            delimiter="",
+            delimiter=delimiter,
             prefix=prefix,
             startOffset=start_after or None,
             endOffset=None if hi is None else f"{hi}\0",  # exclusive
@@ -253,10 +257,12 @@ class GCSClient(RangeListedClient):
         )
         items = page.get("items", [])
         keep = Keep(self, start_after, hi)
+        # folders past a delimiter: listed past, though they make no rows
+        keys = [d["name"] for d in items] + page.get("prefixes", [])
         return Page(
             [self._file_row(d) for d in items if keep(d["name"])],
             items[0]["name"] if items else None,
-            items[-1]["name"] if items else None,
+            max(keys, default=None),
             page.get("nextPageToken"),
             keep.past_lo,
             keep.past_hi,
