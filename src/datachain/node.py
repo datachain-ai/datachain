@@ -57,7 +57,7 @@ class Node:
     is_latest: bool = True
     last_modified: datetime | None = None
     size: int = 0
-    location: str | None = None
+    location: dict | list[dict] | None = None
     source: StorageURI = StorageURI("")  # noqa: RUF009
     dir_type: int = DirType.FILE
 
@@ -114,7 +114,7 @@ class Node:
             size=f.size,
             last_modified=f.last_modified,
             version=f.version,
-            location=str(f.location) if f.location else None,
+            location=f.location,
             dir_type=DirType.FILE,
         )
 
@@ -133,8 +133,8 @@ class Node:
             size=_dval("size"),
             last_modified=_dval("last_modified"),
             version=_dval("version"),
-            location=_dval("location"),
-            dir_type=DirType.FILE,
+            location=None if _dval("location") == "" else _dval("location"),
+            dir_type=d.get(f"{file_prefix}__dir_type", DirType.FILE),
         )
 
     @classmethod

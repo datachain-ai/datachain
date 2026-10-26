@@ -668,9 +668,9 @@ class AbstractWarehouse(ABC, Serializable):
         """
         dr = dataset_rows
         columns = [c.name for c in query.selected_columns]
-        for row in self.db.execute(query):
+        for row in self.dataset_rows_select(query):
             d = dict(zip(columns, row, strict=False))
-            yield Node(**{dr.without_object(k): v for k, v in d.items()})
+            yield Node.from_row(d, file_prefix=dr.column)
 
     def get_dirs_by_parent_path(
         self,
@@ -726,19 +726,19 @@ class AbstractWarehouse(ABC, Serializable):
         dr = dataset_rows
         de = dr.dir_expansion()
         q = de.query(
-            dr.select().where(dr.c("is_latest") == true()).subquery(),
-            column=dr.column,
+            dr.select().where(dr.c("is_latest") == true()).subquery()
         ).subquery()
         q = self.expand_query(de, q, dr)
 
-        q = q.where(de.c(q, "path") == get_path(parent, name)).order_by(
-            de.c(q, "source"), de.c(q, "path"), de.c(q, "version")
+        columns = q.selected_columns
+        q = q.where(columns[dr.col_name("path")] == get_path(parent, name)).order_by(
+            *(columns[dr.col_name(field)] for field in ("source", "path", "version"))
         )
-        row = next(self.dataset_rows_select(q), None)
-        if not row:
+        node = next(self.get_nodes(q, dr), None)
+        if node is None:
             path = f"{parent}/{name}"
             raise FileNotFoundError(f"Unable to resolve path {path!r}")
-        return Node(*row)
+        return node
 
     def _populate_nodes_by_path(
         self, dataset_rows: "DataTable", path_list: list[str]
