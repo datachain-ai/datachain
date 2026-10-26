@@ -313,9 +313,10 @@ def test_saved_nodes_preserve_file_metadata(test_session, column, location):
 @pytest.mark.parametrize(
     "pattern,path,dir_type",
     [
-        ("di*1/d2", "dir1/d2", DirType.DIR),
-        ("di*1/d2/", "dir1/d2", DirType.DIR),
-        ("di*1/d2/file1.csv", "dir1/d2/file1.csv", DirType.FILE),
+        ("dir*/d2", "dir1/d2", DirType.DIR),
+        ("dir*/d2/", "dir1/d2", DirType.DIR),
+        ("dir*/d2/file1.csv", "dir1/d2/file1.csv", DirType.FILE),
+        ("dir*/diagram.png", "dir2/diagram.png", DirType.FILE),
     ],
 )
 def test_exact_path_after_glob(listing, pattern, path, dir_type):
@@ -327,9 +328,30 @@ def test_exact_path_after_glob(listing, pattern, path, dir_type):
     assert nodes[0].is_dir == (dir_type == DirType.DIR)
 
 
-def test_missing_exact_path_after_glob(listing):
+@pytest.mark.parametrize(
+    "pattern", ["dir*/missing.txt", "dir*/missing/a.txt", "missing.txt"]
+)
+def test_missing_exact_path(listing, pattern):
     with pytest.raises(FileNotFoundError, match="Unable to resolve path"):
-        listing.expand_path("dir*/missing.txt")
+        listing.warehouse.expand_path(listing.dataset_rows, pattern)
+
+
+def test_exact_path_after_glob_matches_multiple_directories(test_session):
+    chain = dc.read_values(
+        session=test_session,
+        file=[File(path=path) for path in ("one/a.txt", "two/a.txt", "other/b.txt")],
+    ).save("nodes")
+    dataset = chain.dataset
+    warehouse = test_session.catalog.warehouse
+    rows = warehouse.dataset_rows(dataset, dataset.latest_version)
+
+    nodes = warehouse.expand_path(rows, "*/a.txt")
+
+    assert {node.path for node in nodes} == {"one/a.txt", "two/a.txt"}
+
+
+def test_exact_path_after_glob_with_no_parent_matches(listing):
+    assert listing.expand_path("missing*/a.txt") == []
 
 
 @pytest.mark.parametrize(

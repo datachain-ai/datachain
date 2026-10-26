@@ -774,10 +774,16 @@ class AbstractWarehouse(ABC, Serializable):
                 )
                 result.extend(nodes)
         else:
-            result = [
-                self._get_node_by_path_list(dataset_rows, path, curr_name)
-                for path in matched_paths
-            ]
+            result = []
+            for path in matched_paths:
+                try:
+                    node = self._get_node_by_path_list(dataset_rows, path, curr_name)
+                except FileNotFoundError:
+                    continue
+                result.append(node)
+            if not result and matched_paths:
+                pattern = "/".join(path_list)
+                raise FileNotFoundError(f"Unable to resolve path {pattern!r}")
         return result
 
     @staticmethod
