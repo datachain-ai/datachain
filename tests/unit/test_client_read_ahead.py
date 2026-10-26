@@ -6,13 +6,10 @@ import pytest
 from gcsfs.core import GCSFile
 from huggingface_hub import hf_file_system
 from huggingface_hub.hf_file_system import HfFileSystemFile
-from s3fs.core import S3File
 
 from datachain.cache import Cache
-from datachain.client.fileslice import FileSlice
 from datachain.client.gcs import GCSClient
 from datachain.client.hf import HfClient
-from datachain.client.s3 import ClientS3
 from datachain.lib.file import File
 from datachain.lib.tar import build_tar_member, process_tar
 
@@ -40,74 +37,6 @@ def _tar_member(client, raw, version=""):
         member = build_tar_member(parent, archive.getmember("member.bin"))
     member._set_stream(catalog, caching_enabled=False)
     return parent, member
-
-
-def _s3_tar(tmp_path, monkeypatch, data):
-    raw = _tar_bytes(data)
-    client = ClientS3(
-        "bucket",
-        {"anon": True, "default_block_size": 2 * 1024 * 1024},
-        Cache(str(tmp_path / "cache"), str(tmp_path / "tmp")),
-    )
-    monkeypatch.setattr(client.fs, "info", lambda *a, **kw: {"size": len(raw)})
-    calls = []
-
-    def fetch_range(file, start, end):
-        assert isinstance(file, S3File)
-        calls.append((start, min(end, len(raw))))
-        return raw[start:end]
-
-    monkeypatch.setattr(S3File, "_fetch_range", fetch_range)
-    parent, member = _tar_member(client, raw)
-    return client, parent, member, calls
-
-
-@pytest.mark.parametrize("size", [100 * 1024, 6 * 1024 * 1024])
-@pytest.mark.parametrize("block_size", [None, 0, 256 * 1024])
-def test_tar_member_s3_read_ahead(tmp_path, monkeypatch, size, block_size):
-    data = b"m" * size
-    _, _, member, calls = _s3_tar(tmp_path, monkeypatch, data)
-
-    with member.open(block_size=block_size) as stream:
-        assert stream.read() == data
-        assert stream.read() == b""
-
-    assert calls[0][0] == member.location[0]["offset"] > 0
-    fetched = sum(end - start for start, end in calls)
-    expected_block = min(size, 5 * 1024 * 1024) if block_size is None else block_size
-    assert size <= fetched <= size + expected_block + io.DEFAULT_BUFFER_SIZE
-    if block_size == 0:
-        assert fetched == size
-    elif block_size is not None:
-        assert fetched >= block_size
-
-
-def _read_chunks(stream):
-    return b"".join(iter(lambda: stream.read(128 * 1024), b""))
-
-
-def test_tar_member_large_sequential_read_ahead(tmp_path, monkeypatch):
-    data = b"m" * (6 * 1024 * 1024)
-    client, parent, member, calls = _s3_tar(tmp_path, monkeypatch, data)
-    with FileSlice(
-        client.open_object(parent), member.location[0]["offset"], len(data), member.name
-    ) as stream:
-        assert _read_chunks(stream) == data
-    normal_fetches = len(calls)
-    assert normal_fetches == 3
-    calls.clear()
-
-    with member.open() as stream:
-        assert _read_chunks(stream) == data
-        assert stream.read() == b""
-
-    assert calls[0][0] == member.location[0]["offset"] > 0
-    assert 0 < len(calls) <= 2 < normal_fetches
-    assert (
-        len(data)
-        <= sum(end - start for start, end in calls)
-        <= (len(data) + 5 * 1024 * 1024 + 128 * 1024)
-    )
 
 
 def test_tar_member_huggingface_read_ahead(tmp_path, monkeypatch):

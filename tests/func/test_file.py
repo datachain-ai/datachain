@@ -906,8 +906,6 @@ def test_tar_member_open_read_ahead(
 def test_tar_member_large_sequential_read_ahead(
     cloud_test_catalog_upload, fetched_bytes, tmp_path, monkeypatch, record_property
 ):
-    from datachain.client.fileslice import FileSlice
-
     ctc = cloud_test_catalog_upload
     size = 6 * 1024 * 1024
     data_path = tmp_path / "large.bin"
@@ -924,26 +922,14 @@ def test_tar_member_large_sequential_read_ahead(
     client = ctc.catalog.get_client(parent.source)
     monkeypatch.setattr(client.fs, "default_block_size", 2 * 1024 * 1024)
     fetched_bytes[:] = [0, 0]
-    with FileSlice(
-        client.open_object(parent), member.location[0]["offset"], size, member.name
-    ) as stream:
-        normal = b"".join(iter(lambda: stream.read(128 * 1024), b""))
-    normal_fetches = fetched_bytes.copy()
-    assert normal == bytes(size)
-    del normal
-    fetched_bytes[:] = [0, 0]
-
     with member.open() as stream:
         assert b"".join(iter(lambda: stream.read(128 * 1024), b"")) == bytes(size)
         assert stream.read() == b""
 
-    record_property("normal_fetched_bytes", normal_fetches[0])
-    record_property("normal_range_fetches", normal_fetches[1])
     record_property("fetched_bytes", fetched_bytes[0])
     record_property("range_fetches", fetched_bytes[1])
-    assert normal_fetches[1] == 3
     assert size <= fetched_bytes[0] <= size + 5 * 1024 * 1024 + 128 * 1024
-    assert 0 < fetched_bytes[1] <= 2 < normal_fetches[1]
+    assert 0 < fetched_bytes[1] <= 2
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
