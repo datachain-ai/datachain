@@ -68,7 +68,7 @@ class AbstractWarehouse(ABC, Serializable):
     UDF_TABLE_NAME_PREFIX = "udf_"
     TMP_TABLE_NAME_PREFIX = "tmp_"
     INSERT_BATCH_SIZE: int = 10_000
-    INSERT_FLUSH_INTERVAL: float = 60.0
+    INSERT_FLUSH_INTERVAL: float = 2.0
 
     schema: "schema.Schema"
     db: "DatabaseEngine"

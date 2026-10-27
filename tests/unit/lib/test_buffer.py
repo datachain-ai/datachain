@@ -211,3 +211,61 @@ def test_len(buffer):
 
     buffer.insert((2,))
     assert len(buffer) == 2
+
+
+@pytest.mark.parametrize("flush_interval", [None, 2.0])
+def test_insert_many_fast_rows_keep_full_batches(mock_db, monkeypatch, flush_interval):
+    monkeypatch.setattr("datachain.data_storage.buffer.time.monotonic", lambda: 0.0)
+    buffer = InsertBuffer(
+        "test_table",
+        ["id"],
+        mock_db["insert"],
+        buffer_size=10,
+        flush_interval=flush_interval,
+    )
+    buffer.insert_many((i,) for i in range(25))
+
+    assert [call["count"] for call in mock_db["flush_calls"]] == [10, 10]
+    assert len(buffer) == 5
+
+
+def test_insert_many_flushes_slow_iterator_before_exhaustion(mock_db, monkeypatch):
+    clock = 0.0
+    monkeypatch.setattr("datachain.data_storage.buffer.time.monotonic", lambda: clock)
+    buffer = InsertBuffer(
+        "test_table", ["id"], mock_db["insert"], buffer_size=100, flush_interval=2.0
+    )
+
+    def rows():
+        nonlocal clock
+        for i in range(10):
+            clock += 0.5
+            yield (i,)
+            assert len(mock_db["tables"].get("test_table", [])) == ((i + 1) // 4) * 4
+
+    buffer.insert_many(rows())
+    assert [call["count"] for call in mock_db["flush_calls"]] == [4, 4]
+    assert len(buffer) == 2
+    buffer.flush()
+    assert mock_db["tables"]["test_table"] == [(i,) for i in range(10)]
+    assert mock_db["flush_calls"][-1]["final"] is True
+
+
+def test_insert_many_time_flush_retains_rows_on_insert_error(mock_db, monkeypatch):
+    clock = 0.0
+    monkeypatch.setattr("datachain.data_storage.buffer.time.monotonic", lambda: clock)
+
+    def insert(*args, **kwargs):
+        raise RuntimeError("insert failed")
+
+    buffer = InsertBuffer(
+        "test_table", ["id"], insert, buffer_size=100, flush_interval=2.0
+    )
+    buffer.insert_many([(1,)])
+    clock = 2.0
+    with pytest.raises(RuntimeError, match="insert failed"):
+        buffer.insert_many([(2,)])
+    assert len(buffer) == 2
+    buffer.execute_callback = mock_db["insert"]
+    buffer.flush()
+    assert mock_db["tables"]["test_table"] == [(1,), (2,)]

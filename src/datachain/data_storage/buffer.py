@@ -14,7 +14,7 @@ class InsertBuffer(Generic[T]):
 
     Supports two flushing strategies:
     1. Size-based: Flush when buffer reaches buffer_size
-    2. Time-based: Flush when flush_interval seconds have elapsed since last flush
+    2. Time-based: Flush on insertion after flush_interval seconds since last flush
     """
 
     def __init__(
@@ -36,7 +36,7 @@ class InsertBuffer(Generic[T]):
                 Signature: (table, columns, entries, final=False, cursor=None)
             buffer_size: Number of entries to accumulate before flushing
             flush_interval: Optional time in seconds between flushes.
-                If set, buffer will flush when this interval elapses,
+                If set, buffer will flush on insertion after this interval elapses,
                 even if buffer_size hasn't been reached.
             cursor: Optional database cursor for the callback
         """
@@ -57,8 +57,7 @@ class InsertBuffer(Generic[T]):
         """Add many entries to the insert buffer (lazy iteration)."""
         for entry in entries:
             self.buffer.append(entry)
-            # Process blocks when buffer is full to maintain lazy evaluation
-            if len(self.buffer) >= self.buffer_size:
+            if len(self.buffer) >= self.buffer_size or self._should_flush_by_time():
                 self._process_blocks()
 
     def _should_flush_by_time(self) -> bool:
