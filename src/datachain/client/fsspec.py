@@ -610,9 +610,11 @@ class Client(ABC):
         assert not file.location
         # A version-aware client downloads the pinned version. Where that version's
         # content can't change, its etag still can: GCS changes it on metadata-only
-        # updates such as a storage class change.
+        # updates such as a storage class change. S3's "null" version is overwritten
+        # in place when versioning is off: both unversioned and suspended buckets.
         pinned = (
             file.version
+            and file.version != "null"
             and self.PINNED_VERSION_IS_IMMUTABLE
             and self._is_version_aware()
         )

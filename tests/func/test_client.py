@@ -861,6 +861,68 @@ def test_put_in_cache_unpinned_stale_etag_raises(
     assert not ctc.catalog.cache.contains(file)
 
 
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_put_in_cache_version_unaware_client_does_not_skip_etag_check(
+    cloud_test_catalog_upload,
+    cloud_type,
+    version_aware,
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+    unaware_client = ctc.catalog.get_client(
+        ctc.src_uri, **{**ctc.client_config, "version_aware": False}
+    )
+
+    rel_path = f"client-put-in-cache/{uuid4().hex}.bin"
+    uploaded_v1 = client.upload(b"v1", rel_path)
+    client.upload(b"v2", rel_path)
+
+    file = File(
+        source=ctc.src_uri,
+        path=rel_path,
+        version=uploaded_v1.version,
+        etag="stale-etag",
+        size=2,
+    )
+    with pytest.raises(ValueError, match="not version aware"):
+        unaware_client.put_in_cache(file)
+
+    assert not ctc.catalog.cache.contains(file)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_put_in_cache_s3_null_version_checks_etag(
+    cloud_test_catalog_upload,
+    cloud_type,
+    version_aware,
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+    bucket = client.name
+
+    rel_path = f"client-put-in-cache/{uuid4().hex}.bin"
+    client.fs.make_bucket_versioned(bucket, versioned=False)
+    try:
+        uploaded_v1 = client.upload(b"v1", rel_path)
+        client.upload(b"v2", rel_path)
+    finally:
+        client.fs.make_bucket_versioned(bucket, versioned=True)
+
+    file = File(
+        source=ctc.src_uri,
+        path=rel_path,
+        version="null",
+        etag=uploaded_v1.etag,
+        size=2,
+    )
+    with pytest.raises(FileNotFoundError, match="changed on the source"):
+        client.put_in_cache(file)
+
+    assert not ctc.catalog.cache.contains(file)
+
+
 _xfail_special_char_versioned = pytest.mark.xfail(
     reason="versioned keys containing '#' or '?' are not supported on this backend",
     strict=False,
