@@ -172,6 +172,7 @@ namespaces = false
 
 [tool.pytest.ini_options]
 addopts = "-rfEs -m 'not examples' --benchmark-skip --ignore=local"
+asyncio_default_fixture_loop_scope = "function"
 env_override_existing_values = true
 env_files = "local/.env.test"
 markers = [
