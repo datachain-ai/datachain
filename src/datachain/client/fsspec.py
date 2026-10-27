@@ -297,6 +297,11 @@ class Client(ABC):
             **self._version_kwargs(version_id),
         )
 
+    async def _download_file(self, file: "File", path: str, callback: Callback):
+        await self.get_file(
+            file.get_fs_path(), path, callback=callback, version_id=file.version
+        )
+
     async def scandir(
         self, start_prefix: str, method: str = "default"
     ) -> AsyncIterator[Sequence[Any]]:

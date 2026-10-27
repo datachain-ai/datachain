@@ -309,3 +309,62 @@ def test_listing_asks_for_every_field_it_reads(version_aware):
     fields = client._fs._call.call_args.kwargs["fields"]
     assert fields == GCSClient.LIST_FIELDS
     assert item.read <= set(fields.removeprefix("items(").split(")")[0].split(","))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "version, etag", [("", "abc123"), (_VER, ""), (_VER, "abc123")]
+)
+async def test_download_listed_file_checks_response_identity(tmp_path, version, etag):
+    client = _make_client()
+    client._fs.consistency = "size"
+    client._fs._call = AsyncMock(return_value=({"ETag": '"abc123"'}, b"woof"))
+    file = File(source="gs://foo", path="listed", size=4, etag=etag, version=version)
+    callback = MagicMock()
+    path = tmp_path / "tmp" / "file"
+    await client._download_file(file, str(path), callback)
+    assert path.read_bytes() == b"woof"
+    client._fs._info.assert_not_called()
+    client._fs.url.assert_called_once_with(
+        f"gs://foo/listed#{version}" if version else "gs://foo/listed"
+    )
+    callback.set_size.assert_called_once_with(4)
+    callback.relative_update.assert_called_once_with(4)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("headers", [{"ETag": '"changed"'}, {}])
+async def test_download_listed_file_rejects_changed_or_missing_etag(tmp_path, headers):
+    client = _make_client()
+    client._fs._call = AsyncMock(return_value=(headers, b"woof"))
+    file = File(source="gs://foo", path="listed", size=4, etag="abc123")
+    path = tmp_path / "file"
+    with pytest.raises(FileNotFoundError, match="update=True"):
+        await client._download_file(file, str(path), MagicMock())
+    assert not path.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("consistency", ["size", "md5"])
+async def test_download_listed_file_rejects_corrupt_data(tmp_path, consistency):
+    from gcsfs.retry import ChecksumError
+
+    client = _make_client()
+    client._fs.consistency = consistency
+    client._fs._call = AsyncMock(
+        return_value=({"ETag": "abc123", "X-Goog-Hash": "md5=invalid"}, b"woof")
+    )
+    file = File(source="gs://foo", path="listed", size=5, etag="abc123")
+    path = tmp_path / "file"
+    with pytest.raises((OSError, ChecksumError)):
+        await client._download_file(file, str(path), MagicMock())
+    assert not path.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [-1, 5 * 1024 * 1024 + 1])
+async def test_download_without_small_file_metadata_uses_get_file(tmp_path, size):
+    client = _make_client()
+    file = File(source="gs://foo", path="listed", size=size, etag="abc123")
+    await client._download_file(file, str(tmp_path / "file"), DEFAULT_CALLBACK)
+    client._fs._get_file.assert_awaited_once()
