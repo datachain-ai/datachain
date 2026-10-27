@@ -731,7 +731,8 @@ class Catalog:
                 )
                 indexed_sources = []
                 for source in dataset_sources:
-                    client = Client.get_client(source, self.cache, **client_config)
+                    client_cls = Client.get_implementation(source)
+                    client = client_cls.from_source(source, self.cache, **client_config)
                     uri = client.uri
                     dataset_name, _, _, _ = get_listing(uri, session)
                     assert dataset_name
@@ -1405,18 +1406,20 @@ class Catalog:
             raise ValueError("Sources needs to be non empty list")
 
         from datachain import read_dataset, read_storage
+        from datachain.lib.storage import session_for
 
         client_config = self.client_config if client_config is None else client_config
+        session = session_for(self.session, client_config, False)
         project = project or self.metastore.default_project
 
         chains = []
         for source in sources:
             if source.startswith(DATASET_PREFIX):
-                dc = read_dataset(source[len(DATASET_PREFIX) :], session=self.session)
+                dc = read_dataset(source[len(DATASET_PREFIX) :], session=session)
             else:
                 dc = read_storage(
                     source,
-                    session=self.session,
+                    session=session,
                     recursive=recursive,
                     client_config=client_config,
                 )

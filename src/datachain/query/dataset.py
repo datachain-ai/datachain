@@ -3531,6 +3531,7 @@ class DatasetQuery:
             project_name=project.name,
             version=version,
             catalog=self.catalog,
+            session=self.session,
         )
 
     def _reuse_listing_if_unchanged(
@@ -3573,6 +3574,7 @@ class DatasetQuery:
             project_name=project.name,
             version=prev_version,
             catalog=self.catalog,
+            session=self.session,
         )
 
     @property

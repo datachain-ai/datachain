@@ -1068,12 +1068,11 @@ def test_catalog_ls_filesystem_root(catalog, mocker, source):
 @pytest.mark.parametrize("config", [None, {}], ids=["inherit", "empty"])
 @skip_if_not_sqlite
 def test_catalog_dataset_client_config_empty_or_inherited(
-    cloud_test_catalog, dogs_dataset, mocker, config
+    cloud_test_catalog, dogs_dataset, mocker, config, tmp_path
 ):
     ctc = cloud_test_catalog
     original = {"use_symlinks": True}
     ctc.catalog.client_config = original.copy()
-    clients = mocker.spy(Client, "get_client")
     listings = mocker.patch(
         "datachain.catalog.catalog.get_listing", wraps=listing_lib.get_listing
     )
@@ -1087,6 +1086,7 @@ def test_catalog_dataset_client_config_empty_or_inherited(
         try:
             assert len(groups) == 1
             assert groups[0].client.use_symlinks == (config is None)
+            assert groups[0].client.uri == ctc.src_uri
             assert sorted(source.node.path for source in groups[0].sources) == [
                 "dogs/dog1",
                 "dogs/dog2",
@@ -1096,11 +1096,6 @@ def test_catalog_dataset_client_config_empty_or_inherited(
         finally:
             for group in groups:
                 group.close()
-    assert clients.call_args_list
-    assert all(
-        bool(call.kwargs.get("use_symlinks")) == (config is None)
-        for call in clients.call_args_list
-    )
     assert listings.call_args_list
     assert all(
         call.args[1].catalog.client_config == (original if config is None else {})
@@ -1108,6 +1103,14 @@ def test_catalog_dataset_client_config_empty_or_inherited(
     )
     assert ctc.catalog.client_config == original
     assert other.client_config == {}
+
+    output = tmp_path / "copied"
+    ctc.catalog.cp([uri], str(output), recursive=True, client_config=config)
+    source_prefix = os.path.splitdrive(str(ctc.src))[1].lstrip("/")
+    for relative in ["dogs/dog1", "dogs/dog2", "dogs/dog3", "dogs/others/dog4"]:
+        copied = output / source_prefix / relative
+        assert copied.read_text() == (ctc.src / relative).read_text()
+        assert copied.is_symlink() == (config is None)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="drive letters exist only on Windows")
