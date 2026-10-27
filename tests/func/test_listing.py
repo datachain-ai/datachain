@@ -256,6 +256,35 @@ def test_calc_fingerprint_changes_when_version_stops_being_latest(test_session):
 
 
 @pytest.mark.parametrize(
+    "storage,version,reused",
+    [
+        ("s3://bucket", "v1", True),
+        ("gs://bucket", "v1", True),
+        ("az://container", "v1", False),
+        ("s3://bucket", "", False),
+    ],
+    ids=["s3", "gs", "azure", "unversioned"],
+)
+def test_listing_save_reuses_version_only_when_etag_does_not_count(
+    test_session, storage, version, reused
+):
+    uri = f"{storage}/data/"
+    name, _, _ = parse_listing_uri(uri)
+    ds = _save_listing(
+        test_session, uri, File(path="x.jpg", version=version, etag="e1")
+    )
+    original_uuid = ds.get_version("1.0.0").uuid
+
+    ds = _save_listing(
+        test_session, uri, File(path="x.jpg", version=version, etag="e2")
+    )
+
+    assert len(ds.versions) == (1 if reused else 2)
+    assert ds.get_version("1.0.0").uuid == original_uuid
+    assert _etags(test_session, name, "1.0.0") == ["e1"]
+
+
+@pytest.mark.parametrize(
     "tree", [{"deleted": {"gone": "one", "kept": "two"}}], indirect=True
 )
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
@@ -349,11 +378,26 @@ def test_listing_insert_batch_size(test_session, tmp_dir, mocker, settings):
 
 
 def _fingerprint(session, uri: str, file: File) -> int:
+    ds = _save_listing(session, uri, file)
+    return calc_fingerprint(session, ds, ds.latest_version)
+
+
+def _save_listing(session, uri: str, file: File):
     catalog = session.catalog
     name, _, _ = parse_listing_uri(uri)
     dc.read_values(file=[file], session=session).settings(
         namespace=catalog.metastore.system_namespace_name,
         project=catalog.metastore.listing_project_name,
     ).save(name, listing=True)
-    ds = catalog.get_dataset(name, versions=None)
-    return calc_fingerprint(session, ds, ds.latest_version)
+    return catalog.get_dataset(name, versions=None)
+
+
+def _etags(session, name: str, version: str) -> list[str]:
+    metastore = session.catalog.metastore
+    return dc.read_dataset(
+        name,
+        namespace=metastore.system_namespace_name,
+        project=metastore.listing_project_name,
+        version=version,
+        session=session,
+    ).to_values("file.etag")
