@@ -187,7 +187,10 @@ class UDFAdapter:
     batch: int = 1
 
     def hash(self, include_body: bool = True) -> str:
-        return self.inner.hash(include_body=include_body)
+        inner_hash = self.inner.hash(include_body=include_body)
+        if self.batch == 1:
+            return inner_hash
+        return hashlib.sha256(f"{inner_hash}:batch={self.batch}".encode()).hexdigest()
 
     def get_batching(self, use_partitioning: bool = False) -> BatchingStrategy:
         if use_partitioning:
@@ -467,7 +470,9 @@ async def _prefetch_input(
     after_prefetch: "Callable[[], None]" = noop,
 ) -> T:
     for obj in row:
-        if isinstance(obj, File) and obj.path:
+        if isinstance(obj, (list, tuple)):
+            await _prefetch_input(obj, download_cb, after_prefetch)
+        elif isinstance(obj, File) and obj.path:
             try:
                 if await obj._prefetch(download_cb):
                     after_prefetch()
@@ -480,7 +485,9 @@ async def _prefetch_input(
 
 def _remove_prefetched(row: T) -> None:
     for obj in row:
-        if isinstance(obj, File):
+        if isinstance(obj, (list, tuple)):
+            _remove_prefetched(obj)
+        elif isinstance(obj, File):
             catalog = obj._catalog
             assert catalog is not None
             try:
@@ -535,7 +542,14 @@ def _get_cache(
 
 
 class Mapper(UDFBase):
-    """Inherit from this class to pass to `DataChain.map()`."""
+    """Inherit from this class to pass to `DataChain.map()`.
+
+    With `map(batch=N)` for N > 1, `process()` receives a list per input
+    parameter and returns a list or iterator containing one result per input row.
+    `setup()` and `teardown()` run once per worker.
+    """
+
+    input_batch: int = 1
 
     prefetch: int = 2
 
@@ -554,9 +568,28 @@ class Mapper(UDFBase):
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
             with safe_closing(udf_inputs):
                 for row in udf_inputs:
-                    yield self._prepare_row(
-                        row, udf_fields, catalog, cache, download_cb, include_id=True
-                    )
+                    if self.input_batch > 1:
+                        rows = [
+                            self._prepare_row(
+                                r,
+                                udf_fields,
+                                catalog,
+                                cache,
+                                download_cb,
+                                include_id=True,
+                            )
+                            for r in row
+                        ]
+                        yield [list(col) for col in zip(*rows, strict=True)]
+                    else:
+                        yield self._prepare_row(
+                            row,
+                            udf_fields,
+                            catalog,
+                            cache,
+                            download_cb,
+                            include_id=True,
+                        )
 
         prepared_inputs = _prepare_rows(udf_inputs)
         prepared_inputs = _prefetch_inputs(
@@ -566,17 +599,43 @@ class Mapper(UDFBase):
             remove_prefetched=bool(self.prefetch) and not cache,
         )
 
-        with closing(prepared_inputs):
-            for id_, *udf_args in prepared_inputs:
-                result_objs = self.process(*udf_args)
-                udf_output = self._flatten_row(result_objs)
-                output = [
-                    {"sys__id": id_} | dict(zip(signal_names, udf_output, strict=False))
-                ]
-                processed_cb.relative_update(1)
-                yield output
-
-        self.teardown()
+        try:
+            with closing(prepared_inputs):
+                for id_, *udf_args in prepared_inputs:
+                    self._batch_length = len(id_) if self.input_batch > 1 else 1
+                    result_objs = self.process(*udf_args)
+                    if self.input_batch > 1:
+                        with safe_closing(result_objs):
+                            results = list(result_objs)
+                        if len(results) != len(id_):
+                            raise UdfError(
+                                "batched map must return one output per input row: "
+                                f"got {len(results)} outputs for {len(id_)} inputs"
+                            )
+                        output = []
+                        for i, (row_id, result) in enumerate(
+                            zip(id_, results, strict=True)
+                        ):
+                            udf_output = self._flatten_row(result)
+                            output.append(
+                                {
+                                    "sys__id": row_id,
+                                    "sys__input_id": id_[0],
+                                    "sys__partial": i < len(id_) - 1,
+                                }
+                                | dict(zip(signal_names, udf_output, strict=False))
+                            )
+                        processed_cb.relative_update(len(id_))
+                    else:
+                        udf_output = self._flatten_row(result_objs)
+                        output = [
+                            {"sys__id": id_}
+                            | dict(zip(signal_names, udf_output, strict=False))
+                        ]
+                        processed_cb.relative_update(1)
+                    yield output
+        finally:
+            self.teardown()
 
 
 def _make_bound_adapter(fn: Callable, cols: list[str]) -> Callable:
@@ -719,7 +778,19 @@ class _MultiSignalMapper(Mapper):
         for name in self._exec_order:
             params = self._per_func_params[name]
             kw = {p: (results[p] if p in results else row_by_name[p]) for p in params}
-            results[name] = self._callers[name](**kw)
+            result = self._callers[name](**kw)
+            if self.input_batch > 1:
+                with safe_closing(result):
+                    result = list(result)
+                expected = self._batch_length
+                if len(result) != expected:
+                    raise UdfError(
+                        f"batched map entry {name!r} returned {len(result)} outputs "
+                        f"for {expected} inputs"
+                    )
+            results[name] = result
+        if self.input_batch > 1:
+            return list(zip(*(results[name] for name in self._signal_map), strict=True))
         # Output order follows the user's declared kwarg order, not exec order.
         return tuple(results[name] for name in self._signal_map)
 

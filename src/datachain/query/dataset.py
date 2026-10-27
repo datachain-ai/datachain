@@ -654,6 +654,8 @@ def process_udf_outputs(
 
     if udf_kind == "map":
         columns = ["sys__id", *udf.output]
+        if getattr(udf.inner, "input_batch", 1) > 1:
+            columns += ["sys__input_id", "sys__partial"]  # completion per batch
     else:
         columns = [*udf.output, "sys__input_id", "sys__partial", "sys__empty"]
 
@@ -762,13 +764,14 @@ class UDFStep(Step, ABC):
         Returns list of columns:
         - sys__input_id: Tracks which input produced each output. Allows atomic
           writes and reconstruction of processed inputs from output table during
-          checkpoint recovery. Nullable because mappers use sys__id (1:1 mapping)
-          while generators populate this field explicitly (1:N mapping).
+          checkpoint recovery. Generators store the input ID; batched mappers
+          store the first input ID of the batch. Scalar mappers use sys__id.
         - sys__partial: Tracks incomplete inputs during checkpoint recovery.
           For generators, all rows except the last one for each input are marked
           as partial=True. If an input has no row with partial=False, it means the
-          input was not fully processed and needs to be re-run. Nullable because
-          mappers (1:1) don't use this field.
+          input was not fully processed and needs to be re-run. Batched mappers
+          similarly mark all but the last output of a batch as partial. Nullable
+          because scalar mappers do not use this field.
         """
         sys_id_type = next(
             c.type
@@ -1718,7 +1721,8 @@ class UDFStep(Step, ABC):
         """
         Find input IDs that were only partially processed before a crash.
         For generators (1:N), an input is incomplete if it has output rows but none
-        with sys__partial=False. For mappers (1:1), this never happens.
+        with sys__partial=False. Batched mappers track completion per batch;
+        scalar mappers have no incomplete inputs.
 
         Returns:
             List of incomplete input IDs that need to be re-processed
@@ -1798,11 +1802,20 @@ class UDFSignal(UDFStep):
 
     def find_incomplete_inputs(self, partial_table: "Table") -> list[int]:
         """
-        For mappers (1:1 mapping): always returns empty list.
-        Mappers cannot have incomplete inputs because each input produces exactly
-        one output atomically. Either the output exists or it doesn't.
+        Return batch IDs whose output has no completion marker.
+        Scalar mappers persist one output atomically and have no incomplete inputs.
         """
-        return []
+        if self.udf.batch == 1:
+            return []
+        complete_batches = sa.select(partial_table.c.sys__input_id).where(
+            partial_table.c.sys__partial == sa.false()
+        )
+        incomplete_query = (
+            sa.select(partial_table.c.sys__input_id)
+            .distinct()
+            .where(partial_table.c.sys__input_id.not_in(complete_batches))
+        )
+        return [row[0] for row in self.warehouse.db.execute(incomplete_query)]
 
     def create_output_table(self, name: str) -> "Table":
         columns: list[sqlalchemy.Column[Any]] = [

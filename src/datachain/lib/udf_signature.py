@@ -32,6 +32,7 @@ class UdfSignature:  # noqa: PLW1641
         params: str | Sequence[str] | None = None,
         output: DataType | Sequence[str] | dict[str, DataType] | None = None,
         is_generator: bool = True,
+        is_batch_map: bool = False,
     ) -> "UdfSignature":
         keys = ", ".join(signal_map.keys())
         if len(signal_map) > 1:
@@ -65,7 +66,7 @@ class UdfSignature:  # noqa: PLW1641
             )
 
         func_params_map_sign, func_outs_sign, is_iterator, has_return_annotation = (
-            cls._func_signature(chain, udf_func)
+            cls._func_signature(chain, udf_func, is_batch_map=is_batch_map)
         )
 
         reject_var_params(
@@ -187,7 +188,7 @@ class UdfSignature:  # noqa: PLW1641
 
     @staticmethod
     def _func_signature(
-        chain: str, udf_func: Callable | UDFBase
+        chain: str, udf_func: Callable | UDFBase, is_batch_map: bool = False
     ) -> tuple[dict[str, type], Sequence[type], bool, bool]:
         if isinstance(udf_func, AbstractUDF):
             func = udf_func.process  # type: ignore[unreachable]
@@ -205,7 +206,21 @@ class UdfSignature:  # noqa: PLW1641
             output_types: list[type] = []
         else:
             orig = get_origin(anno)
-            if inspect.isclass(orig) and issubclass(orig, Iterator):
+            is_batch_list = is_batch_map and orig is list and bool(get_args(anno))
+            if is_batch_list:
+                anno = get_args(anno)[0]
+                orig = get_origin(anno)
+            elif is_batch_map and not (
+                inspect.isclass(orig) and issubclass(orig, Iterator)
+            ):
+                raise UdfSignatureError(
+                    chain, "batched map must return list[T] or Iterator[T]"
+                )
+            if (
+                not is_batch_list
+                and inspect.isclass(orig)
+                and issubclass(orig, Iterator)
+            ):
                 args = get_args(anno)
                 # For typing.Iterator without type args, default to DEFAULT_RETURN_TYPE
                 if len(args) == 0:

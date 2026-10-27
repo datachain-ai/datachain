@@ -1022,3 +1022,58 @@ def test_udf_continue_after_group_by(test_session_tmpfile):
     result = dc.read_dataset("results", session=test_session).to_list("result")
     # group a: 1+2=3 -> 30, group b: 3+4=7 -> 70, group c: 5+6=11 -> 110
     assert sorted(result) == [(30,), (70,), (110,)]
+
+
+@pytest.mark.parametrize("insert_batch_size", [1, 2, 5])
+@pytest.mark.parametrize("fail_during_insert", [False, True])
+def test_map_batch_checkpoint_recovery(
+    test_session_tmpfile, monkeypatch, insert_batch_size, fail_during_insert
+):
+    session = test_session_tmpfile
+    dc.read_values(num=list(range(8)), session=session).save("batch_nums")
+    processed = []
+    failing = True
+
+    def process(num: list[int]) -> list[int]:
+        if failing and not fail_during_insert and len(processed) >= 3:
+            raise RuntimeError("batch inference interrupted")
+        processed.extend(num)
+        return [n * 10 for n in num]
+
+    warehouse = session.catalog.warehouse
+    original_convert = type(warehouse).convert_type
+    converted = 0
+
+    def interrupt_conversion(self, value, col_type, python_type, type_name, col_name):
+        nonlocal converted
+        if col_name == "result":
+            converted += 1
+            if failing and fail_during_insert and converted == 5:
+                raise RuntimeError("batch insertion interrupted")
+        return original_convert(self, value, col_type, python_type, type_name, col_name)
+
+    # on the class: the UDF write path calls convert_type only when it is overridden
+    monkeypatch.setattr(type(warehouse), "convert_type", interrupt_conversion)
+
+    def run():
+        return (
+            dc.read_dataset("batch_nums", session=session)
+            .settings(batch_size=insert_batch_size, prefetch=0)
+            .map(result=process, batch=3)
+            .save("batch_results")
+        )
+
+    reset_session_job_state()
+    with pytest.raises(
+        Exception,
+        match="invalid value" if fail_during_insert else "batch inference interrupted",
+    ):
+        run()
+
+    completed = set(processed[:3])
+    reset_session_job_state()
+    failing = False
+    processed.clear()
+    result = run().order_by("num").to_values("result")
+    assert result == [n * 10 for n in range(8)]
+    assert sorted(processed) == sorted(set(range(8)) - completed)

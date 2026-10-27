@@ -19,6 +19,7 @@ from datachain.catalog.catalog import clone_catalog_with_cache
 from datachain.catalog.loader import DISTRIBUTED_IMPORT_PATH, get_udf_distributor_class
 from datachain.lib.model_store import ModelStore
 from datachain.lib.udf import UdfRunError, _get_cache
+from datachain.query.batch import Batch
 from datachain.query.dataset import (
     get_download_callback,
     get_generated_callback,
@@ -118,7 +119,8 @@ class UDFDispatcher:
         self.udf_fields = udf_info["udf_fields"]
         self.cache = udf_info["cache"]
         self.is_generator = udf_info["is_generator"]
-        self.is_batching = udf_info["batching"].is_batching
+        self.batching = udf_info["batching"]
+        self.is_batching = self.batching.is_batching
         self.processes = udf_info["processes"]
         self.rows_total = udf_info["rows_total"]
         self.batch_size = udf_info["batch_size"]
@@ -245,12 +247,9 @@ class UDFDispatcher:
                 )
 
     def input_batch_size(self, n_workers: int) -> int:
-        input_batch_size = self.rows_total // n_workers
-        if input_batch_size == 0:
-            input_batch_size = 1
-        elif input_batch_size > DEFAULT_BATCH_SIZE:
-            input_batch_size = DEFAULT_BATCH_SIZE
-        return input_batch_size
+        rows_per_task = min(self.rows_total // n_workers, DEFAULT_BATCH_SIZE)
+        batch_size = self.batching.count if isinstance(self.batching, Batch) else 1
+        return max(1, rows_per_task // batch_size)
 
     def run_udf_parallel(  # noqa: C901, PLR0912
         self,

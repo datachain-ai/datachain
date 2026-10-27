@@ -5,6 +5,12 @@ steps such as reading data from storages, running AI or LLM models or calling ex
 services API to validate or enrich data. See [`DataChain`](#datachain.lib.dc.DataChain)
 for examples of how to create a chain.
 
+Use [`DataChain.map()`](#datachain.lib.dc.DataChain.map) with `batch=N` to
+process up to N rows per UDF call. Inputs are lists and the return annotation is
+`list[T]` or `Iterator[T]`, producing an output column of type T. `batch=1`
+retains scalar behavior. See [batched model inference](../guide/processing.md#batched-model-inference)
+for an example and checkpoint, prefetch, and parallel execution semantics.
+
 ::: datachain.query.schema.C
 
 ::: datachain.lib.dc.database.ConnectionType

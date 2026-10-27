@@ -866,13 +866,6 @@ class SignalSchema:
 
             param_origin = get_origin(param_type)
 
-            schema_inner, schema_is_optional = unwrap_optional(schema_type)
-            if schema_is_optional:
-                schema_type = schema_inner
-                param_inner, param_is_optional = unwrap_optional(param_type)
-                if param_is_optional:
-                    param_type = param_inner
-
             if is_batch:
                 if param_type is list:
                     schema[param] = schema_type
@@ -883,13 +876,21 @@ class SignalSchema:
 
                 param_type = get_args(param_type)[0]
 
+            row_schema_type = schema_type
+            schema_inner, schema_is_optional = unwrap_optional(schema_type)
+            if schema_is_optional:
+                schema_type = schema_inner
+                param_inner, param_is_optional = unwrap_optional(param_type)
+                if param_is_optional:
+                    param_type = param_inner
+
             if param_type == schema_type or (
                 isclass(param_type)
                 and isclass(schema_type)
                 and issubclass(param_type, File)
                 and issubclass(schema_type, File)
             ):
-                schema[param] = schema_type
+                schema[param] = row_schema_type if is_batch else schema_type
                 continue
 
             raise SignalResolvingError(
