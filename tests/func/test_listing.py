@@ -392,7 +392,7 @@ def _save_listing(session, uri: str, file: File):
     return catalog.get_dataset(name, versions=None)
 
 
-def _etags(session, name: str, version: str) -> list[str]:
+def _etags(session, name: str, version: str) -> list:
     metastore = session.catalog.metastore
     return dc.read_dataset(
         name,
