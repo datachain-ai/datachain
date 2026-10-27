@@ -170,6 +170,28 @@ def test_read_storage_rfc_encoded_uri_targets_literal_path(tmp_dir, test_session
 
 @pytest.mark.parametrize(
     "cloud_type,version_aware",
+    [("s3", True), ("gs", False), ("gs", True), ("azure", False)],
+    indirect=True,
+)
+def test_read_storage_reads_keys_with_double_slash(cloud_test_catalog):
+    ctc = cloud_test_catalog
+    client = ctc.catalog.get_client(ctc.src_uri)
+    prefix = f"double-slash-{uuid.uuid4().hex[:8]}"
+    client.fs.pipe_file(f"{client.name}/{prefix}/d//e.txt", b"inside")
+    client.fs.invalidate_cache()
+    try:
+        chain = dc.read_storage(f"{ctc.src_uri}/{prefix}", session=ctc.session)
+        (file,) = chain.to_values("file")
+        file._set_stream(ctc.catalog)
+        assert file.path == f"{prefix}/d//e.txt"
+        assert file.read() == b"inside"
+    finally:
+        client.fs.rm(f"{client.name}/{prefix}", recursive=True)
+        client.fs.invalidate_cache()
+
+
+@pytest.mark.parametrize(
+    "cloud_type,version_aware",
     [("s3", True), ("gs", True)],
     indirect=True,
 )

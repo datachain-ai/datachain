@@ -19,7 +19,11 @@ if TYPE_CHECKING:
     from datachain.dataset import DatasetRecord
 
 
-class Listing:
+class SavedListing:
+    """A saved listing dataset (``lst__...``) browsed as a tree with SQL: what
+    ``datachain ls``, ``du``, ``find`` and ``cp`` read. ``dc.Listing`` lists a
+    storage itself."""
+
     def __init__(
         self,
         metastore: "AbstractMetastore",
@@ -37,7 +41,7 @@ class Listing:
         self.column = column
         self._closed = False
 
-    def clone(self) -> "Listing":
+    def clone(self) -> "SavedListing":
         return self.__class__(
             self.metastore.clone(),
             self.warehouse.clone(),
@@ -120,7 +124,7 @@ class Listing:
             node = src.node
             if recursive and src.is_container():
                 dir_path = []
-                if not copy_dir_contents:
+                if not copy_dir_contents and node.name:
                     dir_path.append(node.name)
                 subtree_nodes = src.find(sort=["path"])
                 all_nodes.extend(

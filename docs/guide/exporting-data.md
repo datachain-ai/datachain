@@ -40,6 +40,12 @@ When exporting to storage, the `placement` parameter controls how file paths are
 chain.to_storage("./local-copy/", signal="file", placement="filepath")
 ```
 
+Object keys can contain empty segments, such as `d//e.txt`. Local `to_storage`
+exports skip paths with empty segments and log a warning; cloud storage with a
+flat namespace preserves them. Azure Data Lake Storage Gen2 accounts with a
+hierarchical namespace normalize empty segments, so use `placement="etag"` when
+exporting these keys there to avoid overwriting a distinct key such as `d/e.txt`.
+
 ## PyTorch DataLoader Integration
 
 DataChain exports directly to PyTorch datasets:

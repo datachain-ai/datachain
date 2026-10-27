@@ -273,7 +273,9 @@ class AzureClient(RangeListedClient):
         token: Any,
         hi: str | None = None,
         page_size: int | None = None,
+        delimiter: str = "",
     ) -> Page:
+        assert not delimiter, "Azure lists with no delimiter"
         kwargs = {"start_from": start_after} if start_after and token is None else {}
         include = ["metadata", "versions"] if self._is_version_aware() else ["metadata"]
         async with self.fs.service_client.get_container_client(

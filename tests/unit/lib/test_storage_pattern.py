@@ -1,8 +1,12 @@
+import pytest
+
 from datachain.lib.dc.storage_pattern import (
     _expand_range,
     expand_brace_pattern,
+    list_scope,
     split_uri_pattern,
 )
+from datachain.lib.listing import ListScope
 
 
 def test_split_uri_pattern_no_pattern():
@@ -185,3 +189,21 @@ def test_expand_brace_pattern_edge_cases():
 
     # malformed braces - no closing brace
     assert expand_brace_pattern("f{abc") == ["f{abc"]
+
+
+@pytest.mark.parametrize(
+    "list_path,pattern,recursive,scope",
+    [
+        ("dir/", None, True, None),
+        ("dir/", None, False, ListScope("dir/", "dir/", True)),
+        ("", None, False, ListScope("", "", True)),
+        ("dir", "*.jpg", True, ListScope("dir/", "dir/", True)),
+        ("dir", "img_0*.jpg", True, ListScope("dir/", "dir/img_0", True)),
+        ("logs", "2024-*/**", True, ListScope("logs/", "logs/2024-", False)),
+        ("logs", "**/*.json", True, None),
+        ("", "d*/x", True, ListScope("", "d", False)),
+        ("dir", "a[0-9]/*", True, ListScope("dir/", "dir/a", False)),
+    ],
+)
+def test_list_scope(list_path, pattern, recursive, scope):
+    assert list_scope(list_path, pattern, recursive) == scope

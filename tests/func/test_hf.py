@@ -44,6 +44,13 @@ def test_read_hf_column(test_session):
     assert df_equal(df["obj"], pd.DataFrame(DF_DATA))
 
 
+@pytest.mark.parametrize("kwargs,signal", [({}, "age"), ({"column": "obj"}, "obj.age")])
+def test_read_hf_one_column(test_session, kwargs, signal):
+    ds = Dataset.from_dict({"age": DF_DATA["age"]})
+    chain = dc.read_hf(ds, session=test_session, **kwargs)
+    assert sorted(chain.to_values(signal)) == DF_DATA["age"]
+
+
 def test_read_hf_invalid(test_session):
     with pytest.raises(FileNotFoundError):
         dc.read_hf("invalid_dataset", session=test_session)
