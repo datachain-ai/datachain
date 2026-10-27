@@ -1018,7 +1018,9 @@ class AbstractWarehouse(ABC, Serializable):
         prefix_len = len(node.path)
 
         def make_node_with_path(node: Node) -> NodeWithPath:
-            return NodeWithPath(node, node.path[prefix_len:].lstrip("/").split("/"))
+            return NodeWithPath(
+                node, node.path[prefix_len:].removeprefix("/").split("/")
+            )
 
         return map(make_node_with_path, self.get_nodes(query, dr))
 

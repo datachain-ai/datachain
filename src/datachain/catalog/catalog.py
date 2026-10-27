@@ -277,7 +277,8 @@ class NodeGroup:
         for src in self.sources:
             if recursive and src.is_container():
                 for nwp in src.find():
-                    yield nwp.n
+                    if not nwp.has_empty_segments:
+                        yield nwp.n
             else:
                 yield src.node
 
