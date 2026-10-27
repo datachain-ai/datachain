@@ -375,7 +375,9 @@ def test_read_storage_glob_with_same_named_object(glob_collision_listing):
         f"{ctc.src_uri}/photos/*.jpg", session=ctc.session
     ).to_values("file.path")
     assert paths == ["photos/a.jpg"]
-    assert [listing.name for listing in ctc.catalog.listings()] == [expected[0]]
+    assert [
+        listing.name for listing in ctc.catalog.listings(prefix=f"{ctc.src_uri}/")
+    ] == [expected[0]]
 
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
@@ -405,7 +407,9 @@ def test_catalog_glob_with_same_named_object(glob_collision_listing):
         for row in rows
     ]
     assert names == ["a.jpg"]
-    assert [listing.name for listing in ctc.catalog.listings()] == [expected[0]]
+    assert [
+        listing.name for listing in ctc.catalog.listings(prefix=f"{ctc.src_uri}/")
+    ] == [expected[0]]
 
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
