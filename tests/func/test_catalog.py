@@ -313,6 +313,68 @@ def test_cp_double_subdir(cloud_test_catalog):
     assert tree_from_path(dest) == {"dog4": "ruff"}
 
 
+@pytest.mark.parametrize(
+    "src,expected", [("", {"d": {"e.txt": "real"}}), ("d/", {"e.txt": "real"})]
+)
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_cp_skips_keys_with_double_slash(cloud_test_catalog, caplog, src, expected):
+    ctc = cloud_test_catalog
+    client = ctc.catalog.get_client(ctc.src_uri)
+    prefix = "cp-double-slash"
+    client.fs.pipe_file(f"{client.name}/{prefix}/d/e.txt", b"real")
+    client.fs.pipe_file(f"{client.name}/{prefix}/d//e.txt", b"odd")
+    client.fs.invalidate_cache()
+    dest = ctc.working_dir / "data"
+    try:
+        with caplog.at_level("WARNING", logger="datachain"):
+            ctc.catalog.cp([f"{ctc.src_uri}/{prefix}/{src}"], str(dest), recursive=True)
+        files = {
+            f.path: f
+            for f in dc.read_storage(
+                f"{ctc.src_uri}/{prefix}/{src}", session=ctc.session
+            ).to_values("file")
+        }
+    finally:
+        client.fs.rm(f"{client.name}/{prefix}", recursive=True)
+        client.fs.invalidate_cache()
+
+    assert tree_from_path(dest) == expected
+    assert files[f"{prefix}/d//e.txt"].get_local_path() is None  # not downloaded
+    assert f"File '{prefix}/d//e.txt' not copied: path has '//'" in caplog.text
+
+
+@pytest.mark.parametrize("cloud_type,tree", [("s3", {})], indirect=True)
+def test_cp_bucket_root_skips_empty_segments_in_existing_directory(cloud_test_catalog):
+    ctc = cloud_test_catalog
+    client = ctc.catalog.get_client(ctc.src_uri)
+    client.fs.pipe_file(f"{client.name}/d/e.txt", b"real")
+    client.fs.pipe_file(f"{client.name}/d//e.txt", b"odd")
+    client.fs.invalidate_cache()
+    dest = ctc.working_dir / "out"
+    dest.mkdir()
+    ctc.catalog.cp([ctc.src_uri], str(dest), recursive=True)
+    assert tree_from_path(dest) == {"d": {"e.txt": "real"}}
+
+
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_cp_double_slash_key_to_explicit_filename(cloud_test_catalog, force):
+    ctc = cloud_test_catalog
+    client = ctc.catalog.get_client(ctc.src_uri)
+    key = "cp-explicit/d//e.txt"
+    client.fs.pipe_file(f"{client.name}/{key}", b"content")
+    client.fs.invalidate_cache()
+    dest = ctc.working_dir / "out.txt"
+    if force:
+        dest.write_text("existing content")
+    try:
+        ctc.catalog.cp([f"{ctc.src_uri}/{key}"], str(dest), force=force)
+        assert dest.read_bytes() == b"content"
+    finally:
+        client.fs.rm(f"{client.name}/{key}")
+        client.fs.invalidate_cache()
+
+
 @pytest.mark.parametrize("no_glob", (True, False))
 def test_cp_single_file(cloud_test_catalog, no_glob):
     working_dir = cloud_test_catalog.working_dir

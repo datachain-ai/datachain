@@ -20,11 +20,22 @@ all_files = dc.read_storage("az://container/data/")
 
 The `type=` parameter selects the right File subclass (`ImageFile`, `VideoFile`, `AudioFile`, `TextFile`). Without it, files are plain `File` objects with binary access.
 
-For public buckets, pass `anon=True` explicitly:
+The chain runs over a saved listing of the storage, a snapshot that later runs reuse. A saved listing of the URI, or of a prefix above it, younger than 4 hours is reused; otherwise the storage is listed and saved, and `update=True` lists it again. `dc.listings()` shows the saved listings. On a versioned bucket the chain holds current objects; `versions=False` lists faster and leaves old versions out of the snapshot.
+
+For public buckets, pass `anon=True` explicitly; for explicit keys or an S3-compatible storage such as MinIO, pass `client_config`:
 
 ```python
 chain = dc.read_storage("gs://datachain-demo/dogs-and-cats/", anon=True)
+
+minio = {
+    "endpoint_url": "https://minio.example.com",
+    "key": "access-key",
+    "secret": "secret-key",
+}
+chain = dc.read_storage("s3://my-bucket/data/", client_config=minio)
 ```
+
+To get the objects of a storage as rows in Python, without a chain or a saved snapshot, use `dc.list_storage()`: see [Listing Storage](listing-storage.md).
 
 ## Structured Formats
 
@@ -55,6 +66,57 @@ from datachain.lib.meta_formats import gen_datamodel_code
 
 code = gen_datamodel_code("s3://bucket/data.json", jmespath="images")
 ```
+
+### Selecting and naming CSV and Parquet columns
+
+For `read_csv()`, `read_parquet()`, and `parse_tabular()`, use `columns=` to select input columns by name and set their order. Names may be written as in the file or as DataChain normalizes them: `"ZIP Code"` and `"zip_code"` refer to the same column. Unknown or repeated columns raise an error.
+
+`output=` defines the result's names and Python types **by position**. A dictionary uses insertion order; CSV and `parse_tabular()` also accept a Pydantic model (field order) or a list of names (types inferred). Output names do not select or match input names. Supply exactly one output field for each column read: the selected columns if `columns` is provided, or all input columns if it is omitted. Omit `output` to infer names and types.
+
+With an `output` dictionary or model and no `columns`, the columns come from the first file by path, and every file is read by those names. Partition columns (from folders like `year=2024/`) and a pandas index saved as a column can be left out of `output` when they come last.
+
+For an ordinary Parquet file with columns `a, b, c`:
+
+```python
+data = dc.read_parquet("s3://bucket/data.parquet", columns=["c"])
+data = dc.read_parquet(
+    "s3://bucket/data.parquet",
+    columns=["c", "a"],
+    output={"x": float, "y": float},
+)  # x receives c; y receives a
+
+data = dc.read_parquet(
+    "s3://bucket/data.parquet", output={"c": float, "b": float, "a": float}
+)  # Renames a, b, c to c, b, a by position
+```
+
+An `output={"c": float}` without `columns` supplies only one field for three columns and raises an error. Replace partial `output` schemas with `columns=["c"]`; add `output={"c": float}` only if you also need to specify the result type. The same rules apply to CSV files.
+
+CSV's `column_types=` controls parsing before `output` is applied. Its keys are input names, before normalization or renaming, and it does not select columns. For example, preserve the leading zero in `02134`:
+
+```python
+labels = dc.read_csv(
+    "s3://bucket/labels.csv",
+    columns=["zip_code"],
+    column_types={"ZIP Code": "string"},
+    output={"postal_code": str},
+)
+```
+
+For CSV without a header, use generated input names `f0`, `f1`, etc. when selecting columns, then optionally rename them:
+
+```python
+data = dc.read_csv(
+    "s3://bucket/no-header.csv",
+    header=False,
+    columns=["f2", "f0"],
+    output=["c", "a"],
+)
+```
+
+With `header=False` and no `columns`, `output` is required and supplies names for every input column.
+
+Parquet exported by DataChain restores its saved schema and does not support `columns=`. Read it without `columns` and use `.select(...)` on the chain. With `columns` or `output`, read it separately from other Parquet files.
 
 ## SQL Databases
 

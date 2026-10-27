@@ -15,7 +15,7 @@ import datachain as dc
 from datachain import Session
 from datachain.lib.file import File, ImageFile
 from tests.conftest import get_cloud_test_catalog, make_cloud_server
-from tests.utils import images_equal, skip_if_not_sqlite
+from tests.utils import images_equal, skip_if_not_sqlite, tree_from_path
 
 python_exc = sys.executable or "python3"
 
@@ -357,3 +357,65 @@ def test_cross_cloud_transfer(
             gcloud_client.fs.rm(dest_dir, recursive=True)
         except FileNotFoundError:
             pass
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_to_storage_skips_empty_segments_locally(cloud_test_catalog, tmp_dir, caplog):
+    ctc = cloud_test_catalog
+    client = ctc.catalog.get_client(ctc.src_uri)
+    prefix = "empty-seg"
+    keys = {"r/b.txt": b"real", "r//b.txt": b"odd", "x//alone.txt": b"alone"}
+    for key, data in keys.items():
+        client.fs.pipe_file(f"{client.name}/{prefix}/{key}", data)
+    client.fs.invalidate_cache()
+    out = tmp_dir / "out"
+    try:
+        with caplog.at_level("WARNING", logger="datachain"):
+            dc.read_storage(f"{ctc.src_uri}/{prefix}", session=ctc.session).to_storage(
+                out, placement="filepath"
+            )
+    finally:
+        client.fs.rm(f"{client.name}/{prefix}", recursive=True)
+        client.fs.invalidate_cache()
+
+    assert tree_from_path(out) == {prefix: {"r": {"b.txt": "real"}}}
+    for key in ("r//b.txt", "x//alone.txt"):
+        assert f"File '{prefix}/{key}' not exported: path has '//'" in caplog.text
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_to_storage_keeps_empty_segments_in_cloud(cloud_test_catalog):
+    ctc = cloud_test_catalog
+    client = ctc.catalog.get_client(ctc.src_uri)
+    src, dst = "empty-seg-src", "empty-seg-dst"
+    client.fs.pipe_file(f"{client.name}/{src}/x//a.txt", b"a")
+    client.fs.invalidate_cache()
+    try:
+        dc.read_storage(f"{ctc.src_uri}/{src}", session=ctc.session).to_storage(
+            f"{ctc.src_uri}/{dst}", placement="filepath"
+        )
+        client.fs.invalidate_cache()
+        assert client.fs.cat_file(f"{client.name}/{dst}/{src}/x//a.txt") == b"a"
+    finally:
+        client.fs.rm(f"{client.name}/{src}", recursive=True)
+        client.fs.rm(f"{client.name}/{dst}", recursive=True)
+        client.fs.invalidate_cache()
+
+
+@pytest.mark.parametrize("placement", ["filename", "etag"])
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_to_storage_empty_segments_with_flat_placement(cloud_test_catalog, placement):
+    ctc = cloud_test_catalog
+    client = ctc.catalog.get_client(ctc.src_uri)
+    key = "flat-export/d//e.txt"
+    client.fs.pipe_file(f"{client.name}/{key}", b"content")
+    client.fs.invalidate_cache()
+    out = ctc.working_dir / "out"
+    try:
+        dc.read_storage(f"{ctc.src_uri}/flat-export/", session=ctc.session).to_storage(
+            out, placement=placement
+        )
+        assert [p.read_bytes() for p in out.iterdir()] == [b"content"]
+    finally:
+        client.fs.rm(f"{client.name}/{key}")
+        client.fs.invalidate_cache()

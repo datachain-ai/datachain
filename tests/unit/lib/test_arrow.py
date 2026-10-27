@@ -11,7 +11,7 @@ import datachain as dc
 from datachain.lib.arrow import (
     ArrowGenerator,
     arrow_type_mapper,
-    infer_schema,
+    file_schemas,
     schema_to_output,
 )
 from datachain.lib.data_model import dict_to_data_model
@@ -309,8 +309,8 @@ def test_parquet_override_column_names_invalid():
         schema_to_output(schema, col_names)
 
 
-def test_infer_schema_no_files(test_session):
+def test_file_schemas_no_files(test_session):
     schema = {"file": File, "my_col": int}
     chain = dc.read_records([], schema=schema, session=test_session, in_memory=True)
     with pytest.raises(ValueError):
-        infer_schema(chain)
+        file_schemas(chain)

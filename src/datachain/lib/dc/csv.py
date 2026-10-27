@@ -25,42 +25,54 @@ def read_csv(
     settings: dict | None = None,
     column_types: dict[str, "str | ArrowDataType"] | None = None,
     parse_options: dict[str, str | bool | Callable] | None = None,
+    columns: Sequence[str] | None = None,
     **kwargs,
 ) -> "DataChain":
-    """Generate chain from csv files.
+    """Generate chain from CSV files.
 
     Parameters:
         path: Storage URI with directory. URI must start with storage prefix such
             as `s3://`, `gs://`, `az://` or "file:///".
         delimiter: Character for delimiting columns. Takes precedence if also
             specified in `parse_options`. Defaults to ",".
-        header: Whether the files include a header row.
-        output: Dictionary or feature class defining column names and their
-            corresponding types. List of column names is also accepted, in which
-            case types will be inferred.
+        header: Whether files include a header row. If False, provide `output`
+            for all columns or select generated names ("f0", "f1", etc.) with `columns`.
+        output: Result names and Python types as a dictionary or Pydantic model.
+            A list of names infers types. Fields map by position, with exactly one
+            field per column read. Use `columns` to select inputs by name.
+            Omit to infer names and types.
         column: Created column name.
         model_name: Generated model name.
         source: Whether to include info about the source file.
         nrows: Optional row limit.
         session: Session to use for the chain.
         settings: Settings to use for the chain.
-        column_types: Dictionary of column names and their corresponding types.
-            It is passed to CSV reader and for each column specified type auto
-            inference is disabled.
+        column_types: CSV parsing types keyed by input name, before normalization
+            or output renaming. Accepts Arrow type names or data types; e.g.
+            `{"ZIP Code": "string"}` preserves leading zeros. Does not select columns.
         parse_options: Tells the parser how to process lines.
             See https://arrow.apache.org/docs/python/generated/pyarrow.csv.ParseOptions.html
+        columns: Input columns to read, in order; all if omitted. Accepts original
+            or normalized names, e.g. "ZIP Code" or "zip_code".
 
     Example:
-        Reading a csv file:
+        Read a file or directory:
         ```py
         import datachain as dc
+
         chain = dc.read_csv("s3://mybucket/file.csv")
+        chain = dc.read_csv("s3://mybucket/dir/")
         ```
 
-        Reading csv files from a directory as a combined dataset:
+        Select and rename columns with a Pydantic model (CSV header: `a,b,c`):
         ```py
-        import datachain as dc
-        chain = dc.read_csv("s3://mybucket/dir")
+        class Row(dc.DataModel):
+            x: float
+            y: float
+
+        chain = dc.read_csv(
+            "s3://mybucket/file.csv", columns=["c", "a"], output=Row
+        )  # x receives c; y receives a
         ```
     """
     from pandas._libs.parsers import STR_NA_VALUES
@@ -87,9 +99,10 @@ def read_csv(
     chain = read_storage(path, session=session, settings=settings, **kwargs)
 
     column_names = None
-    if not header:
+    # With columns=, a file without a header is read with generated names.
+    if not header and columns is None:
         if not output:
-            msg = "error parsing csv - provide output if no header"
+            msg = "error parsing csv - provide output or columns if no header"
             raise DatasetPrepareError(chain.name, msg)
         if isinstance(output, Sequence):
             column_names = output  # type: ignore[assignment]
@@ -102,7 +115,10 @@ def read_csv(
             raise DatasetPrepareError(chain.name, msg)
 
     parse_options = ParseOptions(**parse_options)
-    read_options = ReadOptions(column_names=column_names)
+    read_options = ReadOptions(
+        column_names=column_names,
+        autogenerate_column_names=not header and columns is not None,
+    )
     convert_options = ConvertOptions(
         strings_can_be_null=True,
         null_values=STR_NA_VALUES,
@@ -119,6 +135,7 @@ def read_csv(
         model_name=model_name,
         source=source,
         nrows=nrows,
+        columns=columns,
         format=format,
         parse_options=parse_options,
     )
