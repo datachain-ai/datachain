@@ -53,8 +53,10 @@ class Settings:
                 )
             self._cache = cache
 
-        if prefetch is None or prefetch is True:
+        if prefetch is None:
             self._prefetch = None
+        elif prefetch is True:
+            self._prefetch = DEFAULT_PREFETCH
         elif prefetch is False:
             self._prefetch = 0  # disable prefetch (False == 0)
         else:

@@ -51,6 +51,7 @@ _FILE_STATE = {
     "_caching_enabled": False,
     "_download_cb": DEFAULT_CALLBACK,
     "_fs_path_cache": None,
+    "_prefetch_pending": False,
 }
 
 
@@ -59,7 +60,7 @@ ExportPlacement = Literal["filename", "etag", "fullpath", "checksum", "filepath"
 
 FileType = Literal["binary", "text", "image", "video", "audio"]
 EXPORT_FILES_MAX_THREADS = 5
-PARTIAL_READ_BLOCK_SIZE = 1024 * 1024
+PARTIAL_READ_BLOCK_SIZE = 64 * 1024
 TAR_READ_BLOCK_SIZE = 5 * 1024 * 1024
 
 
@@ -354,6 +355,7 @@ class File(DataModel):
         # them for fields.
         self._caching_enabled: bool
         self._download_cb: Callback
+        self._prefetch_pending: bool
         self._fs_path_cache: tuple[str, str, str] | None
         # The runtime state, set in one __dict__ update: pydantic's __setattr__ per
         # attribute is slow when millions of Files are built. A subclass that
@@ -379,6 +381,7 @@ class File(DataModel):
             return self
         file = TextFile(**self.model_dump())
         file._set_stream(self._catalog, caching_enabled=self._caching_enabled)
+        file._prefetch_pending = self._prefetch_pending
         return file
 
     def as_image_file(self) -> "ImageFile":
@@ -387,6 +390,7 @@ class File(DataModel):
             return self
         file = ImageFile(**self.model_dump())
         file._set_stream(self._catalog, caching_enabled=self._caching_enabled)
+        file._prefetch_pending = self._prefetch_pending
         return file
 
     def as_video_file(self) -> "VideoFile":
@@ -395,6 +399,7 @@ class File(DataModel):
             return self
         file = VideoFile(**self.model_dump())
         file._set_stream(self._catalog, caching_enabled=self._caching_enabled)
+        file._prefetch_pending = self._prefetch_pending
         return file
 
     def as_audio_file(self) -> "AudioFile":
@@ -403,6 +408,7 @@ class File(DataModel):
             return self
         file = AudioFile(**self.model_dump())
         file._set_stream(self._catalog, caching_enabled=self._caching_enabled)
+        file._prefetch_pending = self._prefetch_pending
         return file
 
     @classmethod
@@ -568,6 +574,7 @@ class File(DataModel):
         metadata: dict[str, str] | None = None,
         write_options: dict[str, Any] | None = None,
         block_size: int | None = None,
+        cache: bool | None = None,
         **open_kwargs,
     ) -> Iterator[Any]:
         """Open the file and return a file-like object.
@@ -585,6 +592,9 @@ class File(DataModel):
 
         ``block_size`` sets the read-ahead block for uncached remote reads, and
         the upload part size for writes. HTTP(S) reads ignore it.
+        ``cache=False`` streams a read without downloading the whole file to
+        cache, while still using an existing cached copy. ``cache=True``
+        downloads on a cache miss; None follows the chain settings.
         """
         writing = any(ch in mode for ch in "wax+")
 
@@ -623,7 +633,8 @@ class File(DataModel):
                     with self._wrap_text(f, mode, open_kwargs=open_kwargs) as wrapped:
                         yield wrapped
                 return
-            if self._caching_enabled:
+            caching_enabled = self._caching_enabled if cache is None else cache
+            if caching_enabled:
                 self.ensure_cached()
             with client.open_object(
                 self, use_cache=True, cb=self._download_cb, block_size=block_size
@@ -961,6 +972,7 @@ class File(DataModel):
             )
         client = self._catalog.get_client(self.source)
         client.download(self, callback=self._download_cb)
+        self._prefetch_pending = False
 
     async def _prefetch(self, download_cb: "Callback | None" = None) -> bool:
         if self._catalog is None:
@@ -980,13 +992,15 @@ class File(DataModel):
     def get_local_path(self) -> str | None:
         """Return path to a file in a local cache.
 
-        Returns None if file is not cached.
-        Raises an exception if cache is not setup.
+        Completes a deferred media prefetch on demand. Otherwise, returns None
+        if the file is not cached. Raises an exception if cache is not setup.
         """
         if self._catalog is None:
             raise RuntimeError(
                 "cannot resolve local file path because catalog is not setup"
             )
+        if self._prefetch_pending and not self.location:
+            self.ensure_cached()
         return self._catalog.cache.get_path(self)
 
     def get_file_suffix(self):
@@ -1286,7 +1300,9 @@ class ImageFile(File):
         """
         Retrieves metadata and information about the image file.
 
-        With prefetch and cache off, reads only the parts of the file it needs.
+        Streams the parts of the file needed for metadata, using a cached copy
+        when available. Default media prefetch is deferred; explicit prefetch
+        can download the whole file before this method runs.
 
         Returns:
             Image: A Model containing image metadata such as width, height and format.
@@ -1398,7 +1414,9 @@ class VideoFile(File):
         """
         Retrieves metadata and information about the video file.
 
-        With prefetch and cache off, reads only the parts of the file it needs.
+        Streams the parts of the file needed for metadata, using a cached copy
+        when available. Default media prefetch is deferred; explicit prefetch
+        can download the whole file before this method runs.
 
         Args:
             video_stream_index: Zero-based index among video streams to inspect.
@@ -1575,7 +1593,9 @@ class AudioFile(File):
         """
         Retrieves metadata and information about the audio file.
 
-        With prefetch and cache off, reads only the parts of the file it needs.
+        Streams the parts of the file needed for metadata, using a cached copy
+        when available. Default media prefetch is deferred; explicit prefetch
+        can download the whole file before this method runs.
 
         Returns:
             Audio: A Model containing audio metadata such as duration,

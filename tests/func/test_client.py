@@ -964,3 +964,60 @@ def test_get_file_versioned_special_char_in_key(
     )
     assert dst1.read_bytes() == b"v1"
     assert dst2.read_bytes() == b"version-2"
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("block_size", [None, 0, 2])
+def test_s3_open_object_reuses_listing_metadata(client, mocker, block_size):
+    file = client.get_file_info("dogs/dog1")
+    info = mocker.patch.object(client.fs, "info", side_effect=AssertionError("HEAD"))
+    with client.open_object(file, use_cache=False, block_size=block_size) as stream:
+        assert stream.read(2) == b"wo"
+        stream.seek(0)
+        assert stream.read() == b"woof"
+    info.assert_not_called()
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("tree", [{"changed": "woof"}], indirect=True)
+def test_s3_open_object_rejects_changed_unversioned_object(client):
+    file = client.get_file_info("changed")
+    file.version = ""
+    client.fs.pipe_file(file.get_fs_path(), b"WOOF")
+    with pytest.raises(OSError):
+        with client.open_object(file, use_cache=False, block_size=2) as stream:
+            stream.read()
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+@pytest.mark.parametrize("tree", [{"pinned": "woof"}], indirect=True)
+def test_s3_open_object_pins_listed_version_after_overwrite(client, mocker):
+    file = client.get_file_info("pinned")
+    assert file.version
+    client.fs.pipe_file(file.get_fs_path(), b"WOOF")
+    mocker.patch.object(client.fs, "info", side_effect=AssertionError("HEAD"))
+    with client.open_object(file, use_cache=False, block_size=2) as stream:
+        assert stream.read() == b"woof"
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_s3_open_object_without_identity_uses_head(client, mocker):
+    file = client.get_file_info("dogs/dog1")
+    file.etag = ""
+    file.version = ""
+    info = mocker.spy(client.fs, "info")
+    with client.open_object(file, use_cache=False) as stream:
+        assert stream.read() == b"woof"
+    assert info.called
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("size", [0, -1])
+def test_s3_open_object_without_size_uses_head(client, mocker, size):
+    file = client.get_file_info("dogs/dog1")
+    file.size = size
+    info = mocker.spy(client.fs, "info")
+    with client.open_object(file, use_cache=False) as stream:
+        assert stream.read() == b"woof"
+    assert info.called
