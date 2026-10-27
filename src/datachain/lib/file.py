@@ -750,9 +750,10 @@ class File(DataModel):
             ``version`` populated on versioned backends.
 
         Raises:
-            ValueError: If a local destination contains an interior empty
-                segment, such as ``out/d//e.txt``. Local paths, including
-                ``file://`` URIs, must use a single separator between components.
+            ValueError: If the file's path has an empty segment, such as
+                ``d//e.txt``, and so does a local destination (``file://`` URIs
+                included), such as ``out/d//e.txt``: the local disk would write
+                it to ``out/d/e.txt``, over the file ``d/e.txt``.
 
         Example:
             ```py
@@ -791,7 +792,8 @@ class File(DataModel):
         from datachain.client.fsspec import Client as FSClient
         from datachain.client.local import FileClient
 
-        if FSClient.get_implementation(destination) is FileClient:
+        # a local disk collapses "//": d//e.txt would overwrite d/e.txt
+        if "//" in self.path and FSClient.get_implementation(destination) is FileClient:
             path = destination.removeprefix("file://")
             canonical = path.replace("\\", "/") if os.name == "nt" else path
             if "//" in canonical.lstrip("/"):

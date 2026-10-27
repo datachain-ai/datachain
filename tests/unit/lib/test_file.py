@@ -485,8 +485,7 @@ def test_save_binary_data(tmp_path, catalog: Catalog):
 
 @pytest.mark.parametrize("prefix", ["", "file://"])
 def test_save_refuses_a_local_path_with_an_empty_segment(tmp_path, catalog, prefix):
-    (tmp_path / "src.bin").write_bytes(b"x")
-    file = File(path="src.bin", source=f"file://{tmp_path}")
+    file = File(path="d//e.txt", source="s3://bucket")
     file._set_stream(catalog, False)
 
     with pytest.raises(ValueError, match="must not contain empty segments"):
@@ -494,15 +493,24 @@ def test_save_refuses_a_local_path_with_an_empty_segment(tmp_path, catalog, pref
     assert not (tmp_path / "out").exists()
 
 
+def test_save_of_a_plain_key_to_a_local_path_with_an_empty_segment(tmp_path, catalog):
+    (tmp_path / "src.bin").write_bytes(b"x")
+    file = File(path="src.bin", source=f"file://{tmp_path}")
+    file._set_stream(catalog, False)
+
+    file.save(f"{tmp_path}/out//x.bin")  # f"{out}/{name}" with out ending in "/"
+    assert (tmp_path / "out" / "x.bin").read_bytes() == b"x"
+
+
 @pytest.mark.parametrize("prefix", ["", "file://"])
 def test_image_save_refuses_empty_segments_without_overwriting(
-    tmp_path, catalog, prefix
+    tmp_path, catalog, prefix, mocker
 ):
     from PIL import Image as PILImage
 
-    PILImage.new("RGB", (1, 1)).save(tmp_path / "src.png")
-    file = ImageFile(path="src.png", source=f"file://{tmp_path}")
+    file = ImageFile(path="d//e.png", source="s3://bucket")
     file._set_stream(catalog, False)
+    mocker.patch.object(ImageFile, "read", return_value=PILImage.new("RGB", (1, 1)))
     dest = tmp_path / "out" / "d" / "e.png"
     dest.parent.mkdir(parents=True)
     dest.write_bytes(b"existing content")

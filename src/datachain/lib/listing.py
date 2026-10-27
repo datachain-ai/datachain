@@ -388,7 +388,8 @@ def parse_listing_uri(uri: str, versions: bool = True) -> tuple[str, str, str]:
     """
     storage_uri, path = Client.parse_url(uri)
     if uses_glob(path):
-        lst_uri_path = path.rpartition("/")[0]
+        # up to the last "/": "d//*.txt" is listed under "d//"
+        lst_uri_path = path[: path.rfind("/") + 1]
     else:
         storage_uri, path = Client.parse_url(uri if uri.endswith("/") else f"{uri}/")
         lst_uri_path = path

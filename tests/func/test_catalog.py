@@ -389,6 +389,44 @@ def test_cp_dataset_skips_keys_with_double_slash(cloud_test_catalog, caplog, for
     assert f"File '{prefix}/d//e.txt' not copied: path has '//'" in caplog.text
 
 
+@contextmanager
+def _empty_segment_keys(ctc, prefix):
+    client = ctc.catalog.get_client(ctc.src_uri)
+    for key, data in {"d/e.txt": b"a", "d//e.txt": b"bb", "d///f.txt": b"ccc"}.items():
+        client.fs.pipe_file(f"{client.name}/{prefix}/{key}", data)
+    client.fs.invalidate_cache()
+    try:
+        yield f"{ctc.src_uri}/{prefix}"
+    finally:
+        client.fs.rm(f"{client.name}/{prefix}", recursive=True)
+        client.fs.invalidate_cache()
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_cp_and_du_glob_after_empty_segment(cloud_test_catalog):
+    ctc = cloud_test_catalog
+    dest = ctc.working_dir / "out"
+    dest.mkdir()
+    with _empty_segment_keys(ctc, "glob-empty-segment") as uri:
+        ctc.catalog.cp([f"{uri}/d//*.txt"], str(dest))
+        sizes = dict(ctc.catalog.du([f"{uri}/d//*.txt"]))
+    assert tree_from_path(dest) == {"e.txt": "bb"}
+    assert sizes == {f"{uri}/d//e.txt": 2}
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_cp_and_du_empty_named_folder_from_parent_listing(cloud_test_catalog):
+    ctc = cloud_test_catalog
+    dest = ctc.working_dir / "out"
+    with _empty_segment_keys(ctc, "parent-empty-segment") as uri:
+        dc.read_storage(f"{uri}/", session=ctc.session).exec()  # the parent listing
+        ctc.catalog.cp([f"{uri}/d//"], str(dest), recursive=True)
+        sizes = dict(ctc.catalog.du([f"{uri}/d//"]))
+    # d///f.txt is under the folder named "" in d//: a local disk can't hold it
+    assert tree_from_path(dest) == {"e.txt": "bb"}
+    assert sizes == {f"{uri}/d//": 5}
+
+
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 def test_cp_double_slash_key_to_directory_is_not_downloaded(cloud_test_catalog):
     ctc = cloud_test_catalog

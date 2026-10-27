@@ -47,15 +47,15 @@ flat namespace preserves them. Azure Data Lake Storage Gen2 accounts with a
 hierarchical namespace normalize empty segments, so use `placement="etag"` when
 exporting these keys there to avoid overwriting a distinct key such as `d/e.txt`.
 
-`File.save()` also rejects local destinations with interior empty segments,
-including `file://` URIs, before writing. When constructing a destination from a
-directory and filename, use `os.path.join()` to avoid accidental `//` separators.
-Cloud destinations preserve empty segments, including those kept by `File.rebase()`.
+`File.save()` of a file whose path has an empty segment rejects a local
+destination with one too, including `file://` URIs, before writing: the local
+disk would write `out/d//e.txt` to `out/d/e.txt`, over the file `d/e.txt`.
+`File.upload()` and `File.at(...).open("wb")` don't check: give them local paths
+without `//`. Cloud destinations preserve empty segments, including those kept
+by `File.rebase()`.
 
-Keys beginning with `/` have additional limitations: prefix listings can collapse
-the leading empty segment, and `filepath` and `fullpath` exports strip leading
-slashes. Exporting both `x.txt` and `/x.txt` with either placement can overwrite
-one file. Use `placement="etag"` when exporting such keys from a bucket listing.
+Keys beginning with `/`, such as `/x.txt`, are not listed: `read_storage()` and
+`list_storage()` don't return them.
 
 ## PyTorch DataLoader Integration
 
