@@ -112,6 +112,7 @@ zarr = [
 tests = [
   "datachain[torch,audio,remote,vector,hf,video,postgres,zarr]",
   # pytest-benchmark and pytest-codspeed use internals changed in pytest 9.2.
+  # TODO(#2113): Remove <9.2 once both plugins release compatible versions and CI passes.
   "pytest>=8,<9.2",
   "pytest-asyncio",
   "pytest-sugar>=0.9.6",
