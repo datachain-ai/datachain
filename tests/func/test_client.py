@@ -440,15 +440,24 @@ def test_gcs_client_gets_credentials_from_env(monkeypatch, mocker):
 
 
 @pytest.mark.parametrize("tree", [{}], indirect=True)
+# a versioned bucket keeps the key's old version after rm, for other tests to list
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
 def test_fetch_dir_does_not_return_self(client, cloud_type):
     if cloud_type == "file":
         pytest.skip()
 
     client.fs.touch(f"{client.uri}/directory//file")
-
-    subdirs = sync(
-        get_loop(), client._fetch_dir, "directory/", tqdm(disable=True), asyncio.Queue()
-    )
+    try:
+        subdirs = sync(
+            get_loop(),
+            client._fetch_dir,
+            "directory/",
+            tqdm(disable=True),
+            asyncio.Queue(),
+        )
+    finally:
+        client.fs.rm(f"{client.uri}/directory", recursive=True)
+        client.fs.invalidate_cache()
 
     assert "directory" not in subdirs
 
