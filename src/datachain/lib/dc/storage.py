@@ -207,14 +207,14 @@ def _read_storage(
     cache = session.catalog.cache
     chains = []
     file_values = []
-    updated_listings: set[str] = set()
+    refreshed_listings: set[str] = set()
 
     for list_uri_to_use, glob_pattern in storage_sources(uris):
         dc, list_uri, list_path = prepare_listing(
             list_uri_to_use,
             session,
             client_config,
-            updated_listings,
+            refreshed_listings,
             file_type=file_type,
             column=column,
             update=update,

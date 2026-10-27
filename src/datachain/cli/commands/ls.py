@@ -165,7 +165,7 @@ def _ls_urls_flat(
     from datachain.node import long_line_str
 
     config = catalog.client_config if client_config is None else client_config
-    updated_listings: set[str] = set()
+    refreshed_listings: set[str] = set()
     for source in sources:
         client_cls = Client.get_implementation(source)
         if client_cls.is_root_url(source):
@@ -186,7 +186,7 @@ def _ls_urls_flat(
                 [source],
                 fields=fields,
                 client_config=client_config,
-                _updated_listings=updated_listings,
+                refreshed_listings=refreshed_listings,
                 **kwargs,
             ):
                 values = [_node_data_to_ls_values(r, long) for r in results]
