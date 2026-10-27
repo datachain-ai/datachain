@@ -23,6 +23,7 @@ from datachain.lib.file import (
     VideoFile,
 )
 from datachain.lib.tar import build_tar_member, process_tar
+from tests.utils import make_tar
 
 
 @pytest.fixture
@@ -759,12 +760,7 @@ def test_tar_member_cached_parent_skips_backend(catalog, monkeypatch):
     from datachain.client.s3 import ClientS3
 
     data = b"cached tar member"
-    buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w") as archive:
-        info = tarfile.TarInfo("member.bin")
-        info.size = len(data)
-        archive.addfile(info, io.BytesIO(data))
-    raw = buffer.getvalue()
+    raw = make_tar({"member.bin": data})
     parent = File(
         source="s3://bucket", path="archive.tar", size=len(raw), etag="cached"
     )

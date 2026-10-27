@@ -14,6 +14,7 @@ from datachain.lib.file import File, FileError
 from datachain.lib.tar import process_tar
 from datachain.query import C
 from datachain.utils import TIME_ZERO
+from tests.utils import make_tar
 
 
 def test_file_pickle_with_catalog(tmp_dir, test_session_tmpfile):
@@ -850,38 +851,43 @@ def test_tar_member_partial_read(cloud_test_catalog_upload, fetched_bytes, tmp_p
     assert (info.width, info.height, info.format) == (1500, 1500, "PNG")
 
 
+@pytest.fixture
+def uploaded_tar_member(
+    cloud_test_catalog_upload, fetched_bytes, tmp_path, monkeypatch
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+    monkeypatch.setattr(client.fs, "default_block_size", 2 * 1024 * 1024)
+
+    def upload_member(data, padding=0):
+        tar_path = tmp_path / "member.tar"
+        tar_path.write_bytes(
+            make_tar({"member.bin": data, "padding.bin": bytes(padding)})
+        )
+        ctc.src.fs.put_file(str(tar_path), str(ctc.src / tar_path.name))
+        parent = File(source=ctc.src_uri, path=tar_path.name)
+        parent._set_stream(ctc.catalog, caching_enabled=False)
+        member = next(process_tar(parent))
+        member._set_stream(ctc.catalog, caching_enabled=False)
+        fetched_bytes[:] = [0, 0]
+        return member
+
+    return upload_member
+
+
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
 @pytest.mark.parametrize("size", [0, 100 * 1024])
 @pytest.mark.parametrize("block_size", [None, 0, 256 * 1024])
 def test_tar_member_open_read_ahead(
-    cloud_test_catalog_upload,
+    uploaded_tar_member,
     fetched_bytes,
-    tmp_path,
-    monkeypatch,
     size,
     block_size,
     record_property,
 ):
-    ctc = cloud_test_catalog_upload
-    client = ctc.catalog.get_client(ctc.src_uri)
-    monkeypatch.setattr(client.fs, "default_block_size", 2 * 1024 * 1024)
     data = b"m" * size
-    padding = tmp_path / "padding.bin"
-    with padding.open("wb") as stream:
-        stream.truncate(4 * 1024 * 1024)
-    tar_path = tmp_path / "member.tar"
-    with tarfile.open(tar_path, "w") as archive:
-        info = tarfile.TarInfo("member.bin")
-        info.size = size
-        archive.addfile(info, io.BytesIO(data))
-        archive.add(padding, arcname=padding.name)
-    ctc.src.fs.put_file(str(tar_path), str(ctc.src / tar_path.name))
-    parent = File(source=ctc.src_uri, path=tar_path.name)
-    parent._set_stream(ctc.catalog, caching_enabled=False)
-    member = next(process_tar(parent))
-    member._set_stream(ctc.catalog, caching_enabled=False)
-    fetched_bytes[:] = [0, 0]
+    member = uploaded_tar_member(data, padding=4 * 1024 * 1024)
 
     with member.open(block_size=block_size) as stream:
         assert stream.read() == data
@@ -904,26 +910,13 @@ def test_tar_member_open_read_ahead(
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
 def test_tar_member_large_sequential_read_ahead(
-    cloud_test_catalog_upload, fetched_bytes, tmp_path, monkeypatch, record_property
+    uploaded_tar_member, fetched_bytes, record_property
 ):
-    ctc = cloud_test_catalog_upload
     size = 6 * 1024 * 1024
-    data_path = tmp_path / "large.bin"
-    with data_path.open("wb") as stream:
-        stream.truncate(size)
-    tar_path = tmp_path / "large.tar"
-    with tarfile.open(tar_path, "w") as archive:
-        archive.add(data_path, arcname=data_path.name)
-    ctc.src.fs.put_file(str(tar_path), str(ctc.src / tar_path.name))
-    parent = File(source=ctc.src_uri, path=tar_path.name)
-    parent._set_stream(ctc.catalog, caching_enabled=False)
-    member = next(process_tar(parent))
-    member._set_stream(ctc.catalog, caching_enabled=False)
-    client = ctc.catalog.get_client(parent.source)
-    monkeypatch.setattr(client.fs, "default_block_size", 2 * 1024 * 1024)
-    fetched_bytes[:] = [0, 0]
+    data = bytes(size)
+    member = uploaded_tar_member(data)
     with member.open() as stream:
-        assert b"".join(iter(lambda: stream.read(128 * 1024), b"")) == bytes(size)
+        assert b"".join(iter(lambda: stream.read(128 * 1024), b"")) == data
         assert stream.read() == b""
 
     record_property("fetched_bytes", fetched_bytes[0])
