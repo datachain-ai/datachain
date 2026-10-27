@@ -145,4 +145,4 @@ def test_tar_member_huggingface_read_ahead(
 
     assert all(isinstance(file, HfFileSystemFile) for file, _, _ in requests)
     fetched = sum(end - start for _, start, end in requests)
-    assert len(data) <= fetched <= 108 * 1024
+    assert len(data) <= fetched <= 2 * len(data)
