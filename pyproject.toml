@@ -111,7 +111,8 @@ zarr = [
 ]
 tests = [
   "datachain[torch,audio,remote,vector,hf,video,postgres,zarr]",
-  "pytest>=8,<10",
+  # pytest-benchmark and pytest-codspeed are not compatible with pytest 9.2.
+  "pytest>=8,<9.2",
   "pytest-asyncio",
   "pytest-sugar>=0.9.6",
   "pytest-cov>=4.1.0",
