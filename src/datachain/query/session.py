@@ -106,11 +106,6 @@ class Session:
         view.catalog = catalog
         view._parent = self
         view.is_new_catalog = False
-        if not any(
-            c.metastore is catalog.metastore and c.warehouse is catalog.warehouse
-            for c in self._cleanup_catalogs
-        ):
-            self._cleanup_catalogs.append(catalog)
         return view
 
     def __enter__(self):
@@ -283,6 +278,12 @@ class Session:
             Session._JOB_STATUS = JobStatus.FAILED
 
     def generate_temp_dataset_name(self) -> str:
+        if not any(
+            c.metastore is self.catalog.metastore
+            and c.warehouse is self.catalog.warehouse
+            for c in self._cleanup_catalogs
+        ):
+            self._cleanup_catalogs.append(self.catalog)
         return self.get_temp_prefix() + uuid4().hex[: self.TEMP_TABLE_UUID_LEN]
 
     def get_temp_prefix(self) -> str:

@@ -3,9 +3,11 @@ import re
 import pytest
 
 import datachain as dc
+from datachain.catalog import Catalog
 from datachain.dataset import SESSION_DATASET_PREFIX, DatasetStatus
 from datachain.error import DataChainError, DatasetNotFoundError
 from datachain.query.session import Session
+from tests.utils import skip_if_not_sqlite
 
 
 @pytest.fixture
@@ -204,3 +206,18 @@ def test_reenter_session_cleans_each_temporary_scope(catalog, catalog_view):
             assert catalog.get_dataset(temporary_name)
         with pytest.raises(DatasetNotFoundError):
             catalog.get_dataset(temporary_name)
+
+
+@skip_if_not_sqlite
+def test_readonly_session_view_leaves_closed_catalog_closed(catalog):
+    with Session("owner", catalog=catalog) as parent:
+        dc.read_values(value=[1], session=parent).save("source")
+        with Catalog(
+            metastore=catalog.metastore.clone(),
+            warehouse=catalog.warehouse.clone(),
+        ) as borrowed:
+            chain = dc.read_dataset("source", session=parent.with_catalog(borrowed))
+            assert chain.to_values("value") == [1]
+        assert borrowed.metastore.db.is_closed
+    assert borrowed.metastore.db.is_closed
+    assert borrowed.warehouse.db.is_closed
