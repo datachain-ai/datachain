@@ -136,10 +136,8 @@ class SavedListing:
                     node_path = [os.path.basename(copy_to_filename)]
                 elif from_dataset:
                     # Keep absolute local sources inside the output directory.
-                    node_path = [
-                        os.path.splitdrive(src.listing.client.name)[1].lstrip("/"),
-                        node.path,
-                    ]
+                    prefix = os.path.splitdrive(src.listing.client.name)[1].lstrip("/")
+                    node_path = [prefix, node.path] if prefix else [node.path]
                 else:
                     node_path = [node.name]
                 all_nodes.append(NodeWithPath(node, path=node_path))

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from functools import reduce
 from typing import TYPE_CHECKING
 
+import datachain.lib.listing as listing_lib
 from datachain.client import Client
 from datachain.lib.dc.storage_pattern import (
     list_scope,
@@ -22,7 +23,7 @@ from datachain.lib.listing import (
     list_scope_pages,
     select_paths,
 )
-from datachain.lib.storage import client_configs, prepare_listing, session_for
+from datachain.lib.storage_config import client_configs, session_for
 from datachain.query import Session
 
 if TYPE_CHECKING:
@@ -207,14 +208,14 @@ def _read_storage(
     cache = session.catalog.cache
     chains = []
     file_values = []
-    refreshed_listings: set[str] = set()
+    prepared_listings: set[str] = set()
 
     for list_uri_to_use, glob_pattern in storage_sources(uris):
-        dc, list_uri, list_path = prepare_listing(
+        dc, list_uri, list_path = _prepare_listing(
             list_uri_to_use,
             session,
             client_config,
-            refreshed_listings,
+            prepared_listings,
             file_type=file_type,
             column=column,
             update=update,
@@ -564,3 +565,69 @@ def _record_batch(page: Sequence[tuple], schema: "pa.Schema") -> "pa.RecordBatch
         [pa.array(col, type=t) for col, t in zip(columns, schema.types, strict=True)],
         schema=schema,
     )
+
+
+def _prepare_listing(
+    uri: str | os.PathLike[str],
+    session: Session,
+    client_config: dict,
+    prepared: set[str],
+    *,
+    file_type: type[File] = File,
+    column: str = "file",
+    update: bool = False,
+    versions: bool = True,
+    settings: dict | None = None,
+    in_memory: bool = False,
+    delta: bool | None = False,
+    delta_on: str | Sequence[str] | None = None,
+    delta_result_on: str | Sequence[str] | None = None,
+    delta_compare: str | Sequence[str] | None = None,
+    delta_retry: bool | str | None = None,
+    delta_unsafe: bool = False,
+) -> tuple["DataChain | None", str, str]:
+    """Select a snapshot and attach its full-prefix refresh, without reading rows.
+
+    A single file has no snapshot. The URI and path are kept from this selection
+    so Catalog can browse the same snapshot without selecting it again.
+    """
+    from .datasets import read_dataset
+
+    name, list_uri, list_path, _ = listing_lib.get_listing(
+        uri, session, update=update, versions=versions
+    )
+    if name is None:
+        return None, list_uri, list_path
+
+    catalog = session.catalog
+    chain = read_dataset(
+        name,
+        namespace=catalog.metastore.system_namespace_name,
+        project=catalog.metastore.listing_project_name,
+        session=session,
+        settings=settings,
+        update=update and name not in prepared,
+        delta=delta,
+        delta_on=delta_on,
+        delta_result_on=delta_result_on,
+        delta_compare=delta_compare,
+        delta_retry=delta_retry,
+        delta_unsafe=delta_unsafe,
+    )
+    # A snapshot shared by several URIs is prepared once per operation.
+    prepared.add(name)
+    chain.signals_schema = chain.signals_schema.mutate({column: file_type})
+    # A reused snapshot can cover a parent: always refresh its whole prefix.
+    chain._query.set_listing_fn(
+        lambda: listing_lib.write_listing(
+            listing_lib.listing_uri_from_name(name),
+            name,
+            session,
+            client_config,
+            column=column,
+            file_type=file_type,
+            settings=settings,
+            in_memory=in_memory,
+        )
+    )
+    return chain, list_uri, list_path

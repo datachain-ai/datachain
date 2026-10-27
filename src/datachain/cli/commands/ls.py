@@ -48,8 +48,7 @@ def ls_local(
     from datachain import listings
 
     if sources:
-        session = Session.get(catalog=catalog, client_config=client_config)
-        catalog = session.catalog
+        catalog = catalog or Session.get().catalog
         actual_sources = list(
             ls_urls(
                 sources,
@@ -165,7 +164,7 @@ def _ls_urls_flat(
     from datachain.node import long_line_str
 
     config = catalog.client_config if client_config is None else client_config
-    refreshed_listings: set[str] = set()
+    prepared_listings: set[str] = set()
     for source in sources:
         client_cls = Client.get_implementation(source)
         if client_cls.is_root_url(source):
@@ -186,7 +185,7 @@ def _ls_urls_flat(
                 [source],
                 fields=fields,
                 client_config=client_config,
-                refreshed_listings=refreshed_listings,
+                prepared_listings=prepared_listings,
                 **kwargs,
             ):
                 values = [_node_data_to_ls_values(r, long) for r in results]

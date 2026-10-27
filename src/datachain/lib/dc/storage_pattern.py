@@ -1,4 +1,5 @@
 import glob
+import os
 from collections.abc import Sequence
 
 from datachain.client.fsspec import is_cloud_uri
@@ -28,7 +29,20 @@ def validate_cloud_bucket_name(uri: str) -> None:
             raise ValueError(f"Glob patterns in bucket names are not supported: {uri}")
 
 
-def split_uri_pattern(uri: str) -> tuple[str, str | None]:
+def normalize_storage_uri(uri: str | os.PathLike[str]) -> str:
+    """Resolve local paths before splitting patterns; preserve cloud object keys."""
+    from datachain.client import Client
+    from datachain.client.local import FileClient
+
+    uri = os.fspath(uri)
+    if issubclass(Client.get_implementation(uri), FileClient):
+        FileClient.validate_source(uri)
+        storage, path = Client.parse_url(uri)
+        return f"{storage}/{path}"
+    return uri
+
+
+def split_uri_pattern(uri: str, *, braces: bool = True) -> tuple[str, str | None]:
     """Split a URI into base path and glob pattern."""
     if not any(char in uri for char in ["*", "?", "[", "{", "}"]):
         return uri, None
@@ -42,7 +56,7 @@ def split_uri_pattern(uri: str) -> tuple[str, str | None]:
         pattern_start_idx = None
         for i, segment in enumerate(path_segments):
             # Check for glob patterns including brace expansion
-            if glob.has_magic(segment) or "{" in segment:
+            if glob.has_magic(segment) or (braces and "{" in segment):
                 pattern_start_idx = i
                 break
 
@@ -62,7 +76,7 @@ def split_uri_pattern(uri: str) -> tuple[str, str | None]:
 
     pattern_start_idx = None
     for i, segment in enumerate(path_segments):
-        if glob.has_magic(segment) or "{" in segment:
+        if glob.has_magic(segment) or (braces and "{" in segment):
             pattern_start_idx = i
             break
 
@@ -236,6 +250,7 @@ def storage_sources(uris: Sequence) -> list[tuple[str, str | None]]:
     sources = []
     for uri in uris:
         for expanded in expand_brace_pattern(str(uri)):
+            expanded = normalize_storage_uri(expanded)
             base_uri, pattern = split_uri_pattern(expanded)
             sources.append((base_uri if pattern else expanded, pattern))
     return sources

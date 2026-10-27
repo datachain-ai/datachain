@@ -191,3 +191,16 @@ def test_get_or_create_job_raises_in_studio_without_env(catalog, monkeypatch):
     with Session("testjob", catalog=catalog) as session:
         with pytest.raises(DataChainError, match="Cannot create job in Studio"):
             session.get_or_create_job()
+
+
+@pytest.mark.parametrize("catalog_view", [False, True])
+def test_reenter_session_cleans_each_temporary_scope(catalog, catalog_view):
+    parent = Session("reenter", catalog=catalog)
+    session = parent.with_catalog(catalog.copy()) if catalog_view else parent
+    for _ in range(2):
+        with session:
+            chain = dc.read_values(value=[1], session=session).persist()
+            temporary_name = chain.name
+            assert catalog.get_dataset(temporary_name)
+        with pytest.raises(DatasetNotFoundError):
+            catalog.get_dataset(temporary_name)

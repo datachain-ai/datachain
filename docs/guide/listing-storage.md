@@ -79,5 +79,3 @@ with dc.Session("ingest", client_config=minio):
 ```
 
 Both functions distinguish `None` from `{}`: omit `client_config` (or pass `None`) to inherit the session's configuration. Passing `{}` replaces it with empty client options.
-
-The same rule applies to `Catalog.ls`, `du`, `find`, `index`, `cp`, `clone`, and `create_dataset_from_sources`, including `ds://` sources: `None` inherits the Catalog's configuration, while `{}` clears it. Neither option modifies the caller's Session or Catalog.

@@ -5,6 +5,7 @@ import re
 import sys
 import traceback
 from collections.abc import Callable
+from copy import copy
 from typing import TYPE_CHECKING, ClassVar
 from uuid import uuid4
 from weakref import WeakSet
@@ -90,10 +91,27 @@ class Session:
         session_uuid = uuid4().hex[: self.SESSION_UUID_LEN]
         self.name = f"{name}_{session_uuid}"
         self.is_new_catalog = not catalog
+        self._parent: Session | None = None
         self.catalog = catalog or get_catalog(
             client_config=client_config, in_memory=in_memory
         )
+        self._cleanup_catalogs: list[Catalog] = [self.catalog]
         Session._ALL_SESSIONS.add(self)
+
+    def with_catalog(self, catalog: "Catalog") -> "Session":
+        """Use another catalog without creating a new temporary-dataset scope."""
+        if catalog is self.catalog:
+            return self
+        view = copy(self)
+        view.catalog = catalog
+        view._parent = self
+        view.is_new_catalog = False
+        if not any(
+            c.metastore is catalog.metastore and c.warehouse is catalog.warehouse
+            for c in self._cleanup_catalogs
+        ):
+            self._cleanup_catalogs.append(catalog)
+        return view
 
     def __enter__(self):
         # Push the current context onto the stack
@@ -276,19 +294,20 @@ class Session:
 
     def _cleanup_temp_datasets(self) -> None:
         prefix = self.get_temp_prefix()
-        try:
-            for dataset in list(
-                self.catalog.metastore.list_datasets_by_prefix(
-                    prefix, include_incomplete=True
-                )
-            ):
-                # Session datasets are always wiped — never soft-deleted.
-                self.catalog.remove_dataset(
-                    dataset.name, dataset.project, force=True, keep_metadata=False
-                )
-        # suppress error when metastore has been reset during testing
-        except TableMissingError:
-            pass
+        for catalog in self._cleanup_catalogs:
+            try:
+                for dataset in list(
+                    catalog.metastore.list_datasets_by_prefix(
+                        prefix, include_incomplete=True
+                    )
+                ):
+                    # Session datasets are always wiped — never soft-deleted.
+                    catalog.remove_dataset(
+                        dataset.name, dataset.project, force=True, keep_metadata=False
+                    )
+            # suppress error when metastore has been reset during testing
+            except TableMissingError:
+                pass
 
     @classmethod
     def active(cls) -> "Session | None":

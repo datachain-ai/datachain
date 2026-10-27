@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 import datachain as dc
@@ -342,3 +344,33 @@ def test_read_special_chars_prefix_after_parent_listed(tmp_dir):
     assert dc.read_storage(f"{tmp_dir}/").count() == count_dict_items(DEEP_TREE) + 1
     files = dc.read_storage(f"{special}/").to_values("file")
     assert [f.name for f in files] == ["file"]
+
+
+@pytest.mark.parametrize("operation", ["read", "catalog"])
+def test_relative_glob_scans_working_directory(
+    test_session, tmp_path, monkeypatch, mocker, operation
+):
+    from datachain.client.local import FileClient
+
+    (tmp_path / "data.csv").write_text("data")
+    monkeypatch.chdir(tmp_path)
+    scanned = []
+
+    async def scandir(client, start_prefix, method="default"):
+        assert Path(client.name) == tmp_path
+        scanned.append((client.name, start_prefix))
+        yield [client.get_file_info("data.csv")]
+
+    mocker.patch.object(FileClient, "scandir", scandir)
+    if operation == "read":
+        assert dc.read_storage("*.csv", session=test_session).to_values(
+            "file.path"
+        ) == ["data.csv"]
+    else:
+        rows = [
+            row
+            for _, result in test_session.catalog.ls(["*.csv"], fields=["name"])
+            for row in result
+        ]
+        assert rows == [("data.csv",)]
+    assert len(scanned) == 1

@@ -1,4 +1,3 @@
-import glob
 import io
 import logging
 import os
@@ -11,7 +10,7 @@ from contextlib import contextmanager, suppress
 from copy import copy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from functools import cached_property, reduce
+from functools import reduce
 from typing import TYPE_CHECKING, Any, Self
 from uuid import uuid4
 
@@ -526,11 +525,11 @@ class Catalog:
         self.in_memory = in_memory
         self._owns_connections = True  # False for copies, prevents double-close
 
-    @cached_property
+    @property
     def session(self):
         from datachain.query.session import Session
 
-        return Session.get(catalog=self)
+        return Session.get(catalog=self).with_catalog(self)
 
     def get_init_params(self) -> dict[str, Any]:
         return {
@@ -572,11 +571,15 @@ class Catalog:
     def generate_query_dataset_name(cls) -> str:
         return f"{QUERY_DATASET_PREFIX}_{uuid4().hex}"
 
-    def get_client(self, uri: str, **config: Any) -> Client:
+    def get_client(
+        self, uri: str, *, client_config: dict | None = None, **config: Any
+    ) -> Client:
         """
         Return the client corresponding to the given source `uri`.
         """
-        config = config or self.client_config
+        config = (
+            client_config if client_config is not None else config or self.client_config
+        )
         cls = Client.get_implementation(uri)
         return cls.from_source(StorageURI(uri), self.cache, **config)
 
@@ -588,48 +591,53 @@ class Catalog:
         column="file",
         skip_indexing=False,
         *,
-        refreshed_listings: set[str] | None = None,
+        prepared_listings: set[str] | None = None,
     ) -> tuple["SavedListing | None", Client, str]:
         from datachain.client.local import FileClient
-        from datachain.lib.dc.storage_pattern import split_uri_pattern
-        from datachain.lib.storage import (
-            client_configs,
-            prepare_listing,
-            session_for,
+        from datachain.lib.dc.storage_pattern import (
+            normalize_storage_uri,
+            split_uri_pattern,
         )
+        from datachain.lib.listing import (
+            ensure_listing,
+            listing_uri_from_name,
+            write_listing,
+        )
+        from datachain.lib.storage_config import client_configs, session_for
         from datachain.listing import SavedListing
 
-        source = os.fspath(source)
+        source = normalize_storage_uri(source)
         is_local = issubclass(Client.get_implementation(source), FileClient)
-        if is_local:
-            # Local paths follow the filesystem parser; cloud tree keys stay raw.
-            FileClient.validate_source(source)
-            storage_uri, path = Client.parse_url(source)
-            source = f"{storage_uri}/{path}"
         client_config = self.client_config if client_config is None else client_config
         session_config, config = client_configs(
-            [source], self.session, None, client_config, True
+            [source], None, anon=None, client_config=client_config, versions=True
         )
-        session = session_for(self.session, session_config, False)
-        # Braces are not tree globs: a name with "{" may be an object.
-        source_uri, pattern = (
-            split_uri_pattern(source) if glob.has_magic(source) else (source, None)
+        session = session_for(self.session, session_config, in_memory=False)
+        # Braces are not globs: a name with "{" may be an object.
+        source_uri, pattern = split_uri_pattern(source, braces=False)
+        prepared = set() if prepared_listings is None else prepared_listings
+        list_ds_name, list_uri, list_path, _ = get_listing(
+            source_uri, session, update=update
         )
-        refreshed = set() if refreshed_listings is None else refreshed_listings
-        chain, list_uri, list_path = prepare_listing(
-            source_uri, session, config, refreshed, update=update, column=column
-        )
+        if list_ds_name is not None:
+            ensure_listing(
+                list_ds_name,
+                session.catalog,
+                lambda: write_listing(
+                    listing_uri_from_name(list_ds_name),
+                    list_ds_name,
+                    session,
+                    config,
+                    column=column,
+                ),
+                update=update and list_ds_name not in prepared,
+            )
+            prepared.add(list_ds_name)
         if pattern is not None:
-            # Keep empty path segments in the tree selection (e.g. dir//*/x).
-            if not is_local:
-                base = source_uri.rstrip("/")
-                pattern = source[len(base) :].removeprefix("/")
-            separator = "/" if list_path and not list_path.endswith("/") else ""
-            list_path = list_path + separator + pattern
-        list_ds_name = None
-        if chain is not None:
-            chain._query.resolve_listing()
-            list_ds_name = chain._query.list_ds_name
+            if is_local:
+                list_path = posixpath.join(list_path, pattern)
+            else:
+                _, list_path = Client.parse_url(source)
 
         lst = None
         client = Client.get_client(list_uri, self.cache, **config)
@@ -654,10 +662,10 @@ class Catalog:
         client_config=None,
         only_index=False,
         *,
-        refreshed_listings: set[str] | None = None,
+        prepared_listings: set[str] | None = None,
     ) -> Iterator[list["DataSource"] | None]:
         enlisted_sources: list[tuple[SavedListing | None, Client, str]] = []
-        refreshed_listings = set() if refreshed_listings is None else refreshed_listings
+        prepared_listings = set() if prepared_listings is None else prepared_listings
         try:
             for src in sources:  # Opt: parallel
                 listing, client, file_path = self.enlist_source(
@@ -665,7 +673,7 @@ class Catalog:
                     update,
                     client_config=client_config,
                     skip_indexing=skip_indexing,
-                    refreshed_listings=refreshed_listings,
+                    prepared_listings=prepared_listings,
                 )
                 enlisted_sources.append((listing, client, file_path))
 
@@ -700,7 +708,7 @@ class Catalog:
         no_glob: bool = False,
         client_config=None,
     ) -> list[NodeGroup]:
-        from datachain.lib.storage import session_for
+        from datachain.lib.storage_config import session_for
         from datachain.listing import SavedListing
         from datachain.query.dataset import DatasetQuery
 
@@ -709,12 +717,12 @@ class Catalog:
             return Node.from_row(d)
 
         enlisted_sources: list[tuple[bool, bool, Any]] = []
-        refreshed_listings: set[str] = set()
+        prepared_listings: set[str] = set()
         client_config = self.client_config if client_config is None else client_config
+        session = session_for(self.session, client_config, in_memory=False)
         for src in sources:  # Opt: parallel
             listing: SavedListing | None
             if src.startswith("ds://"):
-                session = session_for(self.session, client_config, False)
                 (ds_namespace, ds_project, ds_name, ds_version) = parse_dataset_uri(src)
                 dataset = self.get_dataset(
                     ds_name,
@@ -731,8 +739,7 @@ class Catalog:
                 )
                 indexed_sources = []
                 for source in dataset_sources:
-                    client_cls = Client.get_implementation(source)
-                    client = client_cls.from_source(source, self.cache, **client_config)
+                    client = self.get_client(source, client_config=client_config)
                     uri = client.uri
                     dataset_name, _, _, _ = get_listing(uri, session)
                     assert dataset_name
@@ -766,7 +773,7 @@ class Catalog:
                     src,
                     update,
                     client_config=client_config,
-                    refreshed_listings=refreshed_listings,
+                    prepared_listings=prepared_listings,
                 )
                 enlisted_sources.append((False, False, (listing, client, source_path)))
 
@@ -1406,10 +1413,10 @@ class Catalog:
             raise ValueError("Sources needs to be non empty list")
 
         from datachain import read_dataset, read_storage
-        from datachain.lib.storage import session_for
+        from datachain.lib.storage_config import session_for
 
         client_config = self.client_config if client_config is None else client_config
-        session = session_for(self.session, client_config, False)
+        session = session_for(self.session, client_config, in_memory=False)
         project = project or self.metastore.default_project
 
         chains = []
@@ -1800,10 +1807,10 @@ class Catalog:
         content_disposition: str | None = None,
         **kwargs,
     ) -> str:
-        client_config = client_config or self.client_config
+        client_config = self.client_config if client_config is None else client_config
         if client_config.get("anon"):
             content_disposition = None
-        client = Client.get_client(source, self.cache, **client_config)
+        client = self.get_client(source, client_config=client_config)
         return client.url(
             path,
             version_id=version_id,
@@ -1927,14 +1934,14 @@ class Catalog:
         skip_indexing=False,
         *,
         client_config=None,
-        refreshed_listings: set[str] | None = None,
+        prepared_listings: set[str] | None = None,
     ) -> Iterator[tuple[DataSource, Iterable[tuple]]]:
         with self.enlist_sources(
             sources,
             update,
             skip_indexing=skip_indexing,
             client_config=client_config,
-            refreshed_listings=refreshed_listings,
+            prepared_listings=prepared_listings,
         ) as data_sources:
             if data_sources is None:
                 return

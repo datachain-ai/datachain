@@ -12,7 +12,6 @@ from datachain.cli import garbage_collect
 from datachain.client import Client
 from datachain.client.local import FileClient
 from datachain.error import DatasetNotFoundError
-from datachain.lib import storage as storage_helpers
 from datachain.lib.file import File
 from datachain.lib.listing import parse_listing_uri
 from tests.data import ENTRIES
@@ -857,7 +856,7 @@ def test_enlist_sources_updates_shared_snapshot_once(
 ):
     ctc = cloud_test_catalog
     uri = f"{ctc.src_uri}/dogs/"
-    write = mocker.spy(storage_helpers, "write_listing")
+    write = mocker.spy(listing_lib, "write_listing")
     with ctc.catalog.enlist_sources(
         [uri + pattern for pattern in patterns], update=True
     ) as sources:
@@ -873,7 +872,7 @@ def test_enlist_source_client_config_override(cloud_test_catalog, mocker):
     config = ctc.client_config.copy()
     original = {"endpoint_url": "http://127.0.0.1:1", "anon": True}
     ctc.catalog.client_config = original.copy()
-    clients = mocker.spy(dc.lib.dc.storage.Client, "get_client")
+    clients = mocker.spy(Client, "get_client")
     with enlist_source(ctc.catalog, f"{ctc.src_uri}/dogs/", client_config=config) as (
         listing,
         client,
@@ -899,7 +898,16 @@ def test_enlist_source_with_glob_in_parent(cloud_test_catalog, update):
         path,
     ):
         assert listing is not None
-        assert path.endswith("*/dog4")
+        assert path == ("*/dog4" if ctc.server.kind == "file" else "dogs/*/dog4")
+        rows = [
+            row
+            for _, result in ctc.catalog.ls(
+                [f"{ctc.src_uri}/dogs/*/dog4"], fields=["path"]
+            )
+            for row in result
+        ]
+        expected = "others/dog4" if ctc.server.kind == "file" else "dogs/others/dog4"
+        assert rows == [(expected,)]
         assert listing_stats(f"{ctc.src_uri}/dogs/", ctc.catalog) == (4, 15)
 
 
@@ -932,14 +940,19 @@ def test_catalog_literal_file_after_glob(
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 def test_enlist_source_keeps_repeated_slashes(cloud_test_catalog):
     ctc = cloud_test_catalog
-    with enlist_source(ctc.catalog, f"{ctc.src_uri}/dogs//*/dog4") as (_, _, path):
-        assert path == "dogs//*/dog4"
+    client = ctc.catalog.get_client(ctc.src_uri)
+    client.fs.pipe_file(f"{client.name}/dogs//x/dog4", b"9")
+    uri = f"{ctc.src_uri}/dogs//*/dog4"
+    rows = [
+        row for _, result in ctc.catalog.ls([uri], fields=["path"]) for row in result
+    ]
+    assert rows == [("dogs//x/dog4",)]
 
 
 def test_grouped_sources_update_shared_snapshot_once(cloud_test_catalog, mocker):
     ctc = cloud_test_catalog
     uri = f"{ctc.src_uri}/dogs/"
-    write = mocker.spy(storage_helpers, "write_listing")
+    write = mocker.spy(listing_lib, "write_listing")
     groups = ctc.catalog.enlist_sources_grouped([uri, uri], update=True)
     try:
         assert len(groups) == 2
@@ -1119,3 +1132,60 @@ def test_catalog_dataset_client_config_empty_or_inherited(
 def test_catalog_ls_rejects_file_uri_without_drive(catalog):
     with pytest.raises(ValueError, match="drive letter"):
         list(catalog.ls(["file:///data/dogs/"], fields=["name"]))
+
+
+@skip_if_not_sqlite
+def test_cp_dataset_from_filesystem_root(test_session, tmp_path):
+    catalog = test_session.catalog
+    source = tmp_path / "data.txt"
+    source.write_text("root file contents")
+    root = Path(source.anchor)
+    client = FileClient.from_source(str(root), catalog.cache)
+    path = source.relative_to(root).as_posix()
+    file = client.get_file_info(path)
+    name, _, _, _ = listing_lib.get_listing(client.uri, test_session)
+    dc.read_values(file=[file], session=test_session).settings(
+        namespace=catalog.metastore.system_namespace_name,
+        project=catalog.metastore.listing_project_name,
+    ).save(name, listing=True)
+    dataset = dc.read_values(file=[file], session=test_session).save("rootds")
+    output = tmp_path / "copied"
+    catalog.cp([dataset.dataset.uri(version="1.0.0")], str(output), recursive=True)
+    assert (output / path).read_text() == "root file contents"
+
+
+@pytest.mark.parametrize("cloud_type", ["file", "s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize(
+    "tree", [{"a{b": {"x.txt": "x"}, "sibling": {"x.txt": "s"}}], indirect=True
+)
+def test_catalog_glob_lists_only_literal_brace_folder(cloud_test_catalog):
+    ctc = cloud_test_catalog
+    uri = f"{ctc.src_uri}/a{{b/"
+    rows = [
+        row
+        for _, result in ctc.catalog.ls([uri + "*.txt"], fields=["name"])
+        for row in result
+    ]
+    assert rows == [("x.txt",)]
+    assert listing_stats(uri, ctc.catalog) == (1, 1)
+
+
+@pytest.mark.parametrize(
+    "config", [None, {}, {"anon": False}], ids=["inherit", "empty", "replace"]
+)
+def test_signed_url_client_config_empty_or_inherited(catalog, mocker, config):
+    catalog.client_config = {"anon": True}
+    client = mocker.Mock()
+    factory = mocker.patch.object(FileClient, "from_source", return_value=client)
+    catalog.signed_url(
+        "file:///source",
+        "a.txt",
+        client_config=config,
+        content_disposition="attachment",
+    )
+    assert factory.call_args.kwargs == ({"anon": True} if config is None else config)
+    assert client.url.call_args.kwargs["content_disposition"] == (
+        None if config is None else "attachment"
+    )
+    assert catalog.client_config == {"anon": True}
