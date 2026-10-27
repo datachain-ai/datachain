@@ -1106,9 +1106,11 @@ def test_catalog_dataset_client_config_empty_or_inherited(
 
     output = tmp_path / "copied"
     ctc.catalog.cp([uri], str(output), recursive=True, client_config=config)
-    source_prefix = os.path.splitdrive(str(ctc.src))[1].lstrip("/")
+    source_path = Path(ctc.src)
+    source_prefix = source_path.relative_to(source_path.anchor)
     for relative in ["dogs/dog1", "dogs/dog2", "dogs/dog3", "dogs/others/dog4"]:
         copied = output / source_prefix / relative
+        assert copied.is_relative_to(output)
         assert copied.read_text() == (ctc.src / relative).read_text()
         assert copied.is_symlink() == (config is None)
 
