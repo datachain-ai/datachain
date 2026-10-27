@@ -12,9 +12,14 @@ When delta processing is enabled:
 
 1. DataChain calculates the difference between the latest version of your source dataset and the version used to create the most recent version of your result dataset
 2. Only the records that are new or modified in the source dataset are processed
-3. These processed records are then merged with the latest version of your result dataset
+3. All result rows belonging to modified or deleted source records are removed, even when a filter rejects the replacement or a generator yields no rows
+4. The newly processed rows are combined with the retained results for unchanged source records
 
-This optimization significantly reduces processing time and resource usage for incremental updates.
+For a fixed row-local pipeline using `map`, `gen`, and filters, the saved result contains the same rows as a full non-delta recompute of the current source. UDFs run only on added and modified source records, plus records explicitly selected by `delta_retry`. Nondeterministic UDF values can differ from a full recompute because unchanged records retain their saved results.
+
+A generator's entire output for a source record is replaced or removed together. Every output row must retain the source key fields, or their counterparts named by `delta_result_on`. A generator must yield these fields explicitly. The same requirement applies when using `select` or renaming fields.
+
+Use `update=True` with `read_storage` to refresh the storage index. A deletion-only refresh can create a new result version without calling the UDF. Source changes that produce no output still advance the saved dependencies, so subsequent runs do not process those changes again. If neither source records nor retry inputs change, the existing result version is reused.
 
 ## Usage
 
@@ -27,6 +32,7 @@ import datachain as dc
 chain = (
     dc.read_storage(
         "data/",
+        update=True,  # Refresh the storage index
         delta=True,  # Enable delta processing
         delta_on="file.path",  # Field that uniquely identifies records
         delta_compare="file.mtime",  # Field to check for changes
@@ -39,9 +45,11 @@ chain = (
 ## Parameters
 
 - **delta**: Boolean flag to enable delta processing
-- **delta_on**: Field(s) that uniquely identify rows in the source dataset
+- **delta_on**: Field(s) that uniquely identify rows in the source dataset. The default is `("file.path", "file.etag", "file.version")`. An overwrite changes this revision key: the old revision's results are removed and the new revision is processed. For explicit identity-based matching, use e.g. `("file.source", "file.path")` with `delta_compare=("file.etag", "file.version")`. Include the source when paths can collide across storages.
 - **delta_result_on**: Field(s) in the resulting dataset that correspond to `delta_on` fields (if they have different names)
-- **delta_compare**: Field(s) used to check if a record has been modified
+- **delta_compare**: Field(s) used to check if a record has been modified. By default, all non-key source fields are compared. An explicit list must cover every source field whose changes can affect your output or filters; ignored changes cannot trigger recomputation.
+
+Storage listings with `versions=True` may contain historical object revisions, but `read_storage` returns current objects by filtering `file.is_latest`. The default revision key and comparison fields detect both new revisions and transitions out of the current listing. With `versions=False`, the listing contains only current objects; overwritten revisions disappear from the source and their results are removed. When processing a versioned listing directly with `read_dataset`, retain `file.version` in the key if historical revisions should remain distinct.
 
 ## Example: Processing New Files Only
 
@@ -104,5 +112,7 @@ delta_unsafe = True
 ```
 
 If more than one delta-enabled source participates in the same composed query, set `delta_unsafe=True` on every participating delta source.
+
+The full-recompute contract does not extend to `delta_unsafe=True` operations. Multiple delta sources currently require this opt-in and a shared result key. Their changed inputs are replayed together; joins with independently changing sides, cross-record operations, and overlapping source keys can require a full recompute.
 
 `delta_unsafe=True` is an advanced option. Use it only when you know the participating delta sources are updated in a consistent way and the result of replaying only the changed rows will still match the result of recomputing the full query.

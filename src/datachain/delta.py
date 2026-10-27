@@ -206,11 +206,7 @@ def _build_source_retry_chain(
     on = [on] if isinstance(on, str) else on
 
     return (
-        retry_chain.diff(
-            diff_chain, on=on, added=True, same=True, modified=False, deleted=False
-        ).distinct(*on)
-        if retry_chain
-        else None
+        retry_chain.subtract(diff_chain, on=on).distinct(*on) if retry_chain else None
     )
 
 
@@ -298,12 +294,8 @@ def _build_source_replay_input(
     target_source_spec: "DeltaSpec",
     result_dataset: "DataChain",
     result_dependencies: list[DatasetDependency | None],
-) -> tuple["DataChain | None", str | None, bool]:
-    """Build the delta/retry chain for `target_source_query` using
-    `target_source_spec`, relative to `result_dataset_name` at
-    `result_latest_version`, and return `(processing_chain,
-    source_latest_version, dependency_missing)`.
-    """
+) -> tuple["DataChain | None", "DataChain | None", str | None, bool]:
+    """Return replay inputs, invalidated source rows, version, and missing status."""
     if target_source_query.starting_step is None:  # pragma: no cover
         raise RuntimeError("Source dataset must be resolved before processing delta")
 
@@ -316,7 +308,7 @@ def _build_source_replay_input(
     )
 
     if source_ds_name is None:
-        return None, None, True
+        return None, None, None, True
 
     assert source_ds_project is not None
     assert source_ds_version is not None
@@ -331,13 +323,22 @@ def _build_source_replay_input(
         target_source_spec.compare,
     )
 
+    invalidated_chain = _build_source_diff_chain(
+        source_ds_name,
+        source_ds_project,
+        source_ds_latest_version,
+        source_ds_version,
+        target_source_spec.on,
+        target_source_spec.compare,
+    )
+
     retry_chain = None
     if target_source_spec.delta_retry:
         retry_chain = _build_source_retry_chain(
             result_dataset,
             source_ds_name,
             source_ds_project,
-            source_ds_version,
+            source_ds_latest_version,
             target_source_spec.on,
             target_source_spec.right_on,
             target_source_spec.delta_retry,
@@ -353,7 +354,7 @@ def _build_source_replay_input(
     else:
         source_replay_input = diff_chain
 
-    return source_replay_input, source_ds_latest_version, False
+    return source_replay_input, invalidated_chain, source_ds_latest_version, False
 
 
 def delta_retry_update(
@@ -418,6 +419,8 @@ def delta_retry_update(
     result_key = _get_shared_result_key(delta_sources)
 
     source_replacements: list[tuple[DatasetQuery, DataChain]] = []
+    retained_chain = latest_dataset
+    has_source_changes = False
     for source in delta_sources:
         target_source_spec = source.delta_spec
         assert target_source_spec is not None
@@ -427,6 +430,7 @@ def delta_retry_update(
 
         (
             source_replay_input,
+            invalidated_chain,
             source_ds_latest_version,
             dependency_missing,
         ) = _build_source_replay_input(
@@ -444,26 +448,30 @@ def delta_retry_update(
         )
 
         assert source_replay_input is not None
+        assert invalidated_chain is not None
+        has_source_changes |= (
+            not source_replay_input.empty or not invalidated_chain.empty
+        )
+        # Invalidate by source keys before filters or generators can drop rows.
+        for invalidated in (invalidated_chain, source_replay_input):
+            retained_chain = retained_chain.subtract(
+                invalidated,
+                on=result_key,
+                right_on=target_source_spec.on,
+            )
         source_replacements.append((source, source_replay_input))
+
+    if not has_source_changes:
+        return None, None, False
 
     replayed_delta_chain = _rewrite_query_for_delta_replay(
         source_replacements,
         dc,
     ).persist()
-    if replayed_delta_chain.empty:
-        return None, None, False
-
     normalized_dependencies = _normalize_dependencies(dependencies, updated_versions)
 
-    compared_chain = latest_dataset.diff(
-        replayed_delta_chain,
-        on=result_key,
-        added=True,
-        modified=False,
-        deleted=False,
-    )
     result_chain = _safe_union(
-        compared_chain,
+        retained_chain,
         replayed_delta_chain,
         context="merging the delta output with the existing dataset version",
     )
