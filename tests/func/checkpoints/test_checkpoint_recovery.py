@@ -1079,3 +1079,85 @@ def test_map_batch_checkpoint_recovery(
     result = run().order_by("num").to_values("result")
     assert result == [n * 10 for n in range(8)]
     assert sorted(processed) == sorted(set(range(8)) - completed)
+
+
+@pytest.mark.parametrize("kind", ["map", "batch_map", "gen", "agg"])
+@pytest.mark.parametrize("same_job", [False, True])
+@pytest.mark.parametrize("resume_failures", [0, 1])
+def test_checkpoint_resume_across_input_pages(
+    test_session_tmpfile, monkeypatch, kind, same_job, resume_failures
+):
+    session = test_session_tmpfile
+    warehouse_type = type(session.catalog.warehouse)
+    original_paginated = warehouse_type.dataset_select_paginated
+
+    def small_pages(self, query, page_size=None):
+        return original_paginated(self, query, page_size=4)
+
+    monkeypatch.setattr(warehouse_type, "dataset_select_paginated", small_pages)
+    dc.read_values(num=list(range(12)), session=session).save("paged_source")
+    processed = []
+    failing = True
+
+    def record(values):
+        if failing and len(processed) >= 4:
+            raise RuntimeError("page interrupted")
+        processed.extend(values)
+
+    def scalar(num: int) -> int:
+        record([num])
+        return num * 10
+
+    def batched(num: list[int]) -> list[int]:
+        record(num)
+        return [value * 10 for value in num]
+
+    def generate(num: int) -> Iterator[tuple[int, int]]:
+        record([num])
+        if num % 3:
+            yield num, num * 10
+            yield num, num * 10 + 1
+
+    def aggregate(num: list[int]) -> Iterator[tuple[int, int]]:
+        record(num)
+        yield num[0], num[0] * 10
+
+    def run():
+        source = (
+            dc.read_dataset("paged_source", session=session)
+            .order_by("num")
+            .settings(batch_size=1, prefetch=0)
+        )
+        result = {
+            "map": lambda: source.map(result=scalar),
+            "batch_map": lambda: source.batch_map(result=batched, batch=2),
+            "gen": lambda: source.gen(generate, output=["num", "result"]),
+            "agg": lambda: source.agg(
+                aggregate, partition_by="num", output=["num", "result"]
+            ),
+        }[kind]()
+        return result.save("paged_result")
+
+    reset_session_job_state()
+    completed = set()
+    for _ in range(resume_failures + 1):
+        if not same_job:
+            reset_session_job_state()
+        processed.clear()
+        with pytest.raises(Exception, match="page interrupted"):
+            run()
+        assert not completed.intersection(processed)
+        completed.update(processed)
+
+    if not same_job:
+        reset_session_job_state()
+    failing = False
+    processed.clear()
+    result = run().order_by("num", "result").to_list("num", "result")
+    expected = (
+        [(n, n * 10 + offset) for n in range(12) if n % 3 for offset in (0, 1)]
+        if kind == "gen"
+        else [(n, n * 10) for n in range(12)]
+    )
+    assert result == expected
+    assert sorted(processed) == sorted(set(range(12)) - completed)
