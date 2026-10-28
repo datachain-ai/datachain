@@ -2615,6 +2615,13 @@ def test_read_csv_nrows_keep_the_chain_prefetch(tmp_dir, test_session):
     assert chain._settings.prefetch == DEFAULT_PREFETCH
 
 
+def test_read_json_nrows_keep_the_chain_prefetch(tmp_dir, test_session):
+    path = tmp_dir / "test.jsonl"
+    path.write_text('{"a": 1}\n{"a": 2}\n')
+    chain = dc.read_json(path.as_uri(), format="jsonl", nrows=1, session=test_session)
+    assert chain._settings.prefetch == DEFAULT_PREFETCH
+
+
 def test_read_parquet_columns_are_part_of_the_step(abc_parquet, test_session):
     def read(column):
         return dc.read_parquet(

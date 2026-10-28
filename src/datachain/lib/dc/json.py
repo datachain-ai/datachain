@@ -81,9 +81,9 @@ def read_json(
         ),
         "params": {"file": File},
     }
-    # disable prefetch if nrows is set
-    settings = {"prefetch": 0} if nrows else {}
-
     cloudpickle.register_pickle_by_value(meta_formats)
 
-    return chain.settings(**settings).gen(**signal_dict)  # type: ignore[misc, arg-type]
+    # Prefetch downloads whole files, so skip it when only part is read. Only
+    # this step skips it: the returned chain keeps the caller's settings.
+    step = chain.settings(prefetch=0) if nrows else chain
+    return step.gen(**signal_dict)._evolve(settings=chain._settings)  # type: ignore[misc, arg-type]
