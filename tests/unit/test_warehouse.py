@@ -261,7 +261,7 @@ def test_map_tuples_are_validated(sqlite_db):
 
 
 @skip_if_not_sqlite
-def test_insert_into_after_another_connection_commits_between_batches_copies_all_rows(
+def test_insert_into_reads_all_ids_before_inserting_batches(
     warehouse_tmpfile, monkeypatch
 ):
     warehouse = warehouse_tmpfile
@@ -272,6 +272,8 @@ def test_insert_into_after_another_connection_commits_between_batches_copies_all
     warehouse.insert_rows(src, [{"value": i} for i in range(10)])
     warehouse.insert_rows_done(src)
 
+    # Another connection commits after each batch. With the id cursor still open,
+    # the next batch fails with "database is locked".
     with warehouse.clone() as other:
         warehouse.insert_into(
             dst,
