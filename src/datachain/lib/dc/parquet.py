@@ -43,6 +43,10 @@ def read_parquet(
         columns: Input columns to read, in order; all if omitted. Accepts original
             or normalized names, e.g. "ZIP Code" or "zip_code". For Parquet exported
             by DataChain, omit this parameter and use `.select(...)` after reading.
+        kwargs: Parameters to pass to `read_storage`. A directory or glob is
+            listed once and the listing is reused for 4 hours, so files added or
+            changed since are missed or fail to read. Pass `update=True` to list
+            it again.
 
     Example:
         Read a file or files matching a pattern:

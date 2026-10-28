@@ -145,7 +145,9 @@ class ArrowGenerator(Generator):
         else:
             client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
             if not file.location:
-                # Prefetch would check this before downloading the file.
+                # The File may come from a reused listing or a saved dataset, so the
+                # object may have changed since. A download into the cache checks
+                # this; a read that skips the cache checks it here.
                 client.check_unchanged(file)
             fs, fs_path = client.fs, file.get_fs_path()
             # pyarrow reads local files natively.
