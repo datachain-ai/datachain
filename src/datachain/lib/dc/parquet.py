@@ -23,7 +23,7 @@ def read_parquet(
     session: Session | None = None,
     settings: dict | None = None,
     columns: Sequence[str] | None = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> "DataChain":
     """Generate chain from Parquet files.
 
