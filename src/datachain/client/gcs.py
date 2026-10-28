@@ -31,8 +31,9 @@ class GCSClient(RangeListedClient):
     protocol = "gs"
     CREDENTIAL_KEYS = frozenset({"token"})
     LIST_PAGE_SIZE = 5000
-    # a generation's bytes never change; metadata edits (storage class, custom
-    # metadata) bump only the metageneration and the etag
+    # The version id is the object's generation, which changes only with the
+    # content. Metadata updates, like a storage class change, change the etag but
+    # keep the generation.
     PINNED_VERSION_IS_IMMUTABLE = True
     # the fields a listing asks for: GCS sends every field otherwise
     LIST_FIELDS = (
@@ -45,9 +46,9 @@ class GCSClient(RangeListedClient):
             kwargs["token"] = json.loads(os.environ["DATACHAIN_GCP_CREDENTIALS"])
         if kwargs.pop("anon", False):
             kwargs["token"] = "anon"  # noqa: S105
-        # Read gzip-encoded objects as stored, like S3: GCS sends them as stored only
-        # to requests that accept gzip, and decompressed bytes would disagree with
-        # File.size and break ranged reads.
+        # Download gzip-encoded objects as stored. GCS decompresses them unless the
+        # request accepts gzip, and aiohttp decompresses by default. Decompressed
+        # content wouldn't match File.size and breaks ranged reads.
         # https://github.com/fsspec/gcsfs/issues/233#issuecomment-4465900826
         session_kwargs = kwargs.get("session_kwargs") or {}
         headers = {

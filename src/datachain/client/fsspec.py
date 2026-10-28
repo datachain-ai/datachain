@@ -80,9 +80,9 @@ class Client(ABC):
     # client_config keys this backend treats as credentials.
     CREDENTIAL_KEYS: ClassVar[frozenset[str]] = frozenset()
     LIST_PAGE_SIZE: ClassVar[int] = 1000
-    # True when reading a file at its version always returns the same bytes, so a
-    # changed etag alone neither fails the read nor makes a new listing version.
-    # A wrong True silently serves changed bytes.
+    # True when a file's version id guarantees its content never changes, so a
+    # changed etag on that version doesn't mean the file changed. A wrong True
+    # hides real changes.
     PINNED_VERSION_IS_IMMUTABLE: ClassVar[bool] = False
 
     @classmethod
@@ -624,10 +624,8 @@ class Client(ABC):
         sync(get_loop(), self._check_unchanged, file)
 
     async def _check_unchanged(self, file: "File") -> None:
-        # A file with a version is read at that version. Where that version's
-        # content can't change, its etag still can: GCS changes it on metadata-only
-        # updates such as a storage class change. S3's "null" version is overwritten
-        # in place when versioning is off: both unversioned and suspended buckets.
+        # Trust the version id when it guarantees the content. Its etag can still
+        # change. S3's "null" version id is the exception: the next write replaces it.
         pinned = (
             file.version and file.version != "null" and self.PINNED_VERSION_IS_IMMUTABLE
         )
