@@ -39,6 +39,7 @@ def _check_etag(file: File, etag: str) -> None:
 
 class _ListedGCSFile(GCSFile):
     def __init__(self, fs, file: File, path: str, block_size: int | None):
+        path = fs._strip_protocol(path)
         self._file = file
         self._details = {"name": path, "size": file.size, "type": "file"}
         super().__init__(

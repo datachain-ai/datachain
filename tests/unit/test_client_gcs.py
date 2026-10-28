@@ -10,7 +10,7 @@ from gcsfs.core import GCSFile
 
 from datachain.asyn import get_loop
 from datachain.client import Client
-from datachain.client.gcs import GCSClient
+from datachain.client.gcs import GCSClient, _ListedGCSFile
 from datachain.client.writeconfig import WriteConfig
 from datachain.lib.file import File
 
@@ -39,7 +39,8 @@ def test_tar_member_versioned_gcs_read_ahead(
 
     monkeypatch.setattr(fs, "open", open_readahead)
     member = small_tar_member(client, version="123")
-    requests = tar_member_range_requests(GCSFile)
+    # a listed member with a version opens as _ListedGCSFile, which checks etags
+    requests = tar_member_range_requests(_ListedGCSFile)
 
     with member.open(block_size=block_size) as stream:
         assert stream.read() == data
