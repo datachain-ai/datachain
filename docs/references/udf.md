@@ -19,9 +19,10 @@ steps need to happen before or after the processing function runs.
 
 ::: datachain.lib.udf.BatchMapper
 
-`BatchMapper.process()` receives a list per parameter with
+`BatchMapper.process()` receives a list per column parameter with
 `chain.batch_map(result=mapper, batch=N)`. Each list contains
 up to N row values and `process()` returns `list[T]` or `Iterator[T]`.
+Resources from `chain.setup()` are passed unchanged.
 The output column has type T. Results must match the input count and order;
 a count mismatch raises `UdfError`. The last partial batch is processed.
 

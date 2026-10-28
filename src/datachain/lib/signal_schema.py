@@ -845,6 +845,7 @@ class SignalSchema:
         params: dict[str, DataType | Any],
         setup: dict[str, Callable] | None = None,
         is_batch: bool = False,
+        is_batch_map: bool = False,
     ) -> "SignalSchema":
         """
         Returns new schema that combines current schema and setup signals.
@@ -872,9 +873,18 @@ class SignalSchema:
                     continue
 
                 if param_origin is not list:
-                    raise SignalResolvingError(param.split("."), "is not a list")
+                    message = "is not a list"
+                    if is_batch_map:
+                        message += (
+                            "; batch_map() column parameters must be annotated "
+                            "as list[T]"
+                        )
+                    raise SignalResolvingError(param.split("."), message)
 
                 param_type = get_args(param_type)[0]
+                if param_type is Any:
+                    schema[param] = schema_type
+                    continue
 
             row_schema_type = schema_type
             schema_inner, schema_is_optional = unwrap_optional(schema_type)
@@ -890,7 +900,7 @@ class SignalSchema:
                 and issubclass(param_type, File)
                 and issubclass(schema_type, File)
             ):
-                schema[param] = row_schema_type if is_batch else schema_type
+                schema[param] = row_schema_type if is_batch_map else schema_type
                 continue
 
             raise SignalResolvingError(

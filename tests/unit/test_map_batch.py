@@ -104,3 +104,97 @@ def test_map_batch_dispatch_task_size(rows, batch, workers, expected):
     dispatcher.rows_total = rows
     dispatcher.batching = Batch(batch) if batch > 1 else NoBatching()
     assert dispatcher.input_batch_size(workers) == expected
+
+
+@pytest.mark.parametrize(
+    "method,kwargs,hint",
+    [
+        ("map", {"batch": 32}, "Use batch_map"),
+        ("map", {"batch_size": 32}, "database insert buffering"),
+        ("batch_map", {"batch_size": 32}, "Use batch_map"),
+        ("batch_map", {"parallel": 2}, "Use settings"),
+        ("batch_map", {"prefetch": 8}, "Use settings"),
+    ],
+)
+def test_map_options_have_actionable_errors(test_session, method, kwargs, hint):
+    from datachain.lib.utils import DataChainParamsError
+
+    def encode(value: list[int]) -> list[int]:
+        return value
+
+    source = dc.read_values(value=[1], session=test_session)
+    with pytest.raises(DataChainParamsError, match=hint) as exc:
+        getattr(source, method)(result=encode, **kwargs)
+    assert next(iter(kwargs)) in str(exc.value)
+
+
+def test_batch_map_multi_output_hint_is_literal(test_session):
+    from datachain.lib.utils import DataChainParamsError
+
+    def other(value: list[int]) -> list[int]:
+        return value
+
+    source = dc.read_values(value=[1], session=test_session)
+    with pytest.raises(DataChainParamsError, match=r"output=\{\.\.\.\}"):
+        source.map(
+            result=dc.llm.complete("value", include_usage=True),
+            other=other,
+        )
+
+
+def test_batch_map_can_name_output_batch_size(test_session):
+    def encode(value: list[int]) -> list[int]:
+        return value
+
+    result = (
+        dc.read_values(value=[1, 2], session=test_session)
+        .batch_map(batch_size=encode, batch=1)
+        .order_by("value")
+        .to_values("batch_size")
+    )
+    assert result == [1, 2]
+
+
+@pytest.mark.parametrize("multi", [False, True])
+def test_batch_map_validates_parameter_annotations_with_bindings(test_session, multi):
+    def bad(value: int) -> list[int]:
+        return [value]
+
+    def good(value: list[int]) -> list[int]:
+        return value
+
+    source = dc.read_values(value=[1], session=test_session)
+    with pytest.raises(SignalResolvingError, match="is not a list"):
+        if multi:
+            source.batch_map(bad=bad, good=good)
+        else:
+            source.batch_map(result=bad, params=["value"])
+
+
+@pytest.mark.parametrize("multi", [False, True])
+@pytest.mark.parametrize("operation", [dc.llm.embed, dc.llm.complete])
+def test_batch_map_rejects_scalar_llm_operations(test_session, multi, operation):
+    from datachain.llm.spec import LLMConfigError
+
+    def good(text: list[str]) -> list[str]:
+        return text
+
+    source = dc.read_values(text=["hello"], session=test_session)
+    with pytest.raises(LLMConfigError, match=r"use \.map\(\)"):
+        if multi:
+            source.batch_map(result=operation("text"), good=good)
+        else:
+            source.batch_map(result=operation("text"))
+
+
+def test_cyclic_string_annotation_does_not_hang():
+    import subprocess
+    import sys
+
+    script = (
+        "from datachain.lib.udf_signature import _resolve_annotation\n"
+        "Alias = 'Alias'\n"
+        "def fn(): pass\n"
+        "assert _resolve_annotation('Alias', fn) == 'Alias'\n"
+    )
+    subprocess.run([sys.executable, "-c", script], check=True, timeout=10)  # noqa: S603

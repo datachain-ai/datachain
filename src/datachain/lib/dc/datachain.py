@@ -487,8 +487,9 @@ class DataChain:
         Parameters:
             cache: Enable files caching to speed up subsequent accesses to the same
                 files from the same or different chains. Defaults to False.
-            prefetch: Number of files to download in full ahead of the UDF, per
-                process on each worker. Defaults to 2. Set to 0 or False for UDFs
+            prefetch: Number of rows to prefetch in full ahead of the UDF, per
+                process on each worker. In batch_map(), counts batches instead of
+                rows; start with 1 or 2. Defaults to 2. Set to 0 or False for UDFs
                 that read only part of a file, such as `get_info()`.
             parallel: Number of processes to use for processing user-defined functions
                 (UDFs) in parallel. If an integer is provided, it specifies the number
@@ -497,7 +498,9 @@ class DataChain:
             project: Project to use for the chain by default.
             min_task_size: Minimum number of rows per worker/process for parallel
                 processing by UDFs. Defaults to 1.
-            batch_size: Number of rows per insert by UDF to fine tune and balance speed
+            batch_size: Database insert buffering, not UDF call size. Use
+                batch_map(batch=N) for batched inference. Number of rows per insert
+                by UDF to fine tune and balance speed
                 and memory usage. This might be useful when processing large rows
                 or when running into memory issues. Defaults to 10,000.
             ephemeral: If True, no persistent objects are created in the metastore
@@ -1017,7 +1020,8 @@ class DataChain:
         """Apply a function to each row to create new signals. The function should
         return a new object for each row. It returns a chain itself with new signals.
 
-        Input-output relationship: 1:1
+        Input-output relationship: 1:1. A list-valued return is one row's value.
+        For vectorized inference over lists of rows, use batch_map(batch=N).
 
         Parameters:
             func: Function applied to each row.
@@ -1066,14 +1070,17 @@ class DataChain:
     ) -> "Self":
         """Apply a function to batches of rows, preserving the input columns.
 
-        Input-output relationship: N:N. Each parameter receives a list, including
-        when batch=1. Return one result per input row, in the same order.
+        Input-output relationship: N:N. Each column parameter receives a list,
+        including when batch=1. Resources supplied by chain.setup() are passed
+        unchanged, once per call. Return one result per input row, in the same order.
 
         Parameters:
             func: Function or BatchMapper applied to each batch.
             params: Input column names. Defaults to the function parameter names.
             output: Output types for one row. Inferred from a list[T] or Iterator[T]
                     return annotation when omitted; the output column has type T.
+                    Embeddings use list[list[float]] as the return annotation and
+                    list[float] as the explicit output type for one row.
             batch: Maximum rows per call. Defaults to 1000. Must be positive.
                     The last batch can contain fewer rows.
             **signal_map: Functions keyed by their output column names, as in map().
@@ -1105,6 +1112,24 @@ class DataChain:
         batch: int | None = None,
     ) -> "Self":
         target_class = BatchMapper if batch is not None else Mapper
+        method = "batch_map" if batch is not None else "map"
+        for name, fn in signal_map.items():
+            if callable(fn) or isinstance(fn, (UDFBase, BoundSpec)):
+                continue
+            if name == "batch" and batch is None:
+                hint = "Use batch_map(..., batch=N) for batched calls."
+            elif name == "batch_size":
+                hint = (
+                    "Use batch_map(..., batch=N) for UDF batching; "
+                    "settings(batch_size=N) controls database insert buffering."
+                )
+            elif name in {"parallel", "prefetch", "cache", "workers"}:
+                hint = f"Use settings({name}=...) before {method}()."
+            else:
+                hint = "Named outputs must be functions or UDF instances."
+            raise DataChainParamsError(
+                f"{method}() entry {name!r} is not callable. {hint}"
+            )
         for fn in (func, *signal_map.values()):
             if (
                 isinstance(fn, Mapper) and fn.is_input_batched != (batch is not None)
@@ -1113,9 +1138,9 @@ class DataChain:
                 and isinstance(fn, UDFBase)
                 and not isinstance(fn, BatchMapper)
             ):
-                method = "batch_map" if batch is not None else "map"
                 raise DataChainParamsError(
-                    f"{method}() requires a {target_class.__name__} instance"
+                    f"{method}() requires a {target_class.__name__} instance; "
+                    "use map() with Mapper or batch_map() with BatchMapper"
                 )
         if batch is not None:
             func = copy.copy(func) if isinstance(func, UDFBase) else func
@@ -1178,7 +1203,7 @@ class DataChain:
                 raise DataChainParamsError(
                     f"{method}() entry {k!r} produces {v.output_count} outputs; "
                     f"multi-signal .{method}() only supports one output per entry. "
-                    f"Use a single .{method}(...) with output={...} to name all "
+                    f"Use a single .{method}(...) with output={{...}} to name all "
                     "columns"
                 )
             if not isinstance(v, BoundSpec):
@@ -1200,15 +1225,19 @@ class DataChain:
             k: self._bind_udf_settings(v, BatchMapper if batch is not None else Mapper)
             for k, v in signal_map.items()
         }
-        multi_mapper = _MultiSignalMapper(bound_signal_map, bound_columns=bound_columns)
+        multi_mapper = _MultiSignalMapper(
+            bound_signal_map, bound_columns=bound_columns, batched=batch is not None
+        )
         output_dict: dict[str, Any] = {}
+        batch_params: dict[str, dict[str, Any]] = {}
         for name, fn in bound_signal_map.items():
             sig_target = fn.process if isinstance(fn, UDFBase) else fn
             anno = inspect.signature(sig_target).return_annotation
             if batch is not None:
-                _, types, _, annotated = UdfSignature._func_signature(
+                input_types, types, _, annotated = UdfSignature._func_signature(
                     self.name or "", fn, is_batch_map=True
                 )
+                batch_params[name] = input_types
                 if isinstance(types, tuple):
                     raise DataChainParamsError(
                         f"{method}() entry {name!r} must produce one output per row"
@@ -1219,6 +1248,8 @@ class DataChain:
                 if anno is not inspect.Signature.empty
                 else UdfSignature.DEFAULT_RETURN_TYPE
             )
+        if batch is not None:
+            self._validate_batch_map_params(output_dict, batch_params, bound_columns)
         return self._udf_to_obj(
             Mapper,
             multi_mapper,
@@ -1226,6 +1257,23 @@ class DataChain:
             output=output_dict,
             signal_map={},
         )
+
+    def _validate_batch_map_params(self, output, params, bound_columns):
+        input_schema = self.signals_schema | SignalSchema(output)
+        for name, input_types in params.items():
+            if name in bound_columns:
+                input_types = dict(
+                    zip(bound_columns[name], input_types.values(), strict=False)
+                )
+            input_schema.slice(
+                {
+                    param: Any if anno is inspect.Parameter.empty else anno
+                    for param, anno in input_types.items()
+                },
+                self._setup,
+                is_batch=True,
+                is_batch_map=True,
+            )
 
     def gen(
         self,
@@ -1280,6 +1328,9 @@ class DataChain:
         group of the new rows. It returns a chain itself with new signals.
 
         Input-output relationship: N:M
+
+        For fixed-size inference batches preserving input rows and columns,
+        use batch_map() instead.
 
         This method bears similarity to `gen()` and `map()`, employing a comparable set
         of parameters, yet differs in two crucial aspects:
@@ -1435,7 +1486,10 @@ class DataChain:
         DataModel.register(list(sign.output_schema.values.values()))
 
         params_schema = self.signals_schema.slice(
-            sign.params, self._setup, is_batch=is_batch
+            sign.params,
+            self._setup,
+            is_batch=is_batch,
+            is_batch_map=batch is not None,
         )
 
         return target_class._create(sign, params_schema)
@@ -3114,8 +3168,9 @@ class DataChain:
     def setup(self, **kwargs) -> "Self":
         """Setup variables to pass to UDF functions.
 
-        Use before running map/gen/agg to save an object and pass it as an
-        argument to the UDF.
+        Use before running map/batch_map/gen/agg to save an object and pass it as an
+        argument to the UDF. In batch_map(), setup resources are passed unchanged;
+        only column values are batched into lists.
 
         The value must be a callable (a `lambda: <value>` syntax can be used to quickly
         create one) that returns the object to be passed to the UDF. It is evaluated

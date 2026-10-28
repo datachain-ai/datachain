@@ -445,3 +445,218 @@ def test_batch_map_reuses_mapper_across_multi_signal_chains(test_session, batch)
     assert calls == ["setup", "teardown", "setup", "teardown"]
     assert mapper.params is None
     assert mapper.output is None
+
+
+@pytest.mark.parametrize("batch", [1, 3])
+@pytest.mark.parametrize("parallel", [False, 2])
+@pytest.mark.parametrize("multi", [False, True])
+def test_batch_map_setup_resources(test_session_tmpfile, batch, parallel, multi):
+    class Model:
+        def encode(self, values):
+            return [v * 2 for v in values]
+
+    def encode(value: list[int], model, offsets: list[int]) -> list[int]:
+        return [v + offsets[0] for v in model.encode(value)]
+
+    def increment(embedding: list[int]) -> list[int]:
+        return [v + 1 for v in embedding]
+
+    source = (
+        dc.read_values(value=list(range(7)), session=test_session_tmpfile)
+        .settings(parallel=parallel)
+        .setup(model=Model, offsets=lambda: [10])
+    )
+    functions = {"embedding": encode}
+    if multi:
+        functions["incremented"] = increment
+    result = source.batch_map(**functions, batch=batch).order_by("value")
+    assert result.to_values("embedding") == [v * 2 + 10 for v in range(7)]
+    if multi:
+        assert result.to_values("incremented") == [v * 2 + 11 for v in range(7)]
+
+
+def test_agg_keeps_nullable_model_input_behavior(test_session):
+    class Item(dc.DataModel):
+        value: int | None = None
+
+    def total(item: list[Item]) -> Iterator[int]:
+        yield sum(obj.value or 0 for obj in item)
+
+    result = (
+        dc.read_values(
+            item=[Item(value=2), None],
+            output={"item": Item | None},
+            session=test_session,
+        )
+        .agg(total=total)
+        .to_values("total")
+    )
+    assert result == [2]
+
+
+def test_batch_map_multi_signal_inputs_are_isolated(test_session):
+    def uppercase(text: list[str]) -> list[str]:
+        original = text.copy()
+        text.sort(key=len)
+        return [value.upper() for value in original]
+
+    def lengths(text: list[str]) -> list[int]:
+        return [len(value) for value in text]
+
+    result = (
+        dc.read_values(text=["ccc", "a", "bb"], session=test_session)
+        .batch_map(upper=uppercase, length=lengths, batch=3)
+        .order_by("text")
+        .to_list("text", "upper", "length")
+    )
+    assert result == [("a", "A", 1), ("bb", "BB", 2), ("ccc", "CCC", 3)]
+
+
+def test_batch_map_multi_signal_dependencies_are_isolated(test_session):
+    def identity(value: list[int]) -> list[int]:
+        return value
+
+    def scale(first: list[int]) -> list[int]:
+        original = first.copy()
+        first.sort()
+        return [value * 10 for value in original]
+
+    result = (
+        dc.read_values(value=[3, 1, 2], session=test_session)
+        .batch_map(first=identity, scaled=scale, batch=3)
+        .order_by("value")
+        .to_list("first", "scaled")
+    )
+    assert result == [(1, 10), (2, 20), (3, 30)]
+
+
+def test_batch_map_does_not_prefetch_setup_collections(
+    test_session, tmp_path, monkeypatch
+):
+    async def unexpected_prefetch(self, download_cb=None):
+        pytest.fail("a setup collection must not be walked for prefetch")
+
+    monkeypatch.setattr(dc.File, "_prefetch", unexpected_prefetch)
+
+    def identity(value: list[int], references: list[dc.File]) -> list[int]:
+        assert len(references) == 1
+        assert references[0].path == "reference.txt"
+        return value
+
+    result = (
+        dc.read_values(value=[1, 2, 3], session=test_session)
+        .setup(
+            references=lambda: [dc.File(source=tmp_path.as_uri(), path="reference.txt")]
+        )
+        .batch_map(result=identity, batch=2)
+        .to_values("result")
+    )
+    assert result == [1, 2, 3]
+
+
+@pytest.mark.parametrize("batched", [False, True])
+@pytest.mark.parametrize("process_error", [False, True])
+def test_mapper_teardown_preserves_process_error(test_session, batched, process_error):
+    base = dc.BatchMapper if batched else dc.Mapper
+
+    class Broken(base):
+        def process(self, value):
+            if process_error:
+                raise ValueError("boom-process")
+            return value
+
+        def teardown(self):
+            raise RuntimeError("boom-teardown")
+
+    source = dc.read_values(value=[1, 2], session=test_session)
+    method = source.batch_map if batched else source.map
+    with pytest.raises(
+        ValueError if process_error else RuntimeError,
+        match="boom-process" if process_error else "boom-teardown",
+    ):
+        method(result=Broken(), output=int).to_values("result")
+
+
+@pytest.mark.parametrize("output", [list[float], {"embedding": list[float]}])
+def test_batch_map_explicit_output_overrides_array_annotation(test_session, output):
+    import numpy as np
+
+    def encode(value: list[int]) -> np.ndarray:
+        return np.array([[v, 0.5] for v in value])
+
+    result = (
+        dc.read_values(value=[1, 2, 3], session=test_session)
+        .batch_map(embedding=encode, batch=2, output=output)
+        .order_by("value")
+        .to_values("embedding")
+    )
+    assert result == [[1.0, 0.5], [2.0, 0.5], [3.0, 0.5]]
+
+
+@pytest.mark.parametrize("multi", [False, True])
+@pytest.mark.parametrize(
+    "invalid", ["abc", b"abc", {"a": 1, "b": 2, "c": 3}, {1, 2, 3}, None, 42]
+)
+def test_batch_map_rejects_non_batch_returns(test_session, multi, invalid):
+    def bad(value):
+        return invalid
+
+    def good(value: list[str]) -> list[str]:
+        return value
+
+    source = dc.read_values(value=["x", "y", "z"], session=test_session)
+    with pytest.raises(UdfError, match=r"batch_map\(\).*row results"):
+        if multi:
+            source.batch_map(broken=bad, good=good, batch=3).to_list()
+        else:
+            source.batch_map(result=bad, batch=3).to_list()
+
+
+@pytest.mark.parametrize("style", ["plain", "partial", "callable"])
+def test_batch_map_resolves_nested_annotations(
+    test_session, tmp_path, monkeypatch, style
+):
+    from functools import partial
+
+    module_name = f"typed_batch_{style}"
+    (tmp_path / f"{module_name}.py").write_text(
+        "from __future__ import annotations\n"
+        "import datachain as dc\n"
+        "class Result(dc.DataModel):\n"
+        "    value: int\n"
+        "def encode(offset: int, value: list['int']) -> list['Result']:\n"
+        "    return [Result(value=v + offset) for v in value]\n"
+        "def plain(value: list['int']) -> list['Result']:\n"
+        "    return encode(0, value)\n"
+        "class Encoder:\n"
+        "    def __call__(self, value: list['int']) -> list['Result']:\n"
+        "        return encode(0, value)\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    module = importlib.import_module(module_name)
+    functions = {
+        "plain": module.plain,
+        "partial": partial(module.encode, 0),
+        "callable": module.Encoder(),
+    }
+    result = (
+        dc.read_values(value=[1, 2, 3], session=test_session)
+        .batch_map(result=functions[style], params=["value"], batch=2)
+        .save(f"typed_{style}")
+        .order_by("value")
+        .to_values("result")
+    )
+    assert result == [module.Result(value=v) for v in [1, 2, 3]]
+
+
+def test_batch_map_accepts_any_element_annotation(test_session):
+    from typing import Any
+
+    def encode(value: list[Any]) -> list[int]:
+        return [v * 2 for v in value]
+
+    assert (
+        dc.read_values(value=[1, 2, 3], session=test_session)
+        .batch_map(result=encode, batch=2)
+        .to_values("result")
+    ) == [2, 4, 6]

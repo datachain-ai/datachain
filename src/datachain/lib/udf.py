@@ -3,6 +3,7 @@ import inspect
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from contextlib import closing, nullcontext
 from dataclasses import dataclass
 from functools import partial
@@ -468,12 +469,12 @@ def noop(*args, **kwargs):
     pass
 
 
-def _row_files(row: Iterable, batched: bool) -> Iterator[File]:
-    """Files of a prepared row; a batched map's row holds a list per parameter."""
-    for obj in row:
+def _row_files(row: Iterable, batch_columns: set[int] | None) -> Iterator[File]:
+    """Files in scalar arguments and batched data columns."""
+    for i, obj in enumerate(row):
         if isinstance(obj, File):
             yield obj
-        elif batched and isinstance(obj, list):
+        elif batch_columns is not None and i in batch_columns and isinstance(obj, list):
             yield from (item for item in obj if isinstance(item, File))
 
 
@@ -481,9 +482,9 @@ async def _prefetch_input(
     row: T,
     download_cb: Callback | None = None,
     after_prefetch: "Callable[[], None]" = noop,
-    batched: bool = False,
+    batch_columns: set[int] | None = None,
 ) -> T:
-    for obj in _row_files(row, batched):  # type: ignore[arg-type]
+    for obj in _row_files(row, batch_columns):  # type: ignore[arg-type]
         if not obj.path:
             continue
         try:
@@ -494,8 +495,8 @@ async def _prefetch_input(
     return row
 
 
-def _remove_prefetched(row: T, batched: bool = False) -> None:
-    for obj in _row_files(row, batched):  # type: ignore[arg-type]
+def _remove_prefetched(row: T, batch_columns: set[int] | None = None) -> None:
+    for obj in _row_files(row, batch_columns):  # type: ignore[arg-type]
         catalog = obj._catalog
         assert catalog is not None
         try:
@@ -510,7 +511,7 @@ def _prefetch_inputs(
     download_cb: Callback | None = None,
     after_prefetch: Callable[[], None] | None = None,
     remove_prefetched: bool = False,
-    batched: bool = False,
+    batch_columns: set[int] | None = None,
 ) -> "abc.Generator[T, None, None]":
     if not prefetch:
         yield from prepared_inputs
@@ -526,7 +527,7 @@ def _prefetch_inputs(
         _prefetch_input,
         download_cb=download_cb,
         after_prefetch=after_prefetch,
-        batched=batched,
+        batch_columns=batch_columns,
     )
     mapper = AsyncMapper(f, prepared_inputs, workers=prefetch)
     with closing(mapper.iterate()) as row_iter:
@@ -535,7 +536,7 @@ def _prefetch_inputs(
                 yield row  # type: ignore[misc]
             finally:
                 if remove_prefetched:
-                    _remove_prefetched(row, batched)
+                    _remove_prefetched(row, batch_columns)
 
 
 def _get_cache(
@@ -555,8 +556,24 @@ def _get_cache(
     return nullcontext(cache)
 
 
+def _batch_results(result: Any, label: str) -> list[Any]:
+    if isinstance(
+        result, (str, bytes, bytearray, Mapping, AbstractSet)
+    ) or not isinstance(result, Iterable):
+        raise UdfError(
+            f"{label} must return a list or iterator of row results, "
+            f"got {type(result).__name__}. output= describes one row"
+        )
+    with safe_closing(result):
+        return list(result)
+
+
 class Mapper(UDFBase):
-    """Inherit from this class to pass to `DataChain.map()`."""
+    """Inherit from this class for scalar `DataChain.map()` calls.
+
+    For lists of rows per call, use BatchMapper with DataChain.batch_map().
+    Returning a list from a scalar Mapper creates one list-valued row output.
+    """
 
     prefetch: int = 2
 
@@ -587,7 +604,14 @@ class Mapper(UDFBase):
                             )
                             for r in row
                         ]
-                        yield [list(col) for col in zip(*rows, strict=True)]
+                        columns: list[Any] = [
+                            list(col) for col in zip(*rows, strict=True)
+                        ]
+                        assert self.params is not None
+                        for i, name in enumerate(self.params.values, 1):
+                            if name in self.params.setup_func:
+                                columns[i] = columns[i][0]
+                        yield columns
                     else:
                         yield self._prepare_row(
                             row,
@@ -604,7 +628,15 @@ class Mapper(UDFBase):
             self.prefetch,
             download_cb=download_cb,
             remove_prefetched=bool(self.prefetch) and not cache,
-            batched=self.is_input_batched,
+            batch_columns=(
+                {
+                    i
+                    for i, name in enumerate(self.params.values, 1)
+                    if name not in self.params.setup_func
+                }
+                if self.is_input_batched and self.params is not None
+                else None
+            ),
         )
 
         try:
@@ -613,11 +645,13 @@ class Mapper(UDFBase):
                     self._batch_length = len(id_) if self.is_input_batched else 1
                     result_objs = self.process(*udf_args)
                     if self.is_input_batched:
-                        with safe_closing(result_objs):
-                            results = list(result_objs)
+                        results = _batch_results(
+                            result_objs, f"batch_map() function {self.verbose_name!r}"
+                        )
                         if len(results) != len(id_):
                             raise UdfError(
-                                "batched map must return one output per input row: "
+                                f"batch_map() function {self.verbose_name!r} "
+                                "must return one output per input row: "
                                 f"got {len(results)} outputs for {len(id_)} inputs"
                             )
                         output = []
@@ -642,14 +676,23 @@ class Mapper(UDFBase):
                         ]
                         processed_cb.relative_update(1)
                     yield output
-        finally:
+        except BaseException:
+            try:
+                self.teardown()
+            except Exception:
+                logger.exception(
+                    "Failed to tear down UDF %r after an error", self.verbose_name
+                )
+            raise
+        else:
             self.teardown()
 
 
 class BatchMapper(Mapper):
     """Inherit from this class to pass to `DataChain.batch_map()`.
 
-    Each process() parameter receives a list, even with batch=1. Return a list or
+    Each column parameter receives a list, even with batch=1. Resources from
+    chain.setup() are passed unchanged. Return a list or
     iterator with one result per input row, in the same order. setup() and
     teardown() run once per worker.
     """
@@ -686,8 +729,11 @@ class _MultiSignalMapper(Mapper):
         signal_map: "dict[str, Callable | UDFBase]",
         *,
         bound_columns: dict[str, list[str]] | None = None,
+        batched: bool = False,
     ):
         super().__init__()
+        self.is_input_batched = batched
+        self._method_name = "batch_map" if batched else "map"
         self._signal_map = signal_map
         self._bound_columns = bound_columns or {}
         output_names = set(signal_map)
@@ -702,7 +748,8 @@ class _MultiSignalMapper(Mapper):
                 params = self._resolve_sig_params(name, fn)
             if name in params:
                 raise DataChainParamsError(
-                    f"map() entry {name!r} declares a parameter named {name!r} "
+                    f"{self._method_name}() entry {name!r} declares a parameter "
+                    f"named {name!r} "
                     "- an entry can't read a column with the same name as its "
                     "own output. Rename the output or the parameter."
                 )
@@ -713,7 +760,7 @@ class _MultiSignalMapper(Mapper):
             self._exec_order = list(TopologicalSorter(deps).static_order())
         except CycleError as e:
             raise ValueError(
-                f"Cyclic dependency between map functions: {e.args[1]}"
+                f"Cyclic dependency between {self._method_name} functions: {e.args[1]}"
             ) from e
 
         # combined_params = union of params NOT resolved from other outputs,
@@ -747,7 +794,8 @@ class _MultiSignalMapper(Mapper):
         if isinstance(fn, UDFBase):
             if not isinstance(fn, Mapper):
                 raise DataChainParamsError(
-                    f"map() entry {name!r} is a {type(fn).__name__}; only "
+                    f"{self._method_name}() entry {name!r} is a "
+                    f"{type(fn).__name__}; only "
                     "Mapper subclasses (or plain callables) are supported "
                     "in multi-signal .map() - use .gen() / .agg() for "
                     "other UDF types"
@@ -767,8 +815,8 @@ class _MultiSignalMapper(Mapper):
         ]
         if bad:
             raise DataChainParamsError(
-                f"map() function {name!r} has parameters that can't "
-                f"be passed by name ({bad}); multi-signal .map() calls "
+                f"{self._method_name}() function {name!r} has parameters that can't "
+                f"be passed by name ({bad}); multi-signal .{self._method_name}() calls "
                 "each function with keyword arguments"
             )
         return [p.name for p in sig_params]
@@ -797,14 +845,21 @@ class _MultiSignalMapper(Mapper):
         for name in self._exec_order:
             params = self._per_func_params[name]
             kw = {p: (results[p] if p in results else row_by_name[p]) for p in params}
+            if self.is_input_batched:
+                assert self.params is not None
+                kw = {
+                    p: list(value)
+                    if p in results or p not in self.params.setup_func
+                    else value
+                    for p, value in kw.items()
+                }
             result = self._callers[name](**kw)
             if self.is_input_batched:
-                with safe_closing(result):
-                    result = list(result)
+                result = _batch_results(result, f"batch_map() entry {name!r}")
                 expected = self._batch_length
                 if len(result) != expected:
                     raise UdfError(
-                        f"batched map entry {name!r} returned {len(result)} outputs "
+                        f"batch_map() entry {name!r} returned {len(result)} outputs "
                         f"for {expected} inputs"
                     )
             results[name] = result

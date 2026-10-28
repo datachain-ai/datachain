@@ -6,7 +6,7 @@ title: Python Operations
 
 Python operations run your Python functions on each record in a chain. Use them when you need file content, ML models, or LLM calls. For everything else, use [data operations](operations.md).
 
-## Three Types
+## Python operation types
 
 ### Mapper: map()
 
@@ -25,6 +25,28 @@ def analyze(file: dc.File, client) -> Analysis:
     resp = client.messages.create(model="claude-sonnet-4-20250514", ...)
     return Analysis.model_validate_json(resp.content[0].text)
 ```
+
+### Batch mapper: batch_map()
+
+Runs a function on lists of column values, keeping one result per input row and
+preserving existing columns. Use it for vectorized inference. `batch=1` still
+passes lists; the default batch size is 1000.
+
+```python
+def double(value: list[int]) -> list[int]:
+    return [v * 2 for v in value]
+
+
+chain = dc.read_values(value=[1, 2, 3]).batch_map(doubled=double, batch=32)
+```
+
+A scalar embedding function passed to `map()` returns `list[float]`; a batched
+embedding function passed to `batch_map()` returns `list[list[float]]`. Both
+produce a `list[float]` column. Explicit `output=` always describes one row.
+Resources supplied via `.setup(model=load_model)` remain ordinary objects;
+only column arguments become lists. Use `dc.BatchMapper` for a batched class.
+See [batched model inference](processing.md#batched-model-inference) for a complete
+example and prefetch, parallel, delta and checkpoint behavior.
 
 ### Generator: gen()
 
@@ -151,13 +173,13 @@ chain = (
 
 ## Class-Based Lifecycle
 
-When `.setup()` is not enough (you need `teardown()`, shared mutable state across records, or multi-resource initialization), use the `Mapper`, `Generator`, and `Aggregator` base classes:
+When `.setup()` is not enough (you need `teardown()`, shared mutable state across records, or multi-resource initialization), use the `dc.Mapper`, `dc.BatchMapper`, `dc.Generator`, and `dc.Aggregator` base classes:
 
 ```python
-from datachain.lib.udf import Mapper  # internal module name
+import datachain as dc
 
 
-class ImageEncoder(Mapper):
+class ImageEncoder(dc.Mapper):
     def setup(self):
         self.model = load_model("ViT-B-32")
 

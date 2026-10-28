@@ -1,7 +1,9 @@
 import inspect
 from collections.abc import Callable, Generator, Iterator, Sequence
 from dataclasses import dataclass
-from typing import Any, get_args, get_origin
+from functools import partial
+from types import SimpleNamespace
+from typing import Any, ForwardRef, get_args, get_origin, get_type_hints
 
 from datachain.lib.data_model import DataType, DataTypeNames, is_chain_type
 from datachain.lib.signal_schema import SignalSchema
@@ -10,15 +12,32 @@ from datachain.lib.utils import AbstractUDF, DataChainParamsError, callable_name
 
 
 def _resolve_annotation(anno: Any, func: Callable) -> Any:
-    """Evaluates string annotations (postponed or quoted) in the function's module;
-    a name that does not resolve leaves the annotation as it is."""
-    namespace = getattr(inspect.unwrap(func), "__globals__", {})
-    while isinstance(anno, str):
-        try:
-            anno = eval(anno, namespace)  # noqa: S307
-        except Exception:  # noqa: BLE001
-            return anno
-    return anno
+    """Resolve one annotation using the callable's module namespace."""
+    target = inspect.unwrap(func)
+    while isinstance(target, partial):
+        target = inspect.unwrap(target.func)
+    if not hasattr(target, "__globals__"):
+        target = target.__call__
+    namespace = getattr(target, "__globals__", {})
+    try:
+        resolved = get_type_hints(
+            SimpleNamespace(__annotations__={"value": anno}), globalns=namespace
+        )["value"]
+        return anno if isinstance(resolved, ForwardRef) else resolved
+    except Exception:  # noqa: BLE001
+        return anno
+
+
+def _column_params(
+    params: str | Sequence[str], annotations: dict[str, Any], batched: bool
+) -> dict[str, Any]:
+    columns = [params] if isinstance(params, str) else params
+    resolved = dict.fromkeys(columns, Any)
+    if batched:
+        for column, anno in zip(columns, annotations.values(), strict=False):
+            if anno is not inspect.Parameter.empty:
+                resolved[column] = anno
+    return resolved
 
 
 class UdfSignatureError(DataChainParamsError):
@@ -78,7 +97,14 @@ class UdfSignature:  # noqa: PLW1641
             )
 
         func_params_map_sign, func_outs_sign, is_iterator, has_return_annotation = (
-            cls._func_signature(chain, udf_func, is_batch_map=is_batch_map)
+            cls._func_signature(
+                chain,
+                udf_func,
+                is_batch_map=is_batch_map,
+                ignore_return_annotation=is_batch_map
+                and bool(output)
+                and not isinstance(output, (str, Sequence)),
+            )
         )
 
         reject_var_params(
@@ -104,9 +130,7 @@ class UdfSignature:  # noqa: PLW1641
 
         udf_params: dict[str, DataType | Any] = {}
         if params is not None:
-            udf_params = (
-                {params: Any} if isinstance(params, str) else dict.fromkeys(params, Any)
-            )
+            udf_params = _column_params(params, func_params_map_sign, is_batch_map)
         elif func_params_map_sign:
             udf_params = {
                 param: (
@@ -200,7 +224,10 @@ class UdfSignature:  # noqa: PLW1641
 
     @staticmethod
     def _func_signature(
-        chain: str, udf_func: Callable | UDFBase, is_batch_map: bool = False
+        chain: str,
+        udf_func: Callable | UDFBase,
+        is_batch_map: bool = False,
+        ignore_return_annotation: bool = False,
     ) -> tuple[dict[str, type], Sequence[type], bool, bool]:
         if isinstance(udf_func, AbstractUDF):
             func = udf_func.process  # type: ignore[unreachable]
@@ -214,7 +241,11 @@ class UdfSignature:  # noqa: PLW1641
         }
         is_iterator = False
 
-        anno = _resolve_annotation(sign.return_annotation, func)
+        anno = (
+            inspect.Signature.empty
+            if ignore_return_annotation
+            else _resolve_annotation(sign.return_annotation, func)
+        )
         if is_batch_map and isinstance(anno, str):
             anno = inspect.Signature.empty  # unresolvable: rely on output=
         has_return_annotation = anno != inspect.Signature.empty
@@ -230,7 +261,12 @@ class UdfSignature:  # noqa: PLW1641
                 inspect.isclass(orig) and issubclass(orig, Iterator)
             ):
                 raise UdfSignatureError(
-                    chain, "batched map must return list[T] or Iterator[T]"
+                    chain,
+                    f"batch_map() function {callable_name(func)!r} must return "
+                    f"list[T] or Iterator[T], where T describes one row; got {anno}. "
+                    "For embeddings, return list[list[float]]; "
+                    "use map() for scalar functions or output= "
+                    "for an explicit row type",
                 )
             if (
                 not is_batch_list

@@ -12,7 +12,7 @@ These features can be used independently or combined to create powerful data pro
 ## Batched model inference
 
 Use `batch_map(batch=N)` to run inference on up to N rows at once. Each input
-parameter receives a list, and the function returns one result per row, in the
+column parameter receives a list, and the function returns one result per row, in the
 same order. The final batch can contain fewer than N rows.
 
 ```python
@@ -53,14 +53,38 @@ def double(value: list[int]) -> list[int]:
 chain = dc.read_values(value=[1, 2, 3]).batch_map(doubled=double, batch=32)
 ```
 
+Resources supplied through `chain.setup(model=load_model)` remain ordinary
+objects. Only column values become lists. For example:
+
+```python
+def encode(file: list[dc.ImageFile], model) -> list[list[float]]:
+    return model.encode([f.read() for f in file]).tolist()
+
+
+chain = (
+    dc.read_storage("./images", type="image")
+    .setup(model=load_model)
+    .batch_map(embedding=encode, batch=32)
+    .save("image_embeddings")
+)
+```
+
+Choose the operation by the function's input and output shape:
+
+| Operation | Column argument | Return annotation | Embedding column |
+|---|---|---|---|
+| `map()` | `dc.ImageFile` | `list[float]` | `list[float]` |
+| `batch_map(batch=N)` | `list[dc.ImageFile]` | `list[list[float]]` | `list[float]` |
+
 A return annotation of `list[T]` or `Iterator[T]` creates an output column of
 type `T`. For embeddings, `list[list[float]]` therefore creates a `list[float]`
 column. An explicit `output=` describes the result for **one row**. Returning
 a different number of results raises an error.
 
 Each worker initializes its own mapper and processes batches independently.
-File inputs are prefetched for the batch; `prefetch` counts batches in this
-mode. `setup()` and `teardown()` run once per worker. Checkpoint recovery keeps
+File inputs are prefetched for the batch; `prefetch` counts batches per worker
+in this mode. Start with `prefetch=1` or `2`; increase it only when the batch
+size and file sizes allow it. `setup()` and `teardown()` run once per worker. Checkpoint recovery keeps
 completed batches and retries incomplete batches. Delta processing batches only
 the rows selected for processing, so a UDF should compute each row's result
 independently of the other rows in its batch.
