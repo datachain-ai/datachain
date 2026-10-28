@@ -47,9 +47,9 @@ logging.getLogger("gcsfs").setLevel(logging.CRITICAL)
 def calc_fingerprint(session: "Session", dataset: "DatasetRecord", version: str) -> int:
     """Return an order-independent fingerprint of a listing version.
 
-    Each file adds its path, its version id (or etag if it has none) and whether
-    it is the latest version. The etag is added too unless the client's version
-    ids guarantee the content.
+    Each file adds its path, its version id (or etag if it has none), its size and
+    whether it is the latest version. The etag is added too, unless the storage
+    never replaces the bytes at a version id.
     """
     # Inline imports: lib.listing sits below lib.dc / query.dataset / func in the
     # import graph (catalog.catalog imports this module during init), so hoisting
@@ -79,7 +79,11 @@ def calc_fingerprint(session: "Session", dataset: "DatasetRecord", version: str)
     client_cls = Client.get_implementation(listing_uri_from_name(dataset.name))
     etag = () if client_cls.PINNED_VERSION_IS_IMMUTABLE else (C("file.etag"),)
     return chain.group_by(  # type: ignore[return-value]
-        fp=xor_agg(string_hash(C("file.path"), identifier, C("file.is_latest"), *etag)),
+        fp=xor_agg(
+            string_hash(
+                C("file.path"), identifier, C("file.size"), C("file.is_latest"), *etag
+            )
+        ),
     ).to_values("fp")[0]
 
 

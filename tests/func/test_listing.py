@@ -282,6 +282,25 @@ def test_calc_fingerprint_changes_when_version_stops_being_latest(test_session):
 
 
 @pytest.mark.parametrize(
+    "storage",
+    ["s3://bucket", "gs://bucket", "az://container"],
+    ids=["s3", "gs", "azure"],
+)
+def test_calc_fingerprint_changes_when_size_changes(test_session, storage):
+    fp1 = _fingerprint(
+        test_session,
+        f"{storage}/a/",
+        File(path="x.jpg", version="v1", etag="e1", size=10),
+    )
+    fp2 = _fingerprint(
+        test_session,
+        f"{storage}/b/",
+        File(path="x.jpg", version="v1", etag="e1", size=20),
+    )
+    assert fp1 != fp2
+
+
+@pytest.mark.parametrize(
     "storage,version,reused",
     [
         ("s3://bucket", "v1", True),
