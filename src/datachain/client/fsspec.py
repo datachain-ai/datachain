@@ -80,9 +80,8 @@ class Client(ABC):
     # client_config keys this backend treats as credentials.
     CREDENTIAL_KEYS: ClassVar[frozenset[str]] = frozenset()
     LIST_PAGE_SIZE: ClassVar[int] = 1000
-    # True when a file's version id guarantees its content never changes, so a
-    # changed etag on that version doesn't mean the file changed. A wrong True
-    # hides real changes.
+    # True when the bytes at a version id are never replaced, only appended to.
+    # Then a changed size means the file changed, and a changed etag alone doesn't.
     PINNED_VERSION_IS_IMMUTABLE: ClassVar[bool] = False
 
     @classmethod
@@ -624,21 +623,32 @@ class Client(ABC):
         sync(get_loop(), self._check_unchanged, file)
 
     async def _check_unchanged(self, file: "File") -> None:
-        # Trust the version id when it guarantees the content. Its etag can still
-        # change. S3's "null" version id is the exception: the next write replaces it.
+        # Metadata updates can change a pinned file's etag without changing its
+        # bytes, so compare its size instead, which still catches appends. A size of
+        # 0 or less is skipped, because a File built by hand may not have one.
         pinned = (
             file.version and file.version != "null" and self.PINNED_VERSION_IS_IMMUTABLE
         )
-        if file.etag and not pinned:
+
+        change = ""
+        if pinned and file.size > 0:
+            size = await self.get_size(file)
+            if size != file.size:
+                change = f"size was {file.size}, now {size}"
+        elif not pinned and file.etag:
             etag = await self.get_current_etag(file)
-            if file.etag != etag:
-                raise FileNotFoundError(
-                    f"{file.source}/{file.path} changed on the source since the "
-                    f"catalog was created (etag was {self.format_etag(file.etag)}, now "
-                    f"{self.format_etag(etag)}). "
-                    "Re-run the original dc.read_storage(...) call with "
-                    "update=True to refresh the catalog."
+            if etag != file.etag:
+                change = (
+                    f"etag was {self.format_etag(file.etag)}, "
+                    f"now {self.format_etag(etag)}"
                 )
+
+        if change:
+            raise FileNotFoundError(
+                f"{file.source}/{file.path} changed on the source since the catalog "
+                f"was created ({change}). Re-run the original dc.read_storage(...) "
+                "call with update=True to refresh the catalog."
+            )
 
 
 class RangeListedClient(Client):
