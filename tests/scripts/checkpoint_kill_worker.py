@@ -10,6 +10,8 @@ import datachain as dc
 root = Path(sys.argv[1])
 kind = sys.argv[2]
 parallel = int(sys.argv[3])
+# inputs from this number on never finish: the run can only end by being killed
+block_from = int(sys.argv[4]) if len(sys.argv) > 4 else None
 delay = 0.32 if parallel else 0.08
 
 
@@ -18,6 +20,8 @@ def record(event: str, num: int) -> None:
         stream.write(json.dumps([event, num, time.monotonic()]) + "\n")
         stream.flush()
         os.fsync(stream.fileno())
+    if event == "start" and block_from is not None and num >= block_from:
+        time.sleep(3600)
 
 
 def mapper(file: dc.File) -> int:

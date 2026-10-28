@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.utils import skip_if_not_sqlite
+
 WORKER = Path(__file__).parents[2] / "scripts" / "checkpoint_kill_worker.py"
 
 
@@ -50,6 +52,25 @@ def read_partial_rows(root):
     return partial_rows, input_nums
 
 
+def incomplete_inputs(partial_rows, input_nums):
+    """Generator inputs with persisted output but no final row."""
+    started = {input_nums[row["sys__input_id"]] for row in partial_rows}
+    finished = {
+        input_nums[row["sys__input_id"]]
+        for row in partial_rows
+        if not row["sys__partial"]
+    }
+    return started - finished
+
+
+def has_incomplete_input(root):
+    try:
+        return bool(incomplete_inputs(*read_partial_rows(root)))
+    except (sqlite3.OperationalError, KeyError):  # the worker is mid-write
+        return False
+
+
+@skip_if_not_sqlite  # reads the partial outputs from the SQLite file
 @pytest.mark.skipif(
     sys.platform == "win32", reason="Requires SIGKILL and process groups"
 )
@@ -67,7 +88,7 @@ def test_checkpoint_resume_after_sigkill(tmp_path, monkeypatch, parallel, kind):
     cmd = [sys.executable, str(WORKER), str(tmp_path), kind, str(parallel)]
     with (tmp_path / "first.log").open("w") as log:
         proc = subprocess.Popen(  # noqa: S603
-            cmd, stdout=log, stderr=log, start_new_session=True
+            [*cmd, "90"], stdout=log, stderr=log, start_new_session=True
         )
         try:
             deadline = time.monotonic() + 90
@@ -75,8 +96,9 @@ def test_checkpoint_resume_after_sigkill(tmp_path, monkeypatch, parallel, kind):
                 assert proc.poll() is None, (tmp_path / "first.log").read_text()
                 assert time.monotonic() < deadline, "UDF did not reach kill point"
                 time.sleep(0.02)
-            if kind == "gen-large":
-                time.sleep(2.5)
+            while kind == "gen-large" and not has_incomplete_input(tmp_path):
+                assert time.monotonic() < deadline, "no partially saved input"
+                time.sleep(0.1)
             killed_at = time.monotonic()
         finally:
             with suppress(ProcessLookupError):
@@ -99,9 +121,7 @@ def test_checkpoint_resume_after_sigkill(tmp_path, monkeypatch, parallel, kind):
             for row in partial_rows
             if not row["sys__partial"]
         }
-        incomplete = {
-            input_nums[row["sys__input_id"]] for row in partial_rows
-        } - persisted
+        incomplete = incomplete_inputs(partial_rows, input_nums)
         assert any(row["sys__empty"] for row in partial_rows)
         if kind == "gen-large":
             assert incomplete
