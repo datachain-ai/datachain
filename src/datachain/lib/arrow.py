@@ -49,6 +49,11 @@ def fix_pyarrow_format(format, parse_options=None):
     return format
 
 
+def is_parquet(format) -> bool:
+    """Whether a pyarrow dataset `format` reads Parquet."""
+    return format == "parquet" or isinstance(format, ParquetFileFormat)
+
+
 # CSV options that decide where a file's rows and columns start.
 _CSV_READ_OPTIONS = (
     "column_names",
@@ -151,8 +156,7 @@ class ArrowGenerator(Generator):
             # this; a read that skips the cache checks it here.
             client.check_unchanged(file)
             fs, fs_path = client.fs, file.get_fs_path()
-            format = self.kwargs.get("format")
-            parquet = format == "parquet" or isinstance(format, ParquetFileFormat)
+            parquet = is_parquet(self.kwargs.get("format"))
             if parquet and not isinstance(fs, LocalFileSystem):
                 fs = PyFileSystem(_PartialReadHandler(client, file))
 

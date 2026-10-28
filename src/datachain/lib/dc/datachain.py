@@ -2551,12 +2551,13 @@ class DataChain:
             ```
         """
         import pyarrow as pa
-        from pyarrow.dataset import CsvFileFormat, JsonFileFormat, ParquetFileFormat
+        from pyarrow.dataset import CsvFileFormat, JsonFileFormat
 
         from datachain.lib.arrow import (
             ArrowGenerator,
             file_schemas,
             fix_pyarrow_format,
+            is_parquet,
             merge_schemas,
             read_columns,
             schema_to_output,
@@ -2619,8 +2620,7 @@ class DataChain:
 
         # Prefetch downloads whole files, so skip it when only part is read. Only
         # this step skips it: the returned chain keeps the caller's settings.
-        parquet = format == "parquet" or isinstance(format, ParquetFileFormat)
-        partial = nrows or (columns is not None and parquet)
+        partial = nrows or (columns is not None and is_parquet(format))
         chain = self.settings(prefetch=0) if partial else self
         return chain.gen(  # type: ignore[arg-type]
             ArrowGenerator(
