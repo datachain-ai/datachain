@@ -228,6 +228,32 @@ def test_calc_fingerprint_order_independent(test_session):
     assert fp1 == fp2
 
 
+def _save_listing(session, uri: str, file: File):
+    catalog = session.catalog
+    name, _, _ = parse_listing_uri(uri)
+    dc.read_values(file=[file], session=session).settings(
+        namespace=catalog.metastore.system_namespace_name,
+        project=catalog.metastore.listing_project_name,
+    ).save(name, listing=True)
+    return catalog.get_dataset(name, versions=None)
+
+
+def _fingerprint(session, uri: str, file: File) -> int:
+    ds = _save_listing(session, uri, file)
+    return calc_fingerprint(session, ds, ds.latest_version)
+
+
+def _etags(session, name: str, version: str) -> list:
+    metastore = session.catalog.metastore
+    return dc.read_dataset(
+        name,
+        namespace=metastore.system_namespace_name,
+        project=metastore.listing_project_name,
+        version=version,
+        session=session,
+    ).to_values("file.etag")
+
+
 @pytest.mark.parametrize(
     "storage,etag_counts",
     [("s3://bucket", False), ("gs://bucket", False), ("az://container", True)],
@@ -375,29 +401,3 @@ def test_listing_insert_batch_size(test_session, tmp_dir, mocker, settings):
     dc.read_storage(tmp_dir.as_uri(), session=test_session, settings=settings).exec()
 
     assert spy.call_args.kwargs["batch_size"] == LISTING_BATCH_SIZE
-
-
-def _fingerprint(session, uri: str, file: File) -> int:
-    ds = _save_listing(session, uri, file)
-    return calc_fingerprint(session, ds, ds.latest_version)
-
-
-def _save_listing(session, uri: str, file: File):
-    catalog = session.catalog
-    name, _, _ = parse_listing_uri(uri)
-    dc.read_values(file=[file], session=session).settings(
-        namespace=catalog.metastore.system_namespace_name,
-        project=catalog.metastore.listing_project_name,
-    ).save(name, listing=True)
-    return catalog.get_dataset(name, versions=None)
-
-
-def _etags(session, name: str, version: str) -> list:
-    metastore = session.catalog.metastore
-    return dc.read_dataset(
-        name,
-        namespace=metastore.system_namespace_name,
-        project=metastore.listing_project_name,
-        version=version,
-        session=session,
-    ).to_values("file.etag")
