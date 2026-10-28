@@ -2524,6 +2524,8 @@ class DataChain:
                 A list of names infers types. Fields map by position, with exactly one
                 field per column read. Use `columns` to select inputs by name.
                 Omit to infer names and types or restore a saved DataChain schema.
+                On Parquet exported by DataChain, each field takes one picked
+                signal, or one top-level signal without `columns`.
             column: Generated column name.
             model_name: Generated model name.
             source: Whether to include info about the source file.
@@ -2563,8 +2565,10 @@ class DataChain:
         )
 
         parse_options = kwargs.pop("parse_options", None)
-        if format := kwargs.get("format"):
-            kwargs["format"] = fix_pyarrow_format(format, parse_options)
+        # pyarrow reads Parquet when no format is given.
+        format = kwargs["format"] = fix_pyarrow_format(
+            kwargs.get("format") or "parquet", parse_options
+        )
 
         if (
             nrows
@@ -2616,9 +2620,11 @@ class DataChain:
         if source:
             output = {"source": ArrowRow} | output  # type: ignore[assignment,operator]
 
-        # disable prefetch if nrows is set
-        settings = {"prefetch": 0} if nrows else {}
-        return self.settings(**settings).gen(  # type: ignore[arg-type]
+        # Prefetch downloads whole files, so skip it when only part is read. Only
+        # this step skips it: the returned chain keeps the caller's settings.
+        partial = nrows or (columns is not None and format == "parquet")
+        chain = self.settings(prefetch=0) if partial else self
+        return chain.gen(  # type: ignore[arg-type]
             ArrowGenerator(
                 schema,
                 model,
@@ -2630,7 +2636,7 @@ class DataChain:
                 **kwargs,
             ),
             output=output,
-        )
+        )._evolve(settings=self._settings)
 
     def to_parquet(
         self,

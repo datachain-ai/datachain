@@ -60,6 +60,7 @@ ExportPlacement = Literal["filename", "etag", "fullpath", "checksum", "filepath"
 FileType = Literal["binary", "text", "image", "video", "audio"]
 EXPORT_FILES_MAX_THREADS = 5
 PARTIAL_READ_BLOCK_SIZE = 1024 * 1024
+TAR_READ_BLOCK_SIZE = 5 * 1024 * 1024
 
 
 class FileExporter(NodesThreadPool):
@@ -155,6 +156,9 @@ class TarVFile(VFile):
 
         Reads always consult the cache (hit → local, miss → remote stream);
         ``_caching_enabled`` only governs whether a miss is also persisted.
+        Read-ahead defaults to 5 MiB, capped at the member size.
+        Explicit ``block_size`` values are forwarded unchanged.
+        HTTP(S) clients ignore this setting.
         """
         tar_file = cls.parent(file, location)
 
@@ -167,6 +171,8 @@ class TarVFile(VFile):
             raise VFileError("'size' is not specified", file.source, file.path)
 
         client = file._catalog.get_client(tar_file.source)
+        if block_size is None:
+            block_size = min(size, TAR_READ_BLOCK_SIZE)
         fd = client.open_object(tar_file, use_cache=True, block_size=block_size)
         return FileSlice(fd, offset, size, file.name)
 
