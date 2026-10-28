@@ -1066,6 +1066,14 @@ class DataChain:
         """
         if isinstance(batch, bool) or not isinstance(batch, int) or batch < 1:
             raise DataChainParamsError("map() batch must be a positive integer")
+        if batch > 1:
+            # building a UDF sets attributes on it; a user's instance may also
+            # serve other, unbatched chains
+            func = copy.copy(func) if isinstance(func, UDFBase) else func
+            signal_map = {
+                k: copy.copy(v) if isinstance(v, UDFBase) else v
+                for k, v in signal_map.items()
+            }
         if len(signal_map) > 1:
             udf_obj = self._build_multi_signal_mapper(
                 func, params, output, signal_map, batch=batch
@@ -1074,10 +1082,7 @@ class DataChain:
             udf_obj = self._udf_to_obj(
                 Mapper, func, params, output, signal_map, batch=batch
             )
-        if batch > 1:
-            # a user's Mapper instance may also be used by other, unbatched chains
-            udf_obj = copy.copy(udf_obj)
-            udf_obj.input_batch = batch
+        udf_obj.input_batch = batch
         if (prefetch := self._settings.prefetch) is not None:
             udf_obj.prefetch = prefetch
 

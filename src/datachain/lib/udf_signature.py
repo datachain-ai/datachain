@@ -9,6 +9,18 @@ from datachain.lib.udf import UDFBase, reject_var_params
 from datachain.lib.utils import AbstractUDF, DataChainParamsError, callable_name
 
 
+def _resolve_annotation(anno: Any, func: Callable) -> Any:
+    """Evaluates string annotations (postponed or quoted) in the function's module;
+    a name that does not resolve leaves the annotation as it is."""
+    namespace = getattr(inspect.unwrap(func), "__globals__", {})
+    while isinstance(anno, str):
+        try:
+            anno = eval(anno, namespace)  # noqa: S307
+        except Exception:  # noqa: BLE001
+            return anno
+    return anno
+
+
 class UdfSignatureError(DataChainParamsError):
     def __init__(self, chain: str, msg):
         suffix = f"(dataset '{chain}')" if chain else ""
@@ -195,15 +207,16 @@ class UdfSignature:  # noqa: PLW1641
         else:
             func = udf_func
 
-        try:  # resolve postponed annotations (`from __future__ import annotations`)
-            sign = inspect.signature(func, eval_str=True)
-        except (NameError, SyntaxError, TypeError):
-            sign = inspect.signature(func)
-
-        input_map = {prm.name: prm.annotation for prm in sign.parameters.values()}
+        sign = inspect.signature(func)
+        input_map = {
+            prm.name: _resolve_annotation(prm.annotation, func)
+            for prm in sign.parameters.values()
+        }
         is_iterator = False
 
-        anno = sign.return_annotation
+        anno = _resolve_annotation(sign.return_annotation, func)
+        if is_batch_map and isinstance(anno, str):
+            anno = inspect.Signature.empty  # unresolvable: rely on output=
         has_return_annotation = anno != inspect.Signature.empty
         if anno == inspect.Signature.empty:
             output_types: list[type] = []

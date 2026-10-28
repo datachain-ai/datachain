@@ -1,9 +1,11 @@
+import importlib
 import os
 import time
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
 import datachain as dc
 from datachain.lib.udf import UdfError
@@ -301,27 +303,50 @@ def test_map_batch_shared_mapper_instance(test_session, batched_first):
 
     mapper = Twice()
     source = dc.read_values(value=[1, 2, 3], session=test_session)
+    batches = {"batched": 2, "scalar": 1}
+    order = ["batched", "scalar"] if batched_first else ["scalar", "batched"]
 
-    def batched():
-        return source.map(result=mapper, output=int, batch=2)
-
-    def scalar():
-        return source.map(result=mapper, output=int)
-
-    first, second = (batched(), scalar()) if batched_first else (scalar(), batched())
-    for chain in (first, second):
-        assert sorted(chain.to_values("result")) == [2, 4, 6]
+    chains = {
+        name: source.map(**{name: mapper}, output=int, batch=batches[name])
+        for name in order
+    }
+    for name, chain in chains.items():
+        assert sorted(chain.to_values(name)) == [2, 4, 6]
 
 
-def test_map_batch_string_annotations(test_session):
-    def twice(value: "list[int]") -> "list[int]":
-        return [v * 2 for v in value]
+def test_map_batch_postponed_annotations(test_session, tmp_path, monkeypatch):
+    (tmp_path / "batch_udfs.py").write_text(
+        "from __future__ import annotations\n\n\n"
+        "def twice(value: list[int]) -> list[int]:\n"
+        "    return [v * 2 for v in value]\n\n\n"
+        "def thrice(value: 'list[int]') -> 'list[int]':\n"
+        "    return [v * 3 for v in value]\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    udfs = importlib.import_module("batch_udfs")
 
     result = (
         dc.read_values(value=[1, 2, 3], session=test_session)
-        .map(result=twice, batch=2)
+        .map(twice=udfs.twice, batch=2)
+        .map(thrice=udfs.thrice, batch=2)
         .order_by("value")
-        .to_values("result")
+        .to_list("twice", "thrice")
+    )
+    assert result == [(2, 3), (4, 6), (6, 9)]
+
+
+def test_map_batch_local_model_with_explicit_output(test_session):
+    class Doubled(BaseModel):
+        value: int
+
+    def twice(value: "list[int]") -> "list[Doubled]":
+        return [Doubled(value=v * 2) for v in value]
+
+    result = (
+        dc.read_values(value=[1, 2, 3], session=test_session)
+        .map(doubled=twice, output=Doubled, batch=2)
+        .order_by("value")
+        .to_values("doubled.value")
     )
     assert result == [2, 4, 6]
 
