@@ -35,7 +35,7 @@ chain = (
         update=True,  # Refresh the storage index
         delta=True,  # Enable delta processing
         delta_on="file.path",  # Field that uniquely identifies records
-        delta_compare="file.mtime",  # Field to check for changes
+        delta_compare="file.last_modified",  # Field to check for changes
     )
     .map(result=process_function)
     .save(name="processed_data")

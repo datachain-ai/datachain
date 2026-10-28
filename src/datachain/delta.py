@@ -289,6 +289,34 @@ def _get_shared_result_key(
     return result_key[0] if len(result_key) == 1 else result_key
 
 
+def _subtract_source_keys(
+    result: "DataChain",
+    source: "DataChain",
+    on: str | Sequence[str],
+    right_on: str | Sequence[str],
+) -> "DataChain":
+    def columns(schema: "SignalSchema", field: str) -> dict[str, str]:
+        prefix = field.replace(".", "__")
+        return {
+            str(column).removeprefix(prefix): str(column)
+            for column in schema.resolve(field).db_signals(include_sentinels=False)
+        }
+
+    result_fields = [on] if isinstance(on, str) else on
+    source_fields = [right_on] if isinstance(right_on, str) else right_on
+    signals: list[tuple[str, str]] = []
+    for result_field, source_field in zip(result_fields, source_fields, strict=True):
+        left = columns(result.signals_schema, result_field)
+        right = columns(source.signals_schema, source_field)
+        if left.keys() != right.keys():
+            raise SchemaDriftError(
+                f"Delta key fields do not match: {result_field!r} and {source_field!r}"
+            )
+        signals.extend((column, right[name]) for name, column in left.items())
+
+    return result._evolve(query=result._query.subtract(source._query, signals))
+
+
 def _build_source_replay_input(
     target_source_query: "DatasetQuery",
     target_source_spec: "DeltaSpec",
@@ -424,6 +452,7 @@ def delta_retry_update(
     source_replacements: list[tuple[DatasetQuery, DataChain]] = []
     retained_chain = latest_dataset
     has_source_changes = False
+    source_versions_changed = False
     for source in delta_sources:
         target_source_spec = source.delta_spec
         assert target_source_spec is not None
@@ -451,16 +480,16 @@ def delta_retry_update(
         )
 
         assert source_replay_input is not None
+        source_versions_changed |= invalidated_chain is not None
         if invalidated_chain is not None or target_source_spec.delta_retry:
-            # each diff runs once: its rows are checked, replayed and subtracted
-            source_replay_input = source_replay_input.persist()
             changed = [source_replay_input]
             if invalidated_chain is not None:
                 changed.append(invalidated_chain.persist())
             # Invalidate by source keys before filters or generators can drop rows.
             for invalidated in (chain for chain in changed if not chain.empty):
                 has_source_changes = True
-                retained_chain = retained_chain.subtract(
+                retained_chain = _subtract_source_keys(
+                    retained_chain,
                     invalidated,
                     on=result_key,
                     right_on=target_source_spec.on,
@@ -474,6 +503,12 @@ def delta_retry_update(
         source_replacements,
         dc,
     ).persist()
+    if (
+        not source_versions_changed
+        and replayed_delta_chain.empty
+        and retained_chain.count() == latest_dataset.count()
+    ):
+        return None, None, False
     normalized_dependencies = _normalize_dependencies(dependencies, updated_versions)
 
     result_chain = _safe_union(

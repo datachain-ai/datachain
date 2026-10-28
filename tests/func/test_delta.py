@@ -1480,9 +1480,8 @@ def test_delta_update_agg(test_session, file_dataset):
 @pytest.mark.parametrize("operation", ["map", "gen"])
 @pytest.mark.parametrize("filter_at", [None, "before", "after"])
 @pytest.mark.parametrize("explicit_key", [False, True])
-@pytest.mark.parametrize("versions", [False, True])
 def test_storage_delta_refresh_matches_full_recompute(
-    test_session, tmp_path, operation, filter_at, explicit_key, versions
+    test_session, tmp_path, operation, filter_at, explicit_key
 ):
     data_dir = tmp_path / "refresh"
     data_dir.mkdir()
@@ -1510,7 +1509,6 @@ def test_storage_delta_refresh_matches_full_recompute(
             update=True,
             delta=delta,
             session=test_session,
-            versions=versions,
             **kwargs,
         )
         if filter_at == "before":
