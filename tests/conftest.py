@@ -1,7 +1,13 @@
+import functools
+import http.server
+import io
 import os
 import os.path
 import signal
+import socketserver
 import subprocess  # nosec B404
+import tarfile
+import threading
 import uuid
 from collections.abc import Generator
 from datetime import datetime
@@ -34,6 +40,8 @@ from datachain.dataset import (
 )
 from datachain.error import DatasetNotFoundError
 from datachain.lib.dc import Sys
+from datachain.lib.file import File
+from datachain.lib.tar import build_tar_member
 from datachain.namespace import Namespace
 from datachain.project import Project
 from datachain.query.session import Session
@@ -45,7 +53,7 @@ from datachain.utils import (
     DataChainDir,
 )
 
-from .utils import DEFAULT_TREE, instantiate_tree, reset_session_job_state
+from .utils import DEFAULT_TREE, instantiate_tree, make_tar, reset_session_job_state
 
 # gcsfs 2026.3+ turns on HNS/zonal support by default, so every gs op probes the
 # Storage Control API over gRPC. The mock gcs server can't answer that, so the
@@ -276,6 +284,54 @@ def catalog(metastore, warehouse):
 
     # Clean up job-related atexit hooks to prevent errors during pytest shutdown
     reset_session_job_state()
+
+
+@pytest.fixture
+def small_tar_member_data():
+    data = b"m" * (100 * 1024)
+    raw = make_tar(
+        {
+            "prefix.bin": b"prefix",
+            "member.bin": data,
+            "padding.bin": bytes(4 * 1024 * 1024),
+        }
+    )
+    return data, raw
+
+
+@pytest.fixture
+def small_tar_member(catalog, monkeypatch, small_tar_member_data):
+    _, raw = small_tar_member_data
+
+    def make_member(client, version=""):
+        monkeypatch.setattr(catalog, "get_client", lambda *args, **kwargs: client)
+        parent = File(
+            source=client.uri, path="archive.tar", size=len(raw), version=version
+        )
+        parent._set_stream(catalog, caching_enabled=False)
+        with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+            member = build_tar_member(parent, archive.getmember("member.bin"))
+        member._set_stream(catalog, caching_enabled=False)
+        return member
+
+    return make_member
+
+
+@pytest.fixture
+def tar_member_range_requests(monkeypatch, small_tar_member_data):
+    _, raw = small_tar_member_data
+
+    def patch_ranges(file_type):
+        requests = []
+
+        def fetch_range(file, start, end):
+            requests.append((file, start, min(end, len(raw))))
+            return raw[start:end]
+
+        monkeypatch.setattr(file_type, "_fetch_range", fetch_range)
+        return requests
+
+    return patch_ranges
 
 
 @pytest.fixture
@@ -1404,3 +1460,44 @@ def mock_parquet_data(compressed_parquet_data, dog_entries, version="1.0.0"):
 def mock_parquet_data_cloud(compressed_parquet_data, dog_entries, cloud_test_catalog):
     src_uri = cloud_test_catalog.src_uri
     return compressed_parquet_data(dog_entries("1.0.0"), src_uri)
+
+
+@pytest.fixture
+def fetched_bytes(monkeypatch):
+    from adlfs.spec import AzureBlobFile
+    from gcsfs.core import GCSFile
+    from s3fs.core import S3File
+
+    fetched = [0, 0]
+    for cls in (S3File, GCSFile, AzureBlobFile):
+
+        def fetch_range(self, *args, _orig=cls._fetch_range, **kwargs):
+            data = _orig(self, *args, **kwargs)
+            fetched[0] += len(data)
+            fetched[1] += 1
+            return data
+
+        monkeypatch.setattr(cls, "_fetch_range", fetch_range)
+    return fetched
+
+
+class _NoRangeHandler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+
+    def handle_error(self, request, client_address):
+        pass
+
+
+@pytest.fixture
+def http_server_without_ranges(tmp_path):
+    """Serve `tmp_path` over HTTP without range support; yields its base URL."""
+    handler = functools.partial(_NoRangeHandler, directory=str(tmp_path))
+    with socketserver.TCPServer(("127.0.0.1", 0), handler) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield f"http://127.0.0.1:{server.server_address[1]}"
+        finally:
+            server.shutdown()
+            thread.join()
