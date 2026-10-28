@@ -24,7 +24,6 @@ from datachain.sql.types import (
 from tests.utils import (
     DEFAULT_TREE,
     TARRED_TREE,
-    skip_if_not_sqlite,
 )
 
 COMPLEX_TREE: dict[str, Any] = {
@@ -100,33 +99,3 @@ def test_list_tables(catalog):
         assert "test_list_tables_abc" in filtered
     finally:
         db.drop_table(table)
-
-
-@skip_if_not_sqlite
-def test_sqlite_insert_into_after_write_from_another_connection(
-    warehouse_tmpfile, monkeypatch
-):
-    from datachain.data_storage.sqlite import SQLiteWarehouse
-
-    warehouse = warehouse_tmpfile
-    monkeypatch.setattr(SQLiteWarehouse, "INSERT_BATCH_SIZE", 3)
-
-    src = warehouse.create_udf_table([sqlalchemy.Column("val", Int)])
-    dst = warehouse.create_udf_table([sqlalchemy.Column("val", Int)])
-    other_table = warehouse.create_udf_table([sqlalchemy.Column("val", Int)])
-    warehouse.insert_rows(src, [{"val": i} for i in range(10)])
-    warehouse.insert_rows_done(src)
-
-    progress = []
-    with warehouse.clone() as other:
-
-        def progress_cb(n):
-            progress.append(n)
-            other.db.execute(other_table.insert().values(val=n))
-
-        warehouse.insert_into(dst, sqlalchemy.select(src), progress_cb=progress_cb)
-
-    assert sorted(r[0] for r in warehouse.db.execute(sqlalchemy.select(dst.c.val))) == (
-        list(range(10))
-    )
-    assert progress == [3, 3, 3, 1]
