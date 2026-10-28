@@ -34,6 +34,7 @@ from datachain.error import (
     ProjectCreateNotAllowedError,
 )
 from datachain.func import string
+from datachain.lib import udf
 from datachain.lib.data_model import DataModel
 from datachain.lib.dc import C, DatasetPrepareError, Sys
 from datachain.lib.dc.listings import read_listing_dataset
@@ -2615,11 +2616,36 @@ def test_read_csv_nrows_keep_the_chain_prefetch(tmp_dir, test_session):
     assert chain._settings.prefetch == DEFAULT_PREFETCH
 
 
-def test_read_json_nrows_keep_the_chain_prefetch(tmp_dir, test_session):
+@pytest.fixture
+def prefetch_per_step(monkeypatch):
+    calls = []
+    prefetch_inputs = udf._prefetch_inputs
+
+    def record(prepared_inputs, prefetch, *args, **kwargs):
+        calls.append(prefetch)
+        return prefetch_inputs(prepared_inputs, prefetch, *args, **kwargs)
+
+    monkeypatch.setattr(udf, "_prefetch_inputs", record)
+    return calls
+
+
+@pytest.mark.parametrize("prefetch", [None, 0, 7])
+def test_read_json_nrows_read_without_prefetch_and_keep_the_chain_prefetch(
+    tmp_dir, test_session, prefetch_per_step, prefetch
+):
     path = tmp_dir / "test.jsonl"
     path.write_text('{"a": 1}\n{"a": 2}\n')
-    chain = dc.read_json(path.as_uri(), format="jsonl", nrows=1, session=test_session)
-    assert chain._settings.prefetch == DEFAULT_PREFETCH
+    settings = {} if prefetch is None else {"prefetch": prefetch}
+    chain = dc.read_json(
+        path.as_uri(),
+        format="jsonl",
+        nrows=1,
+        settings=settings,
+        session=test_session,
+    )
+
+    assert chain.map(b=lambda jsonl: jsonl.a, output=int).to_values("b") == [1]
+    assert prefetch_per_step == [0, DEFAULT_PREFETCH if prefetch is None else prefetch]
 
 
 def test_read_parquet_columns_are_part_of_the_step(abc_parquet, test_session):
