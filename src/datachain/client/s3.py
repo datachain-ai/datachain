@@ -154,18 +154,19 @@ class _ListedS3File(S3File):
             block_size=fs.default_block_size if block_size is None else block_size,
             cache_type=fs.default_cache_type,
             size=file.size,
+            requester_pays=bool(fs.req_kw),  # as S3FileSystem._open does
         )
         self.fs = self.s3 = fs
         self.version_id = file.version or None
-        if file.etag:
-            for kw in ("req_kw", "read_kw"):
-                if isinstance(getattr(self, kw, None), dict):
-                    setattr(
-                        self, kw, {**getattr(self, kw), "IfMatch": f'"{file.etag}"'}
-                    )
         self._details = {"name": file.get_fs_path(), "size": file.size, "type": "file"}
         if file.etag:
-            self._details["ETag"] = f'"{file.etag}"'
+            etag = f'"{file.etag}"'
+            self._details["ETag"] = etag
+            # as S3File does: endpoints without If-Match check the etag locally
+            if not fs.local_expiry_check:
+                for kw in ("req_kw", "read_kw"):  # s3fs >= 2026.9 reads with read_kw
+                    if isinstance(getattr(self, kw, None), dict):
+                        setattr(self, kw, {**getattr(self, kw), "IfMatch": etag})
 
 
 class ClientS3(RangeListedClient):

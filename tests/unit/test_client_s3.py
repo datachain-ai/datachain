@@ -9,15 +9,18 @@ import pytest
 from botocore.exceptions import ClientError
 from botocore.utils import parse_timestamp
 from fsspec.asyn import get_loop, sync
+from s3fs import S3FileSystem
 
 from datachain.client.s3 import (
     _FIELDS,
     ClientS3,
     _fields,
     _handle_200_error,
+    _ListedS3File,
     _parse_timestamp,
 )
 from datachain.client.writeconfig import WriteConfig
+from datachain.lib.file import File
 from datachain.node import DirType, Node
 from datachain.nodes_thread_pool import NodeChunk
 
@@ -451,3 +454,22 @@ def test_list_page_falls_back_to_current_objects_without_version_support():
             ("a", "", True)
         ]
     assert s3.list_object_versions.call_count == 1
+
+
+@pytest.mark.parametrize("requester_pays", [False, True])
+@pytest.mark.parametrize("local_expiry_check", [False, True])
+def test_listed_file_reads_like_s3fs_open(requester_pays, local_expiry_check):
+    fs = S3FileSystem(
+        anon=True,
+        requester_pays=requester_pays,
+        local_expiry_check=local_expiry_check,
+    )
+    file = File(source="s3://bucket", path="a.mp4", size=10, etag="abc")
+
+    listed = _ListedS3File(fs, file, block_size=None)
+
+    expected = {"RequestPayer": "requester"} if requester_pays else {}
+    if not local_expiry_check:
+        expected["IfMatch"] = '"abc"'
+    assert listed.req_kw == expected
+    assert listed.details["ETag"] == '"abc"'  # checked locally when IfMatch is off
