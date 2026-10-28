@@ -624,15 +624,12 @@ class Client(ABC):
         sync(get_loop(), self._check_unchanged, file)
 
     async def _check_unchanged(self, file: "File") -> None:
-        # A version-aware client reads the pinned version. Where that version's
+        # A file with a version is read at that version. Where that version's
         # content can't change, its etag still can: GCS changes it on metadata-only
         # updates such as a storage class change. S3's "null" version is overwritten
         # in place when versioning is off: both unversioned and suspended buckets.
         pinned = (
-            file.version
-            and file.version != "null"
-            and self.PINNED_VERSION_IS_IMMUTABLE
-            and self._is_version_aware()
+            file.version and file.version != "null" and self.PINNED_VERSION_IS_IMMUTABLE
         )
         if file.etag and not pinned:
             etag = await self.get_current_etag(file)
