@@ -10,9 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from tests.utils import skip_if_not_sqlite
-
 WORKER = Path(__file__).parents[2] / "scripts" / "checkpoint_kill_worker.py"
+BACKEND_ENV_PREFIXES = (
+    "DATACHAIN_WAREHOUSE",
+    "DATACHAIN_METASTORE",
+    "DATACHAIN__",
+    "DATACHAIN_DISTRIBUTED",
+)
 
 
 def read_calls(root):
@@ -63,14 +67,25 @@ def incomplete_inputs(partial_rows, input_nums):
     return started - finished
 
 
-def has_incomplete_input(root):
+def is_large(num, parallel):
+    return num % (30 if parallel else 120) == (14 if parallel else 59)
+
+
+def reached_kill_point(root, kind, parallel):
+    """60 inputs started; for gen-large, a large input saved halfway."""
+    if kind == "gen-large":
+        return has_incomplete_large_input(root, parallel)
+    return sum(event == "start" for event, _, _ in read_calls(root)) >= 60
+
+
+def has_incomplete_large_input(root, parallel):
     try:
-        return bool(incomplete_inputs(*read_partial_rows(root)))
+        incomplete = incomplete_inputs(*read_partial_rows(root))
     except (sqlite3.OperationalError, KeyError):  # the worker is mid-write
         return False
+    return any(is_large(num, parallel) for num in incomplete)
 
 
-@skip_if_not_sqlite  # reads the partial outputs from the SQLite file
 @pytest.mark.skipif(
     sys.platform == "win32", reason="Requires SIGKILL and process groups"
 )
@@ -82,6 +97,10 @@ def test_checkpoint_resume_after_sigkill(tmp_path, monkeypatch, parallel, kind):
     monkeypatch.delenv("DATACHAIN_TEST", raising=False)
     monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
     monkeypatch.delenv("DATACHAIN_IGNORE_CHECKPOINTS", raising=False)
+    # the workers use the default SQLite database under the root, read below
+    for name in list(os.environ):
+        if name.startswith(BACKEND_ENV_PREFIXES):
+            monkeypatch.delenv(name)
     (tmp_path / "files").mkdir()
     for num in range(120):
         (tmp_path / "files" / f"{num:04d}.txt").write_text(str(num))
@@ -92,13 +111,10 @@ def test_checkpoint_resume_after_sigkill(tmp_path, monkeypatch, parallel, kind):
         )
         try:
             deadline = time.monotonic() + 90
-            while sum(event == "start" for event, _, _ in read_calls(tmp_path)) < 60:
+            while not reached_kill_point(tmp_path, kind, parallel):
                 assert proc.poll() is None, (tmp_path / "first.log").read_text()
                 assert time.monotonic() < deadline, "UDF did not reach kill point"
-                time.sleep(0.02)
-            while kind == "gen-large" and not has_incomplete_input(tmp_path):
-                assert time.monotonic() < deadline, "no partially saved input"
-                time.sleep(0.1)
+                time.sleep(0.05)
             killed_at = time.monotonic()
         finally:
             with suppress(ProcessLookupError):
@@ -147,9 +163,7 @@ def test_checkpoint_resume_after_sigkill(tmp_path, monkeypatch, parallel, kind):
     else:
         expected = []
         for num in range(120):
-            large = kind == "gen-large" and num % (30 if parallel else 120) == (
-                14 if parallel else 59
-            )
+            large = kind == "gen-large" and is_large(num, parallel)
             if num % 5:
                 expected.extend(
                     num * 100 + offset for offset in range(60 if large else 3)

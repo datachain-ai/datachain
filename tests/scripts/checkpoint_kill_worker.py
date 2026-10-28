@@ -42,6 +42,8 @@ def generator(file: dc.File) -> Iterator[int]:
             14 if parallel else 59
         )
         for offset in range(60 if large else 3):
+            if large and block_from is not None and offset == 30:
+                time.sleep(3600)  # stop halfway: rows saved, no final marker
             time.sleep(0.08 if large else delay / 3)
             yield num * 100 + offset
     record("done", num)
