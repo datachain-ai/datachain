@@ -1648,12 +1648,26 @@ def test_read_parquet_columns_read_a_recorded_version_deleted_since(
     assert chain.to_values("value") == [1]
 
 
-@pytest.mark.parametrize("cloud_type", ["file", "s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
 def test_read_parquet_columns_reject_a_changed_file(cloud_test_catalog_upload):
     ctc = cloud_test_catalog_upload
     old = _put_parquet(ctc, "c.parquet", pa.table({"value": [1]}))
     _put_parquet(ctc, "c.parquet", pa.table({"value": [2, 2, 2]}))
+
+    with pytest.raises(FileNotFoundError):
+        _read_recorded(ctc, old).to_values("value")
+
+
+@pytest.mark.parametrize("cloud_type", ["file"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_read_parquet_columns_reject_a_changed_local_file(cloud_test_catalog_upload):
+    ctc = cloud_test_catalog_upload
+    old = _put_parquet(ctc, "c.parquet", pa.table({"value": [1]}))
+    _put_parquet(ctc, "c.parquet", pa.table({"value": [2, 2, 2]}))
+    path = str(ctc.src / "c.parquet")
+    st = os.stat(path)
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 5 * 10**9))
 
     with pytest.raises(FileNotFoundError):
         _read_recorded(ctc, old).to_values("value")
