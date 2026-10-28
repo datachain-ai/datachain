@@ -80,10 +80,9 @@ class Client(ABC):
     # client_config keys this backend treats as credentials.
     CREDENTIAL_KEYS: ClassVar[frozenset[str]] = frozenset()
     LIST_PAGE_SIZE: ClassVar[int] = 1000
-    # True when a pinned version id always returns the same bytes, so
-    # _put_in_cache can skip the etag check and calc_fingerprint can ignore etags.
-    # A wrong True silently serves changed bytes: set it only where versions are
-    # immutable and reads honor the id.
+    # True when reading a file at its version always returns the same bytes, so a
+    # changed etag alone neither fails the read nor makes a new listing version.
+    # A wrong True silently serves changed bytes.
     PINNED_VERSION_IS_IMMUTABLE: ClassVar[bool] = False
 
     @classmethod
@@ -475,12 +474,20 @@ class Client(ABC):
         use_cache: bool = True,
         cb: Callback = DEFAULT_CALLBACK,
         block_size: int | None = None,
+        read_ahead: bool = True,
     ) -> BinaryIO:
-        """Open a file, including files in tar archives."""
+        """Open a file, including files in tar archives.
+
+        With read-ahead, each read fetches at least a whole block (50 MiB on S3),
+        which suits reading a file in order. Without it, each read fetches only
+        the bytes asked for, for callers like pyarrow that read a few ranges.
+        """
         if use_cache and (cache_path := self.cache.get_path(file)):
             return open(cache_path, mode="rb")
         assert not file.location
         kwargs = self._version_kwargs(file.version)
+        if not read_ahead:
+            kwargs["cache_type"] = "none"
         full_path = file.get_fs_path()
         return FileWrapper(
             self.fs.open(full_path, block_size=block_size, **kwargs),
@@ -609,15 +616,20 @@ class Client(ABC):
 
     async def _put_in_cache(self, file: "File", *, callback: "Callback" = None) -> None:
         assert not file.location
-        # A version-aware client downloads the pinned version. Where that version's
+        await self._check_unchanged(file)
+        await self.cache.download(file, self, callback=callback)
+
+    def check_unchanged(self, file: "File") -> None:
+        """Fail if the file changed on the source since the catalog listed it."""
+        sync(get_loop(), self._check_unchanged, file)
+
+    async def _check_unchanged(self, file: "File") -> None:
+        # A file with a version is read at that version. Where that version's
         # content can't change, its etag still can: GCS changes it on metadata-only
         # updates such as a storage class change. S3's "null" version is overwritten
         # in place when versioning is off: both unversioned and suspended buckets.
         pinned = (
-            file.version
-            and file.version != "null"
-            and self.PINNED_VERSION_IS_IMMUTABLE
-            and self._is_version_aware()
+            file.version and file.version != "null" and self.PINNED_VERSION_IS_IMMUTABLE
         )
         if file.etag and not pinned:
             etag = await self.get_current_etag(file)
@@ -629,7 +641,6 @@ class Client(ABC):
                     "Re-run the original dc.read_storage(...) call with "
                     "update=True to refresh the catalog."
                 )
-        await self.cache.download(file, self, callback=callback)
 
 
 class RangeListedClient(Client):

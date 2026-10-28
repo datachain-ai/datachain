@@ -139,8 +139,9 @@ class ClientS3(RangeListedClient):
     CREDENTIAL_KEYS = frozenset(
         {"key", "secret", "token", "aws_key", "aws_secret", "aws_token"}
     )
-    # a non-null VersionId names fixed bytes and a fixed ETag; the overwritable
-    # "null" version keeps the etag check in _put_in_cache
+    # A version id always returns the same bytes. The exception is "null", the id
+    # S3 gives objects written while versioning is off or suspended: the next
+    # write replaces that object, so those files are still checked by etag.
     PINNED_VERSION_IS_IMMUTABLE = True
     _unversioned = False  # the server can't list versions
 
