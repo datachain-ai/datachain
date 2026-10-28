@@ -2557,15 +2557,16 @@ class DataChain:
             ArrowGenerator,
             file_schemas,
             fix_pyarrow_format,
-            is_parquet,
             merge_schemas,
             read_columns,
             schema_to_output,
         )
 
         parse_options = kwargs.pop("parse_options", None)
-        if format := kwargs.get("format"):
-            kwargs["format"] = fix_pyarrow_format(format, parse_options)
+        # pyarrow reads Parquet when no format is given.
+        format = kwargs["format"] = fix_pyarrow_format(
+            kwargs.get("format") or "parquet", parse_options
+        )
 
         if (
             nrows
@@ -2618,7 +2619,7 @@ class DataChain:
 
         # Prefetch downloads whole files, so skip it when only part is read. Only
         # this step skips it: the returned chain keeps the caller's settings.
-        partial = nrows or (columns is not None and is_parquet(format))
+        partial = nrows or (columns is not None and format == "parquet")
         chain = self.settings(prefetch=0) if partial else self
         return chain.gen(  # type: ignore[arg-type]
             ArrowGenerator(

@@ -66,11 +66,6 @@ _CSV_PARSE_OPTIONS = (
 )
 
 
-def is_parquet(format: Any) -> bool:
-    """Whether a pyarrow dataset `format` reads Parquet, which is its default."""
-    return format is None or format == "parquet"
-
-
 class _PartialReadHandler(FSSpecHandler):
     """Lets pyarrow open the exact File that the reader got from a listing.
 
@@ -156,7 +151,7 @@ class ArrowGenerator(Generator):
             # this; a read that skips the cache checks it here.
             client.check_unchanged(file)
             fs, fs_path = client.fs, file.get_fs_path()
-            parquet = is_parquet(self.kwargs.get("format"))
+            parquet = self.kwargs.get("format") == "parquet"
             if parquet and not isinstance(fs, LocalFileSystem):
                 fs = PyFileSystem(_PartialReadHandler(client, file))
 

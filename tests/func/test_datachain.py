@@ -1571,15 +1571,24 @@ def download_callbacks(monkeypatch):
 @pytest.mark.filterwarnings("ignore:Sending a large body:ResourceWarning")
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize(
+    "read",
+    [
+        lambda uri, session: dc.read_parquet(uri, columns=["c3"], session=session),
+        lambda uri, session: dc.read_storage(uri, session=session).parse_tabular(
+            columns=["c3"]
+        ),
+    ],
+    ids=["read_parquet", "parse_tabular_without_format"],
+)
 def test_read_parquet_columns_fetch_only_those_columns(
-    cloud_test_catalog_upload, fetched_bytes, download_callbacks
+    cloud_test_catalog_upload, fetched_bytes, download_callbacks, read
 ):
     ctc = cloud_test_catalog_upload
     rng = np.random.default_rng(0)
     table = pa.table({f"c{i}": rng.random(50_000) for i in range(10)})
     file = _put_parquet(ctc, "wide.parquet", table, row_group_size=10_000)
-    uri = f"{ctc.src_uri}/wide.parquet"
-    chain = dc.read_parquet(uri, columns=["c3"], session=ctc.session)
+    chain = read(f"{ctc.src_uri}/wide.parquet", ctc.session)
     fetched_bytes[:] = [0, 0]
 
     values = chain.order_by("source.index").to_values("c3")
