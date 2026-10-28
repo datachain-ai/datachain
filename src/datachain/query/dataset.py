@@ -654,7 +654,7 @@ def process_udf_outputs(
 
     if udf_kind == "map":
         columns = ["sys__id", *udf.output]
-        if getattr(udf.inner, "input_batch", 1) > 1:
+        if udf.inner.is_input_batched:
             columns += ["sys__input_id", "sys__partial"]  # completion per batch
     else:
         columns = [*udf.output, "sys__input_id", "sys__partial", "sys__empty"]
@@ -1805,7 +1805,7 @@ class UDFSignal(UDFStep):
         Return batch IDs whose output has no completion marker.
         Scalar mappers persist one output atomically and have no incomplete inputs.
         """
-        if self.udf.batch == 1:
+        if not self.udf.inner.is_input_batched:
             return []
         complete_batches = sa.select(partial_table.c.sys__input_id).where(
             partial_table.c.sys__partial == sa.false()

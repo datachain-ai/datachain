@@ -17,14 +17,17 @@ steps need to happen before or after the processing function runs.
 
 ::: datachain.lib.udf.Mapper
 
-`Mapper.process()` normally receives one row at a time. With
-`chain.map(result=mapper, batch=N)` for N > 1, each parameter receives a list
-of up to N row values and `process()` returns `list[T]` or `Iterator[T]`.
+::: datachain.lib.udf.BatchMapper
+
+`BatchMapper.process()` receives a list per parameter with
+`chain.batch_map(result=mapper, batch=N)`. Each list contains
+up to N row values and `process()` returns `list[T]` or `Iterator[T]`.
 The output column has type T. Results must match the input count and order;
 a count mismatch raises `UdfError`. The last partial batch is processed.
 
-Both plain functions and `Mapper` subclasses support this interface, including
+Both plain functions and `BatchMapper` subclasses support this interface, including
 file parameters, prefetch, parallel workers, setup/teardown, delta processing,
 and checkpoint recovery. A completed batch is the unit of checkpoint reuse;
-an incomplete batch is discarded and retried. `batch=1` retains scalar behavior.
+an incomplete batch is discarded and retried. `batch=1` still passes lists of one
+element. The default batch size is 1000.
 See [batched model inference](../guide/processing.md#batched-model-inference).

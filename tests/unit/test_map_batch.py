@@ -41,7 +41,7 @@ def test_map_batch_rejects_scalar_input(test_session):
         return [value]
 
     with pytest.raises(SignalResolvingError, match="is not a list"):
-        dc.read_values(value=[1], session=test_session).map(result=fn, batch=2)
+        dc.read_values(value=[1], session=test_session).batch_map(result=fn, batch=2)
 
 
 def test_map_batch_hash_and_strategy(test_session):
@@ -49,25 +49,30 @@ def test_map_batch_hash_and_strategy(test_session):
         return value
 
     chain = dc.read_values(value=[1], session=test_session)
+    scalar = chain.map(result=fn, output=int)._query.steps[-1].udf
     adapters = [
-        chain.map(result=fn, output=int, batch=b)._query.steps[-1].udf
+        chain.batch_map(result=fn, output=int, batch=b)._query.steps[-1].udf
         for b in (1, 2, 3)
     ]
-    assert len({a.hash() for a in adapters}) == 3
-    assert len({a.hash(include_body=False) for a in adapters}) == 3
-    assert adapters[0].hash() == adapters[0].inner.hash()
-    assert isinstance(adapters[0].get_batching(), NoBatching)
-    assert isinstance(adapters[1].get_batching(), Batch)
-    assert adapters[1].get_batching().count == 2
+    assert scalar.hash() == scalar.inner.hash()
+    assert isinstance(scalar.get_batching(), NoBatching)
+    assert len({a.hash() for a in (scalar, *adapters)}) == 4
+    assert len({a.hash(include_body=False) for a in (scalar, *adapters)}) == 4
+    for batch, adapter in enumerate(adapters, 1):
+        assert isinstance(adapter.get_batching(), Batch)
+        assert adapter.get_batching().count == batch
 
 
-def test_map_batch_checkpoint_incomplete_group(test_session):
+@pytest.mark.parametrize("batch", [1, 3])
+def test_map_batch_checkpoint_incomplete_group(test_session, batch):
     from datachain.query.dataset import UDFSignal
 
     def fn(value: list[int]) -> list[int]:
         return value
 
-    chain = dc.read_values(value=[1], session=test_session).map(result=fn, batch=3)
+    chain = dc.read_values(value=[1], session=test_session).batch_map(
+        result=fn, batch=batch
+    )
     step = chain._query.steps[-1]
     assert isinstance(step, UDFSignal)
     table = step.create_output_table("udf_batch_incomplete")

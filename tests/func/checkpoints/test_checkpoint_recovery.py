@@ -1026,8 +1026,9 @@ def test_udf_continue_after_group_by(test_session_tmpfile):
 
 @pytest.mark.parametrize("insert_batch_size", [1, 2, 5])
 @pytest.mark.parametrize("fail_during_insert", [False, True])
+@pytest.mark.parametrize("batch", [1, 3])
 def test_map_batch_checkpoint_recovery(
-    test_session_tmpfile, monkeypatch, insert_batch_size, fail_during_insert
+    test_session_tmpfile, monkeypatch, insert_batch_size, fail_during_insert, batch
 ):
     session = test_session_tmpfile
     dc.read_values(num=list(range(8)), session=session).save("batch_nums")
@@ -1059,7 +1060,7 @@ def test_map_batch_checkpoint_recovery(
         return (
             dc.read_dataset("batch_nums", session=session)
             .settings(batch_size=insert_batch_size, prefetch=0)
-            .map(result=process, batch=3)
+            .batch_map(result=process, batch=batch)
             .save("batch_results")
         )
 
@@ -1070,7 +1071,8 @@ def test_map_batch_checkpoint_recovery(
     ):
         run()
 
-    completed = set(processed[:3])
+    completed_count = 3 if batch == 3 or not fail_during_insert else 4
+    completed = set(processed[:completed_count])
     reset_session_job_state()
     failing = False
     processed.clear()

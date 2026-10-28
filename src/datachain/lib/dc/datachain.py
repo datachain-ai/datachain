@@ -61,6 +61,7 @@ from datachain.lib.signal_schema import (
 )
 from datachain.lib.udf import (
     Aggregator,
+    BatchMapper,
     BindContext,
     BoundSpec,
     Generator,
@@ -1011,8 +1012,6 @@ class DataChain:
         func: Callable | None = None,
         params: str | Sequence[str] | None = None,
         output: OutputType = None,
-        *,
-        batch: int = 1,
         **signal_map: Any,
     ) -> "Self":
         """Apply a function to each row to create new signals. The function should
@@ -1029,15 +1028,6 @@ class DataChain:
                     taken from kwargs - **signal_map (see below).
                     If signal name is defined using signal_map (see below) only a single
                     type value can be used.
-            batch: Number of rows per function call. With batch > 1, each input
-                    parameter is a list and the return type is list[T] or Iterator[T].
-                    The output column type is T; explicit output types describe one
-                    row. Results must match the input count and order. The last
-                    partial batch is processed. Each parallel worker processes batches
-                    independently; prefetch counts batches. Checkpoint recovery retries
-                    incomplete batches. Delta processing batches only selected rows.
-                    batch=1 (default) preserves scalar calls. This differs from
-                    settings(batch_size=...), which controls database insert buffering.
             **signal_map: kwargs can be used to define `func` together with its return
                     signal name in format of `map(my_sign=my_func)`. This helps define
                     signal names and functions in a nicer way.
@@ -1064,11 +1054,70 @@ class DataChain:
             chain.save("new_dataset")
             ```
         """
+        return self._map(func, params, output, signal_map)
+
+    def batch_map(
+        self,
+        func: Callable | None = None,
+        params: str | Sequence[str] | None = None,
+        output: OutputType = None,
+        batch: int = 1000,
+        **signal_map: Any,
+    ) -> "Self":
+        """Apply a function to batches of rows, preserving the input columns.
+
+        Input-output relationship: N:N. Each parameter receives a list, including
+        when batch=1. Return one result per input row, in the same order.
+
+        Parameters:
+            func: Function or BatchMapper applied to each batch.
+            params: Input column names. Defaults to the function parameter names.
+            output: Output types for one row. Inferred from a list[T] or Iterator[T]
+                    return annotation when omitted; the output column has type T.
+            batch: Maximum rows per call. Defaults to 1000. Must be positive.
+                    The last batch can contain fewer rows.
+            **signal_map: Functions keyed by their output column names, as in map().
+
+        Each worker processes batches independently. Prefetch counts batches;
+        setup() and teardown() run once per worker. Checkpoint recovery retries
+        incomplete batches. Delta processing batches only selected rows, so each
+        row's result must be independent of the other rows in its batch.
+        settings(batch_size=...) separately controls database insert buffering.
+
+        Example:
+            ```py
+            def double(value: list[int]) -> list[int]:
+                return [v * 2 for v in value]
+
+            chain = chain.batch_map(doubled=double, batch=32)
+            ```
+        """
         if isinstance(batch, bool) or not isinstance(batch, int) or batch < 1:
-            raise DataChainParamsError("map() batch must be a positive integer")
-        if batch > 1:
-            # building a UDF sets attributes on it; a user's instance may also
-            # serve other, unbatched chains
+            raise DataChainParamsError("batch_map() batch must be a positive integer")
+        return self._map(func, params, output, signal_map, batch=batch)
+
+    def _map(
+        self,
+        func: Callable | None,
+        params: str | Sequence[str] | None,
+        output: OutputType,
+        signal_map: dict[str, Any],
+        batch: int | None = None,
+    ) -> "Self":
+        target_class = BatchMapper if batch is not None else Mapper
+        for fn in (func, *signal_map.values()):
+            if (
+                isinstance(fn, Mapper) and fn.is_input_batched != (batch is not None)
+            ) or (
+                batch is not None
+                and isinstance(fn, UDFBase)
+                and not isinstance(fn, BatchMapper)
+            ):
+                method = "batch_map" if batch is not None else "map"
+                raise DataChainParamsError(
+                    f"{method}() requires a {target_class.__name__} instance"
+                )
+        if batch is not None:
             func = copy.copy(func) if isinstance(func, UDFBase) else func
             signal_map = {
                 k: copy.copy(v) if isinstance(v, UDFBase) else v
@@ -1080,16 +1129,18 @@ class DataChain:
             )
         else:
             udf_obj = self._udf_to_obj(
-                Mapper, func, params, output, signal_map, batch=batch
+                target_class, func, params, output, signal_map, batch=batch
             )
-        udf_obj.input_batch = batch
+        udf_obj.is_input_batched = batch is not None
         if (prefetch := self._settings.prefetch) is not None:
             udf_obj.prefetch = prefetch
 
         sys_schema = SignalSchema({"sys": Sys})
         return self._evolve(
             query=self._query.add_signals(
-                udf_obj.to_udf_wrapper(self._settings.batch_size, batch=batch),
+                udf_obj.to_udf_wrapper(
+                    self._settings.batch_size, batch=1 if batch is None else batch
+                ),
                 **self._settings.to_dict(),
             ),
             signal_schema=sys_schema | self.signals_schema | udf_obj.output,
@@ -1101,21 +1152,22 @@ class DataChain:
         params: str | Sequence[str] | None,
         output: OutputType,
         signal_map: dict[str, Callable | BoundSpec | UDFBase],
-        batch: int = 1,
+        batch: int | None = None,
     ) -> "Mapper":
         """Build a single Mapper that runs all functions in `signal_map` per row."""
+        method = "batch_map" if batch is not None else "map"
         if func is not None:
             raise DataChainParamsError(
-                "map() can't combine 'func' with multiple signal kwargs"
+                f"{method}() can't combine 'func' with multiple signal kwargs"
             )
         if output is not None:
             raise DataChainParamsError(
-                "map() can't combine 'output' with multiple signal kwargs; "
+                f"{method}() can't combine 'output' with multiple signal kwargs; "
                 "use function return-type annotations instead"
             )
         if params is not None:
             raise DataChainParamsError(
-                "map() can't combine 'params' with multiple signal kwargs; "
+                f"{method}() can't combine 'params' with multiple signal kwargs; "
                 "each function's parameter names are matched to chain columns "
                 "individually. For nested columns (e.g. 'file.path'), extract "
                 "to a top-level column with a single .map() first."
@@ -1124,9 +1176,9 @@ class DataChain:
         for k, v in signal_map.items():
             if isinstance(v, BoundSpec) and v.output_count != 1:
                 raise DataChainParamsError(
-                    f"map() entry {k!r} produces {v.output_count} outputs; "
-                    "multi-signal .map() only supports one output per entry. "
-                    "Use a single .map(...) with output={...} to name all "
+                    f"{method}() entry {k!r} produces {v.output_count} outputs; "
+                    f"multi-signal .{method}() only supports one output per entry. "
+                    f"Use a single .{method}(...) with output={...} to name all "
                     "columns"
                 )
             if not isinstance(v, BoundSpec):
@@ -1134,9 +1186,9 @@ class DataChain:
                 anno = inspect.signature(sig_target).return_annotation
                 if anno is not inspect.Signature.empty and get_origin(anno) is tuple:
                     raise DataChainParamsError(
-                        f"map() entry {k!r} returns a tuple of "
-                        f"{len(get_args(anno))} values; multi-signal .map() only "
-                        "supports one output per entry. Use a single .map(...) "
+                        f"{method}() entry {k!r} returns a tuple of "
+                        f"{len(get_args(anno))} values; multi-signal .{method}() only "
+                        f"supports one output per entry. Use a single .{method}(...) "
                         "with output={...} to name all columns"
                     )
 
@@ -1145,20 +1197,21 @@ class DataChain:
             if isinstance(v, BoundSpec):
                 bound_columns[k] = v.input_columns()
         bound_signal_map: dict[str, Callable | UDFBase] = {
-            k: self._bind_udf_settings(v, Mapper) for k, v in signal_map.items()
+            k: self._bind_udf_settings(v, BatchMapper if batch is not None else Mapper)
+            for k, v in signal_map.items()
         }
         multi_mapper = _MultiSignalMapper(bound_signal_map, bound_columns=bound_columns)
         output_dict: dict[str, Any] = {}
         for name, fn in bound_signal_map.items():
             sig_target = fn.process if isinstance(fn, UDFBase) else fn
             anno = inspect.signature(sig_target).return_annotation
-            if batch > 1:
+            if batch is not None:
                 _, types, _, annotated = UdfSignature._func_signature(
                     self.name or "", fn, is_batch_map=True
                 )
                 if isinstance(types, tuple):
                     raise DataChainParamsError(
-                        f"map() entry {name!r} must produce one output per row"
+                        f"{method}() entry {name!r} must produce one output per row"
                     )
                 anno = types[0] if annotated else inspect.Signature.empty
             output_dict[name] = (
@@ -1357,9 +1410,9 @@ class DataChain:
         params: str | Sequence[str] | None,
         output: OutputType,
         signal_map: dict[str, Callable],
-        batch: int = 1,
+        batch: int | None = None,
     ) -> UDFObjT:
-        is_batch = target_class.is_input_batched or batch > 1
+        is_batch = target_class.is_input_batched or batch is not None
         is_generator = target_class.is_output_batched
         name = self.name or ""
 
@@ -1377,7 +1430,7 @@ class DataChain:
             params,
             output,
             is_generator,
-            is_batch_map=batch > 1,
+            is_batch_map=batch is not None,
         )
         DataModel.register(list(sign.output_schema.values.values()))
 

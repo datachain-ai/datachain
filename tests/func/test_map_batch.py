@@ -12,7 +12,7 @@ from datachain.lib.udf import UdfError
 from datachain.lib.utils import DataChainParamsError
 
 
-@pytest.mark.parametrize("batch", [2, 4, 32])
+@pytest.mark.parametrize("batch", [1, 2, 4, 32])
 @pytest.mark.parametrize("parallel", [False, 2])
 def test_map_batch_matches_rows(test_session_tmpfile, batch, parallel):
     def twice(value: list[int]) -> list[int]:
@@ -27,7 +27,7 @@ def test_map_batch_matches_rows(test_session_tmpfile, batch, parallel):
     expected = chain.map(result=scalar).order_by("value").to_list()
     actual = (
         chain.settings(parallel=parallel)
-        .map(result=twice, batch=batch)
+        .batch_map(result=twice, batch=batch)
         .order_by("value")
         .to_list()
     )
@@ -37,7 +37,7 @@ def test_map_batch_matches_rows(test_session_tmpfile, batch, parallel):
 def test_map_batch_partial_and_lifecycle(test_session):
     calls = []
 
-    class Offset(dc.Mapper):
+    class Offset(dc.BatchMapper):
         def setup(self):
             calls.append("setup")
             self.offset = 10
@@ -51,7 +51,7 @@ def test_map_batch_partial_and_lifecycle(test_session):
 
     result = (
         dc.read_values(value=list(range(7)), session=test_session)
-        .map(result=Offset(), batch=3)
+        .batch_map(result=Offset(), batch=3)
         .order_by("value")
         .to_values("result")
     )
@@ -59,20 +59,20 @@ def test_map_batch_partial_and_lifecycle(test_session):
     assert calls == ["setup", 3, 3, 1, "teardown"]
 
 
-@pytest.mark.parametrize("size", [0, 2, 4])
-def test_map_batch_wrong_length(test_session, size):
+@pytest.mark.parametrize("batch,size", [(1, 0), (1, 2), (3, 0), (3, 2), (3, 4)])
+def test_map_batch_wrong_length(test_session, batch, size):
     calls = []
 
-    class Wrong(dc.Mapper):
+    class Wrong(dc.BatchMapper):
         def process(self, value: list[int]) -> list[int]:
             return [0] * size
 
         def teardown(self):
             calls.append("teardown")
 
-    with pytest.raises(UdfError, match=f"got {size} outputs for 3 inputs"):
-        dc.read_values(value=[1, 2, 3], session=test_session).map(
-            result=Wrong(), batch=3
+    with pytest.raises(UdfError, match=f"got {size} outputs for {batch} inputs"):
+        dc.read_values(value=[1, 2, 3], session=test_session).batch_map(
+            result=Wrong(), batch=batch
         ).to_list()
     assert calls == ["teardown"]
 
@@ -80,23 +80,24 @@ def test_map_batch_wrong_length(test_session, size):
 @pytest.mark.parametrize("batch", [0, -1, True, 2.5, "2", None])
 def test_map_batch_invalid_size(test_session, batch):
     with pytest.raises(DataChainParamsError, match="batch must be a positive integer"):
-        dc.read_values(value=[1], session=test_session).map(
+        dc.read_values(value=[1], session=test_session).batch_map(
             result=lambda value: value, batch=batch
         )
 
 
-def test_map_batch_one_is_scalar(test_session):
+def test_map_remains_scalar(test_session):
     def scalar(value: int) -> list[int]:
         return [value, value + 1]
 
     chain = dc.read_values(value=[1, 2], session=test_session)
-    assert chain.map(result=scalar, batch=1).order_by("value").to_values("result") == [
+    assert chain.map(result=scalar).order_by("value").to_values("result") == [
         [1, 2],
         [2, 3],
     ]
 
 
-def test_map_batch_nested_outputs_and_params(test_session):
+@pytest.mark.parametrize("batch", [1, 2])
+def test_map_batch_nested_outputs_and_params(test_session, batch):
     def embeddings(
         values: list[int], names: list[str]
     ) -> list[tuple[list[float], str]]:
@@ -106,8 +107,11 @@ def test_map_batch_nested_outputs_and_params(test_session):
 
     result = (
         dc.read_values(value=[1, 2, 3], name=["a", "b", "c"], session=test_session)
-        .map(
-            embeddings, params=["value", "name"], output=["embedding", "upper"], batch=2
+        .batch_map(
+            embeddings,
+            params=["value", "name"],
+            output=["embedding", "upper"],
+            batch=batch,
         )
         .order_by("value")
         .to_list("embedding", "upper")
@@ -140,13 +144,14 @@ def test_map_batch_files(test_session_tmpfile, tmp_path, prefetch, file_type, pa
     result = (
         dc.read_values(file=files, session=test_session_tmpfile)
         .settings(prefetch=prefetch, parallel=parallel)
-        .map(text=read, batch=3)
+        .batch_map(text=read, batch=3)
         .to_values("text")
     )
     assert sorted(result) == [str(i) for i in range(5)]
 
 
-def test_map_batch_multi_signal_dependencies(test_session):
+@pytest.mark.parametrize("batch", [1, 3])
+def test_map_batch_multi_signal_dependencies(test_session, batch):
     def twice(value: list[int]) -> list[int]:
         return [v * 2 for v in value]
 
@@ -155,7 +160,7 @@ def test_map_batch_multi_signal_dependencies(test_session):
 
     result = (
         dc.read_values(value=list(range(7)), session=test_session)
-        .map(final=increment, doubled=twice, batch=3)
+        .batch_map(final=increment, doubled=twice, batch=batch)
         .order_by("value")
         .to_list("doubled", "final")
     )
@@ -167,7 +172,7 @@ def test_map_batch_multi_signal_wrong_length(test_session):
         return [0]
 
     with pytest.raises(UdfError, match="entry 'a' returned 1 outputs for 3 inputs"):
-        dc.read_values(value=[1, 2, 3], session=test_session).map(
+        dc.read_values(value=[1, 2, 3], session=test_session).batch_map(
             a=one, b=one, batch=3
         ).to_list()
 
@@ -179,13 +184,14 @@ def test_map_batch_empty_input(test_session):
     assert (
         dc.read_values(value=[1], session=test_session)
         .limit(0)
-        .map(result=no_call, batch=4)
+        .batch_map(result=no_call, batch=4)
         .to_list()
         == []
     )
 
 
-def test_map_batch_delta(test_session):
+@pytest.mark.parametrize("batch", [1, 3])
+def test_map_batch_delta(test_session, batch):
     calls = []
 
     def twice(value: list[int]) -> list[int]:
@@ -197,7 +203,7 @@ def test_map_batch_delta(test_session):
             dc.read_dataset(
                 "batch_source", session=test_session, delta=True, delta_on="value"
             )
-            .map(result=twice, batch=3)
+            .batch_map(result=twice, batch=batch)
             .save("batch_delta")
         )
 
@@ -223,7 +229,7 @@ def test_map_batch_model_output_roundtrip(test_session_tmpfile, parallel):
     result = (
         dc.read_values(value=[1, 2, 3], session=test_session_tmpfile)
         .settings(parallel=parallel)
-        .map(result=encode, batch=2)
+        .batch_map(result=encode, batch=2)
         .save("batch_models")
     )
     loaded = dc.read_dataset(result.name, session=test_session_tmpfile)
@@ -239,7 +245,11 @@ def test_map_batch_nullable_input(test_session):
     chain = dc.read_values(
         value=[1, None, 3], output={"value": int | None}, session=test_session
     )
-    assert sorted(chain.map(result=encode, batch=2).to_values("result")) == [-1, 1, 3]
+    assert sorted(chain.batch_map(result=encode, batch=2).to_values("result")) == [
+        -1,
+        1,
+        3,
+    ]
 
 
 def test_map_batch_list_input(test_session):
@@ -248,7 +258,7 @@ def test_map_batch_list_input(test_session):
 
     result = (
         dc.read_values(values=[[1, 2], [], [3]], session=test_session)
-        .map(result=total, batch=2)
+        .batch_map(result=total, batch=2)
         .to_values("result")
     )
     assert sorted(result) == [0, 3, 3]
@@ -260,7 +270,7 @@ def test_map_batch_no_annotation_explicit_output(test_session):
 
     result = (
         dc.read_values(value=[1, 2, 3], session=test_session)
-        .map(result=twice, output=int, batch=2)
+        .batch_map(result=twice, output=int, batch=2)
         .order_by("value")
         .to_values("result")
     )
@@ -286,32 +296,29 @@ def test_map_batch_distributes_inference_to_all_workers(test_session_tmpfile, tm
     result = (
         dc.read_values(value=list(range(64)), session=test_session_tmpfile)
         .settings(parallel=4, prefetch=0)
-        .map(worker=worker_id, batch=4)
+        .batch_map(worker=worker_id, batch=4)
         .to_values("worker")
     )
     assert len(result) == 64
     assert len(set(result)) == 4
 
 
-@pytest.mark.parametrize("batched_first", [True, False])
-def test_map_batch_shared_mapper_instance(test_session, batched_first):
-    class Twice(dc.Mapper):
-        def process(self, value):
-            if isinstance(value, list):
-                return [v * 2 for v in value]
-            return value * 2
+@pytest.mark.parametrize("batches", [(1, 2), (2, 1)])
+def test_batch_map_shared_mapper_instance(test_session, batches):
+    class Twice(dc.BatchMapper):
+        def process(self, value: list[int]) -> list[int]:
+            return [v * 2 for v in value]
 
     mapper = Twice()
     source = dc.read_values(value=[1, 2, 3], session=test_session)
-    batches = {"batched": 2, "scalar": 1}
-    order = ["batched", "scalar"] if batched_first else ["scalar", "batched"]
-
     chains = {
-        name: source.map(**{name: mapper}, output=int, batch=batches[name])
-        for name in order
+        name: source.batch_map(**{name: mapper}, batch=batch)
+        for name, batch in zip(("first", "second"), batches, strict=True)
     }
     for name, chain in chains.items():
         assert sorted(chain.to_values(name)) == [2, 4, 6]
+    assert mapper.params is None
+    assert mapper.output is None
 
 
 def test_map_batch_postponed_annotations(test_session, tmp_path, monkeypatch):
@@ -327,8 +334,8 @@ def test_map_batch_postponed_annotations(test_session, tmp_path, monkeypatch):
 
     result = (
         dc.read_values(value=[1, 2, 3], session=test_session)
-        .map(twice=udfs.twice, batch=2)
-        .map(thrice=udfs.thrice, batch=2)
+        .batch_map(twice=udfs.twice, batch=2)
+        .batch_map(thrice=udfs.thrice, batch=2)
         .order_by("value")
         .to_list("twice", "thrice")
     )
@@ -344,7 +351,7 @@ def test_map_batch_local_model_with_explicit_output(test_session):
 
     result = (
         dc.read_values(value=[1, 2, 3], session=test_session)
-        .map(doubled=twice, output=Doubled, batch=2)
+        .batch_map(doubled=twice, output=Doubled, batch=2)
         .order_by("value")
         .to_values("doubled.value")
     )
@@ -366,3 +373,75 @@ def test_map_scalar_ignores_lists_in_setup_values(test_session):
         .to_values("result")
     )
     assert result == [2, 3]
+
+
+def test_batch_map_default_and_positional_batch(test_session):
+    calls = []
+
+    def sizes(value: list[int]) -> list[int]:
+        calls.append(len(value))
+        return value
+
+    source = dc.read_values(value=list(range(1001)), session=test_session)
+    assert sorted(source.batch_map(result=sizes).to_values("result")) == list(
+        range(1001)
+    )
+    assert calls == [1000, 1]
+    calls.clear()
+    assert sorted(
+        source.limit(3).batch_map(sizes, None, {"result": int}, 1).to_values("result")
+    ) == [0, 1, 2]
+    assert calls == [1, 1, 1]
+
+
+@pytest.mark.parametrize("batched", [False, True])
+def test_map_rejects_wrong_mapper_class(test_session, batched):
+    mapper = dc.Mapper() if batched else dc.BatchMapper()
+    source = dc.read_values(value=[1], session=test_session)
+    method = source.batch_map if batched else source.map
+    expected = "BatchMapper" if batched else "Mapper"
+    with pytest.raises(DataChainParamsError, match=f"requires a {expected} instance"):
+        method(result=mapper, output=int)
+
+
+def test_scalar_map_can_create_batch_column(test_session):
+    result = (
+        dc.read_values(value=[1, 2], session=test_session)
+        .map(batch=lambda value: value * 2, output=int)
+        .order_by("value")
+        .to_values("batch")
+    )
+    assert result == [2, 4]
+
+
+@pytest.mark.parametrize("batch", [1, 3])
+def test_batch_map_reuses_mapper_across_multi_signal_chains(test_session, batch):
+    calls = []
+
+    class Twice(dc.BatchMapper):
+        def setup(self):
+            calls.append("setup")
+            self.factor = 2
+
+        def process(self, value: list[int]) -> list[int]:
+            return [v * self.factor for v in value]
+
+        def teardown(self):
+            calls.append("teardown")
+
+    def increment(first: list[int]) -> list[int]:
+        return [v + 1 for v in first]
+
+    mapper = Twice()
+    source = dc.read_values(value=[1, 2, 3], session=test_session)
+    combined = source.batch_map(first=mapper, final=increment, batch=batch)
+    separate = source.batch_map(other=mapper, batch=1)
+    assert combined.order_by("value").to_list("first", "final") == [
+        (2, 3),
+        (4, 5),
+        (6, 7),
+    ]
+    assert separate.order_by("value").to_values("other") == [2, 4, 6]
+    assert calls == ["setup", "teardown", "setup", "teardown"]
+    assert mapper.params is None
+    assert mapper.output is None

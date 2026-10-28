@@ -188,7 +188,9 @@ class UDFAdapter:
 
     def hash(self, include_body: bool = True) -> str:
         inner_hash = self.inner.hash(include_body=include_body)
-        if self.batch == 1:
+        if self.batch == 1 and not (
+            isinstance(self.inner, Mapper) and self.inner.is_input_batched
+        ):
             return inner_hash
         return hashlib.sha256(f"{inner_hash}:batch={self.batch}".encode()).hexdigest()
 
@@ -196,9 +198,11 @@ class UDFAdapter:
         if use_partitioning:
             return Partition()
 
-        if self.batch == 1:
+        if self.batch == 1 and not (
+            isinstance(self.inner, Mapper) and self.inner.is_input_batched
+        ):
             return NoBatching()
-        if self.batch > 1:
+        if self.batch >= 1:
             return Batch(self.batch)
         raise ValueError(f"invalid batch size {self.batch}")
 
@@ -552,14 +556,7 @@ def _get_cache(
 
 
 class Mapper(UDFBase):
-    """Inherit from this class to pass to `DataChain.map()`.
-
-    With `map(batch=N)` for N > 1, `process()` receives a list per input
-    parameter and returns a list or iterator containing one result per input row.
-    `setup()` and `teardown()` run once per worker.
-    """
-
-    input_batch: int = 1
+    """Inherit from this class to pass to `DataChain.map()`."""
 
     prefetch: int = 2
 
@@ -578,7 +575,7 @@ class Mapper(UDFBase):
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
             with safe_closing(udf_inputs):
                 for row in udf_inputs:
-                    if self.input_batch > 1:
+                    if self.is_input_batched:
                         rows = [
                             self._prepare_row(
                                 r,
@@ -607,15 +604,15 @@ class Mapper(UDFBase):
             self.prefetch,
             download_cb=download_cb,
             remove_prefetched=bool(self.prefetch) and not cache,
-            batched=self.input_batch > 1,
+            batched=self.is_input_batched,
         )
 
         try:
             with closing(prepared_inputs):
                 for id_, *udf_args in prepared_inputs:
-                    self._batch_length = len(id_) if self.input_batch > 1 else 1
+                    self._batch_length = len(id_) if self.is_input_batched else 1
                     result_objs = self.process(*udf_args)
-                    if self.input_batch > 1:
+                    if self.is_input_batched:
                         with safe_closing(result_objs):
                             results = list(result_objs)
                         if len(results) != len(id_):
@@ -647,6 +644,17 @@ class Mapper(UDFBase):
                     yield output
         finally:
             self.teardown()
+
+
+class BatchMapper(Mapper):
+    """Inherit from this class to pass to `DataChain.batch_map()`.
+
+    Each process() parameter receives a list, even with batch=1. Return a list or
+    iterator with one result per input row, in the same order. setup() and
+    teardown() run once per worker.
+    """
+
+    is_input_batched = True
 
 
 def _make_bound_adapter(fn: Callable, cols: list[str]) -> Callable:
@@ -790,7 +798,7 @@ class _MultiSignalMapper(Mapper):
             params = self._per_func_params[name]
             kw = {p: (results[p] if p in results else row_by_name[p]) for p in params}
             result = self._callers[name](**kw)
-            if self.input_batch > 1:
+            if self.is_input_batched:
                 with safe_closing(result):
                     result = list(result)
                 expected = self._batch_length
@@ -800,7 +808,7 @@ class _MultiSignalMapper(Mapper):
                         f"for {expected} inputs"
                     )
             results[name] = result
-        if self.input_batch > 1:
+        if self.is_input_batched:
             return list(zip(*(results[name] for name in self._signal_map), strict=True))
         # Output order follows the user's declared kwarg order, not exec order.
         return tuple(results[name] for name in self._signal_map)
