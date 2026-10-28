@@ -10,6 +10,7 @@ from datachain.lib.file import File, FileError
 from datachain.lib.tar import process_tar
 from datachain.query import C
 from datachain.utils import TIME_ZERO
+from tests.utils import make_tar
 
 
 def test_file_pickle_with_catalog(tmp_dir, test_session_tmpfile):
@@ -825,6 +826,80 @@ def test_tar_member_partial_read(cloud_test_catalog_upload, fetched_bytes, tmp_p
 
     assert 0 < fetched_bytes[0] < len(data) // 2
     assert (info.width, info.height, info.format) == (1500, 1500, "PNG")
+
+
+@pytest.fixture
+def uploaded_tar_member(
+    cloud_test_catalog_upload, fetched_bytes, tmp_path, monkeypatch
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+    monkeypatch.setattr(client.fs, "default_block_size", 2 * 1024 * 1024)
+
+    def upload_member(data, padding=0):
+        tar_path = tmp_path / "member.tar"
+        tar_path.write_bytes(
+            make_tar({"member.bin": data, "padding.bin": bytes(padding)})
+        )
+        ctc.src.fs.put_file(str(tar_path), str(ctc.src / tar_path.name))
+        parent = File(source=ctc.src_uri, path=tar_path.name)
+        parent._set_stream(ctc.catalog, caching_enabled=False)
+        member = next(process_tar(parent))
+        member._set_stream(ctc.catalog, caching_enabled=False)
+        fetched_bytes[:] = [0, 0]
+        return member
+
+    return upload_member
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize("size", [0, 100 * 1024])
+@pytest.mark.parametrize("block_size", [None, 0, 256 * 1024])
+def test_tar_member_open_read_ahead(
+    uploaded_tar_member,
+    fetched_bytes,
+    size,
+    block_size,
+    record_property,
+):
+    data = b"m" * size
+    member = uploaded_tar_member(data, padding=4 * 1024 * 1024)
+
+    with member.open(block_size=block_size) as stream:
+        assert stream.read() == data
+
+    record_property("fetched_bytes", fetched_bytes[0])
+    record_property("range_fetches", fetched_bytes[1])
+    if not size:
+        assert fetched_bytes == [0, 0]
+    else:
+        expected_block = size if block_size is None else block_size
+        assert (
+            size <= fetched_bytes[0] <= size + expected_block + io.DEFAULT_BUFFER_SIZE
+        )
+        if block_size == 0:
+            assert fetched_bytes[0] == size
+        elif block_size is not None:
+            assert fetched_bytes[0] >= block_size
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_tar_member_large_sequential_read_ahead(
+    uploaded_tar_member, fetched_bytes, record_property
+):
+    size = 6 * 1024 * 1024
+    data = bytes(size)
+    member = uploaded_tar_member(data)
+    with member.open() as stream:
+        assert b"".join(iter(lambda: stream.read(128 * 1024), b"")) == data
+        assert stream.read() == b""
+
+    record_property("fetched_bytes", fetched_bytes[0])
+    record_property("range_fetches", fetched_bytes[1])
+    assert size <= fetched_bytes[0] <= size + 5 * 1024 * 1024 + 128 * 1024
+    assert 0 < fetched_bytes[1] <= 2
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)

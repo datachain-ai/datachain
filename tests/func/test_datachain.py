@@ -1580,7 +1580,7 @@ def test_read_parquet_columns_fetch_only_those_columns(
     file = _put_parquet(ctc, "wide.parquet", table, row_group_size=10_000)
     uri = f"{ctc.src_uri}/wide.parquet"
     chain = dc.read_parquet(uri, columns=["c3"], session=ctc.session)
-    fetched_bytes[0] = 0
+    fetched_bytes[:] = [0, 0]
 
     values = chain.order_by("source.index").to_values("c3")
 

@@ -111,7 +111,9 @@ zarr = [
 ]
 tests = [
   "datachain[torch,audio,remote,vector,hf,video,postgres,zarr]",
-  "pytest>=8,<10",
+  # pytest-benchmark and pytest-codspeed use internals changed in pytest 9.2.
+  # TODO(#2113): Remove <9.2 once both plugins release compatible versions and CI passes.
+  "pytest>=8,<9.2",
   "pytest-asyncio",
   "pytest-sugar>=0.9.6",
   "pytest-cov>=4.1.0",
@@ -172,6 +174,7 @@ namespaces = false
 
 [tool.pytest.ini_options]
 addopts = "-rfEs -m 'not examples' --benchmark-skip --ignore=local"
+asyncio_default_fixture_loop_scope = "function"
 env_override_existing_values = true
 env_files = "local/.env.test"
 markers = [
