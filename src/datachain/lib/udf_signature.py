@@ -195,7 +195,10 @@ class UdfSignature:  # noqa: PLW1641
         else:
             func = udf_func
 
-        sign = inspect.signature(func)
+        try:  # resolve postponed annotations (`from __future__ import annotations`)
+            sign = inspect.signature(func, eval_str=True)
+        except (NameError, SyntaxError, TypeError):
+            sign = inspect.signature(func)
 
         input_map = {prm.name: prm.annotation for prm in sign.parameters.values()}
         is_iterator = False

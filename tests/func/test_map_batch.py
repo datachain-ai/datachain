@@ -289,3 +289,55 @@ def test_map_batch_distributes_inference_to_all_workers(test_session_tmpfile, tm
     )
     assert len(result) == 64
     assert len(set(result)) == 4
+
+
+@pytest.mark.parametrize("batched_first", [True, False])
+def test_map_batch_shared_mapper_instance(test_session, batched_first):
+    class Twice(dc.Mapper):
+        def process(self, value):
+            if isinstance(value, list):
+                return [v * 2 for v in value]
+            return value * 2
+
+    mapper = Twice()
+    source = dc.read_values(value=[1, 2, 3], session=test_session)
+
+    def batched():
+        return source.map(result=mapper, output=int, batch=2)
+
+    def scalar():
+        return source.map(result=mapper, output=int)
+
+    first, second = (batched(), scalar()) if batched_first else (scalar(), batched())
+    for chain in (first, second):
+        assert sorted(chain.to_values("result")) == [2, 4, 6]
+
+
+def test_map_batch_string_annotations(test_session):
+    def twice(value: "list[int]") -> "list[int]":
+        return [v * 2 for v in value]
+
+    result = (
+        dc.read_values(value=[1, 2, 3], session=test_session)
+        .map(result=twice, batch=2)
+        .order_by("value")
+        .to_values("result")
+    )
+    assert result == [2, 4, 6]
+
+
+def test_map_scalar_ignores_lists_in_setup_values(test_session):
+    cycle: list = []
+    cycle.append(cycle)
+
+    def size(value: int, state: list) -> int:
+        return value + len(state)
+
+    result = (
+        dc.read_values(value=[1, 2], session=test_session)
+        .setup(state=lambda: cycle)
+        .map(result=size)
+        .order_by("value")
+        .to_values("result")
+    )
+    assert result == [2, 3]

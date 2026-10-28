@@ -464,36 +464,40 @@ def noop(*args, **kwargs):
     pass
 
 
+def _row_files(row: Iterable, batched: bool) -> Iterator[File]:
+    """Files of a prepared row; a batched map's row holds a list per parameter."""
+    for obj in row:
+        if isinstance(obj, File):
+            yield obj
+        elif batched and isinstance(obj, list):
+            yield from (item for item in obj if isinstance(item, File))
+
+
 async def _prefetch_input(
     row: T,
     download_cb: Callback | None = None,
     after_prefetch: "Callable[[], None]" = noop,
+    batched: bool = False,
 ) -> T:
-    for obj in row:
-        if isinstance(obj, (list, tuple)):
-            await _prefetch_input(obj, download_cb, after_prefetch)
-        elif isinstance(obj, File) and obj.path:
-            try:
-                if await obj._prefetch(download_cb):
-                    after_prefetch()
-            except FileError as e:
-                logger.warning(
-                    "Skipping prefetch for '%s/%s': %s", obj.source, obj.path, e
-                )
+    for obj in _row_files(row, batched):  # type: ignore[arg-type]
+        if not obj.path:
+            continue
+        try:
+            if await obj._prefetch(download_cb):
+                after_prefetch()
+        except FileError as e:
+            logger.warning("Skipping prefetch for '%s/%s': %s", obj.source, obj.path, e)
     return row
 
 
-def _remove_prefetched(row: T) -> None:
-    for obj in row:
-        if isinstance(obj, (list, tuple)):
-            _remove_prefetched(obj)
-        elif isinstance(obj, File):
-            catalog = obj._catalog
-            assert catalog is not None
-            try:
-                catalog.cache.remove(obj)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("Failed to remove prefetched item %r: %s", obj.name, e)
+def _remove_prefetched(row: T, batched: bool = False) -> None:
+    for obj in _row_files(row, batched):  # type: ignore[arg-type]
+        catalog = obj._catalog
+        assert catalog is not None
+        try:
+            catalog.cache.remove(obj)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to remove prefetched item %r: %s", obj.name, e)
 
 
 def _prefetch_inputs(
@@ -502,6 +506,7 @@ def _prefetch_inputs(
     download_cb: Callback | None = None,
     after_prefetch: Callable[[], None] | None = None,
     remove_prefetched: bool = False,
+    batched: bool = False,
 ) -> "abc.Generator[T, None, None]":
     if not prefetch:
         yield from prepared_inputs
@@ -513,7 +518,12 @@ def _prefetch_inputs(
             increment_file_count: Callable[[], None] = download_cb.increment_file_count
             after_prefetch = increment_file_count
 
-    f = partial(_prefetch_input, download_cb=download_cb, after_prefetch=after_prefetch)
+    f = partial(
+        _prefetch_input,
+        download_cb=download_cb,
+        after_prefetch=after_prefetch,
+        batched=batched,
+    )
     mapper = AsyncMapper(f, prepared_inputs, workers=prefetch)
     with closing(mapper.iterate()) as row_iter:
         for row in row_iter:
@@ -521,7 +531,7 @@ def _prefetch_inputs(
                 yield row  # type: ignore[misc]
             finally:
                 if remove_prefetched:
-                    _remove_prefetched(row)
+                    _remove_prefetched(row, batched)
 
 
 def _get_cache(
@@ -597,6 +607,7 @@ class Mapper(UDFBase):
             self.prefetch,
             download_cb=download_cb,
             remove_prefetched=bool(self.prefetch) and not cache,
+            batched=self.input_batch > 1,
         )
 
         try:

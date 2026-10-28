@@ -1074,7 +1074,10 @@ class DataChain:
             udf_obj = self._udf_to_obj(
                 Mapper, func, params, output, signal_map, batch=batch
             )
-        udf_obj.input_batch = batch
+        if batch > 1:
+            # a user's Mapper instance may also be used by other, unbatched chains
+            udf_obj = copy.copy(udf_obj)
+            udf_obj.input_batch = batch
         if (prefetch := self._settings.prefetch) is not None:
             udf_obj.prefetch = prefetch
 
