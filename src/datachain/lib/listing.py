@@ -45,12 +45,11 @@ logging.getLogger("gcsfs").setLevel(logging.CRITICAL)
 
 
 def calc_fingerprint(session: "Session", dataset: "DatasetRecord", version: str) -> int:
-    """Compute an order-independent content fingerprint for a listing version.
+    """Return an order-independent fingerprint of a listing version.
 
-    Uses file path, ``is_latest`` and version (if available) or etag as the
-    content identifier. Version is preferred over etag because GCS changes etags
-    on metadata-only updates such as storage class changes. Where a version's
-    content can change in place (Azure page and append blobs), etag is used too.
+    Each file adds its path, its version id (or etag if it has none) and whether
+    it is the latest version. The etag is added too unless the client's version
+    ids guarantee the content.
     """
     # Inline imports: lib.listing sits below lib.dc / query.dataset / func in the
     # import graph (catalog.catalog imports this module during init), so hoisting
