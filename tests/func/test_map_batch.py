@@ -389,7 +389,10 @@ def test_batch_map_default_and_positional_batch(test_session):
     assert calls == [1000, 1]
     calls.clear()
     assert sorted(
-        source.limit(3).batch_map(sizes, None, {"result": int}, 1).to_values("result")
+        source.order_by("value")
+        .limit(3)
+        .batch_map(sizes, None, {"result": int}, 1)
+        .to_values("result")
     ) == [0, 1, 2]
     assert calls == [1, 1, 1]
 
@@ -549,6 +552,7 @@ def test_batch_map_does_not_prefetch_setup_collections(
             references=lambda: [dc.File(source=tmp_path.as_uri(), path="reference.txt")]
         )
         .batch_map(result=identity, batch=2)
+        .order_by("value")
         .to_values("result")
     )
     assert result == [1, 2, 3]
@@ -658,5 +662,6 @@ def test_batch_map_accepts_any_element_annotation(test_session):
     assert (
         dc.read_values(value=[1, 2, 3], session=test_session)
         .batch_map(result=encode, batch=2)
+        .order_by("value")
         .to_values("result")
     ) == [2, 4, 6]
