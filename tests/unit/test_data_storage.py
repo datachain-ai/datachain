@@ -103,39 +103,29 @@ def test_list_tables(catalog):
 
 
 @skip_if_not_sqlite
-def test_sqlite_insert_into_does_not_materialize_ids(catalog, monkeypatch):
+def test_sqlite_insert_into_after_write_from_another_connection(
+    warehouse_tmpfile, monkeypatch
+):
     from datachain.data_storage.sqlite import SQLiteWarehouse
 
-    warehouse = catalog.warehouse
+    warehouse = warehouse_tmpfile
     monkeypatch.setattr(SQLiteWarehouse, "INSERT_BATCH_SIZE", 3)
 
     src = warehouse.create_udf_table([sqlalchemy.Column("val", Int)])
     dst = warehouse.create_udf_table([sqlalchemy.Column("val", Int)])
+    other_table = warehouse.create_udf_table([sqlalchemy.Column("val", Int)])
     warehouse.insert_rows(src, [{"val": i} for i in range(10)])
     warehouse.insert_rows_done(src)
 
-    class NoFetchAll:
-        def __init__(self, cursor):
-            self._cursor = cursor
-
-        def __iter__(self):
-            return iter(self._cursor)
-
-        def fetchall(self):
-            raise AssertionError("ids must not be loaded into memory at once")
-
-    original_execute = warehouse.db.execute
-
-    def execute(query, *args, **kwargs):
-        cursor = original_execute(query, *args, **kwargs)
-        return NoFetchAll(cursor) if str(query).startswith("SELECT") else cursor
-
-    monkeypatch.setattr(warehouse.db, "execute", execute)
-
     progress = []
-    warehouse.insert_into(dst, sqlalchemy.select(src), progress_cb=progress.append)
+    with warehouse.clone() as other:
 
-    monkeypatch.undo()
+        def progress_cb(n):
+            progress.append(n)
+            other.db.execute(other_table.insert().values(val=n))
+
+        warehouse.insert_into(dst, sqlalchemy.select(src), progress_cb=progress_cb)
+
     assert sorted(r[0] for r in warehouse.db.execute(sqlalchemy.select(dst.c.val))) == (
         list(range(10))
     )
