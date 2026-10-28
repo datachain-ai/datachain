@@ -29,7 +29,7 @@ def validate_cloud_bucket_name(uri: str) -> None:
 
 
 def split_uri_pattern(uri: str) -> tuple[str, str | None]:
-    """Split a URI into base path and glob pattern."""
+    """Split a URI into base and pattern; a glob base ends with a directory slash."""
     if not any(char in uri for char in ["*", "?", "[", "{", "}"]):
         return uri, None
 
@@ -56,7 +56,7 @@ def split_uri_pattern(uri: str) -> tuple[str, str | None]:
             base = scheme_part + "/".join(path_segments[:pattern_start_idx])
             pattern = "/".join(path_segments[pattern_start_idx:])
 
-        return base, pattern
+        return base + "/", pattern
 
     path_segments = uri.split("/")
 
@@ -69,7 +69,11 @@ def split_uri_pattern(uri: str) -> tuple[str, str | None]:
     if pattern_start_idx is None:
         return uri, None
 
-    base = "/".join(path_segments[:pattern_start_idx]) if pattern_start_idx > 0 else "/"
+    base = (
+        "/".join(path_segments[:pattern_start_idx]) + "/"
+        if pattern_start_idx > 0
+        else "/"
+    )
     pattern = "/".join(path_segments[pattern_start_idx:])
 
     return base, pattern
