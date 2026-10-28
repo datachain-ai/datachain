@@ -346,31 +346,37 @@ def test_read_special_chars_prefix_after_parent_listed(tmp_dir):
     assert [f.name for f in files] == ["file"]
 
 
-@pytest.mark.parametrize("operation", ["read", "catalog"])
-def test_relative_glob_scans_working_directory(
-    test_session, tmp_path, monkeypatch, mocker, operation
-):
+@pytest.fixture
+def working_directory_csv(tmp_path, monkeypatch):
     from datachain.client.local import FileClient
 
     (tmp_path / "data.csv").write_text("data")
     monkeypatch.chdir(tmp_path)
-    scanned = []
+    scandir = FileClient.scandir
 
-    async def scandir(client, start_prefix, method="default"):
+    async def scan_working_directory(client, start_prefix, method="default"):
+        # Guard against a regression scanning the filesystem root before filtering.
         assert Path(client.name) == tmp_path
-        scanned.append((client.name, start_prefix))
-        yield [client.get_file_info("data.csv")]
+        async for page in scandir(client, start_prefix, method=method):
+            yield page
 
-    mocker.patch.object(FileClient, "scandir", scandir)
-    if operation == "read":
-        assert dc.read_storage("*.csv", session=test_session).to_values(
-            "file.path"
-        ) == ["data.csv"]
-    else:
-        rows = [
-            row
-            for _, result in test_session.catalog.ls(["*.csv"], fields=["name"])
-            for row in result
-        ]
-        assert rows == [("data.csv",)]
-    assert len(scanned) == 1
+    monkeypatch.setattr(FileClient, "scandir", scan_working_directory)
+
+
+def test_read_relative_glob_scans_working_directory(
+    test_session, working_directory_csv
+):
+    (file,) = dc.read_storage("*.csv", session=test_session).to_values("file")
+    assert file.path == "data.csv"
+    assert file.read_text() == "data"
+
+
+def test_catalog_relative_glob_scans_working_directory(
+    test_session, working_directory_csv
+):
+    rows = [
+        row
+        for _, result in test_session.catalog.ls(["*.csv"], fields=["name"])
+        for row in result
+    ]
+    assert rows == [("data.csv",)]

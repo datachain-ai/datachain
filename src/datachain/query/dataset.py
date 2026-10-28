@@ -2677,7 +2677,7 @@ class DatasetQuery:
     ) -> None:
         self.session = Session.get(session, catalog=catalog, in_memory=in_memory)
         if catalog is not None and catalog is not self.session.catalog:
-            self.session = self.session.with_catalog(catalog)
+            self.session = self.session._with_catalog(catalog)
         self.catalog = self.session.catalog
         self.steps: list[Step] = list(steps)
         self._chunk_index: int | None = None

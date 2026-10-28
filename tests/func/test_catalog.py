@@ -1154,21 +1154,50 @@ def test_cp_dataset_from_filesystem_root(test_session, tmp_path):
     assert (output / path).read_text() == "root file contents"
 
 
+@pytest.fixture
+def literal_brace_folder(cloud_test_catalog, monkeypatch):
+    ctc = cloud_test_catalog
+    uri = f"{ctc.src_uri}/a{{b/"
+    client_cls = Client.get_implementation(uri)
+    expected_name, expected_path = client_cls.split_url(uri)
+    scandir = client_cls.scandir
+
+    async def scan_literal_folder(client, start_prefix, method="default"):
+        # Returning x.txt alone would also pass after scanning the whole parent.
+        assert client.name == expected_name
+        assert start_prefix == expected_path.rstrip("/")
+        async for page in scandir(client, start_prefix, method=method):
+            yield page
+
+    monkeypatch.setattr(client_cls, "scandir", scan_literal_folder)
+    return ctc, uri
+
+
 @pytest.mark.parametrize("cloud_type", ["file", "s3"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
 @pytest.mark.parametrize(
     "tree", [{"a{b": {"x.txt": "x"}, "sibling": {"x.txt": "s"}}], indirect=True
 )
-def test_catalog_glob_lists_only_literal_brace_folder(cloud_test_catalog):
-    ctc = cloud_test_catalog
-    uri = f"{ctc.src_uri}/a{{b/"
+def test_catalog_glob_lists_only_literal_brace_folder(literal_brace_folder):
+    ctc, uri = literal_brace_folder
     rows = [
         row
         for _, result in ctc.catalog.ls([uri + "*.txt"], fields=["name"])
         for row in result
     ]
     assert rows == [("x.txt",)]
-    assert listing_stats(uri, ctc.catalog) == (1, 1)
+
+
+@pytest.mark.parametrize("cloud_type", ["file", "s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize(
+    "tree", [{"a{b": {"x.txt": "x"}, "sibling": {"x.txt": "s"}}], indirect=True
+)
+def test_read_glob_lists_only_literal_brace_folder(literal_brace_folder):
+    ctc, uri = literal_brace_folder
+    (file,) = dc.read_storage(uri + "*.txt", session=ctc.session).to_values("file")
+    assert file.name == "x.txt"
+    assert file.read_text() == "x"
 
 
 @pytest.mark.parametrize(

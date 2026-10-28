@@ -10,7 +10,7 @@ import datachain.lib.listing as listing_lib
 from datachain.client.fsspec import RangeListedClient
 from datachain.lib import storage_config
 from datachain.lib.convert.flatten import flatten
-from datachain.lib.dc import DataChain, storage
+from datachain.lib.dc import DataChain
 from datachain.lib.file import File, FileRow
 from datachain.lib.listing import get_listing
 from datachain.lib.settings import Settings
@@ -397,7 +397,7 @@ def test_listing_save_lists_a_shared_listing_once(test_session, tmp_dir, mocker)
 
 def test_listing_uses_cache_of_active_session(test_session, tmp_dir, mocker):
     (tmp_dir / "a.txt").write_text("a")
-    pages = mocker.spy(storage, "list_pages")
+    pages = mocker.spy(listing_lib, "list_pages")
 
     catalog = test_session.catalog.copy()
     with dc.Session("active", catalog=catalog):
@@ -523,45 +523,15 @@ def test_empty_client_config_replaces_session_config(test_session, tmp_dir):
     }
 
 
-@pytest.mark.parametrize("operation", ["ls", "cli", "read", "save", "dataset"])
-def test_client_config_override_keeps_parent_session_cleanup(
-    catalog, tmp_path, operation
-):
+@pytest.fixture
+def configured_listing_source(catalog, tmp_path):
     source = tmp_path / "input"
     source.mkdir()
     (source / "a.txt").write_text("contents")
     with dc.Session("owner", catalog=catalog) as parent:
-        uri = str(source) + "/"
-        if operation == "ls":
-            list(
-                catalog.ls(
-                    [uri],
-                    fields=["name"],
-                    update=True,
-                    client_config={"use_symlinks": True},
-                )
-            )
-        elif operation == "cli":
-            from datachain.cli import ls
-
-            ls([uri], catalog=catalog, client_config={"use_symlinks": True})
-        elif operation == "read":
-            chain = dc.read_storage(
-                uri, session=parent, client_config={"use_symlinks": True}
-            )
-            chain.exec()
-            assert chain.session.name == parent.name
-        elif operation == "save":
-            dc.list_storage(
-                uri, session=parent, client_config={"use_symlinks": True}
-            ).save()
-        else:
-            saved = dc.read_storage(uri, session=parent).save("source")
-            catalog.create_dataset_from_sources(
-                "copy",
-                [f"ds://{saved.dataset.full_name}"],
-                client_config={"use_symlinks": True},
-            )
+        kept = dc.read_values(value=[1], session=parent).persist()
+        yield parent, str(source) + "/"
+        assert kept.to_values("value") == [1]
         temporary = list(
             catalog.metastore.list_datasets_by_prefix(
                 "session_", include_incomplete=True
@@ -573,3 +543,51 @@ def test_client_config_override_keeps_parent_session_cleanup(
     assert not list(
         catalog.metastore.list_datasets_by_prefix("session_", include_incomplete=True)
     )
+
+
+def test_catalog_config_override_keeps_parent_cleanup(configured_listing_source):
+    parent, uri = configured_listing_source
+    rows = [
+        row
+        for _, result in parent.catalog.ls(
+            [uri],
+            fields=["name"],
+            update=True,
+            client_config={"use_symlinks": True},
+        )
+        for row in result
+    ]
+    assert rows == [("a.txt",)]
+
+
+def test_cli_config_override_keeps_parent_cleanup(configured_listing_source, capsys):
+    from datachain.cli import ls
+
+    parent, uri = configured_listing_source
+    ls([uri], catalog=parent.catalog, client_config={"use_symlinks": True})
+    assert capsys.readouterr().out.strip() == "a.txt"
+
+
+def test_read_config_override_keeps_parent_cleanup(configured_listing_source):
+    parent, uri = configured_listing_source
+    chain = dc.read_storage(uri, session=parent, client_config={"use_symlinks": True})
+    assert chain.to_values("file.path") == ["a.txt"]
+
+
+def test_save_config_override_keeps_parent_cleanup(configured_listing_source):
+    parent, uri = configured_listing_source
+    saved = dc.list_storage(
+        uri, session=parent, client_config={"use_symlinks": True}
+    ).save()
+    assert saved.to_values("file.path") == ["a.txt"]
+
+
+def test_dataset_copy_config_override_keeps_parent_cleanup(configured_listing_source):
+    parent, uri = configured_listing_source
+    saved = dc.read_storage(uri, session=parent).save("source")
+    parent.catalog.create_dataset_from_sources(
+        "copy",
+        [f"ds://{saved.dataset.full_name}"],
+        client_config={"use_symlinks": True},
+    )
+    assert dc.read_dataset("copy", session=parent).to_values("file.path") == ["a.txt"]

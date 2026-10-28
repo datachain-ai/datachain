@@ -548,6 +548,8 @@ def write_listing(
     """Store the listing of the prefix ``uri``, whole, as the listing dataset
     ``ds_name``: the snapshot ``read_storage`` reads and reuses.
     """
+    from datachain.query.session import Session
+
     from .dc.records import create_records_dataset
 
     namespace = session.catalog.metastore.system_namespace_name
@@ -557,22 +559,25 @@ def write_listing(
     # closure (which holds the URI and the client config) -- auto-hashing
     # the seed would let the UDF checkpoint cache return a stale listing
     # across URIs/runs.
-    (
-        create_records_dataset(
-            [{"seed": 0}],
-            schema={"seed": int},
-            content_hash=None,
-            session=session,
-            settings=settings,
-            in_memory=in_memory,
+    # The seed is needed only while writing this snapshot. Clean it up now rather
+    # than keeping its catalog alive until the caller's (possibly global) exit.
+    with Session("listing", catalog=session.catalog) as writer:
+        (
+            create_records_dataset(
+                [{"seed": 0}],
+                schema={"seed": int},
+                content_hash=None,
+                session=writer,
+                settings=settings,
+                in_memory=in_memory,
+            )
+            .settings(
+                prefetch=0,
+                batch_size=LISTING_BATCH_SIZE,
+                namespace=namespace,
+                project=project,
+            )
+            .gen(list_func, output={column: file_type})
+            # for internal listing datasets, we always bump major version
+            .save(ds_name, listing=True, update_version="major")
         )
-        .settings(
-            prefetch=0,
-            batch_size=LISTING_BATCH_SIZE,
-            namespace=namespace,
-            project=project,
-        )
-        .gen(list_func, output={column: file_type})
-        # for internal listing datasets, we always bump major version
-        .save(ds_name, listing=True, update_version="major")
-    )

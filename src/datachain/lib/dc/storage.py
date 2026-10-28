@@ -14,15 +14,6 @@ from datachain.lib.dc.storage_pattern import (
     storage_sources,
 )
 from datachain.lib.file import File, FileRow, FileType, get_file_type
-from datachain.lib.listing import (
-    PathFilter,
-    describe_listing,
-    file_row,
-    get_file_info,
-    list_pages,
-    list_scope_pages,
-    select_paths,
-)
 from datachain.lib.storage_config import client_configs, session_for
 from datachain.query import Session
 
@@ -231,12 +222,14 @@ def _read_storage(
         )
         if dc is None:
             file_values.append(
-                get_file_info(list_uri, cache, client_config=client_config)
+                listing_lib.get_file_info(list_uri, cache, client_config=client_config)
             )
             continue
 
         chains.append(
-            select_paths(dc, path_filter(list_path, glob_pattern, recursive), column)
+            listing_lib.select_paths(
+                dc, path_filter(list_path, glob_pattern, recursive), column
+            )
         )
 
     storage_chain = None if not chains else reduce(lambda x, y: x.union(y), chains)
@@ -342,11 +335,11 @@ class _Object:
 class _Scan:
     """One read of the listing of ``uri``: of the part ``scope`` holds, or all
     of it if None. A row comes once per filter of ``filters`` it passes;
-    ``PathFilter()`` passes every row.
+    ``listing_lib.PathFilter()`` passes every row.
     """
 
     uri: str
-    filters: "tuple[PathFilter, ...]"
+    filters: "tuple[listing_lib.PathFilter, ...]"
     scope: "ListScope | None" = None
 
 
@@ -399,19 +392,19 @@ class Listing:
         cache = session.catalog.cache if session else None
         for source in self._sources(cache):
             if isinstance(source, _Object):
-                info = get_file_info(source.uri, cache, self.client_config)
-                yield [file_row(info)]
+                info = listing_lib.get_file_info(source.uri, cache, self.client_config)
+                yield [listing_lib.file_row(info)]
                 continue
             if source.scope is None:
-                pages = list_pages(source.uri, cache, self.client_config)
+                pages = listing_lib.list_pages(source.uri, cache, self.client_config)
             else:
-                pages = list_scope_pages(
+                pages = listing_lib.list_scope_pages(
                     source.uri, source.scope, cache, self.client_config
                 )
             # current objects, as read_storage's chain: a listing with versions
             # holds old ones too, listed for the version ids of current ones
             latest = self.versions
-            if source.filters == (PathFilter(),) and not latest:
+            if source.filters == (listing_lib.PathFilter(),) and not latest:
                 yield from pages
                 continue
             matchers = [f.matcher() for f in source.filters]
@@ -431,13 +424,15 @@ class Listing:
         """
         from datachain.client.fsspec import RangeListedClient
 
-        scans: dict[str, dict[ListScope | None, list[PathFilter]]] = {}
+        scans: dict[str, dict[ListScope | None, list[listing_lib.PathFilter]]] = {}
         objects: list[_Object | _Scan] = []
         described: dict[str, tuple[str, str, str] | None] = {}
         for uri, pattern in storage_sources(self.uris):
             client = Client.get_client(uri, cache, **self.client_config)  # type: ignore[arg-type]
             if uri not in described:  # braces expand to URIs with one base
-                described[uri] = describe_listing(client, uri, self.versions)
+                described[uri] = listing_lib.describe_listing(
+                    client, uri, self.versions
+                )
             if (listing := described[uri]) is None:
                 objects.append(_Object(uri))
                 continue
@@ -446,7 +441,7 @@ class Listing:
             # filter by that same prefix selects them all
             whole = list_path == Client.parse_url(list_uri)[1]
             paths = (
-                PathFilter()
+                listing_lib.PathFilter()
                 if pattern is None and self.recursive and whole
                 else path_filter(list_path, pattern, self.recursive)
             )
@@ -588,8 +583,7 @@ def _prepare_listing(
 ) -> tuple["DataChain | None", str, str]:
     """Select a snapshot and attach its full-prefix refresh, without reading rows.
 
-    A single file has no snapshot. The URI and path are kept from this selection
-    so Catalog can browse the same snapshot without selecting it again.
+    A single file has no snapshot. Return its URI and the path used to filter rows.
     """
     from .datasets import read_dataset
 

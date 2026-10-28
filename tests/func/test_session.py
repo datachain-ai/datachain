@@ -1,6 +1,10 @@
+import gc
+from weakref import ref
+
 import pytest
 
 import datachain as dc
+from datachain.catalog import Catalog
 from datachain.query.session import Session
 
 
@@ -40,6 +44,7 @@ def test_catalog_inside_another_session_keeps_its_database_and_cleanup(
     for owner in ["first", "second"]:
         with Session(owner, catalog=other) as parent:
             assert parent.catalog.metastore is not catalog.metastore
+            kept = dc.read_values(value=[1], session=catalog.session).persist()
             rows = [
                 row
                 for _, result in catalog.ls(
@@ -48,6 +53,7 @@ def test_catalog_inside_another_session_keeps_its_database_and_cleanup(
                 for row in result
             ]
             assert rows == [("data.txt",)]
+            assert kept.to_values("value") == [1]
             assert catalog.session.catalog is catalog
             assert catalog.session.name == parent.name
             assert list(
@@ -57,3 +63,47 @@ def test_catalog_inside_another_session_keeps_its_database_and_cleanup(
             catalog.metastore.list_datasets_by_prefix(parent.get_temp_prefix())
         )
     assert list(catalog.listings())
+
+
+def test_global_listing_releases_catalogs_and_temporary_datasets(catalog, tmp_path):
+    # The process-wide job hook already retains its original session/catalog.
+    Session.get(catalog=catalog).get_or_create_job()
+    catalogs = []
+    for i in range(5):
+        folder = tmp_path / str(i)
+        folder.mkdir()
+        (folder / "file.txt").write_text("contents")
+        with Catalog(
+            metastore=catalog.metastore.clone(),
+            warehouse=catalog.warehouse.clone(),
+        ) as other:
+            rows = [
+                row
+                for _, result in other.ls([str(folder) + "/"], fields=["name"])
+                for row in result
+            ]
+            assert rows == [("file.txt",)]
+            assert not list(other.metastore.list_datasets_by_prefix("session_"))
+            catalogs.append(ref(other))
+        del other
+    gc.collect()
+    assert all(c() is None for c in catalogs)
+    assert len(list(catalog.listings())) == 5
+
+
+def test_failed_listing_cleans_seed_and_preserves_parent(catalog, tmp_path, mocker):
+    from datachain.lib import listing
+
+    (tmp_path / "file.txt").write_text("contents")
+    with Session("owner", catalog=catalog) as parent:
+        kept = dc.read_values(value=[1], session=parent).persist()
+        mocker.patch.object(
+            listing, "list_pages", side_effect=RuntimeError("scan failed")
+        )
+        with pytest.raises(RuntimeError, match="scan failed"):
+            list(catalog.ls([str(tmp_path) + "/"], fields=["name"]))
+        assert Session.get() is parent
+        assert kept.to_values("value") == [1]
+        temporary = list(catalog.metastore.list_datasets_by_prefix("session_"))
+        assert all(d.name.startswith(parent.get_temp_prefix()) for d in temporary)
+    assert not list(catalog.metastore.list_datasets_by_prefix("session_"))

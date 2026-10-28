@@ -1,4 +1,6 @@
+import gc
 import re
+from weakref import ref
 
 import pytest
 
@@ -198,9 +200,9 @@ def test_get_or_create_job_raises_in_studio_without_env(catalog, monkeypatch):
 @pytest.mark.parametrize("catalog_view", [False, True])
 def test_reenter_session_cleans_each_temporary_scope(catalog, catalog_view):
     parent = Session("reenter", catalog=catalog)
-    session = parent.with_catalog(catalog.copy()) if catalog_view else parent
+    session = parent._with_catalog(catalog.copy()) if catalog_view else parent
     for _ in range(2):
-        with session:
+        with parent:
             chain = dc.read_values(value=[1], session=session).persist()
             temporary_name = chain.name
             assert catalog.get_dataset(temporary_name)
@@ -208,16 +210,43 @@ def test_reenter_session_cleans_each_temporary_scope(catalog, catalog_view):
             catalog.get_dataset(temporary_name)
 
 
+# db.is_closed is SQLite-specific; other backends have different connection lifetimes.
 @skip_if_not_sqlite
-def test_readonly_session_view_leaves_closed_catalog_closed(catalog):
+def test_session_cleanup_does_not_reopen_closed_sqlite_catalog(catalog):
     with Session("owner", catalog=catalog) as parent:
         dc.read_values(value=[1], session=parent).save("source")
         with Catalog(
             metastore=catalog.metastore.clone(),
             warehouse=catalog.warehouse.clone(),
         ) as borrowed:
-            chain = dc.read_dataset("source", session=parent.with_catalog(borrowed))
+            chain = dc.read_dataset("source", session=parent._with_catalog(borrowed))
             assert chain.to_values("value") == [1]
         assert borrowed.metastore.db.is_closed
     assert borrowed.metastore.db.is_closed
     assert borrowed.warehouse.db.is_closed
+
+
+def test_catalog_view_keeps_cleanup_owner_alive(catalog):
+    parent = Session("owner", catalog=catalog)
+    view = parent._with_catalog(catalog.copy())
+    owner = ref(parent)
+    del parent
+    gc.collect()
+    assert owner() is not None
+    with owner():
+        chain = dc.read_values(value=[1], session=view).persist()
+        temporary_name = chain.name
+        assert chain.to_values("value") == [1]
+    with pytest.raises(DatasetNotFoundError):
+        catalog.get_dataset(temporary_name)
+
+
+def test_catalog_view_cannot_exit_parent_scope(catalog):
+    with Session("owner", catalog=catalog) as parent:
+        chain = dc.read_values(value=[1], session=parent).persist()
+        view = parent._with_catalog(catalog.copy())
+        with pytest.raises(RuntimeError, match="parent Session"):
+            with view:
+                pass
+        assert Session.get() is parent
+        assert chain.to_values("value") == [1]

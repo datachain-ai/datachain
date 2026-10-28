@@ -98,17 +98,22 @@ class Session:
         self._cleanup_catalogs: list[Catalog] = [self.catalog]
         Session._ALL_SESSIONS.add(self)
 
-    def with_catalog(self, catalog: "Catalog") -> "Session":
+    def _with_catalog(self, catalog: "Catalog") -> "Session":
         """Use another catalog without creating a new temporary-dataset scope."""
         if catalog is self.catalog:
             return self
         view = copy(self)
         view.catalog = catalog
+        # Keep the cleanup owner alive; only owners are in _ALL_SESSIONS.
         view._parent = self
+        # The owner cleans up temporary datasets created through this view.
+        view._cleanup_catalogs = self._cleanup_catalogs
         view.is_new_catalog = False
         return view
 
     def __enter__(self):
+        if self._parent is not None:
+            raise RuntimeError("Enter the parent Session, not its catalog view")
         # Push the current context onto the stack
         Session.SESSION_CONTEXTS.append(self)
 
@@ -309,6 +314,8 @@ class Session:
             # suppress error when metastore has been reset during testing
             except TableMissingError:
                 pass
+        # A retained chain/view must not keep other catalogs alive after cleanup.
+        self._cleanup_catalogs[:] = [self.catalog]
 
     @classmethod
     def active(cls) -> "Session | None":

@@ -42,9 +42,9 @@ def normalize_storage_uri(uri: str | os.PathLike[str]) -> str:
     return uri
 
 
-def split_uri_pattern(uri: str, *, braces: bool = True) -> tuple[str, str | None]:
+def split_uri_pattern(uri: str) -> tuple[str, str | None]:
     """Split a URI into base path and glob pattern."""
-    if not any(char in uri for char in ["*", "?", "[", "{", "}"]):
+    if not glob.has_magic(uri):
         return uri, None
 
     if "://" in uri:
@@ -55,8 +55,7 @@ def split_uri_pattern(uri: str, *, braces: bool = True) -> tuple[str, str | None
 
         pattern_start_idx = None
         for i, segment in enumerate(path_segments):
-            # Check for glob patterns including brace expansion
-            if glob.has_magic(segment) or (braces and "{" in segment):
+            if glob.has_magic(segment):
                 pattern_start_idx = i
                 break
 
@@ -76,7 +75,7 @@ def split_uri_pattern(uri: str, *, braces: bool = True) -> tuple[str, str | None
 
     pattern_start_idx = None
     for i, segment in enumerate(path_segments):
-        if glob.has_magic(segment) or (braces and "{" in segment):
+        if glob.has_magic(segment):
             pattern_start_idx = i
             break
 

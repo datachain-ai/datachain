@@ -47,8 +47,8 @@ def ls_local(
 ):
     from datachain import listings
 
+    catalog = catalog or Session.get().catalog
     if sources:
-        catalog = catalog or Session.get().catalog
         actual_sources = list(
             ls_urls(
                 sources,
@@ -76,7 +76,7 @@ def ls_local(
                     print(format_ls_entry(entry))
     else:
         # Collect results in a list here to prevent interference from `tqdm` and `print`
-        listing = listings().to_list("listing")
+        listing = listings(session=catalog.session).to_list("listing")
         for (ls,) in listing:
             print(format_ls_entry(f"{ls.uri}@v{ls.version}"))  # type: ignore[union-attr]
 
@@ -164,7 +164,7 @@ def _ls_urls_flat(
     from datachain.node import long_line_str
 
     config = catalog.client_config if client_config is None else client_config
-    prepared_listings: set[str] = set()
+    _prepared_listings: set[str] = set()
     for source in sources:
         client_cls = Client.get_implementation(source)
         if client_cls.is_root_url(source):
@@ -185,7 +185,7 @@ def _ls_urls_flat(
                 [source],
                 fields=fields,
                 client_config=client_config,
-                prepared_listings=prepared_listings,
+                _prepared_listings=_prepared_listings,
                 **kwargs,
             ):
                 values = [_node_data_to_ls_values(r, long) for r in results]

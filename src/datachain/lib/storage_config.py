@@ -87,7 +87,7 @@ def session_for(
         return session
     catalog = session.catalog.copy()
     catalog.client_config = client_config
-    return session.with_catalog(catalog)
+    return session._with_catalog(catalog)
 
 
 def _session_client_config(session: Session | None, client_config: dict | None) -> dict:
