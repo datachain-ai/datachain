@@ -1621,9 +1621,9 @@ def _put_parquet(ctc, name, table, **kwargs):
 
 
 def _read_recorded(ctc, file):
-    return dc.read_values(file=[file], session=ctc.session).parse_tabular(
-        format="parquet", columns=["value"]
-    )
+    # Without prefetch, small files are read in parts too.
+    chain = dc.read_values(file=[file], session=ctc.session).settings(prefetch=0)
+    return chain.parse_tabular(format="parquet", columns=["value"])
 
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)

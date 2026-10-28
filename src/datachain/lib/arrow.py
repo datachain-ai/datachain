@@ -112,6 +112,7 @@ class ArrowGenerator(Generator):
         source: bool = True,
         nrows: int | None = None,
         columns: list[str] | None = None,
+        prefetch_max_size: int | None = None,
         **kwargs,
     ):
         """
@@ -124,9 +125,12 @@ class ArrowGenerator(Generator):
         source : Whether to include info about the source file.
         nrows : Optional row limit.
         columns : Optional columns to read from each file by name, in output order.
+        prefetch_max_size : Files larger than this, or of unknown size, aren't
+            prefetched.
         kwargs: Parameters to pass to pyarrow.dataset.dataset.
         """
         super().__init__()
+        self._prefetch_max_size = prefetch_max_size
         self.input_schema = input_schema
         self.output_schema = output_schema
         self.source = source

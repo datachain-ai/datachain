@@ -471,7 +471,7 @@ async def _prefetch_input(
         if (
             isinstance(obj, File)
             and obj.path
-            and (max_size is None or obj.size <= max_size)
+            and (max_size is None or 0 < obj.size <= max_size)
         ):
             try:
                 if await obj._prefetch(download_cb):
@@ -776,7 +776,7 @@ class Generator(UDFBase):
 
     is_output_batched = True
     prefetch: int = 2
-    # Files larger than this aren't prefetched.
+    # Files larger than this, or of unknown size, aren't prefetched.
     _prefetch_max_size: int | None = None
 
     def run(

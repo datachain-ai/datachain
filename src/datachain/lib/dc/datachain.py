@@ -2618,19 +2618,21 @@ class DataChain:
         if source:
             output = {"source": ArrowRow} | output  # type: ignore[assignment,operator]
 
-        generator = ArrowGenerator(
-            schema,
-            model,
-            source,
-            nrows,
-            columns=read,
-            parse_options=parse_options,
-            **kwargs,
-        )
         # Prefetch downloads whole files, so a partial read prefetches only small ones.
-        if nrows or (columns is not None and format == "parquet"):
-            generator._prefetch_max_size = PARTIAL_READ_PREFETCH_MAX_SIZE
-        return self.gen(generator, output=output)  # type: ignore[arg-type]
+        partial = nrows or (columns is not None and format == "parquet")
+        return self.gen(  # type: ignore[arg-type]
+            ArrowGenerator(
+                schema,
+                model,
+                source,
+                nrows,
+                columns=read,
+                parse_options=parse_options,
+                prefetch_max_size=PARTIAL_READ_PREFETCH_MAX_SIZE if partial else None,
+                **kwargs,
+            ),
+            output=output,
+        )
 
     def to_parquet(
         self,

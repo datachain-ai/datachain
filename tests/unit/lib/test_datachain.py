@@ -35,6 +35,7 @@ from datachain.error import (
     ProjectCreateNotAllowedError,
 )
 from datachain.func import string
+from datachain.lib.arrow import ArrowGenerator
 from datachain.lib.data_model import DataModel
 from datachain.lib.dc import C, DatasetPrepareError, Sys
 from datachain.lib.dc.listings import read_listing_dataset
@@ -2617,28 +2618,29 @@ def test_read_csv_nrows_keep_the_chain_prefetch(tmp_dir, test_session):
 
 
 @pytest.fixture
-def prefetched(monkeypatch):
-    names = []
-    prefetch = File._prefetch
+def cached_when_parsed(monkeypatch):
+    cached = {}
+    process = ArrowGenerator.process
 
-    async def record(self, *args, **kwargs):
-        names.append(self.name)
-        return await prefetch(self, *args, **kwargs)
+    def record(self, file):
+        cached[file.name] = file.get_local_path() is not None
+        yield from process(self, file)
 
-    monkeypatch.setattr(File, "_prefetch", record)
-    return names
+    monkeypatch.setattr(ArrowGenerator, "process", record)
+    return cached
 
 
+@pytest.mark.parametrize("prefetch", [0, 2])
 @pytest.mark.parametrize(
-    "fmt,read",
+    "fmt,parse,values",
     [
-        ("parquet", lambda uri, s: dc.read_parquet(uri, columns=["a"], session=s)),
-        ("csv", lambda uri, s: dc.read_csv(uri, nrows=1, session=s)),
+        ("parquet", {"format": "parquet", "columns": ["a"]}, [*range(1000), 1]),
+        ("csv", {"format": "csv", "nrows": 1}, [0, 1]),
     ],
-    ids=["read_parquet_columns", "read_csv_nrows"],
+    ids=["parquet_columns", "csv_nrows"],
 )
 def test_partial_reads_prefetch_only_small_files(
-    tmp_dir, test_session, monkeypatch, prefetched, fmt, read
+    tmp_dir, test_session, monkeypatch, cached_when_parsed, fmt, parse, values, prefetch
 ):
     write = pq.write_table if fmt == "parquet" else pa_csv.write_csv
     (tmp_dir / "data").mkdir()
@@ -2647,9 +2649,31 @@ def test_partial_reads_prefetch_only_small_files(
     small = (tmp_dir / "data" / f"small.{fmt}").stat().st_size
     monkeypatch.setattr("datachain.lib.arrow.PARTIAL_READ_PREFETCH_MAX_SIZE", small)
 
-    read((tmp_dir / "data").as_uri(), test_session).count()
+    chain = (
+        dc.read_storage((tmp_dir / "data").as_uri(), session=test_session)
+        .settings(prefetch=prefetch)
+        .parse_tabular(**parse)
+    )
 
-    assert prefetched == [f"small.{fmt}"]
+    assert sorted(chain.to_values("a")) == sorted(values)
+    assert cached_when_parsed == {
+        f"small.{fmt}": prefetch > 0,
+        f"large.{fmt}": False,
+    }
+
+
+def test_partial_reads_dont_prefetch_files_of_unknown_size(
+    tmp_dir, test_session, cached_when_parsed
+):
+    pq.write_table(pa.table({"a": [1]}), tmp_dir / "small.parquet")
+    file = File(source=tmp_dir.as_uri(), path="small.parquet")
+
+    chain = dc.read_values(file=[file], session=test_session).parse_tabular(
+        columns=["a"]
+    )
+
+    assert chain.to_values("a") == [1]
+    assert cached_when_parsed == {"small.parquet": False}
 
 
 def test_read_parquet_columns_are_part_of_the_step(abc_parquet, test_session):
