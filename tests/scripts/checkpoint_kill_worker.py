@@ -49,8 +49,9 @@ def generator(file: dc.File) -> Iterator[int]:
     record("done", num)
 
 
-settings = {"parallel": parallel} if parallel else {}
-source = dc.read_storage(str(root / "files")).order_by("file.path").settings(**settings)
+source = dc.read_storage(str(root / "files")).order_by("file.path")
+if parallel:
+    source = source.settings(parallel=parallel)
 chain = source.map(value=mapper) if kind == "map" else source.gen(value=generator)
 result = chain.save("result")
 (root / "result.json").write_text(json.dumps(sorted(result.to_values("value"))))
