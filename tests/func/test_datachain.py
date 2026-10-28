@@ -1672,6 +1672,46 @@ def test_read_parquet_columns_pinned_version_ignores_stale_etag(
     assert _read_recorded(ctc, stale).to_values("value") == [1]
 
 
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+@pytest.mark.parametrize(
+    "format,first,second",
+    [
+        ("csv", b"old\n1\n", b"new\n2\n"),
+        ("json", b'{"old": 1}\n', b'{"new": 2}\n'),
+    ],
+    ids=["csv", "json"],
+)
+def test_parse_tabular_nrows_reads_the_recorded_version(
+    cloud_test_catalog_upload, format, first, second
+):
+    ctc = cloud_test_catalog_upload
+    old = File.upload(first, f"{ctc.src_uri}/v.{format}", ctc.catalog)
+    File.upload(second, f"{ctc.src_uri}/v.{format}", ctc.catalog)
+
+    chain = dc.read_values(file=[old], session=ctc.session).parse_tabular(
+        format=format, nrows=1
+    )
+
+    assert chain.to_values("old") == [1]
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_parse_tabular_source_row_reads_the_recorded_version(
+    cloud_test_catalog_upload,
+):
+    ctc = cloud_test_catalog_upload
+    old = File.upload(b"old\n1\n", f"{ctc.src_uri}/r.csv", ctc.catalog)
+    chain = dc.read_values(file=[old], session=ctc.session).parse_tabular(
+        format="csv", nrows=1
+    )
+    (row,) = chain.to_values("source")
+    File.upload(b"new\n2\n", f"{ctc.src_uri}/r.csv", ctc.catalog)
+
+    assert row.read() == {"old": 1}
+
+
 # These deprecation warnings occur in the datamodel-code-generator package.
 @pytest.mark.filterwarnings("ignore::pydantic.warnings.PydanticDeprecatedSince20")
 def test_to_read_json(tmp_dir, test_session):
