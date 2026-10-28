@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 import pyarrow as pa
 from fsspec.implementations.local import LocalFileSystem
 from pyarrow._csv import ParseOptions
-from pyarrow.dataset import CsvFileFormat, Dataset, dataset
+from pyarrow.dataset import CsvFileFormat, Dataset, ParquetFileFormat, dataset
 from pyarrow.fs import FileInfo, FileType, FSSpecHandler, PyFileSystem
 
 from datachain import json
@@ -151,7 +151,8 @@ class ArrowGenerator(Generator):
             # this; a read that skips the cache checks it here.
             client.check_unchanged(file)
             fs, fs_path = client.fs, file.get_fs_path()
-            parquet = self.kwargs.get("format") == "parquet"
+            format = self.kwargs.get("format")
+            parquet = format == "parquet" or isinstance(format, ParquetFileFormat)
             if parquet and not isinstance(fs, LocalFileSystem):
                 fs = PyFileSystem(_PartialReadHandler(client, file))
 
