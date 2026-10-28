@@ -72,10 +72,19 @@ def is_parquet(format: Any) -> bool:
 
 
 class _PartialReadHandler(FSSpecHandler):
-    """Opens the recorded version of a file through its client, without read-ahead,
-    so reading some columns of a Parquet file fetches only those columns. pyarrow
-    merges nearby reads itself. HTTP keeps read-ahead for servers without range
-    support."""
+    """Lets pyarrow open the exact File that the reader got from a listing.
+
+    `read_parquet`, `read_csv` and `parse_tabular` run over File rows that
+    `read_storage` lists: one per object, with its path, ETag and, in a bucket
+    that keeps versions, its version. A listing is reused for hours or saved in
+    a dataset, so the object at the path may have changed since. pyarrow's
+    default handler opens whatever the path holds now; this one opens the File
+    through its client, which opens the recorded version.
+
+    It also opens without read-ahead, so reading some columns fetches only those
+    columns; pyarrow merges nearby reads itself. HTTP keeps read-ahead for servers
+    without range support.
+    """
 
     def __init__(self, client: "Client", file: File):
         super().__init__(client.fs)
