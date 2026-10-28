@@ -49,6 +49,7 @@ Plain functions work too:
 def double(value: list[int]) -> list[int]:
     return [v * 2 for v in value]
 
+
 chain = dc.read_values(value=[1, 2, 3]).map(doubled=double, batch=32)
 ```
 
