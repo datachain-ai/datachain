@@ -4,6 +4,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fsspec.asyn import sync
+from huggingface_hub import hf_file_system
+from huggingface_hub.hf_file_system import HfFileSystemFile
 
 from datachain.asyn import get_loop
 from datachain.cache import Cache
@@ -105,3 +107,42 @@ def test_upload_requests_expanded_info_for_returned_file():
     )
     assert file.version == "commit123"
     assert file.last_modified == commit_date
+
+
+def test_tar_member_huggingface_read_ahead(
+    catalog,
+    monkeypatch,
+    small_tar_member_data,
+    small_tar_member,
+    tar_member_range_requests,
+):
+    data, raw = small_tar_member_data
+    client = HfClient("datasets/fictional/fixture", {"token": False}, catalog.cache)
+    fs = client.fs.sync_fs
+    assert fs.block_size is None
+    resolved_path_type = getattr(
+        hf_file_system,
+        "HfFileSystemResolvedRepositoryPath",
+        hf_file_system.HfFileSystemResolvedPath,
+    )
+    monkeypatch.setattr(
+        fs,
+        "resolve_path",
+        lambda *a, **kw: resolved_path_type(
+            repo_type="dataset",
+            repo_id="fictional/fixture",
+            revision="main",
+            path_in_repo="archive.tar",
+        ),
+    )
+    monkeypatch.setattr(fs, "info", lambda *a, **kw: {"size": len(raw), "type": "file"})
+    member = small_tar_member(client)
+    requests = tar_member_range_requests(HfFileSystemFile)
+
+    with member.open() as stream:
+        assert stream.read() == data
+        assert stream.read() == b""
+
+    assert all(isinstance(file, HfFileSystemFile) for file, _, _ in requests)
+    fetched = sum(end - start for _, start, end in requests)
+    assert len(data) <= fetched <= 2 * len(data)

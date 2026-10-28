@@ -21,77 +21,77 @@ def test_split_uri_pattern_no_pattern():
 
 def test_split_uri_pattern_wildcard():
     assert split_uri_pattern("s3://bucket/dir/*.mp3") == (
-        "s3://bucket/dir",
+        "s3://bucket/dir/",
         "*.mp3",
     )
-    assert split_uri_pattern("s3://bucket/*.txt") == ("s3://bucket", "*.txt")
-    assert split_uri_pattern("file:///data/*.json") == ("file:///data", "*.json")
-    assert split_uri_pattern("/local/path/*.csv") == ("/local/path", "*.csv")
+    assert split_uri_pattern("s3://bucket/*.txt") == ("s3://bucket/", "*.txt")
+    assert split_uri_pattern("file:///data/*.json") == ("file:///data/", "*.json")
+    assert split_uri_pattern("/local/path/*.csv") == ("/local/path/", "*.csv")
 
 
 def test_split_uri_pattern_globstar():
-    assert split_uri_pattern("s3://bucket/**/*.mp3") == ("s3://bucket", "**/*.mp3")
+    assert split_uri_pattern("s3://bucket/**/*.mp3") == ("s3://bucket/", "**/*.mp3")
     assert split_uri_pattern("s3://bucket/dir/**/*.txt") == (
-        "s3://bucket/dir",
+        "s3://bucket/dir/",
         "**/*.txt",
     )
     assert split_uri_pattern("file:///data/**/test/*.json") == (
-        "file:///data",
+        "file:///data/",
         "**/test/*.json",
     )
 
 
 def test_split_uri_pattern_brace_expansion():
     assert split_uri_pattern("s3://bucket/*.{mp3,wav}") == (
-        "s3://bucket",
+        "s3://bucket/",
         "*.{mp3,wav}",
     )
     assert split_uri_pattern("s3://bucket/dir/*.{jpg,png,gif}") == (
-        "s3://bucket/dir",
+        "s3://bucket/dir/",
         "*.{jpg,png,gif}",
     )
     assert split_uri_pattern("file:///data/**/*.{json,jsonl}") == (
-        "file:///data",
+        "file:///data/",
         "**/*.{json,jsonl}",
     )
 
 
 def test_split_uri_pattern_question_mark():
     assert split_uri_pattern("s3://bucket/file?.txt") == (
-        "s3://bucket",
+        "s3://bucket/",
         "file?.txt",
     )
     assert split_uri_pattern("s3://bucket/dir/doc??.pdf") == (
-        "s3://bucket/dir",
+        "s3://bucket/dir/",
         "doc??.pdf",
     )
     assert split_uri_pattern("file:///data/test?/file.txt") == (
-        "file:///data",
+        "file:///data/",
         "test?/file.txt",
     )
 
 
 def test_split_uri_pattern_combined():
     assert split_uri_pattern("s3://bucket/**/test?.{mp3,wav}") == (
-        "s3://bucket",
+        "s3://bucket/",
         "**/test?.{mp3,wav}",
     )
     assert split_uri_pattern("s3://bucket/*/dir/**/*.txt") == (
-        "s3://bucket",
+        "s3://bucket/",
         "*/dir/**/*.txt",
     )
 
 
 def test_split_uri_pattern_edge_cases():
-    assert split_uri_pattern("s3://bucket/*") == ("s3://bucket", "*")
-    assert split_uri_pattern("s3://bucket/**") == ("s3://bucket", "**")
+    assert split_uri_pattern("s3://bucket/*") == ("s3://bucket/", "*")
+    assert split_uri_pattern("s3://bucket/**") == ("s3://bucket/", "**")
 
     assert split_uri_pattern("s3://bucket/dir/subdir/*.mp3") == (
-        "s3://bucket/dir/subdir",
+        "s3://bucket/dir/subdir/",
         "*.mp3",
     )
 
-    assert split_uri_pattern("s3://bucket/*/*.mp3") == ("s3://bucket", "*/*.mp3")
+    assert split_uri_pattern("s3://bucket/*/*.mp3") == ("s3://bucket/", "*/*.mp3")
 
 
 def test_expand_brace_pattern():
@@ -207,3 +207,16 @@ def test_expand_brace_pattern_edge_cases():
 )
 def test_list_scope(list_path, pattern, recursive, scope):
     assert list_scope(list_path, pattern, recursive) == scope
+
+
+@pytest.mark.parametrize(
+    "uri,base",
+    [
+        ("s3://bucket/photos//*.jpg", "s3://bucket/photos//"),
+        ("file:///*.jpg", "file:///"),
+        ("/*.jpg", "/"),
+    ],
+)
+def test_glob_base_keeps_directory_boundary(uri, base):
+    # URI splitting only, not filtering of keys with empty segments.
+    assert split_uri_pattern(uri) == (base, "*.jpg")

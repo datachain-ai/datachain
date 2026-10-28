@@ -211,7 +211,9 @@ def values_to_tuples(
     if len(output) > 1:  # type: ignore[arg-type]
         tuple_type = tuple(output_types)
         res_type = tuple[tuple_type]  # type: ignore[valid-type]
-        res_values: Sequence[Any] = list(zip(*fr_map.values(), strict=False))
+        res_values: Sequence[Any] = list(
+            zip(*(fr_map[name] for name in output), strict=False)
+        )
     else:
         res_type = output_types[0]  # type: ignore[misc]
         res_values = next(iter(fr_map.values()))
