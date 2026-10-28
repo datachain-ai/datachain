@@ -45,6 +45,22 @@ class GCSClient(RangeListedClient):
             kwargs["token"] = json.loads(os.environ["DATACHAIN_GCP_CREDENTIALS"])
         if kwargs.pop("anon", False):
             kwargs["token"] = "anon"  # noqa: S105
+        # Read gzip-encoded objects as stored, like S3: GCS sends them as stored only
+        # to requests that accept gzip, and decompressed bytes would disagree with
+        # File.size and break ranged reads.
+        # https://github.com/fsspec/gcsfs/issues/233#issuecomment-4465900826
+        session_kwargs = kwargs.get("session_kwargs") or {}
+        headers = {
+            name: value
+            for name, value in dict(session_kwargs.get("headers") or ()).items()
+            if name.lower() != "accept-encoding"
+        }
+        headers["Accept-Encoding"] = "gzip"
+        kwargs["session_kwargs"] = {
+            **session_kwargs,
+            "auto_decompress": False,
+            "headers": headers,
+        }
 
         return cast("GCSFileSystem", super().create_fs(**kwargs))
 

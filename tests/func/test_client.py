@@ -435,7 +435,12 @@ def test_gcs_client_gets_credentials_from_env(monkeypatch, mocker):
     GCSClient.create_fs()
 
     init.assert_called_once_with(
-        token={"token": "test-credentials-token"}, version_aware=True
+        token={"token": "test-credentials-token"},
+        version_aware=True,
+        session_kwargs={
+            "auto_decompress": False,
+            "headers": {"Accept-Encoding": "gzip"},
+        },
     )
 
 

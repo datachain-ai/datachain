@@ -1,14 +1,22 @@
+import asyncio
+import functools
+import gzip
 import io
+import threading
 from datetime import timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiohttp import web
 from dateutil.parser import isoparse
 from fsspec.asyn import sync
 from fsspec.callbacks import DEFAULT_CALLBACK
 from gcsfs.core import GCSFile
+from gcsfs.extended_gcsfs import BucketType
 
 from datachain.asyn import get_loop
+from datachain.cache import Cache
 from datachain.client import Client
 from datachain.client.gcs import GCSClient
 from datachain.client.writeconfig import WriteConfig
@@ -293,6 +301,108 @@ class _Recording(dict):
     def get(self, key, default=None):
         self.read.add(key)
         return super().get(key, default)
+
+
+_PLAIN = b"hello world " * 400
+_GZIPPED = gzip.compress(_PLAIN)
+
+
+@pytest.fixture
+def gcs_stub_url():
+    async def metadata(request):
+        return web.json_response(
+            {
+                "kind": "storage#object",
+                "bucket": "b",
+                "name": "data.txt",
+                "generation": _VER,
+                "size": str(len(_GZIPPED)),
+                "etag": "e1",
+                "contentEncoding": "gzip",
+                "updated": "2026-10-28T00:00:00Z",
+            }
+        )
+
+    async def media(request):
+        if "gzip" not in request.headers.get("Accept-Encoding", ""):
+            return web.Response(body=_PLAIN)
+        start, end = 0, len(_GZIPPED) - 1
+        if rng := request.headers.get("Range"):
+            first, last = rng.removeprefix("bytes=").split("-")
+            start, end = int(first), int(last or end)
+        return web.Response(
+            status=206 if rng else 200,
+            body=_GZIPPED[start : end + 1],
+            headers={"Content-Encoding": "gzip"},
+        )
+
+    app = web.Application()
+    app.router.add_get("/storage/v1/b/b/o/data.txt", metadata)
+    app.router.add_get("/download/storage/v1/b/b/o/data.txt", media)
+    runner = web.AppRunner(app)
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    run = functools.partial(asyncio.run_coroutine_threadsafe, loop=loop)
+    try:
+        run(runner.setup()).result()
+        run(web.TCPSite(runner, "127.0.0.1", 0).start()).result()
+        yield f"http://127.0.0.1:{runner.addresses[0][1]}"
+    finally:
+        run(runner.cleanup()).result()
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        loop.close()
+
+
+@pytest.fixture
+def stub_client(request, gcs_stub_url, tmp_path, mocker):
+    mocker.patch(
+        "gcsfs.extended_gcsfs.ExtendedGcsFileSystem._get_bucket_type",
+        AsyncMock(return_value=BucketType.UNKNOWN),
+    )
+    client = GCSClient(
+        "b",
+        {
+            "endpoint_url": gcs_stub_url,
+            "token": "anon",
+            "skip_instance_cache": True,
+            "session_kwargs": getattr(request, "param", None),
+        },
+        Cache(str(tmp_path / "cache"), str(tmp_path / "tmp")),
+    )
+    yield client
+    if client.fs._session is not None:
+        sync(get_loop(), client.fs._session.close)
+
+
+_STUB_FILE = File(source="gs://b", path="data.txt", version=_VER, etag="e1")
+
+
+@pytest.mark.parametrize(
+    "stub_client",
+    [
+        None,
+        {"headers": None},
+        {"headers": [("X-Caller", "1")]},
+        {"headers": {"accept-encoding": "identity"}},
+    ],
+    ids=["default", "no-headers", "header-pairs", "caller-accept-encoding"],
+    indirect=True,
+)
+def test_cached_read_of_gzip_encoded_object_keeps_stored_bytes(stub_client):
+    stub_client.put_in_cache(_STUB_FILE)
+
+    assert Path(stub_client.cache.get_path(_STUB_FILE)).read_bytes() == _GZIPPED
+
+
+@pytest.mark.parametrize("offset", [0, 10], ids=["from-start", "seek"])
+def test_uncached_read_of_gzip_encoded_object_keeps_stored_bytes(stub_client, offset):
+    with stub_client.open_object(_STUB_FILE, use_cache=False, block_size=16) as f:
+        f.seek(offset)
+        data = f.read()
+
+    assert data == _GZIPPED[offset:]
 
 
 @pytest.mark.parametrize("version_aware", [False, True])
