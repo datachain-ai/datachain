@@ -10,6 +10,10 @@ import datachain as dc
 chain = dc.read_storage("s3://bucket-name/", type="image")
 ```
 
+`get_info()` streams metadata with the default chain settings. See
+[metadata without downloading](file.md#metadata-without-downloading) for prefetch,
+cache, and format limitations.
+
 ::: datachain.lib.file.ImageFile
 
 ::: datachain.lib.file.Image

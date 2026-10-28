@@ -23,7 +23,7 @@ from datachain.lib.convert.flatten import (
     flatten_value,
     is_optional_model,
 )
-from datachain.lib.file import File, FileError, FileRow
+from datachain.lib.file import AudioFile, File, FileError, FileRow, ImageFile, VideoFile
 from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.utils import AbstractUDF, DataChainParamsError
 from datachain.query.batch import (
@@ -273,6 +273,7 @@ class UDFBase(AbstractUDF):
     is_input_batched = False
     is_output_batched = False
     prefetch: int = 0
+    eager_media: bool = False
     # Class-level default so subclasses that skip super().__init__() still
     # have this attribute; _MultiSignalMapper sets params/output per entry
     # but doesn't call _init(), so _func would otherwise be missing.
@@ -465,9 +466,14 @@ async def _prefetch_input(
     row: T,
     download_cb: Callback | None = None,
     after_prefetch: "Callable[[], None]" = noop,
+    eager_media: bool = True,
 ) -> T:
     for obj in row:
         if isinstance(obj, File) and obj.path:
+            if not eager_media and isinstance(obj, (VideoFile, AudioFile, ImageFile)):
+                obj._caching_enabled = True
+                obj._prefetch_pending = True
+                continue
             try:
                 if await obj._prefetch(download_cb):
                     after_prefetch()
@@ -495,6 +501,7 @@ def _prefetch_inputs(
     download_cb: Callback | None = None,
     after_prefetch: Callable[[], None] | None = None,
     remove_prefetched: bool = False,
+    eager_media: bool = True,
 ) -> "abc.Generator[T, None, None]":
     if not prefetch:
         yield from prepared_inputs
@@ -506,7 +513,12 @@ def _prefetch_inputs(
             increment_file_count: Callable[[], None] = download_cb.increment_file_count
             after_prefetch = increment_file_count
 
-    f = partial(_prefetch_input, download_cb=download_cb, after_prefetch=after_prefetch)
+    f = partial(
+        _prefetch_input,
+        download_cb=download_cb,
+        after_prefetch=after_prefetch,
+        eager_media=eager_media,
+    )
     mapper = AsyncMapper(f, prepared_inputs, workers=prefetch)
     with closing(mapper.iterate()) as row_iter:
         for row in row_iter:
@@ -564,6 +576,7 @@ class Mapper(UDFBase):
             self.prefetch,
             download_cb=download_cb,
             remove_prefetched=bool(self.prefetch) and not cache,
+            eager_media=self.eager_media,
         )
 
         with closing(prepared_inputs):
@@ -818,6 +831,7 @@ class Generator(UDFBase):
             self.prefetch,
             download_cb=download_cb,
             remove_prefetched=bool(self.prefetch) and not cache,
+            eager_media=self.eager_media,
         )
 
         with closing(prepared_inputs):

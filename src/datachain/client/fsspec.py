@@ -297,6 +297,11 @@ class Client(ABC):
             **self._version_kwargs(version_id),
         )
 
+    async def _download_file(self, file: "File", path: str, callback: Callback):
+        await self.get_file(
+            file.get_fs_path(), path, callback=callback, version_id=file.version
+        )
+
     async def scandir(
         self, start_prefix: str, method: str = "default"
     ) -> AsyncIterator[Sequence[Any]]:
@@ -475,12 +480,14 @@ class Client(ABC):
         if use_cache and (cache_path := self.cache.get_path(file)):
             return open(cache_path, mode="rb")
         assert not file.location
-        kwargs = self._version_kwargs(file.version)
-        full_path = file.get_fs_path()
-        return FileWrapper(
-            self.fs.open(full_path, block_size=block_size, **kwargs),
-            cb,
-        )  # type: ignore[return-value]
+        return FileWrapper(self._open_remote(file, block_size), cb)  # type: ignore[return-value]
+
+    def _open_remote(self, file: "File", block_size: int | None = None) -> BinaryIO:
+        return self.fs.open(
+            file.get_fs_path(),
+            block_size=block_size,
+            **self._version_kwargs(file.version),
+        )
 
     def upload(
         self,

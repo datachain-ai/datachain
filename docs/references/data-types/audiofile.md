@@ -24,6 +24,10 @@ For a complete example of audio processing with DataChain, see
 a speech recognition pipeline that uses `AudioFile`, `AudioFragment`, and `Audio`
 to chunk audio files and transcribe them.
 
+`get_info()` streams metadata with the default chain settings. See
+[metadata without downloading](file.md#metadata-without-downloading) for prefetch,
+cache, and format limitations.
+
 ::: datachain.lib.file.AudioFile
 
 ::: datachain.lib.file.AudioFragment
