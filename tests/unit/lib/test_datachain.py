@@ -2641,6 +2641,25 @@ def test_read_parquet_columns_with_output_written_by_datachain(
     assert (q.model_dump(), n, y) == ({"x": 2}, 1, 3)
 
 
+class NullablePoint(DataModel):
+    x: int | None = None
+    y: int
+
+
+def test_read_parquet_columns_keep_a_present_optional_parent_with_null_fields(
+    tmp_dir, test_session
+):
+    path = tmp_dir / "optional.parquet"
+    points = [NullablePoint(x=None, y=3), None]
+    output = {"id": int, "p": NullablePoint | None}
+    dc.read_values(id=[1, 2], p=points, output=output, session=test_session).to_parquet(
+        path
+    )
+    chain = dc.read_parquet(path.as_uri(), columns=["id", "p.x"], session=test_session)
+    rows = chain.order_by("id").to_list("id", "p")
+    assert [(i, p and p.model_dump()) for i, p in rows] == [(1, {"x": None}), (2, None)]
+
+
 @pytest.mark.parametrize("columns,read", [(None, 3), (["c", "a"], 2)])
 def test_read_parquet_output_must_fit_columns_read(
     abc_parquet, test_session, columns, read

@@ -12,7 +12,7 @@ from pyarrow.fs import FileInfo, FileType, FSSpecHandler, PyFileSystem
 
 from datachain import json
 from datachain.fs.reference import ReferenceFileSystem
-from datachain.lib.convert.flatten import classify_field, iter_flat_columns
+from datachain.lib.convert.flatten import classify_field
 from datachain.lib.data_model import (
     NULLABLE_SCALARS,
     dict_to_data_model,
@@ -178,8 +178,9 @@ class ArrowGenerator(Generator):
         kw: dict[str, Any] = {}
         if self.nrows:
             kw = {"batch_size": min(self.DEFAULT_BATCH_SIZE, self.nrows)}
-        if self.columns is not None and use_datachain_schema:
-            kw["columns"] = [c for c in schema.names if _in_signals(c, self.columns)]
+        if self.columns is not None and (signals := _get_datachain_schema(schema)):
+            read = _with_optional_parents(signals, self.columns)
+            kw["columns"] = [c for c in schema.names if _in_signals(c, read)]
         elif self.columns is not None:
             present = set(schema.names)
             kw["columns"] = [c for c in self.columns if c in present]
@@ -408,8 +409,9 @@ def _pick_signals(
     """
     _signal_paths(signal_schema, columns, source)
     picked = signal_schema.to_partial(*columns)
+    read = _with_optional_parents(signal_schema, columns)
     merged = pa.unify_schemas(
-        [pa.schema([f for f in s if _in_signals(f.name, columns)]) for s in schemas]
+        [pa.schema([f for f in s if _in_signals(f.name, read)]) for s in schemas]
     )
     metadata = {
         **schemas[0].metadata,
@@ -447,6 +449,28 @@ def _signal_paths(
 def _in_signals(column: str, signals: Sequence[str]) -> bool:
     """Whether a stored column belongs to one of the signals, e.g. "p.x" to "p"."""
     return any(column == s or column.startswith(f"{s}.") for s in signals)
+
+
+def _with_optional_parents(
+    signal_schema: SignalSchema, paths: Sequence[str]
+) -> list[str]:
+    """Widen each path to its outermost optional model parent, e.g. "p.x" to "p".
+
+    Parquet stores no marker of whether an optional model is present, so a full
+    read decides it from all of the model's fields. Reading them all here gives
+    the same answer when only some fields are picked.
+    """
+    read = []
+    for path in paths:
+        parts = path.split(".")
+        for i in range(1, len(parts)):
+            parent = ".".join(parts[:i])
+            kind = classify_field(signal_schema.resolve(parent).values[parent])
+            if kind.is_optional and kind.is_model:
+                path = parent
+                break
+        read.append(path)
+    return list(dict.fromkeys(read))
 
 
 def infer_output(
@@ -582,15 +606,14 @@ def _get_datachain_schema(schema: "pa.Schema") -> SignalSchema | None:
     return None
 
 
-def _subtree_all_none(
-    column_values: dict[str, Any], model: type["BaseModel"], prefix: str
-) -> bool:
-    """True when every scalar leaf under ``model`` (at ``prefix``) is None. NaN /
-    [] / {} count as None-ish so type defaults don't read as present."""
-    for col in iter_flat_columns(model):
-        if col.is_sentinel:
+def _subtree_all_none(column_values: dict[str, Any], prefix: str) -> bool:
+    """True when every column read under ``prefix`` is None, including fields the
+    output leaves out. NaN / [] / {} count as None-ish so type defaults don't read
+    as present."""
+    sentinel = f".{SignalSchema._OPTIONAL_SENTINEL_FIELD}"
+    for key, val in column_values.items():
+        if not key.startswith(f"{prefix}.") or key.endswith(sentinel):
             continue
-        val = column_values.get(f"{prefix}." + ".".join(col.path))
         if val is not None and not _is_nan(val) and val not in ([], {}):
             return False
     return True
@@ -600,16 +623,14 @@ def _is_nan(val: Any) -> bool:
     return isinstance(val, float) and math.isnan(val)
 
 
-def _optional_absent(
-    column_values: dict[str, Any], inner: type["BaseModel"], prefix: str
-) -> bool:
+def _optional_absent(column_values: dict[str, Any], prefix: str) -> bool:
     """Whether the ``Optional[DataModel]`` at ``prefix`` is absent. Uses the
     ``_type_tag`` discriminator when present (0 = present arm), else the
     all-leaves-None heuristic."""
     tag_key = f"{prefix}.{SignalSchema._OPTIONAL_SENTINEL_FIELD}"
     if tag_key in column_values:
         return optional_tag_is_absent(column_values[tag_key])
-    return _subtree_all_none(column_values, inner, prefix)
+    return _subtree_all_none(column_values, prefix)
 
 
 def _nested_model_instantiate(
@@ -629,9 +650,7 @@ def _nested_model_instantiate(
         else:
             cur_path = f"{prefix}.{field}" if prefix else field
         if kind.is_model:
-            if kind.is_optional and _optional_absent(
-                column_values, kind.inner, cur_path
-            ):
+            if kind.is_optional and _optional_absent(column_values, cur_path):
                 # Absent Optional[DataModel] parent -> None.
                 vals_dict[field] = None
             else:
