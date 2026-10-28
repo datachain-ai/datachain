@@ -37,9 +37,8 @@ read-ahead, and use an existing cached copy when available. Ordinary content
 reads and `get_local_path()` complete the deferred download on demand.
 
 ```python
-metadata = (
-    dc.read_storage("s3://bucket/videos/", type="video")
-    .map(info=lambda file: file.get_info(), output=dc.Video)
+metadata = dc.read_storage("s3://bucket/videos/", type="video").map(
+    info=lambda file: file.get_info(), output=dc.Video
 )
 ```
 
