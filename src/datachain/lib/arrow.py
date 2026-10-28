@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 import pyarrow as pa
 from fsspec.implementations.local import LocalFileSystem
 from pyarrow._csv import ParseOptions
-from pyarrow.dataset import CsvFileFormat, Dataset, ParquetFileFormat, dataset
+from pyarrow.dataset import CsvFileFormat, Dataset, dataset
 from pyarrow.fs import FileInfo, FileType, FSSpecHandler, PyFileSystem
 
 from datachain import json
@@ -68,9 +68,7 @@ _CSV_PARSE_OPTIONS = (
 
 def is_parquet(format: Any) -> bool:
     """Whether a pyarrow dataset `format` reads Parquet, which is its default."""
-    if isinstance(format, str):
-        return format == "parquet"
-    return format is None or isinstance(format, ParquetFileFormat)
+    return format is None or format == "parquet"
 
 
 class _PartialReadHandler(FSSpecHandler):
