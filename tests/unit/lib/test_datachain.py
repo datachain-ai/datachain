@@ -14,6 +14,7 @@ from unittest.mock import ANY, patch
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+import pyarrow.csv as pa_csv
 import pyarrow.parquet as pq
 import pytest
 import sqlalchemy
@@ -2613,6 +2614,42 @@ def test_read_csv_nrows_keep_the_chain_prefetch(tmp_dir, test_session):
     path.write_text("a\n1\n2\n")
     chain = dc.read_csv(path.as_uri(), nrows=1, session=test_session)
     assert chain._settings.prefetch == DEFAULT_PREFETCH
+
+
+@pytest.fixture
+def prefetched(monkeypatch):
+    names = []
+    prefetch = File._prefetch
+
+    async def record(self, *args, **kwargs):
+        names.append(self.name)
+        return await prefetch(self, *args, **kwargs)
+
+    monkeypatch.setattr(File, "_prefetch", record)
+    return names
+
+
+@pytest.mark.parametrize(
+    "fmt,read",
+    [
+        ("parquet", lambda uri, s: dc.read_parquet(uri, columns=["a"], session=s)),
+        ("csv", lambda uri, s: dc.read_csv(uri, nrows=1, session=s)),
+    ],
+    ids=["read_parquet_columns", "read_csv_nrows"],
+)
+def test_partial_reads_prefetch_only_small_files(
+    tmp_dir, test_session, monkeypatch, prefetched, fmt, read
+):
+    write = pq.write_table if fmt == "parquet" else pa_csv.write_csv
+    (tmp_dir / "data").mkdir()
+    write(pa.table({"a": [1]}), tmp_dir / "data" / f"small.{fmt}")
+    write(pa.table({"a": list(range(1000))}), tmp_dir / "data" / f"large.{fmt}")
+    small = (tmp_dir / "data" / f"small.{fmt}").stat().st_size
+    monkeypatch.setattr("datachain.lib.arrow.PARTIAL_READ_PREFETCH_MAX_SIZE", small)
+
+    read((tmp_dir / "data").as_uri(), test_session).count()
+
+    assert prefetched == [f"small.{fmt}"]
 
 
 def test_read_parquet_columns_are_part_of_the_step(abc_parquet, test_session):

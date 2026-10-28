@@ -1582,8 +1582,9 @@ def download_callbacks(monkeypatch):
     ids=["read_parquet", "parse_tabular_without_format"],
 )
 def test_read_parquet_columns_fetch_only_those_columns(
-    cloud_test_catalog_upload, fetched_bytes, download_callbacks, read
+    cloud_test_catalog_upload, fetched_bytes, download_callbacks, read, monkeypatch
 ):
+    monkeypatch.setattr("datachain.lib.arrow.PARTIAL_READ_PREFETCH_MAX_SIZE", 0)
     ctc = cloud_test_catalog_upload
     rng = np.random.default_rng(0)
     table = pa.table({f"c{i}": rng.random(50_000) for i in range(10)})

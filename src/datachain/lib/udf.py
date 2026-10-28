@@ -465,9 +465,14 @@ async def _prefetch_input(
     row: T,
     download_cb: Callback | None = None,
     after_prefetch: "Callable[[], None]" = noop,
+    max_size: int | None = None,
 ) -> T:
     for obj in row:
-        if isinstance(obj, File) and obj.path:
+        if (
+            isinstance(obj, File)
+            and obj.path
+            and (max_size is None or obj.size <= max_size)
+        ):
             try:
                 if await obj._prefetch(download_cb):
                     after_prefetch()
@@ -495,6 +500,7 @@ def _prefetch_inputs(
     download_cb: Callback | None = None,
     after_prefetch: Callable[[], None] | None = None,
     remove_prefetched: bool = False,
+    max_size: int | None = None,
 ) -> "abc.Generator[T, None, None]":
     if not prefetch:
         yield from prepared_inputs
@@ -506,7 +512,12 @@ def _prefetch_inputs(
             increment_file_count: Callable[[], None] = download_cb.increment_file_count
             after_prefetch = increment_file_count
 
-    f = partial(_prefetch_input, download_cb=download_cb, after_prefetch=after_prefetch)
+    f = partial(
+        _prefetch_input,
+        download_cb=download_cb,
+        after_prefetch=after_prefetch,
+        max_size=max_size,
+    )
     mapper = AsyncMapper(f, prepared_inputs, workers=prefetch)
     with closing(mapper.iterate()) as row_iter:
         for row in row_iter:
@@ -765,6 +776,8 @@ class Generator(UDFBase):
 
     is_output_batched = True
     prefetch: int = 2
+    # Files larger than this aren't prefetched.
+    _prefetch_max_size: int | None = None
 
     def run(
         self,
@@ -818,6 +831,7 @@ class Generator(UDFBase):
             self.prefetch,
             download_cb=download_cb,
             remove_prefetched=bool(self.prefetch) and not cache,
+            max_size=self._prefetch_max_size,
         )
 
         with closing(prepared_inputs):

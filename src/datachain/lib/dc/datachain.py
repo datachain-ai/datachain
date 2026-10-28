@@ -2554,6 +2554,7 @@ class DataChain:
         from pyarrow.dataset import CsvFileFormat, JsonFileFormat
 
         from datachain.lib.arrow import (
+            PARTIAL_READ_PREFETCH_MAX_SIZE,
             ArrowGenerator,
             file_schemas,
             fix_pyarrow_format,
@@ -2617,22 +2618,19 @@ class DataChain:
         if source:
             output = {"source": ArrowRow} | output  # type: ignore[assignment,operator]
 
-        # Prefetch downloads whole files, so skip it when only part is read. Only
-        # this step skips it: the returned chain keeps the caller's settings.
-        partial = nrows or (columns is not None and format == "parquet")
-        chain = self.settings(prefetch=0) if partial else self
-        return chain.gen(  # type: ignore[arg-type]
-            ArrowGenerator(
-                schema,
-                model,
-                source,
-                nrows,
-                columns=read,
-                parse_options=parse_options,
-                **kwargs,
-            ),
-            output=output,
-        )._evolve(settings=self._settings)
+        generator = ArrowGenerator(
+            schema,
+            model,
+            source,
+            nrows,
+            columns=read,
+            parse_options=parse_options,
+            **kwargs,
+        )
+        # Prefetch downloads whole files, so a partial read prefetches only small ones.
+        if nrows or (columns is not None and format == "parquet"):
+            generator._prefetch_max_size = PARTIAL_READ_PREFETCH_MAX_SIZE
+        return self.gen(generator, output=output)  # type: ignore[arg-type]
 
     def to_parquet(
         self,

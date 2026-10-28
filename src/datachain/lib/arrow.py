@@ -66,6 +66,10 @@ _CSV_PARSE_OPTIONS = (
 )
 
 
+# A partial read prefetches files up to this size and reads larger ones in parts.
+PARTIAL_READ_PREFETCH_MAX_SIZE = 8 * 1024 * 1024
+
+
 class _PartialReadHandler(FSSpecHandler):
     """Lets pyarrow open the exact File that the reader got from a listing.
 
