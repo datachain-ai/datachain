@@ -32,7 +32,10 @@ import datachain as dc
 
 files, size = Counter(), Counter()
 for f in dc.list_storage("s3://noaa-goes16/ABI-L1b-RadC/2024/", versions=False):
-    key = f.path.split("/")[2], f.name.split("_")[1][-2:]    # day, band ("...-M6C01" -> "01")
+    key = (
+        f.path.split("/")[2],
+        f.name.split("_")[1][-2:],
+    )  # day, band ("...-M6C01" -> "01")
     files[key] += 1
     size[key] += f.size
 ```
@@ -136,11 +139,16 @@ the earlier work.
 import datachain as dc
 
 (
-    dc.read_storage("s3://dc-readme/oxford-pets-small/images/*.jpg", type="image",
-                    anon=True, update=True, delta=True)   # re-run = only new and changed files
-    .settings(parallel=8, prefetch=16)              # 8 workers; downloads overlap compute
-    .map(emb=ClipEmbed(), batch=32)                 # your model, batched
-    .save("pet_embeddings")                         # typed, versioned dataset
+    dc.read_storage(
+        "s3://dc-readme/oxford-pets-small/images/*.jpg",
+        type="image",
+        anon=True,
+        update=True,
+        delta=True,
+    )  # re-run = only new and changed files
+    .settings(parallel=8, prefetch=16)  # 8 workers; downloads overlap compute
+    .map(emb=ClipEmbed(), batch=32)  # your model, batched
+    .save("pet_embeddings")  # typed, versioned dataset
 )
 ```
 
@@ -148,21 +156,28 @@ import datachain as dc
 
 ```python
 class ClipEmbed(dc.Mapper):
-    def setup(self):                                         # once per worker
+    def setup(self):  # once per worker
         import open_clip
+
         self.model, _, self.pre = open_clip.create_model_and_transforms(
-            "ViT-B-32", pretrained="laion2b_s34b_b79k")
+            "ViT-B-32", pretrained="laion2b_s34b_b79k"
+        )
 
     def process(self, file: list[dc.ImageFile]) -> list[list[float]]:
         import torch
+
         x = torch.stack([self.pre(f.read().convert("RGB")) for f in file])
         with torch.no_grad():
             e = self.model.encode_image(x)
         return (e / e.norm(dim=-1, keepdim=True)).tolist()
 
+
 def clip_text(text: str) -> list[float]:
     import open_clip, torch
-    model, _, _ = open_clip.create_model_and_transforms("ViT-B-32", pretrained="laion2b_s34b_b79k")
+
+    model, _, _ = open_clip.create_model_and_transforms(
+        "ViT-B-32", pretrained="laion2b_s34b_b79k"
+    )
     with torch.no_grad():
         e = model.encode_text(open_clip.get_tokenizer("ViT-B-32")([text]))[0]
     return (e / e.norm()).tolist()
@@ -172,7 +187,7 @@ def clip_text(text: str) -> list[float]:
 The next session, from any agent:
 
 ```python
-query = clip_text("a dog on a beach")       # the same model's text side
+query = clip_text("a dog on a beach")  # the same model's text side
 dc.read_dataset("pet_embeddings").similarity_search("emb", query, k=10).show()
 ```
 
