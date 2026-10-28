@@ -1,376 +1,214 @@
-# ![DataChain](docs/assets/datachain.svg) DataChain: The Context Layer for Unstructured Data
+<!-- DRAFT: numbers come from the agent evals on the eval branch (Oct 2026).
+     Re-measure every number on the released version before merging. -->
+
+# ![DataChain](docs/assets/datachain.svg) DataChain
 
 [![PyPI](https://img.shields.io/pypi/v/datachain.svg)](https://pypi.org/project/datachain/)
 [![Python Version](https://img.shields.io/pypi/pyversions/datachain)](https://pypi.org/project/datachain)
-[![Codecov](https://codecov.io/gh/datachain-ai/datachain/graph/badge.svg?token=byliXGGyGB)](https://codecov.io/gh/datachain-ai/datachain)
 [![Tests](https://github.com/datachain-ai/datachain/actions/workflows/tests.yml/badge.svg)](https://github.com/datachain-ai/datachain/actions/workflows/tests.yml)
-[![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/datachain-ai/datachain)
+[![Agent evals](https://img.shields.io/badge/agent%20evals-reproducible-black)](https://github.com/datachain-ai/datachain-agent-evals)
 
-**A Python library that turns files in S3, GCS, and Azure into versioned, typed datasets, queryable at warehouse speed.**
+**Fast data pipelines for robotics and physical AI.**<br>
+**Your coding agent finishes 2× faster.**
 
-- **Compute Engine**: parallel Python over files, distributed on Studio. Async I/O, checkpoint recovery, incremental updates.
-- **Dataset DB**: Pydantic schemas, versioning, file pointers, automatic lineage. Sub-second filter, join, and group_by over millions of typed records locally, hundreds of millions on Studio. Vector search over the same rows, no separate store.
-
-Optional, for agent workflows:
-
-- **Knowledge Base**: markdown summaries derived from the Dataset DB and enriched by LLM. Readable by humans and LLMs.
-- **Agent Harness**: a skill that plugs all three into Claude Code, Cursor, Codex, GitHub Copilot, and Pi, so they understand your data. On Studio, agents reach the same datasets over MCP.
-
-Bytes never leave your storage. Every run deposits a typed dataset the next pipeline (or agent) reads instead of recomputing.
-
-## 1. Install
+A Python library for files in S3, GCS and Azure: video, images, audio, sensor logs, robot episodes.
 
 ```bash
 pip install datachain
+datachain skill install --target claude      # or: codex, cursor, copilot
 ```
 
-To add the agent skill (Knowledge Base + code generation):
+Ask your agent:
 
-```bash
-datachain skill install --target claude     # also: cursor, codex, copilot, pi
+```text
+What's in s3://noaa-goes16/ABI-L1b-RadC/2024/ ? Count files and bytes per day and per band.
 ```
 
-Works with S3, GCS, Azure, and local filesystems.
+It writes this and runs it:
 
-## 2. Quickstart: agent-driven pipeline
-
-Task: find dogs in S3 similar to a reference image, filtered by breed, mask availability, and image dimensions.
-
-Grab a reference image and run Claude Code (or other agent):
-```bash
-datachain cp --anon s3://dc-readme/fiona.jpg .
-
-claude
-```
-
-Prompt:
-```prompt
-Find dogs in s3://dc-readme/oxford-pets-micro/ similar to ./fiona.jpg:
-  - Pull breed metadata and mask files from annotations/
-  - Exclude images without mask
-  - Exclude Cocker Spaniels
-  - Only include images wider than 400px
-```
-
-Result:
-```
-  ┌──────┬───────────────────────────────────┬────────────────────────────┬──────────┐
-  │ Rank │               Image               │           Breed            │ Distance │
-  ├──────┼───────────────────────────────────┼────────────────────────────┼──────────┤
-  │    1 │ shiba_inu_52.jpg                  │ shiba_inu                  │    0.244 │
-  ├──────┼───────────────────────────────────┼────────────────────────────┼──────────┤
-  │    2 │ shiba_inu_53.jpg                  │ shiba_inu                  │    0.323 │
-  ├──────┼───────────────────────────────────┼────────────────────────────┼──────────┤
-  │    3 │ great_pyrenees_17.jpg             │ great_pyrenees             │    0.325 │
-  └──────┴───────────────────────────────────┴────────────────────────────┴──────────┘
-
-  Fiona's closest matches are shiba inus (both top spots), which makes sense given her
-  tan coloring and pointed ears.
-```
-
-The agent decomposed the task into steps - embeddings, breed metadata, mask join, quality filter - and saved each as a named, versioned dataset. Next time you ask a related question, it starts from what's already built.
-
-The datasets are registered in a Knowledge Base optimized for both agents and humans:
-
-```bash
-dc-knowledge
-├── buckets
-│   └── s3
-│       └── dc_readme.md
-├── datasets
-│   ├── oxford_micro_dog_breeds.md
-│   ├── oxford_micro_dog_embeddings.md
-│   └── similar_to_fiona.md
-└── index.md
-```
-
-Browse it as markdown files, navigate with wikilinks, or open in [Obsidian](https://obsidian.md/):
-
-![Visualize data Knowledge Base](docs/assets/readme_obsidian.gif)
-
-
-## 3. Data Harness
-
-Code harnesses (Claude Code, Cursor, Codex, GitHub Copilot, Pi) give agents repo context, dedicated tools, and memory across sessions. DataChain adds the same for data: typed datasets the agent reads, chain operations the agent calls (`read_storage`, `map`, `save`), a Dataset DB where its results persist.
-
-<p align="center">
-  <img src="docs/assets/harness.svg" alt="DataChain as a data harness" width="500" />
-</p>
-
-A **dataset** is the unit of work - a named, versioned result of a pipeline step like `pets_embeddings@1.0.0`. Every `.save()` registers one.
-
-For the data-flow architecture (Compute Engine, Dataset DB, Knowledge Base) and how the components connect, see [Architecture](https://www.datachain.ai/docs/architecture).
-
-
-## 4. Core concepts
-
-### 4.1. Dataset
-
-A dataset is a versioned data reasoning step - what was computed, from what input, producing what schema. DataChain indexes your storage into one: no data copied, just typed metadata and file pointers. Re-runs only process new or changed files.
-
-Create a dataset manually `create_dataset.py`:
 ```python
-from PIL import Image
-import io
-from pydantic import BaseModel
+from collections import Counter
 import datachain as dc
 
+files, size = Counter(), Counter()
+for f in dc.list_storage("s3://noaa-goes16/ABI-L1b-RadC/2024/", versions=False):
+    key = f.path.split("/")[2], f.name.split("_")[1][-2:]    # day, band ("...-M6C01" -> "01")
+    files[key] += 1
+    size[key] += f.size
+```
 
-class ImageInfo(BaseModel):
-    width: int
-    height: int
+1.7 million files in 27 seconds, one pass, nothing saved. `aws s3 ls --recursive` takes 7 minutes for the same bucket.
 
+<sub>Measured from a laptop on home internet, us-east-1 bucket, median of 2 runs.</sub>
 
-def get_info(file: dc.File) -> ImageInfo:
-    img = Image.open(io.BytesIO(file.read()))
-    return ImageInfo(width=img.width, height=img.height)
+## 2× faster on real work
 
+The same agent, the same task, with and without DataChain:
 
-ds = (
-    dc.read_storage(
-        "s3://dc-readme/oxford-pets-micro/images/**/*.jpg",
-        anon=True,
-        update=True,
-        delta=True,  # re-runs skip unchanged files
-    )
-    .settings(prefetch=64)
-    .map(info=get_info)
-    .save("pets_images")
+<p align="center"><img src="docs/assets/agent-speed.svg" alt="Same task, Claude Code alone vs with DataChain: 8.2 vs 15.4 min, 13.6 vs 24.4 min, 15.4 vs 35.6 min"></p>
+
+<p align="center"><i>Claude Code + Opus 5.5 on dashcam video in S3, 8-CPU sandbox. Bar = median of 5 runs, dots = each run.</i></p>
+
+## The problem
+
+Coding agents are good at code and at tables. Give one a bucket of video or robot episodes, and most of its time
+goes into plumbing. In our runs, Claude Code without DataChain:
+
+- **rebuilt the plumbing every time.** Download pools, frame batching, checkpoint files: 240–300 lines before the
+  first answer.
+- **relearned the video.** Rotation, variable frame rates, timestamps: 2–12 minutes per session.
+- **lost the work when it crashed.** Killed at minute 8, it had saved 0–223 of 1,000 videos.
+- **redid everything when files changed.** After new uploads, one run spent 22 minutes re-checking all 343 videos.
+
+DataChain is that plumbing, already fast. And it keeps what was computed.
+
+## Try it on video (8 minutes)
+
+```bash
+pip install "datachain[video,torch]" open_clip_torch      # video needs ffmpeg
+```
+
+Paste into your agent:
+
+```text
+Our dashcam videos are in s3://dc-readme/fleet-cameras/2025-12/front/. Make them searchable: one frame per
+second, CLIP embeddings, each frame with its video and timestamp. Then find the 10 moments that best match
+"a pedestrian crossing in front of the car".
+```
+
+Kill it halfway and ask again: it resumes. Add files to your own bucket and ask again: only the new ones are
+processed.
+
+## Measured
+
+Same Claude Code + Opus 5.5, same task, same 8-CPU sandbox, real public data. The DataChain runs add the skill and
+one line, "Use DataChain for this." Median of 5 runs; every answer checked by an independent verifier.
+
+| Task | Claude Code alone | + DataChain | |
+|---|---:|---:|---|
+| Index 1,000 videos; the process is killed at minute 8; finish the job | 35.6 min · 4/5 correct | **15.4 min** · 5/5 | **2.3× faster** |
+| Index 273 dashcam videos at 1 fps with CLIP, then search them | 15.4 min | **8.2 min** | **1.9× faster** |
+| The same, then refresh after uploads, overwrites and deletions | 24.4 min | **13.6 min** | **1.8× faster** |
+| One-off metadata questions (incl. 3 held-out tasks) | | | same to 1.3× slower |
+
+- **Predictable.** On the search task, the agent took 7.2–8.9 min with DataChain and 8.4–21.3 min without.
+- **Less to read.** 1.7–2.4× fewer tokens, 2–3× less code left behind.
+- **Picked without being asked.** With the skill installed and DataChain never mentioned in the prompt, the agent
+  chose it in 10 of 12 runs.
+
+Prompts, verifiers, raw session logs and the rerun script are in
+[datachain-agent-evals](https://github.com/datachain-ai/datachain-agent-evals).
+
+## How it's fast
+
+Three layers. Each one is something your agent would otherwise rebuild, slower, every session.
+
+**1. Fast primitives.** The operations an agent would write by hand, built to beat the tools it would reach for.
+
+<p align="center"><img src="docs/assets/listing-speed.svg" alt="Listing 2M objects in S3: DataChain 44 s, s3p 94 s, rclone 283 s, s5cmd 294 s, AWS CLI 730 s"></p>
+
+<p align="center"><i>Listing 2.03M objects in S3 into a saved, queryable dataset (DataChain) or to stdout (the others). 8-CPU sandbox, out of region. 10.5M object versions: DataChain 3.8 min, rclone 38 min, s5cmd 39 min.</i></p>
+
+Batched inference with `map(batch=32)`: CLIP over 500 images runs 2.5× faster than one image per call.
+
+**2. State: nothing valid is computed twice.** Every row records which version of which file it came from
+(`etag`, `version`) and which code produced it.
+- A job killed halfway resumes from its finished rows. After the crash, the second session took 442 s with
+  DataChain and 1,653 s without.
+- New, overwritten and deleted files become a delta (`delta=True`). Only the changes are processed, and the
+  result equals a full recompute.
+
+**3. Context for your agent.** Every saved dataset carries what an agent needs to reuse it correctly: its schema,
+the code that produced it, its sources and their file versions, the datasets it was built from, row count and
+when it was computed. All of it is already in the local database: no LLM calls, no setup, answered in milliseconds.
+
+```bash
+$ datachain dataset ls                      # what has been computed in this project
+$ datachain show dashcam_frames --schema --script
+```
+
+In every follow-up session of the video tasks (25 of 25), the agent began with `datachain dataset ls` and found
+the earlier work.
+
+## What your agent writes
+
+```python
+import datachain as dc
+
+(
+    dc.read_storage("s3://dc-readme/oxford-pets-small/images/*.jpg", type="image",
+                    anon=True, update=True, delta=True)   # re-run = only new and changed files
+    .settings(parallel=8, prefetch=16)              # 8 workers; downloads overlap compute
+    .map(emb=ClipEmbed(), batch=32)                 # your model, batched
+    .save("pet_embeddings")                         # typed, versioned dataset
 )
-ds.show(5)
 ```
 
-`pets_images@1.0.0` is now the shared reference to this data - schema, version, lineage, and metadata.
-
-Every `.save()` registers the dataset in the **Dataset DB**, DataChain's persistent store for schemas, versions, lineage, and processing state, kept locally in SQLite DB `.datachain/db`. Pipelines reference datasets by name, not paths. When the code or input data changes, the next run bumps dataset version.
-
-This is what makes a **dataset a management unit:** owned, versioned, and queryable by everyone on the team.
-
-### 4.2. Schemas and types
-
-DataChain uses Pydantic to define the shape of every column. The return type of your UDF becomes the dataset schema - each field a queryable column in the Dataset DB.
-
-`show()` in the previous script renders nested fields as dotted columns:
-
-```bash
-                                          file    file  info   info
-                                          path    size width height
-0  oxford-pets-micro/images/Abyssinian_141.jpg  111270   461    500
-1  oxford-pets-micro/images/Abyssinian_157.jpg  139948   500    375
-2  oxford-pets-micro/images/Abyssinian_175.jpg   31265   600    234
-3  oxford-pets-micro/images/Abyssinian_220.jpg   10687   300    225
-4    oxford-pets-micro/images/Abyssinian_3.jpg   61533   600    869
-
-[Limited by 5 rows]
-```
-
-`print(ds.schema)` renders its schema:
-```bash
-file: File@v1
-  source: str
-  path: str
-  size: int
-  version: str
-  etag: str
-  is_latest: bool
-  last_modified: datetime
-  location: Union[dict, list[dict], NoneType]
-info: ImageInfo
-  width: int
-  height: int
-```
-
-Models can be arbitrarily nested - a `BBox` inside an `Annotation`, a `List[Citation]` inside an LLM Response - every leaf field stays queryable the same way. The schema lives in the Dataset DB and is enforced at dataset creation time.
-
-The Dataset DB handles datasets of any size - 100 millions of files, hundreds of metadata rows - without loading anything into memory. **Pandas is limited by RAM; DataChain is not.** Export to pandas when you need it, on a filtered subset:
+<details><summary><code>ClipEmbed</code> and <code>clip_text</code>: ordinary PyTorch</summary>
 
 ```python
-import datachain as dc
+class ClipEmbed(dc.Mapper):
+    def setup(self):                                         # once per worker
+        import open_clip
+        self.model, _, self.pre = open_clip.create_model_and_transforms(
+            "ViT-B-32", pretrained="laion2b_s34b_b79k")
 
-df = dc.read_dataset("pets_images").filter(dc.C("info.width") > 500).to_pandas()
-print(df)
-```
+    def process(self, file: list[dc.ImageFile]) -> list[list[float]]:
+        import torch
+        x = torch.stack([self.pre(f.read().convert("RGB")) for f in file])
+        with torch.no_grad():
+            e = self.model.encode_image(x)
+        return (e / e.norm(dim=-1, keepdim=True)).tolist()
 
-### 4.3. Fast queries
-
-Filters, aggregations, and joins run as vectorized operations directly against the Dataset DB - metadata never leaves your machine, no files downloaded.
-
-```python
-import datachain as dc
-
-cnt = (
-    dc.read_dataset("pets_images")
-    .filter(
-        (dc.C("info.width") > 400)
-        & ~dc.C("file.path").ilike("%cocker_spaniel%")  # case-insensitive
-    )
-    .count()
-)
-print(f"Large images with Cocker Spaniel: {cnt}")
-```
-
-Milliseconds, even at 100M-file scale.
-```
-Large images with Cocker Spaniel: 6
-```
-
-## 5. Resilient Pipelines
-
-When computation is expensive, bugs and new data are both inevitable. DataChain tracks processing state in the Dataset DB - so crashes and new data are handled automatically, without changing how you write pipelines.
-
-### 5.1. Data checkpoints
-
-Save to `embed.py`:
-```python
-import open_clip, torch, io
-from PIL import Image
-import datachain as dc
-
-model, _, preprocess = open_clip.create_model_and_transforms(
-    "ViT-B-32", "laion2b_s34b_b79k"
-)
-model.eval()
-
-counter = 0
-
-
-def encode(file: dc.File, model, preprocess) -> list[float]:
-    global counter
-    counter += 1
-    if counter > 236:  # ← bug: remove these two lines
-        raise Exception("some bug")  # ←
-    img = Image.open(io.BytesIO(file.read())).convert("RGB")
+def clip_text(text: str) -> list[float]:
+    import open_clip, torch
+    model, _, _ = open_clip.create_model_and_transforms("ViT-B-32", pretrained="laion2b_s34b_b79k")
     with torch.no_grad():
-        return model.encode_image(preprocess(img).unsqueeze(0))[0].tolist()
-
-
-(
-    dc.read_dataset("pets_images")
-    .settings(batch_size=100)
-    .setup(model=lambda: model, preprocess=lambda: preprocess)
-    .map(emb=encode)
-    .save("pets_embeddings")
-)
+        e = model.encode_text(open_clip.get_tokenizer("ViT-B-32")([text]))[0]
+    return (e / e.norm()).tolist()
 ```
+</details>
 
-It fails due to a bug in the code:
-```
-Exception: some bug
-```
-
-Remove the two marked lines and re-run - DataChain resumes from image 201 (two 100 size batches are completed), the start of the last uncommitted batch:
-
-```
-$ python embed.py
-UDF 'encode': Continuing from checkpoint
-```
-
-### 5.2. Similarity search
-
-The vectors live in the Dataset DB alongside all the metadata - `list[float]` type in pydentic schemas. Querying them is instant - no files re-read and can be combined with not vector filters like `info.width`:
-
-Prepare data:
-```bash
-datachain cp s3://dc-readme/fiona.jpg .
-```
-
-`similar.py`:
-```python
-import open_clip, torch, io
-from PIL import Image
-import datachain as dc
-
-model, _, preprocess = open_clip.create_model_and_transforms(
-    "ViT-B-32", "laion2b_s34b_b79k"
-)
-model.eval()
-
-ref_emb = model.encode_image(preprocess(Image.open("fiona.jpg")).unsqueeze(0))[
-    0
-].tolist()
-
-(
-    dc.read_dataset("pets_embeddings")
-    .filter(dc.C("info.width") > 500)  # from pets_images - no re-read
-    .mutate(dist=dc.func.cosine_distance(dc.C("emb"), ref_emb))
-    .order_by("dist")
-    .limit(3)
-    .show()
-)
-```
-
-Under a second - everything runs against the Dataset DB.
-
-
-### 5.3. Incremental updates
-
-The bucket in this walkthrough is static, so there's nothing new to process. But in production - when new images land in your bucket - re-run the same scripts unchanged. `delta=True` in the original dataset ensures only new files are processed end to end while the whole dataset will be updated to `pets_images@1.0.1`:
+The next session, from any agent:
 
 ```python
-$ python create_dataset.py   # 500 new images arrived
-Skipping 10,000 unchanged  ·  indexing 500 new
-Saved pets_images@1.0.1  (+500 records)
-
-# Next day:
-
-$ python create_dataset.py
-Skipping 10,000 unchanged  ·  processing 500 new
-Saved pets_images@1.0.2  (+500 records)
+query = clip_text("a dog on a beach")       # the same model's text side
+dc.read_dataset("pet_embeddings").similarity_search("emb", query, k=10).show()
 ```
 
-## 6. Knowledge Base
+Video works the same way: `file.sample_frames(fps=1)` yields frames at the right times, even when the frame rate
+varies.
 
-DataChain maintains two layers. The **Dataset DB** is the ground truth: schemas, processing state, lineage, the vectors themselves. **The Knowledge Base** is derived from it: structured markdown for humans and agents to read. Because it's derived, it describes what actually ran rather than what someone wrote down. Rebuild it after a pass to bring it current. The Knowledge Base is stored in `dc-knowledge/`.
+## When to use it, and when not
 
-Ask the agent to build it (from Claude Code, Cursor, Codex, GitHub Copilot, or Pi):
-```bash
-claude
-```
+**Use it** when the work is thousands of files × a real per-file cost (decoding, a model), or when it will run
+again: tomorrow's uploads, a crashed job, a follow-up question.
 
-Prompt:
-```prompt
-Build a Knowledge Base for my current datasets
-```
+**Skip it** for a one-off question a single `ffprobe` or `aws s3 ls` answers in seconds. The skill steers your
+agent toward the one-liner there; it still over-reaches now and then (1 of 12 runs).
 
-The skill generates `dc-knowledge/` directory from the Dataset DB - one file per dataset and bucket:
+## Core ideas
 
+- **Files stay where they are.** A row holds a pointer (`source`, `path`, `etag`, `version`) and typed fields
+  computed from the file. Nothing is copied.
+- **Python in, typed columns out.** The UDF's return type becomes the schema. Nested fields are queryable as
+  `emb`, `info.fps`.
+- **SQL after the expensive step.** Filters, joins, group-bys and vector search run in the local database
+  (SQLite; ClickHouse in Studio) without touching the files.
+- **Every `.save()` is a version** with lineage. That is what makes resume and delta automatic.
+- **No LLM calls, no server, no account.** The library never calls a model on its own; your agent does the thinking.
 
-## 7. AI-Generated Pipelines
+Docs: [datachain.ai/docs](https://www.datachain.ai/docs) · For agents: [llms.txt](https://www.datachain.ai/docs/llms.txt) ·
+Skill: [`src/datachain/skill/datachain`](src/datachain/skill/datachain/SKILL.md)
 
-The skill gives the agent data awareness: it reads `dc-knowledge/` to understand what datasets exist, their schemas, which fields can be joined - and the meaning of columns inferred from the code that produced them.
+## Teams: Studio
 
-See section `2. Quickstart: agent-driven pipeline` above. All the steps that were manually created could be just generated.
+The same datasets shared across a team and its agents, compute on many machines, and access over MCP. Studio
+also keeps a knowledge base: LLM-written summaries of every dataset and bucket, so a team's agents can find the
+right data across projects.
+[studio.datachain.ai](https://studio.datachain.ai)
 
+## Community
 
-## 8. Team and cloud: Studio
-
-Data context built locally stays local. DataChain Studio makes it shared.
-
-```bash
-datachain auth login
-datachain job run --workers 20 --cluster gpu-pool caption.py
-# ✓ Job submitted → studio.datachain.ai/jobs/1042
-# Resuming from checkpoint (4,218 already done)...
-# Saved oxford-pets-caps@0.0.1  (3,182 processed)
-```
-
-<p align="center">
-  <img src="docs/assets/studio_architecture.svg" alt="DataChain Studio Architecture" width="600" />
-</p>
-
-Studio adds: shared dataset registry, distributed compute across attached clusters, an MCP endpoint for agents, access control, UI for video/DICOM/NIfTI/point clouds, lineage graphs, reproducible runs.
-
-Bring Your Own Cloud - all data and compute stay in your infrastructure. AWS, GCP, Azure, on-prem Kubernetes.
-
-→ [studio.datachain.ai](https://studio.datachain.ai)
-
-## 9. Contributing
-
-Contributions are very welcome. To learn more, see the [Contributor Guide](https://www.datachain.ai/docs/contributing).
-
-## 10. Community and Support
-
-- [Report an issue](https://github.com/datachain-ai/datachain/issues) if you encounter any problems
-- [Docs](https://www.datachain.ai/docs)
-- [Email](mailto:support@datachain.ai)
-- [Twitter](https://twitter.com/datachain_ai)
+[Contributing](https://www.datachain.ai/docs/contributing) · [Issues](https://github.com/datachain-ai/datachain/issues) ·
+[Discord](https://discord.com/invite/datachain)
