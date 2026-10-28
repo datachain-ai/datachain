@@ -1,4 +1,6 @@
 import gc
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from weakref import ref
 
 import pytest
@@ -107,3 +109,51 @@ def test_failed_listing_cleans_seed_and_preserves_parent(catalog, tmp_path, mock
         temporary = list(catalog.metastore.list_datasets_by_prefix("session_"))
         assert all(d.name.startswith(parent.get_temp_prefix()) for d in temporary)
     assert not list(catalog.metastore.list_datasets_by_prefix("session_"))
+
+
+def test_listing_in_another_thread_preserves_active_session(
+    catalog_tmpfile, tmp_path, monkeypatch
+):
+    from datachain.lib.dc import records
+
+    catalog = catalog_tmpfile
+    folder = tmp_path / "input"
+    folder.mkdir()
+    (folder / "file.txt").write_text("contents")
+    entered = Event()
+    resume = Event()
+    create_records = records.create_records_dataset
+
+    def paused_seed(*args, **kwargs):
+        entered.set()
+        assert resume.wait(15)
+        return create_records(*args, **kwargs)
+
+    def list_in_worker():
+        with Catalog(
+            metastore=catalog.metastore.clone(use_new_connection=True),
+            warehouse=catalog.warehouse.clone(use_new_connection=True),
+        ) as worker:
+            return [
+                row
+                for _, result in worker.ls([str(folder) + "/"], fields=["name"])
+                for row in result
+            ]
+
+    with Session("owner", catalog=catalog) as parent:
+        parent.get_or_create_job()
+        monkeypatch.setattr(records, "create_records_dataset", paused_seed)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            listing = pool.submit(list_in_worker)
+            try:
+                if not entered.wait(10):
+                    listing.result(timeout=1)
+                    pytest.fail("listing did not reach seed creation")
+                assert Session.get() is parent
+                monkeypatch.setattr(records, "create_records_dataset", create_records)
+                kept = dc.read_values(value=[1]).persist()
+            finally:
+                resume.set()
+            assert listing.result(timeout=30) == [("file.txt",)]
+        assert Session.get() is parent
+        assert kept.to_values("value") == [1]

@@ -250,3 +250,33 @@ def test_catalog_view_cannot_exit_parent_scope(catalog):
                 pass
         assert Session.get() is parent
         assert chain.to_values("value") == [1]
+
+
+def _check_closed_catalog_cleanup(catalog, backing):
+    with Session("owner", catalog=catalog) as parent:
+        parent.get_or_create_job()
+        with Catalog(
+            metastore=backing.metastore.clone(),
+            warehouse=backing.warehouse.clone(),
+        ) as borrowed:
+            chain = dc.read_values(value=[1], session=borrowed.session).persist()
+            temporary_name = chain.name
+        assert borrowed.metastore.db.is_closed
+        assert borrowed.warehouse.db.is_closed
+    assert borrowed.metastore.db.is_closed
+    assert borrowed.warehouse.db.is_closed
+    with pytest.raises(DatasetNotFoundError):
+        backing.get_dataset(temporary_name)
+
+
+# These tests inspect SQLite connection state after the borrowed catalog exits.
+@skip_if_not_sqlite
+def test_cleanup_keeps_closed_writing_catalog_closed(catalog):
+    _check_closed_catalog_cleanup(catalog, catalog)
+
+
+@skip_if_not_sqlite
+def test_cleanup_removes_temporary_data_from_closed_separate_database(
+    catalog, catalog_tmpfile
+):
+    _check_closed_catalog_cleanup(catalog, catalog_tmpfile)

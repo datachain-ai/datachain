@@ -561,7 +561,8 @@ def write_listing(
     # across URIs/runs.
     # The seed is needed only while writing this snapshot. Clean it up now rather
     # than keeping its catalog alive until the caller's (possibly global) exit.
-    with Session("listing", catalog=session.catalog) as writer:
+    writer = Session("listing", catalog=session.catalog)
+    try:
         (
             create_records_dataset(
                 [{"seed": 0}],
@@ -581,3 +582,5 @@ def write_listing(
             # for internal listing datasets, we always bump major version
             .save(ds_name, listing=True, update_version="major")
         )
+    finally:
+        writer._close()
