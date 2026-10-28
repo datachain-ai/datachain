@@ -295,7 +295,8 @@ def _build_source_replay_input(
     result_dataset: "DataChain",
     result_dependencies: list[DatasetDependency | None],
 ) -> tuple["DataChain | None", "DataChain | None", str | None, bool]:
-    """Return replay inputs, invalidated source rows, version, and missing status."""
+    """Return replay inputs, invalidated source rows (None when the source version
+    is unchanged), the latest source version, and missing status."""
     if target_source_query.starting_step is None:  # pragma: no cover
         raise RuntimeError("Source dataset must be resolved before processing delta")
 
@@ -323,14 +324,16 @@ def _build_source_replay_input(
         target_source_spec.compare,
     )
 
-    invalidated_chain = _build_source_diff_chain(
-        source_ds_name,
-        source_ds_project,
-        source_ds_latest_version,
-        source_ds_version,
-        target_source_spec.on,
-        target_source_spec.compare,
-    )
+    invalidated_chain = None  # same version: nothing was modified or deleted
+    if source_ds_version != source_ds_latest_version:
+        invalidated_chain = _build_source_diff_chain(
+            source_ds_name,
+            source_ds_project,
+            source_ds_latest_version,
+            source_ds_version,
+            target_source_spec.on,
+            target_source_spec.compare,
+        )
 
     retry_chain = None
     if target_source_spec.delta_retry:
@@ -448,17 +451,20 @@ def delta_retry_update(
         )
 
         assert source_replay_input is not None
-        assert invalidated_chain is not None
-        has_source_changes |= (
-            not source_replay_input.empty or not invalidated_chain.empty
-        )
-        # Invalidate by source keys before filters or generators can drop rows.
-        for invalidated in (invalidated_chain, source_replay_input):
-            retained_chain = retained_chain.subtract(
-                invalidated,
-                on=result_key,
-                right_on=target_source_spec.on,
-            )
+        if invalidated_chain is not None or target_source_spec.delta_retry:
+            # each diff runs once: its rows are checked, replayed and subtracted
+            source_replay_input = source_replay_input.persist()
+            changed = [source_replay_input]
+            if invalidated_chain is not None:
+                changed.append(invalidated_chain.persist())
+            # Invalidate by source keys before filters or generators can drop rows.
+            for invalidated in (chain for chain in changed if not chain.empty):
+                has_source_changes = True
+                retained_chain = retained_chain.subtract(
+                    invalidated,
+                    on=result_key,
+                    right_on=target_source_spec.on,
+                )
         source_replacements.append((source, source_replay_input))
 
     if not has_source_changes:
