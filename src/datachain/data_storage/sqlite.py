@@ -2,7 +2,7 @@ import logging
 import os
 import sqlite3
 from array import array
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from functools import cached_property, wraps
 from time import sleep
