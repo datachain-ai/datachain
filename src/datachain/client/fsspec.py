@@ -409,6 +409,13 @@ class Client(ABC):
             return {"version_id": version_id}
         return {}
 
+    @staticmethod
+    def _block_size_kwargs(block_size: int | None) -> dict[str, Any]:
+        # Hugging Face opens a stream that can't seek for block_size=0.
+        if block_size == 0:
+            return {"cache_type": "none"}
+        return {"block_size": block_size}
+
     def _file_info_kwargs(self, version_id: str | None = None) -> dict[str, Any]:
         return self._version_kwargs(version_id)
 
@@ -470,23 +477,22 @@ class Client(ABC):
         use_cache: bool = True,
         cb: Callback = DEFAULT_CALLBACK,
         block_size: int | None = None,
-        read_ahead: bool = True,
     ) -> BinaryIO:
         """Open a file, including files in tar archives.
 
-        With read-ahead, each read fetches at least a whole block (50 MiB on S3),
-        which suits reading a file in order. Without it, each read fetches only
-        the bytes asked for, for callers like pyarrow that read a few ranges.
+        Each read fetches at least `block_size` bytes (by default 50 MiB on S3),
+        which suits reading a file in order. With `block_size=0`, each read
+        fetches only the bytes asked for, for callers like pyarrow that read a
+        few ranges.
         """
         if use_cache and (cache_path := self.cache.get_path(file)):
             return open(cache_path, mode="rb")
         assert not file.location
         kwargs = self._version_kwargs(file.version)
-        if not read_ahead:
-            kwargs["cache_type"] = "none"
+        kwargs |= self._block_size_kwargs(block_size)
         full_path = file.get_fs_path()
         return FileWrapper(
-            self.fs.open(full_path, block_size=block_size, **kwargs),
+            self.fs.open(full_path, **kwargs),
             cb,
         )  # type: ignore[return-value]
 
