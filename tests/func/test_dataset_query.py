@@ -1192,3 +1192,25 @@ def test_save_subset_of_columns(cloud_test_catalog, cats_dataset):
 
     dataset = catalog.get_dataset("cats")
     assert dataset.schema == {"file__path": String}
+
+
+@pytest.mark.parametrize("explicit_session", [False, True])
+def test_query_catalog_override_keeps_session_consistent(
+    test_session, explicit_session
+):
+    catalog = test_session.catalog
+    source = dc.read_values(value=[1, 2], session=test_session).save("source")
+    other = catalog.copy()
+    other.client_config = {"use_symlinks": True}
+    with dc.Session("parent", catalog=other) as parent:
+        query = DatasetQuery(
+            name=source.dataset.name,
+            catalog=catalog,
+            session=parent if explicit_session else None,
+        )
+        assert query.catalog is query.session.catalog is catalog
+        assert query.session.name == parent.name
+        saved = query.save("consistent")
+        assert saved.catalog is saved.session.catalog is catalog
+        assert parent.catalog is other
+        assert other.client_config == {"use_symlinks": True}
