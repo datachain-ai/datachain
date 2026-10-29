@@ -1,3 +1,6 @@
+import importlib.metadata
+import sys
+
 import pytest
 from datasets import (
     Array2D,
@@ -188,3 +191,37 @@ def test_hf_array():
     gen.setup()
     row = next(iter(gen.process()))
     assert row.arr == [[0, 1], [2, 3]]
+
+
+@pytest.fixture
+def unloaded_hf(monkeypatch):
+    monkeypatch.delitem(sys.modules, "datachain.lib.hf")
+    monkeypatch.delattr("datachain.lib.hf")
+
+
+def _datasets_not_installed(name):
+    raise importlib.metadata.PackageNotFoundError(name)
+
+
+@pytest.mark.parametrize(
+    "fake_version,message",
+    [
+        (lambda name: "2.2.1", r"datasets>=4\.0\.0, found 2\.2\.1"),
+        (_datasets_not_installed, "No package metadata was found for datasets"),
+    ],
+    ids=["outdated", "missing"],
+)
+def test_import_rejects_unusable_datasets(
+    unloaded_hf, monkeypatch, fake_version, message
+):
+    monkeypatch.setitem(sys.modules, "datasets", None)
+    monkeypatch.setattr(importlib.metadata, "version", fake_version)
+
+    with pytest.raises(ImportError, match=message):
+        importlib.import_module("datachain.lib.hf")
+
+
+def test_import_accepts_datasets_4(unloaded_hf, monkeypatch):
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "4.0.0")
+
+    assert importlib.import_module("datachain.lib.hf").HFClassLabel
