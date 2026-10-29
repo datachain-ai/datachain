@@ -78,11 +78,11 @@ class _PartialReadHandler(FSSpecHandler):
     those columns. CSV and JSON are read from the start, so they keep read-ahead.
     """
 
-    def __init__(self, client: "Client", file: File, read_ahead: bool):
+    def __init__(self, client: "Client", file: File, block_size: int | None):
         super().__init__(client.fs)
         self.client = client
         self.file = file
-        self.read_ahead = read_ahead
+        self.block_size = block_size
 
     def get_file_info(self, paths):
         # Describes the recorded file without looking up the latest object, which a
@@ -94,7 +94,7 @@ class _PartialReadHandler(FSSpecHandler):
             self.file,
             use_cache=False,
             cb=self.file._download_cb,
-            read_ahead=self.read_ahead,
+            block_size=self.block_size,
         )
         return pa.PythonFile(f, mode="r")
 
@@ -103,8 +103,8 @@ def pyarrow_fs(file: File, format):
     client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
     if isinstance(client.fs, LocalFileSystem):
         return client.fs
-    read_ahead = format != "parquet"
-    return PyFileSystem(_PartialReadHandler(client, file, read_ahead=read_ahead))
+    block_size = 0 if format == "parquet" else None
+    return PyFileSystem(_PartialReadHandler(client, file, block_size=block_size))
 
 
 class ArrowGenerator(Generator):

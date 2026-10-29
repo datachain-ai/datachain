@@ -376,7 +376,9 @@ def stub_client(request, gcs_stub_url, tmp_path, mocker):
         sync(get_loop(), client.fs._session.close)
 
 
-_STUB_FILE = File(source="gs://b", path="data.txt", version=_VER, etag="e1")
+_STUB_FILE = File(
+    source="gs://b", path="data.txt", version=_VER, etag="e1", size=len(_GZIPPED)
+)
 
 
 @pytest.mark.parametrize(
