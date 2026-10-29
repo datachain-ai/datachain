@@ -2717,11 +2717,7 @@ class OnlyY(DataModel):
     y: int
 
 
-@pytest.mark.parametrize("optional", [False, True])
-def test_read_parquet_columns_read_a_field_missing_from_a_file_as_none(
-    tmp_dir, test_session, optional
-):
-    path = tmp_dir / "parts"
+def _write_x_then_no_x(path, session, optional=False):
     path.mkdir()
     for name, i, point in [
         ("1.parquet", 1, DefaultX(x=1, y=2)),
@@ -2729,12 +2725,31 @@ def test_read_parquet_columns_read_a_field_missing_from_a_file_as_none(
     ]:
         model = type(point) | None if optional else type(point)
         output = {"id": int, "p": model}
-        dc.read_values(
-            id=[i], p=[point], output=output, session=test_session
-        ).to_parquet(path / name)
+        dc.read_values(id=[i], p=[point], output=output, session=session).to_parquet(
+            path / name
+        )
+    return path.as_uri()
+
+
+@pytest.mark.parametrize("optional", [False, True])
+def test_read_parquet_columns_read_a_field_missing_from_a_file_as_none(
+    tmp_dir, test_session, optional
+):
+    uri = _write_x_then_no_x(tmp_dir / "parts", test_session, optional)
     chain = dc.read_parquet(
-        path.as_uri(), columns=["id", "p.x"], source=False, session=test_session
+        uri, columns=["id", "p.x"], source=False, session=test_session
     )
+    assert chain.order_by("id").to_values("p.x") == [1, None]
+
+
+def test_parse_tabular_columns_take_signals_from_the_first_file_by_path(
+    tmp_dir, test_session
+):
+    uri = _write_x_then_no_x(tmp_dir / "parts", test_session)
+    files = dc.read_storage(uri, session=test_session).order_by("file.path")
+    chain = dc.read_values(
+        file=files.to_values("file")[::-1], session=test_session
+    ).parse_tabular(columns=["id", "p.x"], source=False)
     assert chain.order_by("id").to_values("p.x") == [1, None]
 
 

@@ -309,8 +309,11 @@ def _file_datasets(chain: "DataChain", **kwargs) -> Iterator[Dataset]:
 
 
 def file_schemas(chain: "DataChain", **kwargs) -> list[pa.Schema]:
-    """Return the schema of each file in the chain."""
-    schemas = [ds.schema for ds in _file_datasets(chain, **kwargs)]
+    """Return the schema of each file in the chain, by path, so the first file
+    gives the saved DataChain schema, as in `read_columns`."""
+    schemas = [
+        ds.schema for ds in _file_datasets(chain.order_by("file.path"), **kwargs)
+    ]
     if not schemas:
         raise ValueError(
             "Cannot infer schema (no files to process or can't access them)"
