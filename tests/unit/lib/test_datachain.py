@@ -2708,6 +2708,54 @@ def test_read_parquet_columns_with_list_output_ignore_unpicked_types_across_file
     assert chain.order_by("id").to_list("id", "value") == [(1, 1), (2, None), (3, None)]
 
 
+class DefaultX(DataModel):
+    x: int | None = 5
+    y: int
+
+
+class OnlyY(DataModel):
+    y: int
+
+
+@pytest.mark.parametrize("optional", [False, True])
+def test_read_parquet_columns_read_a_field_missing_from_a_file_as_none(
+    tmp_dir, test_session, optional
+):
+    path = tmp_dir / "parts"
+    path.mkdir()
+    for name, i, point in [
+        ("1.parquet", 1, DefaultX(x=1, y=2)),
+        ("2.parquet", 2, OnlyY(y=7)),
+    ]:
+        model = type(point) | None if optional else type(point)
+        output = {"id": int, "p": model}
+        dc.read_values(
+            id=[i], p=[point], output=output, session=test_session
+        ).to_parquet(path / name)
+    chain = dc.read_parquet(
+        path.as_uri(), columns=["id", "p.x"], source=False, session=test_session
+    )
+    assert chain.order_by("id").to_values("p.x") == [1, None]
+
+
+def test_read_parquet_decides_each_optional_parent_from_its_own_fields(
+    tmp_dir, test_session
+):
+    path = tmp_dir / "two.parquet"
+    p = [NullablePoint(x=None, y=3), None]
+    q = [None, NullablePoint(x=None, y=4)]
+    output = {"id": int, "p": NullablePoint | None, "q": NullablePoint | None}
+    dc.read_values(id=[1, 2], p=p, q=q, output=output, session=test_session).to_parquet(
+        path
+    )
+    chain = dc.read_parquet(path.as_uri(), source=False, session=test_session)
+    rows = chain.order_by("id").to_list("p", "q")
+    assert [[v and v.model_dump() for v in row] for row in rows] == [
+        [{"x": None, "y": 3}, None],
+        [None, {"x": None, "y": 4}],
+    ]
+
+
 @pytest.mark.parametrize("columns,read", [(None, 3), (["c", "a"], 2)])
 def test_read_parquet_output_must_fit_columns_read(
     abc_parquet, test_session, columns, read

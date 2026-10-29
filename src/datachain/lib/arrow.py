@@ -168,7 +168,23 @@ class ArrowGenerator(Generator):
         if format := kwargs.get("format"):
             kwargs["format"] = fix_pyarrow_format(format, self.parse_options)
 
-        ds = dataset(fs_path, schema=self.input_schema, filesystem=fs, **kwargs)
+        input_schema = self.input_schema
+        if (
+            input_schema is None
+            or self.columns is None
+            or not _written_by_datachain(input_schema)
+        ):
+            ds = dataset(fs_path, schema=input_schema, filesystem=fs, **kwargs)
+        else:
+            # A picked field missing from this file reads as null, as in a full
+            # read. The fields that decide an optional model keep this file's own
+            # types, which other files may type differently.
+            ds = dataset(fs_path, filesystem=fs, **kwargs)
+            picked = set(input_schema.names)
+            extra = [f for f in ds.schema if f.name not in picked]
+            ds = ds.replace_schema(
+                pa.schema([*input_schema, *extra], metadata=ds.schema.metadata)
+            )
 
         use_datachain_schema = _written_by_datachain(ds.schema)
         if self.written_by_datachain not in (None, use_datachain_schema):
@@ -188,6 +204,7 @@ class ArrowGenerator(Generator):
             fields = [schema.field(c) for c in kw["columns"]]
             schema = pa.schema(fields, metadata=schema.metadata)
         hf_schema = _get_hf_schema(schema)
+        under = _columns_under(kw.get("columns", ds.schema.names))
 
         def iter_records():
             for record_batch in ds.to_batches(**kw):
@@ -199,7 +216,7 @@ class ArrowGenerator(Generator):
         ) as pbar:
             for index, record in enumerate(pbar):
                 yield self._process_record(
-                    record, file, index, hf_schema, use_datachain_schema
+                    record, file, index, hf_schema, use_datachain_schema, under
                 )
 
     def _process_record(
@@ -209,10 +226,11 @@ class ArrowGenerator(Generator):
         index: int,
         hf_schema: tuple["Features", dict[str, "DataType"]] | None,
         use_datachain_schema: bool,
+        under: dict[str, list[str]],
     ):
         if use_datachain_schema and self.output_schema:
             model = self.output_schema
-            vals = [_nested_model_instantiate(record, model, paths=self.columns)]
+            vals = [_nested_model_instantiate(record, model, under, paths=self.columns)]
         else:
             vals = self._process_non_datachain_record(record, hf_schema)
 
@@ -485,7 +503,7 @@ def infer_output(
         return schema_to_output(schema, col_names)[0], None
     if not col_names:
         # Picked signals keep their names, as select() returns them.
-        output = schema_to_output(schema)[0]
+        output = signal_schema.values
         return output, (list(output) if columns is not None else None)
     signals = _signal_paths(signal_schema, columns, source)
     _check_fields_fit(len(col_names), len(signals))
@@ -606,14 +624,25 @@ def _get_datachain_schema(schema: "pa.Schema") -> SignalSchema | None:
     return None
 
 
-def _subtree_all_none(column_values: dict[str, Any], prefix: str) -> bool:
-    """True when every column read under ``prefix`` is None, including fields the
-    output leaves out. NaN / [] / {} count as None-ish so type defaults don't read
-    as present."""
+def _columns_under(columns: Sequence[str]) -> dict[str, list[str]]:
+    """Map each model path to the stored columns under it, e.g. "p" to ["p.x"]."""
+    under: dict[str, list[str]] = {}
+    for column in columns:
+        parts = column.split(".")
+        for i in range(1, len(parts)):
+            under.setdefault(".".join(parts[:i]), []).append(column)
+    return under
+
+
+def _subtree_all_none(column_values: dict[str, Any], columns: Sequence[str]) -> bool:
+    """True when every one of the model's stored ``columns`` is None, including
+    fields the output leaves out. NaN / [] / {} count as None-ish so type defaults
+    don't read as present."""
     sentinel = f".{SignalSchema._OPTIONAL_SENTINEL_FIELD}"
-    for key, val in column_values.items():
-        if not key.startswith(f"{prefix}.") or key.endswith(sentinel):
+    for key in columns:
+        if key.endswith(sentinel):
             continue
+        val = column_values.get(key)
         if val is not None and not _is_nan(val) and val not in ([], {}):
             return False
     return True
@@ -623,25 +652,29 @@ def _is_nan(val: Any) -> bool:
     return isinstance(val, float) and math.isnan(val)
 
 
-def _optional_absent(column_values: dict[str, Any], prefix: str) -> bool:
-    """Whether the ``Optional[DataModel]`` at ``prefix`` is absent. Uses the
-    ``_type_tag`` discriminator when present (0 = present arm), else the
-    all-leaves-None heuristic."""
+def _optional_absent(
+    column_values: dict[str, Any], prefix: str, columns: Sequence[str]
+) -> bool:
+    """Whether the ``Optional[DataModel]`` at ``prefix``, stored as ``columns``, is
+    absent. Uses the ``_type_tag`` discriminator when present (0 = present arm),
+    else the all-leaves-None heuristic."""
     tag_key = f"{prefix}.{SignalSchema._OPTIONAL_SENTINEL_FIELD}"
     if tag_key in column_values:
         return optional_tag_is_absent(column_values[tag_key])
-    return _subtree_all_none(column_values, prefix)
+    return _subtree_all_none(column_values, columns)
 
 
 def _nested_model_instantiate(
     column_values: dict[str, Any],
     model: type["BaseModel"],
+    under: dict[str, list[str]],
     prefix: str = "",
     paths: Sequence[str] | None = None,
 ) -> "BaseModel":
     """Instantiate the given model and all sub-models/fields based on the provided
-    column values. With `paths`, each field is read from its path, in order,
-    instead of from its own name."""
+    column values. `under` maps each model path to its stored columns. With
+    `paths`, each field is read from its path, in order, instead of from its own
+    name."""
     vals_dict: dict[str, Any] = {}
     for i, (field, field_info) in enumerate(model.model_fields.items()):
         kind = classify_field(field_info.annotation)
@@ -650,13 +683,15 @@ def _nested_model_instantiate(
         else:
             cur_path = f"{prefix}.{field}" if prefix else field
         if kind.is_model:
-            if kind.is_optional and _optional_absent(column_values, cur_path):
+            columns = under.get(cur_path, [])
+            if kind.is_optional and _optional_absent(column_values, cur_path, columns):
                 # Absent Optional[DataModel] parent -> None.
                 vals_dict[field] = None
             else:
                 vals_dict[field] = _nested_model_instantiate(
                     column_values,
                     kind.inner,
+                    under,
                     prefix=cur_path,
                 )
         elif cur_path in column_values:
