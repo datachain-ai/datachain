@@ -55,7 +55,7 @@ from datachain.func.base import Function
 from datachain.hash_utils import hash_column_elements
 from datachain.job import Job
 from datachain.lib.data_model import NULLABLE_SCALARS
-from datachain.lib.listing import is_listing_dataset, listing_dataset_expired
+from datachain.lib.listing import ensure_listing, is_listing_dataset
 from datachain.lib.signal_schema import SignalSchema, generate_merge_root_mapping
 from datachain.lib.udf import JsonSerializationError, UdfError, _get_cache
 from datachain.lib.utils import type_to_str
@@ -2676,7 +2676,9 @@ class DatasetQuery:
         checkpoints_enabled: bool = True,
     ) -> None:
         self.session = Session.get(session, catalog=catalog, in_memory=in_memory)
-        self.catalog = catalog or self.session.catalog
+        if catalog is not None and catalog is not self.session.catalog:
+            self.session = self.session._with_catalog(catalog)
+        self.catalog = self.session.catalog
         self.steps: list[Step] = list(steps)
         self._chunk_index: int | None = None
         self._chunk_total: int | None = None
@@ -2825,24 +2827,9 @@ class DatasetQuery:
     def resolve_listing(self) -> None:
         """Runs listing pre-step if needed"""
         if self.list_ds_name and not self.starting_step:
-            listing_ds = None
-            try:
-                listing_ds = self.catalog.get_dataset(
-                    self.list_ds_name,
-                    versions=None,
-                    include_incomplete=False,
-                )
-            except DatasetNotFoundError:
-                pass
-
-            if not listing_ds or self.update or listing_dataset_expired(listing_ds):
-                assert self.listing_fn
-                self.listing_fn()
-                listing_ds = self.catalog.get_dataset(
-                    self.list_ds_name,
-                    versions=None,
-                    include_incomplete=False,
-                )
+            listing_ds = ensure_listing(
+                self.list_ds_name, self.catalog, self.listing_fn, update=self.update
+            )
 
             # at this point we know what is our starting listing dataset name
             self._set_starting_step(listing_ds)  # type: ignore [arg-type]
@@ -3207,7 +3194,6 @@ class DatasetQuery:
         right = dataset_query.clone()
         return DatasetQuery(
             session=self.session,
-            catalog=self.catalog,
             steps=[SQLUnion(left, right)],
             checkpoints_enabled=self.checkpoints_enabled,
         )
@@ -3234,7 +3220,6 @@ class DatasetQuery:
         )
         return DatasetQuery(
             session=self.session,
-            catalog=self.catalog,
             steps=[SQLJoin(self.catalog, left, right, predicates, inner, full, rname)],
             checkpoints_enabled=self.checkpoints_enabled,
         )
@@ -3530,7 +3515,7 @@ class DatasetQuery:
             namespace_name=project.namespace.name,
             project_name=project.name,
             version=version,
-            catalog=self.catalog,
+            session=self.session,
         )
 
     def _reuse_listing_if_unchanged(
@@ -3572,7 +3557,7 @@ class DatasetQuery:
             namespace_name=project.namespace.name,
             project_name=project.name,
             version=prev_version,
-            catalog=self.catalog,
+            session=self.session,
         )
 
     @property
