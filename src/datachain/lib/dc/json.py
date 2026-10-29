@@ -51,7 +51,7 @@ def read_json(
         model_name: optional generated model name
         format: "json", "jsonl"
         jmespath: optional JMESPATH expression to reduce JSON
-        nrows: optional row limit for jsonl and JSON arrays
+        nrows: optional row limit per file, for jsonl and JSON arrays
 
     Example:
         infer JSON schema from data, reduce using JMESPATH

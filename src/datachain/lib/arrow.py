@@ -132,7 +132,7 @@ class ArrowGenerator(Generator):
         input_schema : Optional pyarrow schema for validation.
         output_schema : Optional pydantic model for validation.
         source : Whether to include info about the source file.
-        nrows : Optional row limit.
+        nrows : Optional row limit per file.
         columns : Optional columns to read from each file by name, in output order.
         prefetch_max_size : Files larger than this, or of unknown size, aren't
             prefetched.

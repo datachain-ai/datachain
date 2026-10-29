@@ -2527,7 +2527,7 @@ class DataChain:
             column: Generated column name.
             model_name: Generated model name.
             source: Whether to include info about the source file.
-            nrows: Optional row limit.
+            nrows: Optional row limit per file.
             columns: Input columns to read, in order; all if omitted. Accepts original
                 or normalized names, e.g. "ZIP Code" or "zip_code". For Parquet exported
                 by DataChain, omit this parameter and use `.select(...)` after parsing.
