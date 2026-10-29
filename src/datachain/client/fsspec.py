@@ -624,14 +624,14 @@ class Client(ABC):
 
     async def _check_unchanged(self, file: "File") -> None:
         # Metadata updates can change a pinned file's etag without changing its
-        # bytes, so compare its size instead, which still catches appends. A size of
-        # 0 or less is skipped, because a File built by hand may not have one.
+        # bytes, so compare its size instead, which still catches appends. A negative
+        # size means it's unknown, so nothing is compared.
         pinned = (
             file.version and file.version != "null" and self.PINNED_VERSION_IS_IMMUTABLE
         )
 
         change = ""
-        if pinned and file.size > 0:
+        if pinned and file.size >= 0:
             size = await self.get_size(file)
             if size != file.size:
                 change = f"size was {file.size}, now {size}"
