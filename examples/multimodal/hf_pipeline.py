@@ -13,7 +13,7 @@ import os
 import subprocess
 
 import torch
-from transformers import Pipeline, pipeline
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, Pipeline, pipeline
 
 import datachain as dc
 from datachain import C, File
@@ -104,6 +104,8 @@ if __name__ == "__main__":
         print("ffmpeg binary not found, skipping audio example")
 
     print("\nLong text summarization:")
+    # transformers 5.22 can't load this seq2seq model by name for text-generation.
+    summarizer = "pszemraj/led-large-book-summary"
     (
         dc.read_storage(text_source, anon=True, type="text")
         .filter(C("file.path").glob("*.story"))
@@ -111,7 +113,8 @@ if __name__ == "__main__":
         .setup(
             pipeline=lambda: pipeline(
                 task="text-generation",
-                model="pszemraj/led-large-book-summary",
+                model=AutoModelForSeq2SeqLM.from_pretrained(summarizer),
+                tokenizer=AutoTokenizer.from_pretrained(summarizer),
                 device=device,
             ),
             args=lambda: {"max_length": 150},
