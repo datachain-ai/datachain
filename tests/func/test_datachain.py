@@ -12,6 +12,7 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+import pyarrow.csv as pa_csv
 import pyarrow.parquet as pq
 import pytest
 
@@ -19,6 +20,7 @@ import datachain as dc
 from datachain import DataModel, func
 from datachain.dataset import DatasetDependencyType
 from datachain.fs.utils import path_to_fsspec_uri
+from datachain.lib.arrow import PARTIAL_READ_PREFETCH_MAX_SIZE
 from datachain.lib.data_model import compute_model_fingerprint
 from datachain.lib.file import File, ImageFile
 from datachain.lib.listing import LISTING_TTL, is_listing_dataset, parse_listing_uri
@@ -1583,12 +1585,11 @@ def download_callbacks(monkeypatch):
     ids=["read_parquet", "parse_tabular_without_format"],
 )
 def test_read_parquet_columns_fetch_only_those_columns(
-    cloud_test_catalog_upload, fetched_bytes, download_callbacks, read, monkeypatch
+    cloud_test_catalog_upload, fetched_bytes, download_callbacks, read
 ):
-    monkeypatch.setattr("datachain.lib.arrow.PARTIAL_READ_PREFETCH_MAX_SIZE", 0)
     ctc = cloud_test_catalog_upload
     rng = np.random.default_rng(0)
-    table = pa.table({f"c{i}": rng.random(50_000) for i in range(10)})
+    table = pa.table({f"c{i}": rng.random(120_000) for i in range(10)})
     file = _put_parquet(ctc, "wide.parquet", table, row_group_size=10_000)
     chain = read(f"{ctc.src_uri}/wide.parquet", ctc.session)
     fetched_bytes[:] = [0, 0]
@@ -1611,6 +1612,72 @@ def test_read_parquet_columns_over_http_without_ranges(
 
     assert sorted(chain.to_values("value")) == [1, 2, 3]
     assert sum(cb.value for cb in download_callbacks) > 0
+
+
+def _table_of_size(size):
+    rows = size // 100 + 1
+    return pa.table({"a": range(rows), "pad": [f"{i:0100}" for i in range(rows)]})
+
+
+def _put_table(ctc, name, table):
+    buffer = pa.BufferOutputStream()
+    if name.endswith(".csv"):
+        pa_csv.write_csv(table, buffer)
+    else:
+        pq.write_table(table, buffer, compression="none", use_dictionary=False)
+    data = buffer.getvalue().to_pybytes()
+    return File.upload(data, f"{ctc.src_uri}/{name}", ctc.catalog)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize(
+    "name,parse",
+    [("t.parquet", {"columns": ["a"]}), ("t.csv", {"format": "csv", "nrows": 1})],
+    ids=["parquet_columns", "csv_nrows"],
+)
+@pytest.mark.parametrize(
+    "size,prefetch,read_in_parts",
+    [
+        (1, 2, False),
+        (PARTIAL_READ_PREFETCH_MAX_SIZE, 2, True),
+        (1, 0, True),
+    ],
+    ids=["small", "over_the_limit", "small_without_prefetch"],
+)
+def test_partial_reads_prefetch_only_files_up_to_the_limit(
+    cloud_test_catalog_upload, fetched_bytes, name, parse, size, prefetch, read_in_parts
+):
+    ctc = cloud_test_catalog_upload
+    table = _table_of_size(size)
+    _put_table(ctc, name, table)
+    chain = (
+        dc.read_storage(f"{ctc.src_uri}/{name}", session=ctc.session)
+        .settings(prefetch=prefetch)
+        .parse_tabular(**parse)
+    )
+    fetched_bytes[:] = [0, 0]
+
+    rows = parse.get("nrows") or len(table)
+    assert sorted(chain.to_values("a")) == list(range(rows))
+    assert (fetched_bytes[0] > 0) is read_in_parts
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_partial_reads_read_files_of_unknown_size_in_parts(
+    cloud_test_catalog_upload, fetched_bytes
+):
+    ctc = cloud_test_catalog_upload
+    uploaded = _put_table(ctc, "t.parquet", _table_of_size(1))
+    file = File(source=uploaded.source, path=uploaded.path)
+    chain = dc.read_values(file=[file], session=ctc.session).parse_tabular(
+        columns=["a"]
+    )
+    fetched_bytes[:] = [0, 0]
+
+    assert chain.to_values("a") == [0]
+    assert fetched_bytes[0] > 0
 
 
 def _put_parquet(ctc, name, table, **kwargs):
