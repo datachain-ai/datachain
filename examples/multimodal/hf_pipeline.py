@@ -104,7 +104,6 @@ if __name__ == "__main__":
         print("ffmpeg binary not found, skipping audio example")
 
     print("\nLong text summarization:")
-    # transformers 5.22 can't load this seq2seq model by name for text-generation.
     summarizer = "pszemraj/led-large-book-summary"
     (
         dc.read_storage(text_source, anon=True, type="text")
