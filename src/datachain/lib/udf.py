@@ -776,8 +776,7 @@ class Generator(UDFBase):
 
     is_output_batched = True
     prefetch: int = 2
-    # Files larger than this, or of unknown size, aren't prefetched.
-    _prefetch_max_size: int | None = None
+    prefetch_max_size: int | None = None
 
     def run(
         self,
@@ -831,7 +830,7 @@ class Generator(UDFBase):
             self.prefetch,
             download_cb=download_cb,
             remove_prefetched=bool(self.prefetch) and not cache,
-            max_size=self._prefetch_max_size,
+            max_size=self.prefetch_max_size,
         )
 
         with closing(prepared_inputs):

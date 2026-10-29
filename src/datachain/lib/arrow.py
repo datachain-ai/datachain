@@ -130,7 +130,7 @@ class ArrowGenerator(Generator):
         kwargs: Parameters to pass to pyarrow.dataset.dataset.
         """
         super().__init__()
-        self._prefetch_max_size = prefetch_max_size
+        self.prefetch_max_size = prefetch_max_size
         self.input_schema = input_schema
         self.output_schema = output_schema
         self.source = source
