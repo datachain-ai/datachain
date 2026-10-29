@@ -2594,6 +2594,11 @@ class DataChain:
                     schemas, columns, source, with_output=bool(col_names)
                 )
                 output, read = infer_output(schema, col_names or names, columns, source)
+                if read is not None:
+                    # Each file written by DataChain is read with its own types: an
+                    # optional model is decided from all of its fields, and other
+                    # files may type the unpicked ones differently.
+                    schema = None
 
             if isinstance(output, dict):
                 model_name = model_name or column or ""

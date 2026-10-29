@@ -1625,6 +1625,44 @@ def test_read_parquet_columns_fetch_only_picked_signals_written_by_datachain(
     assert 0 < fetched_bytes[0] < file.size // 4
 
 
+class _Wide(DataModel):
+    x: float
+    a: float
+    b: float
+    c: float
+    d: float
+    e: float
+    f: float
+    g: float
+
+
+@pytest.mark.filterwarnings("ignore:Sending a large body:ResourceWarning")
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_read_parquet_columns_with_scalar_output_under_optional_parent_fetch_only_it(
+    cloud_test_catalog_upload, fetched_bytes, tmp_path
+):
+    ctc = cloud_test_catalog_upload
+    rng = np.random.default_rng(0)
+    rows = [
+        dict(zip(_Wide.model_fields, r, strict=True)) for r in rng.random((20_000, 8))
+    ]
+    points = [_Wide(**row) for row in rows]
+    local = tmp_path / "optional.parquet"
+    dc.read_values(
+        p=points, output={"p": _Wide | None}, session=ctc.session
+    ).to_parquet(local)
+    uri = f"{ctc.src_uri}/optional.parquet"
+    file = File.upload(local.read_bytes(), uri, ctc.catalog)
+    chain = dc.read_parquet(
+        uri, columns=["p.x"], output={"x": float | None}, session=ctc.session
+    )
+    fetched_bytes[:] = [0, 0]
+
+    assert sorted(chain.to_values("x")) == sorted(p.x for p in points)
+    assert 0 < fetched_bytes[0] < file.size // 4
+
+
 def test_read_parquet_columns_over_http_without_ranges(
     http_server_without_ranges, download_callbacks, tmp_path, test_session
 ):

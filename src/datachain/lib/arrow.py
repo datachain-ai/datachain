@@ -178,8 +178,8 @@ class ArrowGenerator(Generator):
         kw: dict[str, Any] = {}
         if self.nrows:
             kw = {"batch_size": min(self.DEFAULT_BATCH_SIZE, self.nrows)}
-        if self.columns is not None and (signals := _get_datachain_schema(schema)):
-            read = _with_optional_parents(signals, self.columns)
+        if self.columns is not None and use_datachain_schema and self.output_schema:
+            read = _model_signals(self.output_schema, self.columns)
             kw["columns"] = [c for c in schema.names if _in_signals(c, read)]
         elif self.columns is not None:
             present = set(schema.names)
@@ -409,9 +409,9 @@ def _pick_signals(
     """
     _signal_paths(signal_schema, columns, source)
     picked = signal_schema.to_partial(*columns)
-    read = _with_optional_parents(signal_schema, columns)
+    # Only the picked signals need compatible types across files.
     merged = pa.unify_schemas(
-        [pa.schema([f for f in s if _in_signals(f.name, read)]) for s in schemas]
+        [pa.schema([f for f in s if _in_signals(f.name, columns)]) for s in schemas]
     )
     metadata = {
         **schemas[0].metadata,
@@ -451,26 +451,22 @@ def _in_signals(column: str, signals: Sequence[str]) -> bool:
     return any(column == s or column.startswith(f"{s}.") for s in signals)
 
 
-def _with_optional_parents(
-    signal_schema: SignalSchema, paths: Sequence[str]
-) -> list[str]:
-    """Widen each path to its outermost optional model parent, e.g. "p.x" to "p".
+def _model_signals(model: type["BaseModel"], paths: Sequence[str]) -> list[str]:
+    """Return the signals that the model's fields read, each from its path.
 
-    Parquet stores no marker of whether an optional model is present, so a full
-    read decides it from all of the model's fields. Reading them all here gives
-    the same answer when only some fields are picked.
+    An optional model is read whole: Parquet stores no marker of whether it is
+    present, so a full read decides it from all of the model's fields. Reading
+    them all here gives the same answer when only some fields are picked.
     """
     read = []
-    for path in paths:
-        parts = path.split(".")
-        for i in range(1, len(parts)):
-            parent = ".".join(parts[:i])
-            kind = classify_field(signal_schema.resolve(parent).values[parent])
-            if kind.is_optional and kind.is_model:
-                path = parent
-                break
-        read.append(path)
-    return list(dict.fromkeys(read))
+    for info, path in zip(model.model_fields.values(), paths, strict=True):
+        kind = classify_field(info.annotation)
+        if kind.is_model and not kind.is_optional:
+            fields = [f"{path}.{field}" for field in kind.inner.model_fields]
+            read += _model_signals(kind.inner, fields)
+        else:
+            read.append(path)
+    return read
 
 
 def infer_output(
@@ -481,12 +477,16 @@ def infer_output(
 ) -> tuple[dict[str, type], list[str] | None]:
     """Generate UDF output from the merged schema, `col_names` naming its columns.
 
-    Also returns the signals that the names take, in order, from files written by
-    DataChain, or None when the output reads columns by their names.
+    Also returns the signals that the output fields take, in order, from files
+    written by DataChain, or None when the output reads all columns by name.
     """
     signal_schema = _get_datachain_schema(schema)
-    if not (signal_schema and col_names):
+    if not signal_schema:
         return schema_to_output(schema, col_names)[0], None
+    if not col_names:
+        # Picked signals keep their names, as select() returns them.
+        output = schema_to_output(schema)[0]
+        return output, (list(output) if columns is not None else None)
     signals = _signal_paths(signal_schema, columns, source)
     _check_fields_fit(len(col_names), len(signals))
     names = list(normalize_col_names(col_names))

@@ -2660,6 +2660,54 @@ def test_read_parquet_columns_keep_a_present_optional_parent_with_null_fields(
     assert [(i, p and p.model_dump()) for i, p in rows] == [(1, {"x": None}), (2, None)]
 
 
+class NullableLabel(DataModel):
+    x: int | None = None
+    y: str
+
+
+@pytest.fixture
+def unpicked_types_differ(tmp_dir, test_session):
+    path = tmp_dir / "parts"
+    path.mkdir()
+    parts = [
+        ("1.parquet", [1], [NullablePoint(x=1, y=3)], NullablePoint),
+        ("2.parquet", [2, 3], [NullableLabel(x=None, y="a"), None], NullableLabel),
+    ]
+    for name, ids, points, model in parts:
+        output = {"id": int, "p": model | None}
+        dc.read_values(
+            id=ids, p=points, output=output, session=test_session
+        ).to_parquet(path / name)
+    return path.as_uri()
+
+
+def test_read_parquet_columns_ignore_unpicked_types_across_files(
+    unpicked_types_differ, test_session
+):
+    chain = dc.read_parquet(
+        unpicked_types_differ, columns=["id", "p.x"], source=False, session=test_session
+    )
+    rows = chain.order_by("id").to_list("id", "p")
+    assert [(i, p and p.model_dump()) for i, p in rows] == [
+        (1, {"x": 1}),
+        (2, {"x": None}),
+        (3, None),
+    ]
+
+
+def test_read_parquet_columns_with_list_output_ignore_unpicked_types_across_files(
+    unpicked_types_differ, test_session
+):
+    chain = dc.read_parquet(
+        unpicked_types_differ,
+        columns=["id", "p.x"],
+        output=["id", "value"],
+        source=False,
+        session=test_session,
+    )
+    assert chain.order_by("id").to_list("id", "value") == [(1, 1), (2, None), (3, None)]
+
+
 @pytest.mark.parametrize("columns,read", [(None, 3), (["c", "a"], 2)])
 def test_read_parquet_output_must_fit_columns_read(
     abc_parquet, test_session, columns, read
