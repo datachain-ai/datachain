@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, cast
 from urllib.parse import quote, urlparse
 
+from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from fsspec.implementations.http import HTTPFileSystem
 
 from datachain.dataset import StorageURI
@@ -165,7 +166,7 @@ class HTTPClient(Client):
         self,
         file: "File",
         use_cache: bool = True,
-        cb=None,
+        cb: Callback = DEFAULT_CALLBACK,
         block_size: int | None = None,
     ):
         from datachain.client.fileslice import FileWrapper
@@ -178,7 +179,7 @@ class HTTPClient(Client):
         # blocks
         return FileWrapper(
             self.fs.open(file.get_fs_path()),
-            cb or (lambda x: None),
+            cb,
         )
 
     async def get_file(self, lpath, rpath, callback, version_id: str | None = None):
