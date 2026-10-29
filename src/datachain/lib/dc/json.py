@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 import cloudpickle
 
 from datachain.lib import meta_formats
-from datachain.lib.arrow import PARTIAL_READ_PREFETCH_MAX_SIZE
 from datachain.lib.data_model import DataType
 from datachain.lib.file import File, FileType
 from datachain.lib.udf import Generator
@@ -66,6 +65,8 @@ def read_json(
         chain = dc.read_json("gs://json_ds", schema_from="gs://json/my.json")
         ```
     """
+    from datachain.lib.arrow import PARTIAL_READ_PREFETCH_MAX_SIZE
+
     from .storage import read_storage
 
     if schema_from == "auto":
