@@ -1,4 +1,5 @@
 import glob
+import os
 from collections.abc import Sequence
 
 from datachain.client.fsspec import is_cloud_uri
@@ -28,9 +29,22 @@ def validate_cloud_bucket_name(uri: str) -> None:
             raise ValueError(f"Glob patterns in bucket names are not supported: {uri}")
 
 
+def normalize_storage_uri(uri: str | os.PathLike[str]) -> str:
+    """Resolve local paths before splitting patterns; preserve cloud object keys."""
+    from datachain.client import Client
+    from datachain.client.local import FileClient
+
+    uri = os.fspath(uri)
+    if issubclass(Client.get_implementation(uri), FileClient):
+        FileClient.validate_source(uri)
+        storage, path = Client.parse_url(uri)
+        return f"{storage}/{path}"
+    return uri
+
+
 def split_uri_pattern(uri: str) -> tuple[str, str | None]:
-    """Split a URI into base path and glob pattern."""
-    if not any(char in uri for char in ["*", "?", "[", "{", "}"]):
+    """Split a URI into base and pattern; a glob base ends with a directory slash."""
+    if not glob.has_magic(uri):
         return uri, None
 
     if "://" in uri:
@@ -41,8 +55,7 @@ def split_uri_pattern(uri: str) -> tuple[str, str | None]:
 
         pattern_start_idx = None
         for i, segment in enumerate(path_segments):
-            # Check for glob patterns including brace expansion
-            if glob.has_magic(segment) or "{" in segment:
+            if glob.has_magic(segment):
                 pattern_start_idx = i
                 break
 
@@ -54,24 +67,26 @@ def split_uri_pattern(uri: str) -> tuple[str, str | None]:
             pattern = "/".join(path_segments[1:]) if len(path_segments) > 1 else "*"
         else:
             base = scheme_part + "/".join(path_segments[:pattern_start_idx])
-            if path_segments[pattern_start_idx - 1] == "":
-                base += "/"
             pattern = "/".join(path_segments[pattern_start_idx:])
 
-        return base, pattern
+        return base + "/", pattern
 
     path_segments = uri.split("/")
 
     pattern_start_idx = None
     for i, segment in enumerate(path_segments):
-        if glob.has_magic(segment) or "{" in segment:
+        if glob.has_magic(segment):
             pattern_start_idx = i
             break
 
     if pattern_start_idx is None:
         return uri, None
 
-    base = "/".join(path_segments[:pattern_start_idx]) if pattern_start_idx > 0 else "/"
+    base = (
+        "/".join(path_segments[:pattern_start_idx]) + "/"
+        if pattern_start_idx > 0
+        else "/"
+    )
     pattern = "/".join(path_segments[pattern_start_idx:])
 
     return base, pattern
@@ -238,6 +253,7 @@ def storage_sources(uris: Sequence) -> list[tuple[str, str | None]]:
     sources = []
     for uri in uris:
         for expanded in expand_brace_pattern(str(uri)):
+            expanded = normalize_storage_uri(expanded)
             base_uri, pattern = split_uri_pattern(expanded)
             sources.append((base_uri if pattern else expanded, pattern))
     return sources

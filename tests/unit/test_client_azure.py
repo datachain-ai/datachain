@@ -270,6 +270,17 @@ def test_get_file_key_and_version(char):
     assert bc.download_blob.call_args[1].get("version_id") == _VER
 
 
+def test_put_in_cache_pinned_version_still_checks_etag():
+    client, _, bc = _make_client_sdk()
+    file = File(
+        source="az://mycontainer", path="blob.txt", version=_VER, etag="stale-etag"
+    )
+
+    with pytest.raises(FileNotFoundError, match="changed on the source"):
+        client.put_in_cache(file)
+    bc.download_blob.assert_not_called()
+
+
 def test_blob_name_is_decoded():
     client = AzureClient("container", {}, None)
     client._fs = MagicMock(version_aware=True)

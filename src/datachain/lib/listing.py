@@ -16,7 +16,7 @@ from sqlalchemy.sql.expression import or_, true
 import datachain.fs.utils as fsutils
 from datachain.asyn import iter_over_async
 from datachain.client import Client
-from datachain.error import ClientError
+from datachain.error import ClientError, DatasetNotFoundError
 from datachain.lib.convert.flatten import flatten
 from datachain.lib.file import File, FileRow
 from datachain.query.schema import C, Column
@@ -26,6 +26,7 @@ from datachain.utils import uses_glob
 if TYPE_CHECKING:
     from sqlalchemy import ColumnElement
 
+    from datachain.catalog import Catalog
     from datachain.client.fsspec import RangeListedClient
     from datachain.dataset import DatasetRecord
     from datachain.lib.dc import DataChain
@@ -45,11 +46,11 @@ logging.getLogger("gcsfs").setLevel(logging.CRITICAL)
 
 
 def calc_fingerprint(session: "Session", dataset: "DatasetRecord", version: str) -> int:
-    """Compute an order-independent content fingerprint for a listing version.
+    """Return an order-independent fingerprint of a listing version.
 
-    Uses file path + version (if available) or etag as the content identifier.
-    Version is preferred over etag because etags can be unstable on some cloud
-    providers (GCS, Azure) due to internal operations like storage class changes.
+    Each file adds its path, its version id (or etag if it has none), its size and
+    whether it is the latest version. The etag is added too, unless the storage
+    never replaces the bytes at a version id.
     """
     # Inline imports: lib.listing sits below lib.dc / query.dataset / func in the
     # import graph (catalog.catalog imports this module during init), so hoisting
@@ -76,8 +77,14 @@ def calc_fingerprint(session: "Session", dataset: "DatasetRecord", version: str)
         (C("file.version") != "", C("file.version")),
         else_=C("file.etag"),
     )
+    client_cls = Client.get_implementation(listing_uri_from_name(dataset.name))
+    etag = () if client_cls.PINNED_VERSION_IS_IMMUTABLE else (C("file.etag"),)
     return chain.group_by(  # type: ignore[return-value]
-        fp=xor_agg(string_hash(C("file.path"), identifier)),
+        fp=xor_agg(
+            string_hash(
+                C("file.path"), identifier, C("file.size"), C("file.is_latest"), *etag
+            )
+        ),
     ).to_values("fp")[0]
 
 
@@ -391,7 +398,10 @@ def parse_listing_uri(uri: str, versions: bool = True) -> tuple[str, str, str]:
         # up to the last "/": "d//*.txt" is listed under "d//"
         lst_uri_path = path[: path.rfind("/") + 1]
     else:
-        storage_uri, path = Client.parse_url(uri if uri.endswith("/") else f"{uri}/")
+        if path:
+            storage_uri, path = Client.parse_url(
+                uri if uri.endswith("/") else f"{uri}/"
+            )
         lst_uri_path = path
 
     lst_uri = f"{storage_uri}/{lst_uri_path.lstrip('/')}"
@@ -521,3 +531,70 @@ def get_listing(
 
     ds_name = listing.name if listing else ds_name
     return ds_name, list_uri, list_path, bool(listing)
+
+
+def ensure_listing(
+    name: str, catalog: "Catalog", write: Callable | None, *, update: bool = False
+) -> "DatasetRecord":
+    """Create or refresh the selected snapshot only when needed."""
+    try:
+        dataset = catalog.get_dataset(name, versions=None, include_incomplete=False)
+    except DatasetNotFoundError:
+        dataset = None
+    if dataset is None or update or listing_dataset_expired(dataset):
+        assert write is not None
+        write()
+        dataset = catalog.get_dataset(name, versions=None, include_incomplete=False)
+    return dataset
+
+
+def write_listing(
+    uri: str,
+    ds_name: str,
+    session: "Session",
+    client_config: dict,
+    *,
+    column: str = "file",
+    file_type: type[File] = File,
+    settings: dict | None = None,
+    in_memory: bool = False,
+) -> None:
+    """Store the listing of the prefix ``uri``, whole, as the listing dataset
+    ``ds_name``: the snapshot ``read_storage`` reads and reuses.
+    """
+    from datachain.query.session import Session
+
+    from .dc.records import create_records_dataset
+
+    namespace = session.catalog.metastore.system_namespace_name
+    project = session.catalog.metastore.listing_project_name
+    list_func = list_bucket(uri, session.catalog.cache, client_config=client_config)
+    # content_hash=None because hash_callable doesn't capture list_func's
+    # closure (which holds the URI and the client config) -- auto-hashing
+    # the seed would let the UDF checkpoint cache return a stale listing
+    # across URIs/runs.
+    # The seed is needed only while writing this snapshot. Clean it up now rather
+    # than keeping its catalog alive until the caller's (possibly global) exit.
+    writer = Session("listing", catalog=session.catalog)
+    try:
+        (
+            create_records_dataset(
+                [{"seed": 0}],
+                schema={"seed": int},
+                content_hash=None,
+                session=writer,
+                settings=settings,
+                in_memory=in_memory,
+            )
+            .settings(
+                prefetch=0,
+                batch_size=LISTING_BATCH_SIZE,
+                namespace=namespace,
+                project=project,
+            )
+            .gen(list_func, output={column: file_type})
+            # for internal listing datasets, we always bump major version
+            .save(ds_name, listing=True, update_version="major")
+        )
+    finally:
+        writer._close()

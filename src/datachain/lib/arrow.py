@@ -5,8 +5,10 @@ from itertools import islice
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
+from fsspec.implementations.local import LocalFileSystem
 from pyarrow._csv import ParseOptions
 from pyarrow.dataset import CsvFileFormat, Dataset, dataset
+from pyarrow.fs import FileInfo, FileType, FSSpecHandler, PyFileSystem
 
 from datachain import json
 from datachain.fs.reference import ReferenceFileSystem
@@ -27,6 +29,7 @@ if TYPE_CHECKING:
     from datasets.features.features import Features
     from pydantic import BaseModel
 
+    from datachain.client import Client
     from datachain.lib.data_model import DataType
     from datachain.lib.dc import DataChain
 
@@ -61,6 +64,47 @@ _CSV_PARSE_OPTIONS = (
     "newlines_in_values",
     "ignore_empty_lines",
 )
+
+
+class _PartialReadHandler(FSSpecHandler):
+    """Lets pyarrow read the exact object a File describes.
+
+    A File can come from a listing that is hours old or saved in a dataset, so the
+    object at its path may have changed since. pyarrow's default handler opens
+    whatever is at the path now. This handler opens the File through its client,
+    which reads the File's version id when it has one.
+
+    Parquet is read without read-ahead, so reading some columns downloads only
+    those columns. CSV and JSON are read from the start, so they keep read-ahead.
+    """
+
+    def __init__(self, client: "Client", file: File, block_size: int | None):
+        super().__init__(client.fs)
+        self.client = client
+        self.file = file
+        self.block_size = block_size
+
+    def get_file_info(self, paths):
+        # Describes the recorded file without looking up the latest object, which a
+        # versioned bucket may have deleted since.
+        return [FileInfo(path, FileType.File) for path in paths]
+
+    def open_input_file(self, path):
+        f = self.client.open_object(
+            self.file,
+            use_cache=False,
+            cb=self.file._download_cb,
+            block_size=self.block_size,
+        )
+        return pa.PythonFile(f, mode="r")
+
+
+def pyarrow_fs(file: File, format):
+    client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
+    if isinstance(client.fs, LocalFileSystem):
+        return client.fs
+    block_size = 0 if format == "parquet" else None
+    return PyFileSystem(_PartialReadHandler(client, file, block_size=block_size))
 
 
 class ArrowGenerator(Generator):
@@ -110,7 +154,13 @@ class ArrowGenerator(Generator):
             fs_path = file.path
             fs = ReferenceFileSystem({fs_path: [cache_path]})
         else:
-            fs, fs_path = file.get_fs(), file.get_fs_path()
+            client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
+            # The File may come from a reused listing or a saved dataset, so the
+            # object may have changed since. A download into the cache checks
+            # this; a read that skips the cache checks it here.
+            client.check_unchanged(file)
+            fs = pyarrow_fs(file, self.kwargs.get("format"))
+            fs_path = file.get_fs_path()
 
         kwargs = self.kwargs
         if format := kwargs.get("format"):
@@ -238,7 +288,8 @@ def _file_datasets(chain: "DataChain", **kwargs) -> Iterator[Dataset]:
     if format := kwargs.get("format"):
         kwargs["format"] = fix_pyarrow_format(format, parse_options)
     for (file,) in chain.to_iter("file"):
-        yield dataset(file.get_fs_path(), filesystem=file.get_fs(), **kwargs)  # type: ignore[union-attr]
+        fs = pyarrow_fs(file, kwargs.get("format"))  # type: ignore[arg-type]
+        yield dataset(file.get_fs_path(), filesystem=fs, **kwargs)  # type: ignore[union-attr]
 
 
 def file_schemas(chain: "DataChain", **kwargs) -> list[pa.Schema]:

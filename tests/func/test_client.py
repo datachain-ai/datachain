@@ -435,7 +435,12 @@ def test_gcs_client_gets_credentials_from_env(monkeypatch, mocker):
     GCSClient.create_fs()
 
     init.assert_called_once_with(
-        token={"token": "test-credentials-token"}, version_aware=True
+        token={"token": "test-credentials-token"},
+        version_aware=True,
+        session_kwargs={
+            "auto_decompress": False,
+            "headers": {"Accept-Encoding": "gzip"},
+        },
     )
 
 
@@ -841,6 +846,136 @@ def test_get_etag_missing_raises_filenotfound(
             client.get_current_etag,
             File(source=ctc.src_uri, path=missing_rel_path),
         )
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_put_in_cache_pinned_version_ignores_stale_etag(
+    cloud_test_catalog_upload,
+    cloud_type,
+    version_aware,
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+
+    rel_path = f"client-put-in-cache/{uuid4().hex}.bin"
+    uploaded_v1 = client.upload(b"v1", rel_path)
+    client.upload(b"version-2", rel_path)
+
+    file = File(
+        source=ctc.src_uri,
+        path=rel_path,
+        version=uploaded_v1.version,
+        etag="stale-etag",
+        size=2,
+    )
+    client.put_in_cache(file)
+
+    assert Path(ctc.catalog.cache.get_path(file)).read_bytes() == b"v1"
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+@pytest.mark.parametrize("size", [0, 1])
+def test_put_in_cache_pinned_version_with_another_size_raises(
+    cloud_test_catalog_upload,
+    cloud_type,
+    version_aware,
+    size,
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+
+    rel_path = f"client-put-in-cache/{uuid4().hex}.bin"
+    uploaded = client.upload(b"v1", rel_path)
+
+    file = File(
+        source=ctc.src_uri,
+        path=rel_path,
+        version=uploaded.version,
+        etag=uploaded.etag,
+        size=size,
+    )
+    with pytest.raises(FileNotFoundError, match=f"size was {size}, now 2"):
+        client.put_in_cache(file)
+
+    assert not ctc.catalog.cache.contains(file)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_put_in_cache_pinned_version_with_unknown_size_reads_it(
+    cloud_test_catalog_upload,
+    cloud_type,
+    version_aware,
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+
+    rel_path = f"client-put-in-cache/{uuid4().hex}.bin"
+    uploaded = client.upload(b"v1", rel_path)
+
+    file = File(
+        source=ctc.src_uri,
+        path=rel_path,
+        version=uploaded.version,
+        etag=uploaded.etag,
+        size=-1,
+    )
+    client.put_in_cache(file)
+
+    assert Path(ctc.catalog.cache.get_path(file)).read_bytes() == b"v1"
+
+
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_put_in_cache_unpinned_stale_etag_raises(
+    cloud_test_catalog_upload,
+    cloud_type,
+    version_aware,
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+
+    rel_path = f"client-put-in-cache/{uuid4().hex}.bin"
+    client.upload(b"v1", rel_path)
+
+    file = File(source=ctc.src_uri, path=rel_path, etag="stale-etag", size=2)
+    with pytest.raises(FileNotFoundError, match="changed on the source"):
+        client.put_in_cache(file)
+
+    assert not ctc.catalog.cache.contains(file)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_put_in_cache_s3_null_version_checks_etag(
+    cloud_test_catalog_upload,
+    cloud_type,
+    version_aware,
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+    bucket = client.name
+
+    rel_path = f"client-put-in-cache/{uuid4().hex}.bin"
+    client.fs.make_bucket_versioned(bucket, versioned=False)
+    try:
+        uploaded_v1 = client.upload(b"v1", rel_path)
+        client.upload(b"v2", rel_path)
+    finally:
+        client.fs.make_bucket_versioned(bucket, versioned=True)
+
+    file = File(
+        source=ctc.src_uri,
+        path=rel_path,
+        version="null",
+        etag=uploaded_v1.etag,
+        size=2,
+    )
+    with pytest.raises(FileNotFoundError, match="changed on the source"):
+        client.put_in_cache(file)
+
+    assert not ctc.catalog.cache.contains(file)
 
 
 _xfail_special_char_versioned = pytest.mark.xfail(

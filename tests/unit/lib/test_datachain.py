@@ -41,6 +41,7 @@ from datachain.lib.file import File
 from datachain.lib.hf import HFClassLabel
 from datachain.lib.listing import LISTING_PREFIX, parse_listing_uri
 from datachain.lib.listing_info import ListingInfo
+from datachain.lib.settings import DEFAULT_PREFETCH
 from datachain.lib.signal_schema import (
     SignalResolvingError,
     SignalResolvingTypeError,
@@ -2595,6 +2596,23 @@ def test_read_parquet_output_renames_by_position(abc_parquet, test_session):
     output = {"c": float, "b": float, "a": float}
     chain = dc.read_parquet(abc_parquet, output=output, session=test_session)
     assert chain.to_list("c", "b", "a") == [(1.0, 10.0, 100.0)]
+
+
+@pytest.mark.parametrize("settings", [{}, {"prefetch": 8}])
+def test_read_parquet_columns_keep_the_chain_prefetch(
+    abc_parquet, test_session, settings
+):
+    chain = dc.read_parquet(
+        abc_parquet, columns=["a"], settings=settings, session=test_session
+    )
+    assert chain._settings.prefetch == settings.get("prefetch", DEFAULT_PREFETCH)
+
+
+def test_read_csv_nrows_keep_the_chain_prefetch(tmp_dir, test_session):
+    path = tmp_dir / "test.csv"
+    path.write_text("a\n1\n2\n")
+    chain = dc.read_csv(path.as_uri(), nrows=1, session=test_session)
+    assert chain._settings.prefetch == DEFAULT_PREFETCH
 
 
 def test_read_parquet_columns_are_part_of_the_step(abc_parquet, test_session):
