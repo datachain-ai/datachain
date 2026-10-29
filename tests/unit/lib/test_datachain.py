@@ -2630,7 +2630,7 @@ def prefetch_per_step(monkeypatch):
 
 
 @pytest.mark.parametrize("prefetch", [None, 0, 7])
-def test_read_json_nrows_read_without_prefetch_and_keep_the_chain_prefetch(
+def test_read_jsonl_nrows_read_without_prefetch_and_keep_the_chain_prefetch(
     tmp_dir, test_session, prefetch_per_step, prefetch
 ):
     path = tmp_dir / "test.jsonl"
@@ -2646,6 +2646,22 @@ def test_read_json_nrows_read_without_prefetch_and_keep_the_chain_prefetch(
 
     assert chain.map(b=lambda jsonl: jsonl.a, output=int).to_values("b") == [1]
     assert prefetch_per_step == [0, DEFAULT_PREFETCH if prefetch is None else prefetch]
+
+
+@pytest.mark.parametrize("prefetch", [None, 0, 7])
+def test_read_json_nrows_read_with_the_chain_prefetch(
+    tmp_dir, test_session, prefetch_per_step, prefetch
+):
+    path = tmp_dir / "test.json"
+    path.write_text('[{"a": 1}, {"a": 2}]')
+    settings = {} if prefetch is None else {"prefetch": prefetch}
+    chain = dc.read_json(
+        path.as_uri(), nrows=1, settings=settings, session=test_session
+    )
+
+    assert chain.map(b=lambda json: json.a, output=int).to_values("b") == [1]
+    expected = DEFAULT_PREFETCH if prefetch is None else prefetch
+    assert prefetch_per_step == [expected, expected]
 
 
 def test_read_parquet_columns_are_part_of_the_step(abc_parquet, test_session):

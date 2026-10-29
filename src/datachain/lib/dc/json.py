@@ -83,7 +83,8 @@ def read_json(
     }
     cloudpickle.register_pickle_by_value(meta_formats)
 
-    # Prefetch downloads whole files, so skip it when only part is read. Only
-    # this step skips it: the returned chain keeps the caller's settings.
-    step = chain.settings(prefetch=0) if nrows else chain
+    # Prefetch downloads whole files, so skip it when only some JSONL lines are
+    # read. JSON is parsed whole anyway. Only this step skips it: the returned
+    # chain keeps the caller's settings.
+    step = chain.settings(prefetch=0) if nrows and format == "jsonl" else chain
     return step.gen(**signal_dict)._evolve(settings=chain._settings)  # type: ignore[misc, arg-type]
