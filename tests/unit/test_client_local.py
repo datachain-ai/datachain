@@ -51,6 +51,15 @@ def test_format_etag_keeps_non_mtime_values(etag):
     assert Client.format_etag(etag) == etag
 
 
+def test_put_in_cache_stale_etag_raises_when_client_ignores_versions(tmp_path, catalog):
+    client = FileClient.from_source(str(tmp_path), catalog.cache)
+    Path(tmp_path, "file.bin").write_bytes(b"hello")
+
+    file = File(source=client.uri, path="file.bin", version="v1", etag="stale-etag")
+    with pytest.raises(FileNotFoundError, match="changed on the source"):
+        client.put_in_cache(file)
+
+
 def test_put_in_cache_stale_local_etag_reports_raw_value_and_mtime(tmp_path, catalog):
     client = FileClient.from_source(str(tmp_path), catalog.cache)
 
