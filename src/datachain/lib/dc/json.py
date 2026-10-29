@@ -1,12 +1,15 @@
 import os
 import re
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import cloudpickle
 
 from datachain.lib import meta_formats
+from datachain.lib.arrow import PARTIAL_READ_PREFETCH_MAX_SIZE
 from datachain.lib.data_model import DataType
 from datachain.lib.file import File, FileType
+from datachain.lib.udf import Generator
 
 if TYPE_CHECKING:
     from typing_extensions import ParamSpec
@@ -14,6 +17,14 @@ if TYPE_CHECKING:
     from .datachain import DataChain
 
     P = ParamSpec("P")
+
+
+class _ReadJson(Generator):
+    def __init__(self, parse: Callable, prefetch_max_size: int | None):
+        super().__init__()
+        # The function's signature gives the step its params and output.
+        self.process = parse  # type: ignore[method-assign]
+        self.prefetch_max_size = prefetch_max_size
 
 
 def read_json(
@@ -69,21 +80,19 @@ def read_json(
     if not column:
         column = format
     chain = read_storage(uri=path, type=type, **kwargs)
-    signal_dict = {
-        column: meta_formats.read_meta(
-            schema_from=schema_from,
-            format=format,
-            spec=spec,
-            model_name=model_name,
-            jmespath=jmespath,
-            nrows=nrows,
-            session=kwargs.get("session"),
-        ),
-        "params": {"file": File},
-    }
-    # disable prefetch if nrows is set
-    settings = {"prefetch": 0} if nrows else {}
-
+    parse = meta_formats.read_meta(
+        schema_from=schema_from,
+        format=format,
+        spec=spec,
+        model_name=model_name,
+        jmespath=jmespath,
+        nrows=nrows,
+        session=kwargs.get("session"),
+    )
     cloudpickle.register_pickle_by_value(meta_formats)
 
-    return chain.settings(**settings).gen(**signal_dict)  # type: ignore[misc, arg-type]
+    # Prefetch downloads whole files, so reading some JSONL lines prefetches only
+    # small ones. JSON is parsed whole anyway.
+    partial = nrows and format == "jsonl"
+    max_size = PARTIAL_READ_PREFETCH_MAX_SIZE if partial else None
+    return chain.gen(params={"file": File}, **{column: _ReadJson(parse, max_size)})  # type: ignore[arg-type]

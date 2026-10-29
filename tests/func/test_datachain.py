@@ -1664,6 +1664,44 @@ def test_read_csv_nrows_read_files_of_unknown_size_in_parts(
     assert fetched_bytes[0] > 0
 
 
+def _put_json(ctc, name, size):
+    rows = [{"a": i, "pad": f"{i:0100}"} for i in range(size // 100 + 1)]
+    if name.endswith(".jsonl"):
+        data = "".join(json.dumps(row) + "\n" for row in rows)
+    else:
+        data = json.dumps(rows)
+    return File.upload(data.encode(), f"{ctc.src_uri}/{name}", ctc.catalog)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize(
+    "name,size,read_in_parts",
+    [
+        ("t.jsonl", 1, False),
+        ("t.jsonl", PARTIAL_READ_PREFETCH_MAX_SIZE, True),
+        ("t.json", PARTIAL_READ_PREFETCH_MAX_SIZE, False),
+    ],
+    ids=["jsonl_small", "jsonl_over_the_limit", "json_over_the_limit"],
+)
+def test_read_json_nrows_prefetch_json_and_jsonl_up_to_the_limit(
+    cloud_test_catalog_upload, fetched_bytes, name, size, read_in_parts
+):
+    ctc = cloud_test_catalog_upload
+    _put_json(ctc, name, size)
+    format = name.rsplit(".", 1)[1]
+    chain = dc.read_json(
+        f"{ctc.src_uri}/{name}",
+        format=format,
+        nrows=1,
+        session=ctc.session,
+    )
+    fetched_bytes[:] = [0, 0]
+
+    assert chain.to_values(f"{format}.a") == [0]
+    assert (fetched_bytes[0] > 0) is read_in_parts
+
+
 def _put_parquet(ctc, name, table, **kwargs):
     buffer = pa.BufferOutputStream()
     pq.write_table(table, buffer, **kwargs)
