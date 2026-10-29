@@ -49,6 +49,9 @@ class AzureClient(RangeListedClient):
     PREFIX = "az://"
     protocol = "az"
     LIST_PAGE_SIZE = 5000
+    # Page and append blobs can be changed without a new version id, so the same
+    # version id can name different bytes.
+    PINNED_VERSION_IS_IMMUTABLE = False
     CREDENTIAL_KEYS = frozenset(
         {
             "account_key",
