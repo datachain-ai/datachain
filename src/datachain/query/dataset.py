@@ -6,6 +6,7 @@ import secrets
 import string
 import subprocess
 import sys
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from copy import copy
@@ -635,6 +636,9 @@ def _tuple_adjuster(col_types: list[ColType]) -> Callable[[tuple], tuple | None]
     return adjust
 
 
+PROGRESS_INTERVAL = 0.1  # seconds
+
+
 def process_udf_outputs(
     warehouse: "AbstractWarehouse",
     udf_table: "Table",
@@ -663,13 +667,20 @@ def process_udf_outputs(
     adjust_tuple = _tuple_adjuster(udf_col_types)
 
     def _insert_rows():
+        # Progress goes out every PROGRESS_INTERVAL, not per row: a parallel
+        # worker sends each update to the main process.
+        generated = 0
+        report_at = 0.0
         for udf_output in udf_results:
             if not udf_output:
                 continue
 
             with safe_closing(udf_output):
                 for row in udf_output:
-                    cb.relative_update()
+                    generated += 1
+                    if (now := time.monotonic()) >= report_at:
+                        cb.relative_update(generated)
+                        generated, report_at = 0, now + PROGRESS_INTERVAL
                     if type(row) is tuple:
                         if (
                             udf_kind != "map"
@@ -686,6 +697,8 @@ def process_udf_outputs(
                         udf_kind=udf_kind,
                     )
                     yield tuple(map(row.__getitem__, columns))
+        if generated:
+            cb.relative_update(generated)
 
     rows = _insert_rows()
     try:

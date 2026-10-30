@@ -260,6 +260,48 @@ def test_map_tuples_are_validated(sqlite_db):
         process_udf_outputs(warehouse, table, iter([[(1, "x", None)]]), udf)
 
 
+def test_gen_progress_counts_every_row_in_few_updates(sqlite_db):
+    from types import SimpleNamespace
+
+    from fsspec.callbacks import Callback
+
+    from datachain.lib.signal_schema import SignalSchema
+    from datachain.query.dataset import process_udf_outputs
+    from datachain.sql.types import Boolean, Int
+
+    class Updates(Callback):
+        def __init__(self):
+            super().__init__()
+            self.incs = []
+
+        def relative_update(self, inc=1):
+            self.incs.append(inc)
+
+    warehouse = SQLiteWarehouse(sqlite_db)
+    table = warehouse.create_udf_table(
+        [
+            sa.Column("a", Int),
+            sa.Column("sys__input_id", Int),
+            sa.Column("sys__partial", Boolean),
+            sa.Column("sys__empty", Boolean),
+        ]
+    )
+    inner = SimpleNamespace(
+        output=SignalSchema({"a": int}),
+        is_input_batched=False,
+        is_output_batched=True,
+    )
+    udf = SimpleNamespace(output={"a": Int}, inner=inner)
+    rows = [(i, 1, i < 9_999, None) for i in range(10_000)]
+    updates = Updates()
+
+    process_udf_outputs(warehouse, table, iter([rows]), udf, cb=updates)
+
+    assert warehouse.table_rows_count(table) == 10_000
+    assert sum(updates.incs) == 10_000
+    assert len(updates.incs) < 100
+
+
 @skip_if_not_sqlite
 def test_insert_into_reads_all_ids_before_inserting_batches(
     warehouse_tmpfile, monkeypatch
