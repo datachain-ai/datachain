@@ -135,9 +135,7 @@ jobs:
       - name: Install FFmpeg on Ubuntu
         if: runner.os == 'Linux'
         timeout-minutes: 10
-        run: |
-          sudo apt update
-          sudo apt install -y ffmpeg
+        uses: ./.github/actions/install-ffmpeg
 
       - name: Install nox
         run: uv pip install nox --system
@@ -228,9 +226,7 @@ jobs:
       - name: Install FFmpeg on Ubuntu
         if: runner.os == 'Linux'
         timeout-minutes: 10
-        run: |
-          sudo apt update
-          sudo apt install -y ffmpeg
+        uses: ./.github/actions/install-ffmpeg
 
       - name: Run examples
         env:

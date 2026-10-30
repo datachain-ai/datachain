@@ -2945,13 +2945,13 @@ class AbstractDBMetastore(AbstractMetastore):
             )
             self.db.execute(query)
 
-            # Also update dataset_version.job_id to point to this job
-            update_query = (
-                self._datasets_versions_update()
-                .where(self._datasets_versions.c.id == dataset_version_id)
-                .values(job_id=job_id)
-            )
-            self.db.execute(update_query)
+            if is_creator:
+                update_query = (
+                    self._datasets_versions_update()
+                    .where(self._datasets_versions.c.id == dataset_version_id)
+                    .values(job_id=job_id)
+                )
+                self.db.execute(update_query)
 
     def get_ancestor_job_ids(self, job_id: str) -> list[str]:
         """Get all ancestor job IDs using recursive CTE."""

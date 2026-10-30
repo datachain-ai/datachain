@@ -1,3 +1,4 @@
+import functools
 from collections.abc import Generator, Iterator
 from typing import Any, NamedTuple
 
@@ -16,8 +17,31 @@ class FieldKind(NamedTuple):
 
 
 def classify_field(annotation: Any) -> FieldKind:
+    try:
+        return _classify_field(annotation)
+    except TypeError:  # rare: e.g. Annotated with dict metadata; the hash fails fast
+        return _classify_field.__wrapped__(annotation)
+
+
+@functools.lru_cache(maxsize=1024)
+def _classify_field(annotation: Any) -> FieldKind:
     inner, is_optional = unwrap_optional(annotation)
     return FieldKind(inner, is_optional, ModelStore.is_pydantic(inner))
+
+
+def _field_kinds(model: type[BaseModel]) -> tuple[tuple[str, FieldKind], ...]:
+    if model.__pydantic_complete__:
+        return _complete_field_kinds(model)
+    return _complete_field_kinds.__wrapped__(model)
+
+
+@functools.lru_cache(maxsize=1024)
+def _complete_field_kinds(
+    model: type[BaseModel],
+) -> tuple[tuple[str, FieldKind], ...]:
+    return tuple(
+        (name, classify_field(f.annotation)) for name, f in model.model_fields.items()
+    )
 
 
 class FlatColumn(NamedTuple):
@@ -47,7 +71,32 @@ def iter_flat_columns(
 
 
 def flatten(obj: BaseModel) -> tuple:
-    return tuple(_flatten_fields_values(type(obj).model_fields, obj))
+    return tuple(_flatten_model(type(obj), obj, []))
+
+
+def _flatten_model(model: type[BaseModel], obj: BaseModel, out: list) -> list:
+    for name, kind in _field_kinds(model):
+        value = getattr(obj, name)
+        if isinstance(value, list):
+            out.append(_flatten_list_field(value))
+        elif isinstance(value, dict):
+            out.append(
+                {
+                    key: val.model_dump() if ModelStore.is_pydantic(type(val)) else val
+                    for key, val in value.items()
+                }
+            )
+        elif not kind.is_model:
+            out.append(value)
+        elif not kind.is_optional:
+            _flatten_model(kind.inner, value, out)
+        elif value is None:
+            out.append(1)
+            out.extend(_emit_absent(kind.inner))
+        else:
+            out.append(0)
+            _flatten_model(kind.inner, value, out)
+    return out
 
 
 def is_optional_model(anno: Any) -> bool:
@@ -76,11 +125,10 @@ def flatten_value(value: Any, anno: Any) -> tuple:
 
 
 def flatten_list(obj_list: list[BaseModel]) -> tuple:
-    return tuple(
-        val
-        for obj in obj_list
-        for val in _flatten_fields_values(type(obj).model_fields, obj)
-    )
+    out: list = []
+    for obj in obj_list:
+        _flatten_model(type(obj), obj, out)
+    return tuple(out)
 
 
 def _flatten_list_field(value: list) -> list:
@@ -102,29 +150,3 @@ def _emit_absent(model: type[BaseModel]) -> Generator[int | None, None, None]:
     ``Optional[DataModel]`` parent is None and the leaves still need a slot."""
     for col in iter_flat_columns(model):
         yield 1 if col.is_sentinel else None
-
-
-def _flatten_fields_values(fields: dict, obj: BaseModel) -> Generator[Any, None, None]:
-    for name, f_info in fields.items():
-        kind = classify_field(f_info.annotation)
-        # Direct attribute access skips Pydantic's model_dump().
-        value = getattr(obj, name)
-        if isinstance(value, list):
-            yield _flatten_list_field(value)
-        elif isinstance(value, dict):
-            yield {
-                key: val.model_dump() if ModelStore.is_pydantic(type(val)) else val
-                for key, val in value.items()
-            }
-        elif kind.is_model:
-            if kind.is_optional:
-                if value is None:
-                    yield 1
-                    yield from _emit_absent(kind.inner)
-                else:
-                    yield 0
-                    yield from _flatten_fields_values(kind.inner.model_fields, value)
-            else:
-                yield from _flatten_fields_values(kind.inner.model_fields, value)
-        else:
-            yield value

@@ -246,3 +246,34 @@ def test_existing_code_patterns(warehouse):
     assert result == 150
 
     warehouse.db.drop_table(table)
+
+
+def test_insert_tuples_in_column_order(warehouse):
+    table = warehouse.create_udf_table(
+        [sa.Column("a", sa.Integer), sa.Column("b", sa.Integer)]
+    )
+
+    warehouse.insert_tuples(table, ["b", "sys__id", "a"], [(7, 1, 2), (8, 2, 3)])
+    warehouse.insert_rows_done(table)
+
+    query = sa.select(table.c.sys__id, table.c.a, table.c.b).order_by(table.c.sys__id)
+    assert list(warehouse.dataset_rows_select(query)) == [(1, 2, 7), (2, 3, 8)]
+
+    warehouse.db.drop_table(table)
+
+
+def test_insert_tuples_into_other_columns_flushes_first(warehouse):
+    table = warehouse.create_udf_table(
+        [sa.Column("a", sa.Integer), sa.Column("b", sa.Integer)]
+    )
+
+    warehouse.insert_tuples(table, ["sys__id", "a"], [(1, 2)])
+    warehouse.insert_tuples(table, ["sys__id", "b"], [(2, 9)])
+    warehouse.insert_rows_done(table)
+
+    first = sa.select(table.c.a).where(table.c.sys__id == 1)
+    second = sa.select(table.c.b).where(table.c.sys__id == 2)
+    assert list(warehouse.dataset_rows_select(first)) == [(2,)]
+    assert list(warehouse.dataset_rows_select(second)) == [(9,)]
+
+    warehouse.db.drop_table(table)

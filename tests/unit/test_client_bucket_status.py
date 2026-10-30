@@ -6,8 +6,7 @@ from azure.core.exceptions import (
     HttpResponseError,
     ResourceNotFoundError,
 )
-from botocore.exceptions import ClientError, NoCredentialsError
-from fsspec.asyn import get_loop, sync
+from botocore.exceptions import ClientError, NoCredentialsError, ReadTimeoutError
 from gcsfs.retry import HttpError
 from google.api_core import exceptions as google_exceptions
 from s3fs import S3FileSystem
@@ -29,24 +28,35 @@ def _azure_http_error(status_code):
     return HttpResponseError(message="test", response=resp)
 
 
-@pytest.mark.parametrize(
-    "uri",
-    [
-        "s3://my-bucket/some/path",
-        "gs://my-bucket/dir",
-        "az://my-container/blob",
-    ],
-)
-def test_bucket_status_rejects_path_component(uri):
-    with pytest.raises(ValueError, match="path in a bucket is not allowed"):
-        bucket_status(uri)
+@pytest.fixture
+def regions(monkeypatch):
+    monkeypatch.setattr(s3, "_BUCKET_REGIONS", {})
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
+    monkeypatch.delenv("AWS_DEFAULT_PROFILE", raising=False)
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+    monkeypatch.delenv("AWS_ENDPOINT_URL", raising=False)
+    monkeypatch.delenv("AWS_ENDPOINT_URL_S3", raising=False)
+    return s3._BUCKET_REGIONS
 
 
+def _client_error(status):
+    return ClientError(
+        {
+            "Error": {"Code": str(status)},
+            "ResponseMetadata": {"HTTPStatusCode": status},
+        },
+        "HeadBucket",
+    )
+
+
+@pytest.mark.usefixtures("regions")
 def test_normalize_s3_kwargs_secret_and_token():
     result = ClientS3._normalize_s3_kwargs({"aws_secret": "s", "aws_token": "t"})
     assert result == {"secret": "s", "token": "t"}
 
 
+@pytest.mark.usefixtures("regions")
 @pytest.mark.parametrize(
     "anon_effect, auth_effect, expected",
     [
@@ -89,21 +99,10 @@ def test_s3_bucket_status(head, _fs_cls, anon_effect, auth_effect, expected):
     assert ClientS3.bucket_status("b") == expected
 
 
-@pytest.fixture(autouse=True)
-def regions(monkeypatch):
-    monkeypatch.setattr(s3, "_BUCKET_REGIONS", {})
-    monkeypatch.delenv("AWS_PROFILE", raising=False)
-    monkeypatch.delenv("AWS_DEFAULT_PROFILE", raising=False)
-    monkeypatch.delenv("AWS_REGION", raising=False)
-    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
-    monkeypatch.delenv("AWS_ENDPOINT_URL", raising=False)
-    monkeypatch.delenv("AWS_ENDPOINT_URL_S3", raising=False)
-    return s3._BUCKET_REGIONS
-
-
+@pytest.mark.usefixtures("regions")
 @patch("datachain.client.s3.S3FileSystem")
 @patch("datachain.client.s3._head_bucket", return_value=(200, "eu-west-3"))
-def test_s3_bucket_region_reaches_the_listing_client(_head, _fs_cls, regions):
+def test_s3_bucket_region_reaches_the_listing_client(_head, _fs_cls):
     ClientS3.bucket_status("regional")
 
     client = ClientS3.from_name("regional", MagicMock(), {})
@@ -111,11 +110,10 @@ def test_s3_bucket_region_reaches_the_listing_client(_head, _fs_cls, regions):
     assert "region_name" not in ClientS3.from_name("other", MagicMock(), {}).fs_kwargs
 
 
+@pytest.mark.usefixtures("regions")
 @patch("datachain.client.s3.S3FileSystem")
 @patch("datachain.client.s3._head_bucket", return_value=(200, "eu-west-3"))
-def test_s3_bucket_region_is_kept_per_default_profile(
-    _head, _fs_cls, regions, monkeypatch
-):
+def test_s3_bucket_region_is_kept_per_default_profile(_head, _fs_cls, monkeypatch):
     monkeypatch.setenv("AWS_DEFAULT_PROFILE", "one")
     ClientS3.bucket_status("regional")
     monkeypatch.setenv("AWS_DEFAULT_PROFILE", "two")
@@ -125,6 +123,7 @@ def test_s3_bucket_region_is_kept_per_default_profile(
     )
 
 
+@pytest.mark.usefixtures("regions")
 @pytest.mark.parametrize(
     "config",
     [{"endpoint_url": "http://e"}, {"client_kwargs": {"endpoint_url": "http://e"}}],
@@ -142,11 +141,12 @@ def test_s3_bucket_region_is_not_kept_for_other_endpoints(
     assert "region_name" not in client.fs_kwargs
 
 
+@pytest.mark.usefixtures("regions")
 @patch("datachain.client.s3.S3FileSystem")
 @patch(
     "datachain.client.s3._head_bucket", side_effect=[(403, "eu-west-3"), (200, None)]
 )
-def test_s3_bucket_status_keeps_caller_config(_head, fs_cls, regions):
+def test_s3_bucket_status_keeps_caller_config(_head, fs_cls):
     config = {"config_kwargs": {"max_pool_connections": 64}}
 
     ClientS3.bucket_status("b", **config)
@@ -157,6 +157,7 @@ def test_s3_bucket_status_keeps_caller_config(_head, fs_cls, regions):
     assert auth_kwargs["config_kwargs"]["region_name"] == "eu-west-3"
 
 
+@pytest.mark.usefixtures("regions")
 @pytest.mark.parametrize("client_kwargs", [None, {}])
 def test_s3_client_takes_client_kwargs_none(client_kwargs):
     client = ClientS3.from_name(
@@ -165,32 +166,7 @@ def test_s3_client_takes_client_kwargs_none(client_kwargs):
     assert client.fs.anon
 
 
-def _client_error(status):
-    return ClientError(
-        {
-            "Error": {"Code": str(status)},
-            "ResponseMetadata": {"HTTPStatusCode": status},
-        },
-        "HeadBucket",
-    )
-
-
-def test_head_bucket_retries_slow_down():
-    fs = S3FileSystem(anon=True, skip_instance_cache=True)
-    slow_down = ClientError(
-        {"Error": {"Code": "SlowDown"}, "ResponseMetadata": {"HTTPStatusCode": 503}},
-        "HeadBucket",
-    )
-    ok = {"ResponseMetadata": {"HTTPStatusCode": 200, "HTTPHeaders": {}}}
-    head = AsyncMock(side_effect=[slow_down, ok])
-    head.__name__ = "head_bucket"
-    fs.get_s3 = AsyncMock(return_value=MagicMock(head_bucket=head))
-
-    with patch("asyncio.sleep", AsyncMock()):
-        assert sync(get_loop(), _head_bucket, fs, "b") == (200, None)
-    assert head.call_count == 2
-
-
+@pytest.mark.usefixtures("regions")
 @pytest.mark.parametrize("status", [301, 400, 403, 404, 503])
 def test_head_bucket(status):
     fs = S3FileSystem(anon=True, s3_additional_kwargs={"ExpectedBucketOwner": "1"})
@@ -200,10 +176,115 @@ def test_head_bucket(status):
 
     if status == 503:
         with pytest.raises(OSError):  # as s3fs raises it
-            sync(get_loop(), _head_bucket, fs, "b")
+            _head_bucket(fs, "b")
     else:
-        assert sync(get_loop(), _head_bucket, fs, "b") == (status, None)
+        assert _head_bucket(fs, "b") == (status, None)
     assert head.call_args.kwargs == {"Bucket": "b", "ExpectedBucketOwner": "1"}
+
+
+@pytest.mark.usefixtures("regions")
+@patch("datachain.client.s3._head_bucket", return_value=(200, "eu-west-3"))
+def test_s3_bucket_region_is_kept_per_profile(_head):
+    ClientS3.bucket_status("b", profile="one")
+
+    client = ClientS3.from_name("b", MagicMock(), {"profile": "one"})
+    assert client.fs_kwargs["region_name"] == "eu-west-3"
+    assert "region_name" not in ClientS3.from_name("b", MagicMock(), {}).fs_kwargs
+
+
+@pytest.mark.usefixtures("regions")
+def test_s3_bucket_region_reaches_the_listing_filesystem(mocker):
+    head = AsyncMock(
+        return_value={
+            "ResponseMetadata": {
+                "HTTPStatusCode": 200,
+                "HTTPHeaders": {"x-amz-bucket-region": "eu-west-3"},
+            }
+        }
+    )
+    head.__name__ = "head_bucket"
+    mocker.patch.object(
+        S3FileSystem, "get_s3", AsyncMock(return_value=MagicMock(head_bucket=head))
+    )
+
+    assert ClientS3.bucket_status("b").access == "anonymous"
+    fs = ClientS3.from_name("b", MagicMock(), {"anon": True}).fs
+
+    assert head.call_count == 1
+    assert fs.config_kwargs["region_name"] == "eu-west-3"
+
+
+@pytest.mark.usefixtures("regions")
+@patch("datachain.client.s3._head_bucket", return_value=(200, "cn-north-1"))
+def test_s3_bucket_region_is_kept_per_configured_region(_head):
+    ClientS3.bucket_status("shared", client_kwargs={"region_name": "cn-north-1"})
+
+    assert "region_name" not in ClientS3.from_name("shared", MagicMock(), {}).fs_kwargs
+
+
+@pytest.mark.usefixtures("regions")
+def test_head_bucket_retries_transient_errors(mocker):
+    mocker.patch("asyncio.sleep")
+    fs = S3FileSystem(anon=True, skip_instance_cache=True)
+    ok = {"ResponseMetadata": {"HTTPStatusCode": 200, "HTTPHeaders": {}}}
+    head = AsyncMock(side_effect=[ReadTimeoutError(endpoint_url="e"), ok])
+    head.__name__ = "head_bucket"
+    fs.get_s3 = AsyncMock(return_value=MagicMock(head_bucket=head))
+
+    assert _head_bucket(fs, "b") == (200, None)
+    assert head.call_count == 2
+
+
+@pytest.mark.usefixtures("regions")
+@patch(
+    "datachain.client.s3._head_bucket", side_effect=[(403, None), (200, "eu-west-3")]
+)
+@pytest.mark.parametrize("config", [{}, {"endpoint_url": "https://custom"}])
+def test_s3_authenticated_region_reaches_listing_client(head, regions, config):
+    assert ClientS3.bucket_status("regional", **config).access == "authenticated"
+    client = ClientS3.from_name("regional", MagicMock(), config)
+    if config:
+        assert not regions
+        assert "region_name" not in client.fs_kwargs
+    else:
+        assert client.fs_kwargs["region_name"] == "eu-west-3"
+    assert head.call_count == 2
+
+
+@pytest.mark.usefixtures("regions")
+@patch("datachain.client.s3._head_bucket", side_effect=[(403, None), (200, None)])
+@patch("datachain.client.s3.S3FileSystem")
+@pytest.mark.parametrize("config_region", [None, "eu-west-1"])
+def test_s3_bucket_status_takes_region_name(fs_cls, head, config_region):
+    config = {} if config_region is None else {"region_name": config_region}
+    ClientS3.bucket_status("b", region_name="us-west-2", config_kwargs=config)
+    for call in fs_cls.call_args_list:
+        assert "region_name" not in call.kwargs
+        assert call.kwargs["config_kwargs"]["region_name"] == (
+            config_region or "us-west-2"
+        )
+    assert config == ({} if config_region is None else {"region_name": config_region})
+
+
+@pytest.mark.usefixtures("regions")
+@patch("datachain.client.s3._head_bucket", side_effect=OSError("service unavailable"))
+def test_s3_bucket_status_anon_service_error_reraises(head):
+    with pytest.raises(OSError, match="service unavailable"):
+        ClientS3.bucket_status("b")
+    assert head.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "s3://my-bucket/some/path",
+        "gs://my-bucket/dir",
+        "az://my-container/blob",
+    ],
+)
+def test_bucket_status_rejects_path_component(uri):
+    with pytest.raises(ValueError, match="path in a bucket is not allowed"):
+        bucket_status(uri)
 
 
 @pytest.mark.parametrize(
@@ -259,9 +340,12 @@ def test_head_bucket(status):
 def test_gcs_bucket_status(mock_create_fs, anon_effect, auth_effect, expected):
     anon_fs, auth_fs = MagicMock(), MagicMock()
     mock_create_fs.side_effect = [anon_fs, auth_fs]
-    anon_fs._ls = AsyncMock(side_effect=anon_effect)
+    anon_fs._call = AsyncMock(side_effect=anon_effect)
     auth_fs._info = AsyncMock(side_effect=auth_effect)
     assert GCSClient.bucket_status("b") == expected
+    anon_fs._call.assert_awaited_once_with(
+        "GET", "b/{}/o", "b", maxResults=1, json_out=True
+    )
 
 
 @pytest.mark.parametrize(
@@ -381,55 +465,3 @@ def test_handle_bucket_command_unexpected_subcommand():
     args = MagicMock(bucket_cmd="foobar")
     with pytest.raises(NotImplementedError, match="Unexpected bucket subcommand"):
         handle_bucket_command(args, {})
-
-
-@patch("datachain.client.s3._head_bucket", return_value=(200, "eu-west-3"))
-def test_s3_bucket_region_is_kept_per_profile(_head, regions):
-    ClientS3.bucket_status("b", profile="one")
-
-    client = ClientS3.from_name("b", MagicMock(), {"profile": "one"})
-    assert client.fs_kwargs["region_name"] == "eu-west-3"
-    assert "region_name" not in ClientS3.from_name("b", MagicMock(), {}).fs_kwargs
-
-
-def test_s3_bucket_region_reaches_the_listing_filesystem(mocker, regions):
-    head = AsyncMock(
-        return_value={
-            "ResponseMetadata": {
-                "HTTPStatusCode": 200,
-                "HTTPHeaders": {"x-amz-bucket-region": "eu-west-3"},
-            }
-        }
-    )
-    head.__name__ = "head_bucket"
-    mocker.patch.object(
-        S3FileSystem, "get_s3", AsyncMock(return_value=MagicMock(head_bucket=head))
-    )
-
-    assert ClientS3.bucket_status("b").access == "anonymous"
-    fs = ClientS3.from_name("b", MagicMock(), {"anon": True}).fs
-
-    assert head.call_count == 1
-    assert fs.config_kwargs["region_name"] == "eu-west-3"
-    assert not fs.cache_regions
-
-
-@patch("datachain.client.s3._head_bucket", return_value=(200, "cn-north-1"))
-def test_s3_bucket_region_is_kept_per_configured_region(_head, regions):
-    ClientS3.bucket_status("shared", client_kwargs={"region_name": "cn-north-1"})
-
-    assert "region_name" not in ClientS3.from_name("shared", MagicMock(), {}).fs_kwargs
-
-
-def test_head_bucket_retries_transient_errors(mocker):
-    from botocore.exceptions import ReadTimeoutError
-
-    mocker.patch("asyncio.sleep")
-    fs = S3FileSystem(anon=True, skip_instance_cache=True)
-    ok = {"ResponseMetadata": {"HTTPStatusCode": 200, "HTTPHeaders": {}}}
-    head = AsyncMock(side_effect=[ReadTimeoutError(endpoint_url="e"), ok])
-    head.__name__ = "head_bucket"
-    fs.get_s3 = AsyncMock(return_value=MagicMock(head_bucket=head))
-
-    assert sync(get_loop(), _head_bucket, fs, "b") == (200, None)
-    assert head.call_count == 2
