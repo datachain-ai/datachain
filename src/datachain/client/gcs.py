@@ -31,6 +31,10 @@ class GCSClient(RangeListedClient):
     protocol = "gs"
     CREDENTIAL_KEYS = frozenset({"token"})
     LIST_PAGE_SIZE = 5000
+    # The version id is the object's generation. Metadata updates, such as a storage
+    # class change, change the etag but keep the generation. Appends to an object in
+    # a zonal bucket also keep the generation, but they change the size.
+    PINNED_VERSION_IS_IMMUTABLE = True
     # the fields a listing asks for: GCS sends every field otherwise
     LIST_FIELDS = (
         "items(name,size,generation,etag,timeDeleted,updated),nextPageToken,prefixes"
@@ -42,6 +46,22 @@ class GCSClient(RangeListedClient):
             kwargs["token"] = json.loads(os.environ["DATACHAIN_GCP_CREDENTIALS"])
         if kwargs.pop("anon", False):
             kwargs["token"] = "anon"  # noqa: S105
+        # Read gzip-encoded objects without decompressing them, so the bytes match
+        # File.size and range reads work. GCS decompresses unless the request accepts
+        # gzip, and aiohttp decompresses unless told not to.
+        # https://github.com/fsspec/gcsfs/issues/233#issuecomment-4465900826
+        session_kwargs = kwargs.get("session_kwargs") or {}
+        headers = {
+            name: value
+            for name, value in dict(session_kwargs.get("headers") or ()).items()
+            if name.lower() != "accept-encoding"
+        }
+        headers["Accept-Encoding"] = "gzip"
+        kwargs["session_kwargs"] = {
+            **session_kwargs,
+            "auto_decompress": False,
+            "headers": headers,
+        }
 
         return cast("GCSFileSystem", super().create_fs(**kwargs))
 
@@ -208,7 +228,6 @@ class GCSClient(RangeListedClient):
         use_cache: bool = True,
         cb: Callback = DEFAULT_CALLBACK,
         block_size: int | None = None,
-        read_ahead: bool = True,
     ) -> BinaryIO:
         if use_cache and (cache_path := self.cache.get_path(file)):
             return open(cache_path, mode="rb")
@@ -217,9 +236,8 @@ class GCSClient(RangeListedClient):
             file.get_fs_path(),
             file.version,
         )
-        kwargs = {} if read_ahead else {"cache_type": "none"}
         return FileWrapper(
-            self.fs.open(full_path, block_size=block_size, **kwargs),
+            self.fs.open(full_path, **self._block_size_kwargs(block_size)),
             cb,
         )  # type: ignore[return-value]
 

@@ -583,8 +583,9 @@ class File(DataModel):
         ``write_options`` escape hatch set object metadata on the written
         object (mapped per backend, ignored on the local filesystem).
 
-        ``block_size`` sets the read-ahead block for uncached remote reads, and
-        the upload part size for writes. HTTP(S) reads ignore it.
+        ``block_size`` sets the read-ahead block for uncached remote reads (0
+        turns read-ahead off), and the upload part size for writes. HTTP(S)
+        reads ignore it.
         """
         writing = any(ch in mode for ch in "wax+")
 
@@ -2147,7 +2148,7 @@ class ArrowRow(DataModel):
         from pyarrow.csv import ParseOptions, ReadOptions
         from pyarrow.dataset import CsvFileFormat, dataset
 
-        from datachain.lib.arrow import fix_pyarrow_format
+        from datachain.lib.arrow import fix_pyarrow_format, pyarrow_fs
 
         kwargs = dict(self.kwargs)
         if csv := kwargs.pop("csv", None):
@@ -2168,7 +2169,8 @@ class ArrowRow(DataModel):
             ds = dataset(path, **kwargs)
         else:
             path = self.file.get_fs_path()
-            ds = dataset(path, filesystem=self.file.get_fs(), **kwargs)
+            fs = pyarrow_fs(self.file, kwargs.get("format"))
+            ds = dataset(path, filesystem=fs, **kwargs)
 
         return ds.take([self.index]).to_reader()
 
