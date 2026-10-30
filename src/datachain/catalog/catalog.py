@@ -1703,22 +1703,22 @@ class Catalog:
         Returns list of ListingInfo objects which are representing specific
         storage listing datasets
         """
-        from datachain.lib.listing import LISTING_PREFIX
+        from datachain.lib.listing import listing_name_prefixes
         from datachain.lib.listing_info import ListingInfo
 
-        if prefix and not prefix.startswith(LISTING_PREFIX):
-            prefix = LISTING_PREFIX + prefix
-
-        listing_datasets_versions = self.list_datasets_versions(
-            prefix=prefix,
-            include_listing=True,
-            with_job=False,
-            project=self.metastore.listing_project,
-        )
+        prefixes: list[str | None] = [None]
+        if prefix:
+            prefixes = list(listing_name_prefixes(prefix))
 
         return [
             ListingInfo.from_models(d, v, j)
-            for d, v, j in listing_datasets_versions
+            for name_prefix in prefixes
+            for d, v, j in self.list_datasets_versions(
+                prefix=name_prefix,
+                include_listing=True,
+                with_job=False,
+                project=self.metastore.listing_project,
+            )
             if is_listing_dataset(d.name)
         ]
 

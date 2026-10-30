@@ -1,13 +1,22 @@
 from datetime import datetime, timedelta, timezone
 
 from datachain.lib.dataset_info import DatasetInfo
-from datachain.lib.listing import LISTING_PREFIX, LISTING_TTL, _desanitize_ds_name
+from datachain.lib.listing import (
+    CURRENT_LISTING_PREFIX,
+    LISTING_TTL,
+    listing_uri_from_name,
+)
 
 
 class ListingInfo(DatasetInfo):
     @property
     def uri(self) -> str:
-        return _desanitize_ds_name(self.name.removeprefix(LISTING_PREFIX))
+        return listing_uri_from_name(self.name)
+
+    @property
+    def versions(self) -> bool:
+        """False for a listing of current objects only."""
+        return not self.name.startswith(CURRENT_LISTING_PREFIX)
 
     @property
     def expires(self) -> datetime | None:

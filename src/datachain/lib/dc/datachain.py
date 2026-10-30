@@ -204,6 +204,18 @@ class DataChainSchema(dict[str, DataType]):
         return file.getvalue().removesuffix("\n")
 
 
+def _paired_key_columns(left: list, right: list) -> list[tuple]:
+    """Pair the key columns of both sides. A Union is several columns, so pairing
+    differently shaped sides by position would compare the wrong ones.
+    """
+    if len(left) != len(right):
+        raise DataChainParamsError(
+            f"'on' resolves to {len(left)} columns and 'right_on' to {len(right)}; "
+            "the key must have the same shape on both sides"
+        )
+    return list(zip(left, right, strict=True))
+
+
 class DataChain:
     """DataChain - a data structure for batch data processing and evaluation.
 
@@ -497,10 +509,9 @@ class DataChain:
         Parameters:
             cache: Enable files caching to speed up subsequent accesses to the same
                 files from the same or different chains. Defaults to False.
-            prefetch: Enable prefetching of files. This will download files in
-                advance in parallel. If an integer is provided, it specifies the number
-                of files to prefetch concurrently for each process on each worker.
-                Defaults to 2. Set to 0 or False to disable prefetching.
+            prefetch: Number of files to download in full ahead of the UDF, per
+                process on each worker. Defaults to 2. Set to 0 or False for UDFs
+                that read only part of a file, such as `get_info()`.
             parallel: Number of processes to use for processing user-defined functions
                 (UDFs) in parallel. If an integer is provided, it specifies the number
                 of CPUs to use. If True, all available CPUs are used. Defaults to 1.
@@ -2321,7 +2332,6 @@ class DataChain:
             signals = list(zip(common_signals, common_signals, strict=False))
         elif on is not None and right_on is None:
             right_on = on
-            self.signals_schema.reject_union_keys("subtract", *on)
             resolved_signals = list(self.signals_schema.resolve(*on).db_signals())
             signals = list(zip(resolved_signals, resolved_signals, strict=False))  # type: ignore[arg-type]
         elif on is None and right_on is not None:
@@ -2337,14 +2347,9 @@ class DataChain:
                 raise DataChainParamsError(
                     "'on' and 'right_on' must have the same length"
                 )
-            self.signals_schema.reject_union_keys("subtract", *on)
-            other.signals_schema.reject_union_keys("subtract", *right_on)
-            signals = list(
-                zip(
-                    self.signals_schema.resolve(*on).db_signals(),
-                    other.signals_schema.resolve(*right_on).db_signals(),
-                    strict=False,
-                )  # type: ignore[arg-type]
+            signals = _paired_key_columns(
+                list(self.signals_schema.resolve(*on).db_signals()),
+                list(other.signals_schema.resolve(*right_on).db_signals()),
             )
         return self._evolve(query=self._query.subtract(other._query, signals))  # type: ignore[arg-type]
 

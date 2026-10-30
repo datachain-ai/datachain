@@ -1,7 +1,12 @@
+import functools
+import http.server
 import io
+import socketserver
 import tarfile
+import threading
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 import datachain as dc
@@ -680,3 +685,229 @@ def test_open_exclusive_azure_conflict(cloud_test_catalog_upload, meta):
         with File.at(path, ctc.session).open("xb", **meta) as f:
             f.write(b"second")
     assert File.at(path, ctc.session).read() == b"first"
+
+
+@pytest.fixture
+def fetched_bytes(monkeypatch):
+    from adlfs.spec import AzureBlobFile
+    from gcsfs.core import GCSFile
+    from s3fs.core import S3File
+
+    fetched = [0]
+    for cls in (S3File, GCSFile, AzureBlobFile):
+
+        def fetch_range(self, *args, _orig=cls._fetch_range, **kwargs):
+            data = _orig(self, *args, **kwargs)
+            fetched[0] += len(data)
+            return data
+
+        monkeypatch.setattr(cls, "_fetch_range", fetch_range)
+    return fetched
+
+
+def _noise_png() -> bytes:
+    from PIL import Image
+
+    pixels = np.random.default_rng(0).integers(0, 256, (1500, 1500, 3), np.uint8)
+    buf = io.BytesIO()
+    Image.fromarray(pixels).save(buf, format="PNG", compress_level=0)
+    return buf.getvalue()
+
+
+def _noise_wav() -> bytes:
+    import soundfile as sf
+
+    samples = np.random.default_rng(0).uniform(-1, 1, 48000 * 40).astype(np.float32)
+    buf = io.BytesIO()
+    sf.write(buf, samples, 48000, format="WAV", subtype="FLOAT")
+    return buf.getvalue()
+
+
+def _noise_mp4() -> bytes:
+    import av
+
+    buf = io.BytesIO()
+    with av.open(buf, "w", format="mp4") as container:
+        stream = container.add_stream("mpeg4", rate=30)
+        stream.width, stream.height, stream.pix_fmt = 640, 480, "yuv420p"
+        stream.bit_rate = 100_000_000
+        rng = np.random.default_rng(0)
+        for _ in range(60):
+            pixels = rng.integers(0, 256, (480, 640, 3), np.uint8)
+            frame = av.VideoFrame.from_ndarray(pixels, format="rgb24")
+            container.mux(stream.encode(frame))
+        container.mux(stream.encode())
+    return buf.getvalue()
+
+
+@pytest.mark.filterwarnings("ignore:Sending a large body:ResourceWarning")
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize(
+    "name,make,read,expected",
+    [
+        (
+            "img.png",
+            _noise_png,
+            lambda f: f.as_image_file().get_info(),
+            {"width": 1500, "height": 1500, "format": "PNG"},
+        ),
+        (
+            "audio.wav",
+            _noise_wav,
+            lambda f: f.as_audio_file().get_info(),
+            {
+                "sample_rate": 48000,
+                "channels": 1,
+                "samples": 48000 * 40,
+                "duration": 40,
+                "format": "wav",
+            },
+        ),
+        (
+            "video.mp4",
+            _noise_mp4,
+            lambda f: f.as_video_file().get_info(),
+            {
+                "width": 640,
+                "height": 480,
+                "fps": 30,
+                "frames": 60,
+                "duration": 2,
+                "codec": "mpeg4",
+            },
+        ),
+    ],
+)
+def test_partial_reads_fetch_part_of_file(
+    cloud_test_catalog_upload, fetched_bytes, tmp_path, name, make, read, expected
+):
+    ctc = cloud_test_catalog_upload
+    data = make()
+    local = tmp_path / name
+    local.write_bytes(data)
+    ctc.src.fs.put_file(str(local), str(ctc.src / name))
+    file = File(source=ctc.src_uri, path=name)
+    file._set_stream(ctc.catalog, caching_enabled=False)
+
+    info = read(file)
+
+    assert len(data) > 4 * 1024 * 1024
+    assert 0 < fetched_bytes[0] < len(data) // 2
+    assert {field: getattr(info, field) for field in expected} == expected
+
+
+@pytest.mark.filterwarnings("ignore:Sending a large body:ResourceWarning")
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize("length", [0, 16, 2 * 1024 * 1024, -1])
+def test_read_bytes_fetch_budget(
+    cloud_test_catalog_upload, fetched_bytes, tmp_path, length
+):
+    ctc = cloud_test_catalog_upload
+    data = _noise_png()
+    local = tmp_path / "img.png"
+    local.write_bytes(data)
+    ctc.src.fs.put_file(str(local), str(ctc.src / local.name))
+    file = File(source=ctc.src_uri, path=local.name)
+    file._set_stream(ctc.catalog, caching_enabled=False)
+
+    result = file.read_bytes(length)
+
+    assert result == (data if length < 0 else data[:length])
+    if length == 0:
+        assert fetched_bytes[0] == 0
+    elif length == 16:
+        assert 0 < fetched_bytes[0] <= 64 * 1024
+    elif length > 0:
+        # Allow one 1 MiB read-ahead block and modest backend overhead.
+        assert length <= fetched_bytes[0] <= length + 1024 * 1024 + 64 * 1024
+    else:
+        assert fetched_bytes[0] == len(data)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_tar_member_partial_read(cloud_test_catalog_upload, fetched_bytes, tmp_path):
+    ctc = cloud_test_catalog_upload
+    data = _noise_png()
+    tar_path = tmp_path / "a.tar"
+    with tarfile.open(tar_path, "w") as tar:
+        info = tarfile.TarInfo("img.png")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    ctc.src.fs.put_file(str(tar_path), str(ctc.src / "a.tar"))
+    tar_file = File(source=ctc.src_uri, path="a.tar")
+    tar_file._set_stream(ctc.catalog, caching_enabled=False)
+    member = next(process_tar(tar_file)).as_image_file()
+    member._set_stream(ctc.catalog, caching_enabled=False)
+    fetched_bytes[0] = 0
+
+    info = member.get_info()
+
+    assert 0 < fetched_bytes[0] < len(data) // 2
+    assert (info.width, info.height, info.format) == (1500, 1500, "PNG")
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_open_write_passes_block_size(cloud_test_catalog_upload, monkeypatch):
+    from s3fs.core import S3File
+
+    ctc = cloud_test_catalog_upload
+    parts = []
+    upload_chunk = S3File._upload_chunk
+
+    def count_parts(self, final=False):
+        parts.append(final)
+        return upload_chunk(self, final=final)
+
+    monkeypatch.setattr(S3File, "_upload_chunk", count_parts)
+    file = File(source=ctc.src_uri, path="big.bin")
+    file._set_stream(ctc.catalog)
+
+    with file.open("wb", block_size=5 * 1024 * 1024) as f:
+        for _ in range(11):
+            f.write(b"x" * 1024 * 1024)
+
+    assert parts.count(False) == 2
+    assert file.read_bytes() == b"x" * (11 * 1024 * 1024)
+
+
+class _NoRangeHandler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+
+    def handle_error(self, request, client_address):
+        pass
+
+
+def test_video_info_http_server_without_range_support(tmp_path, test_session):
+    import av
+
+    with av.open(str(tmp_path / "v.mp4"), "w") as container:
+        stream = container.add_stream("mpeg4", rate=30)
+        stream.width, stream.height, stream.pix_fmt = 320, 240, "yuv420p"
+        stream.bit_rate = 20_000_000
+        rng = np.random.default_rng(0)
+        for _ in range(30):
+            pixels = rng.integers(0, 256, (240, 320, 3), np.uint8)
+            frame = av.VideoFrame.from_ndarray(pixels, format="rgb24")
+            container.mux(stream.encode(frame))
+        container.mux(stream.encode())
+    assert 1024 * 1024 < (tmp_path / "v.mp4").stat().st_size < 5 * 1024 * 1024
+
+    handler = functools.partial(_NoRangeHandler, directory=str(tmp_path))
+    with socketserver.TCPServer(("127.0.0.1", 0), handler) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            source = f"http://127.0.0.1:{server.server_address[1]}"
+            file = File(source=source, path="v.mp4").as_video_file()
+            file._set_stream(test_session.catalog, caching_enabled=False)
+            info = file.get_info()
+        finally:
+            server.shutdown()
+            thread.join()
+
+    assert info.duration == pytest.approx(1.0, abs=0.1)

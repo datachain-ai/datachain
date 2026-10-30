@@ -49,6 +49,7 @@ ExportPlacement = Literal["filename", "etag", "fullpath", "checksum", "filepath"
 
 FileType = Literal["binary", "text", "image", "video", "audio"]
 EXPORT_FILES_MAX_THREADS = 5
+PARTIAL_READ_BLOCK_SIZE = 1024 * 1024
 
 
 class FileExporter(NodesThreadPool):
@@ -120,7 +121,7 @@ class VFile(ABC):
 
     @classmethod
     @abstractmethod
-    def open(cls, file: "File", location: list[dict]):
+    def open(cls, file: "File", location: list[dict], block_size: int | None = None):
         pass
 
 
@@ -132,7 +133,7 @@ class TarVFile(VFile):
         return "tar"
 
     @classmethod
-    def open(cls, file: "File", location: list[dict]):
+    def open(cls, file: "File", location: list[dict], block_size: int | None = None):
         """Stream file from tar archive based on location in archive.
 
         Reads always consult the cache (hit → local, miss → remote stream);
@@ -149,7 +150,7 @@ class TarVFile(VFile):
             raise VFileError("'size' is not specified", file.source, file.path)
 
         client = file._catalog.get_client(tar_file.source)
-        fd = client.open_object(tar_file, use_cache=True)
+        fd = client.open_object(tar_file, use_cache=True, block_size=block_size)
         return FileSlice(fd, offset, size, file.name)
 
     @classmethod
@@ -196,9 +197,9 @@ class VFileRegistry:
         return reader
 
     @classmethod
-    def open(cls, file: "File", location: list[dict]):
+    def open(cls, file: "File", location: list[dict], block_size: int | None = None):
         reader = cls._get_reader(file, location)
-        return reader.open(file, location)
+        return reader.open(file, location, block_size=block_size)
 
     @classmethod
     def parent(cls, file: "File", location: list[dict]) -> "File":
@@ -534,6 +535,7 @@ class File(DataModel):
         content_encoding: str | None = None,
         metadata: dict[str, str] | None = None,
         write_options: dict[str, Any] | None = None,
+        block_size: int | None = None,
         **open_kwargs,
     ) -> Iterator[Any]:
         """Open the file and return a file-like object.
@@ -548,6 +550,9 @@ class File(DataModel):
         ``cache_control``, ``content_encoding``, ``metadata`` and the raw
         ``write_options`` escape hatch set object metadata on the written
         object (mapped per backend, ignored on the local filesystem).
+
+        ``block_size`` sets the read-ahead block for uncached remote reads, and
+        the upload part size for writes. HTTP(S) reads ignore it.
         """
         writing = any(ch in mode for ch in "wax+")
 
@@ -578,13 +583,19 @@ class File(DataModel):
 
         if not writing:
             if self.location:
-                with VFileRegistry.open(self, self.location) as f:  # type: ignore[arg-type]
+                with VFileRegistry.open(
+                    self,
+                    self.location,  # type: ignore[arg-type]
+                    block_size=block_size,
+                ) as f:
                     with self._wrap_text(f, mode, open_kwargs=open_kwargs) as wrapped:
                         yield wrapped
                 return
             if self._caching_enabled:
                 self.ensure_cached()
-            with client.open_object(self, use_cache=True, cb=self._download_cb) as f:
+            with client.open_object(
+                self, use_cache=True, cb=self._download_cb, block_size=block_size
+            ) as f:
                 with self._wrap_text(f, mode, open_kwargs=open_kwargs) as wrapped:
                     yield wrapped
             return
@@ -595,6 +606,8 @@ class File(DataModel):
         binary_kwargs = {
             k: v for k, v in open_kwargs.items() if k not in self._TEXT_WRAPPER_ALLOWED
         }
+        if block_size is not None:
+            binary_kwargs["block_size"] = block_size
         with client.open_for_write(
             full_path, fs_mode, write_cfg, binary_kwargs
         ) as raw_handle:
@@ -651,7 +664,8 @@ class File(DataModel):
 
     def read_bytes(self, length: int = -1):
         """Returns file contents as bytes."""
-        with self.open(mode="rb") as stream:
+        block_size = min(length, PARTIAL_READ_BLOCK_SIZE) if length > 0 else None
+        with self.open(mode="rb", block_size=block_size) as stream:
             return stream.read(length)
 
     def read_text(self, **open_kwargs):
@@ -1197,6 +1211,8 @@ class ImageFile(File):
         """
         Retrieves metadata and information about the image file.
 
+        With prefetch and cache off, reads only the parts of the file it needs.
+
         Returns:
             Image: A Model containing image metadata such as width, height and format.
         """
@@ -1307,9 +1323,7 @@ class VideoFile(File):
         """
         Retrieves metadata and information about the video file.
 
-        Metadata is read through ``File.open()``, so it can stream when caching
-        is disabled. When caching is enabled, opening the file may populate the
-        local cache first.
+        With prefetch and cache off, reads only the parts of the file it needs.
 
         Args:
             video_stream_index: Zero-based index among video streams to inspect.
@@ -1486,10 +1500,7 @@ class AudioFile(File):
         """
         Retrieves metadata and information about the audio file.
 
-        Metadata is read through ``File.open()``, so it can stream when caching
-        is disabled. When caching is enabled, opening the file may populate the
-        local cache first. For UDFs that only need audio metadata, it can be
-        useful to disable caching and prefetching.
+        With prefetch and cache off, reads only the parts of the file it needs.
 
         Returns:
             Audio: A Model containing audio metadata such as duration,

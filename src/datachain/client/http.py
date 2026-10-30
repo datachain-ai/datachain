@@ -161,13 +161,20 @@ class HTTPClient(Client):
         info = self.fs.info(self.get_uri(path))
         return self.info_to_file(info, path)
 
-    def open_object(self, file: "File", use_cache: bool = True, cb=None):
+    def open_object(
+        self,
+        file: "File",
+        use_cache: bool = True,
+        cb=None,
+        block_size: int | None = None,
+    ):
         from datachain.client.fileslice import FileWrapper
 
         if use_cache and (cache_path := self.cache.get_path(file)):
             return open(cache_path, mode="rb")
 
         assert not file.location
+        # block_size is ignored: servers without range support fail on small blocks
         return FileWrapper(
             self.fs.open(file.get_fs_path()),
             cb or (lambda x: None),

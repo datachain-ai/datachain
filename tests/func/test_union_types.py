@@ -609,7 +609,7 @@ def test_mutate_on_an_arm_column(test_session):
     assert [r["v__int"] for r in rows] == [2, None]
 
 
-def test_union_cannot_be_a_diff_or_subtract_key(test_session):
+def test_union_cannot_be_a_diff_key(test_session):
     def chain():
         return dc.read_values(
             id=[1, 2],
@@ -622,11 +622,31 @@ def test_union_cannot_be_a_diff_or_subtract_key(test_session):
     for key in ("v", "v.int"):
         with pytest.raises(DataChainColumnError, match="cannot be a diff"):
             left.diff(right, on=key)
-        with pytest.raises(DataChainColumnError, match="cannot be a subtract"):
-            left.subtract(right, on=[key])
 
     assert left.diff(right, on="id").to_list("id") == []
-    assert left.subtract(right, on=["id"]).to_list("id") == []
+
+
+def test_subtract_on_a_union_key(test_session):
+    left = dc.read_values(
+        id=[1, 2, 3],
+        v=[1, "a", 2],
+        output={"id": int, "v": int | str},
+        session=test_session,
+    )
+    right = dc.read_values(
+        id=[9, 8],
+        v=[1, "a"],
+        output={"id": int, "v": int | str},
+        session=test_session,
+    )
+    assert sorted(left.subtract(right, on=["v"]).to_values("id")) == [3]
+    assert sorted(left.subtract(right, on=["v.int"]).to_values("id")) == [3]
+
+    plain = dc.read_values(
+        id=[1], w=[1], output={"id": int, "w": int}, session=test_session
+    )
+    with pytest.raises(DataChainParamsError, match="same shape on both sides"):
+        left.subtract(plain, on=["v"], right_on=["w"])
 
 
 def test_signal_colliding_with_a_union_column_rejected(test_session):
@@ -932,23 +952,14 @@ def test_window_over_readable_arm_path(test_session):
 
 
 def test_union_arm_name_collision_errors(test_session):
-    import sqlite3
-    from contextlib import closing
-
-    from datachain.lib.utils import DataChainColumnError
-
-    chain = dc.read_values(
-        id=[1, 2],
-        value=["a", 1],
-        value__int=[100, 200],
-        output={"id": int, "value": str | int, "value__int": int},
-        session=test_session,
-    )
     with pytest.raises(DataChainColumnError, match="same export column"):
-        chain.to_records()
-    with pytest.raises(DataChainColumnError, match="same export column"):
-        with closing(sqlite3.connect(":memory:")) as conn:
-            chain.to_database("t", conn)
+        dc.read_values(
+            id=[1, 2],
+            value=["a", 1],
+            value__int=[100, 200],
+            output={"id": int, "value": str | int, "value__int": int},
+            session=test_session,
+        )
 
 
 def test_union_udf_parent_and_child_overlap(test_session):
@@ -956,12 +967,12 @@ def test_union_udf_parent_and_child_overlap(test_session):
         return f"{number}:{value}"
 
     chain = dc.read_values(
-        value=[1, "a"], output={"value": int | str}, session=test_session
+        id=[1, 2],
+        value=[1, "a"],
+        output={"id": int, "value": int | str},
+        session=test_session,
     )
-    assert list(
-        chain.map(
-            result=describe,
-            params=["value.int", "value"],
-            output=str,
-        ).to_values("result")
-    ) == ["1:1", "None:a"]
+    assert _ordered(
+        chain.map(result=describe, params=["value.int", "value"], output=str),
+        "result",
+    ) == [(1, "1:1"), (2, "None:a")]

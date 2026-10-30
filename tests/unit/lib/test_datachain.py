@@ -1,4 +1,4 @@
-import datetime
+import datetime as dt
 import enum
 import hashlib
 import io
@@ -774,7 +774,7 @@ def test_from_features_simple_types_in_memory():
 
 @skip_if_not_sqlite
 def test_to_pandas_as_object_preserves_none(test_session):
-    timestamp = datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)
+    timestamp = dt.datetime(2020, 1, 1, tzinfo=dt.timezone.utc)
     chain = dc.read_values(
         id=[1, None],
         value=[3.14, None],
@@ -810,9 +810,9 @@ def test_from_features_more_simple_types(test_session):
         nn=[None, None, None],
         ss=["x", None, "y"],
         time=[
-            datetime.datetime.now(),
-            datetime.datetime.today(),
-            datetime.datetime.today(),
+            dt.datetime.now(),
+            dt.datetime.today(),
+            dt.datetime.today(),
         ],
         f=[3.14, 2.72, 1.62],
         session=test_session,
@@ -841,7 +841,7 @@ def test_from_features_more_simple_types(test_session):
         list[int],  # from ll
         str,  # from nn (all None -> defaults to str)
         str | None,  # from ss (has a None -> inferred Optional)
-        datetime.datetime,
+        dt.datetime,
         float,
     }
 
@@ -2254,7 +2254,7 @@ def test_to_json_features_nested(tmp_dir, test_session):
 
 
 def test_to_json_datetime(tmp_dir, test_session):
-    timestamp = datetime.datetime.now(datetime.timezone.utc)
+    timestamp = dt.datetime.now(dt.timezone.utc)
     chain = dc.read_values(ts=[timestamp], session=test_session)
 
     path = tmp_dir / "dt.json"
@@ -2266,8 +2266,7 @@ def test_to_json_datetime(tmp_dir, test_session):
     expected_ts = timestamp.isoformat().replace("+00:00", "Z")
     assert values == [{"ts": expected_ts}]
     assert (
-        datetime.datetime.fromisoformat(values[0]["ts"].replace("Z", "+00:00"))
-        == timestamp
+        dt.datetime.fromisoformat(values[0]["ts"].replace("Z", "+00:00")) == timestamp
     )
 
 
@@ -3972,7 +3971,7 @@ def test_schema_flatten(test_session):
         "file.version": str,
         "file.etag": str,
         "file.is_latest": bool,
-        "file.last_modified": datetime.datetime,
+        "file.last_modified": dt.datetime,
         "file.location": File.model_fields["location"].annotation,
         "nested.label": str,
         "nested.fr.nnn": str,

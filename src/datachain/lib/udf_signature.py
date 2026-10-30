@@ -14,9 +14,11 @@ from datachain.lib.udf import UDFBase, reject_var_params
 from datachain.lib.utils import (
     AbstractUDF,
     DataChainParamsError,
+    assert_unique_export_columns,
     callable_name,
     type_to_str,
 )
+from datachain.query.schema import DEFAULT_DELIMITER
 
 
 class UdfSignatureError(DataChainParamsError):
@@ -142,6 +144,13 @@ class UdfSignature:  # noqa: PLW1641
 
         for signal, anno in udf_output_map.items():
             UdfSignature._validate_type(chain, signal, anno)
+        assert_unique_export_columns(
+            [
+                c.split(DEFAULT_DELIMITER)
+                for c in SignalSchema(udf_output_map).db_signals()
+            ],
+            DEFAULT_DELIMITER,
+        )
 
         return cls(
             func=udf_func,

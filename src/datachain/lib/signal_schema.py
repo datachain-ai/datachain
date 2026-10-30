@@ -1335,8 +1335,8 @@ class SignalSchema:
         return ".".join(slots[-1].split(DEFAULT_DELIMITER)) if slots else None
 
     def reject_union_keys(self, method: str, *paths: str) -> None:
-        """Raise when a row-matching key touches a multi-arm union: it is several
-        columns whose inactive arms are NULL, and NULLs never compare equal."""
+        """Raise when a diff key touches a multi-arm union: the comparison runs over
+        its columns, and an inactive arm's NULL has no order."""
         for path in paths:
             if (root := self.multiarm_union_root(path)) is not None:
                 raise DataChainColumnError(
