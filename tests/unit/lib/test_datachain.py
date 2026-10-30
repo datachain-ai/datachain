@@ -2535,6 +2535,17 @@ def test_read_parquet_columns_written_by_datachain(point_parquet, test_session):
         dc.read_parquet(point_parquet, columns=["x"], session=test_session)
 
 
+@pytest.mark.parametrize("output", [None, {"x": int}])
+@pytest.mark.parametrize("columns", ["p.x", []])
+def test_read_parquet_columns_written_by_datachain_must_be_a_list_of_names(
+    point_parquet, test_session, columns, output
+):
+    with pytest.raises(DatasetPrepareError, match="non-empty list of column names"):
+        dc.read_parquet(
+            point_parquet, columns=columns, output=output, session=test_session
+        )
+
+
 @pytest.mark.parametrize("output", [["n", "q", "s"], {"n": int, "q": Point, "s": str}])
 def test_read_parquet_output_written_by_datachain_takes_signals_by_position(
     point_parquet, test_session, output

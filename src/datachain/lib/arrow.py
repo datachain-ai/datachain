@@ -427,6 +427,7 @@ def _signal_paths(
     They are `columns`, or else the top-level signals. With `source`, the reader
     adds its own `source`, so a stored one is left out and can't be picked.
     """
+    _check_columns(columns)
     if columns is None:
         paths = [s for s in signal_schema.values if not (source and s == "source")]
     elif source and any(_in_signals(c, ["source"]) for c in columns):
@@ -482,7 +483,6 @@ def infer_output(
     written by DataChain pick signals as `select()` does. With `columns` or
     `col_names`, they can't be mixed with other files.
     """
-    _check_columns(columns)
     kinds = {_written_by_datachain(s) for s in schemas}
     if (columns is not None or col_names) and len(kinds) > 1:
         raise ValueError(_MIXED_FILES)
