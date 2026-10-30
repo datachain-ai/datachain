@@ -62,17 +62,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         pyv: ['3.11', '3.12', '3.13', '3.14']
-        include:
-          - os: macos-latest
-            pyv: '3.11'
-          - os: macos-latest
-            pyv: '3.14'
-          - os: windows-latest
-            pyv: '3.11'
-          - os: windows-latest
-            pyv: '3.14'
+        # Split each combination across two runners (pytest-split)
+        shard: [1, 2]
+        exclude:
+          # macOS and Windows test only the oldest and newest Python
+          - {os: macos-latest, pyv: '3.12'}
+          - {os: macos-latest, pyv: '3.13'}
+          - {os: windows-latest, pyv: '3.12'}
+          - {os: windows-latest, pyv: '3.13'}
+    env:
+      # No durations file: least_duration then deals tests round-robin
+      SPLIT_ARGS: --splits=2 --group=${{ matrix.shard }} --splitting-algorithm=least_duration
 
     steps:
       - name: Check out the repository
@@ -149,11 +151,11 @@ jobs:
         run: echo 'DISABLE_REMOTES_ARG=--disable-remotes=azure,gs' >> $env:GITHUB_ENV
 
       - name: Run tests
-        run: nox -s tests-${{ matrix.pyv }} -- -m "not e2e and not examples" $DISABLE_REMOTES_ARG
+        run: nox -s tests-${{ matrix.pyv }} -- -m "not e2e and not examples" $DISABLE_REMOTES_ARG $SPLIT_ARGS
         shell: bash
 
       - name: Run E2E tests
-        run: nox -s e2e-${{ matrix.pyv }}
+        run: nox -s e2e-${{ matrix.pyv }} -- $SPLIT_ARGS
         shell: bash
 
       - name: Upload coverage report
@@ -164,9 +166,11 @@ jobs:
           flags: datachain
 
       - name: Build package
+        if: matrix.shard == 1
         run: nox -s build
 
       - name: Build docs
+        if: matrix.shard == 1
         run: nox -s docs
 
   examples:

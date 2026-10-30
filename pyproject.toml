@@ -117,6 +117,7 @@ tests = [
   "pytest-benchmark[histogram]",
   "pytest-codspeed",
   "pytest-xdist>=3.3.1",
+  "pytest-split>=0.10.0",
   "pytest-dotenv",
   "virtualenv",
   "dulwich",
