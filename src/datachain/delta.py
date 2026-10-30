@@ -8,6 +8,7 @@ from sqlalchemy.sql.elements import (
     BinaryExpression,
     BooleanClauseList,
     ColumnClause,
+    ColumnElement,
     Over,
 )
 
@@ -399,6 +400,7 @@ def _can_replay_changed_keys(
         if isinstance(step, (SQLSelect, SQLMutate)) and any(
             isinstance(element, Over)
             for expression in step.parse_cols(step.args)
+            if isinstance(expression, ColumnElement)
             for element in visitors.iterate(expression)
         ):
             return False
@@ -541,7 +543,7 @@ def delta_retry_update(  # noqa: PLR0911
     """
 
     catalog = dc.session.catalog
-    dc._query.resolve_listing()
+    dc._query.resolve_all_listings()
 
     # Check if dataset exists
     try:
@@ -558,8 +560,6 @@ def delta_retry_update(  # noqa: PLR0911
         return None, None, True
 
     delta_sources = dc._query.delta_sources()
-    for source in delta_sources:
-        source.resolve_listing()
 
     dependencies: list[DatasetDependency | None] = [
         d

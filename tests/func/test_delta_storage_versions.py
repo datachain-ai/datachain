@@ -75,6 +75,20 @@ def test_delta_refresh_on_versioned_storage(
     processed.clear()
     assert build(True).save("versioned_result").version == result.version
     assert processed == []
+    for value in (3, 1):
+        File.upload(str(value).encode(), uri + "c.txt", ctc.catalog)
+        processed.clear()
+        updated = build(True).save("versioned_result")
+        assert processed == [prefix + "/c.txt"]
+        assert (
+            rows(updated)
+            == rows(build(False))
+            == [
+                (prefix + "/c.txt", value, index)
+                for index in (range(value) if operation == "gen" else [0])
+            ]
+        )
+    processed.clear()
     (ctc.src / prefix / "c.txt").unlink()
     emptied = build(True).save("versioned_result")
     assert emptied.count() == 0

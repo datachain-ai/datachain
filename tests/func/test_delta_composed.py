@@ -169,7 +169,11 @@ def test_delta_cross_record_operations_match_full_recompute(test_session, operat
             return chain.subtract(
                 dc.read_dataset("excluded", session=test_session), on="value"
             )
-        return chain.mutate(value=func.row_number().over(func.window(order_by="id")))
+        return chain.mutate(
+            value=func.row_number().over(
+                func.window(partition_by=C.id > 0, order_by="id")
+            )
+        )
 
     source([1, 2, 3], [10, 20, 30])
     initial = build(True).save("global_result")
@@ -181,3 +185,106 @@ def test_delta_cross_record_operations_match_full_recompute(test_session, operat
     )
     assert sorted(initial.to_iter("id", "value")) == before
     assert build(True).save("global_result").version == result.version
+
+
+@pytest.mark.parametrize("static_first", [False, True])
+def test_storage_delta_refreshes_changed_static_union_input(
+    test_session, tmp_path, static_first
+):
+    changing = tmp_path / "changing"
+    static = tmp_path / "static"
+    changing.mkdir()
+    static.mkdir()
+    (changing / "a.txt").write_text("2")
+    (static / "b.txt").write_text("3")
+
+    def read_number(file: File) -> int:
+        return int(file.read_text())
+
+    def build(delta):
+        left = dc.read_storage(
+            changing, update=True, delta=delta, delta_unsafe=True, session=test_session
+        )
+        right = dc.read_storage(static, update=True, session=test_session)
+        chain = right.union(left) if static_first else left.union(right)
+        return chain.map(value=read_number)
+
+    build(True).save("static_storage_result")
+    (static / "b.txt").write_text("99")
+    result = build(True).save("static_storage_result")
+    assert sorted(result.to_iter("file.path", "value")) == [("a.txt", 2), ("b.txt", 99)]
+    assert build(True).save("static_storage_result").version == result.version
+
+
+@pytest.mark.parametrize("changed", ["left", "right"])
+@pytest.mark.parametrize("delete", [False, True])
+def test_storage_delta_union_preserves_other_source_with_identical_key(
+    test_session, tmp_path, changed, delete
+):
+    import shutil
+
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    left.mkdir()
+    (left / "a.txt").write_text("2")
+    shutil.copytree(left, right)
+
+    def read_number(file: File) -> int:
+        return int(file.read_text())
+
+    def build(delta):
+        kwargs = {
+            "update": True,
+            "delta": delta,
+            "delta_unsafe": True,
+            "session": test_session,
+        }
+        return (
+            dc.read_storage(left, **kwargs)
+            .union(dc.read_storage(right, **kwargs))
+            .map(value=read_number)
+        )
+
+    first = build(True).save("mirrored_result")
+    assert first.count() == 2
+    for field in ("file.path", "file.etag", "file.version"):
+        values = first.to_values(field)
+        assert values[0] == values[1]
+    path = (left if changed == "left" else right) / "a.txt"
+    if delete:
+        path.unlink()
+    else:
+        path.write_text("99")
+    result = build(True).save("mirrored_result")
+    assert sorted(result.to_iter("file.source", "file.path", "value")) == sorted(
+        build(False).to_iter("file.source", "file.path", "value")
+    )
+    assert sorted(result.to_values("value")) == ([2] if delete else [2, 99])
+    assert first.to_values("value") == [2, 2]
+
+
+def test_delta_subtracts_filtered_occurrence_of_same_source(test_session):
+    def source(ids, groups, blocked):
+        dc.read_values(
+            id=ids, group=groups, blocked=blocked, session=test_session
+        ).save("self_subtract_source")
+
+    def build(delta):
+        chain = dc.read_dataset(
+            "self_subtract_source",
+            delta=delta,
+            delta_on="id",
+            delta_unsafe=True,
+            session=test_session,
+        )
+        return chain.subtract(chain.filter(C.blocked == 1), on="group")
+
+    source([1, 2, 3], [10, 10, 20], [0, 1, 0])
+    initial = build(True).save("self_subtract_result")
+    assert initial.to_values("id") == [3]
+    source([1, 2, 3, 4], [10, 10, 20, 30], [0, 1, 0, 0])
+    result = build(True).save("self_subtract_result")
+    assert (
+        sorted(result.to_values("id")) == sorted(build(False).to_values("id")) == [3, 4]
+    )
+    assert initial.to_values("id") == [3]

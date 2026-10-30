@@ -128,6 +128,6 @@ delta_unsafe = True
 
 If more than one delta-enabled source participates in the same composed query, set `delta_unsafe=True` on every participating delta source.
 
-Multiple delta sources require this opt-in and a shared result key. DataChain uses partial replay for joins on that key when the delta sources change the same keys. Independently changing sources, non-key or full joins, and cross-record operations such as `distinct`, aggregation, `limit`, and `offset` fall back to recomputing the full current query. A changed non-delta input also triggers a full recompute.
+Multiple delta sources require this opt-in and a shared result key. DataChain uses partial replay for joins on that key when the delta sources change the same keys. Independently changing sources, non-key or full joins, and cross-record operations such as `distinct`, aggregation, window functions, `limit`, and `offset` fall back to recomputing the full current query. A changed non-delta input also triggers a full recompute.
 
 **A full recompute can rerun UDFs on unchanged records.** `delta_unsafe=True` keeps the existing key requirements and enables these compositions; it does not guarantee incremental execution. Use a fixed pipeline and retain the configured source-key values in its output.
