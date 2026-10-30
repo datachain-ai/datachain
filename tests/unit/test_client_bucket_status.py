@@ -147,12 +147,16 @@ def test_s3_bucket_region_is_not_kept_for_other_endpoints(
     "datachain.client.s3._head_bucket", side_effect=[(403, "eu-west-3"), (200, None)]
 )
 def test_s3_bucket_status_keeps_caller_config(_head, fs_cls):
-    config = {"config_kwargs": {"max_pool_connections": 64}}
+    config = {"cache_regions": True, "config_kwargs": {"max_pool_connections": 64}}
 
     ClientS3.bucket_status("b", **config)
     ClientS3.create_fs(anon=True, **config)
 
-    assert config == {"config_kwargs": {"max_pool_connections": 64}}
+    assert config == {
+        "cache_regions": True,
+        "config_kwargs": {"max_pool_connections": 64},
+    }
+    assert all(call.kwargs["cache_regions"] is False for call in fs_cls.call_args_list)
     auth_kwargs = fs_cls.call_args_list[1].kwargs
     assert auth_kwargs["config_kwargs"]["region_name"] == "eu-west-3"
 

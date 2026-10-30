@@ -240,6 +240,8 @@ class ClientS3(RangeListedClient):
 
     @classmethod
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:
+        # HeadBucket returns the region; do not discover it with another probe.
+        kwargs["cache_regions"] = False
         not_found = BucketStatus(
             exists=False, access="denied", error=f"S3 bucket '{name}' not found"
         )
