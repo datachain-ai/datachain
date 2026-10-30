@@ -2592,9 +2592,7 @@ class DataChain:
                 schema, output, read = infer_output(schemas, col_names, columns, source)
 
             if isinstance(output, dict):
-                model_name = model_name or column or ""
-                model = dict_to_data_model(model_name, output)
-                output = model
+                model = dict_to_data_model(model_name or column or "", output)
             else:
                 model = output  # type: ignore[assignment]
 
@@ -2607,10 +2605,10 @@ class DataChain:
 
         if column:
             output = {column: model}  # type: ignore[dict-item]
-        elif isinstance(output, type(BaseModel)):
+        else:
             output = {
                 name: info.annotation  # type: ignore[misc]
-                for name, info in output.model_fields.items()
+                for name, info in model.model_fields.items()
             }
 
         if source:
