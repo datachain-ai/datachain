@@ -14,6 +14,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from pyarrow.dataset import ParquetFileFormat
 
 import datachain as dc
 from datachain import DataModel, func
@@ -1579,8 +1580,11 @@ def download_callbacks(monkeypatch):
         lambda uri, session: dc.read_storage(uri, session=session).parse_tabular(
             columns=["c3"]
         ),
+        lambda uri, session: dc.read_storage(uri, session=session).parse_tabular(
+            format=ParquetFileFormat(), columns=["c3"], source=False
+        ),
     ],
-    ids=["read_parquet", "parse_tabular_without_format"],
+    ids=["read_parquet", "parse_tabular_without_format", "parquet_file_format"],
 )
 def test_read_parquet_columns_fetch_only_those_columns(
     cloud_test_catalog_upload, fetched_bytes, download_callbacks, read
@@ -1592,9 +1596,9 @@ def test_read_parquet_columns_fetch_only_those_columns(
     chain = read(f"{ctc.src_uri}/wide.parquet", ctc.session)
     fetched_bytes[:] = [0, 0]
 
-    values = chain.order_by("source.index").to_values("c3")
+    values = chain.to_values("c3")
 
-    assert values == table["c3"].to_pylist()
+    assert sorted(values) == sorted(table["c3"].to_pylist())
     assert 0 < fetched_bytes[0] < file.size // 4
     assert sum(cb.value for cb in download_callbacks) > 0
 

@@ -6,12 +6,14 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from datasets import Dataset
+from pyarrow.dataset import CsvFileFormat, JsonFileFormat, ParquetFileFormat
 
 import datachain as dc
 from datachain.lib.arrow import (
     ArrowGenerator,
     arrow_type_mapper,
     file_schemas,
+    is_parquet,
     schema_to_output,
 )
 from datachain.lib.data_model import dict_to_data_model
@@ -314,3 +316,18 @@ def test_file_schemas_no_files(test_session):
     chain = dc.read_records([], schema=schema, session=test_session, in_memory=True)
     with pytest.raises(ValueError):
         file_schemas(chain)
+
+
+@pytest.mark.parametrize(
+    "format,expected",
+    [
+        ("parquet", True),
+        (ParquetFileFormat(), True),
+        (ParquetFileFormat(buffer_size=4096), True),
+        ("csv", False),
+        (CsvFileFormat(), False),
+        (JsonFileFormat(), False),
+    ],
+)
+def test_is_parquet(format, expected):
+    assert is_parquet(format) is expected
