@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, TypeVar, cast
+from typing import TYPE_CHECKING, Literal, TypeVar, cast
 
 from fsspec.asyn import get_loop, sync
 from sqlalchemy.sql.expression import or_, true
@@ -37,6 +37,11 @@ LISTING_PREFIX = "lst__"  # listing datasets start with this name
 LISTING_BATCH_SIZE = 50_000  # rows per insert: listing rows are small
 # listing of current objects only, read_storage(versions=False)
 CURRENT_LISTING_PREFIX = f"{LISTING_PREFIX}current__"
+
+# listing of all versions and delete rows, read_storage(versions="all")
+ALL_LISTING_PREFIX = f"{LISTING_PREFIX}all__"
+
+Versions = bool | Literal["all"]
 
 D = TypeVar("D", bound="DataChain")
 
@@ -74,7 +79,7 @@ def calc_fingerprint(session: "Session", dataset: "DatasetRecord", version: str)
     chain = DataChain(query, Settings(), signal_schema)
 
     identifier = case(
-        (C("file.version") != "", C("file.version")),
+        (C("file.version").not_in(["", "null"]), C("file.version")),
         else_=C("file.etag"),
     )
     client_cls = Client.get_implementation(listing_uri_from_name(dataset.name))
@@ -98,10 +103,13 @@ def listing_dataset_expired(lst_ds) -> bool:
     return datetime.now(UTC) > expires
 
 
-def list_pages(uri: str, cache, client_config=None) -> Iterator[Sequence[tuple]]:
+def list_pages(
+    uri: str, cache, client_config=None, deleted: bool = False
+) -> Iterator[Sequence[tuple]]:
     """Pages of ``FileRow`` rows of every object under the ``uri`` prefix."""
     config = client_config or {}
     client = Client.get_client(uri, cache, **config)  # type: ignore[arg-type]
+    client.list_deleted = deleted
     _, path = Client.parse_url(uri)
     pages = client.scandir(path.rstrip("/"))
     for page in iter_over_async(pages, get_loop()):
@@ -150,11 +158,11 @@ def file_row(file: File) -> FileRow:
     return FileRow(*flatten(file))
 
 
-def list_bucket(uri: str, cache, client_config=None) -> Callable:
+def list_bucket(uri: str, cache, client_config=None, deleted: bool = False) -> Callable:
     """A generator function, for ``gen()``, of the rows of ``list_pages``."""
 
     def list_func() -> Iterator[File]:  # FileRow rows
-        for page in list_pages(uri, cache, client_config):
+        for page in list_pages(uri, cache, client_config, deleted=deleted):
             yield from page  # type: ignore[misc]
 
     list_func.__name__ = "read_storage"
@@ -176,19 +184,23 @@ def ls(
     path: str,
     recursive: bool | None = True,
     column="file",
+    latest: bool = True,
 ) -> D:
     """
     Return files by some path from DataChain instance which contains bucket listing.
     Path can have globs.
     If recursive is set to False, only first level children will be returned by
-    specified path
+    specified path. With ``latest=False``, every version is returned.
     """
-    return select_paths(dc, PathFilter.ls(path, recursive), column)
+    return select_paths(dc, PathFilter.ls(path, recursive), column, latest=latest)
 
 
-def select_paths(dc: D, paths: "PathFilter", column: str = "file") -> D:
-    """The latest files of a listing chain whose paths ``paths`` selects."""
-    dc = dc.filter(Column(f"{column}.is_latest") == true())
+def select_paths(
+    dc: D, paths: "PathFilter", column: str = "file", latest: bool = True
+) -> D:
+    """Select paths from a listing, optionally keeping only current files."""
+    if latest:
+        dc = dc.filter(Column(f"{column}.is_latest") == true())
     for condition in paths.sql(Column(f"{column}.path")):
         dc = dc.filter(condition)
     return dc
@@ -383,10 +395,11 @@ def _desanitize_ds_name(encoded: str) -> str:
     return _DS_DECODE_RE.sub(_repl, encoded)
 
 
-def parse_listing_uri(uri: str, versions: bool = True) -> tuple[str, str, str]:
+def parse_listing_uri(uri: str, versions: Versions = True) -> tuple[str, str, str]:
     """
     Parsing uri and returns listing dataset name, listing uri and listing path.
-    A listing of current objects only (``versions=False``) gets its own name.
+    Current-only listings (``versions=False``) and history with delete rows
+    (``versions="all"``) each get their own name.
     """
     storage_uri, path = Client.parse_url(uri)
     if uses_glob(path):
@@ -402,7 +415,9 @@ def parse_listing_uri(uri: str, versions: bool = True) -> tuple[str, str, str]:
     )
 
     ds_name = _sanitize_ds_name(ds_name)
-    if not versions:
+    if versions == "all":
+        ds_name = ALL_LISTING_PREFIX + ds_name.removeprefix(LISTING_PREFIX)
+    elif not versions:
         ds_name = CURRENT_LISTING_PREFIX + ds_name.removeprefix(LISTING_PREFIX)
 
     return ds_name, lst_uri, path
@@ -412,7 +427,11 @@ def listing_name_prefixes(prefix: str) -> list[str]:
     """Listing-name prefixes that match a storage URI prefix, one per mode."""
     if prefix.startswith(LISTING_PREFIX):
         return [prefix]
-    return [LISTING_PREFIX + prefix, CURRENT_LISTING_PREFIX + prefix]
+    return [
+        LISTING_PREFIX + prefix,
+        CURRENT_LISTING_PREFIX + prefix,
+        ALL_LISTING_PREFIX + prefix,
+    ]
 
 
 def is_listing_dataset(name: str) -> bool:
@@ -429,6 +448,7 @@ def listing_uri_from_name(dataset_name: str) -> str:
     if not is_listing_dataset(dataset_name):
         raise ValueError(f"Dataset {dataset_name} is not a listing")
     name = dataset_name.removeprefix(CURRENT_LISTING_PREFIX)
+    name = name.removeprefix(ALL_LISTING_PREFIX)
     return _desanitize_ds_name(name.removeprefix(LISTING_PREFIX))
 
 
@@ -447,14 +467,15 @@ def names_object(client: Client, uri: str) -> bool:
 
 
 def describe_listing(
-    client: Client, uri: str, versions: bool = True
+    client: Client, uri: str, versions: Versions = True
 ) -> tuple[str, str, str] | None:
     """The listing dataset name, listing URI and listing path of ``uri``, or
     None when it names a single object."""
     if names_object(client, uri):
         return None
     # local, HF and HTTP storages have no versions: one kind of listing
-    versions = versions or not hasattr(client.fs, "version_aware")
+    if versions is not True and not hasattr(client.fs, "version_aware"):
+        versions = True
     return parse_listing_uri(uri, versions=versions)
 
 
@@ -462,7 +483,7 @@ def get_listing(
     uri: str | os.PathLike[str],
     session: "Session",
     update: bool = False,
-    versions: bool = True,
+    versions: Versions = True,
 ) -> tuple[str | None, str, str, bool]:
     """Returns correct listing dataset name that must be used for saving listing
     operation. It takes into account existing listings and reusability of those.
@@ -550,6 +571,7 @@ def write_listing(
     file_type: type[File] = File,
     settings: dict | None = None,
     in_memory: bool = False,
+    deleted: bool = False,
 ) -> None:
     """Store the listing of the prefix ``uri``, whole, as the listing dataset
     ``ds_name``: the snapshot ``read_storage`` reads and reuses.
@@ -560,7 +582,9 @@ def write_listing(
 
     namespace = session.catalog.metastore.system_namespace_name
     project = session.catalog.metastore.listing_project_name
-    list_func = list_bucket(uri, session.catalog.cache, client_config=client_config)
+    list_func = list_bucket(
+        uri, session.catalog.cache, client_config=client_config, deleted=deleted
+    )
     # content_hash=None because hash_callable doesn't capture list_func's
     # closure (which holds the URI and the client config) -- auto-hashing
     # the seed would let the UDF checkpoint cache return a stale listing

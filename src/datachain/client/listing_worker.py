@@ -165,7 +165,9 @@ class Pool:
         # the page size travels so that tests can shrink it in children too
         spec = (type(client), client.name, client.fs_kwargs, client.cache)
         try:
-            self.spec = dump((*spec, client.LIST_PAGE_SIZE, prefix))
+            self.spec = dump(
+                (*spec, client.LIST_PAGE_SIZE, client.list_deleted, prefix)
+            )
         except Exception:
             logger.debug(
                 "Listing in one process: client config does not pickle", exc_info=True
@@ -280,9 +282,10 @@ def main(out_fd: int) -> None:
         os.dup2(devnull.fileno(), 0)
     try:
         if (spec := load(inp)) is not None:
-            cls, name, fs_kwargs, cache, page_size, prefix = spec
+            cls, name, fs_kwargs, cache, page_size, list_deleted, prefix = spec
             client = cls(name, fs_kwargs, cache)
             client.LIST_PAGE_SIZE = page_size
+            client.list_deleted = list_deleted
     except Exception as e:  # noqa: BLE001
         spec = None  # such as a class in the parent's __main__: the parent lists alone
         with suppress(OSError):

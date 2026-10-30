@@ -1,4 +1,5 @@
 import errno
+import heapq
 import os
 from collections.abc import Callable
 from datetime import datetime
@@ -326,8 +327,21 @@ class ClientS3(RangeListedClient):
                 prefix, start_after, None, hi, page_size, delimiter
             )
         entries = page.get("Versions" if versions else "Contents", [])
-        keys = [d["Key"] for d in entries + page.get("DeleteMarkers", [])]
-        # folders past a delimiter: listed past, though they make no rows
+        markers = page.get("DeleteMarkers", [])
+        keys = [d["Key"] for d in entries + markers]
+        keep = Keep(self, start_after, hi)
+        listed = [(d, False) for d in entries]
+        if self.list_deleted:  # one stream in key order, as ``keep`` checks
+            marked = [(d, True) for d in markers]
+            listed = list(heapq.merge(listed, marked, key=lambda e: e[0]["Key"]))
+        rows: list[Any] = [
+            self._deleted_row(d["Key"], d["VersionId"], d["LastModified"])
+            if deleted
+            else self._file_row(d, versions)
+            for d, deleted in listed
+            if keep(d["Key"])
+        ]
+        # Folders are listed past, though they make no rows.
         keys += [p["Prefix"] for p in page.get("CommonPrefixes", [])]
         if not page.get("IsTruncated"):
             token = None
@@ -335,10 +349,12 @@ class ClientS3(RangeListedClient):
             token = page["NextKeyMarker"], page.get("NextVersionIdMarker")
         else:
             token = page["NextContinuationToken"]
-        keep = Keep(self, start_after, hi)
         return Page(
-            [self._file_row(d, versions) for d in entries if keep(d["Key"])],
-            entries[0]["Key"] if entries else None,
+            rows,
+            # delete markers are rows of their own when listed
+            min(keys, default=None)
+            if self.list_deleted
+            else (entries[0]["Key"] if entries else None),
             max(keys, default=None),
             token,
             keep.past_lo,
@@ -347,11 +363,16 @@ class ClientS3(RangeListedClient):
         )
 
     def _file_row(self, v, versions: bool) -> tuple:
+        version = ""
+        if versions:
+            version = v.get("VersionId", "")
+            if not self.list_deleted:
+                version = ClientS3.clean_s3_version(version)
         return FileRow(
             self.uri,
             v["Key"],
             v["Size"],
-            ClientS3.clean_s3_version(v.get("VersionId", "")) if versions else "",
+            version,
             v.get("ETag", "").strip('"'),
             v.get("IsLatest", True),
             v["LastModified"],
