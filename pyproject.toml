@@ -180,6 +180,7 @@ markers = [
   "get_started: Get started examples",
   "llm_and_nlp: LLM and NLP examples",
   "multimodal: Multimodal examples",
+  "multimodal_heavy: Multimodal examples with large downloads or slow inference",
   "incremental_processing: Delta and retry examples"
 ]
 filterwarnings = [
