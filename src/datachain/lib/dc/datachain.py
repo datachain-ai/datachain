@@ -2558,6 +2558,7 @@ class DataChain:
             ArrowGenerator,
             file_schemas,
             fix_pyarrow_format,
+            is_parquet,
             merge_schemas,
             read_columns,
             schema_to_output,
@@ -2619,7 +2620,7 @@ class DataChain:
             output = {"source": ArrowRow} | output  # type: ignore[assignment,operator]
 
         # Prefetch downloads whole files, so a partial read prefetches only small ones.
-        partial = nrows or (columns is not None and format == "parquet")
+        partial = nrows or (columns is not None and is_parquet(format))
         return self.gen(  # type: ignore[arg-type]
             ArrowGenerator(
                 schema,

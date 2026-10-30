@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 import pyarrow as pa
 from fsspec.implementations.local import LocalFileSystem
 from pyarrow._csv import ParseOptions
-from pyarrow.dataset import CsvFileFormat, Dataset, dataset
+from pyarrow.dataset import CsvFileFormat, Dataset, ParquetFileFormat, dataset
 from pyarrow.fs import FileInfo, FileType, FSSpecHandler, PyFileSystem
 
 from datachain import json
@@ -47,6 +47,10 @@ def fix_pyarrow_format(format, parse_options=None):
     ):
         format.parse_options = parse_options
     return format
+
+
+def is_parquet(format) -> bool:
+    return format == "parquet" or isinstance(format, ParquetFileFormat)
 
 
 # CSV options that decide where a file's rows and columns start.
@@ -107,7 +111,7 @@ def pyarrow_fs(file: File, format):
     client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
     if isinstance(client.fs, LocalFileSystem):
         return client.fs
-    block_size = 0 if format == "parquet" else None
+    block_size = 0 if is_parquet(format) else None
     return PyFileSystem(_PartialReadHandler(client, file, block_size=block_size))
 
 
