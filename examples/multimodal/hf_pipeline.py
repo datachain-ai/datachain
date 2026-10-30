@@ -13,7 +13,7 @@ import os
 import subprocess
 
 import torch
-from transformers import Pipeline, pipeline
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, Pipeline, pipeline
 
 import datachain as dc
 from datachain import C, File
@@ -42,13 +42,6 @@ class Helper(dc.Mapper):
 def process(file: File, pipeline: Pipeline, args: dict) -> str:
     result = pipeline(file.read(), **args)
     return json.dumps(result)
-
-
-def summarize(file: File, pipeline: Pipeline) -> str:
-    messages = [
-        {"role": "user", "content": f"Summarize the following text:\n{file.read()}"}
-    ]
-    return json.dumps(pipeline(messages, max_new_tokens=150, do_sample=False))
 
 
 image_source = "gs://datachain-demo/dogs-and-cats/"
@@ -111,6 +104,7 @@ if __name__ == "__main__":
         print("ffmpeg binary not found, skipping audio example")
 
     print("\nLong text summarization:")
+    summarizer = "pszemraj/led-large-book-summary"
     (
         dc.read_storage(text_source, anon=True, type="text")
         .filter(C("file.path").glob("*.story"))
@@ -118,10 +112,12 @@ if __name__ == "__main__":
         .setup(
             pipeline=lambda: pipeline(
                 task="text-generation",
-                model="HuggingFaceTB/SmolLM2-135M-Instruct",
+                model=AutoModelForSeq2SeqLM.from_pretrained(summarizer),
+                tokenizer=AutoTokenizer.from_pretrained(summarizer),
                 device=device,
             ),
+            args=lambda: {"max_length": 150},
         )
-        .map(result=summarize)
+        .map(result=process)
         .show()
     )
