@@ -3,10 +3,105 @@ from uuid import uuid4
 import pytest
 
 import datachain as dc
-from datachain import C, DataModel
+from datachain import C, DataModel, File
 from datachain.error import SchemaDriftError
 from datachain.toolkit import train_test_split
 from tests.utils import reset_session_job_state
+
+
+@pytest.mark.parametrize("static_first", [False, True])
+@pytest.mark.parametrize("operation", ["map", "gen"])
+@pytest.mark.parametrize("filter_at", [None, "before", "after"])
+def test_delta_union_replaces_replayed_static_rows(
+    test_session, static_first, operation, filter_at
+):
+    dc.read_values(id=[100], value=[1], session=test_session).save("union_static")
+
+    def generate(id, value):
+        for index in range(value):
+            yield id, value, index
+
+    def build(delta):
+        changing = dc.read_dataset(
+            "union_source",
+            delta=delta,
+            delta_on="id",
+            delta_unsafe=True,
+            session=test_session,
+        )
+        static = dc.read_dataset("union_static", session=test_session)
+        chain = static.union(changing) if static_first else changing.union(static)
+        if filter_at == "before":
+            chain = chain.filter(C.value > 0)
+        if operation == "gen":
+            chain = chain.gen(generate, output={"id": int, "value": int, "index": int})
+        else:
+            chain = chain.map(index=lambda value: value, output=int)
+        return chain.filter(C.value > 0) if filter_at == "after" else chain
+
+    def rows(chain):
+        return sorted(chain.to_iter("id", "value", "index"))
+
+    dc.read_values(id=[1, 2], value=[1, 2], session=test_session).save("union_source")
+    first = build(True).save("union_result")
+    initial_rows = rows(first)
+    for ids, values in [([1, 3], [0, 2]), ([1, 3, 4], [0, 1, 1])]:
+        dc.read_values(id=ids, value=values, session=test_session).save("union_source")
+        result = build(True).save("union_result")
+        assert rows(result) == rows(build(False))
+        assert result.filter(C.id == 100).count() == 1
+    assert rows(first) == initial_rows
+    assert build(True).save("union_result").version == result.version
+
+
+@pytest.mark.parametrize("static_first", [False, True])
+def test_storage_delta_union_does_not_duplicate_unchanged_files(
+    test_session, tmp_path, static_first
+):
+    changing = tmp_path / "changing"
+    static = tmp_path / "static"
+    changing.mkdir()
+    static.mkdir()
+    (changing / "a.txt").write_text("2")
+    (static / "b.txt").write_text("3")
+
+    def read_number(file: File) -> int:
+        return int(file.read_text())
+
+    def build(delta):
+        left = dc.read_storage(
+            changing,
+            update=True,
+            delta=delta,
+            delta_unsafe=True,
+            session=test_session,
+        )
+        right = dc.read_storage(static, update=True, session=test_session)
+        chain = right.union(left) if static_first else left.union(right)
+        return chain.map(value=read_number).filter(C.value < 5)
+
+    def rows(chain):
+        return sorted(chain.to_iter("file.path", "value"))
+
+    first = build(True).save("storage_union_result")
+    (changing / "c.txt").write_text("4")
+    added = build(True).save("storage_union_result")
+    assert (
+        rows(added)
+        == rows(build(False))
+        == [
+            ("a.txt", 2),
+            ("b.txt", 3),
+            ("c.txt", 4),
+        ]
+    )
+    (changing / "a.txt").write_text("99")
+    modified = build(True).save("storage_union_result")
+    assert rows(modified) == rows(build(False)) == [("b.txt", 3), ("c.txt", 4)]
+    (changing / "c.txt").unlink()
+    deleted = build(True).save("storage_union_result")
+    assert rows(deleted) == rows(build(False)) == [("b.txt", 3)]
+    assert rows(first) == [("a.txt", 2), ("b.txt", 3)]
 
 
 def test_delta_split_is_disjoint_and_complete(test_session):

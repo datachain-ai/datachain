@@ -511,6 +511,8 @@ def delta_retry_update(
         return None, None, False
     normalized_dependencies = _normalize_dependencies(dependencies, updated_versions)
 
+    # Replay can include unchanged rows from non-delta branches.
+    retained_chain = retained_chain.subtract(replayed_delta_chain, on=result_key)
     result_chain = _safe_union(
         retained_chain,
         replayed_delta_chain,
