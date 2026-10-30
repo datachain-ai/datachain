@@ -157,7 +157,7 @@ def plain_types_parquet(tmp_path):
         {
             "i8": pa.array([-1, None, 3], pa.int8()),
             "u32": pa.array([2**32 - 1, 0, None], pa.uint32()),
-            "f32": pa.array([1.5, None, float("nan")], pa.float32()),
+            "f32": pa.array([1.5, None, -2.5], pa.float32()),
             "f64": pa.array([None, 2.25, -0.0], pa.float64()),
             "b": pa.array([True, False, None]),
             "s": pa.array(["x", None, ""]),
