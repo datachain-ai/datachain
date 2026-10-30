@@ -6,6 +6,23 @@ Delta processing allows you to optimize the creation of new dataset versions by 
 
 When working with large datasets that receive regular updates, reprocessing the entire dataset each time is inefficient. The `delta=True` flag in DataChain enables incremental processing, where only new or changed records are processed.
 
+## Upgrading existing delta datasets
+
+**Upgrading does not automatically clean stale results saved by older delta
+updates.** Existing datasets may still contain rows for deleted files or old
+revisions of overwritten files. If the source version has already been recorded
+as processed, another delta run can leave those rows untouched.
+
+To bring an existing result into sync:
+
+1. Rerun the same pipeline once with `delta=False`. For `read_storage`, also keep
+   `update=True` to refresh the source listing. Keep the same `.save(...)` name.
+2. After that run succeeds, restore `delta=True` for subsequent runs.
+
+**This is a full-source rebuild and can rerun expensive UDFs over every current
+source record.** It saves a new result version; previous versions remain
+unchanged. Newly created results do not need this rebuild.
+
 ## How Delta Processing Works
 
 When delta processing is enabled:
