@@ -155,7 +155,7 @@ def plain_types_parquet(tmp_path):
     when = datetime(2026, 1, 2, 3, 4, 5, 6)
     table = pa.table(
         {
-            "i8": pa.array([-1, None, 3], pa.int8()),
+            "i8": pa.array([-1, 2, 3], pa.int8()),
             "u32": pa.array([2**32 - 1, 0, None], pa.uint32()),
             "f32": pa.array([1.5, None, -2.5], pa.float32()),
             "f64": pa.array([None, 2.25, -0.0], pa.float64()),
@@ -168,40 +168,51 @@ def plain_types_parquet(tmp_path):
         }
     )
     path = tmp_path / "plain.parquet"
-    pq.write_table(table, path)
+    pq.write_table(table, path, row_group_size=1)
     return path.as_uri()
 
 
+@pytest.mark.parametrize("source", [True, False])
 @pytest.mark.parametrize("column", ["", "p"])
-def test_read_parquet_plain_types_as_an_output_model_does(
-    plain_types_parquet, test_session, column
+def test_read_parquet_dict_output_matches_model_output(
+    plain_types_parquet, test_session, column, source
 ):
     output = {name: info.annotation for name, info in PlainTypes.model_fields.items()}
+    prefix = f"{column}." if column else ""
+    signals = [prefix + name for name in PlainTypes.model_fields]
+    if source:
+        signals.append("source")
     by_types, by_model = (
         dc.read_parquet(
-            plain_types_parquet, output=out, column=column, session=test_session
+            plain_types_parquet,
+            output=out,
+            column=column,
+            source=source,
+            session=test_session,
         )
+        .order_by(prefix + "i8")
+        .to_list(*signals)
         for out in (output, PlainTypes)
     )
 
-    prefix = f"{column}." if column else ""
-    signals = [*(prefix + name for name in PlainTypes.model_fields), "source"]
-    rows = by_types.order_by("source.index").to_list(*signals)
-    assert rows == by_model.order_by("source.index").to_list(*signals)
-    assert [row[:2] for row in rows] == [(-1, 2**32 - 1), (None, 0), (3, None)]
-    assert [row[-1].index for row in rows] == [0, 1, 2]
+    assert by_types == by_model
+    assert [row[:2] for row in by_types] == [(-1, 2**32 - 1), (2, 0), (3, None)]
+    if source:
+        assert [row[-1].index for row in by_types] == [0, 1, 2]
 
 
-class Doubled(dc.DataModel):
+class Declared(dc.DataModel):
     a: int | None = None
 
-    @field_validator("a")
-    @classmethod
-    def double(cls, value):
-        return value * 2
 
+@pytest.mark.parametrize("base", [Declared, dict_to_data_model("Inferred", {"a": int})])
+def test_read_parquet_output_model_runs_its_validators(tmp_path, test_session, base):
+    class Doubled(base):
+        @field_validator("a")
+        @classmethod
+        def double(cls, value):
+            return value * 2
 
-def test_read_parquet_output_model_runs_its_validators(tmp_path, test_session):
     path = tmp_path / "a.parquet"
     pq.write_table(pa.table({"a": [1, 2]}), path)
     chain = dc.read_parquet(path.as_uri(), output=Doubled, session=test_session)

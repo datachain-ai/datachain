@@ -1,6 +1,7 @@
 import hashlib
 import math
 from collections.abc import Iterator, Sequence
+from datetime import datetime
 from itertools import islice
 from typing import TYPE_CHECKING, Any
 
@@ -128,6 +129,7 @@ class ArrowGenerator(Generator):
         source: bool = True,
         nrows: int | None = None,
         columns: list[str] | None = None,
+        output_from_types: bool = False,
         prefetch_max_size: int | None = None,
         **kwargs,
     ):
@@ -141,6 +143,8 @@ class ArrowGenerator(Generator):
         source : Whether to include info about the source file.
         nrows : Optional row limit per file.
         columns : Optional columns to read from each file by name, in output order.
+        output_from_types : Whether output_schema was built from types alone, with no
+            validators, so rows of plain values can skip it.
         prefetch_max_size : Files larger than this, or of unknown size, aren't
             prefetched.
         kwargs: Parameters to pass to pyarrow.dataset.dataset.
@@ -152,6 +156,7 @@ class ArrowGenerator(Generator):
         self.source = source
         self.nrows = nrows
         self.columns = columns
+        self.output_from_types = output_from_types
         self.parse_options = kwargs.pop("parse_options", None)
         self.kwargs = kwargs
 
@@ -256,14 +261,14 @@ class ArrowGenerator(Generator):
         values as pyarrow gives them. Then no model is built per row. Else None."""
         model = self.output_schema
         metadata = schema.metadata or {}
-        # A model built from types has no validators; one passed as output may.
         if (
-            not hasattr(model, "_model_fields_by_aliases")
+            model is None
+            or not self.output_from_types
             or DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY in metadata
             or b"huggingface" in metadata
         ):
             return None
-        fields = list(model.model_fields.values())  # type: ignore[union-attr]
+        fields = list(model.model_fields.values())
         names = (self.columns or schema.names)[: len(fields)]
         if not fields or len(names) < len(fields):
             return None
@@ -281,27 +286,27 @@ class ArrowGenerator(Generator):
         source_kwargs: dict[str, Any] | None,
     ) -> Iterator[FlatRow]:
         if source_kwargs is not None:
-            # The source is the same for every row but its index: the file's
-            # columns, the index, then the read options.
-            arrow_row = ArrowRow(file=file, index=0, kwargs=source_kwargs)
-            *head, _, kwargs = map(_json_text, flatten(arrow_row))
-        start, left = 0, self.nrows
+            # Every row's source is the same but its index: the file's columns,
+            # the index, then the read options.
+            source = ArrowRow(file=file, index=0, kwargs=source_kwargs)
+            *file_values, _, stored_options = map(_json_text, flatten(source))
+        next_index, remaining = 0, self.nrows
         with tqdm(
             desc="Parsed by pyarrow", unit="rows", total=self.nrows, leave=False
         ) as pbar:
             for batch in batches:
-                if left is not None:
-                    batch = batch.slice(0, left)
-                    left -= batch.num_rows
+                if remaining is not None:
+                    batch = batch.slice(0, remaining)
+                    remaining -= batch.num_rows
                 rows = zip(*(c.to_pylist() for c in batch.columns), strict=True)
                 if source_kwargs is None:
                     yield from map(FlatRow, rows)
                 else:
-                    for index, values in enumerate(rows, start):
-                        yield FlatRow((*head, index, kwargs, *values))
-                start += batch.num_rows
+                    for index, values in enumerate(rows, next_index):
+                        yield FlatRow((*file_values, index, stored_options, *values))
+                next_index += batch.num_rows
                 pbar.update(batch.num_rows)
-                if left == 0:
+                if remaining == 0:
                     break
 
     def _process_record(
@@ -543,8 +548,6 @@ def _arrow_field_type_mapper(
 def _plain_type(col_type: pa.DataType) -> type | None:  # noqa: PLR0911
     """Return the type of the column's values when pyarrow gives values that
     pydantic and the DB keep as they are, else None."""
-    from datetime import datetime
-
     if pa.types.is_integer(col_type):
         return int
     if pa.types.is_float32(col_type) or pa.types.is_float64(col_type):

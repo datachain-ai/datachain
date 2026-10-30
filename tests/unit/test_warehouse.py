@@ -260,13 +260,14 @@ def test_map_tuples_are_validated(sqlite_db):
         process_udf_outputs(warehouse, table, iter([[(1, "x", None)]]), udf)
 
 
-def test_gen_progress_counts_every_row_in_few_updates(sqlite_db):
+def test_gen_progress_reports_rows_once_per_interval(warehouse, monkeypatch):
+    import time
     from types import SimpleNamespace
 
     from fsspec.callbacks import Callback
 
     from datachain.lib.signal_schema import SignalSchema
-    from datachain.query.dataset import process_udf_outputs
+    from datachain.query.dataset import PROGRESS_INTERVAL, process_udf_outputs
     from datachain.sql.types import Boolean, Int
 
     class Updates(Callback):
@@ -277,7 +278,6 @@ def test_gen_progress_counts_every_row_in_few_updates(sqlite_db):
         def relative_update(self, inc=1):
             self.incs.append(inc)
 
-    warehouse = SQLiteWarehouse(sqlite_db)
     table = warehouse.create_udf_table(
         [
             sa.Column("a", Int),
@@ -292,14 +292,20 @@ def test_gen_progress_counts_every_row_in_few_updates(sqlite_db):
         is_output_batched=True,
     )
     udf = SimpleNamespace(output={"a": Int}, inner=inner)
-    rows = [(i, 1, i < 9_999, None) for i in range(10_000)]
+    now = 0.0
+    monkeypatch.setattr(time, "monotonic", lambda: now)
+
+    def rows():
+        nonlocal now
+        for i, intervals in enumerate([0, 0, 1, 1, 1, 2, 2]):
+            now = intervals * PROGRESS_INTERVAL
+            yield (i, i, False, None)
+
     updates = Updates()
+    process_udf_outputs(warehouse, table, iter([rows()]), udf, cb=updates)
 
-    process_udf_outputs(warehouse, table, iter([rows]), udf, cb=updates)
-
-    assert warehouse.table_rows_count(table) == 10_000
-    assert sum(updates.incs) == 10_000
-    assert len(updates.incs) < 100
+    assert updates.incs == [1, 2, 3, 1]
+    assert warehouse.table_rows_count(table) == 7
 
 
 @skip_if_not_sqlite
