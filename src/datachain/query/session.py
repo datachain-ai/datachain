@@ -5,6 +5,8 @@ import re
 import sys
 import traceback
 from collections.abc import Callable
+from contextlib import ExitStack
+from copy import copy
 from typing import TYPE_CHECKING, ClassVar
 from uuid import uuid4
 from weakref import WeakSet
@@ -90,18 +92,41 @@ class Session:
         session_uuid = uuid4().hex[: self.SESSION_UUID_LEN]
         self.name = f"{name}_{session_uuid}"
         self.is_new_catalog = not catalog
+        self._parent: Session | None = None
         self.catalog = catalog or get_catalog(
             client_config=client_config, in_memory=in_memory
         )
+        self._cleanup_catalogs: list[Catalog] = [self.catalog]
         Session._ALL_SESSIONS.add(self)
 
+    def _with_catalog(self, catalog: "Catalog") -> "Session":
+        """Use another catalog without creating a new temporary-dataset scope."""
+        if catalog is self.catalog:
+            return self
+        view = copy(self)
+        view.catalog = catalog
+        # Keep the cleanup owner alive; only owners are in _ALL_SESSIONS.
+        view._parent = self
+        # The owner cleans up temporary datasets created through this view.
+        view._cleanup_catalogs = self._cleanup_catalogs
+        view.is_new_catalog = False
+        return view
+
     def __enter__(self):
+        if self._parent is not None:
+            raise RuntimeError("Enter the parent Session, not its catalog view")
         # Push the current context onto the stack
         Session.SESSION_CONTEXTS.append(self)
 
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        self._close()
+        if Session.SESSION_CONTEXTS:
+            Session.SESSION_CONTEXTS.pop()
+
+    def _close(self) -> None:
+        """Clean up this scope without changing the active session stack."""
         # Don't cleanup created versions on exception
         # Datasets should persist even if the session fails
         self._cleanup_temp_datasets()
@@ -109,8 +134,6 @@ class Session:
             self.catalog.metastore.close_on_exit()
             self.catalog.warehouse.close_on_exit()
 
-        if Session.SESSION_CONTEXTS:
-            Session.SESSION_CONTEXTS.pop()
         Session._ALL_SESSIONS.discard(self)
 
     def get_job(self) -> "Job | None":
@@ -265,6 +288,12 @@ class Session:
             Session._JOB_STATUS = JobStatus.FAILED
 
     def generate_temp_dataset_name(self) -> str:
+        if not any(
+            c.metastore is self.catalog.metastore
+            and c.warehouse is self.catalog.warehouse
+            for c in self._cleanup_catalogs
+        ):
+            self._cleanup_catalogs.append(self.catalog)
         return self.get_temp_prefix() + uuid4().hex[: self.TEMP_TABLE_UUID_LEN]
 
     def get_temp_prefix(self) -> str:
@@ -276,19 +305,46 @@ class Session:
 
     def _cleanup_temp_datasets(self) -> None:
         prefix = self.get_temp_prefix()
-        try:
-            for dataset in list(
-                self.catalog.metastore.list_datasets_by_prefix(
-                    prefix, include_incomplete=True
-                )
-            ):
-                # Session datasets are always wiped — never soft-deleted.
-                self.catalog.remove_dataset(
-                    dataset.name, dataset.project, force=True, keep_metadata=False
-                )
-        # suppress error when metastore has been reset during testing
-        except TableMissingError:
-            pass
+        for catalog in self._cleanup_catalogs:
+            try:
+                with ExitStack() as connections:
+                    if catalog is not self.catalog:
+                        # Borrowed catalogs may already be closed, or belong to
+                        # another thread. Cleanup owns only these new connections.
+                        catalog = catalog.copy()
+                        catalog.metastore = catalog.metastore.clone(
+                            use_new_connection=True
+                        )
+                        connections.callback(catalog.metastore.close_on_exit)
+                        catalog.warehouse = catalog.warehouse.clone(
+                            use_new_connection=True
+                        )
+                        connections.callback(catalog.warehouse.close_on_exit)
+                    for dataset in list(
+                        catalog.metastore.list_datasets_by_prefix(
+                            prefix, include_incomplete=True
+                        )
+                    ):
+                        # Session datasets are always wiped — never soft-deleted.
+                        catalog.remove_dataset(
+                            dataset.name,
+                            dataset.project,
+                            force=True,
+                            keep_metadata=False,
+                        )
+            # suppress error when metastore has been reset during testing
+            except TableMissingError:
+                pass
+        # A retained chain/view must not keep other catalogs alive after cleanup.
+        self._cleanup_catalogs[:] = [self.catalog]
+
+    @classmethod
+    def active(cls) -> "Session | None":
+        """The session ``get()`` returns without arguments, without creating
+        one: None when no session exists yet."""
+        if cls.SESSION_CONTEXTS:
+            return cls.SESSION_CONTEXTS[-1]
+        return cls.GLOBAL_SESSION_CTX
 
     @classmethod
     def get(

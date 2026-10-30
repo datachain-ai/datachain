@@ -26,7 +26,7 @@ except ImportError as exc:
     ) from exc
 
 from io import BytesIO
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias, get_args, get_origin
 
 import PIL
 
@@ -115,7 +115,13 @@ class HFGenerator(Generator):
                     output_dict[normalized_name] = convert_feature(
                         row[name], feat, anno
                     )
-                yield self.output_schema(**output_dict)
+                row = self.output_schema(**output_dict)
+                if self.output is not None and len(self.output.values) == 1:
+                    # A single output signal takes its value, not the whole row.
+                    ((name, signal_type),) = self.output.values.items()
+                    if type(row) is not signal_type:
+                        row = getattr(row, name)
+                yield row
                 pbar.update(1)
 
 
@@ -127,31 +133,50 @@ def stream_splits(ds: HFDatasetType, *args, **kwargs):
     return {"": ds}
 
 
-def convert_feature(val: Any, feat: Any, anno: Any) -> Any:
-    if isinstance(feat, (Value, Array2D, Array3D, Array4D, Array5D, List)):
+def convert_feature(val: Any, feat: Any, anno: Any) -> Any:  # noqa: PLR0911
+    if isinstance(feat, (Value, Array2D, Array3D, Array4D, Array5D)):
         return val
+    if isinstance(feat, List):
+        if val is None or isinstance(feat.feature, Value):
+            return val
+        item_anno = _list_item_type(anno)
+        return [convert_feature(v, feat.feature, item_anno) for v in val]
     if isinstance(feat, ClassLabel):
+        if HFClassLabel not in (anno, *get_args(anno)):
+            return val
         return HFClassLabel(string=feat.names[val], integer=val)
     if isinstance(feat, dict):
+        model = _generated_model(anno)
+        if model is None:
+            return val
         sdict = {}
-        model_fields = anno._model_fields_by_aliases()  # type: ignore[attr-defined]
+        model_fields = model._model_fields_by_aliases()
         for sname in val:
-            sfeat = feat[sname]
             norm_name, info = model_fields[sname]
-            sanno = info.annotation
-            if isinstance(val[sname], list):
-                sdict[norm_name] = [
-                    convert_feature(v, sfeat, sanno) for v in val[sname]
-                ]
-            else:
-                sdict[norm_name] = convert_feature(val[sname], sfeat, sanno)
-        return anno(**sdict)
+            sdict[norm_name] = convert_feature(val[sname], feat[sname], info.annotation)
+        return model(**sdict)
     if isinstance(feat, Image):
         if isinstance(val, dict):
             return HFImage(img=val["bytes"])
         return HFImage(img=image_to_bytes(val))
     if isinstance(feat, Audio):
         return HFAudio(array=val["array"], sampling_rate=val["sampling_rate"])
+
+
+def _generated_model(anno: Any) -> Any:
+    """Return the model generated for a dict feature, if it is the requested type.
+
+    Other requested types, such as `dict` or a user's model, take the raw dict.
+    """
+    types = (anno, *get_args(anno))
+    return next((t for t in types if hasattr(t, "_model_fields_by_aliases")), None)
+
+
+def _list_item_type(anno: Any) -> Any:
+    """Return X for list[X], also when the list is optional."""
+    return next(
+        get_args(t)[0] for t in (anno, *get_args(anno)) if get_origin(t) is list
+    )
 
 
 def get_output_schema(

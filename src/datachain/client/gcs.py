@@ -27,11 +27,18 @@ os.environ.setdefault("NO_GCE_CHECK", "true")
 class GCSClient(RangeListedClient):
     FS_CLASS = GCSFileSystem
     PREFIX = "gs://"
+    LISTS_LEVELS = True
     protocol = "gs"
     CREDENTIAL_KEYS = frozenset({"token"})
     LIST_PAGE_SIZE = 5000
+    # The version id is the object's generation. Metadata updates, such as a storage
+    # class change, change the etag but keep the generation. Appends to an object in
+    # a zonal bucket also keep the generation, but they change the size.
+    PINNED_VERSION_IS_IMMUTABLE = True
     # the fields a listing asks for: GCS sends every field otherwise
-    LIST_FIELDS = "items(name,size,generation,etag,timeDeleted,updated),nextPageToken"
+    LIST_FIELDS = (
+        "items(name,size,generation,etag,timeDeleted,updated),nextPageToken,prefixes"
+    )
 
     @classmethod
     def create_fs(cls, **kwargs) -> GCSFileSystem:
@@ -39,6 +46,22 @@ class GCSClient(RangeListedClient):
             kwargs["token"] = json.loads(os.environ["DATACHAIN_GCP_CREDENTIALS"])
         if kwargs.pop("anon", False):
             kwargs["token"] = "anon"  # noqa: S105
+        # Read gzip-encoded objects without decompressing them, so the bytes match
+        # File.size and range reads work. GCS decompresses unless the request accepts
+        # gzip, and aiohttp decompresses unless told not to.
+        # https://github.com/fsspec/gcsfs/issues/233#issuecomment-4465900826
+        session_kwargs = kwargs.get("session_kwargs") or {}
+        headers = {
+            name: value
+            for name, value in dict(session_kwargs.get("headers") or ()).items()
+            if name.lower() != "accept-encoding"
+        }
+        headers["Accept-Encoding"] = "gzip"
+        kwargs["session_kwargs"] = {
+            **session_kwargs,
+            "auto_decompress": False,
+            "headers": headers,
+        }
 
         return cast("GCSFileSystem", super().create_fs(**kwargs))
 
@@ -47,13 +70,23 @@ class GCSClient(RangeListedClient):
         from google.api_core import exceptions as google_exceptions
 
         # Step 1: Anonymous probe.
-        # Use _ls (objects.list API) not _info (buckets.get API): GCS does not
-        # grant storage.buckets.get anonymously even for public buckets.
+        # Use _call with maxResults=1 (objects.list API) not _info (buckets.get API)
+        # or _ls: GCS does not grant storage.buckets.get anonymously even for public
+        # buckets, and _ls lists the whole bucket root and triggers unnecessary
+        # gRPC calls.
         anon_kwargs = {k: v for k, v in kwargs.items() if k != "anon"}
         anon_kwargs["anon"] = True
         anon_fs = cls.create_fs(**anon_kwargs)
         try:
-            sync(get_loop(), anon_fs._ls, name)
+            sync(
+                get_loop(),
+                anon_fs._call,
+                "GET",
+                "b/{}/o",
+                name,
+                maxResults=1,
+                json_out=True,
+            )
             return BucketStatus(exists=True, access="anonymous")
         except FileNotFoundError:
             return BucketStatus(
@@ -204,7 +237,7 @@ class GCSClient(RangeListedClient):
             file.version,
         )
         return FileWrapper(
-            self.fs.open(full_path, block_size=block_size),
+            self.fs.open(full_path, **self._block_size_kwargs(block_size)),
             cb,
         )  # type: ignore[return-value]
 
@@ -226,6 +259,7 @@ class GCSClient(RangeListedClient):
         token: Any,
         hi: str | None = None,
         page_size: int | None = None,
+        delimiter: str = "",
     ) -> Page:
         page_token, held = (
             token if self.list_deleted and token is not None else (token, None)
@@ -238,7 +272,7 @@ class GCSClient(RangeListedClient):
             "GET",
             "b/{}/o",
             self.name,
-            delimiter="",
+            delimiter=delimiter,
             prefix=prefix,
             startOffset=start_after or None,
             endOffset=None if hi is None else f"{hi}\0",  # exclusive
@@ -251,7 +285,7 @@ class GCSClient(RangeListedClient):
         items = page.get("items", [])
         keep = Keep(self, start_after, hi)
         first = items[0]["name"] if items else None
-        last = items[-1]["name"] if items else None
+        keys = [d["name"] for d in items] + page.get("prefixes", [])
         next_token = page.get("nextPageToken")
         if self.list_deleted:
             # a generation's delete time depends on the next generation of its key
@@ -264,7 +298,7 @@ class GCSClient(RangeListedClient):
         return Page(
             rows,
             first,
-            last,
+            max(keys, default=None),
             next_token,
             keep.past_lo,
             keep.past_hi,

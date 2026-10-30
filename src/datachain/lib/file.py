@@ -60,6 +60,7 @@ ExportPlacement = Literal["filename", "etag", "fullpath", "checksum", "filepath"
 FileType = Literal["binary", "text", "image", "video", "audio"]
 EXPORT_FILES_MAX_THREADS = 5
 PARTIAL_READ_BLOCK_SIZE = 1024 * 1024
+TAR_READ_BLOCK_SIZE = 5 * 1024 * 1024
 
 
 class FileExporter(NodesThreadPool):
@@ -74,12 +75,16 @@ class FileExporter(NodesThreadPool):
         max_threads: int = EXPORT_FILES_MAX_THREADS,
         client_config: dict | None = None,
     ):
+        from datachain.client.fsspec import Client
+        from datachain.client.local import FileClient
+
         super().__init__(max_threads)
         self.output = output
         self.placement = placement
         self.use_cache = use_cache
         self.link_type = link_type
         self.client_config = client_config
+        self.is_local = Client.get_implementation(output) is FileClient
 
     def done_task(self, done):
         for task in done:
@@ -87,13 +92,17 @@ class FileExporter(NodesThreadPool):
 
     def do_task(self, file: "File | None"):
         if file is not None:
-            file.export(
-                self.output,
-                self.placement,
-                self.use_cache,
-                link_type=self.link_type,
-                client_config=self.client_config,
-            )
+            # a local disk cannot hold an empty path segment
+            if self.is_local and "//" in file._get_destination_suffix(self.placement):
+                logger.warning("File '%s' not exported: path has '//'", file.path)
+            else:
+                file.export(
+                    self.output,
+                    self.placement,
+                    self.use_cache,
+                    link_type=self.link_type,
+                    client_config=self.client_config,
+                )
         self.increase_counter(1)
 
 
@@ -147,6 +156,9 @@ class TarVFile(VFile):
 
         Reads always consult the cache (hit → local, miss → remote stream);
         ``_caching_enabled`` only governs whether a miss is also persisted.
+        Read-ahead defaults to 5 MiB, capped at the member size.
+        Explicit ``block_size`` values are forwarded unchanged.
+        HTTP(S) clients ignore this setting.
         """
         tar_file = cls.parent(file, location)
 
@@ -159,6 +171,8 @@ class TarVFile(VFile):
             raise VFileError("'size' is not specified", file.source, file.path)
 
         client = file._catalog.get_client(tar_file.source)
+        if block_size is None:
+            block_size = min(size, TAR_READ_BLOCK_SIZE)
         fd = client.open_object(tar_file, use_cache=True, block_size=block_size)
         return FileSlice(fd, offset, size, file.name)
 
@@ -611,8 +625,9 @@ class File(DataModel):
         ``write_options`` escape hatch set object metadata on the written
         object (mapped per backend, ignored on the local filesystem).
 
-        ``block_size`` sets the read-ahead block for uncached remote reads, and
-        the upload part size for writes. HTTP(S) reads ignore it.
+        ``block_size`` sets the read-ahead block for uncached remote reads (0
+        turns read-ahead off), and the upload part size for writes. HTTP(S)
+        reads ignore it.
         """
         writing = any(ch in mode for ch in "wax+")
 
@@ -1225,6 +1240,34 @@ class FileRow(NamedTuple):
     is_latest: bool = True
     last_modified: datetime = TIME_ZERO
     location: dict | list[dict] | None = None
+
+    # File's path helpers, which read only ``path``: no File is built
+    @property
+    def name(self) -> str:
+        return PurePosixPath(self.path).name
+
+    @property
+    def parent(self) -> str:
+        return str(PurePosixPath(self.path).parent)
+
+    def get_file_suffix(self) -> str:
+        return PurePosixPath(self.path).suffix
+
+    def get_file_ext(self) -> str:
+        return PurePosixPath(self.path).suffix.lstrip(".")
+
+    def get_file_stem(self) -> str:
+        return PurePosixPath(self.path).stem
+
+    # File's helpers that need a File: one is built from the row
+    def get_fs_path(self) -> str:
+        return File(**self._asdict()).get_fs_path()
+
+    def get_hash(self) -> str:
+        return File(**self._asdict()).get_hash()
+
+    def rebase(self, *args, **kwargs) -> str:
+        return File(**self._asdict()).rebase(*args, **kwargs)
 
 
 class TextFile(File):
@@ -2154,7 +2197,7 @@ class ArrowRow(DataModel):
         from pyarrow.csv import ParseOptions, ReadOptions
         from pyarrow.dataset import CsvFileFormat, dataset
 
-        from datachain.lib.arrow import fix_pyarrow_format, fs_and_path
+        from datachain.lib.arrow import fix_pyarrow_format, pyarrow_fs
 
         kwargs = dict(self.kwargs)
         if csv := kwargs.pop("csv", None):
@@ -2169,10 +2212,15 @@ class ArrowRow(DataModel):
                 parse,
             )
 
+        self.file._raise_if_deleted()
         if self.file._caching_enabled:
             self.file.ensure_cached()
-        fs, path = fs_and_path(self.file)
-        ds = dataset(path, filesystem=fs, **kwargs)
+            path = self.file.get_local_path()
+            ds = dataset(path, **kwargs)
+        else:
+            path = self.file.get_fs_path()
+            fs = pyarrow_fs(self.file, kwargs.get("format"))
+            ds = dataset(path, filesystem=fs, **kwargs)
 
         return ds.take([self.index]).to_reader()
 

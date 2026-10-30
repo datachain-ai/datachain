@@ -24,7 +24,12 @@ from sqlalchemy import Column
 from sqlalchemy.sql import func as f
 from sqlalchemy.sql.elements import ColumnClause, ColumnElement, Label
 from sqlalchemy.sql.expression import label
-from sqlalchemy.sql.selectable import GenerativeSelect, Select, TableClause
+from sqlalchemy.sql.selectable import (
+    GenerativeSelect,
+    Select,
+    SelectBase,
+    TableClause,
+)
 from sqlalchemy.sql.visitors import replacement_traverse
 
 from datachain.catalog.catalog import clone_catalog_with_cache
@@ -50,7 +55,7 @@ from datachain.func.base import Function
 from datachain.hash_utils import hash_column_elements
 from datachain.job import Job
 from datachain.lib.data_model import NULLABLE_SCALARS
-from datachain.lib.listing import is_listing_dataset, listing_dataset_expired
+from datachain.lib.listing import ensure_listing, is_listing_dataset
 from datachain.lib.signal_schema import SignalSchema, generate_merge_root_mapping
 from datachain.lib.udf import JsonSerializationError, UdfError, _get_cache
 from datachain.lib.utils import type_to_str
@@ -160,6 +165,39 @@ def step_result(
     return StepResult(
         query_generator=QueryGenerator(func=func, columns=tuple(columns)),
         dependencies=tuple(dependencies),
+    )
+
+
+def _bind_shared_names(cols: Iterable[Any], query: Select) -> tuple[Any, ...]:
+    """Bind bare names that several of the query's sources have, like both
+    sides of a join, to the columns the query selects under those names."""
+    seen: set[str] = set()
+    shared: set[str] = set()
+    for source in query.columns_clause_froms:
+        shared |= seen & set(source.c.keys())
+        seen |= set(source.c.keys())
+    names = {
+        name: c.element if isinstance(c, Label) else c
+        for name, c in query.selected_columns.items()
+        if name in shared
+    }
+    if not names:
+        return tuple(cols)
+
+    def bind(element, **_kwargs):
+        # A nested SELECT resolves names against its own FROM. Artificial for
+        # now: only hand-written SQLAlchemy puts one in these clauses.
+        if isinstance(element, SelectBase):
+            return element
+        if isinstance(element, C) and element.table is None:
+            return names.get(element.name)
+        return None
+
+    return tuple(
+        names.get(C(c).name, c)
+        if isinstance(c, str)
+        else replacement_traverse(c, {}, bind)
+        for c in cols
     )
 
 
@@ -2087,7 +2125,7 @@ class SQLFilter(SQLClause):
 
     def apply_sql_clause(self, query: Select) -> Select:
         expressions = self.parse_cols(self.expressions)
-        return query.filter(*expressions)
+        return query.filter(*_bind_shared_names(expressions, query))
 
     def requires_boundary(self, state: "QueryState") -> bool:
         # WHERE applied after GROUP BY / LIMIT / OFFSET / DISTINCT would filter
@@ -2109,7 +2147,7 @@ class SQLOrderBy(SQLClause):
 
     def apply_sql_clause(self, query: Select) -> Select:
         args = self.parse_cols(self.args)
-        return query.order_by(*args)
+        return query.order_by(*_bind_shared_names(args, query))
 
     def requires_boundary(self, state: "QueryState") -> bool:
         # Re-ordering after LIMIT/OFFSET would change which rows are kept.
@@ -2177,10 +2215,11 @@ class SQLDistinct(SQLClause):
         return hash_column_elements(self.args)
 
     def apply_sql_clause(self, query):
+        args = _bind_shared_names(self.args, query)
         if self.dialect == "sqlite":
-            return query.group_by(*self.args)
+            return query.group_by(*args)
 
-        return query.distinct(*self.args)
+        return query.distinct(*args)
 
     def requires_boundary(self, state: "QueryState") -> bool:
         # DISTINCT after GROUP BY / LIMIT / OFFSET should de-duplicate the
@@ -2637,7 +2676,9 @@ class DatasetQuery:
         checkpoints_enabled: bool = True,
     ) -> None:
         self.session = Session.get(session, catalog=catalog, in_memory=in_memory)
-        self.catalog = catalog or self.session.catalog
+        if catalog is not None and catalog is not self.session.catalog:
+            self.session = self.session._with_catalog(catalog)
+        self.catalog = self.session.catalog
         self.steps: list[Step] = list(steps)
         self._chunk_index: int | None = None
         self._chunk_total: int | None = None
@@ -2786,24 +2827,9 @@ class DatasetQuery:
     def resolve_listing(self) -> None:
         """Runs listing pre-step if needed"""
         if self.list_ds_name and not self.starting_step:
-            listing_ds = None
-            try:
-                listing_ds = self.catalog.get_dataset(
-                    self.list_ds_name,
-                    versions=None,
-                    include_incomplete=False,
-                )
-            except DatasetNotFoundError:
-                pass
-
-            if not listing_ds or self.update or listing_dataset_expired(listing_ds):
-                assert self.listing_fn
-                self.listing_fn()
-                listing_ds = self.catalog.get_dataset(
-                    self.list_ds_name,
-                    versions=None,
-                    include_incomplete=False,
-                )
+            listing_ds = ensure_listing(
+                self.list_ds_name, self.catalog, self.listing_fn, update=self.update
+            )
 
             # at this point we know what is our starting listing dataset name
             self._set_starting_step(listing_ds)  # type: ignore [arg-type]
@@ -3168,7 +3194,6 @@ class DatasetQuery:
         right = dataset_query.clone()
         return DatasetQuery(
             session=self.session,
-            catalog=self.catalog,
             steps=[SQLUnion(left, right)],
             checkpoints_enabled=self.checkpoints_enabled,
         )
@@ -3195,7 +3220,6 @@ class DatasetQuery:
         )
         return DatasetQuery(
             session=self.session,
-            catalog=self.catalog,
             steps=[SQLJoin(self.catalog, left, right, predicates, inner, full, rname)],
             checkpoints_enabled=self.checkpoints_enabled,
         )
@@ -3491,7 +3515,7 @@ class DatasetQuery:
             namespace_name=project.namespace.name,
             project_name=project.name,
             version=version,
-            catalog=self.catalog,
+            session=self.session,
         )
 
     def _reuse_listing_if_unchanged(
@@ -3533,7 +3557,7 @@ class DatasetQuery:
             namespace_name=project.namespace.name,
             project_name=project.name,
             version=prev_version,
-            catalog=self.catalog,
+            session=self.session,
         )
 
     @property

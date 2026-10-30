@@ -150,7 +150,7 @@ class KeysClient(RangeListedClient):
         raise NotImplementedError
 
     async def _list_page(
-        self, prefix, start_after, token, hi=None, page_size=None
+        self, prefix, start_after, token, hi=None, page_size=None, delimiter=""
     ) -> Page:
         self.requests += 1
         if self.delay:

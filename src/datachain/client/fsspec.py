@@ -81,6 +81,9 @@ class Client(ABC):
     CREDENTIAL_KEYS: ClassVar[frozenset[str]] = frozenset()
     LIST_PAGE_SIZE: ClassVar[int] = 1000
     list_deleted: bool = False  # listings also yield delete rows
+    # True when the bytes at a version id are never replaced, only appended to.
+    # Then a changed size means the file changed, and a changed etag alone doesn't.
+    PINNED_VERSION_IS_IMMUTABLE: ClassVar[bool] = False
 
     @classmethod
     def has_explicit_credentials(cls, client_config: dict | None) -> bool:
@@ -395,11 +398,12 @@ class Client(ABC):
     @staticmethod
     def _is_valid_key(key: str) -> bool:
         """
-        Check if the key looks like a valid path.
+        Check if the key should be indexed.
 
-        Invalid keys are ignored when indexing.
+        Folder markers (``a/``) and keys with a leading ``/`` are skipped
+        (see #2040); keys with ``//`` inside (``a//b``) are kept.
         """
-        return not (key.startswith("/") or key.endswith("/") or "//" in key)
+        return not (key.startswith("/") or key.endswith("/"))
 
     def _is_version_aware(self) -> bool:
         return getattr(self.fs, "version_aware", False)
@@ -415,6 +419,13 @@ class Client(ABC):
         if version_id:
             return {"version_id": version_id}
         return {}
+
+    @staticmethod
+    def _block_size_kwargs(block_size: int | None) -> dict[str, Any]:
+        # Hugging Face opens a stream that can't seek for block_size=0.
+        if block_size == 0:
+            return {"cache_type": "none"}
+        return {"block_size": block_size}
 
     def _file_info_kwargs(self, version_id: str | None = None) -> dict[str, Any]:
         return self._version_kwargs(version_id)
@@ -478,14 +489,21 @@ class Client(ABC):
         cb: Callback = DEFAULT_CALLBACK,
         block_size: int | None = None,
     ) -> BinaryIO:
-        """Open a file, including files in tar archives."""
+        """Open a file, including files in tar archives.
+
+        Each read fetches at least `block_size` bytes (by default 50 MiB on S3),
+        which suits reading a file in order. With `block_size=0`, each read
+        fetches only the bytes asked for, for callers like pyarrow that read a
+        few ranges.
+        """
         if use_cache and (cache_path := self.cache.get_path(file)):
             return open(cache_path, mode="rb")
         assert not file.location
         kwargs = self._version_kwargs(file.version)
+        kwargs |= self._block_size_kwargs(block_size)
         full_path = file.get_fs_path()
         return FileWrapper(
-            self.fs.open(full_path, block_size=block_size, **kwargs),
+            self.fs.open(full_path, **kwargs),
             cb,
         )  # type: ignore[return-value]
 
@@ -612,21 +630,46 @@ class Client(ABC):
     async def _put_in_cache(self, file: "File", *, callback: "Callback" = None) -> None:
         file._raise_if_deleted()
         assert not file.location
-        if file.etag:
-            etag = await self.get_current_etag(file)
-            if file.etag != etag:
-                raise FileNotFoundError(
-                    f"{file.source}/{file.path} changed on the source since the "
-                    f"catalog was created (etag was {self.format_etag(file.etag)}, now "
-                    f"{self.format_etag(etag)}). "
-                    "Re-run the original dc.read_storage(...) call with "
-                    "update=True to refresh the catalog."
-                )
+        await self._check_unchanged(file)
         await self.cache.download(file, self, callback=callback)
+
+    def check_unchanged(self, file: "File") -> None:
+        """Fail if the file changed on the source since the catalog listed it."""
+        sync(get_loop(), self._check_unchanged, file)
+
+    async def _check_unchanged(self, file: "File") -> None:
+        # Metadata updates can change a pinned file's etag without changing its
+        # bytes, so compare its size instead, which still catches appends. A negative
+        # size means it's unknown, so nothing is compared.
+        pinned = (
+            file.version and file.version != "null" and self.PINNED_VERSION_IS_IMMUTABLE
+        )
+
+        change = ""
+        if pinned and file.size >= 0:
+            size = await self.get_size(file)
+            if size != file.size:
+                change = f"size was {file.size}, now {size}"
+        elif not pinned and file.etag:
+            etag = await self.get_current_etag(file)
+            if etag != file.etag:
+                change = (
+                    f"etag was {self.format_etag(file.etag)}, "
+                    f"now {self.format_etag(etag)}"
+                )
+
+        if change:
+            raise FileNotFoundError(
+                f"{file.source}/{file.path} changed on the source since the catalog "
+                f"was created ({change}). Re-run the original dc.read_storage(...) "
+                "call with update=True to refresh the catalog."
+            )
 
 
 class RangeListedClient(Client):
     """A client that lists in parallel key ranges (``RangeListing``)."""
+
+    LISTS_LEVELS: ClassVar[bool] = False  # whether _list_page takes a delimiter
 
     @staticmethod
     def key_order(key: str) -> Any:
@@ -634,13 +677,29 @@ class RangeListedClient(Client):
         return key
 
     async def _fetch_ranges(self, start_prefix: str, result_queue: ResultQueue) -> None:
+        prefix = start_prefix.lstrip(DELIMITER) + DELIMITER if start_prefix else ""
+        await self._fetch_prefix(prefix, result_queue)
+
+    _fetch_default = _fetch_ranges
+
+    async def _fetch_prefix(self, start_prefix: str, result_queue: ResultQueue) -> None:
+        """Keys that start with ``start_prefix``, which needn't end a folder."""
         from .listing_worker import LIST_PROCESSES, Pool
 
-        prefix = start_prefix.lstrip(DELIMITER) + DELIMITER if start_prefix else ""
+        prefix = start_prefix.lstrip(DELIMITER)
         pool = Pool(self, prefix, LIST_PROCESSES) if LIST_PROCESSES else None
         await RangeListing(self, prefix, result_queue, pool).run()
 
-    _fetch_default = _fetch_ranges
+    async def _fetch_level(self, start_prefix: str, result_queue: ResultQueue) -> None:
+        """Keys under ``start_prefix`` with no delimiter past it, in parallel key
+        ranges: nothing below the level is listed. No child processes: a level
+        has few rows to parse."""
+        prefix = start_prefix.lstrip(DELIMITER)
+        await RangeListing(self, prefix, result_queue, None, DELIMITER).run()
+
+    async def has_keys(self, prefix: str) -> bool:
+        page = await self._list_page(prefix, "", None, page_size=1)
+        return page.last is not None or page.token is not None
 
     def _lists_in_key_order(self) -> bool:
         return True
@@ -652,10 +711,12 @@ class RangeListedClient(Client):
         token: Any,
         hi: str | None = None,
         page_size: int | None = None,
+        delimiter: str = "",
     ) -> Page:
         """One page under ``prefix``, in key order: the one after ``token``, or
         the first after ``start_after``. Keys past ``hi`` make no rows; a backend
-        that can end a listing at a key ends it after ``hi``."""
+        that can end a listing at a key ends it after ``hi``. With ``delimiter``
+        (``LISTS_LEVELS``), keys with it past ``prefix`` are skipped."""
         raise NotImplementedError
 
     async def _probe(self, prefix: str, start_after: str) -> str | None:
