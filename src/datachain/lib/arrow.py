@@ -2,7 +2,7 @@ import hashlib
 import math
 from collections.abc import Iterator, Sequence
 from itertools import islice
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeGuard
 
 import pyarrow as pa
 from fsspec.implementations.local import LocalFileSystem
@@ -190,22 +190,16 @@ class ArrowGenerator(Generator):
         if format := kwargs.get("format"):
             kwargs["format"] = fix_pyarrow_format(format, self.parse_options)
 
-        input_schema = self.input_schema
-        if (
-            input_schema is None
-            or self.columns is None
-            or not _written_by_datachain(input_schema)
-        ):
-            ds = dataset(fs_path, schema=input_schema, filesystem=fs, **kwargs)
-        else:
+        if self.columns is not None and _written_by_datachain(self.input_schema):
             # Each file keeps its own types, which other files may differ from. A
             # picked field missing from it reads as null, as in a full read.
             ds = dataset(fs_path, filesystem=fs, **kwargs)
             present = set(ds.schema.names)
-            if missing := [f for f in input_schema if f.name not in present]:
-                ds = ds.replace_schema(
-                    pa.schema([*ds.schema, *missing], metadata=ds.schema.metadata)
-                )
+            if missing := [f for f in self.input_schema if f.name not in present]:
+                fields = [*ds.schema, *missing]
+                ds = ds.replace_schema(pa.schema(fields, metadata=ds.schema.metadata))
+        else:
+            ds = dataset(fs_path, schema=self.input_schema, filesystem=fs, **kwargs)
 
         use_datachain_schema = _written_by_datachain(ds.schema)
         if self.written_by_datachain not in (None, use_datachain_schema):
@@ -216,8 +210,8 @@ class ArrowGenerator(Generator):
         if self.nrows:
             kw = {"batch_size": min(self.DEFAULT_BATCH_SIZE, self.nrows)}
         if self.columns is not None and use_datachain_schema and self.output_schema:
-            read = _model_signals(self.output_schema, self.columns)
-            kw["columns"] = [c for c in schema.names if _in_signals(c, read)]
+            signals = _model_signals(self.output_schema, self.columns)
+            kw["columns"] = [c for c in schema.names if _in_signals(c, signals)]
         elif self.columns is not None:
             present = set(schema.names)
             kw["columns"] = [c for c in self.columns if c in present]
@@ -298,27 +292,22 @@ class ArrowGenerator(Generator):
         hf_schema: tuple["Features", dict[str, "DataType"]] | None,
     ):
         names = self.columns or list(record)
-        vals = [record.get(name) for name in names]
         if not self.output_schema:
-            return vals
+            return [record.get(name) for name in names]
 
         fields = self.output_schema.model_fields
-        vals_dict = {}
-        for (field, field_info), name, val in zip(
-            fields.items(), names, vals, strict=False
-        ):
+        values = {}
+        for (field, field_info), name in zip(fields.items(), names, strict=False):
+            value = record.get(name)
             anno = field_info.annotation
             if hf_schema and (feat := hf_schema[0].get(name)) is not None:
                 from datachain.lib.hf import convert_feature
 
-                vals_dict[field] = convert_feature(val, feat, anno)
-            elif val is None:
-                vals_dict[field] = val
-            elif ModelStore.is_pydantic(anno):
-                vals_dict[field] = anno(**val)  # type: ignore[misc]
-            else:
-                vals_dict[field] = val
-        return [self.output_schema(**vals_dict)]
+                value = convert_feature(value, feat, anno)
+            elif value is not None and ModelStore.is_pydantic(anno):
+                value = anno(**value)  # type: ignore[misc]
+            values[field] = value
+        return [self.output_schema(**values)]
 
 
 def _file_datasets(chain: "DataChain", **kwargs) -> Iterator[Dataset]:
@@ -343,6 +332,50 @@ def file_schemas(chain: "DataChain", **kwargs) -> list[pa.Schema]:
     return schemas
 
 
+def infer_output(
+    schemas: list[pa.Schema],
+    col_names: Sequence[str] | None,
+    columns: Sequence[str] | None,
+    source: bool,
+) -> tuple[pa.Schema, dict[str, type], list[str] | None]:
+    """Return the schema to read the files with, the output types, and, for files
+    written by DataChain, the signal each output field reads (None when the fields
+    take the columns read, in order).
+
+    Files written by DataChain pick signals as `select()` does. With `columns` or
+    `col_names`, they can't be mixed with other files.
+    """
+    kinds = {_written_by_datachain(s) for s in schemas}
+    if (columns is not None or col_names) and len(kinds) > 1:
+        raise ValueError(_MIXED_FILES)
+    signal_schema = _get_datachain_schema(schemas[0])
+    if not signal_schema:
+        schema, names = merge_schemas(schemas, columns)
+        return schema, schema_to_output(schema, col_names or names)[0], None
+
+    signals = _signal_paths(signal_schema, columns, source)
+    if columns is None:
+        schema = pa.unify_schemas(schemas)
+    else:
+        # Only the picked signals need compatible types across files.
+        picked = [
+            pa.schema(
+                [f for f in s if _in_signals(f.name, columns)], metadata=s.metadata
+            )
+            for s in schemas
+        ]
+        schema = pa.unify_schemas(picked)
+    if col_names:
+        _check_fields_fit(len(col_names), len(signals))
+        names = list(normalize_col_names(col_names))
+        return schema, dict(zip(names, signals.values(), strict=True)), list(signals)
+    if columns is None:
+        return schema, signal_schema.values, None
+    # Picked signals keep their names, as select() returns them.
+    output = signal_schema.to_partial(*columns).values
+    return schema, output, list(output)
+
+
 def read_columns(
     chain: "DataChain",
     columns: Sequence[str] | None,
@@ -362,20 +395,7 @@ def read_columns(
     fields = len(model.model_fields)
     if signal_schema := _get_datachain_schema(schema):
         signals = _signal_paths(signal_schema, columns, source)
-        names = list(signals)
-    elif columns is not None:
-        names = merge_schemas([schema], columns)[0].names
-    else:
-        names = schema.names
-        if len(names) > fields:
-            physical = next(ds.get_fragments()).physical_schema
-            extra = set(names) - set(physical.names)
-            index = (schema.pandas_metadata or {}).get("index_columns", [])
-            extra |= {c for c in index if isinstance(c, str)}
-            if set(names[fields:]) <= extra:
-                names = names[:fields]
-    _check_fields_fit(fields, len(names))
-    if signal_schema:
+        _check_fields_fit(fields, len(signals))
         for (field, info), (path, stored) in zip(
             model.model_fields.items(), signals.items(), strict=True
         ):
@@ -383,7 +403,19 @@ def read_columns(
             if is_model != classify_field(stored).is_model:
                 kind = "a model" if is_model else "not a model"
                 raise ValueError(f"output field {field} is {kind}, unlike {path}")
-    return names, signal_schema is not None
+        return list(signals), True
+
+    if columns is not None:
+        schema, _ = merge_schemas([schema], columns)
+    elif len(schema) > fields:
+        physical = next(ds.get_fragments()).physical_schema
+        extra = set(schema.names) - set(physical.names)
+        index = (schema.pandas_metadata or {}).get("index_columns", [])
+        extra |= {c for c in index if isinstance(c, str)}
+        if set(schema.names[fields:]) <= extra:
+            schema = pa.schema(list(schema)[:fields])
+    _check_fields_fit(fields, len(schema))
+    return schema.names, False
 
 
 def _check_fields_fit(fields: int, read: int) -> None:
@@ -407,7 +439,6 @@ def merge_schemas(
     _check_columns(columns)
     if columns is None:
         return pa.unify_schemas(schemas), None
-
     names = list(dict.fromkeys(n for s in schemas for n in s.names))
     cleaned = normalize_col_names(names)
     raw = {n: n for n in names} | cleaned
@@ -416,7 +447,6 @@ def merge_schemas(
     selected = [raw[c] for c in columns]
     if len(set(selected)) < len(selected):
         raise ValueError(f"Columns {list(columns)} name a column more than once")
-
     # Only the selected columns need compatible types across files.
     wanted = set(selected)
     merged = pa.unify_schemas(
@@ -469,9 +499,8 @@ def _in_signals(column: str, signals: Sequence[str]) -> bool:
 def _model_signals(model: type["BaseModel"], paths: Sequence[str]) -> list[str]:
     """Return the signals that the model's fields read, each from its path.
 
-    An optional model is read whole: Parquet stores no marker of whether it is
-    present, so a full read decides it from all of the model's fields. Reading
-    them all here gives the same answer when only some fields are picked.
+    An optional model is read whole. A file without its ``_type_tag``, as written
+    before union types, tells whether it is present only by all of its fields.
     """
     read = []
     for info, path in zip(model.model_fields.values(), paths, strict=True):
@@ -482,51 +511,6 @@ def _model_signals(model: type["BaseModel"], paths: Sequence[str]) -> list[str]:
         else:
             read.append(path)
     return read
-
-
-def infer_output(
-    schemas: list[pa.Schema],
-    col_names: Sequence[str] | None,
-    columns: Sequence[str] | None,
-    source: bool,
-) -> tuple[pa.Schema, dict[str, type], list[str] | None]:
-    """Merge the files' schemas and generate UDF output, `col_names` naming the
-    columns read.
-
-    Also returns the signals that the output fields take, in order, from files
-    written by DataChain, or None when the output reads columns by name. Files
-    written by DataChain pick signals as `select()` does. With `columns` or
-    `col_names`, they can't be mixed with other files.
-    """
-    kinds = {_written_by_datachain(s) for s in schemas}
-    if (columns is not None or col_names) and len(kinds) > 1:
-        raise ValueError(_MIXED_FILES)
-    signal_schema = _get_datachain_schema(schemas[0])
-    if not signal_schema:
-        schema, names = merge_schemas(schemas, columns)
-        return schema, schema_to_output(schema, col_names or names)[0], None
-
-    signals = _signal_paths(signal_schema, columns, source)
-    if columns is None:
-        schema = pa.unify_schemas(schemas)
-    else:
-        # Only the picked signals need compatible types across files.
-        picked = [
-            pa.schema(
-                [f for f in s if _in_signals(f.name, columns)], metadata=s.metadata
-            )
-            for s in schemas
-        ]
-        schema = pa.unify_schemas(picked)
-    if col_names:
-        _check_fields_fit(len(col_names), len(signals))
-        names = list(normalize_col_names(col_names))
-        return schema, dict(zip(names, signals.values(), strict=True)), list(signals)
-    if columns is None:
-        return schema, signal_schema.values, None
-    # Picked signals keep their names, as select() returns them.
-    output = signal_schema.to_partial(*columns).values
-    return schema, output, list(output)
 
 
 def schema_to_output(
@@ -628,13 +612,15 @@ def _get_hf_schema(
     return None
 
 
-def _written_by_datachain(schema: "pa.Schema") -> bool:
-    return DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY in (schema.metadata or {})
+def _written_by_datachain(schema: "pa.Schema | None") -> TypeGuard["pa.Schema"]:
+    if schema is None or not schema.metadata:
+        return False
+    return DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY in schema.metadata
 
 
 def _get_datachain_schema(schema: "pa.Schema") -> SignalSchema | None:
     """Return a restored SignalSchema from parquet metadata, if any is found."""
-    if schema.metadata and DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY in schema.metadata:
+    if _written_by_datachain(schema):
         serialized_signal_schema = json.loads(
             schema.metadata[DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY]
         )
