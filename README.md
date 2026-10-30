@@ -304,7 +304,18 @@ Under a second - everything runs against the Dataset DB.
 
 ### 5.3. Incremental updates
 
-The bucket in this walkthrough is static, so there's nothing new to process. But in production - when new images land in your bucket - re-run the same scripts unchanged. `delta=True` in the original dataset ensures only new files are processed end to end while the whole dataset will be updated to `pets_images@1.0.1`:
+> **Upgrading existing delta datasets:** older delta updates could retain results
+> for deleted or overwritten files. Upgrading does **not** automatically clean
+> these stale rows. To bring an existing result into sync, rerun the same pipeline
+> once with `delta=False` and `update=True`, keeping the same `.save(...)` name,
+> then restore `delta=True`. This rebuild can rerun expensive processing over the
+> entire current source. Previous dataset versions remain unchanged.
+> See the [delta upgrade instructions](docs/guide/delta.md#upgrading-existing-delta-datasets).
+
+The bucket in this walkthrough is static, so there's nothing new to process.
+In production, rerun the same scripts when files are added, changed, or deleted.
+With `delta=True`, the pipeline processes new and changed files, removes results
+for deleted files, and reuses results for unchanged files:
 
 ```python
 $ python create_dataset.py   # 500 new images arrived
