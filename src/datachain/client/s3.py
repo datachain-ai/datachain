@@ -1,16 +1,18 @@
 import os
 from collections.abc import Callable
 from datetime import datetime
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any, cast
 from xml.etree.ElementTree import Element, ParseError, fromstring
 
 from aiobotocore.parsers import AioResponseParserFactory, AioRestXMLParser
 from aiobotocore.session import AioSession
 from botocore import handlers
-from botocore.exceptions import ClientError, NoCredentialsError
+from botocore.configloader import load_config
+from botocore.exceptions import ClientError, ConfigNotFound, NoCredentialsError
 from botocore.model import Shape
 from botocore.utils import parse_timestamp
-from fsspec.asyn import sync_wrapper
+from fsspec.asyn import get_loop, sync, sync_wrapper
 from s3fs import S3FileSystem
 
 from datachain.lib.file import File, FileRow
@@ -23,6 +25,15 @@ if TYPE_CHECKING:
     from datachain.client.writeconfig import WriteConfig
 
 _BUCKET_REGIONS: dict[tuple, str] = {}
+
+
+@lru_cache(maxsize=16)
+def _shared_config(path: str, _stamp: tuple[int, int, int]) -> dict[str, Any]:
+    """Reuse parsed AWS config until its file changes."""
+    try:
+        return load_config(path)
+    except ConfigNotFound:
+        return {}
 
 
 def _region_key(name: str, kwargs: dict[str, Any]) -> tuple | None:
@@ -45,6 +56,19 @@ def _region_key(name: str, kwargs: dict[str, Any]) -> tuple | None:
         or os.environ.get("AWS_DEFAULT_PROFILE")
         or os.environ.get("AWS_PROFILE")
     )
+    path = os.path.expanduser(os.environ.get("AWS_CONFIG_FILE", "~/.aws/config"))
+    try:
+        stat = os.stat(path)
+    except OSError:
+        config = {}
+    else:
+        config = _shared_config(
+            path, (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+        )
+    scoped = config.get("profiles", {}).get(profile or "default", {})
+    services = config.get("services", {}).get(scoped.get("services"), {})
+    if scoped.get("endpoint_url") or services.get("s3", {}).get("endpoint_url"):
+        return None
     region = (
         kwargs.get("region_name")
         or client_kwargs.get("region_name")
@@ -57,13 +81,18 @@ def _region_key(name: str, kwargs: dict[str, Any]) -> tuple | None:
 
 def _head_bucket(fs: S3FileSystem, name: str) -> tuple[int, str | None]:
     try:
-        meta = fs.call_s3("head_bucket", Bucket=name)["ResponseMetadata"]
+        # An asynchronous filesystem has no fs.loop for its sync wrappers.
+        meta = sync(get_loop(), fs._call_s3, "head_bucket", Bucket=name)[
+            "ResponseMetadata"
+        ]
     except OSError as e:
         if not isinstance(e.__cause__, ClientError):
             raise
         meta = e.__cause__.response["ResponseMetadata"]
         status = meta["HTTPStatusCode"]
-        if status != 301 and not 400 <= status < 500:  # R2 refuses anonymous with 400
+        # R2 refuses anonymous requests with 400; other service errors must
+        # keep their original exception, including authenticated 400 and 429.
+        if status not in (301, 401, 403, 404) and not (status == 400 and fs.anon):
             raise
     headers = meta.get("HTTPHeaders", {})
     return meta["HTTPStatusCode"], headers.get("x-amz-bucket-region")
