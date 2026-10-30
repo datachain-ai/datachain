@@ -50,7 +50,6 @@ def fix_pyarrow_format(format, parse_options=None):
 
 
 def is_parquet(format) -> bool:
-    """Whether a pyarrow dataset `format` reads Parquet."""
     return format == "parquet" or isinstance(format, ParquetFileFormat)
 
 
