@@ -182,6 +182,11 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         pyv: ['3.11', '3.14']
         group: ['get_started', 'computer_vision', 'multimodal']
+        # multimodal takes ~11 min serially, so it runs on two runners (see EXAMPLES_K)
+        part: [1, 2]
+        exclude:
+          - {group: get_started, part: 2}
+          - {group: computer_vision, part: 2}
         include:
           # HF runs against actual API - thus run it only once
           - {os: ubuntu-latest, pyv: "3.14", group: llm_and_nlp}
@@ -235,7 +240,12 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           ANTHROPIC_API_KEY: ${{ matrix.group == 'llm_and_nlp' && secrets.ANTHROPIC_API_KEY || '' }}
           OPENAI_API_KEY: ${{ (matrix.group == 'multimodal' || matrix.group == 'llm_and_nlp') && secrets.OPENAI_API_KEY || '' }}
-        run: nox -s examples -p ${{ matrix.pyv }} -- -m "${{ matrix.group }}"
+          # Part 1 runs the slowest multimodal examples (wds ~4 min, hf_pipeline
+          # ~1-2 min), part 2 everything else, so new examples always run
+          EXAMPLES_K: >-
+            ${{ matrix.group == 'multimodal' && (matrix.part == 1 && 'wds.py or hf_pipeline' || 'not (wds.py or hf_pipeline)') || '' }}
+        run: nox -s examples -p ${{ matrix.pyv }} -- -m "${{ matrix.group }}" -k "$EXAMPLES_K"
+        shell: bash
 
   check:
     if: always()
