@@ -92,8 +92,7 @@ def read_json(
     )
     cloudpickle.register_pickle_by_value(meta_formats)
 
-    # Prefetch downloads whole files, so reading some JSONL lines prefetches only
-    # small ones. JSON is parsed whole anyway.
+    # JSON is parsed whole, so only JSONL with nrows reads part of a file.
     partial = nrows and format == "jsonl"
     max_size = PARTIAL_READ_PREFETCH_MAX_SIZE if partial else None
     return chain.gen(params={"file": File}, **{column: _ReadJson(parse, max_size)})  # type: ignore[arg-type]

@@ -1613,10 +1613,10 @@ def test_read_parquet_columns_over_http_without_ranges(
     assert sum(cb.value for cb in download_callbacks) > 0
 
 
-def _put_csv(ctc, size):
+def _put_csv(ctc, size, name="t.csv"):
     rows = "".join(f"{i},{i:0100}\n" for i in range(size // 100 + 1))
     data = f"a,pad\n{rows}".encode()
-    return File.upload(data, f"{ctc.src_uri}/t.csv", ctc.catalog)
+    return File.upload(data, f"{ctc.src_uri}/{name}", ctc.catalog)
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
@@ -1645,6 +1645,22 @@ def test_read_csv_nrows_prefetch_only_files_up_to_the_limit(
 
     assert chain.to_values("a") == [0]
     assert (fetched_bytes[0] > 0) is read_in_parts
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_read_csv_nrows_prefetch_small_files_and_read_a_large_one_in_parts(
+    cloud_test_catalog_upload, fetched_bytes
+):
+    ctc = cloud_test_catalog_upload
+    for i in range(3):
+        _put_csv(ctc, 1, f"parts/small{i}.csv")
+    large = _put_csv(ctc, PARTIAL_READ_PREFETCH_MAX_SIZE, "parts/large.csv")
+    chain = dc.read_csv(f"{ctc.src_uri}/parts/*.csv", nrows=1, session=ctc.session)
+    fetched_bytes[:] = [0, 0]
+
+    assert chain.to_values("a") == [0, 0, 0, 0]
+    assert fetched_bytes[0] == large.size
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
