@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 import pyarrow as pa
 from fsspec.implementations.local import LocalFileSystem
 from pyarrow._csv import ParseOptions
-from pyarrow.dataset import CsvFileFormat, Dataset, dataset
+from pyarrow.dataset import CsvFileFormat, Dataset, ParquetFileFormat, dataset
 from pyarrow.fs import FileInfo, FileType, FSSpecHandler, PyFileSystem
 
 from datachain import json
@@ -53,6 +53,10 @@ def fix_pyarrow_format(format, parse_options=None):
     return format
 
 
+def is_parquet(format) -> bool:
+    return format == "parquet" or isinstance(format, ParquetFileFormat)
+
+
 # CSV options that decide where a file's rows and columns start.
 _CSV_READ_OPTIONS = (
     "column_names",
@@ -68,6 +72,10 @@ _CSV_PARSE_OPTIONS = (
     "newlines_in_values",
     "ignore_empty_lines",
 )
+
+
+# A partial read prefetches files up to this size and reads larger ones in parts.
+PARTIAL_READ_PREFETCH_MAX_SIZE = 8 * 1024 * 1024
 
 
 class _PartialReadHandler(FSSpecHandler):
@@ -107,7 +115,7 @@ def pyarrow_fs(file: File, format):
     client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
     if isinstance(client.fs, LocalFileSystem):
         return client.fs
-    block_size = 0 if format == "parquet" else None
+    block_size = 0 if is_parquet(format) else None
     return PyFileSystem(_PartialReadHandler(client, file, block_size=block_size))
 
 
@@ -122,6 +130,7 @@ class ArrowGenerator(Generator):
         nrows: int | None = None,
         columns: list[str] | None = None,
         written_by_datachain: bool | None = None,
+        prefetch_max_size: int | None = None,
         **kwargs,
     ):
         """
@@ -132,14 +141,17 @@ class ArrowGenerator(Generator):
         input_schema : Optional pyarrow schema for validation.
         output_schema : Optional pydantic model for validation.
         source : Whether to include info about the source file.
-        nrows : Optional row limit.
+        nrows : Optional row limit per file.
         columns : Optional columns to read from each file by name, in output order.
             For files written by DataChain, signal paths such as "p.x".
         written_by_datachain : Whether every file must be written by DataChain, or
             none. Not checked if None.
+        prefetch_max_size : Files larger than this, or of unknown size, aren't
+            prefetched.
         kwargs: Parameters to pass to pyarrow.dataset.dataset.
         """
         super().__init__()
+        self.prefetch_max_size = prefetch_max_size
         self.input_schema = input_schema
         self.output_schema = output_schema
         self.source = source

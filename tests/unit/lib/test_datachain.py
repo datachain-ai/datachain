@@ -2922,6 +2922,19 @@ def test_read_csv_nrows_keep_the_chain_prefetch(tmp_dir, test_session):
     assert chain._settings.prefetch == DEFAULT_PREFETCH
 
 
+@pytest.mark.parametrize(
+    "format,content",
+    [("json", '[{"a": 1}, {"a": 2}]'), ("jsonl", '{"a": 1}\n{"a": 2}\n')],
+)
+def test_read_json_nrows_keep_the_chain_prefetch(
+    tmp_dir, test_session, format, content
+):
+    path = tmp_dir / f"test.{format}"
+    path.write_text(content)
+    chain = dc.read_json(path.as_uri(), format=format, nrows=1, session=test_session)
+    assert chain._settings.prefetch == DEFAULT_PREFETCH
+
+
 def test_read_parquet_columns_are_part_of_the_step(abc_parquet, test_session):
     def read(column):
         return dc.read_parquet(
