@@ -2560,7 +2560,6 @@ class DataChain:
             file_schemas,
             fix_pyarrow_format,
             infer_output,
-            merge_schemas,
             read_columns,
         )
 
@@ -2590,10 +2589,7 @@ class DataChain:
         try:
             if infer:
                 schemas = file_schemas(self, **kwargs, parse_options=parse_options)
-                schema, names = merge_schemas(
-                    schemas, columns, source, with_output=bool(col_names)
-                )
-                output, read = infer_output(schema, col_names or names, columns, source)
+                schema, output, read = infer_output(schemas, col_names, columns, source)
 
             if isinstance(output, dict):
                 model_name = model_name or column or ""
