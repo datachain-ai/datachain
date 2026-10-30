@@ -1,4 +1,5 @@
 import pickle
+from collections.abc import Iterator
 
 import pytest
 from cloudpickle import dumps, loads
@@ -379,3 +380,36 @@ def test_map_prefetch_skips_invalid_path_files(
 
     assert result == [(bad_path,)] * 3
     assert any("Skipping prefetch" in m for m in caplog.messages)
+
+
+def test_output_schema_is_built_once_per_run(test_session, mocker):
+    spec = mocker.spy(SignalSchema, "to_udf_spec")
+    chain = dc.read_values(x=list(range(200)), session=test_session)
+    chain.map(y=lambda x: x + 1, output=int).gen(
+        z=lambda y: iter([y]), output=int
+    ).save("udf_spec")
+    assert spec.call_count < 20
+
+
+def test_an_insert_error_closes_the_udf_outputs(test_session, mocker):
+    closed = []
+
+    def numbers(n: int) -> Iterator[int]:
+        try:
+            yield from range(n)
+        finally:
+            closed.append(n)
+
+    def failing_insert(self, table, columns, rows, batch_size=None):
+        next(iter(rows))
+        raise OSError(28, "No space left on device")
+
+    chain = dc.read_values(n=[1000], session=test_session).save("inputs")
+    mocker.patch.object(
+        type(test_session.catalog.warehouse), "insert_tuples", failing_insert
+    )
+    with pytest.raises(OSError, match="No space left") as error:
+        chain.gen(x=numbers, output=int).save("numbers")
+    # the error's traceback holds the generator: it must be closed already
+    assert closed == [1000]
+    assert error.value.__traceback__ is not None

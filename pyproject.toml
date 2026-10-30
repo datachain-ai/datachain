@@ -11,14 +11,13 @@ license-files = ["LICENSE"]
 authors = [{name = "Dmitry Petrov", email = "support@dvc.org"}]
 classifiers = [
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
   "Development Status :: 2 - Pre-Alpha"
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dynamic = ["version"]
 dependencies = [
   "pyyaml",
@@ -34,9 +33,10 @@ dependencies = [
   "dateparser>=1.3.0",
   "attrs>=21.3.0",
   "fsspec>=2024.2.0",
-  "s3fs>=2024.2.0",
+  "s3fs>=2026.6.0",
   "gcsfs>=2026.3.0,!=2026.8.0,!=2026.8.1",
   "adlfs>=2024.2.0",
+  "azure-storage-blob>=12.28.0",
   "dvc-data>=3.10,<4",
   "dvc-objects>=4,<6",
   "shtab>=1.3.4,<2",
@@ -46,7 +46,7 @@ dependencies = [
   "pydantic>=2.11",
   "jmespath>=1.0",
   "datamodel-code-generator>=0.28.4",
-  "Pillow>=12.1.1,<13",
+  "Pillow>=13.0.0,<14",
   "msgpack>=1.0.4,<2",
   "psutil",
   "huggingface_hub",
@@ -56,20 +56,14 @@ dependencies = [
   "dvc-studio-client>=0.23.0,<1",
   "tabulate",
   "websockets",
-  # >=1.83 excludes the compromised 1.82.7/1.82.8 releases;
-  # <1.92 is the last pure-python release — 1.92.0 adds a Rust extension with
-  # no cp314/macOS/Windows wheels and an sdist that can't build on Python 3.14;
-  # 1.98+ also requires boto3, which conflicts with aiobotocore's botocore cap
-  # (via s3fs) and makes pip backtrack for many minutes
-  "litellm>=1.91.0,<1.92",
-  "tomli;python_version<'3.11'"
+  "litellm>=1.103.1,<2"
 ]
 
 [project.optional-dependencies]
 docs = [
   "mkdocs>=1.5.2",
   "mkdocs-gen-files>=0.5.0",
-  "mkdocs-material==9.5.22",
+  "mkdocs-material==9.8.0",
   "mkdocstrings-python>=1.6.3",
   "mkdocs-literate-nav>=0.6.1",
   "mkdocs-section-index>=0.3.10",
@@ -108,11 +102,13 @@ postgres = [
   "psycopg2-binary>=2.9.0"
 ]
 zarr = [
-  "zarr>=3.0.0 ; python_version >= '3.11'"
+  "zarr>=3.0.0"
 ]
 tests = [
   "datachain[torch,audio,remote,vector,hf,video,postgres,zarr]",
-  "pytest>=8,<10",
+  # pytest-benchmark and pytest-codspeed use internals changed in pytest 9.2.
+  # TODO(#2113): Remove <9.2 once both plugins release compatible versions and CI passes.
+  "pytest>=8,<9.2",
   "pytest-asyncio",
   "pytest-sugar>=0.9.6",
   "pytest-cov>=4.1.0",
@@ -154,7 +150,7 @@ examples = [
 ]
 
 [project.urls]
-Documentation = "https://datachain.dvc.ai"
+Documentation = "https://www.datachain.ai/docs"
 Issues = "https://github.com/datachain-ai/datachain/issues"
 Source = "https://github.com/datachain-ai/datachain"
 
@@ -173,6 +169,7 @@ namespaces = false
 
 [tool.pytest.ini_options]
 addopts = "-rfEs -m 'not examples' --benchmark-skip --ignore=local"
+asyncio_default_fixture_loop_scope = "function"
 env_override_existing_values = true
 env_files = "local/.env.test"
 markers = [
@@ -191,7 +188,8 @@ filterwarnings = [
   "ignore::DeprecationWarning:botocore.auth",
   "ignore::DeprecationWarning:datasets.utils._dill",
   "ignore::DeprecationWarning:librosa.core.intervals",
-  "ignore::FutureWarning:google.api_core._python_version_support",  # Python 3.10 EOL warning
+  "ignore::FutureWarning:google.api_core._python_version_support",  # warns a year before a Python version reaches its EOL
+  "ignore:Skipping device Apple Paravirtual device:UserWarning",  # torch on macOS CI runners, whose virtual GPU has no Metal 2.0
   # Expected warnings from our code
   "ignore:Field name .* shadows an attribute in parent:UserWarning",  # datachain.lib.feature
   # Coverage limitation on Python 3.13
@@ -219,6 +217,7 @@ exclude_lines = [
 ]
 
 [tool.mypy]
+python_version = "3.11"
 # Error output
 show_column_numbers = true
 show_error_codes = true
@@ -239,6 +238,7 @@ ignore-words-list = " "
 skip = ["CODE_OF_CONDUCT.rst", "examples/**/*.ipynb", "tests/examples/wds_data.py"]
 
 [tool.ruff]
+target-version = "py311"
 show-fixes = true
 
 [tool.ruff.lint]

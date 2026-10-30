@@ -149,7 +149,7 @@ def type_name(tp: Any) -> str:
     """Convert a Python type to a human-readable string."""
     if tp is type(None):
         return "None"
-    if isinstance(tp, types.UnionType):  # Python 3.10+ X | Y
+    if isinstance(tp, types.UnionType):  # X | Y
         return " | ".join(type_name(a) for a in tp.__args__)
     origin = getattr(tp, "__origin__", None)
     if origin is typing.Union:

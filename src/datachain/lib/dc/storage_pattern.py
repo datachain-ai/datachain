@@ -1,11 +1,9 @@
 import glob
-from typing import TYPE_CHECKING
+import os
+from collections.abc import Sequence
 
 from datachain.client.fsspec import is_cloud_uri
-from datachain.lib.listing import ls
-
-if TYPE_CHECKING:
-    from .datachain import DataChain
+from datachain.lib.listing import ListScope, PathFilter
 
 
 def validate_cloud_bucket_name(uri: str) -> None:
@@ -31,9 +29,22 @@ def validate_cloud_bucket_name(uri: str) -> None:
             raise ValueError(f"Glob patterns in bucket names are not supported: {uri}")
 
 
+def normalize_storage_uri(uri: str | os.PathLike[str]) -> str:
+    """Resolve local paths before splitting patterns; preserve cloud object keys."""
+    from datachain.client import Client
+    from datachain.client.local import FileClient
+
+    uri = os.fspath(uri)
+    if issubclass(Client.get_implementation(uri), FileClient):
+        FileClient.validate_source(uri)
+        storage, path = Client.parse_url(uri)
+        return f"{storage}/{path}"
+    return uri
+
+
 def split_uri_pattern(uri: str) -> tuple[str, str | None]:
-    """Split a URI into base path and glob pattern."""
-    if not any(char in uri for char in ["*", "?", "[", "{", "}"]):
+    """Split a URI into base and pattern; a glob base ends with a directory slash."""
+    if not glob.has_magic(uri):
         return uri, None
 
     if "://" in uri:
@@ -44,8 +55,7 @@ def split_uri_pattern(uri: str) -> tuple[str, str | None]:
 
         pattern_start_idx = None
         for i, segment in enumerate(path_segments):
-            # Check for glob patterns including brace expansion
-            if glob.has_magic(segment) or "{" in segment:
+            if glob.has_magic(segment):
                 pattern_start_idx = i
                 break
 
@@ -59,20 +69,24 @@ def split_uri_pattern(uri: str) -> tuple[str, str | None]:
             base = scheme_part + "/".join(path_segments[:pattern_start_idx])
             pattern = "/".join(path_segments[pattern_start_idx:])
 
-        return base, pattern
+        return base + "/", pattern
 
     path_segments = uri.split("/")
 
     pattern_start_idx = None
     for i, segment in enumerate(path_segments):
-        if glob.has_magic(segment) or "{" in segment:
+        if glob.has_magic(segment):
             pattern_start_idx = i
             break
 
     if pattern_start_idx is None:
         return uri, None
 
-    base = "/".join(path_segments[:pattern_start_idx]) if pattern_start_idx > 0 else "/"
+    base = (
+        "/".join(path_segments[:pattern_start_idx]) + "/"
+        if pattern_start_idx > 0
+        else "/"
+    )
     pattern = "/".join(path_segments[pattern_start_idx:])
 
     return base, pattern
@@ -231,20 +245,61 @@ def convert_globstar_to_glob(filter_pattern: str) -> str:
     return result
 
 
-def apply_glob_filter(
-    dc: "DataChain",
-    pattern: str,
-    list_path: str,
-    use_recursive: bool,
-    column: str,
-) -> "DataChain":
-    """List ``list_path`` and filter the resulting chain by the glob ``pattern``."""
-    from datachain.query.schema import Column
+def storage_sources(uris: Sequence) -> list[tuple[str, str | None]]:
+    """The URIs to list for ``uris``, in order and with repeats, each with the
+    glob pattern that selects from its listing: braces expanded, a glob listed
+    from its base.
+    """
+    sources = []
+    for uri in uris:
+        for expanded in expand_brace_pattern(str(uri)):
+            expanded = normalize_storage_uri(expanded)
+            base_uri, pattern = split_uri_pattern(expanded)
+            sources.append((base_uri if pattern else expanded, pattern))
+    return sources
 
-    chain = ls(dc, list_path, recursive=use_recursive, column=column)
 
+def path_filter(
+    list_path: str, pattern: str | None, recursive: bool | None
+) -> PathFilter:
+    """The paths a URI with glob ``pattern`` selects from its base's listing."""
+    if pattern is None:
+        return PathFilter.ls(list_path, recursive)
+    glob, use_recursive = _pattern(pattern, list_path, recursive)
+    return PathFilter.ls(list_path, use_recursive).glob(glob)
+
+
+def _pattern(pattern: str, list_path: str, recursive: bool | None) -> tuple[str, bool]:
+    """``pattern`` as a glob of full paths, and whether it recurses."""
+    return (
+        _glob_pattern(pattern, list_path),
+        should_use_recursion(pattern, recursive or False),
+    )
+
+
+def list_scope(
+    list_path: str, pattern: str | None, recursive: bool | None
+) -> ListScope | None:
+    """The part of its folder's listing that a URI's paths can be in: the keys
+    that start with the pattern's literal head, one level only if the URI
+    doesn't recurse. None when it is the whole listing.
+    """
+    folder = list_path.lstrip("/").rstrip("/*")
+    folder = f"{folder}/" if folder else ""
+    if pattern is None:
+        return None if recursive else ListScope(folder, folder, True)
+    head, use_recursive = _pattern(pattern, list_path, recursive)
+    magic = [i for c in "*?[" if (i := head.find(c)) >= 0]
+    head = head[: min(magic, default=len(head))]
+    prefix = head if head.startswith(folder) else folder
+    one_level = not use_recursive
+    if not one_level and prefix == folder:
+        return None
+    return ListScope(folder, prefix, one_level)
+
+
+def _glob_pattern(pattern: str, list_path: str) -> str:
     glob_pattern = convert_globstar_to_glob(pattern)
     if subpath := list_path.strip("/"):
         glob_pattern = f"{subpath}/{glob_pattern}"
-
-    return chain.filter(Column(f"{column}.path").glob(glob_pattern))
+    return glob_pattern

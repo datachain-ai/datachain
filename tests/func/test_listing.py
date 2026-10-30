@@ -6,12 +6,14 @@ import pytest
 import datachain as dc
 from datachain.lib.file import File
 from datachain.lib.listing import (
+    LISTING_BATCH_SIZE,
     _sanitize_ds_name,
     calc_fingerprint,
     get_listing,
     list_bucket,
     parse_listing_uri,
 )
+from datachain.query import dataset
 from tests.data import ENTRIES
 
 
@@ -226,6 +228,125 @@ def test_calc_fingerprint_order_independent(test_session):
     assert fp1 == fp2
 
 
+def _save_listing(session, uri: str, file: File):
+    catalog = session.catalog
+    name, _, _ = parse_listing_uri(uri)
+    dc.read_values(file=[file], session=session).settings(
+        namespace=catalog.metastore.system_namespace_name,
+        project=catalog.metastore.listing_project_name,
+    ).save(name, listing=True)
+    return catalog.get_dataset(name, versions=None)
+
+
+def _fingerprint(session, uri: str, file: File) -> int:
+    ds = _save_listing(session, uri, file)
+    return calc_fingerprint(session, ds, ds.latest_version)
+
+
+def _etags(session, name: str, version: str) -> list:
+    metastore = session.catalog.metastore
+    return dc.read_dataset(
+        name,
+        namespace=metastore.system_namespace_name,
+        project=metastore.listing_project_name,
+        version=version,
+        session=session,
+    ).to_values("file.etag")
+
+
+@pytest.mark.parametrize(
+    "storage,etag_counts",
+    [("s3://bucket", False), ("gs://bucket", False), ("az://container", True)],
+    ids=["s3", "gs", "azure"],
+)
+def test_calc_fingerprint_etag_counts_only_where_versions_change(
+    test_session, storage, etag_counts
+):
+    fp1 = _fingerprint(
+        test_session, f"{storage}/a/", File(path="x.jpg", version="v1", etag="e1")
+    )
+    fp2 = _fingerprint(
+        test_session, f"{storage}/b/", File(path="x.jpg", version="v1", etag="e2")
+    )
+    assert (fp1 != fp2) == etag_counts
+
+
+def test_calc_fingerprint_changes_when_version_stops_being_latest(test_session):
+    fp1 = _fingerprint(test_session, "s3://bucket/a/", File(path="x.jpg", version="v1"))
+    fp2 = _fingerprint(
+        test_session,
+        "s3://bucket/b/",
+        File(path="x.jpg", version="v1", is_latest=False),
+    )
+    assert fp1 != fp2
+
+
+@pytest.mark.parametrize(
+    "storage",
+    ["s3://bucket", "gs://bucket", "az://container"],
+    ids=["s3", "gs", "azure"],
+)
+def test_calc_fingerprint_changes_when_size_changes(test_session, storage):
+    fp1 = _fingerprint(
+        test_session,
+        f"{storage}/a/",
+        File(path="x.jpg", version="v1", etag="e1", size=10),
+    )
+    fp2 = _fingerprint(
+        test_session,
+        f"{storage}/b/",
+        File(path="x.jpg", version="v1", etag="e1", size=20),
+    )
+    assert fp1 != fp2
+
+
+@pytest.mark.parametrize(
+    "storage,version,reused",
+    [
+        ("s3://bucket", "v1", True),
+        ("gs://bucket", "v1", True),
+        ("az://container", "v1", False),
+        ("s3://bucket", "", False),
+    ],
+    ids=["s3", "gs", "azure", "unversioned"],
+)
+def test_listing_save_reuses_version_only_when_etag_does_not_count(
+    test_session, storage, version, reused
+):
+    uri = f"{storage}/data/"
+    name, _, _ = parse_listing_uri(uri)
+    ds = _save_listing(
+        test_session, uri, File(path="x.jpg", version=version, etag="e1")
+    )
+    original_uuid = ds.get_version("1.0.0").uuid
+
+    ds = _save_listing(
+        test_session, uri, File(path="x.jpg", version=version, etag="e2")
+    )
+
+    assert len(ds.versions) == (1 if reused else 2)
+    assert ds.get_version("1.0.0").uuid == original_uuid
+    assert _etags(test_session, name, "1.0.0") == ["e1"]
+
+
+@pytest.mark.parametrize(
+    "tree", [{"deleted": {"gone": "one", "kept": "two"}}], indirect=True
+)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_listing_update_drops_deleted_file_on_versioned_storage(cloud_test_catalog):
+    ctc = cloud_test_catalog
+    uri = f"{ctc.src_uri}/deleted/"
+    dc.read_storage(uri, session=ctc.session).exec()
+
+    client = ctc.catalog.get_client(ctc.src_uri)
+    client.fs.rm(client.get_uri("deleted/gone"))
+
+    paths = dc.read_storage(uri, session=ctc.session, update=True).to_values(
+        "file.path"
+    )
+    assert paths == ["deleted/kept"]
+
+
 def test_read_storage_single_local_file_deterministic_hash(test_session, tmp_dir):
     (tmp_dir / "a.txt").write_text("hello")
     uri = (tmp_dir / "a.txt").as_uri()
@@ -288,3 +409,14 @@ def test_read_storage_mixed_single_file_and_dir_deterministic(test_session, tmp_
     chain1._query.resolve_all_listings()
     chain2._query.resolve_all_listings()
     assert chain1._query.hash() == chain2._query.hash()
+
+
+@pytest.mark.parametrize("settings", [None, {"batch_size": 7}])
+def test_listing_insert_batch_size(test_session, tmp_dir, mocker, settings):
+    # the user's batch_size tunes their UDFs, not the listing
+    (tmp_dir / "a.txt").write_text("hello")
+    spy = mocker.spy(dataset, "process_udf_outputs")
+
+    dc.read_storage(tmp_dir.as_uri(), session=test_session, settings=settings).exec()
+
+    assert spy.call_args.kwargs["batch_size"] == LISTING_BATCH_SIZE

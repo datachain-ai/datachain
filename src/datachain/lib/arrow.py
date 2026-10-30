@@ -1,11 +1,14 @@
+import hashlib
 import math
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from itertools import islice
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
+from fsspec.implementations.local import LocalFileSystem
 from pyarrow._csv import ParseOptions
-from pyarrow.dataset import CsvFileFormat, dataset
+from pyarrow.dataset import CsvFileFormat, Dataset, ParquetFileFormat, dataset
+from pyarrow.fs import FileInfo, FileType, FSSpecHandler, PyFileSystem
 
 from datachain import json
 from datachain.fs.reference import ReferenceFileSystem
@@ -29,6 +32,7 @@ if TYPE_CHECKING:
     from datasets.features.features import Features
     from pydantic import BaseModel
 
+    from datachain.client import Client
     from datachain.lib.data_model import DataType, UnionLayout
     from datachain.lib.dc import DataChain
 
@@ -48,6 +52,10 @@ def fix_pyarrow_format(format, parse_options=None):
     return format
 
 
+def is_parquet(format) -> bool:
+    return format == "parquet" or isinstance(format, ParquetFileFormat)
+
+
 # CSV options that decide where a file's rows and columns start.
 _CSV_READ_OPTIONS = (
     "column_names",
@@ -65,6 +73,47 @@ _CSV_PARSE_OPTIONS = (
 )
 
 
+class _PartialReadHandler(FSSpecHandler):
+    """Lets pyarrow read the exact object a File describes.
+
+    A File can come from a listing that is hours old or saved in a dataset, so the
+    object at its path may have changed since. pyarrow's default handler opens
+    whatever is at the path now. This handler opens the File through its client,
+    which reads the File's version id when it has one.
+
+    Parquet is read without read-ahead, so reading some columns downloads only
+    those columns. CSV and JSON are read from the start, so they keep read-ahead.
+    """
+
+    def __init__(self, client: "Client", file: File, block_size: int | None):
+        super().__init__(client.fs)
+        self.client = client
+        self.file = file
+        self.block_size = block_size
+
+    def get_file_info(self, paths):
+        # Describes the recorded file without looking up the latest object, which a
+        # versioned bucket may have deleted since.
+        return [FileInfo(path, FileType.File) for path in paths]
+
+    def open_input_file(self, path):
+        f = self.client.open_object(
+            self.file,
+            use_cache=False,
+            cb=self.file._download_cb,
+            block_size=self.block_size,
+        )
+        return pa.PythonFile(f, mode="r")
+
+
+def pyarrow_fs(file: File, format):
+    client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
+    if isinstance(client.fs, LocalFileSystem):
+        return client.fs
+    block_size = 0 if is_parquet(format) else None
+    return PyFileSystem(_PartialReadHandler(client, file, block_size=block_size))
+
+
 class ArrowGenerator(Generator):
     DEFAULT_BATCH_SIZE = 2**17  # same as `pyarrow._dataset._DEFAULT_BATCH_SIZE`
 
@@ -74,6 +123,7 @@ class ArrowGenerator(Generator):
         output_schema: type["BaseModel"] | None = None,
         source: bool = True,
         nrows: int | None = None,
+        columns: list[str] | None = None,
         **kwargs,
     ):
         """
@@ -85,6 +135,7 @@ class ArrowGenerator(Generator):
         output_schema : Optional pydantic model for validation.
         source : Whether to include info about the source file.
         nrows : Optional row limit.
+        columns : Optional columns to read from each file by name, in output order.
         kwargs: Parameters to pass to pyarrow.dataset.dataset.
         """
         super().__init__()
@@ -92,8 +143,16 @@ class ArrowGenerator(Generator):
         self.output_schema = output_schema
         self.source = source
         self.nrows = nrows
+        self.columns = columns
         self.parse_options = kwargs.pop("parse_options", None)
         self.kwargs = kwargs
+
+    def hash(self, include_body: bool = True) -> str:
+        # The read schema and columns decide what is read, so reads that differ
+        # only in them must not reuse each other's results.
+        schema = self.input_schema.to_string() if self.input_schema else ""
+        read = schema + json.dumps(self.columns)
+        return hashlib.sha256((super().hash(include_body) + read).encode()).hexdigest()
 
     def process(self, file: File):
         if file._caching_enabled:
@@ -102,7 +161,13 @@ class ArrowGenerator(Generator):
             fs_path = file.path
             fs = ReferenceFileSystem({fs_path: [cache_path]})
         else:
-            fs, fs_path = file.get_fs(), file.get_fs_path()
+            client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
+            # The File may come from a reused listing or a saved dataset, so the
+            # object may have changed since. A download into the cache checks
+            # this; a read that skips the cache checks it here.
+            client.check_unchanged(file)
+            fs = pyarrow_fs(file, self.kwargs.get("format"))
+            fs_path = file.get_fs_path()
 
         kwargs = self.kwargs
         if format := kwargs.get("format"):
@@ -110,15 +175,28 @@ class ArrowGenerator(Generator):
 
         ds = dataset(fs_path, schema=self.input_schema, filesystem=fs, **kwargs)
 
-        hf_schema = _get_hf_schema(ds.schema)
         use_datachain_schema = (
             bool(ds.schema.metadata)
             and DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY in ds.schema.metadata
         )
 
-        kw = {}
+        if self.columns is not None and use_datachain_schema:
+            raise ValueError(
+                f"'{file.path}' was written by DataChain, so it can't be read "
+                "by column names with other files. Read it separately."
+            )
+
+        schema = ds.schema
+        kw: dict[str, Any] = {}
         if self.nrows:
             kw = {"batch_size": min(self.DEFAULT_BATCH_SIZE, self.nrows)}
+        if self.columns is not None:
+            present = set(schema.names)
+            kw["columns"] = [c for c in self.columns if c in present]
+            # Decode Hugging Face features only for the columns being read.
+            fields = [schema.field(c) for c in kw["columns"]]
+            schema = pa.schema(fields, metadata=schema.metadata)
+        hf_schema = _get_hf_schema(schema)
 
         def iter_records():
             for record_batch in ds.to_batches(**kw):
@@ -176,6 +254,11 @@ class ArrowGenerator(Generator):
                 return vals
             return [arrow_file, *vals]
 
+        if self.output is not None and len(self.output.values) == 1:
+            # A single output signal takes its value itself, not a list of values.
+            ((name, signal_type),) = self.output.values.items()
+            row = vals[0]
+            return row if type(row) is signal_type else getattr(row, name)
         return vals
 
     def _process_non_datachain_record(
@@ -183,21 +266,23 @@ class ArrowGenerator(Generator):
         record: dict[str, Any],
         hf_schema: tuple["Features", dict[str, "DataType"]] | None,
     ):
-        vals = list(record.values())
+        names = self.columns or list(record)
+        vals = [record.get(name) for name in names]
         if not self.output_schema:
             return vals
 
         fields = self.output_schema.model_fields
         vals_dict = {}
-        for i, ((field, field_info), val) in enumerate(
-            zip(fields.items(), vals, strict=False)
+        for (field, field_info), name, val in zip(
+            fields.items(), names, vals, strict=False
         ):
             anno = field_info.annotation
-            if hf_schema:
+            if hf_schema and (feat := hf_schema[0].get(name)) is not None:
                 from datachain.lib.hf import convert_feature
 
-                feat = list(hf_schema[0].values())[i]
                 vals_dict[field] = convert_feature(val, feat, anno)
+            elif val is None:
+                vals_dict[field] = val
             elif ModelStore.is_pydantic(anno):
                 vals_dict[field] = anno(**val)  # type: ignore[misc]
             else:
@@ -205,20 +290,90 @@ class ArrowGenerator(Generator):
         return [self.output_schema(**vals_dict)]
 
 
-def infer_schema(chain: "DataChain", **kwargs) -> pa.Schema:
+def _file_datasets(chain: "DataChain", **kwargs) -> Iterator[Dataset]:
     parse_options = kwargs.pop("parse_options", None)
     if format := kwargs.get("format"):
         kwargs["format"] = fix_pyarrow_format(format, parse_options)
-
-    schemas = []
     for (file,) in chain.to_iter("file"):
-        ds = dataset(file.get_fs_path(), filesystem=file.get_fs(), **kwargs)  # type: ignore[union-attr]
-        schemas.append(ds.schema)
+        fs = pyarrow_fs(file, kwargs.get("format"))  # type: ignore[arg-type]
+        yield dataset(file.get_fs_path(), filesystem=fs, **kwargs)  # type: ignore[union-attr]
+
+
+def file_schemas(chain: "DataChain", **kwargs) -> list[pa.Schema]:
+    """Return the schema of each file in the chain."""
+    schemas = [ds.schema for ds in _file_datasets(chain, **kwargs)]
     if not schemas:
         raise ValueError(
             "Cannot infer schema (no files to process or can't access them)"
         )
-    return pa.unify_schemas(schemas)
+    return schemas
+
+
+def read_columns(
+    chain: "DataChain", columns: Sequence[str] | None, fields: int, **kwargs
+) -> list[str] | None:
+    """Return the columns to read from each file when output gives their types.
+
+    Like pyarrow, they come from the first file (by path). Each file is read by
+    these names with its own types. Partition and pandas index columns at the end
+    are left out when output has no fields for them.
+    """
+    ds = next(_file_datasets(chain.order_by("file.path").limit(1), **kwargs))
+    schema = ds.schema
+    if columns is not None:
+        schema, _ = merge_schemas([schema], columns)
+    elif _get_datachain_schema(schema):
+        return None
+    elif len(schema) > fields:
+        physical = next(ds.get_fragments()).physical_schema
+        extra = set(schema.names) - set(physical.names)
+        index = (schema.pandas_metadata or {}).get("index_columns", [])
+        extra |= {c for c in index if isinstance(c, str)}
+        if set(schema.names[fields:]) <= extra:
+            schema = pa.schema(list(schema)[:fields])
+    if len(schema) != fields:
+        raise ValueError(
+            f"output has {fields} fields but {len(schema)} columns are read. "
+            "output names the columns read, in order; pick columns with columns=."
+        )
+    return schema.names
+
+
+def merge_schemas(
+    schemas: list[pa.Schema], columns: Sequence[str] | None = None
+) -> tuple[pa.Schema, list[str] | None]:
+    """Merge the files' schemas. With `columns`, keep only those, in that order.
+
+    Column names can be written as in the file or as DataChain cleans them, e.g.
+    "Unit Price (USD)" or "unit_price_usd". With `columns`, also returns the
+    cleaned names of the kept columns, cleaned over the whole header as in a
+    full read.
+    """
+    if columns is None:
+        return pa.unify_schemas(schemas), None
+    if isinstance(columns, str) or not columns:
+        raise ValueError("columns must be a non-empty list of column names")
+
+    if any(_get_datachain_schema(s) for s in schemas):
+        raise ValueError("columns can't be used with files written by DataChain")
+    names = list(dict.fromkeys(n for s in schemas for n in s.names))
+    cleaned = normalize_col_names(names)
+    raw = {n: n for n in names} | cleaned
+    if missing := [c for c in columns if c not in raw]:
+        raise ValueError(f"Columns {missing} not found. Available columns: {names}")
+    selected = [raw[c] for c in columns]
+    if len(set(selected)) < len(selected):
+        raise ValueError(f"Columns {list(columns)} name a column more than once")
+    # Only the selected columns need compatible types across files.
+    wanted = set(selected)
+    merged = pa.unify_schemas(
+        [pa.schema([f for f in s if f.name in wanted]) for s in schemas]
+    )
+    schema = pa.schema(
+        [merged.field(c) for c in selected], metadata=schemas[0].metadata
+    )
+    clean = {r: c for c, r in cleaned.items()}
+    return schema, [clean[c] for c in selected]
 
 
 def schema_to_output(

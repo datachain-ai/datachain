@@ -89,6 +89,7 @@ nav:
           - Overview: guide/index.md
           - Get Data In:
               - Reading Data: guide/reading-data.md
+              - Listing Storage: guide/listing-storage.md
               - Remote Storage: guide/remotes.md
           - Transform:
               - Data Engine Operations: guide/operations.md

@@ -1,3 +1,4 @@
+import errno
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -6,9 +7,10 @@ from azure.core.exceptions import (
     HttpResponseError,
     ResourceNotFoundError,
 )
-from botocore.exceptions import NoCredentialsError
+from botocore.exceptions import ClientError, NoCredentialsError
 from gcsfs.retry import HttpError
 from google.api_core import exceptions as google_exceptions
+from s3fs.errors import translate_boto_error
 
 from datachain.cli import handle_bucket_command, handle_command
 from datachain.client import bucket_status
@@ -55,6 +57,11 @@ def test_normalize_s3_kwargs_secret_and_token():
             BucketStatus(False, "denied", "S3 bucket 'b' not found"),
         ),
         (PermissionError, None, BucketStatus(True, "authenticated")),
+        (
+            OSError(errno.EINVAL, "Bad Request"),
+            None,
+            BucketStatus(True, "authenticated"),
+        ),
         (PermissionError, NoCredentialsError, BucketStatus(True, "denied", S3_DENIED)),
         (PermissionError, PermissionError, BucketStatus(True, "denied", S3_DENIED)),
         (
@@ -63,7 +70,15 @@ def test_normalize_s3_kwargs_secret_and_token():
             BucketStatus(False, "denied", "S3 bucket 'b' not found"),
         ),
     ],
-    ids=["anon-ok", "anon-404", "auth-ok", "auth-no-creds", "auth-perm", "auth-404"],
+    ids=[
+        "anon-ok",
+        "anon-404",
+        "auth-ok",
+        "anon-400",
+        "auth-no-creds",
+        "auth-perm",
+        "auth-404",
+    ],
 )
 @patch("datachain.client.s3.S3FileSystem")
 def test_s3_bucket_status(mock_fs_cls, anon_effect, auth_effect, expected):
@@ -72,6 +87,18 @@ def test_s3_bucket_status(mock_fs_cls, anon_effect, auth_effect, expected):
     anon_fs._info = AsyncMock(side_effect=anon_effect)
     auth_fs._info = AsyncMock(side_effect=auth_effect)
     assert ClientS3.bucket_status("b") == expected
+
+
+@patch("datachain.client.s3.S3FileSystem")
+def test_s3_bucket_status_anon_service_error_reraises(mock_fs_cls):
+    anon_fs, auth_fs = MagicMock(), MagicMock()
+    mock_fs_cls.side_effect = [anon_fs, auth_fs]
+    server_error = ClientError({"Error": {"Code": "500"}}, "HeadBucket")
+    anon_fs._info = AsyncMock(side_effect=translate_boto_error(server_error))
+    auth_fs._info = AsyncMock()
+    with pytest.raises(OSError, match="500"):
+        ClientS3.bucket_status("b")
+    auth_fs._info.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -127,9 +154,12 @@ def test_s3_bucket_status(mock_fs_cls, anon_effect, auth_effect, expected):
 def test_gcs_bucket_status(mock_create_fs, anon_effect, auth_effect, expected):
     anon_fs, auth_fs = MagicMock(), MagicMock()
     mock_create_fs.side_effect = [anon_fs, auth_fs]
-    anon_fs._ls = AsyncMock(side_effect=anon_effect)
+    anon_fs._call = AsyncMock(side_effect=anon_effect)
     auth_fs._info = AsyncMock(side_effect=auth_effect)
     assert GCSClient.bucket_status("b") == expected
+    anon_fs._call.assert_awaited_once_with(
+        "GET", "b/{}/o", "b", maxResults=1, json_out=True
+    )
 
 
 @pytest.mark.parametrize(

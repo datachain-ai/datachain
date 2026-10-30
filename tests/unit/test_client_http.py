@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import Mock, mock_open, patch
 
 import pytest
@@ -101,13 +101,13 @@ def test_info_to_file():
     # Test with int timestamp
     info = {"last_modified": 1700000000}
     file = client.info_to_file(info, "file1.txt")
-    expected = datetime.fromtimestamp(1700000000, timezone.utc)
+    expected = datetime.fromtimestamp(1700000000, UTC)
     assert file.last_modified == expected
 
     # Test with float timestamp
     info = {"last_modified": 1700000000.5}
     file = client.info_to_file(info, "file2.txt")
-    expected = datetime.fromtimestamp(1700000000.5, timezone.utc)
+    expected = datetime.fromtimestamp(1700000000.5, UTC)
     assert file.last_modified == expected
 
     # Test with invalid date string (triggers ValueError)
@@ -139,6 +139,16 @@ def test_open_object(monkeypatch):
     monkeypatch.setattr(client.fs, "open", Mock())
     client.open_object(file, use_cache=False)
     client.fs.open.assert_called_once()  # Should fetch from remote, not cache
+
+
+def test_read_tar_member_of_uncached_archive_returns_its_data(
+    http_server, tmp_path, catalog, small_tar_member_data, small_tar_member
+):
+    data, raw = small_tar_member_data
+    (tmp_path / "archive.tar").write_bytes(raw)
+    member = small_tar_member(catalog.get_client(http_server))
+
+    assert member.read() == data
 
 
 def test_url():
