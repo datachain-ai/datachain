@@ -654,6 +654,8 @@ def process_udf_outputs(
 
     if udf_kind == "map":
         columns = ["sys__id", *udf.output]
+        if udf.inner.is_input_batched:
+            columns += ["sys__input_id", "sys__partial"]  # completion per batch
     else:
         columns = [*udf.output, "sys__input_id", "sys__partial", "sys__empty"]
 
@@ -762,13 +764,14 @@ class UDFStep(Step, ABC):
         Returns list of columns:
         - sys__input_id: Tracks which input produced each output. Allows atomic
           writes and reconstruction of processed inputs from output table during
-          checkpoint recovery. Nullable because mappers use sys__id (1:1 mapping)
-          while generators populate this field explicitly (1:N mapping).
+          checkpoint recovery. Generators store the input ID; batched mappers
+          store the first input ID of the batch. Scalar mappers use sys__id.
         - sys__partial: Tracks incomplete inputs during checkpoint recovery.
           For generators, all rows except the last one for each input are marked
           as partial=True. If an input has no row with partial=False, it means the
-          input was not fully processed and needs to be re-run. Nullable because
-          mappers (1:1) don't use this field.
+          input was not fully processed and needs to be re-run. Batched mappers
+          similarly mark all but the last output of a batch as partial. Nullable
+          because scalar mappers do not use this field.
         """
         sys_id_type = next(
             c.type
@@ -1643,26 +1646,29 @@ class UDFStep(Step, ABC):
         # `input_query` is rebuilt from the input table and lacks partition_id.
         unprocessed_input = query if self.partition_by is not None else input_query
 
-        unprocessed_query = self.calculate_unprocessed_rows(
-            unprocessed_input,
-            partial_table,
-            incomplete_input_ids,
-        )
+        # The anti-join must stay fixed while resumed outputs are appended.
+        with self._snapshot_processed_input_ids(partial_table) as processed_ids:
+            unprocessed_query = self.calculate_unprocessed_rows(
+                unprocessed_input,
+                partial_table,
+                incomplete_input_ids,
+                processed_ids=processed_ids,
+            )
 
-        # Count rows before populating with new rows
-        output_rows_reused = self.warehouse.table_rows_count(partial_table)
-        rows_input = self.warehouse.table_rows_count(input_table)
-        rows_to_process = self.warehouse.query_count(unprocessed_query)
-        rows_reused = rows_input - rows_to_process  # input rows reused
+            # Count rows before populating with new rows
+            output_rows_reused = self.warehouse.table_rows_count(partial_table)
+            rows_input = self.warehouse.table_rows_count(input_table)
+            rows_to_process = self.warehouse.query_count(unprocessed_query)
+            rows_reused = rows_input - rows_to_process  # input rows reused
 
-        self.populate_udf_output_table(
-            partial_table,
-            unprocessed_query,
-            continued=True,
-            rows_reused=rows_reused,
-            output_rows_reused=output_rows_reused,
-            rows_total=rows_input,
-        )
+            self.populate_udf_output_table(
+                partial_table,
+                unprocessed_query,
+                continued=True,
+                rows_reused=rows_reused,
+                output_rows_reused=output_rows_reused,
+                rows_total=rows_input,
+            )
 
         output_table = self.warehouse.rename_table(
             partial_table, Checkpoint.output_table_name(job.id, hash_output)
@@ -1700,6 +1706,18 @@ class UDFStep(Step, ABC):
 
         return output_table, input_table
 
+    @contextlib.contextmanager
+    def _snapshot_processed_input_ids(self, partial_table):
+        processed_ids = self.processed_input_ids_query(partial_table)
+        snapshot = self.warehouse.create_pre_udf_table(
+            sa.select(processed_ids.c.sys__processed_id),
+            self.warehouse.temp_table_name(),
+        )
+        try:
+            yield snapshot
+        finally:
+            self.warehouse.db.drop_table(snapshot, if_exists=True)
+
     @abstractmethod
     def processed_input_ids_query(self, partial_table: "Table"):
         """
@@ -1718,7 +1736,8 @@ class UDFStep(Step, ABC):
         """
         Find input IDs that were only partially processed before a crash.
         For generators (1:N), an input is incomplete if it has output rows but none
-        with sys__partial=False. For mappers (1:1), this never happens.
+        with sys__partial=False. Batched mappers track completion per batch;
+        scalar mappers have no incomplete inputs.
 
         Returns:
             List of incomplete input IDs that need to be re-processed
@@ -1729,6 +1748,7 @@ class UDFStep(Step, ABC):
         input_query: Select,
         partial_table: "Table",
         incomplete_input_ids: list[int] | None = None,
+        processed_ids: "Table | None" = None,
     ) -> Select:
         """
         Calculate which input rows haven't been processed yet.
@@ -1743,7 +1763,11 @@ class UDFStep(Step, ABC):
             A filtered query containing only unprocessed rows
         """
         incomplete_input_ids = incomplete_input_ids or []
-        processed_input_ids_subquery = self.processed_input_ids_query(partial_table)
+        processed_input_ids_subquery = (
+            self.processed_input_ids_query(partial_table)
+            if processed_ids is None
+            else processed_ids
+        )
 
         # For Aggregator with partition_by: filter by partition_id
         unprocessed_filter: sa.ColumnElement[bool]
@@ -1798,11 +1822,20 @@ class UDFSignal(UDFStep):
 
     def find_incomplete_inputs(self, partial_table: "Table") -> list[int]:
         """
-        For mappers (1:1 mapping): always returns empty list.
-        Mappers cannot have incomplete inputs because each input produces exactly
-        one output atomically. Either the output exists or it doesn't.
+        Return batch IDs whose output has no completion marker.
+        Scalar mappers persist one output atomically and have no incomplete inputs.
         """
-        return []
+        if not self.udf.inner.is_input_batched:
+            return []
+        complete_batches = sa.select(partial_table.c.sys__input_id).where(
+            partial_table.c.sys__partial == sa.false()
+        )
+        incomplete_query = (
+            sa.select(partial_table.c.sys__input_id)
+            .distinct()
+            .where(partial_table.c.sys__input_id.not_in(complete_batches))
+        )
+        return [row[0] for row in self.warehouse.db.execute(incomplete_query)]
 
     def create_output_table(self, name: str) -> "Table":
         columns: list[sqlalchemy.Column[Any]] = [

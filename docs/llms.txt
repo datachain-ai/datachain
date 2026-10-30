@@ -28,7 +28,8 @@ Never use: `from datachain import File, C, func`
 ### Transform data
 - `.filter(dc.C("col") > value)` -- SQL-compiled filter (warehouse speed)
 - `.mutate(new_col=dc.func.path.file_ext("file.path"))` -- SQL-compiled column derivation
-- `.map(result=my_function)` -- Python operation per record (needs `settings(parallel=N)` for perf)
+- `.map(result=my_function)` -- scalar Python call: one row in, one result out
+- `.batch_map(result=my_function, batch=32)` -- vectorized call: lists of column values in, one result per input row out; preserves existing columns
 - `.gen(chunks=split_function)` -- expand one record to many
 - `.agg(summary=aggregate_fn, partition_by="group_col")` -- group and reduce
 - `.merge(other, on="key")` -- join two chains
@@ -42,15 +43,33 @@ Never use: `from datachain import File, C, func`
 - `.to_storage("s3://output/")` -- write files to storage
 - `.to_database("table", "connection_string")` -- write to SQL database
 
+### Scalar vs batched functions
+
+| Method | Column parameter | Return for an embedding | Explicit `output=` |
+|---|---|---|---|
+| `map()` | `dc.ImageFile` | `list[float]` | `list[float]` |
+| `batch_map(batch=32)` | `list[dc.ImageFile]` | `list[list[float]]` | `list[float]` |
+
+`batch_map` defaults to `batch=1000`; choose an explicit batch size that fits the
+model and device. `batch=1` still passes lists. Return results in input order,
+including the last short batch. Use `dc.BatchMapper` for a batched class and
+`dc.Mapper` for a scalar class. Resources from `.setup(model=load_model)` remain
+ordinary objects in both methods.
+
+`batch_map` prefetch counts batches per worker; start with `prefetch=1` or `2`.
+`settings(batch_size=...)` controls database insert buffering, not inference size.
+`agg()` groups rows and produces N:M outputs; use it for grouping, not inference
+batching. See /guide/processing/#batched-model-inference.
+
 ## Critical Rules
 
 1. Always type Python operation return values -- missing annotations default to `str` and crash
 2. Always use trailing slash in storage URIs: `"s3://bucket/path/"`
 3. Pass `anon=True` for public buckets
 4. Use `save()` before `filter()` on expensive Python operation output
-5. Use `settings(parallel=True)` for ML/LLM operations
+5. Use `batch_map(batch=N)` for vectorized inference; add `settings(parallel=N)` when concurrency and per-worker memory allow it
 6. Use data-engine operations (filter, mutate, group_by) over Python when possible
-7. One output signal per map/gen/agg -- use Pydantic models for multiple fields
+7. `map` and `batch_map` support named functions for multiple signals; use a Pydantic model for related fields from one function
 8. Use `dc.func.*` for SQL-speed analytics: distance, aggregate, window, path, string, conditional
 
 ## Documentation Sections
