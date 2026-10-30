@@ -136,15 +136,19 @@ def rebase_path(
     old_scheme, old_rest = _split_scheme(old_base)
     new_scheme, new_rest = _split_scheme(new_base)
 
+    def _key(path: str) -> str:
+        # a cloud key as is: d//e.txt and d/e.txt are different objects
+        return path if src_scheme and src_scheme != "file" else _to_posix(path)
+
     # For scheme URLs, treat everything after :// as the opaque "path" for rebasing.
     # For plain paths, use the full string.
     src_path_only = src_rest if src_scheme else src_path
     old_base_only = old_rest if old_scheme else old_base
 
-    src_path_norm = _to_posix(src_path_only)
-    old_base_norm = _to_posix(old_base_only)
+    src_path_norm = _key(src_path_only)
+    old_base_norm = _key(old_base_only)
 
-    old_base_norm = old_base_norm.rstrip("/") + "/"
+    old_base_norm = old_base_norm.removesuffix("/") + "/"
     idx = (src_path_norm + "/").find(old_base_norm)
     if idx == -1 or (idx > 0 and src_path_norm[idx - 1] != "/"):
         raise ValueError(
@@ -154,7 +158,8 @@ def rebase_path(
     relative_path = src_path_norm[relative_start:]
 
     # Parse the filename
-    path_obj = PurePosixPath(relative_path)
+    parent, separator, name = relative_path.rpartition("/")
+    path_obj = PurePosixPath(name)
     stem = path_obj.stem
     current_ext = path_obj.suffix
 
@@ -171,18 +176,19 @@ def rebase_path(
     new_name = new_stem + new_ext
 
     # Reconstruct path with new base
-    parent = str(path_obj.parent)
-    if parent == ".":
-        new_relative_path = new_name
-    else:
-        new_relative_path = str(PurePosixPath(parent) / new_name)
+    new_relative_path = f"{parent}{separator}{new_name}"
+
+    def _join(base: str) -> str:
+        base = base if new_scheme and new_scheme != "file" else _to_posix(base)
+        return (
+            new_relative_path
+            if base == "."
+            else f"{base.removesuffix('/')}/{new_relative_path}"
+        )
 
     if new_scheme:
-        base_path = _to_posix(new_rest)
-        full_path = str(PurePosixPath(base_path) / new_relative_path)
-        return f"{new_scheme}://{full_path}"
-
-    return str(PurePosixPath(_to_posix(new_base)) / new_relative_path)
+        return f"{new_scheme}://{_join(new_rest)}"
+    return _join(new_base)
 
 
 def type_to_str(  # noqa: C901, PLR0911, PLR0912

@@ -581,6 +581,8 @@ def test_glob_match_is_sqlite_glob(pattern):
         PathFilter(),
         PathFilter.ls("dir/", True),
         PathFilter.ls("dir/", False),
+        PathFilter.ls("dir//", False),
+        PathFilter.ls("dir///", True),
         PathFilter.ls("", False),
         PathFilter.ls("d*/x", True),
         PathFilter.ls("dir/", True).glob("dir/*.txt"),
@@ -588,12 +590,49 @@ def test_glob_match_is_sqlite_glob(pattern):
     ],
 )
 def test_path_filter_python_matches_sql(test_session, paths):
-    names = ["a", "ab", "x.txt", "dir", "dir/x.txt", "dir/a/x.txt", "dirx/x", "d/x"]
+    names = [
+        "a",
+        "ab",
+        "x.txt",
+        "dir",
+        "dir/x.txt",
+        "dir/a/x.txt",
+        "dirx/x",
+        "d/x",
+        "dir//x.txt",
+        "dir///x.txt",
+    ]
     chain = dc.read_values(path=names, session=test_session)
     for condition in paths.sql(dc.C("path")):
         chain = chain.filter(condition)
 
     assert sorted(chain.to_values("path")) == sorted(filter(paths.matcher(), names))
+
+
+@pytest.mark.parametrize(
+    "selector,expected",
+    [
+        ("dir/", ["dir/x.txt"]),
+        ("dir/*", ["dir/x.txt"]),
+        ("dir/**", ["dir/x.txt"]),
+        ("dir/*/", ["dir/x.txt"]),
+        ("dir/**/", ["dir/x.txt"]),
+        ("dir//", ["dir//x.txt"]),
+        ("dir//*", ["dir//x.txt"]),
+        ("dir//**", ["dir//x.txt"]),
+        ("dir//**/", ["dir//x.txt"]),
+        ("dir///", ["dir///x.txt"]),
+        ("dir///*", ["dir///x.txt"]),
+    ],
+)
+def test_nonrecursive_listing_glob_tail(test_session, selector, expected):
+    names = ["dir/x.txt", "dir/a/x.txt", "dir//x.txt", "dir///x.txt"]
+    paths = PathFilter.ls(selector, False)
+    chain = dc.read_values(path=names, session=test_session)
+    for condition in paths.sql(dc.C("path")):
+        chain = chain.filter(condition)
+    assert chain.to_values("path") == expected
+    assert list(filter(paths.matcher(), names)) == expected
 
 
 def test_glob_match_is_sqlite_glob_on_random_patterns():

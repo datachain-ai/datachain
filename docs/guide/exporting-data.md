@@ -41,10 +41,21 @@ chain.to_storage("./local-copy/", signal="file", placement="filepath")
 ```
 
 Object keys can contain empty segments, such as `d//e.txt`. Local `to_storage`
-exports skip paths with empty segments and log a warning; cloud storage with a
+exports skip files whose destination path has an empty segment (with the
+`filepath` and `fullpath` placements) and log a warning; cloud storage with a
 flat namespace preserves them. Azure Data Lake Storage Gen2 accounts with a
 hierarchical namespace normalize empty segments, so use `placement="etag"` when
 exporting these keys there to avoid overwriting a distinct key such as `d/e.txt`.
+
+`File.save()` of a file whose path has an empty segment rejects a local
+destination with one too, including `file://` URIs, before writing: the local
+disk would write `out/d//e.txt` to `out/d/e.txt`, over the file `d/e.txt`.
+`File.upload()` and `File.at(...).open("wb")` don't check: give them local paths
+without `//`. Cloud destinations preserve empty segments, including those kept
+by `File.rebase()`.
+
+Keys beginning with `/`, such as `/x.txt`, are not listed: `read_storage()` and
+`list_storage()` don't return them.
 
 ## PyTorch DataLoader Integration
 

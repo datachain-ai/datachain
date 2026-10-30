@@ -196,6 +196,10 @@ def test_expand_brace_pattern_edge_cases():
     [
         ("dir/", None, True, None),
         ("dir/", None, False, ListScope("dir/", "dir/", True)),
+        ("dir/**", None, False, ListScope("dir/", "dir/", True)),
+        ("dir/*/", None, False, ListScope("dir/", "dir/", True)),
+        ("dir//**", None, False, ListScope("dir//", "dir//", True)),
+        ("dir//**/", None, False, ListScope("dir//", "dir//", True)),
         ("", None, False, ListScope("", "", True)),
         ("dir", "*.jpg", True, ListScope("dir/", "dir/", True)),
         ("dir", "img_0*.jpg", True, ListScope("dir/", "dir/img_0", True)),
@@ -207,6 +211,31 @@ def test_expand_brace_pattern_edge_cases():
 )
 def test_list_scope(list_path, pattern, recursive, scope):
     assert list_scope(list_path, pattern, recursive) == scope
+
+
+@pytest.mark.parametrize("slashes", ["//", "///"])
+def test_split_uri_pattern_preserves_empty_folder_segments(slashes):
+    uri = f"s3://bucket/d{slashes}*.txt"
+    assert split_uri_pattern(uri) == (f"s3://bucket/d{slashes}", "*.txt")
+    assert list_scope(f"d{slashes}", "*.txt", True) == ListScope(
+        f"d{slashes}", f"d{slashes}", True
+    )
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "s3://bucket/*.txt",
+        "s3://bucket/d/*.txt",
+        "s3://bucket/d//*.txt",
+        "s3://bucket/d///*.txt",
+        "s3://bucket//*.txt",
+        "file:///*.txt",
+    ],
+)
+def test_split_uri_pattern_round_trips_directory_boundary(uri):
+    base, pattern = split_uri_pattern(uri)
+    assert f"{base.removesuffix('/')}/{pattern}" == uri
 
 
 @pytest.mark.parametrize(

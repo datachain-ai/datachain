@@ -273,21 +273,32 @@ class NodeGroup:
     def is_dataset(self) -> bool:
         return bool(self.dataset_name)
 
-    def iternodes(self, recursive: bool = False):
-        for src in self.sources:
-            if recursive and src.is_container():
-                for nwp in src.find():
-                    if not nwp.has_empty_segments:
-                        yield nwp.n
-            else:
-                yield src.node
+    def plan(
+        self,
+        recursive: bool,
+        always_copy_dir_contents: bool,
+        copy_to_filename: str | None,
+    ) -> list[NodeWithPath]:
+        """The nodes to copy, with their paths under the output directory."""
+        if not self.listing:
+            node = self.sources[0].node
+            name = os.path.basename(copy_to_filename) if copy_to_filename else None
+            return [NodeWithPath(node, [name or node.path])]
+        return self.listing.collect_nodes_to_instantiate(
+            self.sources,
+            copy_to_filename,
+            recursive,
+            always_copy_dir_contents or self.source_path.endswith("/"),
+            self.is_dataset,
+        )
 
-    def download(self, recursive: bool = False, pbar=None) -> None:
-        """
-        Download this node group to cache.
-        """
-        if self.sources:
-            self.client.fetch_nodes(self.iternodes(recursive), shared_progress_bar=pbar)
+    def download(self, nodes: list[NodeWithPath], pbar=None) -> None:
+        """Download to cache the nodes that will be copied."""
+        # a local disk cannot hold an empty path segment: these are not copied
+        self.client.fetch_nodes(
+            (nwp.n for nwp in nodes if not nwp.has_empty_segments),
+            shared_progress_bar=pbar,
+        )
 
     def close(self) -> None:
         if self.listing:
@@ -415,46 +426,34 @@ def instantiate_node_groups(
     )
 
     output_dir = output
-    output_file = None
     if copy_to_filename:
-        output_dir = os.path.dirname(output)
-        if not output_dir:
-            output_dir = "."
-        output_file = os.path.basename(output)
+        output_dir = os.path.dirname(output) or "."
 
     # Instantiate these nodes
     for node_group in node_groups:
         if not node_group.sources:
             continue
         listing: SavedListing | None = node_group.listing
-        source_path: str = node_group.source_path
-
-        copy_dir_contents = always_copy_dir_contents or source_path.endswith("/")
+        instantiated_nodes = node_group.instantiated_nodes or node_group.plan(
+            recursive, always_copy_dir_contents, copy_to_filename
+        )
         if not listing:
-            source = node_group.sources[0]
-            client = source.client
-            node = NodeWithPath(source.node, [output_file or source.node.path])
-            instantiated_nodes = [node]
+            (node,) = instantiated_nodes
             if not virtual_only:
                 node.instantiate(
-                    client, output_dir, instantiate_progress_bar, force=force
-                )
-        else:
-            instantiated_nodes = listing.collect_nodes_to_instantiate(
-                node_group.sources,
-                copy_to_filename,
-                recursive,
-                copy_dir_contents,
-                node_group.is_dataset,
-            )
-            if not virtual_only:
-                listing.instantiate_nodes(
-                    instantiated_nodes,
+                    node_group.sources[0].client,
                     output_dir,
-                    total_files,
+                    instantiate_progress_bar,
                     force=force,
-                    shared_progress_bar=instantiate_progress_bar,
                 )
+        elif not virtual_only:
+            listing.instantiate_nodes(
+                instantiated_nodes,
+                output_dir,
+                total_files,
+                force=force,
+                shared_progress_bar=instantiate_progress_bar,
+            )
 
         node_group.instantiated_nodes = instantiated_nodes
 
@@ -2345,7 +2344,11 @@ class Catalog:
             if not no_cp:
                 with get_download_bar(bar_format, total_size) as pbar:
                     for node_group in node_groups:
-                        node_group.download(recursive=recursive, pbar=pbar)
+                        if node_group.sources:
+                            node_group.instantiated_nodes = node_group.plan(
+                                recursive, always_copy_dir_contents, copy_to_filename
+                            )
+                            node_group.download(node_group.instantiated_nodes, pbar)
 
             instantiate_node_groups(
                 node_groups,

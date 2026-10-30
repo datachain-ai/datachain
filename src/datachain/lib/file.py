@@ -554,7 +554,7 @@ class File(DataModel):
             file.parent  # 'data/subdir'
             ```
         """
-        return str(PurePosixPath(self.path).parent)
+        return self.path.rsplit("/", 1)[0] if "/" in self.path else "."
 
     @contextmanager
     def open(
@@ -757,6 +757,12 @@ class File(DataModel):
             A ``File`` representing the newly written destination, with
             ``version`` populated on versioned backends.
 
+        Raises:
+            ValueError: If the file's path has an empty segment, such as
+                ``d//e.txt``, and so does a local destination (``file://`` URIs
+                included), such as ``out/d//e.txt``: the local disk would write
+                it to ``out/d/e.txt``, over the file ``d/e.txt``.
+
         Example:
             ```py
             file.save("/local/output/result.bin")
@@ -792,6 +798,16 @@ class File(DataModel):
     ) -> "tuple[Client, str]":
         """Return (client rooted at the storage, rel_path) for *destination*."""
         from datachain.client.fsspec import Client as FSClient
+        from datachain.client.local import FileClient
+
+        # a local disk collapses "//": d//e.txt would overwrite d/e.txt
+        if "//" in self.path and FSClient.get_implementation(destination) is FileClient:
+            path = destination.removeprefix("file://")
+            canonical = path.replace("\\", "/") if os.name == "nt" else path
+            if "//" in canonical.lstrip("/"):
+                raise ValueError(
+                    f"unsafe file path {destination!r}: must not contain empty segments"
+                )
 
         uri = path_to_fsspec_uri(destination)
         client_cls = FSClient.get_implementation(uri)
@@ -1200,7 +1216,7 @@ class FileRow(NamedTuple):
 
     @property
     def parent(self) -> str:
-        return str(PurePosixPath(self.path).parent)
+        return self.path.rsplit("/", 1)[0] if "/" in self.path else "."
 
     def get_file_suffix(self) -> str:
         return PurePosixPath(self.path).suffix

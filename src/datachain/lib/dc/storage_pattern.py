@@ -3,7 +3,7 @@ import os
 from collections.abc import Sequence
 
 from datachain.client.fsspec import is_cloud_uri
-from datachain.lib.listing import ListScope, PathFilter
+from datachain.lib.listing import ListScope, PathFilter, _listing_folder
 
 
 def validate_cloud_bucket_name(uri: str) -> None:
@@ -284,7 +284,7 @@ def list_scope(
     that start with the pattern's literal head, one level only if the URI
     doesn't recurse. None when it is the whole listing.
     """
-    folder = list_path.lstrip("/").rstrip("/*")
+    folder = _listing_folder(list_path)
     folder = f"{folder}/" if folder else ""
     if pattern is None:
         return None if recursive else ListScope(folder, folder, True)
@@ -300,6 +300,6 @@ def list_scope(
 
 def _glob_pattern(pattern: str, list_path: str) -> str:
     glob_pattern = convert_globstar_to_glob(pattern)
-    if subpath := list_path.strip("/"):
+    if subpath := list_path.lstrip("/").removesuffix("/"):
         glob_pattern = f"{subpath}/{glob_pattern}"
     return glob_pattern
