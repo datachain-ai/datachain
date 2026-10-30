@@ -369,6 +369,7 @@ def test_cp_bucket_root_skips_empty_segments_in_existing_directory(cloud_test_ca
 
 @pytest.mark.parametrize("force", [False, True])
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@skip_if_not_sqlite
 def test_cp_dataset_skips_keys_with_double_slash(cloud_test_catalog, caplog, force):
     ctc = cloud_test_catalog
     client = ctc.catalog.get_client(ctc.src_uri)
