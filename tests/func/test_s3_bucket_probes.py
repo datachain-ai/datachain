@@ -152,12 +152,21 @@ def test_shared_config_endpoint_does_not_reuse_another_stores_region(
 
 
 @pytest.mark.parametrize("services", [False, True])
+@pytest.mark.parametrize("path_style", ["absolute", "environment", "relative"])
 def test_adding_shared_endpoint_stops_reusing_a_cached_aws_region(
-    endpoints, tmp_path, monkeypatch, services
+    endpoints, tmp_path, monkeypatch, services, path_style
 ):
     path = tmp_path / "shared-config"
     path.write_text("[default]\n")
-    monkeypatch.setenv("AWS_CONFIG_FILE", str(path))
+    if path_style == "environment":
+        monkeypatch.setenv("DATACHAIN_TEST_AWS_CONFIG_DIR", str(tmp_path))
+        config_path = "${DATACHAIN_TEST_AWS_CONFIG_DIR}/shared-config"
+    elif path_style == "relative":
+        monkeypatch.chdir(tmp_path)
+        config_path = "shared-config"
+    else:
+        config_path = str(path)
+    monkeypatch.setenv("AWS_CONFIG_FILE", config_path)
     s3._BUCKET_REGIONS["bucket", None, None] = "us-west-1"
     kwargs = _CREDENTIALS | {"version_aware": False, "skip_instance_cache": True}
     assert (

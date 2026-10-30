@@ -56,7 +56,11 @@ def _region_key(name: str, kwargs: dict[str, Any]) -> tuple | None:
         or os.environ.get("AWS_DEFAULT_PROFILE")
         or os.environ.get("AWS_PROFILE")
     )
-    path = os.path.expanduser(os.environ.get("AWS_CONFIG_FILE", "~/.aws/config"))
+    path = os.path.abspath(
+        os.path.expanduser(
+            os.path.expandvars(os.environ.get("AWS_CONFIG_FILE", "~/.aws/config"))
+        )
+    )
     try:
         stat = os.stat(path)
     except OSError:
