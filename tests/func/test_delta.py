@@ -648,7 +648,7 @@ def test_delta_update_unsafe_matches_same_named_aligned_sources_by_full_identity
     }
 
 
-def test_delta_update_unsafe_replays_aligned_same_dataset_occurrences(
+def test_delta_update_unsafe_recomputes_same_dataset_join_on_non_key(
     test_session,
 ):
     source_name = f"unsafe_same_occ_source_{uuid.uuid4().hex[:8]}"
@@ -701,13 +701,12 @@ def test_delta_update_unsafe_replays_aligned_same_dataset_occurrences(
 
     build_chain().save(result_name)
 
-    assert processed[1:] == [2]
-    assert set(
-        dc.read_dataset(result_name, session=test_session).to_values("row_id")
-    ) == {
-        1,
-        2,
-    }
+    assert sorted(processed[1:]) == [1, 1, 2, 2]
+    assert sorted(
+        dc.read_dataset(result_name, session=test_session).to_iter(
+            "row_id", "right_row_id"
+        )
+    ) == [(1, 10), (1, 20), (2, 10), (2, 20)]
 
 
 def test_delta_update_unsafe_merge_with_two_storage_sources(test_session, tmp_dir):

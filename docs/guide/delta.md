@@ -68,7 +68,7 @@ chain = (
 
 Storage listings with `versions=True` may contain historical object revisions, but `read_storage` returns current objects by filtering `file.is_latest`. The default revision key and comparison fields detect both new revisions and transitions out of the current listing. With `versions=False`, the listing contains only current objects; overwritten revisions disappear from the source and their results are removed. When processing a versioned listing directly with `read_dataset`, retain `file.version` in the key if historical revisions should remain distinct.
 
-## Example: Processing New Files Only
+## Example: Keeping File Results in Sync
 
 ```python
 import datachain as dc
@@ -88,7 +88,7 @@ chain = (
     dc.read_storage(
         "data/",
         update=True,  # Update the storage index
-        delta=True,  # Process only new files
+        delta=True,  # Process new and changed files; remove deleted files' results
         delta_on="file.path",  # Files are identified by their paths
     )
     .map(result=process_file)
@@ -118,9 +118,7 @@ By default, delta updates cannot be combined with the following methods:
 7. `agg`
 8. `group_by`
 
-These methods are restricted because they may produce **unexpected results** when used with delta processing. Delta runs the chain only on a subset of rows (new and changed records), while methods like `distinct`, `agg`, or `group_by` are designed to operate on the entire dataset.
-
-Similarly, combining delta with methods like `merge`, `union`, `subtract`, `diff`, or `file_diff` may produce inconsistent results because the operation is being applied to replayed delta inputs rather than to the full logical datasets.
+These methods can depend on unchanged records as well as changed ones, so replaying only the changed inputs is not always sufficient.
 
 If you still need to use these methods together with delta, you can override this restriction by setting the additional flag:
 
@@ -130,6 +128,6 @@ delta_unsafe = True
 
 If more than one delta-enabled source participates in the same composed query, set `delta_unsafe=True` on every participating delta source.
 
-The full-recompute contract does not extend to `delta_unsafe=True` operations. Multiple delta sources currently require this opt-in and a shared result key. Their changed inputs are replayed together; joins with independently changing sides, cross-record operations, and overlapping source keys can require a full recompute.
+Multiple delta sources require this opt-in and a shared result key. DataChain uses partial replay for joins on that key when the delta sources change the same keys. Independently changing sources, non-key or full joins, and cross-record operations such as `distinct`, aggregation, `limit`, and `offset` fall back to recomputing the full current query. A changed non-delta input also triggers a full recompute.
 
-`delta_unsafe=True` is an advanced option. Use it only when you know the participating delta sources are updated in a consistent way and the result of replaying only the changed rows will still match the result of recomputing the full query.
+**A full recompute can rerun UDFs on unchanged records.** `delta_unsafe=True` keeps the existing key requirements and enables these compositions; it does not guarantee incremental execution. Use a fixed pipeline and retain the configured source-key values in its output.
