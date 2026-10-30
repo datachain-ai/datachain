@@ -1,6 +1,7 @@
 import hashlib
 import math
 from collections.abc import Iterator, Sequence
+from datetime import datetime
 from itertools import islice
 from typing import TYPE_CHECKING, Any
 
@@ -12,7 +13,7 @@ from pyarrow.fs import FileInfo, FileType, FSSpecHandler, PyFileSystem
 
 from datachain import json
 from datachain.fs.reference import ReferenceFileSystem
-from datachain.lib.convert.flatten import classify_field, iter_flat_columns
+from datachain.lib.convert.flatten import classify_field, flatten, iter_flat_columns
 from datachain.lib.data_model import (
     NULLABLE_SCALARS,
     TYPE_TAG_FIELD,
@@ -24,7 +25,7 @@ from datachain.lib.data_model import (
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.udf import Generator
+from datachain.lib.udf import FlatRow, Generator
 from datachain.lib.utils import normalize_col_names
 from datachain.progress import tqdm
 
@@ -128,6 +129,7 @@ class ArrowGenerator(Generator):
         source: bool = True,
         nrows: int | None = None,
         columns: list[str] | None = None,
+        output_from_types: bool = False,
         prefetch_max_size: int | None = None,
         **kwargs,
     ):
@@ -141,6 +143,8 @@ class ArrowGenerator(Generator):
         source : Whether to include info about the source file.
         nrows : Optional row limit per file.
         columns : Optional columns to read from each file by name, in output order.
+        output_from_types : Whether output_schema was built from types alone, with no
+            validators, so rows of plain values can skip it.
         prefetch_max_size : Files larger than this, or of unknown size, aren't
             prefetched.
         kwargs: Parameters to pass to pyarrow.dataset.dataset.
@@ -152,6 +156,7 @@ class ArrowGenerator(Generator):
         self.source = source
         self.nrows = nrows
         self.columns = columns
+        self.output_from_types = output_from_types
         self.parse_options = kwargs.pop("parse_options", None)
         self.kwargs = kwargs
 
@@ -194,10 +199,15 @@ class ArrowGenerator(Generator):
                 "by column names with other files. Read it separately."
             )
 
+        source_kwargs = self._source_kwargs() if self.source else None
         schema = ds.schema
         kw: dict[str, Any] = {}
         if self.nrows:
             kw = {"batch_size": min(self.DEFAULT_BATCH_SIZE, self.nrows)}
+        if (names := self._flat_columns(schema)) is not None:
+            batches = ds.to_batches(columns=names, **kw)
+            yield from self._flat_rows(batches, file, source_kwargs)
+            return
         if self.columns is not None:
             present = set(schema.names)
             kw["columns"] = [c for c in self.columns if c in present]
@@ -216,8 +226,88 @@ class ArrowGenerator(Generator):
         ) as pbar:
             for index, record in enumerate(pbar):
                 yield self._process_record(
-                    record, file, index, hf_schema, use_datachain_schema
+                    record,
+                    file,
+                    index,
+                    hf_schema,
+                    use_datachain_schema,
+                    source_kwargs,
                 )
+
+    def _source_kwargs(self) -> dict[str, Any]:
+        """Return the read options that each row's source keeps."""
+        kwargs = self.kwargs
+        # Can't JSON-serialize CsvFileFormat; may lose formatting options.
+        if isinstance(format := kwargs.get("format"), CsvFileFormat):
+            # Keep the options that split the file into the same rows and
+            # columns, so the row can be found again.
+            read = format.default_fragment_scan_options.read_options
+            parse = format.parse_options
+            # The format doesn't return its handler (ARROW-17641).
+            handler = getattr(self.parse_options, "invalid_row_handler", None)
+            csv = {
+                "read_options": {n: getattr(read, n) for n in _CSV_READ_OPTIONS},
+                "parse_options": {n: getattr(parse, n) for n in _CSV_PARSE_OPTIONS},
+                # A read that finished skipped every invalid row, so the
+                # handler can be replaced by skipping them all.
+                "skip_invalid_rows": handler is not None,
+            }
+            # A copy, so the files read after this one keep their CSV options.
+            kwargs = {**kwargs, "format": "csv", "csv": csv}
+        return kwargs
+
+    def _flat_columns(self, schema: pa.Schema) -> list[str] | None:
+        """Return the columns that the output fields take, when each takes its
+        values as pyarrow gives them. Then no model is built per row. Else None."""
+        model = self.output_schema
+        metadata = schema.metadata or {}
+        if (
+            model is None
+            or not self.output_from_types
+            or DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY in metadata
+            or b"huggingface" in metadata
+        ):
+            return None
+        fields = list(model.model_fields.values())
+        names = (self.columns or schema.names)[: len(fields)]
+        if not fields or len(names) < len(fields):
+            return None
+        for name, field in zip(names, fields, strict=True):
+            i = schema.get_field_index(name)
+            kind = classify_field(field.annotation)
+            if i < 0 or kind.inner is not _plain_type(schema.field(i).type):
+                return None
+        return names
+
+    def _flat_rows(
+        self,
+        batches: Iterator[pa.RecordBatch],
+        file: File,
+        source_kwargs: dict[str, Any] | None,
+    ) -> Iterator[FlatRow]:
+        if source_kwargs is not None:
+            # Every row's source is the same but its index: the file's columns,
+            # the index, then the read options.
+            source = ArrowRow(file=file, index=0, kwargs=source_kwargs)
+            *file_values, _, stored_options = map(_json_text, flatten(source))
+        next_index, remaining = 0, self.nrows
+        with tqdm(
+            desc="Parsed by pyarrow", unit="rows", total=self.nrows, leave=False
+        ) as pbar:
+            for batch in batches:
+                if remaining is not None:
+                    batch = batch.slice(0, remaining)
+                    remaining -= batch.num_rows
+                rows = zip(*(c.to_pylist() for c in batch.columns), strict=True)
+                if source_kwargs is None:
+                    yield from map(FlatRow, rows)
+                else:
+                    for index, values in enumerate(rows, next_index):
+                        yield FlatRow((*file_values, index, stored_options, *values))
+                next_index += batch.num_rows
+                pbar.update(batch.num_rows)
+                if remaining == 0:
+                    break
 
     def _process_record(
         self,
@@ -226,32 +316,15 @@ class ArrowGenerator(Generator):
         index: int,
         hf_schema: tuple["Features", dict[str, "DataType"]] | None,
         use_datachain_schema: bool,
+        source_kwargs: dict[str, Any] | None,
     ):
         if use_datachain_schema and self.output_schema:
             vals = [_nested_model_instantiate(record, self.output_schema)]
         else:
             vals = self._process_non_datachain_record(record, hf_schema)
 
-        if self.source:
-            kwargs = self.kwargs
-            # Can't JSON-serialize CsvFileFormat; may lose formatting options.
-            if isinstance(format := kwargs.get("format"), CsvFileFormat):
-                # Keep the options that split the file into the same rows and
-                # columns, so the row can be found again.
-                read = format.default_fragment_scan_options.read_options
-                parse = format.parse_options
-                # The format doesn't return its handler (ARROW-17641).
-                handler = getattr(self.parse_options, "invalid_row_handler", None)
-                csv = {
-                    "read_options": {n: getattr(read, n) for n in _CSV_READ_OPTIONS},
-                    "parse_options": {n: getattr(parse, n) for n in _CSV_PARSE_OPTIONS},
-                    # A read that finished skipped every invalid row, so the
-                    # handler can be replaced by skipping them all.
-                    "skip_invalid_rows": handler is not None,
-                }
-                # A copy, so the files read after this one keep their CSV options.
-                kwargs = {**kwargs, "format": "csv", "csv": csv}
-            arrow_file = ArrowRow(file=file, index=index, kwargs=kwargs)
+        if source_kwargs is not None:
+            arrow_file = ArrowRow(file=file, index=index, kwargs=source_kwargs)
 
             if self.output_schema and hasattr(vals[0], "source"):
                 # if we are reading parquet file written by datachain it might have
@@ -470,6 +543,36 @@ def _arrow_field_type_mapper(
     if ModelStore.is_pydantic(dtype):
         return dtype
     return dtype | None  # type: ignore[return-value]
+
+
+def _plain_type(col_type: pa.DataType) -> type | None:  # noqa: PLR0911
+    """Return the type of the column's values when pyarrow gives values that
+    pydantic and the DB keep as they are, else None."""
+    if pa.types.is_integer(col_type):
+        return int
+    if pa.types.is_float32(col_type) or pa.types.is_float64(col_type):
+        return float
+    if pa.types.is_boolean(col_type):
+        return bool
+    if pa.types.is_string(col_type) or pa.types.is_large_string(col_type):
+        return str
+    if pa.types.is_binary(col_type):
+        return bytes
+    # pyarrow gives nanoseconds as pandas Timestamps.
+    if pa.types.is_timestamp(col_type) and col_type.unit != "ns":
+        return datetime
+    return None
+
+
+def _json_text(value: Any) -> Any:
+    """Return a dict or list as the JSON text the DB stores, other values as they
+    are."""
+    if not isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, serialize_numpy=True)
+    except TypeError:
+        return value  # the DB conversion reports it
 
 
 def _get_hf_schema(
