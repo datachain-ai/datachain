@@ -2,7 +2,7 @@ import argparse
 import json
 import signal
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
 from utils import dc_import, parse_uri, source_to_https, write_json
@@ -432,7 +432,7 @@ def compute_bucket_metadata(
     from datachain import C, func
 
     parts = parse_uri(uri)
-    now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     try:
         totals = chain.group_by(

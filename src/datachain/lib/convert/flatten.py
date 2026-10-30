@@ -28,8 +28,34 @@ class FieldKind(NamedTuple):
 
 
 def classify_field(annotation: Any) -> FieldKind:
+    try:
+        return _classify_field(annotation)
+    except TypeError:  # rare: e.g. Annotated with dict metadata; the hash fails fast
+        return _classify_field.__wrapped__(annotation)
+
+
+@lru_cache(maxsize=1024)
+def _classify_field(annotation: Any) -> FieldKind:
     inner, is_optional = unwrap_optional(annotation)
     return FieldKind(inner, is_optional, ModelStore.is_pydantic(inner))
+
+
+def _field_kinds(
+    model: type[BaseModel],
+) -> tuple[tuple[str, FieldKind, UnionLayout | None], ...]:
+    if model.__pydantic_complete__:
+        return _complete_field_kinds(model)
+    return _complete_field_kinds.__wrapped__(model)
+
+
+@lru_cache(maxsize=1024)
+def _complete_field_kinds(
+    model: type[BaseModel],
+) -> tuple[tuple[str, FieldKind, UnionLayout | None], ...]:
+    return tuple(
+        (name, classify_field(f.annotation), union_layout(f.annotation))
+        for name, f in model.model_fields.items()
+    )
 
 
 class FlatColumn(NamedTuple):
@@ -67,7 +93,21 @@ def iter_field_columns(anno: Any, path: tuple[str, ...]) -> Iterator[FlatColumn]
 
 
 def flatten(obj: BaseModel) -> tuple:
-    return tuple(_flatten_fields_values(type(obj).model_fields, obj))
+    return tuple(_flatten_model(type(obj), obj, []))
+
+
+def _flatten_model(model: type[BaseModel], obj: BaseModel, out: list) -> list:
+    for name, kind, layout in _field_kinds(model):
+        value = getattr(obj, name)
+        if layout is not None:
+            out.extend(_flatten_union(value, layout))
+        elif not kind.is_model:
+            out.append(_flatten_scalar(value))
+        elif value is None:
+            out.extend(_emit_absent(kind.inner))
+        else:
+            _flatten_model(kind.inner, value, out)
+    return out
 
 
 def union_value_match(obj, anno, cover_names: "Sequence[str]" = ()) -> bool:
@@ -112,7 +152,7 @@ def _flatten_arm(value, arm) -> Generator:
             yield from _emit_absent(fr)
         else:
             # flatten by the declared fields, not the (maybe subclass) instance's
-            yield from _flatten_fields_values(fr.model_fields, value)
+            yield from _flatten_model(fr, value, [])
     else:
         yield _flatten_scalar(value)
 
@@ -183,11 +223,10 @@ def _flatten_scalar(value):
 
 
 def flatten_list(obj_list: list[BaseModel]) -> tuple:
-    return tuple(
-        val
-        for obj in obj_list
-        for val in _flatten_fields_values(type(obj).model_fields, obj)
-    )
+    out: list = []
+    for obj in obj_list:
+        _flatten_model(type(obj), obj, out)
+    return tuple(out)
 
 
 def _flatten_list_field(value: list) -> list:
@@ -209,8 +248,3 @@ def _emit_absent(model: type[BaseModel]) -> Generator:
     """NULL for each of ``model``'s flat columns (an absent/inactive arm's slots)."""
     for _ in iter_flat_columns(model):
         yield None
-
-
-def _flatten_fields_values(fields: dict, obj: BaseModel) -> Generator[Any, None, None]:
-    for name, f_info in fields.items():
-        yield from flatten_value(getattr(obj, name), f_info.annotation)

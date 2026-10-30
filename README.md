@@ -99,7 +99,7 @@ Code harnesses (Claude Code, Cursor, Codex, GitHub Copilot, Pi) give agents repo
 
 A **dataset** is the unit of work - a named, versioned result of a pipeline step like `pets_embeddings@1.0.0`. Every `.save()` registers one.
 
-For the data-flow architecture (Compute Engine, Dataset DB, Knowledge Base) and how the components connect, see [Architecture](https://docs.datachain.ai/architecture/).
+For the data-flow architecture (Compute Engine, Dataset DB, Knowledge Base) and how the components connect, see [Architecture](https://www.datachain.ai/docs/architecture).
 
 
 ## 4. Core concepts
@@ -366,11 +366,11 @@ Bring Your Own Cloud - all data and compute stay in your infrastructure. AWS, GC
 
 ## 9. Contributing
 
-Contributions are very welcome. To learn more, see the [Contributor Guide](https://docs.datachain.ai/contributing).
+Contributions are very welcome. To learn more, see the [Contributor Guide](https://www.datachain.ai/docs/contributing).
 
 ## 10. Community and Support
 
 - [Report an issue](https://github.com/datachain-ai/datachain/issues) if you encounter any problems
-- [Docs](https://docs.datachain.ai/)
+- [Docs](https://www.datachain.ai/docs)
 - [Email](mailto:support@datachain.ai)
 - [Twitter](https://twitter.com/datachain_ai)

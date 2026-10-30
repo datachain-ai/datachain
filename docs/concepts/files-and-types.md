@@ -144,8 +144,9 @@ For external Pydantic models (like Mistral's `ChatCompletionResponse`), register
 
 A field or a signal can hold one of several types. Each type gets its own columns,
 plus a hidden discriminator naming the type a row carries, so values keep their type
-through saving, reading and exporting. `X | None` (the same as `Optional[X]`) is the
-single-type case of the same mechanism.
+through saving and reading datasets. `Model | None` (the same as
+`Optional[Model]`) is the single-model case of the same mechanism. Optional scalar
+fields, such as `str | None`, use a nullable column.
 
 ```python
 import datachain as dc
@@ -184,8 +185,12 @@ seen[1].weight  # 12.5, a float; seen[0].weight is 4, an int
 A union is also a signal type on its own, and a UDF can return one:
 
 ```python
-chain = dc.read_values(value=[42, "hello"], output={"value": int | str})
-chain.map(pet=classify, output={"pet": Cat | Dog})
+def classify(value: int | str) -> Cat | Dog:
+    return Cat(name=str(value)) if isinstance(value, int) else Dog(name=value)
+
+
+values = dc.read_values(value=[42, "hello"], output={"value": int | str})
+classified = values.map(pet=classify, output={"pet": Cat | Dog})
 ```
 
 To reference one of the types, name it in the path; the name can be dropped when a
@@ -198,8 +203,8 @@ chain.filter(dc.func.isnone("sighting.note"))  # rows where the field is None
 ```
 
 `select()`, `distinct()` and `group_by()` carry the whole union, so a value is never
-separated from the type it belongs to; for the same reason a union cannot be a key
-for `diff()` or `subtract()`.
+separated from the type it belongs to. A union cannot be a key for `diff()`;
+`subtract()` supports union keys when both sides have matching column layouts.
 
 Inside a `list` or a `dict` there are no per-element columns — the collection is one
 JSON value — so types that JSON stores alike are rejected when the chain is created:

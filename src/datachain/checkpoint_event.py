@@ -1,10 +1,10 @@
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 
-class CheckpointEventType(str, Enum):
+class CheckpointEventType(StrEnum):
     """Types of checkpoint events."""
 
     # UDF events
@@ -17,7 +17,7 @@ class CheckpointEventType(str, Enum):
     DATASET_SAVE_COMPLETED = "DATASET_SAVE_COMPLETED"
 
 
-class CheckpointStepType(str, Enum):
+class CheckpointStepType(StrEnum):
     """Types of checkpoint steps."""
 
     UDF_MAP = "UDF_MAP"

@@ -12,7 +12,7 @@ from datetime import datetime
 from functools import partial
 from io import BytesIO
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
 
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
@@ -30,8 +30,9 @@ from datachain.sql.types import JSON, Boolean, DateTime, Int, String
 from datachain.utils import TIME_ZERO
 
 if TYPE_CHECKING:
+    from typing import Self
+
     from numpy import ndarray
-    from typing_extensions import Self
 
     from datachain.catalog import Catalog
     from datachain.client.fsspec import Client
@@ -44,12 +45,22 @@ logger = logging.getLogger("datachain")
 
 _SOURCE_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 
+
+_FILE_STATE = {
+    "_catalog": None,
+    "_caching_enabled": False,
+    "_download_cb": DEFAULT_CALLBACK,
+    "_fs_path_cache": None,
+}
+
+
 # how to create file path when exporting
 ExportPlacement = Literal["filename", "etag", "fullpath", "checksum", "filepath"]
 
 FileType = Literal["binary", "text", "image", "video", "audio"]
 EXPORT_FILES_MAX_THREADS = 5
 PARTIAL_READ_BLOCK_SIZE = 1024 * 1024
+TAR_READ_BLOCK_SIZE = 5 * 1024 * 1024
 
 
 class FileExporter(NodesThreadPool):
@@ -64,12 +75,16 @@ class FileExporter(NodesThreadPool):
         max_threads: int = EXPORT_FILES_MAX_THREADS,
         client_config: dict | None = None,
     ):
+        from datachain.client.fsspec import Client
+        from datachain.client.local import FileClient
+
         super().__init__(max_threads)
         self.output = output
         self.placement = placement
         self.use_cache = use_cache
         self.link_type = link_type
         self.client_config = client_config
+        self.is_local = Client.get_implementation(output) is FileClient
 
     def done_task(self, done):
         for task in done:
@@ -78,13 +93,17 @@ class FileExporter(NodesThreadPool):
     def do_task(self, file: "File | None"):
         # a union arm may be a non-File value (e.g. Union[File, str]); skip it
         if isinstance(file, File):
-            file.export(
-                self.output,
-                self.placement,
-                self.use_cache,
-                link_type=self.link_type,
-                client_config=self.client_config,
-            )
+            # a local disk cannot hold an empty path segment
+            if self.is_local and "//" in file._get_destination_suffix(self.placement):
+                logger.warning("File '%s' not exported: path has '//'", file.path)
+            else:
+                file.export(
+                    self.output,
+                    self.placement,
+                    self.use_cache,
+                    link_type=self.link_type,
+                    client_config=self.client_config,
+                )
         self.increase_counter(1)
 
 
@@ -138,6 +157,9 @@ class TarVFile(VFile):
 
         Reads always consult the cache (hit → local, miss → remote stream);
         ``_caching_enabled`` only governs whether a miss is also persisted.
+        Read-ahead defaults to 5 MiB, capped at the member size.
+        Explicit ``block_size`` values are forwarded unchanged.
+        HTTP(S) clients ignore this setting.
         """
         tar_file = cls.parent(file, location)
 
@@ -150,6 +172,8 @@ class TarVFile(VFile):
             raise VFileError("'size' is not specified", file.source, file.path)
 
         client = file._catalog.get_client(tar_file.source)
+        if block_size is None:
+            block_size = min(size, TAR_READ_BLOCK_SIZE)
         fd = client.open_object(tar_file, use_cache=True, block_size=block_size)
         return FileSlice(fd, offset, size, file.name)
 
@@ -327,10 +351,19 @@ class File(DataModel):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._catalog = None
-        self._caching_enabled: bool = False
-        self._download_cb: Callback = DEFAULT_CALLBACK
-        self._fs_path_cache: tuple[str, str, str] | None = None
+        # Annotations only: in the class body the pydantic mypy plugin would take
+        # them for fields.
+        self._caching_enabled: bool
+        self._download_cb: Callback
+        self._fs_path_cache: tuple[str, str, str] | None
+        # The runtime state, set in one __dict__ update: pydantic's __setattr__ per
+        # attribute is slow when millions of Files are built. A subclass that
+        # declares them as private attributes needs pydantic's setattr instead.
+        if _FILE_STATE.keys() & self.__private_attributes__.keys():
+            for name, value in _FILE_STATE.items():
+                setattr(self, name, value)
+        else:
+            self.__dict__.update(_FILE_STATE)
 
     def __getstate__(self):
         state = super().__getstate__()
@@ -551,8 +584,9 @@ class File(DataModel):
         ``write_options`` escape hatch set object metadata on the written
         object (mapped per backend, ignored on the local filesystem).
 
-        ``block_size`` sets the read-ahead block for uncached remote reads, and
-        the upload part size for writes. HTTP(S) reads ignore it.
+        ``block_size`` sets the read-ahead block for uncached remote reads (0
+        turns read-ahead off), and the upload part size for writes. HTTP(S)
+        reads ignore it.
         """
         writing = any(ch in mode for ch in "wax+")
 
@@ -1143,6 +1177,49 @@ class File(DataModel):
             ```
         """
         return rebase_path(self.get_fs_path(), old_base, new_base, suffix, extension)
+
+
+class FileRow(NamedTuple):
+    """A ``File`` as its flat columns, in DB order. Range listings yield these and
+    they go to the DB as they are, so ``File``'s validators don't run on them: the
+    listing clients make valid rows (a scheme in ``source``, no ``location``)."""
+
+    source: str
+    path: str
+    size: int = 0
+    version: str = ""
+    etag: str = ""
+    is_latest: bool = True
+    last_modified: datetime = TIME_ZERO
+    location: dict | list[dict] | None = None
+
+    # File's path helpers, which read only ``path``: no File is built
+    @property
+    def name(self) -> str:
+        return PurePosixPath(self.path).name
+
+    @property
+    def parent(self) -> str:
+        return str(PurePosixPath(self.path).parent)
+
+    def get_file_suffix(self) -> str:
+        return PurePosixPath(self.path).suffix
+
+    def get_file_ext(self) -> str:
+        return PurePosixPath(self.path).suffix.lstrip(".")
+
+    def get_file_stem(self) -> str:
+        return PurePosixPath(self.path).stem
+
+    # File's helpers that need a File: one is built from the row
+    def get_fs_path(self) -> str:
+        return File(**self._asdict()).get_fs_path()
+
+    def get_hash(self) -> str:
+        return File(**self._asdict()).get_hash()
+
+    def rebase(self, *args, **kwargs) -> str:
+        return File(**self._asdict()).rebase(*args, **kwargs)
 
 
 class TextFile(File):
@@ -2072,7 +2149,7 @@ class ArrowRow(DataModel):
         from pyarrow.csv import ParseOptions, ReadOptions
         from pyarrow.dataset import CsvFileFormat, dataset
 
-        from datachain.lib.arrow import fix_pyarrow_format
+        from datachain.lib.arrow import fix_pyarrow_format, pyarrow_fs
 
         kwargs = dict(self.kwargs)
         if csv := kwargs.pop("csv", None):
@@ -2093,7 +2170,8 @@ class ArrowRow(DataModel):
             ds = dataset(path, **kwargs)
         else:
             path = self.file.get_fs_path()
-            ds = dataset(path, filesystem=self.file.get_fs(), **kwargs)
+            fs = pyarrow_fs(self.file, kwargs.get("format"))
+            ds = dataset(path, filesystem=fs, **kwargs)
 
         return ds.take([self.index]).to_reader()
 

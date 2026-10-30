@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from enum import Enum
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from datachain.func import case, ifelse, isnone, or_
@@ -17,7 +17,7 @@ LEFT_DIFF_COL_NAME = "diff_95f95344064a4b819c8625cd1a5cfc2b"
 RIGHT_DIFF_COL_NAME = "diff_5808838a49b54849aa461d7387376d34"
 
 
-class CompareStatus(str, Enum):
+class CompareStatus(StrEnum):
     ADDED = "A"
     DELETED = "D"
     MODIFIED = "M"

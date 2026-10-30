@@ -560,7 +560,9 @@ class Func(Function):  # noqa: PLW1641
                     f"Window function {self} requires over() clause with a window spec",
                 )
             order_by = self._window_col(self.window.order_by, signals_schema)
-            ordering = desc(order_by) if self.window.desc else asc(order_by)
+            ordering: ColumnElement[Any] = (
+                desc(order_by) if self.window.desc else asc(order_by)
+            )
             # NULLS LAST so window ordering matches across backends (SQLite
             # orders NULLs first by default, ClickHouse last).
             result = result.over(

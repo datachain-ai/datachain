@@ -124,10 +124,11 @@ SIMILARITY_SCORE_COL_NAME = "sim_a4f74e9a"
 
 if TYPE_CHECKING:
     import sqlite3
+    from typing import Self
 
     import pandas as pd
     from sqlalchemy.orm import Session as OrmSession
-    from typing_extensions import ParamSpec, Self
+    from typing_extensions import ParamSpec
 
     from datachain.lib.settings import LLMParams
 
@@ -521,7 +522,7 @@ class DataChain:
                 processing by UDFs. Defaults to 1.
             batch_size: Number of rows per insert by UDF to fine tune and balance speed
                 and memory usage. This might be useful when processing large rows
-                or when running into memory issues. Defaults to 2000.
+                or when running into memory issues. Defaults to 10,000.
             ephemeral: If True, no persistent objects are created in the metastore
                 (no jobs, checkpoints, or datasets). UDF execution still uses
                 temporary tables. Calling .save() in ephemeral mode will raise
@@ -912,7 +913,6 @@ class DataChain:
                 )
 
             # Link current job to this dataset version (not creator).
-            # This also updates dataset_version.job_id.
             metastore.link_dataset_version_to_job(
                 dataset_version.id,
                 self.job.id,
@@ -1430,7 +1430,9 @@ class DataChain:
             if wrapped is not None:
                 resolved.append(wrapped)
             elif descending:
-                resolved.append(sqlalchemy.desc(arg))
+                resolved.append(
+                    sqlalchemy.desc(Column(arg) if isinstance(arg, str) else arg)
+                )
             else:
                 resolved.append(arg)
 
@@ -2598,49 +2600,61 @@ class DataChain:
         model_name: str = "",
         source: bool = True,
         nrows: int | None = None,
+        columns: Sequence[str] | None = None,
         **kwargs: Any,
     ) -> "Self":
-        """Generate chain from list of tabular files.
+        """Generate chain from a list of tabular files.
 
         Parameters:
-            output: Dictionary or feature class defining column names and their
-                corresponding types. List of column names is also accepted, in which
-                case types will be inferred.
+            output: Result names and Python types as a dictionary or Pydantic model.
+                A list of names infers types. Fields map by position, with exactly one
+                field per column read. Use `columns` to select inputs by name.
+                Omit to infer names and types or restore a saved DataChain schema.
             column: Generated column name.
             model_name: Generated model name.
             source: Whether to include info about the source file.
-            nrows: Optional row limit.
+            nrows: Optional row limit per file.
+            columns: Input columns to read, in order; all if omitted. Accepts original
+                or normalized names, e.g. "ZIP Code" or "zip_code". For Parquet exported
+                by DataChain, omit this parameter and use `.select(...)` after parsing.
             kwargs: Parameters to pass to pyarrow.dataset.dataset.
 
         Example:
-            Reading a json lines file:
-            ```py
-            import datachain as dc
-            chain = dc.read_storage("s3://mybucket/file.jsonl")
-            chain = chain.parse_tabular(format="json")
-            ```
-
-            Reading a filtered list of files as a dataset:
+            Parse a filtered list of JSONL files:
             ```py
             import datachain as dc
 
-            chain = dc.read_storage("s3://mybucket")
+            chain = dc.read_storage("s3://mybucket/")
             chain = chain.filter(dc.C("file.path").glob("*.jsonl"))
             chain = chain.parse_tabular(format="json")
             ```
+
+            Select and rename columns from ordinary Parquet files with `a, b, c`:
+            ```py
+            chain = dc.read_storage("s3://mybucket/*.parquet").parse_tabular(
+                format="parquet", columns=["c", "a"], output={"x": float, "y": float}
+            )  # x receives c; y receives a
+            ```
         """
+        import pyarrow as pa
         from pyarrow.dataset import CsvFileFormat, JsonFileFormat
 
         from datachain.lib.arrow import (
+            PARTIAL_READ_PREFETCH_MAX_SIZE,
             ArrowGenerator,
+            file_schemas,
             fix_pyarrow_format,
-            infer_schema,
+            is_parquet,
+            merge_schemas,
+            read_columns,
             schema_to_output,
         )
 
         parse_options = kwargs.pop("parse_options", None)
-        if format := kwargs.get("format"):
-            kwargs["format"] = fix_pyarrow_format(format, parse_options)
+        # pyarrow reads Parquet when no format is given.
+        format = kwargs["format"] = fix_pyarrow_format(
+            kwargs.get("format") or "parquet", parse_options
+        )
 
         if (
             nrows
@@ -2656,21 +2670,29 @@ class DataChain:
         if "file" not in self.schema or not self.count():
             raise DatasetPrepareError(self.name, "no files to parse.")
 
-        schema = None
+        schema, read = None, None
         col_names = output if isinstance(output, Sequence) else None
-        if col_names or not output:
-            try:
-                schema = infer_schema(self, **kwargs, parse_options=parse_options)
-                output, _ = schema_to_output(schema, col_names)
-            except ValueError as e:
-                raise DatasetPrepareError(self.name, e) from e
+        infer = bool(col_names) or not output
+        try:
+            if infer:
+                schemas = file_schemas(self, **kwargs, parse_options=parse_options)
+                schema, names = merge_schemas(schemas, columns)
+                output, _ = schema_to_output(schema, col_names or names)
 
-        if isinstance(output, dict):
-            model_name = model_name or column or ""
-            model = dict_to_data_model(model_name, output)
-            output = model
-        else:
-            model = output  # type: ignore[assignment]
+            if isinstance(output, dict):
+                model_name = model_name or column or ""
+                model = dict_to_data_model(model_name, output)
+                output = model
+            else:
+                model = output  # type: ignore[assignment]
+
+            if not infer:
+                fields = len(model.model_fields)
+                read = read_columns(
+                    self, columns, fields, **kwargs, parse_options=parse_options
+                )
+        except (ValueError, pa.ArrowTypeError) as e:
+            raise DatasetPrepareError(self.name, e) from e
 
         if column:
             output = {column: model}  # type: ignore[dict-item]
@@ -2683,15 +2705,17 @@ class DataChain:
         if source:
             output = {"source": ArrowRow} | output  # type: ignore[assignment,operator]
 
-        # disable prefetch if nrows is set
-        settings = {"prefetch": 0} if nrows else {}
-        return self.settings(**settings).gen(  # type: ignore[arg-type]
+        # Prefetch downloads whole files, so a partial read prefetches only small ones.
+        partial = nrows or (columns is not None and is_parquet(format))
+        return self.gen(  # type: ignore[arg-type]
             ArrowGenerator(
                 schema,
                 model,
                 source,
                 nrows,
+                columns=read,
                 parse_options=parse_options,
+                prefetch_max_size=PARTIAL_READ_PREFETCH_MAX_SIZE if partial else None,
                 **kwargs,
             ),
             output=output,

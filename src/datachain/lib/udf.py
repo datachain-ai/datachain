@@ -22,7 +22,7 @@ from datachain.lib.convert.flatten import (
     flatten_value,
     union_value_match,
 )
-from datachain.lib.file import File, FileError
+from datachain.lib.file import File, FileError, FileRow
 from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.utils import AbstractUDF, DataChainParamsError
 from datachain.query.batch import (
@@ -39,8 +39,7 @@ logger = logging.getLogger("datachain")
 if TYPE_CHECKING:
     from collections import abc
     from contextlib import AbstractContextManager
-
-    from typing_extensions import Self
+    from typing import Self
 
     from datachain.cache import Cache
     from datachain.catalog import Catalog
@@ -429,6 +428,15 @@ class UDFBase(AbstractUDF):
             return flatten_value(row, single_type)
         return tuple(self._obj_to_list(row))
 
+    def _file_row_output(self) -> bool:
+        """Whether a ``FileRow`` is a whole output row: one output with
+        ``FileRow``'s columns. Listing's fast path: its rows are stored as they
+        come, without a ``File`` built and flattened per row."""
+        if len(self.output.values) != 1:
+            return False
+        name = next(iter(self.output.values))
+        return list(self.signal_names) == [f"{name}__{f}" for f in FileRow._fields]
+
     @staticmethod
     def _obj_to_list(obj):
         return flatten(obj) if isinstance(obj, BaseModel) else [obj]
@@ -459,9 +467,14 @@ async def _prefetch_input(
     row: T,
     download_cb: Callback | None = None,
     after_prefetch: "Callable[[], None]" = noop,
+    max_size: int | None = None,
 ) -> T:
     for obj in row:
-        if isinstance(obj, File) and obj.path:
+        if (
+            isinstance(obj, File)
+            and obj.path
+            and (max_size is None or 0 < obj.size <= max_size)
+        ):
             try:
                 if await obj._prefetch(download_cb):
                     after_prefetch()
@@ -489,6 +502,7 @@ def _prefetch_inputs(
     download_cb: Callback | None = None,
     after_prefetch: Callable[[], None] | None = None,
     remove_prefetched: bool = False,
+    max_size: int | None = None,
 ) -> "abc.Generator[T, None, None]":
     if not prefetch:
         yield from prepared_inputs
@@ -500,7 +514,12 @@ def _prefetch_inputs(
             increment_file_count: Callable[[], None] = download_cb.increment_file_count
             after_prefetch = increment_file_count
 
-    f = partial(_prefetch_input, download_cb=download_cb, after_prefetch=after_prefetch)
+    f = partial(
+        _prefetch_input,
+        download_cb=download_cb,
+        after_prefetch=after_prefetch,
+        max_size=max_size,
+    )
     mapper = AsyncMapper(f, prepared_inputs, workers=prefetch)
     with closing(mapper.iterate()) as row_iter:
         for row in row_iter:
@@ -543,6 +562,7 @@ class Mapper(UDFBase):
         processed_cb: Callback = DEFAULT_CALLBACK,
     ) -> Iterator[Iterable[UDFResult]]:
         self.setup()
+        signal_names = list(self.signal_names)
 
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
             with safe_closing(udf_inputs):
@@ -564,8 +584,7 @@ class Mapper(UDFBase):
                 result_objs = self.process(*udf_args)
                 udf_output = self._flatten_row(result_objs)
                 output = [
-                    {"sys__id": id_}
-                    | dict(zip(self.signal_names, udf_output, strict=False))
+                    {"sys__id": id_} | dict(zip(signal_names, udf_output, strict=False))
                 ]
                 processed_cb.relative_update(1)
                 yield output
@@ -759,6 +778,7 @@ class Generator(UDFBase):
 
     is_output_batched = True
     prefetch: int = 2
+    prefetch_max_size: int | None = None
 
     def run(
         self,
@@ -770,6 +790,8 @@ class Generator(UDFBase):
         processed_cb: Callback = DEFAULT_CALLBACK,
     ) -> Iterator[Iterable[UDFResult]]:
         self.setup()
+        signal_names = list(self.signal_names)
+        file_row = FileRow if self._file_row_output() else None
 
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
             with safe_closing(udf_inputs):
@@ -787,8 +809,11 @@ class Generator(UDFBase):
             with safe_closing(result) as result_objs:
                 for result_obj, is_last in with_last_flag(result_objs):
                     has_output = True
+                    if type(result_obj) is file_row:
+                        yield result_obj + (row_id, not is_last, None)  # noqa: RUF005
+                        continue
                     udf_output = self._flatten_row(result_obj)
-                    udf_output = dict(zip(self.signal_names, udf_output, strict=False))
+                    udf_output = dict(zip(signal_names, udf_output, strict=False))
                     udf_output["sys__input_id"] = row_id
                     udf_output["sys__partial"] = not is_last
                     udf_output["sys__empty"] = None
@@ -807,6 +832,7 @@ class Generator(UDFBase):
             self.prefetch,
             download_cb=download_cb,
             remove_prefetched=bool(self.prefetch) and not cache,
+            max_size=self.prefetch_max_size,
         )
 
         with closing(prepared_inputs):
@@ -835,6 +861,7 @@ class Aggregator(UDFBase):
         from datachain.data_storage.schema import PARTITION_COLUMN_ID
 
         self.setup()
+        signal_names = list(self.signal_names)
 
         # Check if partition_id is available (when partition_by is used)
         partition_id_idx = None
@@ -867,7 +894,7 @@ class Aggregator(UDFBase):
                 has_output = False
                 for row, is_last in with_last_flag(udf_outputs):
                     has_output = True
-                    udf_output = dict(zip(self.signal_names, row, strict=False))
+                    udf_output = dict(zip(signal_names, row, strict=False))
                     udf_output["sys__input_id"] = input_id
                     udf_output["sys__partial"] = not is_last
                     udf_output["sys__empty"] = None

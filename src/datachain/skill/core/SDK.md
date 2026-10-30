@@ -453,6 +453,20 @@ dc.read_dataset("name")  # latest version
 dc.read_dataset("name", version="2.0.0")
 ```
 
+**CSV and Parquet columns.** Use `columns=[...]` on `read_csv()`, `read_parquet()`, or `parse_tabular()` to select input columns in that order. It accepts original or normalized input names (`"ZIP Code"` or `"zip_code"`); unknown or repeated columns are errors. `output={name: type, ...}` assigns result names and Python types by dictionary insertion order, not by matching input names. It must have one field per column read: the selected columns with `columns=`, or all input columns by default, taken from the first file by path (trailing partition or pandas index columns may be left out). CSV and `parse_tabular()` also accept a model (field order) or a list of names (types inferred). Omit `output` to infer names and types.
+
+```python
+# Ordinary Parquet file with columns a, b, c
+dc.read_parquet("s3://bucket/data.parquet", columns=["c"])
+dc.read_parquet(
+    "s3://bucket/data.parquet",
+    columns=["c", "a"],
+    output={"x": float, "y": float},
+)  # x receives c; y receives a
+```
+
+`output={"c": float}` alone on a three-column file raises an error; use `columns=["c"]` to select c. CSV's `column_types` controls parsing by input name before normalization or output renaming, e.g. `column_types={"ZIP Code": "string"}` preserves leading zeros. It does not select columns. With `header=False`, `columns` uses `f0`, `f1`, etc.; `output` can rename the selection. Without `columns`, a headerless CSV requires `output` naming every column. Parquet exported by DataChain restores its saved schema and rejects `columns`; read it on its own and use `.select(...)`.
+
 **Data Memory (SQL, fast).** `C` = `dc.C`, `func` = `dc.func`.
 
 ```python

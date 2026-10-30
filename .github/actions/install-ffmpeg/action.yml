@@ -1,0 +1,40 @@
+name: Install FFmpeg on Ubuntu
+description: >-
+  Installs FFmpeg with apt-get and keeps the downloaded packages in the Actions
+  cache, so a slow Ubuntu mirror doesn't stall the job.
+runs:
+  using: composite
+  steps:
+    - name: Get the runner image
+      id: image
+      shell: bash
+      run: echo "version=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+
+    # A new runner image starts from the previous image's packages and saves a
+    # refreshed copy under its own key.
+    - name: Restore FFmpeg packages
+      id: cache
+      uses: actions/cache/restore@v6
+      with:
+        path: ~/.cache/apt-archives
+        key: ffmpeg-debs-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.version }}
+        restore-keys: ffmpeg-debs-${{ runner.os }}-${{ runner.arch }}-
+
+    - name: Install FFmpeg
+      shell: bash
+      run: |
+        archives="$HOME/.cache/apt-archives"
+        mkdir -p "$archives/partial"
+        sudo apt-get update
+        sudo apt-get install -y -o Dir::Cache::Archives="$archives" \
+          -o APT::Keep-Downloaded-Packages=true ffmpeg
+        sudo apt-get -o Dir::Cache::Archives="$archives" autoclean
+        sudo chown -R "$USER" "$archives"
+
+    # Saved right away, so a later failure in the job doesn't lose it.
+    - name: Save FFmpeg packages
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ~/.cache/apt-archives
+        key: ${{ steps.cache.outputs.cache-primary-key }}

@@ -59,7 +59,7 @@ jobs:
           STUDIO_READ_ACCESS_TOKEN: ${{ secrets.ITERATIVE_STUDIO_READ_ACCESS_TOKEN }}
         run: |
           echo "DataChain branch: $BRANCH"
-          if git ls-remote --heads https://"$STUDIO_READ_ACCESS_TOKEN"@github.com/datachain-ai/studio.git "$BRANCH" | grep -F "$BRANCH" 2>&1>/dev/null
+          if git ls-remote --heads https://x-access-token:"$STUDIO_READ_ACCESS_TOKEN"@github.com/datachain-ai/studio.git "$BRANCH" | grep -F "$BRANCH" 2>&1>/dev/null
           then
               STUDIO_BRANCH="$BRANCH"
           else
@@ -107,9 +107,7 @@ jobs:
 
       - name: Install FFmpeg
         timeout-minutes: 10
-        run: |
-          sudo apt update
-          sudo apt install -y ffmpeg
+        uses: ./datachain/.github/actions/install-ffmpeg
 
       - name: Install dependencies
         run: uv pip install --system ./datachain_saas[tests] ./datachain[tests]
@@ -143,6 +141,9 @@ jobs:
           uv venv --python "$PYTHON_VERSION" "${DATACHAIN_VENV_DIR}/default"
           uv pip install -r ./compute/requirements-worker-venv.txt \
             --find-links="$pip_wheel_dir" \
+            --cache-dir="${DATACHAIN_VENV_DIR}/.cache/uv" \
+            -p "${DATACHAIN_VENV_DIR}/default/bin/python"
+          uv pip install ./datachain \
             --cache-dir="${DATACHAIN_VENV_DIR}/.cache/uv" \
             -p "${DATACHAIN_VENV_DIR}/default/bin/python"
 

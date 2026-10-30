@@ -9,10 +9,10 @@ import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from copy import copy
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import wraps
 from types import GeneratorType
-from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, Protocol, TypeVar, cast
 from uuid import uuid4
 
 import attrs
@@ -24,7 +24,12 @@ from sqlalchemy import Column
 from sqlalchemy.sql import func as f
 from sqlalchemy.sql.elements import ColumnClause, ColumnElement, Label
 from sqlalchemy.sql.expression import label
-from sqlalchemy.sql.selectable import GenerativeSelect, Select, TableClause
+from sqlalchemy.sql.selectable import (
+    GenerativeSelect,
+    Select,
+    SelectBase,
+    TableClause,
+)
 from sqlalchemy.sql.visitors import replacement_traverse
 
 from datachain.catalog.catalog import clone_catalog_with_cache
@@ -50,7 +55,7 @@ from datachain.func.base import Function
 from datachain.hash_utils import hash_column_elements
 from datachain.job import Job
 from datachain.lib.data_model import NULLABLE_SCALARS
-from datachain.lib.listing import is_listing_dataset, listing_dataset_expired
+from datachain.lib.listing import ensure_listing, is_listing_dataset
 from datachain.lib.signal_schema import SignalSchema, generate_merge_root_mapping
 from datachain.lib.udf import JsonSerializationError, UdfError, _get_cache
 from datachain.lib.utils import type_to_str
@@ -77,11 +82,11 @@ from datachain.utils import (
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
-    from typing import Concatenate
+    from typing import Concatenate, Self
 
     from sqlalchemy.sql.elements import KeyedColumnElement
     from sqlalchemy.sql.schema import Table
-    from typing_extensions import ParamSpec, Self
+    from typing_extensions import ParamSpec
 
     from datachain.catalog import Catalog
     from datachain.data_storage import AbstractWarehouse
@@ -160,6 +165,39 @@ def step_result(
     return StepResult(
         query_generator=QueryGenerator(func=func, columns=tuple(columns)),
         dependencies=tuple(dependencies),
+    )
+
+
+def _bind_shared_names(cols: Iterable[Any], query: Select) -> tuple[Any, ...]:
+    """Bind bare names that several of the query's sources have, like both
+    sides of a join, to the columns the query selects under those names."""
+    seen: set[str] = set()
+    shared: set[str] = set()
+    for source in query.columns_clause_froms:
+        shared |= seen & set(source.c.keys())
+        seen |= set(source.c.keys())
+    names = {
+        name: c.element if isinstance(c, Label) else c
+        for name, c in query.selected_columns.items()
+        if name in shared
+    }
+    if not names:
+        return tuple(cols)
+
+    def bind(element, **_kwargs):
+        # A nested SELECT resolves names against its own FROM. Artificial for
+        # now: only hand-written SQLAlchemy puts one in these clauses.
+        if isinstance(element, SelectBase):
+            return element
+        if isinstance(element, C) and element.table is None:
+            return names.get(element.name)
+        return None
+
+    return tuple(
+        names.get(C(c).name, c)
+        if isinstance(c, str)
+        else replacement_traverse(c, {}, bind)
+        for c in cols
     )
 
 
@@ -450,10 +488,19 @@ class Subtract(DatasetDiffOperation):
         )
 
 
+class ColType(NamedTuple):
+    name: str
+    sql_type: SQLType
+    python_type: type
+    type_name: str
+    default: Any
+    kept_as_is: bool  # a value of python_type goes in unconverted
+
+
 def adjust_outputs(
     warehouse: "AbstractWarehouse",
     row: dict[str, Any],
-    col_types: list[tuple[str, SQLType, type, str, Any]],
+    col_types: list[ColType],
     signal_schema: SignalSchema,
     udf_kind: str | None = None,
 ) -> dict[str, Any]:
@@ -471,6 +518,7 @@ def adjust_outputs(
         col_python_type,
         col_type_name,
         default_value,
+        kept_as_is,
     ) in col_types:
         # Fill missing values with defaults
         if col_name not in row:
@@ -482,6 +530,9 @@ def adjust_outputs(
         # Fill explicit None values with defaults
         if row_val is None:
             row[col_name] = default_value
+            continue
+
+        if kept_as_is and type(row_val) is col_python_type:
             continue
 
         # Validate and convert type if needed and possible
@@ -530,23 +581,55 @@ def adjust_outputs(
 
 def get_col_types(
     warehouse: "AbstractWarehouse", output: "Mapping[str, Any]"
-) -> list[tuple]:
-    """Optimization: Precompute column types so these don't have to be computed
-    in the convert_type function for each row in a loop."""
+) -> list[ColType]:
+    """Column types, computed once per run rather than once per row."""
+    from datachain.data_storage.warehouse import AbstractWarehouse
+
     dialect = warehouse.db.dialect
-    return [
-        (
-            col_name,
-            # Check if type is already instantiated or not
-            col_type_inst := col_type() if isinstance(col_type, type) else col_type,
-            warehouse.python_type(col_type_inst),
-            type(col_type_inst).__name__,
+    # a warehouse's own convert_type sees every value
+    exact = type(warehouse).convert_type is AbstractWarehouse.convert_type
+    col_types = []
+    for name, col_type in output.items():
+        sql_type = col_type() if isinstance(col_type, type) else col_type
+        python_type = warehouse.python_type(sql_type)
+        type_name = type(sql_type).__name__
+        default = (
             None
-            if getattr(col_type_inst, "dc_nullable", False)
-            else col_type.default_value(dialect),
+            if getattr(sql_type, "dc_nullable", False)
+            else col_type.default_value(dialect)
         )
-        for col_name, col_type in output.items()
+        kept_as_is = exact and python_type not in (list, dict) and type_name != "JSON"
+        col_types.append(
+            ColType(name, sql_type, python_type, type_name, default, kept_as_is)
+        )
+    return col_types
+
+
+def _tuple_adjuster(col_types: list[ColType]) -> Callable[[tuple], tuple | None]:
+    """For a gen row of the output columns, then ``sys__input_id``,
+    ``sys__partial`` and ``sys__empty``: the row with column defaults in place of
+    None, or None when ``adjust_outputs`` must convert it."""
+    kept_types = [
+        frozenset({type(None), c.python_type} if c.kept_as_is else {type(None)})
+        for c in col_types
     ]
+    defaults = [
+        (i, c.default) for i, c in enumerate(col_types) if c.default is not None
+    ]
+
+    def adjust(row: tuple) -> tuple | None:
+        # map stops at the output columns: the sys values are the generator's own
+        if not all(map(frozenset.__contains__, kept_types, map(type, row))):
+            return None
+        if not defaults:
+            return row
+        values = list(row)
+        for i, default in defaults:
+            if values[i] is None:
+                values[i] = default
+        return tuple(values)
+
+    return adjust
 
 
 def process_udf_outputs(
@@ -569,6 +652,13 @@ def process_udf_outputs(
     else:
         udf_kind = "map"
 
+    if udf_kind == "map":
+        columns = ["sys__id", *udf.output]
+    else:
+        columns = [*udf.output, "sys__input_id", "sys__partial", "sys__empty"]
+
+    adjust_tuple = _tuple_adjuster(udf_col_types)
+
     def _insert_rows():
         for udf_output in udf_results:
             if not udf_output:
@@ -577,21 +667,28 @@ def process_udf_outputs(
             with safe_closing(udf_output):
                 for row in udf_output:
                     cb.relative_update()
-                    yield adjust_outputs(
+                    if type(row) is tuple:
+                        if (
+                            udf_kind != "map"
+                            and (fast := adjust_tuple(row)) is not None
+                        ):
+                            yield fast
+                            continue
+                        row = dict(zip(columns, row, strict=True))
+                    row = adjust_outputs(
                         warehouse,
                         row,
                         udf_col_types,
                         udf_signal_schema,
                         udf_kind=udf_kind,
                     )
+                    yield tuple(map(row.__getitem__, columns))
 
+    rows = _insert_rows()
     try:
-        warehouse.insert_rows(
-            udf_table,
-            _insert_rows(),
-            batch_size=batch_size,
-        )
+        warehouse.insert_tuples(udf_table, columns, rows, batch_size=batch_size)
     finally:
+        rows.close()  # an error mid-insert closes the UDF's outputs now, not at GC
         # Always flush the buffer even if an exception occurs
         # This ensures partial results are visible for checkpoint continuation
         warehouse.insert_rows_done(udf_table)
@@ -2028,7 +2125,7 @@ class SQLFilter(SQLClause):
 
     def apply_sql_clause(self, query: Select) -> Select:
         expressions = self.parse_cols(self.expressions)
-        return query.filter(*expressions)
+        return query.filter(*_bind_shared_names(expressions, query))
 
     def requires_boundary(self, state: "QueryState") -> bool:
         # WHERE applied after GROUP BY / LIMIT / OFFSET / DISTINCT would filter
@@ -2050,7 +2147,7 @@ class SQLOrderBy(SQLClause):
 
     def apply_sql_clause(self, query: Select) -> Select:
         args = self.parse_cols(self.args)
-        return query.order_by(*args)
+        return query.order_by(*_bind_shared_names(args, query))
 
     def requires_boundary(self, state: "QueryState") -> bool:
         # Re-ordering after LIMIT/OFFSET would change which rows are kept.
@@ -2118,10 +2215,11 @@ class SQLDistinct(SQLClause):
         return hash_column_elements(self.args)
 
     def apply_sql_clause(self, query):
+        args = _bind_shared_names(self.args, query)
         if self.dialect == "sqlite":
-            return query.group_by(*self.args)
+            return query.group_by(*args)
 
-        return query.distinct(*self.args)
+        return query.distinct(*args)
 
     def requires_boundary(self, state: "QueryState") -> bool:
         # DISTINCT after GROUP BY / LIMIT / OFFSET should de-duplicate the
@@ -2578,7 +2676,9 @@ class DatasetQuery:
         checkpoints_enabled: bool = True,
     ) -> None:
         self.session = Session.get(session, catalog=catalog, in_memory=in_memory)
-        self.catalog = catalog or self.session.catalog
+        if catalog is not None and catalog is not self.session.catalog:
+            self.session = self.session._with_catalog(catalog)
+        self.catalog = self.session.catalog
         self.steps: list[Step] = list(steps)
         self._chunk_index: int | None = None
         self._chunk_total: int | None = None
@@ -2727,24 +2827,9 @@ class DatasetQuery:
     def resolve_listing(self) -> None:
         """Runs listing pre-step if needed"""
         if self.list_ds_name and not self.starting_step:
-            listing_ds = None
-            try:
-                listing_ds = self.catalog.get_dataset(
-                    self.list_ds_name,
-                    versions=None,
-                    include_incomplete=False,
-                )
-            except DatasetNotFoundError:
-                pass
-
-            if not listing_ds or self.update or listing_dataset_expired(listing_ds):
-                assert self.listing_fn
-                self.listing_fn()
-                listing_ds = self.catalog.get_dataset(
-                    self.list_ds_name,
-                    versions=None,
-                    include_incomplete=False,
-                )
+            listing_ds = ensure_listing(
+                self.list_ds_name, self.catalog, self.listing_fn, update=self.update
+            )
 
             # at this point we know what is our starting listing dataset name
             self._set_starting_step(listing_ds)  # type: ignore [arg-type]
@@ -3109,7 +3194,6 @@ class DatasetQuery:
         right = dataset_query.clone()
         return DatasetQuery(
             session=self.session,
-            catalog=self.catalog,
             steps=[SQLUnion(left, right)],
             checkpoints_enabled=self.checkpoints_enabled,
         )
@@ -3136,7 +3220,6 @@ class DatasetQuery:
         )
         return DatasetQuery(
             session=self.session,
-            catalog=self.catalog,
             steps=[SQLJoin(self.catalog, left, right, predicates, inner, full, rname)],
             checkpoints_enabled=self.checkpoints_enabled,
         )
@@ -3432,7 +3515,7 @@ class DatasetQuery:
             namespace_name=project.namespace.name,
             project_name=project.name,
             version=version,
-            catalog=self.catalog,
+            session=self.session,
         )
 
     def _reuse_listing_if_unchanged(
@@ -3467,14 +3550,14 @@ class DatasetQuery:
         self.catalog.remove_dataset_version(full_dataset, version, keep_metadata=False)
         # updating TTL of a bucket listing
         self.catalog.metastore.update_dataset_version(
-            full_dataset, prev_version, finished_at=datetime.now(timezone.utc)
+            full_dataset, prev_version, finished_at=datetime.now(UTC)
         )
         return self.__class__(
             name=name,
             namespace_name=project.namespace.name,
             project_name=project.name,
             version=prev_version,
-            catalog=self.catalog,
+            session=self.session,
         )
 
     @property

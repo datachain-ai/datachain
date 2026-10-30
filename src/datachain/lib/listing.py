@@ -1,32 +1,40 @@
+import functools
 import glob
 import logging
 import os
 import posixpath
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, TypeVar
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, TypeVar, cast
 
-from fsspec.asyn import get_loop
-from sqlalchemy.sql.expression import true
+from fsspec.asyn import get_loop, sync
+from sqlalchemy.sql.expression import or_, true
 
 import datachain.fs.utils as fsutils
 from datachain.asyn import iter_over_async
 from datachain.client import Client
-from datachain.error import ClientError
-from datachain.lib.file import File
+from datachain.error import ClientError, DatasetNotFoundError
+from datachain.lib.convert.flatten import flatten
+from datachain.lib.file import File, FileRow
 from datachain.query.schema import C, Column
 from datachain.sql.functions import path as pathfunc
 from datachain.utils import uses_glob
 
 if TYPE_CHECKING:
+    from sqlalchemy import ColumnElement
+
+    from datachain.catalog import Catalog
+    from datachain.client.fsspec import RangeListedClient
     from datachain.dataset import DatasetRecord
     from datachain.lib.dc import DataChain
     from datachain.query.session import Session
 
 LISTING_TTL = 4 * 60 * 60  # cached listing lasts 4 hours
 LISTING_PREFIX = "lst__"  # listing datasets start with this name
+LISTING_BATCH_SIZE = 50_000  # rows per insert: listing rows are small
 # listing of current objects only, read_storage(versions=False)
 CURRENT_LISTING_PREFIX = f"{LISTING_PREFIX}current__"
 
@@ -38,11 +46,11 @@ logging.getLogger("gcsfs").setLevel(logging.CRITICAL)
 
 
 def calc_fingerprint(session: "Session", dataset: "DatasetRecord", version: str) -> int:
-    """Compute an order-independent content fingerprint for a listing version.
+    """Return an order-independent fingerprint of a listing version.
 
-    Uses file path + version (if available) or etag as the content identifier.
-    Version is preferred over etag because etags can be unstable on some cloud
-    providers (GCS, Azure) due to internal operations like storage class changes.
+    Each file adds its path, its version id (or etag if it has none), its size and
+    whether it is the latest version. The etag is added too, unless the storage
+    never replaces the bytes at a version id.
     """
     # Inline imports: lib.listing sits below lib.dc / query.dataset / func in the
     # import graph (catalog.catalog imports this module during init), so hoisting
@@ -69,8 +77,14 @@ def calc_fingerprint(session: "Session", dataset: "DatasetRecord", version: str)
         (C("file.version") != "", C("file.version")),
         else_=C("file.etag"),
     )
+    client_cls = Client.get_implementation(listing_uri_from_name(dataset.name))
+    etag = () if client_cls.PINNED_VERSION_IS_IMMUTABLE else (C("file.etag"),)
     return chain.group_by(  # type: ignore[return-value]
-        fp=xor_agg(string_hash(C("file.path"), identifier)),
+        fp=xor_agg(
+            string_hash(
+                C("file.path"), identifier, C("file.size"), C("file.is_latest"), *etag
+            )
+        ),
     ).to_values("fp")[0]
 
 
@@ -81,21 +95,67 @@ def listing_dataset_expired(lst_ds) -> bool:
         return False
 
     expires = lst_version.finished_at + timedelta(seconds=LISTING_TTL)
-    return datetime.now(timezone.utc) > expires
+    return datetime.now(UTC) > expires
+
+
+def list_pages(uri: str, cache, client_config=None) -> Iterator[Sequence[tuple]]:
+    """Pages of ``FileRow`` rows of every object under the ``uri`` prefix."""
+    config = client_config or {}
+    client = Client.get_client(uri, cache, **config)  # type: ignore[arg-type]
+    _, path = Client.parse_url(uri)
+    pages = client.scandir(path.rstrip("/"))
+    for page in iter_over_async(pages, get_loop()):
+        yield [*map(file_row, page)] if page and isinstance(page[0], File) else page
+
+
+def list_scope_pages(
+    uri: str, scope: "ListScope", cache, client_config=None
+) -> Iterator[Sequence[tuple]]:
+    """Pages of ``FileRow`` rows of the keys ``scope`` holds in the storage of
+    ``uri``, whose client lists parts of a folder (S3, GCS, Azure)."""
+    config = client_config or {}
+    client = cast("RangeListedClient", Client.get_client(uri, cache, **config))  # type: ignore[arg-type]
+    method = "level" if scope.one_level and client.LISTS_LEVELS else "prefix"
+    return _scope_pages(client, scope, method)
+
+
+def _scope_pages(client, scope: "ListScope", method: str) -> Iterator[Sequence[tuple]]:
+    pages = client.scandir(scope.prefix, method=method)
+    try:
+        yield from iter_over_async(pages, get_loop())
+    except FileNotFoundError:  # nothing under the prefix: fine in a folder
+        _check_folder(client, scope.folder)
+
+
+def _check_folder(client, folder: str) -> None:
+    """Raise, as a listing of ``folder`` would, when it holds no keys. The probe
+    also raises the backend's error for a missing bucket, when ``folder`` is
+    its root."""
+    has_keys = sync(get_loop(), client.has_keys, folder)  # a missing bucket raises
+    if folder and not has_keys:
+        raise FileNotFoundError(f"Unable to resolve remote path: {folder}")
+
+
+@dataclass(frozen=True)
+class ListScope:
+    """What a URI's listing must read of its ``folder``: the keys that start
+    with ``prefix``, only those with no delimiter past it if ``one_level``."""
+
+    folder: str
+    prefix: str
+    one_level: bool
+
+
+def file_row(file: File) -> FileRow:
+    return FileRow(*flatten(file))
 
 
 def list_bucket(uri: str, cache, client_config=None) -> Callable:
-    """
-    Function that returns another generator function that yields File objects
-    from bucket where each File represents one bucket entry.
-    """
+    """A generator function, for ``gen()``, of the rows of ``list_pages``."""
 
-    def list_func() -> Iterator[File]:
-        config = client_config or {}
-        client = Client.get_client(uri, cache, **config)  # type: ignore[arg-type]
-        _, path = Client.parse_url(uri)
-        for entries in iter_over_async(client.scandir(path.rstrip("/")), get_loop()):
-            yield from entries
+    def list_func() -> Iterator[File]:  # FileRow rows
+        for page in list_pages(uri, cache, client_config):
+            yield from page  # type: ignore[misc]
 
     list_func.__name__ = "read_storage"
 
@@ -123,29 +183,140 @@ def ls(
     If recursive is set to False, only first level children will be returned by
     specified path
     """
+    return select_paths(dc, PathFilter.ls(path, recursive), column)
 
-    def _file_c(name: str) -> Column:
-        return Column(f"{column}.{name}")
 
-    dc = dc.filter(_file_c("is_latest") == true())
+def select_paths(dc: D, paths: "PathFilter", column: str = "file") -> D:
+    """The latest files of a listing chain whose paths ``paths`` selects."""
+    dc = dc.filter(Column(f"{column}.is_latest") == true())
+    for condition in paths.sql(Column(f"{column}.path")):
+        dc = dc.filter(condition)
+    return dc
 
-    if recursive:
+
+@dataclass(frozen=True)
+class PathFilter:
+    """The paths of a listing that a URI selects: any of ``any_of`` and all of
+    ``all_of``, each an ``(op, value)`` with op ``eq``, ``glob`` or ``parent``.
+    ``read_storage`` applies it in SQL, ``dc.list_storage`` in Python."""
+
+    any_of: tuple[tuple[str, str], ...] = ()
+    all_of: tuple[tuple[str, str], ...] = ()
+
+    @classmethod
+    def ls(cls, path: str, recursive: bool | None) -> "PathFilter":
+        if not recursive:
+            return cls(any_of=(("parent", path.lstrip("/").rstrip("/*")),))
         if not path or path == "/":
-            # root of a bucket, returning all latest files from it
-            return dc
+            return cls()
+        if uses_glob(path):
+            return cls(any_of=(("glob", path),))
+        return cls(any_of=(("eq", path), ("glob", path.rstrip("/") + "/*")))
 
-        if not uses_glob(path):
-            # path is not glob, so it's pointing to some directory or a specific
-            # file and we are adding proper filter for it
-            return dc.filter(
-                (_file_c("path") == path)
-                | (_file_c("path").glob(path.rstrip("/") + "/*"))
-            )
+    def glob(self, pattern: str) -> "PathFilter":
+        return PathFilter(self.any_of, (*self.all_of, ("glob", pattern)))
 
-        # path has glob syntax so we are returning glob filter
-        return dc.filter(_file_c("path").glob(path))
-    # returning only first level children by path
-    return dc.filter(pathfunc.parent(_file_c("path")) == path.lstrip("/").rstrip("/*"))
+    def sql(self, path: Column) -> "list[ColumnElement]":
+        """One condition per filter step: ``any_of`` combined, then each of
+        ``all_of``. The steps feed chain hashes, so their split is kept."""
+
+        def cond(op: str, value: str) -> "ColumnElement":
+            if op == "eq":
+                return path == value
+            if op == "glob":
+                return path.glob(value)
+            return pathfunc.parent(path) == value
+
+        steps = [or_(*(cond(*c) for c in self.any_of))] if self.any_of else []
+        return steps + [cond(*c) for c in self.all_of]
+
+    def matcher(self) -> "Callable[[str], bool]":
+        """The filter as a function of a path, built once for many rows."""
+
+        def check(op: str, value: str) -> "Callable[[str], bool]":
+            if op == "eq":
+                return value.__eq__
+            if op == "glob":
+                regex = _glob_regex(value)
+                return lambda path: regex is not None and bool(regex.fullmatch(path))
+            return lambda path: _parent(path) == value
+
+        any_of = [check(*c) for c in self.any_of]
+        all_of = [check(*c) for c in self.all_of]
+        return lambda path: (
+            (not any_of or any(c(path) for c in any_of))
+            and all(c(path) for c in all_of)
+        )
+
+
+def _parent(path: str) -> str:
+    """SQLite's ``path_parent``: the path without its name and the slashes
+    before it."""
+    return path.rstrip(path.replace("/", "")).rstrip("/")
+
+
+@functools.lru_cache(maxsize=256)
+def _glob_parts(pattern: str) -> "list[str] | None":
+    """SQLite's GLOB split at ``*`` into regexes; None matches nothing."""
+    parts: list[list[str]] = []
+    out: list[str] = []
+    i, n = 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        i += 1
+        if c == "*":
+            parts.append(out)
+            out = []
+        elif c == "?":
+            out.append(".")
+        elif c == "[":
+            negate = i < n and pattern[i] == "^"
+            j = i + negate
+            members, prior = [], None
+            if j < n and pattern[j] == "]":
+                members.append("\\]")
+                j += 1
+            while j < n and pattern[j] != "]":
+                c = pattern[j]
+                if c == "-" and prior and j + 1 < n and pattern[j + 1] != "]":
+                    if prior <= pattern[j + 1]:
+                        members.append(
+                            f"{re.escape(prior)}-{re.escape(pattern[j + 1])}"
+                        )
+                    prior = None
+                    j += 2
+                else:
+                    members.append(re.escape(c))
+                    prior = c
+                    j += 1
+            if j >= n:
+                return None
+            out.append(f"[{'^' if negate else ''}{''.join(members)}]")
+            i = j + 1
+        else:
+            out.append(re.escape(c))
+    parts.append(out)
+    return ["".join(p) for p in parts]
+
+
+@functools.lru_cache(maxsize=256)
+def _glob_regex(pattern: str) -> "re.Pattern | None":
+    """SQLite's GLOB as a regex; None matches nothing. ``(?>...)`` keeps the
+    leftmost match of each part between stars, so matching stays linear."""
+    parts = _glob_parts(pattern)
+    if parts is None:
+        return None
+    head, *rest = parts
+    if rest:
+        *middle, tail = rest
+        head += "".join(f"(?>.*?{m})" for m in middle) + f".*{tail}"
+    return re.compile(head, re.DOTALL)
+
+
+def glob_match(path: str, pattern: str) -> bool:
+    """SQLite's GLOB."""
+    regex = _glob_regex(pattern)
+    return regex is not None and regex.fullmatch(path) is not None
 
 
 _DS_ENCODE_RE = re.compile(r"[^a-zA-Z0-9_/:\-]")
@@ -221,7 +392,8 @@ def parse_listing_uri(uri: str, versions: bool = True) -> tuple[str, str, str]:
     if uses_glob(path):
         lst_uri_path = posixpath.dirname(path)
     else:
-        storage_uri, path = Client.parse_url(f"{uri.rstrip('/')}/")
+        if path:
+            storage_uri, path = Client.parse_url(f"{uri.rstrip('/')}/")
         lst_uri_path = path
 
     lst_uri = f"{storage_uri}/{lst_uri_path.lstrip('/')}"
@@ -268,6 +440,24 @@ def _reraise_as_client_error() -> Iterator[None]:
         raise ClientError(message=str(e), error_code=getattr(e, "code", None)) from e
 
 
+def names_object(client: Client, uri: str) -> bool:
+    """True if ``uri`` names a single object rather than a prefix or a glob."""
+    isfile = _reraise_as_client_error()(fsutils.isfile)
+    return not glob.has_magic(uri) and not uri.endswith("/") and isfile(client.fs, uri)
+
+
+def describe_listing(
+    client: Client, uri: str, versions: bool = True
+) -> tuple[str, str, str] | None:
+    """The listing dataset name, listing URI and listing path of ``uri``, or
+    None when it names a single object."""
+    if names_object(client, uri):
+        return None
+    # local, HF and HTTP storages have no versions: one kind of listing
+    versions = versions or not hasattr(client.fs, "version_aware")
+    return parse_listing_uri(uri, versions=versions)
+
+
 def get_listing(
     uri: str | os.PathLike[str],
     session: "Session",
@@ -296,14 +486,12 @@ def get_listing(
         uri = os.fspath(uri)
 
     # we don't want to use cached dataset (e.g. for a single file listing)
-    isfile = _reraise_as_client_error()(fsutils.isfile)
-    if not glob.has_magic(uri) and not uri.endswith("/") and isfile(client.fs, uri):
+    described = describe_listing(client, uri, versions)
+    if described is None:
         _, path = Client.parse_url(uri)
         return None, uri, path, False
 
-    # local, HF and HTTP storages have no versions: one kind of listing
-    versions = versions or not hasattr(client.fs, "version_aware")
-    ds_name, list_uri, list_path = parse_listing_uri(uri, versions=versions)
+    ds_name, list_uri, list_path = described
     listing = None
     listings = [
         ls for ls in catalog.listings() if not ls.is_expired and ls.contains(ds_name)
@@ -335,3 +523,70 @@ def get_listing(
 
     ds_name = listing.name if listing else ds_name
     return ds_name, list_uri, list_path, bool(listing)
+
+
+def ensure_listing(
+    name: str, catalog: "Catalog", write: Callable | None, *, update: bool = False
+) -> "DatasetRecord":
+    """Create or refresh the selected snapshot only when needed."""
+    try:
+        dataset = catalog.get_dataset(name, versions=None, include_incomplete=False)
+    except DatasetNotFoundError:
+        dataset = None
+    if dataset is None or update or listing_dataset_expired(dataset):
+        assert write is not None
+        write()
+        dataset = catalog.get_dataset(name, versions=None, include_incomplete=False)
+    return dataset
+
+
+def write_listing(
+    uri: str,
+    ds_name: str,
+    session: "Session",
+    client_config: dict,
+    *,
+    column: str = "file",
+    file_type: type[File] = File,
+    settings: dict | None = None,
+    in_memory: bool = False,
+) -> None:
+    """Store the listing of the prefix ``uri``, whole, as the listing dataset
+    ``ds_name``: the snapshot ``read_storage`` reads and reuses.
+    """
+    from datachain.query.session import Session
+
+    from .dc.records import create_records_dataset
+
+    namespace = session.catalog.metastore.system_namespace_name
+    project = session.catalog.metastore.listing_project_name
+    list_func = list_bucket(uri, session.catalog.cache, client_config=client_config)
+    # content_hash=None because hash_callable doesn't capture list_func's
+    # closure (which holds the URI and the client config) -- auto-hashing
+    # the seed would let the UDF checkpoint cache return a stale listing
+    # across URIs/runs.
+    # The seed is needed only while writing this snapshot. Clean it up now rather
+    # than keeping its catalog alive until the caller's (possibly global) exit.
+    writer = Session("listing", catalog=session.catalog)
+    try:
+        (
+            create_records_dataset(
+                [{"seed": 0}],
+                schema={"seed": int},
+                content_hash=None,
+                session=writer,
+                settings=settings,
+                in_memory=in_memory,
+            )
+            .settings(
+                prefetch=0,
+                batch_size=LISTING_BATCH_SIZE,
+                namespace=namespace,
+                project=project,
+            )
+            .gen(list_func, output={column: file_type})
+            # for internal listing datasets, we always bump major version
+            .save(ds_name, listing=True, update_version="major")
+        )
+    finally:
+        writer._close()

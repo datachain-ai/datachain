@@ -4,16 +4,10 @@ import logging
 import posixpath
 import secrets
 import string
-import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
-from typing import TYPE_CHECKING, Any, Union, cast
+from typing import TYPE_CHECKING, Any, Self, Union, cast
 from urllib.parse import urlparse
-
-if sys.version_info >= (3, 11):
-    from typing import Self
-else:
-    from typing_extensions import Self
 
 import attrs
 import sqlalchemy as sa
@@ -511,24 +505,51 @@ class AbstractWarehouse(ABC, Serializable):
         ((nrows, *rest),) = self.db.execute(query)
         return nrows, rest[0] if rest else 0
 
-    @abstractmethod
-    def prepare_entries(self, entries: "Iterable[File]") -> Iterable[dict[str, Any]]:
-        """Convert File entries so they can be passed on to `insert_rows()`"""
-
     def insert_rows(
         self,
         table: sa.Table,
         rows: Iterable[dict[str, Any]],
         batch_size: int | None = None,
     ) -> None:
-        """Does batch inserts of any kind of rows into table.
+        """Does batch inserts of dict rows into table, with the keys of the first
+        row as the columns.
 
         `insert_rows_done` must be called after this function is used
         (and all rows have been inserted).
         """
+        rows = iter(rows)
+        first = next(rows, None)
+        if first is None:
+            return
+        columns = list(first)
+        self.insert_tuples(
+            table,
+            columns,
+            (tuple(row[c] for c in columns) for row in itertools.chain([first], rows)),
+            batch_size,
+        )
+
+    def insert_tuples(
+        self,
+        table: sa.Table,
+        columns: Sequence[str],
+        rows: Iterable[tuple],
+        batch_size: int | None = None,
+    ) -> None:
+        """Does batch inserts of tuple rows, in the order of `columns`, into table.
+
+        `insert_rows_done` must be called after this function is used
+        (and all rows have been inserted).
+        """
+        buffer = self.buffers.get(table.name)
+        if buffer is not None and buffer.columns != list(columns):
+            self.close_buffer(table)
         buffer_size = batch_size if batch_size is not None else self.INSERT_BATCH_SIZE
         buffer = self.get_buffer(
-            table, buffer_size=buffer_size, flush_interval=self.INSERT_FLUSH_INTERVAL
+            table,
+            columns,
+            buffer_size=buffer_size,
+            flush_interval=self.INSERT_FLUSH_INTERVAL,
         )
         buffer.insert_many(rows)
 
@@ -536,6 +557,7 @@ class AbstractWarehouse(ABC, Serializable):
     def get_buffer(
         self,
         table: sa.Table,
+        columns: Sequence[str],
         buffer_size: int,
         flush_interval: float,
     ) -> "InsertBuffer":
@@ -646,9 +668,9 @@ class AbstractWarehouse(ABC, Serializable):
         """
         dr = dataset_rows
         columns = [c.name for c in query.selected_columns]
-        for row in self.db.execute(query):
+        for row in self.dataset_rows_select(query):
             d = dict(zip(columns, row, strict=False))
-            yield Node(**{dr.without_object(k): v for k, v in d.items()})
+            yield Node.from_row(d, file_prefix=dr.column)
 
     def get_dirs_by_parent_path(
         self,
@@ -704,19 +726,19 @@ class AbstractWarehouse(ABC, Serializable):
         dr = dataset_rows
         de = dr.dir_expansion()
         q = de.query(
-            dr.select().where(dr.c("is_latest") == true()).subquery(),
-            column=dr.column,
+            dr.select().where(dr.c("is_latest") == true()).subquery()
         ).subquery()
         q = self.expand_query(de, q, dr)
 
-        q = q.where(de.c(q, "path") == get_path(parent, name)).order_by(
-            de.c(q, "source"), de.c(q, "path"), de.c(q, "version")
+        columns = q.selected_columns
+        q = q.where(columns[dr.col_name("path")] == get_path(parent, name)).order_by(
+            *(columns[dr.col_name(field)] for field in ("source", "path", "version"))
         )
-        row = next(self.dataset_rows_select(q), None)
-        if not row:
+        node = next(self.get_nodes(q, dr), None)
+        if node is None:
             path = f"{parent}/{name}"
             raise FileNotFoundError(f"Unable to resolve path {path!r}")
-        return Node(*row)
+        return node
 
     def _populate_nodes_by_path(
         self, dataset_rows: "DataTable", path_list: list[str]
@@ -752,10 +774,16 @@ class AbstractWarehouse(ABC, Serializable):
                 )
                 result.extend(nodes)
         else:
-            result = [
-                self._get_node_by_path_list(dataset_rows, path, curr_name)
-                for path in matched_paths
-            ]
+            result = []
+            for path in matched_paths:
+                try:
+                    node = self._get_node_by_path_list(dataset_rows, path, curr_name)
+                except FileNotFoundError:
+                    continue
+                result.append(node)
+            if not result and matched_paths:
+                pattern = "/".join(path_list)
+                raise FileNotFoundError(f"Unable to resolve path {pattern!r}")
         return result
 
     @staticmethod
@@ -990,7 +1018,9 @@ class AbstractWarehouse(ABC, Serializable):
         prefix_len = len(node.path)
 
         def make_node_with_path(node: Node) -> NodeWithPath:
-            return NodeWithPath(node, node.path[prefix_len:].lstrip("/").split("/"))
+            return NodeWithPath(
+                node, node.path[prefix_len:].removeprefix("/").split("/")
+            )
 
         return map(make_node_with_path, self.get_nodes(query, dr))
 
