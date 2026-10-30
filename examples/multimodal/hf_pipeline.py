@@ -44,6 +44,13 @@ def process(file: File, pipeline: Pipeline, args: dict) -> str:
     return json.dumps(result)
 
 
+def summarize(file: File, pipeline: Pipeline) -> str:
+    messages = [
+        {"role": "user", "content": f"Summarize the following text:\n{file.read()}"}
+    ]
+    return json.dumps(pipeline(messages, max_new_tokens=150, do_sample=False))
+
+
 image_source = "gs://datachain-demo/dogs-and-cats/"
 audio_source = "gs://datachain-demo/speech-emotion-recognition-dataset/"
 text_source = "gs://datachain-demo/nlp-cnn-stories"
@@ -111,11 +118,10 @@ if __name__ == "__main__":
         .setup(
             pipeline=lambda: pipeline(
                 task="text-generation",
-                model="pszemraj/led-large-book-summary",
+                model="HuggingFaceTB/SmolLM2-135M-Instruct",
                 device=device,
             ),
-            args=lambda: {"max_length": 150},
         )
-        .map(result=process)
+        .map(result=summarize)
         .show()
     )
