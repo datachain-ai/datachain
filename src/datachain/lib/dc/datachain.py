@@ -2527,7 +2527,7 @@ class DataChain:
             column: Generated column name.
             model_name: Generated model name.
             source: Whether to include info about the source file.
-            nrows: Optional row limit.
+            nrows: Optional row limit per file.
             columns: Input columns to read, in order; all if omitted. Accepts original
                 or normalized names, e.g. "ZIP Code" or "zip_code". For Parquet exported
                 by DataChain, omit this parameter and use `.select(...)` after parsing.
@@ -2554,6 +2554,7 @@ class DataChain:
         from pyarrow.dataset import CsvFileFormat, JsonFileFormat
 
         from datachain.lib.arrow import (
+            PARTIAL_READ_PREFETCH_MAX_SIZE,
             ArrowGenerator,
             file_schemas,
             fix_pyarrow_format,
@@ -2618,11 +2619,9 @@ class DataChain:
         if source:
             output = {"source": ArrowRow} | output  # type: ignore[assignment,operator]
 
-        # Prefetch downloads whole files, so skip it when only part is read. Only
-        # this step skips it: the returned chain keeps the caller's settings.
+        # Prefetch downloads whole files, so a partial read prefetches only small ones.
         partial = nrows or (columns is not None and is_parquet(format))
-        chain = self.settings(prefetch=0) if partial else self
-        return chain.gen(  # type: ignore[arg-type]
+        return self.gen(  # type: ignore[arg-type]
             ArrowGenerator(
                 schema,
                 model,
@@ -2630,10 +2629,11 @@ class DataChain:
                 nrows,
                 columns=read,
                 parse_options=parse_options,
+                prefetch_max_size=PARTIAL_READ_PREFETCH_MAX_SIZE if partial else None,
                 **kwargs,
             ),
             output=output,
-        )._evolve(settings=self._settings)
+        )
 
     def to_parquet(
         self,
