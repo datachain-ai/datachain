@@ -15,8 +15,11 @@ from datachain.fs.reference import ReferenceFileSystem
 from datachain.lib.convert.flatten import classify_field
 from datachain.lib.data_model import (
     NULLABLE_SCALARS,
+    TYPE_TAG_FIELD,
+    arm_for_tag,
+    arm_selector,
     dict_to_data_model,
-    optional_tag_is_absent,
+    union_layout,
 )
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.model_store import ModelStore
@@ -30,7 +33,7 @@ if TYPE_CHECKING:
     from pydantic import BaseModel
 
     from datachain.client import Client
-    from datachain.lib.data_model import DataType
+    from datachain.lib.data_model import DataType, UnionLayout
     from datachain.lib.dc import DataChain
 
 
@@ -642,10 +645,10 @@ def _get_datachain_schema(schema: "pa.Schema") -> SignalSchema | None:
 def _columns_under(columns: Sequence[str]) -> dict[str, list[str]]:
     """Map each model path to the stored columns under it, e.g. "p" to ["p.x"],
     leaving out the ``_type_tag`` discriminators."""
-    sentinel = f".{SignalSchema._OPTIONAL_SENTINEL_FIELD}"
+    tag = f".{TYPE_TAG_FIELD}"
     under: dict[str, list[str]] = {}
     for column in columns:
-        if column.endswith(sentinel):
+        if column.endswith(tag):
             continue
         parts = column.split(".")
         for i in range(1, len(parts)):
@@ -653,26 +656,58 @@ def _columns_under(columns: Sequence[str]) -> dict[str, list[str]]:
     return under
 
 
-def _optional_absent(
-    column_values: dict[str, Any], prefix: str, columns: Sequence[str]
-) -> bool:
-    """Whether the ``Optional[DataModel]`` at ``prefix``, stored as ``columns``, is
-    absent. Uses the ``_type_tag`` discriminator when present (0 = present arm),
-    else whether every column is None. NaN / [] / {} count as None, so type
-    defaults don't read as present."""
-    tag_key = f"{prefix}.{SignalSchema._OPTIONAL_SENTINEL_FIELD}"
-    if tag_key in column_values:
-        return optional_tag_is_absent(column_values[tag_key])
+def _subtree_all_none(column_values: dict[str, Any], columns: Sequence[str]) -> bool:
+    """True when every one of ``columns`` is None. NaN / [] / {} count as None-ish
+    so type defaults don't read as present."""
     for column in columns:
         val = column_values.get(column)
-        if (
-            val is None
-            or val in ([], {})
-            or (isinstance(val, float) and math.isnan(val))
-        ):
-            continue
-        return False
+        if val is not None and not _is_nan(val) and val not in ([], {}):
+            return False
     return True
+
+
+def _is_nan(val: Any) -> bool:
+    return isinstance(val, float) and math.isnan(val)
+
+
+def _infer_active_arm(
+    column_values: dict[str, Any],
+    layout: "UnionLayout",
+    prefix: str,
+    under: dict[str, list[str]],
+) -> int | None:
+    """Active arm inferred from non-null columns when the _type_tag is absent."""
+    for i, arm in enumerate(layout.arms):
+        arm_prefix = f"{prefix}.{arm_selector(arm)}" if layout.use_slots else prefix
+        if ModelStore.to_pydantic(arm) is not None:
+            if not _subtree_all_none(column_values, under.get(arm_prefix, [])):
+                return i
+        else:
+            val = column_values.get(arm_prefix)
+            if val is not None and not _is_nan(val):
+                return i
+    return None
+
+
+def _union_value(
+    column_values: dict[str, Any],
+    layout: "UnionLayout",
+    prefix: str,
+    under: dict[str, list[str]],
+) -> Any:
+    """Reconstruct a tagged-union value from flat columns, hydrating the active arm."""
+    tag_key = f"{prefix}.{TYPE_TAG_FIELD}"
+    if tag_key in column_values:
+        arm = arm_for_tag(layout, column_values[tag_key])
+    else:
+        idx = _infer_active_arm(column_values, layout, prefix, under)
+        arm = layout.arms[idx] if idx is not None else None
+    if arm is None:
+        return None
+    arm_prefix = f"{prefix}.{arm_selector(arm)}" if layout.use_slots else prefix
+    if (fr := ModelStore.to_pydantic(arm)) is not None:
+        return _nested_model_instantiate(column_values, fr, under, arm_prefix)
+    return column_values.get(arm_prefix)
 
 
 def _nested_model_instantiate(
@@ -688,23 +723,22 @@ def _nested_model_instantiate(
     name."""
     vals_dict: dict[str, Any] = {}
     for i, (field, field_info) in enumerate(model.model_fields.items()):
-        kind = classify_field(field_info.annotation)
+        anno = field_info.annotation
         if paths is not None:
             cur_path = paths[i]
         else:
             cur_path = f"{prefix}.{field}" if prefix else field
+        if (layout := union_layout(anno)) is not None:
+            vals_dict[field] = _union_value(column_values, layout, cur_path, under)
+            continue
+        kind = classify_field(anno)
         if kind.is_model:
-            columns = under.get(cur_path, [])
-            if kind.is_optional and _optional_absent(column_values, cur_path, columns):
-                # Absent Optional[DataModel] parent -> None.
-                vals_dict[field] = None
-            else:
-                vals_dict[field] = _nested_model_instantiate(
-                    column_values,
-                    kind.inner,
-                    under,
-                    prefix=cur_path,
-                )
+            vals_dict[field] = _nested_model_instantiate(
+                column_values,
+                kind.inner,
+                under,
+                prefix=cur_path,
+            )
         elif cur_path in column_values:
             vals_dict[field] = column_values[cur_path]
     return model(**vals_dict)

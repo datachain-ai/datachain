@@ -91,7 +91,8 @@ class FileExporter(NodesThreadPool):
             task.result()
 
     def do_task(self, file: "File | None"):
-        if file is not None:
+        # a union arm may be a non-File value (e.g. Union[File, str]); skip it
+        if isinstance(file, File):
             # a local disk cannot hold an empty path segment
             if self.is_local and "//" in file._get_destination_suffix(self.placement):
                 logger.warning("File '%s' not exported: path has '//'", file.path)
