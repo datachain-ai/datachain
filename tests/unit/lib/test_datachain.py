@@ -2742,6 +2742,29 @@ def test_read_parquet_columns_read_a_field_missing_from_a_file_as_none(
     assert chain.order_by("id").to_values("p.x") == [1, None]
 
 
+@pytest.mark.parametrize("output", [None, ["id", "value"]])
+def test_read_parquet_columns_read_a_list_empty_in_one_file(
+    tmp_dir, test_session, output
+):
+    path = tmp_dir / "parts"
+    path.mkdir()
+    for i, value in [(0, []), (1, [1])]:
+        dc.read_values(
+            id=[i],
+            value=[value],
+            output={"id": int, "value": list[int]},
+            session=test_session,
+        ).to_parquet(path / f"{i}.parquet")
+    chain = dc.read_parquet(
+        path.as_uri(),
+        columns=["id", "value"],
+        output=output,
+        source=False,
+        session=test_session,
+    )
+    assert chain.order_by("id").to_values("value") == [[], [1]]
+
+
 def test_parse_tabular_columns_take_signals_from_the_first_file_by_path(
     tmp_dir, test_session
 ):

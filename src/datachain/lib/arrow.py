@@ -183,15 +183,14 @@ class ArrowGenerator(Generator):
         ):
             ds = dataset(fs_path, schema=input_schema, filesystem=fs, **kwargs)
         else:
-            # A picked field missing from this file reads as null, as in a full
-            # read. The fields that decide an optional model keep this file's own
-            # types, which other files may type differently.
+            # Each file keeps its own types, which other files may differ from. A
+            # picked field missing from it reads as null, as in a full read.
             ds = dataset(fs_path, filesystem=fs, **kwargs)
-            picked = set(input_schema.names)
-            extra = [f for f in ds.schema if f.name not in picked]
-            ds = ds.replace_schema(
-                pa.schema([*input_schema, *extra], metadata=ds.schema.metadata)
-            )
+            present = set(ds.schema.names)
+            if missing := [f for f in input_schema if f.name not in present]:
+                ds = ds.replace_schema(
+                    pa.schema([*ds.schema, *missing], metadata=ds.schema.metadata)
+                )
 
         use_datachain_schema = _written_by_datachain(ds.schema)
         if self.written_by_datachain not in (None, use_datachain_schema):
