@@ -494,7 +494,7 @@ class ColType(NamedTuple):
     python_type: type
     type_name: str
     default: Any
-    kept_as_is: bool  # a value of python_type goes in unconverted
+    kept_type: type | None  # a value of this type goes in unconverted
 
 
 def adjust_outputs(
@@ -518,7 +518,7 @@ def adjust_outputs(
         col_python_type,
         col_type_name,
         default_value,
-        kept_as_is,
+        kept_type,
     ) in col_types:
         # Fill missing values with defaults
         if col_name not in row:
@@ -532,7 +532,7 @@ def adjust_outputs(
             row[col_name] = default_value
             continue
 
-        if kept_as_is and type(row_val) is col_python_type:
+        if type(row_val) is kept_type:
             continue
 
         # Validate and convert type if needed and possible
@@ -598,9 +598,15 @@ def get_col_types(
             if getattr(sql_type, "dc_nullable", False)
             else col_type.default_value(dialect)
         )
-        kept_as_is = exact and python_type not in (list, dict) and type_name != "JSON"
+        kept_type: type | None
+        if not exact or python_type is list:
+            kept_type = None
+        elif python_type is dict or type_name == "JSON":
+            kept_type = str  # JSON text, which convert_type keeps as it is
+        else:
+            kept_type = python_type
         col_types.append(
-            ColType(name, sql_type, python_type, type_name, default, kept_as_is)
+            ColType(name, sql_type, python_type, type_name, default, kept_type)
         )
     return col_types
 
@@ -609,10 +615,7 @@ def _tuple_adjuster(col_types: list[ColType]) -> Callable[[tuple], tuple | None]
     """For a gen row of the output columns, then ``sys__input_id``,
     ``sys__partial`` and ``sys__empty``: the row with column defaults in place of
     None, or None when ``adjust_outputs`` must convert it."""
-    kept_types = [
-        frozenset({type(None), c.python_type} if c.kept_as_is else {type(None)})
-        for c in col_types
-    ]
+    kept_types = [frozenset({type(None), c.kept_type}) for c in col_types]
     defaults = [
         (i, c.default) for i, c in enumerate(col_types) if c.default is not None
     ]
