@@ -7,6 +7,7 @@ from typing import TypedDict
 
 SKILLS = ("datachain", "core", "knowledge")
 DEFAULT_SKILLS = ("datachain",)
+_INSTALL_MARKER = ".datachain-installed"
 # Installable once, retired since. An upgrade must still be able to remove these:
 # a stale skill directory keeps instructing the agent that reads it.
 RETIRED_SKILLS = ("jobs",)
@@ -127,25 +128,40 @@ def _frontmatter(text: str) -> str:
     return match.group(1) if match else ""
 
 
+def _frontmatter_name(name: str) -> str:
+    return name if name == "datachain" else f"datachain-{name}"
+
+
 def _installed_by_datachain(skill_dest: Path, name: str) -> bool:
     """Whether this directory holds the skill datachain installed under that name.
 
     `skills/<name>` is a shared namespace - anything may keep a `jobs` skill there -
-    so ownership is read out of the frontmatter rather than assumed from the path.
-    Every skill we ship declares `name: datachain-<skill>`, and installing only
-    resolves placeholders, which leaves that line alone.
+    so ownership uses frontmatter and the generic default also needs our marker.
+    Installing resolves placeholders and preserves the frontmatter name.
     """
     try:
         text = (skill_dest / "SKILL.md").read_text()
     except OSError:
         return False
-    return bool(
-        re.search(
-            rf"^name:\s*datachain-{re.escape(name)}\s*$",
-            _frontmatter(text),
-            re.MULTILINE,
+    frontmatter = _frontmatter(text)
+    if not re.search(
+        rf"^name:\s*{re.escape(_frontmatter_name(name))}\s*$", frontmatter, re.MULTILINE
+    ):
+        return False
+    if name != "datachain":
+        return True
+    try:
+        return (skill_dest / _INSTALL_MARKER).read_text() == name
+    except OSError:
+        # Older default installs have no ownership marker.
+        return (
+            frontmatter.startswith(
+                "name: datachain\ndescription: Use for any work on files "
+                "in object storage or local folders ("
+            )
+            and "DataChain does the parallel I/O, keeps results as queryable datasets"
+            in frontmatter
         )
-    )
 
 
 def _remove_skill(
@@ -184,6 +200,50 @@ def _sweep_retired(
     ]
     if removed:
         print(f"Removed retired skills: {', '.join(removed)}")
+
+
+def _write_companion(
+    src: Path, dest: Path, skills_dir: Path, commands_dir: Path, command_ext: str
+) -> None:
+    skill_md = src / "SKILL.md"
+    if not skill_md.exists():
+        return
+    commands_dir.mkdir(parents=True, exist_ok=True)
+    if command_ext == ".mdc":
+        content = _transform_cursor_mdc(skill_md)
+    elif command_ext == ".instructions.md":
+        content = _transform_copilot_instructions(skill_md)
+    else:
+        content = skill_md.read_text()
+    sdk_md = src / "SDK.md"
+    if sdk_md.exists():
+        content = f"{content.rstrip()}\n\n{sdk_md.read_text()}"
+    command = commands_dir / f"datachain-{src.name}{command_ext}"
+    command.write_text(_resolve_placeholders(content, skills_dir, dest))
+
+
+def _check_install_destinations(skills_dir: Path, names: list[str]) -> bool:
+    for name in names:
+        dest = skills_dir / name
+        if dest.exists() and not _installed_by_datachain(dest, name):
+            print(f"Cannot overwrite unrelated skill: {dest}", file=sys.stderr)
+            return False
+    return True
+
+
+def _print_legacy_hint(skills_dir: Path, target: str, local: bool) -> None:
+    legacy = [
+        name
+        for name in SKILLS
+        if name not in DEFAULT_SKILLS
+        and _installed_by_datachain(skills_dir / name, name)
+    ]
+    if legacy:
+        flags = f" --target {target}" + (" --local" if local else "")
+        print(
+            f"Still installed: {', '.join(legacy)}. Remove with: "
+            f"datachain skill uninstall {','.join(legacy)}{flags}"
+        )
 
 
 def install_skills(skills: str | None, target: str, local: bool) -> int:
@@ -232,6 +292,9 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
     )
     command_ext = layout["command_ext"]
 
+    if not _check_install_destinations(skills_dir, skills_to_install):
+        return 1
+
     installed = []
     missing = []
     for skill_name in skills_to_install:
@@ -244,6 +307,9 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
         dest = skills_dir / skill_name
         dest.mkdir(parents=True, exist_ok=True)
         shutil.copytree(src, dest, dirs_exist_ok=True, ignore=_COPYTREE_IGNORE)
+        (dest / _INSTALL_MARKER).write_text(skill_name)
+        if skill_name == "datachain":
+            shutil.copyfile(_skills_src() / "core" / "SDK.md", dest / "SDK.md")
 
         # Resolve {skill_dir} and {<name>_skill_dir} placeholders in installed
         # SKILL.md so the agent doesn't have to probe the filesystem to find its
@@ -255,24 +321,14 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
             )
 
         if commands_dir is not None and command_ext is not None:
-            commands_dir.mkdir(parents=True, exist_ok=True)
-            skill_md = src / "SKILL.md"
-            if skill_md.exists():
-                cmd_dest = commands_dir / f"datachain-{skill_name}{command_ext}"
-                if command_ext == ".mdc":
-                    content = _transform_cursor_mdc(skill_md)
-                elif command_ext == ".instructions.md":
-                    content = _transform_copilot_instructions(skill_md)
-                else:
-                    content = skill_md.read_text()
-                sdk_md = src / "SDK.md"
-                if sdk_md.exists():
-                    content = f"{content.rstrip()}\n\n{sdk_md.read_text()}"
-                cmd_dest.write_text(_resolve_placeholders(content, skills_dir, dest))
+            _write_companion(src, dest, skills_dir, commands_dir, command_ext)
 
         installed.append(f"  {skill_name} → {dest}")
 
     _sweep_retired(skills_dir, commands_dir, command_ext)
+
+    if not skills:
+        _print_legacy_hint(skills_dir, target, local)
 
     if installed:
         scope = "local" if local else "global"

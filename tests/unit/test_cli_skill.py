@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
+from datachain.cli.commands.skill import DEFAULT_SKILLS, SKILLS
 from datachain.cli.parser import get_parser
 
 
@@ -78,24 +79,23 @@ def test_install_invalid_skill_raises(tmp_path, fake_skills_src, fake_home):
         install_skills(skills="nope", target="claude", local=False)
 
 
-ALL_SKILLS = ("datachain", "core", "knowledge")
-DEFAULT_SKILLS = ("datachain",)
-
-
 def _make_fake_skills_src(tmp_path: Path) -> Path:
     """Create a minimal skills source tree for testing."""
     skills_src = tmp_path / "skills_src"
-    for skill_name in ALL_SKILLS:
+    for skill_name in SKILLS:
         skill_dir = skills_src / skill_name
         skill_dir.mkdir(parents=True)
+        name = "datachain" if skill_name == "datachain" else f"datachain-{skill_name}"
+        resource_dir = "skill_dir" if skill_name == "datachain" else "core_skill_dir"
         (skill_dir / "SKILL.md").write_text(
-            f"---\nname: datachain-{skill_name}\n"
+            f"---\nname: {name}\n"
             f"description: Test skill {skill_name}\n"
             f"---\n# {skill_name}\n"
             "```bash\npython3 scripts/plan.py\n```\n"
-            "Read `{core_skill_dir}/SDK.md`.\n"
+            f"Read `{{{resource_dir}}}/SDK.md`.\n"
         )
-        (skill_dir / "SDK.md").write_text(f"# {skill_name} rules\n")
+        if skill_name != "datachain":
+            (skill_dir / "SDK.md").write_text(f"# {skill_name} rules\n")
         scripts = skill_dir / "scripts"
         scripts.mkdir()
         (scripts / "plan.py").write_text("# stub\n")
@@ -156,7 +156,7 @@ def test_install_defaults_claude_global(tmp_path, fake_skills_src, fake_home):
     assert "{skill_dir}" not in content
     assert "scripts/plan.py" in content
     assert "{core_skill_dir}" not in content
-    assert f"{(skills_base / 'core').resolve()}/SDK.md" in content
+    assert f"{(skills_base / 'datachain').resolve()}/SDK.md" in content
 
 
 def test_install_only_core_claude_global(tmp_path, fake_skills_src, fake_home):
@@ -230,7 +230,7 @@ def test_install_defaults_cursor_global(tmp_path, fake_skills_src, fake_home):
         assert "description: Test skill" in content
         # Original SKILL.md frontmatter fields should NOT appear
         assert "triggers:" not in content
-        assert f"# {skill} rules" in content
+        assert str((skills_base / skill / "SDK.md").resolve()) in content
 
 
 def test_install_defaults_codex_global(tmp_path, fake_skills_src, fake_home):
@@ -256,7 +256,7 @@ def test_install_defaults_pi_global(tmp_path, fake_skills_src, fake_home):
         assert prompt_file.exists()
         # No transform — Pi accepts SKILL.md frontmatter as-is.
         content = prompt_file.read_text()
-        assert f"name: datachain-{skill}" in content
+        assert "name: datachain\n" in content
         assert f"description: Test skill {skill}" in content
 
     # User-level layout MUST be ~/.pi/agent/..., not ~/.pi/...
@@ -307,7 +307,7 @@ def test_install_defaults_copilot_global(tmp_path, fake_skills_src, fake_home):
         # Original SKILL.md frontmatter fields should be stripped
         assert "name: datachain-" not in content
         assert "description: Test skill" not in content
-        assert f"# {skill} rules" in content
+        assert str((skills_base / skill / "SDK.md").resolve()) in content
 
 
 def test_install_copilot_local_uses_github_path(
@@ -623,32 +623,114 @@ def test_uninstall_error_names_the_retired_skill(tmp_path, fake_home):
         uninstall_skills(skills="nope", target="cursor", local=False)
 
 
-@pytest.mark.parametrize("target", ["claude", "cursor", "codex", "pi", "copilot"])
-@pytest.mark.parametrize("local", [False, True])
-def test_default_installs_only_datachain_from_package(
-    tmp_path, fake_home, monkeypatch, target, local
+@pytest.mark.parametrize(
+    "target,local,skills_path,companion_path",
+    [
+        ("claude", False, ".claude/skills", None),
+        ("claude", True, ".claude/skills", ".claude/commands/datachain-datachain.md"),
+        ("cursor", False, ".cursor/skills", ".cursor/rules/datachain-datachain.mdc"),
+        ("cursor", True, ".cursor/skills", ".cursor/rules/datachain-datachain.mdc"),
+        ("codex", False, ".codex/skills", None),
+        ("codex", True, ".codex/skills", None),
+        ("pi", False, ".pi/agent/skills", ".pi/agent/prompts/datachain-datachain.md"),
+        ("pi", True, ".pi/skills", ".pi/prompts/datachain-datachain.md"),
+        (
+            "copilot",
+            False,
+            ".copilot/skills",
+            ".copilot/instructions/datachain-datachain.instructions.md",
+        ),
+        (
+            "copilot",
+            True,
+            ".datachain/skills",
+            ".github/instructions/datachain-datachain.instructions.md",
+        ),
+    ],
+)
+def test_default_package_round_trip_and_reference_reachability(
+    tmp_path, fake_home, monkeypatch, target, local, skills_path, companion_path
 ):
-    from datachain.cli.commands.skill import TARGET_LAYOUT, install_skills
+    from datachain.cli.commands.skill import (
+        _skills_src,
+        install_skills,
+        uninstall_skills,
+    )
 
-    project_dir = tmp_path / "project"
-    project_dir.mkdir()
-    monkeypatch.chdir(project_dir)
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    base = project if local else fake_home
+    skills_dir = base / skills_path
     with patch("pathlib.Path.home", return_value=fake_home):
         assert install_skills(skills=None, target=target, local=local) == 0
+        assert {p.name for p in skills_dir.iterdir()} == {"datachain"}
+        dest = skills_dir / "datachain"
+        sdk = dest / "SDK.md"
+        assert sdk.read_text() == (_skills_src() / "core" / "SDK.md").read_text()
+        assert not (dest / "reference.md").exists()
+        content = (dest / "SKILL.md").read_text()
+        assert "name: datachain\n" in content
+        assert str(sdk.resolve()) in content
+        if companion_path:
+            companion = base / companion_path
+            assert str(sdk.resolve()) in companion.read_text()
+            assert "# DataChain SDK Rules" not in companion.read_text()
+        assert uninstall_skills(skills=None, target=target, local=local) == 0
 
-    layout = TARGET_LAYOUT[target]
-    base = project_dir if local else fake_home
-    skills_rel = (local and layout["skills_dir_local"]) or layout["skills_dir"]
-    skills_base = base / skills_rel
-    assert {p.name for p in skills_base.iterdir()} == {"datachain"}
-    content = (skills_base / "datachain" / "SKILL.md").read_text()
-    assert "name: datachain" in content
-    commands_rel = (local and layout["commands_dir_local"]) or layout["commands_dir"]
-    if commands_rel and (local or not layout["commands_local_only"]):
-        commands = base / commands_rel
-        assert {p.name for p in commands.iterdir()} == {
-            f"datachain-datachain{layout['command_ext']}"
+    assert not dest.exists()
+    if companion_path:
+        assert not (base / companion_path).exists()
+
+
+def test_default_upgrade_preserves_legacy_skills_and_prints_removal_hint(
+    tmp_path, fake_home, monkeypatch, capsys
+):
+    from datachain.cli.commands.skill import install_skills
+
+    monkeypatch.chdir(tmp_path)
+    with patch("pathlib.Path.home", return_value=fake_home):
+        assert install_skills("knowledge", "cursor", True) == 0
+        skills = tmp_path / ".cursor" / "skills"
+        legacy = {
+            name: (skills / name / "SKILL.md").read_bytes()
+            for name in ["core", "knowledge"]
         }
+        capsys.readouterr()
+        assert install_skills(None, "cursor", True) == 0
+
+    assert {p.name for p in skills.iterdir()} == {"datachain", "core", "knowledge"}
+    for name, content in legacy.items():
+        assert (skills / name / "SKILL.md").read_bytes() == content
+    assert (
+        "datachain skill uninstall core,knowledge --target cursor --local"
+        in capsys.readouterr().out
+    )
+
+
+def test_install_refuses_unrelated_datachain_skill(
+    tmp_path, fake_home, monkeypatch, capsys
+):
+    from datachain.cli.commands.skill import install_skills
+
+    monkeypatch.chdir(tmp_path)
+    dest = tmp_path / ".cursor" / "skills" / "datachain"
+    dest.mkdir(parents=True)
+    content = "---\nname: datachain\ndescription: My own workflow\n---\n"
+    (dest / "SKILL.md").write_text(content)
+    (dest / "notes.txt").write_text("mine")
+    with patch("pathlib.Path.home", return_value=fake_home):
+        assert install_skills(None, "cursor", True) == 1
+    assert (dest / "SKILL.md").read_text() == content
+    assert (dest / "notes.txt").read_text() == "mine"
+    assert not (tmp_path / ".cursor" / "rules").exists()
+    assert "Cannot overwrite unrelated skill" in capsys.readouterr().err
+    from datachain.cli.commands.skill import uninstall_skills
+
+    with patch("pathlib.Path.home", return_value=fake_home):
+        assert uninstall_skills(None, "cursor", True) == 0
+    assert (dest / "SKILL.md").read_text() == content
+    assert (dest / "notes.txt").read_text() == "mine"
 
 
 @pytest.mark.parametrize("target", ["claude", "cursor", "codex", "pi", "copilot"])
@@ -658,11 +740,35 @@ def test_install_all_skills_by_name(fake_skills_src, fake_home, target):
     _run_install(
         fake_skills_src,
         fake_home,
-        skills=",".join(ALL_SKILLS),
+        skills=",".join(SKILLS),
         target=target,
         local=False,
     )
     skills_base = fake_home / TARGET_LAYOUT[target]["skills_dir"]
-    assert {p.name for p in skills_base.iterdir()} == set(ALL_SKILLS)
-    for skill in ALL_SKILLS:
+    assert {p.name for p in skills_base.iterdir()} == set(SKILLS)
+    for skill in SKILLS:
         assert (skills_base / skill / "SKILL.md").exists()
+
+
+@pytest.mark.parametrize("upgrade", [False, True])
+def test_manage_default_installed_before_ownership_marker(
+    tmp_path, fake_home, monkeypatch, upgrade
+):
+    from datachain.cli.commands.skill import install_skills, uninstall_skills
+
+    monkeypatch.chdir(tmp_path)
+    dest = tmp_path / ".claude" / "skills" / "datachain"
+    dest.mkdir(parents=True)
+    (dest / "SKILL.md").write_text(
+        "---\nname: datachain\n"
+        "description: Use for any work on files in object storage or local "
+        "folders (S3, GCS, Azure, file://) - "
+        "bucket inventories. DataChain does the parallel I/O, "
+        "keeps results as queryable datasets, and reprocesses only what changed.\n---\n"
+    )
+    with patch("pathlib.Path.home", return_value=fake_home):
+        if upgrade:
+            assert install_skills(None, "claude", True) == 0
+            assert (dest / "SDK.md").is_file()
+        assert uninstall_skills(None, "claude", True) == 0
+    assert not dest.exists()

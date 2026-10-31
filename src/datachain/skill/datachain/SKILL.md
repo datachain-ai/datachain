@@ -1,6 +1,6 @@
 ---
 name: datachain
-description: Use for any work on files in object storage or local folders (S3, GCS, Azure, file://) - bucket inventories, counting/summing over many objects, image/video/audio metadata, embeddings, model or LLM labeling, similarity search, refreshing results after new files land, resuming a crashed run, and answering follow-up questions from earlier results. DataChain does the parallel I/O, keeps results as queryable datasets, and reprocesses only what changed.
+description: Process and query data files in S3, GCS, Azure or local datasets, including inventories, media metadata, batched inference, saved results, refresh and resume.
 ---
 
 # DataChain
@@ -17,53 +17,6 @@ long enough to crash. There DataChain runs parallel decode, batched inference an
 question starts from the saved dataset. For a one-off question that a single command answers in
 seconds (e.g. `ffprobe` over a hundred files, one `aws s3 ls --summarize`), just run that command.
 
-<!-- practices:start -->
-## Practices for heavy file work
-
-- **Reuse before computing.** Look at what earlier sessions left in the project (saved results, scripts, logs).
-  Reuse a result only if it was computed from the same files (same path + etag/version) with the same code and
-  model; otherwise it is stale for that configuration. Answer questions about saved results or their provenance
-  from those results and recorded code, without refreshing. For current-state questions, check source identities
-  cheaply; refresh only confirmed changes or an explicitly requested rebuild. If freshness is unknown, say so.
-- **Persist every expensive result** (embeddings, model outputs, extracted metadata) on all rows, keyed by file
-  path + etag/version, together with the model and preprocessing that produced it. Answer follow-ups from it.
-- **Read only what the question needs.** Explore a large bucket on one prefix or a small sample (`aws s3 ls` of one
-  prefix), never by listing all of it just to look. List a bucket once and aggregate in the same pass. For large media read
-  only the header bytes when metadata is enough (some containers keep it at the end: seek, don't assume a prefix); read small files whole. Filter by path before downloading.
-  Read related small files (image + caption) in one pass, joined first on an explicit, validated key.
-- **Use the machine.** CPU-bound work (decoding, models): one process per CPU (fewer if each loads a large model and memory is
-  short), one torch thread and single-threaded decoders per process (PyAV `thread_count=1`, `cv2.setNumThreads(1)`). Count CPUs from the container's quota (`/sys/fs/cgroup/cpu.max`), not
-  `os.cpu_count()`, which may report the host; more processes than the quota only adds throttling and memory.
-  Network-bound work (header reads, API calls): many concurrent requests. Overlap downloads with compute. Batch
-  model inference (e.g. 32 inputs per forward pass). Load models once per worker, in eval mode, without
-  gradients. Bound queued downloads and inference work so memory stays flat.
-- **Media correctness.** Sample video frames by timestamp, not by frame index (variable frame rate); apply
-  rotation metadata; record the real timestamp of each frame. Normalize embeddings the same way for index and query.
-- **Long jobs survive crashes.** Write results incrementally, keyed, so a killed run loses little; publish
-  checkpoint parts atomically (one writer per result directory) and on re-run skip finished keys, never
-  producing duplicates. A file that fails to decode is recorded with its error, not allowed to kill the run.
-- **Updates equal a full recompute.** Bind reads to the listed identity (etag/version) and join file-derived
-  results on path + etag/version. When files change, diff by (path, etag/version): process new and
-  overwritten files, drop rows of deleted files. A requested model or preprocessing update requires recomputing
-  the affected results; keep historical versions available for questions about earlier reports.
-- **Run jobs to completion.** A job that may outlive one shell call (tool calls time out, often at 10 min) is launched
-  in one call and waited for in later ones:
-  `nohup python job.py > job.log 2>&1 & echo $! > job.pid` then, per call, `timeout 540 tail --pid=$(cat job.pid) -f /dev/null`,
-  repeated until the PID is gone; then check the job's exit status (have it write `job.done` at the end), not a
-  log line (progress bars rewrite lines). Never `pgrep -f` (it matches itself). Don't relaunch a running job.
-  Do the next step only after the run finished. Test on a small slice first.
-- **Match the process to the job.** Time the small slice and estimate the full run. If it takes a couple of
-  minutes or less, run it directly in the foreground and check the result; background jobs, checkpoints and
-  resume logic pay off only for long runs.
-- **Check cheaply.** Use cheap independent checks (counts, keys, a few sampled rows); avoid recomputing a
-  whole result in another tool. Filter, join and aggregate saved tables in a query engine before collecting
-  rows into Python. Record cheap facts (size, resolution, duration) in the same pass that already reads the file.
-- **Know when not to build anything.** A one-off question a single command answers in seconds (`ffprobe` on a
-  few files, `aws s3 ls --summarize`): just run the command.
-<!-- practices:end -->
-
-# DataChain: the same practices, built in
-
 ## 0. Before computing anything: is it already computed?
 
 ```bash
@@ -74,19 +27,22 @@ datachain show <name> --limit 5       # peek at rows and columns
 
 Start with `dataset ls` and `dataset describe --json`; for provenance, check recorded code and counts there before scanning result rows.
 Save expensive results under meaningful names and run named Python scripts so `query_script` captures their code.
-`describe` reports recorded provenance; it does not check current files or models. Delta does not detect model/UDF changes: on a requested update, rebuild the affected results.
+`describe` reports recorded provenance; it does not check current files or models.
 For saved-result and provenance questions, use `dc.read_dataset(name, version=...)` and recorded dependencies/code.
 Do not rerun build/refresh scripts or `read_storage(..., update=True)` just to answer; check sources only when current freshness is part of the question.
 
 For questions about row values (embeddings, metadata, labels), query the saved dataset with
 `dc.read_dataset("<name>")`. Reuse its rows rather than recomputing them.
 
-Datasets live in `.datachain/` of the project directory (DataChain uses the nearest `.datachain/` in the current
-directory or its parents). Run scripts from the project directory: `cd /work && python scripts/x.py`.
+Run scripts from the project directory: `cd /work && python scripts/x.py`. Inside a Git repository,
+DataChain uses the nearest `.datachain/` containing a `db` or `config` file, stopping at the nearest
+repository root; without existing state, it uses that root. Outside Git, it uses the current directory.
+`DATACHAIN_DIR` and `DATACHAIN_ROOT_DIR` override discovery.
 
 ## 1. Recipes
 
-Every recipe is a complete script. Adjust the URI and fields; keep the structure.
+Adapt these examples to the task and use the same model/preprocessing for saved and query embeddings.
+The update recipe reuses the `ClipEmbed` definition from the inference example.
 
 ### Bucket inventory (metadata only, nothing downloaded)
 
@@ -98,10 +54,9 @@ from collections import Counter
 import datachain as dc
 
 n, size = Counter(), Counter()
-for f in dc.list_storage(
-    "s3://bucket/prefix/", versions=False
-):  # versions=False: current objects, faster
-    key = f.path.split("/")[1], f.get_file_ext()  # any keys from the path or name
+# versions=False lists current objects.
+for f in dc.list_storage("s3://bucket/prefix/", versions=False):
+    key = f.parent, f.get_file_ext()
     n[key] += 1
     size[key] += f.size
 ```
@@ -113,11 +68,11 @@ Several passes or follow-up questions over the same listing: use `read_storage`.
 project, and every query after that runs in SQL on the saved copy, no new listing:
 
 ```python
+import datachain as dc
 from datachain import func
 
-files = dc.read_storage(
-    "s3://bucket/prefix/", versions=False
-)  # listed once, then reused
+# List once, then reuse the saved listing.
+files = dc.read_storage("s3://bucket/prefix/", versions=False)
 by_ext = files.mutate(ext=func.path.file_ext("file.path")).group_by(
     n=func.count(), bytes=func.sum("file.size"), partition_by="ext"
 )
@@ -133,24 +88,23 @@ print(by_ext.to_list("ext", "n", "bytes"))
 import datachain as dc
 
 
-def info(file: dc.VideoFile) -> dc.Video:  # always annotate the return type
-    return (
-        file.get_info()
-    )  # width/height in display orientation, fps, duration, frames, codec
+def info(file: dc.VideoFile) -> dc.Video:
+    # Width/height in display orientation, fps, duration, frames and codec.
+    return file.get_info()
 
 
+# Header reads wait on the network; prefetch=0 avoids whole-file downloads.
 meta = (
     dc.read_storage("s3://bucket/videos/", anon=True, type="video")
-    .settings(
-        parallel=64, prefetch=0
-    )  # header reads wait on the network: many more processes than CPUs;
-    # prefetch=0: read headers only, never download whole files
+    .settings(parallel=64, prefetch=0)
     .map(info=info)
     .save("video_meta")
 )
 print(
     meta.group_by(
-        n=dc.func.count(), hours=dc.func.sum("info.duration"), partition_by="info.codec"
+        n=dc.func.count(),
+        seconds=dc.func.sum("info.duration"),
+        partition_by="info.codec",
     ).to_pandas()
 )
 ```
@@ -167,23 +121,23 @@ from pydantic import BaseModel
 
 class ImageEmb(BaseModel):
     embedding: list[float]
-    width: int  # cheap facts recorded in the same pass, for later filters
+    # Cheap facts recorded in the same pass, for later filters.
+    width: int
     height: int
 
 
 class ClipEmbed(dc.BatchMapper):
-    def setup(self):  # once per worker process
+    def setup(self):
         import open_clip, torch
 
-        torch.set_num_threads(1)  # parallelism comes from settings(parallel=True)
+        torch.set_num_threads(1)
         self.model, _, self.pre = open_clip.create_model_and_transforms(
             "ViT-B-32", pretrained="laion2b_s34b_b79k"
         )
         self.model.eval()
 
-    def process(
-        self, file: list[dc.File]
-    ) -> list[ImageEmb]:  # batch=32: lists in, one output per input
+    # One output per input in each inference batch.
+    def process(self, file: list[dc.File]) -> list[ImageEmb]:
         import torch
         from PIL import Image
 
@@ -200,14 +154,11 @@ class ClipEmbed(dc.BatchMapper):
         ]
 
 
+# Filter before downloading; overlap downloads with batched inference.
 emb = (
-    dc.read_storage(
-        "s3://bucket/images/*.jpg", anon=True
-    )  # glob filters at listing time
-    .settings(
-        parallel=True, prefetch=2
-    )  # a process per CPU (container quota); prefetch overlaps downloads
-    .batch_map(img=ClipEmbed(), batch=32)  # batched forward passes
+    dc.read_storage("s3://bucket/images/*.jpg", anon=True)
+    .settings(parallel=True, prefetch=2)
+    .batch_map(img=ClipEmbed(), batch=32)
     .save("image_embeddings")
 )
 ```
@@ -224,16 +175,15 @@ Install `datachain[video]` and the model dependencies (`torch`, `open_clip_torch
 
 ```python
 from collections.abc import Iterator
+from itertools import islice
 import datachain as dc
 from pydantic import BaseModel
 
 
 class FrameEmb(BaseModel):
-    video: (
-        str  # gen() output replaces the input columns, so carry provenance explicitly
-    )
-    second: int  # the sampled target time t = 0, 1, 2, ... s
-    pts: float  # actual timestamp of the decoded frame (first frame at/after t)
+    index: int
+    # Actual timestamp of the decoded frame, in seconds.
+    pts: float
     embedding: list[float]
 
 
@@ -247,42 +197,34 @@ class EmbedFrames(dc.Generator):
         )
         self.model.eval()
 
-    def process(
-        self, file: dc.VideoFile
-    ) -> Iterator[
-        tuple[dc.VideoFile, FrameEmb]
-    ]:  # the annotation defines the output schema
+    def process(self, file: dc.VideoFile) -> Iterator[tuple[dc.VideoFile, FrameEmb]]:
         import torch
         from PIL import Image
 
-        frames = list(
-            file.sample_frames(fps=1.0)
-        )  # k-th frame: first frame at/after t=k s; VFR-safe, upright
-        for i in range(0, len(frames), 32):  # batched forward passes
-            chunk = frames[i : i + 32]
+        frames = file.sample_frames(fps=1.0)
+        index = 0
+        while chunk := list(islice(frames, 32)):
             with torch.no_grad():
                 e = self.model.encode_image(
                     torch.stack([self.pre(Image.fromarray(f.get_np())) for f in chunk])
                 )
             e = e / e.norm(dim=-1, keepdim=True)
-            for k, (f, v) in enumerate(zip(chunk, e.tolist()), start=i):
-                yield (
-                    file,
-                    FrameEmb(video=file.path, second=k, pts=f.timestamp, embedding=v),
-                )
+            for f, v in zip(chunk, e.tolist()):
+                yield file, FrameEmb(index=index, pts=f.timestamp, embedding=v)
+                index += 1
+            del chunk, f
 
 
 frames = (
     dc.read_storage("s3://bucket/videos/*.mov", anon=True, type="video")
-    .settings(
-        parallel=True, prefetch=4
-    )  # prefetch>0: whole videos are needed for decoding
+    # Whole videos are needed for decoding.
+    .settings(parallel=True, prefetch=4)
     .gen(EmbedFrames(), output={"file": dc.VideoFile, "frame": FrameEmb})
     .save("video_frame_embeddings")
 )
 ```
 
-Columns: `file.*`, `frame.video`, `frame.second`, `frame.pts`, `frame.embedding`.
+Columns: `file.*`, `frame.index`, `frame.pts`, `frame.embedding`.
 Keep the top-level `file` output for source identities and compatible file-delta updates.
 Consume or embed sampled pixels inside the generator; saved frame references do not retain decoded buffers.
 
@@ -342,9 +284,8 @@ labels = dc.read_pandas(labels)
 images = dc.read_storage("s3://bucket/images/*.jpg", anon=True).mutate(
     stem=func.path.file_stem("file.path")
 )
-joined = images.merge(
-    labels, on="stem", inner=True
-)  # right-side columns keep their names
+# Right-side columns keep their names.
+joined = images.merge(labels, on="stem", inner=True)
 ```
 
 Large tabular sources: `dc.read_parquet(uri)` / `dc.read_csv(uri)` / `dc.read_json(uri, format="jsonl")`.
@@ -353,9 +294,8 @@ Large tabular sources: `dc.read_parquet(uri)` / `dc.read_csv(uri)` / `dc.read_js
 
 ```python
 emb = (
-    dc.read_storage(
-        "s3://bucket/images/*.jpg", update=True, delta=True
-    )  # update=True re-lists the bucket
+    # update=True re-lists the bucket.
+    dc.read_storage("s3://bucket/images/*.jpg", update=True, delta=True)
     .settings(parallel=True, prefetch=2)
     .batch_map(img=ClipEmbed(), batch=32)
     .save("image_embeddings")
@@ -364,8 +304,7 @@ emb = (
 
 Re-run the same script after the bucket changes. Only new and changed files (path + etag/version) go through
 the UDF; rows of overwritten files are replaced and rows of deleted files removed, so the new version equals a
-full recompute. Existing results built before the delta replacement fix need a one-time
-full rebuild under the same name with `update=True, delta=False`, then delta may be restored.
+full recompute.
 Put `update=True, delta=True` in the very first build script, so later refreshes are a re-run.
 
 ### Resume a crashed or killed run
@@ -375,8 +314,8 @@ from checkpoints; only the rest is computed. Do not rewrite the pipeline into a 
 
 ### Export
 
-`chain.to_parquet("out.parquet")`, `chain.to_pandas()`, `chain.to_list("col1", "col2")`,
-`chain.to_iter("col")`. Nested columns flatten as `info.width`; in pandas they become `info.width` columns.
+`chain.to_parquet("out.parquet")`, `chain.to_list("col1", "col2")`, `chain.to_iter("col")`.
+`chain.to_pandas(flatten=True)` gives flat `info.width` columns; the default uses a MultiIndex.
 
 ## 2. DataChain rules
 
@@ -395,11 +334,10 @@ from checkpoints; only the rest is computed. Do not rewrite the pipeline into a 
   model with all of them).
 - UDF return types must be annotated (`-> float`, `-> dc.Video`, a pydantic model). Unannotated lambdas are
   treated as `str`.
-- **What `delta` tracks:** file changes (new, overwritten by etag/version, deleted). It does not track your code:
-  when the model, its weights or the preprocessing change, save to a new dataset name (e.g. `frames_openai`)
-  instead of re-running delta into the old one, or old-model rows are kept.
-- Resume after a crash: re-run the same script; finished rows come from checkpoints. Don't hand-roll
-  checkpointing.
+- **Model changes:** file delta detects added, overwritten and deleted files, not changes to model code,
+  weights or preprocessing. For a requested model change, rebuild with `update=True, delta=False` and
+  save a new version under the same dataset name; previous versions remain readable. Use another name
+  only when the user asks to keep parallel model variants.
 
-See `reference.md` (same folder) for the API reference: read_storage arguments, settings, UDF classes,
-func catalog, file types, delta details.
+Read `{skill_dir}/SDK.md` for API details when needed: storage arguments, settings, typed UDFs,
+functions, windows and file types.

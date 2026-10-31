@@ -24,7 +24,7 @@ Bytes never leave your storage. Every run deposits a typed dataset the next pipe
 pip install datachain
 ```
 
-To add the agent skill (Knowledge Base + code generation):
+To add the agent skill for data processing and saved-result queries:
 
 ```bash
 datachain skill install --target claude     # also: cursor, codex, copilot, pi
@@ -70,7 +70,13 @@ Result:
 
 The agent decomposed the task into steps - embeddings, breed metadata, mask join, quality filter - and saved each as a named, versioned dataset. Next time you ask a related question, it starts from what's already built.
 
-The datasets are registered in a Knowledge Base optimized for both agents and humans:
+For markdown summaries, install the optional knowledge skill and ask the agent to build them:
+
+```bash
+datachain skill install knowledge --target claude
+```
+
+The knowledge skill registers datasets in a Knowledge Base optimized for both agents and humans:
 
 ```bash
 dc-knowledge
@@ -322,7 +328,13 @@ Saved pets_images@1.0.2  (+500 records)
 
 DataChain maintains two layers. The **Dataset DB** is the ground truth: schemas, processing state, lineage, the vectors themselves. **The Knowledge Base** is derived from it: structured markdown for humans and agents to read. Because it's derived, it describes what actually ran rather than what someone wrote down. Rebuild it after a pass to bring it current. The Knowledge Base is stored in `dc-knowledge/`.
 
-Ask the agent to build it (from Claude Code, Cursor, Codex, GitHub Copilot, or Pi):
+Install the optional knowledge skill (and its core dependency), then ask the agent to build it:
+
+```bash
+datachain skill install knowledge --target claude
+```
+
+From Claude Code, Cursor, Codex, GitHub Copilot, or Pi:
 ```bash
 claude
 ```
