@@ -31,7 +31,7 @@ class DataChainTelemetryLogger(IterativeTelemetryLogger):
     def send(self, payload: dict, use_thread: bool = False, use_daemon: bool = True):
         try:
             return super().send(payload, use_thread=use_thread, use_daemon=use_daemon)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("Failed to send telemetry", exc_info=True)
             return None
 

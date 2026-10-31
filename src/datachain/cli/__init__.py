@@ -84,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
 
         try:
             telemetry.send_cli_call(args.command, error=error)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("Failed to send CLI telemetry", exc_info=True)
 
 
