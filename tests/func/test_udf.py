@@ -1360,3 +1360,27 @@ def test_udf_scalar_union_inputs_use_one_logical_value(test_session, method):
             value=lambda vs: [str(v) for v in vs], params=["v"], output=str, batch=2
         )
     assert sorted(result.to_values("value")) == ["1", "two"]
+
+
+def test_udf_parallel_workers_split_the_cpu_threads(test_session_tmpfile, monkeypatch):
+    from datachain.utils import usable_cpu_count
+
+    monkeypatch.setenv("OMP_NUM_THREADS", "1000")
+    monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
+    monkeypatch.setenv("MKL_NUM_THREADS", "1")
+
+    def threads(x: int) -> str:
+        return ",".join(
+            os.environ.get(k, "")
+            for k in ("DATACHAIN_WORKER_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS")
+        )
+
+    values = (
+        dc.read_values(x=list(range(8)), session=test_session_tmpfile)
+        .settings(parallel=2)
+        .map(threads=threads)
+        .to_values("threads")
+    )
+
+    share = str(max(1, usable_cpu_count() // 2))
+    assert set(values) == {f"{share},{share},1"}

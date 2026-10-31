@@ -8,7 +8,7 @@ import re
 import sys
 import time
 from collections.abc import Iterable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -449,6 +449,110 @@ def determine_processes(
         # Disable parallel processing if only one process is requested.
         return False
     return parallel
+
+
+def _cpu_quotas(
+    root: str = "/sys/fs/cgroup", membership: str = "/proc/self/cgroup"
+) -> list[tuple[int, int]]:
+    """``(quota, period)`` of each cgroup this process is in, and their parents."""
+    quotas = []
+    with suppress(OSError):
+        for line in _read_text(membership).splitlines():
+            try:
+                _, controllers, path = line.split(":", 2)
+            except ValueError:
+                continue
+            if not controllers:  # v2
+                base, files = root, ["cpu.max"]
+            elif "cpu" in controllers.split(","):  # v1
+                base = os.path.join(root, controllers)
+                files = ["cpu.cfs_quota_us", "cpu.cfs_period_us"]
+            else:
+                continue
+            parts = [p for p in path.split("/") if p]
+            for depth in range(len(parts) + 1):
+                folder = os.path.join(base, *parts[:depth])
+                with suppress(OSError, ValueError):
+                    quota, period = " ".join(
+                        _read_text(os.path.join(folder, name)) for name in files
+                    ).split()
+                    if quota not in ("max", "-1"):
+                        quotas.append((int(quota), int(period)))
+    return quotas
+
+
+def _read_text(path: str) -> str:
+    with open(path) as f:
+        return f.read()
+
+
+def usable_cpu_count() -> int:
+    """CPUs this process may use: its affinity, capped by its cgroups' CPU quotas.
+
+    ``os.cpu_count()`` reports the host inside containers; a fractional quota
+    rounds up.
+    """
+    cpus = os.cpu_count() or 1
+    with suppress(OSError):
+        if hasattr(os, "process_cpu_count"):
+            cpus = os.process_cpu_count() or 1
+        elif hasattr(os, "sched_getaffinity"):
+            cpus = len(os.sched_getaffinity(0))
+    caps = [-(-quota // period) for quota, period in _cpu_quotas() if period > 0]
+    return max(min([cpus, *caps]), 1)
+
+
+WORKER_THREADS_ENV = "DATACHAIN_WORKER_THREADS"
+# Read at import by torch/OpenMP, MKL, OpenBLAS, numexpr and Accelerate.
+_THREAD_ENVS = (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+)
+
+
+def worker_thread_env(n_workers: int) -> dict[str, str]:
+    """Thread-count variables splitting the CPUs among ``n_workers`` processes.
+
+    A smaller value already set is kept; a larger one (e.g. a platform default
+    of all CPUs per process) is capped at the worker's share.
+    """
+    if n_workers < 1:
+        raise ValueError("n_workers must be positive")
+    share = max(1, usable_cpu_count() // n_workers)
+    env = {}
+    for name in (WORKER_THREADS_ENV, *_THREAD_ENVS):
+        try:
+            current = int(os.environ[name])
+        except (KeyError, ValueError):
+            current = share
+        env[name] = str(max(1, min(current, share)))
+    return env
+
+
+@contextmanager
+def worker_thread_limits(n_workers: int) -> Iterator[None]:
+    """Apply a CPU-share budget while loading a UDF and starting its workers."""
+    env = worker_thread_env(n_workers)
+    saved = {name: os.environ.get(name) for name in env}
+    try:
+        os.environ.update(env)
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def worker_threads() -> int | None:
+    """CPU threads each parallel UDF worker may use; None outside such workers."""
+    with suppress(KeyError, ValueError):
+        return max(1, int(os.environ[WORKER_THREADS_ENV]))
+    return None
 
 
 def get_env_list(
