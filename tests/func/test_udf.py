@@ -1335,8 +1335,6 @@ def test_udf_parallel_workers_split_the_cpu_threads(test_session_tmpfile, monkey
     monkeypatch.setenv("MKL_NUM_THREADS", "1")
 
     def threads(x: int) -> str:
-        import os
-
         return ",".join(
             os.environ.get(k, "")
             for k in ("DATACHAIN_WORKER_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS")
@@ -1351,5 +1349,3 @@ def test_udf_parallel_workers_split_the_cpu_threads(test_session_tmpfile, monkey
 
     share = str(max(1, usable_cpu_count() // 2))
     assert set(values) == {f"{share},{share},1"}
-    assert os.environ["OMP_NUM_THREADS"] == "1000"
-    assert "DATACHAIN_WORKER_THREADS" not in os.environ

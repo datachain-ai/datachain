@@ -519,6 +519,8 @@ def worker_thread_env(n_workers: int) -> dict[str, str]:
     A smaller value already set is kept; a larger one (e.g. a platform default
     of all CPUs per process) is capped at the worker's share.
     """
+    if n_workers < 1:
+        raise ValueError("n_workers must be positive")
     share = max(1, usable_cpu_count() // n_workers)
     env = {}
     for name in (WORKER_THREADS_ENV, *_THREAD_ENVS):

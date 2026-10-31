@@ -66,6 +66,8 @@ def guided_tasks(
     Early tasks are large to amortize dispatch; the last ones hold a single item,
     so slow rows (e.g. videos) don't leave one worker running alone at the end.
     """
+    if n_workers < 1 or max_size < 1:
+        raise ValueError("n_workers and max_size must be positive")
     it = iter(items)
     remaining = total
     while True:
@@ -269,14 +271,6 @@ class UDFDispatcher:
                     batch_size=self.batch_size,
                 )
 
-    def input_batch_size(self, n_workers: int) -> int:
-        input_batch_size = self.rows_total // n_workers
-        if input_batch_size == 0:
-            input_batch_size = 1
-        elif input_batch_size > DEFAULT_BATCH_SIZE:
-            input_batch_size = DEFAULT_BATCH_SIZE
-        return input_batch_size
-
     def run_udf_parallel(  # noqa: C901, PLR0912
         self,
         n_workers: int,
@@ -292,29 +286,19 @@ class UDFDispatcher:
             self.ctx.Process(name=f"Worker-UDF-{i}", target=self._run_worker)
             for i in range(n_workers)
         ]
-        thread_env = worker_thread_env(n_workers)
-        saved = {name: os.environ.get(name) for name in thread_env}
-        os.environ.update(thread_env)
-        try:
-            for p in pool:
-                p.start()
-        finally:
-            for name, value in saved.items():
-                if value is None:
-                    os.environ.pop(name, None)
-                else:
-                    os.environ[name] = value
+        os.environ.update(worker_thread_env(n_workers))
+        for p in pool:
+            p.start()
 
         try:
             # Will be set to True when the input is exhausted
             input_finished = False
 
-            batch_size = getattr(getattr(self, "batching", None), "count", 1)
             input_rows = guided_tasks(
                 input_rows if self.is_batching else flatten(input_rows),
-                -(-self.rows_total // batch_size),
+                self.rows_total,
                 n_workers,
-                self.input_batch_size(n_workers),
+                DEFAULT_BATCH_SIZE,
             )
 
             # Stop all workers after the input rows have finished processing

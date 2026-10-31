@@ -791,3 +791,11 @@ def test_worker_threads(value, expected, monkeypatch):
         monkeypatch.setenv("DATACHAIN_WORKER_THREADS", value)
 
     assert utils.worker_threads() == expected
+
+
+@pytest.mark.parametrize("workers", [0, -1])
+def test_worker_thread_env_requires_positive_workers(workers):
+    from datachain.utils import worker_thread_env
+
+    with pytest.raises(ValueError, match="n_workers must be positive"):
+        worker_thread_env(workers)
