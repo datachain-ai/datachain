@@ -138,7 +138,7 @@ def _replace(element, replacements):
 def _materialize_join_side(
     side: "FromClause", onclause: "ColumnElement"
 ) -> tuple["FromClause", dict["ClauseElement", "ClauseElement"]]:
-    keys = {}
+    keys: dict[ColumnElement, None] = {}
     for expression in iterate(onclause):
         if not isinstance(expression, BinaryExpression) or expression.operator not in (
             operators.eq,
@@ -175,7 +175,7 @@ def _materialize_join_side(
     values = (
         select(*inputs.c, *computed.values()).offset(0).cte() if computed else inputs
     )
-    column_names = {column: column.name for column in side.c}
+    column_names: dict[ClauseElement, str] = {column: column.name for column in side.c}
     column_names.update({key: label.name for key, label in computed.items()})
     # Keep runtime values and affinity intact. Declared SQL types cannot prove
     # that an extra cast predicate preserves every original match.
