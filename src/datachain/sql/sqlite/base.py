@@ -761,9 +761,9 @@ print(usearch.sqlite_path())
 def usearch_sqlite_path() -> str | None:
     """Path of usearch's SQLite extension, or None if it is not available.
 
-    Resolved in a subprocess: importing usearch loads NumKong with RTLD_GLOBAL,
-    which crashes native libraries imported later in the same process (e.g.
-    onnxruntime). The result is passed to child processes in an env variable.
+    Resolved in a subprocess to keep NumKong's RTLD_GLOBAL symbols out of the
+    process running user model libraries. The result is passed to child
+    processes in an env variable.
     """
     if (path := os.environ.get(USEARCH_SQLITE_ENV)) is None:
         path = os.environ[USEARCH_SQLITE_ENV] = _resolve_usearch_sqlite_path() or ""
