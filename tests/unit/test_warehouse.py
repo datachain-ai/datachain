@@ -9,6 +9,7 @@ import datachain as dc
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SQLiteWarehouse
 from datachain.lib.file import File
+from tests.utils import skip_if_not_sqlite
 
 
 def test_serialize(sqlite_db):
@@ -257,3 +258,27 @@ def test_map_tuples_are_validated(sqlite_db):
 
     with pytest.raises(UdfError):
         process_udf_outputs(warehouse, table, iter([[(1, "x", None)]]), udf)
+
+
+@skip_if_not_sqlite
+def test_insert_into_reads_all_ids_before_inserting_batches(
+    warehouse_tmpfile, monkeypatch
+):
+    warehouse = warehouse_tmpfile
+    monkeypatch.setattr(type(warehouse), "INSERT_BATCH_SIZE", 3)
+    src, dst, unrelated = (
+        warehouse.create_udf_table([sa.Column("value", sa.Integer)]) for _ in range(3)
+    )
+    warehouse.insert_rows(src, [{"value": i} for i in range(10)])
+    warehouse.insert_rows_done(src)
+
+    # Another connection commits after each batch. With the id cursor still open,
+    # the next batch fails with "database is locked".
+    with warehouse.clone() as other:
+        warehouse.insert_into(
+            dst,
+            sa.select(src),
+            progress_cb=lambda _: other.db.execute(unrelated.insert().values(value=0)),
+        )
+
+    assert warehouse.table_rows_count(dst) == 10

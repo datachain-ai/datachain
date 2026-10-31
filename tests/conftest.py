@@ -1,9 +1,13 @@
+import functools
+import http.server
 import io
 import os
 import os.path
 import signal
+import socketserver
 import subprocess  # nosec B404
 import tarfile
+import threading
 import uuid
 from collections.abc import Generator
 from datetime import datetime
@@ -747,15 +751,18 @@ def cloud_test_catalog_upload(cloud_test_catalog):
     src = cloud_test_catalog.src_uri
     client = Client.get_implementation(src)
     fsspec_fs = client.create_fs(**cloud_test_catalog.client_config)
-    original_paths = set(fsspec_fs.ls(src))
+    local = cloud_test_catalog.server.kind == "file"
+    original_paths = set(fsspec_fs.find(src, withdirs=local))
 
     yield cloud_test_catalog
 
-    # Cleanup any written files
-    new_paths = set(fsspec_fs.ls(src))
-    cleanup_paths = new_paths - original_paths
-    for p in cleanup_paths:
-        fsspec_fs.rm(p, recursive=True)
+    # Cleanup any written files, children before their directories
+    new_paths = set(fsspec_fs.find(src, withdirs=local, refresh=True))
+    for p in sorted(new_paths - original_paths, reverse=True):
+        if local and fsspec_fs.isdir(p):
+            fsspec_fs.rmdir(p)
+        else:
+            fsspec_fs.rm_file(p)
 
 
 @pytest.fixture
@@ -1456,3 +1463,69 @@ def mock_parquet_data(compressed_parquet_data, dog_entries, version="1.0.0"):
 def mock_parquet_data_cloud(compressed_parquet_data, dog_entries, cloud_test_catalog):
     src_uri = cloud_test_catalog.src_uri
     return compressed_parquet_data(dog_entries("1.0.0"), src_uri)
+
+
+@pytest.fixture
+def fetched_bytes(monkeypatch):
+    from adlfs.spec import AzureBlobFile
+    from gcsfs.core import GCSFile
+    from s3fs.core import S3File
+
+    fetched = [0, 0]
+    for cls in (S3File, GCSFile, AzureBlobFile):
+
+        def fetch_range(self, *args, _orig=cls._fetch_range, **kwargs):
+            data = _orig(self, *args, **kwargs)
+            fetched[0] += len(data)
+            fetched[1] += 1
+            return data
+
+        monkeypatch.setattr(cls, "_fetch_range", fetch_range)
+    return fetched
+
+
+class _QuietHandler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+
+    def handle_error(self, request, client_address):
+        pass
+
+
+class _RangeHandler(_QuietHandler):
+    def send_head(self):
+        if not (ranges := self.headers.get("Range")):
+            return super().send_head()
+        with open(self.translate_path(self.path), "rb") as f:
+            data = f.read()
+        start, end = map(int, ranges.removeprefix("bytes=").split("-"))
+        body = data[start : end + 1]
+        self.send_response(206)
+        self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        return io.BytesIO(body)
+
+
+def _serve(directory, handler_class):
+    handler = functools.partial(handler_class, directory=str(directory))
+    with socketserver.TCPServer(("127.0.0.1", 0), handler) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield f"http://127.0.0.1:{server.server_address[1]}"
+        finally:
+            server.shutdown()
+            thread.join()
+
+
+@pytest.fixture
+def http_server(tmp_path):
+    """Serve `tmp_path` over HTTP with range support; yields its base URL."""
+    yield from _serve(tmp_path, _RangeHandler)
+
+
+@pytest.fixture
+def http_server_without_ranges(tmp_path):
+    """Serve `tmp_path` over HTTP without range support; yields its base URL."""
+    yield from _serve(tmp_path, _QuietHandler)

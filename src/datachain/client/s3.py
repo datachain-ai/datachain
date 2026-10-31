@@ -177,6 +177,10 @@ class ClientS3(RangeListedClient):
     CREDENTIAL_KEYS = frozenset(
         {"key", "secret", "token", "aws_key", "aws_secret", "aws_token"}
     )
+    # A version id always names the same bytes, except "null". S3 gives that id to
+    # objects written while versioning is off or suspended, and another write in
+    # that state replaces them, so those files are checked by etag.
+    PINNED_VERSION_IS_IMMUTABLE = True
     _unversioned = False  # the server can't list versions
 
     def _open_remote(self, file: File, block_size: int | None = None):

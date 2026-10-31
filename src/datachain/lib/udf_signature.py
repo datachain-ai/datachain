@@ -3,10 +3,22 @@ from collections.abc import Callable, Generator, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any, get_args, get_origin
 
-from datachain.lib.data_model import DataType, DataTypeNames, is_chain_type
+from datachain.lib.data_model import (
+    DataType,
+    DataTypeNames,
+    is_chain_type,
+    validate_chain_type,
+)
 from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.udf import UDFBase, reject_var_params
-from datachain.lib.utils import AbstractUDF, DataChainParamsError, callable_name
+from datachain.lib.utils import (
+    AbstractUDF,
+    DataChainParamsError,
+    assert_unique_export_columns,
+    callable_name,
+    type_to_str,
+)
+from datachain.query.schema import DEFAULT_DELIMITER
 
 
 class UdfSignatureError(DataChainParamsError):
@@ -130,11 +142,32 @@ class UdfSignature:  # noqa: PLW1641
             else:
                 udf_output_map = {signal_name: func_outs_sign[0]}
 
+        for signal, anno in udf_output_map.items():
+            UdfSignature._validate_type(chain, signal, anno)
+        assert_unique_export_columns(
+            [
+                c.split(DEFAULT_DELIMITER)
+                for c in SignalSchema(udf_output_map).db_signals()
+            ],
+            DEFAULT_DELIMITER,
+        )
+
         return cls(
             func=udf_func,
             params=udf_params,
             output_schema=SignalSchema(udf_output_map),
         )
+
+    @staticmethod
+    def _validate_type(chain, signal: str, anno) -> None:
+        validate_chain_type(anno)
+        if not is_chain_type(anno):
+            raise UdfSignatureError(
+                chain,
+                f"output type '{type_to_str(anno)}' of signal"
+                f" '{signal}' is not supported."
+                f" Please use DataModel types: {DataTypeNames}",
+            )
 
     @staticmethod
     def _validate_output(chain, signal_name, func, func_outs_sign, output):
@@ -153,29 +186,24 @@ class UdfSignature:  # noqa: PLW1641
 
             udf_output_map = dict(zip(output, func_outs_sign, strict=False))
         elif isinstance(output, dict):
-            for key, value in output.items():
+            for key in output:
                 if not isinstance(key, str):
                     raise UdfSignatureError(
                         chain,
                         f"output signal '{key}' has type '{type(key)}'"
                         " while 'str' is expected",
                     )
-                if not is_chain_type(value):
-                    raise UdfSignatureError(
-                        chain,
-                        f"output type '{value.__name__}' of signal '{key}' is not"
-                        f" supported. Please use DataModel types: {DataTypeNames}",
-                    )
-
             udf_output_map = output
-        elif is_chain_type(output):
-            udf_output_map = {signal_name: output}
         else:
-            raise UdfSignatureError(
-                chain,
-                f"unknown output type: {output}. List of signals or dict of signals"
-                " to function are expected.",
-            )
+            # the reason first: otherwise a rejected type reads as a bad output shape
+            validate_chain_type(output)
+            if not is_chain_type(output):
+                raise UdfSignatureError(
+                    chain,
+                    f"unknown output type: {output}. List of signals or dict of"
+                    " signals to function are expected.",
+                )
+            udf_output_map = {signal_name: output}
         return udf_output_map
 
     def __eq__(self, other) -> bool:

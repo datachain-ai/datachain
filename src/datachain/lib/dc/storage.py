@@ -5,29 +5,16 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from functools import reduce
 from typing import TYPE_CHECKING
-from uuid import uuid4
 
+import datachain.lib.listing as listing_lib
 from datachain.client import Client
 from datachain.lib.dc.storage_pattern import (
     list_scope,
     path_filter,
     storage_sources,
-    validate_cloud_bucket_name,
 )
 from datachain.lib.file import File, FileRow, FileType, get_file_type
-from datachain.lib.listing import (
-    LISTING_BATCH_SIZE,
-    PathFilter,
-    describe_listing,
-    file_row,
-    get_file_info,
-    get_listing,
-    list_bucket,
-    list_pages,
-    list_scope_pages,
-    listing_uri_from_name,
-    select_paths,
-)
+from datachain.lib.storage_config import client_configs, session_for
 from datachain.query import Session
 
 if TYPE_CHECKING:
@@ -38,46 +25,6 @@ if TYPE_CHECKING:
     from datachain.lib.listing import ListScope
 
     from .datachain import DataChain
-
-
-def _backends_have_credentials(uris, client_config: dict | None) -> bool:
-    """True if any backend behind ``uris`` sees credentials in client_config."""
-    if not client_config:
-        return False
-    seen: set[type[Client]] = set()
-    for uri in uris:
-        try:
-            seen.add(Client.get_implementation(str(uri)))
-        except NotImplementedError:
-            return True
-    return any(c.has_explicit_credentials(client_config) for c in seen)
-
-
-def _all_buckets_anonymous(uris, client_config: dict | None) -> bool:
-    """Probe each unique bucket; True iff all probe as anonymous."""
-    to_probe: set[tuple[type[Client], str]] = set()
-    for uri in uris:
-        try:
-            client_cls = Client.get_implementation(str(uri))
-        except NotImplementedError:
-            return False
-        name, _ = client_cls.split_url(str(uri))
-        if not name:
-            return False
-        to_probe.add((client_cls, name))
-
-    if not to_probe:
-        return False
-
-    for client_cls, name in to_probe:
-        try:
-            status = client_cls.bucket_status(name, **(client_config or {}))
-        except NotImplementedError:
-            # Backend doesn't support bucket_status (e.g. local files).
-            return False
-        if status.access != "anonymous":
-            return False
-    return True
 
 
 def read_storage(  # noqa: PLR0913
@@ -203,10 +150,10 @@ def read_storage(  # noqa: PLR0913
     uris = uri if isinstance(uri, (list, tuple)) else [uri]
     if not uris:
         raise ValueError("No URIs provided")
-    session_config, client_config = _client_configs(
+    session_config, client_config = client_configs(
         uris, session, anon, client_config, versions
     )
-    session = _session_for(session, session_config, in_memory)
+    session = session_for(session, session_config, in_memory)
     return _read_storage(
         uris,
         session,
@@ -225,61 +172,6 @@ def read_storage(  # noqa: PLR0913
         delta_retry=delta_retry,
         delta_unsafe=delta_unsafe,
     )
-
-
-def _client_configs(
-    uris: Sequence,
-    session: Session | None,
-    anon: bool | None,
-    client_config: dict | None,
-    versions: bool,
-) -> tuple[dict | None, dict]:
-    """The client config a session is made with, if not the active one's, and
-    the client config to list ``uris`` with.
-
-    ``client_config`` if given, else the config of ``session`` or the active
-    session. ``anon`` is set
-    on it, True when None and every bucket is public and has no credentials,
-    and ``version_aware=False`` without ``versions``. An explicit session is
-    never changed.
-    """
-    for single_uri in uris:
-        validate_cloud_bucket_name(str(single_uri))
-    config = _session_client_config(session, client_config)
-    if (
-        anon is None
-        and not _backends_have_credentials(uris, config)
-        and _all_buckets_anonymous(uris, config)
-    ):
-        anon = True
-    if anon is not None:
-        config = config | {"anon": anon}
-    session_config = config if client_config or anon is not None else None
-    if not versions:
-        config = config | {"version_aware": False}
-    return session_config, config
-
-
-def _session_for(
-    session: Session | None, client_config: dict | None, in_memory: bool
-) -> Session:
-    """``Session.get(session)`` with ``client_config``, if any: an explicit
-    session is never changed, so a session over a copy of its catalog.
-    """
-    session = Session.get(session, client_config=client_config, in_memory=in_memory)
-    if client_config is None or session.catalog.client_config == client_config:
-        return session
-    catalog = session.catalog.copy()
-    catalog.client_config = client_config
-    return Session("session" + uuid4().hex[:4], catalog, in_memory=in_memory)
-
-
-def _session_client_config(session: Session | None, client_config: dict | None) -> dict:
-    """``client_config`` if given, else the session's, without creating one."""
-    if client_config:
-        return client_config
-    session = session or Session.active()
-    return session.catalog.client_config if session else {}
 
 
 def _read_storage(
@@ -301,38 +193,26 @@ def _read_storage(
     delta_retry: bool | str | None = None,
     delta_unsafe: bool = False,
 ) -> "DataChain":
-    from .datasets import read_dataset
     from .records import read_records
 
     file_type = get_file_type(type)
-    catalog = session.catalog
-    cache = catalog.cache
-    listing_namespace_name = catalog.metastore.system_namespace_name
-    listing_project_name = catalog.metastore.listing_project_name
-
+    cache = session.catalog.cache
     chains = []
     file_values = []
-    updated_listings: set[str] = set()
+    prepared_listings: set[str] = set()
 
     for list_uri_to_use, glob_pattern in storage_sources(uris):
-        list_ds_name, list_uri, list_path, _ = get_listing(
-            list_uri_to_use, session, update=update, versions=versions
-        )
-
-        # list_ds_name is None if object is a file, we don't want to use cache
-        # or do listing in that case - just read that single object
-        if not list_ds_name:
-            file_values.append(
-                get_file_info(list_uri, cache, client_config=client_config)
-            )
-            continue
-
-        dc = read_dataset(
-            list_ds_name,
-            namespace=listing_namespace_name,
-            project=listing_project_name,
-            session=session,
+        dc, list_uri, list_path = _prepare_listing(
+            list_uri_to_use,
+            session,
+            client_config,
+            prepared_listings,
+            file_type=file_type,
+            column=column,
+            update=update,
+            versions=versions,
             settings=settings,
+            in_memory=in_memory,
             delta=delta,
             delta_on=delta_on,
             delta_result_on=delta_result_on,
@@ -340,28 +220,16 @@ def _read_storage(
             delta_retry=delta_retry,
             delta_unsafe=delta_unsafe,
         )
-        # a listing shared by several URIs is refreshed once, so all read one snapshot
-        dc._query.update = update and list_ds_name not in updated_listings
-        updated_listings.add(list_ds_name)
-        dc.signals_schema = dc.signals_schema.mutate({f"{column}": file_type})
-
-        # Always attach listing_fn so resolve_listing can refresh stale listings;
-        # a reused snapshot may cover a parent of list_uri: refresh all of it
-        dc._query.set_listing_fn(
-            lambda ds_name=list_ds_name: _write_listing(
-                listing_uri_from_name(ds_name),
-                ds_name,
-                session,
-                client_config,
-                column=column,
-                file_type=file_type,
-                settings=settings,
-                in_memory=in_memory,
+        if dc is None:
+            file_values.append(
+                listing_lib.get_file_info(list_uri, cache, client_config=client_config)
             )
-        )
+            continue
 
         chains.append(
-            select_paths(dc, path_filter(list_path, glob_pattern, recursive), column)
+            listing_lib.select_paths(
+                dc, path_filter(list_path, glob_pattern, recursive), column
+            )
         )
 
     storage_chain = None if not chains else reduce(lambda x, y: x.union(y), chains)
@@ -442,7 +310,7 @@ def list_storage(
     uris = [os.fspath(u) for u in (uri if isinstance(uri, (list, tuple)) else [uri])]
     if not uris:
         raise ValueError("No URIs provided")
-    session_config, config = _client_configs(
+    session_config, config = client_configs(
         uris, session, anon, client_config, versions
     )
     return Listing(
@@ -467,11 +335,11 @@ class _Object:
 class _Scan:
     """One read of the listing of ``uri``: of the part ``scope`` holds, or all
     of it if None. A row comes once per filter of ``filters`` it passes;
-    ``PathFilter()`` passes every row.
+    ``listing_lib.PathFilter()`` passes every row.
     """
 
     uri: str
-    filters: "tuple[PathFilter, ...]"
+    filters: "tuple[listing_lib.PathFilter, ...]"
     scope: "ListScope | None" = None
 
 
@@ -507,7 +375,7 @@ class Listing:
     def session(self) -> Session:
         """The session `save()` writes with, created on first use."""
         if self._save_session is None:
-            self._save_session = _session_for(
+            self._save_session = session_for(
                 self._session, self._session_config, self._in_memory
             )
         return self._save_session
@@ -524,19 +392,19 @@ class Listing:
         cache = session.catalog.cache if session else None
         for source in self._sources(cache):
             if isinstance(source, _Object):
-                info = get_file_info(source.uri, cache, self.client_config)
-                yield [file_row(info)]
+                info = listing_lib.get_file_info(source.uri, cache, self.client_config)
+                yield [listing_lib.file_row(info)]
                 continue
             if source.scope is None:
-                pages = list_pages(source.uri, cache, self.client_config)
+                pages = listing_lib.list_pages(source.uri, cache, self.client_config)
             else:
-                pages = list_scope_pages(
+                pages = listing_lib.list_scope_pages(
                     source.uri, source.scope, cache, self.client_config
                 )
             # current objects, as read_storage's chain: a listing with versions
             # holds old ones too, listed for the version ids of current ones
             latest = self.versions
-            if source.filters == (PathFilter(),) and not latest:
+            if source.filters == (listing_lib.PathFilter(),) and not latest:
                 yield from pages
                 continue
             matchers = [f.matcher() for f in source.filters]
@@ -556,13 +424,15 @@ class Listing:
         """
         from datachain.client.fsspec import RangeListedClient
 
-        scans: dict[str, dict[ListScope | None, list[PathFilter]]] = {}
+        scans: dict[str, dict[ListScope | None, list[listing_lib.PathFilter]]] = {}
         objects: list[_Object | _Scan] = []
         described: dict[str, tuple[str, str, str] | None] = {}
         for uri, pattern in storage_sources(self.uris):
             client = Client.get_client(uri, cache, **self.client_config)  # type: ignore[arg-type]
             if uri not in described:  # braces expand to URIs with one base
-                described[uri] = describe_listing(client, uri, self.versions)
+                described[uri] = listing_lib.describe_listing(
+                    client, uri, self.versions
+                )
             if (listing := described[uri]) is None:
                 objects.append(_Object(uri))
                 continue
@@ -571,7 +441,7 @@ class Listing:
             # filter by that same prefix selects them all
             whole = list_path == Client.parse_url(list_uri)[1]
             paths = (
-                PathFilter()
+                listing_lib.PathFilter()
                 if pattern is None and self.recursive and whole
                 else path_filter(list_path, pattern, self.recursive)
             )
@@ -660,50 +530,6 @@ class Listing:
         return chain
 
 
-def _write_listing(
-    uri: str,
-    ds_name: str,
-    session: Session,
-    client_config: dict,
-    *,
-    column: str = "file",
-    file_type: type[File] = File,
-    settings: dict | None = None,
-    in_memory: bool = False,
-) -> None:
-    """Store the listing of the prefix ``uri``, whole, as the listing dataset
-    ``ds_name``: the snapshot ``read_storage`` reads and reuses.
-    """
-    from .records import create_records_dataset
-
-    namespace = session.catalog.metastore.system_namespace_name
-    project = session.catalog.metastore.listing_project_name
-    list_func = list_bucket(uri, session.catalog.cache, client_config=client_config)
-    # content_hash=None because hash_callable doesn't capture list_func's
-    # closure (which holds the URI and the client config) -- auto-hashing
-    # the seed would let the UDF checkpoint cache return a stale listing
-    # across URIs/runs.
-    (
-        create_records_dataset(
-            [{"seed": 0}],
-            schema={"seed": int},
-            content_hash=None,
-            session=session,
-            settings=settings,
-            in_memory=in_memory,
-        )
-        .settings(
-            prefetch=0,
-            batch_size=LISTING_BATCH_SIZE,
-            namespace=namespace,
-            project=project,
-        )
-        .gen(list_func, output={column: file_type})
-        # for internal listing datasets, we always bump major version
-        .save(ds_name, listing=True, update_version="major")
-    )
-
-
 _PATH = FileRow._fields.index("path")
 _IS_LATEST = FileRow._fields.index("is_latest")
 
@@ -734,3 +560,68 @@ def _record_batch(page: Sequence[tuple], schema: "pa.Schema") -> "pa.RecordBatch
         [pa.array(col, type=t) for col, t in zip(columns, schema.types, strict=True)],
         schema=schema,
     )
+
+
+def _prepare_listing(
+    uri: str | os.PathLike[str],
+    session: Session,
+    client_config: dict,
+    prepared: set[str],
+    *,
+    file_type: type[File] = File,
+    column: str = "file",
+    update: bool = False,
+    versions: bool = True,
+    settings: dict | None = None,
+    in_memory: bool = False,
+    delta: bool | None = False,
+    delta_on: str | Sequence[str] | None = None,
+    delta_result_on: str | Sequence[str] | None = None,
+    delta_compare: str | Sequence[str] | None = None,
+    delta_retry: bool | str | None = None,
+    delta_unsafe: bool = False,
+) -> tuple["DataChain | None", str, str]:
+    """Select a snapshot and attach its full-prefix refresh, without reading rows.
+
+    A single file has no snapshot. Return its URI and the path used to filter rows.
+    """
+    from .datasets import read_dataset
+
+    name, list_uri, list_path, _ = listing_lib.get_listing(
+        uri, session, update=update, versions=versions
+    )
+    if name is None:
+        return None, list_uri, list_path
+
+    catalog = session.catalog
+    chain = read_dataset(
+        name,
+        namespace=catalog.metastore.system_namespace_name,
+        project=catalog.metastore.listing_project_name,
+        session=session,
+        settings=settings,
+        update=update and name not in prepared,
+        delta=delta,
+        delta_on=delta_on,
+        delta_result_on=delta_result_on,
+        delta_compare=delta_compare,
+        delta_retry=delta_retry,
+        delta_unsafe=delta_unsafe,
+    )
+    # A snapshot shared by several URIs is prepared once per operation.
+    prepared.add(name)
+    chain.signals_schema = chain.signals_schema.mutate({column: file_type})
+    # A reused snapshot can cover a parent: always refresh its whole prefix.
+    chain._query.set_listing_fn(
+        lambda: listing_lib.write_listing(
+            listing_lib.listing_uri_from_name(name),
+            name,
+            session,
+            client_config,
+            column=column,
+            file_type=file_type,
+            settings=settings,
+            in_memory=in_memory,
+        )
+    )
+    return chain, list_uri, list_path
