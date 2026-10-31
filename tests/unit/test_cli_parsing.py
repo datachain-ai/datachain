@@ -136,3 +136,35 @@ def test_determine_flavors(studio, local, all, token, expected):
 def test_determine_flavors_studio_without_token():
     with pytest.raises(DataChainError, match="Not logged in to Studio"):
         determine_flavors(studio=True, local=False, all=False, token=None)
+
+
+def test_dataset_describe_parser():
+    args = get_parser().parse_args(("dataset", "describe", "labels@1.0.0", "--json"))
+    assert args.name == "labels@1.0.0"
+    assert args.json_output is True
+    assert args.version is None
+
+
+def test_local_dataset_commands_are_discoverable(capsys):
+    parser = get_parser()
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["--help"])
+    assert exc.value.code == 0
+    output = capsys.readouterr().out
+    assert "dataset (ds)" in output
+    assert "Inspect saved dataset rows" in output
+
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["dataset", "--help"])
+    assert exc.value.code == 0
+    output = capsys.readouterr().out
+    assert "Inspect local schema, versions, lineage and saved code" in output
+    assert "List saved datasets and versions" in output
+
+
+def test_show_help_describes_reading(capsys):
+    with pytest.raises(SystemExit):
+        get_parser().parse_args(["show", "--help"])
+    output = capsys.readouterr().out
+    assert "Show rows, schema or the saved script" in output
+    assert "Create a new dataset" not in output

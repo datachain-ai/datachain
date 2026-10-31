@@ -248,3 +248,44 @@ def edit_dataset(
             raise DataChainError(
                 "Not logged in to Studio. Log in with 'datachain auth login'."
             )
+
+
+def describe_dataset(
+    catalog: "Catalog", name: str, version: str | None = None, json_output: bool = False
+) -> None:
+    import json
+
+    info = catalog.describe_dataset(name, version)
+    if json_output:
+        print(json.dumps(info, indent=2))
+        return
+    print(f"{info['name']}@{info['version']}")
+    print(f"Rows: {info['rows']} | Status: {info['status']}")
+    print(f"Created: {info['created_at']}")
+    if info["description"]:
+        print(f"Description: {info['description']}")
+    print("Versions: " + ", ".join(v["version"] for v in info["versions"]))
+    print("Schema:")
+    print(json.dumps(info["schema"], indent=2))
+    print("Sources: " + (", ".join(info["sources"]) or "none recorded"))
+
+    def show_dependencies(deps, indent="  "):
+        for dep in deps:
+            if dep is None:
+                print(indent + "unavailable dependency")
+                continue
+            removed = " (removed)" if dep["removed"] else ""
+            rows = f" ({dep['rows']} rows)" if dep["rows"] is not None else ""
+            print(
+                f"{indent}{dep['namespace']}.{dep['project']}.{dep['name']}"
+                f"@{dep['version']}{rows}{removed}"
+            )
+            show_dependencies(dep["dependencies"], indent + "  ")
+
+    print("Dependencies:")
+    show_dependencies(info["dependencies"])
+    print("Dependents (direct):")
+    show_dependencies(info["dependents"])
+    print("External files and models: not checked")
+    print("Script:")
+    print(info["query_script"] or "No script recorded.")
