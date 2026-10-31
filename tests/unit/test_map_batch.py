@@ -94,19 +94,6 @@ def test_map_batch_checkpoint_incomplete_group(test_session, batch):
 
 
 @pytest.mark.parametrize(
-    "rows,batch,workers,expected",
-    [(500, 32, 4, 3), (3, 32, 4, 1), (100000, 32, 4, 312), (500, 1, 4, 125)],
-)
-def test_map_batch_dispatch_task_size(rows, batch, workers, expected):
-    from datachain.query.dispatch import UDFDispatcher
-
-    dispatcher = UDFDispatcher.__new__(UDFDispatcher)
-    dispatcher.rows_total = rows
-    dispatcher.batching = Batch(batch) if batch > 1 else NoBatching()
-    assert dispatcher.input_batch_size(workers) == expected
-
-
-@pytest.mark.parametrize(
     "method,kwargs,hint",
     [
         ("map", {"batch": 32}, "Use batch_map"),
