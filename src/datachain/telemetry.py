@@ -27,6 +27,15 @@ def is_enabled():
     return True
 
 
+class DataChainTelemetryLogger(IterativeTelemetryLogger):
+    def send(self, payload: dict, use_thread: bool = False, use_daemon: bool = True):
+        try:
+            return super().send(payload, use_thread=use_thread, use_daemon=use_daemon)
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to send telemetry", exc_info=True)
+            return None
+
+
 # Try to get the version of the datachain package
 try:
     __version__ = version("datachain")
@@ -34,4 +43,4 @@ except PackageNotFoundError:
     __version__ = "unknown"
 
 # Initialize telemetry logger
-telemetry = IterativeTelemetryLogger("datachain", __version__, is_enabled)
+telemetry = DataChainTelemetryLogger("datachain", __version__, is_enabled)

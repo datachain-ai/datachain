@@ -62,3 +62,19 @@ def test_group_dataset_versions_semver_parsing():
 
     result = group_dataset_versions(datasets, latest_only=True)
     assert result == {"dataset1": "10.0.0"}
+
+
+def test_cli_telemetry_does_not_override_command_result(mocker, capsys):
+    from datachain.cli import main
+    from datachain.error import DataChainError
+
+    mocker.patch("datachain.catalog.get_catalog")
+    handler = mocker.patch("datachain.cli.handle_command", return_value=0)
+    mocker.patch(
+        "datachain.telemetry.telemetry.send_cli_call",
+        side_effect=PermissionError("telemetry cache is read-only"),
+    )
+    assert main(["dataset", "ls", "--local"]) == 0
+    handler.side_effect = DataChainError("command failed")
+    assert main(["dataset", "ls", "--local"]) == 1
+    assert "command failed" in capsys.readouterr().err

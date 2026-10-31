@@ -18,3 +18,18 @@ def test_telemetry_api_call(mocker, tmp_dir):
     assert args == {"interface": "class", "action": "datachain_init", "error": None}
 
     assert "name" in extra
+
+
+def test_telemetry_cache_error_does_not_block_reading(mocker, test_session):
+    dc.read_values(value=[1, 2], session=test_session).save("saved")
+    mocker.patch.object(telemetry, "is_enabled", return_value=True)
+    runtime_info = mocker.patch(
+        "iterative_telemetry.IterativeTelemetryLogger._runtime_info",
+        side_effect=PermissionError("telemetry cache is read-only"),
+    )
+    telemetry._event_sent = False
+    assert dc.read_dataset("saved", session=test_session).to_list("value") == [
+        (1,),
+        (2,),
+    ]
+    runtime_info.assert_called_once()
