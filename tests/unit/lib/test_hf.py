@@ -206,7 +206,10 @@ def _datasets_not_installed(name):
 @pytest.mark.parametrize(
     "fake_version,message",
     [
-        (lambda name: "2.2.1", r"datasets>=4\.0\.0, found 2\.2\.1"),
+        (
+            lambda name: "2.2.1",
+            r"requires 'datasets>=4\.0\.0' but version 2\.2\.1 is installed",
+        ),
         (_datasets_not_installed, "No package metadata was found for datasets"),
     ],
     ids=["outdated", "missing"],

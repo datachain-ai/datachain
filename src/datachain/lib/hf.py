@@ -5,7 +5,10 @@ from packaging.version import Version
 try:
     datasets_version = version("datasets")
     if Version(datasets_version) < Version("4.0.0"):
-        raise ImportError(f"datachain needs datasets>=4.0.0, found {datasets_version}")
+        raise ImportError(
+            f"datachain requires 'datasets>=4.0.0' but version {datasets_version} "
+            "is installed."
+        )
     from datasets import (
         Array2D,
         Array3D,
