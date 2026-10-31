@@ -760,15 +760,18 @@ def cloud_test_catalog_upload(cloud_test_catalog):
     src = cloud_test_catalog.src_uri
     client = Client.get_implementation(src)
     fsspec_fs = client.create_fs(**cloud_test_catalog.client_config)
-    original_paths = set(fsspec_fs.ls(src))
+    local = cloud_test_catalog.server.kind == "file"
+    original_paths = set(fsspec_fs.find(src, withdirs=local))
 
     yield cloud_test_catalog
 
-    # Cleanup any written files
-    new_paths = set(fsspec_fs.ls(src))
-    cleanup_paths = new_paths - original_paths
-    for p in cleanup_paths:
-        fsspec_fs.rm(p, recursive=True)
+    # Cleanup any written files, children before their directories
+    new_paths = set(fsspec_fs.find(src, withdirs=local, refresh=True))
+    for p in sorted(new_paths - original_paths, reverse=True):
+        if local and fsspec_fs.isdir(p):
+            fsspec_fs.rmdir(p)
+        else:
+            fsspec_fs.rm_file(p)
 
 
 @pytest.fixture
