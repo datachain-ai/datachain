@@ -17,6 +17,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 import sqlalchemy
+from datasets import ClassLabel, Dataset, Features, Translation, Value
 from pydantic import BaseModel
 
 import datachain as dc
@@ -37,8 +38,10 @@ from datachain.lib.data_model import DataModel
 from datachain.lib.dc import C, DatasetPrepareError, Sys
 from datachain.lib.dc.listings import read_listing_dataset
 from datachain.lib.file import File
+from datachain.lib.hf import HFClassLabel
 from datachain.lib.listing import LISTING_PREFIX, parse_listing_uri
 from datachain.lib.listing_info import ListingInfo
+from datachain.lib.settings import DEFAULT_PREFETCH
 from datachain.lib.signal_schema import (
     SignalResolvingError,
     SignalResolvingTypeError,
@@ -1750,7 +1753,7 @@ def test_unsupported_output_type(test_session):
     def get_vector(key) -> list[np.float64]:
         return [vector]
 
-    with pytest.raises(TypeError):
+    with pytest.raises(UdfSignatureError, match="is not supported"):
         dc.read_values(key=[123], session=test_session).map(emd=get_vector)
 
 
@@ -2091,6 +2094,55 @@ def test_read_csv_source_reads_its_row(
     assert [row.read() for row in rows] == expected  # a source can be read again
 
 
+def test_read_csv_columns(tmp_dir, test_session):
+    path = tmp_dir / "messy.csv"
+    path.write_text("Customer First Name,ZIP Code,Notes\nAlice,02134,first\n")
+    chain = dc.read_csv(
+        path.as_uri(),
+        columns=["ZIP Code", "customer_first_name"],
+        column_types={"ZIP Code": "string"},
+        session=test_session,
+    )
+    assert chain.to_list("zip_code", "customer_first_name") == [("02134", "Alice")]
+
+
+def test_read_csv_columns_keep_cleaned_names(tmp_dir, test_session):
+    path = tmp_dir / "names.csv"
+    path.write_text("First Name,First-Name\nAlice,Bob\n")
+    chain = dc.read_csv(
+        path.as_uri(), columns=["c0_first_name", "first_name"], session=test_session
+    )
+    assert chain.to_list("first_name", "c0_first_name") == [("Alice", "Bob")]
+    chain = dc.read_csv(path.as_uri(), columns=["c0_first_name"], session=test_session)
+    assert chain.to_values("c0_first_name") == ["Bob"]
+
+
+@pytest.mark.parametrize("columns", [["b", "b"], ["First Name", "first_name"]])
+def test_read_csv_columns_repeated(tmp_dir, test_session, columns):
+    path = tmp_dir / "test.csv"
+    path.write_text("First Name,b\nAlice,2\n")
+    with pytest.raises(DatasetPrepareError, match="name a column more than once"):
+        dc.read_csv(path.as_uri(), columns=columns, session=test_session)
+
+
+def test_read_csv_no_header_columns(tmp_dir, test_session):
+    path = tmp_dir / "test.csv"
+    path.write_text("1,2,3\n")
+    chain = dc.read_csv(
+        path.as_uri(),
+        header=False,
+        columns=["f2", "f0"],
+        output=["c", "a"],
+        session=test_session,
+    )
+    assert chain.to_list("c", "a") == [(3, 1)]
+
+    chain = dc.read_csv(
+        path.as_uri(), header=False, columns=["f2"], session=test_session
+    )
+    assert chain.to_values("f2") == [3]
+
+
 def test_read_csv_tab_delimited(tmp_dir, test_session):
     df = pd.DataFrame(DF_DATA)
     path = tmp_dir / "test.csv"
@@ -2349,6 +2401,241 @@ def test_read_parquet(tmp_dir, test_session):
     df1 = chain.select("first_name", "age", "city").to_pandas()
 
     assert df_equal(df1, df)
+
+
+@pytest.fixture
+def abc_parquet(tmp_dir):
+    path = tmp_dir / "abc.parquet"
+    pq.write_table(pa.table({"a": [1.0], "b": [10.0], "c": [100.0]}), path)
+    return path.as_uri()
+
+
+def test_read_parquet_columns(abc_parquet, test_session):
+    chain = dc.read_parquet(abc_parquet, columns=["c", "a"], session=test_session)
+    assert [s for s in chain.schema if s != "source"] == ["c", "a"]
+    assert chain.to_list("c", "a") == [(100.0, 1.0)]
+
+
+def test_read_parquet_columns_with_output(abc_parquet, test_session):
+    chain = dc.read_parquet(
+        abc_parquet,
+        columns=["c", "a"],
+        output={"x": float, "y": float},
+        session=test_session,
+    )
+    assert chain.to_list("x", "y") == [(100.0, 1.0)]
+
+
+def test_read_parquet_columns_files_in_different_order(tmp_dir, test_session):
+    pq.write_table(pa.table({"a": [1], "b": [10]}), tmp_dir / "1.parquet")
+    pq.write_table(pa.table({"b": [20], "a": [2]}), tmp_dir / "2.parquet")
+    chain = dc.read_parquet(tmp_dir.as_uri(), columns=["a", "b"], session=test_session)
+    assert sorted(chain.to_list("a", "b")) == [(1, 10), (2, 20)]
+
+
+def test_read_parquet_columns_not_found(abc_parquet, test_session):
+    with pytest.raises(DatasetPrepareError, match=r"Columns \['x'\] not found"):
+        dc.read_parquet(abc_parquet, columns=["x"], session=test_session)
+
+
+@pytest.mark.parametrize("columns", ["ca", []])
+def test_read_parquet_columns_must_be_a_list_of_names(
+    abc_parquet, test_session, columns
+):
+    with pytest.raises(DatasetPrepareError, match="non-empty list of column names"):
+        dc.read_parquet(abc_parquet, columns=columns, session=test_session)
+
+
+@pytest.mark.parametrize("missing", ["1.parquet", "2.parquet"])
+def test_read_parquet_columns_missing_in_some_files(tmp_dir, test_session, missing):
+    full = "2.parquet" if missing == "1.parquet" else "1.parquet"
+    pq.write_table(pa.table({"a": [1], "b": [10]}), tmp_dir / full)
+    pq.write_table(pa.table({"b": [20]}), tmp_dir / missing)
+    chain = dc.read_parquet(tmp_dir.as_uri(), columns=["a"], session=test_session)
+    values = chain.to_values("a")
+    assert len(values) == 2
+    assert set(values) == {1, None}
+
+
+def test_read_parquet_columns_with_incompatible_types(tmp_dir, test_session):
+    pq.write_table(pa.table({"a": [1]}), tmp_dir / "1.parquet")
+    pq.write_table(pa.table({"a": ["x"]}), tmp_dir / "2.parquet")
+    with pytest.raises(DatasetPrepareError, match="Unable to merge"):
+        dc.read_parquet(tmp_dir.as_uri(), columns=["a"], session=test_session)
+
+
+def test_read_parquet_columns_with_output_and_mixed_integer_widths(
+    tmp_dir, test_session
+):
+    pq.write_table(pa.table({"a": pa.array([1], pa.int32())}), tmp_dir / "1.parquet")
+    pq.write_table(
+        pa.table({"a": pa.array([2**40], pa.int64())}), tmp_dir / "2.parquet"
+    )
+    chain = dc.read_parquet(
+        tmp_dir.as_uri(), columns=["a"], output={"x": int}, session=test_session
+    )
+    assert sorted(chain.to_values("x")) == [1, 2**40]
+
+
+@pytest.mark.parametrize("output", [None, {"y": int}])
+@pytest.mark.parametrize("exported", ["1.parquet", "2.parquet"])
+def test_read_parquet_columns_some_files_written_by_datachain(
+    tmp_dir, test_session, exported, output
+):
+    plain = "2.parquet" if exported == "1.parquet" else "1.parquet"
+    pq.write_table(pa.table({"x": [1], "y": [10]}), tmp_dir / plain)
+    dc.read_values(x=[2], y=[20], session=test_session).to_parquet(tmp_dir / exported)
+    with pytest.raises((DatasetPrepareError, ValueError), match="written by DataChain"):
+        dc.read_parquet(
+            tmp_dir.as_uri(), columns=["x"], output=output, session=test_session
+        ).to_list()
+
+
+def test_read_parquet_columns_written_by_datachain(tmp_dir, test_session):
+    path = tmp_dir / "exported.parquet"
+    dc.read_values(x=[1], session=test_session).to_parquet(path)
+    with pytest.raises(DatasetPrepareError, match="written by DataChain"):
+        dc.read_parquet(path.as_uri(), columns=["x"], session=test_session)
+
+
+@pytest.mark.parametrize("columns,read", [(None, 3), (["c", "a"], 2)])
+def test_read_parquet_output_must_fit_columns_read(
+    abc_parquet, test_session, columns, read
+):
+    with pytest.raises(DatasetPrepareError, match=f"1 fields but {read} columns"):
+        dc.read_parquet(
+            abc_parquet, columns=columns, output={"c": float}, session=test_session
+        )
+
+
+def test_read_parquet_output_reads_files_by_the_first_file_columns(
+    tmp_dir, test_session
+):
+    pq.write_table(pa.table({"a": [1], "b": [10]}), tmp_dir / "1.parquet")
+    pq.write_table(pa.table({"b": [20], "a": [2]}), tmp_dir / "2.parquet")
+    chain = dc.read_parquet(
+        tmp_dir.as_uri(), output={"x": int, "y": int}, session=test_session
+    )
+    assert sorted(chain.to_list("x", "y")) == [(1, 10), (2, 20)]
+
+
+@pytest.mark.parametrize(
+    "first,second,output,expected",
+    [
+        (pa.array([1]), pa.array([1.5]), float, [1.0, 1.5]),
+        (pa.array([1], pa.int32()), pa.array([2**40]), int, [1, 2**40]),
+    ],
+)
+def test_read_parquet_output_keeps_each_file_types(
+    tmp_dir, test_session, first, second, output, expected
+):
+    pq.write_table(pa.table({"a": first}), tmp_dir / "1.parquet")
+    pq.write_table(pa.table({"a": second}), tmp_dir / "2.parquet")
+    chain = dc.read_parquet(
+        tmp_dir.as_uri(), output={"a": output}, session=test_session
+    )
+    assert sorted(chain.to_values("a")) == expected
+
+
+def test_read_parquet_output_keeps_each_file_struct_fields(tmp_dir, test_session):
+    class Item(DataModel):
+        a: int
+        b: int | None = None
+
+    pq.write_table(pa.table({"item": [{"a": 1}]}), tmp_dir / "1.parquet")
+    pq.write_table(pa.table({"item": [{"a": 2, "b": 3}]}), tmp_dir / "2.parquet")
+    chain = dc.read_parquet(
+        tmp_dir.as_uri(), output={"item": Item}, session=test_session
+    )
+    assert chain.order_by("item.a").to_list("item.a", "item.b") == [(1, None), (2, 3)]
+
+
+def test_read_parquet_output_decodes_each_file_hf_labels(tmp_dir, test_session):
+    for name, labels in [("1.parquet", ["no", "yes"]), ("2.parquet", ["yes", "no"])]:
+        features = Features({"label": ClassLabel(names=labels)})
+        Dataset.from_dict({"label": [0]}, features=features).to_parquet(tmp_dir / name)
+    chain = dc.read_parquet(
+        tmp_dir.as_uri(), output={"label": HFClassLabel}, session=test_session
+    )
+    assert sorted(chain.to_values("label.string")) == ["no", "yes"]
+
+
+def test_read_parquet_columns_with_output_skip_unread_hf_features(
+    tmp_dir, test_session
+):
+    features = Features({"text": Value("string"), "tr": Translation(["en", "fr"])})
+    path = tmp_dir / "hf.parquet"
+    data = {"text": ["hi"], "tr": [{"en": "a", "fr": "b"}]}
+    Dataset.from_dict(data, features=features).to_parquet(path)
+    chain = dc.read_parquet(
+        path.as_uri(), columns=["text"], output={"text": str}, session=test_session
+    )
+    assert chain.to_values("text") == ["hi"]
+
+
+def test_read_parquet_output_skips_partition_columns(tmp_dir, test_session):
+    (tmp_dir / "year=2024").mkdir()
+    pq.write_table(pa.table({"a": [1], "b": [2]}), tmp_dir / "year=2024" / "p.parquet")
+    uri = tmp_dir.as_uri()
+    chain = dc.read_parquet(uri, output={"a": int, "b": int}, session=test_session)
+    assert chain.to_list("a", "b") == [(1, 2)]
+    output = {"a": int, "b": int, "year": int}
+    chain = dc.read_parquet(uri, output=output, session=test_session)
+    assert chain.to_list("a", "b", "year") == [(1, 2, 2024)]
+
+
+def test_read_parquet_output_skips_pandas_index(tmp_dir, test_session):
+    path = tmp_dir / "indexed.parquet"
+    pd.DataFrame({"a": [1], "b": [2]}, index=["r1"]).to_parquet(path)
+    output = {"a": int, "b": int}
+    chain = dc.read_parquet(path.as_uri(), output=output, session=test_session)
+    assert chain.to_list("a", "b") == [(1, 2)]
+
+
+def test_read_parquet_output_renames_by_position(abc_parquet, test_session):
+    output = {"c": float, "b": float, "a": float}
+    chain = dc.read_parquet(abc_parquet, output=output, session=test_session)
+    assert chain.to_list("c", "b", "a") == [(1.0, 10.0, 100.0)]
+
+
+@pytest.mark.parametrize("settings", [{}, {"prefetch": 8}])
+def test_read_parquet_columns_keep_the_chain_prefetch(
+    abc_parquet, test_session, settings
+):
+    chain = dc.read_parquet(
+        abc_parquet, columns=["a"], settings=settings, session=test_session
+    )
+    assert chain._settings.prefetch == settings.get("prefetch", DEFAULT_PREFETCH)
+
+
+def test_read_csv_nrows_keep_the_chain_prefetch(tmp_dir, test_session):
+    path = tmp_dir / "test.csv"
+    path.write_text("a\n1\n2\n")
+    chain = dc.read_csv(path.as_uri(), nrows=1, session=test_session)
+    assert chain._settings.prefetch == DEFAULT_PREFETCH
+
+
+@pytest.mark.parametrize(
+    "format,content",
+    [("json", '[{"a": 1}, {"a": 2}]'), ("jsonl", '{"a": 1}\n{"a": 2}\n')],
+)
+def test_read_json_nrows_keep_the_chain_prefetch(
+    tmp_dir, test_session, format, content
+):
+    path = tmp_dir / f"test.{format}"
+    path.write_text(content)
+    chain = dc.read_json(path.as_uri(), format=format, nrows=1, session=test_session)
+    assert chain._settings.prefetch == DEFAULT_PREFETCH
+
+
+def test_read_parquet_columns_are_part_of_the_step(abc_parquet, test_session):
+    def read(column):
+        return dc.read_parquet(
+            abc_parquet, columns=[column], output={"x": float}, session=test_session
+        ).to_values("x")
+
+    assert read("a") == [1.0]
+    assert read("b") == [10.0]
 
 
 @pytest.mark.parametrize("written_by_datachain", [False, True])
@@ -6454,3 +6741,61 @@ def test_tuple_of_models_stores_numpy_held_in_a_field(test_session):
             ),
         )
     ]
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda chain: chain.filter(C("n") % 3 == 0),
+        lambda chain: chain.filter(C("n") < 30),
+        # rows picked by a scrambled order are not a contiguous sys__id range
+        lambda chain: chain.order_by("k").offset(5).limit(11),
+    ],
+    ids=["filter", "contiguous-filter", "offset-limit"],
+)
+def test_save_copies_exact_rows_in_batches(test_session, monkeypatch, build):
+    monkeypatch.setattr(type(test_session.catalog.warehouse), "INSERT_BATCH_SIZE", 4)
+    n = list(range(40))
+    chain = build(dc.read_values(n=n, k=[i * 7 % 40 for i in n], session=test_session))
+    expected = sorted(chain.to_values("n"))
+
+    chain.save("batched")
+
+    assert sorted(dc.read_dataset("batched", session=test_session).to_values("n")) == (
+        expected
+    )
+
+
+@pytest.mark.parametrize(
+    "build, size",
+    [
+        (lambda chain: chain.order_by("k"), 40),
+        (lambda chain: chain.order_by("k").limit(30).filter(C("k") >= 0), 30),
+    ],
+    ids=["ordered", "ordered-subquery"],
+)
+def test_save_keeps_order_across_batches(test_session, monkeypatch, build, size):
+    monkeypatch.setattr(type(test_session.catalog.warehouse), "INSERT_BATCH_SIZE", 4)
+    k = [i * 7 % 40 for i in range(40)]
+
+    build(dc.read_values(k=k, session=test_session)).save("ordered")
+
+    saved = dc.read_dataset("ordered", session=test_session).order_by("sys.id")
+    assert saved.to_values("k") == sorted(k)[:size]
+
+
+def test_adjust_outputs_calls_an_overridden_convert_type(test_session, mocker):
+    from datachain.query.dataset import adjust_outputs, get_col_types
+    from datachain.sql.types import DateTime
+
+    def normalizing(self, val, *args):
+        return val.astimezone(dt.UTC).replace(tzinfo=None)
+
+    warehouse = test_session.catalog.warehouse
+    mocker.patch.object(type(warehouse), "convert_type", normalizing)
+    when = dt.datetime(2026, 1, 1, 12, tzinfo=dt.timezone(dt.timedelta(hours=2)))
+    col_types = get_col_types(warehouse, {"x": DateTime})
+
+    row = adjust_outputs(warehouse, {"x": when}, col_types, None)  # type: ignore[arg-type]
+
+    assert row["x"] == dt.datetime(2026, 1, 1, 10)

@@ -154,9 +154,12 @@ def test_s3_bucket_status_anon_service_error_reraises(mock_fs_cls):
 def test_gcs_bucket_status(mock_create_fs, anon_effect, auth_effect, expected):
     anon_fs, auth_fs = MagicMock(), MagicMock()
     mock_create_fs.side_effect = [anon_fs, auth_fs]
-    anon_fs._ls = AsyncMock(side_effect=anon_effect)
+    anon_fs._call = AsyncMock(side_effect=anon_effect)
     auth_fs._info = AsyncMock(side_effect=auth_effect)
     assert GCSClient.bucket_status("b") == expected
+    anon_fs._call.assert_awaited_once_with(
+        "GET", "b/{}/o", "b", maxResults=1, json_out=True
+    )
 
 
 @pytest.mark.parametrize(

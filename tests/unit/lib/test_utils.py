@@ -25,6 +25,7 @@ from datachain.lib.utils import (
     type_to_str,
 )
 from datachain.sql.types import (
+    JSON,
     Array,
     String,
 )
@@ -44,6 +45,7 @@ class MyFeature(BaseModel):
         (list[str], Array(String())),
         (Iterable[str], Array(String())),
         (list[list[str]], Array(Array(String()))),
+        (list[str | int], JSON()),
     ),
 )
 def test_convert_type_to_datachain_array(typ, expected):
@@ -54,7 +56,6 @@ def test_convert_type_to_datachain_array(typ, expected):
     "typ",
     (
         str | int,
-        list[str | int],
         MyFeature,
         MyModel,
     ),

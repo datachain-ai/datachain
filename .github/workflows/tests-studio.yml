@@ -107,9 +107,7 @@ jobs:
 
       - name: Install FFmpeg
         timeout-minutes: 10
-        run: |
-          sudo apt update
-          sudo apt install -y ffmpeg
+        uses: ./datachain/.github/actions/install-ffmpeg
 
       - name: Install dependencies
         run: uv pip install --system ./datachain_saas[tests] ./datachain[tests]
@@ -145,6 +143,9 @@ jobs:
             --find-links="$pip_wheel_dir" \
             --cache-dir="${DATACHAIN_VENV_DIR}/.cache/uv" \
             -p "${DATACHAIN_VENV_DIR}/default/bin/python"
+          uv pip install ./datachain \
+            --cache-dir="${DATACHAIN_VENV_DIR}/.cache/uv" \
+            -p "${DATACHAIN_VENV_DIR}/default/bin/python"
 
       - name: Print installed worker venv packages
         env:
@@ -157,7 +158,8 @@ jobs:
           PYTHONPATH="$(pwd)/..:${PYTHONPATH}"
           pytest
           --config-file=pyproject.toml -rs
-          --splits=6 --group=${{ matrix.group }} --durations-path=../../.github/.test_durations
+          --splits=6 --group=${{ matrix.group }} --durations-path=../.github/.test_durations
+          --splitting-algorithm=least_duration
           --benchmark-skip
           tests ../datachain/tests
         working-directory: datachain_saas

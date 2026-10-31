@@ -3,8 +3,11 @@ import shutil
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from email.utils import parsedate_to_datetime
 from tempfile import SpooledTemporaryFile
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import unquote
+from xml.etree.ElementTree import Element
 
 from adlfs import AzureBlobFileSystem
 from azure.core.exceptions import (
@@ -16,10 +19,10 @@ from azure.core.exceptions import (
 from azure.storage.blob import BlobServiceClient
 from fsspec.asyn import get_loop, sync
 
-from datachain.lib.file import File
-from datachain.progress import tqdm
+from datachain.lib.file import File, FileRow
 
-from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue
+from .fsspec import BucketStatus, RangeListedClient
+from .ranges import Keep, Page, utf16_units
 
 if TYPE_CHECKING:
     from datachain.client.writeconfig import WriteConfig
@@ -85,10 +88,14 @@ class _AzureWriteBuffer(SpooledTemporaryFile):
     version_id: str | None = None
 
 
-class AzureClient(Client):
+class AzureClient(RangeListedClient):
     FS_CLASS = AzureBlobFileSystem
     PREFIX = "az://"
     protocol = "az"
+    LIST_PAGE_SIZE = 5000
+    # Page and append blobs can be changed without a new version id, so the same
+    # version id can name different bytes.
+    PINNED_VERSION_IS_IMMUTABLE = False
     CREDENTIAL_KEYS = frozenset(
         {
             "account_key",
@@ -313,37 +320,87 @@ class AzureClient(Client):
             lpath = f"{lpath}?versionid={version_id}"
         await self.fs._get_file(lpath, rpath, callback=callback)
 
-    async def _fetch_flat(self, start_prefix: str, result_queue: ResultQueue) -> None:
-        prefix = start_prefix
-        if prefix:
-            prefix = prefix.lstrip(DELIMITER) + DELIMITER
-        found = False
-        include = ["metadata", "versions"] if self._is_version_aware() else ["metadata"]
-        try:
-            with tqdm(desc=f"Listing {self.uri}", unit=" objects", leave=False) as pbar:
-                async with self.fs.service_client.get_container_client(
-                    container=self.name
-                ) as container_client:
-                    async for page in container_client.list_blobs(
-                        include=include, name_starts_with=prefix
-                    ).by_page():
-                        entries = []
-                        async for b in page:
-                            found = True
-                            if not self._is_valid_key(b["name"]):
-                                continue
-                            info = (await self.fs._details([b]))[0]
-                            entries.append(
-                                self.info_to_file(info, self.rel_path(info["name"]))
-                            )
-                        if entries:
-                            await result_queue.put(entries)
-                            pbar.update(len(entries))
-                    if not found and prefix:
-                        raise FileNotFoundError(
-                            f"Unable to resolve remote path: {prefix}"
-                        )
-        finally:
-            result_queue.put_nowait(None)
+    _hns = False
 
-    _fetch_default = _fetch_flat
+    @staticmethod
+    def key_order(key: str) -> Any:
+        return utf16_units(key)
+
+    def _lists_in_key_order(self) -> bool:
+        # a hierarchical namespace lists "/" before every other character
+        return not self._hns
+
+    async def _list_page(
+        self,
+        prefix: str,
+        start_after: str,
+        token: Any,
+        hi: str | None = None,
+        page_size: int | None = None,
+        delimiter: str = "",
+    ) -> Page:
+        assert not delimiter, "Azure lists with no delimiter"
+        kwargs = {"start_from": start_after} if start_after and token is None else {}
+        include = ["metadata", "versions"] if self._is_version_aware() else ["metadata"]
+        async with self.fs.service_client.get_container_client(
+            container=self.name
+        ) as container:
+            # raw page XML: the SDK's deserializer is most of the listing's CPU
+            pages = container.list_blob_names(
+                include=include,
+                name_starts_with=prefix,
+                results_per_page=page_size or self.LIST_PAGE_SIZE,
+                **kwargs,
+            ).by_page(continuation_token=token)
+            await anext(pages)
+            blobs = pages._response.find("Blobs").findall("Blob")
+            next_token = pages.continuation_token or None
+            pages._response = None  # the pager is in a cycle: free the page now
+        # only a hierarchical namespace reports a resource type
+        if blobs and blobs[0].find("Properties/ResourceType") is not None:
+            self._hns = True
+        names = [self._blob_name(b) for b in blobs]
+        keep = Keep(self, start_after, hi)
+        return Page(
+            [
+                self._file_row(b, n)
+                for b, n in zip(blobs, names, strict=True)
+                if keep(n) and not self._is_directory(b)
+            ],
+            names[0] if names else None,
+            names[-1] if names else None,
+            next_token,
+            keep.past_lo,
+            keep.past_hi,
+            keep.in_order,
+        )
+
+    @staticmethod
+    def _is_directory(blob: Element) -> bool:
+        """A folder listed as a blob: on a hierarchical namespace, or as the empty
+        marker Hadoop tools leave in a flat container."""
+        return (
+            blob.findtext("Properties/ResourceType") == "directory"
+            or blob.findtext("Metadata/hdi_isfolder") == "true"
+        )
+
+    @staticmethod
+    def _blob_name(blob: Element) -> str:
+        name = blob.find("Name")
+        assert name is not None
+        text = name.text or ""
+        return unquote(text) if name.get("Encoded") == "true" else text
+
+    def _file_row(self, blob: Element, name: str) -> tuple:
+        props = blob.find("Properties")
+        assert props is not None
+        version = blob.findtext("VersionId") if self._is_version_aware() else None
+        return FileRow(
+            self.uri,
+            name,
+            int(props.findtext("Content-Length", "0")),
+            version or "",
+            props.findtext("Etag", "").strip('"'),
+            version is None or blob.findtext("IsCurrentVersion") == "true",
+            parsedate_to_datetime(props.findtext("Last-Modified", "")),
+        )
