@@ -22,12 +22,10 @@ from datachain.client.fsspec import Client, RangeListedClient
 from datachain.client.listing_worker import (
     Pool,
     _command,
-    _cpu_quotas,
     _receive,
     _serve,
     dump,
     load,
-    usable_cpus,
 )
 from datachain.client.ranges import Keep, Page, RangeListing
 from datachain.lib.file import FileRow
@@ -632,46 +630,6 @@ def test_child_ignores_ctrl_c_while_it_imports():
     _, err = proc.communicate(b"", timeout=60)
 
     assert (proc.returncode, err) == (0, b"")
-
-
-@pytest.mark.parametrize(
-    "files, expected",
-    [
-        ({"cpu.max": "max 100000"}, []),
-        ({"cpu.max": "150000 100000"}, [(150000, 100000)]),
-        (
-            {"cpu.max": "max 100000", "user.slice/cpu.max": "200000 100000"},
-            [(200000, 100000)],
-        ),
-    ],
-)
-def test_cpu_quotas_of_cgroup_v2_and_its_parents(files, expected, tmp_path):
-    for name, text in files.items():
-        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
-        (tmp_path / name).write_text(text)
-    (tmp_path / "cgroup").write_text("0::/user.slice\n")
-
-    assert _cpu_quotas(str(tmp_path), str(tmp_path / "cgroup")) == expected
-
-
-def test_cpu_quota_of_cgroup_v1(tmp_path):
-    folder = tmp_path / "cpu,cpuacct" / "docker"
-    folder.mkdir(parents=True)
-    (folder / "cpu.cfs_quota_us").write_text("100000\n")
-    (folder / "cpu.cfs_period_us").write_text("100000\n")
-    (tmp_path / "cgroup").write_text("5:memory:/docker\n4:cpu,cpuacct:/docker\n")
-
-    assert _cpu_quotas(str(tmp_path), str(tmp_path / "cgroup")) == [(100000, 100000)]
-
-
-@pytest.mark.parametrize(
-    "quotas, expected", [([], 16), ([(150000, 100000)], 1), ([(50000, 100000)], 1)]
-)
-def test_usable_cpus_follow_the_cgroup_quotas(quotas, expected, monkeypatch):
-    monkeypatch.setattr(os, "process_cpu_count", lambda: 16, raising=False)
-    monkeypatch.setattr(listing_worker, "_cpu_quotas", lambda: quotas)
-
-    assert usable_cpus() == expected
 
 
 def test_s3_connections_cover_the_listing_requests_in_flight():
