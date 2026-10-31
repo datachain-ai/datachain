@@ -20,7 +20,7 @@ from datachain.lib.arrow import (
 from datachain.lib.data_model import dict_to_data_model
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.hf import HFClassLabel
-from datachain.lib.udf import FlatRow
+from datachain.query import dataset
 
 
 @pytest.mark.parametrize("cache", [True, False])
@@ -212,20 +212,17 @@ def test_read_parquet_dict_output_matches_model_output(
         assert [row[-1].index for row in by_types] == [0, 1, 2]
 
 
-def test_arrow_generator_reads_plain_columns_as_flat_rows(plain_types_parquet, catalog):
-    stream = File(
-        path=plain_types_parquet.name, source=f"file://{plain_types_parquet.parent}"
-    )
-    stream._set_stream(catalog, caching_enabled=False)
-    table = pq.read_table(plain_types_parquet)
-    func = ArrowGenerator(
-        table.schema, PlainTypes, source=False, output_from_types=True
+@pytest.mark.parametrize("source", [True, False])
+def test_read_parquet_stores_plain_columns_without_conversion(
+    plain_types_parquet, test_session, mocker, source
+):
+    spy = mocker.spy(dataset, "adjust_outputs")
+    chain = dc.read_parquet(
+        plain_types_parquet.as_uri(), source=source, session=test_session
     )
 
-    rows = list(func.process(stream))
-
-    assert {type(row) for row in rows} == {FlatRow}
-    assert rows == [tuple(r.values()) for r in table.to_pylist()]
+    assert sorted(chain.to_values("i8")) == [-1, 2, 3]
+    assert not [c for c in spy.call_args_list if "i8" in c.args[1]]
 
 
 class Declared(dc.DataModel):

@@ -82,6 +82,21 @@ def test_gen_flat_rows_skip_conversion_for_a_file_output(test_session, mocker):
     assert not [c for c in spy.call_args_list if "file__path" in c.args[1]]
 
 
+@pytest.mark.parametrize(
+    "output,value,stored",
+    [(list[float], [1, 2.5], "[1.0, 2.5]"), (list[list[float]], [[1]], "[[1.0]]")],
+)
+def test_gen_flat_rows_convert_list_items_to_the_column_type(
+    test_session, output, value, stored
+):
+    def rows(n: int) -> Iterator[list]:
+        yield FlatRow((value,))  # type: ignore[misc]
+
+    chain = dc.read_values(n=[1], session=test_session).gen(v=rows, output=output)
+
+    assert repr(chain.to_values("v")[0]) == stored
+
+
 def test_file_row_is_no_optional_file(test_session):
     def rows(n: int) -> Iterator[dc.File | None]:
         yield FileRow("s3://bucket", f"{n}")  # type: ignore[misc]

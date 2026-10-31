@@ -309,30 +309,6 @@ def test_gen_progress_reports_rows_once_per_interval(warehouse, monkeypatch):
 
 
 @skip_if_not_sqlite
-@pytest.mark.parametrize(
-    "item_type,value,kept",
-    [
-        ("float", [0.5, None], True),
-        ("float", [], True),
-        ("float", [1, 2.5], False),
-        ("float", [None, 0.5], False),
-        ("float", (0.5,), False),
-        ("list", [[0.5]], False),
-    ],
-)
-def test_tuple_adjuster_keeps_a_list_only_when_its_first_item_has_the_item_type(
-    warehouse, item_type, value, kept
-):
-    from datachain.query.dataset import _tuple_adjuster, get_col_types
-    from datachain.sql.types import Array, Float
-
-    sql_type = Array(Float) if item_type == "float" else Array(Array(Float))
-    adjust = _tuple_adjuster(get_col_types(warehouse, {"v": sql_type}))
-    row = (value, 1, False, None)
-    assert adjust(row) == (row if kept else None)
-
-
-@skip_if_not_sqlite
 def test_insert_into_reads_all_ids_before_inserting_batches(
     warehouse_tmpfile, monkeypatch
 ):
