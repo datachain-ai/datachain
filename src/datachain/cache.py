@@ -134,7 +134,7 @@ class Cache:  # noqa: PLW1641
 
         try:
             oid = file.get_hash()
-            self.odb.add(tmp_info, self.odb.fs, oid)
+            self.odb.add(tmp_info, self.odb.fs, oid, hardlink=True)
         finally:
             os.unlink(tmp_info)
 
