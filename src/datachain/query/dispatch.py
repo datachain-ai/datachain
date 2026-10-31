@@ -1,4 +1,5 @@
 import contextlib
+import pickle
 import traceback
 from collections.abc import Iterable, Sequence
 from itertools import chain
@@ -282,9 +283,14 @@ class UDFDispatcher:
             input_data = chain(input_rows, [STOP_SIGNAL] * n_workers)
 
             # Add initial buffer of tasks
-            for _ in range(self.buffer_size):
+            for _ in range(min(self.buffer_size, 2 * n_workers)):
                 try:
-                    put_into_queue(self.task_queue, next(input_data))
+                    put_into_queue(
+                        self.task_queue,
+                        pickle.dumps(
+                            next(input_data), protocol=pickle.HIGHEST_PROTOCOL
+                        ),
+                    )
                 except StopIteration:
                     input_finished = True
                     break
@@ -330,7 +336,12 @@ class UDFDispatcher:
 
                 if status == OK_STATUS and not input_finished:
                     try:
-                        put_into_queue(self.task_queue, next(input_data))
+                        put_into_queue(
+                            self.task_queue,
+                            pickle.dumps(
+                                next(input_data), protocol=pickle.HIGHEST_PROTOCOL
+                            ),
+                        )
                     except StopIteration:
                         input_finished = True
         finally:
@@ -395,10 +406,22 @@ class ProcessedCallback(Callback):
     ) -> None:
         self.name = name
         self.queue = queue
+        self.pending = 0
+        self.last_update = monotonic()
         super().__init__()
 
     def relative_update(self, inc: int = 1) -> None:
-        put_into_queue(self.queue, {"status": NOTIFY_STATUS, self.name: inc})
+        self.pending += inc
+        if self.pending >= 1000 or monotonic() - self.last_update >= 0.1:
+            self.flush()
+
+    def flush(self) -> None:
+        if self.pending:
+            put_into_queue(
+                self.queue, {"status": NOTIFY_STATUS, self.name: self.pending}
+            )
+            self.pending = 0
+            self.last_update = monotonic()
 
 
 class UDFWorker:
@@ -442,26 +465,29 @@ class UDFWorker:
                 download_cb=self.download_cb,
                 processed_cb=self.processed_cb,
             )
-            with safe_closing(udf_results):
-                process_udf_outputs(
-                    catalog.warehouse,
-                    self.table,
-                    self.notify_and_process(udf_results),
-                    self.udf,
-                    cb=self.generated_cb,
-                    batch_size=self.batch_size,
-                )
+            try:
+                with safe_closing(udf_results):
+                    process_udf_outputs(
+                        catalog.warehouse,
+                        self.table,
+                        udf_results,
+                        self.udf,
+                        cb=self.generated_cb,
+                        batch_size=self.batch_size,
+                    )
+            finally:
+                self.processed_cb.flush()
+                self.generated_cb.flush()
         put_into_queue(self.done_queue, {"status": FINISHED_STATUS})
-
-    def notify_and_process(self, udf_results):
-        for row in udf_results:
-            put_into_queue(self.done_queue, {"status": OK_STATUS})
-            yield row
 
     def get_inputs(self) -> Iterable["RowsOutput"]:
         warehouse = self.catalog.warehouse.clone()
-        while (batch := get_from_queue(self.task_queue)) != STOP_SIGNAL:
+        while True:
+            batch = pickle.loads(get_from_queue(self.task_queue))  # noqa: S301
+            if batch == STOP_SIGNAL:
+                return
             for ids in batched(batch, DEFAULT_BATCH_SIZE):
                 yield from warehouse.dataset_rows_select_from_ids(
                     self.query, ids, self.is_batching
                 )
+            put_into_queue(self.done_queue, {"status": OK_STATUS})

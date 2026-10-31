@@ -1325,3 +1325,22 @@ def test_agg_list_file_persist_and_read(tmp_dir, test_session):
     assert [f.model_dump() for f in actual_sorted] == [
         f.model_dump() for f in expected_sorted
     ]
+
+
+@pytest.mark.parametrize("is_generator", [False, True])
+def test_udf_parallel_replenishes_input_tasks(test_session_tmpfile, is_generator):
+    count = 50003
+    chain = dc.read_values(num=list(range(count)), session=test_session_tmpfile)
+    chain = chain.settings(parallel=2)
+    if is_generator:
+
+        def generate(num):
+            if num >= 40000:
+                yield num
+
+        result = chain.gen(value=generate, output=int).save("replenish-gen")
+        expected = list(range(40000, count))
+    else:
+        result = chain.map(value=lambda num: num + 1, output=int).save("replenish-map")
+        expected = list(range(1, count + 1))
+    assert sorted(result.to_values("value")) == expected

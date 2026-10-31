@@ -7,11 +7,16 @@ from fsspec.callbacks import DEFAULT_CALLBACK
 from pydantic import BaseModel
 
 import datachain as dc
-from datachain import Mapper
+from datachain import BatchMapper, Mapper
 from datachain.dataset import RowDict
 from datachain.lib.file import File
 from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.udf import JsonSerializationError, UDFBase, UdfError, UdfRunError
+from datachain.lib.udf import (
+    JsonSerializationError,
+    UDFBase,
+    UdfError,
+    UdfRunError,
+)
 from datachain.lib.utils import DataChainError
 
 from .test_udf_signature import get_sign
@@ -124,13 +129,13 @@ def test_udf_verbose_name_func():
 
 
 def test_udf_verbose_name_lambda():
-    sign = get_sign(lambda key: len(key), output="res")  # noqa: PLW0108
+    sign = get_sign(lambda key: len(key), output="res")
     udf = UDFBase._create(sign, sign.output_schema)
     assert udf.verbose_name == "<lambda>"
 
 
 def test_udf_verbose_name_unknown():
-    sign = get_sign(lambda key: len(key), output="res")  # noqa: PLW0108
+    sign = get_sign(lambda key: len(key), output="res")
     udf = UDFBase._create(sign, sign.output_schema)
     udf._func = None
     assert udf.verbose_name == "<unknown>"
@@ -362,7 +367,6 @@ def test_udf_output_type_error_message_json_serialization_failure(
 def test_map_prefetch_skips_invalid_path_files(
     monkeypatch, test_session, caplog, bad_path
 ):
-
     monkeypatch.delenv("DATACHAIN_DISTRIBUTED", raising=False)
 
     files = [File(source="s3://bucket", path=bad_path) for _ in range(3)]
@@ -413,3 +417,72 @@ def test_an_insert_error_closes_the_udf_outputs(test_session, mocker):
     # the error's traceback holds the generator: it must be closed already
     assert closed == [1000]
     assert error.value.__traceback__ is not None
+
+
+@pytest.mark.parametrize("batch", [1, 2])
+def test_mapper_scalar_inputs_skip_async_prefetch(mocker, batch):
+    udf = Mapper() if batch == 1 else BatchMapper()
+    udf.params = SignalSchema({"path": str})
+    udf.output = SignalSchema({"band": str, "month": str, "day": str})
+    udf._func = lambda path: (path, "10", "27")
+    if batch > 1:
+        udf._func = lambda paths: [(path, "10", "27") for path in paths]
+    mocker.patch("datachain.lib.udf.AsyncMapper", side_effect=AssertionError)
+    spec = mocker.spy(udf.output, "to_udf_spec")
+    rows = [(1, "B1"), (2, "B2")]
+    inputs = rows if batch == 1 else [rows]
+
+    results = list(udf.run(["sys__id", "path"], inputs, object(), False))
+
+    flat = [row for output in results for row in output]
+    assert [
+        (row["sys__id"], row["band"], row["month"], row["day"]) for row in flat
+    ] == [
+        (1, "B1", "10", "27"),
+        (2, "B2", "10", "27"),
+    ]
+    assert spec.call_count == 1
+
+
+@pytest.mark.parametrize("setup", [False, True])
+def test_udf_prefetch_retained_for_file_params(setup):
+    udf = Mapper()
+    if setup:
+        udf.params = SignalSchema({"ref": str}, setup={"ref": lambda: File(path="x")})
+    else:
+        udf.params = SignalSchema({"ref": File})
+    assert udf._prefetch == udf.prefetch == 2
+
+
+@pytest.mark.parametrize(
+    "params,fields,row,include_id,expected",
+    [
+        ({"file.path": str}, ["file__path", "sys__id"], ["a", 7], True, (7, "a")),
+        ({"value": int}, ["sys__id", "value"], [7, 3], False, (3,)),
+        ({}, ["sys__id"], [7], True, (7,)),
+        ({}, ["sys__id"], [7], False, ()),
+        (
+            {"b": bool, "v": bytes, "f": float},
+            ["v", "f", "b", "sys__id"],
+            [b"x", 1.5, True, 7],
+            True,
+            (7, True, b"x", 1.5),
+        ),
+    ],
+)
+def test_udf_primitive_row_preparer(params, fields, row, include_id, expected):
+    udf = Mapper()
+    udf.params = SignalSchema(params)
+    prepare = udf._get_row_preparer(
+        fields, object(), False, DEFAULT_CALLBACK, include_id
+    )
+    assert prepare(row) == expected
+
+
+def test_udf_row_preparer_keeps_setup_values():
+    udf = Mapper()
+    udf.params = SignalSchema({"prefix": str}, setup={"prefix": lambda: "setup"})
+    prepare = udf._get_row_preparer(
+        ["sys__id"], object(), False, DEFAULT_CALLBACK, include_id=True
+    )
+    assert prepare([7]) == (7, "setup")

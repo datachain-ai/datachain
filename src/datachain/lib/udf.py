@@ -8,6 +8,7 @@ from contextlib import closing, nullcontext
 from dataclasses import dataclass
 from functools import partial
 from graphlib import CycleError, TopologicalSorter
+from operator import itemgetter
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import attrs
@@ -22,7 +23,6 @@ from datachain.lib.convert.flatten import (
     classify_field,
     flatten,
     flatten_value,
-    is_optional_model,
 )
 from datachain.lib.file import File, FileError, FileRow
 from datachain.lib.signal_schema import SignalSchema
@@ -227,7 +227,7 @@ class UDFAdapter:
 
     @property
     def prefetch(self) -> int:
-        return self.inner.prefetch
+        return self.inner._prefetch
 
 
 class UDFBase(AbstractUDF):
@@ -395,6 +395,12 @@ class UDFBase(AbstractUDF):
             batch,
         )
 
+    @property
+    def _prefetch(self) -> int:
+        if self.params is not None and not self.params._file_stream_params:
+            return 0
+        return self.prefetch
+
     def run(
         self,
         udf_fields: "Sequence[str]",
@@ -406,7 +412,16 @@ class UDFBase(AbstractUDF):
     ) -> Iterator[Iterable[UDFResult]]:
         raise NotImplementedError
 
-    def _flatten_row(self, row):
+    def _get_row_flattener(self):
+        optional_models = []
+        for anno in self.output.values.values():
+            kind = classify_field(anno)
+            optional_models.append(
+                kind.inner if kind.is_optional and kind.is_model else None
+            )
+        return partial(self._flatten_row, optional_models=optional_models)
+
+    def _flatten_row(self, row, optional_models=None):
         if len(self.output.values) > 1 and not isinstance(row, BaseModel):
             annos = self.output.values
             # The row may be shorter than the declared outputs (the arrow/parquet
@@ -418,10 +433,14 @@ class UDFBase(AbstractUDF):
                 )
             flat: list[Any] = []
             # strict=False as shorter row is allowed for arrow/parquet (guarded above)
-            for obj, anno in zip(row, annos.values(), strict=False):
+            if optional_models is None:
+                return self._get_row_flattener()(row)
+            for obj, anno, optional_model in zip(
+                row, annos.values(), optional_models, strict=False
+            ):
                 # tag is added only when obj IS the Optional value, not a wrapper.
-                if is_optional_model(anno) and (
-                    obj is None or isinstance(obj, classify_field(anno).inner)
+                if optional_model is not None and (
+                    obj is None or isinstance(obj, optional_model)
                 ):
                     flat.extend(flatten_value(obj, anno))
                 else:
@@ -454,6 +473,37 @@ class UDFBase(AbstractUDF):
         obj_row = self.params.row_to_objs(row_dict)
         self.params.set_file_streams(obj_row, catalog, cache, download_cb)
         return obj_row
+
+    def _get_row_preparer(
+        self, udf_fields, catalog, cache, download_cb, include_id=False
+    ):
+        if (
+            self.params is not None
+            and not self.params.setup_func
+            and all(
+                annotation in (str, int, float, bool, bytes)
+                for annotation in self.params.values.values()
+            )
+        ):
+            names = [name.replace(".", "__") for name in self.params.values]
+            if include_id:
+                names.insert(0, "sys__id")
+            if all(name in udf_fields for name in names):
+                indices = [udf_fields.index(name) for name in names]
+                if len(indices) > 1:
+                    return itemgetter(*indices)
+                if indices:
+                    index = indices[0]
+                    return lambda row: (row[index],)
+                return lambda row: ()
+        return partial(
+            self._prepare_row,
+            udf_fields=udf_fields,
+            catalog=catalog,
+            cache=cache,
+            download_cb=download_cb,
+            include_id=include_id,
+        )
 
     def _prepare_row(
         self, row, udf_fields, catalog, cache, download_cb, include_id=False
@@ -587,23 +637,18 @@ class Mapper(UDFBase):
         processed_cb: Callback = DEFAULT_CALLBACK,
     ) -> Iterator[Iterable[UDFResult]]:
         self.setup()
-        signal_names = list(self.signal_names)
+        signal_names = tuple(self.signal_names)
+        flatten_row = self._get_row_flattener()
+
+        prepare_row = self._get_row_preparer(
+            udf_fields, catalog, cache, download_cb, include_id=True
+        )
 
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
             with safe_closing(udf_inputs):
                 for row in udf_inputs:
                     if self.is_input_batched:
-                        rows = [
-                            self._prepare_row(
-                                r,
-                                udf_fields,
-                                catalog,
-                                cache,
-                                download_cb,
-                                include_id=True,
-                            )
-                            for r in row
-                        ]
+                        rows = [prepare_row(r) for r in row]
                         columns: list[Any] = [
                             list(col) for col in zip(*rows, strict=True)
                         ]
@@ -613,21 +658,15 @@ class Mapper(UDFBase):
                                 columns[i] = columns[i][0]
                         yield columns
                     else:
-                        yield self._prepare_row(
-                            row,
-                            udf_fields,
-                            catalog,
-                            cache,
-                            download_cb,
-                            include_id=True,
-                        )
+                        yield prepare_row(row)
 
+        prefetch = self._prefetch
         prepared_inputs = _prepare_rows(udf_inputs)
         prepared_inputs = _prefetch_inputs(
             prepared_inputs,
-            self.prefetch,
+            prefetch,
             download_cb=download_cb,
-            remove_prefetched=bool(self.prefetch) and not cache,
+            remove_prefetched=bool(prefetch) and not cache,
             batch_columns=(
                 {
                     i
@@ -658,7 +697,7 @@ class Mapper(UDFBase):
                         for i, (row_id, result) in enumerate(
                             zip(id_, results, strict=True)
                         ):
-                            udf_output = self._flatten_row(result)
+                            udf_output = flatten_row(result)
                             output.append(
                                 {
                                     "sys__id": row_id,
@@ -669,7 +708,7 @@ class Mapper(UDFBase):
                             )
                         processed_cb.relative_update(len(id_))
                     else:
-                        udf_output = self._flatten_row(result_objs)
+                        udf_output = flatten_row(result_objs)
                         output = [
                             {"sys__id": id_}
                             | dict(zip(signal_names, udf_output, strict=False))
@@ -921,15 +960,18 @@ class Generator(UDFBase):
         processed_cb: Callback = DEFAULT_CALLBACK,
     ) -> Iterator[Iterable[UDFResult]]:
         self.setup()
-        signal_names = list(self.signal_names)
+        signal_names = tuple(self.signal_names)
         file_row = FileRow if self._file_row_output() else None
+        flatten_row = self._get_row_flattener()
+
+        prepare_row = self._get_row_preparer(
+            udf_fields, catalog, cache, download_cb, include_id=True
+        )
 
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
             with safe_closing(udf_inputs):
                 for row in udf_inputs:
-                    yield self._prepare_row(
-                        row, udf_fields, catalog, cache, download_cb, include_id=True
-                    )
+                    yield prepare_row(row)
 
         def _process_row(row):
             row_id, *row = row
@@ -943,7 +985,7 @@ class Generator(UDFBase):
                     if type(result_obj) is file_row:
                         yield result_obj + (row_id, not is_last, None)  # noqa: RUF005
                         continue
-                    udf_output = self._flatten_row(result_obj)
+                    udf_output = flatten_row(result_obj)
                     udf_output = dict(zip(signal_names, udf_output, strict=False))
                     udf_output["sys__input_id"] = row_id
                     udf_output["sys__partial"] = not is_last
@@ -957,12 +999,13 @@ class Generator(UDFBase):
                     "sys__empty": True,
                 }
 
+        prefetch = self._prefetch
         prepared_inputs = _prepare_rows(udf_inputs)
         prepared_inputs = _prefetch_inputs(
             prepared_inputs,
-            self.prefetch,
+            prefetch,
             download_cb=download_cb,
-            remove_prefetched=bool(self.prefetch) and not cache,
+            remove_prefetched=bool(prefetch) and not cache,
         )
 
         with closing(prepared_inputs):
@@ -991,7 +1034,8 @@ class Aggregator(UDFBase):
         from datachain.data_storage.schema import PARTITION_COLUMN_ID
 
         self.setup()
-        signal_names = list(self.signal_names)
+        signal_names = tuple(self.signal_names)
+        flatten_row = self._get_row_flattener()
 
         # Check if partition_id is available (when partition_by is used)
         partition_id_idx = None
@@ -1018,7 +1062,7 @@ class Aggregator(UDFBase):
             result_objs = self.process(*udf_args)
             if result_objs is None:
                 result_objs = iter(())
-            udf_outputs = (self._flatten_row(row) for row in result_objs)
+            udf_outputs = (flatten_row(row) for row in result_objs)
 
             def _process_partition(udf_outputs, input_id):
                 has_output = False
