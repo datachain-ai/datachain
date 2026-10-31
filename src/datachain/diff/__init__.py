@@ -70,6 +70,9 @@ def _compare(  # noqa: C901
     right_cols = right.signals_schema.clone_without_sys_signals().db_signals()
     cols_select = list(left.signals_schema.clone_without_sys_signals().values.keys())
 
+    left.signals_schema.reject_union_keys("diff", *on)
+    right.signals_schema.reject_union_keys("diff", *(right_on or on))
+
     # getting correct on and right_on column names
     on_ = on
     on = left.signals_schema.resolve(*on).db_signals()  # type: ignore[assignment]
