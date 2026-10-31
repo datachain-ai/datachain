@@ -98,8 +98,10 @@ from collections import Counter
 import datachain as dc
 
 n, size = Counter(), Counter()
-for f in dc.list_storage("s3://bucket/prefix/", versions=False):   # versions=False: current objects, faster
-    key = f.path.split("/")[1], f.get_file_ext()                     # any keys from the path or name
+for f in dc.list_storage(
+    "s3://bucket/prefix/", versions=False
+):  # versions=False: current objects, faster
+    key = f.path.split("/")[1], f.get_file_ext()  # any keys from the path or name
     n[key] += 1
     size[key] += f.size
 ```
@@ -113,9 +115,12 @@ project, and every query after that runs in SQL on the saved copy, no new listin
 ```python
 from datachain import func
 
-files = dc.read_storage("s3://bucket/prefix/", versions=False)   # listed once, then reused
+files = dc.read_storage(
+    "s3://bucket/prefix/", versions=False
+)  # listed once, then reused
 by_ext = files.mutate(ext=func.path.file_ext("file.path")).group_by(
-    n=func.count(), bytes=func.sum("file.size"), partition_by="ext")
+    n=func.count(), bytes=func.sum("file.size"), partition_by="ext"
+)
 print(by_ext.to_list("ext", "n", "bytes"))
 ```
 
@@ -127,17 +132,27 @@ print(by_ext.to_list("ext", "n", "bytes"))
 ```python
 import datachain as dc
 
-def info(file: dc.VideoFile) -> dc.Video:     # always annotate the return type
-    return file.get_info()                    # width/height in display orientation, fps, duration, frames, codec
+
+def info(file: dc.VideoFile) -> dc.Video:  # always annotate the return type
+    return (
+        file.get_info()
+    )  # width/height in display orientation, fps, duration, frames, codec
+
 
 meta = (
     dc.read_storage("s3://bucket/videos/", anon=True, type="video")
-    .settings(parallel=64, prefetch=0)  # header reads wait on the network: many more processes than CPUs;
-                                        # prefetch=0: read headers only, never download whole files
+    .settings(
+        parallel=64, prefetch=0
+    )  # header reads wait on the network: many more processes than CPUs;
+    # prefetch=0: read headers only, never download whole files
     .map(info=info)
     .save("video_meta")
 )
-print(meta.group_by(n=dc.func.count(), hours=dc.func.sum("info.duration"), partition_by="info.codec").to_pandas())
+print(
+    meta.group_by(
+        n=dc.func.count(), hours=dc.func.sum("info.duration"), partition_by="info.codec"
+    ).to_pandas()
+)
 ```
 
 Images: `type="image"` (does not filter by extension - add a glob like `images/*.jpg`), `def info(file: dc.ImageFile) -> dc.Image: return file.get_info()` (width, height, format).
@@ -149,21 +164,29 @@ Audio: `type="audio"`, `dc.AudioFile` -> `dc.Audio` (duration, sample_rate, chan
 import datachain as dc
 from pydantic import BaseModel
 
+
 class ImageEmb(BaseModel):
     embedding: list[float]
-    width: int            # cheap facts recorded in the same pass, for later filters
+    width: int  # cheap facts recorded in the same pass, for later filters
     height: int
 
+
 class ClipEmbed(dc.BatchMapper):
-    def setup(self):                          # once per worker process
+    def setup(self):  # once per worker process
         import open_clip, torch
-        torch.set_num_threads(1)              # parallelism comes from settings(parallel=True)
-        self.model, _, self.pre = open_clip.create_model_and_transforms("ViT-B-32", pretrained="laion2b_s34b_b79k")
+
+        torch.set_num_threads(1)  # parallelism comes from settings(parallel=True)
+        self.model, _, self.pre = open_clip.create_model_and_transforms(
+            "ViT-B-32", pretrained="laion2b_s34b_b79k"
+        )
         self.model.eval()
 
-    def process(self, file: list[dc.File]) -> list[ImageEmb]:   # batch=32: lists in, one output per input
+    def process(
+        self, file: list[dc.File]
+    ) -> list[ImageEmb]:  # batch=32: lists in, one output per input
         import torch
         from PIL import Image
+
         imgs = []
         for f in file:
             with f.open() as fh:
@@ -171,12 +194,20 @@ class ClipEmbed(dc.BatchMapper):
         with torch.no_grad():
             e = self.model.encode_image(torch.stack([self.pre(im) for im in imgs]))
         e = e / e.norm(dim=-1, keepdim=True)
-        return [ImageEmb(embedding=v, width=im.width, height=im.height) for v, im in zip(e.tolist(), imgs)]
+        return [
+            ImageEmb(embedding=v, width=im.width, height=im.height)
+            for v, im in zip(e.tolist(), imgs)
+        ]
+
 
 emb = (
-    dc.read_storage("s3://bucket/images/*.jpg", anon=True)     # glob filters at listing time
-    .settings(parallel=True, prefetch=2)                      # a process per CPU (container quota); prefetch overlaps downloads
-    .batch_map(img=ClipEmbed(), batch=32)                            # batched forward passes
+    dc.read_storage(
+        "s3://bucket/images/*.jpg", anon=True
+    )  # glob filters at listing time
+    .settings(
+        parallel=True, prefetch=2
+    )  # a process per CPU (container quota); prefetch overlaps downloads
+    .batch_map(img=ClipEmbed(), batch=32)  # batched forward passes
     .save("image_embeddings")
 )
 ```
@@ -196,34 +227,56 @@ from collections.abc import Iterator
 import datachain as dc
 from pydantic import BaseModel
 
+
 class FrameEmb(BaseModel):
-    video: str          # gen() output replaces the input columns, so carry provenance explicitly
-    second: int         # the sampled target time t = 0, 1, 2, ... s
-    pts: float          # actual timestamp of the decoded frame (first frame at/after t)
+    video: (
+        str  # gen() output replaces the input columns, so carry provenance explicitly
+    )
+    second: int  # the sampled target time t = 0, 1, 2, ... s
+    pts: float  # actual timestamp of the decoded frame (first frame at/after t)
     embedding: list[float]
+
 
 class EmbedFrames(dc.Generator):
     def setup(self):
         import open_clip, torch
+
         torch.set_num_threads(1)
-        self.model, _, self.pre = open_clip.create_model_and_transforms("ViT-B-32", pretrained="laion2b_s34b_b79k")
+        self.model, _, self.pre = open_clip.create_model_and_transforms(
+            "ViT-B-32", pretrained="laion2b_s34b_b79k"
+        )
         self.model.eval()
 
-    def process(self, file: dc.VideoFile) -> Iterator[tuple[dc.VideoFile, FrameEmb]]:   # the annotation defines the output schema
+    def process(
+        self, file: dc.VideoFile
+    ) -> Iterator[
+        tuple[dc.VideoFile, FrameEmb]
+    ]:  # the annotation defines the output schema
         import torch
         from PIL import Image
-        frames = list(file.sample_frames(fps=1.0))   # k-th frame: first frame at/after t=k s; VFR-safe, upright
-        for i in range(0, len(frames), 32):          # batched forward passes
-            chunk = frames[i:i + 32]
+
+        frames = list(
+            file.sample_frames(fps=1.0)
+        )  # k-th frame: first frame at/after t=k s; VFR-safe, upright
+        for i in range(0, len(frames), 32):  # batched forward passes
+            chunk = frames[i : i + 32]
             with torch.no_grad():
-                e = self.model.encode_image(torch.stack([self.pre(Image.fromarray(f.get_np())) for f in chunk]))
+                e = self.model.encode_image(
+                    torch.stack([self.pre(Image.fromarray(f.get_np())) for f in chunk])
+                )
             e = e / e.norm(dim=-1, keepdim=True)
             for k, (f, v) in enumerate(zip(chunk, e.tolist()), start=i):
-                yield file, FrameEmb(video=file.path, second=k, pts=f.timestamp, embedding=v)
+                yield (
+                    file,
+                    FrameEmb(video=file.path, second=k, pts=f.timestamp, embedding=v),
+                )
+
 
 frames = (
     dc.read_storage("s3://bucket/videos/*.mov", anon=True, type="video")
-    .settings(parallel=True, prefetch=4)      # prefetch>0: whole videos are needed for decoding
+    .settings(
+        parallel=True, prefetch=4
+    )  # prefetch>0: whole videos are needed for decoding
     .gen(EmbedFrames(), output={"file": dc.VideoFile, "frame": FrameEmb})
     .save("video_frame_embeddings")
 )
@@ -237,10 +290,12 @@ Consume or embed sampled pixels inside the generator; saved frame references do 
 
 ```python
 import datachain as dc
-q = text_or_image_embedding()   # same model and normalization as the saved embeddings
+
+q = text_or_image_embedding()  # same model and normalization as the saved embeddings
 top = (
-    dc.read_dataset("image_embeddings")
-    .similarity_search("img.embedding", q, k=10, score_column="distance")   # cosine distance = 1 - similarity
+    dc.read_dataset("image_embeddings").similarity_search(
+        "img.embedding", q, k=10, score_column="distance"
+    )  # cosine distance = 1 - similarity
 )
 for path, d in top.to_iter("file.path", "distance"):
     print(path, 1 - d)
@@ -254,11 +309,14 @@ neighbour of every hit, all-pairs, many text prompts), read the vectors once and
 
 ```python
 import numpy as np
-paths, embs = zip(*dc.read_dataset("image_embeddings").to_iter("file.path", "img.embedding"))
-E = np.asarray(embs, dtype=np.float32)                       # rows are L2-normalized: dot = cosine
+
+paths, embs = zip(
+    *dc.read_dataset("image_embeddings").to_iter("file.path", "img.embedding")
+)
+E = np.asarray(embs, dtype=np.float32)  # rows are L2-normalized: dot = cosine
 hits = [paths.index(p) for p in top_paths]
 S = E[hits] @ E.T
-S[np.arange(len(hits)), hits] = -np.inf                     # exclude each item itself
+S[np.arange(len(hits)), hits] = -np.inf  # exclude each item itself
 nearest = [(paths[j], float(S[i, j])) for i, j in enumerate(S.argmax(1))]
 ```
 
@@ -272,11 +330,21 @@ from datachain import func
 
 (f,) = dc.read_storage("s3://bucket/annotations/list.txt", anon=True).to_values("file")
 with f.open() as fh:
-    labels = pd.read_csv(fh, sep=" ", comment="#", header=None, names=["stem", "class_id", "species", "breed_id"])
+    labels = pd.read_csv(
+        fh,
+        sep=" ",
+        comment="#",
+        header=None,
+        names=["stem", "class_id", "species", "breed_id"],
+    )
 labels = dc.read_pandas(labels)
 
-images = dc.read_storage("s3://bucket/images/*.jpg", anon=True).mutate(stem=func.path.file_stem("file.path"))
-joined = images.merge(labels, on="stem", inner=True)          # right-side columns keep their names
+images = dc.read_storage("s3://bucket/images/*.jpg", anon=True).mutate(
+    stem=func.path.file_stem("file.path")
+)
+joined = images.merge(
+    labels, on="stem", inner=True
+)  # right-side columns keep their names
 ```
 
 Large tabular sources: `dc.read_parquet(uri)` / `dc.read_csv(uri)` / `dc.read_json(uri, format="jsonl")`.
@@ -285,7 +353,9 @@ Large tabular sources: `dc.read_parquet(uri)` / `dc.read_csv(uri)` / `dc.read_js
 
 ```python
 emb = (
-    dc.read_storage("s3://bucket/images/*.jpg", update=True, delta=True)   # update=True re-lists the bucket
+    dc.read_storage(
+        "s3://bucket/images/*.jpg", update=True, delta=True
+    )  # update=True re-lists the bucket
     .settings(parallel=True, prefetch=2)
     .batch_map(img=ClipEmbed(), batch=32)
     .save("image_embeddings")
