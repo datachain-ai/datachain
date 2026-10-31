@@ -1,5 +1,4 @@
 import contextlib
-import os
 import traceback
 from collections.abc import Iterable, Iterator, Sequence
 from itertools import chain, islice
@@ -32,7 +31,7 @@ from datachain.utils import (
     flatten,
     safe_closing,
     usable_cpu_count,
-    worker_thread_env,
+    worker_thread_limits,
 )
 
 if TYPE_CHECKING:
@@ -216,19 +215,19 @@ class UDFDispatcher:
             n_workers = 1  # Single-threaded (on this worker)
         n_workers = get_n_workers_from_arg(n_workers)
 
-        if n_workers == 1:
-            # no need to spawn worker processes if we are running in a single process
-            self.run_udf_single(input_rows, download_cb, processed_cb, generated_cb)
-        else:
-            if self.buffer_size < n_workers:
-                raise RuntimeError(
-                    "Parallel run error: buffer size is smaller than "
-                    f"number of workers: {self.buffer_size} < {n_workers}"
-                )
+        with worker_thread_limits(n_workers):
+            if n_workers == 1:
+                self.run_udf_single(input_rows, download_cb, processed_cb, generated_cb)
+            else:
+                if self.buffer_size < n_workers:
+                    raise RuntimeError(
+                        "Parallel run error: buffer size is smaller than "
+                        f"number of workers: {self.buffer_size} < {n_workers}"
+                    )
 
-            self.run_udf_parallel(
-                n_workers, input_rows, download_cb, processed_cb, generated_cb
-            )
+                self.run_udf_parallel(
+                    n_workers, input_rows, download_cb, processed_cb, generated_cb
+                )
 
     def run_udf_single(
         self,
@@ -286,11 +285,9 @@ class UDFDispatcher:
             self.ctx.Process(name=f"Worker-UDF-{i}", target=self._run_worker)
             for i in range(n_workers)
         ]
-        os.environ.update(worker_thread_env(n_workers))
-        for p in pool:
-            p.start()
-
         try:
+            for p in pool:
+                p.start()
             # Will be set to True when the input is exhausted
             input_finished = False
 
