@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import get_args
 
 import pandas as pd
@@ -131,7 +131,7 @@ def test_read_parquet_partitioned(tmp_path, test_session, cache):
     )
 
     rows = chain.to_list("first_name", "age", "city", "source")
-    assert sorted(row[:3] for row in rows) == [tuple(r.values()) for r in pylist]
+    assert sorted(row[:3] for row in rows) == sorted(tuple(r.values()) for r in pylist)
     for name, *_, source in rows:
         assert f"first_name={name}/" in source.file.path
         assert source.index == 0
@@ -170,7 +170,9 @@ def plain_types_parquet(tmp_path):
             "ls": pa.array([None, "ü", "z"], pa.large_string()),
             "bin": pa.array([b"\x00", None, b""]),
             "ts": pa.array([when, None, None]),
-            "tz": pa.array([None, when, None], pa.timestamp("ms", tz="UTC")),
+            "tz": pa.array(
+                [None, when.replace(tzinfo=UTC), None], pa.timestamp("ms", tz="UTC")
+            ),
             "cat": pa.array(["a", None, "a"]).dictionary_encode(),
             "empty": pa.array([None, None, None]),
             "fl": pa.array([[1.5, -2.0], None, []]),
