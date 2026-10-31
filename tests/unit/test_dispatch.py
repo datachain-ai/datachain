@@ -2,7 +2,12 @@ from queue import Empty, Full
 
 import pytest
 
-from datachain.query.dispatch import STOP_SIGNAL, get_from_queue, put_into_queue
+from datachain.query.dispatch import (
+    STOP_SIGNAL,
+    get_from_queue,
+    guided_tasks,
+    put_into_queue,
+)
 
 
 class MockQueue:
@@ -41,26 +46,29 @@ def test_put_into_queue():
 
 
 @pytest.mark.parametrize(
-    "total,workers,max_size",
-    [(255, 8, 31), (1, 4, 1), (16, 8, 2), (100_000, 4, 10_000), (7, 16, 1)],
+    "items,total,workers,max_size",
+    [
+        (255, 255, 8, 31),
+        (1, 1, 4, 1),
+        (16, 16, 8, 2),
+        (100_000, 100_000, 4, 10_000),
+        (7, 7, 16, 1),
+        (10, 3, 2, 5),
+    ],
 )
 def test_guided_tasks_cover_items_once_and_end_with_single_items(
-    total, workers, max_size
+    items, total, workers, max_size
 ):
-    from datachain.query.dispatch import guided_tasks
-
-    tasks = list(guided_tasks(range(total), total, workers, max_size))
+    tasks = list(guided_tasks(range(items), total, workers, max_size))
     sizes = [len(t) for t in tasks]
 
-    assert [i for t in tasks for i in t] == list(range(total))
+    assert [i for t in tasks for i in t] == list(range(items))
     assert max(sizes) <= max_size
     assert sizes == sorted(sizes, reverse=True)
     assert sizes[-min(workers, len(sizes)) :] == [1] * min(workers, len(sizes))
 
 
-def test_guided_tasks_with_underestimated_total_still_yield_everything():
-    from datachain.query.dispatch import guided_tasks
-
-    tasks = list(guided_tasks(range(10), 3, 2, 5))
-
-    assert [i for t in tasks for i in t] == list(range(10))
+@pytest.mark.parametrize("workers,max_size", [(0, 1), (-1, 1), (1, 0)])
+def test_guided_tasks_require_positive_limits(workers, max_size):
+    with pytest.raises(ValueError, match="must be positive"):
+        list(guided_tasks(range(3), 3, workers, max_size))
