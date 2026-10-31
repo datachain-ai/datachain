@@ -1484,26 +1484,24 @@ class VideoFile(File):
         *,
         video_stream_index: int = 0,
     ) -> "Iterator[VideoFrame]":
-        """Sample frames at target times 0, 1/fps, 2/fps, ... seconds.
+        """Yield frames sampled ``fps`` times per second.
 
-        Yields the first decoded frame at or after each target time, using one
-        container and sequential decoding through EOF. Timestamps are actual
-        decoded presentation times, including any stream start offset. A frame
-        can be yielded more than once if it spans several targets. Targets
-        after the last decoded timestamp produce no output.
+        Sample times start at the beginning of the video and repeat every
+        ``1 / fps`` seconds. Each sample is the first frame at or after its
+        sample time, so frames repeat when ``fps`` exceeds the video's frame
+        rate. This selects the next observation, rather than the frame still
+        on screen during a gap. ``timestamp`` is the frame's own time,
+        including any stream offset, not the sample time. Videos without
+        timestamps use their frame rate to estimate frame times.
 
         Args:
-            fps: Finite, positive sampling rate in frames per second.
+            fps: Samples per second. Must be finite and positive.
             video_stream_index: Zero-based index among video streams to read.
+                Defaults to 0.
 
         Returns:
-            Iterator[VideoFrame]: Frames with decoded PTS timestamps. Pixel
-                access applies display orientation, as with ``get_frames()``.
-
-        Note:
-            Consume ``frame.get_np()`` in this iterator's UDF to reuse decoded
-            pixels. Saving frame references across chain stages discards the
-            decoded buffers and later pixel access decodes the frame again.
+            Iterator[VideoFrame]: Sampled frames with pixels already decoded;
+                call ``get_np()`` or ``save()`` in the same UDF to reuse them.
         """
         from .video import sample_video_frames
 
@@ -1872,8 +1870,8 @@ class VideoFrame(DataModel):
         ``VideoFile.sample_frames()`` are pre-populated with the decoded frame,
         so the first call to any of those methods requires no I/O. The cache
         is held for the lifetime of the ``VideoFrame`` object; when many frames
-        are kept in memory at once
-        (e.g. ``list(video.get_frames())``) the cached pixel buffers can
+        are kept in memory at once (e.g. ``list(video.get_frames())``),
+        the cached pixel buffers can
         create significant memory pressure (~3 MB each for 1080p video).  The
         cache is excluded from pickling so cross-process serialisation (e.g.
         DataChain ``.gen()`` workers) is unaffected.
