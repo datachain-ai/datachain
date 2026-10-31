@@ -107,8 +107,11 @@ recordings = (
     .save("recordings")
 )
 recordings.select(
-    "file.path", "recording.topics", "recording.message_count",
-    "recording.first_log_time_ns", "recording.last_log_time_ns",
+    "file.path",
+    "recording.topics",
+    "recording.message_count",
+    "recording.first_log_time_ns",
+    "recording.last_log_time_ns",
 ).show()
 ```
 
@@ -143,8 +146,12 @@ selected = (
     .save("training_recordings")
 )
 selected.select(
-    "file.source", "file.path", "file.etag", "file.version",
-    "recording.first_log_time_ns", "recording.last_log_time_ns",
+    "file.source",
+    "file.path",
+    "file.etag",
+    "file.version",
+    "recording.first_log_time_ns",
+    "recording.last_log_time_ns",
 ).to_parquet("training_manifest.parquet")
 ```
 
