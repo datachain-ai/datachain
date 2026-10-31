@@ -1,5 +1,4 @@
 import os
-import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlparse
@@ -370,85 +369,77 @@ def test_cp_bucket_root_skips_empty_segments_in_existing_directory(cloud_test_ca
 @pytest.mark.parametrize("force", [False, True])
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 @skip_if_not_sqlite
-def test_cp_dataset_skips_keys_with_double_slash(cloud_test_catalog, caplog, force):
+def test_cp_dataset_skips_keys_with_double_slash(
+    cloud_test_catalog, cloud_prefix, caplog, force
+):
     ctc = cloud_test_catalog
     client = ctc.catalog.get_client(ctc.src_uri)
-    prefix = "cp-ds-double-slash"
+    prefix = cloud_prefix
     client.fs.pipe_file(f"{client.name}/{prefix}/d/e.txt", b"real")
     client.fs.pipe_file(f"{client.name}/{prefix}/d//e.txt", b"odd")
     client.fs.invalidate_cache()
-    name = f"ds-{uuid.uuid4().hex[:8]}"
+    name = "keys"
     dest = ctc.working_dir / "data"
-    try:
-        chain = dc.read_storage(f"{ctc.src_uri}/{prefix}/", session=ctc.session)
-        chain.save(name)
-        files = {f.path: f for f in chain.to_values("file")}
-        with caplog.at_level("WARNING", logger="datachain"):
-            ctc.catalog.cp([f"ds://{name}"], str(dest), force=force)
-    finally:
-        client.fs.rm(f"{client.name}/{prefix}", recursive=True)
-        client.fs.invalidate_cache()
+    chain = dc.read_storage(f"{ctc.src_uri}/{prefix}/", session=ctc.session)
+    chain.save(name)
+    files = {f.path: f for f in chain.to_values("file")}
+    with caplog.at_level("WARNING", logger="datachain"):
+        ctc.catalog.cp([f"ds://{name}"], str(dest), force=force)
 
     assert tree_from_path(dest / client.name) == {prefix: {"d": {"e.txt": "real"}}}
     assert files[f"{prefix}/d//e.txt"].get_local_path() is None  # not downloaded
     assert f"File '{prefix}/d//e.txt' not copied: path has '//'" in caplog.text
 
 
-@contextmanager
 def _empty_segment_keys(ctc, prefix):
     client = ctc.catalog.get_client(ctc.src_uri)
     for key, data in {"d/e.txt": b"a", "d//e.txt": b"bb", "d///f.txt": b"ccc"}.items():
         client.fs.pipe_file(f"{client.name}/{prefix}/{key}", data)
     client.fs.invalidate_cache()
-    try:
-        yield f"{ctc.src_uri}/{prefix}"
-    finally:
-        client.fs.rm(f"{client.name}/{prefix}", recursive=True)
-        client.fs.invalidate_cache()
+    return f"{ctc.src_uri}/{prefix}"
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
-def test_cp_and_du_glob_after_empty_segment(cloud_test_catalog):
+def test_cp_and_du_glob_after_empty_segment(cloud_test_catalog, cloud_prefix):
     ctc = cloud_test_catalog
     dest = ctc.working_dir / "out"
     dest.mkdir()
-    with _empty_segment_keys(ctc, "glob-empty-segment") as uri:
-        ctc.catalog.cp([f"{uri}/d//*.txt"], str(dest))
-        sizes = dict(ctc.catalog.du([f"{uri}/d//*.txt"]))
+    uri = _empty_segment_keys(ctc, cloud_prefix)
+    ctc.catalog.cp([f"{uri}/d//*.txt"], str(dest))
+    sizes = dict(ctc.catalog.du([f"{uri}/d//*.txt"]))
     assert tree_from_path(dest) == {"e.txt": "bb"}
     assert sizes == {f"{uri}/d//e.txt": 2}
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
-def test_cp_and_du_empty_named_folder_from_parent_listing(cloud_test_catalog):
+def test_cp_and_du_empty_named_folder_from_parent_listing(
+    cloud_test_catalog, cloud_prefix
+):
     ctc = cloud_test_catalog
     dest = ctc.working_dir / "out"
-    with _empty_segment_keys(ctc, "parent-empty-segment") as uri:
-        dc.read_storage(f"{uri}/", session=ctc.session).exec()  # the parent listing
-        ctc.catalog.cp([f"{uri}/d//"], str(dest), recursive=True)
-        sizes = dict(ctc.catalog.du([f"{uri}/d//"]))
-    # d///f.txt is under the folder named "" in d//: a local disk can't hold it
+    uri = _empty_segment_keys(ctc, cloud_prefix)
+    dc.read_storage(f"{uri}/", session=ctc.session).exec()
+    ctc.catalog.cp([f"{uri}/d//"], str(dest), recursive=True)
+    sizes = dict(ctc.catalog.du([f"{uri}/d//"]))
     assert tree_from_path(dest) == {"e.txt": "bb"}
     assert sizes == {f"{uri}/d//": 5}
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
-def test_cp_double_slash_key_to_directory_is_not_downloaded(cloud_test_catalog):
+def test_cp_double_slash_key_to_directory_is_not_downloaded(
+    cloud_test_catalog, cloud_prefix
+):
     ctc = cloud_test_catalog
     client = ctc.catalog.get_client(ctc.src_uri)
-    key = "cp-to-dir/d//e.txt"
+    key = f"{cloud_prefix}/d//e.txt"
     client.fs.pipe_file(f"{client.name}/{key}", b"odd")
     client.fs.invalidate_cache()
     dest = ctc.working_dir / "out"
     dest.mkdir()
-    try:
-        ctc.catalog.cp([f"{ctc.src_uri}/{key}"], str(dest))
-        (file,) = dc.read_storage(
-            f"{ctc.src_uri}/{key}", session=ctc.session
-        ).to_values("file")
-    finally:
-        client.fs.rm(f"{client.name}/{key}")
-        client.fs.invalidate_cache()
+    ctc.catalog.cp([f"{ctc.src_uri}/{key}"], str(dest))
+    (file,) = dc.read_storage(f"{ctc.src_uri}/{key}", session=ctc.session).to_values(
+        "file"
+    )
 
     assert tree_from_path(dest) == {}
     assert file.get_local_path() is None
@@ -456,21 +447,19 @@ def test_cp_double_slash_key_to_directory_is_not_downloaded(cloud_test_catalog):
 
 @pytest.mark.parametrize("force", [False, True])
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
-def test_cp_double_slash_key_to_explicit_filename(cloud_test_catalog, force):
+def test_cp_double_slash_key_to_explicit_filename(
+    cloud_test_catalog, cloud_prefix, force
+):
     ctc = cloud_test_catalog
     client = ctc.catalog.get_client(ctc.src_uri)
-    key = "cp-explicit/d//e.txt"
+    key = f"{cloud_prefix}/d//e.txt"
     client.fs.pipe_file(f"{client.name}/{key}", b"content")
     client.fs.invalidate_cache()
     dest = ctc.working_dir / "out.txt"
     if force:
         dest.write_text("existing content")
-    try:
-        ctc.catalog.cp([f"{ctc.src_uri}/{key}"], str(dest), force=force)
-        assert dest.read_bytes() == b"content"
-    finally:
-        client.fs.rm(f"{client.name}/{key}")
-        client.fs.invalidate_cache()
+    ctc.catalog.cp([f"{ctc.src_uri}/{key}"], str(dest), force=force)
+    assert dest.read_bytes() == b"content"
 
 
 @pytest.mark.parametrize("no_glob", (True, False))

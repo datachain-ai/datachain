@@ -157,7 +157,7 @@ def test_url_unversioned_sign_called_with_clean_path():
 # marked xfail so they become regular passes once the upstream is fixed and our
 # guard is removed.
 _xfail_special_char_versioned = pytest.mark.xfail(
-    reason="Awaiting gcsfs release with https://github.com/fsspec/gcsfs/pull/1129",
+    reason="DataChain guards versioned special keys pending gcsfs#1129 support",
     strict=True,
 )
 
@@ -421,18 +421,3 @@ def test_listing_asks_for_every_field_it_reads(version_aware):
     fields = client._fs._call.call_args.kwargs["fields"]
     assert fields == GCSClient.LIST_FIELDS
     assert item.read <= set(fields.removeprefix("items(").split(")")[0].split(","))
-
-
-@pytest.mark.xfail(
-    reason="Awaiting gcsfs release with https://github.com/fsspec/gcsfs/pull/1129",
-    strict=True,
-)
-@pytest.mark.parametrize("key", ["http://example.com/a.txt", "b#1.txt", "c?d=1.txt"])
-def test_gcsfs_versioned_path_preserves_opaque_key(key):
-    from gcsfs import GCSFileSystem
-
-    assert GCSFileSystem._split_path(f"bucket/{key}#123", version_aware=True) == (
-        "bucket",
-        key,
-        "123",
-    )

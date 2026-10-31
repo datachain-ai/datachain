@@ -5,7 +5,6 @@ from datetime import datetime
 from struct import pack
 from time import sleep
 from typing import Any
-from uuid import uuid4
 
 import msgpack
 import pytest
@@ -395,22 +394,20 @@ REMOTE_DATA: dict[str, list[dict[str, Any]]] = {
 
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
-def test_ls_tells_keys_with_empty_segments_apart(cloud_test_catalog, capsys):
+def test_ls_tells_keys_with_empty_segments_apart(
+    cloud_test_catalog, cloud_prefix, capsys
+):
     ctc = cloud_test_catalog
     client = ctc.catalog.get_client(ctc.src_uri)
-    prefix = f"empty-segments-{uuid4().hex[:8]}"
+    prefix = cloud_prefix
     keys = ["d/e.txt", "d//e.txt", "d///f.txt", "x/y/w.txt", "x//y/z.txt"]
     for key in keys:
         client.fs.pipe_file(f"{client.name}/{prefix}/{key}", b"x")
     client.fs.invalidate_cache()
-    try:
-        ls([f"{ctc.src_uri}/{prefix}/d/"], catalog=ctc.catalog)
-        assert same_lines(capsys.readouterr().out, "''/\ne.txt\n")
-        ls([f"{ctc.src_uri}/{prefix}/x/"], catalog=ctc.catalog)
-        assert same_lines(capsys.readouterr().out, "''/\ny/\n")
-    finally:
-        client.fs.rm(f"{client.name}/{prefix}", recursive=True)
-        client.fs.invalidate_cache()
+    ls([f"{ctc.src_uri}/{prefix}/d/"], catalog=ctc.catalog)
+    assert same_lines(capsys.readouterr().out, "''/\ne.txt\n")
+    ls([f"{ctc.src_uri}/{prefix}/x/"], catalog=ctc.catalog)
+    assert same_lines(capsys.readouterr().out, "''/\ny/\n")
 
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)

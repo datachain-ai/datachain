@@ -167,7 +167,7 @@ def rebase_path(
         base = base if new_scheme and new_scheme != "file" else _to_posix(base)
         return (
             new_relative_path
-            if base == "."
+            if base == "." and not new_relative_path.startswith("/")
             else f"{base.removesuffix('/')}/{new_relative_path}"
         )
 

@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from functools import partial
 from io import BytesIO
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
 
@@ -799,17 +799,19 @@ class File(DataModel):
         from datachain.client.fsspec import Client as FSClient
         from datachain.client.local import FileClient
 
+        uri = path_to_fsspec_uri(destination)
+        client_cls = FSClient.get_implementation(uri)
         # a local disk collapses "//": d//e.txt would overwrite d/e.txt
-        if "//" in self.path and FSClient.get_implementation(destination) is FileClient:
+        if "//" in self.path and client_cls is FileClient:
             path = destination.removeprefix("file://")
             canonical = path.replace("\\", "/") if os.name == "nt" else path
-            if "//" in canonical.lstrip("/"):
+            if os.name == "nt" and PureWindowsPath(canonical).drive.startswith("\\\\"):
+                canonical = canonical.removeprefix("//")
+            if "//" in canonical:
                 raise ValueError(
                     f"unsafe file path {destination!r}: must not contain empty segments"
                 )
 
-        uri = path_to_fsspec_uri(destination)
-        client_cls = FSClient.get_implementation(uri)
         storage, rel_path = client_cls.split_url(uri)
         client = self._catalog.get_client(  # type: ignore[union-attr]
             client_cls.storage_uri(storage), **(client_config or {})

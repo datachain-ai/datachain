@@ -625,7 +625,7 @@ def test_path_filter_python_matches_sql(test_session, paths):
         ("dir///*", ["dir///x.txt"]),
     ],
 )
-def test_nonrecursive_listing_glob_tail(test_session, selector, expected):
+def test_nonrecursive_glob_tail_lists_one_folder(test_session, selector, expected):
     names = ["dir/x.txt", "dir/a/x.txt", "dir//x.txt", "dir///x.txt"]
     paths = PathFilter.ls(selector, False)
     chain = dc.read_values(path=names, session=test_session)
