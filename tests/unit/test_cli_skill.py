@@ -683,7 +683,7 @@ def test_default_package_round_trip_and_reference_reachability(
         assert not (base / companion_path).exists()
 
 
-def test_default_upgrade_preserves_legacy_skills_and_prints_removal_hint(
+def test_default_upgrade_removes_legacy_skills_and_rules(
     tmp_path, fake_home, monkeypatch, capsys
 ):
     from datachain.cli.commands.skill import install_skills
@@ -691,21 +691,35 @@ def test_default_upgrade_preserves_legacy_skills_and_prints_removal_hint(
     monkeypatch.chdir(tmp_path)
     with patch("pathlib.Path.home", return_value=fake_home):
         assert install_skills("knowledge", "cursor", True) == 0
-        skills = tmp_path / ".cursor" / "skills"
-        legacy = {
-            name: (skills / name / "SKILL.md").read_bytes()
-            for name in ["core", "knowledge"]
-        }
-        capsys.readouterr()
         assert install_skills(None, "cursor", True) == 0
 
-    assert {p.name for p in skills.iterdir()} == {"datachain", "core", "knowledge"}
-    for name, content in legacy.items():
-        assert (skills / name / "SKILL.md").read_bytes() == content
-    assert (
-        "datachain skill uninstall core,knowledge --target cursor --local"
-        in capsys.readouterr().out
-    )
+    skills = tmp_path / ".cursor" / "skills"
+    rules = tmp_path / ".cursor" / "rules"
+    assert {p.name for p in skills.iterdir()} == {"datachain"}
+    assert {p.name for p in rules.iterdir()} == {"datachain-datachain.mdc"}
+    assert "Removed old skills: core, knowledge" in capsys.readouterr().out
+
+
+def test_failed_default_upgrade_keeps_legacy_skills(tmp_path, fake_home, monkeypatch):
+    from datachain.cli.commands.skill import install_skills
+
+    monkeypatch.chdir(tmp_path)
+    with patch("pathlib.Path.home", return_value=fake_home):
+        assert install_skills("knowledge", "cursor", True) == 0
+        skills = tmp_path / ".cursor" / "skills"
+        before = {
+            name: (skills / name / "SKILL.md").read_bytes()
+            for name in ("core", "knowledge")
+        }
+        empty_source = tmp_path / "empty-source"
+        empty_source.mkdir()
+        monkeypatch.setattr(
+            "datachain.cli.commands.skill._skills_src", lambda: empty_source
+        )
+        assert install_skills(None, "cursor", True) == 1
+    assert {
+        name: (skills / name / "SKILL.md").read_bytes() for name in before
+    } == before
 
 
 def test_install_refuses_unrelated_datachain_skill(

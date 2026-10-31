@@ -72,9 +72,10 @@ Then ask the agent to build a knowledge base for your saved datasets. See the
 [Knowledge Base guide](../guide/knowledge-base.md) for generation and browsing.
 The default skill does not require a knowledge base.
 
-If earlier installs left `core` or `knowledge` in place, a default install preserves
-them and prints a removal command. Remove them only if you no longer want those
-instructions.
+Installing the default `datachain` skill removes earlier DataChain `core` and
+`knowledge` installations and their command/rule files in the same target and
+scope. The new skill is installed first; an unsuccessful install preserves the
+previous skills.
 
 ## Next Steps
 

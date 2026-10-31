@@ -186,20 +186,19 @@ def _remove_skill(
 
 
 def _sweep_retired(
-    skills_dir: Path, commands_dir: Path | None, command_ext: str | None
+    skills_dir: Path,
+    commands_dir: Path | None,
+    command_ext: str | None,
+    names: tuple[str, ...] = RETIRED_SKILLS,
 ) -> None:
-    """Clear skills that no longer ship, left behind by an earlier install.
-
-    Without this an upgrade leaves a retired skill in place, still instructing
-    whichever agent reads that directory.
-    """
+    """Remove old installed skills and their companion instructions."""
     removed = [
         name
-        for name in RETIRED_SKILLS
+        for name in names
         if _remove_skill(skills_dir, commands_dir, command_ext, name)
     ]
     if removed:
-        print(f"Removed retired skills: {', '.join(removed)}")
+        print(f"Removed old skills: {', '.join(removed)}")
 
 
 def _write_companion(
@@ -229,21 +228,6 @@ def _check_install_destinations(skills_dir: Path, names: list[str]) -> bool:
             print(f"Cannot overwrite unrelated skill: {dest}", file=sys.stderr)
             return False
     return True
-
-
-def _print_legacy_hint(skills_dir: Path, target: str, local: bool) -> None:
-    legacy = [
-        name
-        for name in SKILLS
-        if name not in DEFAULT_SKILLS
-        and _installed_by_datachain(skills_dir / name, name)
-    ]
-    if legacy:
-        flags = f" --target {target}" + (" --local" if local else "")
-        print(
-            f"Still installed: {', '.join(legacy)}. Remove with: "
-            f"datachain skill uninstall {','.join(legacy)}{flags}"
-        )
 
 
 def install_skills(skills: str | None, target: str, local: bool) -> int:
@@ -325,10 +309,10 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
 
         installed.append(f"  {skill_name} → {dest}")
 
-    _sweep_retired(skills_dir, commands_dir, command_ext)
-
-    if not skills:
-        _print_legacy_hint(skills_dir, target, local)
+    old_skills: tuple[str, ...] = RETIRED_SKILLS
+    if skills_to_install == list(DEFAULT_SKILLS) and not missing:
+        old_skills += tuple(name for name in SKILLS if name not in DEFAULT_SKILLS)
+    _sweep_retired(skills_dir, commands_dir, command_ext, old_skills)
 
     if installed:
         scope = "local" if local else "global"
