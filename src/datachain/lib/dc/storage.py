@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 import datachain.lib.listing as listing_lib
 from datachain.client import Client
+from datachain.client.local import FileClient
 from datachain.lib.dc.storage_pattern import (
     list_scope,
     path_filter,
@@ -16,6 +17,8 @@ from datachain.lib.dc.storage_pattern import (
 from datachain.lib.file import File, FileRow, FileType, get_file_type
 from datachain.lib.storage_config import client_configs, session_for
 from datachain.query import Session
+
+from .utils import is_studio
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -57,6 +60,10 @@ def read_storage(  # noqa: PLR0913
     is reused; otherwise the storage is listed and saved, as
     `dc.list_storage(uri).save()` does. The chain holds current objects. To list a
     storage without saving it, use `dc.list_storage()`.
+
+    In a Studio job, a local path is listed each time it is read and never
+    saved, since the job's files live only in its own worker; `delta=True`
+    raises there for a directory.
 
     Parameters:
         uri: Storage path(s) or URI(s). Can be a local path or start with a
@@ -584,8 +591,31 @@ def _prepare_listing(
     """Select a snapshot and attach its full-prefix refresh, without reading rows.
 
     A single file has no snapshot. Return its URI and the path used to filter rows.
+    In Studio, a local path has no snapshot either: it is listed live each time.
     """
     from .datasets import read_dataset
+
+    if is_studio() and issubclass(Client.get_implementation(uri), FileClient):
+        uri = os.fspath(uri)
+        client = Client.get_client(uri, session.catalog.cache, **client_config)
+        described = listing_lib.describe_listing(client, uri, versions)
+        if described is None:
+            return None, uri, Client.parse_url(uri)[1]
+        if delta:
+            raise ValueError(
+                "delta needs a saved listing, and Studio saves none for local paths"
+            )
+        _, list_uri, list_path = described
+        chain = listing_lib.listing_chain(
+            list_uri,
+            session,
+            client_config,
+            column=column,
+            file_type=file_type,
+            settings=settings,
+            in_memory=in_memory,
+        )
+        return chain, list_uri, list_path
 
     name, list_uri, list_path, _ = listing_lib.get_listing(
         uri, session, update=update, versions=versions

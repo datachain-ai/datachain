@@ -45,7 +45,7 @@ from datachain.error import (
     ProjectNotFoundError,
     TableMissingError,
 )
-from datachain.lib.listing import get_listing, is_listing_dataset
+from datachain.lib.listing import describe_listing, get_listing, is_listing_dataset
 from datachain.node import DirType, Node, NodeWithPath
 from datachain.nodes_thread_pool import NodesThreadPool
 from datachain.progress import tqdm
@@ -598,6 +598,7 @@ class Catalog:
             normalize_storage_uri,
             split_uri_pattern,
         )
+        from datachain.lib.dc.utils import is_studio
         from datachain.lib.listing import (
             ensure_listing,
             listing_uri_from_name,
@@ -615,23 +616,36 @@ class Catalog:
         session = session_for(self.session, session_config, in_memory=False)
         source_uri, pattern = split_uri_pattern(source)
         prepared = set() if _prepared_listings is None else _prepared_listings
-        list_ds_name, list_uri, list_path, _ = get_listing(
-            source_uri, session, update=update
-        )
-        if list_ds_name is not None:
-            ensure_listing(
-                list_ds_name,
-                session.catalog,
-                lambda: write_listing(
-                    listing_uri_from_name(list_ds_name),
-                    list_ds_name,
-                    session,
-                    config,
-                    column=column,
-                ),
-                update=update and list_ds_name not in prepared,
+
+        if is_studio() and is_local:
+            client = Client.get_client(source_uri, self.cache, **config)
+            described = describe_listing(client, source_uri)
+            if described is None:
+                list_ds_name = None
+                list_uri, list_path = source_uri, Client.parse_url(source_uri)[1]
+            else:
+                _, list_uri, list_path = described
+                list_ds_name = session.generate_temp_dataset_name()
+                write_listing(list_uri, list_ds_name, session, config, column=column)
+        else:
+            list_ds_name, list_uri, list_path, _ = get_listing(
+                source_uri, session, update=update
             )
-            prepared.add(list_ds_name)
+            if list_ds_name is not None:
+                ensure_listing(
+                    list_ds_name,
+                    session.catalog,
+                    lambda: write_listing(
+                        listing_uri_from_name(list_ds_name),
+                        list_ds_name,
+                        session,
+                        config,
+                        column=column,
+                    ),
+                    update=update and list_ds_name not in prepared,
+                )
+                prepared.add(list_ds_name)
+
         if pattern is not None:
             if is_local:
                 list_path = posixpath.join(list_path, pattern)

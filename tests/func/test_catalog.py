@@ -170,6 +170,17 @@ def test_cp_root(cloud_test_catalog, recursive, star, dir_exists, cloud_type):
     assert tree_from_path(dest) == expected
 
 
+@pytest.mark.parametrize("is_studio", [True])
+def test_cp_in_studio_saves_no_local_listing(
+    test_session, local_tree, studio_job, tmp_path
+):
+    catalog = test_session.catalog
+    dest = tmp_path / "data"
+    catalog.cp([local_tree.as_uri() + "/"], str(dest), recursive=True)
+    assert tree_from_path(dest) == {"a.txt": "a", "b.csv": "b", "sub": {"c.txt": "c"}}
+    assert catalog.listings() == []
+
+
 @pytest.mark.parametrize(
     "cloud_type",
     ["s3", "gs", "azure"],

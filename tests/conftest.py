@@ -344,6 +344,15 @@ def test_session(catalog):
 
 
 @pytest.fixture
+def local_tree(tmp_dir):
+    (tmp_dir / "sub").mkdir()
+    (tmp_dir / "a.txt").write_text("a")
+    (tmp_dir / "b.csv").write_text("b")
+    (tmp_dir / "sub" / "c.txt").write_text("c")
+    return tmp_dir.resolve()
+
+
+@pytest.fixture
 def metastore_tmpfile(monkeypatch, tmp_path):
     if os.environ.get("DATACHAIN_METASTORE"):
         _metastore = get_metastore()

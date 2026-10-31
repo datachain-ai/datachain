@@ -20,9 +20,9 @@ if TYPE_CHECKING:
 
 
 class SavedListing:
-    """A saved listing dataset (``lst__...``) browsed as a tree with SQL: what
-    ``datachain ls``, ``du``, ``find`` and ``cp`` read. ``dc.Listing`` lists a
-    storage itself."""
+    """A saved listing dataset (``lst__...``, or a session-only one of a local
+    path in Studio) browsed as a tree with SQL: what ``datachain ls``, ``du``,
+    ``find`` and ``cp`` read. ``dc.Listing`` lists a storage itself."""
 
     def __init__(
         self,
@@ -65,14 +65,6 @@ class SavedListing:
             self.warehouse.close_on_exit()
         finally:
             self.metastore.close_on_exit()
-
-    @property
-    def uri(self):
-        from datachain.lib.listing import listing_uri_from_name
-
-        assert self.dataset_name
-
-        return listing_uri_from_name(self.dataset_name)
 
     @cached_property
     def dataset(self) -> "DatasetRecord":
