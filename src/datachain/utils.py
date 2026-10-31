@@ -11,6 +11,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import cloudpickle
@@ -88,15 +89,19 @@ class DataChainDir:
             root_dir = os.environ[cls.ENV_VAR_DATACHAIN_ROOT]
         except KeyError:
             root_dir = os.getcwd()
-            candidate = root_dir
-            while True:
-                datachain_dir = osp.join(candidate, cls.DEFAULT)
-                if osp.isfile(osp.join(datachain_dir, cls.DB)):
-                    return datachain_dir
-                parent = osp.dirname(candidate)
-                if parent == candidate:
-                    break
-                candidate = parent
+            cwd = Path(root_dir)
+            nearest = None
+            for directory in (cwd, *cwd.parents):
+                datachain_dir = osp.join(directory, cls.DEFAULT)
+                if nearest is None and (
+                    osp.isfile(osp.join(datachain_dir, cls.DB))
+                    or osp.isfile(osp.join(datachain_dir, cls.CONFIG))
+                ):
+                    nearest = datachain_dir
+                # Only reuse ancestor state inside a containing Git project.
+                # Worktrees and submodules use a .git file instead of a directory.
+                if osp.exists(directory / ".git"):
+                    return nearest or datachain_dir
 
         return osp.join(root_dir, cls.DEFAULT)
 

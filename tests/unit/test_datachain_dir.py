@@ -1,73 +1,127 @@
-from pathlib import Path
-
 import pytest
 
 import datachain as dc
 from datachain.query.session import Session
 from datachain.utils import DataChainDir
+from tests.utils import skip_if_not_sqlite
+
+
+def make_state(directory, marker="db"):
+    root = directory / ".datachain"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / marker).touch()
+    return root
 
 
 @pytest.mark.parametrize("location", [".", "nested", "nested/deeper"])
-def test_find_nearest_parent_database(tmp_path, monkeypatch, location):
-    parent = tmp_path / ".datachain"
-    parent.mkdir()
-    (parent / "db").touch()
+@pytest.mark.parametrize("marker", ["db", "config"])
+def test_find_nearest_project_state(tmp_path, monkeypatch, location, marker):
+    (tmp_path / ".git").mkdir()
+    make_state(tmp_path)
     project = tmp_path / "project"
-    root = project / ".datachain"
-    root.mkdir(parents=True)
-    (root / "db").touch()
+    root = make_state(project, marker)
     cwd = project / location
     cwd.mkdir(parents=True, exist_ok=True)
     monkeypatch.chdir(cwd)
 
-    assert DataChainDir().root == str(root)
-    assert DataChainDir.find(create=False).db == str(root / "db")
-    assert not (cwd / ".datachain").exists() or cwd == project
+    assert DataChainDir.find(create=False).root == str(root)
 
 
-@pytest.mark.parametrize("marker", [None, "config", "db_directory"])
-def test_no_parent_database_uses_cwd(tmp_path, monkeypatch, marker):
-    root = tmp_path / ".datachain"
-    root.mkdir()
-    if marker == "config":
-        (root / "config").touch()
-    elif marker == "db_directory":
-        (root / "db").mkdir()
+@pytest.mark.parametrize("git_marker", ["directory", "file"])
+@pytest.mark.parametrize("existing_state", [False, True])
+def test_git_root_bounds_project_discovery(
+    tmp_path, monkeypatch, git_marker, existing_state
+):
+    make_state(tmp_path)
+    repo = tmp_path / "repo"
+    nested = repo / "scripts" / "nested"
+    nested.mkdir(parents=True)
+    if git_marker == "directory":
+        (repo / ".git").mkdir()
+    else:
+        (repo / ".git").write_text("gitdir: ../worktrees/repo\n")
+    if existing_state:
+        make_state(repo)
+    monkeypatch.chdir(nested)
+
+    assert DataChainDir.find().root == str(repo / ".datachain")
+    assert (repo / ".datachain").is_dir()
+    assert not (nested / ".datachain").exists()
+
+
+@pytest.mark.parametrize("marker", ["db", "config"])
+def test_outside_git_uses_cwd(tmp_path, monkeypatch, marker):
+    make_state(tmp_path, marker)
     cwd = tmp_path / "nested"
     cwd.mkdir()
     monkeypatch.chdir(cwd)
 
-    assert DataChainDir().root == str(cwd / ".datachain")
     assert DataChainDir.find().root == str(cwd / ".datachain")
     assert (cwd / ".datachain").is_dir()
 
 
-def test_root_env_overrides_parent_database(tmp_path, monkeypatch):
-    root = tmp_path / ".datachain"
-    root.mkdir()
-    (root / "db").touch()
+@pytest.mark.parametrize("marker", [None, "cache", "tmp", "db", "config"])
+def test_skip_state_without_db_or_config_file(tmp_path, monkeypatch, marker):
+    (tmp_path / ".git").mkdir()
+    root = make_state(tmp_path)
+    child_state = tmp_path / "child" / ".datachain"
+    child_state.mkdir(parents=True)
+    if marker:
+        (child_state / marker).mkdir()
+    nested = child_state.parent / "nested"
+    nested.mkdir()
+    monkeypatch.chdir(nested)
+
+    assert DataChainDir.find().root == str(root)
+
+
+@pytest.mark.parametrize("git_marker", ["directory", "file"])
+def test_nested_git_project_does_not_reuse_outer_state(
+    tmp_path, monkeypatch, git_marker
+):
+    (tmp_path / ".git").mkdir()
+    make_state(tmp_path)
+    inner = tmp_path / "inner"
+    nested = inner / "scripts"
+    nested.mkdir(parents=True)
+    if git_marker == "directory":
+        (inner / ".git").mkdir()
+    else:
+        (inner / ".git").touch()
+    monkeypatch.chdir(nested)
+
+    assert DataChainDir.find().root == str(inner / ".datachain")
+
+
+@pytest.mark.parametrize(
+    "env_var,expected",
+    [("DATACHAIN_ROOT_DIR", "override/.datachain"), ("DATACHAIN_DIR", "override")],
+)
+def test_env_var_overrides_project_state(tmp_path, monkeypatch, env_var, expected):
+    (tmp_path / ".git").mkdir()
+    make_state(tmp_path)
     monkeypatch.chdir(tmp_path)
-    override = tmp_path / "override"
-    monkeypatch.setenv("DATACHAIN_ROOT_DIR", str(override))
+    monkeypatch.setenv(env_var, str(tmp_path / "override"))
 
-    assert DataChainDir.find().root == str(override / ".datachain")
+    assert DataChainDir.find().root == str(tmp_path / expected)
 
 
-def test_explicit_directory_overrides_parent_database(tmp_path, monkeypatch):
-    root = tmp_path / ".datachain"
-    root.mkdir()
-    (root / "db").touch()
+def test_explicit_directory_and_env_precedence(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    make_state(tmp_path)
     monkeypatch.chdir(tmp_path)
-    override = tmp_path / "override"
-    monkeypatch.setenv("DATACHAIN_DIR", str(override))
+    monkeypatch.setenv("DATACHAIN_ROOT_DIR", str(tmp_path / "root-override"))
+    monkeypatch.setenv("DATACHAIN_DIR", str(tmp_path / "dir-override"))
 
-    assert DataChainDir.find().root == str(override)
+    assert DataChainDir.find().root == str(tmp_path / "dir-override")
     assert DataChainDir(root=str(tmp_path / "explicit")).root == str(
         tmp_path / "explicit"
     )
 
 
-def test_read_saved_dataset_from_nested_directory(tmp_path, monkeypatch, sqlite_db):
+@skip_if_not_sqlite
+def test_read_saved_dataset_from_nested_directory(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
     monkeypatch.chdir(tmp_path)
     with Session() as session:
         dc.read_values(x=[1, 2], session=session).save("parent_dataset")
@@ -76,11 +130,6 @@ def test_read_saved_dataset_from_nested_directory(tmp_path, monkeypatch, sqlite_
     nested.mkdir(parents=True)
     monkeypatch.chdir(nested)
     with Session() as session:
-        assert list(
-            dc.read_dataset("parent_dataset", session=session).to_values("x")
-        ) == [
-            1,
-            2,
-        ]
-        assert Path(session.catalog.metastore.db.db_file) == tmp_path / ".datachain/db"
+        chain = dc.read_dataset("parent_dataset", session=session)
+        assert chain.to_values("x") == [1, 2]
     assert not (nested / ".datachain").exists()

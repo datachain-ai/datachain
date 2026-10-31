@@ -2,13 +2,12 @@
 
 import os
 from datetime import UTC, datetime
-from glob import glob
 
-from utils import studio_available
+from utils import local_db_files, studio_available
 
 
 def cmd_db_mtime():
-    matches = glob(".datachain/db*")
+    matches = local_db_files()
     if not matches:
         if studio_available():
             # No local DB but Studio is configured — signal Studio mode.
