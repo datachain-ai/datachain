@@ -7,9 +7,12 @@ from datachain.query.dispatch import (
     FINISHED_STATUS,
     NOTIFY_STATUS,
     OK_STATUS,
+    STATS_INTERVAL_SEC,
     STOP_SIGNAL,
+    DownloadCallback,
     ProcessedCallback,
     UDFWorker,
+    WorkerStats,
     get_from_queue,
     put_into_queue,
 )
@@ -48,26 +51,6 @@ def test_put_into_queue():
 
     assert put_into_queue(mock_queue, STOP_SIGNAL) is None
     assert mock_queue.put_signal == STOP_SIGNAL
-
-
-def test_processed_callback_batches_and_flushes(mocker):
-    now = mocker.patch("datachain.query.dispatch.monotonic", return_value=0)
-    queue = Queue()
-    callback = ProcessedCallback("processed", queue)
-    for _ in range(999):
-        callback.relative_update()
-    assert queue.empty()
-    callback.relative_update()
-    assert queue.get_nowait() == {"status": NOTIFY_STATUS, "processed": 1000}
-    callback.relative_update(7)
-    now.return_value = 0.2
-    callback.relative_update(3)
-    assert queue.get_nowait() == {"status": NOTIFY_STATUS, "processed": 10}
-    callback.relative_update(2)
-    callback.flush()
-    callback.flush()
-    assert queue.get_nowait() == {"status": NOTIFY_STATUS, "processed": 2}
-    assert queue.empty()
 
 
 @pytest.fixture
@@ -120,8 +103,43 @@ def test_udf_worker_flushes_progress_on_exit(mocker, udf_worker, fail):
             worker.run()
     else:
         worker.run()
-    assert queue.get_nowait() == {"status": NOTIFY_STATUS, "processed": 3}
-    assert queue.get_nowait() == {"status": NOTIFY_STATUS, "generated": 7}
+    assert queue.get_nowait() == {
+        "status": NOTIFY_STATUS,
+        "processed": 3,
+        "generated": 7,
+    }
     if not fail:
         assert queue.get_nowait() == {"status": FINISHED_STATUS}
+    assert queue.empty()
+
+
+def test_worker_sends_progress_once_per_interval(monkeypatch):
+    now = [0]
+    monkeypatch.setattr("datachain.query.dispatch.monotonic", lambda: now[0])
+    queue = Queue()
+    stats = WorkerStats(queue)
+    processed = ProcessedCallback("processed", stats)
+    download = DownloadCallback(stats)
+
+    for _ in range(300):
+        now[0] += 1
+        processed.relative_update(1)
+        download.increment_file_count(1)
+        download.relative_update(10)
+    stats.send(FINISHED_STATUS)
+
+    messages = list(queue.queue)
+    assert len(messages) == 300 // STATS_INTERVAL_SEC + 1
+    assert sum(m.get("processed", 0) for m in messages) == 300
+    assert sum(m.get("downloaded", 0) for m in messages) == 300
+    assert sum(m.get("bytes_downloaded", 0) for m in messages) == 3000
+
+
+def test_worker_stats_flush_is_idempotent():
+    queue = Queue()
+    stats = WorkerStats(queue)
+    stats.add("processed", 2)
+    stats.flush()
+    stats.flush()
+    assert queue.get_nowait() == {"status": NOTIFY_STATUS, "processed": 2}
     assert queue.empty()
