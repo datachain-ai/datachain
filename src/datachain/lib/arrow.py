@@ -36,6 +36,9 @@ if TYPE_CHECKING:
     from datachain.lib.data_model import DataType, UnionLayout
     from datachain.lib.dc import DataChain
 
+    # A parent's tag column, its layout, and the arm holding the path read.
+    ParentTag = tuple[str, UnionLayout, Any]
+
 
 DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY = b"DataChain SignalSchema"
 
@@ -209,9 +212,18 @@ class ArrowGenerator(Generator):
         kw: dict[str, Any] = {}
         if self.nrows:
             kw = {"batch_size": min(self.DEFAULT_BATCH_SIZE, self.nrows)}
-        if self.columns is not None and use_datachain_schema and self.output_schema:
+        parents: dict[str, ParentTag] = {}
+        if (
+            self.columns is not None
+            and self.output_schema
+            and (signal_schema := _get_datachain_schema(schema))
+        ):
             signals = _model_signals(self.output_schema, self.columns)
-            kw["columns"] = [c for c in schema.names if _in_signals(c, signals)]
+            parents = _parent_tags(signal_schema, schema.names, self.columns)
+            tags = {tag for tag, _, _ in parents.values()}
+            kw["columns"] = [
+                c for c in schema.names if c in tags or _in_signals(c, signals)
+            ]
         elif self.columns is not None:
             present = set(schema.names)
             kw["columns"] = [c for c in self.columns if c in present]
@@ -231,7 +243,7 @@ class ArrowGenerator(Generator):
         ) as pbar:
             for index, record in enumerate(pbar):
                 yield self._process_record(
-                    record, file, index, hf_schema, use_datachain_schema, under
+                    record, file, index, hf_schema, use_datachain_schema, under, parents
                 )
 
     def _process_record(
@@ -242,10 +254,15 @@ class ArrowGenerator(Generator):
         hf_schema: tuple["Features", dict[str, "DataType"]] | None,
         use_datachain_schema: bool,
         under: dict[str, list[str]],
+        parents: dict[str, "ParentTag"],
     ):
         if use_datachain_schema and self.output_schema:
             model = self.output_schema
-            vals = [_nested_model_instantiate(record, model, under, paths=self.columns)]
+            vals = [
+                _nested_model_instantiate(
+                    record, model, under, paths=self.columns, parents=parents
+                )
+            ]
         else:
             vals = self._process_non_datachain_record(record, hf_schema)
 
@@ -368,7 +385,6 @@ def infer_output(
         schema = pa.unify_schemas(picked)
     if col_names:
         _check_fields_fit(len(col_names), len(signals))
-        _check_read_alone(signal_schema, signals)
         names = list(normalize_col_names(col_names))
         return schema, dict(zip(names, signals.values(), strict=True)), list(signals)
     if columns is None:
@@ -398,12 +414,10 @@ def read_columns(
     if signal_schema := _get_datachain_schema(schema):
         signals = _signal_paths(signal_schema, columns, source)
         _check_fields_fit(fields, len(signals))
-        _check_read_alone(signal_schema, signals)
         for (field, info), (path, stored) in zip(
             model.model_fields.items(), signals.items(), strict=True
         ):
-            if (kind := _model_kind(info.annotation)) != _model_kind(stored):
-                raise ValueError(f"output field {field} is {kind}, unlike {path}")
+            _check_fits(field, info.annotation, path, stored)
         return list(signals), True
 
     if columns is not None:
@@ -468,10 +482,13 @@ def _check_columns(columns: Sequence[str] | None) -> None:
 def _signal_paths(
     signal_schema: SignalSchema, columns: Sequence[str] | None, source: bool
 ) -> dict[str, "DataType"]:
-    """Return the signals read from files written by DataChain, with their types.
+    """Return the signals read from files written by DataChain, with the types they
+    read as.
 
     They are `columns`, or else the top-level signals. With `source`, the reader
-    adds its own `source`, so a stored one is left out and can't be picked.
+    adds its own `source`, so a stored one is left out and can't be picked. A
+    signal inside an optional model or a union is None where that parent doesn't
+    hold it, so it reads as optional.
     """
     _check_columns(columns)
     if columns is None:
@@ -486,39 +503,66 @@ def _signal_paths(
     else:
         paths = list(columns)
     try:
-        return signal_schema.resolve(*paths).values
+        signals = signal_schema.resolve(*paths).values
     except SignalSchemaError as e:
-        signals = list(signal_schema.values)
-        raise ValueError(f"{e}. Available signals: {signals}") from e
+        available = list(signal_schema.values)
+        raise ValueError(f"{e}. Available signals: {available}") from e
+    return {
+        path: anno | None if signal_schema.tagged_parent(path) else anno  # type: ignore[misc]
+        for path, anno in signals.items()
+    }
 
 
-def _check_read_alone(signal_schema: SignalSchema, signals: dict[str, "DataType"]):
-    """Raise for a model inside an optional model or a union, which only that
-    parent tells is present."""
-    for path, stored in signals.items():
-        kind = classify_field(stored)
-        if not kind.is_model or kind.is_optional:
-            continue
-        parts = path.split(".")
-        for i in range(1, len(parts)):
-            parent = ".".join(parts[:i])
-            if union_layout(signal_schema.resolve(parent).values[parent]) is not None:
-                raise ValueError(
-                    f"{path} can't be read alone, as {parent} tells whether it is "
-                    f"present. Read {parent} instead."
-                )
-
-
-def _model_kind(anno: Any) -> str:
-    kind = classify_field(anno)
-    if not kind.is_model:
-        return "not a model"
-    return "an optional model" if kind.is_optional else "a model"
+def _check_fits(field: str, anno: Any, path: str, stored: Any) -> None:
+    """Raise unless the output field is a model, and optional, where the signal it
+    reads is, down through the fields it declares."""
+    have, want = classify_field(anno), classify_field(stored)
+    if have.is_model != want.is_model:
+        kind = "a model" if have.is_model else "not a model"
+        raise ValueError(f"output field {field} is {kind}, unlike {path}")
+    if not have.is_model:
+        return
+    if have.is_optional != want.is_optional:
+        if want.is_optional:
+            reason = f"must be optional, as {path} can be None"
+        else:
+            reason = f"can't be optional, as {path} is never None"
+        raise ValueError(f"output field {field} {reason}")
+    fields = want.inner.model_fields
+    for name, info in have.inner.model_fields.items():
+        if name in fields:
+            _check_fits(
+                f"{field}.{name}",
+                info.annotation,
+                f"{path}.{name}",
+                fields[name].annotation,
+            )
 
 
 def _in_signals(column: str, signals: Sequence[str]) -> bool:
     """Whether a stored column belongs to one of the signals, e.g. "p.x" to "p"."""
     return any(column == s or column.startswith(f"{s}.") for s in signals)
+
+
+def _parent_tags(
+    signal_schema: SignalSchema, columns: Sequence[str], paths: Sequence[str]
+) -> dict[str, "ParentTag"]:
+    """Map each path that only its parent's ``_type_tag`` tells is present to that
+    tag column, the parent's layout and the arm holding the path.
+
+    A column, or a model with its own tag, is null where its parent is absent. A
+    file written before union types has no tags, so its paths aren't mapped.
+    """
+    names = set(columns)
+    parents = {}
+    for path in paths:
+        if path in names or f"{path}.{TYPE_TAG_FIELD}" in names:
+            continue
+        if (found := signal_schema.tagged_parent(path)) is not None:
+            parent, layout, arm = found
+            if (tag := f"{parent}.{TYPE_TAG_FIELD}") in names:
+                parents[path] = (tag, layout, arm)
+    return parents
 
 
 def _model_signals(model: type["BaseModel"], paths: Sequence[str]) -> list[str]:
@@ -727,16 +771,24 @@ def _nested_model_instantiate(
     under: dict[str, list[str]],
     prefix: str = "",
     paths: Sequence[str] | None = None,
+    parents: dict[str, "ParentTag"] | None = None,
 ) -> "BaseModel":
     """Instantiate the given model and all sub-models/fields based on the provided
     column values. `under` maps each model path to its stored columns. With
     `paths`, each field is read from its path, in order, instead of from its own
-    name."""
+    name, and `parents` maps a path to the parent tag that tells it is present."""
     vals_dict: dict[str, Any] = {}
     for i, (field, field_info) in enumerate(model.model_fields.items()):
         anno = field_info.annotation
         if paths is not None:
             cur_path = paths[i]
+            if parents and (parent := parents.get(cur_path)):
+                tag, parent_layout, arm = parent
+                if arm_for_tag(parent_layout, column_values[tag]) is not arm:
+                    vals_dict[field] = None
+                    continue
+                # Present by its parent's tag, even with all of its fields null.
+                anno = classify_field(anno).inner
         else:
             cur_path = f"{prefix}.{field}" if prefix else field
         if (layout := union_layout(anno)) is not None:

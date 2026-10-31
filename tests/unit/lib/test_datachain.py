@@ -2588,7 +2588,7 @@ def test_read_parquet_list_output_renames_repeated_names_written_by_datachain(
     [
         ({"q": int, "n": int}, "q is not a model, unlike p"),
         ({"q": Point, "n": PointX}, "n is a model, unlike a"),
-        ({"q": Point | None, "n": int}, "q is an optional model, unlike p"),
+        ({"q": Point | None, "n": int}, "q can't be optional, as p is never None"),
     ],
 )
 def test_read_parquet_output_models_must_fit_signals_written_by_datachain(
@@ -2784,39 +2784,106 @@ def test_read_parquet_columns_read_a_union_field_missing_from_a_file_as_none(
     assert [p.x for p in chain.order_by("id").to_values("p")] == [1, None]
 
 
-class Outer(DataModel):
-    point: Point
+class Note(DataModel):
+    text: str | None = None
+
+
+class Card(DataModel):
+    note: Note
+
+
+class MaybeCard(DataModel):
+    note: Note | None = None
 
 
 @pytest.fixture
 def nested_parquet(tmp_dir, test_session):
     path = tmp_dir / "nested.parquet"
     dc.read_values(
-        u=[Point(x=1, y=2)],
-        o=[Outer(point=Point(x=3, y=4))],
-        output={"u": Point | int, "o": Outer | None},
+        id=[0, 1, 2, 3],
+        u=[Note(), Note(text="a"), Card(note=Note(text="b")), None],
+        c=[Card(note=Note()), Card(note=Note(text="a")), None, None],
+        m=[MaybeCard(note=Note()), MaybeCard(note=Note(text="a")), MaybeCard(), None],
+        output={
+            "id": int,
+            "u": Note | Card | None,
+            "c": Card | None,
+            "m": MaybeCard | None,
+        },
         session=test_session,
     ).to_parquet(path)
-    return path.as_uri()
+    return path
 
 
-@pytest.mark.parametrize("column,parent", [("u.Point", "u"), ("o.point", "o")])
-@pytest.mark.parametrize("output", [["v"], {"v": Point}, {"v": Point | None}])
-def test_read_parquet_columns_cant_read_a_model_in_an_optional_or_union_alone(
-    nested_parquet, test_session, column, parent, output
+@pytest.mark.parametrize("column", ["u.Note", "c.note", "m.note"])
+@pytest.mark.parametrize("output", [["id", "v"], {"id": int, "v": Note | None}])
+def test_read_parquet_columns_read_a_model_in_an_optional_or_union_by_its_parent(
+    nested_parquet, test_session, column, output
 ):
-    with pytest.raises(DatasetPrepareError, match=f"Read {parent} instead"):
+    chain = dc.read_parquet(
+        nested_parquet.as_uri(),
+        columns=["id", column],
+        output=output,
+        source=False,
+        session=test_session,
+    )
+    notes = chain.order_by("id").to_values("v")
+    assert [n and n.model_dump() for n in notes] == [
+        {"text": None},
+        {"text": "a"},
+        None,
+        None,
+    ]
+
+
+def test_read_parquet_columns_read_a_model_in_an_optional_without_type_tags(
+    nested_parquet, test_session
+):
+    _drop_type_tags(nested_parquet)
+    chain = dc.read_parquet(
+        nested_parquet.as_uri(),
+        columns=["id", "c.note"],
+        output=["id", "v"],
+        source=False,
+        session=test_session,
+    )
+    notes = chain.order_by("id").to_values("v")
+    assert [n and n.model_dump() for n in notes] == [None, {"text": "a"}, None, None]
+
+
+@pytest.mark.parametrize(
+    "column,model", [("u.Note", Note), ("c.note", Note), ("c", Card)]
+)
+def test_read_parquet_output_model_must_be_optional_as_its_signal(
+    nested_parquet, test_session, column, model
+):
+    with pytest.raises(
+        DatasetPrepareError, match=f"v must be optional, as {column} can be None"
+    ):
         dc.read_parquet(
-            nested_parquet, columns=[column], output=output, session=test_session
+            nested_parquet.as_uri(),
+            columns=[column],
+            output={"v": model},
+            session=test_session,
         )
 
 
-def test_read_parquet_output_model_must_be_optional_as_its_signal(
-    nested_parquet, test_session
+@pytest.mark.parametrize("columns", [["p"], None])
+@pytest.mark.parametrize(
+    "stored,read,error",
+    [
+        (Card(note=Note()), MaybeCard, "q.note can't be optional, as p.note is never"),
+        (MaybeCard(), Card, "q.note must be optional, as p.note can be None"),
+    ],
+)
+def test_read_parquet_output_nested_models_must_be_optional_as_their_signals(
+    tmp_dir, test_session, columns, stored, read, error
 ):
-    with pytest.raises(DatasetPrepareError, match="v is a model, unlike o"):
+    path = tmp_dir / "card.parquet"
+    dc.read_values(p=[stored], session=test_session).to_parquet(path)
+    with pytest.raises(DatasetPrepareError, match=error):
         dc.read_parquet(
-            nested_parquet, columns=["o"], output={"v": Outer}, session=test_session
+            path.as_uri(), columns=columns, output={"q": read}, session=test_session
         )
 
 
