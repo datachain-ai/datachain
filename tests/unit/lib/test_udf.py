@@ -500,3 +500,29 @@ def test_prefetch_failure_cancels_and_awaits_other_downloads(monkeypatch, error)
         assert stopped.is_set()
 
     asyncio.run(run())
+
+
+def test_prefetch_reuses_finished_slots_while_one_file_is_slow(monkeypatch):
+    async def run():
+        later_started = asyncio.Event()
+        release_slow = asyncio.Event()
+
+        async def prefetch(self, download_cb=None):
+            if self.path == "slow":
+                await release_slow.wait()
+            elif self.path == "later":
+                later_started.set()
+            return True
+
+        monkeypatch.setattr(File, "_prefetch", prefetch)
+        names = ["slow", *[str(i) for i in range(ASYNC_WORKERS - 1)], "later"]
+        row = [[File(source="s3://b", path=name) for name in names]]
+        task = asyncio.create_task(_prefetch_input(row, batch_columns={0}))
+        try:
+            await asyncio.wait_for(later_started.wait(), timeout=5)
+            assert not task.done()
+        finally:
+            release_slow.set()
+            await asyncio.wait_for(task, timeout=5)
+
+    asyncio.run(run())
