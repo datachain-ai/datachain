@@ -82,10 +82,7 @@ def main(argv: list[str] | None = None) -> int:
                 logger.exception("Failed to close catalog")
         from datachain.telemetry import telemetry
 
-        try:
-            telemetry.send_cli_call(args.command, error=error)
-        except Exception:
-            logger.debug("Failed to send CLI telemetry", exc_info=True)
+        telemetry.send_cli_call(args.command, error=error)
 
 
 def handle_command(args, catalog, client_config) -> int:

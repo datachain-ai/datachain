@@ -1,6 +1,7 @@
 import functools
 import http.server
 import io
+import logging
 import os
 import os.path
 import signal
@@ -1529,3 +1530,11 @@ def http_server(tmp_path):
 def http_server_without_ranges(tmp_path):
     """Serve `tmp_path` over HTTP without range support; yields its base URL."""
     yield from _serve(tmp_path, _QuietHandler)
+
+
+@pytest.fixture
+def cli_logger(monkeypatch):
+    """Restore logging state after an in-process CLI invocation."""
+    logger = logging.getLogger("datachain")
+    monkeypatch.setattr(logger, "handlers", logger.handlers.copy())
+    monkeypatch.setattr(logger, "level", logger.level)
