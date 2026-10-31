@@ -1,8 +1,12 @@
+import threading
 from datetime import UTC, datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import Mock, mock_open, patch
+from urllib.parse import unquote
 
 import pytest
 
+import datachain as dc
 from datachain.cache import Cache
 from datachain.client.fsspec import Client
 from datachain.client.http import HTTPClient, HTTPSClient
@@ -57,6 +61,126 @@ def test_get_uri_http():
     client = HTTPClient("example.com:8080", {}, cache)
 
     assert client.get_uri("file.txt") == "http://example.com:8080/file.txt"
+
+
+@pytest.mark.parametrize("client_class", [HTTPClient, HTTPSClient])
+@pytest.mark.parametrize(
+    "path,encoded_path",
+    [
+        ("v1.0/file.txt", "v1.0/file.txt"),
+        ("files.example.com/file.txt", "files.example.com/file.txt"),
+        (
+            "release-1.2.3/file with spaces.txt?download=1#section",
+            "release-1.2.3/file%20with%20spaces.txt?download=1#section",
+        ),
+        (
+            "v1.0/file%20name.txt?token=a%2Fb#section",
+            "v1.0/file%20name.txt?token=a%2Fb#section",
+        ),
+        ("nested/v1.0/file.txt", "nested/v1.0/file.txt"),
+        (".well-known/file.txt", ".well-known/file.txt"),
+    ],
+)
+def test_relative_paths_keep_the_clients_host(client_class, path, encoded_path):
+    client = client_class("example.com:8080", {}, Mock(spec=Cache))
+    expected = f"{client_class.PREFIX}example.com:8080/{encoded_path}"
+
+    assert client.get_uri(path) == expected
+    assert client.url(path) == expected
+
+
+@pytest.mark.parametrize("client_class", [HTTPClient, HTTPSClient])
+@pytest.mark.parametrize("scheme_in_name", [False, True])
+def test_scheme_only_source_accepts_host_in_path(client_class, scheme_in_name):
+    name = client_class.PREFIX if scheme_in_name else ""
+    client = client_class(name, {}, Mock(spec=Cache))
+
+    assert (
+        client.get_uri("example.com/data/file.txt")
+        == f"{client_class.PREFIX}example.com/data/file.txt"
+    )
+
+
+@pytest.mark.parametrize("client_class", [HTTPClient, HTTPSClient])
+@pytest.mark.parametrize(
+    "path", ["example.com:8080/data/file.txt", "127.0.0.1:8000/data/file.txt"]
+)
+def test_scheme_only_from_name_preserves_host_ports(client_class, path):
+    client = client_class.from_name(client_class.PREFIX, Mock(spec=Cache), {})
+
+    assert client.name == ""
+    assert client.get_uri(path) == f"{client_class.PREFIX}{path}"
+
+
+@pytest.mark.parametrize("client_class", [HTTPClient, HTTPSClient])
+def test_full_url_source_preserves_its_base_path(client_class):
+    client = client_class(
+        f"{client_class.PREFIX}example.com/base", {}, Mock(spec=Cache)
+    )
+
+    assert (
+        client.get_uri("v1.0/file.txt")
+        == f"{client_class.PREFIX}example.com/base/v1.0/file.txt"
+    )
+
+
+def test_read_storage_http_metadata_matches_the_requested_path(test_session):
+    expected_body = b"the requested file contents"
+    other_body = b"other"
+    paths = []
+    expected_path = ""
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_HEAD(self):
+            self.send_content(False)
+
+        def do_GET(self):
+            self.send_content(True)
+
+        def send_content(self, send_body):
+            path = unquote(self.path)
+            paths.append(path)
+            body = expected_body if path == expected_path else other_body
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header(
+                "ETag", '"expected"' if body == expected_body else '"other"'
+            )
+            self.end_headers()
+            if send_body:
+                self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            host = f"127.0.0.1:{server.server_port}"
+            expected_path = f"/{host}/file.txt"
+            uri = f"http://{host}{expected_path}"
+            control = File.at(uri, session=test_session).resolve()
+            assert control.size == len(expected_body)
+
+            scheme_client = HTTPClient.from_name(
+                "http://", test_session.catalog.cache, {}
+            )
+            scheme_metadata = scheme_client.get_file_info(f"{host}{expected_path}")
+            assert scheme_metadata.size == len(expected_body)
+            assert scheme_metadata.etag == "expected"
+
+            file = dc.read_storage(uri, session=test_session).to_values("file")[0]
+
+            assert file.source == f"http://{host}"
+            assert file.path == f"{host}/file.txt"
+            assert file.size == len(expected_body)
+            assert file.etag == "expected"
+            assert file.read() == expected_body
+            assert set(paths) == {expected_path}
+        finally:
+            server.shutdown()
+            thread.join()
 
 
 def test_upload_raises_not_implemented():
