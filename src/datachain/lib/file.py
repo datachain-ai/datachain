@@ -1478,6 +1478,37 @@ class VideoFile(File):
             self, start, end, step, video_stream_index=video_stream_index
         )
 
+    def sample_frames(
+        self,
+        fps: float = 1.0,
+        *,
+        video_stream_index: int = 0,
+    ) -> "Iterator[VideoFrame]":
+        """Sample frames at target times 0, 1/fps, 2/fps, ... seconds.
+
+        Yields the first decoded frame at or after each target time, using one
+        container and sequential decoding through EOF. Timestamps are actual
+        decoded presentation times, including any stream start offset. A frame
+        can be yielded more than once if it spans several targets. Targets
+        after the last decoded timestamp produce no output.
+
+        Args:
+            fps: Finite, positive sampling rate in frames per second.
+            video_stream_index: Zero-based index among video streams to read.
+
+        Returns:
+            Iterator[VideoFrame]: Frames with decoded PTS timestamps. Pixel
+                access applies display orientation, as with ``get_frames()``.
+
+        Note:
+            Consume ``frame.get_np()`` in this iterator's UDF to reuse decoded
+            pixels. Saving frame references across chain stages discards the
+            decoded buffers and later pixel access decodes the frame again.
+        """
+        from .video import sample_video_frames
+
+        yield from sample_video_frames(self, fps, video_stream_index)
+
     def get_fragment(self, start: float, end: float) -> "VideoFragment":
         """
         Returns a video fragment from the specified time range.
@@ -1832,15 +1863,16 @@ class VideoFrame(DataModel):
         timestamp (float): Frame timestamp in seconds. Frames returned by
             ``VideoFile.get_frame()`` use FPS metadata. Frames yielded by
             ``VideoFile.get_frames()`` use decoded frame timestamps when
-            available.
+            available; ``VideoFile.sample_frames()`` selects by decoded time.
 
     Note:
         The decoded ``av.VideoFrame`` is cached in the ``_decoded`` instance
         attribute the first time any of ``get_np()``, ``read_bytes()``, or
-        ``save()`` is called.  Frames yielded by ``VideoFile.get_frames()``
-        are pre-populated with the decoded frame, so the first call to any of
-        those methods requires no I/O.  The cache is held for the lifetime of
-        the ``VideoFrame`` object; when many frames are kept in memory at once
+        ``save()`` is called. Frames yielded by ``VideoFile.get_frames()`` or
+        ``VideoFile.sample_frames()`` are pre-populated with the decoded frame,
+        so the first call to any of those methods requires no I/O. The cache
+        is held for the lifetime of the ``VideoFrame`` object; when many frames
+        are kept in memory at once
         (e.g. ``list(video.get_frames())``) the cached pixel buffers can
         create significant memory pressure (~3 MB each for 1080p video).  The
         cache is excluded from pickling so cross-process serialisation (e.g.

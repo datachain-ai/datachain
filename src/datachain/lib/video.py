@@ -5,7 +5,8 @@ import subprocess
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from math import atan2, ceil, degrees, floor, hypot
+from fractions import Fraction
+from math import atan2, ceil, degrees, floor, hypot, isfinite
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
@@ -398,6 +399,50 @@ def _set_decode_threads(stream: Any) -> None:
     stream.thread_type = "AUTO"
     if threads:
         stream.thread_count = threads
+
+
+def sample_video_frames(
+    video: VideoFile, fps: float, video_stream_index: int = 0
+) -> Iterator[VideoFrame]:
+    if not isfinite(fps) or fps <= 0:
+        raise ValueError("fps must be finite and positive")
+    _validate_video_stream_index(video_stream_index)
+    rate = Fraction(str(fps))
+    sample_index = 0
+
+    try:
+        with video.open() as f, av.open(f) as container:
+            stream = _video_stream(
+                container,
+                video_stream_index,
+                video.source,
+                video.path,
+                "unable to sample video frames",
+            )
+            _set_decode_threads(stream)
+            for frame_index, frame in enumerate(container.decode(stream)):
+                if frame.pts is not None and frame.time_base is not None:
+                    timestamp = frame.pts * frame.time_base
+                elif frame.time is not None:
+                    timestamp = Fraction(str(frame.time))
+                else:
+                    raise ValueError("unable to determine decoded frame timestamp")
+                while timestamp * rate >= sample_index:
+                    result = VideoFrame(
+                        video=video,
+                        frame=frame_index,
+                        video_stream_index=video_stream_index,
+                        timestamp=float(timestamp),
+                    )
+                    result._decoded = frame
+                    yield result
+                    sample_index += 1
+    except FileError:
+        raise
+    except Exception as exc:
+        raise FileError(
+            "unable to sample video frames", video.source, video.path
+        ) from exc
 
 
 def video_frames(

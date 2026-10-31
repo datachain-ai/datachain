@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import tarfile
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -1330,3 +1331,107 @@ def test_save_fragments(tmp_path, video_file):
             "format": "mov,mp4,m4a,3gp,3g2,mj2",
             "codec": "h264",
         }
+
+
+@pytest.mark.parametrize(
+    "fps,expected_indices",
+    [
+        (1, [0]),
+        (10, [0, 2, 3]),
+        (30, [0, 1, 2, 2, 2, 2, 3]),
+        (60, [0, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3]),
+    ],
+)
+def test_sample_frames_vfr_first_frame_at_or_after_target(
+    variable_timestamp_video, fps, expected_indices, mocker
+):
+    file = variable_timestamp_video.file
+    with av.open(str(variable_timestamp_video.path)) as container:
+        decoded = list(container.decode(video=0))
+    opened = mocker.spy(av, "open")
+    frames = list(file.sample_frames(fps))
+    assert [frame.frame for frame in frames] == expected_indices
+    assert [frame.timestamp for frame in frames] == pytest.approx(
+        [float(decoded[i].pts * decoded[i].time_base) for i in expected_indices]
+    )
+    for frame in frames:
+        np.testing.assert_array_equal(
+            frame.get_np(), decoded[frame.frame].to_ndarray(format="rgb24")
+        )
+    assert opened.call_count == 1
+
+
+@pytest.mark.parametrize("fps", [0, -1, float("nan"), float("inf"), -float("inf")])
+def test_sample_frames_invalid_rate(video_file, fps, mocker):
+    opened = mocker.spy(av, "open")
+    with pytest.raises(ValueError, match="fps must be finite and positive"):
+        list(video_file.as_video_file().sample_frames(fps))
+    opened.assert_not_called()
+
+
+def test_sample_frames_selects_video_stream(multi_stream_video):
+    frames = list(multi_stream_video.file.sample_frames(30, video_stream_index=1))
+    assert [frame.frame for frame in frames] == [0, 1]
+    assert all(frame.video_stream_index == 1 for frame in frames)
+    assert all(frame.get_np().shape == (24, 32, 3) for frame in frames)
+
+
+@requires_display_rotation
+@pytest.mark.parametrize("rotation", [90, 180, 270])
+def test_sample_frames_display_orientation(make_rotated_video, rotation):
+    generated = make_rotated_video(rotation)
+    frames = list(generated.file.sample_frames())
+    assert frames
+    _assert_matches_autorotated(frames[0].get_np(), _autorotated_frame(generated.path))
+
+
+@pytest.mark.parametrize(
+    "fps,expected_indices",
+    [(1.0, [0, 2, 3, 3]), (1.5, [0, 1, 3, 3, 3]), (0.5, [0, 3])],
+)
+def test_sample_frames_stops_at_decoded_eof(tmp_path, fps, expected_indices):
+    path = tmp_path / "vfr.mov"
+    _write_single_stream_video(
+        path, codec="mpeg4", fps=30, frame_count=4, pts=[0, 29, 31, 95]
+    )
+    file = _generated_video(path).file
+    frames = list(file.sample_frames(fps))
+    assert [frame.frame for frame in frames] == expected_indices
+    assert [frame.timestamp for frame in frames] == pytest.approx(
+        [[0, 29 / 30, 31 / 30, 95 / 30][i] for i in expected_indices]
+    )
+
+
+def test_sample_frames_nonzero_start_time(tmp_path):
+    path = tmp_path / "offset.mov"
+    _write_single_stream_video(path, codec="mpeg4", fps=30, frame_count=2, pts=[30, 60])
+    frames = list(_generated_video(path).file.sample_frames())
+    assert [frame.frame for frame in frames] == [0, 0, 1]
+    assert [frame.timestamp for frame in frames] == pytest.approx([1, 1, 2])
+
+
+@pytest.mark.parametrize("index", [-1, 1])
+def test_sample_frames_invalid_video_stream(video_file, index):
+    error = ValueError if index < 0 else FileError
+    with pytest.raises(error):
+        list(video_file.as_video_file().sample_frames(video_stream_index=index))
+
+
+def test_sample_frames_closes_container_when_consumer_stops(video_file, monkeypatch):
+    original_open = av.open
+    closed = []
+
+    @contextmanager
+    def tracked_open(*args, **kwargs):
+        with original_open(*args, **kwargs) as container:
+            try:
+                yield container
+            finally:
+                closed.append(True)
+
+    monkeypatch.setattr(av, "open", tracked_open)
+    frames = video_file.as_video_file().sample_frames()
+    next(frames)
+    assert not closed
+    frames.close()
+    assert closed == [True]
