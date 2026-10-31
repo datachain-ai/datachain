@@ -1,5 +1,7 @@
 from queue import Empty, Full
 
+import pytest
+
 from datachain.query.dispatch import STOP_SIGNAL, get_from_queue, put_into_queue
 
 
@@ -36,3 +38,29 @@ def test_put_into_queue():
 
     assert put_into_queue(mock_queue, STOP_SIGNAL) is None
     assert mock_queue.put_signal == STOP_SIGNAL
+
+
+@pytest.mark.parametrize(
+    "total,workers,max_size",
+    [(255, 8, 31), (1, 4, 1), (16, 8, 2), (100_000, 4, 10_000), (7, 16, 1)],
+)
+def test_guided_tasks_cover_items_once_and_end_with_single_items(
+    total, workers, max_size
+):
+    from datachain.query.dispatch import guided_tasks
+
+    tasks = list(guided_tasks(range(total), total, workers, max_size))
+    sizes = [len(t) for t in tasks]
+
+    assert [i for t in tasks for i in t] == list(range(total))
+    assert max(sizes) <= max_size
+    assert sizes == sorted(sizes, reverse=True)
+    assert sizes[-min(workers, len(sizes)) :] == [1] * min(workers, len(sizes))
+
+
+def test_guided_tasks_with_underestimated_total_still_yield_everything():
+    from datachain.query.dispatch import guided_tasks
+
+    tasks = list(guided_tasks(range(10), 3, 2, 5))
+
+    assert [i for t in tasks for i in t] == list(range(10))

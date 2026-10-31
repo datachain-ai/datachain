@@ -1,11 +1,12 @@
 import contextlib
+import os
 import traceback
-from collections.abc import Iterable, Sequence
-from itertools import chain
+from collections.abc import Iterable, Iterator, Sequence
+from itertools import chain, islice
 from queue import Empty
 from sys import stdin
 from time import monotonic, sleep
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import multiprocess
 from cloudpickle import load, loads
@@ -26,7 +27,13 @@ from datachain.query.dataset import (
 )
 from datachain.query.queue import get_from_queue, put_into_queue
 from datachain.query.udf import UdfInfo
-from datachain.utils import batched, flatten, safe_closing, usable_cpu_count
+from datachain.utils import (
+    batched,
+    flatten,
+    safe_closing,
+    usable_cpu_count,
+    worker_thread_env,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy import Select, Table
@@ -49,6 +56,25 @@ def get_n_workers_from_arg(n_workers: int | None = None) -> int:
     if n_workers < 1:
         raise RuntimeError("Must use at least one worker for parallel UDF execution!")
     return n_workers
+
+
+def guided_tasks(
+    items: Iterable[Any], total: int, n_workers: int, max_size: int
+) -> Iterator[tuple[Any, ...]]:
+    """Split items into tasks that shrink with the work left (guided scheduling).
+
+    Early tasks are large to amortize dispatch; the last ones hold a single item,
+    so slow rows (e.g. videos) don't leave one worker running alone at the end.
+    """
+    it = iter(items)
+    remaining = total
+    while True:
+        size = max(1, min(max_size, -(-remaining // (2 * n_workers))))
+        task = tuple(islice(it, size))
+        if not task:
+            return
+        remaining -= len(task)
+        yield task
 
 
 def udf_entrypoint() -> int:
@@ -266,15 +292,28 @@ class UDFDispatcher:
             self.ctx.Process(name=f"Worker-UDF-{i}", target=self._run_worker)
             for i in range(n_workers)
         ]
-        for p in pool:
-            p.start()
+        thread_env = worker_thread_env(n_workers)
+        saved = {name: os.environ.get(name) for name in thread_env}
+        os.environ.update(thread_env)
+        try:
+            for p in pool:
+                p.start()
+        finally:
+            for name, value in saved.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
 
         try:
             # Will be set to True when the input is exhausted
             input_finished = False
 
-            input_rows = batched(
+            batch_size = getattr(getattr(self, "batching", None), "count", 1)
+            input_rows = guided_tasks(
                 input_rows if self.is_batching else flatten(input_rows),
+                -(-self.rows_total // batch_size),
+                n_workers,
                 self.input_batch_size(n_workers),
             )
 

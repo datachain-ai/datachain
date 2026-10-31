@@ -7,6 +7,7 @@ import pytest
 from datachain.lib.video import (
     _display_matrix_rotation,
     _frame_to_ndarray,
+    _set_decode_threads,
     _video_stream_rotation,
 )
 
@@ -127,3 +128,21 @@ def test_video_stream_rotation_no_frames():
 def test_video_stream_rotation_decode_error():
     container = SimpleNamespace(decode=Mock(side_effect=RuntimeError))
     assert _video_stream_rotation(container, object()) == 0
+
+
+@pytest.mark.parametrize(
+    "budget,thread_type,thread_count",
+    [(None, "AUTO", None), ("1", None, 1), ("3", "AUTO", 3)],
+)
+def test_decode_threads_follow_the_worker_budget(
+    budget, thread_type, thread_count, monkeypatch
+):
+    if budget is None:
+        monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
+    else:
+        monkeypatch.setenv("DATACHAIN_WORKER_THREADS", budget)
+    stream = SimpleNamespace(thread_type=None, thread_count=None)
+
+    _set_decode_threads(stream)
+
+    assert (stream.thread_type, stream.thread_count) == (thread_type, thread_count)

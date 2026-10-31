@@ -23,6 +23,7 @@ from datachain.lib.file import (
     VideoFrame,
     sha256,
 )
+from datachain.utils import worker_threads
 
 if TYPE_CHECKING:
     from datachain.client.writeconfig import WriteConfig
@@ -134,6 +135,7 @@ def video_info(file: File | VideoFile, video_stream_index: int = 0) -> Video:
                     file.path,
                     "unable to extract metadata from video file",
                 )
+                _set_decode_threads(video_stream)
                 fps = _video_fps(video_stream)
                 duration = _video_duration(container, video_stream)
 
@@ -387,6 +389,17 @@ def _frame_timestamp(frame, frame_index: int, fps: float) -> float:
     raise ValueError("unable to determine frame timestamp")
 
 
+def _set_decode_threads(stream: Any) -> None:
+    """Frame + slice threading, limited to the worker's share of the CPUs."""
+    threads = worker_threads()
+    if threads == 1:
+        stream.thread_count = 1
+        return
+    stream.thread_type = "AUTO"
+    if threads:
+        stream.thread_count = threads
+
+
 def video_frames(
     video: VideoFile,
     start: int,
@@ -408,6 +421,7 @@ def video_frames(
                     video.path,
                     "unable to read video frames",
                 )
+                _set_decode_threads(video_stream)
                 fps = _video_fps(video_stream)
                 seeked = _seek_to_frame(input_container, f, video_stream, start, fps)
 
@@ -480,6 +494,7 @@ def _decode_video_frame(video: VideoFile, frame: int, video_stream_index: int = 
                     video.path,
                     "unable to read video frame",
                 )
+                _set_decode_threads(video_stream)
                 fps = _video_fps(video_stream)
                 seeked = _seek_to_frame(input_container, f, video_stream, frame, fps)
 

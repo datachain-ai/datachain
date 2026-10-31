@@ -763,3 +763,31 @@ def test_default_parallel_uses_the_cpu_quota(monkeypatch):
 
     assert get_n_workers_from_arg(None) == 8
     assert get_n_workers_from_arg(12) == 12
+
+
+def test_worker_thread_env_caps_settings_at_the_worker_share(monkeypatch):
+    for name in ("DATACHAIN_WORKER_THREADS", *utils._THREAD_ENVS):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OMP_NUM_THREADS", "8")
+    monkeypatch.setenv("MKL_NUM_THREADS", "1")
+    monkeypatch.setenv("OPENBLAS_NUM_THREADS", "junk")
+    monkeypatch.setattr(utils, "usable_cpu_count", lambda: 8)
+
+    env = utils.worker_thread_env(4)
+
+    assert env["DATACHAIN_WORKER_THREADS"] == env["OMP_NUM_THREADS"] == "2"
+    assert env["MKL_NUM_THREADS"] == "1"
+    assert env["OPENBLAS_NUM_THREADS"] == "2"
+    assert utils.worker_thread_env(24)["NUMEXPR_NUM_THREADS"] == "1"
+
+
+@pytest.mark.parametrize(
+    "value,expected", [(None, None), ("3", 3), ("0", 1), ("x", None)]
+)
+def test_worker_threads(value, expected, monkeypatch):
+    if value is None:
+        monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
+    else:
+        monkeypatch.setenv("DATACHAIN_WORKER_THREADS", value)
+
+    assert utils.worker_threads() == expected
