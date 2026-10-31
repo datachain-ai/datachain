@@ -516,6 +516,12 @@ class AbstractMetastore(ABC, Serializable):
         deps without a separate query."""
 
     @abstractmethod
+    def get_direct_dataset_dependents(
+        self, dataset: DatasetRecord, version: str
+    ) -> list[DatasetDependency | None]:
+        """Get versions that directly depend on this dataset version."""
+
+    @abstractmethod
     def get_dataset_dependency_nodes(
         self, dataset_id: int, version_id: int
     ) -> list[DatasetDependencyNode | None]:
@@ -2258,6 +2264,40 @@ class AbstractDBMetastore(AbstractMetastore):
             .where(where_clause)
         )
 
+        return [self.dependency_class.parse(*r) for r in self.db.execute(query)]
+
+    def get_direct_dataset_dependents(
+        self, dataset: DatasetRecord, version: str
+    ) -> list[DatasetDependency | None]:
+        n = self._dependency_namespaces_source
+        p = self._projects
+        d = self._dependency_datasets_source
+        dd = self._datasets_dependencies
+        dv = self._datasets_versions
+        query = (
+            self._datasets_dependencies_select(
+                n.c.name,
+                p.c.name,
+                dd.c.id,
+                d.c.id,
+                dv.c.id,
+                d.c.name,
+                dv.c.version,
+                dv.c.created_at,
+                dv.c.status,
+            )
+            .select_from(
+                dd.join(d, dd.c.source_dataset_id == d.c.id)
+                .join(dv, dd.c.source_dataset_version_id == dv.c.id)
+                .join(p, d.c.project_id == p.c.id)
+                .join(n, p.c.namespace_id == n.c.id)
+            )
+            .where(
+                dd.c.dataset_id == dataset.id,
+                dd.c.dataset_version_id == dataset.get_version(version).id,
+                dv.c.status == DatasetStatus.COMPLETE,
+            )
+        )
         return [self.dependency_class.parse(*r) for r in self.db.execute(query)]
 
     def get_dataset_dependency_nodes(
