@@ -516,6 +516,13 @@ class Binary(SQLType):
         return read_converter(dialect).binary(value)
 
 
+_FLOAT_READS = (
+    Float.on_read_convert,
+    Float32.on_read_convert,
+    Float64.on_read_convert,
+)
+
+
 class TypeReadConverter:
     def string(self, value):
         return value
@@ -566,7 +573,27 @@ class TypeReadConverter:
     def array(self, value, item_type, dialect):
         if value is None or item_type is None:
             return value
+        if self._reads_floats_as_is(item_type, dialect) and set(map(type, value)) <= {
+            float,
+            int,
+        }:
+            return value if type(value) is list else list(value)
         return [item_type.on_read_convert(x, dialect) for x in value]
+
+    @staticmethod
+    def _reads_floats_as_is(item_type, dialect) -> bool:
+        """Whether float items of this array type read back unchanged."""
+        if not (
+            isinstance(item_type, Float)
+            and type(item_type).on_read_convert in _FLOAT_READS
+        ):
+            return False
+        conv, base = type(read_converter(dialect)), TypeReadConverter
+        return (
+            conv.float is base.float
+            and conv.float32 is base.float32
+            and conv.float64 is base.float64
+        )
 
     def json(self, value):
         if isinstance(value, str):

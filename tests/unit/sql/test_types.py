@@ -1,11 +1,15 @@
+import math
 from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.dialects import sqlite
 from sqlalchemy.exc import CompileError
 
 from datachain.sql.types import (
     Array,
+    Float,
+    Float32,
     Int64,
     SQLType,
     String,
@@ -159,3 +163,24 @@ def test_cache_ok_opt_out_is_inherited():
 
     assert Child.cache_ok is False
     assert Int64.cache_ok is True
+
+
+@pytest.mark.parametrize("item_type", [Float, Float32])
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ([0.5, 1, -2.0], [0.5, 1, -2.0]),
+        ((0.5, 1.5), [0.5, 1.5]),
+        ([0.5, None, "nan"], [0.5, "nan", "nan"]),
+        ([], []),
+    ],
+)
+def test_type_read_converter_float_array(item_type, value, expected):
+    result = TypeReadConverter().array(value, item_type(), sqlite.dialect())
+    assert isinstance(result, list)
+    assert len(result) == len(expected)
+    for got, want in zip(result, expected, strict=True):
+        if want == "nan":
+            assert math.isnan(got)
+        else:
+            assert got == want

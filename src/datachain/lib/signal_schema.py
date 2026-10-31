@@ -334,6 +334,11 @@ def _model_reader(build_model: Callable[[type[BaseModel], dict], Any]) -> ModelR
     return read_model
 
 
+def _is_passthrough_annotation(annotation: Any) -> bool:
+    """Whether `_convert_feature_value` returns values of this type unchanged."""
+    return get_origin(annotation) is None and not ModelStore.is_pydantic(annotation)
+
+
 @dataclass
 class SignalSchema:
     values: dict[str, DataType]
@@ -1002,17 +1007,9 @@ class SignalSchema:
             if parts and isinstance(value, (list, tuple)):
                 # `tuple[A, B]` is positional; every other collection is uniform
                 positional = is_tuple_annotation(annotation) and len(parts) > 1
-                converted = [
-                    self._convert_feature_value(
-                        parts[i] if positional and i < len(parts) else parts[0],
-                        item,
-                        catalog,
-                        cache,
-                    )
-                    if item is not None
-                    else None
-                    for i, item in enumerate(value)
-                ]
+                converted = self._convert_items(
+                    parts, positional, value, catalog, cache
+                )
                 # the DB hands back a list; a declared tuple must arrive as one
                 result = (
                     tuple(converted) if is_tuple_annotation(annotation) else converted
@@ -1042,6 +1039,28 @@ class SignalSchema:
                     result[converted_key] = converted_val
 
         return result
+
+    def _convert_items(
+        self,
+        parts: Sequence[Any],
+        positional: bool,
+        value: Sequence[Any],
+        catalog: "Catalog | None",
+        cache: bool,
+    ) -> list[Any]:
+        if not positional and _is_passthrough_annotation(parts[0]):
+            return list(value)
+        return [
+            self._convert_feature_value(
+                parts[i] if positional and i < len(parts) else parts[0],
+                item,
+                catalog,
+                cache,
+            )
+            if item is not None
+            else None
+            for i, item in enumerate(value)
+        ]
 
     @staticmethod
     def _set_file_stream(
