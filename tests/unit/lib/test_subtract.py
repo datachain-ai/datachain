@@ -223,3 +223,13 @@ def test_subtract_preserves_sys_columns(test_session):
         assert isinstance(sys_id, int)
         assert isinstance(sys_rand, int)
         assert x in [1, 3]
+
+
+def test_subtract_computed_keys_with_nulls_and_duplicates(test_session):
+    left = dc.read_values(
+        path=["a.jpg", "a.png", None, "b.jpg"], session=test_session
+    ).mutate(key=func.path.file_stem("path"))
+    right = dc.read_values(path=["a.txt", None], session=test_session).mutate(
+        key=func.path.file_stem("path")
+    )
+    assert left.subtract(right, on="key").to_list("path", "key") == [("b.jpg", "b")]

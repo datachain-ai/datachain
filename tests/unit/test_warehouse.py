@@ -282,3 +282,168 @@ def test_insert_into_reads_all_ids_before_inserting_batches(
         )
 
     assert warehouse.table_rows_count(dst) == 10
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize(
+    "kind,direct",
+    [(kind, direct) for kind in ("inner", "left", "full") for direct in (False, True)]
+    + [("subtract", False)],
+)
+@pytest.mark.parametrize("computed_side", ["left", "right", "both"])
+@pytest.mark.parametrize("typed", [False, True])
+def test_join_computed_keys_evaluated_linearly(
+    sqlite_db, kind, computed_side, direct, typed
+):
+    warehouse = SQLiteWarehouse(sqlite_db)
+    size = 7390
+    calls = 0
+
+    def join_key(value):
+        nonlocal calls
+        calls += 1
+        return value
+
+    sqlite_db.db.create_function("test_join_key", 1, join_key, deterministic=True)
+    left_table = sa.Table(
+        "computed_join_left", sqlite_db.metadata, sa.Column("key", sa.Integer)
+    )
+    right_table = sa.Table(
+        "computed_join_right", sqlite_db.metadata, sa.Column("key", sa.Integer)
+    )
+    sqlite_db.create_table(left_table)
+    sqlite_db.create_table(right_table)
+    warehouse.insert_rows(left_table, [{"key": i} for i in range(size)])
+    warehouse.insert_rows(right_table, [{"key": i} for i in range(size)])
+    warehouse.insert_rows_done(left_table)
+    warehouse.insert_rows_done(right_table)
+
+    def make_side(table, computed):
+        key = table.c.key
+        if computed and not direct:
+            key = sa.func.test_join_key(key, type_=sa.Integer if typed else None).label(
+                "key"
+            )
+        side = sa.select(key).subquery()
+        predicate = side.c.key
+        if computed and direct:
+            predicate = sa.func.test_join_key(
+                predicate, type_=sa.Integer if typed else None
+            )
+        return side, predicate
+
+    left, left_key = make_side(left_table, computed_side in ("left", "both"))
+    right, right_key = make_side(right_table, computed_side in ("right", "both"))
+    if kind == "subtract":
+        query = warehouse.subtract_query(
+            left.select(), right.select(), [("key", "key")]
+        )
+        expected = []
+    else:
+        query = warehouse.join(
+            left,
+            right,
+            left_key == right_key,
+            inner=kind == "inner",
+            full=kind == "full",
+            columns=[left.c.key, right.c.key.label("right_key")],
+        )
+        expected = [(i, i) for i in range(size)]
+
+    assert sorted(sqlite_db.execute(query).fetchall()) == expected
+    assert calls == size * (2 if computed_side == "both" else 1)
+    sql, params = sqlite_db.compile_to_args(query)
+    plan = sqlite_db.db.execute("EXPLAIN QUERY PLAN " + sql, params).fetchall()
+    indexed_joins = sum("AUTOMATIC" in row[3] and "INDEX" in row[3] for row in plan)
+    assert indexed_joins >= (2 if kind == "full" else 1)
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize("direct", [False, True])
+@pytest.mark.parametrize(
+    "left_value,right_value,expected",
+    [(1, "1", []), (1, 1.5, []), (1.5, 1.5, [(1.5, 1.5)])],
+)
+def test_join_computed_keys_preserves_comparison_semantics(
+    sqlite_db, direct, left_value, right_value, expected
+):
+    warehouse = SQLiteWarehouse(sqlite_db)
+    sqlite_db.db.create_function(
+        "test_left_key", 1, lambda value: left_value, deterministic=True
+    )
+    sqlite_db.db.create_function(
+        "test_right_key", 1, lambda value: right_value, deterministic=True
+    )
+    tables = [
+        sa.Table(name, sqlite_db.metadata, sa.Column("key", sa.Integer))
+        for name in ("join_comparison_left", "join_comparison_right")
+    ]
+    for table in tables:
+        sqlite_db.create_table(table)
+        warehouse.insert_rows(table, [{"key": 1}])
+        warehouse.insert_rows_done(table)
+    left_expression = sa.func.test_left_key(tables[0].c.key, type_=sa.Integer)
+    right_expression = sa.func.test_right_key(
+        tables[1].c.key, type_=sa.String if isinstance(right_value, str) else sa.Float
+    )
+    if direct:
+        left, right = tables
+        columns = [
+            left_expression.label("left_key"),
+            right_expression.label("right_key"),
+        ]
+    else:
+        left = sa.select(left_expression.label("key")).subquery()
+        right = sa.select(right_expression.label("key")).subquery()
+        left_expression, right_expression = left.c.key, right.c.key
+        columns = [left.c.key, right.c.key.label("right_key")]
+    query = warehouse.join(
+        left, right, left_expression == right_expression, columns=columns
+    )
+    assert sqlite_db.execute(query).fetchall() == expected
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize("rename", [False, True])
+def test_join_plain_keys_do_not_materialize_computed_payload(sqlite_db, rename):
+    table = sa.Table(
+        "plain_join_keys", sqlite_db.metadata, sa.Column("key", sa.Integer)
+    )
+    key = table.c.key.label("renamed") if rename else table.c.key
+    left = sa.select(key, (table.c.key + 1).label("payload")).subquery()
+    right = sa.select(key).subquery()
+    key_name = key.name
+    query = SQLiteWarehouse(sqlite_db).join(
+        left, right, left.c[key_name] == right.c[key_name], columns=[left.c.payload]
+    )
+    sql, _ = sqlite_db.compile_to_args(query)
+    assert "OFFSET" not in sql
+
+
+@skip_if_not_sqlite
+def test_join_expression_on_derived_key_evaluates_each_function_once(
+    warehouse, numbers_table
+):
+    calls = 0
+
+    def join_key(value):
+        nonlocal calls
+        calls += 1
+        return value
+
+    warehouse.db.db.create_function("test_nested_join_key", 1, join_key)
+    left = sa.select(
+        sa.func.test_nested_join_key(numbers_table.c.number, type_=sa.Integer).label(
+            "key"
+        )
+    ).subquery()
+    right = sa.select(numbers_table.c.number).subquery()
+    query = warehouse.join(
+        left,
+        right,
+        sa.func.test_nested_join_key(left.c.key, type_=sa.Integer) == right.c.number,
+        columns=[left.c.key, right.c.number],
+    )
+    rows = warehouse.db.execute(query).fetchall()
+    assert sorted(rows) == [(i, i) for i in range(1, 74)]
+    assert calls == 2 * 73
