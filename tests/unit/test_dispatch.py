@@ -1,9 +1,18 @@
-import pickle
-from queue import Empty, Full
+from contextlib import nullcontext
+from queue import Empty, Full, Queue
 
 import pytest
 
-from datachain.query.dispatch import STOP_SIGNAL, get_from_queue, put_into_queue
+from datachain.query.dispatch import (
+    FINISHED_STATUS,
+    NOTIFY_STATUS,
+    OK_STATUS,
+    STOP_SIGNAL,
+    ProcessedCallback,
+    UDFWorker,
+    get_from_queue,
+    put_into_queue,
+)
 
 
 class MockQueue:
@@ -42,10 +51,6 @@ def test_put_into_queue():
 
 
 def test_processed_callback_batches_and_flushes(mocker):
-    from queue import Queue
-
-    from datachain.query.dispatch import NOTIFY_STATUS, ProcessedCallback
-
     now = mocker.patch("datachain.query.dispatch.monotonic", return_value=0)
     queue = Queue()
     callback = ProcessedCallback("processed", queue)
@@ -65,23 +70,22 @@ def test_processed_callback_batches_and_flushes(mocker):
     assert queue.empty()
 
 
-def test_udf_worker_acknowledges_each_input_task(mocker):
-    from queue import Queue
+@pytest.fixture
+def udf_worker(mocker):
+    catalog = mocker.Mock()
+    udf = mocker.Mock(prefetch=0)
+    udf.run.return_value = iter(())
+    return UDFWorker(catalog, udf, Queue(), Queue(), None, None, False, False, None, [])
 
-    from datachain.query.dispatch import OK_STATUS, UDFWorker
 
-    worker = UDFWorker.__new__(UDFWorker)
-    worker.task_queue = Queue()
-    worker.done_queue = Queue()
-    worker.query = mocker.sentinel.query
-    worker.is_batching = False
-    worker.catalog = mocker.Mock()
+def test_udf_worker_acknowledges_each_input_task(udf_worker):
+    worker = udf_worker
     warehouse = worker.catalog.warehouse.clone.return_value
     warehouse.dataset_rows_select_from_ids.side_effect = (
         lambda query, ids, is_batching: iter(ids)
     )
     for task in ([1, 2], [], [3], STOP_SIGNAL):
-        worker.task_queue.put(pickle.dumps(task))
+        worker.task_queue.put(task)
     inputs = worker.get_inputs()
     assert next(inputs) == 1
     assert next(inputs) == 2
@@ -95,17 +99,10 @@ def test_udf_worker_acknowledges_each_input_task(mocker):
 
 
 @pytest.mark.parametrize("fail", [False, True])
-def test_udf_worker_flushes_progress_on_exit(mocker, fail):
-    from contextlib import nullcontext
-    from queue import Queue
-
-    from datachain.query.dispatch import FINISHED_STATUS, NOTIFY_STATUS, UDFWorker
-
-    catalog = mocker.Mock()
-    udf = mocker.Mock(prefetch=0)
-    udf.run.return_value = iter(())
-    queue = Queue()
-    worker = UDFWorker(catalog, udf, Queue(), queue, None, None, False, False, None, [])
+def test_udf_worker_flushes_progress_on_exit(mocker, udf_worker, fail):
+    worker = udf_worker
+    catalog = worker.catalog
+    queue = worker.done_queue
     mocker.patch("datachain.query.dispatch._get_cache", return_value=nullcontext())
     mocker.patch(
         "datachain.query.dispatch.clone_catalog_with_cache", return_value=catalog

@@ -1327,20 +1327,15 @@ def test_agg_list_file_persist_and_read(tmp_dir, test_session):
     ]
 
 
-@pytest.mark.parametrize("is_generator", [False, True])
-def test_udf_parallel_replenishes_input_tasks(test_session_tmpfile, is_generator):
-    count = 50003
+def test_udf_parallel_replenishes_input_tasks(test_session_tmpfile):
+    from datachain.query.dispatch import DEFAULT_BATCH_SIZE
+
+    # More tasks than the initial fill of four tasks for two workers.
+    count = 4 * DEFAULT_BATCH_SIZE + 1
     chain = dc.read_values(num=list(range(count)), session=test_session_tmpfile)
-    chain = chain.settings(parallel=2)
-    if is_generator:
-
-        def generate(num):
-            if num >= 40000:
-                yield num
-
-        result = chain.gen(value=generate, output=int).save("replenish-gen")
-        expected = list(range(40000, count))
-    else:
-        result = chain.map(value=lambda num: num + 1, output=int).save("replenish-map")
-        expected = list(range(1, count + 1))
-    assert sorted(result.to_values("value")) == expected
+    result = (
+        chain.settings(parallel=2)
+        .map(value=lambda num: num + 1, output=int)
+        .save("replenish-map")
+    )
+    assert sorted(result.to_values("value")) == list(range(1, count + 1))

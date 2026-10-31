@@ -421,7 +421,7 @@ class UDFBase(AbstractUDF):
             )
         return partial(self._flatten_row, optional_models=optional_models)
 
-    def _flatten_row(self, row, optional_models=None):
+    def _flatten_row(self, row, optional_models):
         if len(self.output.values) > 1 and not isinstance(row, BaseModel):
             annos = self.output.values
             # The row may be shorter than the declared outputs (the arrow/parquet
@@ -433,8 +433,6 @@ class UDFBase(AbstractUDF):
                 )
             flat: list[Any] = []
             # strict=False as shorter row is allowed for arrow/parquet (guarded above)
-            if optional_models is None:
-                return self._get_row_flattener()(row)
             for obj, anno, optional_model in zip(
                 row, annos.values(), optional_models, strict=False
             ):
@@ -474,35 +472,19 @@ class UDFBase(AbstractUDF):
         self.params.set_file_streams(obj_row, catalog, cache, download_cb)
         return obj_row
 
-    def _get_row_preparer(
-        self, udf_fields, catalog, cache, download_cb, include_id=False
-    ):
-        if (
-            self.params is not None
-            and not self.params.setup_func
-            and all(
-                annotation in (str, int, float, bool, bytes)
-                for annotation in self.params.values.values()
-            )
-        ):
-            names = [name.replace(".", "__") for name in self.params.values]
-            if include_id:
-                names.insert(0, "sys__id")
-            if all(name in udf_fields for name in names):
-                indices = [udf_fields.index(name) for name in names]
-                if len(indices) > 1:
-                    return itemgetter(*indices)
-                if indices:
-                    index = indices[0]
-                    return lambda row: (row[index],)
-                return lambda row: ()
+    def _get_row_preparer(self, udf_fields, catalog, cache, download_cb):
+        assert self.params is not None
+        columns = self.params.plain_columns()
+        if columns is not None and {"sys__id", *columns} <= set(udf_fields):
+            getter = itemgetter(*(udf_fields.index(c) for c in ["sys__id", *columns]))
+            return getter if columns else lambda row: (getter(row),)
         return partial(
             self._prepare_row,
             udf_fields=udf_fields,
             catalog=catalog,
             cache=cache,
             download_cb=download_cb,
-            include_id=include_id,
+            include_id=True,
         )
 
     def _prepare_row(
@@ -640,9 +622,7 @@ class Mapper(UDFBase):
         signal_names = tuple(self.signal_names)
         flatten_row = self._get_row_flattener()
 
-        prepare_row = self._get_row_preparer(
-            udf_fields, catalog, cache, download_cb, include_id=True
-        )
+        prepare_row = self._get_row_preparer(udf_fields, catalog, cache, download_cb)
 
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
             with safe_closing(udf_inputs):
@@ -964,9 +944,7 @@ class Generator(UDFBase):
         file_row = FileRow if self._file_row_output() else None
         flatten_row = self._get_row_flattener()
 
-        prepare_row = self._get_row_preparer(
-            udf_fields, catalog, cache, download_cb, include_id=True
-        )
+        prepare_row = self._get_row_preparer(udf_fields, catalog, cache, download_cb)
 
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
             with safe_closing(udf_inputs):

@@ -627,6 +627,12 @@ class SignalSchema:
                 res[db_name] = self._db_leaf_sql_type(path, type_)
         return res
 
+    def plain_columns(self) -> list[str] | None:
+        """Columns returned unchanged by row_to_objs, or None for converted inputs."""
+        if self.setup_func or any(self._row_conversion_required.values()):
+            return None
+        return [DEFAULT_DELIMITER.join(name.split(".")) for name in self.values]
+
     def row_to_objs(self, row_dict: "RowDict") -> list[Any]:
         self._init_setup_values()
 

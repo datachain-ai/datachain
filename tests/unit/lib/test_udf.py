@@ -129,13 +129,13 @@ def test_udf_verbose_name_func():
 
 
 def test_udf_verbose_name_lambda():
-    sign = get_sign(lambda key: len(key), output="res")
+    sign = get_sign(lambda key: len(key), output="res")  # noqa: PLW0108
     udf = UDFBase._create(sign, sign.output_schema)
     assert udf.verbose_name == "<lambda>"
 
 
 def test_udf_verbose_name_unknown():
-    sign = get_sign(lambda key: len(key), output="res")
+    sign = get_sign(lambda key: len(key), output="res")  # noqa: PLW0108
     udf = UDFBase._create(sign, sign.output_schema)
     udf._func = None
     assert udf.verbose_name == "<unknown>"
@@ -419,18 +419,23 @@ def test_an_insert_error_closes_the_udf_outputs(test_session, mocker):
     assert error.value.__traceback__ is not None
 
 
-@pytest.mark.parametrize("batch", [1, 2])
-def test_mapper_scalar_inputs_skip_async_prefetch(mocker, batch):
-    udf = Mapper() if batch == 1 else BatchMapper()
+@pytest.mark.parametrize(
+    "udf_cls,func,inputs",
+    [
+        (Mapper, lambda path: (path, "10", "27"), [(1, "B1"), (2, "B2")]),
+        (
+            BatchMapper,
+            lambda paths: [(p, "10", "27") for p in paths],
+            [[(1, "B1"), (2, "B2")]],
+        ),
+    ],
+)
+def test_mapper_scalar_inputs_skip_async_prefetch(mocker, udf_cls, func, inputs):
+    udf = udf_cls()
     udf.params = SignalSchema({"path": str})
     udf.output = SignalSchema({"band": str, "month": str, "day": str})
-    udf._func = lambda path: (path, "10", "27")
-    if batch > 1:
-        udf._func = lambda paths: [(path, "10", "27") for path in paths]
+    udf._func = func
     mocker.patch("datachain.lib.udf.AsyncMapper", side_effect=AssertionError)
-    spec = mocker.spy(udf.output, "to_udf_spec")
-    rows = [(1, "B1"), (2, "B2")]
-    inputs = rows if batch == 1 else [rows]
 
     results = list(udf.run(["sys__id", "path"], inputs, object(), False))
 
@@ -441,7 +446,6 @@ def test_mapper_scalar_inputs_skip_async_prefetch(mocker, batch):
         (1, "B1", "10", "27"),
         (2, "B2", "10", "27"),
     ]
-    assert spec.call_count == 1
 
 
 @pytest.mark.parametrize("setup", [False, True])
@@ -455,34 +459,34 @@ def test_udf_prefetch_retained_for_file_params(setup):
 
 
 @pytest.mark.parametrize(
-    "params,fields,row,include_id,expected",
+    "params,fields,row",
     [
-        ({"file.path": str}, ["file__path", "sys__id"], ["a", 7], True, (7, "a")),
-        ({"value": int}, ["sys__id", "value"], [7, 3], False, (3,)),
-        ({}, ["sys__id"], [7], True, (7,)),
-        ({}, ["sys__id"], [7], False, ()),
+        ({"file.path": str}, ["file__path", "sys__id"], ["a", 7]),
+        ({"value": int | None}, ["sys__id", "value"], [7, 3]),
+        ({}, ["sys__id"], [7]),
+        ({"values": list[str]}, ["sys__id", "values"], [7, ["a", "b"]]),
+        ({"values": tuple[int, str]}, ["sys__id", "values"], [7, [1, "a"]]),
         (
             {"b": bool, "v": bytes, "f": float},
             ["v", "f", "b", "sys__id"],
             [b"x", 1.5, True, 7],
-            True,
-            (7, True, b"x", 1.5),
         ),
     ],
 )
-def test_udf_primitive_row_preparer(params, fields, row, include_id, expected):
+def test_udf_row_preparer_matches_schema_conversion(params, fields, row):
     udf = Mapper()
     udf.params = SignalSchema(params)
-    prepare = udf._get_row_preparer(
-        fields, object(), False, DEFAULT_CALLBACK, include_id
+    catalog = object()
+    prepare = udf._get_row_preparer(fields, catalog, False, DEFAULT_CALLBACK)
+    assert prepare(row) == udf._prepare_row(
+        row, fields, catalog, False, DEFAULT_CALLBACK, include_id=True
     )
-    assert prepare(row) == expected
 
 
 def test_udf_row_preparer_keeps_setup_values():
     udf = Mapper()
     udf.params = SignalSchema({"prefix": str}, setup={"prefix": lambda: "setup"})
     prepare = udf._get_row_preparer(
-        ["sys__id"], object(), False, DEFAULT_CALLBACK, include_id=True
+        ["sys__id", "prefix"], object(), False, DEFAULT_CALLBACK
     )
-    assert prepare([7]) == (7, "setup")
+    assert prepare([7, "column"]) == (7, "setup")

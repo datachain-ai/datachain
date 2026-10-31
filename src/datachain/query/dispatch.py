@@ -1,5 +1,4 @@
 import contextlib
-import pickle
 import traceback
 from collections.abc import Iterable, Sequence
 from itertools import chain
@@ -110,7 +109,7 @@ class UDFDispatcher:
     task_queue: MultiprocessQueue | None = None
     done_queue: MultiprocessQueue | None = None
 
-    def __init__(self, udf_info: UdfInfo, buffer_size: int = DEFAULT_BATCH_SIZE):
+    def __init__(self, udf_info: UdfInfo):
         self.udf_data = udf_info["udf_data"]
         self.catalog_init_params = udf_info["catalog_init"]
         self.metastore_clone_params = udf_info["metastore_clone_params"]
@@ -125,7 +124,6 @@ class UDFDispatcher:
         self.processes = udf_info["processes"]
         self.rows_total = udf_info["rows_total"]
         self.batch_size = udf_info["batch_size"]
-        self.buffer_size = buffer_size
         self.task_queue = None
         self.done_queue = None
         self.ctx = multiprocess.get_context("spawn")
@@ -196,12 +194,6 @@ class UDFDispatcher:
             # no need to spawn worker processes if we are running in a single process
             self.run_udf_single(input_rows, download_cb, processed_cb, generated_cb)
         else:
-            if self.buffer_size < n_workers:
-                raise RuntimeError(
-                    "Parallel run error: buffer size is smaller than "
-                    f"number of workers: {self.buffer_size} < {n_workers}"
-                )
-
             self.run_udf_parallel(
                 n_workers, input_rows, download_cb, processed_cb, generated_cb
             )
@@ -283,14 +275,9 @@ class UDFDispatcher:
             input_data = chain(input_rows, [STOP_SIGNAL] * n_workers)
 
             # Add initial buffer of tasks
-            for _ in range(min(self.buffer_size, 2 * n_workers)):
+            for _ in range(2 * n_workers):
                 try:
-                    put_into_queue(
-                        self.task_queue,
-                        pickle.dumps(
-                            next(input_data), protocol=pickle.HIGHEST_PROTOCOL
-                        ),
-                    )
+                    put_into_queue(self.task_queue, next(input_data))
                 except StopIteration:
                     input_finished = True
                     break
@@ -336,12 +323,7 @@ class UDFDispatcher:
 
                 if status == OK_STATUS and not input_finished:
                     try:
-                        put_into_queue(
-                            self.task_queue,
-                            pickle.dumps(
-                                next(input_data), protocol=pickle.HIGHEST_PROTOCOL
-                            ),
-                        )
+                        put_into_queue(self.task_queue, next(input_data))
                     except StopIteration:
                         input_finished = True
         finally:
@@ -423,6 +405,9 @@ class ProcessedCallback(Callback):
             self.pending = 0
             self.last_update = monotonic()
 
+    def close(self) -> None:
+        self.flush()
+
 
 class UDFWorker:
     def __init__(
@@ -465,25 +450,21 @@ class UDFWorker:
                 download_cb=self.download_cb,
                 processed_cb=self.processed_cb,
             )
-            try:
-                with safe_closing(udf_results):
-                    process_udf_outputs(
-                        catalog.warehouse,
-                        self.table,
-                        udf_results,
-                        self.udf,
-                        cb=self.generated_cb,
-                        batch_size=self.batch_size,
-                    )
-            finally:
-                self.processed_cb.flush()
-                self.generated_cb.flush()
+            with self.generated_cb, self.processed_cb, safe_closing(udf_results):
+                process_udf_outputs(
+                    catalog.warehouse,
+                    self.table,
+                    udf_results,
+                    self.udf,
+                    cb=self.generated_cb,
+                    batch_size=self.batch_size,
+                )
         put_into_queue(self.done_queue, {"status": FINISHED_STATUS})
 
     def get_inputs(self) -> Iterable["RowsOutput"]:
         warehouse = self.catalog.warehouse.clone()
         while True:
-            batch = pickle.loads(get_from_queue(self.task_queue))  # noqa: S301
+            batch = get_from_queue(self.task_queue)
             if batch == STOP_SIGNAL:
                 return
             for ids in batched(batch, DEFAULT_BATCH_SIZE):
