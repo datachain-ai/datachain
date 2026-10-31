@@ -225,14 +225,7 @@ path                  usage        usage             usage
 
 ## Iterating over Python data structures
 
-In the previous examples, datasets were saved in the embedded database
-(`SQLite` in the project's `.datachain` folder). Inside a Git repository,
-DataChain reuses the nearest `.datachain` containing a database or configuration,
-stopping at the repository root; if none exists, it creates state at that root.
-Outside Git, it uses the current working directory. You can override this with
-[`DATACHAIN_DIR` or `DATACHAIN_ROOT_DIR`](../guide/env.md#core-configuration).
-These datasets were automatically versioned, and
-can be accessed using `dc.read_dataset("dataset_name")`.
+In the previous examples, datasets were saved in SQLite in the project's `.datachain` folder (see [how DataChain finds it](../guide/env.md#project-files)). These datasets were automatically versioned and can be accessed using `dc.read_dataset("dataset_name")`.
 
 Here is how to retrieve a saved dataset and iterate over the objects:
 

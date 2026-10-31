@@ -62,6 +62,8 @@ class DataChainDir:
         db: str | None = None,
         config: str | None = None,
     ) -> None:
+        if root is None:
+            root = os.environ.get(self.ENV_VAR)
         self.root = osp.abspath(root) if root is not None else self.default_root()
         self.cache = (
             osp.abspath(cache) if cache is not None else osp.join(self.root, self.CACHE)

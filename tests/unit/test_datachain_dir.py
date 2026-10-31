@@ -13,6 +13,14 @@ def make_state(directory, marker="db"):
     return root
 
 
+def make_git(directory, kind="directory"):
+    marker = directory / ".git"
+    if kind == "file":
+        marker.write_text("gitdir: ../worktrees/project\n")
+    else:
+        marker.mkdir()
+
+
 @pytest.mark.parametrize("location", [".", "nested", "nested/deeper"])
 @pytest.mark.parametrize("marker", ["db", "config"])
 def test_find_nearest_project_state(tmp_path, monkeypatch, location, marker):
@@ -36,10 +44,7 @@ def test_git_root_bounds_project_discovery(
     repo = tmp_path / "repo"
     nested = repo / "scripts" / "nested"
     nested.mkdir(parents=True)
-    if git_marker == "directory":
-        (repo / ".git").mkdir()
-    else:
-        (repo / ".git").write_text("gitdir: ../worktrees/repo\n")
+    make_git(repo, git_marker)
     if existing_state:
         make_state(repo)
     monkeypatch.chdir(nested)
@@ -84,10 +89,7 @@ def test_nested_git_project_does_not_reuse_outer_state(
     inner = tmp_path / "inner"
     nested = inner / "scripts"
     nested.mkdir(parents=True)
-    if git_marker == "directory":
-        (inner / ".git").mkdir()
-    else:
-        (inner / ".git").touch()
+    make_git(inner, git_marker)
     monkeypatch.chdir(nested)
 
     assert DataChainDir.find().root == str(inner / ".datachain")
@@ -133,3 +135,21 @@ def test_read_saved_dataset_from_nested_directory(tmp_path, monkeypatch):
         chain = dc.read_dataset("parent_dataset", session=session)
         assert chain.to_values("x") == [1, 2]
     assert not (nested / ".datachain").exists()
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize("env_var", ["DATACHAIN_DIR", "DATACHAIN_ROOT_DIR"])
+def test_session_cache_and_tmp_follow_state_directory(tmp_path, monkeypatch, env_var):
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    destination = tmp_path / "custom"
+    monkeypatch.setenv(env_var, str(destination))
+    root = destination if env_var == "DATACHAIN_DIR" else destination / ".datachain"
+
+    with Session() as session:
+        dc.read_values(x=[1, 2], session=session).save("saved")
+        assert dc.read_dataset("saved", session=session).to_values("x") == [1, 2]
+        assert session.catalog.cache.cache_dir == str(root / "cache")
+        assert session.catalog.cache.tmp_dir == str(root / "tmp")
+    assert not (cwd / ".datachain").exists()
