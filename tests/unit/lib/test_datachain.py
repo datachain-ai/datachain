@@ -2868,6 +2868,31 @@ def test_read_parquet_output_model_must_be_optional_as_its_signal(
         )
 
 
+@pytest.mark.parametrize(
+    "column,output,error",
+    [
+        ("id", int | str | None, "v is a union of int, str, unlike id"),
+        (
+            "c.note.text",
+            int | str | None,
+            "v is a union of int, str, unlike c.note.text",
+        ),
+        ("u", int, "v is not a union, unlike u"),
+        ("u", Note | int | None, "v is a union of Note, int, unlike u"),
+    ],
+)
+def test_read_parquet_output_must_be_a_union_where_its_signal_is(
+    nested_parquet, test_session, column, output, error
+):
+    with pytest.raises(DatasetPrepareError, match=error):
+        dc.read_parquet(
+            nested_parquet.as_uri(),
+            columns=[column],
+            output={"v": output},
+            session=test_session,
+        )
+
+
 @pytest.mark.parametrize("columns", [["p"], None])
 @pytest.mark.parametrize(
     "stored,read,error",

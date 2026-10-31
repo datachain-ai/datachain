@@ -417,7 +417,7 @@ def read_columns(
         for (field, info), (path, stored) in zip(
             model.model_fields.items(), signals.items(), strict=True
         ):
-            _check_fits(field, info.annotation, path, stored)
+            _check_output_shape(field, info.annotation, path, stored)
         return list(signals), True
 
     if columns is not None:
@@ -513,30 +513,40 @@ def _signal_paths(
     }
 
 
-def _check_fits(field: str, anno: Any, path: str, stored: Any) -> None:
-    """Raise unless the output field is a model, and optional, where the signal it
-    reads is, down through the fields it declares."""
-    have, want = classify_field(anno), classify_field(stored)
-    if have.is_model != want.is_model:
-        kind = "a model" if have.is_model else "not a model"
+def _check_output_shape(field: str, anno: Any, path: str, stored: Any) -> None:
+    """Raise unless the output field has the shape of the signal it reads: a model,
+    optional where the signal is, a union of the same types, or a plain value,
+    down through the fields it declares."""
+    output_kind, stored_kind = classify_field(anno), classify_field(stored)
+    if output_kind.is_model != stored_kind.is_model:
+        kind = "a model" if output_kind.is_model else "not a model"
         raise ValueError(f"output field {field} is {kind}, unlike {path}")
-    if not have.is_model:
+    if not output_kind.is_model:
+        if (arms := _union_arms(anno)) != _union_arms(stored):
+            kind = f"a union of {arms}" if arms else "not a union"
+            raise ValueError(f"output field {field} is {kind}, unlike {path}")
         return
-    if have.is_optional != want.is_optional:
-        if want.is_optional:
+    if output_kind.is_optional != stored_kind.is_optional:
+        if stored_kind.is_optional:
             reason = f"must be optional, as {path} can be None"
         else:
             reason = f"can't be optional, as {path} is never None"
         raise ValueError(f"output field {field} {reason}")
-    fields = want.inner.model_fields
-    for name, info in have.inner.model_fields.items():
+    fields = stored_kind.inner.model_fields
+    for name, info in output_kind.inner.model_fields.items():
         if name in fields:
-            _check_fits(
+            _check_output_shape(
                 f"{field}.{name}",
                 info.annotation,
                 f"{path}.{name}",
                 fields[name].annotation,
             )
+
+
+def _union_arms(anno: Any) -> str | None:
+    """Return the arms of a tagged union, which name its columns, else None."""
+    layout = union_layout(anno)
+    return None if layout is None else ", ".join(map(arm_selector, layout.arms))
 
 
 def _in_signals(column: str, signals: Sequence[str]) -> bool:
