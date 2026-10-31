@@ -15,7 +15,7 @@ import pytest
 
 from datachain.dataset import RowDict
 from datachain.error import OutdatedDatasetFormatError
-from datachain.lib.arrow import _union_value
+from datachain.lib.arrow import _columns_under, _union_value
 from datachain.lib.convert.flatten import flatten, flatten_value
 from datachain.lib.convert.unflatten import unflatten_to_json_pos
 from datachain.lib.data_model import (
@@ -437,12 +437,16 @@ def test_union_arm_named_like_the_discriminator_rejected():
         SignalSchema({"value": _type_tag | str}).db_signals()
 
 
+def _union(values, layout):
+    return _union_value(values, layout, "v", _columns_under(values))
+
+
 def test_single_arm_reads_the_arm_under_any_tag_name():
     layout = UnionLayout(arms=[Foo], has_none=True, use_slots=False)
-    got = _union_value({"v._type_tag": "FooPartial_1a2b_v1", "v.a": 5}, layout, "v")
+    got = _union({"v._type_tag": "FooPartial_1a2b_v1", "v.a": 5}, layout)
     assert (got.a, got.b) == (5, "")
-    assert _union_value({"v._type_tag": None}, layout, "v") is None
-    assert _union_value({"v._type_tag": ""}, layout, "v") is None  # CH NULL tag
+    assert _union({"v._type_tag": None}, layout) is None
+    assert _union({"v._type_tag": ""}, layout) is None  # CH NULL tag
 
 
 def test_arm_name_wins_over_a_field_of_the_same_name():
@@ -514,7 +518,7 @@ def unwarned_index_tag():
 def test_index_tag_reads_optional_model(unwarned_index_tag):
     layout = UnionLayout(arms=[Foo], has_none=True, use_slots=False)
     with pytest.warns(FutureWarning, match="numeric Optional"):
-        got = _union_value({"v._type_tag": 0, "v.a": 7, "v.b": "z"}, layout, "v")
+        got = _union({"v._type_tag": 0, "v.a": 7, "v.b": "z"}, layout)
     assert (got.a, got.b) == (7, "z")
 
     schema = SignalSchema({"m": Foo | None})
@@ -525,7 +529,7 @@ def test_index_tag_reads_optional_model(unwarned_index_tag):
     assert schema.row_to_objs(
         RowDict(zip(schema.to_udf_spec(), (1, 7, "z"), strict=True))
     ) == [None]
-    assert _union_value({"v._type_tag": 1, "v.a": 7}, layout, "v") is None
+    assert _union({"v._type_tag": 1, "v.a": 7}, layout) is None
 
 
 def test_index_tag_rejected_multi_arm(unwarned_index_tag):
@@ -545,10 +549,10 @@ def test_union_value_infers_arm_when_tag_absent():
     layout = union_layout(Foo | int)
     fk, ik = arm_selector(Foo), arm_selector(int)
 
-    foo = _union_value({f"v.{fk}.a": 5, f"v.{fk}.b": "z"}, layout, "v")
+    foo = _union({f"v.{fk}.a": 5, f"v.{fk}.b": "z"}, layout)
     assert (foo.a, foo.b) == (5, "z")
 
     empty_foo = {f"v.{fk}.a": float("nan"), f"v.{fk}.b": None, f"v.{ik}": 9}
-    assert _union_value(empty_foo, layout, "v") == 9
+    assert _union(empty_foo, layout) == 9
 
-    assert _union_value({f"v.{fk}.a": None, f"v.{ik}": None}, layout, "v") is None
+    assert _union({f"v.{fk}.a": None, f"v.{ik}": None}, layout) is None

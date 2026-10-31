@@ -116,7 +116,7 @@ data = dc.read_csv(
 
 With `header=False` and no `columns`, `output` is required and supplies names for every input column.
 
-Parquet exported by DataChain restores its saved schema and does not support `columns=`. Read it without `columns` and use `.select(...)` on the chain. With `columns` or `output`, read it separately from other Parquet files.
+Parquet exported by DataChain restores its saved schema. There, `columns=` picks signals as `select()` does: `columns=["p.x", "a"]` keeps `p` as a model with only `x`. `output` takes the picked signals and nested fields by position, one field each, or the top-level signals without `columns`. A model field may declare only some of the stored model's fields, and is optional where the stored model is, down to its nested fields. A signal inside an optional model or a union is None where that parent doesn't hold it, so it is read as optional: `columns=["value.Text"]` with `output={"t": Text | None}` gives None where `value` holds another type or is None. With `columns` or `output`, it can't be read together with other Parquet files. With `source=True`, the reader adds its own `source`, so a stored `source` can't be picked; read it with `source=False`.
 
 ## SQL Databases
 
