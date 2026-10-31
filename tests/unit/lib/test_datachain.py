@@ -1753,7 +1753,7 @@ def test_unsupported_output_type(test_session):
     def get_vector(key) -> list[np.float64]:
         return [vector]
 
-    with pytest.raises(TypeError):
+    with pytest.raises(UdfSignatureError, match="is not supported"):
         dc.read_values(key=[123], session=test_session).map(emd=get_vector)
 
 
@@ -2612,6 +2612,19 @@ def test_read_csv_nrows_keep_the_chain_prefetch(tmp_dir, test_session):
     path = tmp_dir / "test.csv"
     path.write_text("a\n1\n2\n")
     chain = dc.read_csv(path.as_uri(), nrows=1, session=test_session)
+    assert chain._settings.prefetch == DEFAULT_PREFETCH
+
+
+@pytest.mark.parametrize(
+    "format,content",
+    [("json", '[{"a": 1}, {"a": 2}]'), ("jsonl", '{"a": 1}\n{"a": 2}\n')],
+)
+def test_read_json_nrows_keep_the_chain_prefetch(
+    tmp_dir, test_session, format, content
+):
+    path = tmp_dir / f"test.{format}"
+    path.write_text(content)
+    chain = dc.read_json(path.as_uri(), format=format, nrows=1, session=test_session)
     assert chain._settings.prefetch == DEFAULT_PREFETCH
 
 
