@@ -2,7 +2,13 @@ import itertools
 from collections.abc import Sequence
 from typing import Any
 
-from datachain.lib.data_model import DataType, DataTypeNames, DataValue, is_chain_type
+from datachain.lib.data_model import (
+    DataType,
+    DataTypeNames,
+    DataValue,
+    is_chain_type,
+    validate_chain_type,
+)
 from datachain.lib.utils import DataChainParamsError
 
 
@@ -97,6 +103,7 @@ def _infer_type_from_sequence(
 
     typ = type(first_element)
 
+    validate_chain_type(typ)
     if not is_chain_type(typ):
         raise ValuesToTupleError(
             ds_name,
@@ -211,7 +218,9 @@ def values_to_tuples(
     if len(output) > 1:  # type: ignore[arg-type]
         tuple_type = tuple(output_types)
         res_type = tuple[tuple_type]  # type: ignore[valid-type]
-        res_values: Sequence[Any] = list(zip(*fr_map.values(), strict=False))
+        res_values: Sequence[Any] = list(
+            zip(*(fr_map[name] for name in output), strict=False)
+        )
     else:
         res_type = output_types[0]  # type: ignore[misc]
         res_values = next(iter(fr_map.values()))

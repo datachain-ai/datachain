@@ -141,6 +141,16 @@ def test_open_object(monkeypatch):
     client.fs.open.assert_called_once()  # Should fetch from remote, not cache
 
 
+def test_read_tar_member_of_uncached_archive_returns_its_data(
+    http_server, tmp_path, catalog, small_tar_member_data, small_tar_member
+):
+    data, raw = small_tar_member_data
+    (tmp_path / "archive.tar").write_bytes(raw)
+    member = small_tar_member(catalog.get_client(http_server))
+
+    assert member.read() == data
+
+
 def test_url():
     cache = Mock(spec=Cache)
     client = HTTPSClient("example.com", {}, cache)

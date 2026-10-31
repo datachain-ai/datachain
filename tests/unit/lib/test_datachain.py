@@ -41,6 +41,7 @@ from datachain.lib.file import File
 from datachain.lib.hf import HFClassLabel
 from datachain.lib.listing import LISTING_PREFIX, parse_listing_uri
 from datachain.lib.listing_info import ListingInfo
+from datachain.lib.settings import DEFAULT_PREFETCH
 from datachain.lib.signal_schema import (
     SignalResolvingError,
     SignalResolvingTypeError,
@@ -1752,7 +1753,7 @@ def test_unsupported_output_type(test_session):
     def get_vector(key) -> list[np.float64]:
         return [vector]
 
-    with pytest.raises(TypeError):
+    with pytest.raises(UdfSignatureError, match="is not supported"):
         dc.read_values(key=[123], session=test_session).map(emd=get_vector)
 
 
@@ -2595,6 +2596,36 @@ def test_read_parquet_output_renames_by_position(abc_parquet, test_session):
     output = {"c": float, "b": float, "a": float}
     chain = dc.read_parquet(abc_parquet, output=output, session=test_session)
     assert chain.to_list("c", "b", "a") == [(1.0, 10.0, 100.0)]
+
+
+@pytest.mark.parametrize("settings", [{}, {"prefetch": 8}])
+def test_read_parquet_columns_keep_the_chain_prefetch(
+    abc_parquet, test_session, settings
+):
+    chain = dc.read_parquet(
+        abc_parquet, columns=["a"], settings=settings, session=test_session
+    )
+    assert chain._settings.prefetch == settings.get("prefetch", DEFAULT_PREFETCH)
+
+
+def test_read_csv_nrows_keep_the_chain_prefetch(tmp_dir, test_session):
+    path = tmp_dir / "test.csv"
+    path.write_text("a\n1\n2\n")
+    chain = dc.read_csv(path.as_uri(), nrows=1, session=test_session)
+    assert chain._settings.prefetch == DEFAULT_PREFETCH
+
+
+@pytest.mark.parametrize(
+    "format,content",
+    [("json", '[{"a": 1}, {"a": 2}]'), ("jsonl", '{"a": 1}\n{"a": 2}\n')],
+)
+def test_read_json_nrows_keep_the_chain_prefetch(
+    tmp_dir, test_session, format, content
+):
+    path = tmp_dir / f"test.{format}"
+    path.write_text(content)
+    chain = dc.read_json(path.as_uri(), format=format, nrows=1, session=test_session)
+    assert chain._settings.prefetch == DEFAULT_PREFETCH
 
 
 def test_read_parquet_columns_are_part_of_the_step(abc_parquet, test_session):
