@@ -43,11 +43,14 @@ from datachain.job import Job
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.convert.sql_to_python import sql_to_python
 from datachain.lib.data_model import (
+    TYPE_TAG_FIELD,
     DataModel,
     DataType,
     DataValue,
     StandardType,
+    arm_selector,
     dict_to_data_model,
+    union_layout,
     unwrap_optional,
 )
 from datachain.lib.file import EXPORT_FILES_MAX_THREADS, ArrowRow, File, FileExporter
@@ -69,7 +72,11 @@ from datachain.lib.udf import (
     _MultiSignalMapper,
 )
 from datachain.lib.udf_signature import UdfSignature
-from datachain.lib.utils import DataChainColumnError, DataChainParamsError
+from datachain.lib.utils import (
+    DataChainColumnError,
+    DataChainParamsError,
+    assert_unique_export_columns,
+)
 from datachain.progress import tqdm
 from datachain.project import Project
 from datachain.query import Session
@@ -79,7 +86,7 @@ from datachain.query.dataset import (
     RegenerateSystemColumns,
     UnionSchemaMismatchError,
 )
-from datachain.query.schema import DEFAULT_DELIMITER, Column, ColumnExpr
+from datachain.query.schema import DEFAULT_DELIMITER, Column, ColumnExpr, ColumnMeta
 from datachain.sql.functions import path as pathfunc
 from datachain.sql.types import SQLType
 from datachain.utils import (
@@ -196,6 +203,18 @@ class DataChainSchema(dict[str, DataType]):
             file=file,
         )
         return file.getvalue().removesuffix("\n")
+
+
+def _paired_key_columns(left: list, right: list) -> list[tuple]:
+    """Pair the key columns of both sides. A Union is several columns, so pairing
+    differently shaped sides by position would compare the wrong ones.
+    """
+    if len(left) != len(right):
+        raise DataChainParamsError(
+            f"'on' resolves to {len(left)} columns and 'right_on' to {len(right)}; "
+            "the key must have the same shape on both sides"
+        )
+    return list(zip(left, right, strict=True))
 
 
 class DataChain:
@@ -342,7 +361,12 @@ class DataChain:
             name_path = [name]
         for path, type_, _, _ in self.signals_schema.get_flat_tree():
             if path == name_path:
+                if (err := self.signals_schema.multiarm_root_error(name)) is not None:
+                    raise err
                 return Column(name, python_to_sql(type_))
+
+        if (resolved := self.signals_schema.resolve_arm_path(name)) is not None:
+            return self.column(resolved)
 
         raise ValueError(f"Column with name {name} not found in the schema")
 
@@ -498,7 +522,7 @@ class DataChain:
                 processing by UDFs. Defaults to 1.
             batch_size: Number of rows per insert by UDF to fine tune and balance speed
                 and memory usage. This might be useful when processing large rows
-                or when running into memory issues. Defaults to 2000.
+                or when running into memory issues. Defaults to 10,000.
             ephemeral: If True, no persistent objects are created in the metastore
                 (no jobs, checkpoints, or datasets). UDF execution still uses
                 temporary tables. Calling .save() in ephemeral mode will raise
@@ -889,7 +913,6 @@ class DataChain:
                 )
 
             # Link current job to this dataset version (not creator).
-            # This also updates dataset_version.job_id.
             metastore.link_dataset_version_to_job(
                 dataset_version.id,
                 self.job.id,
@@ -1407,7 +1430,9 @@ class DataChain:
             if wrapped is not None:
                 resolved.append(wrapped)
             elif descending:
-                resolved.append(sqlalchemy.desc(arg))
+                resolved.append(
+                    sqlalchemy.desc(Column(arg) if isinstance(arg, str) else arg)
+                )
             else:
                 resolved.append(arg)
 
@@ -1433,8 +1458,12 @@ class DataChain:
         if not args:
             raise TypeError("distinct() expected at least 1 argument, got 0")
 
+        # a union is atomic: dedup on the whole union, not a single arm slot
+        roots = [self.signals_schema.multiarm_union_root(a) or a for a in args]
         return self._evolve(
-            query=self._query.distinct(*self.signals_schema.resolve(*args).db_signals())
+            query=self._query.distinct(
+                *self.signals_schema.resolve(*roots).db_signals()
+            )
         )
 
     def select(self, *args: str | Column, **kwargs) -> "Self":
@@ -1537,6 +1566,14 @@ class DataChain:
             partition_by = [partition_by]
 
         partition_by_columns: list[Column] = []
+        seen_partition_cols: set[str] = set()
+
+        def add_partition_col(column: Column) -> None:
+            # a union's leaves share one enclosing _type_tag; add each column once
+            if column.name not in seen_partition_cols:
+                seen_partition_cols.add(column.name)
+                partition_by_columns.append(column)
+
         signal_columns: list[Column] = []
         schema_fields: dict[str, DataType] = {}
         keep_columns: list[str] = []
@@ -1551,17 +1588,30 @@ class DataChain:
                 except ValueError:
                     pass
 
+        # a union is atomic, and C('v.int') means the same as 'v.int' here
+        partition_by = [
+            root
+            if isinstance(col, Column)
+            and (root := self.signals_schema.multiarm_union_root(col.name)) is not None
+            else col
+            for col in partition_by
+        ]
+
         for col in partition_by:
             if isinstance(col, str):
+                # a union is atomic: partition by the whole union, not one arm
+                union_root = self.signals_schema.multiarm_union_root(col)
+                if union_root is not None:
+                    col = union_root
                 columns = self.signals_schema.db_signals(name=col, as_columns=True)
                 if not columns:
                     raise SignalResolvingError([col], "is not found")
-                partition_by_columns.extend(cast("list[Column]", columns))
-                # GROUP BY the ancestor sentinel so the result keeps _type_tag.
                 for leaf in cast("list[Column]", columns):
-                    sentinel = self.signals_schema.optional_parent_sentinel(leaf.name)
+                    add_partition_col(leaf)
+                    # GROUP BY the ancestor sentinel so the result keeps _type_tag.
+                    sentinel = self.signals_schema.enclosing_type_tag(leaf.name)
                     if sentinel:
-                        partition_by_columns.append(Column(sentinel))
+                        add_partition_col(Column(sentinel))
 
                 # For nested field references (e.g., "nested.level1.name"),
                 # we need to distinguish between:
@@ -1607,7 +1657,7 @@ class DataChain:
                     label = f"gr_{partition_counter}"
                     partition_counter += 1
                 column = col.get_column(self.signals_schema, label=label)
-                partition_by_columns.append(column)
+                add_partition_col(column)
                 signal_columns.append(column)
                 schema_fields[column.name] = column.type.python_type
             elif isinstance(col, ColumnExpr):
@@ -1616,7 +1666,7 @@ class DataChain:
                 enriched = self.signals_schema.enrich_expr_types(col)
                 labeled = cast("Column", enriched.label(col_label))
                 inferred = sql_to_python(enriched)
-                partition_by_columns.append(labeled)
+                add_partition_col(labeled)
                 signal_columns.append(labeled)
                 schema_fields[col_label] = inferred
             else:
@@ -1714,12 +1764,26 @@ class DataChain:
             raise self._named_expression_error("mutate()", args[0])
         return self._mutate("mutate()", **kwargs)
 
+    def _resolve_arm_columns(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """``kwargs`` with readable arm columns (``C("block.name")``) arm-qualified."""
+        resolved_kwargs = dict(kwargs)
+        for col_name, expr in kwargs.items():
+            if (
+                isinstance(expr, Column)
+                and (resolved := self.signals_schema.resolve_arm_path(expr.name))
+                is not None
+            ):
+                resolved_kwargs[col_name] = Column(ColumnMeta.to_db_name(resolved))
+        return resolved_kwargs
+
     def _mutate(self, method: str, **kwargs) -> "Self":
         from sqlalchemy.sql.sqltypes import NullType
 
         primitives = (bool, str, int, float)
 
         try:
+            kwargs = self._resolve_arm_columns(kwargs)
+
             for col_name, expr in kwargs.items():
                 if not isinstance(expr, (*primitives, Column, Func)):
                     if not isinstance(expr, ColumnExpr):
@@ -1834,17 +1898,24 @@ class DataChain:
             yield from rows
 
     def to_columnar_data_with_names(
-        self, chunk_size: int = DEFAULT_PARQUET_CHUNK_SIZE
+        self,
+        chunk_size: int = DEFAULT_PARQUET_CHUNK_SIZE,
+        include_sentinels: bool = False,
     ) -> tuple[list[str], Iterator[list[list[Any]]]]:
         """Returns column names and the results as an iterator that provides chunks,
         with each chunk containing a list of columns, where each column contains a
         list of the row values for that column in that chunk. Useful for columnar data
         formats, such as parquet or other OLAP databases.
+
+        ``include_sentinels`` keeps the ``_type_tag`` discriminator, which round-trip
+        formats (parquet) need to reconstruct a multi-arm union.
         """
-        headers, _ = self._effective_signals_schema.get_headers_with_length()
+        headers, _ = self._effective_signals_schema.get_headers_with_length(
+            include_sentinels=include_sentinels
+        )
         column_names = [".".join(filter(None, header)) for header in headers]
 
-        results_iter = self._leaf_values()
+        results_iter = self._leaf_values(include_sentinels=include_sentinels)
 
         def column_chunks() -> Iterator[list[list[Any]]]:
             for chunk_iter in batched_it(results_iter, chunk_size):
@@ -1885,11 +1956,10 @@ class DataChain:
 
     def to_records(self) -> list[dict[str, Any]]:
         """Convert every row to a dictionary."""
-
-        def to_dict(cols: list[str], row: tuple[Any, ...]) -> dict[str, Any]:
-            return dict(zip(cols, row, strict=False))
-
-        return self.results(row_factory=to_dict)
+        headers, _ = self._effective_signals_schema.get_headers_with_length()
+        assert_unique_export_columns(headers, DEFAULT_DELIMITER)
+        column_names = [DEFAULT_DELIMITER.join(filter(None, h)) for h in headers]
+        return [dict(zip(column_names, row, strict=False)) for row in self.results()]
 
     def to_iter(
         self, *cols: str | Column
@@ -2115,18 +2185,19 @@ class DataChain:
 
         lvals = self.signals_schema.values
         rvals = other.signals_schema.values
-        if set(lvals) != set(rvals):
+        names = set(lvals) - {"sys"}  # a union's own result has no sys
+        if names != set(rvals) - {"sys"}:
             return self, other  # genuinely different signals -> let union error
 
         lprom, rprom = dict(lvals), dict(rvals)
         left_add: dict[str, Any] = {}
         right_add: dict[str, Any] = {}
-        sentinel_field = SignalSchema._OPTIONAL_SENTINEL_FIELD
+        sentinel_field = TYPE_TAG_FIELD
 
-        def _present_sentinel() -> Any:
-            # nullable to match the natural side's _type_tag column type.
-            col = literal(0)
-            col.type = SQLType.as_nullable(python_to_sql(int))
+        def _present_sentinel(arm: Any) -> Any:
+            # the active arm's selector name; nullable to match the _type_tag column
+            col = literal(arm_selector(arm))
+            col.type = SQLType.as_nullable(python_to_sql(str))
             return col
 
         def _nullable_leaf_casts(name: str, promoted: dict[str, Any]) -> dict[str, Any]:
@@ -2149,9 +2220,11 @@ class DataChain:
             prom[name] = inner | None
             add.update(_nullable_leaf_casts(name, prom))
             if ModelStore.is_pydantic(inner):
-                add[f"{name}{DEFAULT_DELIMITER}{sentinel_field}"] = _present_sentinel()
+                add[f"{name}{DEFAULT_DELIMITER}{sentinel_field}"] = _present_sentinel(
+                    inner
+                )
 
-        for name in lvals:
+        for name in names:
             l_inner, l_opt = unwrap_optional(lvals[name])
             r_inner, r_opt = unwrap_optional(rvals[name])
             if l_inner != r_inner or l_opt == r_opt:
@@ -2186,7 +2259,24 @@ class DataChain:
         left, right = self._align_optional_for_union(other)
         self_schema = left.signals_schema
         other_schema = right.signals_schema
+        # report a union-vs-other mismatch by signal name, not leaked arm columns
+        lv, rv = self_schema.values, other_schema.values
+        for name in set(lv) & set(rv):
+            if lv[name] != rv[name] and (
+                union_layout(lv[name]) is not None or union_layout(rv[name]) is not None
+            ):
+                raise DataChainColumnError(
+                    name,
+                    f"cannot union a '{SignalSchema._type_to_str(lv[name])}' signal "
+                    f"with a '{SignalSchema._type_to_str(rv[name])}' signal; align "
+                    "the column types before union()",
+                )
         missing_left, missing_right = self_schema.compare_signals(other_schema)
+        # collapse a union's arm-slot leaves back to the signal name
+        missing_left = {self_schema.multiarm_union_root(c) or c for c in missing_left}
+        missing_right = {
+            other_schema.multiarm_union_root(c) or c for c in missing_right
+        }
         if missing_left or missing_right:
             raise UnionSchemaMismatchError.from_column_sets(
                 missing_left,
@@ -2259,12 +2349,9 @@ class DataChain:
                 raise DataChainParamsError(
                     "'on' and 'right_on' must have the same length"
                 )
-            signals = list(
-                zip(
-                    self.signals_schema.resolve(*on).db_signals(),
-                    other.signals_schema.resolve(*right_on).db_signals(),
-                    strict=False,
-                )  # type: ignore[arg-type]
+            signals = _paired_key_columns(
+                list(self.signals_schema.resolve(*on).db_signals()),
+                list(other.signals_schema.resolve(*right_on).db_signals()),
             )
         return self._evolve(query=self._query.subtract(other._query, signals))  # type: ignore[arg-type]
 
@@ -2513,49 +2600,61 @@ class DataChain:
         model_name: str = "",
         source: bool = True,
         nrows: int | None = None,
+        columns: Sequence[str] | None = None,
         **kwargs: Any,
     ) -> "Self":
-        """Generate chain from list of tabular files.
+        """Generate chain from a list of tabular files.
 
         Parameters:
-            output: Dictionary or feature class defining column names and their
-                corresponding types. List of column names is also accepted, in which
-                case types will be inferred.
+            output: Result names and Python types as a dictionary or Pydantic model.
+                A list of names infers types. Fields map by position, with exactly one
+                field per column read. Use `columns` to select inputs by name.
+                Omit to infer names and types or restore a saved DataChain schema.
             column: Generated column name.
             model_name: Generated model name.
             source: Whether to include info about the source file.
-            nrows: Optional row limit.
+            nrows: Optional row limit per file.
+            columns: Input columns to read, in order; all if omitted. Accepts original
+                or normalized names, e.g. "ZIP Code" or "zip_code". For Parquet exported
+                by DataChain, omit this parameter and use `.select(...)` after parsing.
             kwargs: Parameters to pass to pyarrow.dataset.dataset.
 
         Example:
-            Reading a json lines file:
-            ```py
-            import datachain as dc
-            chain = dc.read_storage("s3://mybucket/file.jsonl")
-            chain = chain.parse_tabular(format="json")
-            ```
-
-            Reading a filtered list of files as a dataset:
+            Parse a filtered list of JSONL files:
             ```py
             import datachain as dc
 
-            chain = dc.read_storage("s3://mybucket")
+            chain = dc.read_storage("s3://mybucket/")
             chain = chain.filter(dc.C("file.path").glob("*.jsonl"))
             chain = chain.parse_tabular(format="json")
             ```
+
+            Select and rename columns from ordinary Parquet files with `a, b, c`:
+            ```py
+            chain = dc.read_storage("s3://mybucket/*.parquet").parse_tabular(
+                format="parquet", columns=["c", "a"], output={"x": float, "y": float}
+            )  # x receives c; y receives a
+            ```
         """
+        import pyarrow as pa
         from pyarrow.dataset import CsvFileFormat, JsonFileFormat
 
         from datachain.lib.arrow import (
+            PARTIAL_READ_PREFETCH_MAX_SIZE,
             ArrowGenerator,
+            file_schemas,
             fix_pyarrow_format,
-            infer_schema,
+            is_parquet,
+            merge_schemas,
+            read_columns,
             schema_to_output,
         )
 
         parse_options = kwargs.pop("parse_options", None)
-        if format := kwargs.get("format"):
-            kwargs["format"] = fix_pyarrow_format(format, parse_options)
+        # pyarrow reads Parquet when no format is given.
+        format = kwargs["format"] = fix_pyarrow_format(
+            kwargs.get("format") or "parquet", parse_options
+        )
 
         if (
             nrows
@@ -2571,21 +2670,29 @@ class DataChain:
         if "file" not in self.schema or not self.count():
             raise DatasetPrepareError(self.name, "no files to parse.")
 
-        schema = None
+        schema, read = None, None
         col_names = output if isinstance(output, Sequence) else None
-        if col_names or not output:
-            try:
-                schema = infer_schema(self, **kwargs, parse_options=parse_options)
-                output, _ = schema_to_output(schema, col_names)
-            except ValueError as e:
-                raise DatasetPrepareError(self.name, e) from e
+        infer = bool(col_names) or not output
+        try:
+            if infer:
+                schemas = file_schemas(self, **kwargs, parse_options=parse_options)
+                schema, names = merge_schemas(schemas, columns)
+                output, _ = schema_to_output(schema, col_names or names)
 
-        if isinstance(output, dict):
-            model_name = model_name or column or ""
-            model = dict_to_data_model(model_name, output)
-            output = model
-        else:
-            model = output  # type: ignore[assignment]
+            if isinstance(output, dict):
+                model_name = model_name or column or ""
+                model = dict_to_data_model(model_name, output)
+                output = model
+            else:
+                model = output  # type: ignore[assignment]
+
+            if not infer:
+                fields = len(model.model_fields)
+                read = read_columns(
+                    self, columns, fields, **kwargs, parse_options=parse_options
+                )
+        except (ValueError, pa.ArrowTypeError) as e:
+            raise DatasetPrepareError(self.name, e) from e
 
         if column:
             output = {column: model}  # type: ignore[dict-item]
@@ -2598,15 +2705,17 @@ class DataChain:
         if source:
             output = {"source": ArrowRow} | output  # type: ignore[assignment,operator]
 
-        # disable prefetch if nrows is set
-        settings = {"prefetch": 0} if nrows else {}
-        return self.settings(**settings).gen(  # type: ignore[arg-type]
+        # Prefetch downloads whole files, so a partial read prefetches only small ones.
+        partial = nrows or (columns is not None and is_parquet(format))
+        return self.gen(  # type: ignore[arg-type]
             ArrowGenerator(
                 schema,
                 model,
                 source,
                 nrows,
+                columns=read,
                 parse_options=parse_options,
+                prefetch_max_size=PARTIAL_READ_PREFETCH_MAX_SIZE if partial else None,
                 **kwargs,
             ),
             output=output,
@@ -2631,6 +2740,9 @@ class DataChain:
             fs_kwargs: Optional kwargs forwarded to the underlying fsspec filesystem
                 when writing (e.g., s3://, gs://, hf://), fsspec-specific options
                 are supported.
+
+        A `Union` signal is written with its `_type_tag` column, which names the arm
+        each value holds. Dropping that column loses the arm types on read-back.
         """
         import pyarrow as pa
         import pyarrow.parquet as pq
@@ -2664,7 +2776,9 @@ class DataChain:
             self._effective_signals_schema.serialize(), ensure_ascii=False
         ).encode("utf-8")
 
-        column_names, column_chunks = self.to_columnar_data_with_names(chunk_size)
+        column_names, column_chunks = self.to_columnar_data_with_names(
+            chunk_size, include_sentinels=True
+        )
 
         parquet_schema = None
         parquet_writer = None
@@ -3088,10 +3202,11 @@ class DataChain:
         chain = self.persist()
         count = chain.count()
 
-        if placement == "filename" and (
-            chain._query.distinct(pathfunc.name(C(f"{signal}__path"))).count() != count
-        ):
-            raise ValueError("Files with the same name found")
+        if placement == "filename":
+            path_col = chain.signals_schema.to_db_col(f"{signal}.path")
+            named = chain._query.filter(C(path_col).isnot(None))
+            if named.distinct(pathfunc.name(C(path_col))).count() != named.count():
+                raise ValueError("Files with the same name found")
 
         if anon is not None:
             client_config = (client_config or {}) | {"anon": anon}

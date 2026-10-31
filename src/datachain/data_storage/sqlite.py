@@ -1,7 +1,8 @@
 import logging
 import os
 import sqlite3
-from collections.abc import Callable, Iterable, Sequence
+from array import array
+from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from functools import cached_property, wraps
 from time import sleep
@@ -23,7 +24,7 @@ from sqlalchemy.dialects import sqlite
 from sqlalchemy.schema import CreateIndex, CreateTable, DropTable
 from sqlalchemy.sql import func
 from sqlalchemy.sql.elements import BinaryExpression, BooleanClauseList
-from sqlalchemy.sql.expression import bindparam, cast
+from sqlalchemy.sql.expression import cast
 from sqlalchemy.sql.selectable import Select
 
 import datachain.sql.sqlite
@@ -53,8 +54,6 @@ if TYPE_CHECKING:
     from sqlalchemy.sql._typing import _FromClauseArgument, _OnClauseArgument
     from sqlalchemy.sql.elements import ColumnElement
     from sqlalchemy.types import TypeEngine
-
-    from datachain.lib.file import File
 
 
 logger = logging.getLogger("datachain")
@@ -255,8 +254,8 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         return self.db.execute(*self.compile_to_args(query))
 
     @retry_sqlite_locks
-    def executemany(self, query, params) -> None:
-        self.db.executemany(self.compile(query).string, params)
+    def executemany(self, sql: str, params) -> None:
+        self.db.executemany(sql, params)
 
     @retry_sqlite_locks
     def execute_str(self, sql: str, parameters=None) -> sqlite3.Cursor:
@@ -788,30 +787,33 @@ class SQLiteWarehouse(AbstractWarehouse):
         query = dr.select(dr.c("source", column="file")).distinct()
         return [StorageURI(row[0]) for row in self.db.execute(query)]
 
-    def prepare_entries(self, entries: "Iterable[File]") -> Iterable[dict[str, Any]]:
-        return (e.model_dump() for e in entries)
-
     def _insert_from_buffer(
         self,
         table: Table,
-        entries: list[dict[str, Any]],
+        columns: Sequence[str],
+        entries: list[tuple],
         final: bool = False,
         cursor: Any = None,
     ) -> None:
         """Callback for InsertBuffer to insert a batch of entries."""
         if not entries:
             return
+        quote = self.db.dialect.identifier_preparer.quote
+        sql = (
+            f"INSERT INTO {quote(table.name)} ({', '.join(map(quote, columns))}) "  # noqa: S608
+            f"VALUES ({', '.join('?' * len(columns))})"
+            if columns
+            else f"INSERT INTO {quote(table.name)} DEFAULT VALUES"
+        )
         with self.db.transaction():
             # transactions speeds up inserts significantly as there is no separate
             # transaction created for each insert row
-            self.db.executemany(
-                table.insert().values({f: bindparam(f) for f in entries[0]}),
-                entries,
-            )
+            self.db.executemany(sql, entries)
 
     def get_buffer(
         self,
         table: Table,
+        columns: Sequence[str],
         buffer_size: int,
         flush_interval: float,
     ) -> InsertBuffer:
@@ -819,6 +821,7 @@ class SQLiteWarehouse(AbstractWarehouse):
         if table.name not in self.buffers:
             self.buffers[table.name] = InsertBuffer(
                 table,
+                columns,
                 self._insert_from_buffer,
                 buffer_size,
                 flush_interval=flush_interval,
@@ -888,7 +891,9 @@ class SQLiteWarehouse(AbstractWarehouse):
             return
 
         select_ids = query.with_only_columns(col_id)
-        ids = self.db.execute(select_ids).fetchall()
+        # Read all ids up front (8 bytes each) so no read cursor stays open and
+        # holds a WAL snapshot while the batches are inserted.
+        ids = array("q", (row[0] for row in self.db.execute(select_ids)))
 
         if preserve_sys_ids:
             select_q = query.offset(None).limit(None)
@@ -902,8 +907,14 @@ class SQLiteWarehouse(AbstractWarehouse):
             )
 
         for batch in batched_it(ids, self.INSERT_BATCH_SIZE):
-            batch_ids = [row[0] for row in batch]
-            select_q._where_criteria = (col_id.in_(batch_ids),)
+            batch_ids = list(batch)
+            low, high = min(batch_ids), max(batch_ids)
+            # binding thousands of ids dominates the copy: a batch that is a whole
+            # range of ids is copied as that range
+            if high - low + 1 == len(batch_ids) == len(set(batch_ids)):
+                select_q._where_criteria = (col_id.between(low, high),)
+            else:
+                select_q._where_criteria = (col_id.in_(batch_ids),)
             q = table.insert().from_select(list(select_q.selected_columns), select_q)
 
             self.db.execute(q)

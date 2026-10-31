@@ -91,6 +91,45 @@ def test_output_spec_wrong_type():
         dc.read_values(value1=[1, 2, 3], output=123)
 
 
+def test_values_to_tuples_with_reordered_output_builds_rows_in_output_order():
+    typ, _out, vals = values_to_tuples(
+        output={"label": str, "number": int}, number=[1, 2], label=["one", "two"]
+    )
+
+    assert get_args(typ) == (str, int)
+    assert vals == [("one", 1), ("two", 2)]
+
+
+def test_read_values_with_reordered_output_keeps_values_in_their_columns(
+    test_session,
+):
+    chain = dc.read_values(
+        left=[1, 2],
+        right=[10, 20],
+        output={"right": int, "left": int},
+        session=test_session,
+    )
+
+    assert chain.order_by("left").to_list("left", "right") == [(1, 10), (2, 20)]
+
+
+def test_read_values_with_reordered_output_and_column_keeps_values_in_their_fields(
+    test_session,
+):
+    chain = dc.read_values(
+        left=[1, 2],
+        right=[10, 20],
+        output={"right": int, "left": int},
+        column="pair",
+        session=test_session,
+    )
+
+    assert chain.order_by("pair.left").to_list("pair.left", "pair.right") == [
+        (1, 10),
+        (2, 20),
+    ]
+
+
 def test_resolve_column():
     signal = Column("hello.world.again")
     assert signal.name == "hello__world__again"

@@ -1,12 +1,9 @@
-import asyncio
 import json
 import os
-from collections.abc import Iterable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, BinaryIO, cast
 from urllib.parse import quote
 
-from dateutil.parser import isoparse
 from fsspec.asyn import get_loop, sync
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from gcsfs import GCSFileSystem
@@ -14,10 +11,10 @@ from gcsfs.retry import HttpError
 from google.auth.credentials import AnonymousCredentials
 
 from datachain.client.fileslice import FileWrapper
-from datachain.lib.file import File
-from datachain.progress import tqdm
+from datachain.lib.file import File, FileRow
 
-from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue
+from .fsspec import BucketStatus, RangeListedClient
+from .ranges import Keep, Page
 
 if TYPE_CHECKING:
     from datachain.client.writeconfig import WriteConfig
@@ -26,14 +23,23 @@ if TYPE_CHECKING:
 GCSFileSystem.set_session = GCSFileSystem._set_session
 # Skip the GCE metadata check — it adds latency and hangs outside GCE.
 os.environ.setdefault("NO_GCE_CHECK", "true")
-PageQueue = asyncio.Queue[Iterable[dict[str, Any]] | None]
 
 
-class GCSClient(Client):
+class GCSClient(RangeListedClient):
     FS_CLASS = GCSFileSystem
     PREFIX = "gs://"
+    LISTS_LEVELS = True
     protocol = "gs"
     CREDENTIAL_KEYS = frozenset({"token"})
+    LIST_PAGE_SIZE = 5000
+    # The version id is the object's generation. Metadata updates, such as a storage
+    # class change, change the etag but keep the generation. Appends to an object in
+    # a zonal bucket also keep the generation, but they change the size.
+    PINNED_VERSION_IS_IMMUTABLE = True
+    # the fields a listing asks for: GCS sends every field otherwise
+    LIST_FIELDS = (
+        "items(name,size,generation,etag,timeDeleted,updated),nextPageToken,prefixes"
+    )
 
     @classmethod
     def create_fs(cls, **kwargs) -> GCSFileSystem:
@@ -41,6 +47,22 @@ class GCSClient(Client):
             kwargs["token"] = json.loads(os.environ["DATACHAIN_GCP_CREDENTIALS"])
         if kwargs.pop("anon", False):
             kwargs["token"] = "anon"  # noqa: S105
+        # Read gzip-encoded objects without decompressing them, so the bytes match
+        # File.size and range reads work. GCS decompresses unless the request accepts
+        # gzip, and aiohttp decompresses unless told not to.
+        # https://github.com/fsspec/gcsfs/issues/233#issuecomment-4465900826
+        session_kwargs = kwargs.get("session_kwargs") or {}
+        headers = {
+            name: value
+            for name, value in dict(session_kwargs.get("headers") or ()).items()
+            if name.lower() != "accept-encoding"
+        }
+        headers["Accept-Encoding"] = "gzip"
+        kwargs["session_kwargs"] = {
+            **session_kwargs,
+            "auto_decompress": False,
+            "headers": headers,
+        }
 
         fs = cast("GCSFileSystem", super().create_fs(**kwargs))
         if getattr(fs, "credential", False) is None and fs.credentials.method == "anon":
@@ -53,13 +75,23 @@ class GCSClient(Client):
         from google.api_core import exceptions as google_exceptions
 
         # Step 1: Anonymous probe.
-        # Use _ls (objects.list API) not _info (buckets.get API): GCS does not
-        # grant storage.buckets.get anonymously even for public buckets.
+        # Use _call with maxResults=1 (objects.list API) not _info (buckets.get API)
+        # or _ls: GCS does not grant storage.buckets.get anonymously even for public
+        # buckets, and _ls lists the whole bucket root and triggers unnecessary
+        # gRPC calls.
         anon_kwargs = {k: v for k, v in kwargs.items() if k != "anon"}
         anon_kwargs["anon"] = True
         anon_fs = cls.create_fs(**anon_kwargs)
         try:
-            sync(get_loop(), anon_fs._ls, name)
+            sync(
+                get_loop(),
+                anon_fs._call,
+                "GET",
+                "b/{}/o",
+                name,
+                maxResults=1,
+                json_out=True,
+            )
             return BucketStatus(exists=True, access="anonymous")
         except FileNotFoundError:
             return BucketStatus(
@@ -210,7 +242,7 @@ class GCSClient(Client):
             file.version,
         )
         return FileWrapper(
-            self.fs.open(full_path, block_size=block_size),
+            self.fs.open(full_path, **self._block_size_kwargs(block_size)),
             cb,
         )  # type: ignore[return-value]
 
@@ -221,77 +253,57 @@ class GCSClient(Client):
 
         This ensures that the passed timestamp is timezone aware.
         """
-        dt = isoparse(timestamp)
+        dt = datetime.fromisoformat(timestamp)
         assert dt.tzinfo is not None
         return dt
 
-    async def _fetch_flat(self, start_prefix: str, result_queue: ResultQueue) -> None:
-        prefix = start_prefix
-        if prefix:
-            prefix = prefix.lstrip(DELIMITER) + DELIMITER
-        found = False
-        try:
-            page_queue: PageQueue = asyncio.Queue(2)
-            consumer = asyncio.create_task(
-                self._process_pages(page_queue, result_queue)
-            )
-            try:
-                await self._get_pages(prefix, page_queue)
-                found = await consumer
-                if not found and prefix:
-                    raise FileNotFoundError(f"Unable to resolve remote path: {prefix}")
-            finally:
-                consumer.cancel()  # In case _get_pages() raised
-        finally:
-            result_queue.put_nowait(None)
+    async def _list_page(
+        self,
+        prefix: str,
+        start_after: str,
+        token: Any,
+        hi: str | None = None,
+        page_size: int | None = None,
+        delimiter: str = "",
+    ) -> Page:
+        page = await self.fs._call(
+            "GET",
+            "b/{}/o",
+            self.name,
+            delimiter=delimiter,
+            prefix=prefix,
+            startOffset=start_after or None,
+            endOffset=None if hi is None else f"{hi}\0",  # exclusive
+            maxResults=page_size or self.LIST_PAGE_SIZE,
+            pageToken=token,
+            fields=self.LIST_FIELDS,
+            json_out=True,
+            versions="true" if self._is_version_aware() else "false",
+        )
+        items = page.get("items", [])
+        keep = Keep(self, start_after, hi)
+        # folders past a delimiter: listed past, though they make no rows
+        keys = [d["name"] for d in items] + page.get("prefixes", [])
+        return Page(
+            [self._file_row(d) for d in items if keep(d["name"])],
+            items[0]["name"] if items else None,
+            max(keys, default=None),
+            page.get("nextPageToken"),
+            keep.past_lo,
+            keep.past_hi,
+            keep.in_order,
+        )
 
-    _fetch_default = _fetch_flat
-
-    async def _process_pages(
-        self, page_queue: PageQueue, result_queue: ResultQueue
-    ) -> bool:
-        found = False
-        with tqdm(desc=f"Listing {self.uri}", unit=" objects", leave=False) as pbar:
-            while (page := await page_queue.get()) is not None:
-                if page:
-                    found = True
-                entries = [
-                    self._entry_from_dict(d)
-                    for d in page
-                    if self._is_valid_key(d["name"])
-                ]
-                if entries:
-                    await result_queue.put(entries)
-                    pbar.update(len(entries))
-        return found
-
-    async def _get_pages(self, path: str, page_queue: PageQueue) -> None:
-        page_size = 5000
-        try:
-            next_page_token = None
-            while True:
-                page = await self.fs._call(
-                    "GET",
-                    "b/{}/o",
-                    self.name,
-                    delimiter="",
-                    prefix=path,
-                    maxResults=page_size,
-                    pageToken=next_page_token,
-                    json_out=True,
-                    versions="true" if self._is_version_aware() else "false",
-                )
-                assert page["kind"] == "storage#objects"
-                await page_queue.put(page.get("items", []))
-                next_page_token = page.get("nextPageToken")
-                if next_page_token is None:
-                    break
-        finally:
-            await page_queue.put(None)
-
-    def _entry_from_dict(self, d: dict[str, Any]) -> File:
-        info = self.fs._process_object(self.name, d)
-        return self.info_to_file(info, self.rel_path(info["name"]))
+    def _file_row(self, d: dict[str, Any]) -> tuple:
+        return FileRow(
+            self.uri,
+            d["name"],
+            int(d.get("size", 0)),
+            d.get("generation", "") if self._is_version_aware() else "",
+            d.get("etag", ""),
+            not d.get("timeDeleted"),
+            self.parse_timestamp(d["updated"]),
+        )
 
     def info_to_file(self, v: dict[str, Any], path: str) -> File:
         return File(

@@ -1004,7 +1004,7 @@ def test_get_features_nested(test_session, nested_file_schema):
         ),
         (
             {"fr.name": str, "fr": MyType2 | None},
-            ("Fred", 0, "Fred", 129, "qwe"),
+            ("Fred", "MyType2", "Fred", 129, "qwe"),
             ["Fred", MyType2(name="Fred", deep=MyType1(aa=129, bb="qwe"))],
         ),
         (
@@ -1019,7 +1019,7 @@ def test_get_features_nested(test_session, nested_file_schema):
         ),
         (
             {"fr.deep.aa": int, "fr": MyTypeOptionalNested},
-            (129, "Fred", 0, 129, "qwe"),
+            (129, "Fred", "MyType1", 129, "qwe"),
             [
                 129,
                 MyTypeOptionalNested(name="Fred", deep=MyType1(aa=129, bb="qwe")),
@@ -1027,7 +1027,7 @@ def test_get_features_nested(test_session, nested_file_schema):
         ),
         (
             {"fr.deep.aa": int, "fr": MyTypeOptionalNested},
-            (None, "Fred", 1, None, None),
+            (None, "Fred", None, None, None),
             [None, MyTypeOptionalNested(name="Fred", deep=None)],
         ),
     ],
@@ -1622,7 +1622,7 @@ def test_row_to_objs_setup():
         ),
         (
             {"fr.name": str, "fr": MyType2 | None},
-            ("Fred", 0, 129, "qwe"),
+            ("Fred", "MyType2", 129, "qwe"),
             ["Fred", MyType2(name="Fred", deep=MyType1(aa=129, bb="qwe"))],
         ),
         (
@@ -1637,7 +1637,7 @@ def test_row_to_objs_setup():
         ),
         (
             {"fr.deep.aa": int, "fr": MyTypeOptionalNested},
-            (129, "Fred", 0, "qwe"),
+            (129, "Fred", "MyType1", "qwe"),
             [
                 129,
                 MyTypeOptionalNested(name="Fred", deep=MyType1(aa=129, bb="qwe")),
@@ -1645,7 +1645,7 @@ def test_row_to_objs_setup():
         ),
         (
             {"fr.deep.aa": int, "fr": MyTypeOptionalNested},
-            (None, "Fred", 1, None),
+            (None, "Fred", None, None),
             [None, MyTypeOptionalNested(name="Fred", deep=None)],
         ),
     ],

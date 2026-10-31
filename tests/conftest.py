@@ -1,7 +1,13 @@
+import functools
+import http.server
+import io
 import os
 import os.path
 import signal
+import socketserver
 import subprocess  # nosec B404
+import tarfile
+import threading
 import uuid
 from collections.abc import Generator
 from datetime import datetime
@@ -34,6 +40,8 @@ from datachain.dataset import (
 )
 from datachain.error import DatasetNotFoundError
 from datachain.lib.dc import Sys
+from datachain.lib.file import File
+from datachain.lib.tar import build_tar_member
 from datachain.namespace import Namespace
 from datachain.project import Project
 from datachain.query.session import Session
@@ -45,7 +53,7 @@ from datachain.utils import (
     DataChainDir,
 )
 
-from .utils import DEFAULT_TREE, instantiate_tree, reset_session_job_state
+from .utils import DEFAULT_TREE, instantiate_tree, make_tar, reset_session_job_state
 
 # gcsfs 2026.3+ turns on HNS/zonal support by default, so every gs op probes the
 # Storage Control API over gRPC. The mock gcs server can't answer that, so the
@@ -279,6 +287,54 @@ def catalog(metastore, warehouse):
 
 
 @pytest.fixture
+def small_tar_member_data():
+    data = b"m" * (100 * 1024)
+    raw = make_tar(
+        {
+            "prefix.bin": b"prefix",
+            "member.bin": data,
+            "padding.bin": bytes(4 * 1024 * 1024),
+        }
+    )
+    return data, raw
+
+
+@pytest.fixture
+def small_tar_member(catalog, monkeypatch, small_tar_member_data):
+    _, raw = small_tar_member_data
+
+    def make_member(client, version=""):
+        monkeypatch.setattr(catalog, "get_client", lambda *args, **kwargs: client)
+        parent = File(
+            source=client.uri, path="archive.tar", size=len(raw), version=version
+        )
+        parent._set_stream(catalog, caching_enabled=False)
+        with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+            member = build_tar_member(parent, archive.getmember("member.bin"))
+        member._set_stream(catalog, caching_enabled=False)
+        return member
+
+    return make_member
+
+
+@pytest.fixture
+def tar_member_range_requests(monkeypatch, small_tar_member_data):
+    _, raw = small_tar_member_data
+
+    def patch_ranges(file_type):
+        requests = []
+
+        def fetch_range(file, start, end):
+            requests.append((file, start, min(end, len(raw))))
+            return raw[start:end]
+
+        monkeypatch.setattr(file_type, "_fetch_range", fetch_range)
+        return requests
+
+    return patch_ranges
+
+
+@pytest.fixture
 def test_session(catalog):
     with Session("TestSession", catalog=catalog) as session:
         yield session
@@ -491,6 +547,42 @@ class CloudTestCatalog:
         return Session("CTCSession", catalog=self.catalog)
 
 
+AZURITE_IMAGE = "mcr.microsoft.com/azure-storage/azurite:3.37.0"
+
+
+@pytest.fixture(scope="session")
+def azurite(docker_client, tmp_path_factory):
+    """pytest-servers' Azurite at a release that honors ``startFrom``."""
+    import requests
+    from docker.errors import NotFound
+    from filelock import FileLock
+    from pytest_servers.azure import AZURITE_CONNECTION_STRING, AZURITE_URL
+    from pytest_servers.utils import wait_until, wait_until_running
+
+    name = "datachain-azurite-" + AZURITE_IMAGE.rsplit(":", 1)[1]
+    with FileLock(tmp_path_factory.getbasetemp().parent / f"{name}.lock"):
+        try:
+            container = docker_client.containers.get(name)
+        except NotFound:
+            container = docker_client.containers.run(
+                AZURITE_IMAGE,
+                command="azurite-blob --loose --blobHost 0.0.0.0 --skipApiVersionCheck",
+                name=name,
+                detach=True,
+                remove=True,
+                ports={"10000/tcp": None},
+            )
+        wait_until_running(container)
+        port = container.ports.get("10000/tcp")[0]["HostPort"]
+
+    def is_healthy() -> bool:
+        r = requests.get(AZURITE_URL.format(port=port), timeout=3)
+        return r.status_code == 400 and "Azurite" in r.headers.get("Server", "")
+
+    wait_until(is_healthy, timeout=30)
+    return AZURITE_CONNECTION_STRING.format(port=port)
+
+
 cloud_types = ["s3", "gs", "azure"]
 
 
@@ -547,8 +639,33 @@ def pytest_collection_modifyitems(config, items):
                 item.add_marker(pytest.mark.skip(reason=reason))
 
 
+def _moto_lists_after_key_marker(monkeypatch):
+    """moto drops the first version after a KeyMarker that names no key; S3 lists
+    everything after it. Resume moto after the last key at or before the marker."""
+    from moto.s3.models import S3Backend
+
+    list_versions = S3Backend.list_object_versions
+
+    def list_object_versions(self, bucket_name, key_marker=None, **kwargs):
+        if key_marker and not kwargs.get("version_id_marker"):
+            keys = self.get_bucket(bucket_name).keys
+            if before := [name for name in keys if name <= key_marker]:
+                key_marker = max(before)
+                oldest = min(keys.getlist(key_marker), key=lambda v: v.last_modified)
+                kwargs["version_id_marker"] = oldest.version_id
+            else:
+                key_marker = None
+        return list_versions(self, bucket_name, key_marker=key_marker, **kwargs)
+
+    monkeypatch.setattr(S3Backend, "list_object_versions", list_object_versions)
+
+
 @pytest.fixture(scope="session")
-def cloud_server(request, tmp_upath_factory, cloud_type, version_aware, tree):
+def cloud_server(
+    request, tmp_upath_factory, cloud_type, version_aware, tree, monkeypatch_session
+):
+    if cloud_type == "s3":
+        _moto_lists_after_key_marker(monkeypatch_session)
     if cloud_type == "azure" and version_aware:
         if conn_str := request.config.getoption("--azure-connection-string"):
             src_path = tmp_upath_factory.azure(conn_str)
@@ -634,15 +751,18 @@ def cloud_test_catalog_upload(cloud_test_catalog):
     src = cloud_test_catalog.src_uri
     client = Client.get_implementation(src)
     fsspec_fs = client.create_fs(**cloud_test_catalog.client_config)
-    original_paths = set(fsspec_fs.ls(src))
+    local = cloud_test_catalog.server.kind == "file"
+    original_paths = set(fsspec_fs.find(src, withdirs=local))
 
     yield cloud_test_catalog
 
-    # Cleanup any written files
-    new_paths = set(fsspec_fs.ls(src))
-    cleanup_paths = new_paths - original_paths
-    for p in cleanup_paths:
-        fsspec_fs.rm(p, recursive=True)
+    # Cleanup any written files, children before their directories
+    new_paths = set(fsspec_fs.find(src, withdirs=local, refresh=True))
+    for p in sorted(new_paths - original_paths, reverse=True):
+        if local and fsspec_fs.isdir(p):
+            fsspec_fs.rmdir(p)
+        else:
+            fsspec_fs.rm_file(p)
 
 
 @pytest.fixture
@@ -1258,7 +1378,7 @@ def compressed_parquet_data():
         adapted_data = [_adapt_row(row) for row in data]
         df = pd.DataFrame.from_records(adapted_data)
         buffer = io.BytesIO()
-        df.to_parquet(buffer, engine="auto")
+        df.to_parquet(buffer)
 
         return lz4.frame.compress(buffer.getvalue())
 
@@ -1343,3 +1463,69 @@ def mock_parquet_data(compressed_parquet_data, dog_entries, version="1.0.0"):
 def mock_parquet_data_cloud(compressed_parquet_data, dog_entries, cloud_test_catalog):
     src_uri = cloud_test_catalog.src_uri
     return compressed_parquet_data(dog_entries("1.0.0"), src_uri)
+
+
+@pytest.fixture
+def fetched_bytes(monkeypatch):
+    from adlfs.spec import AzureBlobFile
+    from gcsfs.core import GCSFile
+    from s3fs.core import S3File
+
+    fetched = [0, 0]
+    for cls in (S3File, GCSFile, AzureBlobFile):
+
+        def fetch_range(self, *args, _orig=cls._fetch_range, **kwargs):
+            data = _orig(self, *args, **kwargs)
+            fetched[0] += len(data)
+            fetched[1] += 1
+            return data
+
+        monkeypatch.setattr(cls, "_fetch_range", fetch_range)
+    return fetched
+
+
+class _QuietHandler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+
+    def handle_error(self, request, client_address):
+        pass
+
+
+class _RangeHandler(_QuietHandler):
+    def send_head(self):
+        if not (ranges := self.headers.get("Range")):
+            return super().send_head()
+        with open(self.translate_path(self.path), "rb") as f:
+            data = f.read()
+        start, end = map(int, ranges.removeprefix("bytes=").split("-"))
+        body = data[start : end + 1]
+        self.send_response(206)
+        self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        return io.BytesIO(body)
+
+
+def _serve(directory, handler_class):
+    handler = functools.partial(handler_class, directory=str(directory))
+    with socketserver.TCPServer(("127.0.0.1", 0), handler) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield f"http://127.0.0.1:{server.server_address[1]}"
+        finally:
+            server.shutdown()
+            thread.join()
+
+
+@pytest.fixture
+def http_server(tmp_path):
+    """Serve `tmp_path` over HTTP with range support; yields its base URL."""
+    yield from _serve(tmp_path, _RangeHandler)
+
+
+@pytest.fixture
+def http_server_without_ranges(tmp_path):
+    """Serve `tmp_path` over HTTP without range support; yields its base URL."""
+    yield from _serve(tmp_path, _QuietHandler)

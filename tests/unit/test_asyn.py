@@ -1,7 +1,11 @@
 import asyncio
 import functools
 import itertools
+import os
+import subprocess
+import sys
 import threading
+import time
 from collections import Counter
 from contextlib import contextmanager
 from queue import Queue
@@ -11,6 +15,7 @@ from fsspec.asyn import sync
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
+import datachain
 from datachain.asyn import AsyncMapper, get_loop, iter_over_async
 
 
@@ -238,3 +243,62 @@ def test_iter_over_async_empty():
 
     res = iter_over_async(gen(), get_loop())
     assert list(res) == []
+
+
+def test_iter_over_async_closes_the_iterator_it_stops_early():
+    closed = []
+
+    async def numbers():
+        try:
+            for i in range(10):
+                yield i
+        finally:
+            closed.append(True)
+
+    it = iter_over_async(numbers(), get_loop())
+    assert next(it) == 0
+    it.close()
+
+    for _ in range(100):
+        if closed:
+            break
+        time.sleep(0.01)
+    assert closed == [True]
+
+
+EXIT_ON_ERROR = """
+import asyncio
+from fsspec.asyn import get_loop
+from datachain.asyn import iter_over_async
+
+async def pages():
+    try:
+        while True:
+            await asyncio.sleep(0.01)
+            yield [1]
+    finally:
+        await asyncio.sleep(0.01)
+
+class Holder:
+    pass
+
+holder = Holder()
+holder.pages = iter_over_async(pages(), get_loop())
+holder.cycle = holder  # finalized by the garbage collector at shutdown
+next(holder.pages)
+del holder
+raise OSError(28, "No space left on device")
+"""
+
+
+def test_iter_over_async_exits_after_an_error():
+    root = os.path.dirname(os.path.dirname(datachain.__file__))
+    out = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", EXIT_ON_ERROR],
+        capture_output=True,
+        timeout=30,
+        check=False,
+        env={**os.environ, "PYTHONPATH": root},
+    )
+    assert out.returncode == 1
+    assert b"No space left on device" in out.stderr

@@ -47,10 +47,17 @@ def ls_local(
 ):
     from datachain import listings
 
+    catalog = catalog or Session.get().catalog
     if sources:
-        session = Session.get(catalog=catalog, client_config=client_config)
-        catalog = session.catalog
-        actual_sources = list(ls_urls(sources, catalog=catalog, long=long, **kwargs))
+        actual_sources = list(
+            ls_urls(
+                sources,
+                catalog=catalog,
+                long=long,
+                client_config=client_config,
+                **kwargs,
+            )
+        )
         if len(actual_sources) == 1:
             for _, entries in actual_sources:
                 for entry in entries:
@@ -69,7 +76,7 @@ def ls_local(
                     print(format_ls_entry(entry))
     else:
         # Collect results in a list here to prevent interference from `tqdm` and `print`
-        listing = listings().to_list("listing")
+        listing = listings(session=catalog.session).to_list("listing")
         for (ls,) in listing:
             print(format_ls_entry(f"{ls.uri}@v{ls.version}"))  # type: ignore[union-attr]
 
@@ -150,15 +157,18 @@ def _ls_urls_flat(
     sources,
     long: bool,
     catalog: "Catalog",
+    client_config: dict | None = None,
     **kwargs,
 ) -> Iterator[tuple[str, Iterable[str]]]:
     from datachain.client import Client
     from datachain.node import long_line_str
 
+    config = catalog.client_config if client_config is None else client_config
+    _prepared_listings: set[str] = set()
     for source in sources:
         client_cls = Client.get_implementation(source)
         if client_cls.is_root_url(source):
-            buckets = client_cls.ls_buckets(**catalog.client_config)
+            buckets = client_cls.ls_buckets(**config)
             if long:
                 values: Iterable[str] = (
                     long_line_str(b.name, b.created) for b in buckets
@@ -171,7 +181,13 @@ def _ls_urls_flat(
             fields = ["name", "dir_type"]
             if long:
                 fields.append("last_modified")
-            for data_source, results in catalog.ls([source], fields=fields, **kwargs):
+            for data_source, results in catalog.ls(
+                [source],
+                fields=fields,
+                client_config=client_config,
+                _prepared_listings=_prepared_listings,
+                **kwargs,
+            ):
                 values = [_node_data_to_ls_values(r, long) for r in results]
                 found = True
                 yield data_source.dirname(), values
