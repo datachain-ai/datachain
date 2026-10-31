@@ -22,7 +22,8 @@ from datachain.lib.file import (
     VFileError,
     VideoFile,
 )
-from datachain.lib.tar import process_tar
+from datachain.lib.tar import build_tar_member, process_tar
+from tests.utils import make_tar
 
 
 @pytest.fixture
@@ -761,6 +762,28 @@ def test_read_text_virtual_tar_file(tmp_path, catalog):
     assert member.read_text(encoding="utf-8") == data
 
 
+def test_tar_member_cached_parent_skips_backend(catalog, monkeypatch):
+    from datachain.client.s3 import ClientS3
+
+    data = b"cached tar member"
+    raw = make_tar({"member.bin": data})
+    parent = File(
+        source="s3://bucket", path="archive.tar", size=len(raw), etag="cached"
+    )
+    catalog.cache.store_data(parent, raw)
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        member = build_tar_member(parent, archive.getmember("member.bin"))
+    member._set_stream(catalog, caching_enabled=False)
+
+    def no_backend(*args, **kwargs):
+        raise AssertionError("cached parent initialized the backend")
+
+    monkeypatch.setattr(ClientS3, "create_fs", no_backend)
+
+    with member.open() as stream:
+        assert stream.read() == data
+
+
 def test_resolve_unsupported_protocol():
     mock_catalog = Mock()
     mock_catalog.get_client.side_effect = NotImplementedError("Unsupported protocol")
@@ -1097,3 +1120,20 @@ def test_video_frame_save_forwards_write_config(tmp_path, catalog, monkeypatch):
     assert cfg.content_type == "image/png"
     assert cfg.content_disposition == "attachment"
     assert cfg.metadata == {"k": "v"}
+
+
+def test_subclass_private_attributes_keep_their_values():
+    from typing import Any
+
+    from pydantic import PrivateAttr
+
+    class CustomFile(File):
+        _catalog: Any = PrivateAttr(default=None)
+        _caching_enabled: bool = PrivateAttr(default=False)
+
+    catalog = Mock()
+    file = CustomFile(path="a")
+    file._set_stream(catalog, caching_enabled=True)
+
+    assert file._catalog is catalog
+    assert file._caching_enabled

@@ -9,6 +9,7 @@ import datachain as dc
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SQLiteWarehouse
 from datachain.lib.file import File
+from tests.utils import skip_if_not_sqlite
 
 
 def test_serialize(sqlite_db):
@@ -225,3 +226,59 @@ def test_select_node_fields_by_parent_path_tar_wildcards_are_literal(
         "dir_%1/b.csv",
         "dir_%1/nested/c.csv",
     ]
+
+
+def test_empty_rows_insert_defaults(sqlite_db):
+    warehouse = SQLiteWarehouse(sqlite_db)
+    table = warehouse.create_udf_table([sa.Column("value", sa.Integer)])
+
+    warehouse.insert_rows(table, [{}, {}])
+    warehouse.insert_rows_done(table)
+
+    query = sa.select(table.c.value)
+    assert list(warehouse.dataset_rows_select(query)) == [(None,), (None,)]
+
+
+def test_map_tuples_are_validated(sqlite_db):
+    from types import SimpleNamespace
+
+    from datachain.lib.signal_schema import SignalSchema
+    from datachain.lib.udf import UdfError
+    from datachain.query.dataset import process_udf_outputs
+    from datachain.sql.types import Int, String
+
+    warehouse = SQLiteWarehouse(sqlite_db)
+    table = warehouse.create_udf_table([sa.Column("a", Int), sa.Column("b", String)])
+    inner = SimpleNamespace(
+        output=SignalSchema({"a": int, "b": str}),
+        is_input_batched=False,
+        is_output_batched=False,
+    )
+    udf = SimpleNamespace(output={"a": Int, "b": String}, inner=inner)
+
+    with pytest.raises(UdfError):
+        process_udf_outputs(warehouse, table, iter([[(1, "x", None)]]), udf)
+
+
+@skip_if_not_sqlite
+def test_insert_into_reads_all_ids_before_inserting_batches(
+    warehouse_tmpfile, monkeypatch
+):
+    warehouse = warehouse_tmpfile
+    monkeypatch.setattr(type(warehouse), "INSERT_BATCH_SIZE", 3)
+    src, dst, unrelated = (
+        warehouse.create_udf_table([sa.Column("value", sa.Integer)]) for _ in range(3)
+    )
+    warehouse.insert_rows(src, [{"value": i} for i in range(10)])
+    warehouse.insert_rows_done(src)
+
+    # Another connection commits after each batch. With the id cursor still open,
+    # the next batch fails with "database is locked".
+    with warehouse.clone() as other:
+        warehouse.insert_into(
+            dst,
+            sa.select(src),
+            progress_cb=lambda _: other.db.execute(unrelated.insert().values(value=0)),
+        )
+
+    assert warehouse.table_rows_count(dst) == 10

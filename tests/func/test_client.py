@@ -1,6 +1,8 @@
 import asyncio
 import os
 import sys
+from contextlib import aclosing
+from datetime import UTC
 from pathlib import Path
 from uuid import uuid4
 
@@ -13,7 +15,9 @@ from tqdm import tqdm
 
 from datachain.asyn import get_loop
 from datachain.client import Client
-from datachain.lib.file import File, FileError
+from datachain.client.fsspec import RangeListedClient
+from datachain.client.ranges import RangeListing
+from datachain.lib.file import File, FileError, FileRow
 from tests.data import ENTRIES
 
 _non_null_text = st.text(
@@ -22,7 +26,8 @@ _non_null_text = st.text(
 
 
 @pytest.fixture
-def client(cloud_server, cloud_server_credentials):
+def client(cloud_server, cloud_server_credentials, mocker):
+    mocker.patch("datachain.client.listing_worker.LIST_PROCESSES", 0)
     uri = cloud_server.src_uri
     return Client.get_implementation(uri).from_source(
         uri, cache=None, **cloud_server.client_config
@@ -69,6 +74,331 @@ def test_scandir_not_dir(client):
 def test_scandir_success(client):
     results = scandir(client, "")
     match_entries(results, ENTRIES)
+    row = FileRow if isinstance(client, RangeListedClient) else File
+    assert {type(e) for e in results} == {row}
+
+
+def _paths(tree, prefix=""):
+    for name, value in tree.items():
+        if isinstance(value, dict):
+            yield from _paths(value, f"{prefix}{name}/")
+        else:
+            yield prefix + name
+
+
+RANGE_TREES = {
+    "skewed": {"a": "1", "big": {f"{i:03}": "x" for i in range(80)}, "z": "1"},
+    "flat": {f"{i * 7919 % 4096:03x}": "x" for i in range(80)},
+    "siblings": {"a": {"b": "x"}, "a-b": "x", "a.c": "x", "a0": "x", "ab": {"c": "x"}},
+}
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize(
+    "tree", list(RANGE_TREES.values()), ids=list(RANGE_TREES), indirect=True
+)
+@pytest.mark.parametrize("prefix", ["", "big"])
+def test_scandir_ranges_are_exact(client, tree, prefix, mocker):
+    mocker.patch.object(type(client), "LIST_PAGE_SIZE", 4)
+    mocker.patch("datachain.client.ranges.LIST_WORKERS", 3)
+    ranges = mocker.spy(client, "_list_page")
+    expected = [p for p in _paths(tree) if p.startswith(prefix)]
+    if not expected:
+        with pytest.raises(FileNotFoundError):
+            scandir(client, prefix)
+        return
+
+    paths = [e.path for e in scandir(client, prefix)]
+
+    assert sorted(paths) == sorted(expected)
+    assert ranges.call_count > 1
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "azure"], indirect=True)
+@pytest.mark.parametrize("tree", [{f"{i:03}": "x" for i in range(200)}], indirect=True)
+@pytest.mark.parametrize("workers", [2, 16])
+@pytest.mark.parametrize("young_pages", [4, 10**6])
+def test_scandir_young_and_old_ranges_are_exact(
+    client, tree, workers, young_pages, mocker
+):
+    # a range split off another inherits its age, so old ranges split twice
+    mocker.patch.object(type(client), "LIST_PAGE_SIZE", 4)
+    mocker.patch("datachain.client.ranges.LIST_WORKERS", workers)
+    mocker.patch("datachain.client.ranges.YOUNG_PAGES", young_pages)
+    split = mocker.spy(RangeListing, "_split")
+
+    assert sorted(e.path for e in scandir(client, "")) == sorted(tree)
+    assert split.call_count
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "azure"], indirect=True)
+@pytest.mark.parametrize("tree", [{f"{i:03}": "x" for i in range(200)}], indirect=True)
+def test_scandir_splits_past_the_data_are_few(client, tree, mocker):
+    mocker.patch.object(type(client), "LIST_PAGE_SIZE", 4)
+    mocker.patch("datachain.client.ranges.LIST_WORKERS", 2)
+    calls = mocker.spy(client, "_list_page")
+
+    assert sorted(e.path for e in scandir(client, "")) == sorted(tree)
+    ranges = [c.args[1] for c in calls.call_args_list if c.args[2] is None]
+    assert sum(lo > "199" for lo in ranges) <= 4
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("tree", [{f"{i:03}": "x" for i in range(200)}], indirect=True)
+@pytest.mark.parametrize("processes", [False, True])
+def test_scandir_is_exact_when_the_reader_is_slow(client, tree, processes, mocker):
+    mocker.patch("datachain.client.listing_worker.LIST_PROCESSES", 2 * processes)
+    # pages wait for room in the result queue while other ranges split
+    mocker.patch.object(type(client), "LIST_PAGE_SIZE", 4)
+    mocker.patch("datachain.client.ranges.LIST_WORKERS", 4)
+
+    async def slow_reader():
+        paths = []
+        async for entries in client.scandir(""):
+            paths.extend(e.path for e in entries)
+            await asyncio.sleep(0.02)
+        return paths
+
+    assert sorted(sync(get_loop(), slow_reader)) == sorted(tree)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+@pytest.mark.parametrize("tree", [{"a": "x", "z": "x"}], indirect=True)
+def test_a_page_reads_to_a_delete_marker(client, tree):
+    client.fs.rm_file(f"{client.uri}/z")
+
+    assert sync(get_loop(), client._list_page, "", "m", None).last == "z"
+    assert sync(get_loop(), client._list_page, "", "z", None).last is None
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+# more pages than the result queue holds: an open listing would still be waiting
+@pytest.mark.parametrize("tree", [{f"{i:03}": "x" for i in range(200)}], indirect=True)
+def test_scandir_stops_listing_when_closed_early(client, tree, mocker):
+    mocker.patch.object(type(client), "LIST_PAGE_SIZE", 4)
+
+    async def first_page():
+        async with aclosing(client.scandir("")) as entries:
+            async for page in entries:
+                return page
+
+    async def pending_listing_tasks():
+        tasks = [
+            t
+            for t in asyncio.all_tasks()
+            if t.get_coro().__qualname__.startswith(("RangeListing.", "Client.scandir"))
+        ]
+        if tasks:
+            await asyncio.wait(tasks, timeout=5)
+        return [t for t in tasks if not t.done()]
+
+    assert sync(get_loop(), first_page)
+    assert not sync(get_loop(), pending_listing_tasks)
+
+
+UNLISTED_TREE = {"a": {f"{i:02}": "x" for i in range(40)}, "z": {"0": "x"}}
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("tree", [UNLISTED_TREE], indirect=True)
+def test_scandir_ranges_see_past_unlisted_keys(client, tree, mocker):
+    for i in range(60):  # folder markers: listed, never rows
+        client.fs.pipe_file(f"{client.uri}/m/{i:02}/", b"")
+    mocker.patch.object(type(client), "LIST_PAGE_SIZE", 4)
+    mocker.patch("datachain.client.ranges.LIST_WORKERS", 3)
+    calls = mocker.spy(client, "_list_page")
+
+    expected = sorted(_paths(tree))
+    assert sorted(e.path for e in scandir(client, "")) == expected
+    assert calls.call_count <= 2 * (len(expected) + 60) // 4
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("tree", [RANGE_TREES["flat"]], indirect=True)
+def test_scandir_builds_no_files_past_range_ends(client, tree, mocker):
+    mocker.patch.object(type(client), "LIST_PAGE_SIZE", 4)
+    mocker.patch("datachain.client.ranges.LIST_WORKERS", 3)
+    bounded, past_hi = [], []
+    list_page = type(client)._list_page
+
+    async def recorded(self, prefix, start_after, token, hi=None, **kwargs):
+        page = await list_page(self, prefix, start_after, token, hi, **kwargs)
+        if hi is not None:
+            bounded.append(hi)
+            order = self.key_order
+            past_hi.extend(r.path for r in page.rows if order(r.path) > order(hi))
+        return page
+
+    mocker.patch.object(type(client), "_list_page", recorded)
+
+    assert len(scandir(client, "")) == len(tree)
+    assert bounded
+    assert not past_hi
+
+
+@pytest.mark.parametrize("cloud_type", ["gs"], indirect=True)
+@pytest.mark.parametrize("tree", [RANGE_TREES["flat"]], indirect=True)
+def test_gcs_listing_ends_at_hi(client, tree, mocker):
+    mocker.patch.object(type(client), "LIST_PAGE_SIZE", 4)
+    keys = sorted(tree)
+    lo, hi = keys[10], keys[20]
+    read = []
+    call = client.fs._call
+
+    async def counted(*args, **kwargs):
+        page = await call(*args, **kwargs)
+        read.extend(item["name"] for item in page.get("items", []))
+        return page
+
+    mocker.patch.object(client.fs, "_call", counted)
+
+    async def listed():
+        page = await client._list_page("", lo, None, hi)
+        while page.token is not None:
+            page = await client._list_page("", lo, page.token, hi)
+
+    sync(get_loop(), listed)
+    assert read == keys[10:21]  # startOffset includes the start key
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("tree", [RANGE_TREES["flat"]], indirect=True)
+def test_scandir_out_of_key_order_is_one_range(client, tree, mocker):
+    mocker.patch.object(type(client), "LIST_PAGE_SIZE", 4)
+    mocker.patch.object(type(client), "_lists_in_key_order", return_value=False)
+    ranges = mocker.spy(client, "_list_page")
+
+    paths = [e.path for e in scandir(client, "")]
+
+    assert sorted(paths) == sorted(_paths(tree))
+    assert [c.args[2] for c in ranges.call_args_list].count(None) == 1
+
+
+PREFIXED_TREE = {
+    "n1": {f"{uuid}.jpg": "x" for uuid in ["0a", "3f", "5c", "9d", "b2", "e7"]},
+    **{f"n{i}": {f"{i:02}{j}.jpg": "x" for j in range(9)} for i in (2, 3)},
+}
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize(
+    "tree",
+    [
+        PREFIXED_TREE,
+        {"n2": {f"{i:03}.jpg": "x" for i in range(60)}, "z": "x"},
+        {"n2": {f"{c}.jpg": "x" for c in "abcdefghi"}, "n3": {"a.jpg": "x"}},
+    ],
+    indirect=True,
+)
+@pytest.mark.parametrize("processes", [False, True])
+def test_scandir_requests_stay_inside_the_prefix(client, tree, processes, mocker):
+    mocker.patch("datachain.client.listing_worker.LIST_PROCESSES", 2 * processes)
+    mocker.patch.object(type(client), "LIST_PAGE_SIZE", 4)
+    calls = mocker.spy(client, "_list_page")
+
+    async def listed():
+        paths = []
+        async for entries in client.scandir("n2"):
+            paths.extend(e.path for e in entries)
+        return paths
+
+    expected = [p for p in _paths(tree) if p.startswith("n2/")]
+    assert sorted(sync(get_loop(), listed)) == sorted(expected)
+    starts = [c.args[1] for c in calls.call_args_list]
+    assert len(starts) > 1
+    assert all(s.startswith("n2/") for s in starts if s)
+
+
+# fake-gcs-server repeats a key's versions after a page token
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+@pytest.mark.parametrize("tree", [{"d": {"b.txt": "0"}, "t": "x"}], indirect=True)
+def test_scandir_versions_of_one_key_stay_inside_the_prefix(client, tree, mocker):
+    for i in range(1, 10):
+        client.fs.pipe_file(f"{client.uri}/d/b.txt", str(i).encode())
+    mocker.patch.object(type(client), "LIST_PAGE_SIZE", 4)
+    calls = mocker.spy(client, "_list_page")
+
+    assert len(scandir(client, "d")) == 10
+    assert all(c.args[1].startswith("d/") for c in calls.call_args_list if c.args[1])
+
+
+EMOJI_TREE = {
+    "img": {
+        **{f"\U0001f600_{i:02}.png": "x" for i in range(25)},
+        **{f"\uff08{i:02}\uff09.png": "x" for i in range(25)},
+    }
+}
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("tree", [EMOJI_TREE], indirect=True)
+@pytest.mark.parametrize("processes", [False, True])
+def test_scandir_lists_keys_past_the_basic_multilingual_plane(
+    client, tree, processes, mocker
+):
+    mocker.patch("datachain.client.listing_worker.LIST_PROCESSES", 2 * processes)
+    mocker.patch.object(type(client), "LIST_PAGE_SIZE", 4)
+    mocker.patch("datachain.client.ranges.LIST_WORKERS", 4)
+
+    async def listed():
+        paths = []
+        async for entries in client.scandir(""):
+            paths.extend(e.path for e in entries)
+        return paths
+
+    assert sorted(sync(get_loop(), listed)) == sorted(_paths(tree))
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+@pytest.mark.parametrize(
+    "tree", [{"dm": {"a": "x", "b": "x"}, "z": "x"}], indirect=True
+)
+def test_prefix_of_only_delete_markers_is_not_found(client, tree):
+    client.fs.rm([f"{client.uri}/dm/a", f"{client.uri}/dm/b"])
+    listed = client.fs.call_s3("list_object_versions", Bucket=client.name, Prefix="dm/")
+    for version in listed["Versions"]:
+        client.fs.call_s3(
+            "delete_object",
+            Bucket=client.name,
+            Key=version["Key"],
+            VersionId=version["VersionId"],
+        )
+
+    with pytest.raises(FileNotFoundError):
+        scandir(client, "dm")
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+def test_scandir_one_page_is_one_range(client, mocker):
+    ranges = mocker.spy(client, "_list_page")
+    assert scandir(client, "")
+    assert ranges.call_count == 1
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+def test_listing_parses_timestamps_without_dateutil(client):
+    assert {e.last_modified.tzinfo for e in scandir(client, "")} == {UTC}
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("tree", [{"a": "x"}], indirect=True)
+def test_scandir_lists_double_slash_keys_but_not_leading_slash_or_folder_markers(
+    client,
+):
+    keys = ["d//e.txt", "/lead.txt", "folder/"]
+    for key in keys:
+        body = b"" if key.endswith("/") else b"x"
+        client.fs.pipe_file(f"{client.name}/{key}", body)
+    try:
+        paths = sorted(e.path for e in scandir(client, ""))
+        assert paths == ["a", "d//e.txt"]
+    finally:
+        for key in keys:
+            client.fs.rm_file(f"{client.name}/{key}")
+        client.fs.invalidate_cache()
 
 
 def test_scandir_alternate(client):
@@ -121,7 +451,12 @@ def test_gcs_client_gets_credentials_from_env(monkeypatch, mocker):
     GCSClient.create_fs()
 
     init.assert_called_once_with(
-        token={"token": "test-credentials-token"}, version_aware=True
+        token={"token": "test-credentials-token"},
+        version_aware=True,
+        session_kwargs={
+            "auto_decompress": False,
+            "headers": {"Accept-Encoding": "gzip"},
+        },
     )
 
 
@@ -518,6 +853,136 @@ def test_get_etag_missing_raises_filenotfound(
             client.get_current_etag,
             File(source=ctc.src_uri, path=missing_rel_path),
         )
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_put_in_cache_pinned_version_ignores_stale_etag(
+    cloud_test_catalog_upload,
+    cloud_type,
+    version_aware,
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+
+    rel_path = f"client-put-in-cache/{uuid4().hex}.bin"
+    uploaded_v1 = client.upload(b"v1", rel_path)
+    client.upload(b"version-2", rel_path)
+
+    file = File(
+        source=ctc.src_uri,
+        path=rel_path,
+        version=uploaded_v1.version,
+        etag="stale-etag",
+        size=2,
+    )
+    client.put_in_cache(file)
+
+    assert Path(ctc.catalog.cache.get_path(file)).read_bytes() == b"v1"
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+@pytest.mark.parametrize("size", [0, 1])
+def test_put_in_cache_pinned_version_with_another_size_raises(
+    cloud_test_catalog_upload,
+    cloud_type,
+    version_aware,
+    size,
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+
+    rel_path = f"client-put-in-cache/{uuid4().hex}.bin"
+    uploaded = client.upload(b"v1", rel_path)
+
+    file = File(
+        source=ctc.src_uri,
+        path=rel_path,
+        version=uploaded.version,
+        etag=uploaded.etag,
+        size=size,
+    )
+    with pytest.raises(FileNotFoundError, match=f"size was {size}, now 2"):
+        client.put_in_cache(file)
+
+    assert not ctc.catalog.cache.contains(file)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_put_in_cache_pinned_version_with_unknown_size_reads_it(
+    cloud_test_catalog_upload,
+    cloud_type,
+    version_aware,
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+
+    rel_path = f"client-put-in-cache/{uuid4().hex}.bin"
+    uploaded = client.upload(b"v1", rel_path)
+
+    file = File(
+        source=ctc.src_uri,
+        path=rel_path,
+        version=uploaded.version,
+        etag=uploaded.etag,
+        size=-1,
+    )
+    client.put_in_cache(file)
+
+    assert Path(ctc.catalog.cache.get_path(file)).read_bytes() == b"v1"
+
+
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_put_in_cache_unpinned_stale_etag_raises(
+    cloud_test_catalog_upload,
+    cloud_type,
+    version_aware,
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+
+    rel_path = f"client-put-in-cache/{uuid4().hex}.bin"
+    client.upload(b"v1", rel_path)
+
+    file = File(source=ctc.src_uri, path=rel_path, etag="stale-etag", size=2)
+    with pytest.raises(FileNotFoundError, match="changed on the source"):
+        client.put_in_cache(file)
+
+    assert not ctc.catalog.cache.contains(file)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_put_in_cache_s3_null_version_checks_etag(
+    cloud_test_catalog_upload,
+    cloud_type,
+    version_aware,
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+    bucket = client.name
+
+    rel_path = f"client-put-in-cache/{uuid4().hex}.bin"
+    client.fs.make_bucket_versioned(bucket, versioned=False)
+    try:
+        uploaded_v1 = client.upload(b"v1", rel_path)
+        client.upload(b"v2", rel_path)
+    finally:
+        client.fs.make_bucket_versioned(bucket, versioned=True)
+
+    file = File(
+        source=ctc.src_uri,
+        path=rel_path,
+        version="null",
+        etag=uploaded_v1.etag,
+        size=2,
+    )
+    with pytest.raises(FileNotFoundError, match="changed on the source"):
+        client.put_in_cache(file)
+
+    assert not ctc.catalog.cache.contains(file)
 
 
 _xfail_special_char_versioned = pytest.mark.xfail(

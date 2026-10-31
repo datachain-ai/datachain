@@ -18,6 +18,7 @@ Never use: `from datachain import File, C, func`
 ## Key Patterns
 
 ### Read data
+- `dc.list_storage("s3://bucket/path/")` -- list storage files without a chain or saved dataset ([guide](https://docs.datachain.ai/guide/listing-storage/))
 - `dc.read_storage("s3://bucket/path/", type="image")` -- files from cloud storage
 - `dc.read_csv()`, `dc.read_json()`, `dc.read_parquet()` -- structured formats
 - `dc.read_database(query, connection_string)` -- SQL databases

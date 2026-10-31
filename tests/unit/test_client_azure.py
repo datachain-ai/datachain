@@ -1,7 +1,8 @@
-import asyncio
 import os
 from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
+from xml.etree.ElementTree import fromstring
 
 import pytest
 from adlfs import AzureBlobFileSystem
@@ -12,7 +13,7 @@ from datachain.asyn import get_loop
 from datachain.client import Client
 from datachain.client.azure import AzureClient
 from datachain.dataset import StorageURI
-from datachain.lib.file import File
+from datachain.lib.file import File, FileRow
 
 
 @pytest.fixture(autouse=True)
@@ -31,6 +32,11 @@ _INFO = {
     "etag": '"abc123"',
     "last_modified": datetime(2024, 1, 1, tzinfo=UTC),
 }
+
+
+@pytest.fixture(autouse=True)
+def _one_process(mocker):
+    mocker.patch("datachain.client.listing_worker.LIST_PROCESSES", 0)  # mocks stay here
 
 
 def _make_client() -> AzureClient:
@@ -483,52 +489,35 @@ def test_get_file_key_and_version(char):
     assert bc.download_blob.call_args[1].get("version_id") == _VER
 
 
-def _listed_blob(name, metadata):
-    from azure.storage.blob import BlobProperties
-
-    blob = BlobProperties()
-    blob.name = name
-    blob.container = "mycontainer"
-    blob.size = 0
-    blob.metadata = metadata
-    blob.etag = '"abc123"'
-    blob.last_modified = datetime(2024, 1, 1, tzinfo=UTC)
-    return blob
-
-
-class _AsyncItems:
-    def __init__(self, items):
-        self.items = items
-
-    async def __aiter__(self):
-        for item in self.items:
-            yield item
-
-
-@pytest.mark.parametrize(
-    "metadata",
-    [{"hdi_isfolder": "true"}, {"Hdi_isfolder": "true"}, {"is_directory": "true"}],
-)
-def test_fetch_flat_skips_directory_markers(metadata):
-    blobs = [_listed_blob("dir", metadata), _listed_blob("dir/a.txt", {})]
-    container_client = MagicMock()
-    container_client.__aenter__ = AsyncMock(return_value=container_client)
-    container_client.__aexit__ = AsyncMock(return_value=False)
-    container_client.list_blobs.return_value.by_page.return_value = _AsyncItems(
-        [_AsyncItems(blobs)]
+def test_put_in_cache_pinned_version_still_checks_etag():
+    client, _, bc = _make_client_sdk()
+    file = File(
+        source="az://mycontainer", path="blob.txt", version=_VER, etag="stale-etag"
     )
-    service_client = MagicMock()
-    service_client.close = AsyncMock()
-    service_client.get_container_client.return_value = container_client
-    client = AzureClient("mycontainer", {"account_name": "myaccount"}, MagicMock())
-    client.fs.service_client = service_client
 
-    queue: asyncio.Queue = asyncio.Queue()
-    sync(get_loop(), client._fetch_flat, "", queue)
+    with pytest.raises(FileNotFoundError, match="changed on the source"):
+        client.put_in_cache(file)
+    bc.download_blob.assert_not_called()
 
-    files = queue.get_nowait()
-    assert [f.path for f in files] == ["dir/a.txt"]
-    assert queue.get_nowait() is None
+
+def test_blob_name_is_decoded():
+    client = AzureClient("container", {}, None)
+    client._fs = MagicMock(version_aware=True)
+    blob = fromstring(  # noqa: S314
+        "<Blob><Name Encoded='true'>a%01b</Name><VersionId>v1</VersionId>"
+        "<IsCurrentVersion>true</IsCurrentVersion><Properties>"
+        "<Last-Modified>Wed, 30 Sep 2026 23:00:00 GMT</Last-Modified>"
+        "<Etag>0x8DC</Etag><Content-Length>7</Content-Length></Properties></Blob>"
+    )
+    assert client._blob_name(blob) == "a\x01b"
+    assert client._file_row(blob, "a\x01b") == FileRow(
+        source="az://container",
+        path="a\x01b",
+        etag="0x8DC",
+        version="v1",
+        last_modified=datetime(2026, 9, 30, 23, tzinfo=UTC),
+        size=7,
+    )
 
 
 @pytest.mark.parametrize(
@@ -536,22 +525,102 @@ def test_fetch_flat_skips_directory_markers(metadata):
     [(True, ["metadata", "versions"]), (False, ["metadata"])],
 )
 def test_listing_asks_for_versions_only_when_version_aware(version_aware, include):
-    async def no_pages():
-        return
-        yield
+    _, container, _ = _listed("", version_aware)
+
+    assert container.list_blob_names.call_args.kwargs["include"] == include
+
+
+def _blob(name: str, resource_type: str = "", metadata: str = "") -> str:
+    return (
+        f"<Blob><Name>{name}</Name><Properties>"
+        "<Last-Modified>Wed, 30 Sep 2026 23:00:00 GMT</Last-Modified>"
+        f"<Etag>0x8DC</Etag><Content-Length>1</Content-Length>{resource_type}"
+        f"</Properties><Metadata>{metadata}</Metadata></Blob>"
+    )
+
+
+def _listed(
+    blobs: str, version_aware: bool = False, name: str = "mycontainer"
+) -> tuple[AzureClient, Any, list]:
+    page = fromstring(  # noqa: S314
+        f"<EnumerationResults><Blobs>{blobs}</Blobs></EnumerationResults>"
+    )
+
+    class Pages:
+        _response = page
+        continuation_token = None
+        done = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.done:
+                raise StopAsyncIteration
+            self.done = True
+            return page
 
     container = MagicMock()
     container.__aenter__ = AsyncMock(return_value=container)
     container.__aexit__ = AsyncMock(return_value=False)
-    container.list_blobs.return_value.by_page.return_value = no_pages()
-    client = AzureClient("mycontainer", {}, MagicMock())
+    container.list_blob_names.return_value.by_page.return_value = Pages()
+    client = AzureClient(name, {}, MagicMock())
     client._fs = MagicMock(version_aware=version_aware)
     client._fs.service_client.get_container_client.return_value = container
 
     async def list_all():
-        async for _ in client.scandir(""):
-            pass
+        return [f.path async for page in client.scandir("") for f in page]
 
-    sync(get_loop(), list_all)
+    return client, container, sync(get_loop(), list_all)
 
-    assert container.list_blobs.call_args.kwargs["include"] == include
+
+def test_listing_opens_container_without_account():
+    client, _, paths = _listed(_blob("a"), name="mycontainer@myaccount")
+
+    client.fs.service_client.get_container_client.assert_called_once_with(
+        container="mycontainer"
+    )
+    assert paths == ["a"]
+
+
+@pytest.mark.parametrize("resource_type", ["", "<ResourceType>file</ResourceType>"])
+def test_hierarchical_namespace_lists_out_of_key_order(resource_type):
+    client, _, _ = _listed(_blob("a", resource_type))
+
+    assert client._lists_in_key_order() is (not resource_type)
+
+
+def test_hierarchical_namespace_directories_are_not_files():
+    directory = "<ResourceType>directory</ResourceType>"
+    file = "<ResourceType>file</ResourceType>"
+    blobs = [
+        _blob("dir", directory),
+        _blob("dir/f1", file),
+        _blob("dir/sub", directory),
+        _blob("dir/sub/f2", file),
+    ]
+
+    _, _, paths = _listed("".join(blobs))
+
+    assert paths == ["dir/f1", "dir/sub/f2"]
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "<hdi_isfolder>true</hdi_isfolder>",
+        "<Hdi_isfolder>true</Hdi_isfolder>",
+        "<is_directory>true</is_directory>",
+    ],
+    ids=["hadoop", "hadoop-capitalized", "adlfs"],
+)
+def test_folder_markers_are_not_files(marker):
+    blobs = [
+        _blob("year=2008", metadata=marker),
+        _blob("year=2008/month=1", metadata=marker),
+        _blob("year=2008/month=1/part-0.parquet"),
+    ]
+
+    _, _, paths = _listed("".join(blobs))
+
+    assert paths == ["year=2008/month=1/part-0.parquet"]
