@@ -496,6 +496,7 @@ class ColType(NamedTuple):
     type_name: str
     default: Any
     kept_type: type | None  # a value of this type goes in unconverted
+    item_type: type | None  # a list whose first item has this type goes in unconverted
 
 
 def adjust_outputs(
@@ -520,6 +521,7 @@ def adjust_outputs(
         col_type_name,
         default_value,
         kept_type,
+        _,
     ) in col_types:
         # Fill missing values with defaults
         if col_name not in row:
@@ -599,15 +601,20 @@ def get_col_types(
             if getattr(sql_type, "dc_nullable", False)
             else col_type.default_value(dialect)
         )
-        kept_type: type | None
-        if not exact or python_type is list:
-            kept_type = None
-        elif python_type is dict or type_name == "JSON":
+        kept_type: type | None = None
+        item_type: type | None = None
+        if exact and python_type is list:
+            # convert_type checks only the first item, and recurses into a list
+            item = warehouse.python_type(sql_type.item_type)
+            item_type = None if item is list else item
+        elif exact and (python_type is dict or type_name == "JSON"):
             kept_type = str  # JSON text, which convert_type keeps as it is
-        else:
+        elif exact:
             kept_type = python_type
         col_types.append(
-            ColType(name, sql_type, python_type, type_name, default, kept_type)
+            ColType(
+                name, sql_type, python_type, type_name, default, kept_type, item_type
+            )
         )
     return col_types
 
@@ -616,7 +623,10 @@ def _tuple_adjuster(col_types: list[ColType]) -> Callable[[tuple], tuple | None]
     """For a gen row of the output columns, then ``sys__input_id``,
     ``sys__partial`` and ``sys__empty``: the row with column defaults in place of
     None, or None when ``adjust_outputs`` must convert it."""
-    kept_types = [frozenset({type(None), c.kept_type}) for c in col_types]
+    kept_types = [
+        frozenset({type(None), list if c.item_type else c.kept_type}) for c in col_types
+    ]
+    lists = [(i, c.item_type) for i, c in enumerate(col_types) if c.item_type]
     defaults = [
         (i, c.default) for i, c in enumerate(col_types) if c.default is not None
     ]
@@ -625,6 +635,9 @@ def _tuple_adjuster(col_types: list[ColType]) -> Callable[[tuple], tuple | None]
         # map stops at the output columns: the sys values are the generator's own
         if not all(map(frozenset.__contains__, kept_types, map(type, row))):
             return None
+        for i, item_type in lists:
+            if (value := row[i]) and not isinstance(value[0], item_type):
+                return None
         if not defaults:
             return row
         values = list(row)

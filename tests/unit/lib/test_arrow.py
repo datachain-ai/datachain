@@ -20,6 +20,7 @@ from datachain.lib.arrow import (
 from datachain.lib.data_model import dict_to_data_model
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.hf import HFClassLabel
+from datachain.lib.udf import FlatRow
 
 
 @pytest.mark.parametrize("cache", [True, False])
@@ -148,6 +149,11 @@ class PlainTypes(dc.DataModel):
     bin: bytes | None = None
     ts: datetime | None = None
     tz: datetime | None = None
+    cat: str | None = None
+    empty: str | None = None
+    fl: list[float | None] | None = None
+    il: list[int | None] | None = None
+    sl: list[str | None] | None = None
 
 
 @pytest.fixture
@@ -165,11 +171,16 @@ def plain_types_parquet(tmp_path):
             "bin": pa.array([b"\x00", None, b""]),
             "ts": pa.array([when, None, None]),
             "tz": pa.array([None, when, None], pa.timestamp("ms", tz="UTC")),
+            "cat": pa.array(["a", None, "a"]).dictionary_encode(),
+            "empty": pa.array([None, None, None]),
+            "fl": pa.array([[1.5, -2.0], None, []]),
+            "il": pa.array([[1], [2, None], None]),
+            "sl": pa.array([None, ["x", None], ["ü"]]),
         }
     )
     path = tmp_path / "plain.parquet"
     pq.write_table(table, path, row_group_size=1)
-    return path.as_uri()
+    return path
 
 
 @pytest.mark.parametrize("source", [True, False])
@@ -184,7 +195,7 @@ def test_read_parquet_dict_output_matches_model_output(
         signals.append("source")
     by_types, by_model = (
         dc.read_parquet(
-            plain_types_parquet,
+            plain_types_parquet.as_uri(),
             output=out,
             column=column,
             source=source,
@@ -199,6 +210,22 @@ def test_read_parquet_dict_output_matches_model_output(
     assert [row[:2] for row in by_types] == [(-1, 2**32 - 1), (2, 0), (3, None)]
     if source:
         assert [row[-1].index for row in by_types] == [0, 1, 2]
+
+
+def test_arrow_generator_reads_plain_columns_as_flat_rows(plain_types_parquet, catalog):
+    stream = File(
+        path=plain_types_parquet.name, source=f"file://{plain_types_parquet.parent}"
+    )
+    stream._set_stream(catalog, caching_enabled=False)
+    table = pq.read_table(plain_types_parquet)
+    func = ArrowGenerator(
+        table.schema, PlainTypes, source=False, output_from_types=True
+    )
+
+    rows = list(func.process(stream))
+
+    assert {type(row) for row in rows} == {FlatRow}
+    assert rows == [tuple(r.values()) for r in table.to_pylist()]
 
 
 class Declared(dc.DataModel):
