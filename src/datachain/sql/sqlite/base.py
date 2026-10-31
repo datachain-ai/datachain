@@ -749,7 +749,8 @@ def compile_collect(element, compiler, **kwargs):
 
 USEARCH_SQLITE_ENV = "DATACHAIN_USEARCH_SQLITE"
 _USEARCH_SQLITE_PATH_CODE = """
-import warnings
+import sys, warnings
+sys.path[:] = {path!r}
 warnings.simplefilter("ignore")
 import usearch
 print(usearch.sqlite_path())
@@ -764,28 +765,37 @@ def usearch_sqlite_path() -> str | None:
     which crashes native libraries imported later in the same process (e.g.
     onnxruntime). The result is passed to child processes in an env variable.
     """
-    if (path := os.environ.get(USEARCH_SQLITE_ENV)) is not None:
-        return path or None
-    path = _resolve_usearch_sqlite_path()
-    os.environ[USEARCH_SQLITE_ENV] = path or ""
-    return path
+    if (path := os.environ.get(USEARCH_SQLITE_ENV)) is None:
+        path = os.environ[USEARCH_SQLITE_ENV] = _resolve_usearch_sqlite_path() or ""
+    return path or None
 
 
 def _resolve_usearch_sqlite_path() -> str | None:
-    if getattr(sys, "frozen", False) or importlib.util.find_spec("usearch") is None:
+    if (
+        not sys.executable
+        or getattr(sys, "frozen", False)
+        or importlib.util.find_spec("usearch") is None
+    ):
         return None
     try:
         result = subprocess.run(  # noqa: S603
-            [sys.executable, "-c", _USEARCH_SQLITE_PATH_CODE],
+            [
+                sys.executable,
+                "-c",
+                _USEARCH_SQLITE_PATH_CODE.format(
+                    path=[p for p in sys.path if isinstance(p, str)]
+                ),
+            ],
             capture_output=True,
             text=True,
             timeout=120,
             check=True,
         )
     except (OSError, subprocess.SubprocessError):
+        logger.debug("Failed to locate usearch SQLite extension", exc_info=True)
         return None
     lines = result.stdout.strip().splitlines()
-    return lines[-1] if lines else None
+    return (lines[-1].strip() or None) if lines else None
 
 
 @cache
