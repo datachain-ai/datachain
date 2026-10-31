@@ -1,4 +1,3 @@
-import inspect
 from typing import Any, ClassVar
 
 from pydantic import BaseModel
@@ -90,9 +89,10 @@ class ModelStore:
 
     @staticmethod
     def is_pydantic(val: Any) -> bool:
+        # isinstance first: most calls pass values or builtin types, and it is cheap
         return (
-            not hasattr(val, "__origin__")
-            and inspect.isclass(val)
+            isinstance(val, type)
+            and not hasattr(val, "__origin__")
             and issubclass(val, BaseModel)
         )
 

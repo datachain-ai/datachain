@@ -495,6 +495,7 @@ class ColType(NamedTuple):
     type_name: str
     default: Any
     kept_as_is: bool  # a value of python_type goes in unconverted
+    exact: bool = False  # the warehouse converts values with the base convert_type
 
 
 def adjust_outputs(
@@ -519,6 +520,7 @@ def adjust_outputs(
         col_type_name,
         default_value,
         kept_as_is,
+        _,
     ) in col_types:
         # Fill missing values with defaults
         if col_name not in row:
@@ -600,19 +602,49 @@ def get_col_types(
         )
         kept_as_is = exact and python_type not in (list, dict) and type_name != "JSON"
         col_types.append(
-            ColType(name, sql_type, python_type, type_name, default, kept_as_is)
+            ColType(name, sql_type, python_type, type_name, default, kept_as_is, exact)
         )
     return col_types
+
+
+def _plain_item_type(sql_type: Any) -> type | None:
+    """The item type of a list column of plain scalars, else None."""
+    from datachain.sql.types import Boolean, Float, Int, String
+
+    item = getattr(sql_type, "item_type", None)
+    if isinstance(item, type):
+        item = item()
+    for cls, python_type in (
+        (Boolean, bool),
+        (Float, float),
+        (Int, int),
+        (String, str),
+    ):
+        if isinstance(item, cls):
+            return python_type
+    return None
 
 
 def _tuple_adjuster(col_types: list[ColType]) -> Callable[[tuple], tuple | None]:
     """For a gen row of the output columns, then ``sys__input_id``,
     ``sys__partial`` and ``sys__empty``: the row with column defaults in place of
     None, or None when ``adjust_outputs`` must convert it."""
-    kept_types = [
-        frozenset({type(None), c.python_type} if c.kept_as_is else {type(None)})
-        for c in col_types
-    ]
+    kept_types = []
+    # list columns whose items convert_type keeps as they are: (index, item type)
+    lists: list[tuple[int, type]] = []
+    for i, c in enumerate(col_types):
+        if c.kept_as_is:
+            kept_types.append(frozenset({type(None), c.python_type}))
+        elif c.exact and (c.python_type is dict or c.type_name == "JSON"):
+            # a str is JSON that convert_type stores as it is
+            kept_types.append(frozenset({type(None), str}))
+        elif (
+            c.exact and c.python_type is list and (item := _plain_item_type(c.sql_type))
+        ):
+            kept_types.append(frozenset({type(None), list}))
+            lists.append((i, item))
+        else:
+            kept_types.append(frozenset({type(None)}))
     defaults = [
         (i, c.default) for i, c in enumerate(col_types) if c.default is not None
     ]
@@ -621,6 +653,9 @@ def _tuple_adjuster(col_types: list[ColType]) -> Callable[[tuple], tuple | None]
         # map stops at the output columns: the sys values are the generator's own
         if not all(map(frozenset.__contains__, kept_types, map(type, row))):
             return None
+        for i, item in lists:
+            if (v := row[i]) and type(v[0]) is not item:
+                return None
         if not defaults:
             return row
         values = list(row)

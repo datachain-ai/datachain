@@ -2852,7 +2852,7 @@ def test_exec(test_session, monkeypatch):
 
     chain = (
         dc.read_values(name=names, session=test_session)
-        .map(nop=lambda name: all_names.add(name))  # noqa: PLW0108
+        .map(nop=lambda name: all_names.add(name))
         .exec()
     )
     assert isinstance(chain, dc.DataChain)
@@ -2917,7 +2917,7 @@ def test_sys_feature(test_session, monkeypatch):
     assert not ds_no_sys._sys
 
     args = []
-    ds_no_sys.map(res=lambda t1: args.append(t1)).save("ds_no_sys")  # noqa: PLW0108
+    ds_no_sys.map(res=lambda t1: args.append(t1)).save("ds_no_sys")
     assert args == [
         MyFr(nnn="n1", count=1),
         MyFr(nnn="n1", count=3),
@@ -6799,3 +6799,23 @@ def test_adjust_outputs_calls_an_overridden_convert_type(test_session, mocker):
     row = adjust_outputs(warehouse, {"x": when}, col_types, None)  # type: ignore[arg-type]
 
     assert row["x"] == dt.datetime(2026, 1, 1, 10)
+
+
+def test_tuple_adjuster_keeps_plain_lists_and_json_strings(test_session):
+    from datachain.query.dataset import _tuple_adjuster, get_col_types
+    from datachain.sql.types import JSON, Array, Float, String
+
+    warehouse = test_session.catalog.warehouse
+    col_types = get_col_types(
+        warehouse, {"emb": Array(Float), "meta": JSON, "tags": Array(String)}
+    )
+    adjust = _tuple_adjuster(col_types)
+    sys_values = (1, False, None)
+
+    row = ([0.5, 1.5], '{"a": 1}', ["x"], *sys_values)
+    assert adjust(row) == row
+    assert adjust(([], "{}", None, *sys_values)) is not None
+    # values convert_type would still change go the per-row way
+    assert adjust(([1, 2], "{}", ["x"], *sys_values)) is None
+    assert adjust(([0.5], {"a": 1}, ["x"], *sys_values)) is None
+    assert adjust(((0.5,), "{}", ["x"], *sys_values)) is None

@@ -331,3 +331,77 @@ def test_file_schemas_no_files(test_session):
 )
 def test_is_parquet(format, expected):
     assert is_parquet(format) is expected
+
+
+def _read_both_ways(monkeypatch, read):
+    from datachain.lib.arrow import ArrowGenerator
+
+    fast = read()
+    monkeypatch.setattr(ArrowGenerator, "_flat_columns_possible", lambda *a: False)
+    slow = read()
+    return fast, slow
+
+
+@pytest.mark.parametrize("source", [True, False])
+def test_read_parquet_flat_rows_match_per_record_rows(
+    tmp_path, test_session, monkeypatch, source
+):
+    from datachain.lib.arrow import ArrowGenerator
+
+    pq.write_table(
+        pa.table(
+            {
+                "id": list(range(300)),
+                "name": [f"n{i}" if i % 7 else None for i in range(300)],
+                "score": [i / 3 for i in range(300)],
+                "emb": [[float(i), float(-i)] for i in range(300)],
+                "ts": pa.array(
+                    [datetime(2024, 1, 1 + i % 28) for i in range(300)],
+                    pa.timestamp("us", tz="UTC"),
+                ),
+            }
+        ),
+        tmp_path / "t.parquet",
+        row_group_size=64,
+    )
+    calls = []
+    original = ArrowGenerator._process_record
+    monkeypatch.setattr(
+        ArrowGenerator,
+        "_process_record",
+        lambda self, *a: calls.append(1) or original(self, *a),
+    )
+
+    def read():
+        chain = dc.read_parquet(
+            tmp_path / "t.parquet", source=source, session=test_session
+        )
+        return chain.order_by("id").to_list()
+
+    fast = read()
+    assert len(calls) <= 2  # only the rows that check the column-wise path
+    monkeypatch.setattr(ArrowGenerator, "_flat_columns_possible", lambda *a: False)
+    assert fast == read()
+    assert len(fast) == 300
+
+
+def test_read_csv_flat_rows_respect_nrows_and_missing_columns(
+    tmp_path, test_session, monkeypatch
+):
+    (tmp_path / "a.csv").write_text(
+        "x,y\n" + "".join(f"{i},{i * 2}\n" for i in range(50))
+    )
+    (tmp_path / "b.csv").write_text("x\n" + "".join(f"{i}\n" for i in range(50, 60)))
+
+    def read():
+        return (
+            dc.read_csv(
+                f"{tmp_path}/*.csv", session=test_session, column_types={"y": "int64"}
+            )
+            .order_by("x")
+            .to_list("x", "y")
+        )
+
+    fast, slow = _read_both_ways(monkeypatch, read)
+    assert fast == slow
+    assert fast[-1] == (59, None)

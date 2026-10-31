@@ -459,6 +459,12 @@ class UDFBase(AbstractUDF):
         return udf_input
 
 
+class FlatRow(tuple):
+    """A generator output row already flattened into the output columns' order."""
+
+    __slots__ = ()
+
+
 def noop(*args, **kwargs):
     pass
 
@@ -809,8 +815,8 @@ class Generator(UDFBase):
             with safe_closing(result) as result_objs:
                 for result_obj, is_last in with_last_flag(result_objs):
                     has_output = True
-                    if type(result_obj) is file_row:
-                        yield result_obj + (row_id, not is_last, None)  # noqa: RUF005
+                    if type(result_obj) is file_row or type(result_obj) is FlatRow:
+                        yield (*result_obj, row_id, not is_last, None)
                         continue
                     udf_output = self._flatten_row(result_obj)
                     udf_output = dict(zip(signal_names, udf_output, strict=False))

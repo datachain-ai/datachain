@@ -24,7 +24,7 @@ from datachain.lib.data_model import (
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.udf import Generator
+from datachain.lib.udf import FlatRow, Generator
 from datachain.lib.utils import normalize_col_names
 from datachain.progress import tqdm
 
@@ -206,6 +206,10 @@ class ArrowGenerator(Generator):
             schema = pa.schema(fields, metadata=schema.metadata)
         hf_schema = _get_hf_schema(schema)
 
+        if self._flat_columns_possible(hf_schema, use_datachain_schema):
+            yield from self._flat_rows(ds.to_batches(**kw), file, hf_schema)
+            return
+
         def iter_records():
             for record_batch in ds.to_batches(**kw):
                 yield from record_batch.to_pylist()
@@ -218,6 +222,102 @@ class ArrowGenerator(Generator):
                 yield self._process_record(
                     record, file, index, hf_schema, use_datachain_schema
                 )
+
+    def _flat_columns_possible(self, hf_schema, use_datachain_schema) -> bool:
+        """Plain columns only: no Hugging Face features, DataChain schema or models."""
+        if hf_schema or use_datachain_schema or self.output_schema is None:
+            return False
+        if getattr(self, "output", None) is None:  # not bound to a chain's output
+            return False
+        return not any(
+            ModelStore.is_pydantic(f.annotation)
+            for f in self.output_schema.model_fields.values()
+        )
+
+    def _flat_rows(self, batches, file: File, hf_schema) -> Iterator[Any]:
+        """Rows already in output column order, built column by column.
+
+        The first rows of each file go through the per-record path as well; if the
+        two disagree, the rest of the file uses the per-record path.
+        """
+        flatten_row = self._flatten_row
+        index = 0
+        remaining = self.nrows
+        template = None  # (prefix before index, prefix after index) or None
+        with tqdm(
+            desc="Parsed by pyarrow", unit="rows", total=self.nrows, leave=False
+        ) as pbar:
+            for batch in batches:
+                if remaining is not None:
+                    if remaining <= 0:
+                        return
+                    batch = batch.slice(0, remaining)
+                    remaining -= batch.num_rows
+                names = self.columns or batch.schema.names
+                present = set(batch.schema.names)
+                cols = [
+                    batch.column(n).to_pylist() if n in present else [None] * len(batch)
+                    for n in names
+                ]
+                rows = zip(*cols, strict=True)
+                if template is None:
+                    records = batch.slice(0, 2).to_pylist()
+                    template = self._flat_template(
+                        records, file, hf_schema, flatten_row
+                    )
+                    if template is False:
+                        yield from self._slow_rows(
+                            batches, batch, file, hf_schema, index
+                        )
+                        return
+                if self.source:
+                    before, after = (
+                        tuple(_json_once(v) for v in part)
+                        for part in template  # type: ignore[union-attr]
+                    )
+                    for values in rows:
+                        yield FlatRow((*before, index, *after, *values))
+                        index += 1
+                else:
+                    for values in rows:
+                        yield FlatRow(values)
+                        index += 1
+                pbar.update(len(batch))
+
+    def _flat_template(self, records, file, hf_schema, flatten_row):
+        """Constant part of the flat row around the row index, if it matches."""
+        expected = [
+            tuple(flatten_row(self._process_record(r, file, i, hf_schema, False)))
+            for i, r in enumerate(records)
+        ]
+        names = self.columns or (list(records[0]) if records else [])
+        values = [tuple(r.get(n) for n in names) for r in records]
+        if not self.source:
+            return () if [tuple(v) for v in values] == expected else False
+        n = len(names)
+        prefixes = [e[: len(e) - n] for e in expected]
+        if any(e[len(e) - n :] != v for e, v in zip(expected, values, strict=True)):
+            return False
+        first = prefixes[0]
+        idx = [i for i, x in enumerate(first) if x == 0 and type(x) is int]
+        for pos in idx:
+            if len(prefixes) == 1 or (
+                prefixes[1][pos] == 1
+                and prefixes[1][:pos] == first[:pos]
+                and prefixes[1][pos + 1 :] == first[pos + 1 :]
+            ):
+                return first[:pos], first[pos + 1 :]
+        return False
+
+    def _slow_rows(self, batches, first_batch, file, hf_schema, index):
+        def records():
+            yield from first_batch.to_pylist()
+            for b in batches:
+                yield from b.to_pylist()
+
+        limit = None if self.nrows is None else self.nrows - index
+        for i, record in enumerate(islice(records(), limit), start=index):
+            yield self._process_record(record, file, i, hf_schema, False)
 
     def _process_record(
         self,
@@ -296,6 +396,13 @@ class ArrowGenerator(Generator):
             else:
                 vals_dict[field] = val
         return [self.output_schema(**vals_dict)]
+
+
+def _json_once(value: Any) -> Any:
+    """A dict stored once per file as the JSON its column would get on insert."""
+    if type(value) is dict:
+        return json.dumps(value, ensure_ascii=False, serialize_numpy=True)
+    return value
 
 
 def _file_datasets(chain: "DataChain", **kwargs) -> Iterator[Dataset]:
