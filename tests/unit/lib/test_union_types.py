@@ -9,7 +9,7 @@ round-trips for every union kind (basic/basic, model/model, mixed, nullable).
 
 import copy
 from datetime import datetime
-from typing import Generic, Literal, Optional, TypeVar, Union
+from typing import ClassVar, Generic, Literal, Optional, TypeVar, Union
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -29,6 +29,7 @@ from datachain.lib.data_model import (
     union_layout,
     validate_chain_type,
 )
+from datachain.lib.dc import DatasetPrepareError
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema, SignalSchemaWarning
 from datachain.lib.utils import DataChainParamsError
@@ -444,7 +445,7 @@ def _write_v(path, session, values, anno, replaced):
         v=values,
         output={"id": int, "v": anno},
         session=session,
-    ).to_parquet(path)
+    ).order_by("id").to_parquet(path)
     table = pq.read_table(path)
     for name, column in replaced.items():
         table = table.drop_columns([name])
@@ -555,6 +556,27 @@ def test_index_tag_rejected_multi_arm(unwarned_index_tag):
 
 def test_order_by_column_none_for_unknown_signal():
     assert SignalSchema({"v": int | str}).order_by_column("nonexistent") is None
+
+
+def test_read_parquet_union_arm_must_have_the_stored_arm_shape(tmp_dir, test_session):
+    class Holder(DataModel):
+        foo: Foo
+
+    path = tmp_dir / "v.parquet"
+    _write_v(path, test_session, [Holder(foo=Foo())], Holder | int, {})
+
+    class Holder(DataModel):  # type: ignore[no-redef]
+        _version: ClassVar[int] = 2
+        foo: Foo | None = None
+
+    error = "v.Holder.foo can't be optional, as v.Holder.foo is never None"
+    with pytest.raises(DatasetPrepareError, match=error):
+        dc.read_parquet(
+            path.as_uri(),
+            columns=["v"],
+            output={"v": Holder | int},
+            session=test_session,
+        )
 
 
 def test_read_parquet_infers_a_union_arm_without_type_tags(tmp_dir, test_session):

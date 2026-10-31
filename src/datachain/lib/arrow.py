@@ -516,15 +516,24 @@ def _signal_paths(
 def _check_output_shape(field: str, anno: Any, path: str, stored: Any) -> None:
     """Raise unless the output field has the shape of the signal it reads: a model,
     optional where the signal is, a union of the same types, or a plain value,
-    down through the fields it declares."""
+    down through the fields it declares and the union arms' fields."""
     output_kind, stored_kind = classify_field(anno), classify_field(stored)
     if output_kind.is_model != stored_kind.is_model:
         kind = "a model" if output_kind.is_model else "not a model"
         raise ValueError(f"output field {field} is {kind}, unlike {path}")
     if not output_kind.is_model:
-        if (arms := _union_arms(anno)) != _union_arms(stored):
+        output_layout, stored_layout = union_layout(anno), union_layout(stored)
+        if (arms := _union_arms(output_layout)) != _union_arms(stored_layout):
             kind = f"a union of {arms}" if arms else "not a union"
             raise ValueError(f"output field {field} is {kind}, unlike {path}")
+        if output_layout and stored_layout:
+            for arm, stored_arm in zip(
+                output_layout.arms, stored_layout.arms, strict=True
+            ):
+                name = arm_selector(arm)
+                _check_output_shape(
+                    f"{field}.{name}", arm, f"{path}.{name}", stored_arm
+                )
         return
     if output_kind.is_optional != stored_kind.is_optional:
         if stored_kind.is_optional:
@@ -543,9 +552,8 @@ def _check_output_shape(field: str, anno: Any, path: str, stored: Any) -> None:
             )
 
 
-def _union_arms(anno: Any) -> str | None:
+def _union_arms(layout: "UnionLayout | None") -> str | None:
     """Return the arms of a tagged union, which name its columns, else None."""
-    layout = union_layout(anno)
     return None if layout is None else ", ".join(map(arm_selector, layout.arms))
 
 
