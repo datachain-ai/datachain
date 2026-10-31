@@ -14,7 +14,6 @@ from datachain.lib.listing import (
     list_bucket,
     parse_listing_uri,
 )
-from datachain.lib.settings import DEFAULT_PREFETCH
 from datachain.query import dataset
 from tests.data import ENTRIES
 
@@ -392,12 +391,12 @@ def test_read_storage_in_studio_saves_cloud_listing(cloud_test_catalog, studio_j
 
 
 @pytest.mark.parametrize("is_studio", [True])
-def test_read_storage_in_studio_sees_new_local_files(
+def test_read_storage_in_studio_lists_local_files_again_on_each_call(
     test_session, local_tree, studio_job
 ):
-    chain = dc.read_storage(local_tree.as_uri(), session=test_session)
+    assert dc.read_storage(local_tree.as_uri(), session=test_session).count() == 3
     (local_tree / "d.txt").write_text("d")
-    assert chain.count() == 4
+    assert dc.read_storage(local_tree.as_uri(), session=test_session).count() == 4
 
 
 @pytest.mark.parametrize("is_studio", [True])
@@ -411,17 +410,26 @@ def test_read_storage_in_studio_rejects_delta_on_local_paths(
 
 
 @pytest.mark.parametrize("is_studio", [True])
-def test_read_storage_in_studio_scopes_listing_settings_to_the_listing_step(
+def test_read_storage_in_studio_chunks_local_files(test_session, tmp_dir, studio_job):
+    for i in range(20):
+        (tmp_dir / f"{i}.txt").write_text(str(i))
+    chain = dc.read_storage(tmp_dir.as_uri(), session=test_session)
+    chunks = [set(chain.chunk(i, 2).to_values("file.path")) for i in range(2)]
+    assert all(chunks)
+    assert chunks[0] | chunks[1] == {f"{i}.txt" for i in range(20)}
+
+
+@pytest.mark.parametrize("is_studio", [True])
+def test_read_storage_in_studio_lists_a_directory_once_per_call(
     test_session, local_tree, studio_job
 ):
-    chain = dc.read_storage(local_tree.as_uri(), session=test_session)
-    generator = next(
-        s for s in chain._query.steps if isinstance(s, dataset.RowGenerator)
+    chain = dc.read_storage(local_tree.as_uri() + "/*.{txt,csv}", session=test_session)
+    assert sorted(chain.to_values("file.path")) == ["a.txt", "b.csv"]
+    temp = test_session.catalog.metastore.list_datasets_by_prefix(
+        test_session.get_temp_prefix()
     )
-    assert generator.udf.inner.prefetch == 0
-    assert generator.batch_size == LISTING_BATCH_SIZE
-    assert chain._settings.prefetch == DEFAULT_PREFETCH
-    assert chain._settings.batch_size is None
+    listing_project = test_session.catalog.metastore.listing_project_name
+    assert len([d for d in temp if d.project.name == listing_project]) == 1
 
 
 def test_read_storage_single_local_file_deterministic_hash(test_session, tmp_dir):

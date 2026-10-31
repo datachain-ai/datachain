@@ -591,7 +591,7 @@ class Catalog:
         column="file",
         skip_indexing=False,
         *,
-        _prepared_listings: set[str] | None = None,
+        _prepared_listings: dict[str, str] | None = None,
     ) -> tuple["SavedListing | None", Client, str]:
         from datachain.client.local import FileClient
         from datachain.lib.dc.storage_pattern import (
@@ -601,6 +601,7 @@ class Catalog:
         from datachain.lib.dc.utils import is_studio
         from datachain.lib.listing import (
             ensure_listing,
+            ensure_session_listing,
             listing_uri_from_name,
             write_listing,
         )
@@ -615,7 +616,7 @@ class Catalog:
         )
         session = session_for(self.session, session_config, in_memory=False)
         source_uri, pattern = split_uri_pattern(source)
-        prepared = set() if _prepared_listings is None else _prepared_listings
+        prepared = {} if _prepared_listings is None else _prepared_listings
 
         session_listing_uri = None
         if is_studio() and is_local:
@@ -626,9 +627,10 @@ class Catalog:
                 list_uri, list_path = source_uri, Client.parse_url(source_uri)[1]
             else:
                 _, list_uri, list_path = described
-                list_ds_name = session.generate_temp_dataset_name()
+                list_ds_name = ensure_session_listing(
+                    list_uri, session, config, prepared, column=column
+                )
                 session_listing_uri = list_uri
-                write_listing(list_uri, list_ds_name, session, config, column=column)
         else:
             list_ds_name, list_uri, list_path, _ = get_listing(
                 source_uri, session, update=update
@@ -646,7 +648,7 @@ class Catalog:
                     ),
                     update=update and list_ds_name not in prepared,
                 )
-                prepared.add(list_ds_name)
+                prepared[list_ds_name] = list_ds_name
 
         if pattern is not None:
             if is_local:
@@ -678,10 +680,10 @@ class Catalog:
         client_config=None,
         only_index=False,
         *,
-        _prepared_listings: set[str] | None = None,
+        _prepared_listings: dict[str, str] | None = None,
     ) -> Iterator[list["DataSource"] | None]:
         enlisted_sources: list[tuple[SavedListing | None, Client, str]] = []
-        _prepared_listings = set() if _prepared_listings is None else _prepared_listings
+        _prepared_listings = {} if _prepared_listings is None else _prepared_listings
         try:
             for src in sources:  # Opt: parallel
                 listing, client, file_path = self.enlist_source(
@@ -733,7 +735,7 @@ class Catalog:
             return Node.from_row(d)
 
         enlisted_sources: list[tuple[bool, bool, Any]] = []
-        _prepared_listings: set[str] = set()
+        _prepared_listings: dict[str, str] = {}
         client_config = self.client_config if client_config is None else client_config
         session = session_for(self.session, client_config, in_memory=False)
         for src in sources:  # Opt: parallel
@@ -1950,7 +1952,7 @@ class Catalog:
         skip_indexing=False,
         *,
         client_config=None,
-        _prepared_listings: set[str] | None = None,
+        _prepared_listings: dict[str, str] | None = None,
     ) -> Iterator[tuple[DataSource, Iterable[tuple]]]:
         with self.enlist_sources(
             sources,

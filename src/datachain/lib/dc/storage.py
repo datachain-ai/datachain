@@ -61,9 +61,9 @@ def read_storage(  # noqa: PLR0913
     `dc.list_storage(uri).save()` does. The chain holds current objects. To list a
     storage without saving it, use `dc.list_storage()`.
 
-    In a Studio job, a local path is listed each time it is read and never
-    saved, since the job's files live only in its own worker; `delta=True`
-    raises there for a directory.
+    In a Studio job, a local path is listed again on each call into a
+    temporary dataset that the session drops, since the job's files live only
+    in its own worker; `delta=True` raises there for a directory.
 
     Parameters:
         uri: Storage path(s) or URI(s). Can be a local path or start with a
@@ -206,7 +206,7 @@ def _read_storage(
     cache = session.catalog.cache
     chains = []
     file_values = []
-    prepared_listings: set[str] = set()
+    prepared_listings: dict[str, str] = {}
 
     for list_uri_to_use, glob_pattern in storage_sources(uris):
         dc, list_uri, list_path = _prepare_listing(
@@ -573,7 +573,7 @@ def _prepare_listing(
     uri: str | os.PathLike[str],
     session: Session,
     client_config: dict,
-    prepared: set[str],
+    prepared: dict[str, str],
     *,
     file_type: type[File] = File,
     column: str = "file",
@@ -591,10 +591,11 @@ def _prepare_listing(
     """Select a snapshot and attach its full-prefix refresh, without reading rows.
 
     A single file has no snapshot. Return its URI and the path used to filter rows.
-    In Studio, a local path has no snapshot either: it is listed live each time.
+    In Studio, a local directory gets a session-only snapshot, listed again each call.
     """
     from .datasets import read_dataset
 
+    catalog = session.catalog
     if is_studio() and issubclass(Client.get_implementation(uri), FileClient):
         uri = os.fspath(uri)
         client = Client.get_client(uri, session.catalog.cache, **client_config)
@@ -603,18 +604,27 @@ def _prepare_listing(
             return None, uri, Client.parse_url(uri)[1]
         if delta:
             raise ValueError(
-                "delta needs a saved listing, and Studio saves none for local paths"
+                "delta needs a saved listing, and Studio keeps none for local paths"
             )
         _, list_uri, list_path = described
-        chain = listing_lib.listing_chain(
+        temp_name = listing_lib.ensure_session_listing(
             list_uri,
             session,
             client_config,
+            prepared,
             column=column,
             file_type=file_type,
             settings=settings,
             in_memory=in_memory,
         )
+        chain = read_dataset(
+            temp_name,
+            namespace=catalog.metastore.system_namespace_name,
+            project=catalog.metastore.listing_project_name,
+            session=session,
+            settings=settings,
+        )
+        chain.signals_schema = chain.signals_schema.mutate({column: file_type})
         return chain, list_uri, list_path
 
     name, list_uri, list_path, _ = listing_lib.get_listing(
@@ -623,7 +633,6 @@ def _prepare_listing(
     if name is None:
         return None, list_uri, list_path
 
-    catalog = session.catalog
     chain = read_dataset(
         name,
         namespace=catalog.metastore.system_namespace_name,
@@ -639,7 +648,7 @@ def _prepare_listing(
         delta_unsafe=delta_unsafe,
     )
     # A snapshot shared by several URIs is prepared once per operation.
-    prepared.add(name)
+    prepared[name] = name
     chain.signals_schema = chain.signals_schema.mutate({column: file_type})
     # A reused snapshot can cover a parent: always refresh its whole prefix.
     chain._query.set_listing_fn(

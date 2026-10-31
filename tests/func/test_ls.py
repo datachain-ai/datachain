@@ -287,6 +287,35 @@ def test_ls_in_studio_removes_local_listing_with_its_session(
     assert not list(catalog.metastore.list_datasets_by_prefix(prefix))
 
 
+@pytest.mark.parametrize("is_studio", [True])
+def test_ls_in_studio_lists_a_shared_local_directory_once(
+    test_session, local_tree, studio_job, capsys
+):
+    catalog = test_session.catalog
+    with Session("cli", catalog=catalog) as session:
+        ls(
+            [f"{local_tree.as_uri()}/*.txt", f"{local_tree.as_uri()}/*.csv"],
+            catalog=catalog,
+        )
+        temp = catalog.metastore.list_datasets_by_prefix(session.get_temp_prefix())
+        listing_project = catalog.metastore.listing_project_name
+        assert len([d for d in temp if d.project.name == listing_project]) == 1
+    out = capsys.readouterr().out
+    assert "a.txt" in out
+    assert "b.csv" in out
+
+
+@pytest.mark.parametrize("is_studio", [True])
+def test_enlisted_local_sources_share_one_listing_and_its_uri(
+    test_session, local_tree, studio_job
+):
+    sources = [f"{local_tree.as_uri()}/*.txt", f"{local_tree.as_uri()}/*.csv"]
+    with test_session.catalog.enlist_sources(sources, update=False) as data_sources:
+        listings = {(s.listing.dataset_name, s.listing.uri) for s in data_sources}
+    assert len(listings) == 1
+    assert next(iter(listings))[1] == local_tree.as_uri() + "/"
+
+
 @pytest.mark.parametrize("is_studio", [False, True])
 def test_enlisted_local_source_keeps_its_uri(test_session, local_tree, studio_job):
     listing, _, _ = test_session.catalog.enlist_source(local_tree.as_uri())
