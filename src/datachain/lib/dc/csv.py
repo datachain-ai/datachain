@@ -44,7 +44,7 @@ def read_csv(
         column: Created column name.
         model_name: Generated model name.
         source: Whether to include info about the source file.
-        nrows: Optional row limit.
+        nrows: Optional row limit per file.
         session: Session to use for the chain.
         settings: Settings to use for the chain.
         column_types: CSV parsing types keyed by input name, before normalization

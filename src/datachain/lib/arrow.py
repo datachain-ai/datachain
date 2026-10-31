@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 import pyarrow as pa
 from fsspec.implementations.local import LocalFileSystem
 from pyarrow._csv import ParseOptions
-from pyarrow.dataset import CsvFileFormat, Dataset, dataset
+from pyarrow.dataset import CsvFileFormat, Dataset, ParquetFileFormat, dataset
 from pyarrow.fs import FileInfo, FileType, FSSpecHandler, PyFileSystem
 
 from datachain import json
@@ -15,8 +15,11 @@ from datachain.fs.reference import ReferenceFileSystem
 from datachain.lib.convert.flatten import classify_field, iter_flat_columns
 from datachain.lib.data_model import (
     NULLABLE_SCALARS,
+    TYPE_TAG_FIELD,
+    arm_for_tag,
+    arm_selector,
     dict_to_data_model,
-    optional_tag_is_absent,
+    union_layout,
 )
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.model_store import ModelStore
@@ -30,7 +33,7 @@ if TYPE_CHECKING:
     from pydantic import BaseModel
 
     from datachain.client import Client
-    from datachain.lib.data_model import DataType
+    from datachain.lib.data_model import DataType, UnionLayout
     from datachain.lib.dc import DataChain
 
 
@@ -49,6 +52,10 @@ def fix_pyarrow_format(format, parse_options=None):
     return format
 
 
+def is_parquet(format) -> bool:
+    return format == "parquet" or isinstance(format, ParquetFileFormat)
+
+
 # CSV options that decide where a file's rows and columns start.
 _CSV_READ_OPTIONS = (
     "column_names",
@@ -64,6 +71,10 @@ _CSV_PARSE_OPTIONS = (
     "newlines_in_values",
     "ignore_empty_lines",
 )
+
+
+# A partial read prefetches files up to this size and reads larger ones in parts.
+PARTIAL_READ_PREFETCH_MAX_SIZE = 8 * 1024 * 1024
 
 
 class _PartialReadHandler(FSSpecHandler):
@@ -103,7 +114,7 @@ def pyarrow_fs(file: File, format):
     client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
     if isinstance(client.fs, LocalFileSystem):
         return client.fs
-    block_size = 0 if format == "parquet" else None
+    block_size = 0 if is_parquet(format) else None
     return PyFileSystem(_PartialReadHandler(client, file, block_size=block_size))
 
 
@@ -117,6 +128,7 @@ class ArrowGenerator(Generator):
         source: bool = True,
         nrows: int | None = None,
         columns: list[str] | None = None,
+        prefetch_max_size: int | None = None,
         **kwargs,
     ):
         """
@@ -127,11 +139,14 @@ class ArrowGenerator(Generator):
         input_schema : Optional pyarrow schema for validation.
         output_schema : Optional pydantic model for validation.
         source : Whether to include info about the source file.
-        nrows : Optional row limit.
+        nrows : Optional row limit per file.
         columns : Optional columns to read from each file by name, in output order.
+        prefetch_max_size : Files larger than this, or of unknown size, aren't
+            prefetched.
         kwargs: Parameters to pass to pyarrow.dataset.dataset.
         """
         super().__init__()
+        self.prefetch_max_size = prefetch_max_size
         self.input_schema = input_schema
         self.output_schema = output_schema
         self.source = source
@@ -496,16 +511,38 @@ def _is_nan(val: Any) -> bool:
     return isinstance(val, float) and math.isnan(val)
 
 
-def _optional_absent(
-    column_values: dict[str, Any], inner: type["BaseModel"], prefix: str
-) -> bool:
-    """Whether the ``Optional[DataModel]`` at ``prefix`` is absent. Uses the
-    ``_type_tag`` discriminator when present (0 = present arm), else the
-    all-leaves-None heuristic."""
-    tag_key = f"{prefix}.{SignalSchema._OPTIONAL_SENTINEL_FIELD}"
+def _infer_active_arm(
+    column_values: dict[str, Any], layout: "UnionLayout", prefix: str
+) -> int | None:
+    """Active arm inferred from non-null columns when the _type_tag is absent."""
+    for i, arm in enumerate(layout.arms):
+        arm_prefix = f"{prefix}.{arm_selector(arm)}" if layout.use_slots else prefix
+        if (fr := ModelStore.to_pydantic(arm)) is not None:
+            if not _subtree_all_none(column_values, fr, arm_prefix):
+                return i
+        else:
+            val = column_values.get(arm_prefix)
+            if val is not None and not _is_nan(val):
+                return i
+    return None
+
+
+def _union_value(
+    column_values: dict[str, Any], layout: "UnionLayout", prefix: str
+) -> Any:
+    """Reconstruct a tagged-union value from flat columns, hydrating the active arm."""
+    tag_key = f"{prefix}.{TYPE_TAG_FIELD}"
     if tag_key in column_values:
-        return optional_tag_is_absent(column_values[tag_key])
-    return _subtree_all_none(column_values, inner, prefix)
+        arm = arm_for_tag(layout, column_values[tag_key])
+    else:
+        idx = _infer_active_arm(column_values, layout, prefix)
+        arm = layout.arms[idx] if idx is not None else None
+    if arm is None:
+        return None
+    arm_prefix = f"{prefix}.{arm_selector(arm)}" if layout.use_slots else prefix
+    if (fr := ModelStore.to_pydantic(arm)) is not None:
+        return _nested_model_instantiate(column_values, fr, arm_prefix)
+    return column_values.get(arm_prefix)
 
 
 def _nested_model_instantiate(
@@ -515,20 +552,18 @@ def _nested_model_instantiate(
     column values."""
     vals_dict: dict[str, Any] = {}
     for field, field_info in model.model_fields.items():
-        kind = classify_field(field_info.annotation)
+        anno = field_info.annotation
         cur_path = f"{prefix}.{field}" if prefix else field
+        if (layout := union_layout(anno)) is not None:
+            vals_dict[field] = _union_value(column_values, layout, cur_path)
+            continue
+        kind = classify_field(anno)
         if kind.is_model:
-            if kind.is_optional and _optional_absent(
-                column_values, kind.inner, cur_path
-            ):
-                # Absent Optional[DataModel] parent -> None.
-                vals_dict[field] = None
-            else:
-                vals_dict[field] = _nested_model_instantiate(
-                    column_values,
-                    kind.inner,
-                    prefix=cur_path,
-                )
+            vals_dict[field] = _nested_model_instantiate(
+                column_values,
+                kind.inner,
+                prefix=cur_path,
+            )
         elif cur_path in column_values:
             vals_dict[field] = column_values[cur_path]
     return model(**vals_dict)

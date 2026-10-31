@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import closing, nullcontext
 from dataclasses import dataclass
-from functools import partial
+from functools import cached_property, partial
 from graphlib import CycleError, TopologicalSorter
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -18,10 +18,9 @@ from datachain.cache import temporary_cache
 from datachain.dataset import RowDict
 from datachain.hash_utils import hash_callable
 from datachain.lib.convert.flatten import (
-    classify_field,
     flatten,
     flatten_value,
-    is_optional_model,
+    union_value_match,
 )
 from datachain.lib.file import File, FileError, FileRow
 from datachain.lib.signal_schema import SignalSchema
@@ -398,6 +397,10 @@ class UDFBase(AbstractUDF):
     ) -> Iterator[Iterable[UDFResult]]:
         raise NotImplementedError
 
+    @cached_property
+    def _output_names(self) -> list[str]:
+        return list(self.output.values)
+
     def _flatten_row(self, row):
         if len(self.output.values) > 1 and not isinstance(row, BaseModel):
             annos = self.output.values
@@ -409,12 +412,11 @@ class UDFBase(AbstractUDF):
                     "in output"
                 )
             flat: list[Any] = []
+            names = self._output_names
             # strict=False as shorter row is allowed for arrow/parquet (guarded above)
-            for obj, anno in zip(row, annos.values(), strict=False):
-                # tag is added only when obj IS the Optional value, not a wrapper.
-                if is_optional_model(anno) and (
-                    obj is None or isinstance(obj, classify_field(anno).inner)
-                ):
+            for i, (obj, anno) in enumerate(zip(row, annos.values(), strict=False)):
+                # names[i:] are the signals a cover model at this position holds
+                if union_value_match(obj, anno, names[i:]):
                     flat.extend(flatten_value(obj, anno))
                 else:
                     flat.extend(self._obj_to_list(obj))
@@ -465,9 +467,14 @@ async def _prefetch_input(
     row: T,
     download_cb: Callback | None = None,
     after_prefetch: "Callable[[], None]" = noop,
+    max_size: int | None = None,
 ) -> T:
     for obj in row:
-        if isinstance(obj, File) and obj.path:
+        if (
+            isinstance(obj, File)
+            and obj.path
+            and (max_size is None or 0 < obj.size <= max_size)
+        ):
             try:
                 if await obj._prefetch(download_cb):
                     after_prefetch()
@@ -495,6 +502,7 @@ def _prefetch_inputs(
     download_cb: Callback | None = None,
     after_prefetch: Callable[[], None] | None = None,
     remove_prefetched: bool = False,
+    max_size: int | None = None,
 ) -> "abc.Generator[T, None, None]":
     if not prefetch:
         yield from prepared_inputs
@@ -506,7 +514,12 @@ def _prefetch_inputs(
             increment_file_count: Callable[[], None] = download_cb.increment_file_count
             after_prefetch = increment_file_count
 
-    f = partial(_prefetch_input, download_cb=download_cb, after_prefetch=after_prefetch)
+    f = partial(
+        _prefetch_input,
+        download_cb=download_cb,
+        after_prefetch=after_prefetch,
+        max_size=max_size,
+    )
     mapper = AsyncMapper(f, prepared_inputs, workers=prefetch)
     with closing(mapper.iterate()) as row_iter:
         for row in row_iter:
@@ -765,6 +778,7 @@ class Generator(UDFBase):
 
     is_output_batched = True
     prefetch: int = 2
+    prefetch_max_size: int | None = None
 
     def run(
         self,
@@ -818,6 +832,7 @@ class Generator(UDFBase):
             self.prefetch,
             download_cb=download_cb,
             remove_prefetched=bool(self.prefetch) and not cache,
+            max_size=self.prefetch_max_size,
         )
 
         with closing(prepared_inputs):
