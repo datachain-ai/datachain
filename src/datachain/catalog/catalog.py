@@ -617,6 +617,7 @@ class Catalog:
         source_uri, pattern = split_uri_pattern(source)
         prepared = set() if _prepared_listings is None else _prepared_listings
 
+        session_listing_uri = None
         if is_studio() and is_local:
             client = Client.get_client(source_uri, self.cache, **config)
             described = describe_listing(client, source_uri)
@@ -626,6 +627,7 @@ class Catalog:
             else:
                 _, list_uri, list_path = described
                 list_ds_name = session.generate_temp_dataset_name()
+                session_listing_uri = list_uri
                 write_listing(list_uri, list_ds_name, session, config, column=column)
         else:
             list_ds_name, list_uri, list_path, _ = get_listing(
@@ -662,6 +664,7 @@ class Catalog:
                 client,
                 dataset_name=list_ds_name,
                 column=column,
+                uri=session_listing_uri,
             )
 
         return lst, client, list_path

@@ -287,6 +287,13 @@ def test_ls_in_studio_removes_local_listing_with_its_session(
     assert not list(catalog.metastore.list_datasets_by_prefix(prefix))
 
 
+@pytest.mark.parametrize("is_studio", [False, True])
+def test_enlisted_local_source_keeps_its_uri(test_session, local_tree, studio_job):
+    listing, _, _ = test_session.catalog.enlist_source(local_tree.as_uri())
+    with listing, listing.clone() as clone:
+        assert listing.uri == clone.uri == local_tree.as_uri() + "/"
+
+
 @pytest.mark.parametrize("is_studio", [True])
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 def test_ls_in_studio_saves_cloud_listing(cloud_test_catalog, studio_job):
