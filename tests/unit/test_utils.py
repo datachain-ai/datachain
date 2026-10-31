@@ -799,3 +799,25 @@ def test_worker_thread_env_requires_positive_workers(workers):
 
     with pytest.raises(ValueError, match="n_workers must be positive"):
         worker_thread_env(workers)
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_worker_thread_limits_restore_environment(monkeypatch, fail):
+    monkeypatch.setenv("OMP_NUM_THREADS", "1000")
+    monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
+    monkeypatch.setattr(utils, "usable_cpu_count", lambda: 8)
+    before = dict(os.environ)
+
+    def start_worker():
+        with utils.worker_thread_limits(4):
+            assert os.environ["OMP_NUM_THREADS"] == "2"
+            assert utils.worker_threads() == 2
+            if fail:
+                raise RuntimeError("worker could not start")
+
+    if fail:
+        with pytest.raises(RuntimeError, match="could not start"):
+            start_worker()
+    else:
+        start_worker()
+    assert dict(os.environ) == before

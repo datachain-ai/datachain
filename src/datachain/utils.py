@@ -532,6 +532,22 @@ def worker_thread_env(n_workers: int) -> dict[str, str]:
     return env
 
 
+@contextmanager
+def worker_thread_limits(n_workers: int) -> Iterator[None]:
+    """Apply a CPU-share budget while loading a UDF and starting its workers."""
+    env = worker_thread_env(n_workers)
+    saved = {name: os.environ.get(name) for name in env}
+    try:
+        os.environ.update(env)
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
 def worker_threads() -> int | None:
     """CPU threads each parallel UDF worker may use; None outside such workers."""
     with suppress(KeyError, ValueError):
