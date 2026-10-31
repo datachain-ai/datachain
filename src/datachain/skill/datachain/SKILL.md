@@ -246,21 +246,47 @@ for path, d in top.to_iter("file.path", "distance"):
 Combine with any filter before the search: `.filter(dc.C("img.width") > 400)`, joins with metadata
 (`.merge(other, on="file.path")`), etc.
 
-Each `similarity_search` is one full scan (seconds per call at 100k rows). For more than a few queries (nearest
-neighbour of every hit, all-pairs, many text prompts), read the vectors once and use one matrix product:
+Each `similarity_search` scans the saved vectors. For repeated nearest-neighbor queries over saved
+rows, load the vectors once and score at most 128 query rows at a time:
 
 ```python
+import datachain as dc
 import numpy as np
 
-paths, embs = zip(
-    *dc.read_dataset("image_embeddings").to_iter("file.path", "img.embedding")
+rows = list(
+    dc.read_dataset("image_embeddings").to_iter(
+        "file.source", "file.path", "img.embedding"
+    )
 )
-E = np.asarray(embs, dtype=np.float32)  # rows are L2-normalized: dot = cosine
-hits = [paths.index(p) for p in top_paths]
-S = E[hits] @ E.T
-S[np.arange(len(hits)), hits] = -np.inf  # exclude each item itself
-nearest = [(paths[j], float(S[i, j])) for i, j in enumerate(S.argmax(1))]
+identities = [(source, path) for source, path, _ in rows]
+# Embeddings use the same L2 normalization, so dot products are cosine similarities.
+E = np.asarray([embedding for _, _, embedding in rows], dtype=np.float32)
+del rows
+
+
+def nearest_rows(query_rows):
+    if len(E) < 2:
+        return
+    for start in range(0, len(query_rows), 128):
+        indices = np.asarray(query_rows[start : start + 128], dtype=np.intp)
+        scores = E[indices] @ E.T
+        # Exclude each query's own global row, including in later blocks.
+        scores[np.arange(len(indices)), indices] = -np.inf
+        matches = scores.argmax(axis=1)
+        for offset, (i, j) in enumerate(zip(indices, matches, strict=True)):
+            yield int(i), int(j), float(scores[offset, j])
+        del scores
+
+
+# Use all rows, or selected positions from this loaded snapshot.
+for i, j, similarity in nearest_rows(range(len(E))):
+    print(i, identities[i], j, identities[j], similarity)
 ```
+
+Indices identify rows in this loaded snapshot; they are not persistent IDs across dataset versions.
+Duplicate `(source, path)` values remain distinct rows, and another row for the same file can be its
+nearest neighbor. Keep the row indices with results instead of looking up a filename. Fewer than two
+rows yields no neighbors. The vectors stay in memory, but score blocks are discarded as results stream.
 
 ### Join files with an annotation / metadata table
 
