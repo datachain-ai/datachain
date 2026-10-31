@@ -751,15 +751,18 @@ def cloud_test_catalog_upload(cloud_test_catalog):
     src = cloud_test_catalog.src_uri
     client = Client.get_implementation(src)
     fsspec_fs = client.create_fs(**cloud_test_catalog.client_config)
-    original_paths = set(fsspec_fs.ls(src))
+    local = cloud_test_catalog.server.kind == "file"
+    original_paths = set(fsspec_fs.find(src, withdirs=local))
 
     yield cloud_test_catalog
 
-    # Cleanup any written files
-    new_paths = set(fsspec_fs.ls(src))
-    cleanup_paths = new_paths - original_paths
-    for p in cleanup_paths:
-        fsspec_fs.rm(p, recursive=True)
+    # Cleanup any written files, children before their directories
+    new_paths = set(fsspec_fs.find(src, withdirs=local, refresh=True))
+    for p in sorted(new_paths - original_paths, reverse=True):
+        if local and fsspec_fs.isdir(p):
+            fsspec_fs.rmdir(p)
+        else:
+            fsspec_fs.rm_file(p)
 
 
 @pytest.fixture
@@ -1481,7 +1484,7 @@ def fetched_bytes(monkeypatch):
     return fetched
 
 
-class _NoRangeHandler(http.server.SimpleHTTPRequestHandler):
+class _QuietHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
@@ -1489,10 +1492,23 @@ class _NoRangeHandler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
-@pytest.fixture
-def http_server_without_ranges(tmp_path):
-    """Serve `tmp_path` over HTTP without range support; yields its base URL."""
-    handler = functools.partial(_NoRangeHandler, directory=str(tmp_path))
+class _RangeHandler(_QuietHandler):
+    def send_head(self):
+        if not (ranges := self.headers.get("Range")):
+            return super().send_head()
+        with open(self.translate_path(self.path), "rb") as f:
+            data = f.read()
+        start, end = map(int, ranges.removeprefix("bytes=").split("-"))
+        body = data[start : end + 1]
+        self.send_response(206)
+        self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        return io.BytesIO(body)
+
+
+def _serve(directory, handler_class):
+    handler = functools.partial(handler_class, directory=str(directory))
     with socketserver.TCPServer(("127.0.0.1", 0), handler) as server:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -1501,3 +1517,15 @@ def http_server_without_ranges(tmp_path):
         finally:
             server.shutdown()
             thread.join()
+
+
+@pytest.fixture
+def http_server(tmp_path):
+    """Serve `tmp_path` over HTTP with range support; yields its base URL."""
+    yield from _serve(tmp_path, _RangeHandler)
+
+
+@pytest.fixture
+def http_server_without_ranges(tmp_path):
+    """Serve `tmp_path` over HTTP without range support; yields its base URL."""
+    yield from _serve(tmp_path, _QuietHandler)

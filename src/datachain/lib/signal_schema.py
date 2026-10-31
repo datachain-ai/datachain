@@ -14,13 +14,14 @@ from collections.abc import (
 )
 from dataclasses import dataclass
 from datetime import datetime
-from functools import cached_property
+from functools import cached_property, partial
 from inspect import isclass
 from typing import (
     IO,
     TYPE_CHECKING,
     Any,
     Final,
+    NamedTuple,
     Optional,
     Union,
     get_args,
@@ -29,31 +30,44 @@ from typing import (
 
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from pydantic import BaseModel, Field, ValidationError, create_model
-from sqlalchemy import Cast, asc, cast, desc, nulls_last
-from sqlalchemy.sql.elements import BinaryExpression, Grouping, Label
+from sqlalchemy import and_, asc, cast, desc, nulls_last, or_
+from sqlalchemy.sql import operators as sa_operators
+from sqlalchemy.sql.elements import (
+    BinaryExpression,
+    BooleanClauseList,
+    Cast,
+    Grouping,
+    Label,
+    UnaryExpression,
+)
+from sqlalchemy.sql.visitors import iterate, replacement_traverse
 
 from datachain import json
 from datachain.func import literal
 from datachain.func.func import Func
-from datachain.lib.convert.flatten import is_optional_model, iter_flat_columns
+from datachain.lib.convert.flatten import iter_field_columns
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.convert.sql_to_python import sql_to_python
 from datachain.lib.convert.unflatten import (
-    read_optional_sentinel,
+    ModelReader,
+    read_union,
     unflatten_to_json_pos,
 )
 from datachain.lib.data_model import (
     NULLABLE_SCALARS,
+    TYPE_TAG_FIELD,
     DataModel,
     DataType,
     DataValue,
     annotation_parts,
+    arm_selector,
     compute_model_fingerprint,
     is_mapping_annotation,
     is_sequence_annotation,
     is_tuple_annotation,
     key_needs_json_decode,
     skip_optional_promotion,
+    union_layout,
     unwrap_optional,
 )
 from datachain.lib.file import File
@@ -64,13 +78,14 @@ from datachain.lib.utils import (
     type_to_str,
 )
 from datachain.query.schema import DEFAULT_DELIMITER, C, Column, ColumnExpr, ColumnMeta
-from datachain.sql.types import SQLType
+from datachain.sql.types import SQLType, String
 
 if TYPE_CHECKING:
     from collections.abc import MutableMapping
 
     from datachain.catalog import Catalog
     from datachain.dataset import RowDict
+    from datachain.lib.data_model import UnionLayout
 
 
 logger = logging.getLogger(__name__)
@@ -292,6 +307,31 @@ def create_feature_model(
     ModelStore.register(model)
 
     return model
+
+
+class SignalReader(NamedTuple):
+    """How one signal is read: its annotation, its tagged-union layout or model when
+    it has one, and the db columns feeding it, in order."""
+
+    anno: DataType
+    layout: "UnionLayout | None"
+    model: "type[BaseModel] | None"
+    columns: list[str]
+
+
+def _tag_col(prefix: str) -> str:
+    """DB name of the ``_type_tag`` discriminator under ``prefix``."""
+    return f"{prefix}{DEFAULT_DELIMITER}{TYPE_TAG_FIELD}"
+
+
+def _model_reader(build_model: Callable[[type[BaseModel], dict], Any]) -> ModelReader:
+    """Reader that turns a model's flat columns into an instance."""
+
+    def read_model(fr: type[BaseModel], row: Sequence[Any], pos: int):
+        values, pos = unflatten_to_json_pos(fr, row, pos, build_model)
+        return build_model(fr, values), pos
+
+    return read_model
 
 
 @dataclass
@@ -568,7 +608,11 @@ class SignalSchema:
                 )
             try:
                 fr = SignalSchema._resolve_type(type_name, custom_types)
-                if fr is Any:
+                unresolved = fr is Any or (
+                    get_origin(fr) in (Union, types.UnionType)
+                    and any(a is Any for a in get_args(fr))
+                )
+                if unresolved:
                     # Skip if the type is not found, so all data can be displayed.
                     warnings.warn(
                         f"In signal '{signal}': "
@@ -629,29 +673,88 @@ class SignalSchema:
 
     def plain_columns(self) -> list[str] | None:
         """Columns returned unchanged by row_to_objs, or None for converted inputs."""
-        if self.setup_func or any(self._row_conversion_required.values()):
+        if (
+            self.setup_func
+            or any(self._row_conversion_required.values())
+            or any(reader.layout is not None for reader in self._signal_plan.values())
+        ):
             return None
-        return [DEFAULT_DELIMITER.join(name.split(".")) for name in self.values]
+        return [
+            column for reader in self._signal_plan.values() for column in reader.columns
+        ]
+
+    @cached_property
+    def _signal_plan(self) -> dict[str, SignalReader]:
+        """Each signal's reader, worked out once per schema instead of on every row."""
+        plan: dict[str, SignalReader] = {}
+        for name, anno in self.values.items():
+            layout = union_layout(anno)
+            inner, _ = unwrap_optional(anno)
+            plan[name] = SignalReader(
+                anno=anno,
+                layout=layout,
+                model=None if layout is not None else ModelStore.to_pydantic(inner),
+                columns=(
+                    []
+                    if name in self.setup_func
+                    else [
+                        DEFAULT_DELIMITER.join(
+                            (*col.path, TYPE_TAG_FIELD) if col.is_sentinel else col.path
+                        )
+                        for col in iter_field_columns(anno, tuple(name.split(".")))
+                    ]
+                ),
+            )
+        return plan
+
+    @staticmethod
+    def _read_signal(
+        reader: "SignalReader",
+        row: Sequence[Any],
+        pos: int,
+        read_model: ModelReader,
+        convert_scalar: Callable[[DataType, Any], Any] | None = None,
+    ) -> tuple[Any, int]:
+        """Read one top-level signal value at ``pos``. A tagged union (including
+        ``Optional[Model]``) hydrates only its active arm; ``convert_scalar`` (if
+        given) post-processes a plain scalar leaf."""
+        if reader.layout is not None:
+            return read_union(reader.layout, row, pos, read_model)
+        if reader.model is not None:
+            return read_model(reader.model, row, pos)
+        value = row[pos]
+        if convert_scalar is not None:
+            value = convert_scalar(reader.anno, value)
+        return value, pos + 1
 
     def row_to_objs(self, row_dict: "RowDict") -> list[Any]:
         self._init_setup_values()
 
+        def build_model(fr: type[BaseModel], j: dict) -> Any:
+            try:
+                return fr(**j)
+            except ValidationError as e:
+                if self._all_values_none(j):
+                    logger.debug("Failed to create input for %s: %s", fr, e)
+                    return None
+                raise
+
+        read_model = _model_reader(build_model)
+        convert = partial(self._convert_feature_value, catalog=None, cache=False)
         objs: list[Any] = []
-        for name, fr_type in self.values.items():
-            inner_type, is_optional = unwrap_optional(fr_type)
+        for name, reader in self._signal_plan.items():
             if self.setup_values and name in self.setup_values:
                 objs.append(self.setup_values.get(name))
-            elif (fr := ModelStore.to_pydantic(inner_type)) is not None:
-                row = self._model_row_values(name, fr, is_optional, row_dict)
-                obj, _ = self._hydrate_model(fr, is_optional, row, 0, label=name)
-                objs.append(obj)
-            else:
-                value = row_dict[DEFAULT_DELIMITER.join(name.split("."))]
-                if self._row_conversion_required[name]:
-                    value = self._convert_feature_value(
-                        fr_type, value, catalog=None, cache=False
-                    )
-                objs.append(value)
+                continue
+            row = [row_dict[col] for col in reader.columns]
+            obj, _ = self._read_signal(
+                reader,
+                row,
+                0,
+                read_model,
+                convert if self._row_conversion_required[name] else None,
+            )
+            objs.append(obj)
         return objs
 
     def set_file_streams(
@@ -762,38 +865,6 @@ class SignalSchema:
         return fields
 
     @staticmethod
-    def _model_row_values(
-        name: str,
-        model_type: type[BaseModel],
-        is_optional: bool,
-        row_dict: "RowDict",
-    ) -> list[Any]:
-        """Pull one model's flat column values out of ``row_dict``.
-
-        Returns the values in the order ``_hydrate_model`` will consume
-        them: the ``_type_tag`` sentinel first when the field is Optional,
-        then one value per leaf column in the model's declared field order.
-
-        For a schema ``{"fr": MyModel}`` where ``MyModel`` has ``name: str``
-        and ``deep: Nested`` with ``Nested.value: int``, this reads keys
-        ``fr__name`` and ``fr__deep__value`` from ``row_dict`` and returns
-        ``[row_dict["fr__name"], row_dict["fr__deep__value"]]``.
-        """
-        parts = name.split(".")
-        result = []
-        if is_optional:
-            db_name = DEFAULT_DELIMITER.join(
-                [*parts, SignalSchema._OPTIONAL_SENTINEL_FIELD]
-            )
-            result.append(row_dict[db_name])
-        for col in iter_flat_columns(model_type):
-            path = [*parts, *col.path]
-            if col.is_sentinel:
-                path.append(SignalSchema._OPTIONAL_SENTINEL_FIELD)
-            result.append(row_dict[DEFAULT_DELIMITER.join(path)])
-        return result
-
-    @staticmethod
     def _all_values_none(value: Any) -> bool:
         if isinstance(value, dict):
             return all(SignalSchema._all_values_none(v) for v in value.values())
@@ -808,38 +879,10 @@ class SignalSchema:
             return len(value) == 0
         return value is None
 
-    def _hydrate_model(
-        self,
-        fr: type[BaseModel],
-        is_optional: bool,
-        row: Sequence[Any],
-        pos: int,
-        *,
-        catalog: "Catalog | None" = None,
-        cache: bool = False,
-        set_stream: bool = False,
-        label: str = "",
-    ) -> tuple[Any, int]:
-        """Build a model from the flat row and return it with the next position."""
-        if is_optional:
-            absent, pos = read_optional_sentinel(fr, row, pos)
-            if absent:
-                return None, pos
-        j, pos = unflatten_to_json_pos(fr, row, pos)
-        try:
-            obj = fr(**j)
-            if set_stream:
-                assert catalog is not None
-                SignalSchema._set_file_stream(obj, catalog, cache)
-        except ValidationError as e:
-            if not self._all_values_none(j):
-                raise
-            logger.debug("Failed to create %s: %s", label, e)
-            obj = None
-        return obj, pos
-
     def get_file_signal(self) -> str | None:
         for signal_name, signal_type in self.values.items():
+            if union_layout(signal_type) is not None:
+                continue  # a union has no single file column to export from
             if (fr := ModelStore.to_pydantic(signal_type)) is not None and issubclass(
                 fr, File
             ):
@@ -896,8 +939,8 @@ class SignalSchema:
             schema_inner, schema_is_optional = unwrap_optional(schema_type)
             if schema_is_optional:
                 schema_type = schema_inner
-                param_inner, param_is_optional = unwrap_optional(param_type)
-                if param_is_optional:
+                param_inner, param_opt = unwrap_optional(param_type)
+                if param_opt:
                     param_type = param_inner
 
             if param_type == schema_type or (
@@ -919,27 +962,26 @@ class SignalSchema:
     def row_to_features(
         self, row: Sequence, catalog: "Catalog", cache: bool = False
     ) -> list[DataValue]:
+        def build_model(fr: type[BaseModel], j: dict) -> Any:
+            try:
+                obj = fr(**j)
+                SignalSchema._set_file_stream(obj, catalog, cache)
+                return obj
+            except ValidationError as e:
+                if self._all_values_none(j):
+                    logger.debug("Failed to create feature for %s: %s", fr, e)
+                    return None
+                raise
+
+        def convert_scalar(anno: DataType, value: Any) -> Any:
+            return self._convert_feature_value(anno, value, catalog, cache)
+
+        read_model = _model_reader(build_model)
         res = []
         pos = 0
-        for fr_cls in self.values.values():
-            inner_cls, is_optional = unwrap_optional(fr_cls)
-            if (fr := ModelStore.to_pydantic(inner_cls)) is None:
-                value = row[pos]
-                pos += 1
-                converted = self._convert_feature_value(fr_cls, value, catalog, cache)
-                res.append(converted)
-            else:
-                obj, pos = self._hydrate_model(
-                    fr,
-                    is_optional,
-                    row,
-                    pos,
-                    catalog=catalog,
-                    cache=cache,
-                    set_stream=True,
-                    label=str(fr_cls),
-                )
-                res.append(obj)
+        for reader in self._signal_plan.values():
+            value, pos = self._read_signal(reader, row, pos, read_model, convert_scalar)
+            res.append(value)
         return res
 
     def _convert_feature_value(
@@ -1086,6 +1128,11 @@ class SignalSchema:
                 path
             ) == col_name:
                 return _type
+        db = self.to_db_col(col_name)
+        if db != col_name:
+            return self.get_column_type(db, with_subtree=with_subtree)
+        if (err := self.multiarm_root_error(col_name)) is not None:
+            raise err
         raise SignalResolvingError([col_name], "is not found")
 
     def is_nullable_column(self, db_col: str, anno: DataType) -> bool:
@@ -1095,7 +1142,7 @@ class SignalSchema:
         inner, is_optional = unwrap_optional(anno)
         if inner not in NULLABLE_SCALARS:
             return False
-        return is_optional or self.optional_parent_sentinel(db_col) is not None
+        return is_optional or self.enclosing_type_tag(db_col) is not None
 
     def _db_leaf_sql_type(self, path: list[str], anno: DataType) -> Any:
         """SQL type for a leaf at ``path``, marked ``dc_nullable`` per
@@ -1131,13 +1178,16 @@ class SignalSchema:
         ]
 
         if name:
-            if "." in name:
-                name = ColumnMeta.to_db_name(name)
+            name = self.to_db_col(name)
+
+            def _raw(s: "str | Column") -> str:
+                # Column.name, not str(Column) — the latter quotes mixed-case names
+                return s.name if isinstance(s, Column) else s
 
             signals = [
                 s
                 for s in signals
-                if str(s) == name or str(s).startswith(f"{name}{DEFAULT_DELIMITER}")
+                if _raw(s) == name or _raw(s).startswith(f"{name}{DEFAULT_DELIMITER}")
             ]
 
         return signals  # type: ignore[return-value]
@@ -1178,6 +1228,8 @@ class SignalSchema:
         for field in names:
             if not isinstance(field, str):
                 raise SignalResolvingTypeError("select()", field)
+            # readable arm path (block.name) -> arm-qualified (block.Text.name)
+            field = self.resolve_arm_path(field) or field
             schema[field] = self._find_in_tree(field.split("."))
 
         return SignalSchema(schema)
@@ -1202,37 +1254,216 @@ class SignalSchema:
         if curr_type is None or i < len(path):
             # If we reached the end of the path and didn't find a type,
             # or if we didn't traverse the entire path, raise an error.
+            if (err := self.multiarm_root_error(".".join(path))) is not None:
+                raise err
             raise SignalResolvingError(path, "is not found")
 
         return curr_type
 
     @cached_property
-    def _optional_model_db_cols(self) -> set[str]:
+    def _tagged_db_cols(self) -> dict[str, "UnionLayout"]:
+        """DB-name -> layout for every node carrying a ``_type_tag`` discriminator:
+        an ``Optional[DataModel]`` (one model arm + None) or a multi-arm union."""
         return {
-            DEFAULT_DELIMITER.join(path)
+            DEFAULT_DELIMITER.join(path): layout
             for path, type_, has_subtree, _ in self.get_flat_tree(
                 include_sentinels=False
             )
-            if has_subtree and is_optional_model(type_)
+            if has_subtree and (layout := union_layout(type_)) is not None
         }
 
-    def model_sentinel(self, db_col: str) -> str | None:
-        """Sentinel db-name for ``db_col`` when it is itself an
-        ``Optional[DataModel]`` node, else None."""
-        if db_col in self._optional_model_db_cols:
-            return f"{db_col}{DEFAULT_DELIMITER}{self._OPTIONAL_SENTINEL_FIELD}"
-        return None
-
-    def optional_parent_sentinel(self, db_col: str) -> str | None:
-        """DB name of the ``_type_tag`` discriminator for the closest
-        ``Optional[DataModel]`` ancestor of leaf ``db_col``, or None when ``db_col``
-        is not such a leaf (or is itself a discriminator).
-        """
+    def _tagged_ancestors(self, db_col: str) -> "Iterator[tuple[str, UnionLayout]]":
+        """``(db_prefix, layout)`` for each ancestor of ``db_col`` (and itself) that is
+        a tagged-union node, innermost (longest prefix) first."""
         parts = db_col.split(DEFAULT_DELIMITER)
         for i in range(len(parts), 0, -1):
-            sentinel = self.model_sentinel(DEFAULT_DELIMITER.join(parts[:i]))
-            if sentinel is not None:
-                return None if sentinel == db_col else sentinel
+            prefix = DEFAULT_DELIMITER.join(parts[:i])
+            if (layout := self._tagged_db_cols.get(prefix)) is not None:
+                yield prefix, layout
+
+    def type_tag_column(self, db_col: str) -> str | None:
+        """DB name of the ``_type_tag`` discriminator when ``db_col`` is itself a
+        tagged-union node (``Optional[DataModel]`` or a multi-arm union), else None."""
+        if db_col in self._tagged_db_cols:
+            return _tag_col(db_col)
+        return None
+
+    def legacy_tag_columns(self, column_types: Mapping[str, Any]) -> list[str]:
+        """Discriminator columns stored as a number: the layout written before arm
+        names, which queries over this schema cannot read."""
+        legacy = []
+        for prefix in self._tagged_db_cols:
+            tag = _tag_col(prefix)
+            stored = column_types.get(tag)
+            if stored is None:
+                continue
+            if not issubclass(stored if isclass(stored) else type(stored), String):
+                legacy.append(tag)
+        return legacy
+
+    @cached_property
+    def _tagged_arm_cols(self) -> list[tuple[str, list[tuple[str, str]]]]:
+        """Per tagged node: its discriminator column, and each arm's column prefix
+        with the name its tag holds."""
+        return [
+            (
+                _tag_col(prefix),
+                [
+                    (
+                        f"{prefix}{DEFAULT_DELIMITER}{arm_selector(arm)}"
+                        if layout.use_slots
+                        else prefix,
+                        arm_selector(arm),
+                    )
+                    for arm in layout.arms
+                ],
+            )
+            for prefix, layout in self._tagged_db_cols.items()
+        ]
+
+    def infer_type_tags(self, flat: dict[str, Any]) -> None:
+        """Fill a pre-flattened record's missing ``_type_tag`` from the arm columns
+        carrying a value: ``to_records()`` hides it, so a round trip rebuilds it."""
+        for tag_col, arms in self._tagged_arm_cols:
+            if tag_col in flat:
+                continue
+            for arm_col, name in arms:
+                if any(
+                    value is not None
+                    and col != tag_col
+                    and (col == arm_col or col.startswith(arm_col + DEFAULT_DELIMITER))
+                    for col, value in flat.items()
+                ):
+                    flat[tag_col] = name
+                    break
+
+    def enclosing_type_tag(self, db_col: str) -> str | None:
+        """DB name of the ``_type_tag`` discriminator for the closest tagged-union
+        ancestor of leaf ``db_col``, or None when ``db_col`` is not such a leaf (or is
+        itself a discriminator).
+        """
+        for prefix, _ in self._tagged_ancestors(db_col):
+            sentinel = _tag_col(prefix)
+            return None if sentinel == db_col else sentinel
+        return None
+
+    def multiarm_union_root(self, col: str) -> str | None:
+        """Dotted name of the outermost multi-arm union enclosing ``col``, else None. A
+        union is atomic, so group_by/select must carry all its columns, not one arm."""
+        db_col = ColumnMeta.to_db_name(col)
+        slots = [p for p, layout in self._tagged_ancestors(db_col) if layout.use_slots]
+        return ".".join(slots[-1].split(DEFAULT_DELIMITER)) if slots else None
+
+    def reject_union_keys(self, method: str, *paths: str) -> None:
+        """Raise when a diff key touches a multi-arm union: the comparison runs over
+        its columns, and an inactive arm's NULL has no order."""
+        for path in paths:
+            if (root := self.multiarm_union_root(path)) is not None:
+                raise DataChainColumnError(
+                    root,
+                    f"a Union cannot be a {method}() key: its inactive arms are NULL"
+                    " and never compare equal; key on another column",
+                )
+
+    @staticmethod
+    def _field_type(cur: DataType, name: str) -> "DataType | None":
+        """Annotation of model field ``name`` on ``cur`` (unwrapping Optional), or
+        None when ``cur`` is not a model or has no such field."""
+        fr = ModelStore.to_pydantic(unwrap_optional(cur)[0])
+        if fr is None or name not in fr.model_fields:
+            return None
+        return fr.model_fields[name].annotation  # type: ignore[return-value]
+
+    def _select_union_arm(
+        self, layout: "UnionLayout", segment: str
+    ) -> tuple[int | None, DataType | None, int]:
+        """The single arm ``segment`` selects, by arm type name (consumes it) or a
+        model field name (does not). An arm name wins; an ambiguous field raises.
+        Returns ``(index, arm, consumed)``; index None when nothing matches."""
+        # an arm name is exact and unique, so it wins over any field of that name
+        for idx, arm in enumerate(layout.arms):
+            if arm_selector(arm) == segment:
+                return idx, arm, 1
+        matches = [
+            (idx, arm, 0)
+            for idx, arm in enumerate(layout.arms)
+            if (fr := ModelStore.to_pydantic(arm)) is not None
+            and segment in fr.model_fields
+        ]
+        if len(matches) > 1:
+            names = ", ".join(arm_selector(arm) for _, arm, _ in matches)
+            raise SignalResolvingError(
+                [segment],
+                f"is ambiguous across union arms ({names}); reference it with a "
+                "type-qualified path like '<signal>.<ArmType>' or "
+                "'<signal>.<ArmType>.<field>'",
+            )
+        if matches:
+            return matches[0]
+        return None, None, 0
+
+    def resolve_arm_path(self, path: str) -> str | None:
+        """Validate + normalize a readable arm path, e.g. ``block.name`` ->
+        ``block.Text.name`` (arms are stored under their type name). ``path`` may be
+        dotted or ``__``-joined. None when not a multi-arm union arm; raises on an
+        ambiguous field."""
+        parts = path.split(".") if "." in path else path.split(DEFAULT_DELIMITER)
+        if len(parts) < 2 or parts[0] not in self.values:
+            return None
+        cur: DataType = self.values[parts[0]]
+        out = [parts[0]]
+        rewrote = False
+        i = 1
+        while i < len(parts):
+            layout = union_layout(cur)
+            if layout is not None and layout.use_slots:
+                idx, arm, consumed = self._select_union_arm(layout, parts[i])
+                if idx is None or arm is None:
+                    return None
+                cur = arm
+                out.append(arm_selector(arm))
+                rewrote = True
+                i += consumed
+            else:
+                nxt = self._field_type(cur, parts[i])
+                if nxt is None:
+                    return None
+                out.append(parts[i])
+                cur = nxt
+                i += 1
+        return ".".join(out) if rewrote else None
+
+    def to_db_col(self, name: str) -> str:
+        """Readable signal/arm path -> DB column name, e.g. ``block.name`` ->
+        ``block__Text__name`` (arm stored under its type name)."""
+        return ColumnMeta.to_db_name(self.resolve_arm_path(name) or name)
+
+    def multiarm_root_error(self, name: str) -> "DataChainColumnError | None":
+        """Error for referencing a signal that has no single column — a multi-arm
+        union or an Optional model — by its root name; None if ``name`` is fine."""
+        if "." in name:
+            name_path = name.split(".")
+        elif DEFAULT_DELIMITER in name:
+            name_path = name.split(DEFAULT_DELIMITER)
+        else:
+            name_path = [name]
+        for path, type_, _, _ in self.get_flat_tree():
+            if path != name_path:
+                continue
+            layout = union_layout(type_)
+            if layout is None:
+                return None
+            if layout.use_slots:
+                hint = (
+                    "a multi-arm Union signal has no single column; reference "
+                    "a specific arm (e.g. C('col.int')) or a scalar key instead"
+                )
+            else:
+                hint = (
+                    "an Optional model signal has no single column; reference "
+                    "a nested field (e.g. C('addr.city')) or use func.isnone"
+                )
+            return DataChainColumnError(name, hint)
         return None
 
     def order_by_column(
@@ -1261,17 +1492,39 @@ class SignalSchema:
             c.name: c for c in self.db_signals(as_columns=True) if isinstance(c, Column)
         }
 
-        def rebuild(node):
+        def replace_col(node, **_kw):
+            # readable arm path (C("block.name")) -> arm-qualified column
+            if not isinstance(node, Column):
+                return None
+            db_col = self.to_db_col(node.name)
+            if db_col in typed_cols:
+                return typed_cols[db_col]
+            if (err := self.multiarm_root_error(node.name)) is not None:
+                raise err
+            return None
+
+        # Reconstruct explicitly so SQLAlchemy recomputes node types from rewritten
+        # children (a plain clone would keep stale cached types).
+        def rebuild(node):  # noqa: PLR0911
             if isinstance(node, Column):
-                return typed_cols.get(node.name, node)
+                replaced = replace_col(node)
+                return node if replaced is None else replaced
             if isinstance(node, Label):
                 return rebuild(node.element).label(node.name)
             if isinstance(node, Grouping):
                 return Grouping(rebuild(node.element))
             if isinstance(node, BinaryExpression):
                 return rebuild(node.left).operate(node.operator, rebuild(node.right))
+            if isinstance(node, BooleanClauseList):
+                joiner = or_ if node.operator is sa_operators.or_ else and_
+                return joiner(*[rebuild(c) for c in node.clauses])
+            if isinstance(node, UnaryExpression) and node.operator is not None:
+                return rebuild(node.element).operate(node.operator)
             if isinstance(node, Cast):
                 return cast(rebuild(node.clause), node.typeclause.type)
+            # other node types: rewrite columns in place, leave literals untouched
+            if any(isinstance(n, Column) for n in iterate(node)):
+                return replacement_traverse(node, {}, replace_col)
             return node
 
         return rebuild(expr)
@@ -1284,18 +1537,10 @@ class SignalSchema:
 
     @staticmethod
     def _expr_references_nullable(expr: "ColumnExpr") -> bool:
-        def walk(node: Any) -> bool:
-            if isinstance(node, Column):
-                return getattr(node.type, "dc_nullable", False)
-            if isinstance(node, (Label, Grouping)):
-                return walk(node.element)
-            if isinstance(node, BinaryExpression):
-                return walk(node.left) or walk(node.right)
-            if isinstance(node, Cast):
-                return walk(node.clause)
-            return False
-
-        return walk(expr)
+        return any(
+            isinstance(node, Column) and getattr(node.type, "dc_nullable", False)
+            for node in iterate(expr)
+        )
 
     def group_by(
         self, partition_by: Sequence[str], new_column: Sequence[Column]
@@ -1333,6 +1578,14 @@ class SignalSchema:
         for signal in args:
             if not isinstance(signal, str):
                 raise SignalResolvingTypeError("select_except()", signal)
+
+            root = self.multiarm_union_root(signal)
+            if root is not None and root != signal:
+                raise SignalRemoveError(
+                    signal.split("."),
+                    f"a Union is atomic; exclude the whole signal ({root!r}), "
+                    "not one of its arms",
+                )
 
             matches = {
                 s for s in leaf_signals if s == signal or s.startswith(f"{signal}.")
@@ -1399,7 +1652,10 @@ class SignalSchema:
                 new_values[name] = value
 
             if C.is_nested(name):
-                if current_type != new_values[name]:
+                widened = self.multiarm_union_root(name) is not None and (
+                    unwrap_optional(new_values[name])[0] == current_type
+                )
+                if current_type != new_values[name] and not widened:
                     msg = (
                         f"Altering nested column type is not allowed: {name}, "
                         f"current type: {current_type}, new type: {new_values[name]}"
@@ -1422,11 +1678,13 @@ class SignalSchema:
         right_nullable: bool = False,
     ) -> "SignalSchema":
         def _nullable(type_: DataType, nullable: bool) -> DataType:
-            # widen scalars to Optional (collections/models can't be Nullable on CH)
+            # widen scalars/unions; models/collections can't be Nullable on CH
             inner, is_optional = unwrap_optional(type_)
-            if not nullable or is_optional or inner not in NULLABLE_SCALARS:
+            if not nullable or is_optional:
                 return type_
-            return type_ | None  # type: ignore[return-value]
+            if inner in NULLABLE_SCALARS or union_layout(inner) is not None:
+                return type_ | None  # type: ignore[return-value]
+            return type_
 
         merged_values = {k: _nullable(t, left_nullable) for k, t in self.values.items()}
 
@@ -1511,10 +1769,7 @@ class SignalSchema:
             new_prefix = prefix + suffix
             if not include_sys and new_prefix and new_prefix[0] == "sys":
                 continue
-            if (
-                not include_sentinels
-                and name.split(".")[-1] == SignalSchema._OPTIONAL_SENTINEL_FIELD
-            ):
+            if not include_sentinels and name == TYPE_TAG_FIELD:
                 continue
             hidden_fields = getattr(type_, "_hidden_fields", None)
             if hidden_fields and substree and not include_hidden:
@@ -1564,7 +1819,9 @@ class SignalSchema:
                     )
 
     def get_headers_with_length(
-        self, include_hidden: bool = True, include_sentinels: bool = False
+        self,
+        include_hidden: bool = True,
+        include_sentinels: bool = False,
     ):
         paths = [
             path
@@ -1622,10 +1879,9 @@ class SignalSchema:
             register_pydantic=True,
         )
 
-    # `_type_tag` = 0-based index of the active arm (Optional[X] == Union[X, None]:
-    # present=0, None=1). Leading-underscore internal column, int | None.
-    _OPTIONAL_SENTINEL_FIELD = "_type_tag"
-    _OPTIONAL_SENTINEL_TYPE = int | None  # type: ignore[valid-type]
+    # `_type_tag` = the active arm's selector name (``int``, ``Pet``), or NULL for None
+    # — the same name that keys the arm's columns. Leading-underscore internal column.
+    _TYPE_TAG_TYPE = str | None  # type: ignore[valid-type]
 
     @staticmethod
     def _model_subtree(
@@ -1635,14 +1891,32 @@ class SignalSchema:
         field is ``Optional[DataModel]``."""
         subtree = SignalSchema._build_tree_for_model(fr) or {}
         if is_optional:
-            sentinel: tuple[Any, Any] = (SignalSchema._OPTIONAL_SENTINEL_TYPE, None)
-            subtree = {SignalSchema._OPTIONAL_SENTINEL_FIELD: sentinel, **subtree}
+            sentinel: tuple[Any, Any] = (SignalSchema._TYPE_TAG_TYPE, None)
+            subtree = {TYPE_TAG_FIELD: sentinel, **subtree}
+        return subtree
+
+    @staticmethod
+    def _union_subtree(
+        layout: "UnionLayout",
+    ) -> dict[str, tuple[DataType, dict | None]]:
+        """Subtree for a multi-arm union: ``_type_tag`` plus one slot per arm."""
+        sentinel: tuple[Any, Any] = (SignalSchema._TYPE_TAG_TYPE, None)
+        subtree: dict[str, tuple[DataType, dict | None]] = {TYPE_TAG_FIELD: sentinel}
+        for arm in layout.arms:
+            arm_sub = (
+                SignalSchema._build_tree_for_model(fr)
+                if (fr := ModelStore.to_pydantic(arm)) is not None
+                else None
+            )
+            subtree[arm_selector(arm)] = (arm, arm_sub)
         return subtree
 
     @staticmethod
     def _build_tree_for_type(
         model: DataType,
     ) -> dict[str, tuple[DataType, dict | None]] | None:
+        if (layout := union_layout(model)) is not None and layout.use_slots:
+            return SignalSchema._union_subtree(layout)
         inner, is_optional = unwrap_optional(model)
         if (fr := ModelStore.to_pydantic(inner)) is not None:
             return SignalSchema._model_subtree(fr, is_optional)
@@ -1656,12 +1930,7 @@ class SignalSchema:
 
         for name, f_info in model.model_fields.items():
             anno = f_info.annotation
-            inner, is_optional = unwrap_optional(anno)
-            if (fr := ModelStore.to_pydantic(inner)) is not None:
-                subtree: dict | None = SignalSchema._model_subtree(fr, is_optional)
-            else:
-                subtree = None
-            res[name] = (anno, subtree)  # type: ignore[assignment]
+            res[name] = (anno, SignalSchema._build_tree_for_type(anno))  # type: ignore[assignment, arg-type]
 
         return res
 
@@ -1703,6 +1972,12 @@ class SignalSchema:
         """
         if not columns:
             return SignalSchema({})
+
+        # readable arm path -> arm-qualified; leave non-str args for the validation
+        # below to reject with a clear error
+        columns = tuple(
+            self.resolve_arm_path(c) or c if isinstance(c, str) else c for c in columns
+        )
 
         selections: dict[str, dict[str, Any] | None] = {}
 
@@ -1773,6 +2048,11 @@ class SignalSchema:
                     "Internal error in SignalSchema.to_partial(): "
                     f"empty selection for '{'.'.join(path)}'"
                 )
+
+            # A multi-arm union is an atomic signal: selecting any arm slot (or its
+            # discriminator) keeps the whole union rather than a partial model.
+            if (layout := union_layout(base_type)) is not None and layout.use_slots:
+                return base_type
 
             # The base may be Optional[Model]; resolve from the inner type and
             # re-wrap the partial as Optional below.

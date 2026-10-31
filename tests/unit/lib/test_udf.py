@@ -463,6 +463,11 @@ def test_udf_prefetch_retained_for_file_params(setup):
     [
         ({"file.path": str}, ["file__path", "sys__id"], ["a", 7]),
         ({"value": int | None}, ["sys__id", "value"], [7, 3]),
+        (
+            {"v": int | str},
+            ["sys__id", "v___type_tag", "v__int", "v__str"],
+            [7, "int", 11, None],
+        ),
         ({}, ["sys__id"], [7]),
         ({"values": list[str]}, ["sys__id", "values"], [7, ["a", "b"]]),
         ({"values": tuple[int, str]}, ["sys__id", "values"], [7, [1, "a"]]),

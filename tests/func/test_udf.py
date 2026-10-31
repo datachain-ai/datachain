@@ -1339,3 +1339,24 @@ def test_udf_parallel_replenishes_input_tasks(test_session_tmpfile):
         .save("replenish-map")
     )
     assert sorted(result.to_values("value")) == list(range(1, count + 1))
+
+
+@pytest.mark.parametrize("method", ["map", "gen", "batch_map"])
+def test_udf_scalar_union_inputs_use_one_logical_value(test_session, method):
+    def stringify(v: int | str) -> str:
+        return str(v)
+
+    chain = (
+        dc.read_values(x=[1, 2], session=test_session)
+        .map(v=lambda x: x if x == 1 else "two", output=int | str)
+        .select("v")
+    )
+    if method == "map":
+        result = chain.map(value=stringify)
+    elif method == "gen":
+        result = chain.gen(value=lambda v: iter([str(v)]), output=str)
+    else:
+        result = chain.batch_map(
+            value=lambda vs: [str(v) for v in vs], params=["v"], output=str, batch=2
+        )
+    assert sorted(result.to_values("value")) == ["1", "two"]

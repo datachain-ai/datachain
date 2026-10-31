@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 import datachain as dc
@@ -343,6 +345,42 @@ def test_read_special_chars_prefix_after_parent_listed(tmp_dir):
     assert dc.read_storage(f"{tmp_dir}/").count() == count_dict_items(DEEP_TREE) + 1
     files = dc.read_storage(f"{special}/").to_values("file")
     assert [f.name for f in files] == ["file"]
+
+
+@pytest.fixture
+def working_directory_csv(tmp_path, monkeypatch):
+    from datachain.client.local import FileClient
+
+    (tmp_path / "data.csv").write_text("data")
+    monkeypatch.chdir(tmp_path)
+    scandir = FileClient.scandir
+
+    async def scan_working_directory(client, start_prefix, method="default"):
+        # Guard against a regression scanning the filesystem root before filtering.
+        assert Path(client.name) == tmp_path
+        async for page in scandir(client, start_prefix, method=method):
+            yield page
+
+    monkeypatch.setattr(FileClient, "scandir", scan_working_directory)
+
+
+def test_read_relative_glob_scans_working_directory(
+    test_session, working_directory_csv
+):
+    (file,) = dc.read_storage("*.csv", session=test_session).to_values("file")
+    assert file.path == "data.csv"
+    assert file.read_text() == "data"
+
+
+def test_catalog_relative_glob_scans_working_directory(
+    test_session, working_directory_csv
+):
+    rows = [
+        row
+        for _, result in test_session.catalog.ls(["*.csv"], fields=["name"])
+        for row in result
+    ]
+    assert rows == [("data.csv",)]
 
 
 GLOB_COLLISION_TREE = {
