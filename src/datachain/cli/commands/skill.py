@@ -5,7 +5,8 @@ from importlib.resources import files
 from pathlib import Path
 from typing import TypedDict
 
-SKILLS = ("core", "knowledge")
+SKILLS = ("datachain", "core", "knowledge")
+DEFAULT_SKILLS = ("datachain",)
 # Installable once, retired since. An upgrade must still be able to remove these:
 # a stale skill directory keeps instructing the agent that reads it.
 RETIRED_SKILLS = ("jobs",)
@@ -204,7 +205,7 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
             if dep not in requested
         ]
     else:
-        skills_to_install = list(SKILLS)
+        skills_to_install = list(DEFAULT_SKILLS)
 
     # Per-mode overrides — when installing --local some targets (e.g. copilot)
     # write to a different directory layout than the user-level default.

@@ -78,7 +78,8 @@ def test_install_invalid_skill_raises(tmp_path, fake_skills_src, fake_home):
         install_skills(skills="nope", target="claude", local=False)
 
 
-ALL_SKILLS = ("core", "knowledge")
+ALL_SKILLS = ("datachain", "core", "knowledge")
+DEFAULT_SKILLS = ("datachain",)
 
 
 def _make_fake_skills_src(tmp_path: Path) -> Path:
@@ -135,23 +136,23 @@ def _run_install(
         install_skills(skills=skills, target=target, local=local)
 
 
-def test_install_all_claude_global(tmp_path, fake_skills_src, fake_home):
+def test_install_defaults_claude_global(tmp_path, fake_skills_src, fake_home):
     _run_install(fake_skills_src, fake_home, skills=None, target="claude", local=False)
 
     skills_base = fake_home / ".claude" / "skills"
 
-    for skill in ALL_SKILLS:
+    for skill in DEFAULT_SKILLS:
         assert (skills_base / skill / "SKILL.md").exists()
 
-    # graph should have its scripts directory too
-    assert (skills_base / "knowledge" / "scripts" / "plan.py").exists()
+    assert {p.name for p in skills_base.iterdir()} == set(DEFAULT_SKILLS)
+    assert (skills_base / "datachain" / "scripts" / "plan.py").exists()
 
     # Claude global installs should NOT create commands
     # (~/.claude/commands/ is not a real Claude Code path)
     assert not (fake_home / ".claude" / "commands").exists()
 
     # {skill_dir} should be resolved to absolute path in installed SKILL.md
-    content = (skills_base / "knowledge" / "SKILL.md").read_text()
+    content = (skills_base / "datachain" / "SKILL.md").read_text()
     assert "{skill_dir}" not in content
     assert "scripts/plan.py" in content
     assert "{core_skill_dir}" not in content
@@ -213,13 +214,13 @@ def test_install_knowledge_from_package_ships_core_sdk(tmp_path, fake_home):
     assert f"{(skills_base / 'core').resolve()}/SDK.md" in content
 
 
-def test_install_all_cursor_global(tmp_path, fake_skills_src, fake_home):
+def test_install_defaults_cursor_global(tmp_path, fake_skills_src, fake_home):
     _run_install(fake_skills_src, fake_home, skills=None, target="cursor", local=False)
 
     skills_base = fake_home / ".cursor" / "skills"
     rules_base = fake_home / ".cursor" / "rules"
 
-    for skill in ALL_SKILLS:
+    for skill in DEFAULT_SKILLS:
         assert (skills_base / skill / "SKILL.md").exists()
         mdc_file = rules_base / f"datachain-{skill}.mdc"
         assert mdc_file.exists()
@@ -232,24 +233,24 @@ def test_install_all_cursor_global(tmp_path, fake_skills_src, fake_home):
         assert f"# {skill} rules" in content
 
 
-def test_install_all_codex_global(tmp_path, fake_skills_src, fake_home):
+def test_install_defaults_codex_global(tmp_path, fake_skills_src, fake_home):
     _run_install(fake_skills_src, fake_home, skills=None, target="codex", local=False)
 
     skills_base = fake_home / ".codex" / "skills"
-    for skill in ALL_SKILLS:
+    for skill in DEFAULT_SKILLS:
         assert (skills_base / skill / "SKILL.md").exists()
 
     # codex has no commands dir
     assert not (fake_home / ".codex" / "commands").exists()
 
 
-def test_install_all_pi_global(tmp_path, fake_skills_src, fake_home):
+def test_install_defaults_pi_global(tmp_path, fake_skills_src, fake_home):
     _run_install(fake_skills_src, fake_home, skills=None, target="pi", local=False)
 
     skills_base = fake_home / ".pi" / "agent" / "skills"
     prompts_base = fake_home / ".pi" / "agent" / "prompts"
 
-    for skill in ALL_SKILLS:
+    for skill in DEFAULT_SKILLS:
         assert (skills_base / skill / "SKILL.md").exists()
         prompt_file = prompts_base / f"datachain-{skill}.md"
         assert prompt_file.exists()
@@ -279,7 +280,7 @@ def test_install_pi_local(tmp_path, fake_skills_src, fake_home, monkeypatch):
     skills_base = project_dir / ".pi" / "skills"
     prompts_base = project_dir / ".pi" / "prompts"
 
-    for skill in ALL_SKILLS:
+    for skill in DEFAULT_SKILLS:
         assert (skills_base / skill / "SKILL.md").exists()
         assert (prompts_base / f"datachain-{skill}.md").exists()
 
@@ -289,13 +290,13 @@ def test_install_pi_local(tmp_path, fake_skills_src, fake_home, monkeypatch):
     assert not (fake_home / ".pi").exists()
 
 
-def test_install_all_copilot_global(tmp_path, fake_skills_src, fake_home):
+def test_install_defaults_copilot_global(tmp_path, fake_skills_src, fake_home):
     _run_install(fake_skills_src, fake_home, skills=None, target="copilot", local=False)
 
     skills_base = fake_home / ".copilot" / "skills"
     instructions_base = fake_home / ".copilot" / "instructions"
 
-    for skill in ALL_SKILLS:
+    for skill in DEFAULT_SKILLS:
         # Full vendor copy of the skill dir (scripts, SKILL.md, etc.)
         assert (skills_base / skill / "SKILL.md").exists()
         # Per-skill .instructions.md file with applyTo frontmatter
@@ -330,7 +331,7 @@ def test_install_copilot_local_uses_github_path(
     instructions_base = project_dir / ".github" / "instructions"
     vendor_base = project_dir / ".datachain" / "skills"
 
-    for skill in ALL_SKILLS:
+    for skill in DEFAULT_SKILLS:
         assert (vendor_base / skill / "SKILL.md").exists()
         instr_file = instructions_base / f"datachain-{skill}.instructions.md"
         assert instr_file.exists()
@@ -356,7 +357,7 @@ def test_install_claude_local(tmp_path, fake_skills_src, fake_home, monkeypatch)
     skills_base = project_dir / ".claude" / "skills"
     commands_base = project_dir / ".claude" / "commands"
 
-    for skill in ALL_SKILLS:
+    for skill in DEFAULT_SKILLS:
         assert (skills_base / skill / "SKILL.md").exists()
         # Local Claude installs SHOULD create commands
         assert (commands_base / f"datachain-{skill}.md").exists()
@@ -370,8 +371,8 @@ def test_pycache_not_copied(tmp_path, fake_skills_src, fake_home):
     _run_install(fake_skills_src, fake_home, skills=None, target="claude", local=False)
 
     skills_base = fake_home / ".claude" / "skills"
-    assert (skills_base / "knowledge" / "scripts" / "plan.py").exists()
-    assert not (skills_base / "knowledge" / "scripts" / "__pycache__").exists()
+    assert (skills_base / "datachain" / "scripts" / "plan.py").exists()
+    assert not (skills_base / "datachain" / "scripts" / "__pycache__").exists()
 
 
 def test_list_skills_output(capsys):
@@ -379,6 +380,7 @@ def test_list_skills_output(capsys):
 
     list_skills()
     out = capsys.readouterr().out
+    assert "datachain" in out
     assert "core" in out
     assert "knowledge" in out
     assert "claude" in out
@@ -391,7 +393,7 @@ def test_install_missing_source_returns_nonzero(tmp_path, fake_home):
     """If a skill source dir is missing, install returns 1."""
     from datachain.cli.commands.skill import install_skills
 
-    # Create a skills_src with only "core" — knowledge missing
+    # The default skill is absent even though a legacy skill is available.
     skills_src = tmp_path / "partial_src"
     core = skills_src / "core"
     core.mkdir(parents=True)
@@ -406,9 +408,8 @@ def test_install_missing_source_returns_nonzero(tmp_path, fake_home):
     ):
         result = install_skills(skills=None, target="claude", local=False)
 
-    # core installed, but knowledge missing → non-zero
     assert result == 1
-    assert (fake_home / ".claude" / "skills" / "core" / "SKILL.md").exists()
+    assert not (fake_home / ".claude" / "skills" / "core").exists()
 
 
 def test_transform_cursor_mdc_no_frontmatter():
@@ -516,7 +517,7 @@ def test_install_clears_a_retired_skill(tmp_path, fake_skills_src, fake_home):
 
     assert not skill_dir.exists()
     assert not command.exists()
-    assert (fake_home / ".cursor" / "skills" / "core" / "SKILL.md").exists()
+    assert (fake_home / ".cursor" / "skills" / "datachain" / "SKILL.md").exists()
 
 
 def _seed_someone_elses_jobs_skill(fake_home: Path, target: str = "cursor") -> Path:
@@ -620,3 +621,48 @@ def test_uninstall_error_names_the_retired_skill(tmp_path, fake_home):
         pytest.raises(ValueError, match=r"Valid skills:.*jobs"),
     ):
         uninstall_skills(skills="nope", target="cursor", local=False)
+
+
+@pytest.mark.parametrize("target", ["claude", "cursor", "codex", "pi", "copilot"])
+@pytest.mark.parametrize("local", [False, True])
+def test_default_installs_only_datachain_from_package(
+    tmp_path, fake_home, monkeypatch, target, local
+):
+    from datachain.cli.commands.skill import TARGET_LAYOUT, install_skills
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    monkeypatch.chdir(project_dir)
+    with patch("pathlib.Path.home", return_value=fake_home):
+        assert install_skills(skills=None, target=target, local=local) == 0
+
+    layout = TARGET_LAYOUT[target]
+    base = project_dir if local else fake_home
+    skills_rel = (local and layout["skills_dir_local"]) or layout["skills_dir"]
+    skills_base = base / skills_rel
+    assert {p.name for p in skills_base.iterdir()} == {"datachain"}
+    content = (skills_base / "datachain" / "SKILL.md").read_text()
+    assert "name: datachain" in content
+    commands_rel = (local and layout["commands_dir_local"]) or layout["commands_dir"]
+    if commands_rel and (local or not layout["commands_local_only"]):
+        commands = base / commands_rel
+        assert {p.name for p in commands.iterdir()} == {
+            f"datachain-datachain{layout['command_ext']}"
+        }
+
+
+@pytest.mark.parametrize("target", ["claude", "cursor", "codex", "pi", "copilot"])
+def test_install_all_skills_by_name(fake_skills_src, fake_home, target):
+    from datachain.cli.commands.skill import TARGET_LAYOUT
+
+    _run_install(
+        fake_skills_src,
+        fake_home,
+        skills=",".join(ALL_SKILLS),
+        target=target,
+        local=False,
+    )
+    skills_base = fake_home / TARGET_LAYOUT[target]["skills_dir"]
+    assert {p.name for p in skills_base.iterdir()} == set(ALL_SKILLS)
+    for skill in ALL_SKILLS:
+        assert (skills_base / skill / "SKILL.md").exists()
