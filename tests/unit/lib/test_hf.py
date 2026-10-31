@@ -1,3 +1,4 @@
+import copy
 import importlib.metadata
 import sys
 
@@ -21,6 +22,7 @@ from datachain.lib.hf import (
     get_output_schema,
     stream_splits,
 )
+from datachain.lib.model_store import ModelStore
 
 
 def test_hf():
@@ -197,6 +199,7 @@ def test_hf_array():
 def unloaded_hf(monkeypatch):
     monkeypatch.delitem(sys.modules, "datachain.lib.hf")
     monkeypatch.delattr("datachain.lib.hf")
+    monkeypatch.setattr(ModelStore, "store", copy.deepcopy(ModelStore.store))
 
 
 def _datasets_not_installed(name):
