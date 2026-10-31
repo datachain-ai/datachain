@@ -1,8 +1,11 @@
 import hashlib
+import importlib.util
 import logging
+import os
 import re
 import sqlite3
-import warnings
+import subprocess
+import sys
 from collections.abc import Callable, Iterable
 from contextlib import closing
 from datetime import MAXYEAR, MINYEAR, UTC, date, datetime
@@ -744,24 +747,56 @@ def compile_collect(element, compiler, **kwargs):
     return compiler.process(func.json_group_array(*element.clauses.clauses), **kwargs)
 
 
+USEARCH_SQLITE_ENV = "DATACHAIN_USEARCH_SQLITE"
+_USEARCH_SQLITE_PATH_CODE = """
+import warnings
+warnings.simplefilter("ignore")
+import usearch
+print(usearch.sqlite_path())
+"""
+
+
 @cache
 def usearch_sqlite_path() -> str | None:
-    try:
-        import usearch
-    except ImportError:
+    """Path of usearch's SQLite extension, or None if it is not available.
+
+    Resolved in a subprocess: importing usearch loads NumKong with RTLD_GLOBAL,
+    which crashes native libraries imported later in the same process (e.g.
+    onnxruntime). The result is passed to child processes in an env variable.
+    """
+    if (path := os.environ.get(USEARCH_SQLITE_ENV)) is not None:
+        return path or None
+    path = _resolve_usearch_sqlite_path()
+    os.environ[USEARCH_SQLITE_ENV] = path or ""
+    return path
+
+
+def _resolve_usearch_sqlite_path() -> str | None:
+    if getattr(sys, "frozen", False) or importlib.util.find_spec("usearch") is None:
         return None
+    try:
+        result = subprocess.run(  # noqa: S603
+            [sys.executable, "-c", _USEARCH_SQLITE_PATH_CODE],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    lines = result.stdout.strip().splitlines()
+    return lines[-1] if lines else None
 
-    with warnings.catch_warnings():
-        # usearch binary is not available for Windows, see: https://github.com/unum-cloud/usearch/issues/427.
-        # and, sometimes fail to download the binary in other platforms
-        # triggering UserWarning.
 
-        warnings.filterwarnings("ignore", category=UserWarning, module="usearch")
-
-        try:
-            return usearch.sqlite_path()
-        except (FileNotFoundError, OSError):
-            return None
+@cache
+def _warn_usearch_unloadable(ext_path: str, error: str) -> None:
+    logger.warning(
+        "usearch's SQLite extension %s does not load (%s); vector distances use "
+        "a slower Python fallback. If it names libsqlite3.so, install the SQLite "
+        "development package (e.g. libsqlite3-dev).",
+        ext_path,
+        error,
+    )
 
 
 def load_usearch_extension(conn: sqlite3.Connection) -> bool:
@@ -779,7 +814,8 @@ def load_usearch_extension(conn: sqlite3.Connection) -> bool:
 
     try:
         conn.load_extension(ext_path)
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as exc:
+        _warn_usearch_unloadable(ext_path, str(exc))
         return False
     else:
         return True
