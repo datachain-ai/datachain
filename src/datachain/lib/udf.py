@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import inspect
 import logging
@@ -484,14 +485,18 @@ async def _prefetch_input(
     after_prefetch: "Callable[[], None]" = noop,
     batch_columns: set[int] | None = None,
 ) -> T:
-    for obj in _row_files(row, batch_columns):  # type: ignore[arg-type]
+    async def prefetch_file(obj: File) -> None:
         if not obj.path:
-            continue
+            return
         try:
             if await obj._prefetch(download_cb):
                 after_prefetch()
         except FileError as e:
             logger.warning("Skipping prefetch for '%s/%s': %s", obj.source, obj.path, e)
+
+    await asyncio.gather(
+        *(prefetch_file(obj) for obj in _row_files(row, batch_columns))
+    )
     return row
 
 
@@ -529,7 +534,7 @@ def _prefetch_inputs(
         after_prefetch=after_prefetch,
         batch_columns=batch_columns,
     )
-    mapper = AsyncMapper(f, prepared_inputs, workers=prefetch)
+    mapper = AsyncMapper(f, prepared_inputs, workers=prefetch, queue_size=1)
     with closing(mapper.iterate()) as row_iter:
         for row in row_iter:
             try:

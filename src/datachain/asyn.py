@@ -49,10 +49,12 @@ class AsyncMapper(Generic[InputT, ResultT]):
         *,
         workers: int = ASYNC_WORKERS,
         loop: asyncio.AbstractEventLoop | None = None,
+        queue_size: int | None = None,
     ):
         self.func = func
         self.iterable = iterable
         self.workers = workers
+        self.queue_size = 2 * workers if queue_size is None else queue_size
         self.loop = get_loop() if loop is None else loop
         self.pool = ThreadPoolExecutor(workers)
         self._tasks: set[asyncio.Task] = set()
@@ -105,7 +107,7 @@ class AsyncMapper(Generic[InputT, ResultT]):
                 self.work_queue.task_done()
 
     async def init(self) -> None:
-        self.work_queue = asyncio.Queue(2 * self.workers)
+        self.work_queue = asyncio.Queue(self.queue_size)
         self.result_queue: asyncio.Queue[ResultT | None] = asyncio.Queue(self.workers)
 
     async def run(self) -> None:

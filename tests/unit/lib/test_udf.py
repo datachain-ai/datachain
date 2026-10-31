@@ -124,13 +124,13 @@ def test_udf_verbose_name_func():
 
 
 def test_udf_verbose_name_lambda():
-    sign = get_sign(lambda key: len(key), output="res")  # noqa: PLW0108
+    sign = get_sign(lambda key: len(key), output="res")
     udf = UDFBase._create(sign, sign.output_schema)
     assert udf.verbose_name == "<lambda>"
 
 
 def test_udf_verbose_name_unknown():
-    sign = get_sign(lambda key: len(key), output="res")  # noqa: PLW0108
+    sign = get_sign(lambda key: len(key), output="res")
     udf = UDFBase._create(sign, sign.output_schema)
     udf._func = None
     assert udf.verbose_name == "<unknown>"
@@ -362,7 +362,6 @@ def test_udf_output_type_error_message_json_serialization_failure(
 def test_map_prefetch_skips_invalid_path_files(
     monkeypatch, test_session, caplog, bad_path
 ):
-
     monkeypatch.delenv("DATACHAIN_DISTRIBUTED", raising=False)
 
     files = [File(source="s3://bucket", path=bad_path) for _ in range(3)]
@@ -413,3 +412,49 @@ def test_an_insert_error_closes_the_udf_outputs(test_session, mocker):
     # the error's traceback holds the generator: it must be closed already
     assert closed == [1000]
     assert error.value.__traceback__ is not None
+
+
+@pytest.mark.parametrize("prefetch,batch,bound", [(4, 1, 11), (16, 32, 35), (2, 4, 7)])
+def test_prefetch_read_ahead_is_bounded(prefetch, batch, bound):
+    import time
+
+    from datachain.lib.udf import _prefetch_inputs
+
+    pulled = 0
+
+    def rows():
+        nonlocal pulled
+        for i in range(1000):
+            pulled += 1
+            yield [i]
+
+    it = _prefetch_inputs(rows(), prefetch, batch_columns={0} if batch > 1 else None)
+    assert next(it) == [0]
+    time.sleep(0.2)
+    assert pulled <= bound
+    assert sum(1 for _ in it) == 999
+
+
+def test_prefetch_downloads_a_batch_concurrently(monkeypatch):
+    import asyncio
+
+    from datachain.lib.file import File
+    from datachain.lib.udf import _prefetch_inputs
+
+    active = peak = 0
+
+    async def fake_prefetch(self, download_cb=None):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.05)
+        active -= 1
+        return True
+
+    monkeypatch.setattr(File, "_prefetch", fake_prefetch)
+    batch = [[File(source="s3://b", path=f"{i}.jpg") for i in range(8)]]
+
+    out = list(_prefetch_inputs(iter([batch]), prefetch=1, batch_columns={0}))
+
+    assert out == [batch]
+    assert peak == 8
