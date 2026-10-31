@@ -123,3 +123,4 @@ def test_cache_download_reserved_chars_in_path(cloud_test_catalog_upload):
     assert cached_path is not None
     contents = Path(cached_path).read_text(encoding="utf-8")
     assert contents == "hi"
+    assert os.listdir(catalog.cache.tmp_dir) == []

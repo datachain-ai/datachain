@@ -136,7 +136,7 @@ class Cache:  # noqa: PLW1641
             oid = file.get_hash()
             self.odb.add(tmp_info, self.odb.fs, oid, hardlink=True)
         finally:
-            os.unlink(tmp_info)
+            remove(tmp_info)
 
     def store_data(self, file: "File", contents: bytes) -> None:
         self.odb.add_bytes(file.get_hash(), contents)
