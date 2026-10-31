@@ -11,16 +11,17 @@ import copy
 from datetime import datetime
 from typing import Generic, Literal, Optional, TypeVar, Union
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
+import datachain as dc
 from datachain.dataset import RowDict
 from datachain.error import OutdatedDatasetFormatError
-from datachain.lib.arrow import _columns_under, _union_value
 from datachain.lib.convert.flatten import flatten, flatten_value
 from datachain.lib.convert.unflatten import unflatten_to_json_pos
 from datachain.lib.data_model import (
     DataModel,
-    UnionLayout,
     _warn_index_tag,
     arm_selector,
     is_chain_type,
@@ -437,16 +438,32 @@ def test_union_arm_named_like_the_discriminator_rejected():
         SignalSchema({"value": _type_tag | str}).db_signals()
 
 
-def _union(values, layout):
-    return _union_value(values, layout, "v", _columns_under(values))
+def _write_v(path, session, values, anno, replaced):
+    dc.read_values(
+        id=list(range(len(values))),
+        v=values,
+        output={"id": int, "v": anno},
+        session=session,
+    ).to_parquet(path)
+    table = pq.read_table(path)
+    for name, column in replaced.items():
+        table = table.drop_columns([name])
+        if column is not None:
+            table = table.append_column(name, column)
+    pq.write_table(table, path)
 
 
-def test_single_arm_reads_the_arm_under_any_tag_name():
-    layout = UnionLayout(arms=[Foo], has_none=True, use_slots=False)
-    got = _union({"v._type_tag": "FooPartial_1a2b_v1", "v.a": 5}, layout)
-    assert (got.a, got.b) == (5, "")
-    assert _union({"v._type_tag": None}, layout) is None
-    assert _union({"v._type_tag": ""}, layout) is None  # CH NULL tag
+def _read_v(path, session):
+    chain = dc.read_parquet(path.as_uri(), source=False, session=session)
+    return chain.order_by("id").to_values("v")
+
+
+def test_read_parquet_reads_an_optional_model_under_any_tag_name(tmp_dir, test_session):
+    path = tmp_dir / "v.parquet"
+    # A partial model's name, NULL, and ClickHouse's NULL
+    tags = pa.array(["FooPartial_1a2b_v1", None, ""])
+    _write_v(path, test_session, [Foo(a=5)] * 3, Foo | None, {"v._type_tag": tags})
+    assert [v and v.a for v in _read_v(path, test_session)] == [5, None, None]
 
 
 def test_arm_name_wins_over_a_field_of_the_same_name():
@@ -516,20 +533,15 @@ def unwarned_index_tag():
 
 
 def test_index_tag_reads_optional_model(unwarned_index_tag):
-    layout = UnionLayout(arms=[Foo], has_none=True, use_slots=False)
-    with pytest.warns(FutureWarning, match="numeric Optional"):
-        got = _union({"v._type_tag": 0, "v.a": 7, "v.b": "z"}, layout)
-    assert (got.a, got.b) == (7, "z")
-
     schema = SignalSchema({"m": Foo | None})
-    assert schema.row_to_objs(
-        RowDict(zip(schema.to_udf_spec(), (0, 7, "z"), strict=True))
-    ) == [Foo(a=7, b="z")]
+    with pytest.warns(FutureWarning, match="numeric Optional"):
+        assert schema.row_to_objs(
+            RowDict(zip(schema.to_udf_spec(), (0, 7, "z"), strict=True))
+        ) == [Foo(a=7, b="z")]
     # any other index is the absent arm
     assert schema.row_to_objs(
         RowDict(zip(schema.to_udf_spec(), (1, 7, "z"), strict=True))
     ) == [None]
-    assert _union({"v._type_tag": 1, "v.a": 7}, layout) is None
 
 
 def test_index_tag_rejected_multi_arm(unwarned_index_tag):
@@ -545,14 +557,9 @@ def test_order_by_column_none_for_unknown_signal():
     assert SignalSchema({"v": int | str}).order_by_column("nonexistent") is None
 
 
-def test_union_value_infers_arm_when_tag_absent():
-    layout = union_layout(Foo | int)
-    fk, ik = arm_selector(Foo), arm_selector(int)
-
-    foo = _union({f"v.{fk}.a": 5, f"v.{fk}.b": "z"}, layout)
-    assert (foo.a, foo.b) == (5, "z")
-
-    empty_foo = {f"v.{fk}.a": float("nan"), f"v.{fk}.b": None, f"v.{ik}": 9}
-    assert _union(empty_foo, layout) == 9
-
-    assert _union({f"v.{fk}.a": None, f"v.{ik}": None}, layout) is None
+def test_read_parquet_infers_a_union_arm_without_type_tags(tmp_dir, test_session):
+    path = tmp_dir / "v.parquet"
+    replaced = {"v._type_tag": None, "v.Foo.a": pa.array([5.0, float("nan"), None])}
+    _write_v(path, test_session, [Foo(a=5, b="z"), 9, None], Foo | int | None, replaced)
+    foo, number, absent = _read_v(path, test_session)
+    assert (foo.a, foo.b, number, absent) == (5, "z", 9, None)
