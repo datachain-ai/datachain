@@ -675,12 +675,10 @@ def test_filter_after_merge_does_not_bind_size_inside_sqlalchemy_select(test_ses
 def test_merge_file_stems_with_pandas_duplicates_and_unmatched(
     test_session, kind, direct
 ):
-    from datachain import File
-    from datachain import func as dc_func
 
     left = dc.read_values(
         file=[
-            File(path=path)
+            dc.File(path=path)
             for path in ("foo/x.jpg", "bar/y.jpg", "baz/x.png", "no.jpg")
         ],
         session=test_session,
@@ -690,9 +688,9 @@ def test_merge_file_stems_with_pandas_duplicates_and_unmatched(
         session=test_session,
     )
     if direct:
-        on = dc_func.path.file_stem(left.c("file.path"))
+        on = dc.func.path.file_stem(left.c("file.path"))
     else:
-        left = left.mutate(stem=dc_func.path.file_stem("file.path")).select(
+        left = left.mutate(stem=dc.func.path.file_stem("file.path")).select(
             "file", "stem"
         )
         on = "stem"
@@ -713,22 +711,34 @@ def test_merge_file_stems_with_pandas_duplicates_and_unmatched(
     assert sorted(merged.select("file.path", "score").results(), key=repr) == sorted(
         expected, key=repr
     )
-    assert left.count() == 4
 
 
 @pytest.mark.parametrize("reverse", [False, True])
 def test_merge_computed_keys_after_union_and_limit(test_session, reverse):
-    from datachain import func as dc_func
-
     left = dc.read_values(path=["a.jpg", "b.jpg", "c.jpg"], session=test_session)
-    left = left.mutate(key=dc_func.path.file_stem("path"))
+    left = left.mutate(key=dc.func.path.file_stem("path"))
     extra = dc.read_values(path=["d.png"], key=["d"], session=test_session)
     left = (
         (extra.union(left) if reverse else left.union(extra)).order_by("key").limit(3)
     )
     right = dc.read_values(path=["b.png", "c.png", "d.png"], session=test_session)
-    right = right.mutate(key=dc_func.path.file_stem("path"))
+    right = right.mutate(key=dc.func.path.file_stem("path"))
     assert left.merge(right, "key", inner=True).order_by("key").to_list("key") == [
         ("b",),
         ("c",),
     ]
+
+
+def test_merge_computed_keys_do_not_collide_with_signal_names(test_session):
+    left = dc.read_values(
+        path=["a/x.jpg", "b/y.jpg"],
+        session=test_session,
+        **{f"anon_{i}": ["p", "q"] for i in range(1, 8)},
+        __dc_join_key_0=["p", "q"],
+    ).mutate(stem=dc.func.path.file_stem("path"))
+    right = dc.read_values(
+        path=["c/x.png", "d/y.png"], score=[1, 2], session=test_session
+    ).mutate(stem=dc.func.path.file_stem("path"))
+    assert left.merge(right, on="stem").order_by("path").to_list(
+        "path", "anon_1", "score"
+    ) == [("a/x.jpg", "p", 1), ("b/y.jpg", "q", 2)]

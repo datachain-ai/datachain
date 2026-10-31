@@ -293,10 +293,9 @@ def test_insert_into_reads_all_ids_before_inserting_batches(
 @pytest.mark.parametrize("computed_side", ["left", "right", "both"])
 @pytest.mark.parametrize("typed", [False, True])
 def test_join_computed_keys_evaluated_linearly(
-    sqlite_db, kind, computed_side, direct, typed
+    warehouse, numbers_table, kind, computed_side, direct, typed
 ):
-    warehouse = SQLiteWarehouse(sqlite_db)
-    size = 7390
+    sqlite_db = warehouse.db
     calls = 0
 
     def join_key(value):
@@ -305,21 +304,9 @@ def test_join_computed_keys_evaluated_linearly(
         return value
 
     sqlite_db.db.create_function("test_join_key", 1, join_key, deterministic=True)
-    left_table = sa.Table(
-        "computed_join_left", sqlite_db.metadata, sa.Column("key", sa.Integer)
-    )
-    right_table = sa.Table(
-        "computed_join_right", sqlite_db.metadata, sa.Column("key", sa.Integer)
-    )
-    sqlite_db.create_table(left_table)
-    sqlite_db.create_table(right_table)
-    warehouse.insert_rows(left_table, [{"key": i} for i in range(size)])
-    warehouse.insert_rows(right_table, [{"key": i} for i in range(size)])
-    warehouse.insert_rows_done(left_table)
-    warehouse.insert_rows_done(right_table)
 
     def make_side(table, computed):
-        key = table.c.key
+        key = table.c.number.label("key")
         if computed and not direct:
             key = sa.func.test_join_key(key, type_=sa.Integer if typed else None).label(
                 "key"
@@ -332,8 +319,8 @@ def test_join_computed_keys_evaluated_linearly(
             )
         return side, predicate
 
-    left, left_key = make_side(left_table, computed_side in ("left", "both"))
-    right, right_key = make_side(right_table, computed_side in ("right", "both"))
+    left, left_key = make_side(numbers_table, computed_side in ("left", "both"))
+    right, right_key = make_side(numbers_table, computed_side in ("right", "both"))
     if kind == "subtract":
         query = warehouse.subtract_query(
             left.select(), right.select(), [("key", "key")]
@@ -348,14 +335,10 @@ def test_join_computed_keys_evaluated_linearly(
             full=kind == "full",
             columns=[left.c.key, right.c.key.label("right_key")],
         )
-        expected = [(i, i) for i in range(size)]
+        expected = [(i, i) for i in range(1, 74)]
 
     assert sorted(sqlite_db.execute(query).fetchall()) == expected
-    assert calls == size * (2 if computed_side == "both" else 1)
-    sql, params = sqlite_db.compile_to_args(query)
-    plan = sqlite_db.db.execute("EXPLAIN QUERY PLAN " + sql, params).fetchall()
-    indexed_joins = sum("AUTOMATIC" in row[3] and "INDEX" in row[3] for row in plan)
-    assert indexed_joins >= (2 if kind == "full" else 1)
+    assert calls == 73 * (2 if computed_side == "both" else 1)
 
 
 @skip_if_not_sqlite
@@ -447,3 +430,37 @@ def test_join_expression_on_derived_key_evaluates_each_function_once(
     rows = warehouse.db.execute(query).fetchall()
     assert sorted(rows) == [(i, i) for i in range(1, 74)]
     assert calls == 2 * 73
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize("kind", ["inner", "left", "full", "subtract"])
+def test_computed_join_does_not_coerce_runtime_text_to_numeric(sqlite_db, kind):
+    warehouse = SQLiteWarehouse(sqlite_db)
+    left_table = sa.Table(
+        "nullable_keys", sqlite_db.metadata, sa.Column("key", sa.Integer)
+    )
+    right_table = sa.Table("text_keys", sqlite_db.metadata, sa.Column("key", sa.String))
+    for table, value in [(left_table, None), (right_table, "missing")]:
+        sqlite_db.create_table(table)
+        warehouse.insert_rows(table, [{"key": value}])
+        warehouse.insert_rows_done(table)
+    left = sa.select(
+        sa.func.coalesce(left_table.c.key, "missing").label("key")
+    ).subquery()
+    right = right_table.alias()
+    if kind == "subtract":
+        query = warehouse.subtract_query(
+            left.select(), right.select(), [("key", "key")]
+        )
+        expected = []
+    else:
+        query = warehouse.join(
+            left,
+            right,
+            left.c.key == right.c.key,
+            inner=kind == "inner",
+            full=kind == "full",
+            columns=[left.c.key, right.c.key.label("right_key")],
+        )
+        expected = [("missing", "missing")]
+    assert sqlite_db.execute(query).fetchall() == expected

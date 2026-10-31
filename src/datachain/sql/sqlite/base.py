@@ -216,30 +216,22 @@ def sqlite_string_split(string: str, sep: str, maxsplit: int = -1) -> str:
 
 
 def sqlite_path_parent(path: str) -> str:
-    i = path.rfind("/")
-    return path[: i + 1].rstrip("/") if i >= 0 else ""
+    return path.rpartition("/")[0].rstrip("/")
 
 
 def sqlite_path_name(path: str) -> str:
-    return path[len(sqlite_path_parent(path)) :].lstrip("/")
-
-
-def _file_ext_length(name: str) -> int:
-    i = name.rfind(".")
-    return 0 if i < 0 else len(name) - i - 1
-
-
-def sqlite_path_file_ext(path: str) -> str:
-    ext_length = _file_ext_length(sqlite_path_name(path))
-    return path[len(path) - ext_length :] if ext_length else ""
+    return path.rpartition("/")[2]
 
 
 def sqlite_path_file_stem(path: str) -> str:
-    if "/" not in path:
-        return path[: len(path) - _file_ext_length(path)].rstrip(".")
-    parent_length = len(sqlite_path_parent(path))
-    ext_length = _file_ext_length(sqlite_path_name(path))
-    return path[parent_length : len(path) - ext_length].rstrip(".").lstrip("/")
+    name = sqlite_path_name(path)
+    stem, dot, _ = name.rpartition(".")
+    return stem.rstrip(".") if dot else name
+
+
+def sqlite_path_file_ext(path: str) -> str:
+    _, dot, ext = sqlite_path_name(path).rpartition(".")
+    return ext if dot else ""
 
 
 def sqlite_int_hash_64(x: int) -> int:

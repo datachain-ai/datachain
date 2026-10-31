@@ -131,13 +131,13 @@ def get_db_file_in_memory(
     return db_file
 
 
+def _replace(element, replacements):
+    return replacement_traverse(element, {}, lambda e, **_kwargs: replacements.get(e))
+
+
 def _materialize_join_side(
     side: "FromClause", onclause: "ColumnElement"
-) -> tuple[
-    "FromClause",
-    dict["ClauseElement", "ClauseElement"],
-    dict["ClauseElement", "ClauseElement"],
-]:
+) -> tuple["FromClause", dict["ClauseElement", "ClauseElement"]]:
     keys = {}
     for expression in iterate(onclause):
         if not isinstance(expression, BinaryExpression) or expression.operator not in (
@@ -145,10 +145,7 @@ def _materialize_join_side(
             operators.is_not_distinct_from,
         ):
             continue
-        for key, other in (
-            (expression.left, expression.right),
-            (expression.right, expression.left),
-        ):
+        for key in (expression.left, expression.right):
             tables = {
                 column.table
                 for column in iterate(key)
@@ -157,80 +154,44 @@ def _materialize_join_side(
             if tables == {side} and any(
                 not isinstance(proxy, (ColumnClause, Label)) for proxy in key.proxy_set
             ):
-                keys[key] = (
-                    other.type
-                    if isinstance(key.type, sqlalchemy.types.NullType)
-                    else key.type
-                )
+                keys[key] = None
 
     if not keys:
-        return side, {}, {}
+        return side, {}
 
-    # OFFSET prevents subquery flattening on SQLite versions predating AS MATERIALIZED.
+    # OFFSET prevents flattening without requiring SQLite's AS MATERIALIZED.
     inputs = select(*side.c).offset(0).cte()
     input_columns = {column: inputs.c[column.name] for column in side.c}
-    original_keys = {
-        key: replacement_traverse(
-            key, {}, lambda element, **_kwargs: input_columns.get(element)
-        ).label(None)
-        for key in keys
-        if not isinstance(key, ColumnClause)
-    }
+    names = set(inputs.c.keys())
+    computed = {}
+    for i, key in enumerate(keys):
+        if isinstance(key, ColumnClause):
+            continue
+        name = f"__dc_join_key_{i}"
+        while name in names:
+            name += "_"
+        names.add(name)
+        computed[key] = _replace(key, input_columns).label(name)
     values = (
-        select(*inputs.c, *original_keys.values()).offset(0).cte()
-        if original_keys
-        else inputs
+        select(*inputs.c, *computed.values()).offset(0).cte() if computed else inputs
     )
-    column_names: dict[ClauseElement, str] = {column: column.name for column in side.c}
-    column_names.update({key: label.name for key, label in original_keys.items()})
-    value_columns = {key: values.c[name] for key, name in column_names.items()}
-
-    extra_keys = {}
-    for key, key_type in keys.items():
-        try:
-            python_type = key_type.python_type
-        except NotImplementedError:
-            python_type = None
-        # SQLite needs an explicit affinity to index a materialized expression
-        # against a stored column. Keep the original columns for the result.
-        if python_type in (str, int, float, bool, bytes):
-            key_type = (
-                sqlalchemy.Numeric() if python_type in (int, float, bool) else key_type
-            )
-            extra_keys[key] = cast(value_columns[key], key_type).label(None)
-
-    materialized = (
-        select(*values.c, *extra_keys.values()).offset(0).cte()
-        if extra_keys
-        else values
-    )
-    columns: dict[ClauseElement, ClauseElement] = {
-        key: materialized.c[name] for key, name in column_names.items()
-    }
-    predicates: dict[ClauseElement, ClauseElement] = {
-        key: materialized.c[label.name] for key, label in extra_keys.items()
-    }
-    return materialized, columns, predicates
+    column_names = {column: column.name for column in side.c}
+    column_names.update({key: label.name for key, label in computed.items()})
+    # Keep runtime values and affinity intact. Declared SQL types cannot prove
+    # that an extra cast predicate preserves every original match.
+    return values, {key: values.c[name] for key, name in column_names.items()}
 
 
 def _materialize_join(
     join: Join,
 ) -> tuple[Join, dict["ClauseElement", "ClauseElement"]]:
     assert join.onclause is not None
-    left, left_columns, left_keys = _materialize_join_side(join.left, join.onclause)
-    right, right_columns, right_keys = _materialize_join_side(join.right, join.onclause)
+    left, left_columns = _materialize_join_side(join.left, join.onclause)
+    right, right_columns = _materialize_join_side(join.right, join.onclause)
     columns = left_columns | right_columns
     if not columns:
         return join, columns
-    # Preserve SQLite mixed-type comparison semantics alongside the indexable keys.
-    original_onclause = replacement_traverse(
-        join.onclause, {}, lambda element, **_kwargs: columns.get(element)
-    )
-    predicates = columns | left_keys | right_keys
-    indexed_onclause = replacement_traverse(
-        join.onclause, {}, lambda element, **_kwargs: predicates.get(element)
-    )
-    onclause = sqlalchemy.and_(original_onclause, indexed_onclause)
+    onclause = _replace(join.onclause, columns)
     return sqlalchemy.join(left, right, onclause, isouter=join.isouter), columns
 
 
@@ -1094,7 +1055,7 @@ class SQLiteWarehouse(AbstractWarehouse):
     ) -> Select:
         query = super().subtract_query(source_query, target_query, key_pairs)
         assert isinstance(query, Select)
-        (join,) = query._from_obj
+        (join,) = (child for child in query.get_children() if isinstance(child, Join))
         assert isinstance(join, Join)
         materialized_join, replacements = _materialize_join(join)
         if not replacements:
