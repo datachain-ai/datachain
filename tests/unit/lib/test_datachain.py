@@ -2588,6 +2588,7 @@ def test_read_parquet_list_output_renames_repeated_names_written_by_datachain(
     [
         ({"q": int, "n": int}, "q is not a model, unlike p"),
         ({"q": Point, "n": PointX}, "n is a model, unlike a"),
+        ({"q": Point | None, "n": int}, "q is an optional model, unlike p"),
     ],
 )
 def test_read_parquet_output_models_must_fit_signals_written_by_datachain(
@@ -2760,6 +2761,63 @@ def test_read_parquet_columns_read_a_field_missing_from_a_file_as_none(
         uri, columns=["id", "p.x"], source=False, session=test_session
     )
     assert chain.order_by("id").to_values("p.x") == [1, None]
+
+
+@pytest.mark.parametrize("column", ["p.x", "p.DefaultX.x"])
+def test_read_parquet_columns_read_a_union_field_missing_from_a_file_as_none(
+    tmp_dir, test_session, column
+):
+    path = tmp_dir / "parts"
+    path.mkdir()
+    for i in (1, 2):
+        dc.read_values(
+            id=[i],
+            p=[DefaultX(x=i, y=2)],
+            output={"id": int, "p": DefaultX | int},
+            session=test_session,
+        ).to_parquet(path / f"{i}.parquet")
+    table = pq.read_table(path / "2.parquet")
+    pq.write_table(table.drop_columns(["p.DefaultX.x"]), path / "2.parquet")
+    chain = dc.read_parquet(
+        path.as_uri(), columns=["id", column], source=False, session=test_session
+    )
+    assert [p.x for p in chain.order_by("id").to_values("p")] == [1, None]
+
+
+class Outer(DataModel):
+    point: Point
+
+
+@pytest.fixture
+def nested_parquet(tmp_dir, test_session):
+    path = tmp_dir / "nested.parquet"
+    dc.read_values(
+        u=[Point(x=1, y=2)],
+        o=[Outer(point=Point(x=3, y=4))],
+        output={"u": Point | int, "o": Outer | None},
+        session=test_session,
+    ).to_parquet(path)
+    return path.as_uri()
+
+
+@pytest.mark.parametrize("column,parent", [("u.Point", "u"), ("o.point", "o")])
+@pytest.mark.parametrize("output", [["v"], {"v": Point}, {"v": Point | None}])
+def test_read_parquet_columns_cant_read_a_model_in_an_optional_or_union_alone(
+    nested_parquet, test_session, column, parent, output
+):
+    with pytest.raises(DatasetPrepareError, match=f"Read {parent} instead"):
+        dc.read_parquet(
+            nested_parquet, columns=[column], output=output, session=test_session
+        )
+
+
+def test_read_parquet_output_model_must_be_optional_as_its_signal(
+    nested_parquet, test_session
+):
+    with pytest.raises(DatasetPrepareError, match="v is a model, unlike o"):
+        dc.read_parquet(
+            nested_parquet, columns=["o"], output={"v": Outer}, session=test_session
+        )
 
 
 @pytest.mark.parametrize("output", [None, ["id", "value"]])

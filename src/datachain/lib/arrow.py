@@ -357,6 +357,7 @@ def infer_output(
     if columns is None:
         schema = pa.unify_schemas(schemas)
     else:
+        columns = list(signals)  # as stored, e.g. "u.Model.x" for "u.x"
         # Only the picked signals need compatible types across files.
         picked = [
             pa.schema(
@@ -367,6 +368,7 @@ def infer_output(
         schema = pa.unify_schemas(picked)
     if col_names:
         _check_fields_fit(len(col_names), len(signals))
+        _check_read_alone(signal_schema, signals)
         names = list(normalize_col_names(col_names))
         return schema, dict(zip(names, signals.values(), strict=True)), list(signals)
     if columns is None:
@@ -396,12 +398,11 @@ def read_columns(
     if signal_schema := _get_datachain_schema(schema):
         signals = _signal_paths(signal_schema, columns, source)
         _check_fields_fit(fields, len(signals))
+        _check_read_alone(signal_schema, signals)
         for (field, info), (path, stored) in zip(
             model.model_fields.items(), signals.items(), strict=True
         ):
-            is_model = classify_field(info.annotation).is_model
-            if is_model != classify_field(stored).is_model:
-                kind = "a model" if is_model else "not a model"
+            if (kind := _model_kind(info.annotation)) != _model_kind(stored):
                 raise ValueError(f"output field {field} is {kind}, unlike {path}")
         return list(signals), True
 
@@ -489,6 +490,30 @@ def _signal_paths(
     except SignalSchemaError as e:
         signals = list(signal_schema.values)
         raise ValueError(f"{e}. Available signals: {signals}") from e
+
+
+def _check_read_alone(signal_schema: SignalSchema, signals: dict[str, "DataType"]):
+    """Raise for a model inside an optional model or a union, which only that
+    parent tells is present."""
+    for path, stored in signals.items():
+        kind = classify_field(stored)
+        if not kind.is_model or kind.is_optional:
+            continue
+        parts = path.split(".")
+        for i in range(1, len(parts)):
+            parent = ".".join(parts[:i])
+            if union_layout(signal_schema.resolve(parent).values[parent]) is not None:
+                raise ValueError(
+                    f"{path} can't be read alone, as {parent} tells whether it is "
+                    f"present. Read {parent} instead."
+                )
+
+
+def _model_kind(anno: Any) -> str:
+    kind = classify_field(anno)
+    if not kind.is_model:
+        return "not a model"
+    return "an optional model" if kind.is_optional else "a model"
 
 
 def _in_signals(column: str, signals: Sequence[str]) -> bool:
