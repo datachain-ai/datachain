@@ -32,6 +32,9 @@ class AsyncMapper(Generic[InputT, ResultT]):
     `workers` asyncio coroutines, and the results are yielded in arbitrary
     order.
 
+    `queue_size` bounds buffered input items (not active workers or completed
+    results). It defaults to twice `workers`; both limits must be positive.
+
     If `func` needs to call synchronous functions that may themselves run coroutines
     on the same loop, it must use `mapper.to_thread()`.
 
@@ -51,6 +54,8 @@ class AsyncMapper(Generic[InputT, ResultT]):
         loop: asyncio.AbstractEventLoop | None = None,
         queue_size: int | None = None,
     ):
+        if workers < 1 or (queue_size is not None and queue_size < 1):
+            raise ValueError("workers and queue_size must be positive")
         self.func = func
         self.iterable = iterable
         self.workers = workers

@@ -15,7 +15,7 @@ import attrs
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from pydantic import BaseModel
 
-from datachain.asyn import AsyncMapper
+from datachain.asyn import ASYNC_WORKERS, AsyncMapper
 from datachain.cache import temporary_cache
 from datachain.dataset import RowDict
 from datachain.hash_utils import hash_callable
@@ -35,7 +35,7 @@ from datachain.query.batch import (
     Partition,
     RowsOutputBatch,
 )
-from datachain.utils import safe_closing, with_last_flag
+from datachain.utils import batched_it, safe_closing, with_last_flag
 
 logger = logging.getLogger("datachain")
 
@@ -494,9 +494,16 @@ async def _prefetch_input(
         except FileError as e:
             logger.warning("Skipping prefetch for '%s/%s': %s", obj.source, obj.path, e)
 
-    await asyncio.gather(
-        *(prefetch_file(obj) for obj in _row_files(row, batch_columns))
-    )
+    # Bound both active downloads and task allocation within a large input batch.
+    for files in batched_it(_row_files(row, batch_columns), ASYNC_WORKERS):
+        tasks = [asyncio.create_task(prefetch_file(obj)) for obj in files]
+        try:
+            await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
     return row
 
 
