@@ -577,7 +577,7 @@ class TypeReadConverter:
             float,
             int,
         }:
-            return value if type(value) is list else list(value)
+            return list(value)
         return [item_type.on_read_convert(x, dialect) for x in value]
 
     @staticmethod

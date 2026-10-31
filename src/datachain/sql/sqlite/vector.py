@@ -2,16 +2,16 @@ import math
 from functools import lru_cache
 
 import numpy as np
-import ujson
+
+from datachain import json
 
 
 # A scan compares every row against the same query vector; cache its parse.
 @lru_cache(maxsize=8)
 def _parse(a: str) -> np.ndarray:
-    try:
-        return np.array(ujson.loads(a), dtype=np.float64)
-    except (ValueError, TypeError):
-        return np.fromstring(a[1:-1], sep=",")
+    values = np.array(json.loads(a), dtype=np.float64)
+    values.flags.writeable = False
+    return values
 
 
 def euclidean_distance(a: str, b: str):

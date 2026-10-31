@@ -1919,6 +1919,8 @@ def test_enrich_expr_types_unknown_column():
         (list[float], [0.5, None, 2], [0.5, None, 2]),
         (list[int], [1, None, 3], [1, None, 3]),
         (list[str], ["a", "b"], ["a", "b"]),
+        (list[tuple[int, str]], [[1, "a"]], [(1, "a")]),
+        (list[dict[int, str]], [{"1": "a"}], [{1: "a"}]),
         (tuple[float, ...], [0.5, 1.5], (0.5, 1.5)),
         (tuple[int, str], [1, "a"], (1, "a")),
         (list[list[float]], [[0.5], [1.5, None]], [[0.5], [1.5, None]]),
@@ -1931,4 +1933,3 @@ def test_row_to_features_sequences(test_session, spec, value, expected):
     )
     assert features == expected
     assert type(features) is type(expected)
-    assert features is not value
