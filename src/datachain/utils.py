@@ -88,6 +88,15 @@ class DataChainDir:
             root_dir = os.environ[cls.ENV_VAR_DATACHAIN_ROOT]
         except KeyError:
             root_dir = os.getcwd()
+            candidate = root_dir
+            while True:
+                datachain_dir = osp.join(candidate, cls.DEFAULT)
+                if osp.isfile(osp.join(datachain_dir, cls.DB)):
+                    return datachain_dir
+                parent = osp.dirname(candidate)
+                if parent == candidate:
+                    break
+                candidate = parent
 
         return osp.join(root_dir, cls.DEFAULT)
 
