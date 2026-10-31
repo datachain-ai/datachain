@@ -207,24 +207,30 @@ def _datasets_not_installed(name):
 
 
 @pytest.mark.parametrize(
-    "fake_version,message",
+    "fake_version,reason",
     [
         (
             lambda name: "2.2.1",
-            r"requires 'datasets>=4\.0\.0' but version 2\.2\.1 is installed",
+            "datachain requires 'datasets>=4.0.0' but version 2.2.1 is installed.",
         ),
         (_datasets_not_installed, "No package metadata was found for datasets"),
     ],
     ids=["outdated", "missing"],
 )
 def test_import_rejects_unusable_datasets(
-    unloaded_hf, monkeypatch, fake_version, message
+    unloaded_hf, monkeypatch, fake_version, reason
 ):
     monkeypatch.setitem(sys.modules, "datasets", None)
     monkeypatch.setattr(importlib.metadata, "version", fake_version)
 
-    with pytest.raises(ImportError, match=message):
+    with pytest.raises(ImportError) as exc_info:
         importlib.import_module("datachain.lib.hf")
+
+    assert str(exc_info.value) == (
+        f"Missing dependencies for huggingface datasets: {reason}\n"
+        "To install run:\n\n"
+        "  pip install 'datachain[hf]'\n"
+    )
 
 
 def test_import_accepts_datasets_4(unloaded_hf, monkeypatch):
