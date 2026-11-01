@@ -8,7 +8,7 @@ import re
 import sys
 import time
 from collections.abc import Iterable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -461,6 +461,61 @@ def determine_processes(
         # Disable parallel processing if only one process is requested.
         return False
     return parallel
+
+
+def _cpu_quotas(
+    root: str = "/sys/fs/cgroup", membership: str = "/proc/self/cgroup"
+) -> list[tuple[int, int]]:
+    """``(quota, period)`` of each cgroup this process is in, and their parents."""
+    quotas = []
+    with suppress(OSError):
+        for line in _read_text(membership).splitlines():
+            try:
+                _, controllers, path = line.split(":", 2)
+            except ValueError:
+                continue
+            if not controllers:  # v2
+                base, files = root, ["cpu.max"]
+            elif "cpu" in controllers.split(","):  # v1
+                base = os.path.join(root, controllers)
+                if not os.path.isdir(base):
+                    base = os.path.join(root, ",".join(sorted(controllers.split(","))))
+                if not os.path.isdir(base):
+                    base = os.path.join(root, "cpu")
+                files = ["cpu.cfs_quota_us", "cpu.cfs_period_us"]
+            else:
+                continue
+            parts = [p for p in path.split("/") if p]
+            for depth in range(len(parts) + 1):
+                folder = os.path.join(base, *parts[:depth])
+                with suppress(OSError, ValueError):
+                    quota, period = " ".join(
+                        _read_text(os.path.join(folder, name)) for name in files
+                    ).split()
+                    if quota not in ("max", "-1"):
+                        quotas.append((int(quota), int(period)))
+    return quotas
+
+
+def _read_text(path: str) -> str:
+    with open(path) as f:
+        return f.read()
+
+
+def usable_cpu_count() -> int:
+    """CPUs this process may use: its affinity, capped by its cgroups' CPU quotas.
+
+    ``os.cpu_count()`` reports the host inside containers; a fractional quota
+    rounds up.
+    """
+    cpus = os.cpu_count() or 1
+    with suppress(OSError):
+        if hasattr(os, "process_cpu_count"):
+            cpus = os.process_cpu_count() or cpus
+        elif hasattr(os, "sched_getaffinity"):
+            cpus = len(os.sched_getaffinity(0))
+    caps = [-(-quota // period) for quota, period in _cpu_quotas() if period > 0]
+    return max(min([cpus, *caps]), 1)
 
 
 def get_env_list(
