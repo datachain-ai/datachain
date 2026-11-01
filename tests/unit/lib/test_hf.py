@@ -1,3 +1,7 @@
+import copy
+import importlib.metadata
+import sys
+
 import pytest
 from datasets import (
     Array2D,
@@ -18,6 +22,7 @@ from datachain.lib.hf import (
     get_output_schema,
     stream_splits,
 )
+from datachain.lib.model_store import ModelStore
 
 
 def test_hf():
@@ -188,3 +193,47 @@ def test_hf_array():
     gen.setup()
     row = next(iter(gen.process()))
     assert row.arr == [[0, 1], [2, 3]]
+
+
+@pytest.fixture
+def unloaded_hf(monkeypatch):
+    monkeypatch.delitem(sys.modules, "datachain.lib.hf")
+    monkeypatch.delattr("datachain.lib.hf")
+    monkeypatch.setattr(ModelStore, "store", copy.deepcopy(ModelStore.store))
+
+
+def _datasets_not_installed(name):
+    raise importlib.metadata.PackageNotFoundError(name)
+
+
+@pytest.mark.parametrize(
+    "fake_version,reason",
+    [
+        (
+            lambda name: "2.2.1",
+            "datachain requires 'datasets>=4.0.0' but version 2.2.1 is installed.",
+        ),
+        (_datasets_not_installed, "No package metadata was found for datasets"),
+    ],
+    ids=["outdated", "missing"],
+)
+def test_import_rejects_unusable_datasets(
+    unloaded_hf, monkeypatch, fake_version, reason
+):
+    monkeypatch.setitem(sys.modules, "datasets", None)
+    monkeypatch.setattr(importlib.metadata, "version", fake_version)
+
+    with pytest.raises(ImportError) as exc_info:
+        importlib.import_module("datachain.lib.hf")
+
+    assert str(exc_info.value) == (
+        f"Missing dependencies for huggingface datasets: {reason}\n"
+        "To install run:\n\n"
+        "  pip install 'datachain[hf]'\n"
+    )
+
+
+def test_import_accepts_datasets_4(unloaded_hf, monkeypatch):
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "4.0.0")
+
+    assert importlib.import_module("datachain.lib.hf").HFClassLabel
