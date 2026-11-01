@@ -1,15 +1,17 @@
-import errno
 import os
 from collections.abc import Callable
 from datetime import datetime
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any, cast
 from xml.etree.ElementTree import Element, ParseError, fromstring
 
 from aiobotocore.parsers import AioResponseParserFactory, AioRestXMLParser
 from aiobotocore.session import AioSession
 from botocore import handlers
-from botocore.exceptions import ClientError, NoCredentialsError
+from botocore.configloader import load_config
+from botocore.exceptions import ClientError, ConfigNotFound, NoCredentialsError
 from botocore.model import Shape
+from botocore.session import Session
 from botocore.utils import parse_timestamp
 from fsspec.asyn import get_loop, sync, sync_wrapper
 from s3fs import S3FileSystem
@@ -20,7 +22,122 @@ from .fsspec import BucketStatus, RangeListedClient
 from .ranges import PROCESS_LIST_WORKERS, Keep, Page
 
 if TYPE_CHECKING:
+    from datachain.cache import Cache
     from datachain.client.writeconfig import WriteConfig
+
+_BUCKET_REGIONS: dict[tuple, str] = {}
+
+
+@lru_cache(maxsize=16)
+def _shared_config(path: str, _stamp: tuple[int, int, int]) -> dict[str, Any]:
+    """Reuse parsed AWS config until its file changes."""
+    try:
+        return load_config(path)
+    except ConfigNotFound:
+        return {}
+
+
+def _region_key(name: str, kwargs: dict[str, Any]) -> tuple | None:
+    """The cache key of a bucket's region: the same name under another profile,
+    region or endpoint may be another bucket. None for custom endpoints and
+    sessions."""
+    client_kwargs = kwargs.get("client_kwargs") or {}
+    config_kwargs = kwargs.get("config_kwargs") or {}
+    if (
+        "session" in kwargs
+        or kwargs.get("endpoint_url")
+        or kwargs.get("aws_endpoint_url")
+        or client_kwargs.get("endpoint_url")
+        or os.environ.get("AWS_ENDPOINT_URL")
+        or os.environ.get("AWS_ENDPOINT_URL_S3")
+    ):
+        return None
+    profile = (
+        kwargs.get("profile")
+        or os.environ.get("AWS_DEFAULT_PROFILE")
+        or os.environ.get("AWS_PROFILE")
+    )
+    path = os.path.abspath(
+        os.path.expanduser(
+            os.path.expandvars(os.environ.get("AWS_CONFIG_FILE", "~/.aws/config"))
+        )
+    )
+    try:
+        stat = os.stat(path)
+    except OSError:
+        config = {}
+    else:
+        config = _shared_config(
+            path, (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+        )
+    scoped = config.get("profiles", {}).get(profile or "default", {})
+    services = config.get("services", {}).get(scoped.get("services"), {})
+    if scoped.get("endpoint_url") or services.get("s3", {}).get("endpoint_url"):
+        return None
+    region = (
+        kwargs.get("region_name")
+        or client_kwargs.get("region_name")
+        or config_kwargs.get("region_name")
+        or os.environ.get("AWS_REGION")
+        or os.environ.get("AWS_DEFAULT_REGION")
+    )
+    return name, profile, region
+
+
+def _has_credentials(kwargs: dict[str, Any]) -> bool:
+    client_kwargs = kwargs.get("client_kwargs") or {}
+    if (
+        kwargs.get("key")
+        or client_kwargs.get("aws_access_key_id")
+        or "session" in kwargs
+    ):
+        return True
+    env = frozenset(
+        (k, v)
+        for k, v in os.environ.items()
+        if k.startswith("AWS_") or k == "BOTO_CONFIG"
+    )
+    files = []
+    for path in (
+        os.environ.get("AWS_CONFIG_FILE", "~/.aws/config"),
+        os.environ.get("AWS_SHARED_CREDENTIALS_FILE", "~/.aws/credentials"),
+        os.environ.get("BOTO_CONFIG", "~/.boto"),
+    ):
+        path = os.path.abspath(os.path.expanduser(os.path.expandvars(path)))
+        try:
+            stat = os.stat(path)
+        except OSError:
+            stamp = None
+        else:
+            stamp = (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+        files.append((path, stamp))
+    return _finds_credentials(kwargs.get("profile"), env, tuple(files))
+
+
+@lru_cache(maxsize=16)
+def _finds_credentials(profile: str | None, _env: frozenset, _files: tuple) -> bool:
+    return Session(profile=profile).get_credentials() is not None
+
+
+def _head_bucket(fs: S3FileSystem, name: str) -> tuple[int, str | None]:
+    try:
+        # An asynchronous filesystem has no fs.loop for its sync wrappers.
+        meta = sync(get_loop(), fs._call_s3, "head_bucket", Bucket=name)[
+            "ResponseMetadata"
+        ]
+    except OSError as e:
+        if not isinstance(e.__cause__, ClientError):
+            raise
+        meta = e.__cause__.response["ResponseMetadata"]
+        status = meta["HTTPStatusCode"]
+        # R2 refuses anonymous requests with 400; other service errors must
+        # keep their original exception, including authenticated 400 and 429.
+        if status == 301:
+            raise e.__cause__ from None
+        if status not in (401, 403, 404) and not (status == 400 and fs.anon):
+            raise
+    headers = meta.get("HTTPHeaders", {})
+    return meta["HTTPStatusCode"], headers.get("x-amz-bucket-region")
 
 
 def _parse_timestamp(value: Any) -> datetime:
@@ -157,6 +274,10 @@ class ClientS3(RangeListedClient):
             kwargs.setdefault("secret", kwargs.pop("aws_secret"))
         if "aws_token" in kwargs:
             kwargs.setdefault("token", kwargs.pop("aws_token"))
+        if "region_name" in kwargs:
+            kwargs["config_kwargs"] = {"region_name": kwargs.pop("region_name")} | (
+                kwargs.get("config_kwargs") or {}
+            )
         return kwargs
 
     @classmethod
@@ -166,12 +287,10 @@ class ClientS3(RangeListedClient):
         # We want to use newer v4 signature version since regions added after
         # 2014 are not going to support v2 which is the older one.
         # All regions support v4.
-        kwargs.setdefault("config_kwargs", {}).setdefault("signature_version", "s3v4")
-        # a connection for each listing request in flight
+        kwargs["config_kwargs"] = {"signature_version": "s3v4"} | (
+            kwargs.get("config_kwargs") or {}
+        )
         kwargs["config_kwargs"].setdefault("max_pool_connections", PROCESS_LIST_WORKERS)
-
-        if "region_name" in kwargs:
-            kwargs["config_kwargs"].setdefault("region_name", kwargs.pop("region_name"))
 
         # remove this `if` when https://github.com/fsspec/s3fs/pull/929 lands
         if not os.environ.get("AWS_REGION") and not os.environ.get("AWS_ENDPOINT_URL"):
@@ -179,65 +298,63 @@ class ClientS3(RangeListedClient):
             # it tries to randomly guess and creates wrong signature
             kwargs.setdefault("cache_regions", True)
 
-        if not kwargs.get("anon"):
-            try:
-                # Run an inexpensive check to see if credentials are available
-                super().create_fs(**kwargs).sign("s3://bucket/object")
-            except NoCredentialsError:
-                kwargs["anon"] = True
-            except NotImplementedError:
-                pass
+        if not kwargs.get("anon") and not _has_credentials(kwargs):
+            kwargs["anon"] = True
 
         return cast("S3FileSystem", super().create_fs(**kwargs))
 
     @classmethod
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:
-        # Step 1: Anonymous probe. cache_regions=True handles PermanentRedirect
-        # (bucket-in-wrong-region) transparently so the bucket is found → exists=True.
-        # Preserve endpoint/region settings from caller kwargs; strip credentials.
+        # HeadBucket returns the region; do not discover it with another probe.
+        kwargs["cache_regions"] = False
+        not_found = BucketStatus(
+            exists=False, access="denied", error=f"S3 bucket '{name}' not found"
+        )
         strip = cls.CREDENTIAL_KEYS | {"anon"}
         anon_kwargs = cls._normalize_s3_kwargs(
             {k: v for k, v in kwargs.items() if k not in strip}
         )
         anon_kwargs["anon"] = True
-        anon_kwargs.setdefault("cache_regions", True)
-        anon_fs = S3FileSystem(**anon_kwargs)
-        try:
-            sync(get_loop(), anon_fs._info, name)
+        status, region = _head_bucket(S3FileSystem(**anon_kwargs), name)
+        if region and (key := _region_key(name, kwargs)):
+            _BUCKET_REGIONS[key] = region
+        if status == 200:
             return BucketStatus(exists=True, access="anonymous")
-        except FileNotFoundError:
-            return BucketStatus(
-                exists=False, access="denied", error=f"S3 bucket '{name}' not found"
-            )
-        except PermissionError:
-            pass
-        except OSError as e:
-            # s3fs maps R2's anonymous HTTP 400 response to EINVAL.
-            if e.errno != errno.EINVAL:
-                raise
+        if status == 404:
+            return not_found
 
-        # Step 2: Authenticated probe.
         # Use raw S3FileSystem to bypass ClientS3.create_fs()'s auto-anon fallback.
         auth_kwargs = cls._normalize_s3_kwargs(
             {k: v for k, v in kwargs.items() if k != "anon"}
         )
-        auth_kwargs.setdefault("cache_regions", True)
-
-        auth_fs = S3FileSystem(**auth_kwargs)
+        if region:
+            auth_kwargs["config_kwargs"] = {"region_name": region} | (
+                auth_kwargs.get("config_kwargs") or {}
+            )
         try:
-            sync(get_loop(), auth_fs._info, name)
+            status, auth_region = _head_bucket(S3FileSystem(**auth_kwargs), name)
+            if auth_region and (key := _region_key(name, kwargs)):
+                _BUCKET_REGIONS[key] = auth_region
+        except NoCredentialsError:
+            status = 403
+        if status == 200:
             return BucketStatus(exists=True, access="authenticated")
-        except (NoCredentialsError, PermissionError):
-            return BucketStatus(
-                exists=True,
-                access="denied",
-                error=f"Access denied to S3 bucket '{name}'"
-                " — check AWS credentials/permissions",
-            )
-        except FileNotFoundError:
-            return BucketStatus(
-                exists=False, access="denied", error=f"S3 bucket '{name}' not found"
-            )
+        if status == 404:
+            return not_found
+        return BucketStatus(
+            exists=True,
+            access="denied",
+            error=f"Access denied to S3 bucket '{name}'"
+            " — check AWS credentials/permissions",
+        )
+
+    @classmethod
+    def from_name(cls, name: str, cache: "Cache", kwargs: dict[str, Any]) -> "ClientS3":
+        key = _region_key(name, kwargs)
+        region = _BUCKET_REGIONS.get(key) if key else None
+        if region and "region_name" not in kwargs:
+            kwargs = {**kwargs, "region_name": region}
+        return cls(name, kwargs, cache)
 
     @staticmethod
     def _write_kwargs(cfg: "WriteConfig", *, streaming: bool) -> dict[str, Any]:
