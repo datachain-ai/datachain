@@ -1,4 +1,9 @@
-from datachain.cli.commands.skill import TARGET_LAYOUT
+from datachain.cli.commands.skill import (
+    DEFAULT_SKILLS,
+    RETIRED_SKILLS,
+    SKILLS,
+    TARGET_LAYOUT,
+)
 from datachain.cli.parser.utils import CustomHelpFormatter
 
 
@@ -19,7 +24,7 @@ def add_skill_parser(subparsers, parent_parser) -> None:
 
     install_help = "Install DataChain skills into an AI coding tool"
     install_description = (
-        "Install DataChain skills (core, knowledge) into an AI coding tool "
+        f"Install DataChain skills ({', '.join(SKILLS)}) into an AI coding tool "
         "such as Claude Code, Cursor, Codex, GitHub Copilot, or Pi."
     )
     install_parser = skill_subparser.add_parser(
@@ -35,8 +40,8 @@ def add_skill_parser(subparsers, parent_parser) -> None:
         default=None,
         metavar="SKILLS",
         help=(
-            "Comma-separated skill names to install: core, knowledge "
-            "(default: install all)"
+            f"Comma-separated skill names to install: {', '.join(SKILLS)} "
+            f"(default: {', '.join(DEFAULT_SKILLS)})"
         ),
     )
     install_parser.add_argument(
@@ -72,7 +77,8 @@ def add_skill_parser(subparsers, parent_parser) -> None:
         default=None,
         metavar="SKILLS",
         help=(
-            "Comma-separated skill names to uninstall: core, knowledge, jobs "
+            "Comma-separated skill names to uninstall: "
+            f"{', '.join(SKILLS + RETIRED_SKILLS)} "
             "(default: uninstall all)"
         ),
     )

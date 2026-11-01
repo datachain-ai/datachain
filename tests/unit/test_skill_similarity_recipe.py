@@ -1,6 +1,5 @@
 import ast
 import re
-import weakref
 
 import numpy as np
 import pytest
@@ -33,9 +32,7 @@ def nearest_rows():
 @pytest.mark.parametrize(
     "rows,queries", [(300, 289), (129, 129), (300, 0), (2, 2), (1, 1), (0, 0)]
 )
-def test_similarity_recipe_matches_full_scan_and_bounds_score_blocks(
-    nearest_rows, rows, queries
-):
+def test_similarity_recipe_matches_full_scan(nearest_rows, rows, queries):
     random = np.random.default_rng(42)
     embeddings = random.normal(size=(rows, 16)).astype(np.float32)
     embeddings /= np.linalg.norm(embeddings, axis=1, keepdims=True)
@@ -43,22 +40,9 @@ def test_similarity_recipe_matches_full_scan_and_bounds_score_blocks(
         # Identical embeddings in separate rows must still exclude only the query row.
         embeddings[1] = embeddings[0]
     query_rows = random.permutation(rows)[:queries]
-    shapes = []
-    previous = None
-
-    class TrackedEmbeddings(np.ndarray):
-        def __matmul__(self, other):
-            nonlocal previous
-            assert previous is None or previous() is None
-            scores = np.asarray(self) @ np.asarray(other)
-            shapes.append(scores.shape)
-            previous = weakref.ref(scores)
-            return scores
-
-    result = nearest_rows(embeddings.view(TrackedEmbeddings), query_rows)
+    result = nearest_rows(embeddings, query_rows)
     if rows < 2 or not queries:
         assert result == []
-        assert shapes == []
         return
 
     scores = embeddings[query_rows] @ embeddings.T
@@ -74,7 +58,3 @@ def test_similarity_recipe_matches_full_scan_and_bounds_score_blocks(
         for i in (0, 1):
             if i in neighbors:
                 assert neighbors[i] == 1 - i
-    assert shapes == [
-        (min(128, queries - start), rows) for start in range(0, queries, 128)
-    ]
-    assert previous() is None

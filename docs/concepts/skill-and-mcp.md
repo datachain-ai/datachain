@@ -26,7 +26,7 @@ datachain skill install --target claude     # also: cursor, codex
 
 The Skill is the agent-side instruction package. Installing it places files into the agent harness's directory (for Claude Code: `~/.claude/skills/datachain/`). The default skill teaches the agent to inspect the Dataset DB, process data files, save expensive results and query them later.
 
-For a markdown Knowledge Base, explicitly install the legacy knowledge skill and its core dependency:
+For a markdown Knowledge Base, explicitly install the optional knowledge skill and its core dependency:
 
 ```bash
 datachain skill install knowledge --target claude

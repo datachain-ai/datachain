@@ -72,10 +72,14 @@ Then ask the agent to build a knowledge base for your saved datasets. See the
 [Knowledge Base guide](../guide/knowledge-base.md) for generation and browsing.
 The default skill does not require a knowledge base.
 
-Installing the default `datachain` skill removes earlier DataChain `core` and
-`knowledge` installations and their command/rule files in the same target and
-scope. The new skill is installed first; an unsuccessful install preserves the
-previous skills.
+Installing the default `datachain` skill replaces `core` and `knowledge`
+installations from earlier releases. Optional skills explicitly installed with
+this version remain installed. To use only the task-oriented skill, remove those explicitly in
+that target and scope:
+
+```bash
+datachain skill uninstall core,knowledge --target claude --local
+```
 
 ## Next Steps
 

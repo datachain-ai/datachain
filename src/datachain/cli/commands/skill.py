@@ -152,16 +152,6 @@ def _installed_by_datachain(skill_dest: Path, name: str) -> bool:
         return True
     try:
         return (skill_dest / _INSTALL_MARKER).read_text(encoding="utf-8") == name
-    except FileNotFoundError:
-        # Older default installs have no ownership marker.
-        return (
-            frontmatter.startswith(
-                "name: datachain\ndescription: Use for any work on files "
-                "in object storage or local folders ("
-            )
-            and "DataChain does the parallel I/O, keeps results as queryable datasets"
-            in frontmatter
-        )
     except (OSError, UnicodeError):
         return False
 
@@ -204,7 +194,13 @@ def _sweep_retired(
 
 
 def _write_companion(
-    src: Path, dest: Path, skills_dir: Path, commands_dir: Path, command_ext: str
+    src: Path,
+    dest: Path,
+    skills_dir: Path,
+    commands_dir: Path,
+    command_ext: str,
+    *,
+    local: bool = False,
 ) -> None:
     skill_md = src / "SKILL.md"
     if not skill_md.exists():
@@ -221,7 +217,7 @@ def _write_companion(
         content = f"{content.rstrip()}\n\n{sdk_md.read_text(encoding='utf-8')}"
     command = commands_dir / f"datachain-{src.name}{command_ext}"
     command.write_text(
-        _resolve_placeholders(content, skills_dir, dest), encoding="utf-8"
+        _resolve_placeholders(content, skills_dir, dest, local=local), encoding="utf-8"
     )
 
 
@@ -306,19 +302,28 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
         if installed_skill_md.exists():
             installed_skill_md.write_text(
                 _resolve_placeholders(
-                    installed_skill_md.read_text(encoding="utf-8"), skills_dir, dest
+                    installed_skill_md.read_text(encoding="utf-8"),
+                    skills_dir,
+                    dest,
+                    local=local,
                 ),
                 encoding="utf-8",
             )
 
         if commands_dir is not None and command_ext is not None:
-            _write_companion(src, dest, skills_dir, commands_dir, command_ext)
+            _write_companion(
+                src, dest, skills_dir, commands_dir, command_ext, local=local
+            )
 
         installed.append(f"  {skill_name} → {dest}")
 
     old_skills: tuple[str, ...] = RETIRED_SKILLS
-    if skills_to_install == list(DEFAULT_SKILLS) and not missing:
-        old_skills += tuple(name for name in SKILLS if name not in DEFAULT_SKILLS)
+    if "datachain" in skills_to_install and not missing:
+        old_skills += tuple(
+            name
+            for name in ("core", "knowledge")
+            if not (skills_dir / name / _INSTALL_MARKER).exists()
+        )
     _sweep_retired(skills_dir, commands_dir, command_ext, old_skills)
 
     if installed:
@@ -416,10 +421,13 @@ def list_skills() -> int:
     return 0
 
 
-def _resolve_placeholders(text: str, skills_dir: Path, dest: Path) -> str:
-    text = text.replace("{skill_dir}", dest.resolve().as_posix())
+def _resolve_placeholders(
+    text: str, skills_dir: Path, dest: Path, *, local: bool = False
+) -> str:
+    if local:
+        skills_dir = skills_dir.relative_to(Path.cwd())
+        dest = dest.relative_to(Path.cwd())
+    text = text.replace("{skill_dir}", dest.as_posix())
     for name in SKILLS:
-        text = text.replace(
-            f"{{{name}_skill_dir}}", (skills_dir / name).resolve().as_posix()
-        )
+        text = text.replace(f"{{{name}_skill_dir}}", (skills_dir / name).as_posix())
     return text

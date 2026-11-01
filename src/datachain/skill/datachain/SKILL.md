@@ -96,7 +96,7 @@ def info(file: dc.VideoFile) -> dc.Video:
 # Header reads wait on the network; prefetch=0 avoids whole-file downloads.
 meta = (
     dc.read_storage("s3://bucket/videos/", anon=True, type="video")
-    .settings(parallel=64, prefetch=0)
+    .settings(parallel=True, prefetch=0)
     .map(info=info)
     .save("video_meta")
 )
@@ -163,7 +163,8 @@ emb = (
 )
 ```
 
-`prefetch=2` counts batches here: each worker may download two batches concurrently.
+`prefetch=2` allows two batches in flight per worker; files within each batch download sequentially.
+Budget memory and temporary disk space for the batch size as well as the worker count.
 
 Columns: `file.*`, `img.embedding`, `img.width`, `img.height`. A file that fails to decode should not kill the run:
 catch inside `process` and return a sentinel row (e.g. empty embedding), or let it raise and re-run - finished
@@ -212,7 +213,6 @@ class EmbedFrames(dc.Generator):
             for f, v in zip(chunk, e.tolist()):
                 yield file, FrameEmb(index=index, pts=f.timestamp, embedding=v)
                 index += 1
-            del chunk, f
 
 
 frames = (
@@ -349,11 +349,11 @@ from checkpoints; only the rest is computed. Do not rewrite the pipeline into a 
 - Inventories and one-off totals: `list_storage` + one loop. Processing files: one `read_storage` per bucket
   prefix; filter with a glob in the URI (`.../*.jpg`, `.../**/*.mov`) or `.filter(...)` on `file.path` before
   any `map`.
-- `settings(parallel=True)` (one process per CPU of the container quota; never a hard-coded count) for CPU-heavy UDFs (decoding, models).
-  Network-bound UDFs (header reads, small range reads, API calls) wait, not compute: `parallel=64, prefetch=0`.
+- `settings(parallel=True)` uses the available CPU budget for CPU-heavy UDFs (decoding, models), if each worker fits in memory.
+  For network-bound UDFs, start with `parallel=True, prefetch=0` and tune concurrency to memory and service limits.
 - Header-only reads (`prefetch=0`) pay off for large files (videos, audio, multi-MB images). Many small files
   (thumbnails, captions, JSON sidecars under ~1 MB) are cheaper to read whole with `prefetch=16`. Read related
-  small files in one pass: join them first (e.g. image + caption by `func.path.file_stem`), then one `map`.
+  small files in one pass: materialize derived join keys with `.save()` before merging large chains, then use one `map`.
 - `.save(name)` every expensive result, then filter and aggregate downstream from the saved dataset in SQL
   (`filter`/`group_by`/`order_by`), no Python loop needed. Don't `to_list()`/`to_pandas()` millions of rows.
 - When a UDF already has the file's bytes, also return the cheap facts a follow-up may filter on (a pydantic

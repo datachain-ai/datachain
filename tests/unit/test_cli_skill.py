@@ -673,10 +673,15 @@ def test_default_package_round_trip_and_reference_reachability(
         assert not (dest / "reference.md").exists()
         content = (dest / "SKILL.md").read_text(encoding="utf-8")
         assert "name: datachain\n" in content
-        assert sdk.resolve().as_posix() in content
+        reference = sdk.relative_to(project) if local else sdk
+        assert reference.as_posix() in content
+        if local:
+            assert project.as_posix() not in content
         if companion_path:
             companion = base / companion_path
-            assert sdk.resolve().as_posix() in companion.read_text(encoding="utf-8")
+            assert reference.as_posix() in companion.read_text(encoding="utf-8")
+            if local:
+                assert project.as_posix() not in companion.read_text(encoding="utf-8")
             assert "# DataChain SDK Rules" not in companion.read_text(encoding="utf-8")
         assert uninstall_skills(skills=None, target=target, local=local) == 0
 
@@ -685,8 +690,8 @@ def test_default_package_round_trip_and_reference_reachability(
         assert not (base / companion_path).exists()
 
 
-def test_default_upgrade_removes_legacy_skills_and_rules(
-    tmp_path, fake_home, monkeypatch, capsys
+def test_default_upgrade_preserves_optional_skills_and_rules(
+    tmp_path, fake_home, monkeypatch
 ):
     from datachain.cli.commands.skill import install_skills
 
@@ -697,9 +702,12 @@ def test_default_upgrade_removes_legacy_skills_and_rules(
 
     skills = tmp_path / ".cursor" / "skills"
     rules = tmp_path / ".cursor" / "rules"
-    assert {p.name for p in skills.iterdir()} == {"datachain"}
-    assert {p.name for p in rules.iterdir()} == {"datachain-datachain.mdc"}
-    assert "Removed old skills: core, knowledge" in capsys.readouterr().out
+    assert {p.name for p in skills.iterdir()} == {"datachain", "core", "knowledge"}
+    assert {p.name for p in rules.iterdir()} == {
+        "datachain-datachain.mdc",
+        "datachain-core.mdc",
+        "datachain-knowledge.mdc",
+    }
 
 
 def test_failed_default_upgrade_keeps_legacy_skills(tmp_path, fake_home, monkeypatch):
@@ -709,6 +717,8 @@ def test_failed_default_upgrade_keeps_legacy_skills(tmp_path, fake_home, monkeyp
     with patch("pathlib.Path.home", return_value=fake_home):
         assert install_skills("knowledge", "cursor", True) == 0
         skills = tmp_path / ".cursor" / "skills"
+        for name in ("core", "knowledge"):
+            (skills / name / ".datachain-installed").unlink()
         before = {
             name: (skills / name / "SKILL.md").read_bytes()
             for name in ("core", "knowledge")
@@ -767,32 +777,20 @@ def test_install_all_skills_by_name(fake_skills_src, fake_home, target):
         assert (skills_base / skill / "SKILL.md").exists()
 
 
-@pytest.mark.parametrize("upgrade", [False, True])
-@pytest.mark.parametrize("marker", [None, b"\xff"])
-def test_manage_default_installed_before_ownership_marker(
-    tmp_path, fake_home, monkeypatch, upgrade, marker
+def test_default_upgrade_removes_previous_release_skills(
+    tmp_path, fake_home, monkeypatch
 ):
-    from datachain.cli.commands.skill import install_skills, uninstall_skills
+    from datachain.cli.commands.skill import install_skills
 
     monkeypatch.chdir(tmp_path)
-    dest = tmp_path / ".claude" / "skills" / "datachain"
-    dest.mkdir(parents=True)
-    (dest / "SKILL.md").write_text(
-        "---\nname: datachain\n"
-        "description: Use for any work on files in object storage or local "
-        "folders (S3, GCS, Azure, file://) - "
-        "bucket inventories. DataChain does the parallel I/O, "
-        "keeps results as queryable datasets, and reprocesses only what changed.\n---\n"
-    )
-    if marker is not None:
-        (dest / ".datachain-installed").write_bytes(marker)
-    before = (dest / "SKILL.md").read_bytes()
     with patch("pathlib.Path.home", return_value=fake_home):
-        if upgrade:
-            assert install_skills(None, "claude", True) == (0 if marker is None else 1)
-            assert (dest / "SDK.md").is_file() == (marker is None)
-        assert uninstall_skills(None, "claude", True) == 0
-    if marker is None:
-        assert not dest.exists()
-    else:
-        assert (dest / "SKILL.md").read_bytes() == before
+        assert install_skills("knowledge", "cursor", True) == 0
+        skills = tmp_path / ".cursor" / "skills"
+        for name in ("core", "knowledge"):
+            (skills / name / ".datachain-installed").unlink()
+        assert install_skills(None, "cursor", True) == 0
+
+    assert {p.name for p in skills.iterdir()} == {"datachain"}
+    assert {p.name for p in (tmp_path / ".cursor" / "rules").iterdir()} == {
+        "datachain-datachain.mdc"
+    }
