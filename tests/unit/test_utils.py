@@ -796,6 +796,7 @@ def test_usable_cpu_count_follows_the_cgroup_quotas(quotas, expected, monkeypatc
 
     assert usable_cpu_count() == expected
 
+
 def test_worker_thread_env_caps_settings_at_the_worker_share(monkeypatch):
     for name in ("DATACHAIN_WORKER_THREADS", *utils._THREAD_ENVS):
         monkeypatch.delenv(name, raising=False)

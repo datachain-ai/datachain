@@ -291,15 +291,15 @@ class UDFDispatcher:
             # Will be set to True when the input is exhausted
             input_finished = False
 
-            input_rows = guided_tasks(
-                input_rows if self.is_batching else flatten(input_rows),
-                self.rows_total,
-                n_workers,
-                DEFAULT_BATCH_SIZE,
-            )
+            if self.is_batching:
+                input_tasks = batched(input_rows, 1)
+            else:
+                input_tasks = guided_tasks(
+                    flatten(input_rows), self.rows_total, n_workers, DEFAULT_BATCH_SIZE
+                )
 
             # Stop all workers after the input rows have finished processing
-            input_data = chain(input_rows, [STOP_SIGNAL] * n_workers)
+            input_data = chain(input_tasks, [STOP_SIGNAL] * n_workers)
 
             # Add initial buffer of tasks
             for _ in range(self.buffer_size):

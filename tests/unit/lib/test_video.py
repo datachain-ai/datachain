@@ -131,11 +131,18 @@ def test_video_stream_rotation_decode_error():
 
 
 @pytest.mark.parametrize(
-    "budget,thread_type,thread_count",
-    [(None, "AUTO", 2), ("1", "SLICE", 1), ("3", "AUTO", 3)],
+    "budget,frame_threads,thread_type,thread_count",
+    [
+        (None, True, "AUTO", 2),
+        ("1", True, "SLICE", 1),
+        ("3", True, "AUTO", 3),
+        ("32", True, "AUTO", 16),
+        ("3", False, "SLICE", 3),
+        ("32", False, "SLICE", 16),
+    ],
 )
 def test_decode_threads_follow_the_worker_budget(
-    budget, thread_type, thread_count, monkeypatch
+    budget, frame_threads, thread_type, thread_count, monkeypatch
 ):
     if budget is None:
         monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
@@ -144,6 +151,6 @@ def test_decode_threads_follow_the_worker_budget(
     monkeypatch.setattr("datachain.lib.video.usable_cpu_count", lambda: 2)
     stream = SimpleNamespace(thread_type="AUTO", thread_count=None)
 
-    _set_decode_threads(stream)
+    _set_decode_threads(stream, frame_threads=frame_threads)
 
     assert (stream.thread_type, stream.thread_count) == (thread_type, thread_count)

@@ -550,7 +550,7 @@ def worker_thread_env(n_workers: int) -> dict[str, str]:
 
 @contextmanager
 def worker_thread_limits(n_workers: int) -> Iterator[None]:
-    """Apply a CPU-share budget while loading a UDF and starting its workers."""
+    """Apply a CPU-share budget throughout UDF worker execution."""
     env = worker_thread_env(n_workers)
     saved = {name: os.environ.get(name) for name in env}
     try:
