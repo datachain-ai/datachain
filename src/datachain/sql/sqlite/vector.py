@@ -6,8 +6,8 @@ import numpy as np
 from datachain import json
 
 
-# A scan compares every row against the same query vector; cache its parse.
-@lru_cache(maxsize=8)
+# Scans reuse one query vector; joins reuse a small set of query vectors.
+@lru_cache(maxsize=64)
 def _parse(a: str) -> np.ndarray:
     values = np.array(json.loads(a), dtype=np.float64)
     values.flags.writeable = False
