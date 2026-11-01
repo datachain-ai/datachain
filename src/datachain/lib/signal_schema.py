@@ -1002,17 +1002,21 @@ class SignalSchema:
             if parts and isinstance(value, (list, tuple)):
                 # `tuple[A, B]` is positional; every other collection is uniform
                 positional = is_tuple_annotation(annotation) and len(parts) > 1
-                converted = [
-                    self._convert_feature_value(
-                        parts[i] if positional and i < len(parts) else parts[0],
-                        item,
-                        catalog,
-                        cache,
-                    )
-                    if item is not None
-                    else None
-                    for i, item in enumerate(value)
-                ]
+                converted = (
+                    list(value)
+                    if not positional and not self._requires_row_conversion(parts[0])
+                    else [
+                        self._convert_feature_value(
+                            parts[i] if positional and i < len(parts) else parts[0],
+                            item,
+                            catalog,
+                            cache,
+                        )
+                        if item is not None
+                        else None
+                        for i, item in enumerate(value)
+                    ]
+                )
                 # the DB hands back a list; a declared tuple must arrive as one
                 result = (
                     tuple(converted) if is_tuple_annotation(annotation) else converted

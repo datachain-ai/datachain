@@ -1,15 +1,21 @@
+import math
 from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.dialects import sqlite
 from sqlalchemy.exc import CompileError
 
 from datachain.sql.types import (
     Array,
+    Float,
+    Float32,
+    Float64,
     Int64,
     SQLType,
     String,
     TypeReadConverter,
+    register_type_read_converters,
     validate_datetime_cast_input_type,
 )
 
@@ -159,3 +165,44 @@ def test_cache_ok_opt_out_is_inherited():
 
     assert Child.cache_ok is False
     assert Int64.cache_ok is True
+
+
+@pytest.mark.parametrize("item_type", [Float, Float32, Float64])
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ([0.5, 1, -2.0], [0.5, 1, -2.0]),
+        ((0.5, 1.5), [0.5, 1.5]),
+        ([0.5, None], [0.5, math.nan]),
+        ([0.5, "nan"], [0.5, math.nan]),
+        ([], []),
+    ],
+)
+def test_type_read_converter_float_array(item_type, value, expected):
+    result = TypeReadConverter().array(value, item_type(), sqlite.dialect())
+    assert isinstance(result, list)
+    assert result == pytest.approx(expected, nan_ok=True)
+
+
+@pytest.mark.parametrize("item_type", [Float, Float32, Float64])
+def test_float_array_preserves_registered_conversion(item_type):
+    class CustomConverter(TypeReadConverter):
+        def float(self, value):
+            return value + 10
+
+    dialect = sa.engine.default.DefaultDialect()
+    dialect.name = "custom_float_array"
+    # A distinct dialect avoids changing converters used by other tests.
+    register_type_read_converters(dialect.name, CustomConverter())
+    assert Array(item_type()).on_read_convert([0.5, 1.5], dialect) == [10.5, 11.5]
+
+
+def test_float_array_preserves_item_subtype_conversion():
+    class CustomFloat(Float):
+        def on_read_convert(self, value, dialect):
+            return value + 10
+
+    assert Array(CustomFloat()).on_read_convert([0.5, 1.5], sqlite.dialect()) == [
+        10.5,
+        11.5,
+    ]

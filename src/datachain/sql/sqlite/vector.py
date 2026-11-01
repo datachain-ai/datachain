@@ -1,18 +1,26 @@
 import math
+from functools import lru_cache
 
 import numpy as np
 
+from datachain import json
+
+
+# Scans reuse one query vector; joins reuse a small set of query vectors.
+@lru_cache(maxsize=64)
+def _parse(a: str) -> np.ndarray:
+    values = np.array(json.loads(a), dtype=np.float64)
+    values.flags.writeable = False
+    return values
+
 
 def euclidean_distance(a: str, b: str):
-    a_np = np.fromstring(a[1:-1], sep=",")
-    b_np = np.fromstring(b[1:-1], sep=",")
-
-    return np.linalg.norm(b_np - a_np)
+    return np.linalg.norm(_parse(b) - _parse(a))
 
 
 def cosine_distance(a: str, b: str):
-    u = np.fromstring(a[1:-1], sep=",")
-    v = np.fromstring(b[1:-1], sep=",")
+    u = _parse(a)
+    v = _parse(b)
 
     uv = np.inner(u, v)
     uu = np.inner(u, u)
