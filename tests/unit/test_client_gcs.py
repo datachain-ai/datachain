@@ -12,8 +12,11 @@ from aiohttp import web
 from dateutil.parser import isoparse
 from fsspec.asyn import sync
 from fsspec.callbacks import DEFAULT_CALLBACK
-from gcsfs.core import GCSFile
-from gcsfs.extended_gcsfs import BucketType
+from gcsfs.core import GCSFile, GCSFileSystem
+from gcsfs.extended_gcsfs import BucketType, ExtendedGcsFileSystem
+from google.auth.credentials import AnonymousCredentials
+from google.auth.exceptions import RefreshError
+from google.oauth2.credentials import Credentials
 
 from datachain.asyn import get_loop
 from datachain.cache import Cache
@@ -271,6 +274,41 @@ def test_get_file_qmark_in_key_with_version():
     args, kwargs = client._fs._get_file.call_args
     assert args[0] == f"gs://foo/blob?file.txt#{_VER}"
     assert kwargs.get("generation") is None
+
+
+@pytest.fixture
+def no_gcp_credentials(monkeypatch, mocker, tmp_path):
+    for name in (
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "DATACHAIN_GCP_CREDENTIALS",
+        "GCSFS_TOKEN",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CLOUDSDK_CONFIG", str(tmp_path))
+    monkeypatch.setattr("google.auth.compute_engine._metadata._NO_GCE_CHECK", True)
+    monkeypatch.setattr("gcsfs.credentials.GoogleCredentials.tokens", {})
+    mocker.patch(
+        "google.auth.compute_engine.Credentials.refresh",
+        side_effect=RefreshError("No metadata credentials"),
+    )
+
+
+@pytest.mark.usefixtures("no_gcp_credentials")
+@pytest.mark.parametrize("fs_class", [GCSFileSystem, ExtendedGcsFileSystem])
+def test_client_without_credentials_is_anonymous(mocker, fs_class):
+    mocker.patch.object(GCSClient, "FS_CLASS", fs_class)
+    client = GCSClient.from_name("b", MagicMock(), {"skip_instance_cache": True})
+
+    assert client.url("a b.jpg") == "https://storage.googleapis.com/b/a%20b.jpg"
+    if fs_class is ExtendedGcsFileSystem:
+        assert isinstance(client.fs.credential, AnonymousCredentials)
+
+
+@pytest.mark.usefixtures("no_gcp_credentials")
+def test_create_fs_keeps_credentials():
+    token = Credentials("t")
+    fs = GCSClient.create_fs(token=token, skip_instance_cache=True)
+    assert fs.credentials.credentials is token
 
 
 @pytest.mark.parametrize(

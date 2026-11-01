@@ -20,8 +20,6 @@ if TYPE_CHECKING:
 
 # Patch gcsfs for consistency with s3fs
 GCSFileSystem.set_session = GCSFileSystem._set_session
-# Skip the GCE metadata check — it adds latency and hangs outside GCE.
-os.environ.setdefault("NO_GCE_CHECK", "true")
 
 
 class GCSClient(RangeListedClient):
@@ -63,7 +61,10 @@ class GCSClient(RangeListedClient):
             "headers": headers,
         }
 
-        return cast("GCSFileSystem", super().create_fs(**kwargs))
+        fs = cast("GCSFileSystem", super().create_fs(**kwargs))
+        if kwargs.get("token") is None and fs.credentials.method == "anon":
+            return cls.create_fs(**kwargs, anon=True)
+        return fs
 
     @classmethod
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:  # noqa: PLR0911
