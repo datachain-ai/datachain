@@ -146,6 +146,7 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
         aliases=["ds"],
         parents=[parent_parser],
         description="Commands for managing datasets.",
+        help="List, inspect and manage datasets",
         formatter_class=CustomHelpFormatter,
     )
     add_anon_arg(datasets_parser)
@@ -234,6 +235,7 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
         "ls",
         parents=[parent_parser],
         description="List datasets.",
+        help="List saved datasets and versions",
         formatter_class=CustomHelpFormatter,
     )
     datasets_ls_parser.add_argument(
@@ -276,6 +278,19 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
         action="store_true",
         default=False,
         help="Include removed datasets in the output",
+    )
+
+    describe_parser = datasets_subparser.add_parser(
+        "describe",
+        parents=[parent_parser],
+        description="Describe local schema, versions, lineage and saved code.",
+        help="Inspect local schema, versions, lineage and saved code",
+        formatter_class=CustomHelpFormatter,
+    )
+    describe_parser.add_argument("name", help="Dataset name, optionally name@version")
+    describe_parser.add_argument("--version", help="Dataset version (default: latest)")
+    describe_parser.add_argument(
+        "--json", action="store_true", dest="json_output", help="Print structured JSON"
     )
 
     rm_dataset_parser = datasets_subparser.add_parser(
@@ -461,7 +476,8 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
     show_parser = subp.add_parser(
         "show",
         parents=[parent_parser],
-        description="Create a new dataset with a query script.",
+        description="Show rows, schema or the saved script of a dataset.",
+        help="Inspect saved dataset rows, schema or script",
         formatter_class=CustomHelpFormatter,
     )
     show_parser.add_argument("name", type=str, help="Dataset name")

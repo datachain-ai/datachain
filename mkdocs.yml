@@ -145,6 +145,7 @@ nav:
           - Toolkit: references/toolkit.md
       - 📖 CLI Reference:
           - Overview: commands/index.md
+          - dataset describe: commands/dataset-describe.md
           - Commands:
               - gc: commands/gc.md
               - auth:

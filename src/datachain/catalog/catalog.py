@@ -1506,7 +1506,6 @@ class Catalog:
         include_removed: bool = False,
         include_preview: bool = False,
     ) -> DatasetRecord:
-
         namespace_name = namespace_name or self.metastore.default_namespace_name
         project_name = project_name or self.metastore.default_project_name
 
@@ -1669,6 +1668,106 @@ class Catalog:
             dataset_version_id,
             indirect,
         )
+
+    def describe_dataset(self, name: str, version: str | None = None) -> dict[str, Any]:
+        """Describe local saved state without reading rows or contacting storage.
+
+        Dependencies record the versions used, not the current state of external
+        files or models. Empty query_script means no script was captured.
+        """
+        name, embedded_version = parse_dataset_with_version(name)
+        version = version or embedded_version
+        namespace, project, name = self.get_full_dataset_name(name)
+        dataset = self.get_dataset(
+            name,
+            namespace_name=namespace,
+            project_name=project,
+            versions=None,
+            include_incomplete=False,
+        )
+        selected = dataset.get_version(version or dataset.latest_version)
+        dependencies = self.get_dataset_dependencies(
+            name,
+            selected.version,
+            namespace_name=namespace,
+            project_name=project,
+            indirect=True,
+        )
+        from datachain.lib.listing import listing_uri_from_name
+
+        sources = set(selected.sources.splitlines())
+
+        dependency_records: dict[tuple[str, str, str], DatasetRecord] = {}
+
+        def describe_dependency(dep):
+            if dep is None:
+                return None
+            result = dep.to_dict()
+            key = (dep.namespace, dep.project, dep.name)
+            try:
+                if key not in dependency_records:
+                    dependency_records[key] = self.get_dataset(
+                        dep.name,
+                        namespace_name=dep.namespace,
+                        project_name=dep.project,
+                        versions=None,
+                        include_incomplete=True,
+                        include_removed=True,
+                    )
+                result["rows"] = (
+                    dependency_records[key].get_version(dep.version).num_objects
+                )
+            except (DatasetNotFoundError, DatasetVersionNotFoundError):
+                result["rows"] = None
+            result["created_at"] = (
+                dep.created_at.isoformat() if dep.created_at else None
+            )
+            result["dependencies"] = [describe_dependency(d) for d in dep.dependencies]
+            return result
+
+        def collect_sources(deps):
+            for dep in deps:
+                if dep is None:
+                    continue
+                if not dep.is_dataset:
+                    sources.add(listing_uri_from_name(dep.name))
+                collect_sources(dep.dependencies)
+
+        collect_sources(dependencies)
+        dependents = self.metastore.get_direct_dataset_dependents(
+            dataset, selected.version
+        )
+        statuses = {
+            value: key.lower()
+            for key, value in vars(DatasetStatus).items()
+            if key.isupper()
+        }
+        return {
+            "name": dataset.full_name,
+            "version": selected.version,
+            "description": dataset.description,
+            "rows": selected.num_objects,
+            "created_at": selected.created_at.isoformat(),
+            "finished_at": selected.finished_at.isoformat()
+            if selected.finished_at
+            else None,
+            "status": statuses.get(selected.status, str(selected.status)),
+            "schema": selected.feature_schema,
+            "versions": [
+                {
+                    "version": v.version,
+                    "rows": v.num_objects,
+                    "created_at": v.created_at.isoformat(),
+                    "status": statuses.get(v.status, str(v.status)),
+                }
+                for v in sorted(dataset.versions)
+            ],
+            "dependencies": [describe_dependency(d) for d in dependencies],
+            "dependents": [describe_dependency(d) for d in dependents],
+            "sources": sorted(s for s in sources if s),
+            "query_script": selected.query_script,
+            "external_state": "not_checked",
+        }
 
     def ls_datasets(
         self,

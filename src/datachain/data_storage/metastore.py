@@ -515,6 +515,15 @@ class AbstractMetastore(ABC, Serializable):
         carries a ``removed`` flag so callers can filter or badge tombstoned
         deps without a separate query."""
 
+    def get_direct_dataset_dependents(
+        self, dataset: DatasetRecord, version: str
+    ) -> list[DatasetDependency | None]:
+        """Get versions that directly depend on this dataset version.
+
+        Optional for metastores that do not support local dataset inspection.
+        """
+        raise NotImplementedError("This metastore does not support dataset dependents")
+
     @abstractmethod
     def get_dataset_dependency_nodes(
         self, dataset_id: int, version_id: int
@@ -2258,6 +2267,38 @@ class AbstractDBMetastore(AbstractMetastore):
             .where(where_clause)
         )
 
+        return [self.dependency_class.parse(*r) for r in self.db.execute(query)]
+
+    def get_direct_dataset_dependents(
+        self, dataset: DatasetRecord, version: str
+    ) -> list[DatasetDependency | None]:
+        n = self._dependency_namespaces_source
+        p = self._projects
+        d = self._dependency_datasets_source
+        dd = self._datasets_dependencies
+        dv = self._datasets_versions
+        reverse_ids: dict[SchemaItem, SchemaItem] = {
+            dd.c.dataset_id: dd.c.source_dataset_id,
+            dd.c.dataset_version_id: dd.c.source_dataset_version_id,
+        }
+        select_cols = [
+            reverse_ids.get(column, column)
+            for column in self._dataset_dependencies_select_columns()
+        ]
+        query = (
+            self._datasets_dependencies_select(*select_cols)
+            .select_from(
+                dd.join(d, dd.c.source_dataset_id == d.c.id)
+                .join(dv, dd.c.source_dataset_version_id == dv.c.id)
+                .join(p, d.c.project_id == p.c.id)
+                .join(n, p.c.namespace_id == n.c.id)
+            )
+            .where(
+                dd.c.dataset_id == dataset.id,
+                dd.c.dataset_version_id == dataset.get_version(version).id,
+                dv.c.status == DatasetStatus.COMPLETE,
+            )
+        )
         return [self.dependency_class.parse(*r) for r in self.db.execute(query)]
 
     def get_dataset_dependency_nodes(
