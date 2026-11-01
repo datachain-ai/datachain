@@ -511,11 +511,8 @@ class DataChain:
             cache: Enable files caching to speed up subsequent accesses to the same
                 files from the same or different chains. Defaults to False.
             prefetch: Number of files to download in full ahead of the UDF, per
-                process on each worker. Defaults to 2. With the default settings,
-                ImageFile, AudioFile and VideoFile downloads are deferred until
-                content access; get_info() streams metadata. Set an explicit
-                positive value (or True) to eagerly prefetch media as well.
-                Set to 0 or False to disable prefetch for all files.
+                process on each worker. Defaults to 2. Set to 0 or False for UDFs
+                that read only part of a file, such as `get_info()`.
             parallel: Number of processes to use for processing user-defined functions
                 (UDFs) in parallel. If an integer is provided, it specifies the number
                 of CPUs to use. If True, all available CPUs are used. Defaults to 1.
@@ -1086,7 +1083,6 @@ class DataChain:
             udf_obj = self._udf_to_obj(Mapper, func, params, output, signal_map)
         if (prefetch := self._settings.prefetch) is not None:
             udf_obj.prefetch = prefetch
-            udf_obj.eager_media = "prefetch" in self._settings.to_dict()
 
         sys_schema = SignalSchema({"sys": Sys})
         return self._evolve(
@@ -1196,7 +1192,6 @@ class DataChain:
         udf_obj = self._udf_to_obj(Generator, func, params, output, signal_map)
         if (prefetch := self._settings.prefetch) is not None:
             udf_obj.prefetch = prefetch
-            udf_obj.eager_media = "prefetch" in self._settings.to_dict()
         return self._evolve(
             query=self._query.generate(
                 udf_obj.to_udf_wrapper(self._settings.batch_size),

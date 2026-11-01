@@ -47,7 +47,6 @@ def test_tar_member_versioned_gcs_read_ahead(
 
     monkeypatch.setattr(fs, "open", open_readahead)
     member = small_tar_member(client, version="123")
-    # a listed member with a version opens as _ListedGCSFile, which checks etags
     requests = tar_member_range_requests(_ListedGCSFile)
 
     with member.open(block_size=block_size) as stream:
@@ -114,6 +113,7 @@ def _make_client() -> GCSClient:
     client._fs = MagicMock()
     client._fs.storage_options = {}  # non-anon
     client._fs.sign.return_value = _FAKE_SAS
+    client._fs._lookup_bucket_type = AsyncMock(return_value=BucketType.NON_HIERARCHICAL)
     client._fs._info = AsyncMock(return_value=_INFO)
     client._fs._get_file = AsyncMock(return_value=None)
     return client
@@ -426,22 +426,20 @@ def test_listing_asks_for_every_field_it_reads(version_aware):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "version, etag",
-    [("", "abc123"), (_VER, ""), (_VER, "abc123"), (_VER, "stale-etag")],
+    "etag",
+    ["", "abc123", "stale-etag"],
 )
-async def test_download_listed_file_checks_response_identity(tmp_path, version, etag):
+async def test_download_listed_generation_ignores_metadata_etag(tmp_path, etag):
     client = _make_client()
     client._fs.consistency = "size"
     client._fs._call = AsyncMock(return_value=({"ETag": '"abc123"'}, b"woof"))
-    file = File(source="gs://foo", path="listed", size=4, etag=etag, version=version)
+    file = File(source="gs://foo", path="listed", size=4, etag=etag, version=_VER)
     callback = MagicMock()
     path = tmp_path / "tmp" / "file"
     await client._download_file(file, str(path), callback)
     assert path.read_bytes() == b"woof"
     client._fs._info.assert_not_called()
-    client._fs.url.assert_called_once_with(
-        f"gs://foo/listed#{version}" if version else "gs://foo/listed"
-    )
+    client._fs.url.assert_called_once_with(f"gs://foo/listed#{_VER}")
     callback.set_size.assert_called_once_with(4)
     callback.relative_update.assert_called_once_with(4)
 
@@ -460,18 +458,6 @@ async def test_download_pinned_generation_rejects_changed_size(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("headers", [{"ETag": '"changed"'}, {}])
-async def test_download_listed_file_rejects_changed_or_missing_etag(tmp_path, headers):
-    client = _make_client()
-    client._fs._call = AsyncMock(return_value=(headers, b"woof"))
-    file = File(source="gs://foo", path="listed", size=4, etag="abc123")
-    path = tmp_path / "file"
-    with pytest.raises(FileNotFoundError, match="update=True"):
-        await client._download_file(file, str(path), MagicMock())
-    assert not path.exists()
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("consistency", ["size", "md5"])
 async def test_download_listed_file_rejects_corrupt_data(tmp_path, consistency):
     from gcsfs.retry import ChecksumError
@@ -481,7 +467,7 @@ async def test_download_listed_file_rejects_corrupt_data(tmp_path, consistency):
     client._fs._call = AsyncMock(
         return_value=({"ETag": "abc123", "X-Goog-Hash": "md5=invalid"}, b"woof")
     )
-    file = File(source="gs://foo", path="listed", size=5, etag="abc123")
+    file = File(source="gs://foo", path="listed", size=5, etag="abc123", version=_VER)
     path = tmp_path / "file"
     with pytest.raises((OSError, ChecksumError)):
         await client._download_file(file, str(path), MagicMock())
@@ -493,5 +479,22 @@ async def test_download_listed_file_rejects_corrupt_data(tmp_path, consistency):
 async def test_download_without_small_file_metadata_uses_get_file(tmp_path, size):
     client = _make_client()
     file = File(source="gs://foo", path="listed", size=size, etag="abc123")
+    await client._download_file(file, str(tmp_path / "file"), DEFAULT_CALLBACK)
+    client._fs._get_file.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "version,bucket_type",
+    [("", BucketType.NON_HIERARCHICAL), (_VER, BucketType.ZONAL_HIERARCHICAL)],
+)
+async def test_download_without_immutable_generation_uses_get_file(
+    tmp_path, version, bucket_type
+):
+    client = _make_client()
+    client._fs._lookup_bucket_type.return_value = bucket_type
+    file = File(
+        source="gs://foo", path="listed", size=4, etag="abc123", version=version
+    )
     await client._download_file(file, str(tmp_path / "file"), DEFAULT_CALLBACK)
     client._fs._get_file.assert_awaited_once()

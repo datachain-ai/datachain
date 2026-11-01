@@ -26,7 +26,7 @@ def media_file(request, tmp_path):
 @pytest.mark.parametrize("cache", [False, True])
 @pytest.mark.parametrize("prefetch", [None, 0, 2, True])
 @pytest.mark.parametrize("operation", ["map", "gen"])
-def test_media_file_metadata_downloads_only_with_explicit_prefetch(
+def test_media_file_metadata_respects_prefetch(
     test_session, media_file, cache, prefetch, operation, mocker
 ):
     kind, path = media_file
@@ -39,7 +39,9 @@ def test_media_file_metadata_downloads_only_with_explicit_prefetch(
 
     def metadata(file) -> dict:
         info = file.get_info().model_dump()
-        assert file._catalog.cache.contains(file) == bool(prefetch)
+        assert file._catalog.cache.contains(file) == (
+            prefetch is None or bool(prefetch)
+        )
         return info
 
     if operation == "gen":
@@ -57,16 +59,16 @@ def test_media_file_metadata_downloads_only_with_explicit_prefetch(
 
 @pytest.mark.parametrize("cache", [False, True])
 @pytest.mark.parametrize("read", ["open", "read_bytes", "get_local_path"])
-def test_media_file_default_prefetch_downloads_on_content_access(
+def test_media_file_default_prefetch_provides_content(
     test_session, media_file, cache, read
 ):
     kind, path = media_file
     expected = path.read_bytes()
 
     def content(file) -> int:
-        assert not file._catalog.cache.contains(file)
+        assert file._catalog.cache.contains(file)
         file.get_info()
-        assert not file._catalog.cache.contains(file)
+        assert file._catalog.cache.contains(file)
         if read == "open":
             with file.open() as f:
                 actual = f.read()
@@ -88,7 +90,7 @@ def test_media_file_default_prefetch_downloads_on_content_access(
 
 
 @pytest.mark.parametrize("parallel", [None, 2])
-def test_media_file_metadata_default_prefetch_survives_serialization(
+def test_media_file_metadata_streaming_survives_serialization(
     test_session_tmpfile, media_file, parallel
 ):
     kind, path = media_file
@@ -102,7 +104,7 @@ def test_media_file_metadata_default_prefetch_survives_serialization(
     assert (
         dc.read_storage(path.parent.as_uri(), type=kind, session=test_session_tmpfile)
         .filter(dc.C("file.path").glob(f"*{path.suffix}"))
-        .settings(parallel=parallel)
+        .settings(parallel=parallel, prefetch=0)
         .map(info=metadata)
         .to_list("info")
     )[0][0]
@@ -114,24 +116,21 @@ def test_media_file_metadata_then_content_in_one_udf_stage(
 ):
     kind, path = media_file
 
-    def metadata(file) -> dict:
-        info = file.get_info().model_dump()
-        assert not file._catalog.cache.contains(file)
-        return info
-
     def content(file) -> int:
-        value = file.read_bytes()
-        assert file._catalog.cache.contains(file)
+        assert file.get_info().model_dump()
+        assert not file._catalog.cache.contains(file)
+        with file.open() as stream:
+            value = stream.read()
+        assert file._catalog.cache.contains(file) is cache
         return len(value)
 
     result = (
         dc.read_storage(path.as_uri(), type=kind, session=test_session)
-        .settings(cache=cache)
-        .map(info=metadata, size=content)
-        .to_list("info", "size")
+        .settings(cache=cache, prefetch=0)
+        .map(size=content)
+        .to_list("size")
     )
-    assert result[0][0]
-    assert result[0][1] == path.stat().st_size
+    assert result == [(path.stat().st_size,)]
 
 
 def test_media_file_metadata_reuses_persistent_cache(test_session, media_file, mocker):

@@ -133,7 +133,7 @@ def test_cache_download_reserved_chars_in_path(cloud_test_catalog_upload):
 @pytest.mark.parametrize("error", [None, ConnectionResetError, asyncio.CancelledError])
 def test_download_cleans_temp_and_protects_cache(cache, error, monkeypatch, mocker):
     class Client:
-        async def get_file(self, src, dst, callback, version_id=None):
+        async def _download_file(self, file, dst, callback):
             Path(dst).write_bytes(b"foo")  # noqa: ASYNC240
             if error:
                 raise error

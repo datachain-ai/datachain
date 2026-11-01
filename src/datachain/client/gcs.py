@@ -5,13 +5,13 @@ from typing import TYPE_CHECKING, Any, BinaryIO, cast
 from urllib.parse import quote
 
 from fsspec.asyn import get_loop, sync
-from fsspec.callbacks import DEFAULT_CALLBACK, Callback
+from fsspec.callbacks import Callback
 from gcsfs import GCSFileSystem
 from gcsfs.checkers import get_consistency_checker
 from gcsfs.core import GCSFile
+from gcsfs.extended_gcsfs import BucketType
 from gcsfs.retry import HttpError
 
-from datachain.client.fileslice import FileWrapper
 from datachain.lib.file import File, FileRow
 
 from .fsspec import BucketStatus, RangeListedClient
@@ -27,20 +27,9 @@ os.environ.setdefault("NO_GCE_CHECK", "true")
 SMALL_FILE_SIZE = 5 * 1024 * 1024
 
 
-def _check_etag(file: File, etag: str) -> None:
-    if not file.version and file.etag and file.etag != etag.strip('"'):
-        raise FileNotFoundError(
-            f"{file.source}/{file.path} changed on the source since the "
-            f"catalog was created (etag was {file.etag}, now {etag}). "
-            "Re-run the original dc.read_storage(...) call with "
-            "update=True to refresh the catalog."
-        )
-
-
 class _ListedGCSFile(GCSFile):
     def __init__(self, fs, file: File, path: str, block_size: int | None):
         path = fs._strip_protocol(path)
-        self._file = file
         self._details = {"name": path, "size": file.size, "type": "file"}
         super().__init__(
             fs,
@@ -61,10 +50,7 @@ class _ListedGCSFile(GCSFile):
         headers = {}
         if start is not None or end is not None:
             headers["Range"] = await self.fs._process_limits(self.path, start, end)
-        headers, data = await self.fs._call(
-            "GET", self.fs.url(self.path), headers=headers
-        )
-        _check_etag(self._file, headers.get("ETag", ""))
+        _, data = await self.fs._call("GET", self.fs.url(self.path), headers=headers)
         return data
 
 
@@ -252,23 +238,29 @@ class GCSClient(RangeListedClient):
         info = await self.fs._info(path)
         return self.info_to_file(info, file.path).etag
 
-    @staticmethod
-    def _can_download_listed(file: File) -> bool:
-        return 0 <= file.size <= SMALL_FILE_SIZE and bool(file.etag or file.version)
+    async def _can_read_listed(self, file: File) -> bool:
+        if file.size < 0 or not file.version:
+            return False
+        lookup = getattr(self.fs, "_lookup_bucket_type", None)
+        return (
+            lookup is None or await lookup(self.name) != BucketType.ZONAL_HIERARCHICAL
+        )
+
+    async def _can_download_listed(self, file: File) -> bool:
+        return file.size <= SMALL_FILE_SIZE and await self._can_read_listed(file)
 
     async def _put_in_cache(self, file: File, *, callback: Callback = None) -> None:
         assert not file.location
-        if self._can_download_listed(file):
+        if await self._can_download_listed(file):
             await self.cache.download(file, self, callback=callback)
         else:
             await super()._put_in_cache(file, callback=callback)
 
     async def _download_file(self, file: File, path: str, callback: Callback):
-        if not self._can_download_listed(file):
+        if not await self._can_download_listed(file):
             return await super()._download_file(file, path, callback)
         remote = self._path_with_generation(file.get_fs_path(), file.version)
         headers, data = await self.fs._call("GET", self.fs.url(remote))
-        _check_etag(file, headers.get("ETag", ""))
         checker = get_consistency_checker(self.fs.consistency)
         checker.update(data)
         checker.validate_headers(headers)
@@ -299,28 +291,13 @@ class GCSClient(RangeListedClient):
             raise FileNotFoundError(file.get_fs_path())
         return int(size)
 
-    def open_object(
-        self,
-        file: File,
-        use_cache: bool = True,
-        cb: Callback = DEFAULT_CALLBACK,
-        block_size: int | None = None,
-    ) -> BinaryIO:
-        if use_cache and (cache_path := self.cache.get_path(file)):
-            return open(cache_path, mode="rb")
-        assert not file.location
-        full_path = self._path_with_generation(
-            file.get_fs_path(),
-            file.version,
-        )
-        return FileWrapper(
-            (
-                _ListedGCSFile(self.fs, file, full_path, block_size)
-                if file.size > 0 and self._can_download_listed(file)
-                else self.fs.open(full_path, **self._block_size_kwargs(block_size))
-            ),
-            cb,
-        )  # type: ignore[return-value]
+    def _open_remote(self, file: File, block_size: int | None = None) -> BinaryIO:
+        full_path = self._path_with_generation(file.get_fs_path(), file.version)
+        if not file.version:
+            sync(self.fs.loop, self._check_unchanged, file)
+        if file.size > 0 and sync(self.fs.loop, self._can_read_listed, file):
+            return _ListedGCSFile(self.fs, file, full_path, block_size)
+        return self.fs.open(full_path, **self._block_size_kwargs(block_size))
 
     @staticmethod
     def parse_timestamp(timestamp: str) -> datetime:

@@ -1102,15 +1102,20 @@ def test_get_file_versioned_special_char_in_key(
 
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
 @pytest.mark.parametrize("block_size", [None, 0, 2])
 def test_open_object_reuses_listing_metadata(client, mocker, block_size):
     file = client.get_file_info("dogs/dog1")
     info = mocker.patch.object(client.fs, "info", side_effect=AssertionError("HEAD"))
+    async_info = mocker.patch.object(
+        client.fs, "_info", side_effect=AssertionError("HEAD")
+    )
     with client.open_object(file, use_cache=False, block_size=block_size) as stream:
         assert stream.read(2) == b"wo"
         stream.seek(0)
         assert stream.read() == b"woof"
     info.assert_not_called()
+    async_info.assert_not_called()
 
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
@@ -1159,7 +1164,7 @@ def test_open_object_without_size_uses_head(client, mocker, size):
 
 
 @pytest.mark.parametrize("cloud_type", ["gs"], indirect=True)
-@pytest.mark.parametrize("version_aware", [False, True], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
 @pytest.mark.parametrize("contents", [b"", b"woof"])
 def test_gcs_cache_download_reuses_listing_metadata(
     cloud_test_catalog_upload, mocker, contents
@@ -1206,13 +1211,41 @@ def test_gcs_cache_download_pins_listed_version(cloud_test_catalog_upload, mocke
     assert Path(ctc.catalog.cache.get_path(file)).read_bytes() == b"woof"
 
 
-@pytest.mark.parametrize("cloud_type", ["gs"], indirect=True)
-@pytest.mark.parametrize("tree", [{"changed": "woof"}], indirect=True)
-def test_gcs_range_reads_reject_overwrite_between_requests(client):
-    file = client.get_file_info("changed")
-    file.version = ""
-    with client.open_object(file, use_cache=False, block_size=0) as stream:
-        assert stream.read(2) == b"wo"
-        client.fs.pipe_file(file.get_fs_path(), b"WOOF")
-        with pytest.raises(FileNotFoundError, match="changed on the source"):
-            stream.read()
+@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+@pytest.mark.filterwarnings(
+    "ignore:Sending a large body directly with raw bytes:ResourceWarning"
+)
+def test_video_metadata_reads_ranges_without_head(cloud_test_catalog_upload, mocker):
+    from datachain.client.gcs import _ListedGCSFile
+    from datachain.client.s3 import _ListedS3File
+    from datachain.lib.file import VideoFile
+
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+    path = Path(__file__).parent / "data" / "Big_Buck_Bunny_360_10s_1MB.mp4"
+    contents = path.read_bytes() + b"\0" * (6 * 1024 * 1024)
+    uploaded = client.upload(contents, "metadata.mp4")
+    video = VideoFile(**uploaded.model_dump())
+    video._set_stream(ctc.catalog, caching_enabled=True)
+    expected = VideoFile.at(path).get_info()
+    ranges = []
+    remote_class = _ListedS3File if client.PREFIX == "s3://" else _ListedGCSFile
+    fetch = remote_class._fetch_range
+
+    def fetch_range(stream, start, end):
+        data = fetch(stream, start, end)
+        ranges.append(len(data))
+        return data
+
+    mocker.patch.object(remote_class, "_fetch_range", fetch_range)
+    head = mocker.patch.object(client.fs, "info", side_effect=AssertionError("HEAD"))
+    async_info = mocker.patch.object(
+        client.fs, "_info", side_effect=AssertionError("HEAD")
+    )
+    assert video.get_info() == expected
+    head.assert_not_called()
+    async_info.assert_not_called()
+    assert 0 < len(ranges) <= 20
+    assert sum(ranges) < len(contents) // 2
+    assert not ctc.catalog.cache.contains(video)

@@ -1131,16 +1131,3 @@ def test_subclass_private_attributes_keep_their_values():
 
     assert file._catalog is catalog
     assert file._caching_enabled
-
-
-def test_get_local_path_deferred_virtual_file(catalog, mocker):
-    file = VideoFile(
-        source="s3://bucket",
-        path="member.mp4",
-        location=[{"vtype": "tar", "offset": 0, "size": 10}],
-    )
-    file._set_stream(catalog)
-    file._prefetch_pending = True
-    download = mocker.patch.object(File, "ensure_cached")
-    assert file.get_local_path() is None
-    download.assert_not_called()
