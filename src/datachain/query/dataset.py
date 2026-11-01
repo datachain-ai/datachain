@@ -3004,11 +3004,21 @@ class DatasetQuery:
 
         return sources
 
+    def _contains_source(self, source: "DatasetQuery") -> bool:
+        return self is source or any(
+            query._contains_source(source)
+            for step in self.steps
+            for query in step.sub_queries
+        )
+
     def replace_source(
         self,
         source: "DatasetQuery",
         replacement: "DatasetQuery",
     ) -> "Self":
+        # Preserve other source occurrences for subsequent identity-based rewrites.
+        if not self._contains_source(source):
+            return self
         if self is source:
             rewritten = replacement.clone(new_table=False)
             rewritten.table = self.table
