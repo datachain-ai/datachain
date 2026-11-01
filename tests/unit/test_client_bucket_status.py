@@ -223,7 +223,7 @@ def test_gcs_bucket_status(mock_create_fs, anon_effect, auth_effect, expected):
     ],
 )
 @patch("datachain.client.azure.BlobServiceClient")
-@patch.object(AzureClient, "create_fs")
+@patch("datachain.client.fsspec.Client.create_fs")
 def test_azure_bucket_status(
     mock_create_fs, mock_blob_svc, anon_effect, auth_effect, kwargs, expected
 ):
@@ -241,7 +241,7 @@ def test_azure_bucket_status(
 
 
 @patch("datachain.client.azure.BlobServiceClient")
-@patch.object(AzureClient, "create_fs")
+@patch("datachain.client.fsspec.Client.create_fs")
 def test_azure_bucket_status_http_500_reraises(_mock_create_fs, mock_blob_svc):
     container = MagicMock()
     mock_blob_svc.return_value.get_container_client.return_value = container

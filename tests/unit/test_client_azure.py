@@ -6,11 +6,13 @@ from xml.etree.ElementTree import fromstring
 
 import pytest
 from adlfs import AzureBlobFileSystem
+from azure.core.exceptions import ClientAuthenticationError
+from azure.identity import CredentialUnavailableError
 from fsspec.asyn import sync
 from fsspec.callbacks import DEFAULT_CALLBACK
 
 from datachain.asyn import get_loop
-from datachain.client.azure import AzureClient
+from datachain.client.azure import AzureClient, _finds_no_identity
 from datachain.lib.file import File, FileRow
 
 _FAKE_SAS = "https://account.blob.core.windows.net/mycontainer/blob.txt?sv=x&sig=y"
@@ -351,6 +353,113 @@ def _listed(blobs: str, version_aware: bool = False) -> tuple[AzureClient, Any, 
         return [f.path async for page in client.scandir("") for f in page]
 
     return client, container, sync(get_loop(), list_all)
+
+
+@pytest.fixture
+def no_azure_env(monkeypatch):
+    for var in list(os.environ):
+        if var.startswith("AZURE_"):
+            monkeypatch.delenv(var)
+
+
+class _Credential:
+    def __init__(self, error=None):
+        self.error = error
+
+    def get_token(self, *scopes, **kwargs):
+        if self.error:
+            raise self.error
+        return "token"
+
+
+def _chain(*credentials):
+    return MagicMock(credentials=list(credentials))
+
+
+@pytest.mark.parametrize(
+    "credentials, found",
+    [
+        (
+            [
+                CredentialUnavailableError("no env"),
+                CredentialUnavailableError("no cli"),
+            ],
+            False,
+        ),
+        ([CredentialUnavailableError("no env"), None], True),
+        # a configured identity that fails is found: its error must surface
+        ([ClientAuthenticationError("bad secret"), None], True),
+    ],
+    ids=["nothing-configured", "identity", "failing-identity"],
+)
+def test_finds_no_identity_only_when_nothing_is_configured(credentials, found):
+    chain = _chain(*map(_Credential, credentials))
+    assert _finds_no_identity(chain) is not found
+
+
+@pytest.mark.parametrize("found", [True, False])
+def test_create_fs_anon_when_no_identity(no_azure_env, found):
+    with patch(
+        "datachain.client.azure._finds_no_identity", return_value=not found
+    ) as probe:
+        fs = AzureClient.create_fs(account_name=f"acc{found}")
+        AzureClient.create_fs(account_name=f"acc{found}")
+    assert fs.anon is not found
+    probe.assert_called_once()
+
+
+def test_create_fs_asks_again_after_no_identity(no_azure_env, mocker):
+    probe = mocker.patch(
+        "datachain.client.azure._finds_no_identity", side_effect=[True, False]
+    )
+    now = mocker.patch("datachain.client.azure.time.monotonic", return_value=0.0)
+    assert AzureClient.create_fs(account_name="later").anon
+
+    now.return_value = 61.0  # then az login
+    assert not AzureClient.create_fs(account_name="later").anon
+    assert probe.call_count == 2
+
+
+@pytest.mark.parametrize("env", [{}, {"AZURE_STORAGE_ANON": "false"}])
+def test_create_fs_keeps_explicit_authenticated_mode(no_azure_env, monkeypatch, env):
+    for var, value in env.items():
+        monkeypatch.setenv(var, value)
+    kwargs = {} if env else {"anon": False}
+    with patch("datachain.client.azure._finds_no_identity", return_value=True) as probe:
+        fs = AzureClient.create_fs(account_name=f"explicit{len(env)}", **kwargs)
+    probe.assert_not_called()
+    assert not fs.anon
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"anon": False, "credential": "c"},
+        {"account_key": "k"},
+        {"sas_token": "s"},
+        {
+            "connection_string": "DefaultEndpointsProtocol=https;AccountName=acc;"
+            "AccountKey=a2V5;EndpointSuffix=core.windows.net"
+        },
+    ],
+)
+def test_create_fs_explicit_config_skips_credential_check(no_azure_env, kwargs):
+    with patch("datachain.client.azure._finds_no_identity") as probe:
+        fs = AzureClient.create_fs(account_name="acc", **kwargs)
+    probe.assert_not_called()
+    assert not fs.anon
+
+
+@pytest.mark.parametrize(
+    "var,value", [("AZURE_STORAGE_ACCOUNT_KEY", "a2V5"), ("AZURE_STORAGE_ANON", "1")]
+)
+def test_create_fs_env_config_skips_credential_check(
+    no_azure_env, monkeypatch, var, value
+):
+    monkeypatch.setenv(var, value)
+    with patch("datachain.client.azure._finds_no_identity") as probe:
+        AzureClient.create_fs(account_name="acc")
+    probe.assert_not_called()
 
 
 @pytest.mark.parametrize("resource_type", ["", "<ResourceType>file</ResourceType>"])
