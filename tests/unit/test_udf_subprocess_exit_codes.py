@@ -1,3 +1,4 @@
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -128,3 +129,20 @@ def test_canceled_exit_code_closes_warehouse(test_session_tmpfile, monkeypatch):
             chain.to_list()
 
     assert close_called
+
+
+def test_subprocess_keeps_caller_pythonpath(
+    test_session_tmpfile, monkeypatch, tmp_path
+):
+    monkeypatch.delenv("DATACHAIN_DISTRIBUTED", raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PYTHONPATH", "/a")
+    chain = _build_parallel_chain(test_session_tmpfile)
+
+    with patch(
+        "datachain.query.dataset.subprocess.Popen", return_value=_make_mock_popen()
+    ) as popen:
+        chain.to_list()
+
+    pythonpath = popen.call_args.kwargs["env"]["PYTHONPATH"]
+    assert pythonpath.split(os.pathsep) == [str(tmp_path), "/a"]

@@ -1325,3 +1325,62 @@ def test_agg_list_file_persist_and_read(tmp_dir, test_session):
     assert [f.model_dump() for f in actual_sorted] == [
         f.model_dump() for f in expected_sorted
     ]
+
+
+def test_udf_parallel_replenishes_input_tasks(test_session_tmpfile):
+    from datachain.query.dispatch import DEFAULT_BATCH_SIZE
+
+    # More tasks than the initial fill of four tasks for two workers.
+    count = 4 * DEFAULT_BATCH_SIZE + 1
+    chain = dc.read_values(num=list(range(count)), session=test_session_tmpfile)
+    result = (
+        chain.settings(parallel=2)
+        .map(value=lambda num: num + 1, output=int)
+        .save("replenish-map")
+    )
+    assert sorted(result.to_values("value")) == list(range(1, count + 1))
+
+
+@pytest.mark.parametrize("method", ["map", "gen", "batch_map"])
+def test_udf_scalar_union_inputs_use_one_logical_value(test_session, method):
+    def stringify(v: int | str) -> str:
+        return str(v)
+
+    chain = (
+        dc.read_values(x=[1, 2], session=test_session)
+        .map(v=lambda x: x if x == 1 else "two", output=int | str)
+        .select("v")
+    )
+    if method == "map":
+        result = chain.map(value=stringify)
+    elif method == "gen":
+        result = chain.gen(value=lambda v: iter([str(v)]), output=str)
+    else:
+        result = chain.batch_map(
+            value=lambda vs: [str(v) for v in vs], params=["v"], output=str, batch=2
+        )
+    assert sorted(result.to_values("value")) == ["1", "two"]
+
+
+def test_udf_parallel_workers_split_the_cpu_threads(test_session_tmpfile, monkeypatch):
+    from datachain.utils import usable_cpu_count
+
+    monkeypatch.setenv("OMP_NUM_THREADS", "1000")
+    monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
+    monkeypatch.setenv("MKL_NUM_THREADS", "1")
+
+    def threads(x: int) -> str:
+        return ",".join(
+            os.environ.get(k, "")
+            for k in ("DATACHAIN_WORKER_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS")
+        )
+
+    values = (
+        dc.read_values(x=list(range(8)), session=test_session_tmpfile)
+        .settings(parallel=2)
+        .map(threads=threads)
+        .to_values("threads")
+    )
+
+    share = str(max(1, usable_cpu_count() // 2))
+    assert set(values) == {f"{share},{share},1"}

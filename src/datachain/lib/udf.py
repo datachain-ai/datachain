@@ -8,6 +8,7 @@ from contextlib import closing, nullcontext
 from dataclasses import dataclass
 from functools import cached_property, partial
 from graphlib import CycleError, TopologicalSorter
+from operator import itemgetter
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import attrs
@@ -226,7 +227,7 @@ class UDFAdapter:
 
     @property
     def prefetch(self) -> int:
-        return self.inner.prefetch
+        return self.inner._prefetch
 
 
 class UDFBase(AbstractUDF):
@@ -394,6 +395,12 @@ class UDFBase(AbstractUDF):
             batch,
         )
 
+    @property
+    def _prefetch(self) -> int:
+        if self.params is not None and not self.params._file_stream_params:
+            return 0
+        return self.prefetch
+
     def run(
         self,
         udf_fields: "Sequence[str]",
@@ -456,6 +463,21 @@ class UDFBase(AbstractUDF):
         obj_row = self.params.row_to_objs(row_dict)
         self.params.set_file_streams(obj_row, catalog, cache, download_cb)
         return obj_row
+
+    def _get_row_preparer(self, udf_fields, catalog, cache, download_cb):
+        assert self.params is not None
+        columns = self.params.plain_columns()
+        if columns is not None and {"sys__id", *columns} <= set(udf_fields):
+            getter = itemgetter(*(udf_fields.index(c) for c in ["sys__id", *columns]))
+            return getter if columns else lambda row: (getter(row),)
+        return partial(
+            self._prepare_row,
+            udf_fields=udf_fields,
+            catalog=catalog,
+            cache=cache,
+            download_cb=download_cb,
+            include_id=True,
+        )
 
     def _prepare_row(
         self, row, udf_fields, catalog, cache, download_cb, include_id=False
@@ -592,23 +614,16 @@ class Mapper(UDFBase):
         processed_cb: Callback = DEFAULT_CALLBACK,
     ) -> Iterator[Iterable[UDFResult]]:
         self.setup()
-        signal_names = list(self.signal_names)
+        signal_names = tuple(self.signal_names)
+        flatten_row = self._flatten_row
+
+        prepare_row = self._get_row_preparer(udf_fields, catalog, cache, download_cb)
 
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
             with safe_closing(udf_inputs):
                 for row in udf_inputs:
                     if self.is_input_batched:
-                        rows = [
-                            self._prepare_row(
-                                r,
-                                udf_fields,
-                                catalog,
-                                cache,
-                                download_cb,
-                                include_id=True,
-                            )
-                            for r in row
-                        ]
+                        rows = [prepare_row(r) for r in row]
                         columns: list[Any] = [
                             list(col) for col in zip(*rows, strict=True)
                         ]
@@ -618,21 +633,15 @@ class Mapper(UDFBase):
                                 columns[i] = columns[i][0]
                         yield columns
                     else:
-                        yield self._prepare_row(
-                            row,
-                            udf_fields,
-                            catalog,
-                            cache,
-                            download_cb,
-                            include_id=True,
-                        )
+                        yield prepare_row(row)
 
+        prefetch = self._prefetch
         prepared_inputs = _prepare_rows(udf_inputs)
         prepared_inputs = _prefetch_inputs(
             prepared_inputs,
-            self.prefetch,
+            prefetch,
             download_cb=download_cb,
-            remove_prefetched=bool(self.prefetch) and not cache,
+            remove_prefetched=bool(prefetch) and not cache,
             batch_columns=(
                 {
                     i
@@ -663,7 +672,7 @@ class Mapper(UDFBase):
                         for i, (row_id, result) in enumerate(
                             zip(id_, results, strict=True)
                         ):
-                            udf_output = self._flatten_row(result)
+                            udf_output = flatten_row(result)
                             output.append(
                                 {
                                     "sys__id": row_id,
@@ -674,7 +683,7 @@ class Mapper(UDFBase):
                             )
                         processed_cb.relative_update(len(id_))
                     else:
-                        udf_output = self._flatten_row(result_objs)
+                        udf_output = flatten_row(result_objs)
                         output = [
                             {"sys__id": id_}
                             | dict(zip(signal_names, udf_output, strict=False))
@@ -927,15 +936,16 @@ class Generator(UDFBase):
         processed_cb: Callback = DEFAULT_CALLBACK,
     ) -> Iterator[Iterable[UDFResult]]:
         self.setup()
-        signal_names = list(self.signal_names)
+        signal_names = tuple(self.signal_names)
         file_row = FileRow if self._file_row_output() else None
+        flatten_row = self._flatten_row
+
+        prepare_row = self._get_row_preparer(udf_fields, catalog, cache, download_cb)
 
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
             with safe_closing(udf_inputs):
                 for row in udf_inputs:
-                    yield self._prepare_row(
-                        row, udf_fields, catalog, cache, download_cb, include_id=True
-                    )
+                    yield prepare_row(row)
 
         def _process_row(row):
             row_id, *row = row
@@ -949,7 +959,7 @@ class Generator(UDFBase):
                     if type(result_obj) is file_row:
                         yield result_obj + (row_id, not is_last, None)  # noqa: RUF005
                         continue
-                    udf_output = self._flatten_row(result_obj)
+                    udf_output = flatten_row(result_obj)
                     udf_output = dict(zip(signal_names, udf_output, strict=False))
                     udf_output["sys__input_id"] = row_id
                     udf_output["sys__partial"] = not is_last
@@ -963,12 +973,13 @@ class Generator(UDFBase):
                     "sys__empty": True,
                 }
 
+        prefetch = self._prefetch
         prepared_inputs = _prepare_rows(udf_inputs)
         prepared_inputs = _prefetch_inputs(
             prepared_inputs,
-            self.prefetch,
+            prefetch,
             download_cb=download_cb,
-            remove_prefetched=bool(self.prefetch) and not cache,
+            remove_prefetched=bool(prefetch) and not cache,
             max_size=self.prefetch_max_size,
         )
 
@@ -998,7 +1009,8 @@ class Aggregator(UDFBase):
         from datachain.data_storage.schema import PARTITION_COLUMN_ID
 
         self.setup()
-        signal_names = list(self.signal_names)
+        signal_names = tuple(self.signal_names)
+        flatten_row = self._flatten_row
 
         # Check if partition_id is available (when partition_by is used)
         partition_id_idx = None
@@ -1025,7 +1037,7 @@ class Aggregator(UDFBase):
             result_objs = self.process(*udf_args)
             if result_objs is None:
                 result_objs = iter(())
-            udf_outputs = (self._flatten_row(row) for row in result_objs)
+            udf_outputs = (flatten_row(row) for row in result_objs)
 
             def _process_partition(udf_outputs, input_id):
                 has_output = False

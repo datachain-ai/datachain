@@ -1,12 +1,12 @@
 import contextlib
+import threading
 import traceback
-from collections.abc import Iterable, Sequence
-from itertools import chain
-from multiprocessing import cpu_count
+from collections.abc import Iterable, Iterator, Sequence
+from itertools import chain, islice
 from queue import Empty
 from sys import stdin
 from time import monotonic, sleep
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import multiprocess
 from cloudpickle import load, loads
@@ -28,7 +28,13 @@ from datachain.query.dataset import (
 )
 from datachain.query.queue import get_from_queue, put_into_queue
 from datachain.query.udf import UdfInfo
-from datachain.utils import batched, flatten, safe_closing
+from datachain.utils import (
+    batched,
+    flatten,
+    safe_closing,
+    usable_cpu_count,
+    worker_thread_limits,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy import Select, Table
@@ -43,14 +49,36 @@ OK_STATUS = "OK"
 FINISHED_STATUS = "FINISHED"
 FAILED_STATUS = "FAILED"
 NOTIFY_STATUS = "NOTIFY"
+STATS_INTERVAL_SEC = 3.0
 
 
 def get_n_workers_from_arg(n_workers: int | None = None) -> int:
     if not n_workers:
-        return cpu_count()
+        return usable_cpu_count()
     if n_workers < 1:
         raise RuntimeError("Must use at least one worker for parallel UDF execution!")
     return n_workers
+
+
+def guided_tasks(
+    items: Iterable[Any], total: int, n_workers: int, max_size: int
+) -> Iterator[tuple[Any, ...]]:
+    """Split items into tasks that shrink with the work left (guided scheduling).
+
+    Early tasks are large to amortize dispatch; the last ones hold a single item,
+    so slow rows (e.g. videos) don't leave one worker running alone at the end.
+    """
+    if n_workers < 1 or max_size < 1:
+        raise ValueError("n_workers and max_size must be positive")
+    it = iter(items)
+    remaining = total
+    while True:
+        size = max(1, min(max_size, -(-remaining // (2 * n_workers))))
+        task = tuple(islice(it, size))
+        if not task:
+            return
+        remaining -= len(task)
+        yield task
 
 
 def udf_entrypoint() -> int:
@@ -109,7 +137,7 @@ class UDFDispatcher:
     task_queue: MultiprocessQueue | None = None
     done_queue: MultiprocessQueue | None = None
 
-    def __init__(self, udf_info: UdfInfo, buffer_size: int = DEFAULT_BATCH_SIZE):
+    def __init__(self, udf_info: UdfInfo):
         self.udf_data = udf_info["udf_data"]
         self.catalog_init_params = udf_info["catalog_init"]
         self.metastore_clone_params = udf_info["metastore_clone_params"]
@@ -124,7 +152,6 @@ class UDFDispatcher:
         self.processes = udf_info["processes"]
         self.rows_total = udf_info["rows_total"]
         self.batch_size = udf_info["batch_size"]
-        self.buffer_size = buffer_size
         self.task_queue = None
         self.done_queue = None
         self.ctx = multiprocess.get_context("spawn")
@@ -191,19 +218,13 @@ class UDFDispatcher:
             n_workers = 1  # Single-threaded (on this worker)
         n_workers = get_n_workers_from_arg(n_workers)
 
-        if n_workers == 1:
-            # no need to spawn worker processes if we are running in a single process
-            self.run_udf_single(input_rows, download_cb, processed_cb, generated_cb)
-        else:
-            if self.buffer_size < n_workers:
-                raise RuntimeError(
-                    "Parallel run error: buffer size is smaller than "
-                    f"number of workers: {self.buffer_size} < {n_workers}"
+        with worker_thread_limits(n_workers):
+            if n_workers == 1:
+                self.run_udf_single(input_rows, download_cb, processed_cb, generated_cb)
+            else:
+                self.run_udf_parallel(
+                    n_workers, input_rows, download_cb, processed_cb, generated_cb
                 )
-
-            self.run_udf_parallel(
-                n_workers, input_rows, download_cb, processed_cb, generated_cb
-            )
 
     def run_udf_single(
         self,
@@ -246,11 +267,6 @@ class UDFDispatcher:
                     batch_size=self.batch_size,
                 )
 
-    def input_batch_size(self, n_workers: int) -> int:
-        rows_per_task = min(self.rows_total // n_workers, DEFAULT_BATCH_SIZE)
-        batch_size = self.batching.count if isinstance(self.batching, Batch) else 1
-        return max(1, rows_per_task // batch_size)
-
     def run_udf_parallel(  # noqa: C901, PLR0912
         self,
         n_workers: int,
@@ -266,23 +282,25 @@ class UDFDispatcher:
             self.ctx.Process(name=f"Worker-UDF-{i}", target=self._run_worker)
             for i in range(n_workers)
         ]
-        for p in pool:
-            p.start()
-
         try:
+            for p in pool:
+                p.start()
             # Will be set to True when the input is exhausted
             input_finished = False
 
-            input_rows = batched(
+            batch_size = self.batching.count if isinstance(self.batching, Batch) else 1
+            input_rows = guided_tasks(
                 input_rows if self.is_batching else flatten(input_rows),
-                self.input_batch_size(n_workers),
+                -(-self.rows_total // batch_size),
+                n_workers,
+                max(1, DEFAULT_BATCH_SIZE // batch_size),
             )
 
             # Stop all workers after the input rows have finished processing
             input_data = chain(input_rows, [STOP_SIGNAL] * n_workers)
 
             # Add initial buffer of tasks
-            for _ in range(self.buffer_size):
+            for _ in range(2 * n_workers):
                 try:
                     put_into_queue(self.task_queue, next(input_data))
                 except StopIteration:
@@ -375,30 +393,61 @@ class UDFDispatcher:
             queue.join_thread()
 
 
-class DownloadCallback(Callback):
+class WorkerStats:
     def __init__(self, queue: MultiprocessQueue) -> None:
         self.queue = queue
+        self.lock = threading.Lock()  # prefetch and download threads add too
+        self.counts: dict[str, int] = {}
+        self.sent_at = monotonic()
+
+    def add(self, name: str, inc: int = 1) -> None:
+        with self.lock:
+            self.counts[name] = self.counts.get(name, 0) + inc
+            if monotonic() - self.sent_at >= STATS_INTERVAL_SEC:
+                self._send(NOTIFY_STATUS)
+
+    def send(self, status: str) -> None:
+        with self.lock:
+            self._send(status)
+
+    def flush(self) -> None:
+        with self.lock:
+            if self.counts:
+                self._send(NOTIFY_STATUS)
+
+    def _send(self, status: str) -> None:
+        put_into_queue(self.queue, {"status": status, **self.counts})
+        self.counts = {}
+        self.sent_at = monotonic()
+
+
+class DownloadCallback(Callback):
+    def __init__(self, stats: WorkerStats) -> None:
+        self.stats = stats
         super().__init__()
 
     def relative_update(self, inc: int = 1) -> None:
-        put_into_queue(self.queue, {"status": NOTIFY_STATUS, "bytes_downloaded": inc})
+        self.stats.add("bytes_downloaded", inc)
 
     def increment_file_count(self, inc: int = 1) -> None:
-        put_into_queue(self.queue, {"status": NOTIFY_STATUS, "downloaded": inc})
+        self.stats.add("downloaded", inc)
 
 
 class ProcessedCallback(Callback):
     def __init__(
         self,
         name: Literal["processed", "generated"],
-        queue: MultiprocessQueue,
+        stats: WorkerStats,
     ) -> None:
         self.name = name
-        self.queue = queue
+        self.stats = stats
         super().__init__()
 
     def relative_update(self, inc: int = 1) -> None:
-        put_into_queue(self.queue, {"status": NOTIFY_STATUS, self.name: inc})
+        self.stats.add(self.name, inc)
+
+    def close(self) -> None:
+        self.stats.flush()
 
 
 class UDFWorker:
@@ -426,9 +475,10 @@ class UDFWorker:
         self.batch_size = batch_size
         self.udf_fields = udf_fields
 
-        self.download_cb = DownloadCallback(self.done_queue)
-        self.processed_cb = ProcessedCallback("processed", self.done_queue)
-        self.generated_cb = ProcessedCallback("generated", self.done_queue)
+        self.stats = WorkerStats(self.done_queue)
+        self.download_cb = DownloadCallback(self.stats)
+        self.processed_cb = ProcessedCallback("processed", self.stats)
+        self.generated_cb = ProcessedCallback("generated", self.stats)
 
     def run(self) -> None:
         prefetch = self.udf.prefetch
@@ -442,26 +492,25 @@ class UDFWorker:
                 download_cb=self.download_cb,
                 processed_cb=self.processed_cb,
             )
-            with safe_closing(udf_results):
+            with self.generated_cb, self.processed_cb, safe_closing(udf_results):
                 process_udf_outputs(
                     catalog.warehouse,
                     self.table,
-                    self.notify_and_process(udf_results),
+                    udf_results,
                     self.udf,
                     cb=self.generated_cb,
                     batch_size=self.batch_size,
                 )
-        put_into_queue(self.done_queue, {"status": FINISHED_STATUS})
-
-    def notify_and_process(self, udf_results):
-        for row in udf_results:
-            put_into_queue(self.done_queue, {"status": OK_STATUS})
-            yield row
+        self.stats.send(FINISHED_STATUS)
 
     def get_inputs(self) -> Iterable["RowsOutput"]:
         warehouse = self.catalog.warehouse.clone()
-        while (batch := get_from_queue(self.task_queue)) != STOP_SIGNAL:
+        while True:
+            batch = get_from_queue(self.task_queue)
+            if batch == STOP_SIGNAL:
+                return
             for ids in batched(batch, DEFAULT_BATCH_SIZE):
                 yield from warehouse.dataset_rows_select_from_ids(
                     self.query, ids, self.is_batching
                 )
+            self.stats.send(OK_STATUS)

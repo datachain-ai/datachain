@@ -7,11 +7,16 @@ from fsspec.callbacks import DEFAULT_CALLBACK
 from pydantic import BaseModel
 
 import datachain as dc
-from datachain import Mapper
+from datachain import BatchMapper, Mapper
 from datachain.dataset import RowDict
 from datachain.lib.file import File
 from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.udf import JsonSerializationError, UDFBase, UdfError, UdfRunError
+from datachain.lib.udf import (
+    JsonSerializationError,
+    UDFBase,
+    UdfError,
+    UdfRunError,
+)
 from datachain.lib.utils import DataChainError
 
 from .test_udf_signature import get_sign
@@ -362,7 +367,6 @@ def test_udf_output_type_error_message_json_serialization_failure(
 def test_map_prefetch_skips_invalid_path_files(
     monkeypatch, test_session, caplog, bad_path
 ):
-
     monkeypatch.delenv("DATACHAIN_DISTRIBUTED", raising=False)
 
     files = [File(source="s3://bucket", path=bad_path) for _ in range(3)]
@@ -413,3 +417,81 @@ def test_an_insert_error_closes_the_udf_outputs(test_session, mocker):
     # the error's traceback holds the generator: it must be closed already
     assert closed == [1000]
     assert error.value.__traceback__ is not None
+
+
+@pytest.mark.parametrize(
+    "udf_cls,func,inputs",
+    [
+        (Mapper, lambda path: (path, "10", "27"), [(1, "B1"), (2, "B2")]),
+        (
+            BatchMapper,
+            lambda paths: [(p, "10", "27") for p in paths],
+            [[(1, "B1"), (2, "B2")]],
+        ),
+    ],
+)
+def test_mapper_scalar_inputs_skip_async_prefetch(mocker, udf_cls, func, inputs):
+    udf = udf_cls()
+    udf.params = SignalSchema({"path": str})
+    udf.output = SignalSchema({"band": str, "month": str, "day": str})
+    udf._func = func
+    mocker.patch("datachain.lib.udf.AsyncMapper", side_effect=AssertionError)
+
+    results = list(udf.run(["sys__id", "path"], inputs, object(), False))
+
+    flat = [row for output in results for row in output]
+    assert [
+        (row["sys__id"], row["band"], row["month"], row["day"]) for row in flat
+    ] == [
+        (1, "B1", "10", "27"),
+        (2, "B2", "10", "27"),
+    ]
+
+
+@pytest.mark.parametrize("setup", [False, True])
+def test_udf_prefetch_retained_for_file_params(setup):
+    udf = Mapper()
+    if setup:
+        udf.params = SignalSchema({"ref": str}, setup={"ref": lambda: File(path="x")})
+    else:
+        udf.params = SignalSchema({"ref": File})
+    assert udf._prefetch == udf.prefetch == 2
+
+
+@pytest.mark.parametrize(
+    "params,fields,row",
+    [
+        ({"file.path": str}, ["file__path", "sys__id"], ["a", 7]),
+        ({"value": int | None}, ["sys__id", "value"], [7, 3]),
+        (
+            {"v": int | str},
+            ["sys__id", "v___type_tag", "v__int", "v__str"],
+            [7, "int", 11, None],
+        ),
+        ({}, ["sys__id"], [7]),
+        ({"values": list[str]}, ["sys__id", "values"], [7, ["a", "b"]]),
+        ({"values": tuple[int, str]}, ["sys__id", "values"], [7, [1, "a"]]),
+        (
+            {"b": bool, "v": bytes, "f": float},
+            ["v", "f", "b", "sys__id"],
+            [b"x", 1.5, True, 7],
+        ),
+    ],
+)
+def test_udf_row_preparer_matches_schema_conversion(params, fields, row):
+    udf = Mapper()
+    udf.params = SignalSchema(params)
+    catalog = object()
+    prepare = udf._get_row_preparer(fields, catalog, False, DEFAULT_CALLBACK)
+    assert prepare(row) == udf._prepare_row(
+        row, fields, catalog, False, DEFAULT_CALLBACK, include_id=True
+    )
+
+
+def test_udf_row_preparer_keeps_setup_values():
+    udf = Mapper()
+    udf.params = SignalSchema({"prefix": str}, setup={"prefix": lambda: "setup"})
+    prepare = udf._get_row_preparer(
+        ["sys__id", "prefix"], object(), False, DEFAULT_CALLBACK
+    )
+    assert prepare([7, "column"]) == (7, "setup")

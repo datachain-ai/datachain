@@ -7,9 +7,11 @@ import sqlalchemy as sa
 from filelock import FileLock, Timeout
 from sqlalchemy.engine import make_url
 
+from datachain import utils
 from datachain.fs.utils import is_subpath, path_to_fsspec_uri
 from datachain.testing import drop_all_tables
 from datachain.utils import (
+    _cpu_quotas,
     batched,
     batched_it,
     checkpoints_enabled,
@@ -23,6 +25,7 @@ from datachain.utils import (
     sizeof_fmt,
     sql_escape_like,
     suffix_to_number,
+    usable_cpu_count,
     uses_glob,
     with_last_flag,
 )
@@ -676,3 +679,145 @@ def test_drop_all_tables_drops_fk_linked_tables(tmp_path):
 
     assert sa.inspect(engine).get_table_names() == []
     engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "files, expected",
+    [
+        ({"cpu.max": "max 100000"}, []),
+        ({"cpu.max": "150000 100000"}, [(150000, 100000)]),
+        (
+            {"cpu.max": "max 100000", "user.slice/cpu.max": "200000 100000"},
+            [(200000, 100000)],
+        ),
+    ],
+)
+def test_cpu_quotas_of_cgroup_v2_and_its_parents(files, expected, tmp_path):
+    for name, text in files.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(text)
+    (tmp_path / "cgroup").write_text("0::/user.slice\n")
+
+    assert _cpu_quotas(str(tmp_path), str(tmp_path / "cgroup")) == expected
+
+
+def test_cpu_quota_of_cgroup_v1(tmp_path):
+    folder = tmp_path / "cpu,cpuacct" / "docker"
+    folder.mkdir(parents=True)
+    (folder / "cpu.cfs_quota_us").write_text("100000\n")
+    (folder / "cpu.cfs_period_us").write_text("100000\n")
+    (tmp_path / "cgroup").write_text("5:memory:/docker\n4:cpu,cpuacct:/docker\n")
+
+    assert _cpu_quotas(str(tmp_path), str(tmp_path / "cgroup")) == [(100000, 100000)]
+
+
+def test_cpu_quotas_of_missing_or_garbled_cgroup_files(tmp_path):
+    (tmp_path / "cpu.max").write_text("garbage\n")
+    (tmp_path / "cgroup").write_text("0::/\n")
+
+    assert _cpu_quotas(str(tmp_path), str(tmp_path / "cgroup")) == []
+    assert _cpu_quotas(str(tmp_path / "nope"), str(tmp_path / "nope" / "cgroup")) == []
+
+
+def test_cpu_quotas_ignore_malformed_membership(tmp_path):
+    (tmp_path / "cpu.max").write_text("800000 100000")
+    (tmp_path / "cgroup").write_text("invalid\n0::/\n")
+
+    assert _cpu_quotas(str(tmp_path), str(tmp_path / "cgroup")) == [(800000, 100000)]
+
+
+def test_usable_cpu_count_falls_back_when_affinity_is_unavailable(monkeypatch):
+    def unavailable():
+        raise OSError("affinity unavailable")
+
+    monkeypatch.setattr(os, "process_cpu_count", unavailable, raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: 24)
+    monkeypatch.setattr(utils, "_cpu_quotas", lambda: [(800000, 100000)])
+
+    assert usable_cpu_count() == 8
+
+
+@pytest.mark.parametrize(
+    "quotas, expected",
+    [
+        ([], 24),
+        ([(800000, 100000)], 8),
+        ([(150000, 100000)], 2),
+        ([(50000, 100000)], 1),
+        ([(800000, 100000), (400000, 100000)], 4),
+        ([(4800000, 100000)], 24),
+    ],
+)
+def test_usable_cpu_count_follows_the_cgroup_quotas(quotas, expected, monkeypatch):
+    monkeypatch.setattr(os, "process_cpu_count", lambda: 24, raising=False)
+    monkeypatch.setattr(utils, "_cpu_quotas", lambda: quotas)
+
+    assert usable_cpu_count() == expected
+
+
+def test_default_parallel_uses_the_cpu_quota(monkeypatch):
+    from datachain.query.dispatch import get_n_workers_from_arg
+
+    monkeypatch.setattr(os, "process_cpu_count", lambda: 24, raising=False)
+    monkeypatch.setattr(utils, "_cpu_quotas", lambda: [(800000, 100000)])
+
+    assert get_n_workers_from_arg(None) == 8
+    assert get_n_workers_from_arg(12) == 12
+
+
+def test_worker_thread_env_caps_settings_at_the_worker_share(monkeypatch):
+    for name in ("DATACHAIN_WORKER_THREADS", *utils._THREAD_ENVS):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OMP_NUM_THREADS", "8")
+    monkeypatch.setenv("MKL_NUM_THREADS", "1")
+    monkeypatch.setenv("OPENBLAS_NUM_THREADS", "junk")
+    monkeypatch.setattr(utils, "usable_cpu_count", lambda: 8)
+
+    env = utils.worker_thread_env(4)
+
+    assert env["DATACHAIN_WORKER_THREADS"] == env["OMP_NUM_THREADS"] == "2"
+    assert env["MKL_NUM_THREADS"] == "1"
+    assert env["OPENBLAS_NUM_THREADS"] == "2"
+    assert utils.worker_thread_env(24)["NUMEXPR_NUM_THREADS"] == "1"
+
+
+@pytest.mark.parametrize(
+    "value,expected", [(None, None), ("3", 3), ("0", 1), ("x", None)]
+)
+def test_worker_threads(value, expected, monkeypatch):
+    if value is None:
+        monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
+    else:
+        monkeypatch.setenv("DATACHAIN_WORKER_THREADS", value)
+
+    assert utils.worker_threads() == expected
+
+
+@pytest.mark.parametrize("workers", [0, -1])
+def test_worker_thread_env_requires_positive_workers(workers):
+    from datachain.utils import worker_thread_env
+
+    with pytest.raises(ValueError, match="n_workers must be positive"):
+        worker_thread_env(workers)
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_worker_thread_limits_restore_environment(monkeypatch, fail):
+    monkeypatch.setenv("OMP_NUM_THREADS", "1000")
+    monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
+    monkeypatch.setattr(utils, "usable_cpu_count", lambda: 8)
+    before = dict(os.environ)
+
+    def start_worker():
+        with utils.worker_thread_limits(4):
+            assert os.environ["OMP_NUM_THREADS"] == "2"
+            assert utils.worker_threads() == 2
+            if fail:
+                raise RuntimeError("worker could not start")
+
+    if fail:
+        with pytest.raises(RuntimeError, match="could not start"):
+            start_worker()
+    else:
+        start_worker()
+    assert dict(os.environ) == before

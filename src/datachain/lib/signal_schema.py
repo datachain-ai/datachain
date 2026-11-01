@@ -671,6 +671,18 @@ class SignalSchema:
                 res[db_name] = self._db_leaf_sql_type(path, type_)
         return res
 
+    def plain_columns(self) -> list[str] | None:
+        """Columns returned unchanged by row_to_objs, or None for converted inputs."""
+        if (
+            self.setup_func
+            or any(self._row_conversion_required.values())
+            or any(reader.layout is not None for reader in self._signal_plan.values())
+        ):
+            return None
+        return [
+            column for reader in self._signal_plan.values() for column in reader.columns
+        ]
+
     @cached_property
     def _signal_plan(self) -> dict[str, SignalReader]:
         """Each signal's reader, worked out once per schema instead of on every row."""
