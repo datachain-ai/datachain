@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 import sqlalchemy as sa
 from PIL import Image
+from upath.implementations.cloud import CloudPath
 
 import datachain as dc
 from datachain.catalog.catalog import Catalog
@@ -50,7 +51,25 @@ LARGE_TREE: dict[str, Any] = {
 NUM_TREE = {f"{i:06d}": f"{i}" for i in range(1024)}
 
 
+def _tree_files(tree, prefix=""):
+    for key, value in tree.items():
+        name = f"{prefix}{key}"
+        if isinstance(value, dict):
+            yield from _tree_files(value, f"{name}/")
+        elif isinstance(value, str):
+            yield name, value.encode("utf-8")
+        elif isinstance(value, bytes):
+            yield name, value
+        else:
+            raise TypeError(f"{value=}")
+
+
 def instantiate_tree(path, tree):
+    if isinstance(path, CloudPath):
+        files = {str(path / name): data for name, data in _tree_files(tree)}
+        path.fs.pipe(files, batch_size=8)
+        return
+
     for key, value in tree.items():
         if isinstance(value, str):
             (path / key).write_text(value)

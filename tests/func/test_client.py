@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 from fsspec.asyn import sync
 from fsspec.callbacks import DEFAULT_CALLBACK
-from hypothesis import HealthCheck, given, settings
+from hypothesis import given, settings
 from hypothesis import strategies as st
 from tqdm import tqdm
 
@@ -494,9 +494,8 @@ def test_parse_url_file(tmp_path, rel_suffix, expected_uri_suffix, expected_rel)
     assert rel_part == expected_rel
 
 
-@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
-def test_parse_url_cloud(cloud_test_catalog):
-    base_uri = cloud_test_catalog.src_uri
+@pytest.mark.parametrize("base_uri", ["s3://bucket", "gs://bucket", "az://bucket"])
+def test_parse_url_cloud(base_uri):
     cases = [
         # (rel_suffix, expected_rel)
         ("animals", "animals"),
@@ -511,19 +510,18 @@ def test_parse_url_cloud(cloud_test_catalog):
         assert rel_part == expected_rel, f"rel mismatch for {rel_suffix!r}"
 
 
-@settings(suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=None)
+@pytest.mark.parametrize("scheme", ["file", "s3", "gs", "az"])
+@settings(deadline=None)
 @given(rel_path=_non_null_text)
-def test_get_client(cloud_test_catalog, rel_path, cloud_type):
-    catalog = cloud_test_catalog.catalog
-    bucket_uri = cloud_test_catalog.src_uri
-    url = f"{bucket_uri}/{rel_path}"
-    client = Client.get_client(url, catalog.cache)
+def test_get_client(scheme, rel_path):
+    base_uri = Path.cwd().as_uri() if scheme == "file" else f"{scheme}://bucket"
+    url = f"{base_uri}/{rel_path}"
+    client = Client.get_client(url, None)
     assert client
     assert client.uri
 
 
-@pytest.mark.parametrize("cloud_type", ["file"], indirect=True)
-def test_parse_file_absolute_path_without_protocol(cloud_test_catalog):
+def test_parse_file_absolute_path_without_protocol():
     working_dir = Path().absolute()
     uri, rel_part = Client.parse_url(str(working_dir / Path("animals")))
     assert uri == working_dir.as_uri()
@@ -531,7 +529,6 @@ def test_parse_file_absolute_path_without_protocol(cloud_test_catalog):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX root-path behavior")
-@pytest.mark.parametrize("cloud_type", ["file"], indirect=True)
 @pytest.mark.parametrize(
     "url,expected_uri,expected_rel",
     [
@@ -551,32 +548,27 @@ def test_parse_file_absolute_path_without_protocol(cloud_test_catalog):
         "uri-trailing-slash",
     ],
 )
-def test_parse_file_absolute_posix_root_paths(
-    cloud_test_catalog, url, expected_uri, expected_rel
-):
+def test_parse_file_absolute_posix_root_paths(url, expected_uri, expected_rel):
     uri, rel_part = Client.parse_url(url)
 
     assert uri == expected_uri
     assert rel_part == expected_rel
 
 
-@pytest.mark.parametrize("cloud_type", ["file"], indirect=True)
-def test_parse_file_relative_path_multiple_dirs_back(cloud_test_catalog):
+def test_parse_file_relative_path_multiple_dirs_back():
     uri, rel_part = Client.parse_url("../../animals".replace("/", os.sep))
     assert uri == Path().absolute().parents[1].as_uri()
     assert rel_part == "animals"
 
 
-@pytest.mark.parametrize("cloud_type", ["file"], indirect=True)
 @pytest.mark.parametrize("url", ["./animals".replace("/", os.sep), "animals"])
-def test_parse_file_relative_path_working_dir(cloud_test_catalog, url):
+def test_parse_file_relative_path_working_dir(url):
     uri, rel_part = Client.parse_url(url)
     assert uri == Path().absolute().as_uri()
     assert rel_part == "animals"
 
 
-@pytest.mark.parametrize("cloud_type", ["file"], indirect=True)
-def test_parse_file_relative_path_home_dir(cloud_test_catalog):
+def test_parse_file_relative_path_home_dir():
     if sys.platform == "win32":
         # home dir shortcut is not available on windows
         pytest.skip()
@@ -585,11 +577,10 @@ def test_parse_file_relative_path_home_dir(cloud_test_catalog):
     assert rel_part == "animals"
 
 
-@pytest.mark.parametrize("cloud_type", ["s3", "azure", "gs"], indirect=True)
-def test_parse_cloud_path_ends_with_slash(cloud_test_catalog):
-    uri = f"{cloud_test_catalog.src_uri}/animals/"
-    uri, rel_part = Client.parse_url(uri)
-    assert uri == cloud_test_catalog.src_uri
+@pytest.mark.parametrize("base_uri", ["s3://bucket", "gs://bucket", "az://bucket"])
+def test_parse_cloud_path_ends_with_slash(base_uri):
+    uri, rel_part = Client.parse_url(f"{base_uri}/animals/")
+    assert uri == base_uri
     assert rel_part == "animals/"
 
 
