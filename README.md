@@ -18,9 +18,12 @@ You can use the same API directly from Python.
 - **15.6–22.6× faster large S3 inventories** than a serial boto3 paginator in our listing benchmarks.
 - **2.6× faster to a verified result with Claude Code using DataChain + skill** versus Claude without a skill on held-out
   heavy media tasks. No speed advantage over expert Python was established.
+- **Faster data workflows with Codex:** video search, video updates and S3 inventory ran **1.67–2.05× faster**
+  with DataChain + skill than with Codex without a skill in our benchmarks.
 
-[Measurements, builds and methodology](docs/benchmarks.md). Listing numbers exclude persistence; the agent
-measurement includes the skill's practices and an explicit library instruction. Task-specific Codex results appear below.
+[Measurements, builds and methodology](docs/benchmarks.md). Listing numbers exclude persistence; agent
+measurements include the skill's practices and an explicit library instruction. Codex development benchmarks
+used two repetitions per configuration. The separate held-out evaluation did not establish an overall Codex speedup.
 
 ## What you can build
 
@@ -276,7 +279,22 @@ Specialists can win on their store. A dash means no reported measurement, not ne
 These engineering measurements compare separate per-store workloads, not end-to-end cross-cloud performance.
 [Full tool table, larger S3 results, scoped listing and methodology](docs/benchmarks.md#comparison-with-dedicated-listing-tools).
 
-### Coding agents on heavy media tasks
+### Codex: faster video and inventory workflows
+
+Codex + DataChain completed these workflows 1.67–2.05× faster than Codex without a skill.
+On S3 inventory, it also outperformed Codex with an expert plain-Python skill by 3.19×.
+
+| Codex task | No skill, min | Expert Python, min | DataChain, min | No skill / DC | Expert / DC |
+|---|---:|---:|---:|---:|---:|
+| Search dashcam video | 14.5 | 9.4 | 8.2 | 1.77× | 1.15× |
+| Process and update video clips | 20.6 | 10.6 | 10.1 | 2.05× | 1.05× |
+| Inventory a large S3 prefix | 2.2 | 4.1 | 1.3 | 1.67× | 3.19× |
+
+These tasks were used during tuning, with two repetitions per configuration. Times are rounded; ratios use the
+underlying results. They are task-specific observations.
+[Builds, task details, limits and reproduction](docs/benchmarks.md).
+
+### Independent held-out results on heavy media tasks
 
 A 90-run held-out evaluation compared no skill, an expert plain-Python skill, and the DataChain skill.
 The metric is time to a verified result, with failures charged the task budget. Ratios above 1 favor DataChain;
@@ -290,18 +308,6 @@ brackets are 95% confidence intervals.
 The headline rounds the 2.69× estimate down to 2.6×, as specified before the run. It includes the skill's practices and does not
 establish a speed advantage over expert Python. Codex showed no overall gain in this independent task set.
 Cold questions over small saved tables were also slower with DataChain in a separate pilot.
-
-Codex did improve on specific development tasks:
-
-| Codex task | No skill, min | Expert Python, min | DataChain, min | No skill / DC | Expert / DC |
-|---|---:|---:|---:|---:|---:|
-| Search dashcam video | 14.5 | 9.4 | 8.2 | 1.77× | 1.15× |
-| Process and update video clips | 20.6 | 10.6 | 10.1 | 2.05× | 1.05× |
-| Inventory a large S3 prefix | 2.2 | 4.1 | 1.3 | 1.67× | 3.19× |
-
-These tasks were used during tuning, with two repetitions per cell. Times are rounded; ratios use the
-underlying results. They are task-specific observations.
-[Builds, task details, limits and reproduction](docs/benchmarks.md).
 
 ## Learn more
 
