@@ -882,6 +882,7 @@ class SignalSchema:
         params: dict[str, DataType | Any],
         setup: dict[str, Callable] | None = None,
         is_batch: bool = False,
+        is_batch_map: bool = False,
     ) -> "SignalSchema":
         """
         Returns new schema that combines current schema and setup signals.
@@ -903,25 +904,32 @@ class SignalSchema:
 
             param_origin = get_origin(param_type)
 
-            # Strip a trailing None arm (Optional) from both sides, but keep a
-            # multi-arm Union intact — collapsing it to one arm would make the UDF
-            # input expect a single column instead of the union's tag + arm slots.
-            schema_inner, schema_opt = unwrap_optional(schema_type)
-            if schema_opt:
-                schema_type = schema_inner
-                param_inner, param_opt = unwrap_optional(param_type)
-                if param_opt:
-                    param_type = param_inner
-
             if is_batch:
                 if param_type is list:
                     schema[param] = schema_type
                     continue
 
                 if param_origin is not list:
-                    raise SignalResolvingError(param.split("."), "is not a list")
+                    message = "is not a list"
+                    if is_batch_map:
+                        message += (
+                            "; batch_map() column parameters must be annotated "
+                            "as list[T]"
+                        )
+                    raise SignalResolvingError(param.split("."), message)
 
                 param_type = get_args(param_type)[0]
+                if param_type is Any:
+                    schema[param] = schema_type
+                    continue
+
+            row_schema_type = schema_type
+            schema_inner, schema_is_optional = unwrap_optional(schema_type)
+            if schema_is_optional:
+                schema_type = schema_inner
+                param_inner, param_opt = unwrap_optional(param_type)
+                if param_opt:
+                    param_type = param_inner
 
             if param_type == schema_type or (
                 isclass(param_type)
@@ -929,7 +937,7 @@ class SignalSchema:
                 and issubclass(param_type, File)
                 and issubclass(schema_type, File)
             ):
-                schema[param] = schema_type
+                schema[param] = row_schema_type if is_batch_map else schema_type
                 continue
 
             raise SignalResolvingError(
