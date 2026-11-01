@@ -1,5 +1,9 @@
+import asyncio
 import pickle
+import threading
+import time
 from collections.abc import Iterator
+from contextlib import closing
 
 import pytest
 from cloudpickle import dumps, loads
@@ -8,10 +12,18 @@ from pydantic import BaseModel
 
 import datachain as dc
 from datachain import Mapper
+from datachain.asyn import ASYNC_WORKERS
 from datachain.dataset import RowDict
 from datachain.lib.file import File
 from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.udf import JsonSerializationError, UDFBase, UdfError, UdfRunError
+from datachain.lib.udf import (
+    JsonSerializationError,
+    UDFBase,
+    UdfError,
+    UdfRunError,
+    _prefetch_input,
+    _prefetch_inputs,
+)
 from datachain.lib.utils import DataChainError
 
 from .test_udf_signature import get_sign
@@ -362,7 +374,6 @@ def test_udf_output_type_error_message_json_serialization_failure(
 def test_map_prefetch_skips_invalid_path_files(
     monkeypatch, test_session, caplog, bad_path
 ):
-
     monkeypatch.delenv("DATACHAIN_DISTRIBUTED", raising=False)
 
     files = [File(source="s3://bucket", path=bad_path) for _ in range(3)]
@@ -413,3 +424,105 @@ def test_an_insert_error_closes_the_udf_outputs(test_session, mocker):
     # the error's traceback holds the generator: it must be closed already
     assert closed == [1000]
     assert error.value.__traceback__ is not None
+
+
+@pytest.mark.parametrize("prefetch,batch_size", [(4, 1), (16, 32), (2, 4)])
+def test_prefetch_read_ahead_is_bounded(prefetch, batch_size, monkeypatch):
+    pulled = 0
+    changed = threading.Event()
+
+    async def fake_prefetch(self, download_cb=None):
+        return True
+
+    monkeypatch.setattr(File, "_prefetch", fake_prefetch)
+
+    def rows():
+        nonlocal pulled
+        for i in range(100):
+            pulled += 1
+            changed.set()
+            yield [[File(source="s3://b", path=f"{i}-{j}") for j in range(batch_size)]]
+
+    with closing(_prefetch_inputs(rows(), prefetch, batch_columns={0})) as it:
+        assert len(next(it)[0]) == batch_size
+        # Wait for producer activity to settle against backpressure, with a deadline.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            changed.clear()
+            if not changed.wait(0.1):
+                break
+        # Result queue + active workers + consumer + one queued and one pending input.
+        assert pulled <= 2 * prefetch + 3
+        assert sum(1 for _ in it) == 99
+
+
+@pytest.mark.parametrize("size", [8, 45])
+def test_prefetch_downloads_a_batch_concurrently(monkeypatch, size):
+    active = peak = 0
+
+    async def fake_prefetch(self, download_cb=None):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0)
+        active -= 1
+        return True
+
+    monkeypatch.setattr(File, "_prefetch", fake_prefetch)
+    batch = [[File(source="s3://b", path=f"{i}.jpg") for i in range(size)]]
+
+    out = list(_prefetch_inputs(iter([batch]), prefetch=1, batch_columns={0}))
+
+    assert out == [batch]
+    assert peak == min(size, ASYNC_WORKERS)
+
+
+@pytest.mark.parametrize("error", [PermissionError, FileNotFoundError])
+def test_prefetch_failure_cancels_and_awaits_other_downloads(monkeypatch, error):
+    async def run():
+        started = asyncio.Event()
+        stopped = asyncio.Event()
+
+        async def prefetch(self, download_cb=None):
+            if self.path == "fail":
+                await started.wait()
+                raise error("download failed")
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+        monkeypatch.setattr(File, "_prefetch", prefetch)
+        row = [[File(source="s3://b", path=p) for p in ("fail", "wait")]]
+        with pytest.raises(error, match="download failed"):
+            await asyncio.wait_for(_prefetch_input(row, batch_columns={0}), timeout=5)
+        assert stopped.is_set()
+
+    asyncio.run(run())
+
+
+def test_prefetch_reuses_finished_slots_while_one_file_is_slow(monkeypatch):
+    async def run():
+        later_started = asyncio.Event()
+        release_slow = asyncio.Event()
+
+        async def prefetch(self, download_cb=None):
+            if self.path == "slow":
+                await release_slow.wait()
+            elif self.path == "later":
+                later_started.set()
+            return True
+
+        monkeypatch.setattr(File, "_prefetch", prefetch)
+        names = ["slow", *[str(i) for i in range(ASYNC_WORKERS - 1)], "later"]
+        row = [[File(source="s3://b", path=name) for name in names]]
+        task = asyncio.create_task(_prefetch_input(row, batch_columns={0}))
+        try:
+            await asyncio.wait_for(later_started.wait(), timeout=5)
+            assert not task.done()
+        finally:
+            release_slow.set()
+            await asyncio.wait_for(task, timeout=5)
+
+    asyncio.run(run())

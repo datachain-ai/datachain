@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import inspect
 import logging
@@ -8,13 +9,14 @@ from contextlib import closing, nullcontext
 from dataclasses import dataclass
 from functools import cached_property, partial
 from graphlib import CycleError, TopologicalSorter
+from itertools import islice
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import attrs
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from pydantic import BaseModel
 
-from datachain.asyn import AsyncMapper
+from datachain.asyn import ASYNC_WORKERS, AsyncMapper
 from datachain.cache import temporary_cache
 from datachain.dataset import RowDict
 from datachain.hash_utils import hash_callable
@@ -487,14 +489,34 @@ async def _prefetch_input(
     batch_columns: set[int] | None = None,
     max_size: int | None = None,
 ) -> T:
-    for obj in _row_files(row, batch_columns):  # type: ignore[arg-type]
+    async def prefetch_file(obj: File) -> None:
         if not obj.path or (max_size is not None and not 0 < obj.size <= max_size):
-            continue
+            return
         try:
             if await obj._prefetch(download_cb):
                 after_prefetch()
         except FileError as e:
             logger.warning("Skipping prefetch for '%s/%s': %s", obj.source, obj.path, e)
+
+    files = _row_files(row, batch_columns)
+
+    async def prefetch_files(first: File) -> None:
+        await prefetch_file(first)
+        for obj in files:
+            await prefetch_file(obj)
+
+    # Refill each slot independently; a slow file must not stall later files.
+    tasks = [
+        asyncio.create_task(prefetch_files(first))
+        for first in islice(files, ASYNC_WORKERS)
+    ]
+    try:
+        await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
     return row
 
 
@@ -534,7 +556,7 @@ def _prefetch_inputs(
         batch_columns=batch_columns,
         max_size=max_size,
     )
-    mapper = AsyncMapper(f, prepared_inputs, workers=prefetch)
+    mapper = AsyncMapper(f, prepared_inputs, workers=prefetch, queue_size=1)
     with closing(mapper.iterate()) as row_iter:
         for row in row_iter:
             try:
