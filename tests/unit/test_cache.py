@@ -1,7 +1,12 @@
+import asyncio
+import errno
 import os
+import stat
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
+from dvc_objects.fs.utils import remove
 from fsspec.asyn import get_loop, sync
 
 from datachain.cache import Cache, get_temp_cache, temporary_cache
@@ -123,4 +128,31 @@ def test_cache_download_reserved_chars_in_path(cloud_test_catalog_upload):
     assert cached_path is not None
     contents = Path(cached_path).read_text(encoding="utf-8")
     assert contents == "hi"
-    assert os.listdir(catalog.cache.tmp_dir) == []
+
+
+@pytest.mark.parametrize("error", [None, ConnectionResetError, asyncio.CancelledError])
+def test_download_cleans_temp_and_protects_cache(cache, error, monkeypatch, mocker):
+    class Client:
+        async def get_file(self, src, dst, callback, version_id=None):
+            Path(dst).write_bytes(b"foo")  # noqa: ASYNC240
+            if error:
+                raise error
+
+    def remove_temp(path):
+        # Windows cleanup clears read-only state shared by hardlinked paths.
+        os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+        remove(path)
+
+    monkeypatch.setattr("datachain.cache.remove", remove_temp)
+    mocker.patch.object(
+        cache.odb.fs, "reflink", side_effect=OSError(errno.ENOTSUP, "unsupported")
+    )
+    file = File(source="s3://foo", path="data/bar", etag="xyz", size=3)
+    os.makedirs(cache.tmp_dir)
+    with pytest.raises(error) if error else nullcontext():
+        asyncio.run(cache.download(file, Client()))
+
+    assert os.listdir(cache.tmp_dir) == []
+    assert cache.contains(file) is (error is None)
+    if error is None:
+        assert cache.odb.is_protected(cache.get_path(file))
