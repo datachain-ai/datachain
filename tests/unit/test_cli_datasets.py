@@ -164,6 +164,7 @@ def test_describe_deleted_source(test_session, capsys, keep_metadata):
     catalog = test_session.catalog
     dc.read_values(value=[1, 2], session=test_session).save("source")
     dc.read_dataset("source", session=test_session).save("derived", query_script="")
+    source_name = catalog.get_dataset("source").full_name
     catalog.remove_dataset("source", version="1.0.0", keep_metadata=keep_metadata)
 
     info = catalog.describe_dataset("derived")
@@ -179,7 +180,7 @@ def test_describe_deleted_source(test_session, capsys, keep_metadata):
     describe_dataset(catalog, "derived")
     output = capsys.readouterr().out
     expected_line = (
-        "local.local.source@1.0.0 (2 rows) (removed)"
+        f"{source_name}@1.0.0 (2 rows) (removed)"
         if keep_metadata
         else "unavailable dependency"
     )
