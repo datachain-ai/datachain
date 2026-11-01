@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 
 import pytest
 import requests
+from google.oauth2.service_account import Credentials
 
 import datachain as dc
 import datachain.lib.listing as listing_lib
@@ -738,13 +739,15 @@ def test_garbage_collect_temp_tables(cloud_test_catalog, from_cli, capsys):
 
 
 @pytest.fixture
-def gcs_fake_credentials(monkeypatch):
-    # For signed URL tests to work we need to setup some fake credentials
-    # that looks like real ones
-    monkeypatch.setenv(
-        "GOOGLE_APPLICATION_CREDENTIALS",
-        os.path.dirname(__file__) + "/fake-service-account-credentials.json",
-    )
+def gcs_fake_credentials(cloud_test_catalog):
+    if cloud_test_catalog.server.kind == "gs":
+        credentials = Credentials.from_service_account_file(
+            os.path.join(
+                os.path.dirname(__file__), "fake-service-account-credentials.json"
+            )
+        )
+        credentials.token = "test-token"  # noqa: S105
+        cloud_test_catalog.catalog.client_config["token"] = credentials
 
 
 @pytest.mark.parametrize("is_studio", (False,))
