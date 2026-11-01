@@ -8,7 +8,6 @@ from fsspec.asyn import get_loop, sync
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from gcsfs import GCSFileSystem
 from gcsfs.retry import HttpError
-from google.auth.credentials import AnonymousCredentials
 
 from datachain.client.fileslice import FileWrapper
 from datachain.lib.file import File, FileRow
@@ -21,8 +20,6 @@ if TYPE_CHECKING:
 
 # Patch gcsfs for consistency with s3fs
 GCSFileSystem.set_session = GCSFileSystem._set_session
-# Skip the GCE metadata check — it adds latency and hangs outside GCE.
-os.environ.setdefault("NO_GCE_CHECK", "true")
 
 
 class GCSClient(RangeListedClient):
@@ -65,9 +62,8 @@ class GCSClient(RangeListedClient):
         }
 
         fs = cast("GCSFileSystem", super().create_fs(**kwargs))
-        if getattr(fs, "credential", False) is None and fs.credentials.method == "anon":
-            # gcsfs leaves its gRPC clients without credentials: fsspec/gcsfs#1109
-            fs.credential = AnonymousCredentials()
+        if kwargs.get("token") is None and fs.credentials.method == "anon":
+            return cls.create_fs(**kwargs, anon=True)
         return fs
 
     @classmethod

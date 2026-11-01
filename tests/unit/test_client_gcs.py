@@ -5,16 +5,18 @@ import io
 import threading
 from datetime import timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
 from dateutil.parser import isoparse
 from fsspec.asyn import sync
 from fsspec.callbacks import DEFAULT_CALLBACK
-from gcsfs.core import GCSFile
-from gcsfs.extended_gcsfs import BucketType
+from gcsfs.core import GCSFile, GCSFileSystem
+from gcsfs.extended_gcsfs import BucketType, ExtendedGcsFileSystem
 from google.auth.credentials import AnonymousCredentials
+from google.auth.exceptions import RefreshError
+from google.oauth2.credentials import Credentials
 
 from datachain.asyn import get_loop
 from datachain.cache import Cache
@@ -274,25 +276,39 @@ def test_get_file_qmark_in_key_with_version():
     assert kwargs.get("generation") is None
 
 
-def _create_fs(method, credential, monkeypatch, **kwargs):
-    monkeypatch.delenv("DATACHAIN_GCP_CREDENTIALS", raising=False)
-    with patch.object(GCSClient, "FS_CLASS") as fs_cls:
-        fs_cls.return_value.credentials.method = method
-        fs_cls.return_value.credential = credential
-        return GCSClient.create_fs(**kwargs)
+@pytest.fixture
+def no_gcp_credentials(monkeypatch, mocker, tmp_path):
+    for name in (
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "DATACHAIN_GCP_CREDENTIALS",
+        "GCSFS_TOKEN",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CLOUDSDK_CONFIG", str(tmp_path))
+    monkeypatch.setattr("google.auth.compute_engine._metadata._NO_GCE_CHECK", True)
+    monkeypatch.setattr("gcsfs.credentials.GoogleCredentials.tokens", {})
+    mocker.patch(
+        "google.auth.compute_engine.Credentials.refresh",
+        side_effect=RefreshError("No metadata credentials"),
+    )
 
 
-def test_create_fs_without_credentials_sets_anonymous_grpc_credential(monkeypatch):
-    fs = _create_fs("anon", None, monkeypatch)
-    assert isinstance(fs.credential, AnonymousCredentials)
+@pytest.mark.usefixtures("no_gcp_credentials")
+@pytest.mark.parametrize("fs_class", [GCSFileSystem, ExtendedGcsFileSystem])
+def test_client_without_credentials_is_anonymous(mocker, fs_class):
+    mocker.patch.object(GCSClient, "FS_CLASS", fs_class)
+    client = GCSClient.from_name("b", MagicMock(), {"skip_instance_cache": True})
+
+    assert client.url("a b.jpg") == "https://storage.googleapis.com/b/a%20b.jpg"
+    if fs_class is ExtendedGcsFileSystem:
+        assert isinstance(client.fs.credential, AnonymousCredentials)
 
 
-@pytest.mark.parametrize(
-    "method,credential",
-    [("google_default", None), ("google_default", "creds"), ("anon", "creds")],
-)
-def test_create_fs_keeps_grpc_credential(monkeypatch, method, credential):
-    assert _create_fs(method, credential, monkeypatch).credential == credential
+@pytest.mark.usefixtures("no_gcp_credentials")
+def test_create_fs_keeps_credentials():
+    token = Credentials("t")
+    fs = GCSClient.create_fs(token=token, skip_instance_cache=True)
+    assert fs.credentials.credentials is token
 
 
 @pytest.mark.parametrize(

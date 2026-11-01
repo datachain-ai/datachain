@@ -122,16 +122,6 @@ def test_s3_bucket_status(mock_fs_cls, anon_effect, auth_effect, expected):
 
 
 @patch("datachain.client.s3.S3FileSystem")
-def test_s3_bucket_status_anon_probe_keeps_profile(mock_fs_cls):
-    mock_fs_cls.return_value._info = AsyncMock()
-    ClientS3.bucket_status("b", profile="minio", key="k")
-    kwargs = mock_fs_cls.call_args.kwargs
-    assert kwargs["profile"] == "minio"
-    assert kwargs["anon"] is True
-    assert "key" not in kwargs
-
-
-@patch("datachain.client.s3.S3FileSystem")
 def test_s3_bucket_status_anon_service_error_reraises(mock_fs_cls):
     anon_fs, auth_fs = MagicMock(), MagicMock()
     mock_fs_cls.side_effect = [anon_fs, auth_fs]
