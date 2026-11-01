@@ -126,15 +126,13 @@ class Cache:  # noqa: PLW1641
         )
         try:
             await client._download_file(file, tmp_info, cb)
+            oid = file.get_hash()
+            self.odb.add(tmp_info, odb_fs, oid, hardlink=True)
         finally:
             if not callback:
                 cb.close()
-
-        try:
-            oid = file.get_hash()
-            self.odb.add(tmp_info, self.odb.fs, oid)
-        finally:
-            os.unlink(tmp_info)
+            remove(tmp_info)
+        self.odb.protect(self.odb.oid_to_path(oid))
 
     def store_data(self, file: "File", contents: bytes) -> None:
         self.odb.add_bytes(file.get_hash(), contents)
