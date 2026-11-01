@@ -28,7 +28,7 @@ SMALL_FILE_SIZE = 5 * 1024 * 1024
 
 
 def _check_etag(file: File, etag: str) -> None:
-    if file.etag and file.etag != etag.strip('"'):
+    if not file.version and file.etag and file.etag != etag.strip('"'):
         raise FileNotFoundError(
             f"{file.source}/{file.path} changed on the source since the "
             f"catalog was created (etag was {file.etag}, now {etag}). "

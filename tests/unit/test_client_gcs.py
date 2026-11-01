@@ -426,7 +426,8 @@ def test_listing_asks_for_every_field_it_reads(version_aware):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "version, etag", [("", "abc123"), (_VER, ""), (_VER, "abc123")]
+    "version, etag",
+    [("", "abc123"), (_VER, ""), (_VER, "abc123"), (_VER, "stale-etag")],
 )
 async def test_download_listed_file_checks_response_identity(tmp_path, version, etag):
     client = _make_client()

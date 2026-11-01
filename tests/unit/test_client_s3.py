@@ -458,18 +458,23 @@ def test_list_page_falls_back_to_current_objects_without_version_support():
 
 @pytest.mark.parametrize("requester_pays", [False, True])
 @pytest.mark.parametrize("local_expiry_check", [False, True])
-def test_listed_file_reads_like_s3fs_open(requester_pays, local_expiry_check):
+@pytest.mark.parametrize("version", ["", "null", "pinned-version"])
+def test_listed_file_reads_like_s3fs_open(requester_pays, local_expiry_check, version):
     fs = S3FileSystem(
         anon=True,
         requester_pays=requester_pays,
         local_expiry_check=local_expiry_check,
     )
-    file = File(source="s3://bucket", path="a.mp4", size=10, etag="abc")
+    file = File(
+        source="s3://bucket", path="a.mp4", size=10, etag="abc", version=version
+    )
 
     listed = _ListedS3File(fs, file, block_size=None)
 
     expected = {"RequestPayer": "requester"} if requester_pays else {}
-    if not local_expiry_check:
+    check_etag = version != "pinned-version"
+    if check_etag and not local_expiry_check:
         expected["IfMatch"] = '"abc"'
     assert listed.req_kw == expected
-    assert listed.details["ETag"] == '"abc"'  # checked locally when IfMatch is off
+    assert listed.details.get("ETag") == ('"abc"' if check_etag else None)
+    assert listed.version_id == (version or None)

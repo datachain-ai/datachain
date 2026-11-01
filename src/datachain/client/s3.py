@@ -14,6 +14,7 @@ from botocore.utils import parse_timestamp
 from fsspec.asyn import get_loop, sync, sync_wrapper
 from s3fs import S3FileSystem
 from s3fs.core import S3File
+from s3fs.utils import FileExpired
 
 from datachain.lib.file import File, FileRow
 
@@ -159,7 +160,7 @@ class _ListedS3File(S3File):
         self.fs = self.s3 = fs
         self.version_id = file.version or None
         self._details = {"name": file.get_fs_path(), "size": file.size, "type": "file"}
-        if file.etag:
+        if file.etag and (not file.version or file.version == "null"):
             etag = f'"{file.etag}"'
             self._details["ETag"] = etag
             # as S3File does: endpoints without If-Match check the etag locally
@@ -167,6 +168,15 @@ class _ListedS3File(S3File):
                 for kw in ("req_kw", "read_kw"):  # s3fs >= 2026.9 reads with read_kw
                     if isinstance(getattr(self, kw, None), dict):
                         setattr(self, kw, {**getattr(self, kw), "IfMatch": etag})
+
+    def _fetch_range(self, start, end):
+        try:
+            return super()._fetch_range(start, end)
+        except FileExpired as exc:
+            raise FileNotFoundError(
+                f"{self.path} changed on the source since the catalog was created. "
+                "Re-run dc.read_storage(..., update=True) to refresh the catalog."
+            ) from exc
 
 
 class ClientS3(RangeListedClient):
