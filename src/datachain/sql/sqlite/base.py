@@ -792,7 +792,7 @@ def _resolve_usearch_sqlite_path() -> str | None:
         logger.debug("Failed to locate usearch SQLite extension", exc_info=True)
         return None
     lines = result.stdout.strip().splitlines()
-    return (lines[-1].strip() or None) if lines else None
+    return lines[-1].strip() if lines else None
 
 
 def load_usearch_extension(conn: sqlite3.Connection) -> bool:

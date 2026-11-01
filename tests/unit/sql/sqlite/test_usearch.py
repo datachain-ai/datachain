@@ -39,15 +39,26 @@ def test_usearch_sqlite_path_finds_the_extension():
     assert list(Path(path).parent.glob(f"{Path(path).name}.*"))
 
 
-def test_usearch_lookup_inherits_runtime_import_path(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "source,expected",
+    [
+        ("def sqlite_path(): return '/runtime/extension'\n", "/runtime/extension"),
+        (
+            "print('banner')\ndef sqlite_path(): return '/runtime/extension'\n",
+            "/runtime/extension",
+        ),
+        ("def sqlite_path(): return ''\n", None),
+    ],
+)
+def test_usearch_lookup_inherits_runtime_import_path(
+    tmp_path, monkeypatch, source, expected
+):
     package = tmp_path / "usearch"
     package.mkdir()
-    (package / "__init__.py").write_text(
-        "def sqlite_path(): return '/runtime/extension'\n"
-    )
+    (package / "__init__.py").write_text(source)
     monkeypatch.syspath_prepend(str(tmp_path))
 
-    assert base._resolve_usearch_sqlite_path() == "/runtime/extension"
+    assert base._resolve_usearch_sqlite_path() == expected
     assert "usearch" not in sys.modules
 
 
