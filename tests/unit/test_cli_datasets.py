@@ -154,3 +154,92 @@ def test_describe_missing_dataset_or_version(test_session):
     dc.read_values(value=[1], session=test_session).save("source")
     with pytest.raises(DatasetVersionNotFoundError):
         test_session.catalog.describe_dataset("source@99.0.0")
+
+
+@pytest.mark.parametrize("keep_metadata", [False, True])
+def test_describe_deleted_source(test_session, capsys, keep_metadata):
+    import datachain as dc
+    from datachain.cli.commands.datasets import describe_dataset
+
+    catalog = test_session.catalog
+    dc.read_values(value=[1, 2], session=test_session).save("source")
+    dc.read_dataset("source", session=test_session).save("derived", query_script="")
+    catalog.remove_dataset("source", version="1.0.0", keep_metadata=keep_metadata)
+
+    info = catalog.describe_dataset("derived")
+    if keep_metadata:
+        dependency = info["dependencies"][0]
+        assert (dependency["name"], dependency["removed"], dependency["rows"]) == (
+            "source",
+            True,
+            2,
+        )
+    else:
+        assert info["dependencies"] == [None]
+    describe_dataset(catalog, "derived")
+    output = capsys.readouterr().out
+    expected_line = (
+        "local.local.source@1.0.0 (2 rows) (removed)"
+        if keep_metadata
+        else "unavailable dependency"
+    )
+    assert expected_line in output
+    assert "No script recorded." in output
+
+
+def test_describe_text_includes_description(test_session, capsys):
+    import datachain as dc
+    from datachain.cli.commands.datasets import describe_dataset
+
+    dc.read_values(value=[1], session=test_session).save(
+        "source", description="Recorded labels"
+    )
+    describe_dataset(test_session.catalog, "source")
+    output = capsys.readouterr().out
+    assert "Description: Recorded labels" in output
+    assert "Sources: none recorded" in output
+
+
+@pytest.mark.parametrize("missing_version", [False, True])
+def test_describe_source_removed_during_inspection(
+    test_session, monkeypatch, missing_version
+):
+    import datachain as dc
+    from datachain.error import DatasetNotFoundError, DatasetVersionNotFoundError
+
+    catalog = test_session.catalog
+    dc.read_values(value=[1], session=test_session).save("source")
+    dc.read_dataset("source", session=test_session).save("derived")
+    get_dataset = catalog.get_dataset
+    error = DatasetVersionNotFoundError if missing_version else DatasetNotFoundError
+
+    def lookup(name, **kwargs):
+        if name == "source":
+            raise error("Source was removed during inspection")
+        return get_dataset(name, **kwargs)
+
+    monkeypatch.setattr(catalog, "get_dataset", lookup)
+    dependency = catalog.describe_dataset("derived")["dependencies"][0]
+    assert dependency["name"] == "source"
+    assert dependency["version"] == "1.0.0"
+    assert dependency["rows"] is None
+
+
+def test_describe_shared_source_versions(test_session):
+    import datachain as dc
+
+    dc.read_values(value=[1, 2], session=test_session).save("source", version="1.0.0")
+    dc.read_dataset("source", session=test_session).save("first")
+    dc.read_values(value=[3], session=test_session).save("source", version="2.0.0")
+    dc.read_dataset("source", session=test_session).save("second")
+    dc.read_dataset("first", session=test_session).union(
+        dc.read_dataset("second", session=test_session)
+    ).save("combined")
+
+    info = test_session.catalog.describe_dataset("combined")
+    ancestors = {
+        ancestor["version"]: ancestor["rows"]
+        for dependency in info["dependencies"]
+        for ancestor in dependency["dependencies"]
+    }
+    assert ancestors == {"1.0.0": 2, "2.0.0": 1}
