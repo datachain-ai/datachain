@@ -447,6 +447,19 @@ async def test_download_listed_file_checks_response_identity(tmp_path, version, 
 
 
 @pytest.mark.asyncio
+async def test_download_pinned_generation_rejects_changed_size(tmp_path):
+    client = _make_client()
+    client._fs.consistency = "none"
+    client._fs._call = AsyncMock(return_value=({"ETag": '"changed"'}, b"longer"))
+    file = File(source="gs://foo", path="listed", size=4, etag="old", version=_VER)
+    path = tmp_path / "file"
+
+    with pytest.raises(OSError, match="Size mismatch"):
+        await client._download_file(file, str(path), MagicMock())
+    assert not path.exists()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("headers", [{"ETag": '"changed"'}, {}])
 async def test_download_listed_file_rejects_changed_or_missing_etag(tmp_path, headers):
     client = _make_client()

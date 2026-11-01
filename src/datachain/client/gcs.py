@@ -272,7 +272,7 @@ class GCSClient(RangeListedClient):
         checker = get_consistency_checker(self.fs.consistency)
         checker.update(data)
         checker.validate_headers(headers)
-        if self.fs.consistency == "size" and len(data) != file.size:
+        if len(data) != file.size:
             raise OSError(f"Size mismatch downloading {remote}")
         callback.set_size(len(data))
         os.makedirs(os.path.dirname(path), exist_ok=True)
