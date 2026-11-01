@@ -815,7 +815,10 @@ def test_get_frames(video_file):
     )
 
 
-def test_get_frames_get_np_no_double_decode(video_file, monkeypatch):
+@pytest.mark.parametrize(
+    "method,args", [("get_frames", (0, 5)), ("sample_frames", (1,))]
+)
+def test_get_frames_get_np_no_double_decode(video_file, monkeypatch, method, args):
     open_call_count = 0
     real_open = VideoFile.open
 
@@ -826,13 +829,13 @@ def test_get_frames_get_np_no_double_decode(video_file, monkeypatch):
 
     monkeypatch.setattr(VideoFile, "open", counting_open)
 
-    frames = list(video_file.as_video_file().get_frames(0, 5))
-    assert open_call_count == 1, "get_frames() should open the file exactly once"
+    frames = list(getattr(video_file.as_video_file(), method)(*args))
+    assert open_call_count == 1, f"{method}() should open the file exactly once"
 
     open_call_count = 0
     arrays = [frame.get_np() for frame in frames]
     assert open_call_count == 0, (
-        "get_np() should not re-open the file for frames from get_frames()"
+        f"get_np() should not re-open the file for frames from {method}()"
     )
     assert all(isinstance(arr, ndarray) for arr in arrays)
     assert all(arr.shape == (360, 640, 3) for arr in arrays)
@@ -928,6 +931,10 @@ def test_video_stream_index_selects_video_stream(multi_stream_video):
     assert [frame.video_stream_index for frame in frames] == [1, 1]
     assert [frame.timestamp for frame in frames] == pytest.approx([0, 1 / 30])
 
+    frames = list(file.sample_frames(30, video_stream_index=1))
+    assert [frame.video_stream_index for frame in frames] == [1, 1]
+    assert all(frame.get_np().shape == (24, 32, 3) for frame in frames)
+
 
 def test_video_stream_index_is_relative_to_video_streams(audio_first_video):
     video_path = audio_first_video.path
@@ -944,6 +951,11 @@ def test_video_stream_index_is_relative_to_video_streams(audio_first_video):
 
 def test_video_stream_index_error(video_file):
     with pytest.raises(ValueError):
+        list(video_file.as_video_file().sample_frames(video_stream_index=-1))
+    with pytest.raises(FileError):
+        list(video_file.as_video_file().sample_frames(video_stream_index=1))
+
+    with pytest.raises(ValueError):
         video_file.as_video_file().get_frame(0, video_stream_index=-1)
 
     with pytest.raises(FileError):
@@ -953,11 +965,18 @@ def test_video_stream_index_error(video_file):
         list(video_file.as_video_file().get_frames(0, 1, video_stream_index=1))
 
 
-def test_get_frames_wraps_decode_errors():
+@pytest.mark.parametrize(
+    "method,args,message",
+    [
+        ("get_frames", (0, 1), "unable to read video frames"),
+        ("sample_frames", (), "unable to sample video frames"),
+    ],
+)
+def test_get_frames_wraps_decode_errors(method, args, message):
     file = VideoFile.upload(b"not a video", "broken.mp4")
 
-    with pytest.raises(FileError, match="unable to read video frames"):
-        list(file.get_frames(0, 1))
+    with pytest.raises(FileError, match=message):
+        list(getattr(file, method)(*args))
 
 
 @requires_ffmpeg
@@ -1331,6 +1350,127 @@ def test_save_fragments(tmp_path, video_file):
             "format": "mov,mp4,m4a,3gp,3g2,mj2",
             "codec": "h264",
         }
+
+
+@pytest.mark.parametrize(
+    "pts,fps,expected_indices",
+    [
+        ([0, 1, 5, 6], 1, [0]),
+        ([0, 1, 5, 6], 10, [0, 2, 3]),
+        ([0, 1, 5, 6], 30, [0, 1, 2, 2, 2, 2, 3]),
+        ([0, 1, 5, 6], 60, [0, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3]),
+        ([0, 29, 31, 95], 1, [0, 2, 3, 3]),
+        ([0, 29, 31, 95], 1.5, [0, 1, 3, 3, 3]),
+        ([0, 29, 31, 95], 0.5, [0, 3]),
+        ([30, 60], 1, [0, 1]),
+    ],
+)
+def test_sample_frames_selects_first_frame_at_or_after_target(
+    tmp_path, pts, fps, expected_indices
+):
+    path = tmp_path / "video.mov"
+    _write_single_stream_video(
+        path, codec="mpeg4", fps=30, frame_count=len(pts), pts=pts
+    )
+    frames = list(_generated_video(path).file.sample_frames(fps))
+    assert [frame.frame for frame in frames] == expected_indices
+    assert [frame.timestamp for frame in frames] == pytest.approx(
+        [pts[i] / 30 for i in expected_indices]
+    )
+
+
+def test_sample_frames_handles_stream_start_offset(mpegts_video):
+    frames = list(mpegts_video.file.sample_frames(24))
+    assert [frame.frame for frame in frames] == list(range(10))
+    assert [frame.timestamp for frame in frames] == pytest.approx(
+        [(i + 1) / 24 for i in range(10)]
+    )
+
+
+@pytest.mark.parametrize(
+    "method,args", [("get_frames", (0, 10)), ("sample_frames", (24,))]
+)
+def test_frame_iterators_estimate_missing_timestamps_with_stream_offset(
+    mpegts_video, monkeypatch, method, args
+):
+    original_open = av.open
+    starts = []
+
+    @contextmanager
+    def without_timestamps(*args, **kwargs):
+        with original_open(*args, **kwargs) as container:
+
+            def decode(stream):
+                starts.append(float(stream.start_time * stream.time_base))
+                for frame in container.decode(stream):
+                    frame.pts = None
+                    yield frame
+
+            yield SimpleNamespace(streams=container.streams, decode=decode)
+
+    monkeypatch.setattr(av, "open", without_timestamps)
+    frames = list(getattr(mpegts_video.file, method)(*args))
+
+    assert [frame.frame for frame in frames] == list(range(10))
+    assert [frame.timestamp for frame in frames] == pytest.approx(
+        [starts[0] + i / 24 for i in range(10)]
+    )
+
+
+def test_sample_frames_estimates_missing_timestamps(raw_h264_video):
+    frames = list(raw_h264_video.file.sample_frames(25))
+    assert [frame.frame for frame in frames] == list(range(4))
+    assert [frame.timestamp for frame in frames] == pytest.approx(
+        [i / 25 for i in range(4)]
+    )
+
+
+@pytest.mark.parametrize("fps", [0, -1, float("nan"), float("inf"), -float("inf")])
+def test_sample_frames_invalid_rate(video_file, fps, mocker):
+    opened = mocker.spy(av, "open")
+    with pytest.raises(ValueError, match="fps must be finite and positive"):
+        list(video_file.as_video_file().sample_frames(fps))
+    opened.assert_not_called()
+
+
+@requires_display_rotation
+@pytest.mark.parametrize("rotation", [90, 180, 270])
+def test_sample_frames_display_orientation(make_rotated_video, rotation):
+    generated = make_rotated_video(rotation)
+    frames = list(generated.file.sample_frames())
+    assert frames
+    _assert_matches_autorotated(frames[0].get_np(), _autorotated_frame(generated.path))
+
+
+def test_sample_frames_closes_container_when_consumer_stops(video_file, monkeypatch):
+    original_open = av.open
+    closed = []
+
+    @contextmanager
+    def tracked_open(*args, **kwargs):
+        with original_open(*args, **kwargs) as container:
+            try:
+                yield container
+            finally:
+                closed.append(True)
+
+    monkeypatch.setattr(av, "open", tracked_open)
+    frames = video_file.as_video_file().sample_frames()
+    next(frames)
+    assert not closed
+    frames.close()
+    assert closed == [True]
+
+
+def test_get_np_does_not_retain_decoded_frame_references(video_file):
+    import sys
+
+    frame = next(video_file.as_video_file().get_frames(0, 1))
+    decoded = frame._decoded
+    before = sys.getrefcount(decoded)
+    for _ in range(5):
+        frame.get_np()
+    assert sys.getrefcount(decoded) == before
 
 
 @pytest.mark.parametrize("metadata", [False, True])
