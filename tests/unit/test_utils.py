@@ -795,3 +795,61 @@ def test_usable_cpu_count_follows_the_cgroup_quotas(quotas, expected, monkeypatc
     monkeypatch.setattr(utils, "_cpu_quotas", lambda: quotas)
 
     assert usable_cpu_count() == expected
+
+
+def test_worker_thread_env_caps_settings_at_the_worker_share(monkeypatch):
+    for name in ("DATACHAIN_WORKER_THREADS", *utils._THREAD_ENVS):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OMP_NUM_THREADS", "8")
+    monkeypatch.setenv("MKL_NUM_THREADS", "1")
+    monkeypatch.setenv("OPENBLAS_NUM_THREADS", "junk")
+    monkeypatch.setattr(utils, "usable_cpu_count", lambda: 8)
+
+    env = utils.worker_thread_env(4)
+
+    assert env["DATACHAIN_WORKER_THREADS"] == env["OMP_NUM_THREADS"] == "2"
+    assert env["MKL_NUM_THREADS"] == "1"
+    assert env["OPENBLAS_NUM_THREADS"] == "2"
+    assert utils.worker_thread_env(24)["NUMEXPR_NUM_THREADS"] == "1"
+
+
+@pytest.mark.parametrize(
+    "value,expected", [(None, None), ("3", 3), ("0", 1), ("x", None)]
+)
+def test_worker_threads(value, expected, monkeypatch):
+    if value is None:
+        monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
+    else:
+        monkeypatch.setenv("DATACHAIN_WORKER_THREADS", value)
+
+    assert utils.worker_threads() == expected
+
+
+@pytest.mark.parametrize("workers", [0, -1])
+def test_worker_thread_env_requires_positive_workers(workers):
+    from datachain.utils import worker_thread_env
+
+    with pytest.raises(ValueError, match="n_workers must be positive"):
+        worker_thread_env(workers)
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_worker_thread_limits_restore_environment(monkeypatch, fail):
+    monkeypatch.setenv("OMP_NUM_THREADS", "1000")
+    monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
+    monkeypatch.setattr(utils, "usable_cpu_count", lambda: 8)
+    before = dict(os.environ)
+
+    def start_worker():
+        with utils.worker_thread_limits(4):
+            assert os.environ["OMP_NUM_THREADS"] == "2"
+            assert utils.worker_threads() == 2
+            if fail:
+                raise RuntimeError("worker could not start")
+
+    if fail:
+        with pytest.raises(RuntimeError, match="could not start"):
+            start_worker()
+    else:
+        start_worker()
+    assert dict(os.environ) == before
