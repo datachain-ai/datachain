@@ -179,14 +179,9 @@ def test_guided_tasks_require_positive_limits(workers, max_size):
         list(guided_tasks(range(3), 3, workers, max_size))
 
 
-def test_automatic_single_worker_applies_and_restores_thread_budget(
-    monkeypatch, mocker
-):
-    monkeypatch.setattr("datachain.query.dispatch.usable_cpu_count", lambda: 1)
-    monkeypatch.setattr("datachain.utils.usable_cpu_count", lambda: 1)
-    monkeypatch.setenv("OMP_NUM_THREADS", "1000")
-    monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
-    dispatcher = UDFDispatcher(
+@pytest.fixture
+def dispatcher(mocker):
+    return UDFDispatcher(
         UdfInfo(
             udf_data=b"",
             catalog_init={},
@@ -204,15 +199,62 @@ def test_automatic_single_worker_applies_and_restores_thread_budget(
         )
     )
 
-    def run_single(*args):
+
+@pytest.mark.parametrize("workers", [1, 2])
+@pytest.mark.parametrize("fail", [False, True])
+def test_automatic_workers_apply_and_restore_thread_budget(
+    dispatcher, monkeypatch, mocker, workers, fail
+):
+    monkeypatch.setattr("datachain.query.dispatch.usable_cpu_count", lambda: workers)
+    monkeypatch.setattr("datachain.utils.usable_cpu_count", lambda: workers)
+    monkeypatch.setenv("OMP_NUM_THREADS", "1000")
+    monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
+
+    def run(*args):
         assert os.environ["DATACHAIN_WORKER_THREADS"] == "1"
         assert os.environ["OMP_NUM_THREADS"] == "1"
+        if fail:
+            raise RuntimeError("UDF failed")
 
-    single = mocker.patch.object(dispatcher, "run_udf_single", side_effect=run_single)
-    mocker.patch.object(dispatcher, "run_udf_parallel", side_effect=AssertionError)
+    selected = "run_udf_single" if workers == 1 else "run_udf_parallel"
+    other = "run_udf_parallel" if workers == 1 else "run_udf_single"
+    execution = mocker.patch.object(dispatcher, selected, side_effect=run)
+    mocker.patch.object(dispatcher, other, side_effect=AssertionError)
     before = dict(os.environ)
 
-    dispatcher.run_udf([])
+    if fail:
+        with pytest.raises(RuntimeError, match="UDF failed"):
+            dispatcher.run_udf([])
+    else:
+        dispatcher.run_udf([])
 
-    single.assert_called_once()
+    execution.assert_called_once()
+    assert dict(os.environ) == before
+
+
+def test_worker_start_failure_cleans_up_and_restores_environment(
+    dispatcher, mocker, monkeypatch
+):
+    monkeypatch.setattr("datachain.query.dispatch.usable_cpu_count", lambda: 2)
+    monkeypatch.setattr("datachain.utils.usable_cpu_count", lambda: 2)
+    monkeypatch.setenv("OMP_NUM_THREADS", "1000")
+    before = dict(os.environ)
+    first, second = mocker.Mock(), mocker.Mock()
+    first.is_alive.side_effect = [True, False]
+    second.is_alive.return_value = False
+
+    def start():
+        assert os.environ["OMP_NUM_THREADS"] == "1"
+
+    first.start.side_effect = start
+    second.start.side_effect = OSError("worker could not start")
+    mocker.patch.object(dispatcher.ctx, "Process", side_effect=[first, second])
+
+    with pytest.raises(OSError, match="worker could not start"):
+        dispatcher.run_udf([])
+
+    first.terminate.assert_called_once()
+    for queue in (dispatcher.task_queue, dispatcher.done_queue):
+        with pytest.raises(ValueError, match="closed"):
+            queue.put_nowait(1)
     assert dict(os.environ) == before
