@@ -2673,6 +2673,8 @@ class DataChain:
         schema, read = None, None
         col_names = output if isinstance(output, Sequence) else None
         infer = bool(col_names) or not output
+        # A model built from types has no validators; one passed as output may.
+        from_types = infer or isinstance(output, dict)
         try:
             if infer:
                 schemas = file_schemas(self, **kwargs, parse_options=parse_options)
@@ -2714,6 +2716,7 @@ class DataChain:
                 source,
                 nrows,
                 columns=read,
+                output_from_types=from_types,
                 parse_options=parse_options,
                 prefetch_max_size=PARTIAL_READ_PREFETCH_MAX_SIZE if partial else None,
                 **kwargs,

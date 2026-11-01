@@ -260,6 +260,54 @@ def test_map_tuples_are_validated(sqlite_db):
         process_udf_outputs(warehouse, table, iter([[(1, "x", None)]]), udf)
 
 
+def test_gen_progress_reports_rows_once_per_interval(warehouse, monkeypatch):
+    import time
+    from types import SimpleNamespace
+
+    from fsspec.callbacks import Callback
+
+    from datachain.lib.signal_schema import SignalSchema
+    from datachain.query.dataset import PROGRESS_INTERVAL, process_udf_outputs
+    from datachain.sql.types import Boolean, Int
+
+    class Updates(Callback):
+        def __init__(self):
+            super().__init__()
+            self.incs = []
+
+        def relative_update(self, inc=1):
+            self.incs.append(inc)
+
+    table = warehouse.create_udf_table(
+        [
+            sa.Column("a", Int),
+            sa.Column("sys__input_id", Int),
+            sa.Column("sys__partial", Boolean),
+            sa.Column("sys__empty", Boolean),
+        ]
+    )
+    inner = SimpleNamespace(
+        output=SignalSchema({"a": int}),
+        is_input_batched=False,
+        is_output_batched=True,
+    )
+    udf = SimpleNamespace(output={"a": Int}, inner=inner)
+    now = 0.0
+    monkeypatch.setattr(time, "monotonic", lambda: now)
+
+    def rows():
+        nonlocal now
+        for i, intervals in enumerate([0, 0, 1, 1, 1, 2, 2]):
+            now = intervals * PROGRESS_INTERVAL
+            yield (i, i, False, None)
+
+    updates = Updates()
+    process_udf_outputs(warehouse, table, iter([rows()]), udf, cb=updates)
+
+    assert updates.incs == [1, 2, 3, 1]
+    assert warehouse.table_rows_count(table) == 7
+
+
 @skip_if_not_sqlite
 def test_insert_into_reads_all_ids_before_inserting_batches(
     warehouse_tmpfile, monkeypatch

@@ -178,6 +178,13 @@ UDFOutputSpec = Mapping[str, ColumnType]
 UDFResult = dict[str, Any]
 
 
+class FlatRow(tuple):
+    """A generator's output row as its flat columns, in DB order. It goes to the
+    DB as it is, with no model built or flattened per row."""
+
+    __slots__ = ()
+
+
 @attrs.define(slots=False)
 class UDFAdapter:
     inner: "UDFBase"
@@ -791,7 +798,7 @@ class Generator(UDFBase):
     ) -> Iterator[Iterable[UDFResult]]:
         self.setup()
         signal_names = list(self.signal_names)
-        file_row = FileRow if self._file_row_output() else None
+        flat_rows = (FlatRow, FileRow) if self._file_row_output() else (FlatRow,)
 
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
             with safe_closing(udf_inputs):
@@ -809,7 +816,7 @@ class Generator(UDFBase):
             with safe_closing(result) as result_objs:
                 for result_obj, is_last in with_last_flag(result_objs):
                     has_output = True
-                    if type(result_obj) is file_row:
+                    if type(result_obj) in flat_rows:
                         yield result_obj + (row_id, not is_last, None)  # noqa: RUF005
                         continue
                     udf_output = self._flatten_row(result_obj)

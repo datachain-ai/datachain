@@ -9,7 +9,7 @@ from pydantic import ValidationError
 import datachain as dc
 from datachain.lib.convert.flatten import iter_flat_columns
 from datachain.lib.file import File, FileRow
-from datachain.lib.udf import UdfError
+from datachain.lib.udf import FlatRow, UdfError
 from datachain.query import dataset
 
 
@@ -68,6 +68,33 @@ def test_gen_file_rows_skip_conversion(test_session, mocker):
 
     files = [c for c in spy.call_args_list if "file__path" in c.args[1]]
     assert len(files) == 1  # the File object among the rows
+
+
+def test_gen_flat_rows_skip_conversion_for_a_file_output(test_session, mocker):
+    spy = mocker.spy(dataset, "adjust_outputs")
+
+    def rows(n: int) -> Iterator[dc.File]:
+        yield FlatRow(FileRow("s3://bucket", f"{n}"))  # type: ignore[misc]
+
+    chain = dc.read_values(n=[3], session=test_session).gen(file=rows, output=dc.File)
+
+    assert chain.to_values("file.path") == ["3"]
+    assert not [c for c in spy.call_args_list if "file__path" in c.args[1]]
+
+
+@pytest.mark.parametrize(
+    "output,value,stored",
+    [(list[float], [1, 2.5], "[1.0, 2.5]"), (list[list[float]], [[1]], "[[1.0]]")],
+)
+def test_gen_flat_rows_convert_list_items_to_the_column_type(
+    test_session, output, value, stored
+):
+    def rows(n: int) -> Iterator[list]:
+        yield FlatRow((value,))  # type: ignore[misc]
+
+    chain = dc.read_values(n=[1], session=test_session).gen(v=rows, output=output)
+
+    assert repr(chain.to_values("v")[0]) == stored
 
 
 def test_file_row_is_no_optional_file(test_session):
