@@ -5,9 +5,11 @@ import pytest
 
 from datachain.query.batch import NoBatching
 from datachain.query.dispatch import (
+    FINISHED_STATUS,
     STOP_SIGNAL,
     UDFDispatcher,
     get_from_queue,
+    get_n_workers_from_arg,
     guided_tasks,
     put_into_queue,
 )
@@ -157,3 +159,34 @@ def test_worker_start_failure_cleans_up_and_restores_environment(
         with pytest.raises(ValueError, match="closed"):
             queue.put_nowait(1)
     assert dict(os.environ) == before
+
+
+@pytest.mark.parametrize(
+    "cpus,requested,expected", [(8, None, 8), (1, None, 1), (8, 12, 12)]
+)
+def test_worker_count_respects_cpu_quota_and_explicit_override(
+    monkeypatch, cpus, requested, expected
+):
+    monkeypatch.setattr("datachain.query.dispatch.usable_cpu_count", lambda: cpus)
+
+    assert get_n_workers_from_arg(requested) == expected
+
+
+def test_batched_udf_queues_independent_tasks(dispatcher, mocker):
+    dispatcher.is_batching = True
+    dispatcher.rows_total = 10_000
+    batches = [list(range(i, i + 100)) for i in range(0, 10_000, 100)]
+    task_queue, done_queue = mocker.Mock(), mocker.Mock()
+    done_queue.get_nowait.side_effect = [{"status": FINISHED_STATUS}] * 4
+    mocker.patch.object(dispatcher.ctx, "Queue", side_effect=[task_queue, done_queue])
+    mocker.patch.object(dispatcher.ctx, "Process")
+    mocker.patch.object(dispatcher, "_shutdown_workers")
+
+    dispatcher.run_udf_parallel(4, batches, None, None, None)
+
+    queued = [
+        call.args[0]
+        for call in task_queue.put_nowait.call_args_list
+        if call.args[0] != STOP_SIGNAL
+    ]
+    assert queued == [(batch,) for batch in batches]

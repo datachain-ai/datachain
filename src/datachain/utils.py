@@ -478,6 +478,10 @@ def _cpu_quotas(
                 base, files = root, ["cpu.max"]
             elif "cpu" in controllers.split(","):  # v1
                 base = os.path.join(root, controllers)
+                if not os.path.isdir(base):
+                    base = os.path.join(root, ",".join(sorted(controllers.split(","))))
+                if not os.path.isdir(base):
+                    base = os.path.join(root, "cpu")
                 files = ["cpu.cfs_quota_us", "cpu.cfs_period_us"]
             else:
                 continue
@@ -507,7 +511,7 @@ def usable_cpu_count() -> int:
     cpus = os.cpu_count() or 1
     with suppress(OSError):
         if hasattr(os, "process_cpu_count"):
-            cpus = os.process_cpu_count() or 1
+            cpus = os.process_cpu_count() or cpus
         elif hasattr(os, "sched_getaffinity"):
             cpus = len(os.sched_getaffinity(0))
     caps = [-(-quota // period) for quota, period in _cpu_quotas() if period > 0]
@@ -546,7 +550,7 @@ def worker_thread_env(n_workers: int) -> dict[str, str]:
 
 @contextmanager
 def worker_thread_limits(n_workers: int) -> Iterator[None]:
-    """Apply a CPU-share budget while loading a UDF and starting its workers."""
+    """Apply a CPU-share budget throughout UDF worker execution."""
     env = worker_thread_env(n_workers)
     saved = {name: os.environ.get(name) for name in env}
     try:

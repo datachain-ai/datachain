@@ -1471,3 +1471,36 @@ def test_get_np_does_not_retain_decoded_frame_references(video_file):
     for _ in range(5):
         frame.get_np()
     assert sys.getrefcount(decoded) == before
+
+
+@pytest.mark.parametrize("metadata", [False, True])
+def test_single_frame_and_metadata_follow_thread_budget(
+    video_file, monkeypatch, metadata
+):
+    original_open = av.open
+    seen = []
+
+    @contextmanager
+    def tracked_open(*args, **kwargs):
+        with original_open(*args, **kwargs) as container:
+
+            def decode(stream):
+                seen.append((stream.thread_type.name, stream.thread_count))
+                yield from container.decode(stream)
+
+            yield SimpleNamespace(
+                streams=container.streams,
+                decode=decode,
+                format=container.format,
+                duration=container.duration,
+            )
+
+    monkeypatch.setenv("DATACHAIN_WORKER_THREADS", "3")
+    monkeypatch.setattr(av, "open", tracked_open)
+    if metadata:
+        info = video_file.as_video_file().get_info()
+        assert (info.width, info.height) == (640, 360)
+    else:
+        frame = VideoFrame(video=video_file.as_video_file(), frame=0, timestamp=0)
+        assert frame.get_np().shape == (360, 640, 3)
+    assert seen == [("SLICE", 3)]
