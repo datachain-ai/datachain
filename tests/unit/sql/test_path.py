@@ -8,7 +8,7 @@ from datachain import func
 from datachain.sql import select
 from datachain.sql.functions import path as pathfunc
 
-PATHS = ["", "/", "name", "/name", "name/", "some/long/path"]
+PATHS = ["", "/", "name", "/name", "name/", "some/long/path", "d//e.txt", "d///f.txt"]
 EXT_PATHS = [
     "",
     "abc.txt",

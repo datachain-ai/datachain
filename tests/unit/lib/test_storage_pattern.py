@@ -196,8 +196,14 @@ def test_expand_brace_pattern_edge_cases():
     [
         ("dir/", None, True, None),
         ("dir/", None, False, ListScope("dir/", "dir/", True)),
+        ("dir/**", None, False, ListScope("dir/", "dir/", True)),
+        ("dir/*/", None, False, ListScope("dir/", "dir/", True)),
+        ("dir//**", None, False, ListScope("dir//", "dir//", True)),
+        ("dir//**/", None, False, ListScope("dir//", "dir//", True)),
         ("", None, False, ListScope("", "", True)),
         ("dir", "*.jpg", True, ListScope("dir/", "dir/", True)),
+        ("dir//", "*.jpg", True, ListScope("dir//", "dir//", True)),
+        ("dir///", "*.jpg", True, ListScope("dir///", "dir///", True)),
         ("dir", "img_0*.jpg", True, ListScope("dir/", "dir/img_0", True)),
         ("logs", "2024-*/**", True, ListScope("logs/", "logs/2024-", False)),
         ("logs", "**/*.json", True, None),
@@ -213,6 +219,8 @@ def test_list_scope(list_path, pattern, recursive, scope):
     "uri,base",
     [
         ("s3://bucket/photos//*.jpg", "s3://bucket/photos//"),
+        ("s3://bucket/photos///*.jpg", "s3://bucket/photos///"),
+        ("s3://bucket//*.jpg", "s3://bucket//"),
         ("file:///*.jpg", "file:///"),
         ("/*.jpg", "/"),
     ],

@@ -41,10 +41,37 @@ chain.to_storage("./local-copy/", signal="file", placement="filepath")
 ```
 
 Object keys can contain empty segments, such as `d//e.txt`. Local `to_storage`
-exports skip paths with empty segments and log a warning; cloud storage with a
+exports skip files whose destination path has an empty segment (with the
+`filepath` and `fullpath` placements) and log a warning; cloud storage with a
 flat namespace preserves them. Azure Data Lake Storage Gen2 accounts with a
 hierarchical namespace normalize empty segments, so use `placement="etag"` when
 exporting these keys there to avoid overwriting a distinct key such as `d/e.txt`.
+
+## Local Paths and Object Keys
+
+Object storage treats `d/e.txt` and `d//e.txt` as different keys. A local
+filesystem treats both paths as the same file. When saving a `File` whose key
+contains `//`, choose a local destination without empty segments:
+
+```python
+file.save("./output/e.txt")
+```
+
+For that source, `file.save("./output/d//e.txt")` raises `ValueError` before
+writing. This check also applies to `file://` destinations and media-file saves.
+An ordinary source key can still be saved to a local path containing redundant
+separators; the operating system normalizes those separators.
+
+`File.rebase()` preserves empty segments in the source key, so rebasing can
+produce a destination that local `save()` rejects. Cloud destinations with a
+flat namespace preserve those segments. Construct local destinations with
+`os.path.join()` or choose a new filename to avoid collisions.
+
+`File.upload()` and `File.at(...).open("wb")` use the supplied local path without
+this collision check. Give them local paths without `//`.
+
+Keys beginning with `/`, such as `/x.txt`, have listing and export limitations.
+Use `placement="etag"` when exporting them from a bucket listing.
 
 ## PyTorch DataLoader Integration
 

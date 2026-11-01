@@ -1,7 +1,6 @@
 import glob
 import itertools
 import logging
-import posixpath
 import secrets
 import string
 from abc import ABC, abstractmethod
@@ -931,7 +930,8 @@ class AbstractWarehouse(ABC, Serializable):
             # Return node size if this is not a directory
             return node_size, 1
 
-        sub_glob = posixpath.join(path, "*")
+        # "d/" is the folder named "" in "d": its files match "d//*"
+        sub_glob = f"{path}/*" if path else "*"
         dr = dataset_rows
         selections: list[sa.ColumnElement] = [
             sa.func.sum(dr.c("size")),
@@ -973,7 +973,7 @@ class AbstractWarehouse(ABC, Serializable):
         path = de.c(q, "path")
 
         if parent_path:
-            sub_glob = posixpath.join(parent_path, "*")
+            sub_glob = f"{parent_path}/*"
             conds.append(path.op("GLOB", is_comparison=True)(sub_glob))
         else:
             conds.append(path != "")

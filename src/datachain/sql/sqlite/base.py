@@ -445,7 +445,8 @@ def convert_datetime(val: bytes) -> datetime:
 
 
 def path_parent(path):
-    return func.rtrim(func.rtrim(path, func.replace(path, slash, empty_str)), slash)
+    upto_last_slash = func.rtrim(path, func.replace(path, slash, empty_str))
+    return func.substr(upto_last_slash, 1, func.length(upto_last_slash) - 1)
 
 
 def path_name(path):

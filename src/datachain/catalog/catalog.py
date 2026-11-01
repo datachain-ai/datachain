@@ -267,27 +267,37 @@ class NodeGroup:
     source_path: str = ""
     dataset_name: str | None = None
     dataset_version: str | None = None
-    instantiated_nodes: list[NodeWithPath] | None = None
 
     @property
     def is_dataset(self) -> bool:
         return bool(self.dataset_name)
 
-    def iternodes(self, recursive: bool = False):
-        for src in self.sources:
-            if recursive and src.is_container():
-                for nwp in src.find():
-                    if not nwp.has_empty_segments:
-                        yield nwp.n
-            else:
-                yield src.node
+    def plan(
+        self,
+        recursive: bool,
+        always_copy_dir_contents: bool,
+        copy_to_filename: str | None,
+    ) -> list[NodeWithPath]:
+        """The nodes to copy, with their paths under the output directory."""
+        if not self.listing:
+            node = self.sources[0].node
+            name = os.path.basename(copy_to_filename) if copy_to_filename else None
+            return [NodeWithPath(node, [name or node.path])]
+        return self.listing.collect_nodes_to_instantiate(
+            self.sources,
+            copy_to_filename,
+            recursive,
+            always_copy_dir_contents or self.source_path.endswith("/"),
+            self.is_dataset,
+        )
 
-    def download(self, recursive: bool = False, pbar=None) -> None:
-        """
-        Download this node group to cache.
-        """
-        if self.sources:
-            self.client.fetch_nodes(self.iternodes(recursive), shared_progress_bar=pbar)
+    def download(self, nodes: list[NodeWithPath], pbar=None) -> None:
+        """Download to cache the nodes that will be copied."""
+        # a local disk cannot hold an empty path segment: these are not copied
+        self.client.fetch_nodes(
+            (nwp.n for nwp in nodes if not nwp.has_empty_segments),
+            shared_progress_bar=pbar,
+        )
 
     def close(self) -> None:
         if self.listing:
@@ -390,76 +400,39 @@ def get_download_bar(bar_format: str, total_size: int):
 
 
 def instantiate_node_groups(
-    node_groups: Iterable[NodeGroup],
+    plans: Iterable[tuple[NodeGroup, list[NodeWithPath]]],
     output: str,
     bar_format: str,
     total_files: int,
     force: bool = False,
-    recursive: bool = False,
-    virtual_only: bool = False,
-    always_copy_dir_contents: bool = False,
-    copy_to_filename: str | None = None,
 ) -> None:
-    instantiate_progress_bar = (
-        None
-        if virtual_only
-        else tqdm(
-            desc=f"Instantiating {output}: ",
-            unit=" f",
-            bar_format=bar_format,
-            unit_scale=True,
-            unit_divisor=1000,
-            total=total_files,
-            leave=False,
-        )
-    )
-
-    output_dir = output
-    output_file = None
-    if copy_to_filename:
-        output_dir = os.path.dirname(output)
-        if not output_dir:
-            output_dir = "."
-        output_file = os.path.basename(output)
-
-    # Instantiate these nodes
-    for node_group in node_groups:
-        if not node_group.sources:
-            continue
-        listing: SavedListing | None = node_group.listing
-        source_path: str = node_group.source_path
-
-        copy_dir_contents = always_copy_dir_contents or source_path.endswith("/")
-        if not listing:
-            source = node_group.sources[0]
-            client = source.client
-            node = NodeWithPath(source.node, [output_file or source.node.path])
-            instantiated_nodes = [node]
-            if not virtual_only:
+    with tqdm(
+        desc=f"Instantiating {output}: ",
+        unit=" f",
+        bar_format=bar_format,
+        unit_scale=True,
+        unit_divisor=1000,
+        total=total_files,
+        leave=False,
+    ) as instantiate_progress_bar:
+        for node_group, nodes in plans:
+            listing = node_group.listing
+            if not listing:
+                (node,) = nodes
                 node.instantiate(
-                    client, output_dir, instantiate_progress_bar, force=force
+                    node_group.sources[0].client,
+                    output,
+                    instantiate_progress_bar,
+                    force=force,
                 )
-        else:
-            instantiated_nodes = listing.collect_nodes_to_instantiate(
-                node_group.sources,
-                copy_to_filename,
-                recursive,
-                copy_dir_contents,
-                node_group.is_dataset,
-            )
-            if not virtual_only:
+            else:
                 listing.instantiate_nodes(
-                    instantiated_nodes,
-                    output_dir,
+                    nodes,
+                    output,
                     total_files,
                     force=force,
                     shared_progress_bar=instantiate_progress_bar,
                 )
-
-        node_group.instantiated_nodes = instantiated_nodes
-
-    if instantiate_progress_bar:
-        instantiate_progress_bar.close()
 
 
 def find_column_to_str(  # noqa: PLR0911
@@ -1506,7 +1479,6 @@ class Catalog:
         include_removed: bool = False,
         include_preview: bool = False,
     ) -> DatasetRecord:
-
         namespace_name = namespace_name or self.metastore.default_namespace_name
         project_name = project_name or self.metastore.default_project_name
 
@@ -2334,6 +2306,17 @@ class Catalog:
             if not total_files:
                 return
 
+            plans = [
+                (
+                    group,
+                    group.plan(recursive, always_copy_dir_contents, copy_to_filename),
+                )
+                for group in node_groups
+                if group.sources
+            ]
+            if no_cp:
+                return
+
             desc_max_len = max(len(output) + 16, 19)
             bar_format = (
                 "{desc:<"
@@ -2342,21 +2325,16 @@ class Catalog:
                 "[{elapsed}<{remaining}, {rate_fmt:>8}]"
             )
 
-            if not no_cp:
-                with get_download_bar(bar_format, total_size) as pbar:
-                    for node_group in node_groups:
-                        node_group.download(recursive=recursive, pbar=pbar)
+            with get_download_bar(bar_format, total_size) as pbar:
+                for group, nodes in plans:
+                    group.download(nodes, pbar)
 
             instantiate_node_groups(
-                node_groups,
-                output,
+                plans,
+                (os.path.dirname(output) or ".") if copy_to_filename else output,
                 bar_format,
                 total_files,
                 force,
-                recursive,
-                no_cp,
-                always_copy_dir_contents,
-                copy_to_filename,
             )
         finally:
             for node_group in node_groups:

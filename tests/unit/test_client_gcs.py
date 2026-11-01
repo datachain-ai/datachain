@@ -157,7 +157,7 @@ def test_url_unversioned_sign_called_with_clean_path():
 # marked xfail so they become regular passes once the upstream is fixed and our
 # guard is removed.
 _xfail_special_char_versioned = pytest.mark.xfail(
-    reason="gcsfs split_path breaks with '#'/'?' in versioned key names",
+    reason="DataChain guards versioned special keys pending gcsfs#1129 support",
     strict=True,
 )
 

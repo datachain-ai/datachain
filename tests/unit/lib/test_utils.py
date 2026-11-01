@@ -134,6 +134,49 @@ def test_normalize_column_names_repeat_generated_after_normalize():
     assert res == {"c0_column": "c0_CoLuMn", "c1_column": "_column", "column": "column"}
 
 
+@pytest.mark.parametrize(
+    "src,old_base,new_base,expected",
+    [
+        ("s3://src/d/e.txt", "s3://src", "s3://dst/new", "s3://dst/new/d/e.txt"),
+        ("s3://src/d//e.txt", "s3://src", "s3://dst/new", "s3://dst/new/d//e.txt"),
+        ("s3://src/d///e.txt", "s3://src", "s3://dst/", "s3://dst/d///e.txt"),
+        ("s3://src/d//e.txt", "s3://src", "/out", "/out/d//e.txt"),
+        ("s3://src/d//e.txt", "s3://src/d", "s3://dst", "s3://dst//e.txt"),
+        ("s3://src/d///e.txt", "s3://src/d//", "s3://dst", "s3://dst//e.txt"),
+        ("s3://src/e.txt", "s3://src", "s3://dst/d//", "s3://dst/d//e.txt"),
+        (r"s3://src/a\b.txt", "s3://src", "s3://dst", r"s3://dst/a\b.txt"),
+        ("s3://src/d//e.txt", "s3://src/d", ".", ".//e.txt"),
+        ("s3://src/d//e.txt", "s3://src/d", "./", ".//e.txt"),
+        ("s3://src/d//e.txt", "s3://src/d", "", ".//e.txt"),
+        ("s3://src/d//e.txt", "s3://src/d", "/", "//e.txt"),
+        ("s3://src/d//e.txt", "s3://src/d", "file:///", "file:////e.txt"),
+    ],
+)
+def test_rebase_path_keeps_cloud_keys_as_is(src, old_base, new_base, expected):
+    assert rebase_path(src, old_base, new_base) == expected
+
+
+def test_rebase_path_converts_windows_bases_of_a_file_uri():
+    assert rebase_path("file:///C:/data/a.txt", r"C:\data", r"C:\out") == "C:/out/a.txt"
+
+
+@pytest.mark.parametrize(
+    "new_base,expected",
+    [
+        (r"file:///C:\out", "file:///C:/out/d//e.txt"),
+        ("file:///tmp/out//", "file:///tmp/out/d//e.txt"),
+        ("file:///tmp/./out", "file:///tmp/out/d//e.txt"),
+        ("file:///", "file:///d//e.txt"),
+        (r"\\server\share\out", "//server/share/out/d//e.txt"),
+        ("file:////server/share/out", "file:////server/share/out/d//e.txt"),
+    ],
+)
+def test_rebase_path_normalizes_local_uri_base_without_changing_cloud_key(
+    new_base, expected
+):
+    assert rebase_path("s3://src/d//e.txt", "s3://src", new_base) == expected
+
+
 def test_rebase_path_basic():
     result = rebase_path(
         "/data/audio/folder1/file.wav", "/data/audio", "/output/waveforms"
