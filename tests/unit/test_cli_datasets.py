@@ -1,3 +1,5 @@
+import pytest
+
 from datachain.cli.commands.datasets import group_dataset_versions
 
 
@@ -64,7 +66,8 @@ def test_group_dataset_versions_semver_parsing():
     assert result == {"dataset1": "10.0.0"}
 
 
-def test_describe_saved_versions(test_session, capsys):
+@pytest.mark.parametrize("extended_columns", [False, True])
+def test_describe_saved_versions(test_session, capsys, monkeypatch, extended_columns):
     import json
 
     import datachain as dc
@@ -76,6 +79,26 @@ def test_describe_saved_versions(test_session, capsys):
     )
     dc.read_dataset("source", version="1.0.0", session=test_session).save("derived")
     dc.read_values(value=[3], session=test_session).save("source", version="2.0.0")
+    if extended_columns:
+        from sqlalchemy import literal
+
+        metastore = catalog.metastore
+        columns = metastore._dataset_dependencies_select_columns()
+        parse = metastore.dependency_class.parse
+
+        def parse_extended(*row, **kwargs):
+            if row:
+                assert row[-1] == "backend-extra"
+            return parse(*row[:-1], **kwargs)
+
+        monkeypatch.setattr(
+            type(metastore),
+            "_dataset_dependencies_select_columns",
+            lambda self: [*columns, literal("backend-extra")],
+        )
+        monkeypatch.setattr(
+            metastore.dependency_class, "parse", staticmethod(parse_extended)
+        )
     info = catalog.describe_dataset("source@1.0.0")
     assert info["rows"] == 2
     assert info["version"] == "1.0.0"
@@ -123,8 +146,6 @@ def test_describe_storage_sources(test_session, tmp_path, monkeypatch):
 
 
 def test_describe_missing_dataset_or_version(test_session):
-    import pytest
-
     import datachain as dc
     from datachain.error import DatasetNotFoundError, DatasetVersionNotFoundError
 

@@ -2277,18 +2277,16 @@ class AbstractDBMetastore(AbstractMetastore):
         d = self._dependency_datasets_source
         dd = self._datasets_dependencies
         dv = self._datasets_versions
+        reverse_ids: dict[SchemaItem, SchemaItem] = {
+            dd.c.dataset_id: dd.c.source_dataset_id,
+            dd.c.dataset_version_id: dd.c.source_dataset_version_id,
+        }
+        select_cols = [
+            reverse_ids.get(column, column)
+            for column in self._dataset_dependencies_select_columns()
+        ]
         query = (
-            self._datasets_dependencies_select(
-                n.c.name,
-                p.c.name,
-                dd.c.id,
-                d.c.id,
-                dv.c.id,
-                d.c.name,
-                dv.c.version,
-                dv.c.created_at,
-                dv.c.status,
-            )
+            self._datasets_dependencies_select(*select_cols)
             .select_from(
                 dd.join(d, dd.c.source_dataset_id == d.c.id)
                 .join(dv, dd.c.source_dataset_version_id == dv.c.id)
