@@ -660,7 +660,6 @@ def _moto_lists_after_key_marker(monkeypatch):
     monkeypatch.setattr(S3Backend, "list_object_versions", list_object_versions)
 
 
-# Give each test its own mutable bucket while reusing emulator processes.
 @pytest.fixture
 def cloud_server(
     request, tmp_upath_factory, cloud_type, version_aware, tree, monkeypatch
