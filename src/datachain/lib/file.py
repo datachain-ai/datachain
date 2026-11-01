@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from functools import partial
 from io import BytesIO
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
 
@@ -805,7 +805,7 @@ class File(DataModel):
         if "//" in self.path and client_cls is FileClient:
             path = destination.removeprefix("file://")
             canonical = path.replace("\\", "/") if os.name == "nt" else path
-            if os.name == "nt" and PureWindowsPath(canonical).drive.startswith("\\\\"):
+            if os.name == "nt" and re.match(r"^//[^/]+/[^/]+(?:/|$)", canonical):
                 canonical = canonical.removeprefix("//")
             if "//" in canonical:
                 raise ValueError(

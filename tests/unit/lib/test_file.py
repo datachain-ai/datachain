@@ -4,6 +4,7 @@ import os
 import posixpath
 import tarfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -499,6 +500,30 @@ def test_save_rejects_rebased_empty_segment_at_local_root(catalog, base):
     destination = file.rebase("s3://src/d", base)
 
     with pytest.raises(ValueError, match="must not contain empty segments"):
+        file._resolve_destination(destination)
+
+
+@pytest.mark.parametrize(
+    "destination, unsafe",
+    [
+        ("//e.txt", True),
+        ("file:////e.txt", True),
+        ("///e.txt", True),
+        ("//server/share/e.txt", False),
+        ("//server/share//e.txt", True),
+        (r"\\server\share\e.txt", False),
+        (r"\\server\share\\e.txt", True),
+    ],
+)
+def test_save_checks_unc_server_and_share(catalog, monkeypatch, destination, unsafe):
+    monkeypatch.setattr("datachain.lib.file.os", SimpleNamespace(name="nt"))
+    file = File(path="d//e.txt", source="s3://src")
+    file._set_stream(catalog, False)
+
+    if unsafe:
+        with pytest.raises(ValueError, match="must not contain empty segments"):
+            file._resolve_destination(destination)
+    else:
         file._resolve_destination(destination)
 
 
