@@ -454,7 +454,7 @@ async def test_download_pinned_generation_rejects_changed_size(tmp_path):
     file = File(source="gs://foo", path="listed", size=4, etag="old", version=_VER)
     path = tmp_path / "file"
 
-    with pytest.raises(OSError, match="Size mismatch"):
+    with pytest.raises(FileNotFoundError, match="size was 4, now 6"):
         await client._download_file(file, str(path), MagicMock())
     assert not path.exists()
 

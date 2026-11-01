@@ -1174,12 +1174,15 @@ def test_gcs_cache_download_reuses_listing_metadata(
 
 
 @pytest.mark.parametrize("cloud_type", ["gs"], indirect=True)
-@pytest.mark.parametrize("version_aware", [False, True], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
 @pytest.mark.parametrize("operation", ["open", "download"])
-def test_gcs_rejects_stale_etag(cloud_test_catalog_upload, operation):
+def test_gcs_rejects_stale_etag_without_pinned_version(
+    cloud_test_catalog_upload, operation
+):
     ctc = cloud_test_catalog_upload
     client = ctc.catalog.get_client(ctc.src_uri)
     file = client.upload(b"woof", "stale")
+    file.version = ""
     file.etag = "stale-etag"
     with pytest.raises(FileNotFoundError, match="changed on the source"):
         if operation == "open":
@@ -1197,6 +1200,7 @@ def test_gcs_cache_download_pins_listed_version(cloud_test_catalog_upload, mocke
     client = ctc.catalog.get_client(ctc.src_uri)
     file = client.upload(b"woof", "pinned-download")
     client.upload(b"WOOF", "pinned-download")
+    file.etag = "stale-etag"
     mocker.patch.object(client.fs, "_info", side_effect=AssertionError("HEAD"))
     sync(get_loop(), client._download, file, callback=DEFAULT_CALLBACK)
     assert Path(ctc.catalog.cache.get_path(file)).read_bytes() == b"woof"

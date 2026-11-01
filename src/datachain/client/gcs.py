@@ -273,7 +273,12 @@ class GCSClient(RangeListedClient):
         checker.update(data)
         checker.validate_headers(headers)
         if len(data) != file.size:
-            raise OSError(f"Size mismatch downloading {remote}")
+            raise FileNotFoundError(
+                f"{file.source}/{file.path} changed on the source since the "
+                f"catalog was created (size was {file.size}, now {len(data)}). "
+                "Re-run the original dc.read_storage(...) call with "
+                "update=True to refresh the catalog."
+            )
         callback.set_size(len(data))
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "wb") as stream:  # noqa: ASYNC230
