@@ -13,6 +13,8 @@ from botocore.model import Shape
 from botocore.utils import parse_timestamp
 from fsspec.asyn import get_loop, sync, sync_wrapper
 from s3fs import S3FileSystem
+from s3fs.core import S3File
+from s3fs.utils import FileExpired
 
 from datachain.lib.file import File, FileRow
 
@@ -131,6 +133,52 @@ class _S3FileSystem(S3FileSystem):
     connect = sync_wrapper(set_session)
 
 
+class _NoVersionResolveFS:
+    """An S3FileSystem view that skips S3File's version resolution HEAD request."""
+
+    version_aware = False
+
+    def __init__(self, fs):
+        self._fs = fs
+
+    def __getattr__(self, name):
+        return getattr(self._fs, name)
+
+
+class _ListedS3File(S3File):
+    def __init__(self, fs, file: File, block_size: int | None):
+        # The listing provides size, version and etag; S3File would HEAD for them.
+        super().__init__(
+            _NoVersionResolveFS(fs),
+            file.get_fs_path(),
+            mode="rb",
+            block_size=fs.default_block_size if block_size is None else block_size,
+            cache_type=fs.default_cache_type,
+            size=file.size,
+            requester_pays=bool(fs.req_kw),  # as S3FileSystem._open does
+        )
+        self.fs = self.s3 = fs
+        self.version_id = file.version or None
+        self._details = {"name": file.get_fs_path(), "size": file.size, "type": "file"}
+        if file.etag and (not file.version or file.version == "null"):
+            etag = f'"{file.etag}"'
+            self._details["ETag"] = etag
+            # as S3File does: endpoints without If-Match check the etag locally
+            if not fs.local_expiry_check:
+                for kw in ("req_kw", "read_kw"):  # s3fs >= 2026.9 reads with read_kw
+                    if isinstance(getattr(self, kw, None), dict):
+                        setattr(self, kw, {**getattr(self, kw), "IfMatch": etag})
+
+    def _fetch_range(self, start, end):
+        try:
+            return super()._fetch_range(start, end)
+        except FileExpired as exc:
+            raise FileNotFoundError(
+                f"{self.path} changed on the source since the catalog was created. "
+                "Re-run dc.read_storage(..., update=True) to refresh the catalog."
+            ) from exc
+
+
 class ClientS3(RangeListedClient):
     FS_CLASS = _S3FileSystem
     PREFIX = "s3://"
@@ -144,6 +192,11 @@ class ClientS3(RangeListedClient):
     # that state replaces them, so those files are checked by etag.
     PINNED_VERSION_IS_IMMUTABLE = True
     _unversioned = False  # the server can't list versions
+
+    def _open_remote(self, file: File, block_size: int | None = None):
+        if file.size > 0 and (file.etag or file.version):
+            return _ListedS3File(self.fs, file, block_size)
+        return super()._open_remote(file, block_size)
 
     @staticmethod
     def _normalize_s3_kwargs(kwargs: dict) -> dict:

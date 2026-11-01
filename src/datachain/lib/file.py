@@ -59,7 +59,7 @@ ExportPlacement = Literal["filename", "etag", "fullpath", "checksum", "filepath"
 
 FileType = Literal["binary", "text", "image", "video", "audio"]
 EXPORT_FILES_MAX_THREADS = 5
-PARTIAL_READ_BLOCK_SIZE = 1024 * 1024
+PARTIAL_READ_BLOCK_SIZE = 64 * 1024
 TAR_READ_BLOCK_SIZE = 5 * 1024 * 1024
 
 
@@ -569,6 +569,7 @@ class File(DataModel):
         metadata: dict[str, str] | None = None,
         write_options: dict[str, Any] | None = None,
         block_size: int | None = None,
+        cache: bool = True,
         **open_kwargs,
     ) -> Iterator[Any]:
         """Open the file and return a file-like object.
@@ -587,6 +588,9 @@ class File(DataModel):
         ``block_size`` sets the read-ahead block for uncached remote reads (0
         turns read-ahead off), and the upload part size for writes. HTTP(S)
         reads ignore it.
+        ``cache=False`` streams a read without downloading the whole file to
+        cache, while still using an existing cached copy. The default follows
+        the chain cache settings.
         """
         writing = any(ch in mode for ch in "wax+")
 
@@ -625,7 +629,7 @@ class File(DataModel):
                     with self._wrap_text(f, mode, open_kwargs=open_kwargs) as wrapped:
                         yield wrapped
                 return
-            if self._caching_enabled:
+            if cache and self._caching_enabled:
                 self.ensure_cached()
             with client.open_object(
                 self, use_cache=True, cb=self._download_cb, block_size=block_size
@@ -1288,7 +1292,9 @@ class ImageFile(File):
         """
         Retrieves metadata and information about the image file.
 
-        With prefetch and cache off, reads only the parts of the file it needs.
+        Streams the parts of the file needed for metadata, using a cached copy
+        when available. Set prefetch=0 to avoid whole-file downloads before
+        this method runs.
 
         Returns:
             Image: A Model containing image metadata such as width, height and format.
@@ -1400,7 +1406,9 @@ class VideoFile(File):
         """
         Retrieves metadata and information about the video file.
 
-        With prefetch and cache off, reads only the parts of the file it needs.
+        Streams the parts of the file needed for metadata, using a cached copy
+        when available. Set prefetch=0 to avoid whole-file downloads before
+        this method runs.
 
         Args:
             video_stream_index: Zero-based index among video streams to inspect.
@@ -1577,7 +1585,9 @@ class AudioFile(File):
         """
         Retrieves metadata and information about the audio file.
 
-        With prefetch and cache off, reads only the parts of the file it needs.
+        Streams the parts of the file needed for metadata, using a cached copy
+        when available. Set prefetch=0 to avoid whole-file downloads before
+        this method runs.
 
         Returns:
             Audio: A Model containing audio metadata such as duration,

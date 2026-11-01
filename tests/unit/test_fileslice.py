@@ -2,7 +2,7 @@ import io
 
 import pytest
 
-from datachain.client.fileslice import FileSlice
+from datachain.client.fileslice import FileSlice, FileWrapper
 
 
 def test_positions():
@@ -62,3 +62,19 @@ def test_implicit_close():
     assert base.closed is False
     f = None  # noqa: F841
     assert base.closed is True
+
+
+@pytest.mark.parametrize("prefix", [0, 7])
+def test_wrapper_reads_remainder_in_one_call(prefix, mocker):
+    from fsspec.callbacks import Callback
+
+    data = b"a" * (256 * 1024)
+    source = io.BytesIO(data)
+    read = mocker.spy(source, "read")
+    callback = Callback()
+    with FileWrapper(source, callback) as stream:
+        assert stream.read(prefix) == data[:prefix]
+        assert stream.read() == data[prefix:]
+        read.assert_called_once_with()
+        assert callback.value == len(data)
+    assert source.closed

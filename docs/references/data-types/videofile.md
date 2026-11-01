@@ -24,6 +24,8 @@ Instead, they are used to represent the data in the `VideoFile` these models are
 If you need to save the data, you can use the `save` method of these models,
 allowing you to save data locally or upload it to a storage service.
 
+For metadata-only workflows, see [metadata without downloading](file.md#metadata-without-downloading).
+
 ::: datachain.lib.file.VideoFile
 
 ::: datachain.lib.file.VideoFrame
