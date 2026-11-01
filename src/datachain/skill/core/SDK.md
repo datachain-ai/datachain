@@ -444,7 +444,7 @@ dc.read_storage("s3://bucket/imgs/**/*.{jpg,png}", type="image")  # glob in path
 dc.read_csv("s3://bucket/data.csv")
 dc.read_json("s3://bucket/ann.json", jmespath="images")
 dc.read_parquet("s3://bucket/data/*.parquet")
-dc.read_hf("dataset-name", split="train")
+dc.read_hf("dataset-name", split="train")  # requires datachain[hf]
 dc.read_pandas(df)
 dc.read_values(scores=[1.2, 3.4])
 dc.read_records([{"a": 1}, ...])

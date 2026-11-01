@@ -387,6 +387,32 @@ def test_studio_logout_local_revokes_local_token():
     assert "token" not in config["studio"]
 
 
+def test_studio_logout_local_preserves_parent_token(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".datachain" / "db").touch()
+    with Config(ConfigLevel.LOCAL).edit() as conf:
+        conf["studio"] = {"token": "parent-token", "url": STUDIO_URL}
+    parent_config = (tmp_path / ".datachain" / "config").read_text()
+    child = tmp_path / "child"
+    child_state = child / ".datachain"
+    child_state.mkdir(parents=True)
+    (child_state / "config").write_text('[studio]\ntoken = "child-token"\n')
+    nested = child / "scripts"
+    nested.mkdir()
+    monkeypatch.chdir(nested)
+    assert not (child_state / "db").exists()
+
+    with requests_mock.mock() as m:
+        m.post(f"{STUDIO_URL}/api/device-logout", json={})
+        assert main(["auth", "logout", "--local"]) == 0
+        assert m.call_count == 1
+        assert m.last_request.headers["Authorization"] == "token child-token"
+
+    assert "token" not in Config(ConfigLevel.LOCAL).read()["studio"]
+    assert (tmp_path / ".datachain" / "config").read_text() == parent_config
+    assert not (nested / ".datachain").exists()
+
+
 def test_studio_logout_trailing_slash_url():
     url_with_slash = "https://custom-studio.example.com/"
     with Config(ConfigLevel.GLOBAL).edit() as conf:
