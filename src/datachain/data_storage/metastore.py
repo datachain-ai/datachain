@@ -515,11 +515,14 @@ class AbstractMetastore(ABC, Serializable):
         carries a ``removed`` flag so callers can filter or badge tombstoned
         deps without a separate query."""
 
-    @abstractmethod
     def get_direct_dataset_dependents(
         self, dataset: DatasetRecord, version: str
     ) -> list[DatasetDependency | None]:
-        """Get versions that directly depend on this dataset version."""
+        """Get versions that directly depend on this dataset version.
+
+        Optional for metastores that do not support local dataset inspection.
+        """
+        raise NotImplementedError("This metastore does not support dataset dependents")
 
     @abstractmethod
     def get_dataset_dependency_nodes(

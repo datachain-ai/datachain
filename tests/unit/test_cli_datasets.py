@@ -113,7 +113,7 @@ def test_describe_storage_sources(test_session, tmp_path, monkeypatch):
     monkeypatch.setattr(Client, "get_implementation", forbidden)
     monkeypatch.setattr(test_session.catalog.warehouse, "get_table", forbidden)
     info = test_session.catalog.describe_dataset("report")
-    assert any(str(tmp_path) in uri for uri in info["sources"])
+    assert any(tmp_path.as_uri() in uri for uri in info["sources"])
     assert all(not uri.startswith("lst__") for uri in info["sources"])
     assert info["dependencies"][0]["dependencies"][0]["type"] == "storage"
     assert info["dependencies"][0]["dependencies"][0]["rows"] == 1
