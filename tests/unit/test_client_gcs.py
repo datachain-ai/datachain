@@ -498,3 +498,23 @@ async def test_download_without_immutable_generation_uses_get_file(
     )
     await client._download_file(file, str(tmp_path / "file"), DEFAULT_CALLBACK)
     client._fs._get_file.assert_awaited_once()
+
+
+@pytest.mark.parametrize("start,end", [(0, 4), (None, None), (4, 4)])
+def test_listed_generation_range_requests(start, end, mocker):
+    client = GCSClient("foo", {"token": "anon"}, None)
+    file = File(source="gs://foo", path="listed", size=4, version=_VER)
+    request = mocker.patch.object(
+        client.fs, "_call", new=AsyncMock(return_value=({}, b"woof"))
+    )
+    with _ListedGCSFile(client.fs, file, f"foo/listed#{_VER}", block_size=0) as stream:
+        assert stream._fetch_range(start, end) == (
+            b"" if start == end == 4 else b"woof"
+        )
+    if start == end == 4:
+        request.assert_not_called()
+    else:
+        headers = {} if start is None else {"Range": "bytes=0-3"}
+        request.assert_awaited_once_with(
+            "GET", client.fs.url(f"foo/listed#{_VER}"), headers=headers
+        )

@@ -1249,3 +1249,15 @@ def test_video_metadata_reads_ranges_without_head(cloud_test_catalog_upload, moc
     assert 0 < len(ranges) <= 20
     assert sum(ranges) < len(contents) // 2
     assert not ctc.catalog.cache.contains(video)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("tree", [{"changed": "woof"}], indirect=True)
+def test_s3_listed_local_expiry_check_rejects_changed_object(client):
+    client.fs.local_expiry_check = True
+    file = client.get_file_info("changed")
+    file.version = ""
+    client.fs.pipe_file(file.get_fs_path(), b"WOOF")
+    with pytest.raises(FileNotFoundError, match="changed on the source"):
+        with client.open_object(file, use_cache=False, block_size=2) as stream:
+            stream.read()
