@@ -444,7 +444,7 @@ def test_gcs_client_gets_credentials_from_env(monkeypatch, mocker):
     )
 
 
-@pytest.mark.parametrize("tree", [{}], indirect=True)
+@pytest.mark.parametrize("tree", [{"fetch-dir": {}}], indirect=True)
 def test_fetch_dir_does_not_return_self(client, cloud_type):
     if cloud_type == "file":
         pytest.skip()
@@ -612,6 +612,7 @@ def test_get_size_roundtrip_file_and_cloud(
 
 
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
+@pytest.mark.parametrize("tree", [{"versioned-writes": {}}], indirect=True)
 def test_get_size_roundtrip_versioned_selects_version(
     cloud_test_catalog_upload,
     cloud_type,
@@ -699,6 +700,7 @@ def test_get_file_roundtrip_file_and_cloud(
 
 
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
+@pytest.mark.parametrize("tree", [{"versioned-writes": {}}], indirect=True)
 def test_get_file_roundtrip_versioned_selects_version(
     cloud_test_catalog_upload,
     cloud_type,
@@ -789,6 +791,7 @@ def test_get_etag_roundtrip_file_and_cloud(
 
 
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
+@pytest.mark.parametrize("tree", [{"versioned-writes": {}}], indirect=True)
 def test_get_etag_roundtrip_versioned_selects_version(
     cloud_test_catalog_upload,
     cloud_type,
@@ -999,6 +1002,7 @@ _special_char_versioned = pytest.mark.parametrize(
 
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
 @_special_char_versioned
+@pytest.mark.parametrize("tree", [{"versioned-writes": {}}], indirect=True)
 def test_get_file_info_versioned_special_char_in_key(
     cloud_test_catalog_upload, cloud_type, version_aware, char
 ):
@@ -1018,6 +1022,7 @@ def test_get_file_info_versioned_special_char_in_key(
 
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
 @_special_char_versioned
+@pytest.mark.parametrize("tree", [{"versioned-writes": {}}], indirect=True)
 def test_get_size_versioned_special_char_in_key(
     cloud_test_catalog_upload, cloud_type, version_aware, char
 ):
@@ -1045,6 +1050,7 @@ def test_get_size_versioned_special_char_in_key(
 
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
 @_special_char_versioned
+@pytest.mark.parametrize("tree", [{"versioned-writes": {}}], indirect=True)
 def test_get_etag_versioned_special_char_in_key(
     cloud_test_catalog_upload, cloud_type, version_aware, char
 ):
@@ -1073,6 +1079,7 @@ def test_get_etag_versioned_special_char_in_key(
 
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
 @_special_char_versioned
+@pytest.mark.parametrize("tree", [{"versioned-writes": {}}], indirect=True)
 def test_get_file_versioned_special_char_in_key(
     cloud_test_catalog_upload, cloud_type, version_aware, char, tmp_path
 ):
