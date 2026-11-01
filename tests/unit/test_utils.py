@@ -701,12 +701,20 @@ def test_cpu_quotas_of_cgroup_v2_and_its_parents(files, expected, tmp_path):
     assert _cpu_quotas(str(tmp_path), str(tmp_path / "cgroup")) == expected
 
 
-def test_cpu_quota_of_cgroup_v1(tmp_path):
-    folder = tmp_path / "cpu,cpuacct" / "docker"
+@pytest.mark.parametrize(
+    "controllers,mount",
+    [
+        ("cpu,cpuacct", "cpu,cpuacct"),
+        ("cpuacct,cpu", "cpu,cpuacct"),
+        ("cpuacct,cpu", "cpu"),
+    ],
+)
+def test_cpu_quota_of_cgroup_v1(tmp_path, controllers, mount):
+    folder = tmp_path / mount / "docker"
     folder.mkdir(parents=True)
     (folder / "cpu.cfs_quota_us").write_text("100000\n")
     (folder / "cpu.cfs_period_us").write_text("100000\n")
-    (tmp_path / "cgroup").write_text("5:memory:/docker\n4:cpu,cpuacct:/docker\n")
+    (tmp_path / "cgroup").write_text(f"5:memory:/docker\n4:{controllers}:/docker\n")
 
     assert _cpu_quotas(str(tmp_path), str(tmp_path / "cgroup")) == [(100000, 100000)]
 
@@ -726,15 +734,49 @@ def test_cpu_quotas_ignore_malformed_membership(tmp_path):
     assert _cpu_quotas(str(tmp_path), str(tmp_path / "cgroup")) == [(800000, 100000)]
 
 
-def test_usable_cpu_count_falls_back_when_affinity_is_unavailable(monkeypatch):
-    def unavailable():
+@pytest.mark.parametrize("host_cpus,expected", [(24, 24), (None, 1)])
+def test_usable_cpu_count_falls_back_when_affinity_is_unavailable(
+    monkeypatch, host_cpus, expected
+):
+    def unavailable(pid):
         raise OSError("affinity unavailable")
 
-    monkeypatch.setattr(os, "process_cpu_count", unavailable, raising=False)
-    monkeypatch.setattr(os, "cpu_count", lambda: 24)
+    monkeypatch.delattr(os, "process_cpu_count", raising=False)
+    monkeypatch.setattr(os, "sched_getaffinity", unavailable, raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: host_cpus)
+    monkeypatch.setattr(utils, "_cpu_quotas", list)
+
+    assert usable_cpu_count() == expected
+
+
+def test_usable_cpu_count_uses_linux_affinity(monkeypatch):
+    monkeypatch.delattr(os, "process_cpu_count", raising=False)
+    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {0, 1, 2}, raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: 32)
     monkeypatch.setattr(utils, "_cpu_quotas", lambda: [(800000, 100000)])
 
-    assert usable_cpu_count() == 8
+    assert usable_cpu_count() == 3
+
+
+def test_usable_cpu_count_handles_unknown_process_count(monkeypatch):
+    monkeypatch.setattr(os, "process_cpu_count", lambda: None, raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: 24)
+    monkeypatch.setattr(utils, "_cpu_quotas", list)
+
+    assert usable_cpu_count() == 24
+
+
+def test_usable_cpu_count_reads_cgroup_files(tmp_path, monkeypatch):
+    (tmp_path / "cpu.max").write_text("150000 100000")
+    (tmp_path / "cgroup").write_text("0::/\n")
+    monkeypatch.setattr(os, "process_cpu_count", lambda: 24, raising=False)
+    monkeypatch.setattr(
+        utils,
+        "_cpu_quotas",
+        lambda: _cpu_quotas(str(tmp_path), str(tmp_path / "cgroup")),
+    )
+
+    assert usable_cpu_count() == 2
 
 
 @pytest.mark.parametrize(
@@ -753,17 +795,6 @@ def test_usable_cpu_count_follows_the_cgroup_quotas(quotas, expected, monkeypatc
     monkeypatch.setattr(utils, "_cpu_quotas", lambda: quotas)
 
     assert usable_cpu_count() == expected
-
-
-def test_default_parallel_uses_the_cpu_quota(monkeypatch):
-    from datachain.query.dispatch import get_n_workers_from_arg
-
-    monkeypatch.setattr(os, "process_cpu_count", lambda: 24, raising=False)
-    monkeypatch.setattr(utils, "_cpu_quotas", lambda: [(800000, 100000)])
-
-    assert get_n_workers_from_arg(None) == 8
-    assert get_n_workers_from_arg(12) == 12
-
 
 def test_worker_thread_env_caps_settings_at_the_worker_share(monkeypatch):
     for name in ("DATACHAIN_WORKER_THREADS", *utils._THREAD_ENVS):

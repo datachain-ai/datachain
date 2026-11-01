@@ -8,6 +8,7 @@ from datachain.query.dispatch import (
     STOP_SIGNAL,
     UDFDispatcher,
     get_from_queue,
+    get_n_workers_from_arg,
     guided_tasks,
     put_into_queue,
 )
@@ -157,3 +158,13 @@ def test_worker_start_failure_cleans_up_and_restores_environment(
         with pytest.raises(ValueError, match="closed"):
             queue.put_nowait(1)
     assert dict(os.environ) == before
+
+@pytest.mark.parametrize(
+    "cpus,requested,expected", [(8, None, 8), (1, None, 1), (8, 12, 12)]
+)
+def test_worker_count_respects_cpu_quota_and_explicit_override(
+    monkeypatch, cpus, requested, expected
+):
+    monkeypatch.setattr("datachain.query.dispatch.usable_cpu_count", lambda: cpus)
+
+    assert get_n_workers_from_arg(requested) == expected
