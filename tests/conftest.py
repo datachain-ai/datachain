@@ -661,12 +661,13 @@ def _moto_lists_after_key_marker(monkeypatch):
     monkeypatch.setattr(S3Backend, "list_object_versions", list_object_versions)
 
 
-@pytest.fixture(scope="session")
+# Give each test its own mutable bucket while reusing emulator processes.
+@pytest.fixture
 def cloud_server(
-    request, tmp_upath_factory, cloud_type, version_aware, tree, monkeypatch_session
+    request, tmp_upath_factory, cloud_type, version_aware, tree, monkeypatch
 ):
     if cloud_type == "s3":
-        _moto_lists_after_key_marker(monkeypatch_session)
+        _moto_lists_after_key_marker(monkeypatch)
     if cloud_type == "azure" and version_aware:
         if conn_str := request.config.getoption("--azure-connection-string"):
             src_path = tmp_upath_factory.azure(conn_str)
@@ -697,17 +698,15 @@ def datachain_job_id(test_session, monkeypatch):
     yield _create_job(test_session.catalog.metastore)
 
 
-@pytest.fixture(scope="session")
-def cloud_server_credentials(cloud_server, monkeypatch_session):
+@pytest.fixture
+def cloud_server_credentials(cloud_server, monkeypatch):
     if cloud_server.kind == "s3":
         cfg = cloud_server.src.fs.client_kwargs
-        monkeypatch_session.delenv("AWS_PROFILE", raising=False)
-        monkeypatch_session.setenv("AWS_ACCESS_KEY_ID", cfg["aws_access_key_id"])
-        monkeypatch_session.setenv(
-            "AWS_SECRET_ACCESS_KEY", cfg["aws_secret_access_key"]
-        )
-        monkeypatch_session.setenv("AWS_SESSION_TOKEN", cfg["aws_session_token"])
-        monkeypatch_session.setenv("AWS_DEFAULT_REGION", cfg["region_name"])
+        monkeypatch.delenv("AWS_PROFILE", raising=False)
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", cfg["aws_access_key_id"])
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", cfg["aws_secret_access_key"])
+        monkeypatch.setenv("AWS_SESSION_TOKEN", cfg["aws_session_token"])
+        monkeypatch.setenv("AWS_DEFAULT_REGION", cfg["region_name"])
 
 
 def get_cloud_test_catalog(cloud_server, tmp_path, metastore, warehouse):
