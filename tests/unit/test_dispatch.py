@@ -78,16 +78,9 @@ def test_guided_tasks_require_positive_limits(workers, max_size):
         list(guided_tasks(range(3), 3, workers, max_size))
 
 
-@pytest.mark.parametrize("workers", [1, 2])
-@pytest.mark.parametrize("fail", [False, True])
-def test_automatic_workers_apply_and_restore_thread_budget(
-    monkeypatch, mocker, workers, fail
-):
-    monkeypatch.setattr("datachain.query.dispatch.usable_cpu_count", lambda: workers)
-    monkeypatch.setattr("datachain.utils.usable_cpu_count", lambda: workers)
-    monkeypatch.setenv("OMP_NUM_THREADS", "1000")
-    monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
-    dispatcher = UDFDispatcher(
+@pytest.fixture
+def dispatcher(mocker):
+    return UDFDispatcher(
         UdfInfo(
             udf_data=b"",
             catalog_init={},
@@ -104,6 +97,17 @@ def test_automatic_workers_apply_and_restore_thread_budget(
             batch_size=None,
         )
     )
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+@pytest.mark.parametrize("fail", [False, True])
+def test_automatic_workers_apply_and_restore_thread_budget(
+    dispatcher, monkeypatch, mocker, workers, fail
+):
+    monkeypatch.setattr("datachain.query.dispatch.usable_cpu_count", lambda: workers)
+    monkeypatch.setattr("datachain.utils.usable_cpu_count", lambda: workers)
+    monkeypatch.setenv("OMP_NUM_THREADS", "1000")
+    monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
 
     def run(*args):
         assert os.environ["DATACHAIN_WORKER_THREADS"] == "1"
@@ -124,4 +128,32 @@ def test_automatic_workers_apply_and_restore_thread_budget(
         dispatcher.run_udf([])
 
     execution.assert_called_once()
+    assert dict(os.environ) == before
+
+
+def test_worker_start_failure_cleans_up_and_restores_environment(
+    dispatcher, mocker, monkeypatch
+):
+    monkeypatch.setattr("datachain.query.dispatch.usable_cpu_count", lambda: 2)
+    monkeypatch.setattr("datachain.utils.usable_cpu_count", lambda: 2)
+    monkeypatch.setenv("OMP_NUM_THREADS", "1000")
+    before = dict(os.environ)
+    first, second = mocker.Mock(), mocker.Mock()
+    first.is_alive.side_effect = [True, False]
+    second.is_alive.return_value = False
+
+    def start():
+        assert os.environ["OMP_NUM_THREADS"] == "1"
+
+    first.start.side_effect = start
+    second.start.side_effect = OSError("worker could not start")
+    mocker.patch.object(dispatcher.ctx, "Process", side_effect=[first, second])
+
+    with pytest.raises(OSError, match="worker could not start"):
+        dispatcher.run_udf([])
+
+    first.terminate.assert_called_once()
+    for queue in (dispatcher.task_queue, dispatcher.done_queue):
+        with pytest.raises(ValueError, match="closed"):
+            queue.put_nowait(1)
     assert dict(os.environ) == before
