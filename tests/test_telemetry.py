@@ -35,7 +35,12 @@ def failing_telemetry(mocker):
 
 def test_telemetry_error_does_not_break_read_dataset(failing_telemetry, test_session):
     dc.read_values(value=[1, 2], session=test_session).save("saved")
-    assert dc.read_dataset("saved", session=test_session).to_values("value") == [1, 2]
+    assert sorted(
+        dc.read_dataset("saved", session=test_session).to_values("value")
+    ) == [
+        1,
+        2,
+    ]
     failing_telemetry.assert_called_once()
 
 
