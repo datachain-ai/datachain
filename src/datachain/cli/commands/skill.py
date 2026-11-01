@@ -141,7 +141,7 @@ def _installed_by_datachain(skill_dest: Path, name: str) -> bool:
     """
     try:
         text = (skill_dest / "SKILL.md").read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeError):
         return False
     frontmatter = _frontmatter(text)
     if not re.search(
@@ -152,7 +152,7 @@ def _installed_by_datachain(skill_dest: Path, name: str) -> bool:
         return True
     try:
         return (skill_dest / _INSTALL_MARKER).read_text(encoding="utf-8") == name
-    except OSError:
+    except FileNotFoundError:
         # Older default installs have no ownership marker.
         return (
             frontmatter.startswith(
@@ -162,6 +162,8 @@ def _installed_by_datachain(skill_dest: Path, name: str) -> bool:
             and "DataChain does the parallel I/O, keeps results as queryable datasets"
             in frontmatter
         )
+    except (OSError, UnicodeError):
+        return False
 
 
 def _remove_skill(

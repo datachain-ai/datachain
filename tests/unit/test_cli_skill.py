@@ -724,20 +724,21 @@ def test_failed_default_upgrade_keeps_legacy_skills(tmp_path, fake_home, monkeyp
     } == before
 
 
+@pytest.mark.parametrize("encoding", ["utf-8", "cp1252"])
 def test_install_refuses_unrelated_datachain_skill(
-    tmp_path, fake_home, monkeypatch, capsys
+    tmp_path, fake_home, monkeypatch, capsys, encoding
 ):
     from datachain.cli.commands.skill import install_skills
 
     monkeypatch.chdir(tmp_path)
     dest = tmp_path / ".cursor" / "skills" / "datachain"
     dest.mkdir(parents=True)
-    content = "---\nname: datachain\ndescription: My own workflow\n---\n"
-    (dest / "SKILL.md").write_text(content)
+    content = "---\nname: datachain\ndescription: Café personnel\n---\n"
+    (dest / "SKILL.md").write_text(content, encoding=encoding)
     (dest / "notes.txt").write_text("mine")
     with patch("pathlib.Path.home", return_value=fake_home):
         assert install_skills(None, "cursor", True) == 1
-    assert (dest / "SKILL.md").read_text(encoding="utf-8") == content
+    assert (dest / "SKILL.md").read_text(encoding=encoding) == content
     assert (dest / "notes.txt").read_text(encoding="utf-8") == "mine"
     assert not (tmp_path / ".cursor" / "rules").exists()
     assert "Cannot overwrite unrelated skill" in capsys.readouterr().err
@@ -745,7 +746,7 @@ def test_install_refuses_unrelated_datachain_skill(
 
     with patch("pathlib.Path.home", return_value=fake_home):
         assert uninstall_skills(None, "cursor", True) == 0
-    assert (dest / "SKILL.md").read_text(encoding="utf-8") == content
+    assert (dest / "SKILL.md").read_text(encoding=encoding) == content
     assert (dest / "notes.txt").read_text(encoding="utf-8") == "mine"
 
 
@@ -767,8 +768,9 @@ def test_install_all_skills_by_name(fake_skills_src, fake_home, target):
 
 
 @pytest.mark.parametrize("upgrade", [False, True])
+@pytest.mark.parametrize("marker", [None, b"\xff"])
 def test_manage_default_installed_before_ownership_marker(
-    tmp_path, fake_home, monkeypatch, upgrade
+    tmp_path, fake_home, monkeypatch, upgrade, marker
 ):
     from datachain.cli.commands.skill import install_skills, uninstall_skills
 
@@ -782,9 +784,15 @@ def test_manage_default_installed_before_ownership_marker(
         "bucket inventories. DataChain does the parallel I/O, "
         "keeps results as queryable datasets, and reprocesses only what changed.\n---\n"
     )
+    if marker is not None:
+        (dest / ".datachain-installed").write_bytes(marker)
+    before = (dest / "SKILL.md").read_bytes()
     with patch("pathlib.Path.home", return_value=fake_home):
         if upgrade:
-            assert install_skills(None, "claude", True) == 0
-            assert (dest / "SDK.md").is_file()
+            assert install_skills(None, "claude", True) == (0 if marker is None else 1)
+            assert (dest / "SDK.md").is_file() == (marker is None)
         assert uninstall_skills(None, "claude", True) == 0
-    assert not dest.exists()
+    if marker is None:
+        assert not dest.exists()
+    else:
+        assert (dest / "SKILL.md").read_bytes() == before
