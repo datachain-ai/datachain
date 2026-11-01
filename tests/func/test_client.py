@@ -444,7 +444,7 @@ def test_gcs_client_gets_credentials_from_env(monkeypatch, mocker):
     )
 
 
-@pytest.mark.parametrize("tree", [{"fetch-dir": {}}], indirect=True)
+@pytest.mark.parametrize("tree", [{}], indirect=True)
 def test_fetch_dir_does_not_return_self(client, cloud_type):
     if cloud_type == "file":
         pytest.skip()
@@ -612,7 +612,6 @@ def test_get_size_roundtrip_file_and_cloud(
 
 
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
-@pytest.mark.parametrize("tree", [{"versioned-writes": {}}], indirect=True)
 def test_get_size_roundtrip_versioned_selects_version(
     cloud_test_catalog_upload,
     cloud_type,
@@ -700,7 +699,6 @@ def test_get_file_roundtrip_file_and_cloud(
 
 
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
-@pytest.mark.parametrize("tree", [{"versioned-writes": {}}], indirect=True)
 def test_get_file_roundtrip_versioned_selects_version(
     cloud_test_catalog_upload,
     cloud_type,
@@ -791,7 +789,6 @@ def test_get_etag_roundtrip_file_and_cloud(
 
 
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
-@pytest.mark.parametrize("tree", [{"versioned-writes": {}}], indirect=True)
 def test_get_etag_roundtrip_versioned_selects_version(
     cloud_test_catalog_upload,
     cloud_type,
@@ -842,20 +839,17 @@ def test_get_etag_missing_raises_filenotfound(
         )
 
 
-# Keep archived GCS generations away from the shared listing fixtures.
 @pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
-@pytest.mark.parametrize("tree", [{"cache-tests": {}}], indirect=True)
 def test_put_in_cache_pinned_version_ignores_stale_etag(
     cloud_test_catalog_upload,
-    cloud_prefix,
     cloud_type,
     version_aware,
 ):
     ctc = cloud_test_catalog_upload
     client = ctc.catalog.get_client(ctc.src_uri)
 
-    rel_path = f"{cloud_prefix}/cached.bin"
+    rel_path = f"client-put-in-cache/{uuid4().hex}.bin"
     uploaded_v1 = client.upload(b"v1", rel_path)
     client.upload(b"version-2", rel_path)
 
@@ -874,10 +868,8 @@ def test_put_in_cache_pinned_version_ignores_stale_etag(
 @pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
 @pytest.mark.parametrize("size", [0, 1])
-@pytest.mark.parametrize("tree", [{"cache-tests": {}}], indirect=True)
 def test_put_in_cache_pinned_version_with_another_size_raises(
     cloud_test_catalog_upload,
-    cloud_prefix,
     cloud_type,
     version_aware,
     size,
@@ -885,7 +877,7 @@ def test_put_in_cache_pinned_version_with_another_size_raises(
     ctc = cloud_test_catalog_upload
     client = ctc.catalog.get_client(ctc.src_uri)
 
-    rel_path = f"{cloud_prefix}/cached.bin"
+    rel_path = f"client-put-in-cache/{uuid4().hex}.bin"
     uploaded = client.upload(b"v1", rel_path)
 
     file = File(
@@ -903,17 +895,15 @@ def test_put_in_cache_pinned_version_with_another_size_raises(
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
-@pytest.mark.parametrize("tree", [{"cache-tests": {}}], indirect=True)
 def test_put_in_cache_pinned_version_with_unknown_size_reads_it(
     cloud_test_catalog_upload,
-    cloud_prefix,
     cloud_type,
     version_aware,
 ):
     ctc = cloud_test_catalog_upload
     client = ctc.catalog.get_client(ctc.src_uri)
 
-    rel_path = f"{cloud_prefix}/cached.bin"
+    rel_path = f"client-put-in-cache/{uuid4().hex}.bin"
     uploaded = client.upload(b"v1", rel_path)
 
     file = File(
@@ -929,17 +919,15 @@ def test_put_in_cache_pinned_version_with_unknown_size_reads_it(
 
 
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
-@pytest.mark.parametrize("tree", [{"cache-tests": {}}], indirect=True)
 def test_put_in_cache_unpinned_stale_etag_raises(
     cloud_test_catalog_upload,
-    cloud_prefix,
     cloud_type,
     version_aware,
 ):
     ctc = cloud_test_catalog_upload
     client = ctc.catalog.get_client(ctc.src_uri)
 
-    rel_path = f"{cloud_prefix}/cached.bin"
+    rel_path = f"client-put-in-cache/{uuid4().hex}.bin"
     client.upload(b"v1", rel_path)
 
     file = File(source=ctc.src_uri, path=rel_path, etag="stale-etag", size=2)
@@ -951,10 +939,8 @@ def test_put_in_cache_unpinned_stale_etag_raises(
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
-@pytest.mark.parametrize("tree", [{"cache-tests": {}}], indirect=True)
 def test_put_in_cache_s3_null_version_checks_etag(
     cloud_test_catalog_upload,
-    cloud_prefix,
     cloud_type,
     version_aware,
 ):
@@ -962,7 +948,7 @@ def test_put_in_cache_s3_null_version_checks_etag(
     client = ctc.catalog.get_client(ctc.src_uri)
     bucket = client.name
 
-    rel_path = f"{cloud_prefix}/cached.bin"
+    rel_path = f"client-put-in-cache/{uuid4().hex}.bin"
     client.fs.make_bucket_versioned(bucket, versioned=False)
     try:
         uploaded_v1 = client.upload(b"v1", rel_path)
@@ -1007,7 +993,6 @@ _special_char_versioned = pytest.mark.parametrize(
 
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
 @_special_char_versioned
-@pytest.mark.parametrize("tree", [{"versioned-writes": {}}], indirect=True)
 def test_get_file_info_versioned_special_char_in_key(
     cloud_test_catalog_upload, cloud_type, version_aware, char
 ):
@@ -1027,7 +1012,6 @@ def test_get_file_info_versioned_special_char_in_key(
 
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
 @_special_char_versioned
-@pytest.mark.parametrize("tree", [{"versioned-writes": {}}], indirect=True)
 def test_get_size_versioned_special_char_in_key(
     cloud_test_catalog_upload, cloud_type, version_aware, char
 ):
@@ -1055,7 +1039,6 @@ def test_get_size_versioned_special_char_in_key(
 
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
 @_special_char_versioned
-@pytest.mark.parametrize("tree", [{"versioned-writes": {}}], indirect=True)
 def test_get_etag_versioned_special_char_in_key(
     cloud_test_catalog_upload, cloud_type, version_aware, char
 ):
@@ -1084,7 +1067,6 @@ def test_get_etag_versioned_special_char_in_key(
 
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
 @_special_char_versioned
-@pytest.mark.parametrize("tree", [{"versioned-writes": {}}], indirect=True)
 def test_get_file_versioned_special_char_in_key(
     cloud_test_catalog_upload, cloud_type, version_aware, char, tmp_path
 ):
