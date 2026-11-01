@@ -845,7 +845,6 @@ class File(DataModel):
         return client, rel_path
 
     def _symlink_to(self, destination: str) -> None:
-        self._raise_if_deleted()
         if self.location:
             raise OSError(errno.ENOTSUP, "Symlinking virtual file is not supported")
 
@@ -1229,9 +1228,8 @@ class File(DataModel):
 
 
 class FileRow(NamedTuple):
-    """A ``File`` as its flat columns, in DB order. Range listings yield these and
-    they go to the DB as they are, so ``File``'s validators don't run on them: the
-    listing clients make valid rows (a scheme in ``source``, no ``location``)."""
+    """A ``File`` as flat DB columns. Listing clients supply validated rows,
+    including ``location`` markers for deletions."""
 
     source: str
     path: str

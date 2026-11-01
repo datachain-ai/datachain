@@ -28,11 +28,14 @@ if TYPE_CHECKING:
     from .datachain import DataChain
 
 
-def _validate_versions(versions: Versions, delta: bool | None) -> None:
-    if versions not in (True, False, None, "all"):
-        raise ValueError(f"versions must be True, False or 'all', got {versions!r}")
-    if versions == "all" and delta:
-        raise ValueError("delta is not supported with versions='all'")
+def _normalize_versions(versions: object) -> Versions:
+    if versions is None:
+        return False
+    if isinstance(versions, bool):
+        return versions
+    if versions == "all":
+        return "all"
+    raise ValueError(f"versions must be True, False, None or 'all', got {versions!r}")
 
 
 def read_storage(  # noqa: PLR0913
@@ -46,7 +49,7 @@ def read_storage(  # noqa: PLR0913
     column: str = "file",
     update: bool = False,
     anon: bool | None = None,
-    versions: Versions = True,
+    versions: Versions | None = True,
     delta: bool | None = False,
     delta_on: str | Sequence[str] | None = (
         "file.path",
@@ -85,7 +88,7 @@ def read_storage(  # noqa: PLR0913
         versions: If False, list only current objects, without versions.
             If True, list every version and return the latest ones. If "all",
             return every version and a delete row for each delete the storage
-            records (see Notes).
+            records (see Notes). None is equivalent to False.
         client_config: Optional client configuration for the storage client.
             Replaces the session's.
         delta: If True, only process new or changed files instead of reprocessing
@@ -191,7 +194,9 @@ def read_storage(  # noqa: PLR0913
     uris = uri if isinstance(uri, (list, tuple)) else [uri]
     if not uris:
         raise ValueError("No URIs provided")
-    _validate_versions(versions, delta)
+    versions = _normalize_versions(versions)
+    if versions == "all" and delta:
+        raise ValueError("delta is not supported with versions='all'")
     session_config, client_config = client_configs(
         uris, session, anon, client_config, bool(versions)
     )
@@ -305,7 +310,7 @@ def list_storage(
     uri: str | os.PathLike[str] | list[str] | list[os.PathLike[str]],
     *,
     recursive: bool | None = True,
-    versions: Versions = True,
+    versions: Versions | None = True,
     anon: bool | None = None,
     client_config: dict | None = None,
     session: Session | None = None,
@@ -328,7 +333,8 @@ def list_storage(
         recursive: If False, list only the files directly in the folder.
         versions: True, the default, returns current files with version ids.
             False omits version ids for a faster listing. "all" includes every
-            retained version and delete row, as in `read_storage`.
+            retained version and delete row, as in `read_storage`. None is equivalent
+            to False.
         anon: If True, read the bucket as public, without credentials. If
             None, the default, a public bucket is detected.
         client_config: Client configuration, such as credentials or an
@@ -352,7 +358,7 @@ def list_storage(
         table = dc.list_storage(uri).to_arrow()
         ```
     """
-    _validate_versions(versions, None)
+    versions = _normalize_versions(versions)
     uris = [os.fspath(u) for u in (uri if isinstance(uri, (list, tuple)) else [uri])]
     if not uris:
         raise ValueError("No URIs provided")
@@ -427,7 +433,7 @@ class Listing:
         return self._save_session
 
     def __repr__(self) -> str:  # noqa: D105
-        return f"Listing({self.uris!r}, versions={self.versions})"
+        return f"Listing({self.uris!r}, versions={self.versions!r})"
 
     def __iter__(self) -> Iterator[FileRow]:
         """List the storage, yielding `dc.FileRow` rows."""

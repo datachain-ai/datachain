@@ -329,7 +329,7 @@ def is_deleted(file: str = "file") -> Func:
         ```py
         history = dc.read_storage("s3://bucket/data/", versions="all")
         deleted = history.filter(func.is_deleted("file"))
-        live = history.filter(func.is_deleted("file") == False)  # noqa: E712
+        live = history.filter(func.not_(func.is_deleted("file")))
         ```
 
     Notes:

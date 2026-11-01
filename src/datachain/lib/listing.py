@@ -475,7 +475,7 @@ def describe_listing(
     if names_object(client, uri):
         return None
     # local, HF and HTTP storages have no versions: one kind of listing
-    if versions is not True and not hasattr(client.fs, "version_aware"):
+    if not hasattr(client.fs, "version_aware"):
         versions = True
     return parse_listing_uri(uri, versions=versions)
 

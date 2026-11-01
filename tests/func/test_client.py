@@ -352,7 +352,7 @@ def test_scandir_lists_keys_past_the_basic_multilingual_plane(
 @pytest.mark.parametrize(
     "tree", [{"dm": {"a": "x", "b": "x"}, "z": "x"}], indirect=True
 )
-def test_prefix_of_only_delete_markers_is_not_found(client, tree):
+def test_prefix_of_only_delete_markers_needs_delete_rows(client, tree):
     client.fs.rm([f"{client.uri}/dm/a", f"{client.uri}/dm/b"])
     listed = client.fs.call_s3("list_object_versions", Bucket=client.name, Prefix="dm/")
     for version in listed["Versions"]:

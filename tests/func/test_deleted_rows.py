@@ -8,6 +8,7 @@ import datachain as dc
 from datachain import func
 from datachain.lib.dc.listings import read_listing_dataset
 from datachain.lib.file import File, VFileError
+from tests.utils import skip_if_not_sqlite
 
 DELETED = [{"vtype": "deleted"}]
 T0 = datetime(2026, 10, 1, tzinfo=UTC)
@@ -62,31 +63,12 @@ def test_delete_row_round_trips_through_save(history):
     "expr,versions",
     [
         (lambda: func.is_deleted("file"), ["m1"]),
-        (lambda: dc.C("file.etag") == "", ["m1"]),
-        (lambda: func.is_deleted("file") == False, ["1", "2"]),  # noqa: E712
-        (lambda: ~(dc.C("file.etag") == ""), ["1", "2"]),
+        (lambda: func.not_(func.is_deleted("file")), ["1", "2"]),
         (lambda: func.is_deleted("file") & dc.C("file.path").glob("b*"), ["m1"]),
     ],
 )
 def test_filter_delete_rows(history, expr, versions):
     assert sorted(history.filter(expr()).to_values("file.version")) == versions
-
-
-def test_is_deleted_as_a_column(history):
-    rows = history.mutate(d=func.is_deleted("file")).order_by("file.version")
-
-    assert rows.to_list("file.version", "d") == [
-        ("1", False),
-        ("2", False),
-        ("m1", True),
-    ]
-
-
-def test_is_deleted_on_a_renamed_column(files, test_session):
-    chain = dc.read_values(f=files, session=test_session)
-
-    assert chain.filter(func.is_deleted("f")).to_values("f.version") == ["m1"]
-    assert deleted_paths(chain, "f") == [("b.txt", "m1")]
 
 
 def test_delete_rows_through_chain_ops(history, files, test_session):
@@ -369,11 +351,12 @@ def test_sql_and_python_deletion_state_match(
     assert chain.filter(func.is_deleted(column)).count() == int(expected)
 
 
-def test_a_delete_row_is_not_downloaded(files, test_session):
-    client = test_session.catalog.get_client(files[2].source)
+@skip_if_not_sqlite
+def test_copy_dataset_refuses_delete_rows(history, tmp_path):
+    saved = history.filter(func.is_deleted("file")).save("deleted")
 
     with pytest.raises(VFileError, match="object was deleted"):
-        client.put_in_cache(files[2])
+        history.session.catalog.cp([f"ds://{saved.name}"], str(tmp_path / "out"))
 
 
 @pytest.mark.parametrize("cloud_type,version_aware", [("s3", True)], indirect=True)

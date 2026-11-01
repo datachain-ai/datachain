@@ -44,7 +44,9 @@ def test_listing_rows_match_saved_listing(cloud_test_catalog, versions):
     ]
 
 
-@pytest.mark.parametrize("cloud_type,version_aware", [("s3", True)], indirect=True)
+@pytest.mark.parametrize(
+    "cloud_type,version_aware", [("s3", True), ("gs", True)], indirect=True
+)
 @pytest.mark.parametrize(
     "suffix,recursive", [("/", True), ("/", False), ("/*", True), ("/sub/", True)]
 )

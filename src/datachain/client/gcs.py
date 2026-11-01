@@ -264,7 +264,6 @@ class GCSClient(RangeListedClient):
         page_token, held = (
             token if self.list_deleted and token is not None else (token, None)
         )
-        # a generation's delete time reads the next generation's creation time
         fields = self.LIST_FIELDS
         if self.list_deleted:
             fields = fields.replace("updated)", "updated,timeCreated)")
@@ -310,6 +309,7 @@ class GCSClient(RangeListedClient):
     ) -> list[tuple]:
         """Rows of ``items`` with their delete rows; ``held`` waits for the next
         page."""
+        # fake-gcs-server lists the current generation before older ones.
         items = sorted(items, key=lambda d: (d["name"], int(d["generation"])))
         rows = []
         for i, d in enumerate(items):
