@@ -830,12 +830,12 @@ def test_get_frames_get_np_no_double_decode(video_file, monkeypatch, method, arg
     monkeypatch.setattr(VideoFile, "open", counting_open)
 
     frames = list(getattr(video_file.as_video_file(), method)(*args))
-    assert open_call_count == 1, "get_frames() should open the file exactly once"
+    assert open_call_count == 1, f"{method}() should open the file exactly once"
 
     open_call_count = 0
     arrays = [frame.get_np() for frame in frames]
     assert open_call_count == 0, (
-        "get_np() should not re-open the file for frames from get_frames()"
+        f"get_np() should not re-open the file for frames from {method}()"
     )
     assert all(isinstance(arr, ndarray) for arr in arrays)
     assert all(arr.shape == (360, 640, 3) for arr in arrays)
@@ -1382,6 +1382,39 @@ def test_sample_frames_selects_first_frame_at_or_after_target(
 def test_sample_frames_handles_stream_start_offset(mpegts_video):
     frames = list(mpegts_video.file.sample_frames(24))
     assert [frame.frame for frame in frames] == list(range(10))
+    assert [frame.timestamp for frame in frames] == pytest.approx(
+        [(i + 1) / 24 for i in range(10)]
+    )
+
+
+@pytest.mark.parametrize(
+    "method,args", [("get_frames", (0, 10)), ("sample_frames", (24,))]
+)
+def test_frame_iterators_estimate_missing_timestamps_with_stream_offset(
+    mpegts_video, monkeypatch, method, args
+):
+    original_open = av.open
+    starts = []
+
+    @contextmanager
+    def without_timestamps(*args, **kwargs):
+        with original_open(*args, **kwargs) as container:
+
+            def decode(stream):
+                starts.append(float(stream.start_time * stream.time_base))
+                for frame in container.decode(stream):
+                    frame.pts = None
+                    yield frame
+
+            yield SimpleNamespace(streams=container.streams, decode=decode)
+
+    monkeypatch.setattr(av, "open", without_timestamps)
+    frames = list(getattr(mpegts_video.file, method)(*args))
+
+    assert [frame.frame for frame in frames] == list(range(10))
+    assert [frame.timestamp for frame in frames] == pytest.approx(
+        [starts[0] + i / 24 for i in range(10)]
+    )
 
 
 def test_sample_frames_estimates_missing_timestamps(raw_h264_video):

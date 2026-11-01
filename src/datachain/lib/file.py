@@ -1492,7 +1492,8 @@ class VideoFile(File):
         rate. This selects the next observation, rather than the frame still
         on screen during a gap. ``timestamp`` is the frame's own time,
         including any stream offset, not the sample time. Videos without
-        timestamps use their frame rate to estimate frame times.
+        timestamps use frame indices and the stream frame rate to estimate
+        frame times. Estimates may be inaccurate for variable-frame-rate video.
 
         Args:
             fps: Samples per second. Must be finite and positive.
@@ -1861,7 +1862,8 @@ class VideoFrame(DataModel):
         timestamp (float): Frame timestamp in seconds. Frames returned by
             ``VideoFile.get_frame()`` use FPS metadata. Frames yielded by
             ``VideoFile.get_frames()`` use decoded frame timestamps when
-            available; ``VideoFile.sample_frames()`` selects by decoded time.
+            available; ``VideoFile.sample_frames()`` also uses decoded timestamps,
+            including the stream start offset.
 
     Note:
         The decoded ``av.VideoFrame`` is cached in the ``_decoded`` instance
@@ -1870,11 +1872,10 @@ class VideoFrame(DataModel):
         ``VideoFile.sample_frames()`` are pre-populated with the decoded frame,
         so the first call to any of those methods requires no I/O. The cache
         is held for the lifetime of the ``VideoFrame`` object; when many frames
-        are kept in memory at once (e.g. ``list(video.get_frames())``),
-        the cached pixel buffers can
-        create significant memory pressure (~3 MB each for 1080p video).  The
-        cache is excluded from pickling so cross-process serialisation (e.g.
-        DataChain ``.gen()`` workers) is unaffected.
+        are kept in memory at once (e.g. ``list(video.get_frames())``), the cached
+        pixel buffers can create significant memory pressure (~3 MB each for
+        1080p video). The cache is excluded from pickling, so cross-process
+        serialisation (e.g. DataChain ``.gen()`` workers) is unaffected.
     """
 
     video: VideoFile

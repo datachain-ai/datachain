@@ -5,7 +5,6 @@ import subprocess
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from fractions import Fraction
 from math import ceil, floor, isfinite
 from typing import TYPE_CHECKING, Any, cast
 
@@ -266,6 +265,7 @@ def _video_frames_from_decoded(
     step: int,
     fps: float,
     video_stream_index: int,
+    start_time: float,
 ) -> Iterator[VideoFrame]:
     for frame_index, frame in decoded_frames:
         if frame_index >= end:
@@ -277,7 +277,7 @@ def _video_frames_from_decoded(
             video=video,
             frame=frame_index,
             video_stream_index=video_stream_index,
-            timestamp=_frame_timestamp(frame, frame_index, fps),
+            timestamp=_frame_timestamp(frame, frame_index, fps, start_time),
         )
         video_frame._decoded = frame
         yield video_frame
@@ -343,7 +343,7 @@ def validate_frame_range(
     return start, end, step
 
 
-def _frame_timestamp(frame, frame_index: int, fps: float) -> float:
+def _frame_timestamp(frame, frame_index: int, fps: float, start_time: float) -> float:
     if frame.pts is not None and frame.time_base is not None:
         return float(frame.pts * frame.time_base)
 
@@ -351,7 +351,7 @@ def _frame_timestamp(frame, frame_index: int, fps: float) -> float:
         return float(frame.time)
 
     if fps > 0:
-        return frame_index / fps
+        return start_time + frame_index / fps
 
     raise ValueError("unable to determine frame timestamp")
 
@@ -369,7 +369,6 @@ def sample_video_frames(
     if not isfinite(fps) or fps <= 0:
         raise ValueError("fps must be finite and positive")
     _validate_video_stream_index(video_stream_index)
-    rate = Fraction(str(fps))
     sample_index = 0
 
     try:
@@ -385,8 +384,8 @@ def sample_video_frames(
             stream_fps = _video_fps(stream)
             start = _stream_start_time(stream)
             for frame_index, frame in enumerate(container.decode(stream)):
-                timestamp = _frame_timestamp(frame, frame_index, stream_fps)
-                while (timestamp - start) * rate + FRAME_INDEX_EPSILON >= sample_index:
+                timestamp = _frame_timestamp(frame, frame_index, stream_fps, start)
+                while (timestamp - start) * fps + FRAME_INDEX_EPSILON >= sample_index:
                     result = VideoFrame(
                         video=video,
                         frame=frame_index,
@@ -440,6 +439,7 @@ def video_frames(
                         step=step,
                         fps=fps,
                         video_stream_index=video_stream_index,
+                        start_time=_stream_start_time(video_stream),
                     )
                 except _SeekLandedAfterStartError:
                     if not seeked:
@@ -460,6 +460,7 @@ def video_frames(
                         step=step,
                         fps=fps,
                         video_stream_index=video_stream_index,
+                        start_time=_stream_start_time(video_stream),
                     )
     except FileError:
         raise
