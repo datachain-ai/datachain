@@ -478,6 +478,10 @@ def _cpu_quotas(
                 base, files = root, ["cpu.max"]
             elif "cpu" in controllers.split(","):  # v1
                 base = os.path.join(root, controllers)
+                if not os.path.isdir(base):
+                    base = os.path.join(root, ",".join(sorted(controllers.split(","))))
+                if not os.path.isdir(base):
+                    base = os.path.join(root, "cpu")
                 files = ["cpu.cfs_quota_us", "cpu.cfs_period_us"]
             else:
                 continue
@@ -507,7 +511,7 @@ def usable_cpu_count() -> int:
     cpus = os.cpu_count() or 1
     with suppress(OSError):
         if hasattr(os, "process_cpu_count"):
-            cpus = os.process_cpu_count() or 1
+            cpus = os.process_cpu_count() or cpus
         elif hasattr(os, "sched_getaffinity"):
             cpus = len(os.sched_getaffinity(0))
     caps = [-(-quota // period) for quota, period in _cpu_quotas() if period > 0]

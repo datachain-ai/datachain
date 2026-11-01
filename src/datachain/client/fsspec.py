@@ -2,6 +2,7 @@ import asyncio
 import functools
 import io
 import logging
+import multiprocessing
 import os
 import posixpath
 import re
@@ -27,7 +28,6 @@ from datachain.fs.utils import is_win_local_path
 from datachain.nodes_fetcher import NodesFetcher
 from datachain.nodes_thread_pool import NodeChunk
 from datachain.progress import tqdm
-from datachain.utils import usable_cpu_count
 
 from .ranges import LIST_WORKERS, Page, RangeListing
 
@@ -73,7 +73,7 @@ class BucketStatus(NamedTuple):
 
 
 class Client(ABC):
-    MAX_THREADS = usable_cpu_count()
+    MAX_THREADS = multiprocessing.cpu_count()
     FS_CLASS: ClassVar[type["AbstractFileSystem"]]
     PREFIX: ClassVar[str]
     protocol: ClassVar[str]
