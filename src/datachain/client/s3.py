@@ -11,6 +11,7 @@ from botocore import handlers
 from botocore.configloader import load_config
 from botocore.exceptions import ClientError, ConfigNotFound, NoCredentialsError
 from botocore.model import Shape
+from botocore.session import Session
 from botocore.utils import parse_timestamp
 from fsspec.asyn import get_loop, sync, sync_wrapper
 from s3fs import S3FileSystem
@@ -83,6 +84,41 @@ def _region_key(name: str, kwargs: dict[str, Any]) -> tuple | None:
     return name, profile, region
 
 
+def _has_credentials(kwargs: dict[str, Any]) -> bool:
+    client_kwargs = kwargs.get("client_kwargs") or {}
+    if (
+        kwargs.get("key")
+        or client_kwargs.get("aws_access_key_id")
+        or "session" in kwargs
+    ):
+        return True
+    env = frozenset(
+        (k, v)
+        for k, v in os.environ.items()
+        if k.startswith("AWS_") or k == "BOTO_CONFIG"
+    )
+    files = []
+    for path in (
+        os.environ.get("AWS_CONFIG_FILE", "~/.aws/config"),
+        os.environ.get("AWS_SHARED_CREDENTIALS_FILE", "~/.aws/credentials"),
+        os.environ.get("BOTO_CONFIG", "~/.boto"),
+    ):
+        path = os.path.abspath(os.path.expanduser(os.path.expandvars(path)))
+        try:
+            stat = os.stat(path)
+        except OSError:
+            stamp = None
+        else:
+            stamp = (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+        files.append((path, stamp))
+    return _finds_credentials(kwargs.get("profile"), env, tuple(files))
+
+
+@lru_cache(maxsize=16)
+def _finds_credentials(profile: str | None, _env: frozenset, _files: tuple) -> bool:
+    return Session(profile=profile).get_credentials() is not None
+
+
 def _head_bucket(fs: S3FileSystem, name: str) -> tuple[int, str | None]:
     try:
         # An asynchronous filesystem has no fs.loop for its sync wrappers.
@@ -96,7 +132,9 @@ def _head_bucket(fs: S3FileSystem, name: str) -> tuple[int, str | None]:
         status = meta["HTTPStatusCode"]
         # R2 refuses anonymous requests with 400; other service errors must
         # keep their original exception, including authenticated 400 and 429.
-        if status not in (301, 401, 403, 404) and not (status == 400 and fs.anon):
+        if status == 301:
+            raise e.__cause__ from None
+        if status not in (401, 403, 404) and not (status == 400 and fs.anon):
             raise
     headers = meta.get("HTTPHeaders", {})
     return meta["HTTPStatusCode"], headers.get("x-amz-bucket-region")
@@ -260,14 +298,8 @@ class ClientS3(RangeListedClient):
             # it tries to randomly guess and creates wrong signature
             kwargs.setdefault("cache_regions", True)
 
-        if not kwargs.get("anon"):
-            try:
-                # Run an inexpensive check to see if credentials are available
-                super().create_fs(**kwargs).sign("s3://bucket/object")
-            except NoCredentialsError:
-                kwargs["anon"] = True
-            except NotImplementedError:
-                pass
+        if not kwargs.get("anon") and not _has_credentials(kwargs):
+            kwargs["anon"] = True
 
         return cast("S3FileSystem", super().create_fs(**kwargs))
 
@@ -288,7 +320,7 @@ class ClientS3(RangeListedClient):
             _BUCKET_REGIONS[key] = region
         if status == 200:
             return BucketStatus(exists=True, access="anonymous")
-        if status in (301, 404):
+        if status == 404:
             return not_found
 
         # Use raw S3FileSystem to bypass ClientS3.create_fs()'s auto-anon fallback.
@@ -307,7 +339,7 @@ class ClientS3(RangeListedClient):
             status = 403
         if status == 200:
             return BucketStatus(exists=True, access="authenticated")
-        if status in (301, 404):
+        if status == 404:
             return not_found
         return BucketStatus(
             exists=True,

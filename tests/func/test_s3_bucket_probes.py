@@ -3,11 +3,13 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
+from botocore.exceptions import ClientError
 from fsspec.asyn import get_loop, sync
 from s3fs import S3FileSystem
 
 import datachain as dc
 from datachain.client import s3
+from datachain.client.fsspec import BucketStatus
 from datachain.client.s3 import ClientS3
 
 _CREDENTIALS = {"key": "synthetic-key", "secret": "synthetic-secret"}
@@ -41,15 +43,20 @@ def isolated_aws(monkeypatch, tmp_path):
 def endpoints():
     servers = []
 
-    def start(region="us-east-1", statuses=(200, 200)):
+    def start(region="us-east-1", statuses=(200, 200), redirect_once=False):
         requests = []
 
         class Handler(BaseHTTPRequestHandler):
             def do_HEAD(self):
                 signed = bool(self.headers.get("Authorization"))
                 requests.append(("HEAD", signed))
-                self.send_response(statuses[int(signed)])
-                if statuses[int(signed)] == 200:
+                status = (
+                    301
+                    if redirect_once and len(requests) == 1
+                    else statuses[int(signed)]
+                )
+                self.send_response(status)
+                if status in (200, 301):
                     self.send_header("x-amz-bucket-region", region)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
@@ -203,10 +210,137 @@ def test_probe_preserves_service_errors(endpoints, statuses):
     assert len(requests) == (1 if statuses[0] == 429 else 2)
 
 
-def test_r2_anonymous_bad_request_still_allows_authenticated_probe(endpoints):
-    endpoint, requests = endpoints(statuses=(400, 200))
+@pytest.mark.parametrize(
+    "statuses,credentials,expected,signed",
+    [
+        ((200, 200), {}, BucketStatus(True, "anonymous"), [False]),
+        (
+            (404, 404),
+            _CREDENTIALS,
+            BucketStatus(False, "denied", "S3 bucket 'bucket' not found"),
+            [False],
+        ),
+        ((403, 200), _CREDENTIALS, BucketStatus(True, "authenticated"), [False, True]),
+        ((400, 200), _CREDENTIALS, BucketStatus(True, "authenticated"), [False, True]),
+        (
+            (403, 403),
+            {},
+            BucketStatus(
+                True,
+                "denied",
+                "Access denied to S3 bucket 'bucket'"
+                " — check AWS credentials/permissions",
+            ),
+            [False],
+        ),
+        (
+            (403, 403),
+            _CREDENTIALS,
+            BucketStatus(
+                True,
+                "denied",
+                "Access denied to S3 bucket 'bucket'"
+                " — check AWS credentials/permissions",
+            ),
+            [False, True],
+        ),
+        (
+            (403, 404),
+            _CREDENTIALS,
+            BucketStatus(False, "denied", "S3 bucket 'bucket' not found"),
+            [False, True],
+        ),
+    ],
+    ids=[
+        "public",
+        "missing",
+        "authenticated",
+        "r2",
+        "no-credentials",
+        "denied",
+        "authenticated-missing",
+    ],
+)
+def test_bucket_status(endpoints, statuses, credentials, expected, signed):
+    endpoint, seen = endpoints(statuses=statuses)
     status = ClientS3.bucket_status(
-        "bucket", endpoint_url=endpoint, **_CREDENTIALS, skip_instance_cache=True
+        "bucket", endpoint_url=endpoint, skip_instance_cache=True, **credentials
     )
-    assert status.access == "authenticated"
-    assert requests == [("HEAD", False), ("HEAD", True)]
+    assert status == expected
+    assert seen == [("HEAD", value) for value in signed]
+
+
+def test_probe_follows_a_regional_redirect(endpoints):
+    endpoint, requests = endpoints(region="eu-west-2", redirect_once=True)
+    status = ClientS3.bucket_status(
+        "bucket",
+        endpoint_url=endpoint,
+        region_name="us-east-1",
+        skip_instance_cache=True,
+    )
+    assert status == BucketStatus(True, "anonymous")
+    assert requests == [("HEAD", False), ("HEAD", False)]
+
+
+@pytest.mark.parametrize("statuses", [(301, 200), (403, 301)])
+def test_probe_preserves_an_unresolved_redirect(endpoints, statuses):
+    endpoint, requests = endpoints(region="eu-west-2", statuses=statuses)
+    with pytest.raises(ClientError) as exc:
+        ClientS3.bucket_status(
+            "bucket", endpoint_url=endpoint, **_CREDENTIALS, skip_instance_cache=True
+        )
+    assert exc.value.response["ResponseMetadata"]["HTTPStatusCode"] == 301
+    assert (
+        exc.value.response["ResponseMetadata"]["HTTPHeaders"]["x-amz-bucket-region"]
+        == "eu-west-2"
+    )
+    assert requests[-1] == ("HEAD", statuses[0] != 301)
+
+
+@pytest.mark.parametrize("in_loop", [False, True])
+def test_filesystem_without_credentials_is_anonymous(in_loop):
+    async def create():
+        return ClientS3.create_fs(skip_instance_cache=True)
+
+    fs = (
+        sync(get_loop(), create)
+        if in_loop
+        else ClientS3.create_fs(skip_instance_cache=True)
+    )
+    assert fs.anon
+
+
+@pytest.mark.parametrize(
+    "credentials",
+    [
+        _CREDENTIALS,
+        {
+            "client_kwargs": {
+                "aws_access_key_id": "key",
+                "aws_secret_access_key": "secret",
+            }
+        },
+    ],
+)
+def test_filesystem_creation_does_not_send_s3_requests(monkeypatch, credentials):
+    async def unexpected(*args, **kwargs):
+        pytest.fail("Filesystem creation sent an S3 request")
+
+    monkeypatch.setattr("aiobotocore.endpoint.AioEndpoint.make_request", unexpected)
+    fs = ClientS3.create_fs(skip_instance_cache=True, **credentials)
+    assert not fs.anon
+
+
+@pytest.mark.parametrize("source", ["environment", "credentials-file"])
+def test_filesystem_rechecks_changed_credentials(monkeypatch, source):
+    assert ClientS3.create_fs(skip_instance_cache=True).anon
+    if source == "environment":
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "key")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secret")
+    else:
+        from pathlib import Path
+
+        Path(os.environ["AWS_SHARED_CREDENTIALS_FILE"]).write_text(
+            "[default]\naws_access_key_id = key\naws_secret_access_key = secret\n"
+        )
+    assert not ClientS3.create_fs(skip_instance_cache=True).anon
