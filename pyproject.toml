@@ -122,6 +122,7 @@ tests = [
   "pytest-benchmark[histogram]",
   "pytest-codspeed",
   "pytest-xdist>=3.3.1",
+  "pytest-split>=0.10.0",
   "pytest-dotenv",
   "virtualenv",
   "dulwich",
@@ -184,6 +185,7 @@ markers = [
   "get_started: Get started examples",
   "llm_and_nlp: LLM and NLP examples",
   "multimodal: Multimodal examples",
+  "multimodal_heavy: Multimodal examples with large downloads or slow inference",
   "incremental_processing: Delta and retry examples"
 ]
 filterwarnings = [
