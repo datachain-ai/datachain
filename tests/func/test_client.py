@@ -843,13 +843,14 @@ def test_get_etag_missing_raises_filenotfound(
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
 def test_put_in_cache_pinned_version_ignores_stale_etag(
     cloud_test_catalog_upload,
+    cloud_prefix,
     cloud_type,
     version_aware,
 ):
     ctc = cloud_test_catalog_upload
     client = ctc.catalog.get_client(ctc.src_uri)
 
-    rel_path = f"client-put-in-cache/{uuid4().hex}.bin"
+    rel_path = f"{cloud_prefix}/cached.bin"
     uploaded_v1 = client.upload(b"v1", rel_path)
     client.upload(b"version-2", rel_path)
 
@@ -870,6 +871,7 @@ def test_put_in_cache_pinned_version_ignores_stale_etag(
 @pytest.mark.parametrize("size", [0, 1])
 def test_put_in_cache_pinned_version_with_another_size_raises(
     cloud_test_catalog_upload,
+    cloud_prefix,
     cloud_type,
     version_aware,
     size,
@@ -877,7 +879,7 @@ def test_put_in_cache_pinned_version_with_another_size_raises(
     ctc = cloud_test_catalog_upload
     client = ctc.catalog.get_client(ctc.src_uri)
 
-    rel_path = f"client-put-in-cache/{uuid4().hex}.bin"
+    rel_path = f"{cloud_prefix}/cached.bin"
     uploaded = client.upload(b"v1", rel_path)
 
     file = File(
@@ -897,13 +899,14 @@ def test_put_in_cache_pinned_version_with_another_size_raises(
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
 def test_put_in_cache_pinned_version_with_unknown_size_reads_it(
     cloud_test_catalog_upload,
+    cloud_prefix,
     cloud_type,
     version_aware,
 ):
     ctc = cloud_test_catalog_upload
     client = ctc.catalog.get_client(ctc.src_uri)
 
-    rel_path = f"client-put-in-cache/{uuid4().hex}.bin"
+    rel_path = f"{cloud_prefix}/cached.bin"
     uploaded = client.upload(b"v1", rel_path)
 
     file = File(
@@ -921,13 +924,14 @@ def test_put_in_cache_pinned_version_with_unknown_size_reads_it(
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
 def test_put_in_cache_unpinned_stale_etag_raises(
     cloud_test_catalog_upload,
+    cloud_prefix,
     cloud_type,
     version_aware,
 ):
     ctc = cloud_test_catalog_upload
     client = ctc.catalog.get_client(ctc.src_uri)
 
-    rel_path = f"client-put-in-cache/{uuid4().hex}.bin"
+    rel_path = f"{cloud_prefix}/cached.bin"
     client.upload(b"v1", rel_path)
 
     file = File(source=ctc.src_uri, path=rel_path, etag="stale-etag", size=2)
@@ -941,6 +945,7 @@ def test_put_in_cache_unpinned_stale_etag_raises(
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
 def test_put_in_cache_s3_null_version_checks_etag(
     cloud_test_catalog_upload,
+    cloud_prefix,
     cloud_type,
     version_aware,
 ):
@@ -948,7 +953,7 @@ def test_put_in_cache_s3_null_version_checks_etag(
     client = ctc.catalog.get_client(ctc.src_uri)
     bucket = client.name
 
-    rel_path = f"client-put-in-cache/{uuid4().hex}.bin"
+    rel_path = f"{cloud_prefix}/cached.bin"
     client.fs.make_bucket_versioned(bucket, versioned=False)
     try:
         uploaded_v1 = client.upload(b"v1", rel_path)
