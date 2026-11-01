@@ -357,7 +357,7 @@ def list_storage(
     if not uris:
         raise ValueError("No URIs provided")
     session_config, config = client_configs(
-        uris, session, anon, client_config, versions
+        uris, session, anon, client_config, bool(versions)
     )
     return Listing(
         uris,
