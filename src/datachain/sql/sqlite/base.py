@@ -21,6 +21,7 @@ from datachain.sql.functions import (
     aggregate,
     array,
     conditional,
+    conversion,
     numeric,
     random,
     string,
@@ -102,6 +103,7 @@ def setup():
     compiles(string.byte_hamming_distance, "sqlite")(compile_byte_hamming_distance)
     compiles(conditional.greatest, "sqlite")(compile_greatest)
     compiles(conditional.least, "sqlite")(compile_least)
+    compiles(conversion.json_value, "sqlite")(compile_json_value)
     compiles(Values, "sqlite")(compile_values)
     compiles(random.rand, "sqlite")(compile_rand)
     compiles(aggregate.avg, "sqlite")(compile_avg)
@@ -623,6 +625,10 @@ def py_json_array_slice(val, offset: int, length: int | None = None):
 
 def py_json_array_join(val, sep: str):
     return sep.join(json.loads(val))
+
+
+def compile_json_value(element, compiler, **kwargs):
+    return compiler.process(func.json_extract(*element.clauses.clauses), **kwargs)
 
 
 def compile_array_get_element(element, compiler, **kwargs):

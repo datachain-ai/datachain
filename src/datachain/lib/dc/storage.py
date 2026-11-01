@@ -14,6 +14,7 @@ from datachain.lib.dc.storage_pattern import (
     storage_sources,
 )
 from datachain.lib.file import File, FileRow, FileType, get_file_type
+from datachain.lib.listing import Versions
 from datachain.lib.storage_config import client_configs, session_for
 from datachain.query import Session
 
@@ -27,6 +28,16 @@ if TYPE_CHECKING:
     from .datachain import DataChain
 
 
+def _normalize_versions(versions: object) -> Versions:
+    if versions is None:
+        return False
+    if isinstance(versions, bool):
+        return versions
+    if versions == "all":
+        return "all"
+    raise ValueError(f"versions must be True, False, None or 'all', got {versions!r}")
+
+
 def read_storage(  # noqa: PLR0913
     uri: str | os.PathLike[str] | list[str] | list[os.PathLike[str]],
     *,
@@ -38,7 +49,7 @@ def read_storage(  # noqa: PLR0913
     column: str = "file",
     update: bool = False,
     anon: bool | None = None,
-    versions: bool = True,
+    versions: Versions | None = True,
     delta: bool | None = False,
     delta_on: str | Sequence[str] | None = (
         "file.path",
@@ -55,8 +66,9 @@ def read_storage(  # noqa: PLR0913
 
     A saved listing of the URI, or of a prefix above it, younger than 4 hours
     is reused; otherwise the storage is listed and saved, as
-    `dc.list_storage(uri).save()` does. The chain holds current objects. To list a
-    storage without saving it, use `dc.list_storage()`.
+    `dc.list_storage(uri).save()` does. By default the chain holds current objects;
+    `versions="all"` includes retained versions and delete rows. To list a storage
+    without saving it, use `dc.list_storage()`.
 
     Parameters:
         uri: Storage path(s) or URI(s). Can be a local path or start with a
@@ -73,10 +85,10 @@ def read_storage(  # noqa: PLR0913
         update: list the storage again instead of reusing a saved listing.
             Default is False.
         anon: If True, we will treat cloud bucket as public one.
-        versions: The chain holds current files either way: old versions are
-            not included. If True, the default, on a versioned bucket each file
-            carries its version id, and the saved listing keeps old versions
-            too. If False, no version ids, and the listing is faster.
+        versions: If False, list only current objects, without versions.
+            If True, list every version and return the latest ones. If "all",
+            return every version and a delete row for each delete the storage
+            records (see Notes). None is equivalent to False.
         client_config: Optional client configuration for the storage client.
             Replaces the session's.
         delta: If True, only process new or changed files instead of reprocessing
@@ -106,6 +118,32 @@ def read_storage(  # noqa: PLR0913
 
     Returns:
         DataChain: A DataChain object containing the file information.
+
+    Notes:
+        With ``versions="all"``, a delete row is a ``File`` whose
+        ``is_deleted`` is True: ``last_modified`` is the time of the delete,
+        ``version`` the id of the delete (the delete marker id on S3,
+        ``deleted:<deleted version>`` on GCS and Azure), ``size`` 0, ``etag`` empty and
+        ``is_latest`` False. Opening it raises an error.
+        ``func.is_deleted("file")`` selects them in queries. A key is deleted
+        now when none of its rows has ``is_latest`` True.
+
+        - The history is what the storage still keeps: permanently deleted
+          versions and expired delete markers leave no row.
+        - Rows of one key can share ``last_modified`` (S3 keeps whole
+          seconds, and a multipart upload is stamped with its start time),
+          so ordering by time may not match the order of the writes.
+        - Azure keeps neither past deletes nor the time of a delete: a key
+          that is deleted now gets one delete row, with ``last_modified``
+          set to 1970-01-01 (epoch 0).
+        - S3 records a delete marker for every delete, also of a key that is
+          already deleted or never existed; GCS records only the delete of a
+          live object.
+        - A URI naming an existing object returns its current version only.
+          Without a current object or matching folder, it raises
+          ``FileNotFoundError``. List the parent prefix and filter ``file.path``
+          to retrieve one key's history.
+        - ``delta`` is not supported.
 
     Examples:
         Simple call from s3:
@@ -139,6 +177,12 @@ def read_storage(  # noqa: PLR0913
         dc.read_storage("s3://my-bucket/my-dir", versions=False)
         ```
 
+        Every version and every delete of a versioned bucket:
+        ```python
+        history = dc.read_storage("s3://my-bucket/my-dir", versions="all")
+        deleted = history.filter(dc.func.is_deleted("file"))
+        ```
+
         With AWS S3-compatible storage:
         ```python
         dc.read_storage(
@@ -150,8 +194,11 @@ def read_storage(  # noqa: PLR0913
     uris = uri if isinstance(uri, (list, tuple)) else [uri]
     if not uris:
         raise ValueError("No URIs provided")
+    versions = _normalize_versions(versions)
+    if versions == "all" and delta:
+        raise ValueError("delta is not supported with versions='all'")
     session_config, client_config = client_configs(
-        uris, session, anon, client_config, versions
+        uris, session, anon, client_config, bool(versions)
     )
     session = session_for(session, session_config, in_memory)
     return _read_storage(
@@ -185,7 +232,7 @@ def _read_storage(
     recursive: bool | None = True,
     column: str = "file",
     update: bool = False,
-    versions: bool = True,
+    versions: Versions = True,
     delta: bool | None = False,
     delta_on: str | Sequence[str] | None = None,
     delta_result_on: str | Sequence[str] | None = None,
@@ -228,7 +275,10 @@ def _read_storage(
 
         chains.append(
             listing_lib.select_paths(
-                dc, path_filter(list_path, glob_pattern, recursive), column
+                dc,
+                path_filter(list_path, glob_pattern, recursive),
+                column,
+                latest=versions != "all",
             )
         )
 
@@ -260,7 +310,7 @@ def list_storage(
     uri: str | os.PathLike[str] | list[str] | list[os.PathLike[str]],
     *,
     recursive: bool | None = True,
-    versions: bool = True,
+    versions: Versions | None = True,
     anon: bool | None = None,
     client_config: dict | None = None,
     session: Session | None = None,
@@ -281,9 +331,10 @@ def list_storage(
         uri: Storage URI(s), as in `read_storage`: buckets, folders or files,
             with glob patterns (`*`, `**`, `?`, `{a,b}`, `{1..9}`).
         recursive: If False, list only the files directly in the folder.
-        versions: As in `read_storage`, the rows are current files. If True,
-            the default, on a versioned bucket they carry their version id. If
-            False, they don't, and the listing is faster.
+        versions: True, the default, returns current files with version ids.
+            False omits version ids for a faster listing. "all" includes every
+            retained version and delete row, as in `read_storage`. None is equivalent
+            to False.
         anon: If True, read the bucket as public, without credentials. If
             None, the default, a public bucket is detected.
         client_config: Client configuration, such as credentials or an
@@ -307,11 +358,12 @@ def list_storage(
         table = dc.list_storage(uri).to_arrow()
         ```
     """
+    versions = _normalize_versions(versions)
     uris = [os.fspath(u) for u in (uri if isinstance(uri, (list, tuple)) else [uri])]
     if not uris:
         raise ValueError("No URIs provided")
     session_config, config = client_configs(
-        uris, session, anon, client_config, versions
+        uris, session, anon, client_config, bool(versions)
     )
     return Listing(
         uris,
@@ -355,7 +407,7 @@ class Listing:
         uris: list[str],
         *,
         recursive: bool | None = True,
-        versions: bool,
+        versions: Versions,
         client_config: dict,
         session: Session | None = None,
         session_config: dict | None = None,
@@ -381,7 +433,7 @@ class Listing:
         return self._save_session
 
     def __repr__(self) -> str:  # noqa: D105
-        return f"Listing({self.uris!r}, versions={self.versions})"
+        return f"Listing({self.uris!r}, versions={self.versions!r})"
 
     def __iter__(self) -> Iterator[FileRow]:
         """List the storage, yielding `dc.FileRow` rows."""
@@ -396,14 +448,21 @@ class Listing:
                 yield [listing_lib.file_row(info)]
                 continue
             if source.scope is None:
-                pages = listing_lib.list_pages(source.uri, cache, self.client_config)
+                pages = listing_lib.list_pages(
+                    source.uri,
+                    cache,
+                    self.client_config,
+                    deleted=self.versions == "all",
+                )
             else:
                 pages = listing_lib.list_scope_pages(
-                    source.uri, source.scope, cache, self.client_config
+                    source.uri,
+                    source.scope,
+                    cache,
+                    self.client_config,
+                    deleted=self.versions == "all",
                 )
-            # current objects, as read_storage's chain: a listing with versions
-            # holds old ones too, listed for the version ids of current ones
-            latest = self.versions
+            latest = self.versions is True
             if source.filters == (listing_lib.PathFilter(),) and not latest:
                 yield from pages
                 continue
@@ -571,7 +630,7 @@ def _prepare_listing(
     file_type: type[File] = File,
     column: str = "file",
     update: bool = False,
-    versions: bool = True,
+    versions: Versions = True,
     settings: dict | None = None,
     in_memory: bool = False,
     delta: bool | None = False,
@@ -622,6 +681,7 @@ def _prepare_listing(
             file_type=file_type,
             settings=settings,
             in_memory=in_memory,
+            deleted=versions == "all",
         )
     )
     return chain, list_uri, list_path

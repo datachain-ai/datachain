@@ -9,7 +9,7 @@ from sqlalchemy import true as sql_true
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.utils import DataChainParamsError
 from datachain.query.schema import Column, ColumnExpr
-from datachain.sql.functions import conditional
+from datachain.sql.functions import conditional, conversion
 
 from .func import Func, _source_is_nullable, _TagAwareFunc
 
@@ -44,6 +44,15 @@ class _IsNoneFunc(_TagAwareFunc):
         tag.table = table
         func_col = sql_case((tag.is_(None), True), else_=False)
         return self._finalize_column(func_col, python_to_sql(bool), label)
+
+
+class _IsDeletedFunc(Func):
+    def is_nullable_result(
+        self,
+        signals_schema: "SignalSchema | None",
+        col_type: "DataType | None" = None,
+    ) -> bool:
+        return False
 
 
 class _CaseFunc(Func):
@@ -300,6 +309,48 @@ def isnone(col: str | ColumnExpr) -> Func:
             (c.is_(None) if c is not None else sql_true(), True), else_=False
         ),
         cols=[col],
+        result_type=bool,
+    )
+
+
+def is_deleted(file: str = "file") -> Func:
+    """
+    Selects the delete rows of ``read_storage(versions="all")``.
+
+    Uses the location's delete marker, matching ``File.is_deleted`` in Python.
+
+    Args:
+        file (str): Name of the `File` signal. Defaults to "file".
+
+    Returns:
+        Func: A `Func` object that represents the is_deleted function.
+
+    Example:
+        ```py
+        history = dc.read_storage("s3://bucket/data/", versions="all")
+        deleted = history.filter(func.is_deleted("file"))
+        live = history.filter(func.not_(func.is_deleted("file")))
+        ```
+
+    Notes:
+        - The result column will always be of type bool.
+    """
+    from datachain.lib.file import DeletedVFile
+
+    marker = DeletedVFile.get_vtype()
+    return _IsDeletedFunc(
+        "is_deleted",
+        inner=lambda location: sql_case(
+            (
+                sql_or(
+                    conversion.json_value(location, "$[0].vtype") == marker,
+                    conversion.json_value(location, "$.vtype") == marker,
+                ),
+                True,
+            ),
+            else_=False,
+        ),
+        cols=[Column(f"{file}.location")],
         result_type=bool,
     )
 
