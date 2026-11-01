@@ -136,7 +136,7 @@ def _replace(element, replacements):
 
 
 def _materialize_join_side(
-    side: "FromClause", onclause: "ColumnElement"
+    side: "FromClause", onclause: "ColumnElement", columns: "Sequence[ClauseElement]"
 ) -> tuple["FromClause", dict["ClauseElement", "ClauseElement"]]:
     keys: dict[ColumnElement, None] = {}
     for expression in iterate(onclause):
@@ -160,8 +160,15 @@ def _materialize_join_side(
         return side, {}
 
     # OFFSET prevents flattening without requiring SQLite's AS MATERIALIZED.
-    inputs = select(*side.c).offset(0).cte()
-    input_columns = {column: inputs.c[column.name] for column in side.c}
+    required = {
+        element
+        for expression in (*columns, onclause)
+        for element in iterate(expression)
+        if isinstance(element, ColumnClause)
+    }
+    selected = [column for column in side.c if column in required]
+    inputs = select(*selected).offset(0).cte()
+    input_columns = {column: inputs.c[column.name] for column in selected}
     names = set(inputs.c.keys())
     computed = {}
     for i, key in enumerate(keys):
@@ -175,7 +182,9 @@ def _materialize_join_side(
     values = (
         select(*inputs.c, *computed.values()).offset(0).cte() if computed else inputs
     )
-    column_names: dict[ClauseElement, str] = {column: column.name for column in side.c}
+    column_names: dict[ClauseElement, str] = {
+        column: column.name for column in selected
+    }
     column_names.update({key: label.name for key, label in computed.items()})
     # Keep runtime values and affinity intact. Declared SQL types cannot prove
     # that an extra cast predicate preserves every original match.
@@ -183,11 +192,11 @@ def _materialize_join_side(
 
 
 def _materialize_join(
-    join: Join,
+    join: Join, required: "Sequence[ClauseElement]"
 ) -> tuple[Join, dict["ClauseElement", "ClauseElement"]]:
     assert join.onclause is not None
-    left, left_columns = _materialize_join_side(join.left, join.onclause)
-    right, right_columns = _materialize_join_side(join.right, join.onclause)
+    left, left_columns = _materialize_join_side(join.left, join.onclause, required)
+    right, right_columns = _materialize_join_side(join.right, join.onclause, required)
     columns = left_columns | right_columns
     if not columns:
         return join, columns
@@ -1006,7 +1015,7 @@ class SQLiteWarehouse(AbstractWarehouse):
         Join two tables together.
         """
         join_query, replacements = _materialize_join(
-            sqlalchemy.join(left, right, onclause, isouter=not inner)
+            sqlalchemy.join(left, right, onclause, isouter=not inner), columns
         )
         if replacements:
             columns = [
@@ -1057,7 +1066,10 @@ class SQLiteWarehouse(AbstractWarehouse):
         assert isinstance(query, Select)
         (join,) = (child for child in query.get_children() if isinstance(child, Join))
         assert isinstance(join, Join)
-        materialized_join, replacements = _materialize_join(join)
+        assert query.whereclause is not None
+        materialized_join, replacements = _materialize_join(
+            join, [*query.selected_columns, query.whereclause]
+        )
         if not replacements:
             return query
         query = query.with_only_columns(*query.selected_columns)

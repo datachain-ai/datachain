@@ -342,6 +342,43 @@ def test_join_computed_keys_evaluated_linearly(
 
 
 @skip_if_not_sqlite
+@pytest.mark.parametrize("kind", ["inner", "left", "full"])
+def test_computed_join_skips_unused_payload(warehouse, numbers_table, kind):
+    calls = 0
+
+    def join_key(value):
+        nonlocal calls
+        calls += 1
+        return value
+
+    def unused_payload(value):
+        raise AssertionError("unused payload must not be evaluated")
+
+    warehouse.db.db.create_function("test_pruned_join_key", 1, join_key)
+    warehouse.db.db.create_function("test_unused_payload", 1, unused_payload)
+
+    def side():
+        return sa.select(
+            sa.func.test_pruned_join_key(numbers_table.c.number).label("key"),
+            sa.func.test_unused_payload(numbers_table.c.number).label("payload"),
+        ).subquery()
+
+    left, right = side(), side()
+    query = warehouse.join(
+        left,
+        right,
+        left.c.key == right.c.key,
+        inner=kind == "inner",
+        full=kind == "full",
+        columns=[left.c.key, right.c.key.label("right_key")],
+    )
+    assert sorted(warehouse.db.execute(query).fetchall()) == [
+        (i, i) for i in range(1, 74)
+    ]
+    assert calls == 2 * 73
+
+
+@skip_if_not_sqlite
 @pytest.mark.parametrize("direct", [False, True])
 @pytest.mark.parametrize(
     "left_value,right_value,expected",
