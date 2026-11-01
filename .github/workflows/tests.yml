@@ -192,6 +192,10 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.ref }}
 
+      - name: Free disk space for model downloads
+        if: runner.os == 'Linux' && matrix.group == 'multimodal_heavy'
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet
+
       - name: Set up Python ${{ matrix.pyv }}
         uses: actions/setup-python@v6
         with:

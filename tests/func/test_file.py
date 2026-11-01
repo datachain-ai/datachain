@@ -325,7 +325,6 @@ def test_read_storage_preserves_relative_file_at_source_and_path(
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
-@pytest.mark.parametrize("tree", [{"versioned-writes": {}}], indirect=True)
 def test_write_version_capture(cloud_test_catalog, cloud_type):
     """Test version capture when writes interleave.
 
