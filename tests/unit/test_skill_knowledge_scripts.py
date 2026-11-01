@@ -6,6 +6,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 # Insert the scripts directory so bare imports work (matches runtime behavior).
 SCRIPTS_DIR = str(
     Path(__file__).resolve().parents[2] / "src/datachain/skill/knowledge/scripts"
@@ -26,6 +28,7 @@ from utils import (  # noqa: E402
     extract_description,
     human_size,
     is_sys_column,
+    local_db_files,
     parse_semver,
     parse_uri,
     read_frontmatter,
@@ -36,6 +39,37 @@ from utils import (  # noqa: E402
     source_to_https,
     split_frontmatter,
 )
+
+
+@pytest.mark.parametrize("override", [None, "DATACHAIN_DIR", "DATACHAIN_ROOT_DIR"])
+def test_local_db_files_follow_project_and_env(tmp_path, monkeypatch, override):
+    (tmp_path / ".git").mkdir()
+    state = tmp_path / ".datachain"
+    if override:
+        # Glob metacharacters in explicit paths must remain literal.
+        destination = tmp_path / "override[1]"
+        monkeypatch.setenv(override, str(destination))
+        state = (
+            destination if override == "DATACHAIN_DIR" else destination / ".datachain"
+        )
+    state.mkdir(parents=True)
+    db = state / "db"
+    wal = state / "db-wal"
+    db.touch()
+    wal.touch()
+    nested = tmp_path / "scripts"
+    nested.mkdir()
+    monkeypatch.chdir(nested)
+
+    assert set(local_db_files()) == {str(db), str(wal)}
+    assert not (nested / ".datachain").exists()
+
+
+def test_local_db_files_does_not_create_state(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    assert local_db_files() == []
+    assert not (tmp_path / ".datachain").exists()
 
 
 def test_parse_semver_valid():

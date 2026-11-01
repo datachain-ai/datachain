@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import pytest
 from tomlkit import TOMLDocument, dump
@@ -60,6 +61,31 @@ def test_get_dir(global_config_dir, system_config_dir, current_dir):
     assert Config.get_dir(ConfigLevel.SYSTEM) == system_config_dir
 
     assert Config.get_dir(ConfigLevel.LOCAL) == os.path.join(current_dir, ".datachain")
+
+
+@pytest.mark.parametrize("location", [".", "scripts/nested"])
+def test_child_config_overrides_parent_catalog(current_dir, monkeypatch, location):
+    parent = Path(current_dir)
+    (parent / ".git").mkdir()
+    (parent / ".datachain").mkdir()
+    create_local_config(parent)
+    (parent / ".datachain" / "db").touch()
+    parent_config = (parent / ".datachain" / "config").read_text()
+    child = parent / "child"
+    (child / ".datachain").mkdir(parents=True)
+    create_local_config(child)
+    child_config = child / ".datachain" / "config"
+    child_config.write_text(
+        child_config.read_text().replace("local-token", "child-token")
+    )
+    cwd = child / location
+    cwd.mkdir(parents=True, exist_ok=True)
+    monkeypatch.chdir(cwd)
+
+    assert Config().read()["studio"]["token"] == "child-token"  # noqa: S105
+    assert Config(ConfigLevel.LOCAL).config_file() == str(child_config)
+    assert DataChainDir.find().root == str(child / ".datachain")
+    assert (parent / ".datachain" / "config").read_text() == parent_config
 
 
 def test_read_config(global_config_dir, system_config_dir, current_dir):
