@@ -1,4 +1,5 @@
 import contextlib
+import threading
 import traceback
 from collections.abc import Iterable, Sequence
 from itertools import chain
@@ -42,6 +43,7 @@ OK_STATUS = "OK"
 FINISHED_STATUS = "FINISHED"
 FAILED_STATUS = "FAILED"
 NOTIFY_STATUS = "NOTIFY"
+STATS_INTERVAL_SEC = 3.0
 
 
 def get_n_workers_from_arg(n_workers: int | None = None) -> int:
@@ -376,30 +378,53 @@ class UDFDispatcher:
             queue.join_thread()
 
 
-class DownloadCallback(Callback):
+class WorkerStats:
     def __init__(self, queue: MultiprocessQueue) -> None:
         self.queue = queue
+        self.lock = threading.Lock()  # prefetch and download threads add too
+        self.counts: dict[str, int] = {}
+        self.sent_at = monotonic()
+
+    def add(self, name: str, inc: int = 1) -> None:
+        with self.lock:
+            self.counts[name] = self.counts.get(name, 0) + inc
+            if monotonic() - self.sent_at >= STATS_INTERVAL_SEC:
+                self._send(NOTIFY_STATUS)
+
+    def send(self, status: str) -> None:
+        with self.lock:
+            self._send(status)
+
+    def _send(self, status: str) -> None:
+        put_into_queue(self.queue, {"status": status, **self.counts})
+        self.counts = {}
+        self.sent_at = monotonic()
+
+
+class DownloadCallback(Callback):
+    def __init__(self, stats: WorkerStats) -> None:
+        self.stats = stats
         super().__init__()
 
     def relative_update(self, inc: int = 1) -> None:
-        put_into_queue(self.queue, {"status": NOTIFY_STATUS, "bytes_downloaded": inc})
+        self.stats.add("bytes_downloaded", inc)
 
     def increment_file_count(self, inc: int = 1) -> None:
-        put_into_queue(self.queue, {"status": NOTIFY_STATUS, "downloaded": inc})
+        self.stats.add("downloaded", inc)
 
 
 class ProcessedCallback(Callback):
     def __init__(
         self,
         name: Literal["processed", "generated"],
-        queue: MultiprocessQueue,
+        stats: WorkerStats,
     ) -> None:
         self.name = name
-        self.queue = queue
+        self.stats = stats
         super().__init__()
 
     def relative_update(self, inc: int = 1) -> None:
-        put_into_queue(self.queue, {"status": NOTIFY_STATUS, self.name: inc})
+        self.stats.add(self.name, inc)
 
 
 class UDFWorker:
@@ -427,9 +452,10 @@ class UDFWorker:
         self.batch_size = batch_size
         self.udf_fields = udf_fields
 
-        self.download_cb = DownloadCallback(self.done_queue)
-        self.processed_cb = ProcessedCallback("processed", self.done_queue)
-        self.generated_cb = ProcessedCallback("generated", self.done_queue)
+        self.stats = WorkerStats(self.done_queue)
+        self.download_cb = DownloadCallback(self.stats)
+        self.processed_cb = ProcessedCallback("processed", self.stats)
+        self.generated_cb = ProcessedCallback("generated", self.stats)
 
     def run(self) -> None:
         prefetch = self.udf.prefetch
@@ -447,21 +473,18 @@ class UDFWorker:
                 process_udf_outputs(
                     catalog.warehouse,
                     self.table,
-                    self.notify_and_process(udf_results),
+                    udf_results,
                     self.udf,
                     cb=self.generated_cb,
                     batch_size=self.batch_size,
                 )
-        put_into_queue(self.done_queue, {"status": FINISHED_STATUS})
-
-    def notify_and_process(self, udf_results):
-        for row in udf_results:
-            put_into_queue(self.done_queue, {"status": OK_STATUS})
-            yield row
+        self.stats.send(FINISHED_STATUS)
 
     def get_inputs(self) -> Iterable["RowsOutput"]:
         warehouse = self.catalog.warehouse.clone()
         while (batch := get_from_queue(self.task_queue)) != STOP_SIGNAL:
+            # OK makes the dispatcher queue the next task
+            self.stats.send(OK_STATUS)
             for ids in batched(batch, DEFAULT_BATCH_SIZE):
                 yield from warehouse.dataset_rows_select_from_ids(
                     self.query, ids, self.is_batching
