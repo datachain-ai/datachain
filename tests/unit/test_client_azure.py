@@ -10,8 +10,19 @@ from fsspec.asyn import sync
 from fsspec.callbacks import DEFAULT_CALLBACK
 
 from datachain.asyn import get_loop
+from datachain.client import Client
 from datachain.client.azure import AzureClient
+from datachain.dataset import StorageURI
 from datachain.lib.file import File, FileRow
+
+
+@pytest.fixture(autouse=True)
+def _no_env_connection_string(monkeypatch):
+    monkeypatch.delenv("AZURE_STORAGE_CONNECTION_STRING", raising=False)
+    AzureBlobFileSystem.clear_instance_cache()
+    yield
+    AzureBlobFileSystem.clear_instance_cache()
+
 
 _FAKE_SAS = "https://account.blob.core.windows.net/mycontainer/blob.txt?sv=x&sig=y"
 _VER = "ver-abc-123"
@@ -35,6 +46,204 @@ def _make_client() -> AzureClient:
     client._fs._info = AsyncMock(return_value=_INFO)
     client._fs._get_file = AsyncMock(return_value=None)
     return client
+
+
+def test_name_without_account():
+    client = AzureClient("mycontainer", {}, MagicMock())
+    assert client.name == "mycontainer"
+    assert client.container == "mycontainer"
+    assert client.uri == "az://mycontainer"
+    assert "account_name" not in client.fs_kwargs
+
+
+def test_name_with_account():
+    client = AzureClient("mycontainer@myaccount", {}, MagicMock())
+    assert client.name == "mycontainer@myaccount"
+    assert client.container == "mycontainer"
+    assert client.uri == "az://mycontainer@myaccount"
+    assert client.fs_kwargs["account_name"] == "myaccount"
+
+
+def test_uri_account_overrides_client_config():
+    client = AzureClient(
+        "mycontainer@myaccount", {"account_name": "other"}, MagicMock()
+    )
+    assert client.fs_kwargs["account_name"] == "myaccount"
+
+
+def test_client_config_account_kept_without_uri_account():
+    client = AzureClient("mycontainer", {"account_name": "other"}, MagicMock())
+    assert client.fs_kwargs["account_name"] == "other"
+
+
+_CONN_STR = (
+    "DefaultEndpointsProtocol=https;AccountName=myaccount;"
+    "AccountKey=dGVzdA==;EndpointSuffix=core.windows.net"
+)
+_SAS = "SharedAccessSignature=sv=x&sig=y"
+_ENDPOINT_SAS = f"BlobEndpoint=https://myaccount.blob.core.windows.net;{_SAS}"
+_CHINA_CONN_STR = _CONN_STR.replace("core.windows.net", "chinacloudapi.cn")
+_DUP_CONN_STR = "AccountName=other;AccountName=myaccount;AccountKey=dGVzdA=="
+_DOMAIN_CONN_STR = f"BlobEndpoint=https://files.example.com;{_SAS}"
+
+
+@pytest.mark.parametrize(
+    "fs_kwargs",
+    [
+        {"connection_string": _CONN_STR},
+        {"connection_string": _CHINA_CONN_STR},
+        {"connection_string": _ENDPOINT_SAS},
+        {"account_host": "myaccount.blob.core.windows.net"},
+    ],
+    ids=["named", "sovereign-suffix", "endpoint-sas", "account-host"],
+)
+def test_uri_account_matching_endpoint_ok(fs_kwargs):
+    client = AzureClient("mycontainer@myaccount", fs_kwargs, MagicMock())
+    assert client.fs.service_client.account_name == "myaccount"
+
+
+@pytest.mark.parametrize(
+    "fs_kwargs",
+    [
+        {"connection_string": _DOMAIN_CONN_STR},
+        {"account_host": "files.example.com"},
+        {"account_host": "myaccount.blob.local.azurestack.external"},
+        {"account_host": "myaccount.z1.blob.storage.azure.net"},
+    ],
+    ids=["custom-domain-conn", "custom-domain-host", "azure-stack", "dns-zone"],
+)
+def test_uri_account_unidentifiable_endpoint_trusted(fs_kwargs):
+    client = AzureClient("mycontainer@myaccount", fs_kwargs, MagicMock())
+    assert client.fs.service_client.account_name is None
+    assert client.fs_kwargs["account_name"] == "myaccount"
+
+
+@pytest.mark.parametrize(
+    "fs_kwargs,target",
+    [
+        ({"connection_string": _CONN_STR}, "account 'myaccount'"),
+        ({"connection_string": _ENDPOINT_SAS}, "account 'myaccount'"),
+        (
+            {
+                "connection_string": "AccountName=other;"
+                f"BlobEndpoint=https://myaccount.blob.core.windows.net;{_SAS}"
+            },
+            "account 'myaccount'",
+        ),
+        ({"connection_string": _DUP_CONN_STR}, "account 'myaccount'"),
+        (
+            {"connection_string": "UseDevelopmentStorage=true"},
+            "account 'devstoreaccount1'",
+        ),
+        ({"account_host": "myaccount.blob.core.windows.net"}, "account 'myaccount'"),
+    ],
+    ids=[
+        "named",
+        "endpoint-sas",
+        "name-vs-endpoint",
+        "duplicate-name",
+        "dev-storage",
+        "account-host",
+    ],
+)
+def test_uri_account_conflicting_endpoint_raises(fs_kwargs, target):
+    with pytest.raises(
+        ValueError, match=f"conflicts with the configured endpoint for {target}"
+    ):
+        AzureClient("mycontainer@other", fs_kwargs, MagicMock())
+
+
+def test_uri_account_conflicting_env_connection_string_raises(monkeypatch):
+    monkeypatch.setenv("AZURE_STORAGE_CONNECTION_STRING", _CONN_STR)
+    with pytest.raises(ValueError, match="conflicts with"):
+        AzureClient("mycontainer@other", {}, MagicMock())
+
+
+def test_devstoreaccount_development_storage_ok():
+    client = AzureClient(
+        "mycontainer@devstoreaccount1",
+        {"connection_string": "UseDevelopmentStorage=true"},
+        MagicMock(),
+    )
+    assert client.fs.service_client.account_name == "devstoreaccount1"
+
+
+def test_no_uri_account_ignores_connection_string_account():
+    client = AzureClient("mycontainer", {"connection_string": _CONN_STR}, MagicMock())
+    assert "account_name" not in client.fs_kwargs
+    assert client.fs.service_client.account_name == "myaccount"
+
+
+@pytest.mark.parametrize("service", ["blob", "dfs"])
+def test_name_with_full_account_host(service):
+    client = AzureClient(
+        f"mycontainer@myaccount.{service}.core.windows.net", {}, MagicMock()
+    )
+    assert client.name == f"mycontainer@myaccount.{service}.core.windows.net"
+    assert client.container == "mycontainer"
+    assert client.fs_kwargs["account_name"] == "myaccount"
+
+
+@pytest.mark.parametrize(
+    "netloc",
+    [
+        "mycontainer@myaccount.blob.core.chinacloudapi.cn",
+        "mycontainer@myaccount.z1.blob.storage.azure.net",
+        "mycontainer@myaccount.blob.core.windows.net:443",
+        "mycontainer@files.example.com",
+        "mycontainer@MyAccount",
+        "mycontainer@my-account",
+        "mycontainer@ab",
+        "mycontainer@",
+    ],
+)
+def test_unsupported_account_raises(netloc):
+    with pytest.raises(ValueError, match="Unsupported Azure storage account"):
+        AzureClient(netloc, {}, MagicMock())
+
+
+def test_parse_url_with_account():
+    uri, rel_path = Client.parse_url("az://mycontainer@myaccount/dir/blob.txt")
+    assert uri == "az://mycontainer@myaccount"
+    assert rel_path == "dir/blob.txt"
+
+
+def test_get_client_with_account():
+    client = Client.get_client("az://mycontainer@myaccount/dir/blob.txt", MagicMock())
+    assert isinstance(client, AzureClient)
+    assert client.uri == "az://mycontainer@myaccount"
+    assert client.container == "mycontainer"
+    assert client.fs_kwargs["account_name"] == "myaccount"
+
+
+def test_from_source_preserves_account():
+    client = AzureClient.from_source(
+        StorageURI("az://mycontainer@myaccount"), MagicMock()
+    )
+    assert client.name == "mycontainer@myaccount"
+    assert client.container == "mycontainer"
+    assert client.fs_kwargs["account_name"] == "myaccount"
+
+
+def test_from_source_with_path_parses_netloc_account():
+    client = AzureClient.from_source(
+        StorageURI("az://mycontainer@myaccount/exports/"), MagicMock()
+    )
+    assert client.name == "mycontainer@myaccount/exports"
+    assert client.container == "mycontainer"
+    assert client.fs_kwargs["account_name"] == "myaccount"
+
+
+def test_get_uri_with_account():
+    client = AzureClient("mycontainer@myaccount", {}, MagicMock())
+    assert client.get_uri("dir/blob.txt") == "az://mycontainer@myaccount/dir/blob.txt"
+
+
+def test_create_fs_receives_account_name():
+    with patch.object(AzureClient, "FS_CLASS") as mock_fs_cls:
+        mock_fs_cls.return_value.service_client.account_name = "myaccount"
+        AzureClient("mycontainer@myaccount", {}, MagicMock())
+    assert mock_fs_cls.call_args[1]["account_name"] == "myaccount"
 
 
 def test_url_versioned_versionid_exactly_once():
@@ -117,7 +326,7 @@ _DETAILS_MOCK = [
 ]
 
 
-def _make_client_sdk():
+def _make_client_sdk(name="mycontainer"):
     """AzureClient whose _info/_get_file run real adlfs code with
     service_client mocked at the Azure SDK boundary."""
     bc = AsyncMock()
@@ -182,9 +391,19 @@ def _make_client_sdk():
     mock_fs._info = _real_info
     mock_fs._get_file = _real_get_file
 
-    client = AzureClient("mycontainer", {}, MagicMock())
+    client = AzureClient(name, {}, MagicMock())
     client._fs = mock_fs
     return client, service_client, bc
+
+
+def test_get_file_info_with_account_in_name():
+    client, service_client, _bc = _make_client_sdk("mycontainer@myaccount")
+    file = client.get_file_info("dir/blob.txt", version_id=_VER)
+    container, path = service_client.get_blob_client.call_args[0]
+    assert container == "mycontainer"
+    assert path == "dir/blob.txt"
+    assert file.source == "az://mycontainer@myaccount"
+    assert file.path == "dir/blob.txt"
 
 
 @pytest.mark.parametrize(
@@ -320,7 +539,9 @@ def _blob(name: str, resource_type: str = "", metadata: str = "") -> str:
     )
 
 
-def _listed(blobs: str, version_aware: bool = False) -> tuple[AzureClient, Any, list]:
+def _listed(
+    blobs: str, version_aware: bool = False, name: str = "mycontainer"
+) -> tuple[AzureClient, Any, list]:
     page = fromstring(  # noqa: S314
         f"<EnumerationResults><Blobs>{blobs}</Blobs></EnumerationResults>"
     )
@@ -343,7 +564,7 @@ def _listed(blobs: str, version_aware: bool = False) -> tuple[AzureClient, Any, 
     container.__aenter__ = AsyncMock(return_value=container)
     container.__aexit__ = AsyncMock(return_value=False)
     container.list_blob_names.return_value.by_page.return_value = Pages()
-    client = AzureClient("mycontainer", {}, MagicMock())
+    client = AzureClient(name, {}, MagicMock())
     client._fs = MagicMock(version_aware=version_aware)
     client._fs.service_client.get_container_client.return_value = container
 
@@ -351,6 +572,15 @@ def _listed(blobs: str, version_aware: bool = False) -> tuple[AzureClient, Any, 
         return [f.path async for page in client.scandir("") for f in page]
 
     return client, container, sync(get_loop(), list_all)
+
+
+def test_listing_opens_container_without_account():
+    client, _, paths = _listed(_blob("a"), name="mycontainer@myaccount")
+
+    client.fs.service_client.get_container_client.assert_called_once_with(
+        container="mycontainer"
+    )
+    assert paths == ["a"]
 
 
 @pytest.mark.parametrize("resource_type", ["", "<ResourceType>file</ResourceType>"])
@@ -375,8 +605,16 @@ def test_hierarchical_namespace_directories_are_not_files():
     assert paths == ["dir/f1", "dir/sub/f2"]
 
 
-def test_hadoop_folder_markers_are_not_files():
-    marker = "<hdi_isfolder>true</hdi_isfolder>"
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "<hdi_isfolder>true</hdi_isfolder>",
+        "<Hdi_isfolder>true</Hdi_isfolder>",
+        "<is_directory>true</is_directory>",
+    ],
+    ids=["hadoop", "hadoop-capitalized", "adlfs"],
+)
+def test_folder_markers_are_not_files(marker):
     blobs = [
         _blob("year=2008", metadata=marker),
         _blob("year=2008/month=1", metadata=marker),

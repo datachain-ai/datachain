@@ -451,9 +451,9 @@ def source_to_https(source: str) -> str | None:
     Returns None for local paths or unrecognized schemes.
 
     Examples:
-        s3://my-bucket/prefix/  -> https://my-bucket.s3.amazonaws.com
-        gs://demo/data/         -> https://storage.googleapis.com/demo
-        az://acct/container/    -> https://acct.blob.core.windows.net/container
+        s3://my-bucket/prefix/       -> https://my-bucket.s3.amazonaws.com
+        gs://demo/data/              -> https://storage.googleapis.com/demo
+        az://container@acct/prefix/  -> https://acct.blob.core.windows.net/container
     """
     parts = parse_uri(source)
     scheme = parts["scheme"]
@@ -464,11 +464,16 @@ def source_to_https(source: str) -> str | None:
     if scheme == "gs":
         return f"https://storage.googleapis.com/{bucket}"
     if scheme == "az":
-        # az://account/container/... -> bucket=account, prefix=container/...
-        # Azure needs account + container in the URL
-        prefix = parts["prefix"].rstrip("/")
-        container = prefix.split("/", 1)[0] if prefix else None
-        if container:
-            return f"https://{bucket}.blob.core.windows.net/{container}"
-        return None
+        from datachain.client.azure import AzureClient
+
+        # The SDK resolves the endpoint (sovereign clouds, Azurite, custom
+        # hosts) from the URI account and the environment. Its URL carries the
+        # SAS token as a query, which must never end up in a link.
+        try:
+            client = AzureClient(bucket, {}, None)  # type: ignore[arg-type]
+            endpoint = urlparse(client.fs.service_client.primary_endpoint)
+        except ValueError:
+            return None
+        base = f"{endpoint.scheme}://{endpoint.netloc}{endpoint.path.rstrip('/')}"
+        return f"{base}/{client.container}"
     return None
