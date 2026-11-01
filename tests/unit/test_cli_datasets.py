@@ -102,7 +102,10 @@ def test_describe_saved_versions(test_session, capsys):
 def test_describe_storage_sources(test_session, tmp_path, monkeypatch):
     import datachain as dc
     from datachain.client import Client
+    from datachain.fs.utils import path_to_fsspec_uri
 
+    tmp_path = tmp_path / "source with spaces"
+    tmp_path.mkdir()
     (tmp_path / "sample.txt").write_text("hello")
     dc.read_storage(str(tmp_path), session=test_session).save("inventory")
     dc.read_dataset("inventory", session=test_session).save("report")
@@ -113,7 +116,7 @@ def test_describe_storage_sources(test_session, tmp_path, monkeypatch):
     monkeypatch.setattr(Client, "get_implementation", forbidden)
     monkeypatch.setattr(test_session.catalog.warehouse, "get_table", forbidden)
     info = test_session.catalog.describe_dataset("report")
-    assert any(tmp_path.as_uri() in uri for uri in info["sources"])
+    assert any(path_to_fsspec_uri(str(tmp_path)) in uri for uri in info["sources"])
     assert all(not uri.startswith("lst__") for uri in info["sources"])
     assert info["dependencies"][0]["dependencies"][0]["type"] == "storage"
     assert info["dependencies"][0]["dependencies"][0]["rows"] == 1
