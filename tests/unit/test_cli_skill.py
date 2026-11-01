@@ -152,11 +152,11 @@ def test_install_defaults_claude_global(tmp_path, fake_skills_src, fake_home):
     assert not (fake_home / ".claude" / "commands").exists()
 
     # {skill_dir} should be resolved to absolute path in installed SKILL.md
-    content = (skills_base / "datachain" / "SKILL.md").read_text()
+    content = (skills_base / "datachain" / "SKILL.md").read_text(encoding="utf-8")
     assert "{skill_dir}" not in content
     assert "scripts/plan.py" in content
     assert "{core_skill_dir}" not in content
-    assert f"{(skills_base / 'datachain').resolve()}/SDK.md" in content
+    assert f"{(skills_base / 'datachain').resolve().as_posix()}/SDK.md" in content
 
 
 def test_install_only_core_claude_global(tmp_path, fake_skills_src, fake_home):
@@ -210,8 +210,8 @@ def test_install_knowledge_from_package_ships_core_sdk(tmp_path, fake_home):
 
     skills_base = fake_home / ".claude" / "skills"
     assert (skills_base / "core" / "SDK.md").exists()
-    content = (skills_base / "knowledge" / "SKILL.md").read_text()
-    assert f"{(skills_base / 'core').resolve()}/SDK.md" in content
+    content = (skills_base / "knowledge" / "SKILL.md").read_text(encoding="utf-8")
+    assert f"{(skills_base / 'core').resolve().as_posix()}/SDK.md" in content
 
 
 def test_install_defaults_cursor_global(tmp_path, fake_skills_src, fake_home):
@@ -225,12 +225,12 @@ def test_install_defaults_cursor_global(tmp_path, fake_skills_src, fake_home):
         mdc_file = rules_base / f"datachain-{skill}.mdc"
         assert mdc_file.exists()
         # Verify Cursor .mdc has correct frontmatter format
-        content = mdc_file.read_text()
+        content = mdc_file.read_text(encoding="utf-8")
         assert "alwaysApply: true" in content
         assert "description: Test skill" in content
         # Original SKILL.md frontmatter fields should NOT appear
         assert "triggers:" not in content
-        assert str((skills_base / skill / "SDK.md").resolve()) in content
+        assert (skills_base / skill / "SDK.md").resolve().as_posix() in content
 
 
 def test_install_defaults_codex_global(tmp_path, fake_skills_src, fake_home):
@@ -255,7 +255,7 @@ def test_install_defaults_pi_global(tmp_path, fake_skills_src, fake_home):
         prompt_file = prompts_base / f"datachain-{skill}.md"
         assert prompt_file.exists()
         # No transform — Pi accepts SKILL.md frontmatter as-is.
-        content = prompt_file.read_text()
+        content = prompt_file.read_text(encoding="utf-8")
         assert "name: datachain\n" in content
         assert f"description: Test skill {skill}" in content
 
@@ -302,12 +302,12 @@ def test_install_defaults_copilot_global(tmp_path, fake_skills_src, fake_home):
         # Per-skill .instructions.md file with applyTo frontmatter
         instr_file = instructions_base / f"datachain-{skill}.instructions.md"
         assert instr_file.exists()
-        content = instr_file.read_text()
+        content = instr_file.read_text(encoding="utf-8")
         assert "applyTo: '**/*.py'" in content
         # Original SKILL.md frontmatter fields should be stripped
         assert "name: datachain-" not in content
         assert "description: Test skill" not in content
-        assert str((skills_base / skill / "SDK.md").resolve()) in content
+        assert (skills_base / skill / "SDK.md").resolve().as_posix() in content
 
 
 def test_install_copilot_local_uses_github_path(
@@ -335,7 +335,7 @@ def test_install_copilot_local_uses_github_path(
         assert (vendor_base / skill / "SKILL.md").exists()
         instr_file = instructions_base / f"datachain-{skill}.instructions.md"
         assert instr_file.exists()
-        assert "applyTo: '**/*.py'" in instr_file.read_text()
+        assert "applyTo: '**/*.py'" in instr_file.read_text(encoding="utf-8")
 
     # The user-level layout MUST NOT be touched in --local mode.
     assert not (project_dir / ".copilot").exists()
@@ -540,7 +540,7 @@ def test_install_leaves_a_jobs_skill_we_did_not_install(
 
     _run_install(fake_skills_src, fake_home, skills=None, target="cursor", local=False)
 
-    assert "my-own-jobs" in (skill_dir / "SKILL.md").read_text()
+    assert "my-own-jobs" in (skill_dir / "SKILL.md").read_text(encoding="utf-8")
     assert (skill_dir / "scripts" / "run.py").exists()
 
 
@@ -562,7 +562,7 @@ def test_install_leaves_a_jobs_skill_that_only_writes_about_ours(
 
     _run_install(fake_skills_src, fake_home, skills=None, target="cursor", local=False)
 
-    assert "my-own-jobs" in (skill_dir / "SKILL.md").read_text()
+    assert "my-own-jobs" in (skill_dir / "SKILL.md").read_text(encoding="utf-8")
     assert (skill_dir / "scripts" / "run.py").exists()
 
 
@@ -667,15 +667,17 @@ def test_default_package_round_trip_and_reference_reachability(
         assert {p.name for p in skills_dir.iterdir()} == {"datachain"}
         dest = skills_dir / "datachain"
         sdk = dest / "SDK.md"
-        assert sdk.read_text() == (_skills_src() / "core" / "SDK.md").read_text()
+        assert sdk.read_text(encoding="utf-8") == (
+            _skills_src() / "core" / "SDK.md"
+        ).read_text(encoding="utf-8")
         assert not (dest / "reference.md").exists()
-        content = (dest / "SKILL.md").read_text()
+        content = (dest / "SKILL.md").read_text(encoding="utf-8")
         assert "name: datachain\n" in content
-        assert str(sdk.resolve()) in content
+        assert sdk.resolve().as_posix() in content
         if companion_path:
             companion = base / companion_path
-            assert str(sdk.resolve()) in companion.read_text()
-            assert "# DataChain SDK Rules" not in companion.read_text()
+            assert sdk.resolve().as_posix() in companion.read_text(encoding="utf-8")
+            assert "# DataChain SDK Rules" not in companion.read_text(encoding="utf-8")
         assert uninstall_skills(skills=None, target=target, local=local) == 0
 
     assert not dest.exists()
@@ -735,16 +737,16 @@ def test_install_refuses_unrelated_datachain_skill(
     (dest / "notes.txt").write_text("mine")
     with patch("pathlib.Path.home", return_value=fake_home):
         assert install_skills(None, "cursor", True) == 1
-    assert (dest / "SKILL.md").read_text() == content
-    assert (dest / "notes.txt").read_text() == "mine"
+    assert (dest / "SKILL.md").read_text(encoding="utf-8") == content
+    assert (dest / "notes.txt").read_text(encoding="utf-8") == "mine"
     assert not (tmp_path / ".cursor" / "rules").exists()
     assert "Cannot overwrite unrelated skill" in capsys.readouterr().err
     from datachain.cli.commands.skill import uninstall_skills
 
     with patch("pathlib.Path.home", return_value=fake_home):
         assert uninstall_skills(None, "cursor", True) == 0
-    assert (dest / "SKILL.md").read_text() == content
-    assert (dest / "notes.txt").read_text() == "mine"
+    assert (dest / "SKILL.md").read_text(encoding="utf-8") == content
+    assert (dest / "notes.txt").read_text(encoding="utf-8") == "mine"
 
 
 @pytest.mark.parametrize("target", ["claude", "cursor", "codex", "pi", "copilot"])

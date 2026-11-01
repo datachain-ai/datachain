@@ -87,7 +87,7 @@ def _skills_src() -> Path:
 
 def _transform_cursor_mdc(skill_md_path: Path) -> str:
     """Read SKILL.md and transform its frontmatter to Cursor .mdc format."""
-    text = skill_md_path.read_text()
+    text = skill_md_path.read_text(encoding="utf-8")
 
     # Extract description from existing frontmatter
     description = ""
@@ -112,7 +112,7 @@ def _transform_copilot_instructions(skill_md_path: Path) -> str:
     `applyTo` glob. Copilot reads instruction files that match a glob against
     the active file path and prepends them to the prompt.
     """
-    text = skill_md_path.read_text()
+    text = skill_md_path.read_text(encoding="utf-8")
     fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
     body = text[fm_match.end() :] if fm_match else text
     return f"---\napplyTo: '**/*.py'\n---\n{body}"
@@ -140,7 +140,7 @@ def _installed_by_datachain(skill_dest: Path, name: str) -> bool:
     Installing resolves placeholders and preserves the frontmatter name.
     """
     try:
-        text = (skill_dest / "SKILL.md").read_text()
+        text = (skill_dest / "SKILL.md").read_text(encoding="utf-8")
     except OSError:
         return False
     frontmatter = _frontmatter(text)
@@ -151,7 +151,7 @@ def _installed_by_datachain(skill_dest: Path, name: str) -> bool:
     if name != "datachain":
         return True
     try:
-        return (skill_dest / _INSTALL_MARKER).read_text() == name
+        return (skill_dest / _INSTALL_MARKER).read_text(encoding="utf-8") == name
     except OSError:
         # Older default installs have no ownership marker.
         return (
@@ -213,12 +213,14 @@ def _write_companion(
     elif command_ext == ".instructions.md":
         content = _transform_copilot_instructions(skill_md)
     else:
-        content = skill_md.read_text()
+        content = skill_md.read_text(encoding="utf-8")
     sdk_md = src / "SDK.md"
     if sdk_md.exists():
-        content = f"{content.rstrip()}\n\n{sdk_md.read_text()}"
+        content = f"{content.rstrip()}\n\n{sdk_md.read_text(encoding='utf-8')}"
     command = commands_dir / f"datachain-{src.name}{command_ext}"
-    command.write_text(_resolve_placeholders(content, skills_dir, dest))
+    command.write_text(
+        _resolve_placeholders(content, skills_dir, dest), encoding="utf-8"
+    )
 
 
 def _check_install_destinations(skills_dir: Path, names: list[str]) -> bool:
@@ -291,7 +293,7 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
         dest = skills_dir / skill_name
         dest.mkdir(parents=True, exist_ok=True)
         shutil.copytree(src, dest, dirs_exist_ok=True, ignore=_COPYTREE_IGNORE)
-        (dest / _INSTALL_MARKER).write_text(skill_name)
+        (dest / _INSTALL_MARKER).write_text(skill_name, encoding="utf-8")
         if skill_name == "datachain":
             shutil.copyfile(_skills_src() / "core" / "SDK.md", dest / "SDK.md")
 
@@ -301,7 +303,10 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
         installed_skill_md = dest / "SKILL.md"
         if installed_skill_md.exists():
             installed_skill_md.write_text(
-                _resolve_placeholders(installed_skill_md.read_text(), skills_dir, dest)
+                _resolve_placeholders(
+                    installed_skill_md.read_text(encoding="utf-8"), skills_dir, dest
+                ),
+                encoding="utf-8",
             )
 
         if commands_dir is not None and command_ext is not None:
@@ -410,7 +415,9 @@ def list_skills() -> int:
 
 
 def _resolve_placeholders(text: str, skills_dir: Path, dest: Path) -> str:
-    text = text.replace("{skill_dir}", str(dest.resolve()))
+    text = text.replace("{skill_dir}", dest.resolve().as_posix())
     for name in SKILLS:
-        text = text.replace(f"{{{name}_skill_dir}}", str((skills_dir / name).resolve()))
+        text = text.replace(
+            f"{{{name}_skill_dir}}", (skills_dir / name).resolve().as_posix()
+        )
     return text
