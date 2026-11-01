@@ -839,8 +839,10 @@ def test_get_etag_missing_raises_filenotfound(
         )
 
 
+# Keep archived GCS generations away from the shared listing fixtures.
 @pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
+@pytest.mark.parametrize("tree", [{"cache-tests": {}}], indirect=True)
 def test_put_in_cache_pinned_version_ignores_stale_etag(
     cloud_test_catalog_upload,
     cloud_type,
@@ -868,6 +870,7 @@ def test_put_in_cache_pinned_version_ignores_stale_etag(
 @pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
 @pytest.mark.parametrize("size", [0, 1])
+@pytest.mark.parametrize("tree", [{"cache-tests": {}}], indirect=True)
 def test_put_in_cache_pinned_version_with_another_size_raises(
     cloud_test_catalog_upload,
     cloud_type,
@@ -895,6 +898,7 @@ def test_put_in_cache_pinned_version_with_another_size_raises(
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
+@pytest.mark.parametrize("tree", [{"cache-tests": {}}], indirect=True)
 def test_put_in_cache_pinned_version_with_unknown_size_reads_it(
     cloud_test_catalog_upload,
     cloud_type,
@@ -919,6 +923,7 @@ def test_put_in_cache_pinned_version_with_unknown_size_reads_it(
 
 
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize("tree", [{"cache-tests": {}}], indirect=True)
 def test_put_in_cache_unpinned_stale_etag_raises(
     cloud_test_catalog_upload,
     cloud_type,
@@ -939,6 +944,7 @@ def test_put_in_cache_unpinned_stale_etag_raises(
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
+@pytest.mark.parametrize("tree", [{"cache-tests": {}}], indirect=True)
 def test_put_in_cache_s3_null_version_checks_etag(
     cloud_test_catalog_upload,
     cloud_type,
