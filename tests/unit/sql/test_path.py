@@ -74,3 +74,26 @@ def test_file_ext(warehouse, path):
     query = select(func.path.file_ext(func.literal(path)))
     result = tuple(warehouse.db.execute(query))
     assert result == ((file_ext(path),),)
+
+
+@pytest.mark.parametrize(
+    "path,parent,name,stem,ext",
+    [
+        (".a", "", ".a", "", "a"),
+        ("a.", "", "a.", "a", ""),
+        ("..", "", "..", "", ""),
+        ("a/.b", "a", ".b", "", "b"),
+        ("a/b./", "a/b.", "", "", ""),
+        ("a..b", "", "a..b", "a", "b"),
+        ("x/y.tar.gz", "x", "y.tar.gz", "y.tar", "gz"),
+        ("é/ü.ñ", "é", "ü.ñ", "ü", "ñ"),
+    ],
+)
+def test_path_functions_edge_cases(warehouse, path, parent, name, stem, ext):
+    query = select(
+        func.path.parent(func.literal(path)),
+        func.path.name(func.literal(path)),
+        func.path.file_stem(func.literal(path)),
+        func.path.file_ext(func.literal(path)),
+    )
+    assert tuple(warehouse.db.execute(query)) == ((parent, name, stem, ext),)

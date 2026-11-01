@@ -22,10 +22,16 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects import sqlite
 from sqlalchemy.schema import CreateIndex, CreateTable, DropTable
-from sqlalchemy.sql import func
-from sqlalchemy.sql.elements import BinaryExpression, BooleanClauseList
+from sqlalchemy.sql import func, operators
+from sqlalchemy.sql.elements import (
+    BinaryExpression,
+    BooleanClauseList,
+    ColumnClause,
+    Label,
+)
 from sqlalchemy.sql.expression import cast
-from sqlalchemy.sql.selectable import Select
+from sqlalchemy.sql.selectable import Join, Select
+from sqlalchemy.sql.visitors import iterate, replacement_traverse
 
 import datachain.sql.sqlite
 from datachain.data_storage import AbstractDBMetastore, AbstractWarehouse
@@ -52,7 +58,8 @@ if TYPE_CHECKING:
     from sqlalchemy.engine.base import Engine
     from sqlalchemy.schema import SchemaItem
     from sqlalchemy.sql._typing import _FromClauseArgument, _OnClauseArgument
-    from sqlalchemy.sql.elements import ColumnElement
+    from sqlalchemy.sql.elements import ClauseElement, ColumnElement
+    from sqlalchemy.sql.selectable import FromClause
     from sqlalchemy.types import TypeEngine
 
 
@@ -122,6 +129,79 @@ def get_db_file_in_memory(
             raise RuntimeError("A db_file cannot be specified if in_memory is True")
         db_file = ":memory:"
     return db_file
+
+
+def _replace(element, replacements):
+    return replacement_traverse(element, {}, lambda e, **_kwargs: replacements.get(e))
+
+
+def _materialize_join_side(
+    side: "FromClause", onclause: "ColumnElement", columns: "Sequence[ClauseElement]"
+) -> tuple["FromClause", dict["ClauseElement", "ClauseElement"]]:
+    keys: dict[ColumnElement, None] = {}
+    for expression in iterate(onclause):
+        if not isinstance(expression, BinaryExpression) or expression.operator not in (
+            operators.eq,
+            operators.is_not_distinct_from,
+        ):
+            continue
+        for key in (expression.left, expression.right):
+            tables = {
+                column.table
+                for column in iterate(key)
+                if isinstance(column, ColumnClause) and column.table is not None
+            }
+            if tables == {side} and any(
+                not isinstance(proxy, (ColumnClause, Label)) for proxy in key.proxy_set
+            ):
+                keys[key] = None
+
+    if not keys:
+        return side, {}
+
+    # OFFSET prevents flattening without requiring SQLite's AS MATERIALIZED.
+    required = {
+        element
+        for expression in (*columns, onclause)
+        for element in iterate(expression)
+        if isinstance(element, ColumnClause)
+    }
+    selected = [column for column in side.c if column in required]
+    inputs = select(*selected).offset(0).cte()
+    input_columns = {column: inputs.c[column.name] for column in selected}
+    names = set(inputs.c.keys())
+    computed = {}
+    for i, key in enumerate(keys):
+        if isinstance(key, ColumnClause):
+            continue
+        name = f"__dc_join_key_{i}"
+        while name in names:
+            name += "_"
+        names.add(name)
+        computed[key] = _replace(key, input_columns).label(name)
+    values = (
+        select(*inputs.c, *computed.values()).offset(0).cte() if computed else inputs
+    )
+    column_names: dict[ClauseElement, str] = {
+        column: column.name for column in selected
+    }
+    column_names.update({key: label.name for key, label in computed.items()})
+    # Keep runtime values and affinity intact. Declared SQL types cannot prove
+    # that an extra cast predicate preserves every original match.
+    return values, {key: values.c[name] for key, name in column_names.items()}
+
+
+def _materialize_join(
+    join: Join, required: "Sequence[ClauseElement]"
+) -> tuple[Join, dict["ClauseElement", "ClauseElement"]]:
+    assert join.onclause is not None
+    left, left_columns = _materialize_join_side(join.left, join.onclause, required)
+    right, right_columns = _materialize_join_side(join.right, join.onclause, required)
+    columns = left_columns | right_columns
+    if not columns:
+        return join, columns
+    onclause = _replace(join.onclause, columns)
+    return sqlalchemy.join(left, right, onclause, isouter=join.isouter), columns
 
 
 class SQLiteDatabaseEngine(DatabaseEngine):
@@ -934,15 +1014,21 @@ class SQLiteWarehouse(AbstractWarehouse):
         """
         Join two tables together.
         """
+        join_query, replacements = _materialize_join(
+            sqlalchemy.join(left, right, onclause, isouter=not inner), columns
+        )
+        if replacements:
+            columns = [
+                replacement_traverse(
+                    column, {}, lambda element, **_kwargs: replacements.get(element)
+                )
+                for column in columns
+            ]
         if not full:
-            join_query = sqlalchemy.join(
-                left,
-                right,
-                onclause,
-                isouter=not inner,
-            )
             return sqlalchemy.select(*columns).select_from(join_query)
 
+        assert join_query.onclause is not None
+        left, right, onclause = join_query.left, join_query.right, join_query.onclause
         left_right_join = sqlalchemy.select(*columns).select_from(
             sqlalchemy.join(left, right, onclause, isouter=True)
         )
@@ -969,6 +1055,35 @@ class SQLiteWarehouse(AbstractWarehouse):
 
         union_cte = sqlalchemy.union(left_right_join, right_left_join).cte()
         return sqlalchemy.select(*union_cte.c).select_from(union_cte)
+
+    def subtract_query(
+        self,
+        source_query: Select,
+        target_query: Select,
+        key_pairs: Sequence[tuple[str, str]],
+    ) -> Select:
+        query = super().subtract_query(source_query, target_query, key_pairs)
+        assert isinstance(query, Select)
+        (join,) = (child for child in query.get_children() if isinstance(child, Join))
+        assert isinstance(join, Join)
+        assert query.whereclause is not None
+        materialized_join, replacements = _materialize_join(
+            join, [*query.selected_columns, query.whereclause]
+        )
+        if not replacements:
+            return query
+        query = query.with_only_columns(*query.selected_columns)
+        query_replacements: dict[ClauseElement, ClauseElement] = {
+            join: materialized_join,
+            join.left: materialized_join.left,
+            join.right: materialized_join.right,
+            **replacements,
+        }
+        result = replacement_traverse(
+            query, {}, lambda element, **_kwargs: query_replacements.get(element)
+        )
+        assert isinstance(result, Select)
+        return result
 
     def _system_row_number_expr(self):
         return func.row_number().over()
