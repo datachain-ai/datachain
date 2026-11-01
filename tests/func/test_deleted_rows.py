@@ -339,6 +339,44 @@ def test_is_deleted_ignores_files_without_an_etag(history, files, test_session):
     assert not plain.is_deleted
 
 
+@pytest.mark.parametrize("column", ["file", "media"])
+@pytest.mark.parametrize("saved", [False, True])
+@pytest.mark.parametrize(
+    "version,etag,location,expected",
+    [
+        ("v1", "", None, False),
+        ("", "", None, False),
+        ("m1", "", DELETED, True),
+        ("", "etag", DELETED, True),
+        ("m1", "", {"vtype": "deleted"}, True),
+        ("m1", "", [{"vtype": "deleted", "extra": 1}], True),
+        ("v1", "", [{"vtype": "tar"}, {"vtype": "deleted"}], False),
+        ("v1", "", [], False),
+        ("v1", "", {}, False),
+        ("v1", "", [{}], False),
+        ("v1", "", {"vtype": "tar"}, False),
+        ("m1", "", '[{"vtype":"deleted"}]', True),
+    ],
+)
+def test_sql_and_python_deletion_state_match(
+    source, test_session, column, saved, version, etag, location, expected
+):
+    value = File(
+        source=source, path="object", version=version, etag=etag, location=location
+    )
+    chain = dc.read_values(**{column: [value]}, session=test_session)
+    if saved:
+        chain = dc.read_dataset(chain.save("deletion-state").name, session=test_session)
+
+    result = chain.mutate(deleted=func.is_deleted(column))
+    assert result.schema["deleted"] is bool
+    (row,) = result.to_list(column, "deleted")
+    file, deleted = row
+    assert file.is_deleted is expected
+    assert deleted is expected
+    assert chain.filter(func.is_deleted(column)).count() == int(expected)
+
+
 def test_a_delete_row_is_not_downloaded(files, test_session):
     client = test_session.catalog.get_client(files[2].source)
 
