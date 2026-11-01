@@ -113,6 +113,7 @@ nav:
               - Namespaces: guide/namespaces.md
               - Local DB Migrations: guide/db_migrations.md
       - 🎬 Examples: examples.md
+      - Benchmarks: benchmarks.md
       - 🐍 API Reference:
           - Overview: references/index.md
           - DataChain: references/datachain.md
