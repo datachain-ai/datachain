@@ -4,9 +4,9 @@ List of environment variables used to configure DataChain behavior.
 
 ### Project files
 
-DataChain keeps its local database, configuration and downloaded-file cache in a `.datachain` directory. Inside a Git repository, it uses the nearest `.datachain` with a `db` or `config` file between the current directory and the repository root. If none exists, it creates `.datachain` at the repository root. Outside Git, it uses the current directory. Worktrees and submodules follow the same rule. A Git repository in your home directory follows this rule too: subdirectories share its state unless they contain a closer project marker or Git repository.
+DataChain keeps its local database, configuration and downloaded-file cache in a `.datachain` directory. Inside a Git repository, it uses the nearest `.datachain` with a `db` or `config` file between the current directory and the repository root. If none exists, it creates `.datachain` at the repository root. Outside Git, it uses the current directory. Worktrees and submodules follow the same rule. A Git repository in your home directory follows this rule too: subdirectories share its state unless they have their own `.datachain` with a `db` or `config` file, or their own Git repository.
 
-To choose a different directory, set one of the variables below. Local configuration, the database and the default cache and temporary directories follow that choice.
+To choose a different directory, set `DATACHAIN_DIR` or `DATACHAIN_ROOT_DIR` (see below). Local configuration, the database and the default cache and temporary directories follow that choice.
 
 ### Core Configuration
 

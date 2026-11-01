@@ -94,31 +94,27 @@ class DataChainDir:
             cwd = Path(root_dir)
             nearest = None
             for directory in (cwd, *cwd.parents):
-                datachain_dir = osp.join(directory, cls.DEFAULT)
+                datachain_dir = directory / cls.DEFAULT
                 if nearest is None and (
-                    osp.isfile(osp.join(datachain_dir, cls.DB))
-                    or osp.isfile(osp.join(datachain_dir, cls.CONFIG))
+                    osp.isfile(datachain_dir / cls.DB)
+                    or osp.isfile(datachain_dir / cls.CONFIG)
                 ):
                     nearest = datachain_dir
                 # Only reuse ancestor state inside a containing Git project.
                 # Worktrees and submodules use a .git file instead of a directory.
                 if osp.exists(directory / ".git"):
-                    return nearest or datachain_dir
+                    return str(nearest or datachain_dir)
 
         return osp.join(root_dir, cls.DEFAULT)
 
     @classmethod
     def find(cls, create: bool = True) -> "Self":
-        try:
-            root = os.environ[cls.ENV_VAR]
-        except KeyError:
-            root = cls.default_root()
-        instance = cls(root)
-        if not osp.isdir(root):
+        instance = cls()
+        if not osp.isdir(instance.root):
             if create:
                 instance.init()
             else:
-                raise NotADirectoryError(root)
+                raise NotADirectoryError(instance.root)
         return instance
 
 
