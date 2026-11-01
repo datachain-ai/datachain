@@ -14,10 +14,7 @@ from datachain.sql.sqlite import base
 
 @pytest.fixture
 def fresh_lookup(monkeypatch):
-    base.usearch_sqlite_path.cache_clear()
     monkeypatch.delenv(base.USEARCH_SQLITE_ENV, raising=False)
-    yield
-    base.usearch_sqlite_path.cache_clear()
 
 
 def test_sqlite_setup_does_not_import_usearch_into_the_process():
@@ -64,7 +61,6 @@ def test_usearch_path_is_resolved_once_and_inherited(
     )
 
     assert base.usearch_sqlite_path() == (resolved or None)
-    base.usearch_sqlite_path.cache_clear()
     assert base.usearch_sqlite_path() == (resolved or None)
     assert calls == [1]
 
@@ -94,7 +90,7 @@ def test_failed_usearch_lookup_subprocess_means_no_extension(
     not hasattr(sqlite3.Connection, "enable_load_extension"),
     reason="sqlite3 is built without extension loading",
 )
-def test_unloadable_usearch_extension_warns_once(
+def test_unloadable_usearch_extension_uses_fallback_quietly(
     tmp_path, fresh_lookup, monkeypatch, caplog
 ):
     ext_path = str(tmp_path / "usearch_sqlite")
@@ -106,25 +102,15 @@ def test_unloadable_usearch_extension_warns_once(
     ):
         assert [base.load_usearch_extension(conn) for _ in range(3)] == [False] * 3
 
-    assert sum(ext_path in r.getMessage() for r in caplog.records) == 1
+    assert not caplog.records
 
 
-def test_timed_out_usearch_lookup_warns_once_and_uses_fallback(
-    fresh_lookup, monkeypatch, mocker, caplog
-):
-    monkeypatch.setattr(base.importlib.util, "find_spec", lambda name: object())
-    run = mocker.patch.object(
-        base.subprocess, "run", side_effect=subprocess.TimeoutExpired("python", 30)
-    )
+def test_usearch_extension_computes_distance():
+    with closing(sqlite3.connect(":memory:")) as conn:
+        if not base.load_usearch_extension(conn):
+            pytest.skip("usearch SQLite extension cannot be loaded")
+        (distance,) = conn.execute(
+            "SELECT distance_cosine_f32('[1, 0]', '[0, 1]')"
+        ).fetchone()
 
-    with caplog.at_level(logging.WARNING, logger="datachain"):
-        assert base.usearch_sqlite_path() is None
-        base.usearch_sqlite_path.cache_clear()
-        assert base.usearch_sqlite_path() is None
-
-    run.assert_called_once()
-    assert run.call_args.kwargs["timeout"] == 30
-    messages = [record.getMessage() for record in caplog.records]
-    assert len(messages) == 1
-    assert "timed out after 30 s" in messages[0]
-    assert "slower Python fallback" in messages[0]
+    assert distance == pytest.approx(1)

@@ -9,7 +9,6 @@ import sys
 from collections.abc import Callable, Iterable
 from contextlib import closing
 from datetime import MAXYEAR, MINYEAR, UTC, date, datetime
-from functools import cache
 from types import MappingProxyType
 
 import sqlalchemy as sa
@@ -748,7 +747,6 @@ def compile_collect(element, compiler, **kwargs):
 
 
 USEARCH_SQLITE_ENV = "DATACHAIN_USEARCH_SQLITE"
-_USEARCH_LOOKUP_TIMEOUT = 30
 _USEARCH_SQLITE_PATH_CODE = """
 import sys, warnings
 sys.path[:] = {path!r}
@@ -758,7 +756,6 @@ print(usearch.sqlite_path())
 """
 
 
-@cache
 def usearch_sqlite_path() -> str | None:
     """Path of usearch's SQLite extension, or None if it is not available.
 
@@ -789,32 +786,13 @@ def _resolve_usearch_sqlite_path() -> str | None:
             ],
             capture_output=True,
             text=True,
-            timeout=_USEARCH_LOOKUP_TIMEOUT,
             check=True,
         )
-    except subprocess.TimeoutExpired:
-        logger.warning(
-            "Looking up usearch's SQLite extension timed out after %d s; "
-            "vector distances use a slower Python fallback.",
-            _USEARCH_LOOKUP_TIMEOUT,
-        )
-        return None
     except (OSError, subprocess.SubprocessError):
         logger.debug("Failed to locate usearch SQLite extension", exc_info=True)
         return None
     lines = result.stdout.strip().splitlines()
     return (lines[-1].strip() or None) if lines else None
-
-
-@cache
-def _warn_usearch_unloadable(ext_path: str, error: str) -> None:
-    logger.warning(
-        "usearch's SQLite extension %s does not load (%s); vector distances use "
-        "a slower Python fallback. If it names libsqlite3.so, install the SQLite "
-        "development package (e.g. libsqlite3-dev).",
-        ext_path,
-        error,
-    )
 
 
 def load_usearch_extension(conn: sqlite3.Connection) -> bool:
@@ -833,7 +811,7 @@ def load_usearch_extension(conn: sqlite3.Connection) -> bool:
     try:
         conn.load_extension(ext_path)
     except sqlite3.OperationalError as exc:
-        _warn_usearch_unloadable(ext_path, str(exc))
+        logger.debug("Failed to load usearch SQLite extension %s: %s", ext_path, exc)
         return False
     else:
         return True
