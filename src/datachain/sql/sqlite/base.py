@@ -748,6 +748,7 @@ def compile_collect(element, compiler, **kwargs):
 
 
 USEARCH_SQLITE_ENV = "DATACHAIN_USEARCH_SQLITE"
+_USEARCH_LOOKUP_TIMEOUT = 30
 _USEARCH_SQLITE_PATH_CODE = """
 import sys, warnings
 sys.path[:] = {path!r}
@@ -788,9 +789,16 @@ def _resolve_usearch_sqlite_path() -> str | None:
             ],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=_USEARCH_LOOKUP_TIMEOUT,
             check=True,
         )
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "Looking up usearch's SQLite extension timed out after %d s; "
+            "vector distances use a slower Python fallback.",
+            _USEARCH_LOOKUP_TIMEOUT,
+        )
+        return None
     except (OSError, subprocess.SubprocessError):
         logger.debug("Failed to locate usearch SQLite extension", exc_info=True)
         return None

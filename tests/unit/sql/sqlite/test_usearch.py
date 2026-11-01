@@ -107,3 +107,24 @@ def test_unloadable_usearch_extension_warns_once(
         assert [base.load_usearch_extension(conn) for _ in range(3)] == [False] * 3
 
     assert sum(ext_path in r.getMessage() for r in caplog.records) == 1
+
+
+def test_timed_out_usearch_lookup_warns_once_and_uses_fallback(
+    fresh_lookup, monkeypatch, mocker, caplog
+):
+    monkeypatch.setattr(base.importlib.util, "find_spec", lambda name: object())
+    run = mocker.patch.object(
+        base.subprocess, "run", side_effect=subprocess.TimeoutExpired("python", 30)
+    )
+
+    with caplog.at_level(logging.WARNING, logger="datachain"):
+        assert base.usearch_sqlite_path() is None
+        base.usearch_sqlite_path.cache_clear()
+        assert base.usearch_sqlite_path() is None
+
+    run.assert_called_once()
+    assert run.call_args.kwargs["timeout"] == 30
+    messages = [record.getMessage() for record in caplog.records]
+    assert len(messages) == 1
+    assert "timed out after 30 s" in messages[0]
+    assert "slower Python fallback" in messages[0]
