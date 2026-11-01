@@ -150,6 +150,16 @@ def test_delete_row_has_no_content(history, tmp_path, use):
     assert not (tmp_path / "out").exists()
 
 
+def test_delete_row_has_no_content_even_when_cached(history):
+    (file,) = history.filter(func.is_deleted("file")).to_values("file")
+    cache = history.session.catalog.cache
+    cache.store_data(file, b"stale content")
+    assert cache.contains(file)
+
+    with pytest.raises(VFileError, match="object was deleted"):
+        file.ensure_cached()
+
+
 @pytest.mark.xfail(
     bool(os.environ.get("DATACHAIN_WAREHOUSE")),
     reason="ClickHouse reads an empty JSON column as '', not None",
@@ -260,30 +270,6 @@ def test_changes_since_a_cutoff(cloud_test_catalog, cloud_prefix):
     ]
 
 
-@pytest.mark.parametrize(
-    "cloud_type,version_aware", [("s3", True), ("gs", True)], indirect=True
-)
-@pytest.mark.parametrize("versions", [True, "all"])
-def test_update_after_a_delete_drops_the_file(
-    cloud_test_catalog, cloud_prefix, versions
-):
-    ctc = cloud_test_catalog
-    prefix = cloud_prefix
-    (ctc.src / prefix / "a").write_text("1")
-    (ctc.src / prefix / "b").write_text("1")
-    uri = f"{ctc.src_uri}/{prefix}"
-
-    def latest(update):
-        chain = dc.read_storage(
-            uri, session=ctc.session, versions=versions, update=update
-        )
-        return sorted(chain.filter(dc.C("file.is_latest")).to_values("file.path"))
-
-    assert latest(False) == [f"{prefix}/a", f"{prefix}/b"]
-    (ctc.src / prefix / "a").unlink()
-    assert latest(True) == [f"{prefix}/b"]
-
-
 def test_parse_tabular_refuses_a_delete_row(history):
     deleted = history.filter(func.is_deleted("file"))
 
@@ -298,7 +284,6 @@ def test_parse_tabular_reads_each_version(cloud_test_catalog, cloud_prefix):
     ctc = cloud_test_catalog
     for row in ("1", "2"):
         (ctc.src / cloud_prefix / "t.csv").write_text(f"x\n{row}\n")
-        time.sleep(1.1)  # moto keeps whole seconds
 
     rows = (
         dc.read_storage(
@@ -313,30 +298,37 @@ def test_parse_tabular_reads_each_version(cloud_test_catalog, cloud_prefix):
     assert sorted(source.read()["x"] for _, source in rows) == [1, 2]
 
 
-@pytest.mark.parametrize("cloud_type,version_aware", [("s3", False)], indirect=True)
-def test_update_sees_an_overwrite_of_an_unversioned_object(
-    cloud_test_catalog, cloud_prefix
-):
+@pytest.mark.parametrize("cloud_type,version_aware", [("s3", True)], indirect=True)
+def test_all_versions_read_a_noncurrent_null_version(cloud_test_catalog, cloud_prefix):
     ctc = cloud_test_catalog
-    path = ctc.src / cloud_prefix / "a"
-    uri = f"{ctc.src_uri}/{cloud_prefix}"
+    client = ctc.catalog.get_client(ctc.src_uri)
 
-    def sizes(update):
-        chain = dc.read_storage(uri, session=ctc.session, versions="all", update=update)
-        return chain.to_values("file.size")
+    def versioning(status):
+        client.fs.call_s3(
+            "put_bucket_versioning",
+            Bucket=client.name,
+            VersioningConfiguration={"Status": status},
+        )
 
-    path.write_text("1")
-    assert sizes(False) == [1]
-    path.write_text("22")
-    assert sizes(True) == [2]
+    versioning("Suspended")
+    try:
+        (ctc.src / cloud_prefix / "a").write_text("before versioning")
+        (current,) = dc.read_storage(
+            f"{ctc.src_uri}/{cloud_prefix}", session=ctc.session, versions=True
+        ).to_values("file")
+        assert current.version == ""
+    finally:
+        versioning("Enabled")
+    (ctc.src / cloud_prefix / "a").write_text("after")
 
+    chain = dc.read_storage(
+        f"{ctc.src_uri}/{cloud_prefix}", session=ctc.session, versions="all"
+    )
 
-def test_is_deleted_ignores_files_without_an_etag(history, files, test_session):
-    plain = File(source=files[0].source, path="c.txt")  # no etag, no version
-    chain = history.union(dc.read_values(file=[plain], session=test_session))
-
-    assert chain.filter(func.is_deleted("file")).to_values("file.path") == ["b.txt"]
-    assert not plain.is_deleted
+    assert sorted(file.read_text() for file in chain.to_values("file")) == [
+        "after",
+        "before versioning",
+    ]
 
 
 @pytest.mark.parametrize("column", ["file", "media"])

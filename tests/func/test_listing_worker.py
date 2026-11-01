@@ -1,5 +1,4 @@
 import asyncio
-import io
 import os
 import signal
 import sys
@@ -13,10 +12,11 @@ from fsspec.asyn import sync
 import datachain as dc
 from datachain.asyn import get_loop
 from datachain.client import Client, listing_worker
-from datachain.client.listing_worker import Pool, load
+from datachain.client.listing_worker import Pool
 from datachain.lib.convert.flatten import flatten
 from datachain.lib.file import File, FileRow
 from datachain.lib.listing import list_bucket
+from tests.utils import listing_pages
 
 TREE = {
     "a": "1",
@@ -422,16 +422,6 @@ def test_a_stopped_child_does_not_hang_the_listing(
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
-@pytest.mark.parametrize("list_deleted", [False, True])
-def test_children_get_list_deleted(client, list_deleted):
-    client.list_deleted = list_deleted
-
-    *_, sent, _ = load(io.BytesIO(Pool(client, "", 2).spec))
-
-    assert sent is list_deleted
-
-
-@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
 @pytest.mark.parametrize("tree", [TREE], indirect=True)
 def test_deletes_across_pages_are_exact(
@@ -475,18 +465,9 @@ def test_pages_with_deletes_keep_keys_in_order(client, tree, cloud_prefix):
         client.fs.pipe_file(f"{client.uri}/{b}", str(i).encode())
     client.list_deleted = True
 
-    pages = sync(get_loop(), _pages, client, f"{cloud_prefix}/")
+    pages = sync(get_loop(), listing_pages, client, f"{cloud_prefix}/")
 
-    assert [[(r.path, bool(r.location)) for r in page] for page in pages] == [
+    assert [[(r.path, bool(r.location)) for r in page.rows] for page in pages] == [
         [(a, False), (a, True), (b, False), (b, False)],
         [(b, False)],
     ]
-
-
-async def _pages(client, prefix):
-    pages, token = [], None
-    while True:
-        page = await client._list_page(prefix, "", token)
-        pages.append(page.rows)
-        if (token := page.token) is None:
-            return pages

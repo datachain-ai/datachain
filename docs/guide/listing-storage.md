@@ -40,10 +40,13 @@ Each use lists the storage again: iterating the same listing twice lists it twic
 
 ## Versioned Buckets
 
-On a bucket with versioning enabled (S3, GCS, Azure), `list_storage()` and `read_storage()` give the current files only: old versions are not included, so counts and sums are over current files. `versions` decides only whether the rows carry version ids:
+On a bucket with versioning enabled (S3, GCS, Azure), `list_storage()` and `read_storage()` return current files by default. Use `versions` to choose what to include:
 
 - `versions=True`, the default: each file has its `version` id. The listing asks the storage for versions, so it is slower, and `save()` keeps old versions in the saved listing too.
 - `versions=False`: no version ids; a faster listing.
+- `versions="all"`: every retained version and the delete rows recorded by the storage.
+
+`File.is_deleted` identifies delete rows on objects from `to_objects()` or a chain. Use `func.is_deleted("file")` to filter them in a query.
 
 ```python
 total = sum(

@@ -351,10 +351,7 @@ class ClientS3(RangeListedClient):
             token = page["NextContinuationToken"]
         return Page(
             rows,
-            # delete markers are rows of their own when listed
-            min(keys, default=None)
-            if self.list_deleted
-            else (entries[0]["Key"] if entries else None),
+            listed[0][0]["Key"] if listed else None,
             max(keys, default=None),
             token,
             keep.past_lo,

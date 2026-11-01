@@ -20,7 +20,7 @@ all_files = dc.read_storage("az://container/data/")
 
 The `type=` parameter selects the right File subclass (`ImageFile`, `VideoFile`, `AudioFile`, `TextFile`). Without it, files are plain `File` objects with binary access.
 
-The chain runs over a saved listing of the storage, a snapshot that later runs reuse. A saved listing of the URI, or of a prefix above it, younger than 4 hours is reused; otherwise the storage is listed and saved, and `update=True` lists it again. `dc.listings()` shows the saved listings. On a versioned bucket the chain holds current objects; `versions=False` lists faster and leaves old versions out of the snapshot.
+The chain runs over a saved listing of the storage, a snapshot that later runs reuse. A saved listing of the URI, or of a prefix above it, younger than 4 hours is reused; otherwise the storage is listed and saved, and `update=True` lists it again. `dc.listings()` shows the saved listings. On a versioned bucket the chain holds current objects by default; `versions=False` lists faster and leaves old versions out of the snapshot. Use `versions="all"` to include retained history and delete rows. Identify deletions with `File.is_deleted` in Python or `func.is_deleted("file")` in a query.
 
 For public buckets, pass `anon=True` explicitly; for explicit keys or an S3-compatible storage such as MinIO, pass `client_config`:
 

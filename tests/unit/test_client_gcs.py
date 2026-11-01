@@ -22,6 +22,7 @@ from datachain.client import Client
 from datachain.client.gcs import GCSClient
 from datachain.client.writeconfig import WriteConfig
 from datachain.lib.file import File
+from tests.utils import listing_pages
 
 
 @pytest.mark.parametrize("block_size", [None, 256 * 1024])
@@ -442,15 +443,6 @@ def _gen(name, generation, created, deleted=None):
     return item
 
 
-async def _all_pages(client):
-    pages, token = [], None
-    while True:
-        page = await client._list_page("", "", token)
-        pages.append((page.rows, page.last))
-        if (token := page.token) is None:
-            return pages
-
-
 @pytest.mark.parametrize("list_deleted", [False, True])
 def test_delete_rows_from_generations_across_pages(list_deleted):
     client = _make_client()
@@ -464,20 +456,20 @@ def test_delete_rows_from_generations_across_pages(list_deleted):
     )
     client.list_deleted = list_deleted
 
-    pages = sync(get_loop(), _all_pages, client)
+    pages = sync(get_loop(), listing_pages, client)
     rows = [
         (r.path, r.version, bool(r.location), r.last_modified.second)
-        for page, _ in pages
-        for r in page
+        for page in pages
+        for r in page.rows
     ]
 
-    assert [last for _, last in pages] == ["a", "b"]
+    assert [page.last for page in pages] == ["a", "b"]
     versions = [("a", "1", False, 1), ("a", "2", False, 2)]
     if not list_deleted:
-        assert [len(page) for page, _ in pages] == [2, 2]
+        assert [len(page.rows) for page in pages] == [2, 2]
         assert rows == [*versions, ("a", "3", False, 4), ("b", "9", False, 1)]
     else:
-        assert [len(page) for page, _ in pages] == [1, 5]  # a's last generation waits
+        assert [len(page.rows) for page in pages] == [1, 5]  # a's last generation waits
         assert rows == [
             *versions,
             ("a", "deleted:2", True, 3),

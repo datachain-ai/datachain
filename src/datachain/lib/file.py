@@ -2213,7 +2213,6 @@ class ArrowRow(DataModel):
                 parse,
             )
 
-        self.file._raise_if_deleted()
         if self.file._caching_enabled:
             self.file.ensure_cached()
             path = self.file.get_local_path()

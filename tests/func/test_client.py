@@ -19,6 +19,7 @@ from datachain.client.fsspec import RangeListedClient
 from datachain.client.ranges import RangeListing
 from datachain.lib.file import File, FileError, FileRow
 from tests.data import ENTRIES
+from tests.utils import listing_pages
 
 _non_null_text = st.text(
     alphabet=st.characters(blacklist_categories=["Cc", "Cs"]), min_size=1
@@ -253,12 +254,7 @@ def test_gcs_listing_ends_at_hi(client, tree, mocker):
 
     mocker.patch.object(client.fs, "_call", counted)
 
-    async def listed():
-        page = await client._list_page("", lo, None, hi)
-        while page.token is not None:
-            page = await client._list_page("", lo, page.token, hi)
-
-    sync(get_loop(), listed)
+    sync(get_loop(), listing_pages, client, "", lo, hi)
     assert read == keys[10:21]  # startOffset includes the start key
 
 

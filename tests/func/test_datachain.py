@@ -278,9 +278,10 @@ def test_read_storage_all_versions_of_unversioned_storage(tmp_dir, test_session)
 
 
 @pytest.mark.parametrize("versions", ["latest", 2])
-def test_read_storage_rejects_unknown_versions(tmp_dir, test_session, versions):
+@pytest.mark.parametrize("reader", [dc.read_storage, dc.list_storage])
+def test_storage_rejects_unknown_versions(tmp_dir, test_session, versions, reader):
     with pytest.raises(ValueError, match="versions must be"):
-        dc.read_storage(tmp_dir.as_uri(), session=test_session, versions=versions)
+        reader(tmp_dir.as_uri(), session=test_session, versions=versions)
 
 
 def test_read_storage_versions_none_lists_current_objects(tmp_dir, test_session):

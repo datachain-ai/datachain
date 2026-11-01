@@ -1,7 +1,6 @@
 import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from tempfile import SpooledTemporaryFile
 from typing import TYPE_CHECKING, Any
@@ -19,6 +18,7 @@ from azure.storage.blob import BlobServiceClient
 from fsspec.asyn import get_loop, sync
 
 from datachain.lib.file import File, FileRow
+from datachain.utils import TIME_ZERO
 
 from .fsspec import BucketStatus, RangeListedClient
 from .ranges import Keep, Page, utf16_units
@@ -43,9 +43,6 @@ class _AzureWriteBuffer(SpooledTemporaryFile):
     """
 
     version_id: str | None = None
-
-
-EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 class AzureClient(RangeListedClient):
@@ -362,7 +359,9 @@ class AzureClient(RangeListedClient):
 
     def _delete_row_of(self, key: tuple) -> list[Any]:
         path, current, newest = key
-        return [] if current else [self._deleted_row(path, f"deleted:{newest}", EPOCH)]
+        return (
+            [] if current else [self._deleted_row(path, f"deleted:{newest}", TIME_ZERO)]
+        )
 
     @staticmethod
     def _blob_name(blob: Element) -> str:

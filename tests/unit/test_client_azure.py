@@ -12,8 +12,10 @@ from fsspec.asyn import sync
 from fsspec.callbacks import DEFAULT_CALLBACK
 
 from datachain.asyn import get_loop
-from datachain.client.azure import EPOCH, AzureClient
+from datachain.client.azure import AzureClient
 from datachain.lib.file import File, FileRow
+from datachain.utils import TIME_ZERO
+from tests.utils import listing_pages
 
 _FAKE_SAS = "https://account.blob.core.windows.net/mycontainer/blob.txt?sv=x&sig=y"
 _VER = "ver-abc-123"
@@ -427,15 +429,7 @@ def _listed_versions(pages, list_deleted):
     client._fs.service_client.get_container_client.return_value = container
     client.list_deleted = list_deleted
 
-    async def all_pages():
-        pages, token = [], None
-        while True:
-            page = await client._list_page("", "", token)
-            pages.append(page.rows)
-            if (token := page.token) is None:
-                return pages
-
-    return [r for page in sync(get_loop(), all_pages) for r in page]
+    return [r for page in sync(get_loop(), listing_pages, client) for r in page.rows]
 
 
 @pytest.mark.parametrize("list_deleted", [False, True])
@@ -456,8 +450,8 @@ def test_delete_rows_for_keys_without_a_current_version(list_deleted):
     assert sorted(r.path for r in rows if not r.location) == list("aaabccd")
     if list_deleted:
         assert deleted == [
-            ("a", "deleted:2026-10-01T00:00:03.0000000Z", EPOCH),
-            ("d", "deleted:2026-10-01T00:00:01.0000000Z", EPOCH),
+            ("a", "deleted:2026-10-01T00:00:03.0000000Z", TIME_ZERO),
+            ("d", "deleted:2026-10-01T00:00:01.0000000Z", TIME_ZERO),
         ]
         assert all(
             (r.size, r.etag, r.is_latest) == (0, "", False) for r in rows if r.location
@@ -476,7 +470,7 @@ def test_an_empty_page_keeps_a_key_open():
 
 @pytest.mark.parametrize("seed", range(20))
 def test_delete_rows_survive_ranges_that_split_in_flight(seed, mocker):
-    mocker.patch("datachain.client.fsspec.LIST_WORKERS", 8)
+    mocker.patch("datachain.client.ranges.LIST_WORKERS", 8)
     mocker.patch("datachain.client.ranges.YOUNG_PAGES", 1)
     rng = random.Random(seed)  # noqa: S311
     names = sorted(

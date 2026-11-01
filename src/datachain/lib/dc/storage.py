@@ -136,9 +136,10 @@ def read_storage(  # noqa: PLR0913
         - S3 records a delete marker for every delete, also of a key that is
           already deleted or never existed; GCS records only the delete of a
           live object.
-        - A URI that names a single object returns its current version only;
-          one that names a key deleted now returns no rows. Its prefix lists
-          the key's history.
+        - A URI naming an existing object returns its current version only.
+          Without a current object or matching folder, it raises
+          ``FileNotFoundError``. List the parent prefix and filter ``file.path``
+          to retrieve one key's history.
         - ``delta`` is not supported.
 
     Examples:
@@ -304,7 +305,7 @@ def list_storage(
     uri: str | os.PathLike[str] | list[str] | list[os.PathLike[str]],
     *,
     recursive: bool | None = True,
-    versions: bool = True,
+    versions: Versions = True,
     anon: bool | None = None,
     client_config: dict | None = None,
     session: Session | None = None,
@@ -325,9 +326,9 @@ def list_storage(
         uri: Storage URI(s), as in `read_storage`: buckets, folders or files,
             with glob patterns (`*`, `**`, `?`, `{a,b}`, `{1..9}`).
         recursive: If False, list only the files directly in the folder.
-        versions: As in `read_storage`, the rows are current files. If True,
-            the default, on a versioned bucket they carry their version id. If
-            False, they don't, and the listing is faster.
+        versions: True, the default, returns current files with version ids.
+            False omits version ids for a faster listing. "all" includes every
+            retained version and delete row, as in `read_storage`.
         anon: If True, read the bucket as public, without credentials. If
             None, the default, a public bucket is detected.
         client_config: Client configuration, such as credentials or an
@@ -351,6 +352,7 @@ def list_storage(
         table = dc.list_storage(uri).to_arrow()
         ```
     """
+    _validate_versions(versions, None)
     uris = [os.fspath(u) for u in (uri if isinstance(uri, (list, tuple)) else [uri])]
     if not uris:
         raise ValueError("No URIs provided")
@@ -399,7 +401,7 @@ class Listing:
         uris: list[str],
         *,
         recursive: bool | None = True,
-        versions: bool,
+        versions: Versions,
         client_config: dict,
         session: Session | None = None,
         session_config: dict | None = None,
@@ -440,14 +442,21 @@ class Listing:
                 yield [listing_lib.file_row(info)]
                 continue
             if source.scope is None:
-                pages = listing_lib.list_pages(source.uri, cache, self.client_config)
+                pages = listing_lib.list_pages(
+                    source.uri,
+                    cache,
+                    self.client_config,
+                    deleted=self.versions == "all",
+                )
             else:
                 pages = listing_lib.list_scope_pages(
-                    source.uri, source.scope, cache, self.client_config
+                    source.uri,
+                    source.scope,
+                    cache,
+                    self.client_config,
+                    deleted=self.versions == "all",
                 )
-            # current objects, as read_storage's chain: a listing with versions
-            # holds old ones too, listed for the version ids of current ones
-            latest = self.versions
+            latest = self.versions is True
             if source.filters == (listing_lib.PathFilter(),) and not latest:
                 yield from pages
                 continue

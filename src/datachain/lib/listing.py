@@ -117,12 +117,13 @@ def list_pages(
 
 
 def list_scope_pages(
-    uri: str, scope: "ListScope", cache, client_config=None
+    uri: str, scope: "ListScope", cache, client_config=None, deleted: bool = False
 ) -> Iterator[Sequence[tuple]]:
     """Pages of ``FileRow`` rows of the keys ``scope`` holds in the storage of
     ``uri``, whose client lists parts of a folder (S3, GCS, Azure)."""
     config = client_config or {}
     client = cast("RangeListedClient", Client.get_client(uri, cache, **config))  # type: ignore[arg-type]
+    client.list_deleted = deleted
     method = "level" if scope.one_level and client.LISTS_LEVELS else "prefix"
     return _scope_pages(client, scope, method)
 
