@@ -3,6 +3,7 @@ import shutil
 import sys
 from importlib.resources import files
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 SKILLS = ("datachain", "core", "knowledge")
 DEFAULT_SKILLS = ("datachain",)
@@ -37,7 +38,9 @@ def _layout(target: str, local: bool) -> tuple[Path, Path | None, str]:
     return base / skills_dir, base / commands_dir if commands_dir else None, command_ext
 
 
-_COPYTREE_IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".datachain")
+_COPYTREE_IGNORE = shutil.ignore_patterns(
+    "__pycache__", "*.pyc", ".datachain", "SKILL.md"
+)
 
 
 def _skills_src() -> Path:
@@ -153,6 +156,13 @@ def _sweep_retired(
         print(f"Removed old skills: {', '.join(removed)}")
 
 
+def _write_text_atomic(path: Path, content: str) -> None:
+    with TemporaryDirectory(dir=path.parent) as staging:
+        temporary = Path(staging) / path.name
+        temporary.write_text(content, encoding="utf-8")
+        temporary.replace(path)
+
+
 def _write_companion(
     src: Path,
     dest: Path,
@@ -174,9 +184,7 @@ def _write_companion(
     if sdk_md.exists():
         content = f"{content.rstrip()}\n\n{sdk_md.read_text(encoding='utf-8')}"
     command = commands_dir / f"datachain-{src.name}{command_ext}"
-    command.write_text(
-        _resolve_placeholders(content, skills_dir, dest), encoding="utf-8"
-    )
+    _write_text_atomic(command, _resolve_placeholders(content, skills_dir, dest))
 
 
 def _check_install_destinations(skills_dir: Path, names: list[str]) -> bool:
@@ -227,31 +235,24 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
         fresh = not dest.exists()
         dest.mkdir(parents=True, exist_ok=True)
         try:
-            (dest / _INSTALL_MARKER).write_text(skill_name, encoding="utf-8")
+            _write_text_atomic(dest / _INSTALL_MARKER, skill_name)
             shutil.copytree(src, dest, dirs_exist_ok=True, ignore=_COPYTREE_IGNORE)
+            if skill_name == "datachain":
+                shutil.copyfile(_skills_src() / "core" / "SDK.md", dest / "SDK.md")
+            skill_md = src / "SKILL.md"
+            if skill_md.exists():
+                _write_text_atomic(
+                    dest / "SKILL.md",
+                    _resolve_placeholders(
+                        skill_md.read_text(encoding="utf-8"), skills_dir, dest
+                    ),
+                )
+            if commands_dir is not None:
+                _write_companion(src, dest, skills_dir, commands_dir, command_ext)
         except BaseException:
             if fresh:
                 shutil.rmtree(dest)
             raise
-        if skill_name == "datachain":
-            shutil.copyfile(_skills_src() / "core" / "SDK.md", dest / "SDK.md")
-
-        # Resolve {skill_dir} and {<name>_skill_dir} placeholders in installed
-        # SKILL.md so the agent doesn't have to probe the filesystem to find its
-        # own scripts or another skill's files.
-        installed_skill_md = dest / "SKILL.md"
-        if installed_skill_md.exists():
-            installed_skill_md.write_text(
-                _resolve_placeholders(
-                    installed_skill_md.read_text(encoding="utf-8"),
-                    skills_dir,
-                    dest,
-                ),
-                encoding="utf-8",
-            )
-
-        if commands_dir is not None:
-            _write_companion(src, dest, skills_dir, commands_dir, command_ext)
 
         installed.append(f"  {skill_name} -> {dest}")
 

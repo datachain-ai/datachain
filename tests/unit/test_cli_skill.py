@@ -678,3 +678,33 @@ def test_interrupted_install_can_be_retried(
         assert not (tmp_path / ".claude/skills/datachain").exists()
         assert skill.install_skills(None, "claude", True) == 0
         assert skill.uninstall_skills(None, "claude", True) == 0
+
+
+@pytest.mark.parametrize("upgrade", [False, True])
+def test_interrupted_skill_rewrite_preserves_retryable_ownership(
+    tmp_path, fake_home, monkeypatch, upgrade
+):
+    from datachain.cli.commands import skill
+
+    monkeypatch.chdir(tmp_path)
+    original = Path.write_text
+
+    def interrupted(path, *args, **kwargs):
+        if path.name == "SKILL.md":
+            original(path, "", encoding="utf-8")
+            raise OSError("disk full")
+        return original(path, *args, **kwargs)
+
+    with patch("pathlib.Path.home", return_value=fake_home):
+        if upgrade:
+            assert skill.install_skills(None, "claude", True) == 0
+        with patch.object(Path, "write_text", interrupted):
+            with pytest.raises(OSError, match="disk full"):
+                skill.install_skills(None, "claude", True)
+        dest = tmp_path / ".claude/skills/datachain"
+        if upgrade:
+            assert skill._installed_by_datachain(dest, "datachain")
+        else:
+            assert not dest.exists()
+        assert skill.install_skills(None, "claude", True) == 0
+        assert skill.uninstall_skills(None, "claude", True) == 0
