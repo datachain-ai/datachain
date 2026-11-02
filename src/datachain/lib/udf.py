@@ -7,6 +7,7 @@ from contextlib import closing, nullcontext
 from dataclasses import dataclass
 from functools import cached_property, partial
 from graphlib import CycleError, TopologicalSorter
+from operator import itemgetter
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import attrs
@@ -449,6 +450,30 @@ class UDFBase(AbstractUDF):
         self.params.set_file_streams(obj_row, catalog, cache, download_cb)
         return obj_row
 
+    @property
+    def _prefetch(self) -> int:
+        assert self.params is not None
+        if not self.params._file_stream_params:
+            return 0
+        return self.prefetch
+
+    def _get_row_preparer(self, udf_fields, catalog, cache, download_cb):
+        assert self.params is not None
+        columns = self.params._plain_columns()
+        if columns is not None:
+            positions = {name: i for i, name in enumerate(udf_fields)}
+            if {"sys__id", *columns} <= positions.keys():
+                getter = itemgetter(*(positions[c] for c in ["sys__id", *columns]))
+                return getter if columns else lambda row: (getter(row),)
+        return partial(
+            self._prepare_row,
+            udf_fields=udf_fields,
+            catalog=catalog,
+            cache=cache,
+            download_cb=download_cb,
+            include_id=True,
+        )
+
     def _prepare_row(
         self, row, udf_fields, catalog, cache, download_cb, include_id=False
     ):
@@ -564,19 +589,20 @@ class Mapper(UDFBase):
         self.setup()
         signal_names = list(self.signal_names)
 
+        prepare_row = self._get_row_preparer(udf_fields, catalog, cache, download_cb)
+        prefetch = self._prefetch
+
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
             with safe_closing(udf_inputs):
                 for row in udf_inputs:
-                    yield self._prepare_row(
-                        row, udf_fields, catalog, cache, download_cb, include_id=True
-                    )
+                    yield prepare_row(row)
 
         prepared_inputs = _prepare_rows(udf_inputs)
         prepared_inputs = _prefetch_inputs(
             prepared_inputs,
-            self.prefetch,
+            prefetch,
             download_cb=download_cb,
-            remove_prefetched=bool(self.prefetch) and not cache,
+            remove_prefetched=bool(prefetch) and not cache,
         )
 
         with closing(prepared_inputs):
@@ -793,12 +819,13 @@ class Generator(UDFBase):
         signal_names = list(self.signal_names)
         file_row = FileRow if self._file_row_output() else None
 
+        prepare_row = self._get_row_preparer(udf_fields, catalog, cache, download_cb)
+        prefetch = self._prefetch
+
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
             with safe_closing(udf_inputs):
                 for row in udf_inputs:
-                    yield self._prepare_row(
-                        row, udf_fields, catalog, cache, download_cb, include_id=True
-                    )
+                    yield prepare_row(row)
 
         def _process_row(row):
             row_id, *row = row
@@ -829,9 +856,9 @@ class Generator(UDFBase):
         prepared_inputs = _prepare_rows(udf_inputs)
         prepared_inputs = _prefetch_inputs(
             prepared_inputs,
-            self.prefetch,
+            prefetch,
             download_cb=download_cb,
-            remove_prefetched=bool(self.prefetch) and not cache,
+            remove_prefetched=bool(prefetch) and not cache,
             max_size=self.prefetch_max_size,
         )
 
