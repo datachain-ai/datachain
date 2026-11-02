@@ -5,7 +5,9 @@ from importlib.resources import files
 from pathlib import Path
 from typing import TypedDict
 
-SKILLS = ("core", "knowledge")
+SKILLS = ("datachain", "core", "knowledge")
+DEFAULT_SKILLS = ("datachain",)
+_INSTALL_MARKER = ".datachain-installed"
 # Installable once, retired since. An upgrade must still be able to remove these:
 # a stale skill directory keeps instructing the agent that reads it.
 RETIRED_SKILLS = ("jobs",)
@@ -85,7 +87,7 @@ def _skills_src() -> Path:
 
 def _transform_cursor_mdc(skill_md_path: Path) -> str:
     """Read SKILL.md and transform its frontmatter to Cursor .mdc format."""
-    text = skill_md_path.read_text()
+    text = skill_md_path.read_text(encoding="utf-8")
 
     # Extract description from existing frontmatter
     description = ""
@@ -110,7 +112,7 @@ def _transform_copilot_instructions(skill_md_path: Path) -> str:
     `applyTo` glob. Copilot reads instruction files that match a glob against
     the active file path and prepends them to the prompt.
     """
-    text = skill_md_path.read_text()
+    text = skill_md_path.read_text(encoding="utf-8")
     fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
     body = text[fm_match.end() :] if fm_match else text
     return f"---\napplyTo: '**/*.py'\n---\n{body}"
@@ -126,25 +128,32 @@ def _frontmatter(text: str) -> str:
     return match.group(1) if match else ""
 
 
+def _frontmatter_name(name: str) -> str:
+    return name if name == "datachain" else f"datachain-{name}"
+
+
 def _installed_by_datachain(skill_dest: Path, name: str) -> bool:
     """Whether this directory holds the skill datachain installed under that name.
 
     `skills/<name>` is a shared namespace - anything may keep a `jobs` skill there -
-    so ownership is read out of the frontmatter rather than assumed from the path.
-    Every skill we ship declares `name: datachain-<skill>`, and installing only
-    resolves placeholders, which leaves that line alone.
+    so ownership uses frontmatter and the generic default also needs our marker.
+    Installing resolves placeholders and preserves the frontmatter name.
     """
     try:
-        text = (skill_dest / "SKILL.md").read_text()
-    except OSError:
+        text = (skill_dest / "SKILL.md").read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
         return False
-    return bool(
-        re.search(
-            rf"^name:\s*datachain-{re.escape(name)}\s*$",
-            _frontmatter(text),
-            re.MULTILINE,
-        )
-    )
+    frontmatter = _frontmatter(text)
+    if not re.search(
+        rf"^name:\s*{re.escape(_frontmatter_name(name))}\s*$", frontmatter, re.MULTILINE
+    ):
+        return False
+    if name != "datachain":
+        return True
+    try:
+        return (skill_dest / _INSTALL_MARKER).read_text(encoding="utf-8") == name
+    except (OSError, UnicodeError):
+        return False
 
 
 def _remove_skill(
@@ -169,20 +178,56 @@ def _remove_skill(
 
 
 def _sweep_retired(
-    skills_dir: Path, commands_dir: Path | None, command_ext: str | None
+    skills_dir: Path,
+    commands_dir: Path | None,
+    command_ext: str | None,
+    names: tuple[str, ...] = RETIRED_SKILLS,
 ) -> None:
-    """Clear skills that no longer ship, left behind by an earlier install.
-
-    Without this an upgrade leaves a retired skill in place, still instructing
-    whichever agent reads that directory.
-    """
+    """Remove old installed skills and their companion instructions."""
     removed = [
         name
-        for name in RETIRED_SKILLS
+        for name in names
         if _remove_skill(skills_dir, commands_dir, command_ext, name)
     ]
     if removed:
-        print(f"Removed retired skills: {', '.join(removed)}")
+        print(f"Removed old skills: {', '.join(removed)}")
+
+
+def _write_companion(
+    src: Path,
+    dest: Path,
+    skills_dir: Path,
+    commands_dir: Path,
+    command_ext: str,
+    *,
+    local: bool = False,
+) -> None:
+    skill_md = src / "SKILL.md"
+    if not skill_md.exists():
+        return
+    commands_dir.mkdir(parents=True, exist_ok=True)
+    if command_ext == ".mdc":
+        content = _transform_cursor_mdc(skill_md)
+    elif command_ext == ".instructions.md":
+        content = _transform_copilot_instructions(skill_md)
+    else:
+        content = skill_md.read_text(encoding="utf-8")
+    sdk_md = src / "SDK.md"
+    if sdk_md.exists():
+        content = f"{content.rstrip()}\n\n{sdk_md.read_text(encoding='utf-8')}"
+    command = commands_dir / f"datachain-{src.name}{command_ext}"
+    command.write_text(
+        _resolve_placeholders(content, skills_dir, dest, local=local), encoding="utf-8"
+    )
+
+
+def _check_install_destinations(skills_dir: Path, names: list[str]) -> bool:
+    for name in names:
+        dest = skills_dir / name
+        if dest.exists() and not _installed_by_datachain(dest, name):
+            print(f"Cannot overwrite unrelated skill: {dest}", file=sys.stderr)
+            return False
+    return True
 
 
 def install_skills(skills: str | None, target: str, local: bool) -> int:
@@ -204,7 +249,7 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
             if dep not in requested
         ]
     else:
-        skills_to_install = list(SKILLS)
+        skills_to_install = list(DEFAULT_SKILLS)
 
     # Per-mode overrides — when installing --local some targets (e.g. copilot)
     # write to a different directory layout than the user-level default.
@@ -231,6 +276,9 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
     )
     command_ext = layout["command_ext"]
 
+    if not _check_install_destinations(skills_dir, skills_to_install):
+        return 1
+
     installed = []
     missing = []
     for skill_name in skills_to_install:
@@ -243,6 +291,9 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
         dest = skills_dir / skill_name
         dest.mkdir(parents=True, exist_ok=True)
         shutil.copytree(src, dest, dirs_exist_ok=True, ignore=_COPYTREE_IGNORE)
+        (dest / _INSTALL_MARKER).write_text(skill_name, encoding="utf-8")
+        if skill_name == "datachain":
+            shutil.copyfile(_skills_src() / "core" / "SDK.md", dest / "SDK.md")
 
         # Resolve {skill_dir} and {<name>_skill_dir} placeholders in installed
         # SKILL.md so the agent doesn't have to probe the filesystem to find its
@@ -250,28 +301,30 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
         installed_skill_md = dest / "SKILL.md"
         if installed_skill_md.exists():
             installed_skill_md.write_text(
-                _resolve_placeholders(installed_skill_md.read_text(), skills_dir, dest)
+                _resolve_placeholders(
+                    installed_skill_md.read_text(encoding="utf-8"),
+                    skills_dir,
+                    dest,
+                    local=local,
+                ),
+                encoding="utf-8",
             )
 
         if commands_dir is not None and command_ext is not None:
-            commands_dir.mkdir(parents=True, exist_ok=True)
-            skill_md = src / "SKILL.md"
-            if skill_md.exists():
-                cmd_dest = commands_dir / f"datachain-{skill_name}{command_ext}"
-                if command_ext == ".mdc":
-                    content = _transform_cursor_mdc(skill_md)
-                elif command_ext == ".instructions.md":
-                    content = _transform_copilot_instructions(skill_md)
-                else:
-                    content = skill_md.read_text()
-                sdk_md = src / "SDK.md"
-                if sdk_md.exists():
-                    content = f"{content.rstrip()}\n\n{sdk_md.read_text()}"
-                cmd_dest.write_text(_resolve_placeholders(content, skills_dir, dest))
+            _write_companion(
+                src, dest, skills_dir, commands_dir, command_ext, local=local
+            )
 
         installed.append(f"  {skill_name} → {dest}")
 
-    _sweep_retired(skills_dir, commands_dir, command_ext)
+    old_skills: tuple[str, ...] = RETIRED_SKILLS
+    if "datachain" in skills_to_install and not missing:
+        old_skills += tuple(
+            name
+            for name in ("core", "knowledge")
+            if not (skills_dir / name / _INSTALL_MARKER).exists()
+        )
+    _sweep_retired(skills_dir, commands_dir, command_ext, old_skills)
 
     if installed:
         scope = "local" if local else "global"
@@ -368,8 +421,13 @@ def list_skills() -> int:
     return 0
 
 
-def _resolve_placeholders(text: str, skills_dir: Path, dest: Path) -> str:
-    text = text.replace("{skill_dir}", str(dest.resolve()))
+def _resolve_placeholders(
+    text: str, skills_dir: Path, dest: Path, *, local: bool = False
+) -> str:
+    if local:
+        skills_dir = skills_dir.relative_to(Path.cwd())
+        dest = dest.relative_to(Path.cwd())
+    text = text.replace("{skill_dir}", dest.as_posix())
     for name in SKILLS:
-        text = text.replace(f"{{{name}_skill_dir}}", str((skills_dir / name).resolve()))
+        text = text.replace(f"{{{name}_skill_dir}}", (skills_dir / name).as_posix())
     return text

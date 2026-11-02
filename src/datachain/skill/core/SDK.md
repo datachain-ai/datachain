@@ -166,7 +166,7 @@ When the user needs a plain string path, keep the typed file and add the string 
 
 Names describe content: `product_catalog_clip`, `cik_text_stats`. Keep them under ~30 characters — longer names are truncated in dataset lists and table headers. Parameters (model id, preset, threshold) belong in the code, never in the name.
 
-Every `.save()` sets `description=` — one line on what the dataset holds and what it is good for. That line is what the next reader sees in `dc.datasets()` and in the knowledge-base index.
+Every `.save()` sets `description=` — one line on what the dataset holds and what it is good for. That line helps the next reader understand the saved dataset.
 
 ```python
 chain.save(
@@ -262,16 +262,18 @@ Lineage is tracked automatically when a chain reads one dataset and saves anothe
    AND the UDF doesn't already saturate cores via internal threading.
    Skip when the model saturates the device (single-GPU), the total wall is <30s
    (bootstrap dominates), or per-worker memory × N would OOM.
-   Rough picks: I/O-bound → parallel=4-8; CPU-bound → parallel=2-4; external API → parallel=8-16.
-   ✓ chain.settings(parallel=4).map(emb=model_fn)
+   Use parallel=True for CPU-bound work, subject to per-worker memory limits.
+   For network-bound work, tune the count to memory and service limits.
+   ✓ chain.settings(parallel=True).map(emb=model_fn)
    ✓ chain.map(label=classify)                       # lightweight → sequential
    `workers=N` is Studio-only distributed processing — guard with dc.is_studio():
-   ✓ chain = chain.settings(parallel=4)
+   ✓ chain = chain.settings(parallel=True)
      if dc.is_studio():
          chain = chain.settings(workers=8)
 
-7. PREFETCH FOR FILE-READING UDFs: Estimate avg file size and compute:
+7. PREFETCH FOR FILE-READING UDFs: For scalar UDFs, estimate avg file size and compute:
      prefetch = clamp(4MB / estimated_avg_size, 2, 128)
+   For batch_map, prefetch counts batches; budget batch size × file size per slot.
    Only add .settings(prefetch=N) if N > 4 (default is 2). Prefetch downloads
    file content, never attributes: file.path and file.size come from the
    listing. Default prefetch=2 downloads the whole content of every File
@@ -410,7 +412,7 @@ Lineage is tracked automatically when a chain reads one dataset and saves anothe
 
 2. **Prefer Data Memory over Compute Engine.** Data Memory ops — `filter()`, `mutate()`, `group_by()`, `order_by()`, `select()`, `merge()`, `union()`, `distinct()`, `limit()` — run as SQL at warehouse speed using `dc.C()` and `dc.func.*`. Compute Engine ops (`map`/`gen`/`agg`) run heavy Python in parallel workers and are expensive. Use Compute Engine ONLY for file content reads, model inference, LLM calls, external APIs.
 
-3. **Extracting results.** Use `to_values()` for one column (returns flat list); `to_list()` for multiple columns (returns tuples). Never use `to_iter()` — it loses parallelism and lineage. For processing, use `map()` / `gen()` rather than extracting and looping.
+3. **Extracting results.** Use `to_values()` for one column (returns flat list); `to_list()` for multiple columns (returns tuples). Use `to_iter()` to stream saved rows without collecting them all in memory. For processing, use `map()` / `gen()` rather than extracting and looping.
    ```python
    files = chain.to_values("file")  # → [File(...), ...]
    rows = chain.to_list("file", "label")  # → [(File, "cat"), ...]

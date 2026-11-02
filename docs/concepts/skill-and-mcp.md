@@ -11,7 +11,7 @@ Skill and MCP are the two ways an agent reaches DataChain. The **Skill** ships w
 | | Skill (OSS) | MCP (Studio) |
 |---|---|---|
 | Ships with | `pip install datachain` | Studio |
-| Reads | Local `dc-knowledge/` + `.datachain/db` (SQLite) | Centralized data warehouse + shared Knowledge Base |
+| Reads | Local `.datachain/db` (SQLite); optional `dc-knowledge/` | Centralized data warehouse + shared Knowledge Base |
 | Compute | Local machine, parallel threads | Attached BYOC clusters: dozens to thousands of CPU/GPU machines |
 | Scale | One project's SQLite registry | Billions of typed records (LAION-scale corpora) |
 | Access control | Filesystem only | Teams, namespaces, per-team ACLs |
@@ -24,9 +24,15 @@ pip install datachain
 datachain skill install --target claude     # also: cursor, codex
 ```
 
-The Skill is the agent-side instruction package. Installing it places files into the agent harness's directory (for Claude Code: `~/.claude/skills/datachain/`). The Skill teaches the agent where the Knowledge Base is, how to introspect the Dataset DB, when to materialize a new dataset, and how to write idiomatic chains.
+The Skill is the agent-side instruction package. Installing it places files into the agent harness's directory (for Claude Code: `~/.claude/skills/datachain/`). The default skill teaches the agent to inspect the Dataset DB, process data files, save expensive results and query them later.
 
-Reads target two local sources:
+For a markdown Knowledge Base, explicitly install the optional knowledge skill and its core dependency:
+
+```bash
+datachain skill install knowledge --target claude
+```
+
+That workflow reads two local sources:
 
 - **`dc-knowledge/`** holds compiled markdown pages: schema, lineage, previews, links. The agent reads this first.
 - **`.datachain/db`** is the SQLite dataset registry: every named, versioned dataset and its provenance. The agent queries this when the Knowledge Base summary is not enough.
@@ -37,7 +43,7 @@ A small team can extend the Skill beyond solo work by **synchronizing both folde
 
 ## MCP (Studio)
 
-When the team outgrows file sync, the Dataset DB moves into Studio and the agent reaches it through MCP, the open Model Context Protocol with native client support in Claude Code, Cursor, and Codex. The Skill and MCP work side by side. The Skill is instructions: check the Knowledge Base first, how to name and save datasets, caching, SDK rules. MCP is tools that act on shared Studio state: search the Knowledge Base, read datasets and storages, run jobs. The agent uses both; the Skill itself never calls MCP. See [MCP Server](../studio/user-guide/agents/mcp.md) for how to connect a client.
+When the team outgrows file sync, the Dataset DB moves into Studio and the agent reaches it through MCP, the open Model Context Protocol with native client support in Claude Code, Cursor, and Codex. The Skill and MCP work side by side. The skill provides instructions for inspecting saved results, naming datasets, caching and SDK usage. The optional knowledge skill adds a markdown Knowledge Base workflow. MCP is tools that act on shared Studio state: search the Knowledge Base, read datasets and storages, run jobs. The agent uses both; the Skill itself never calls MCP. See [MCP Server](../studio/user-guide/agents/mcp.md) for how to connect a client.
 
 Studio adds four capabilities the OSS path does not have:
 

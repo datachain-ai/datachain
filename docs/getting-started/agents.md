@@ -4,7 +4,8 @@ title: Getting Started with Agents
 
 # Getting Started with Agents
 
-Without DataChain, an agent over a folder of files starts from raw bytes every session: re-downloading files, re-computing embeddings, re-filtering results. Effort is linear; nothing compounds. With the DataChain skill installed, every agent session deposits its conclusions into the Dataset DB as typed, versioned datasets, and the next session reads them as settled premises before generating its first line of code. After a week, your project has a knowledge base that both agents and humans navigate, and capability over your data rises with usage rather than staying flat.
+Install DataChain and its coding-agent skill to process data files and reuse saved
+results across sessions.
 
 ## Installation
 
@@ -20,72 +21,68 @@ Without DataChain, an agent over a folder of files starts from raw bytes every s
     uv add datachain
     ```
 
-## Install the Skill
+Install the skill for the current project, then start a new agent session:
 
 ```bash
-datachain skill install --target claude     # also: --target cursor, --target codex
+datachain skill install --target claude --local
+# Other targets: cursor, codex, copilot, pi
 ```
 
-The skill gives agents data awareness: what datasets exist, their schemas, which fields can be joined, and the meaning of columns inferred from the code that produced them.
+Omit `--local` to install for your user account. The default `datachain` skill
+includes recipes for inventories, media headers, batched inference, video frames,
+saved-result queries, updates and interrupted runs.
 
 ## Your First Agent Task
 
-Copy a reference image:
+Describe the task in your own words:
+
+```text
+Inventory our deliveries across S3, GCS and Azure.
+Report file counts and bytes by source, folder and extension without downloading contents.
+```
+
+| Task | DataChain pattern |
+|---|---|
+| One-off inventory | `list_storage()` and one aggregation pass |
+| Media headers | A typed file's `get_info()` inside `map()`, with `prefetch=0` |
+| Batched inference | `BatchMapper` with `setup()`, then `batch_map(..., batch=32)` |
+| Video and recordings | Use an existing Python reader in map/gen; retain source files and timestamps |
+| Saved results | Inspect datasets and recorded code, then query `read_dataset()` |
+| File updates | A compatible pipeline with `read_storage(..., update=True, delta=True)` |
+| Interrupted runs | Rerun the script to reuse checkpointed work |
+
+For questions about saved results or provenance, start from recorded datasets and
+code. Check external sources when current freshness is part of the request.
+Read the skill's installed `SDK.md` for API details and its `SKILL.md` for the
+model-change rebuild rule.
+
+A small shell command is sufficient for questions it answers directly. Use DuckDB
+or pandas for ready-made tables.
+
+## Optional Knowledge Base
+
+To generate and maintain markdown summaries in `dc-knowledge/`, explicitly install
+the `knowledge` skill, which also installs its `core` dependency:
 
 ```bash
-datachain cp --anon s3://dc-readme/fiona.jpg .
+datachain skill install knowledge --target claude --local
 ```
 
-Enter prompt in Claude Code, Cursor, or Codex:
+Then ask the agent to build a knowledge base for your saved datasets. See the
+[Knowledge Base guide](../guide/knowledge-base.md) for generation and browsing.
+The default skill does not require a knowledge base.
 
-```prompt
-Find dogs in s3://dc-readme/oxford-pets-micro/ similar to fiona.jpg:
-  - Pull breed metadata and mask files from annotations/
-  - Exclude images without mask
-  - Exclude Cocker Spaniels
-  - Only include images wider than 400px
+Installing the default `datachain` skill replaces `core` and `knowledge`
+installations from earlier releases. Optional skills explicitly installed with
+this version remain installed. To use only the task-oriented skill, remove those explicitly in
+that target and scope:
+
+```bash
+datachain skill uninstall core,knowledge --target claude --local
 ```
-
-Result:
-
-```
-┌──────┬───────────────────────────────────┬────────────────────────────┬──────────┐
-│ Rank │               Image               │           Breed            │ Distance │
-├──────┼───────────────────────────────────┼────────────────────────────┼──────────┤
-│    1 │ shiba_inu_52.jpg                  │ shiba_inu                  │    0.244 │
-├──────┼───────────────────────────────────┼────────────────────────────┼──────────┤
-│    2 │ shiba_inu_53.jpg                  │ shiba_inu                  │    0.323 │
-├──────┼───────────────────────────────────┼────────────────────────────┼──────────┤
-│    3 │ great_pyrenees_17.jpg             │ great_pyrenees             │    0.325 │
-└──────┴───────────────────────────────────┴────────────────────────────┴──────────┘
-```
-
-The agent decomposed this into embedding, metadata, and filtering steps; each saved as a named **dataset**. Next time, it starts from what's already built.
-
-## Knowledge Base
-
-The datasets are registered in a knowledge base in `dc-knowledge/`, optimized for both agents and humans:
-
-```
-dc-knowledge
-├── buckets
-│   └── s3
-│       └── dc_readme.md
-├── datasets
-│   ├── oxford_micro_dog_breeds.md
-│   ├── oxford_micro_dog_embeddings.md
-│   └── similar_to_fiona.md
-└── index.md
-```
-
-Browse as markdown files, or open in Obsidian:
-
-![Visualize data knowledge base](../assets/readme_obsidian.gif)
-
-Run the skill prompt again to update the knowledge base after creating new datasets. See the [Knowledge Base guide](../guide/knowledge-base.md) for details.
 
 ## Next Steps
 
-- [Concepts](../concepts/index.md): understand the Dataset DB, Datasets, and the dual engine
-- [Knowledge Base guide](../guide/knowledge-base.md): skill installation, generation, browsing
-- [Guides](../guide/index.md): in-depth coverage of every capability
+- [Concepts](../concepts/index.md): the Dataset DB, datasets and execution
+- [Knowledge Base guide](../guide/knowledge-base.md): optional markdown summaries
+- [Guides](../guide/index.md): in-depth coverage of each capability
