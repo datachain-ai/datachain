@@ -468,8 +468,8 @@ def _cpu_quotas(
 ) -> list[tuple[int, int]]:
     """``(quota, period)`` of each cgroup this process is in, and their parents."""
     quotas = []
-    with suppress(OSError):
-        for line in _read_text(membership).splitlines():
+    with suppress(OSError, ValueError):
+        for line in Path(membership).read_text().splitlines():
             try:
                 _, controllers, path = line.split(":", 2)
             except ValueError:
@@ -478,8 +478,6 @@ def _cpu_quotas(
                 base, files = root, ["cpu.max"]
             elif "cpu" in controllers.split(","):  # v1
                 base = os.path.join(root, controllers)
-                if not os.path.isdir(base):
-                    base = os.path.join(root, ",".join(sorted(controllers.split(","))))
                 if not os.path.isdir(base):
                     base = os.path.join(root, "cpu")
                 files = ["cpu.cfs_quota_us", "cpu.cfs_period_us"]
@@ -490,16 +488,11 @@ def _cpu_quotas(
                 folder = os.path.join(base, *parts[:depth])
                 with suppress(OSError, ValueError):
                     quota, period = " ".join(
-                        _read_text(os.path.join(folder, name)) for name in files
+                        Path(folder, name).read_text() for name in files
                     ).split()
                     if quota not in ("max", "-1"):
                         quotas.append((int(quota), int(period)))
     return quotas
-
-
-def _read_text(path: str) -> str:
-    with open(path) as f:
-        return f.read()
 
 
 def usable_cpu_count() -> int:
