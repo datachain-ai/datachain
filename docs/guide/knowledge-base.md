@@ -10,10 +10,13 @@ The knowledge base is a structured reflection of your datasets as markdown files
 
 ```bash
 pip install datachain
-datachain skill install --target claude     # also: --target cursor, --target codex
+datachain skill install knowledge --target claude     # also: --target cursor, --target codex
 ```
 
 The skill gives agents data awareness: what datasets exist, their schemas, which fields can be joined, and the meaning of columns inferred from the code that produced them.
+
+The `knowledge` skill also installs its `core` dependency. The default skill alone
+does not generate a knowledge base.
 
 ## Generate the Knowledge Base
 

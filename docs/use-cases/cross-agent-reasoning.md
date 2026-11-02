@@ -12,6 +12,12 @@ A teammate runs Claude Code over your S3 bucket on Monday and produces a curated
 
 Every agent that runs a chain saves a typed dataset. The Knowledge Base compiles markdown pages from those datasets, one per dataset and one per bucket listing, with schema, lineage, and a preview. Any agent on the same project (Claude Code, Cursor, Codex, or a custom harness) reads knowledge base as context before generating code. The dataset name and version (`curated_images@1.0.0`) is the contract between agents; the Knowledge Base page is the description.
 
+Install the optional knowledge skill for this workflow (it also installs core):
+
+```bash
+datachain skill install knowledge --target claude
+```
+
 A Claude Code session on Monday produces this:
 
 ```python
@@ -32,7 +38,7 @@ class Quality(BaseModel):
 )
 ```
 
-The save also generates a Knowledge Base entry:
+After saving, ask the agent to update the Knowledge Base:
 
 ```text
 dc-knowledge/
@@ -44,7 +50,7 @@ dc-knowledge/
 └── index.md
 ```
 
-A Cursor session on Wednesday installs the same skill (`datachain skill install --target cursor`), reads `dc-knowledge/curated_images.md`, and finds the dataset already exists. The next prompt becomes:
+A Cursor session on Wednesday installs the same skill (`datachain skill install knowledge --target cursor`), reads `dc-knowledge/curated_images.md`, and finds the dataset already exists. The next prompt becomes:
 
 ```text
 Train a small classifier on curated_images, holding out 20% for eval.
