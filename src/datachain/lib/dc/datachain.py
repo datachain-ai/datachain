@@ -516,8 +516,9 @@ class DataChain:
                 Set to 0 or False for UDFs that read only part of a file, such as
                 `get_info()`.
             parallel: Number of processes to use for processing user-defined functions
-                (UDFs) in parallel. If an integer is provided, it specifies the number
-                of CPUs to use. If True, all available CPUs are used. Defaults to 1.
+                (UDFs) in parallel. Each process has its own UDF and setup resources.
+                If an integer is provided, it specifies the number of CPUs to use.
+                If True, all available CPUs are used. Defaults to 1.
             namespace: Namespace to use for the chain by default.
             project: Project to use for the chain by default.
             min_task_size: Minimum number of rows per worker/process for parallel
