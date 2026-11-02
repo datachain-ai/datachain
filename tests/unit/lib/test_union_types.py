@@ -439,19 +439,16 @@ def test_union_arm_named_like_the_discriminator_rejected():
         SignalSchema({"value": _type_tag | str}).db_signals()
 
 
-def _write_v(path, session, values, anno, replaced):
+def _write_v(path, session, values, anno, tags=None):
     dc.read_values(
         id=list(range(len(values))),
         v=values,
         output={"id": int, "v": anno},
         session=session,
     ).order_by("id").to_parquet(path)
-    table = pq.read_table(path)
-    for name, column in replaced.items():
-        table = table.drop_columns([name])
-        if column is not None:
-            table = table.append_column(name, column)
-    pq.write_table(table, path)
+    if tags is not None:
+        table = pq.read_table(path).drop_columns(["v._type_tag"])
+        pq.write_table(table.append_column("v._type_tag", tags), path)
 
 
 def _read_v(path, session):
@@ -463,7 +460,7 @@ def test_read_parquet_reads_an_optional_model_under_any_tag_name(tmp_dir, test_s
     path = tmp_dir / "v.parquet"
     # A partial model's name, NULL, and ClickHouse's NULL
     tags = pa.array(["FooPartial_1a2b_v1", None, ""])
-    _write_v(path, test_session, [Foo(a=5)] * 3, Foo | None, {"v._type_tag": tags})
+    _write_v(path, test_session, [Foo(a=5)] * 3, Foo | None, tags)
     assert [v and v.a for v in _read_v(path, test_session)] == [5, None, None]
 
 
@@ -563,7 +560,7 @@ def test_read_parquet_union_arm_must_have_the_stored_arm_shape(tmp_dir, test_ses
         foo: Foo
 
     path = tmp_dir / "v.parquet"
-    _write_v(path, test_session, [Holder(foo=Foo())], Holder | int, {})
+    _write_v(path, test_session, [Holder(foo=Foo())], Holder | int)
 
     class Holder(DataModel):  # type: ignore[no-redef]
         _version: ClassVar[int] = 2
@@ -577,11 +574,3 @@ def test_read_parquet_union_arm_must_have_the_stored_arm_shape(tmp_dir, test_ses
             output={"v": Holder | int},
             session=test_session,
         )
-
-
-def test_read_parquet_infers_a_union_arm_without_type_tags(tmp_dir, test_session):
-    path = tmp_dir / "v.parquet"
-    replaced = {"v._type_tag": None, "v.Foo.a": pa.array([5.0, float("nan"), None])}
-    _write_v(path, test_session, [Foo(a=5, b="z"), 9, None], Foo | int | None, replaced)
-    foo, number, absent = _read_v(path, test_session)
-    assert (foo.a, foo.b, number, absent) == (5, "z", 9, None)

@@ -2658,15 +2658,8 @@ class NullablePoint(DataModel):
     y: int
 
 
-def _drop_type_tags(path):
-    table = pq.read_table(path)
-    tags = [c for c in table.column_names if c.endswith("._type_tag")]
-    pq.write_table(table.drop_columns(tags), path)
-
-
-@pytest.mark.parametrize("type_tags", [True, False])
 def test_read_parquet_columns_keep_a_present_optional_parent_with_null_fields(
-    tmp_dir, test_session, type_tags
+    tmp_dir, test_session
 ):
     path = tmp_dir / "optional.parquet"
     points = [NullablePoint(x=None, y=3), None]
@@ -2674,8 +2667,6 @@ def test_read_parquet_columns_keep_a_present_optional_parent_with_null_fields(
     dc.read_values(id=[1, 2], p=points, output=output, session=test_session).to_parquet(
         path
     )
-    if not type_tags:
-        _drop_type_tags(path)
     chain = dc.read_parquet(path.as_uri(), columns=["id", "p.x"], session=test_session)
     rows = chain.order_by("id").to_list("id", "p")
     assert [(i, p and p.model_dump()) for i, p in rows] == [(1, {"x": None}), (2, None)]
@@ -2836,21 +2827,6 @@ def test_read_parquet_columns_read_a_model_in_an_optional_or_union_by_its_parent
     ]
 
 
-def test_read_parquet_columns_read_a_model_in_an_optional_without_type_tags(
-    nested_parquet, test_session
-):
-    _drop_type_tags(nested_parquet)
-    chain = dc.read_parquet(
-        nested_parquet.as_uri(),
-        columns=["id", "c.note"],
-        output=["id", "v"],
-        source=False,
-        session=test_session,
-    )
-    notes = chain.order_by("id").to_values("v")
-    assert [n and n.model_dump() for n in notes] == [None, {"text": "a"}, None, None]
-
-
 @pytest.mark.parametrize(
     "column,model", [("u.Note", Note), ("c.note", Note), ("c", Card)]
 )
@@ -2944,27 +2920,6 @@ def test_parse_tabular_columns_take_signals_from_the_first_file_by_path(
         file=files.to_values("file")[::-1], session=test_session
     ).parse_tabular(columns=["id", "p.x"], source=False)
     assert chain.order_by("id").to_values("p.x") == [1, None]
-
-
-@pytest.mark.parametrize("type_tags", [True, False])
-def test_read_parquet_decides_each_optional_parent_from_its_own_fields(
-    tmp_dir, test_session, type_tags
-):
-    path = tmp_dir / "two.parquet"
-    p = [NullablePoint(x=None, y=3), None]
-    q = [None, NullablePoint(x=None, y=4)]
-    output = {"id": int, "p": NullablePoint | None, "q": NullablePoint | None}
-    dc.read_values(id=[1, 2], p=p, q=q, output=output, session=test_session).to_parquet(
-        path
-    )
-    if not type_tags:
-        _drop_type_tags(path)
-    chain = dc.read_parquet(path.as_uri(), source=False, session=test_session)
-    rows = chain.order_by("id").to_list("p", "q")
-    assert [[v and v.model_dump() for v in row] for row in rows] == [
-        [{"x": None, "y": 3}, None],
-        [None, {"x": None, "y": 4}],
-    ]
 
 
 @pytest.mark.parametrize("columns,read", [(None, 3), (["c", "a"], 2)])

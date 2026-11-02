@@ -1628,11 +1628,12 @@ def _put_wide(ctc, tmp_path, anno):
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize("anno", [_Wide, _Wide | None])
 def test_read_parquet_columns_fetch_only_picked_signals_written_by_datachain(
-    cloud_test_catalog_upload, fetched_bytes, tmp_path
+    cloud_test_catalog_upload, fetched_bytes, tmp_path, anno
 ):
     ctc = cloud_test_catalog_upload
-    uri, size, points = _put_wide(ctc, tmp_path, _Wide)
+    uri, size, points = _put_wide(ctc, tmp_path, anno)
     chain = dc.read_parquet(
         uri, columns=["p.x"], settings={"prefetch": 0}, session=ctc.session
     )
