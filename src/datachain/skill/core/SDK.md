@@ -271,15 +271,13 @@ Lineage is tracked automatically when a chain reads one dataset and saves anothe
      if dc.is_studio():
          chain = chain.settings(workers=8)
 
-7. PREFETCH FOR FILE-READING UDFs: For scalar UDFs, estimate avg file size and compute:
-     prefetch = clamp(4MB / estimated_avg_size, 2, 128)
-   Only add .settings(prefetch=N) if N > 4 (default is 2). Prefetch downloads
-   file content, never attributes: file.path and file.size come from the
-   listing. Default prefetch=2 downloads the whole content of every File
-   argument. For UDFs that take a File but read only part of it (get_info(),
-   read_bytes(n)), set prefetch=0. UDFs that receive only file.path and/or
-   file.size via params= download nothing. Skip if the user explicitly sets
-   prefetch.
+7. PREFETCH FOR FILE-READING UDFs: Prefetch downloads whole files, never
+   attributes such as file.path and file.size. For partial reads (get_info(),
+   read_bytes(n) with n > 0), set prefetch=0. For whole-file scalar UDFs, start
+   with 16 for small files (under about 1 MB), the default 2 otherwise, or 1 for
+   large files; tune to memory and service limits. In batch_map, prefetch counts
+   batches, so budget their combined file sizes. UDFs receiving only file.path
+   and/or file.size through params= download nothing. Respect explicit settings.
 
 8. CACHE ONLY WHEN NEEDED: Do not add cache=True by default. Use only when the
    same files are read multiple times (multi-stage pipelines), or the user asks.
@@ -409,7 +407,12 @@ Lineage is tracked automatically when a chain reads one dataset and saves anothe
 
    **Scope.** This rule governs DATA file access. Reading a handful of log/metadata files for one-off introspection during debugging is outside the rule.
 
-2. **Prefer Data Memory over Compute Engine.** Data Memory ops — `filter()`, `mutate()`, `group_by()`, `order_by()`, `select()`, `merge()`, `union()`, `distinct()`, `limit()` — run as SQL at warehouse speed using `dc.C()` and `dc.func.*`. Compute Engine ops (`map`/`gen`/`agg`) run heavy Python in parallel workers and are expensive. Use Compute Engine ONLY for file content reads, model inference, LLM calls, external APIs.
+2. **Choose SQL or Python for the work.** Data Memory ops — `filter()`, `mutate()`,
+   `group_by()`, `order_by()`, `select()`, `merge()`, `union()`, `distinct()`, `limit()` —
+   run in the warehouse using `dc.C()` and `dc.func.*`. Use them for relational queries.
+   Stream saved rows with `to_iter()` when Python is a better fit. Compute Engine ops
+   (`map`/`gen`/`agg`) run per-row Python, including file reads, models and external APIs.
+   Add parallel workers when the workload benefits.
 
 3. **Extracting results.** Use `to_values()` for one column (returns flat list); `to_list()` for multiple columns (returns tuples). Use `to_iter()` to stream saved rows without collecting them all in memory. For processing, use `map()` / `gen()` rather than extracting and looping.
    ```python

@@ -27,19 +27,12 @@ datachain dataset describe <name>    # schema, versions, lineage, sources and sa
 datachain show <name> --limit 5       # peek at rows and columns
 ```
 
-Start with `dataset ls` and `dataset describe --json`; for provenance, check recorded code and counts there before scanning result rows.
-Save expensive results under meaningful names and run named Python scripts so `query_script` captures their code.
-`describe` reports recorded provenance; it does not check current files or models.
-For saved-result and provenance questions, use `dc.read_dataset(name, version=...)` and recorded dependencies/code.
-Do not rerun build/refresh scripts or `read_storage(..., update=True)` just to answer; check sources only when current freshness is part of the question.
+If a saved dataset answers the question, query it with `dc.read_dataset(name, version=...)`
+instead of recomputing. For provenance, inspect its recorded dependencies, code and counts
+with `describe` before scanning rows. `describe` does not check current files or models;
+refresh with `read_storage(..., update=True)` only when current freshness is part of the question.
 
-For questions about row values (embeddings, metadata, labels), query the saved dataset with
-`dc.read_dataset("<name>")`. Reuse its rows rather than recomputing them.
-
-Run scripts from the project directory: `cd /work && python scripts/x.py`. Inside a Git repository,
-DataChain uses the nearest `.datachain/` containing a `db` or `config` file, stopping at the nearest
-repository root; without existing state, it uses that root. Outside Git, it uses the current directory.
-`DATACHAIN_DIR` and `DATACHAIN_ROOT_DIR` override discovery.
+Run named Python scripts from the project directory so saved datasets record their code.
 
 ### Shared team state with Studio (optional)
 
@@ -97,7 +90,7 @@ print(by_ext.to_list("ext", "n", "bytes"))
 ```
 
 `func.path`: `parent`, `name`, `file_stem`, `file_ext`. `func.string`: `split(col, sep, limit)`, `length`,
-`replace`, `regexp_replace`. Aggregate in SQL first; don't `to_list()` millions of rows of a saved listing.
+`replace`, `regexp_replace`. Aggregate in SQL or stream with `to_iter()`; don't `to_list()` millions of rows.
 
 ### Per-file metadata: video / image / audio headers (reads only the header bytes)
 
@@ -336,16 +329,13 @@ durability or a fixed checkpoint interval. Do not rewrite the pipeline into a ma
 ## 2. DataChain rules
 
 - DataChain results are exact: `similarity_search` is a brute-force cosine scan, `group_by`/`count` are SQL.
-- Inventories and one-off totals: `list_storage` + one loop. Processing files: one `read_storage` per bucket
-  prefix; filter with a glob in the URI (`.../*.jpg`, `.../**/*.mov`) or `.filter(...)` on `file.path` before
-  any `map`.
-- `settings(parallel=True)` uses the available CPU budget for CPU-heavy UDFs (decoding, models), if each worker fits in memory.
-  For network-bound UDFs, start with `parallel=True, prefetch=0` and tune concurrency to memory and service limits.
-- Header-only reads (`prefetch=0`) pay off for large files (videos, audio, multi-MB images). Many small files
-  (thumbnails, captions, JSON sidecars under ~1 MB) are cheaper to read whole with `prefetch=16`. Read related
-  small files in one pass: materialize derived join keys with `.save()` before merging large chains, then use one `map`.
-- `.save(name)` every expensive result, then filter and aggregate downstream from the saved dataset in SQL
-  (`filter`/`group_by`/`order_by`), no Python loop needed. Don't `to_list()`/`to_pandas()` millions of rows.
+- For CPU-heavy UDFs, use `settings(parallel=True)` when each worker fits in memory.
+  For network-bound UDFs, tune concurrency to memory and service limits.
+- Use `prefetch=0` for partial reads. For whole-file scalar UDFs, start with 16 for
+  small files (under about 1 MB), the default 2 otherwise, or 1 for large files.
+  In `batch_map`, prefetch counts batches; budget their combined file sizes.
+- Save expensive results before answering follow-up questions. Query saved rows in SQL
+  or stream them with `to_iter()` to keep memory bounded.
 - When a UDF already has the file's bytes, also return the cheap facts a follow-up may filter on (a pydantic
   model with all of them).
 - UDF return types must be annotated (`-> float`, `-> dc.Video`, a pydantic model). Unannotated lambdas are

@@ -58,3 +58,17 @@ def test_similarity_recipe_matches_full_scan(nearest_rows, rows, queries):
         for i in (0, 1):
             if i in neighbors:
                 assert neighbors[i] == 1 - i
+
+
+def test_similarity_recipe_bounds_score_matrix_memory(nearest_rows):
+    products = []
+
+    class Embeddings(np.ndarray):
+        def __matmul__(self, other):
+            products.append((self.shape[0], other.shape[1]))
+            return super().__matmul__(other)
+
+    embeddings = np.ones((300, 16), dtype=np.float32).view(Embeddings)
+    assert len(nearest_rows(embeddings, range(len(embeddings)))) == 300
+    assert sum(rows for rows, _ in products) == 300
+    assert all(rows <= 128 and columns == 300 for rows, columns in products)

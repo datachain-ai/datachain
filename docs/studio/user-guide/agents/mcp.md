@@ -22,13 +22,13 @@ on the team's clusters. See [Tools](mcp-tools.md) for what it can do.
 
 ```bash
 pip install datachain
-datachain skill install knowledge --target claude   # also: --target cursor, --target codex
+datachain skill install --target claude   # also: --target cursor, --target codex
 ```
 
-The optional `knowledge` skill also installs its `core` dependency.
-The skill is the instructions, MCP is the tools. The skill tells the agent to check the
-knowledge base before computing anything, how to name and save datasets, and which SDK
-rules a script must follow; MCP is how it acts on the team's data in Studio.
+The default `datachain` skill guides agents to inspect shared datasets and jobs before
+computing, use knowledge descriptions for discovery, and save reusable results. MCP
+provides the tools for working with the team's data in Studio. The optional `knowledge`
+skill remains available for its separate knowledge workflow.
 
 ## Connect
 
