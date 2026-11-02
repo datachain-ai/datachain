@@ -1,5 +1,6 @@
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -345,6 +346,90 @@ def test_listing_update_drops_deleted_file_on_versioned_storage(cloud_test_catal
         "file.path"
     )
     assert paths == ["deleted/kept"]
+
+
+@pytest.mark.parametrize("is_studio", [True])
+@pytest.mark.parametrize(
+    "pattern,recursive,expected",
+    [
+        ("", True, ["a.txt", "b.csv", "sub/c.txt"]),
+        ("", False, ["a.txt", "b.csv"]),
+        ("/*.txt", True, ["a.txt"]),
+        ("/**/*.txt", True, ["a.txt", "sub/c.txt"]),
+        ("/sub/", True, ["sub/c.txt"]),
+        ("/a.txt", True, ["a.txt"]),
+    ],
+    ids=["dir", "not-recursive", "glob", "recursive-glob", "subdir", "file"],
+)
+def test_read_storage_in_studio_reads_local_paths_without_listing(
+    test_session, local_tree, studio_job, pattern, recursive, expected
+):
+    chain = dc.read_storage(
+        local_tree.as_uri() + pattern, recursive=recursive, session=test_session
+    )
+    paths = [Path(f.get_fs_path()) for f in chain.to_values("file")]
+    assert sorted(p.relative_to(local_tree).as_posix() for p in paths) == expected
+    assert test_session.catalog.listings() == []
+
+
+@pytest.mark.parametrize(
+    "is_studio,listings", [(False, 1), (True, 0)], ids=["local", "studio"]
+)
+def test_read_storage_saves_local_listing_only_outside_studio(
+    test_session, local_tree, studio_job, listings
+):
+    dc.read_storage(local_tree.as_uri(), session=test_session).exec()
+    assert len(test_session.catalog.listings()) == listings
+
+
+@pytest.mark.parametrize("is_studio", [True])
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_read_storage_in_studio_saves_cloud_listing(cloud_test_catalog, studio_job):
+    session = cloud_test_catalog.session
+    dc.read_storage(cloud_test_catalog.src_uri, session=session).exec()
+    assert len(session.catalog.listings()) == 1
+
+
+@pytest.mark.parametrize("is_studio", [True])
+def test_read_storage_in_studio_lists_local_files_again_on_each_call(
+    test_session, local_tree, studio_job
+):
+    assert dc.read_storage(local_tree.as_uri(), session=test_session).count() == 3
+    (local_tree / "d.txt").write_text("d")
+    assert dc.read_storage(local_tree.as_uri(), session=test_session).count() == 4
+
+
+@pytest.mark.parametrize("is_studio", [True])
+def test_read_storage_in_studio_rejects_delta_on_local_paths(
+    test_session, local_tree, studio_job
+):
+    with pytest.raises(ValueError, match="delta"):
+        dc.read_storage(
+            local_tree.as_uri(), delta=True, delta_on="file.path", session=test_session
+        )
+
+
+@pytest.mark.parametrize("is_studio", [True])
+def test_read_storage_in_studio_chunks_local_files(test_session, tmp_dir, studio_job):
+    for i in range(20):
+        (tmp_dir / f"{i}.txt").write_text(str(i))
+    chain = dc.read_storage(tmp_dir.as_uri(), session=test_session)
+    chunks = [set(chain.chunk(i, 2).to_values("file.path")) for i in range(2)]
+    assert all(chunks)
+    assert chunks[0] | chunks[1] == {f"{i}.txt" for i in range(20)}
+
+
+@pytest.mark.parametrize("is_studio", [True])
+def test_read_storage_in_studio_lists_a_directory_once_per_call(
+    test_session, local_tree, studio_job
+):
+    chain = dc.read_storage(local_tree.as_uri() + "/*.{txt,csv}", session=test_session)
+    assert sorted(chain.to_values("file.path")) == ["a.txt", "b.csv"]
+    temp = test_session.catalog.metastore.list_datasets_by_prefix(
+        test_session.get_temp_prefix()
+    )
+    listing_project = test_session.catalog.metastore.listing_project_name
+    assert len([d for d in temp if d.project.name == listing_project]) == 1
 
 
 def test_read_storage_single_local_file_deterministic_hash(test_session, tmp_dir):

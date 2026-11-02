@@ -164,7 +164,7 @@ def _ls_urls_flat(
     from datachain.node import long_line_str
 
     config = catalog.client_config if client_config is None else client_config
-    _prepared_listings: set[str] = set()
+    _prepared_listings: dict[str, str] = {}
     for source in sources:
         client_cls = Client.get_implementation(source)
         if client_cls.is_root_url(source):

@@ -14,6 +14,7 @@ import datachain.lib.listing as listing_lib
 from datachain.cli import ls
 from datachain.config import Config, ConfigLevel
 from datachain.lib.listing import LISTING_PREFIX, _sanitize_ds_name
+from datachain.query.session import Session
 
 
 @pytest.fixture
@@ -258,6 +259,76 @@ dog1
 dog2
 dog3
 """
+
+
+@pytest.mark.parametrize("is_studio", [True])
+@pytest.mark.parametrize(
+    "path,expected",
+    [("", "a.txt\nb.csv\nsub/\n"), ("/a.txt", "a.txt\n")],
+    ids=["dir", "file"],
+)
+def test_ls_in_studio_saves_no_local_listing(
+    test_session, local_tree, studio_job, capsys, path, expected
+):
+    ls([local_tree.as_uri() + path], catalog=test_session.catalog)
+    assert capsys.readouterr().out == expected
+    assert test_session.catalog.listings() == []
+
+
+@pytest.mark.parametrize("is_studio", [True])
+def test_ls_in_studio_removes_local_listing_with_its_session(
+    test_session, local_tree, studio_job
+):
+    catalog = test_session.catalog
+    with Session("cli", catalog=catalog) as session:
+        ls([local_tree.as_uri()], catalog=catalog)
+        prefix = session.get_temp_prefix()
+        assert list(catalog.metastore.list_datasets_by_prefix(prefix))
+    assert not list(catalog.metastore.list_datasets_by_prefix(prefix))
+
+
+@pytest.mark.parametrize("is_studio", [True])
+def test_ls_in_studio_lists_a_shared_local_directory_once(
+    test_session, local_tree, studio_job, capsys
+):
+    catalog = test_session.catalog
+    with Session("cli", catalog=catalog) as session:
+        ls(
+            [f"{local_tree.as_uri()}/*.txt", f"{local_tree.as_uri()}/*.csv"],
+            catalog=catalog,
+        )
+        temp = catalog.metastore.list_datasets_by_prefix(session.get_temp_prefix())
+        listing_project = catalog.metastore.listing_project_name
+        assert len([d for d in temp if d.project.name == listing_project]) == 1
+    out = capsys.readouterr().out
+    assert "a.txt" in out
+    assert "b.csv" in out
+
+
+@pytest.mark.parametrize("is_studio", [True])
+def test_enlisted_local_sources_share_one_listing_and_its_uri(
+    test_session, local_tree, studio_job
+):
+    sources = [f"{local_tree.as_uri()}/*.txt", f"{local_tree.as_uri()}/*.csv"]
+    with test_session.catalog.enlist_sources(sources, update=False) as data_sources:
+        listings = {(s.listing.dataset_name, s.listing.uri) for s in data_sources}
+    assert len(listings) == 1
+    assert next(iter(listings))[1] == local_tree.as_uri() + "/"
+
+
+@pytest.mark.parametrize("is_studio", [False, True])
+def test_enlisted_local_source_keeps_its_uri(test_session, local_tree, studio_job):
+    listing, _, _ = test_session.catalog.enlist_source(local_tree.as_uri())
+    with listing, listing.clone() as clone:
+        assert listing.uri == clone.uri == local_tree.as_uri() + "/"
+
+
+@pytest.mark.parametrize("is_studio", [True])
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_ls_in_studio_saves_cloud_listing(cloud_test_catalog, studio_job):
+    catalog = cloud_test_catalog.catalog
+    ls([cloud_test_catalog.src_uri], catalog=catalog)
+    assert len(catalog.listings()) == 1
 
 
 def test_ls_remote_sources(cloud_type, capsys, monkeypatch, studio_config):
