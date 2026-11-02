@@ -23,7 +23,7 @@ def test_plain_udf_inputs_skip_async_prefetch(test_session, mocker, method):
         split if method == "map" else generate,
         output={"left": str, "right": str},
     )
-    assert result.to_list("left", "right") == [("a", "b"), ("c", "d")]
+    assert result.order_by("left").to_list("left", "right") == [("a", "b"), ("c", "d")]
 
 
 @pytest.mark.parametrize("method", ["map", "gen"])
@@ -88,7 +88,7 @@ def test_udf_dotted_model_input_and_reordered_params(test_session, mocker, metho
         combine if method == "map" else generate,
         params=["suffix", "item.text"],
         output={"result": str},
-    ).to_values("result") == ["ax", "by"]
+    ).order_by("result").to_values("result") == ["ax", "by"]
 
     prepare.assert_not_called()
 
@@ -118,7 +118,7 @@ def test_udf_without_inputs_and_with_setup_preserves_values(
 
     assert getattr(chain.setup(prefix=lambda: "p"), method)(
         result=configured if method == "map" else generate_configured
-    ).to_values("result") == [f"p{x}" for x in values]
+    ).order_by("result").to_values("result") == [f"p{x}" for x in values]
 
 
 @pytest.mark.parametrize("method", ["map", "gen"])
@@ -143,7 +143,7 @@ def test_udf_model_input_is_hydrated(test_session, mocker, method):
     )
     assert getattr(chain, method)(
         result=inspect if method == "map" else generate
-    ).to_values("result") == [1, 2]
+    ).order_by("result").to_values("result") == [1, 2]
 
     assert prepare.call_count > 0
 
