@@ -12,12 +12,17 @@ from pydantic import BaseModel
 
 import datachain as dc
 from datachain import Mapper
-from datachain.asyn import ASYNC_WORKERS
 from datachain.dataset import RowDict
-from datachain.lib.file import File
+from datachain.lib.file import File, FileError
 from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.udf import (
-    JsonSerializationError, UDFBase, UdfError, UdfRunError, _prefetch_input, _prefetch_inputs,
+    PREFETCH_FILE_WORKERS,
+    JsonSerializationError,
+    UDFBase,
+    UdfError,
+    UdfRunError,
+    _prefetch_input,
+    _prefetch_inputs,
 )
 from datachain.lib.utils import DataChainError
 
@@ -486,10 +491,12 @@ def test_udf_instance_shared_by_chains(test_session, verb):
 
 @pytest.mark.parametrize("prefetch,batch_size", [(4, 1), (16, 32), (2, 4)])
 def test_prefetch_read_ahead_is_bounded(prefetch, batch_size, monkeypatch):
-    pulled = 0
+    pulled = completed = 0
     changed = threading.Event()
 
     async def fake_prefetch(self, download_cb=None):
+        nonlocal completed
+        completed += 1
         return True
 
     monkeypatch.setattr(File, "_prefetch", fake_prefetch)
@@ -511,6 +518,7 @@ def test_prefetch_read_ahead_is_bounded(prefetch, batch_size, monkeypatch):
                 break
         # Result queue + active workers + consumer + one queued and one pending input.
         assert pulled <= 2 * prefetch + 3
+        assert completed / batch_size - 1 <= 2 * prefetch + 1
         assert sum(1 for _ in it) == 99
 
 
@@ -532,10 +540,10 @@ def test_prefetch_downloads_a_batch_concurrently(monkeypatch, size):
     out = list(_prefetch_inputs(iter([batch]), prefetch=1, batch_columns={0}))
 
     assert out == [batch]
-    assert peak == min(size, ASYNC_WORKERS)
+    assert peak == min(size, PREFETCH_FILE_WORKERS)
 
 
-@pytest.mark.parametrize("error", [PermissionError, FileNotFoundError])
+@pytest.mark.parametrize("error", [PermissionError, asyncio.CancelledError])
 def test_prefetch_failure_cancels_and_awaits_other_downloads(monkeypatch, error):
     async def run():
         started = asyncio.Event()
@@ -573,7 +581,7 @@ def test_prefetch_reuses_finished_slots_while_one_file_is_slow(monkeypatch):
             return True
 
         monkeypatch.setattr(File, "_prefetch", prefetch)
-        names = ["slow", *[str(i) for i in range(ASYNC_WORKERS - 1)], "later"]
+        names = ["slow", *[str(i) for i in range(PREFETCH_FILE_WORKERS - 1)], "later"]
         row = [[File(source="s3://b", path=name) for name in names]]
         task = asyncio.create_task(_prefetch_input(row, batch_columns={0}))
         try:
@@ -582,5 +590,102 @@ def test_prefetch_reuses_finished_slots_while_one_file_is_slow(monkeypatch):
         finally:
             release_slow.set()
             await asyncio.wait_for(task, timeout=5)
+
+    asyncio.run(run())
+
+
+def test_prefetch_downloads_each_cache_target_once(
+    catalog, tmp_path, monkeypatch, small_tar_member, small_tar_member_data
+):
+    from datachain.client.local import FileClient
+
+    data, raw = small_tar_member_data
+    (tmp_path / "archive.tar").write_bytes(raw)
+    (tmp_path / "plain").write_bytes(b"woof")
+    client = FileClient(str(tmp_path), {}, catalog.cache)
+    members = [small_tar_member(client) for _ in range(32)]
+    plain = File(source=client.uri, path="plain", size=4)
+    plain._set_stream(catalog, caching_enabled=False)
+    downloads = []
+    original = client.get_file
+
+    async def get_file(*args, **kwargs):
+        downloads.append(args[0])
+        await asyncio.sleep(0.01)
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(client, "get_file", get_file)
+    completed = []
+    row = [members + [plain] * 5]
+    assert (
+        asyncio.run(
+            _prefetch_input(
+                row, batch_columns={0}, after_prefetch=lambda: completed.append(1)
+            )
+        )
+        is row
+    )
+    assert len(downloads) == len(set(downloads)) == 2
+    assert len(completed) == 37
+    assert members[0].read() == data
+    assert plain.read() == b"woof"
+
+
+@pytest.mark.parametrize("size", [0, 1])
+def test_prefetch_small_rows_avoid_tasks(monkeypatch, size):
+    async def prefetch(self, download_cb=None):
+        return True
+
+    def unexpected_task(*args, **kwargs):
+        raise AssertionError("single-file rows do not need async tasks")
+
+    monkeypatch.setattr(File, "_prefetch", prefetch)
+    monkeypatch.setattr(asyncio, "create_task", unexpected_task)
+    row = [File(source="s3://b", path="x")] * size
+    assert asyncio.run(_prefetch_input(row)) is row
+
+
+def test_prefetch_file_error_skips_only_that_file(monkeypatch, caplog):
+    completed = []
+
+    async def prefetch(self, download_cb=None):
+        if self.path == "bad":
+            raise FileError("invalid location", self.source, self.path)
+        return True
+
+    monkeypatch.setattr(File, "_prefetch", prefetch)
+    row = [[File(source="s3://b", path=p) for p in ("bad", "good")]]
+    assert (
+        asyncio.run(
+            _prefetch_input(
+                row, batch_columns={0}, after_prefetch=lambda: completed.append(1)
+            )
+        )
+        is row
+    )
+    assert completed == [1]
+    assert "Skipping prefetch" in caplog.text
+
+
+def test_prefetch_external_cancellation_awaits_downloads(monkeypatch):
+    async def run():
+        started = asyncio.Event()
+        stopped = []
+
+        async def prefetch(self, download_cb=None):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.append(self.path)
+
+        monkeypatch.setattr(File, "_prefetch", prefetch)
+        row = [[File(source="s3://b", path=p) for p in ("a", "b")]]
+        task = asyncio.create_task(_prefetch_input(row, batch_columns={0}))
+        await asyncio.wait_for(started.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert sorted(stopped) == ["a", "b"]
 
     asyncio.run(run())

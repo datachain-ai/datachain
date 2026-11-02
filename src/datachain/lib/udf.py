@@ -16,7 +16,7 @@ import attrs
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from pydantic import BaseModel
 
-from datachain.asyn import ASYNC_WORKERS, AsyncMapper
+from datachain.asyn import AsyncMapper
 from datachain.cache import temporary_cache
 from datachain.dataset import RowDict
 from datachain.hash_utils import hash_callable
@@ -25,7 +25,7 @@ from datachain.lib.convert.flatten import (
     flatten_value,
     union_value_match,
 )
-from datachain.lib.file import File, FileError, FileRow
+from datachain.lib.file import File, FileError, FileRow, VFileRegistry
 from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.utils import AbstractUDF, DataChainParamsError
 from datachain.query.batch import (
@@ -38,6 +38,8 @@ from datachain.query.batch import (
 from datachain.utils import safe_closing, with_last_flag
 
 logger = logging.getLogger("datachain")
+PREFETCH_FILE_WORKERS = 20
+
 
 if TYPE_CHECKING:
     from collections import abc
@@ -502,26 +504,38 @@ async def _prefetch_input(
     batch_columns: set[int] | None = None,
     max_size: int | None = None,
 ) -> T:
-    async def prefetch_file(obj: File) -> None:
-        if not obj.path or (max_size is not None and not 0 < obj.size <= max_size):
-            return
-        try:
-            if await obj._prefetch(download_cb):
-                after_prefetch()
-        except FileError as e:
-            logger.warning("Skipping prefetch for '%s/%s': %s", obj.source, obj.path, e)
+    files = [
+        obj
+        for obj in _row_files(row, batch_columns)
+        if obj.path and (max_size is None or 0 < obj.size <= max_size)
+    ]
+    pending = iter(files)
+    locks: dict[str, asyncio.Lock] = {}
 
-    files = _row_files(row, batch_columns)
+    async def download() -> None:
+        for obj in pending:
+            try:
+                if len(files) > 1:
+                    target = obj
+                    if obj.location:
+                        target = VFileRegistry.parent(obj, obj.location)  # type: ignore[arg-type]
+                    async with locks.setdefault(target.get_hash(), asyncio.Lock()):
+                        prefetched = await obj._prefetch(download_cb)
+                else:
+                    prefetched = await obj._prefetch(download_cb)
+                if prefetched:
+                    after_prefetch()
+            except FileError as e:
+                logger.warning(
+                    "Skipping prefetch for '%s/%s': %s", obj.source, obj.path, e
+                )
 
-    async def prefetch_files(first: File) -> None:
-        await prefetch_file(first)
-        for obj in files:
-            await prefetch_file(obj)
-
-    # Refill each slot independently; a slow file must not stall later files.
+    if len(files) < 2:
+        await download()
+        return row
     tasks = [
-        asyncio.create_task(prefetch_files(first))
-        for first in islice(files, ASYNC_WORKERS)
+        asyncio.create_task(download())
+        for _ in range(min(len(files), PREFETCH_FILE_WORKERS))
     ]
     try:
         await asyncio.gather(*tasks)

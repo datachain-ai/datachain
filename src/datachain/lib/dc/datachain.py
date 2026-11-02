@@ -1108,10 +1108,10 @@ class DataChain:
         row's result must not depend on the other rows in its batch. Under this
         rule, a rerun with a different `batch` reuses completed results.
 
-        With `settings(prefetch=N)`, up to N batches download at a time, the files
-        of each batch one after another, and up to 2N+1 batches can be on local
-        disk per process. `settings(batch_size=...)` sets database insert
-        buffering, not the call size.
+        With `settings(prefetch=N)`, up to N batches download at a time, with
+        up to 20 files per batch downloading concurrently. Up to 2N+1 batches
+        can be on local disk per process. `settings(batch_size=...)` sets database
+        insert buffering, not the call size.
 
         Parameters:
             func: Function or `BatchMapper` applied to each batch.
