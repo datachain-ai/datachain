@@ -192,7 +192,7 @@ def _build_source_retry_chain(
     on: str | Sequence[str],
     right_on: str | Sequence[str] | None,
     delta_retry: bool | str | None,
-    diff_chain: "DataChain",
+    diff_chain: "DataChain | None",
     current_only: bool = False,
 ) -> "DataChain | None":
     """Get retry chain for processing error records and missing records."""
@@ -227,9 +227,11 @@ def _build_source_retry_chain(
     # result dataset atm)
     on = [on] if isinstance(on, str) else on
 
-    return (
-        retry_chain.subtract(diff_chain, on=on).distinct(*on) if retry_chain else None
-    )
+    if retry_chain is None:
+        return None
+    if diff_chain is not None:
+        retry_chain = retry_chain.subtract(diff_chain, on=on)
+    return retry_chain.distinct(*on)
 
 
 def _get_source_info(
@@ -406,18 +408,21 @@ def _build_source_replay_input(
     assert source_ds_latest_version is not None
 
     current_only = target_source_query.listing_fn is not None
-    diff_chain = _build_source_diff_chain(
-        source_ds_name,
-        source_ds_project,
-        source_ds_version,
-        source_ds_latest_version,
-        target_source_spec.on,
-        target_source_spec.compare,
-        current_only=current_only,
-    )
+    versions_changed = source_ds_version != source_ds_latest_version
+    diff_chain = None
+    if versions_changed:
+        diff_chain = _build_source_diff_chain(
+            source_ds_name,
+            source_ds_project,
+            source_ds_version,
+            source_ds_latest_version,
+            target_source_spec.on,
+            target_source_spec.compare,
+            current_only=current_only,
+        )
 
     changed = []
-    if source_ds_version != source_ds_latest_version:
+    if versions_changed:
         # Deleted records carry their old key, so this also covers removals.
         changed.append(
             _build_source_diff_chain(
@@ -446,15 +451,22 @@ def _build_source_replay_input(
             current_only=current_only,
         )
 
+    source_replay_input = diff_chain
     if retry_chain is not None:
         changed.append(retry_chain)
-        source_replay_input = _safe_union(
-            diff_chain,
-            retry_chain,
-            context="combining retry records with delta changes",
+        source_replay_input = (
+            _safe_union(
+                diff_chain,
+                retry_chain,
+                context="combining retry records with delta changes",
+            )
+            if diff_chain is not None
+            else retry_chain
         )
-    else:
-        source_replay_input = diff_chain
+    if source_replay_input is None:
+        source_replay_input = _read_source(
+            source_ds_name, source_ds_project, source_ds_latest_version, current_only
+        ).limit(0)
 
     return (
         source_replay_input,
@@ -523,7 +535,6 @@ def delta_retry_update(  # noqa: PLR0911
     result_key = _get_shared_result_key(delta_sources)
 
     source_replacements: list[tuple[DatasetQuery, DataChain]] = []
-    retained_chain = latest_dataset
     source_versions_changed = False
     changed_keys: list[tuple[DeltaSpec, DataChain | None]] = []
     for source in delta_sources:
@@ -552,11 +563,6 @@ def delta_retry_update(  # noqa: PLR0911
             source_ds_latest_version
         )
         source_versions_changed |= source_ds_version != source_ds_latest_version
-        if source_keys is not None:
-            # Invalidate by source keys before filters or generators can drop rows.
-            retained_chain = retained_chain.subtract(
-                source_keys, on=result_key, right_on=target_source_spec.on
-            )
         changed_keys.append((target_source_spec, source_keys))
         source_replacements.append((source, source_replay_input))
 
@@ -568,6 +574,10 @@ def delta_retry_update(  # noqa: PLR0911
         dc._query, result_key
     ) or not _changed_keys_are_aligned(changed_keys):
         return None, None, True
+
+    spec, keys = changed_keys[0]
+    assert keys is not None
+    retained_chain = latest_dataset.subtract(keys, on=result_key, right_on=spec.on)
 
     replayed_delta_chain = _rewrite_query_for_delta_replay(
         source_replacements,
@@ -581,7 +591,6 @@ def delta_retry_update(  # noqa: PLR0911
         return None, None, False
     normalized_dependencies = _normalize_dependencies(dependencies, updated_versions)
 
-    retained_chain = retained_chain.subtract(replayed_delta_chain, on=result_key)
     result_chain = _safe_union(
         retained_chain,
         replayed_delta_chain,

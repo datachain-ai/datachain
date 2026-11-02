@@ -1,11 +1,14 @@
+from collections.abc import Iterator
+
 import pytest
 
 import datachain as dc
 from datachain import C, File, func
+from tests.utils import assert_delta_refresh
 
 
 @pytest.mark.parametrize(
-    "operation", ["merge", "inner_merge", "grouped_merge", "subtract"]
+    "operation", ["merge", "inline_merge", "inner_merge", "grouped_merge", "subtract"]
 )
 def test_delta_with_unchanged_static_input_replays_changed_records(
     test_session, operation
@@ -27,7 +30,11 @@ def test_delta_with_unchanged_static_input_replays_changed_records(
             delta_unsafe=True,
             session=test_session,
         ).map(score=score)
-        labels = dc.read_dataset("labels", session=test_session)
+        labels = (
+            dc.read_values(group=[1, 2], label=["a", "b"], session=test_session)
+            if operation == "inline_merge"
+            else dc.read_dataset("labels", session=test_session)
+        )
         if operation == "subtract":
             return chain.subtract(labels, on="group")
         if operation == "grouped_merge":
@@ -36,46 +43,13 @@ def test_delta_with_unchanged_static_input_replays_changed_records(
 
     dc.read_values(group=[1, 2], label=["a", "b"], session=test_session).save("labels")
     source([1, 2, 3], [1, 2, 3])
-    build(True).save("enriched_result")
-    source([1, 3, 4], [1, 2, 3])
-    processed.clear()
-    result = build(True).save("enriched_result")
-    assert sorted(processed) == [3, 4]
-    assert sorted(result.to_list(), key=repr) == sorted(
-        build(False).to_list(), key=repr
+    refreshed = assert_delta_refresh(
+        build,
+        "enriched_result",
+        lambda: source([1, 3, 4], [1, 2, 3]),
+        processed=processed,
     )
-
-
-def test_delta_with_inline_static_input_replays_changed_records(test_session):
-    processed = []
-
-    def score(id) -> int:
-        processed.append(id)
-        return id * 10
-
-    def build():
-        labels = dc.read_values(group=[1, 2], label=["a", "b"], session=test_session)
-        return (
-            dc.read_dataset(
-                "inline_source",
-                delta=True,
-                delta_on="id",
-                delta_unsafe=True,
-                session=test_session,
-            )
-            .map(score=score)
-            .merge(labels, on="group")
-        )
-
-    dc.read_values(id=[1, 2], group=[1, 2], session=test_session).save("inline_source")
-    build().save("inline_result")
-    dc.read_values(id=[1, 2, 3], group=[1, 2, 1], session=test_session).save(
-        "inline_source"
-    )
-    processed.clear()
-    result = build().save("inline_result")
-    assert processed == [3]
-    assert build().save("inline_result").version == result.version
+    assert refreshed == [3, 4]
 
 
 @pytest.mark.parametrize("changed", ["left", "right", "both"])
@@ -101,21 +75,13 @@ def test_delta_join_with_independent_changes(test_session, changed, how):
             full=how == "full",
         )
 
-    def rows(chain):
-        return sorted(
-            chain.to_iter("id", "left_value", "right_id", "right_value"), key=repr
-        )
+    def change():
+        if changed in ("left", "both"):
+            source("join_left", [1, 3], [11, 30], "left_value")
+        if changed in ("right", "both"):
+            source("join_right", [1, 2, 4], [100, 201, 400], "right_value")
 
-    first = build(True).save("join_result")
-    initial = rows(first)
-    if changed in ("left", "both"):
-        source("join_left", [1, 3], [11, 30], "left_value")
-    if changed in ("right", "both"):
-        source("join_right", [1, 2, 4], [100, 201, 400], "right_value")
-    result = build(True).save("join_result")
-    assert rows(result) == rows(build(False))
-    assert rows(first) == initial
-    assert build(True).save("join_result").version == result.version
+    assert_delta_refresh(build, "join_result", change)
 
 
 @pytest.mark.parametrize("changed", ["left", "right"])
@@ -138,22 +104,26 @@ def test_delta_union_with_overlapping_source_keys(test_session, changed, delete)
             dc.read_dataset("right", **kwargs)
         )
 
-    build(True).save("overlap_result")
-    source(changed, [4] if delete else [1, 4], [40] if delete else [11, 40])
-    result = build(True).save("overlap_result")
-    assert sorted(result.to_iter("id", "value")) == sorted(
-        build(False).to_iter("id", "value")
+    assert_delta_refresh(
+        build,
+        "overlap_result",
+        lambda: source(
+            changed, [4] if delete else [1, 4], [40] if delete else [11, 40]
+        ),
     )
-    assert build(True).save("overlap_result").version == result.version
 
 
 @pytest.mark.parametrize("operation", ["union", "merge"])
 @pytest.mark.parametrize("static_first", [False, True])
-def test_delta_composed_query_refreshes_changed_static_input(
-    test_session, operation, static_first
+@pytest.mark.parametrize("change", ["static", "inline", "source", "delete"])
+def test_delta_composed_query_refreshes_static_and_source_inputs(
+    test_session, operation, static_first, change
 ):
-    dc.read_values(id=[1, 2], value=[10, 20], session=test_session).save("changing")
-    dc.read_values(id=[1, 2], value=[100, 200], session=test_session).save("static")
+    def source(ids, values):
+        dc.read_values(id=ids, value=values, session=test_session).save("changing")
+
+    source([1, 2], [10, 20])
+    dc.read_values(id=[1, 9], value=[100, 900], session=test_session).save("static")
 
     def build(delta):
         changing = dc.read_dataset(
@@ -163,19 +133,26 @@ def test_delta_composed_query_refreshes_changed_static_input(
             delta_unsafe=True,
             session=test_session,
         )
-        static = dc.read_dataset("static", session=test_session)
+        static = (
+            dc.read_values(id=[1, 9], value=[100, 900], session=test_session)
+            if change == "inline"
+            else dc.read_dataset("static", session=test_session)
+        )
         left, right = (static, changing) if static_first else (changing, static)
         return left.union(right) if operation == "union" else left.merge(right, on="id")
 
-    build(True).save("static_result")
-    dc.read_values(id=[2, 3], value=[201, 300], session=test_session).save("static")
-    result = build(True).save("static_result")
-    columns = ["id", "value"]
-    if operation == "merge":
-        columns.extend(["right_id", "right_value"])
-    assert sorted(result.to_iter(*columns), key=repr) == sorted(
-        build(False).to_iter(*columns), key=repr
-    )
+    def update():
+        if change == "static":
+            dc.read_values(id=[2, 3], value=[201, 300], session=test_session).save(
+                "static"
+            )
+        else:
+            source(
+                [1, 3] if change == "delete" else [1, 2, 3],
+                [10, 30] if change == "delete" else [10, 21, 30],
+            )
+
+    assert_delta_refresh(build, "static_result", update)
 
 
 def test_full_rebuild_cleans_legacy_delta_results(test_session, tmp_path):
@@ -213,10 +190,12 @@ def test_full_rebuild_cleans_legacy_delta_results(test_session, tmp_path):
 
 
 @pytest.mark.parametrize(
-    "operation", ["limit", "offset", "distinct", "group_by", "subtract", "window"]
+    "operation",
+    ["limit", "offset", "distinct", "group_by", "agg", "subtract", "window"],
 )
 def test_delta_cross_record_operations_match_full_recompute(test_session, operation):
-    from datachain import func
+    def total(id: list[int], value: list[int]) -> Iterator[tuple[int, int]]:
+        yield min(id), sum(value)
 
     def source(ids, values):
         dc.read_values(id=ids, value=values, session=test_session).save("global_source")
@@ -231,14 +210,17 @@ def test_delta_cross_record_operations_match_full_recompute(test_session, operat
             delta_unsafe=True,
             session=test_session,
         )
-        if operation == "limit":
-            return chain.order_by("id").limit(2)
-        if operation == "offset":
-            return chain.order_by("id").offset(1)
+        if operation in ("limit", "offset"):
+            ordered = chain.order_by("id")
+            return ordered.limit(2) if operation == "limit" else ordered.offset(1)
         if operation == "distinct":
             return chain.distinct("id")
         if operation == "group_by":
             return chain.group_by(partition_by="id", value=func.sum("value"))
+        if operation == "agg":
+            return chain.agg(
+                total, partition_by="value", output={"id": int, "value": int}
+            )
         if operation == "subtract":
             return chain.subtract(
                 dc.read_dataset("excluded", session=test_session), on="value"
@@ -250,15 +232,12 @@ def test_delta_cross_record_operations_match_full_recompute(test_session, operat
         )
 
     source([1, 2, 3], [10, 20, 30])
-    initial = build(True).save("global_result")
-    before = sorted(initial.to_iter("id", "value"))
-    source([2, 3, 4], [21, 30, 40])
-    result = build(True).save("global_result")
-    assert sorted(result.to_iter("id", "value")) == sorted(
-        build(False).to_iter("id", "value")
+    assert_delta_refresh(
+        build,
+        "global_result",
+        lambda: source([2, 3, 4], [21, 30, 30]),
+        columns=("id", "value"),
     )
-    assert sorted(initial.to_iter("id", "value")) == before
-    assert build(True).save("global_result").version == result.version
 
 
 @pytest.mark.parametrize("static_first", [False, True])
@@ -362,43 +341,3 @@ def test_delta_subtracts_filtered_occurrence_of_same_source(test_session):
         sorted(result.to_values("id")) == sorted(build(False).to_values("id")) == [3, 4]
     )
     assert initial.to_values("id") == [3]
-
-
-@pytest.mark.parametrize("static_first", [False, True])
-@pytest.mark.parametrize("inline", [False, True])
-@pytest.mark.parametrize("delete", [False, True])
-def test_delta_union_keeps_unchanged_rows_with_overlapping_static_keys(
-    test_session, static_first, inline, delete
-):
-    dc.read_values(id=[1, 2], value=[10, 20], session=test_session).save("changing")
-    dc.read_values(id=[1, 9], value=[100, 900], session=test_session).save("static")
-
-    def build(delta):
-        changing = dc.read_dataset(
-            "changing",
-            delta=delta,
-            delta_on="id",
-            delta_unsafe=True,
-            session=test_session,
-        )
-        static = (
-            dc.read_values(id=[1, 9], value=[100, 900], session=test_session)
-            if inline
-            else dc.read_dataset("static", session=test_session)
-        )
-        left, right = (static, changing) if static_first else (changing, static)
-        return left.union(right)
-
-    first = build(True).save("result")
-    before = sorted(first.to_iter("id", "value"))
-    dc.read_values(
-        id=[1, 3] if delete else [1, 2, 3],
-        value=[10, 30] if delete else [10, 21, 30],
-        session=test_session,
-    ).save("changing")
-    result = build(True).save("result")
-    assert sorted(result.to_iter("id", "value")) == sorted(
-        build(False).to_iter("id", "value")
-    )
-    assert sorted(first.to_iter("id", "value")) == before
-    assert build(True).save("result").version == result.version
