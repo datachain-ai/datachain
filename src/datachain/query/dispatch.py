@@ -19,7 +19,7 @@ from datachain.catalog.catalog import clone_catalog_with_cache
 from datachain.catalog.loader import DISTRIBUTED_IMPORT_PATH, get_udf_distributor_class
 from datachain.lib.model_store import ModelStore
 from datachain.lib.udf import UdfRunError, _get_cache
-from datachain.query.batch import Batch
+from datachain.query.batch import DEFAULT_BATCH_SIZE, Batch
 from datachain.query.dataset import (
     get_download_callback,
     get_generated_callback,
@@ -37,7 +37,6 @@ if TYPE_CHECKING:
     from datachain.lib.udf import UDFAdapter
     from datachain.query.batch import RowsOutput
 
-DEFAULT_BATCH_SIZE = 10000
 STOP_SIGNAL = "STOP"
 OK_STATUS = "OK"
 FINISHED_STATUS = "FINISHED"

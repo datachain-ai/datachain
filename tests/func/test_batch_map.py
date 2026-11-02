@@ -508,12 +508,22 @@ def test_batch_map_rejects_non_batch_returns(test_session, multi, invalid):
             source.batch_map(result=bad, batch=3).to_list()
 
 
-@pytest.mark.parametrize("style", ["plain", "partial", "callable"])
+@pytest.mark.parametrize(
+    "style", ["plain", "partial", "callable", "decorated_callable"]
+)
 def test_batch_map_resolves_nested_annotations(
     test_session, tmp_path, monkeypatch, style
 ):
     from functools import partial
 
+    (tmp_path / "batch_wrapper.py").write_text(
+        "from functools import wraps\n"
+        "def decorate(func):\n"
+        "    @wraps(func)\n"
+        "    def wrapped(*args, **kwargs):\n"
+        "        return func(*args, **kwargs)\n"
+        "    return wrapped\n"
+    )
     module_name = f"typed_batch_{style}"
     (tmp_path / f"{module_name}.py").write_text(
         "from __future__ import annotations\n"
@@ -524,6 +534,11 @@ def test_batch_map_resolves_nested_annotations(
         "    return [Result(value=v + offset) for v in value]\n"
         "def plain(value: list['int']) -> list['Result']:\n"
         "    return encode(0, value)\n"
+        "from batch_wrapper import decorate\n"
+        "class DecoratedEncoder:\n"
+        "    @decorate\n"
+        "    def __call__(self, value: list['int']) -> list['Result']:\n"
+        "        return encode(0, value)\n"
         "class Encoder:\n"
         "    def __call__(self, value: list['int']) -> list['Result']:\n"
         "        return encode(0, value)\n"
@@ -534,6 +549,7 @@ def test_batch_map_resolves_nested_annotations(
         "plain": module.plain,
         "partial": partial(module.encode, 0),
         "callable": module.Encoder(),
+        "decorated_callable": module.DecoratedEncoder(),
     }
     result = (
         dc.read_values(value=[1, 2, 3], session=test_session)
@@ -557,3 +573,33 @@ def test_batch_map_accepts_any_element_annotation(test_session):
         .order_by("value")
         .to_values("result")
     ) == [2, 4, 6]
+
+
+@pytest.mark.parametrize("parallel", [False, 2])
+def test_grouped_id_fetch_preserves_aggregation_partitions(
+    test_session_tmpfile, monkeypatch, parallel
+):
+    monkeypatch.setattr("datachain.data_storage.warehouse.DEFAULT_BATCH_SIZE", 7)
+
+    def collect(group: list[int], value: list[int]) -> Iterator[tuple[int, list[int]]]:
+        yield group[0], value
+
+    (
+        dc.read_values(
+            group=[v % 12 for v in range(36)],
+            value=list(range(36)),
+            session=test_session_tmpfile,
+        )
+        .settings(parallel=parallel)
+        .order_by("value", descending=True)
+        .agg(collect, partition_by="group", output={"key": int, "values": list[int]})
+        .save("ordered_groups")
+    )
+    groups = (
+        dc.read_dataset("ordered_groups", session=test_session_tmpfile)
+        .order_by("key")
+        .to_values("values")
+    )
+    assert [sorted(group) for group in groups] == [
+        [key, key + 12, key + 24] for key in range(12)
+    ]

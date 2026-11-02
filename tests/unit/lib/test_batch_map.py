@@ -74,6 +74,40 @@ def test_batch_map_rejects_unresolved_model_annotation_before_execution(
         source.batch_map(result=predict, batch=2)
 
     output = Local if output_style == "type" else {"result": Local}
-    assert source.batch_map(result=predict, batch=2, output=output).to_values(
-        "result.value"
-    ) == [1, 2]
+    assert source.batch_map(result=predict, batch=2, output=output).order_by(
+        "value"
+    ).to_values("result.value") == [1, 2]
+
+
+@pytest.mark.parametrize("invalid", [False, True])
+def test_batch_map_multiple_bound_signals_use_column_annotations(test_session, invalid):
+    from datachain.lib.udf import BoundSpec
+
+    class ColumnSpec(BoundSpec):
+        def bind(self, ctx):
+            def encode(values: list[int]) -> list[int]:
+                return [value * 2 for value in values]
+
+            return encode
+
+        def input_columns(self):
+            return ["source"]
+
+        @property
+        def output_count(self):
+            return 1
+
+    def copy(source: list[int]) -> list[int]:
+        return source
+
+    source = dc.read_values(
+        source=["bad"] if invalid else [1, 2, 3], session=test_session
+    )
+    if invalid:
+        with pytest.raises(SignalResolvingError):
+            source.batch_map(double=ColumnSpec(), copied=copy, batch=2)
+    else:
+        source.batch_map(double=ColumnSpec(), copied=copy, batch=2).save("bound_batch")
+        assert dc.read_dataset("bound_batch", session=test_session).order_by(
+            "source"
+        ).to_list("double", "copied") == [(2, 1), (4, 2), (6, 3)]
