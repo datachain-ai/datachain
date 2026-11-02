@@ -2,7 +2,7 @@
 This is a simple UDF to demonstrate local parallel processing with multiprocessing.
 
 In add_signals specify either parallel=True to use processes equal to the number
-of CPUs/cores on your current machine, or parallel=N for N processes.
+of CPUs available to the process, or parallel=N for N processes.
 The default if parallel is not specified is to run single-threaded.
 
 The UDF specified in map will then be run in parallel across all these

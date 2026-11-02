@@ -7,9 +7,11 @@ import sqlalchemy as sa
 from filelock import FileLock, Timeout
 from sqlalchemy.engine import make_url
 
+from datachain import utils
 from datachain.fs.utils import is_subpath, path_to_fsspec_uri
 from datachain.testing import drop_all_tables
 from datachain.utils import (
+    _cpu_quotas,
     batched,
     batched_it,
     checkpoints_enabled,
@@ -23,6 +25,7 @@ from datachain.utils import (
     sizeof_fmt,
     sql_escape_like,
     suffix_to_number,
+    usable_cpu_count,
     uses_glob,
     with_last_flag,
 )
@@ -676,3 +679,119 @@ def test_drop_all_tables_drops_fk_linked_tables(tmp_path):
 
     assert sa.inspect(engine).get_table_names() == []
     engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "files, expected",
+    [
+        ({"cpu.max": "max 100000"}, []),
+        ({"cpu.max": "150000 100000"}, [(150000, 100000)]),
+        (
+            {"cpu.max": "max 100000", "user.slice/cpu.max": "200000 100000"},
+            [(200000, 100000)],
+        ),
+    ],
+)
+def test_cpu_quotas_of_cgroup_v2_and_its_parents(files, expected, tmp_path):
+    for name, text in files.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(text)
+    (tmp_path / "cgroup").write_text("0::/user.slice\n")
+
+    assert _cpu_quotas(str(tmp_path), str(tmp_path / "cgroup")) == expected
+
+
+@pytest.mark.parametrize(
+    "controllers,mount",
+    [
+        ("cpu,cpuacct", "cpu,cpuacct"),
+        ("cpuacct,cpu", "cpu,cpuacct"),
+        ("cpuacct,cpu", "cpu"),
+    ],
+)
+def test_cpu_quota_of_cgroup_v1(tmp_path, controllers, mount):
+    folder = tmp_path / mount / "docker"
+    folder.mkdir(parents=True)
+    (folder / "cpu.cfs_quota_us").write_text("100000\n")
+    (folder / "cpu.cfs_period_us").write_text("100000\n")
+    (tmp_path / "cgroup").write_text(f"5:memory:/docker\n4:{controllers}:/docker\n")
+
+    assert _cpu_quotas(str(tmp_path), str(tmp_path / "cgroup")) == [(100000, 100000)]
+
+
+def test_cpu_quotas_of_missing_or_garbled_cgroup_files(tmp_path):
+    (tmp_path / "cpu.max").write_text("garbage\n")
+    (tmp_path / "cgroup").write_text("0::/\n")
+
+    assert _cpu_quotas(str(tmp_path), str(tmp_path / "cgroup")) == []
+    assert _cpu_quotas(str(tmp_path / "nope"), str(tmp_path / "nope" / "cgroup")) == []
+
+
+def test_cpu_quotas_ignore_malformed_membership(tmp_path):
+    (tmp_path / "cpu.max").write_text("800000 100000")
+    (tmp_path / "cgroup").write_text("invalid\n0::/\n")
+
+    assert _cpu_quotas(str(tmp_path), str(tmp_path / "cgroup")) == [(800000, 100000)]
+
+
+@pytest.mark.parametrize("host_cpus,expected", [(24, 24), (None, 1)])
+def test_usable_cpu_count_falls_back_when_affinity_is_unavailable(
+    monkeypatch, host_cpus, expected
+):
+    def unavailable(pid):
+        raise OSError("affinity unavailable")
+
+    monkeypatch.delattr(os, "process_cpu_count", raising=False)
+    monkeypatch.setattr(os, "sched_getaffinity", unavailable, raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: host_cpus)
+    monkeypatch.setattr(utils, "_cpu_quotas", list)
+
+    assert usable_cpu_count() == expected
+
+
+def test_usable_cpu_count_uses_linux_affinity(monkeypatch):
+    monkeypatch.delattr(os, "process_cpu_count", raising=False)
+    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {0, 1, 2}, raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: 32)
+    monkeypatch.setattr(utils, "_cpu_quotas", lambda: [(800000, 100000)])
+
+    assert usable_cpu_count() == 3
+
+
+def test_usable_cpu_count_handles_unknown_process_count(monkeypatch):
+    monkeypatch.setattr(os, "process_cpu_count", lambda: None, raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: 24)
+    monkeypatch.setattr(utils, "_cpu_quotas", list)
+
+    assert usable_cpu_count() == 24
+
+
+def test_usable_cpu_count_reads_cgroup_files(tmp_path, monkeypatch):
+    (tmp_path / "cpu.max").write_text("150000 100000")
+    (tmp_path / "cgroup").write_text("0::/\n")
+    monkeypatch.setattr(os, "process_cpu_count", lambda: 24, raising=False)
+    monkeypatch.setattr(
+        utils,
+        "_cpu_quotas",
+        lambda: _cpu_quotas(str(tmp_path), str(tmp_path / "cgroup")),
+    )
+
+    assert usable_cpu_count() == 2
+
+
+@pytest.mark.parametrize(
+    "quotas, expected",
+    [
+        ([], 24),
+        ([(800000, 100000)], 8),
+        ([(150000, 100000)], 2),
+        ([(50000, 100000)], 1),
+        ([(800000, 100000), (400000, 100000)], 4),
+        ([(4800000, 100000)], 24),
+    ],
+)
+def test_usable_cpu_count_follows_the_cgroup_quotas(quotas, expected, monkeypatch):
+    monkeypatch.setattr(os, "process_cpu_count", lambda: 24, raising=False)
+    monkeypatch.setattr(utils, "_cpu_quotas", lambda: quotas)
+
+    assert usable_cpu_count() == expected

@@ -2,7 +2,6 @@ import contextlib
 import traceback
 from collections.abc import Iterable, Sequence
 from itertools import chain
-from multiprocessing import cpu_count
 from queue import Empty
 from sys import stdin
 from time import monotonic, sleep
@@ -27,7 +26,7 @@ from datachain.query.dataset import (
 )
 from datachain.query.queue import get_from_queue, put_into_queue
 from datachain.query.udf import UdfInfo
-from datachain.utils import batched, flatten, safe_closing
+from datachain.utils import batched, flatten, safe_closing, usable_cpu_count
 
 if TYPE_CHECKING:
     from sqlalchemy import Select, Table
@@ -46,7 +45,7 @@ NOTIFY_STATUS = "NOTIFY"
 
 def get_n_workers_from_arg(n_workers: int | None = None) -> int:
     if not n_workers:
-        return cpu_count()
+        return usable_cpu_count()
     if n_workers < 1:
         raise RuntimeError("Must use at least one worker for parallel UDF execution!")
     return n_workers
