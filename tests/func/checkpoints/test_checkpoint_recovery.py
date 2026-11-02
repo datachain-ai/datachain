@@ -1022,3 +1022,163 @@ def test_udf_continue_after_group_by(test_session_tmpfile):
     result = dc.read_dataset("results", session=test_session).to_list("result")
     # group a: 1+2=3 -> 30, group b: 3+4=7 -> 70, group c: 5+6=11 -> 110
     assert sorted(result) == [(30,), (70,), (110,)]
+
+
+@pytest.mark.parametrize("fail_during_insert", [False, True])
+def test_batch_map_checkpoint_recovery(
+    test_session_tmpfile, monkeypatch, fail_during_insert
+):
+    session = test_session_tmpfile
+    dc.read_values(num=list(range(8)), session=session).save("batch_nums")
+    processed = []
+    failing = True
+
+    def process(num: list[int]) -> list[int]:
+        if failing and not fail_during_insert and len(processed) >= 3:
+            raise RuntimeError("batch inference interrupted")
+        processed.extend(num)
+        return [n * 10 for n in num]
+
+    warehouse = session.catalog.warehouse
+    original_convert = type(warehouse).convert_type
+    converted = 0
+
+    def interrupt_conversion(self, value, col_type, python_type, type_name, col_name):
+        nonlocal converted
+        if col_name == "result":
+            converted += 1
+            if failing and fail_during_insert and converted == 5:
+                raise RuntimeError("batch insertion interrupted")
+        return original_convert(self, value, col_type, python_type, type_name, col_name)
+
+    # on the class: the UDF write path calls convert_type only when it is overridden
+    monkeypatch.setattr(type(warehouse), "convert_type", interrupt_conversion)
+
+    def run(batch):
+        return (
+            dc.read_dataset("batch_nums", session=session)
+            .settings(batch_size=2, prefetch=0)
+            .batch_map(result=process, batch=batch)
+            .save("batch_results")
+        )
+
+    reset_session_job_state()
+    with pytest.raises(
+        Exception,
+        match="invalid value" if fail_during_insert else "batch inference interrupted",
+    ):
+        run(3)
+
+    # Rows written before the failure are kept, even from an unfinished batch.
+    completed = set(processed[: 4 if fail_during_insert else 3])
+    reset_session_job_state()
+    failing = False
+    processed.clear()
+    result = run(2).order_by("num").to_values("result")
+    assert result == [n * 10 for n in range(8)]
+    assert sorted(processed) == sorted(set(range(8)) - completed)
+
+
+def test_batch_map_checkpoint_reuse(test_session_tmpfile):
+    session = test_session_tmpfile
+    dc.read_values(num=[1, 2, 3, 4], session=session).save("reuse_nums")
+    calls = []
+
+    def identity(num):
+        calls.append(num)
+        return num
+
+    def run(verb, **kwargs):
+        reset_session_job_state()
+        chain = dc.read_dataset("reuse_nums", session=session)
+        getattr(chain, verb)(result=identity, output=int, **kwargs).save("reused")
+
+    run("batch_map", batch=2)
+    assert sorted(len(c) for c in calls) == [2, 2]
+    calls.clear()
+    run("batch_map", batch=3)
+    assert calls == []
+    run("map")
+    assert sorted(calls) == [1, 2, 3, 4]
+
+
+@pytest.mark.parametrize("kind", ["map", "batch_map", "gen", "agg"])
+@pytest.mark.parametrize("same_job", [False, True])
+@pytest.mark.parametrize("resume_failures", [0, 1])
+def test_checkpoint_resume_across_input_pages(
+    test_session_tmpfile, monkeypatch, kind, same_job, resume_failures
+):
+    session = test_session_tmpfile
+    warehouse_type = type(session.catalog.warehouse)
+    original_paginated = warehouse_type.dataset_select_paginated
+
+    def small_pages(self, query, page_size=None):
+        return original_paginated(self, query, page_size=4)
+
+    monkeypatch.setattr(warehouse_type, "dataset_select_paginated", small_pages)
+    dc.read_values(num=list(range(12)), session=session).save("paged_source")
+    processed = []
+    failing = True
+
+    def record(values):
+        if failing and len(processed) >= 4:
+            raise RuntimeError("page interrupted")
+        processed.extend(values)
+
+    def scalar(num: int) -> int:
+        record([num])
+        return num * 10
+
+    def batched(num: list[int]) -> list[int]:
+        record(num)
+        return [value * 10 for value in num]
+
+    def generate(num: int) -> Iterator[tuple[int, int]]:
+        record([num])
+        if num % 3:
+            yield num, num * 10
+            yield num, num * 10 + 1
+
+    def aggregate(num: list[int]) -> Iterator[tuple[int, int]]:
+        record(num)
+        yield num[0], num[0] * 10
+
+    def run():
+        source = (
+            dc.read_dataset("paged_source", session=session)
+            .order_by("num")
+            .settings(batch_size=1, prefetch=0)
+        )
+        result = {
+            "map": lambda: source.map(result=scalar),
+            "batch_map": lambda: source.batch_map(result=batched, batch=2),
+            "gen": lambda: source.gen(generate, output=["num", "result"]),
+            "agg": lambda: source.agg(
+                aggregate, partition_by="num", output=["num", "result"]
+            ),
+        }[kind]()
+        return result.save("paged_result")
+
+    reset_session_job_state()
+    completed = set()
+    for _ in range(resume_failures + 1):
+        if not same_job:
+            reset_session_job_state()
+        processed.clear()
+        with pytest.raises(Exception, match="page interrupted"):
+            run()
+        assert not completed.intersection(processed)
+        completed.update(processed)
+
+    if not same_job:
+        reset_session_job_state()
+    failing = False
+    processed.clear()
+    result = run().order_by("num", "result").to_list("num", "result")
+    expected = (
+        [(n, n * 10 + offset) for n in range(12) if n % 3 for offset in (0, 1)]
+        if kind == "gen"
+        else [(n, n * 10) for n in range(12)]
+    )
+    assert result == expected
+    assert sorted(processed) == sorted(set(range(12)) - completed)

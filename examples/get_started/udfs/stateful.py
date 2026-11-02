@@ -1,18 +1,17 @@
 """
+Compute image embeddings in batches with a model loaded once per worker.
+
 To install the required dependencies:
 
   pip install datachain[examples]
 
 """
 
-import os
-
 import open_clip
+import torch
 
 import datachain as dc
-from datachain import C, File
-
-os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+from datachain import C
 
 
 class ClipImageEncoder:
@@ -22,13 +21,15 @@ class ClipImageEncoder:
         self.model, _, self.preprocess = open_clip.create_model_and_transforms(
             self.model_name, self.pretrained
         )
+        self.model.eval()
 
 
-def embeddings(file: File, encoder: ClipImageEncoder) -> list[float]:
-    img = file.read()
-    img = encoder.preprocess(img).unsqueeze(0)
-    emb = encoder.model.encode_image(img)
-    return emb[0].tolist()
+def embeddings(
+    file: list[dc.ImageFile], encoder: ClipImageEncoder
+) -> list[list[float]]:
+    images = torch.stack([encoder.preprocess(image.read()) for image in file])
+    with torch.inference_mode():
+        return encoder.model.encode_image(images).tolist()
 
 
 if __name__ == "__main__":
@@ -38,6 +39,6 @@ if __name__ == "__main__":
         .limit(5)
         .settings(parallel=True)
         .setup(encoder=lambda: ClipImageEncoder("ViT-B-32", "laion2b_s34b_b79k"))
-        .map(emb=embeddings)
+        .batch_map(emb=embeddings, batch=5)
         .show()
     )

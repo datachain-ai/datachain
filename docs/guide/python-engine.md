@@ -6,7 +6,7 @@ title: Python Operations
 
 Python operations run your Python functions on each record in a chain. Use them when you need file content, ML models, or LLM calls. For everything else, use [data operations](operations.md).
 
-## Three Types
+## Python operation types
 
 ### Mapper: map()
 
@@ -25,6 +25,10 @@ def analyze(file: dc.File, client) -> Analysis:
     resp = client.messages.create(model="claude-sonnet-4-20250514", ...)
     return Analysis.model_validate_json(resp.content[0].text)
 ```
+
+### Batch mapper: batch_map()
+
+Runs a Python function on a batch of records per call, such as a model that encodes many images at once, and adds one result to each record. See [Batched Inference](batch-inference.md).
 
 ### Generator: gen()
 
@@ -151,13 +155,13 @@ chain = (
 
 ## Class-Based Lifecycle
 
-When `.setup()` is not enough (you need `teardown()`, shared mutable state across records, or multi-resource initialization), use the `Mapper`, `Generator`, and `Aggregator` base classes:
+When `.setup()` is not enough (you need `teardown()`, shared mutable state across records, or multi-resource initialization), use the `dc.Mapper`, `dc.BatchMapper`, `dc.Generator`, and `dc.Aggregator` base classes:
 
 ```python
-from datachain.lib.udf import Mapper  # internal module name
+import datachain as dc
 
 
-class ImageEncoder(Mapper):
+class ImageEncoder(dc.Mapper):
     def setup(self):
         self.model = load_model("ViT-B-32")
 
