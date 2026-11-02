@@ -12,12 +12,12 @@ When delta processing is enabled:
 
 1. DataChain calculates the difference between the latest version of your source dataset and the version used to create the most recent version of your result dataset
 2. Only the records that are new or modified in the source dataset are processed
-3. All result rows belonging to modified or deleted source records are removed, even when a filter rejects the replacement or a generator yields no rows
+3. All result rows belonging to modified or deleted source records are removed, even when `.filter(...)` excludes the replacement or `.gen(...)` produces no replacement rows
 4. The newly processed rows are combined with the retained results for unchanged source records
 
 For a fixed row-local pipeline using `map`, `gen`, and filters, the saved result contains the same rows as a full non-delta recompute of the current source. UDFs run only on added and modified source records, plus records explicitly selected by `delta_retry`. Nondeterministic UDF values can differ from a full recompute because unchanged records retain their saved results.
 
-A generator's entire output for a source record is replaced or removed together. Every output row must retain the source key fields, or their counterparts named by `delta_result_on`. A generator must yield these fields explicitly. The same requirement applies when using `select` or renaming fields.
+All rows produced by `.gen(...)` for one source record are replaced or removed together. The function must yield the source key fields, or their counterparts named by `delta_result_on`, in every output row. Preserve those fields when using `select` or renaming them.
 
 Use `update=True` with `read_storage` to refresh the storage index. A deletion-only refresh can create a new result version without calling the UDF. Source changes that produce no output still advance the saved dependencies, so subsequent runs do not process those changes again. If neither source records nor retry inputs change, the existing result version is reused.
 
@@ -45,11 +45,11 @@ chain = (
 ## Parameters
 
 - **delta**: Boolean flag to enable delta processing
-- **delta_on**: Field(s) that uniquely identify rows in the source dataset. The default is `("file.path", "file.etag", "file.version")`. An overwrite changes this revision key: the old revision's results are removed and the new revision is processed. For explicit identity-based matching, use e.g. `("file.source", "file.path")` with `delta_compare=("file.etag", "file.version")`. Include the source when paths can collide across storages.
+- **delta_on**: Field(s) that uniquely identify source records. The default is `("file.path", "file.etag", "file.version")`; overwriting a file replaces the results for its previous revision. Include `file.source` if paths can collide across storages.
 - **delta_result_on**: Field(s) in the resulting dataset that correspond to `delta_on` fields (if they have different names)
 - **delta_compare**: Field(s) used to check if a record has been modified. By default, all non-key source fields are compared. An explicit list must cover every source field whose changes can affect your output or filters; ignored changes cannot trigger recomputation.
 
-Storage listings with `versions=True` may contain historical object revisions, but `read_storage` returns current objects by filtering `file.is_latest`. The default revision key and comparison fields detect both new revisions and transitions out of the current listing. With `versions=False`, the listing contains only current objects; overwritten revisions disappear from the source and their results are removed. When processing a versioned listing directly with `read_dataset`, retain `file.version` in the key if historical revisions should remain distinct.
+`read_storage` processes current files, even when the storage keeps older versions. When reading a versioned listing directly with `read_dataset`, keep `file.version` in any custom `delta_on` to distinguish historical revisions.
 
 ## Example: Keeping File Results in Sync
 
@@ -81,6 +81,8 @@ chain = (
 print(f"Processed {chain.count()} files")
 ```
 
+Use stable, unique, non-null delta keys. Repeated keys are unsupported and can process the same source record more than once; null keys can cause extra processing when source versions change.
+
 ## Combining with Retry Processing
 
 Delta processing can be combined with [retry processing](./retry.md) to create a powerful workflow that both:
@@ -109,34 +111,26 @@ If you still need to use these methods together with delta, you can override thi
 delta_unsafe = True
 ```
 
-If more than one delta-enabled source participates in the same composed query, set `delta_unsafe=True` on every participating delta source.
+When combining multiple delta sources, use the same result key for all of them and set `delta_unsafe=True` on each source. Different result keys are unsupported.
 
-DataChain processes only the changed records when the output for each record depends on that record alone:
+With `delta_unsafe=True`, these combinations can still process only changed records:
 
 - `merge` or `subtract` with an input that has no delta source, such as a lookup dataset, when the delta chain is on the left side and the merge is not `full`.
 - Multiple delta sources that share a result key and change the same keys, combined with `union` or merged on that key.
 
-Other compositions fall back to recomputing the full current query, for example unions with a non-delta input, independently changing delta sources, merges between delta sources on other fields, `full` merges, and cross-record operations such as `distinct`, aggregation, window functions, `limit`, and `offset`. A changed input dataset without delta also triggers a full recompute. Inline inputs such as `read_values`, `read_records`, `read_pandas`, single-file readers (`read_csv`, `read_json`, `read_parquet`, `read_storage`), and `persist()` results are assumed to be fixed: changes to them, including edits to a file read this way, do not trigger recomputation. Save such an input as a dataset if it can change.
+## When a full recompute is needed
 
-Use stable, unique, non-null delta keys. Repeated keys are unsupported: a diff can
-pair several source rows and duplicate replay inputs. Null keys can cause extra
-replay when source versions change, even if their values are unchanged.
+Some operations need the full current source, so DataChain may rerun UDFs even for unchanged records. These include aggregation, full merges, independently changing delta sources, and changes to a saved lookup dataset. Window functions, `limit`, and `offset` also require a full recompute and can be used without `delta_unsafe=True`.
 
-**A full recompute can rerun UDFs on unchanged records.** `delta_unsafe=True` keeps the existing key requirements and enables these compositions; it does not guarantee incremental execution. Use a fixed pipeline and retain the configured source-key values in its output.
+Inline inputs such as `read_values`, single-file readers such as `read_csv`, and `persist()` results are treated as fixed; changes to them do not trigger recomputation. Save an input as a dataset first if it can change.
 
 ## Upgrading existing delta datasets
 
-**Upgrading does not automatically clean stale results saved by older delta
-updates.** Existing datasets may still contain rows for deleted files or old
-revisions of overwritten files. If the source version has already been recorded
-as processed, another delta run can leave those rows untouched.
+**Upgrading does not automatically clean stale results saved by older delta updates.** Existing datasets may still contain rows for deleted files or old revisions of overwritten files. If the source version has already been recorded as processed, another delta run can leave those rows untouched.
 
 To bring an existing result into sync:
 
-1. Rerun the same pipeline once with `delta=False`. For `read_storage`, also keep
-   `update=True` to refresh the source listing. Keep the same `.save(...)` name.
+1. Rerun the same pipeline once with `delta=False`. For `read_storage`, also keep `update=True` to refresh the source listing. Keep the same `.save(...)` name.
 2. After that run succeeds, restore `delta=True` for subsequent runs.
 
-**This is a full-source rebuild and can rerun expensive UDFs over every current
-source record.** It saves a new result version; previous versions remain
-unchanged. Newly created results do not need this rebuild.
+**This is a full-source rebuild and can rerun expensive UDFs over every current source record.** It saves a new result version; previous versions remain unchanged. Newly created results do not need this rebuild.
