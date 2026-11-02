@@ -2610,13 +2610,15 @@ class DataChain:
                 A list of names infers types. Fields map by position, with exactly one
                 field per column read. Use `columns` to select inputs by name.
                 Omit to infer names and types or restore a saved DataChain schema.
+                On Parquet exported by DataChain, each field takes one picked
+                signal, or one top-level signal without `columns`.
             column: Generated column name.
             model_name: Generated model name.
             source: Whether to include info about the source file.
             nrows: Optional row limit per file.
             columns: Input columns to read, in order; all if omitted. Accepts original
                 or normalized names, e.g. "ZIP Code" or "zip_code". For Parquet exported
-                by DataChain, omit this parameter and use `.select(...)` after parsing.
+                by DataChain, it picks signals as `select()` does, e.g. "p.x".
             kwargs: Parameters to pass to pyarrow.dataset.dataset.
 
         Example:
@@ -2644,10 +2646,9 @@ class DataChain:
             ArrowGenerator,
             file_schemas,
             fix_pyarrow_format,
+            infer_output,
             is_parquet,
-            merge_schemas,
             read_columns,
-            schema_to_output,
         )
 
         parse_options = kwargs.pop("parse_options", None)
@@ -2670,36 +2671,32 @@ class DataChain:
         if "file" not in self.schema or not self.count():
             raise DatasetPrepareError(self.name, "no files to parse.")
 
-        schema, read = None, None
+        schema, read, written_by_datachain = None, None, None
         col_names = output if isinstance(output, Sequence) else None
         infer = bool(col_names) or not output
         try:
             if infer:
                 schemas = file_schemas(self, **kwargs, parse_options=parse_options)
-                schema, names = merge_schemas(schemas, columns)
-                output, _ = schema_to_output(schema, col_names or names)
+                schema, output, read = infer_output(schemas, col_names, columns, source)
 
             if isinstance(output, dict):
-                model_name = model_name or column or ""
-                model = dict_to_data_model(model_name, output)
-                output = model
+                model = dict_to_data_model(model_name or column or "", output)
             else:
                 model = output  # type: ignore[assignment]
 
             if not infer:
-                fields = len(model.model_fields)
-                read = read_columns(
-                    self, columns, fields, **kwargs, parse_options=parse_options
+                read, written_by_datachain = read_columns(
+                    self, columns, model, source, **kwargs, parse_options=parse_options
                 )
         except (ValueError, pa.ArrowTypeError) as e:
             raise DatasetPrepareError(self.name, e) from e
 
         if column:
             output = {column: model}  # type: ignore[dict-item]
-        elif isinstance(output, type(BaseModel)):
+        else:
             output = {
                 name: info.annotation  # type: ignore[misc]
-                for name, info in output.model_fields.items()
+                for name, info in model.model_fields.items()
             }
 
         if source:
@@ -2714,6 +2711,7 @@ class DataChain:
                 source,
                 nrows,
                 columns=read,
+                written_by_datachain=written_by_datachain,
                 parse_options=parse_options,
                 prefetch_max_size=PARTIAL_READ_PREFETCH_MAX_SIZE if partial else None,
                 **kwargs,

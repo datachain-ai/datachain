@@ -116,7 +116,43 @@ data = dc.read_csv(
 
 With `header=False` and no `columns`, `output` is required and supplies names for every input column.
 
-Parquet exported by DataChain restores its saved schema and does not support `columns=`. Read it without `columns` and use `.select(...)` on the chain. With `columns` or `output`, read it separately from other Parquet files.
+#### Parquet written by DataChain
+
+A Parquet file written by `to_parquet()` keeps its DataChain schema, so it reads back with the same signals and models. There, `columns=` picks signals as `select()` does:
+
+```python
+class Point(dc.DataModel):
+    x: int
+    y: int
+
+
+dc.read_values(a=[1], p=[Point(x=2, y=3)]).to_parquet("points.parquet")
+
+dc.read_parquet("points.parquet", columns=["p", "a"])  # signals p and a
+dc.read_parquet("points.parquet", columns=["p.x"])  # p as a model with only x
+```
+
+`output=` works by position, as for other files: one field for each picked signal, or for each top-level signal without `columns`. A model field may declare only some of the stored fields:
+
+```python
+class PointX(dc.DataModel):
+    x: int
+
+
+dc.read_parquet("points.parquet", columns=["p", "a"], output={"q": PointX, "n": int})
+# q = PointX(x=2), n = 1
+```
+
+Each field must have the shape of the signal it reads: a model for a model, optional where the signal can be None, and a union of the same types for a union. A mismatch raises an error before anything is read.
+
+A signal inside an optional model or a union is None wherever that parent doesn't hold it, so it reads into an optional field. For `value: Text | Image | None`:
+
+```python
+dc.read_parquet("docs.parquet", columns=["value.Text"], output={"t": Text | None})
+# t is None where value holds an Image or is None
+```
+
+With `columns=` or `output=`, these files can't be read together with other Parquet files. With `source=True`, the default, the reader adds its own `source`; to read a stored `source`, pass `source=False`.
 
 ## SQL Databases
 

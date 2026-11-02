@@ -9,18 +9,19 @@ round-trips for every union kind (basic/basic, model/model, mixed, nullable).
 
 import copy
 from datetime import datetime
-from typing import Generic, Literal, Optional, TypeVar, Union
+from typing import ClassVar, Generic, Literal, Optional, TypeVar, Union
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
+import datachain as dc
 from datachain.dataset import RowDict
 from datachain.error import OutdatedDatasetFormatError
-from datachain.lib.arrow import _union_value
 from datachain.lib.convert.flatten import flatten, flatten_value
 from datachain.lib.convert.unflatten import unflatten_to_json_pos
 from datachain.lib.data_model import (
     DataModel,
-    UnionLayout,
     _warn_index_tag,
     arm_selector,
     is_chain_type,
@@ -28,6 +29,7 @@ from datachain.lib.data_model import (
     union_layout,
     validate_chain_type,
 )
+from datachain.lib.dc import DatasetPrepareError
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema, SignalSchemaWarning
 from datachain.lib.utils import DataChainParamsError
@@ -437,12 +439,29 @@ def test_union_arm_named_like_the_discriminator_rejected():
         SignalSchema({"value": _type_tag | str}).db_signals()
 
 
-def test_single_arm_reads_the_arm_under_any_tag_name():
-    layout = UnionLayout(arms=[Foo], has_none=True, use_slots=False)
-    got = _union_value({"v._type_tag": "FooPartial_1a2b_v1", "v.a": 5}, layout, "v")
-    assert (got.a, got.b) == (5, "")
-    assert _union_value({"v._type_tag": None}, layout, "v") is None
-    assert _union_value({"v._type_tag": ""}, layout, "v") is None  # CH NULL tag
+def _write_v(path, session, values, anno, tags=None):
+    dc.read_values(
+        id=list(range(len(values))),
+        v=values,
+        output={"id": int, "v": anno},
+        session=session,
+    ).order_by("id").to_parquet(path)
+    if tags is not None:
+        table = pq.read_table(path).drop_columns(["v._type_tag"])
+        pq.write_table(table.append_column("v._type_tag", tags), path)
+
+
+def _read_v(path, session):
+    chain = dc.read_parquet(path.as_uri(), source=False, session=session)
+    return chain.order_by("id").to_values("v")
+
+
+def test_read_parquet_reads_an_optional_model_under_any_tag_name(tmp_dir, test_session):
+    path = tmp_dir / "v.parquet"
+    # A partial model's name, NULL, and ClickHouse's NULL
+    tags = pa.array(["FooPartial_1a2b_v1", None, ""])
+    _write_v(path, test_session, [Foo(a=5)] * 3, Foo | None, tags)
+    assert [v and v.a for v in _read_v(path, test_session)] == [5, None, None]
 
 
 def test_arm_name_wins_over_a_field_of_the_same_name():
@@ -512,20 +531,15 @@ def unwarned_index_tag():
 
 
 def test_index_tag_reads_optional_model(unwarned_index_tag):
-    layout = UnionLayout(arms=[Foo], has_none=True, use_slots=False)
-    with pytest.warns(FutureWarning, match="numeric Optional"):
-        got = _union_value({"v._type_tag": 0, "v.a": 7, "v.b": "z"}, layout, "v")
-    assert (got.a, got.b) == (7, "z")
-
     schema = SignalSchema({"m": Foo | None})
-    assert schema.row_to_objs(
-        RowDict(zip(schema.to_udf_spec(), (0, 7, "z"), strict=True))
-    ) == [Foo(a=7, b="z")]
+    with pytest.warns(FutureWarning, match="numeric Optional"):
+        assert schema.row_to_objs(
+            RowDict(zip(schema.to_udf_spec(), (0, 7, "z"), strict=True))
+        ) == [Foo(a=7, b="z")]
     # any other index is the absent arm
     assert schema.row_to_objs(
         RowDict(zip(schema.to_udf_spec(), (1, 7, "z"), strict=True))
     ) == [None]
-    assert _union_value({"v._type_tag": 1, "v.a": 7}, layout, "v") is None
 
 
 def test_index_tag_rejected_multi_arm(unwarned_index_tag):
@@ -541,14 +555,22 @@ def test_order_by_column_none_for_unknown_signal():
     assert SignalSchema({"v": int | str}).order_by_column("nonexistent") is None
 
 
-def test_union_value_infers_arm_when_tag_absent():
-    layout = union_layout(Foo | int)
-    fk, ik = arm_selector(Foo), arm_selector(int)
+def test_read_parquet_union_arm_must_have_the_stored_arm_shape(tmp_dir, test_session):
+    class Holder(DataModel):
+        foo: Foo
 
-    foo = _union_value({f"v.{fk}.a": 5, f"v.{fk}.b": "z"}, layout, "v")
-    assert (foo.a, foo.b) == (5, "z")
+    path = tmp_dir / "v.parquet"
+    _write_v(path, test_session, [Holder(foo=Foo())], Holder | int)
 
-    empty_foo = {f"v.{fk}.a": float("nan"), f"v.{fk}.b": None, f"v.{ik}": 9}
-    assert _union_value(empty_foo, layout, "v") == 9
+    class Holder(DataModel):  # type: ignore[no-redef]
+        _version: ClassVar[int] = 2
+        foo: Foo | None = None
 
-    assert _union_value({f"v.{fk}.a": None, f"v.{ik}": None}, layout, "v") is None
+    error = "v.Holder.foo can't be optional, as v.Holder.foo is never None"
+    with pytest.raises(DatasetPrepareError, match=error):
+        dc.read_parquet(
+            path.as_uri(),
+            columns=["v"],
+            output={"v": Holder | int},
+            session=test_session,
+        )
