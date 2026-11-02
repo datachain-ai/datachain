@@ -118,7 +118,9 @@ DataChain processes only the changed records when the output for each record dep
 
 Other compositions fall back to recomputing the full current query, for example unions with a non-delta input, independently changing delta sources, merges between delta sources on other fields, `full` merges, and cross-record operations such as `distinct`, aggregation, window functions, `limit`, and `offset`. A changed input dataset without delta also triggers a full recompute. Inline inputs such as `read_values`, `read_records`, `read_pandas`, single-file readers (`read_csv`, `read_json`, `read_parquet`, `read_storage`), and `persist()` results are assumed to be fixed: changes to them, including edits to a file read this way, do not trigger recomputation. Save such an input as a dataset if it can change.
 
-Use stable, non-null delta keys. A null key may be replayed even when its values are unchanged.
+Use stable, unique, non-null delta keys. Repeated keys are unsupported: a diff can
+pair several source rows and duplicate replay inputs. Null keys can cause extra
+replay when source versions change, even if their values are unchanged.
 
 **A full recompute can rerun UDFs on unchanged records.** `delta_unsafe=True` keeps the existing key requirements and enables these compositions; it does not guarantee incremental execution. Use a fixed pipeline and retain the configured source-key values in its output.
 

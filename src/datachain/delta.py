@@ -210,12 +210,9 @@ def _build_source_retry_chain(
     # Handle error records if delta_retry is a string (column name)
     if isinstance(delta_retry, str):
         error_records = result_dataset.filter(C(delta_retry) != "")
-        error_source_records = source_dc.merge(
-            error_records, on=on, right_on=right_on, inner=True
-        ).select(
-            *list(source_dc.signals_schema.clone_without_sys_signals().values.keys())
+        retry_chain = source_dc.subtract(
+            source_dc.subtract(error_records, on=on, right_on=right_on), on=on
         )
-        retry_chain = error_source_records
 
     # Handle missing records if delta_retry is True
     elif delta_retry is True:
@@ -386,9 +383,10 @@ def _build_source_replay_input(
     result_dataset: "DataChain",
     result_dependencies: list[DatasetDependency | None],
 ) -> tuple["DataChain | None", "DataChain | None", str | None, str | None]:
-    """Return the replay input (None when the source dependency is missing), the
-    persisted keys of source records whose results are replaced (None when there
-    are none), and the processed and latest source versions."""
+    """Return replay input, persisted replacement keys and source versions.
+
+    No changes produce no input or keys; a missing dependency also has no versions.
+    """
     if target_source_query.starting_step is None:  # pragma: no cover
         raise RuntimeError("Source dataset must be resolved before processing delta")
 
@@ -463,10 +461,6 @@ def _build_source_replay_input(
             if diff_chain is not None
             else retry_chain
         )
-    if source_replay_input is None:
-        source_replay_input = _read_source(
-            source_ds_name, source_ds_project, source_ds_latest_version, current_only
-        ).limit(0)
 
     return (
         source_replay_input,
@@ -555,16 +549,16 @@ def delta_retry_update(  # noqa: PLR0911
             result_dataset=latest_dataset,
             result_dependencies=dependencies,
         )
-        if source_replay_input is None:
+        if source_ds_latest_version is None:
             return None, None, True
 
-        assert source_ds_latest_version is not None
         updated_versions[_dataset_identity(target_source_dataset)] = (
             source_ds_latest_version
         )
         source_versions_changed |= source_ds_version != source_ds_latest_version
         changed_keys.append((target_source_spec, source_keys))
-        source_replacements.append((source, source_replay_input))
+        if source_replay_input is not None:
+            source_replacements.append((source, source_replay_input))
 
     if all(keys is None for _, keys in changed_keys):
         return None, None, False
@@ -591,6 +585,7 @@ def delta_retry_update(  # noqa: PLR0911
         return None, None, False
     normalized_dependencies = _normalize_dependencies(dependencies, updated_versions)
 
+    retained_chain = retained_chain.subtract(replayed_delta_chain, on=result_key)
     result_chain = _safe_union(
         retained_chain,
         replayed_delta_chain,

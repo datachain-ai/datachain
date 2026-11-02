@@ -115,7 +115,9 @@ def test_delta_union_with_overlapping_source_keys(test_session, changed, delete)
 
 @pytest.mark.parametrize("operation", ["union", "merge"])
 @pytest.mark.parametrize("static_first", [False, True])
-@pytest.mark.parametrize("change", ["static", "inline", "source", "delete"])
+@pytest.mark.parametrize(
+    "change", ["static", "source_with_inline_lookup", "source", "delete"]
+)
 def test_delta_composed_query_refreshes_static_and_source_inputs(
     test_session, operation, static_first, change
 ):
@@ -135,7 +137,7 @@ def test_delta_composed_query_refreshes_static_and_source_inputs(
         )
         static = (
             dc.read_values(id=[1, 9], value=[100, 900], session=test_session)
-            if change == "inline"
+            if change == "source_with_inline_lookup"
             else dc.read_dataset("static", session=test_session)
         )
         left, right = (static, changing) if static_first else (changing, static)

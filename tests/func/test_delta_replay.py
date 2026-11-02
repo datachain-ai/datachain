@@ -133,7 +133,7 @@ def test_delta_empty_retry_reuses_result_version(test_session, operation):
         assert sorted(result.to_iter("id", "value")) == [(1, 2), (2, 4)]
 
 
-@pytest.mark.parametrize("keys", [[1, None, 2], [1, 1, 2]])
+@pytest.mark.parametrize("keys", [[1, None, 2], [1, 3, 2]])
 def test_delta_retry_preserves_replayed_records(test_session, keys):
     def build():
         return (
@@ -269,3 +269,64 @@ def test_delta_model_key_rejects_incompatible_fields(test_session):
         else:
             with pytest.raises(DataChainParamsError, match="same shape on both sides"):
                 save()
+
+
+@pytest.mark.parametrize("rename", [False, True])
+def test_delta_error_retry_reprocesses_null_keys(test_session, rename):
+    state = {"fail": True}
+
+    def error(value: int) -> str:
+        return "retry" if state["fail"] else ""
+
+    def build(delta):
+        chain = dc.read_dataset(
+            "nullable_retry",
+            delta=delta,
+            delta_on="id",
+            delta_result_on="result_id" if rename else None,
+            delta_retry="error",
+            session=test_session,
+        ).map(error=error)
+        return (
+            chain.mutate(result_id=C.id).select("result_id", "error")
+            if rename
+            else chain
+        )
+
+    dc.read_values(id=[None, 1], value=[10, 20], session=test_session).save(
+        "nullable_retry"
+    )
+    first = build(True).save("nullable_result")
+    state["fail"] = False
+    result = build(True).save("nullable_result")
+    assert result.to_values("error") == ["", ""]
+    assert first.to_values("error") == ["retry", "retry"]
+    assert sorted(result.to_list(), key=repr) == sorted(
+        build(False).to_list(), key=repr
+    )
+    assert build(True).save("nullable_result").version == result.version
+
+
+@pytest.mark.parametrize("operation", ["mutate", "gen"])
+def test_delta_updates_do_not_duplicate_rewritten_result_keys(test_session, operation):
+    def generate(id, value):
+        yield id * 10, value
+
+    def build(delta):
+        chain = dc.read_dataset(
+            "rewrite_source", delta=delta, delta_on="id", session=test_session
+        )
+        if operation == "mutate":
+            return chain.mutate(id=C.id + 10)
+        return chain.gen(generate, output={"id": int, "value": int})
+
+    dc.read_values(id=[1, 2], value=[10, 20], session=test_session).save(
+        "rewrite_source"
+    )
+    first = build(True).save("rewrite_result")
+    dc.read_values(id=[1, 2], value=[10, 200], session=test_session).save(
+        "rewrite_source"
+    )
+    result = build(True).save("rewrite_result")
+    assert sorted(result.to_list()) == sorted(build(False).to_list())
+    assert sorted(first.to_values("value")) == [10, 20]
