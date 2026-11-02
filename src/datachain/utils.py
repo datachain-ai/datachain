@@ -11,6 +11,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import cloudpickle
@@ -61,6 +62,8 @@ class DataChainDir:
         db: str | None = None,
         config: str | None = None,
     ) -> None:
+        if root is None:
+            root = os.environ.get(self.ENV_VAR)
         self.root = osp.abspath(root) if root is not None else self.default_root()
         self.cache = (
             osp.abspath(cache) if cache is not None else osp.join(self.root, self.CACHE)
@@ -88,21 +91,30 @@ class DataChainDir:
             root_dir = os.environ[cls.ENV_VAR_DATACHAIN_ROOT]
         except KeyError:
             root_dir = os.getcwd()
+            cwd = Path(root_dir)
+            nearest = None
+            for directory in (cwd, *cwd.parents):
+                datachain_dir = directory / cls.DEFAULT
+                if nearest is None and (
+                    osp.isfile(datachain_dir / cls.DB)
+                    or osp.isfile(datachain_dir / cls.CONFIG)
+                ):
+                    nearest = datachain_dir
+                # Only reuse ancestor state inside a containing Git project.
+                # Worktrees and submodules use a .git file instead of a directory.
+                if osp.exists(directory / ".git"):
+                    return str(nearest or datachain_dir)
 
         return osp.join(root_dir, cls.DEFAULT)
 
     @classmethod
     def find(cls, create: bool = True) -> "Self":
-        try:
-            root = os.environ[cls.ENV_VAR]
-        except KeyError:
-            root = cls.default_root()
-        instance = cls(root)
-        if not osp.isdir(root):
+        instance = cls()
+        if not osp.isdir(instance.root):
             if create:
                 instance.init()
             else:
-                raise NotADirectoryError(root)
+                raise NotADirectoryError(instance.root)
         return instance
 
 

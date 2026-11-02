@@ -44,7 +44,7 @@ DataChain's storage-native architecture means files live in cloud storage and ar
 
 Prefetch downloads file content ahead of the UDF that reads it. `prefetch=N` downloads the next N files in full while the current one is processed. Default is 2; `prefetch=0` disables it. Tune by file size: ~10-16 for small files, 1 for large files.
 
-With `batch_map(batch=N)`, `prefetch` counts batches per worker rather than files. Start with 1 or 2 and account for the batch size when estimating downloads and memory. `settings(batch_size=...)` controls database insert buffering; it does not set the inference batch size.
+In `batch_map()`, `prefetch` counts batches; see [Batched Inference](batch-inference.md#parallel-execution-and-prefetch).
 
 Prefetch runs only when a UDF receives a `File` object. Attributes such as `file.path` and `file.size` come from the listing, so a UDF that receives only them through `params=` downloads nothing.
 

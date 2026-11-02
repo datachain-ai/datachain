@@ -28,25 +28,7 @@ def analyze(file: dc.File, client) -> Analysis:
 
 ### Batch mapper: batch_map()
 
-Runs a function on lists of column values, keeping one result per input row and
-preserving existing columns. Use it for vectorized inference. `batch=1` still
-passes lists; the default batch size is 1000.
-
-```python
-def double(value: list[int]) -> list[int]:
-    return [v * 2 for v in value]
-
-
-chain = dc.read_values(value=[1, 2, 3]).batch_map(doubled=double, batch=32)
-```
-
-A scalar embedding function passed to `map()` returns `list[float]`; a batched
-embedding function passed to `batch_map()` returns `list[list[float]]`. Both
-produce a `list[float]` column. Explicit `output=` always describes one row.
-Resources supplied via `.setup(model=load_model)` remain ordinary objects;
-only column arguments become lists. Use `dc.BatchMapper` for a batched class.
-See [batched model inference](processing.md#batched-model-inference) for a complete
-example and prefetch, parallel, delta and checkpoint behavior.
+Runs a Python function on a batch of records per call, such as a model that encodes many images at once, and adds one result to each record. See [Batched Inference](batch-inference.md).
 
 ### Generator: gen()
 

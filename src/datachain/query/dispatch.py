@@ -221,7 +221,7 @@ class UDFDispatcher:
 
         def get_inputs() -> Iterable["RowsOutput"]:
             warehouse = self.catalog.warehouse.clone()
-            for ids in batched(input_rows, DEFAULT_BATCH_SIZE):
+            for ids in batched(input_rows, self.input_batch_size(1)):
                 yield from warehouse.dataset_rows_select_from_ids(
                     self.query, ids, self.is_batching
                 )

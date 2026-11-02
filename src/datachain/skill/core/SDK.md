@@ -270,7 +270,7 @@ Lineage is tracked automatically when a chain reads one dataset and saves anothe
      if dc.is_studio():
          chain = chain.settings(workers=8)
 
-7. PREFETCH FOR FILE-READING UDFs: For scalar map(), estimate avg file size:
+7. PREFETCH FOR FILE-READING UDFs: Estimate avg file size and compute:
      prefetch = clamp(4MB / estimated_avg_size, 2, 128)
    Only add .settings(prefetch=N) if N > 4 (default is 2). Prefetch downloads
    file content, never attributes: file.path and file.size come from the
@@ -280,9 +280,9 @@ Lineage is tracked automatically when a chain reads one dataset and saves anothe
    file.size via params= download nothing. Skip if the user explicitly sets
    prefetch.
 
-   For `batch_map`, prefetch counts BATCHES per worker, not files. Start with
-   prefetch=1 or 2 and budget for batch size × average file size per batch. Do not
-   apply the per-file formula above unchanged to a batched inference pipeline.
+   For `batch_map`, prefetch counts BATCHES, so do not apply this formula: keep
+   prefetch=1 or 2. Up to 2 × prefetch + 1 batches can be on local disk per
+   process.
 
 8. CACHE ONLY WHEN NEEDED: Do not add cache=True by default. Use only when the
    same files are read multiple times (multi-stage pipelines), or the user asks.
@@ -383,12 +383,10 @@ Lineage is tracked automatically when a chain reads one dataset and saves anothe
     columns. Never write a long select() list (>4 columns). When chaining multiple
     merges, do ALL merges first, then ONE select_except() at the end.
 
-20. INLINE SETUP OVER UDF CLASS: Prefer chain.setup() over dc.Mapper,
-    dc.BatchMapper, and dc.Generator classes. A plain function + .setup() achieves model/client initialization
+20. INLINE SETUP OVER UDF CLASS: Prefer chain.setup() over dc.Mapper/Generator
+    classes. A plain function + .setup() achieves model/client initialization
     without introducing a class. Use dc.Mapper only when setup requires multiple
-    self.* fields or custom __init__ args. For a class used with batch_map(),
-    inherit dc.BatchMapper. Setup resources passed to a plain function remain
-    ordinary objects; only column arguments are lists in batch_map().
+    self.* fields or custom __init__ args.
 
 21. MATERIALIZE BEFORE MULTI-MERGE AND AFTER GROUP_BY: When merging 2+ right-side
     chains that contain UDFs, materialize each before the merge. Without it, the
@@ -455,7 +453,7 @@ dc.read_storage("s3://bucket/imgs/**/*.{jpg,png}", type="image")  # glob in path
 dc.read_csv("s3://bucket/data.csv")
 dc.read_json("s3://bucket/ann.json", jmespath="images")
 dc.read_parquet("s3://bucket/data/*.parquet")
-dc.read_hf("dataset-name", split="train")
+dc.read_hf("dataset-name", split="train")  # requires datachain[hf]
 dc.read_pandas(df)
 dc.read_values(scores=[1.2, 3.4])
 dc.read_records([{"a": 1}, ...])
@@ -523,28 +521,22 @@ chain.file_diff(other)
 **Compute Engine (Python workers, expensive):**
 
 ```python
-chain.map(col_name=fn)  # scalar: 1 input → 1 output record
+chain.map(col_name=fn)  # 1 input → 1 output record
 chain.batch_map(col_name=fn, batch=32)  # lists in, one output per input row
 chain.gen(col_name=fn)  # 1 input → N output records
 chain.agg(col_name=fn, partition_by="key")
 ```
 
-### Scalar map vs batched inference
+### Batched inference: batch_map()
 
-Use `map()` for a function that handles one row. Use `batch_map()` for vectorized
-model inference over multiple rows. Both preserve input columns. `agg()` groups
-rows and produces N:M outputs; it is not an inference batcher.
+Use `batch_map()` when a model takes many inputs per call; use `map()` for one
+row per call. `agg()` groups rows into N:M outputs; it is not an inference
+batcher.
 
 | Call | Column argument | Embedding return annotation | Explicit `output=` |
 |---|---|---|---|
 | `map(emb=encode_one)` | `dc.ImageFile` | `list[float]` | `list[float]` |
 | `batch_map(emb=encode_batch, batch=32)` | `list[dc.ImageFile]` | `list[list[float]]` | `list[float]` |
-
-`output=` describes ONE ROW, never the outer batch container. `batch_map` defaults
-to 1000 rows per call; choose an explicit size that fits the model and device.
-`batch=1` still passes lists. Return one result per input row, in the same order;
-the last batch can be shorter. Each row's result must not depend on its neighbors,
-so delta updates and checkpoint recovery can regroup rows safely.
 
 ```python
 def encode_batch(file: list[dc.ImageFile], model) -> list[list[float]]:
@@ -559,16 +551,15 @@ chain = (
 )
 ```
 
-Resources from `.setup()` remain ordinary objects; `model` is not a list. If a
-class is needed, use `dc.BatchMapper` with `batch_map()` and `dc.Mapper` with
-`map()`. Convert tensor outputs to ordinary Python row values with `.tolist()`.
-Use `params=["file"]` when a batched argument is named `files` instead of `file`.
-
-Do not pass `batch=` to `map()`, or `batch_size=`, `parallel=`, or `prefetch=` as
-method options to `batch_map()`. `batch_map(batch=N)` sets inference size;
-`.settings(batch_size=N)` sets database insert buffering. Concurrency and
-prefetch belong in `.settings(...)`; prefetch counts batches in `batch_map`, so
-start with 1 or 2 instead of applying a per-file prefetch formula.
+- `batch=` is required; pick a size that fits the model and device. `batch=1`
+  still passes lists.
+- Return one result per input row, in input order. `output=` describes ONE ROW.
+  Convert tensors to Python values with `.tolist()`.
+- Setup resources (`model` above) are not lists. For a class, use
+  `dc.BatchMapper`.
+- A row's result must not depend on the other rows in its batch.
+- `.settings(batch_size=N)` is database insert buffering, not the call size.
+  `parallel=` and `prefetch=` also go in `.settings(...)` (see rule 7).
 
 **Setup and settings:**
 

@@ -274,8 +274,6 @@ class UdfSignature:  # noqa: PLW1641
             if ignore_return_annotation
             else _resolve_annotation(sign.return_annotation, func)
         )
-        if is_batch_map and isinstance(anno, str):
-            anno = inspect.Signature.empty  # unresolvable: rely on output=
         has_return_annotation = anno != inspect.Signature.empty
         if anno == inspect.Signature.empty:
             output_types: list[type] = []

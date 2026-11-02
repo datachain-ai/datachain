@@ -220,8 +220,6 @@ When computation is expensive, bugs and new data are both inevitable. DataChain 
 
 ### 5.1. Data checkpoints
 
-For vectorized inference, use [`batch_map(batch=N)`](https://docs.datachain.ai/guide/processing/#batched-model-inference). `map()` processes one row per call; `settings(batch_size=...)` controls database inserts.
-
 Save to `embed.py`:
 ```python
 import open_clip, torch, io
@@ -248,7 +246,7 @@ def encode(file: dc.File, model, preprocess) -> list[float]:
 
 (
     dc.read_dataset("pets_images")
-    .settings(batch_size=100)  # database insert buffering; UDF calls stay scalar
+    .settings(batch_size=100)
     .setup(model=lambda: model, preprocess=lambda: preprocess)
     .map(emb=encode)
     .save("pets_embeddings")

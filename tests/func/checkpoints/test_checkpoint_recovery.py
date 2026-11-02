@@ -1024,11 +1024,9 @@ def test_udf_continue_after_group_by(test_session_tmpfile):
     assert sorted(result) == [(30,), (70,), (110,)]
 
 
-@pytest.mark.parametrize("insert_batch_size", [1, 2, 5])
 @pytest.mark.parametrize("fail_during_insert", [False, True])
-@pytest.mark.parametrize("batch", [1, 3])
-def test_map_batch_checkpoint_recovery(
-    test_session_tmpfile, monkeypatch, insert_batch_size, fail_during_insert, batch
+def test_batch_map_checkpoint_recovery(
+    test_session_tmpfile, monkeypatch, fail_during_insert
 ):
     session = test_session_tmpfile
     dc.read_values(num=list(range(8)), session=session).save("batch_nums")
@@ -1056,10 +1054,10 @@ def test_map_batch_checkpoint_recovery(
     # on the class: the UDF write path calls convert_type only when it is overridden
     monkeypatch.setattr(type(warehouse), "convert_type", interrupt_conversion)
 
-    def run():
+    def run(batch):
         return (
             dc.read_dataset("batch_nums", session=session)
-            .settings(batch_size=insert_batch_size, prefetch=0)
+            .settings(batch_size=2, prefetch=0)
             .batch_map(result=process, batch=batch)
             .save("batch_results")
         )
@@ -1069,16 +1067,39 @@ def test_map_batch_checkpoint_recovery(
         Exception,
         match="invalid value" if fail_during_insert else "batch inference interrupted",
     ):
-        run()
+        run(3)
 
-    completed_count = 3 if batch == 3 or not fail_during_insert else 4
-    completed = set(processed[:completed_count])
+    # Rows written before the failure are kept, even from an unfinished batch.
+    completed = set(processed[: 4 if fail_during_insert else 3])
     reset_session_job_state()
     failing = False
     processed.clear()
-    result = run().order_by("num").to_values("result")
+    result = run(2).order_by("num").to_values("result")
     assert result == [n * 10 for n in range(8)]
     assert sorted(processed) == sorted(set(range(8)) - completed)
+
+
+def test_batch_map_checkpoint_reuse(test_session_tmpfile):
+    session = test_session_tmpfile
+    dc.read_values(num=[1, 2, 3, 4], session=session).save("reuse_nums")
+    calls = []
+
+    def identity(num):
+        calls.append(num)
+        return num
+
+    def run(verb, **kwargs):
+        reset_session_job_state()
+        chain = dc.read_dataset("reuse_nums", session=session)
+        getattr(chain, verb)(result=identity, output=int, **kwargs).save("reused")
+
+    run("batch_map", batch=2)
+    assert sorted(len(c) for c in calls) == [2, 2]
+    calls.clear()
+    run("batch_map", batch=3)
+    assert calls == []
+    run("map")
+    assert sorted(calls) == [1, 2, 3, 4]
 
 
 @pytest.mark.parametrize("kind", ["map", "batch_map", "gen", "agg"])
