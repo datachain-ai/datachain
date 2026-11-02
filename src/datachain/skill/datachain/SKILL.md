@@ -167,66 +167,14 @@ emb = (
 Budget memory and temporary disk space for the batch size as well as the worker count.
 
 Columns: `file.*`, `img.embedding`, `img.width`, `img.height`. A file that fails to decode should not kill the run:
-catch inside `process` and return a sentinel row (e.g. empty embedding), or let it raise and re-run - finished
-rows are kept (see Resume).
+catch inside `process` and return a sentinel row (e.g. empty embedding), or let it raise and rerun.
+Previously written checkpoints can be reused; work not yet checkpointed may repeat.
 
-### Video frames (one row per sampled frame, with source video and timestamp)
+### Video and recording readers
 
-Install `datachain[video]` and the model dependencies (`torch`, `open_clip_torch`) for this recipe.
-
-```python
-from collections.abc import Iterator
-from itertools import islice
-import datachain as dc
-from pydantic import BaseModel
-
-
-class FrameEmb(BaseModel):
-    index: int
-    # Actual timestamp of the decoded frame, in seconds.
-    pts: float
-    embedding: list[float]
-
-
-class EmbedFrames(dc.Generator):
-    def setup(self):
-        import open_clip, torch
-
-        torch.set_num_threads(1)
-        self.model, _, self.pre = open_clip.create_model_and_transforms(
-            "ViT-B-32", pretrained="laion2b_s34b_b79k"
-        )
-        self.model.eval()
-
-    def process(self, file: dc.VideoFile) -> Iterator[tuple[dc.VideoFile, FrameEmb]]:
-        import torch
-        from PIL import Image
-
-        frames = file.sample_frames(fps=1.0)
-        index = 0
-        while chunk := list(islice(frames, 32)):
-            with torch.no_grad():
-                e = self.model.encode_image(
-                    torch.stack([self.pre(Image.fromarray(f.get_np())) for f in chunk])
-                )
-            e = e / e.norm(dim=-1, keepdim=True)
-            for f, v in zip(chunk, e.tolist()):
-                yield file, FrameEmb(index=index, pts=f.timestamp, embedding=v)
-                index += 1
-
-
-frames = (
-    dc.read_storage("s3://bucket/videos/*.mov", anon=True, type="video")
-    # Whole videos are needed for decoding.
-    .settings(parallel=True, prefetch=4)
-    .gen(EmbedFrames(), output={"file": dc.VideoFile, "frame": FrameEmb})
-    .save("video_frame_embeddings")
-)
-```
-
-Columns: `file.*`, `frame.index`, `frame.pts`, `frame.embedding`.
-Keep the top-level `file` output for source identities and compatible file-delta updates.
-Consume or embed sampled pixels inside the generator; saved frame references do not retain decoded buffers.
+Use an existing Python reader in map/gen for video or MCAP tasks. Keep source File identities and
+recording/frame timestamps in generator outputs. Choose the reader's sampling and decoding behavior
+explicitly; preserve a top-level file output for compatible file-delta updates.
 
 ### Search saved embeddings (follow-up questions)
 
@@ -335,8 +283,9 @@ Put `update=True, delta=True` in the very first build script, so later refreshes
 
 ### Resume a crashed or killed run
 
-Re-run the same script unchanged (or with the bug fixed in the UDF). Rows the UDF already finished are reused
-from checkpoints; only the rest is computed. Do not rewrite the pipeline into a manual checkpointing loop.
+Re-run the same script unchanged (or with the bug fixed in the UDF) to reuse checkpoints already written
+to storage. Completed work still buffered in memory may repeat after a kill. Do not promise per-row
+durability or a fixed checkpoint interval. Do not rewrite the pipeline into a manual checkpointing loop.
 
 ### Export
 

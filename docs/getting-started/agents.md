@@ -46,7 +46,7 @@ Report file counts and bytes by source, folder and extension without downloading
 | One-off inventory | `list_storage()` and one aggregation pass |
 | Media headers | A typed file's `get_info()` inside `map()`, with `prefetch=0` |
 | Batched inference | `BatchMapper` with `setup()`, then `batch_map(..., batch=32)` |
-| Video frames | Stream chunks from `VideoFile.sample_frames()` inside a generator |
+| Video and recordings | Use an existing Python reader in map/gen; retain source files and timestamps |
 | Saved results | Inspect datasets and recorded code, then query `read_dataset()` |
 | File updates | A compatible pipeline with `read_storage(..., update=True, delta=True)` |
 | Interrupted runs | Rerun the script to reuse checkpointed work |
