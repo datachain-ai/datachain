@@ -5,7 +5,8 @@ produce a verified result. The latter measures the library together with its ski
 It is not a measurement of library overhead alone.
 
 These results were collected on integrated evaluation builds in October 2026. They are not measurements of
-an arbitrary PyPI release. This README draft must ship with the matching features and fixes.
+an arbitrary PyPI release. Read the build named for each result: these figures are historical measurements,
+not a new timing guarantee for every package version. The release must support every API shown in its README.
 
 ## Large S3 inventories
 
@@ -269,4 +270,6 @@ modal run bench/ops/ops_bench.py --plan m1_10m_v2 --pairs 3
 
 The harness stages inputs, runs agents and independently verifies their outputs. Run logs, original failed
 attempts and audit snapshots are retained with the evaluation records. Before publishing this draft,
-make the referenced evidence available and confirm the released build includes the evaluated fixes.
+make the referenced evidence available, identify the minimum package version and validate the README
+examples on the released build. A performance smoke can detect regressions; it does not reproduce the
+agent-level statistical result. The release checklist in PR #2114 separates required APIs from follow-up optimizations.

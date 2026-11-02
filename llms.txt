@@ -1,0 +1,10 @@
+# DataChain
+
+Fast Python file pipelines across S3, GCS, Azure and local storage, with saved, typed, versioned datasets.
+
+- [Agent skill](src/datachain/skill/datachain/SKILL.md): task selection and tested recipes; install with datachain skill install.
+- [API and documentation index](docs/llms.txt).
+- [Python quickstart](README.md#quickstart).
+- [Benchmark methodology and builds](docs/benchmarks.md).
+
+For saved-result questions, query recorded datasets and code before recomputing. Inspect provenance with datachain dataset describe NAME --json. Check source freshness when the task calls for it; file delta does not detect model or preprocessing changes.

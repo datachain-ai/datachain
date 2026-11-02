@@ -1,6 +1,14 @@
 # DataChain
 
-> DataChain is the Data Context Layer for unstructured data. It chains Python functions and warehouse-speed data operations into composable queries, and every query deposits its result into the Dataset DB as a versioned, typed dataset with automatic lineage. The next query (human or agent) starts from prior conclusions instead of raw bytes. The Compute Engine produces; the Dataset DB recalls; the Knowledge Base compiles datasets into agent-readable knowledge.
+> DataChain is a Python library for file pipelines across S3, GCS, Azure and local storage. Use it for inventories, Python readers and model inference, then save typed, versioned results for later queries. Local pipelines use the project's catalog without a DataChain account.
+
+## Agent entry point
+
+- [DataChain skill](https://github.com/datachain-ai/datachain/blob/main/src/datachain/skill/datachain/SKILL.md): task selection, inventories, media metadata, batched inference, saved results and updates.
+- [Python and agent quickstarts](https://github.com/datachain-ai/datachain/blob/main/README.md).
+- [API reference](https://docs.datachain.ai/references/).
+
+Start saved-result questions with the catalog and recorded code. Refresh sources when current freshness is requested; file delta does not detect model or preprocessing changes.
 
 ## Import Convention
 
@@ -22,12 +30,14 @@ Never use: `from datachain import File, C, func`
 - `dc.read_storage("s3://bucket/path/", type="image")` -- files from cloud storage
 - `dc.read_csv()`, `dc.read_json()`, `dc.read_parquet()` -- structured formats
 - `dc.read_database(query, connection_string)` -- SQL databases
-- `dc.read_dataset("name")` -- previously saved datasets
+- `dc.read_dataset("name", version="1.0.0")` -- an explicit saved version
+- `datachain dataset describe NAME --json` -- recorded schema, versions, lineage and code; metadata only
 - `dc.read_pandas(df)`, `dc.read_hf("dataset")` -- in-memory sources
 
 ### Transform data
-- `.filter(dc.C("col") > value)` -- SQL-compiled filter (warehouse speed)
+- `.filter(dc.C("col") > value)` -- filter saved rows in SQL
 - `.mutate(new_col=dc.func.path.file_ext("file.path"))` -- SQL-compiled column derivation
+- `.batch_map(result=my_batch_function, batch=32)` -- lists of inputs with one output per input; subclass `dc.BatchMapper` for model setup
 - `.map(result=my_function)` -- Python operation per record (needs `settings(parallel=N)` for perf)
 - `.gen(chunks=split_function)` -- expand one record to many
 - `.agg(summary=aggregate_fn, partition_by="group_col")` -- group and reduce
@@ -38,20 +48,20 @@ Never use: `from datachain import File, C, func`
 - `.save("dataset_name")` -- versioned, named dataset (PREFERRED terminal operation)
 - `.persist()` -- anonymous cache for branching
 - `.to_pandas()`, `.to_parquet()`, `.to_csv()`, `.to_json()` -- export formats
-- `.to_pytorch(transform=..., tokenizer=...)` -- PyTorch DataLoader
+- `.to_pytorch(transform=..., tokenizer=...)` -- iterable PyTorch Dataset for a DataLoader
 - `.to_storage("s3://output/")` -- write files to storage
 - `.to_database("table", "connection_string")` -- write to SQL database
 
 ## Critical Rules
 
-1. Always type Python operation return values -- missing annotations default to `str` and crash
-2. Always use trailing slash in storage URIs: `"s3://bucket/path/"`
+1. Annotate Python operation return values or pass output=; unannotated functions default to str
+2. Use a directory URI such as `"s3://bucket/path/"` or an explicit file glob such as `"s3://bucket/path/*.jpg"`
 3. Pass `anon=True` for public buckets
 4. Use `save()` before `filter()` on expensive Python operation output
 5. Use `settings(parallel=True)` for ML/LLM operations
 6. Use data-engine operations (filter, mutate, group_by) over Python when possible
-7. One output signal per map/gen/agg -- use Pydantic models for multiple fields
-8. Use `dc.func.*` for SQL-speed analytics: distance, aggregate, window, path, string, conditional
+7. Preserve source File identities when expanding records with gen, especially for file-delta updates
+8. Filter and aggregate saved rows with dc.func; use pandas, DuckDB or a warehouse for table-heavy analytics
 
 ## Documentation Sections
 
