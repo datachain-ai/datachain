@@ -45,7 +45,7 @@ chain = (
 ## Parameters
 
 - **delta**: Boolean flag to enable delta processing
-- **delta_on**: Field(s) that uniquely identify source records. The default is `("file.path", "file.etag", "file.version")`; overwriting a file replaces the results for its previous revision. Include `file.source` if paths can collide across storages.
+- **delta_on**: Field(s) that uniquely identify rows in the source dataset. The default is `("file.path", "file.etag", "file.version")`.
 - **delta_result_on**: Field(s) in the resulting dataset that correspond to `delta_on` fields (if they have different names)
 - **delta_compare**: Field(s) used to check if a record has been modified. By default, all non-key source fields are compared. An explicit list must cover every source field whose changes can affect your output or filters; ignored changes cannot trigger recomputation.
 
