@@ -8,6 +8,8 @@ from fsspec.utils import stringify_path
 from datachain.lib.file import PARTIAL_READ_BLOCK_SIZE, FileError
 
 if TYPE_CHECKING:
+    from typing import BinaryIO
+
     from numpy import ndarray
 
     from datachain.client.writeconfig import WriteConfig
@@ -23,6 +25,12 @@ except ImportError as exc:
     ) from exc
 
 
+def _prime_soundfile_stream(stream: "BinaryIO") -> None:
+    # libsndfile swallows exceptions raised inside its read callback.
+    stream.read(1)
+    stream.seek(0)
+
+
 def audio_info(file: "File | AudioFile") -> "Audio":
     """Extract metadata like sample rate, channels, duration, and format."""
     from datachain.lib.file import Audio
@@ -31,9 +39,7 @@ def audio_info(file: "File | AudioFile") -> "Audio":
 
     try:
         with file.open(block_size=PARTIAL_READ_BLOCK_SIZE, cache=False) as f:
-            # libsndfile swallows exceptions raised inside its read callback.
-            f.read(1)
-            f.seek(0)
+            _prime_soundfile_stream(f)
             info = sf.info(f)
 
             sample_rate = int(info.samplerate)
@@ -124,6 +130,7 @@ def audio_to_np(
 
     try:
         with audio.open() as f:
+            _prime_soundfile_stream(f)
             info = sf.info(f)
             sample_rate = info.samplerate
 

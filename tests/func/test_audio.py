@@ -120,7 +120,10 @@ def test_audio_datachain_workflow(test_session, tmp_path):
 @pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
 @pytest.mark.parametrize("change", ["delete", "overwrite"])
-def test_audio_metadata_preserves_source_error(cloud_test_catalog_upload, change):
+@pytest.mark.parametrize("operation", ["info", "numpy"])
+def test_audio_reads_preserve_source_error(
+    cloud_test_catalog_upload, change, operation
+):
     ctc = cloud_test_catalog_upload
     client = ctc.catalog.get_client(ctc.src_uri)
     data = generate_test_wav()
@@ -132,5 +135,8 @@ def test_audio_metadata_preserves_source_error(cloud_test_catalog_upload, change
     else:
         client.upload(data[:-1] + b"1", "source.wav")
     with pytest.raises(FileError) as error:
-        audio.get_info()
+        if operation == "info":
+            audio.get_info()
+        else:
+            audio_to_np(audio)
     assert isinstance(error.value.__cause__, FileNotFoundError)

@@ -1,4 +1,5 @@
 import asyncio
+import io
 import os
 import sys
 from contextlib import aclosing
@@ -1258,3 +1259,26 @@ def test_gcs_unpinned_read_reuses_open_metadata(cloud_test_catalog_upload, mocke
         assert stream.read() == b"woof"
 
     assert calls.call_count == backend_calls
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_tar_member_uses_listing_without_head(cloud_test_catalog_upload, mocker):
+    import tarfile
+
+    from datachain.lib.tar import build_tar_member
+    from tests.utils import make_tar
+
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+    data = b"member content"
+    raw = make_tar({"member.bin": data})
+    parent = client.upload(raw, "archive.tar")
+    parent._set_stream(ctc.catalog, caching_enabled=False)
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        member = build_tar_member(parent, archive.getmember("member.bin"))
+    member._set_stream(ctc.catalog, caching_enabled=False)
+    for name in ("info", "_info"):
+        mocker.patch.object(client.fs, name, side_effect=AssertionError("HEAD"))
+    assert member.read_bytes(10) == data[:10]
+    assert not ctc.catalog.cache.contains(parent)
