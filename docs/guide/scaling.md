@@ -46,11 +46,7 @@ Prefetch downloads file content ahead of the UDF that reads it. `prefetch=N` dow
 
 Prefetch runs only when a UDF receives a `File` object. Attributes such as `file.path` and `file.size` come from the listing, so a UDF that receives only them through `params=` downloads nothing.
 
-For partial reads (`get_info()`, or `read_bytes(n)` with `n > 0`), use
-`.settings(prefetch=0)`: they read only the ranges they need, with up to 64 KiB
-read-ahead. Custom readers can use `file.open(cache=False, block_size=65536)`.
-Transfer size depends on the format. Whole-file reads follow the chain's cache
-setting, and partial reads reuse a cached copy when available.
+For a UDF that calls `file.get_info()` or `file.read_bytes(n)` with `n > 0`, set `.settings(prefetch=0)` to disable downloading entire files ahead of the UDF. Metadata reads depend on the format: video inspection may read an index and decode a frame, and some image formats require reading the entire file. Partial reads reuse a cached copy when available.
 
 ## File Cache
 

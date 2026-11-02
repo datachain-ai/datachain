@@ -277,7 +277,10 @@ class GCSClient(RangeListedClient):
         full_path = self._path_with_generation(file.get_fs_path(), file.version)
         if file.size > 0 and sync(self.fs.loop, self._can_read_listed, file):
             return _ListedGCSFile(self.fs, file, full_path, block_size)
-        stream = self.fs.open(full_path, **self._block_size_kwargs(block_size))
+        open_kwargs = self._block_size_kwargs(block_size)
+        if block_size:
+            open_kwargs["cache_type"] = "readahead"
+        stream = self.fs.open(full_path, **open_kwargs)
         if not file.version and file.etag and stream.details.get("etag") != file.etag:
             stream.close()
             raise _file_changed_error(

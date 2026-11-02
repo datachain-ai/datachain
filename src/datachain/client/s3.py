@@ -186,7 +186,7 @@ class ClientS3(RangeListedClient):
     _unversioned = False  # the server can't list versions
 
     def _open_remote(self, file: File, block_size: int | None = None):
-        if file.size > 0 and (file.etag or file.version):
+        if file.size > 0 and (file.etag or file.version not in ("", "null")):
             return _ListedS3File(self.fs, file, block_size)
         return super()._open_remote(file, block_size)
 

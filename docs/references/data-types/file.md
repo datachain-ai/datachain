@@ -28,11 +28,9 @@ file: File@v1
 `File` classes include various metadata fields describing the underlying file,
 along with methods to read and manipulate file contents.
 
-### Metadata without downloading
+### Read media metadata
 
-`get_info()` methods read the ranges needed for metadata with 64 KiB read-ahead,
-using an existing cached copy when available. Set `prefetch=0` before the UDF
-to avoid whole-file downloads:
+Set `.settings(prefetch=0)` before a UDF that calls `get_info()` to avoid downloading entire files ahead of the UDF. Metadata reads reuse a cached copy when available:
 
 ```python
 metadata = (
@@ -42,11 +40,7 @@ metadata = (
 )
 ```
 
-Default prefetch downloads whole files for every UDF that receives a `File`.
-Custom partial readers can use `file.open(cache=False, block_size=65536)`.
-
-Transfer size depends on the format: video inspection may read indexes and decode a
-frame, and some formats require the entire file. HTTP(S) reads ignore `block_size`.
+The default `prefetch=2` downloads entire files for UDFs that receive a `File`. With `prefetch=0`, `get_info()` reads the ranges needed for the format: video inspection may read an index and decode a frame, and some image formats require the entire file.
 
 ::: datachain.lib.file.File
 

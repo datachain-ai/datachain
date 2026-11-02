@@ -52,9 +52,9 @@ ResultQueue = asyncio.Queue[Sequence[Any] | None]
 
 def _file_changed_error(path: str, change: str) -> FileNotFoundError:
     return FileNotFoundError(
-        f"{path} changed on the source since the catalog was created ({change}). "
+        f"{path} changed on the source since it was listed ({change}). "
         "Re-run the original dc.read_storage(...) call with update=True "
-        "to refresh the catalog."
+        "to refresh the listing."
     )
 
 
@@ -507,6 +507,8 @@ class Client(ABC):
         return FileWrapper(self._open_remote(file, block_size), cb)  # type: ignore[return-value]
 
     def _open_remote(self, file: "File", block_size: int | None = None) -> BinaryIO:
+        if file._caching_enabled:
+            self.check_unchanged(file)
         return self.fs.open(
             file.get_fs_path(),
             **self._block_size_kwargs(block_size),

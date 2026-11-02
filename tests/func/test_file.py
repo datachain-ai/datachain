@@ -1,4 +1,5 @@
 import io
+import os
 import tarfile
 from pathlib import Path
 
@@ -949,3 +950,29 @@ def test_video_info_http_server_without_range_support(
     info = file.get_info()
 
     assert info.duration == pytest.approx(1.0, abs=0.1)
+
+
+@pytest.mark.parametrize("operation", ["prefix", "metadata"])
+def test_uncached_partial_read_rejects_changed_local_file(
+    test_session, tmp_path, operation
+):
+    from PIL import Image
+
+    path = tmp_path / "image.png"
+
+    Image.new("RGB", (2, 2)).save(path)
+    chain = dc.read_storage(str(path), session=test_session)
+    file = chain.to_values("file")[0]
+    file._set_stream(test_session.catalog, caching_enabled=True)
+    mtime = path.stat().st_mtime + 1
+    Image.new("RGB", (3, 3)).save(path)
+    os.utime(path, (mtime, mtime))
+    error = FileNotFoundError if operation == "prefix" else FileError
+    with pytest.raises(error) as exc:
+        if operation == "prefix":
+            file.read_bytes(3)
+        else:
+            file.as_image_file().get_info()
+    cause = exc.value if operation == "prefix" else exc.value.__cause__
+    assert "changed on the source" in str(cause)
+    assert not test_session.catalog.cache.contains(file)

@@ -1477,11 +1477,11 @@ def mock_parquet_data_cloud(compressed_parquet_data, dog_entries, cloud_test_cat
 @pytest.fixture
 def fetched_bytes(monkeypatch):
     from adlfs.spec import AzureBlobFile
-    from gcsfs.core import GCSFile
+    from gcsfs import GCSFileSystem
     from s3fs.core import S3File
 
     fetched = [0, 0]
-    for cls in (S3File, GCSFile, AzureBlobFile):
+    for cls in (S3File, AzureBlobFile):
 
         def fetch_range(self, *args, _orig=cls._fetch_range, **kwargs):
             data = _orig(self, *args, **kwargs)
@@ -1490,6 +1490,16 @@ def fetched_bytes(monkeypatch):
             return data
 
         monkeypatch.setattr(cls, "_fetch_range", fetch_range)
+    original_call = GCSFileSystem._call
+
+    async def call(self, method, *args, **kwargs):
+        response = await original_call(self, method, *args, **kwargs)
+        if method == "GET" and not kwargs.get("json_out"):
+            fetched[0] += len(response[1])
+            fetched[1] += 1
+        return response
+
+    monkeypatch.setattr(GCSFileSystem, "_call", call)
     return fetched
 
 

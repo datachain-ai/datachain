@@ -1282,3 +1282,30 @@ def test_tar_member_uses_listing_without_head(cloud_test_catalog_upload, mocker)
         mocker.patch.object(client.fs, name, side_effect=AssertionError("HEAD"))
     assert member.read_bytes(10) == data[:10]
     assert not ctc.catalog.cache.contains(parent)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_s3_null_version_without_etag_uses_backend_open(client, mocker):
+    from io import BytesIO
+
+    file = client.get_file_info("dogs/dog1")
+    file.etag = ""
+    file.version = "null"
+    replacement = b"a longer replacement"
+    opened = mocker.patch.object(client.fs, "open", return_value=BytesIO(replacement))
+    with client.open_object(file, use_cache=False, block_size=2) as stream:
+        assert stream.read() == replacement
+    opened.assert_called_once_with(file.get_fs_path(), block_size=2, version_id="null")
+
+
+@pytest.mark.parametrize("cloud_type", ["gs"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+@pytest.mark.parametrize("block_size", [None, 0, 2])
+def test_gcs_fallback_open_preserves_block_size(client, mocker, block_size):
+    file = client.get_file_info("dogs/dog1")
+    mocker.patch.object(client, "_can_read_listed", return_value=False)
+    with client.open_object(file, use_cache=False, block_size=block_size) as stream:
+        assert stream.read(2) == b"wo"
+        stream.seek(0)
+        assert stream.read() == b"woof"
