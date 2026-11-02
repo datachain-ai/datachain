@@ -96,7 +96,7 @@ chain = (
         update=True,
         delta=True,
         delta_on="file.path",
-        delta_compare="file.mtime",
+        delta_compare="file.last_modified",
     )
     .map(result=process_file)
     .save("processed_data")

@@ -550,7 +550,7 @@ chain.avg("column")
 ```python
 dc.read_storage("s3://bucket/", update=True, delta=True)
 # Defaults: delta_on=("file.path", "file.etag", "file.version"); delta_compare=None.
-# Override delta_compare="file.mtime" only when etag is unreliable (e.g. local FS).
+# Override delta_compare="file.last_modified" only when etag is unreliable (e.g. local FS).
 # Build scripts reading storage take this path; plain queries over an existing
 # listing do not — there, re-listing the bucket only costs time.
 ```

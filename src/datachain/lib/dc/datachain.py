@@ -58,6 +58,7 @@ from datachain.lib.file import ExportPlacement as FileExportPlacement
 from datachain.lib.model_store import ModelStore
 from datachain.lib.settings import Settings
 from datachain.lib.signal_schema import (
+    KeyPresence,
     SignalResolvingError,
     SignalResolvingTypeError,
     SignalSchema,
@@ -205,16 +206,63 @@ class DataChainSchema(dict[str, DataType]):
         return file.getvalue().removesuffix("\n")
 
 
-def _paired_key_columns(left: list, right: list) -> list[tuple]:
-    """Pair the key columns of both sides. A Union is several columns, so pairing
-    differently shaped sides by position would compare the wrong ones.
+def _paired_key_columns(
+    left: SignalSchema,
+    on: Sequence[str],
+    right: SignalSchema,
+    right_on: Sequence[str],
+) -> tuple[list[tuple[str, str]], list[tuple[KeyPresence, KeyPresence]]]:
+    """Pair the key columns of both sides by their path below each key, so model
+    fields match by name rather than by position, and pair the presence of each
+    ``Optional`` model node either side has, so None differs from a model whose
+    fields are all None.
     """
-    if len(left) != len(right):
-        raise DataChainParamsError(
-            f"'on' resolves to {len(left)} columns and 'right_on' to {len(right)}; "
-            "the key must have the same shape on both sides"
+    pairs: list[tuple[str, str]] = []
+    presence: list[tuple[KeyPresence, KeyPresence]] = []
+    for left_key, right_key in zip(on, right_on, strict=True):
+        left_columns, left_nodes = left.key_columns(left_key)
+        right_columns, right_nodes = right.key_columns(right_key)
+        if left_columns.keys() != right_columns.keys():
+            raise DataChainParamsError(
+                f"'on' key {left_key!r} and 'right_on' key {right_key!r} have different"
+                " fields; the key must have the same shape on both sides"
+            )
+        pairs.extend(
+            (column, right_columns[path]) for path, column in left_columns.items()
         )
-    return list(zip(left, right, strict=True))
+        presence.extend(
+            (left.key_presence(left_key, path), right.key_presence(right_key, path))
+            for path in sorted(left_nodes | right_nodes)
+        )
+    return pairs, presence
+
+
+def _common_key_columns(
+    left_schema: SignalSchema, right_schema: SignalSchema
+) -> tuple[list[tuple[str, str]], list[tuple[KeyPresence, KeyPresence]]]:
+    presence: list[tuple[KeyPresence, KeyPresence]] = []
+    other_columns = set(cast("list[str]", right_schema.db_signals()))
+    common_signals = [
+        c for c in cast("list[str]", left_schema.db_signals()) if c in other_columns
+    ]
+    if not common_signals:
+        raise DataChainParamsError("subtract(): no common columns")
+    signals = list(zip(common_signals, common_signals, strict=False))
+    for name in sorted(left_schema.values.keys() & right_schema.values.keys()):
+        left_columns, _ = left_schema.key_columns(name)
+        right_columns, _ = right_schema.key_columns(name)
+        if left_columns.keys() != right_columns.keys():
+            continue
+        model_keys, model_presence = _paired_key_columns(
+            left_schema, [name], right_schema, [name]
+        )
+        if model_presence:
+            columns = set(left_schema.resolve(name).db_signals())
+            columns.update(right_schema.resolve(name).db_signals())
+            signals = [(a, b) for a, b in signals if a not in columns]
+            signals.extend(model_keys)
+            presence.extend(model_presence)
+    return signals, presence
 
 
 class DataChain:
@@ -2322,20 +2370,15 @@ class DataChain:
             if not right_on or any(not col for col in right_on):
                 raise DataChainParamsError("'right_on' cannot contain empty strings")
 
+        presence: list[tuple[KeyPresence, KeyPresence]] = []
         if on is None and right_on is None:
-            other_columns = set(other._effective_signals_schema.db_signals())
-            common_signals = [
-                c
-                for c in self._effective_signals_schema.db_signals()
-                if c in other_columns
-            ]
-            if not common_signals:
-                raise DataChainParamsError("subtract(): no common columns")
-            signals = list(zip(common_signals, common_signals, strict=False))
+            signals, presence = _common_key_columns(
+                self._effective_signals_schema, other._effective_signals_schema
+            )
         elif on is not None and right_on is None:
-            right_on = on
-            resolved_signals = list(self.signals_schema.resolve(*on).db_signals())
-            signals = list(zip(resolved_signals, resolved_signals, strict=False))  # type: ignore[arg-type]
+            signals, presence = _paired_key_columns(
+                self.signals_schema, on, other.signals_schema, on
+            )
         elif on is None and right_on is not None:
             raise DataChainParamsError(
                 "'on' must be specified when 'right_on' is provided"
@@ -2349,11 +2392,12 @@ class DataChain:
                 raise DataChainParamsError(
                     "'on' and 'right_on' must have the same length"
                 )
-            signals = _paired_key_columns(
-                list(self.signals_schema.resolve(*on).db_signals()),
-                list(other.signals_schema.resolve(*right_on).db_signals()),
+            signals, presence = _paired_key_columns(
+                self.signals_schema, on, other.signals_schema, right_on
             )
-        return self._evolve(query=self._query.subtract(other._query, signals))  # type: ignore[arg-type]
+        return self._evolve(
+            query=self._query.subtract(other._query, signals, presence)  # type: ignore[arg-type]
+        )
 
     @delta_disabled
     def diff(
