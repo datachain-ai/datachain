@@ -35,6 +35,11 @@ DataChain is a command-line tool for wrangling unstructured AI data at scale. Us
 	- Check the compute clusters available for jobs, and the machine, region and capacity of each, with [`datachain job clusters`](job/clusters.md)
 
 
-3.  **Maintenance**
+3.  **Datasets**
+
+	- Inspect a saved dataset's versions, lineage and script with [`datachain dataset describe`](dataset/describe.md)
+
+
+4.  **Maintenance**
 
 	- Clean up temporary tables, failed versions, and outdated checkpoints with [`datachain gc`](gc.md)

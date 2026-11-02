@@ -17,6 +17,26 @@ from datachain.sql.types import String
 from tests.utils import assert_row_names, dataset_dependency_asdict
 
 
+def test_shared_dependency_edges_are_not_duplicated(test_session):
+    catalog = test_session.catalog
+    dc.read_values(value=[1], session=test_session).save("source")
+    dc.read_dataset("source", session=test_session).save("first")
+    dc.read_dataset("first", session=test_session).save("second")
+    dc.read_dataset("first", session=test_session).union(
+        dc.read_dataset("second", session=test_session)
+    ).save("top")
+
+    deps = {
+        dep.name: dep
+        for dep in catalog.get_dataset_dependencies("top", "1.0.0", indirect=True)
+        if dep is not None
+    }
+    first = [deps["first"], *deps["second"].dependencies]
+    for dep in first:
+        assert dep is not None
+        assert [child.name for child in dep.dependencies if child] == ["source"]
+
+
 def from_result_row(col_names, row):
     return dict(zip(col_names, row, strict=False))
 
