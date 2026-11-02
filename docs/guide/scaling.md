@@ -8,7 +8,9 @@ DataChain has a layered optimization architecture. Each layer eliminates a sourc
 
 ## Parallel Execution
 
-`settings(parallel=N)` runs N processes, each with its own model instance. `parallel=True` (or `parallel=-1`) uses the CPUs available to the process, respecting affinity and container CPU quotas. Fractional quotas round up; an explicit positive process count keeps its value.
+`settings(parallel=N)` runs N processes, each with its own model instance. `parallel=True` (or `parallel=-1`) uses the CPUs available to the process, respecting affinity and container CPU quotas. Fractional quotas round up (a 1.5-CPU quota allows two workers), including automatic listing processes. An explicit positive process count keeps its value.
+
+In a 1-CPU container, automatic UDF execution uses one process even on a larger host. For network-bound work that benefits from more concurrency, set an explicit `parallel=N`.
 
 ```python
 import datachain as dc
