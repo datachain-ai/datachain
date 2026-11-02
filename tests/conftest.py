@@ -1480,8 +1480,10 @@ def fetched_bytes(monkeypatch):
     from gcsfs.core import GCSFile
     from s3fs.core import S3File
 
+    from datachain.client.gcs import _ListedGCSFile
+
     fetched = [0, 0]
-    for cls in (S3File, GCSFile, AzureBlobFile):
+    for cls in (S3File, GCSFile, _ListedGCSFile, AzureBlobFile):
 
         def fetch_range(self, *args, _orig=cls._fetch_range, **kwargs):
             data = _orig(self, *args, **kwargs)

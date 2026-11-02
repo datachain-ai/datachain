@@ -18,7 +18,7 @@ from gcsfs.extended_gcsfs import BucketType
 from datachain.asyn import get_loop
 from datachain.cache import Cache
 from datachain.client import Client
-from datachain.client.gcs import GCSClient
+from datachain.client.gcs import GCSClient, _ListedGCSFile
 from datachain.client.writeconfig import WriteConfig
 from datachain.lib.file import File
 
@@ -47,7 +47,7 @@ def test_tar_member_versioned_gcs_read_ahead(
 
     monkeypatch.setattr(fs, "open", open_readahead)
     member = small_tar_member(client, version="123")
-    requests = tar_member_range_requests(GCSFile)
+    requests = tar_member_range_requests(_ListedGCSFile)
 
     with member.open(block_size=block_size) as stream:
         assert stream.read() == data
@@ -113,6 +113,7 @@ def _make_client() -> GCSClient:
     client._fs = MagicMock()
     client._fs.storage_options = {}  # non-anon
     client._fs.sign.return_value = _FAKE_SAS
+    client._fs._lookup_bucket_type = AsyncMock(return_value=BucketType.NON_HIERARCHICAL)
     client._fs._info = AsyncMock(return_value=_INFO)
     client._fs._get_file = AsyncMock(return_value=None)
     return client
@@ -333,7 +334,7 @@ def gcs_stub_url():
         return web.Response(
             status=206 if rng else 200,
             body=_GZIPPED[start : end + 1],
-            headers={"Content-Encoding": "gzip"},
+            headers={"Content-Encoding": "gzip", "ETag": "e1"},
         )
 
     app = web.Application()
@@ -421,3 +422,99 @@ def test_listing_asks_for_every_field_it_reads(version_aware):
     fields = client._fs._call.call_args.kwargs["fields"]
     assert fields == GCSClient.LIST_FIELDS
     assert item.read <= set(fields.removeprefix("items(").split(")")[0].split(","))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "etag",
+    ["", "abc123", "stale-etag"],
+)
+async def test_download_listed_generation_ignores_metadata_etag(tmp_path, etag):
+    client = _make_client()
+    client._fs.consistency = "size"
+    client._fs._call = AsyncMock(return_value=({"ETag": '"abc123"'}, b"woof"))
+    file = File(source="gs://foo", path="listed", size=4, etag=etag, version=_VER)
+    callback = MagicMock()
+    path = tmp_path / "tmp" / "file"
+    await client._download_file(file, str(path), callback)
+    assert path.read_bytes() == b"woof"
+    client._fs._info.assert_not_called()
+    client._fs.url.assert_called_once_with(f"gs://foo/listed#{_VER}")
+    callback.set_size.assert_called_once_with(4)
+    callback.relative_update.assert_called_once_with(4)
+
+
+@pytest.mark.asyncio
+async def test_download_pinned_generation_rejects_changed_size(tmp_path):
+    client = _make_client()
+    client._fs.consistency = "none"
+    client._fs._call = AsyncMock(return_value=({"ETag": '"changed"'}, b"longer"))
+    file = File(source="gs://foo", path="listed", size=4, etag="old", version=_VER)
+    path = tmp_path / "file"
+
+    with pytest.raises(FileNotFoundError, match="size was 4, now 6"):
+        await client._download_file(file, str(path), MagicMock())
+    assert not path.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("consistency", ["size", "md5"])
+async def test_download_listed_file_rejects_corrupt_data(tmp_path, consistency):
+    from gcsfs.retry import ChecksumError
+
+    client = _make_client()
+    client._fs.consistency = consistency
+    client._fs._call = AsyncMock(
+        return_value=({"ETag": "abc123", "X-Goog-Hash": "md5=invalid"}, b"woof")
+    )
+    file = File(source="gs://foo", path="listed", size=5, etag="abc123", version=_VER)
+    path = tmp_path / "file"
+    with pytest.raises((OSError, ChecksumError)):
+        await client._download_file(file, str(path), MagicMock())
+    assert not path.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [-1, 5 * 1024 * 1024 + 1])
+async def test_download_without_small_file_metadata_uses_get_file(tmp_path, size):
+    client = _make_client()
+    file = File(source="gs://foo", path="listed", size=size, etag="abc123")
+    await client._download_file(file, str(tmp_path / "file"), DEFAULT_CALLBACK)
+    client._fs._get_file.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "version,bucket_type",
+    [("", BucketType.NON_HIERARCHICAL), (_VER, BucketType.ZONAL_HIERARCHICAL)],
+)
+async def test_download_without_immutable_generation_uses_get_file(
+    tmp_path, version, bucket_type
+):
+    client = _make_client()
+    client._fs._lookup_bucket_type.return_value = bucket_type
+    file = File(
+        source="gs://foo", path="listed", size=4, etag="abc123", version=version
+    )
+    await client._download_file(file, str(tmp_path / "file"), DEFAULT_CALLBACK)
+    client._fs._get_file.assert_awaited_once()
+
+
+@pytest.mark.parametrize("start,end", [(0, 4), (None, None), (4, 4)])
+def test_listed_generation_range_requests(start, end, mocker):
+    client = GCSClient("foo", {"token": "anon"}, None)
+    file = File(source="gs://foo", path="listed", size=4, version=_VER)
+    request = mocker.patch.object(
+        client.fs, "_call", new=AsyncMock(return_value=({}, b"woof"))
+    )
+    with _ListedGCSFile(client.fs, file, f"foo/listed#{_VER}", block_size=0) as stream:
+        assert stream._fetch_range(start, end) == (
+            b"" if start == end == 4 else b"woof"
+        )
+    if start == end == 4:
+        request.assert_not_called()
+    else:
+        headers = {} if start is None else {"Range": "bytes=0-3"}
+        request.assert_awaited_once_with(
+            "GET", client.fs.url(f"foo/listed#{_VER}"), headers=headers
+        )

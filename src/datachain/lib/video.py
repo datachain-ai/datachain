@@ -125,7 +125,7 @@ def video_info(file: File | VideoFile, video_stream_index: int = 0) -> Video:
     _validate_video_stream_index(video_stream_index)
 
     try:
-        with file.open(block_size=PARTIAL_READ_BLOCK_SIZE) as f:
+        with file.open(block_size=PARTIAL_READ_BLOCK_SIZE, cache=False) as f:
             with av.open(f) as container:
                 video_stream = _video_stream(
                     container,

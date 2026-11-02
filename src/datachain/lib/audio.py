@@ -30,7 +30,7 @@ def audio_info(file: "File | AudioFile") -> "Audio":
     file = file.as_audio_file()
 
     try:
-        with file.open(block_size=PARTIAL_READ_BLOCK_SIZE) as f:
+        with file.open(block_size=PARTIAL_READ_BLOCK_SIZE, cache=False) as f:
             info = sf.info(f)
 
             sample_rate = int(info.samplerate)
