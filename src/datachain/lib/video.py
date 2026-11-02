@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from math import atan2, ceil, degrees, floor, hypot
+from math import ceil, floor, isfinite
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
@@ -31,7 +31,6 @@ if TYPE_CHECKING:
 try:
     import av
     import ffmpeg
-    from av.sidedata.sidedata import Type as _SideDataType
 except ImportError as exc:
     raise ImportError(
         "Missing dependencies for processing video.\n"
@@ -39,11 +38,7 @@ except ImportError as exc:
         "  pip install 'datachain[video]'\n"
     ) from exc
 
-_DISPLAYMATRIX = _SideDataType.DISPLAYMATRIX
-
 VIDEO_TIME_BASE = 1_000_000
-# DISPLAYMATRIX rotation entries are 16.16 fixed point (FFmpeg libavutil/display.h).
-DISPLAY_MATRIX_FIXED_POINT = 1 << 16
 FFMPEG_FRAGMENT_TIMEOUT_MIN = 60.0
 FFMPEG_FRAGMENT_TIMEOUT_FACTOR = 10.0
 FFMPEG_FRAGMENT_EXECUTABLE = "ffmpeg"
@@ -56,36 +51,8 @@ class _SeekLandedAfterStartError(Exception):
 
 
 def _display_matrix_rotation(frame) -> int:
-    """
-    Clockwise display rotation (0/90/180/270) from a frame's DISPLAYMATRIX,
-    matching what FFmpeg/OpenCV apply on playback (PyAV does not autorotate).
-
-    Only right-angle rotation is applied: scale is normalized out and any
-    flipped or off-axis matrix is snapped to the nearest 0/90/180/270, as
-    OpenCV does. Returns 0 when there is no rotation metadata.
-    """
-    try:
-        side_data = frame.side_data.get(_DISPLAYMATRIX)
-        if side_data is None:
-            return 0
-        matrix = np.frombuffer(bytes(side_data), dtype=np.int32)  # native int32
-    except Exception:  # noqa: BLE001  # malformed side data -> no rotation
-        return 0
-    if matrix.size < 9:
-        return 0
-
-    # Rotation angle, normalizing out scale (FFmpeg av_display_rotation_get).
-    a = matrix[0] / DISPLAY_MATRIX_FIXED_POINT
-    b = matrix[1] / DISPLAY_MATRIX_FIXED_POINT
-    c = matrix[3] / DISPLAY_MATRIX_FIXED_POINT
-    d = matrix[4] / DISPLAY_MATRIX_FIXED_POINT
-    scale_x = hypot(a, c)
-    scale_y = hypot(b, d)
-    if scale_x == 0 or scale_y == 0:
-        return 0
-
-    theta = degrees(atan2(b / scale_y, a / scale_x))
-    return round(theta / 90) % 4 * 90
+    """Clockwise right-angle rotation, without creating PyAV side-data cycles."""
+    return round(-frame.rotation / 90) % 4 * 90
 
 
 def _frame_to_ndarray(frame) -> ndarray:
@@ -299,6 +266,7 @@ def _video_frames_from_decoded(
     step: int,
     fps: float,
     video_stream_index: int,
+    start_time: float,
 ) -> Iterator[VideoFrame]:
     for frame_index, frame in decoded_frames:
         if frame_index >= end:
@@ -310,7 +278,7 @@ def _video_frames_from_decoded(
             video=video,
             frame=frame_index,
             video_stream_index=video_stream_index,
-            timestamp=_frame_timestamp(frame, frame_index, fps),
+            timestamp=_frame_timestamp(frame, frame_index, fps, start_time),
         )
         video_frame._decoded = frame
         yield video_frame
@@ -376,7 +344,7 @@ def validate_frame_range(
     return start, end, step
 
 
-def _frame_timestamp(frame, frame_index: int, fps: float) -> float:
+def _frame_timestamp(frame, frame_index: int, fps: float, start_time: float) -> float:
     if frame.pts is not None and frame.time_base is not None:
         return float(frame.pts * frame.time_base)
 
@@ -384,7 +352,7 @@ def _frame_timestamp(frame, frame_index: int, fps: float) -> float:
         return float(frame.time)
 
     if fps > 0:
-        return frame_index / fps
+        return start_time + frame_index / fps
 
     raise ValueError("unable to determine frame timestamp")
 
@@ -394,6 +362,46 @@ def _set_decode_threads(stream: Any, *, frame_threads: bool = True) -> None:
     threads = min(worker_threads() or usable_cpu_count(), 16)
     stream.thread_type = "AUTO" if frame_threads and threads > 1 else "SLICE"
     stream.thread_count = threads
+
+
+def sample_video_frames(
+    video: VideoFile, fps: float, video_stream_index: int = 0
+) -> Iterator[VideoFrame]:
+    if not isfinite(fps) or fps <= 0:
+        raise ValueError("fps must be finite and positive")
+    _validate_video_stream_index(video_stream_index)
+    sample_index = 0
+
+    try:
+        with video.open() as f, av.open(f) as container:
+            stream = _video_stream(
+                container,
+                video_stream_index,
+                video.source,
+                video.path,
+                "unable to sample video frames",
+            )
+            _set_decode_threads(stream)
+            stream_fps = _video_fps(stream)
+            start = _stream_start_time(stream)
+            for frame_index, frame in enumerate(container.decode(stream)):
+                timestamp = _frame_timestamp(frame, frame_index, stream_fps, start)
+                while (timestamp - start) * fps + FRAME_INDEX_EPSILON >= sample_index:
+                    result = VideoFrame(
+                        video=video,
+                        frame=frame_index,
+                        video_stream_index=video_stream_index,
+                        timestamp=float(timestamp),
+                    )
+                    result._decoded = frame
+                    yield result
+                    sample_index += 1
+    except FileError:
+        raise
+    except Exception as exc:
+        raise FileError(
+            "unable to sample video frames", video.source, video.path
+        ) from exc
 
 
 def video_frames(
@@ -432,6 +440,7 @@ def video_frames(
                         step=step,
                         fps=fps,
                         video_stream_index=video_stream_index,
+                        start_time=_stream_start_time(video_stream),
                     )
                 except _SeekLandedAfterStartError:
                     if not seeked:
@@ -452,6 +461,7 @@ def video_frames(
                         step=step,
                         fps=fps,
                         video_stream_index=video_stream_index,
+                        start_time=_stream_start_time(video_stream),
                     )
     except FileError:
         raise

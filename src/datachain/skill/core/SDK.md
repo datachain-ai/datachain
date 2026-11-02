@@ -579,7 +579,7 @@ class Detection(BaseModel):
 | `dc.File` | (default) | `bytes` | `.read_text()`, `.open()`, `.ensure_cached()` |
 | `dc.TextFile` | `"text"` | `str` | `.read_text()` |
 | `dc.ImageFile` | `"image"` | `PIL.Image` | `.get_info()` → `dc.Image` |
-| `dc.VideoFile` | `"video"` | — | `.get_frame(frame, ...)`, `.get_frames(step=N, ...)`, `.get_fragments(duration)`, `.get_info()` → `dc.Video` |
+| `dc.VideoFile` | `"video"` | — | `.get_frame(frame, ...)`, `.get_frames(step=N, ...)`, `.sample_frames(fps=1)`, `.get_fragments(duration)`, `.get_info()` → `dc.Video` |
 | `dc.AudioFile` | `"audio"` | — | `.get_fragments(duration)`, `.get_info()` → `dc.Audio` |
 
 `dc.Image`, `dc.Video`, `dc.Audio` are media metadata models in the `dc` namespace — NOT in `datachain.model`.
