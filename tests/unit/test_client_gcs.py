@@ -18,7 +18,7 @@ from gcsfs.extended_gcsfs import BucketType
 from datachain.asyn import get_loop
 from datachain.cache import Cache
 from datachain.client import Client
-from datachain.client.gcs import GCSClient, _ListedGCSFile
+from datachain.client.gcs import SMALL_FILE_SIZE, GCSClient, _ListedGCSFile
 from datachain.client.writeconfig import WriteConfig
 from datachain.lib.file import File
 
@@ -400,7 +400,11 @@ def test_cached_read_of_gzip_encoded_object_keeps_stored_bytes(stub_client):
 
 
 @pytest.mark.parametrize("offset", [0, 10], ids=["from-start", "seek"])
-def test_uncached_read_of_gzip_encoded_object_keeps_stored_bytes(stub_client, offset):
+def test_uncached_read_of_gzip_encoded_object_keeps_stored_bytes(
+    stub_client, offset, mocker
+):
+    for name in ("info", "_info"):
+        mocker.patch.object(stub_client.fs, name, side_effect=AssertionError("HEAD"))
     with stub_client.open_object(_STUB_FILE, use_cache=False, block_size=16) as f:
         f.seek(offset)
         data = f.read()
@@ -425,23 +429,22 @@ def test_listing_asks_for_every_field_it_reads(version_aware):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "etag",
-    ["", "abc123", "stale-etag"],
-)
-async def test_download_listed_generation_ignores_metadata_etag(tmp_path, etag):
+@pytest.mark.parametrize("etag", ["", "abc123", "stale-etag"])
+@pytest.mark.parametrize("size", [4, SMALL_FILE_SIZE])
+async def test_download_listed_generation_ignores_metadata_etag(tmp_path, etag, size):
     client = _make_client()
     client._fs.consistency = "size"
-    client._fs._call = AsyncMock(return_value=({"ETag": '"abc123"'}, b"woof"))
-    file = File(source="gs://foo", path="listed", size=4, etag=etag, version=_VER)
+    data = b"w" * size
+    client._fs._call = AsyncMock(return_value=({"ETag": '"abc123"'}, data))
+    file = File(source="gs://foo", path="listed", size=size, etag=etag, version=_VER)
     callback = MagicMock()
     path = tmp_path / "tmp" / "file"
     await client._download_file(file, str(path), callback)
-    assert path.read_bytes() == b"woof"
+    assert path.read_bytes() == data
     client._fs._info.assert_not_called()
     client._fs.url.assert_called_once_with(f"gs://foo/listed#{_VER}")
-    callback.set_size.assert_called_once_with(4)
-    callback.relative_update.assert_called_once_with(4)
+    callback.set_size.assert_called_once_with(size)
+    callback.relative_update.assert_called_once_with(size)
 
 
 @pytest.mark.asyncio
@@ -475,10 +478,12 @@ async def test_download_listed_file_rejects_corrupt_data(tmp_path, consistency):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("size", [-1, 5 * 1024 * 1024 + 1])
+@pytest.mark.parametrize("size", [-1, SMALL_FILE_SIZE + 1])
 async def test_download_without_small_file_metadata_uses_get_file(tmp_path, size):
     client = _make_client()
-    file = File(source="gs://foo", path="listed", size=size, etag="abc123")
+    file = File(
+        source="gs://foo", path="listed", size=size, etag="abc123", version=_VER
+    )
     await client._download_file(file, str(tmp_path / "file"), DEFAULT_CALLBACK)
     client._fs._get_file.assert_awaited_once()
 
@@ -498,23 +503,3 @@ async def test_download_without_immutable_generation_uses_get_file(
     )
     await client._download_file(file, str(tmp_path / "file"), DEFAULT_CALLBACK)
     client._fs._get_file.assert_awaited_once()
-
-
-@pytest.mark.parametrize("start,end", [(0, 4), (None, None), (4, 4)])
-def test_listed_generation_range_requests(start, end, mocker):
-    client = GCSClient("foo", {"token": "anon"}, None)
-    file = File(source="gs://foo", path="listed", size=4, version=_VER)
-    request = mocker.patch.object(
-        client.fs, "_call", new=AsyncMock(return_value=({}, b"woof"))
-    )
-    with _ListedGCSFile(client.fs, file, f"foo/listed#{_VER}", block_size=0) as stream:
-        assert stream._fetch_range(start, end) == (
-            b"" if start == end == 4 else b"woof"
-        )
-    if start == end == 4:
-        request.assert_not_called()
-    else:
-        headers = {} if start is None else {"Range": "bytes=0-3"}
-        request.assert_awaited_once_with(
-            "GET", client.fs.url(f"foo/listed#{_VER}"), headers=headers
-        )

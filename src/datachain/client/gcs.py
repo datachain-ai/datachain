@@ -41,18 +41,6 @@ class _ListedGCSFile(GCSFile):
             consistency=fs.consistency,
         )
 
-    def _fetch_range(self, start=None, end=None):
-        return sync(self.fs.loop, self._fetch_listed_range, start, end)
-
-    async def _fetch_listed_range(self, start, end):
-        if start is not None and end is not None and start >= end:
-            return b""
-        headers = {}
-        if start is not None or end is not None:
-            headers["Range"] = await self.fs._process_limits(self.path, start, end)
-        _, data = await self.fs._call("GET", self.fs.url(self.path), headers=headers)
-        return data
-
 
 class GCSClient(RangeListedClient):
     FS_CLASS = GCSFileSystem

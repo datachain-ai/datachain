@@ -703,7 +703,7 @@ class File(DataModel):
     def read_bytes(self, length: int = -1):
         """Returns file contents as bytes."""
         block_size = min(length, PARTIAL_READ_BLOCK_SIZE) if length > 0 else None
-        with self.open(mode="rb", block_size=block_size) as stream:
+        with self.open(mode="rb", block_size=block_size, cache=length <= 0) as stream:
             return stream.read(length)
 
     def read_text(self, **open_kwargs):

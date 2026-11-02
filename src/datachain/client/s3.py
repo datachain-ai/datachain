@@ -147,27 +147,20 @@ class _NoVersionResolveFS:
 
 class _ListedS3File(S3File):
     def __init__(self, fs, file: File, block_size: int | None):
-        # The listing provides size, version and etag; S3File would HEAD for them.
+        path = file.get_fs_path()
+        self._details = {"name": path, "size": file.size, "type": "file"}
+        if file.etag and file.version in ("", "null"):
+            self._details["ETag"] = f'"{file.etag}"'
         super().__init__(
             _NoVersionResolveFS(fs),
-            file.get_fs_path(),
+            path,
             mode="rb",
             block_size=fs.default_block_size if block_size is None else block_size,
             cache_type=fs.default_cache_type,
-            size=file.size,
+            version_id=file.version or None,
             requester_pays=bool(fs.req_kw),  # as S3FileSystem._open does
         )
         self.fs = self.s3 = fs
-        self.version_id = file.version or None
-        self._details = {"name": file.get_fs_path(), "size": file.size, "type": "file"}
-        if file.etag and (not file.version or file.version == "null"):
-            etag = f'"{file.etag}"'
-            self._details["ETag"] = etag
-            # as S3File does: endpoints without If-Match check the etag locally
-            if not fs.local_expiry_check:
-                for kw in ("req_kw", "read_kw"):  # s3fs >= 2026.9 reads with read_kw
-                    if isinstance(getattr(self, kw, None), dict):
-                        setattr(self, kw, {**getattr(self, kw), "IfMatch": etag})
 
     def _fetch_range(self, start, end):
         try:

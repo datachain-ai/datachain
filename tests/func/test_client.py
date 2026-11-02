@@ -1094,19 +1094,18 @@ def test_get_file_versioned_special_char_in_key(
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
+@pytest.mark.parametrize("tree", [{"pinned": "woof"}], indirect=True)
 @pytest.mark.parametrize("block_size", [None, 0, 2])
-def test_open_object_reuses_listing_metadata(client, mocker, block_size):
-    file = client.get_file_info("dogs/dog1")
-    info = mocker.patch.object(client.fs, "info", side_effect=AssertionError("HEAD"))
-    async_info = mocker.patch.object(
-        client.fs, "_info", side_effect=AssertionError("HEAD")
-    )
+def test_open_object_reads_listed_version_without_head(client, mocker, block_size):
+    file = client.get_file_info("pinned")
+    assert file.version
+    client.fs.pipe_file(file.get_fs_path(), b"WOOF")
+    for name in ("info", "_info"):
+        mocker.patch.object(client.fs, name, side_effect=AssertionError("HEAD"))
     with client.open_object(file, use_cache=False, block_size=block_size) as stream:
         assert stream.read(2) == b"wo"
         stream.seek(0)
         assert stream.read() == b"woof"
-    info.assert_not_called()
-    async_info.assert_not_called()
 
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
@@ -1115,39 +1114,19 @@ def test_open_object_rejects_changed_unversioned_object(client):
     file = client.get_file_info("changed")
     file.version = ""
     client.fs.pipe_file(file.get_fs_path(), b"WOOF")
-    with pytest.raises(OSError):
+    with pytest.raises(FileNotFoundError, match="changed on the source"):
         with client.open_object(file, use_cache=False, block_size=2) as stream:
             stream.read()
 
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
-@pytest.mark.parametrize("version_aware", [True], indirect=True)
-@pytest.mark.parametrize("tree", [{"pinned": "woof"}], indirect=True)
-def test_open_object_pins_listed_version_after_overwrite(client, mocker):
-    file = client.get_file_info("pinned")
-    assert file.version
-    client.fs.pipe_file(file.get_fs_path(), b"WOOF")
-    mocker.patch.object(client.fs, "info", side_effect=AssertionError("HEAD"))
-    with client.open_object(file, use_cache=False, block_size=2) as stream:
-        assert stream.read() == b"woof"
-
-
-@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
-def test_open_object_without_identity_uses_head(client, mocker):
+@pytest.mark.parametrize(
+    "unknown", [{"etag": "", "version": ""}, {"size": 0}, {"size": -1}]
+)
+def test_open_object_without_listing_metadata_uses_head(client, mocker, unknown):
     file = client.get_file_info("dogs/dog1")
-    file.etag = ""
-    file.version = ""
-    info = mocker.spy(client.fs, "info")
-    with client.open_object(file, use_cache=False) as stream:
-        assert stream.read() == b"woof"
-    assert info.called
-
-
-@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
-@pytest.mark.parametrize("size", [0, -1])
-def test_open_object_without_size_uses_head(client, mocker, size):
-    file = client.get_file_info("dogs/dog1")
-    file.size = size
+    for name, value in unknown.items():
+        setattr(file, name, value)
     info = mocker.spy(client.fs, "info")
     with client.open_object(file, use_cache=False) as stream:
         assert stream.read() == b"woof"
@@ -1261,6 +1240,9 @@ def test_gcs_unpinned_read_reuses_open_metadata(cloud_test_catalog_upload, mocke
     client = ctc.catalog.get_client(ctc.src_uri)
     file = client.upload(b"woof", "unpinned-read")
     file.version = ""
+    # Bucket discovery is cached independently of object metadata.
+    with client.fs.open(file.get_fs_path()) as stream:
+        assert stream.read() == b"woof"
     calls = mocker.spy(client.fs, "_call")
     client.fs.invalidate_cache()
     with client.fs.open(file.get_fs_path()) as stream:
