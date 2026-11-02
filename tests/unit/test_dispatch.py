@@ -190,3 +190,11 @@ def test_batched_udf_queues_independent_tasks(dispatcher, mocker):
         if call.args[0] != STOP_SIGNAL
     ]
     assert queued == [(batch,) for batch in batches]
+
+
+@pytest.mark.parametrize("estimate", [0, 1000])
+def test_guided_tasks_keep_query_count_bounded_with_an_underestimate(estimate):
+    tasks = list(guided_tasks(range(100_000), estimate, 8, 10_000))
+    assert [item for task in tasks for item in task] == list(range(100_000))
+    assert len(tasks) < 1000
+    assert max(map(len, tasks)) <= 10_000

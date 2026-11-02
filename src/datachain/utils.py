@@ -565,7 +565,7 @@ def worker_thread_limits(n_workers: int) -> Iterator[None]:
 
 
 def worker_threads() -> int | None:
-    """CPU threads each parallel UDF worker may use; None outside such workers."""
+    """CPU thread budget from DATACHAIN_WORKER_THREADS; None if unset or invalid."""
     with suppress(KeyError, ValueError):
         return max(1, int(os.environ[WORKER_THREADS_ENV]))
     return None

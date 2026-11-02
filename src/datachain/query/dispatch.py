@@ -62,19 +62,21 @@ def guided_tasks(
 ) -> Iterator[tuple[Any, ...]]:
     """Split items into tasks that shrink with the work left (guided scheduling).
 
-    Early tasks are large to amortize dispatch; the last ones hold a single item,
-    so slow rows (e.g. videos) don't leave one worker running alone at the end.
+    Early tasks are large to amortize dispatch. With an accurate total, the last
+    tasks hold single items so slow rows do not leave one worker running alone.
     """
     if n_workers < 1 or max_size < 1:
         raise ValueError("n_workers and max_size must be positive")
     it = iter(items)
-    remaining = total
+    remaining, done = total, 0
     while True:
-        size = max(1, min(max_size, -(-remaining // (2 * n_workers))))
+        left = remaining if remaining > 0 else done // 2
+        size = max(1, min(max_size, -(-left // (2 * n_workers))))
         task = tuple(islice(it, size))
         if not task:
             return
         remaining -= len(task)
+        done += len(task)
         yield task
 
 
