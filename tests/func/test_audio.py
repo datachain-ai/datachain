@@ -2,11 +2,12 @@ import io
 from collections.abc import Iterator
 
 import numpy as np
+import pytest
 import soundfile as sf
 
 import datachain as dc
 from datachain.lib.audio import audio_to_np
-from datachain.lib.file import Audio, AudioFile, AudioFragment
+from datachain.lib.file import Audio, AudioFile, AudioFragment, FileError
 
 
 def generate_test_wav(
@@ -114,3 +115,22 @@ def test_audio_datachain_workflow(test_session, tmp_path):
     assert len(original_np) == len(saved_np)
     # Allow some tolerance for audio processing differences
     assert np.allclose(original_np, saved_np, atol=1e-3)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize("change", ["delete", "overwrite"])
+def test_audio_metadata_preserves_source_error(cloud_test_catalog_upload, change):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+    data = generate_test_wav()
+    listed = client.upload(data, "source.wav")
+    audio = AudioFile(**listed.model_dump())
+    audio._set_stream(ctc.catalog, caching_enabled=False)
+    if change == "delete":
+        client.fs.rm(listed.get_fs_path())
+    else:
+        client.upload(data[:-1] + b"1", "source.wav")
+    with pytest.raises(FileError) as error:
+        audio.get_info()
+    assert isinstance(error.value.__cause__, FileNotFoundError)

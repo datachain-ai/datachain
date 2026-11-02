@@ -481,6 +481,7 @@ async def test_download_listed_file_rejects_corrupt_data(tmp_path, consistency):
 @pytest.mark.parametrize("size", [-1, SMALL_FILE_SIZE + 1])
 async def test_download_without_small_file_metadata_uses_get_file(tmp_path, size):
     client = _make_client()
+    client._fs._info.return_value = {**_INFO, "size": size}
     file = File(
         source="gs://foo", path="listed", size=size, etag="abc123", version=_VER
     )
@@ -498,6 +499,7 @@ async def test_download_without_immutable_generation_uses_get_file(
 ):
     client = _make_client()
     client._fs._lookup_bucket_type.return_value = bucket_type
+    client._fs._info.return_value = {**_INFO, "size": 4}
     file = File(
         source="gs://foo", path="listed", size=4, etag="abc123", version=version
     )

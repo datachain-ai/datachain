@@ -105,7 +105,7 @@ def test_read_bytes_preserves_full_read_cache_policy(
 
     def read(file: dc.File) -> bytes:
         value = file.read_bytes(length)
-        assert file._catalog.cache.contains(file) == (cache and length <= 0)
+        assert file._catalog.cache.contains(file) == (cache and length < 0)
         return value
 
     result = (

@@ -35,10 +35,8 @@ class _ListedGCSFile(GCSFile):
             fs,
             path,
             mode="rb",
-            size=file.size,
             block_size=fs.default_block_size if block_size is None else block_size,
-            cache_type="readahead",
-            consistency=fs.consistency,
+            cache_type="readahead",  # bound reads instead of background prefetch
         )
 
 
@@ -229,6 +227,7 @@ class GCSClient(RangeListedClient):
     async def _can_read_listed(self, file: File) -> bool:
         if file.size < 0 or not file.version:
             return False
+        # The non-experimental gcsfs backend has no bucket-layout lookup.
         lookup = getattr(self.fs, "_lookup_bucket_type", None)
         return (
             lookup is None or await lookup(self.name) != BucketType.ZONAL_HIERARCHICAL
@@ -239,13 +238,11 @@ class GCSClient(RangeListedClient):
 
     async def _put_in_cache(self, file: File, *, callback: Callback = None) -> None:
         assert not file.location
-        if await self._can_download_listed(file):
-            await self.cache.download(file, self, callback=callback)
-        else:
-            await super()._put_in_cache(file, callback=callback)
+        await self.cache.download(file, self, callback=callback)
 
     async def _download_file(self, file: File, path: str, callback: Callback):
         if not await self._can_download_listed(file):
+            await self._check_unchanged(file)
             return await super()._download_file(file, path, callback)
         remote = self._path_with_generation(file.get_fs_path(), file.version)
         headers, data = await self.fs._call("GET", self.fs.url(remote))

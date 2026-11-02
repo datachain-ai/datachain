@@ -1142,10 +1142,12 @@ def test_gcs_cache_download_reuses_listing_metadata(
     ctc = cloud_test_catalog_upload
     client = ctc.catalog.get_client(ctc.src_uri)
     file = client.upload(contents, "listed")
+    eligibility = mocker.spy(client, "_can_download_listed")
     info = mocker.patch.object(client.fs, "_info", side_effect=AssertionError("HEAD"))
     sync(get_loop(), client._download, file, callback=DEFAULT_CALLBACK)
     assert Path(ctc.catalog.cache.get_path(file)).read_bytes() == contents
     info.assert_not_called()
+    eligibility.assert_awaited_once()
 
 
 @pytest.mark.parametrize("cloud_type", ["gs"], indirect=True)

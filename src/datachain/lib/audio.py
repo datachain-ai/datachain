@@ -31,6 +31,9 @@ def audio_info(file: "File | AudioFile") -> "Audio":
 
     try:
         with file.open(block_size=PARTIAL_READ_BLOCK_SIZE, cache=False) as f:
+            # libsndfile swallows exceptions raised inside its read callback.
+            f.read(1)
+            f.seek(0)
             info = sf.info(f)
 
             sample_rate = int(info.samplerate)
