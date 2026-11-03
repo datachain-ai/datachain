@@ -738,9 +738,11 @@ def test_garbage_collect_temp_tables(cloud_test_catalog, from_cli, capsys):
 
 
 @pytest.fixture
-def gcs_fake_credentials(monkeypatch):
+def gcs_fake_credentials(cloud_test_catalog, monkeypatch):
     # For signed URL tests to work we need to setup some fake credentials
     # that looks like real ones
+    # Create the cached filesystem first, so gcsfs doesn't use them for requests.
+    _ = cloud_test_catalog.catalog.get_client(cloud_test_catalog.src_uri).fs
     monkeypatch.setenv(
         "GOOGLE_APPLICATION_CREDENTIALS",
         os.path.dirname(__file__) + "/fake-service-account-credentials.json",
