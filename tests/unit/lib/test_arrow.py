@@ -211,6 +211,31 @@ def test_read_parquet_multiple_struct_list_columns_roundtrip(test_session, tmp_p
     assert [order.amount for order in orders] == [5]
 
 
+def test_read_parquet_map_columns_as_dicts(test_session, tmp_path):
+    counts = pa.map_(pa.string(), pa.int64())
+    table = pa.table(
+        {
+            "counts": pa.array([[("a", 1), ("b", 2)]], counts),
+            "event": pa.array([{"tags": [("k", 3)]}], pa.struct([("tags", counts)])),
+            "history": pa.array([[[("c", 4)]]], pa.list_(counts)),
+        }
+    )
+    path = tmp_path / "maps.parquet"
+    pq.write_table(table, path)
+
+    chain = dc.read_parquet(path.as_posix(), source=True, session=test_session)
+
+    ((counts, tags, history, source),) = chain.to_list(
+        "counts", "event.tags", "history", "source"
+    )
+    assert (counts, tags, history) == ({"a": 1, "b": 2}, {"k": 3}, [{"c": 4}])
+    assert source.read() == {
+        "counts": {"a": 1, "b": 2},
+        "event": {"tags": {"k": 3}},
+        "history": [{"c": 4}],
+    }
+
+
 def test_arrow_type_error():
     col_type = pa.union(
         [pa.field("a", pa.binary(10)), pa.field("b", pa.string())],

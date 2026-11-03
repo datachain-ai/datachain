@@ -208,7 +208,8 @@ class ArrowGenerator(Generator):
 
         def iter_records():
             for record_batch in ds.to_batches(**kw):
-                yield from record_batch.to_pylist()
+                # Maps are read as dicts. Duplicate keys raise an error.
+                yield from record_batch.to_pylist(maps_as_pydicts="strict")
 
         it = islice(iter_records(), self.nrows)
         with tqdm(

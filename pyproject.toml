@@ -27,7 +27,7 @@ dependencies = [
   "pandas>=2.0.0",
   "ujson>=5.10.0",
   "packaging",
-  "pyarrow",
+  "pyarrow>=20",
   "typing-extensions",
   "python-dateutil>=2",
   "dateparser>=1.3.0",
