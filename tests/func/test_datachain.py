@@ -89,6 +89,58 @@ def test_read_storage_glob(cloud_test_catalog):
     assert chain.count() == 3
 
 
+@pytest.mark.parametrize("path", ["cats", "cats/*", "cats/cat1"])
+@pytest.mark.parametrize("file_type", ["binary", "text"])
+@pytest.mark.parametrize("reuse_listing", [False, True])
+def test_read_storage_custom_column(cloud_test_catalog, path, file_type, reuse_listing):
+    ctc = cloud_test_catalog
+    uri = f"{ctc.src_uri}/{path}"
+    if reuse_listing:
+        dc.read_storage(uri, session=ctc.session).exec()
+
+    chain = dc.read_storage(uri, session=ctc.session, column="document", type=file_type)
+    files = chain.to_values("document")
+    expected = dc.read_storage(uri, session=ctc.session, type=file_type).to_values(
+        "file"
+    )
+
+    assert chain.schema == {"document": dc.TextFile if file_type == "text" else File}
+    assert len(files) == (1 if path == "cats/cat1" else 2)
+    assert sorted(files, key=lambda f: f.path) == sorted(expected, key=lambda f: f.path)
+
+
+def test_read_storage_custom_column_multiple_uris(cloud_test_catalog):
+    ctc = cloud_test_catalog
+    uris = [f"{ctc.src_uri}/cats/*", f"{ctc.src_uri}/description"]
+
+    chain = dc.read_storage(uris, session=ctc.session, column="document")
+    files = chain.to_values("document")
+    expected = dc.read_storage(uris, session=ctc.session).to_values("file")
+
+    assert chain.schema == {"document": File}
+    assert len(files) == 3
+    assert sorted(files, key=lambda f: f.path) == sorted(expected, key=lambda f: f.path)
+
+
+def test_read_storage_custom_column_update(test_session, tmp_dir):
+    (tmp_dir / "a.txt").write_text("a")
+    assert dc.read_storage(tmp_dir, session=test_session, column="document").to_values(
+        "document.path"
+    ) == ["a.txt"]
+    (tmp_dir / "b.txt").write_text("b")
+
+    chain = dc.read_storage(
+        tmp_dir, session=test_session, column="document", update=True
+    )
+    files = chain.order_by("document.path").to_values("document")
+
+    assert [f.path for f in files] == ["a.txt", "b.txt"]
+    assert [f.read() for f in files] == [b"a", b"b"]
+    assert dc.read_storage(tmp_dir, session=test_session).order_by(
+        "file.path"
+    ).to_values("file.path") == ["a.txt", "b.txt"]
+
+
 def test_read_storage_glob_with_dir_component(cloud_test_catalog):
     ctc = cloud_test_catalog
     chain = dc.read_storage(f"{ctc.src_uri}/dogs/oth*/*", session=ctc.session)

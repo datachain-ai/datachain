@@ -16,6 +16,7 @@ from datachain.lib.dc.storage_pattern import (
 from datachain.lib.file import File, FileRow, FileType, get_file_type
 from datachain.lib.storage_config import client_configs, session_for
 from datachain.query import Session
+from datachain.query.schema import C
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -208,7 +209,6 @@ def _read_storage(
             client_config,
             prepared_listings,
             file_type=file_type,
-            column=column,
             update=update,
             versions=versions,
             settings=settings,
@@ -228,7 +228,7 @@ def _read_storage(
 
         chains.append(
             listing_lib.select_paths(
-                dc, path_filter(list_path, glob_pattern, recursive), column
+                dc, path_filter(list_path, glob_pattern, recursive)
             )
         )
 
@@ -246,12 +246,12 @@ def _read_storage(
             settings=settings,
             in_memory=in_memory,
         )
-        file_chain.signals_schema = file_chain.signals_schema.mutate(
-            {f"{column}": file_type}
-        )
         storage_chain = storage_chain.union(file_chain) if storage_chain else file_chain
 
     assert storage_chain is not None
+
+    if column != "file":
+        storage_chain = storage_chain.mutate(**{column: C("file")})
 
     return storage_chain
 
