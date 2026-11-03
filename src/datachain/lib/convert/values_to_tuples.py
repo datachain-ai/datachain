@@ -1,5 +1,6 @@
 import itertools
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any
 
 from datachain.lib.data_model import (
@@ -34,6 +35,11 @@ def _find_first_non_none(sequence: Sequence[Any]) -> Any | None:
         return None
 
 
+def _value_type(value: Any) -> type:
+    # pandas.Timestamp subclasses datetime and is stored as one.
+    return datetime if isinstance(value, datetime) else type(value)
+
+
 def _infer_list_item_type(lst: list) -> type:
     """Infer the item type of a list, handling None values and nested lists."""
     if len(lst) == 0:
@@ -45,13 +51,13 @@ def _infer_list_item_type(lst: list) -> type:
         # Default to str when all items are None
         return str
 
-    item_type = type(first_item)
+    item_type = _value_type(first_item)
 
     # Handle nested lists one level deep
     if isinstance(first_item, list) and len(first_item) > 0:
         nested_item = _find_first_non_none(first_item)
         if nested_item is not None:
-            return list[type(nested_item)]  # type: ignore[misc, return-value]
+            return list[_value_type(nested_item)]  # type: ignore[misc, return-value]
         # Default to str for nested lists with all None
         return list[str]  # type: ignore[return-value]
 
@@ -79,11 +85,11 @@ def _infer_dict_value_type(dct: dict) -> type:
     if isinstance(first_value, list) and len(first_value) > 0:
         list_item = _find_first_non_none(first_value)
         if list_item is not None:
-            return list[type(list_item)]  # type: ignore[misc, return-value]
+            return list[_value_type(list_item)]  # type: ignore[misc, return-value]
         # Default to str for lists with all None
         return list[str]  # type: ignore[return-value]
 
-    return type(first_value)
+    return _value_type(first_value)
 
 
 def _infer_type_from_sequence(
@@ -101,7 +107,7 @@ def _infer_type_from_sequence(
         # Default to str if column is empty or all values are None
         return str
 
-    typ = type(first_element)
+    typ = _value_type(first_element)
 
     validate_chain_type(typ)
     if not is_chain_type(typ):

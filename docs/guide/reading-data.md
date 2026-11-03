@@ -57,6 +57,8 @@ data = dc.read_parquet("s3://bucket/data/*.parquet")
 data = dc.read_parquet("s3://bucket/202{1..4}/{yellow,green}-{01..12}.parquet")
 ```
 
+Timestamps are read as Python `datetime`, which holds microseconds. Digits beyond microseconds are dropped, for example in the nanosecond timestamps that pandas 2 writes to Parquet by default.
+
 JMESPath is powerful for real-world JSON formats like COCO, where images, annotations, and categories live under different top-level keys. Each `read_json()` call with a different `jmespath` extracts one array, and you merge them together on shared IDs.
 
 For complex JSON, auto-generate a Pydantic model from a sample file:
