@@ -8,12 +8,7 @@ DataChain has a layered optimization architecture. Each layer eliminates a sourc
 
 ## Parallel Execution
 
-`settings(parallel=N)` runs N processes, each with its own model instance.
-`parallel=True` runs one process per CPU available to the job. In a
-container, that follows the CPU limit, rounded up: a 1.5-CPU limit gives two
-processes.
-
-For network-bound work, set `parallel=N` higher than the CPU count.
+`settings(parallel=N)` runs N processes, each with its own model instance. `parallel=True` uses the CPUs available to the job, respecting container CPU limits. Fractional limits round up: a 1.5-CPU limit gives two processes.
 
 ```python
 import datachain as dc
