@@ -5,6 +5,7 @@ from itertools import islice
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
+import pyarrow.compute as pc
 from fsspec.implementations.local import LocalFileSystem
 from pyarrow._csv import ParseOptions
 from pyarrow.dataset import CsvFileFormat, Dataset, ParquetFileFormat, dataset
@@ -205,10 +206,15 @@ class ArrowGenerator(Generator):
             fields = [schema.field(c) for c in kw["columns"]]
             schema = pa.schema(fields, metadata=schema.metadata)
         hf_schema = _get_hf_schema(schema)
+        # pyarrow returns ns timestamps as pandas.Timestamp, which SQLite can't store.
+        has_ns = any(_has_ns_timestamp(t) for t in schema.types)
 
         def iter_records():
             for record_batch in ds.to_batches(**kw):
-                yield from _ns_timestamps_to_us(record_batch).to_pylist()
+                if has_ns:
+                    columns = [_floor_ns_to_us(c) for c in record_batch.columns]
+                    record_batch = pa.RecordBatch.from_arrays(columns, schema.names)
+                yield from record_batch.to_pylist()
 
         it = islice(iter_records(), self.nrows)
         with tqdm(
@@ -298,20 +304,32 @@ class ArrowGenerator(Generator):
         return [self.output_schema(**vals_dict)]
 
 
-def _ns_timestamps_to_us(batch: pa.RecordBatch) -> pa.RecordBatch | pa.Table:
-    # pyarrow returns ns timestamps as pandas.Timestamp, which SQLite can't store.
-    schema = pa.schema([f.with_type(_ns_type_to_us(f.type)) for f in batch.schema])
-    if schema.equals(batch.schema):
-        return batch
-    return pa.Table.from_batches([batch]).cast(schema, safe=False)
-
-
-def _ns_type_to_us(col_type: pa.DataType) -> pa.DataType:
-    if pa.types.is_timestamp(col_type) and col_type.unit == "ns":
-        return pa.timestamp("us", tz=col_type.tz)
+def _has_ns_timestamp(col_type: pa.DataType) -> bool:
     if pa.types.is_struct(col_type):
-        return pa.struct([f.with_type(_ns_type_to_us(f.type)) for f in col_type])
-    return col_type
+        return any(_has_ns_timestamp(f.type) for f in col_type)
+    if pa.types.is_dictionary(col_type):
+        return _has_ns_timestamp(col_type.value_type)
+    return pa.types.is_timestamp(col_type) and col_type.unit == "ns"
+
+
+def _floor_ns_to_us(arr: pa.Array) -> pa.Array:
+    col_type = arr.type
+    if not _has_ns_timestamp(col_type):
+        return arr
+    if pa.types.is_struct(col_type):
+        return pa.StructArray.from_arrays(
+            [_floor_ns_to_us(c) for c in arr.flatten()],
+            names=[f.name for f in col_type],
+            mask=arr.is_null(),
+        )
+    if pa.types.is_dictionary(col_type):
+        return pa.DictionaryArray.from_arrays(
+            arr.indices, _floor_ns_to_us(arr.dictionary), ordered=col_type.ordered
+        )
+    # A cast rounds pre-1970 values up, so floor instead. Floor the naive values,
+    # as zoned ones need a time zone database, which Windows may not have.
+    floored = pc.floor_temporal(arr.cast(pa.timestamp("ns")), unit="microsecond")
+    return floored.cast(pa.timestamp("us", tz=col_type.tz))
 
 
 def _file_datasets(chain: "DataChain", **kwargs) -> Iterator[Dataset]:

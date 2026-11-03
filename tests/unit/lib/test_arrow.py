@@ -6,6 +6,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from datasets import Dataset
+from pyarrow import feather
 from pyarrow.dataset import CsvFileFormat, JsonFileFormat, ParquetFileFormat
 
 import datachain as dc
@@ -211,22 +212,48 @@ def test_read_parquet_multiple_struct_list_columns_roundtrip(test_session, tmp_p
     assert [order.amount for order in orders] == [5]
 
 
-def test_read_parquet_ns_timestamps_truncated_to_microseconds(test_session, tmp_path):
-    ns = pa.array([1704067200123456789], type=pa.timestamp("ns"))
-    event = pa.StructArray.from_arrays([ns], ["ts"])
+def test_read_parquet_ns_timestamps_floored_to_microseconds(test_session, tmp_path):
+    ns = pa.array([-1, 1704067200123456789], type=pa.timestamp("ns"))
+    table = pa.table(
+        {
+            "ts": ns,
+            "utc": ns.cast(pa.timestamp("ns", tz="UTC")),
+            "event": pa.StructArray.from_arrays([ns], ["ts"]),
+            "history": pa.ListArray.from_arrays([0, 1, 2], ns),
+        }
+    )
     path = tmp_path / "data.parquet"
-    pq.write_table(pa.table({"ts": ns, "event": event}), path)
+    pq.write_table(table, path)
 
-    chain = dc.read_parquet(path.as_posix(), session=test_session)
+    chain = dc.read_parquet(path.as_posix(), session=test_session).order_by("ts")
 
-    expected = datetime(2024, 1, 1, 0, 0, 0, 123456, tzinfo=UTC)
-    assert chain.to_values("ts") == [expected]
-    assert [e.ts for e in chain.to_values("event")] == [expected]
+    expected = [
+        datetime(1969, 12, 31, 23, 59, 59, 999999, tzinfo=UTC),
+        datetime(2024, 1, 1, 0, 0, 0, 123456, tzinfo=UTC),
+    ]
+    assert chain.to_values("ts") == expected
+    assert chain.to_values("utc") == expected
+    assert [e.ts for e in chain.to_values("event")] == expected
+    assert [h[0] for h in chain.to_values("history")] == expected
 
 
-def test_read_csv_fractional_timestamps_truncated_to_microseconds(
+def test_parse_tabular_ns_timestamp_dictionary_floored_to_microseconds(
     test_session, tmp_path
 ):
+    ts = pa.array([-1], type=pa.timestamp("ns")).dictionary_encode()
+    path = tmp_path / "data.arrow"
+    feather.write_feather(pa.table({"ts": ts}), path)
+
+    chain = dc.read_storage(path.as_posix(), session=test_session).parse_tabular(
+        format="ipc"
+    )
+
+    assert chain.to_values("ts") == [
+        datetime(1969, 12, 31, 23, 59, 59, 999999, tzinfo=UTC)
+    ]
+
+
+def test_read_csv_fractional_timestamps_floored_to_microseconds(test_session, tmp_path):
     path = tmp_path / "data.csv"
     path.write_text("ts\n2024-01-01 00:00:00.5\n2024-01-01 00:00:00.123456789\n")
 
