@@ -1483,3 +1483,140 @@ def test_delta_update_agg(test_session, file_dataset):
         )
 
     assert str(excinfo.value) == _delta_unsafe_required_message("agg")
+
+
+@pytest.mark.parametrize("method", ["limit", "offset"])
+@pytest.mark.parametrize("n", [0, 2, 10])
+@pytest.mark.parametrize("stage", ["source", "derived", "saved"])
+def test_delta_update_slice_requires_unsafe(test_session, method, n, stage):
+    records = [(1, 10), (2, 20), (3, 30)]
+    dc.read_values(id=[1, 2, 3], value=[10, 20, 30], session=test_session).save(
+        "source"
+    )
+    if stage == "saved":
+        dc.read_dataset("source", session=test_session, delta=True, delta_on="id").save(
+            "result"
+        )
+        dc.read_values(id=[1, 2, 3], value=[15, 25, 30], session=test_session).save(
+            "source"
+        )
+    chain = dc.read_dataset("source", session=test_session, delta=True, delta_on="id")
+    if stage == "derived":
+        chain = chain.filter(C("id") > 0).select("id", "value")
+    chain = chain.order_by("id")
+    query_hash = chain._query.hash()
+    before = list(chain.to_iter("id", "value"))
+    with pytest.raises(NotImplementedError) as excinfo:
+        getattr(chain, method)(n).save("result")
+    assert str(excinfo.value) == _delta_unsafe_required_message(method)
+    assert chain._query.hash() == query_hash
+    assert list(chain.to_iter("id", "value")) == before
+    if stage == "saved":
+        saved = dc.read_dataset("result", session=test_session)
+        assert saved.version == "1.0.0"
+        assert sorted(saved.to_iter("id", "value")) == records
+    else:
+        with pytest.raises(DatasetNotFoundError):
+            dc.read_dataset("result", session=test_session)
+
+
+@pytest.mark.parametrize("method", ["limit", "offset"])
+@pytest.mark.parametrize("n", [0, 2, 10])
+@pytest.mark.parametrize("delta", [False, True])
+def test_delta_update_slice_opt_in_and_non_delta_readback(
+    test_session, method, n, delta
+):
+    for values in ([10, 20, 30], [15, 25, 30]):
+        records = list(zip([1, 2, 3], values, strict=True))
+        dc.read_values(id=[1, 2, 3], value=values, session=test_session).save("source")
+        chain = dc.read_dataset(
+            "source",
+            session=test_session,
+            delta=delta,
+            delta_on="id",
+            delta_unsafe=delta,
+        ).order_by("id")
+        query_hash = chain._query.hash()
+        sliced = getattr(chain, method)(n)
+        assert sliced is not chain
+        assert chain._query.hash() == query_hash
+        sliced.save("result")
+        saved = dc.read_dataset("result", session=test_session)
+        expected = records[:n] if method == "limit" else records[n:]
+        assert sorted(saved.to_iter("id", "value")) == expected
+        assert list(chain.to_iter("id", "value")) == records
+
+
+@pytest.mark.parametrize("method", ["limit", "offset"])
+@pytest.mark.parametrize("nested", [False, True])
+def test_delta_update_slice_composed_unsafe(test_session, method, nested):
+    for name, ids in [("left", [1, 2]), ("right", [3, 4]), ("third", [5, 6])]:
+        dc.read_values(id=ids, session=test_session).save(name)
+    left = dc.read_dataset(
+        "left", session=test_session, delta=True, delta_on="id", delta_unsafe=True
+    )
+    right = dc.read_dataset(
+        "right", session=test_session, delta=True, delta_on="id", delta_unsafe=True
+    )
+    chain = left.union(right)
+    if nested:
+        chain = chain.union(dc.read_dataset("third", session=test_session))
+    chain = chain.select("id").order_by("id")
+    before = list(chain.to_iter("id"))
+    result = getattr(chain, method)(2).save("result")
+    expected = before[:2] if method == "limit" else before[2:]
+    assert list(result.order_by("id").to_iter("id")) == expected
+    assert list(chain.to_iter("id")) == before
+
+
+@pytest.mark.parametrize("operation", ["show", "explode"])
+def test_delta_update_internal_sampling(test_session, capsys, operation):
+    dc.read_values(
+        id=[1, 2],
+        payload=['{"n": "first"}', '{"n": "second"}'],
+        session=test_session,
+    ).save("source")
+    chain = dc.read_dataset("source", session=test_session, delta=True, delta_on="id")
+    query_hash = chain._query.hash()
+    if operation == "show":
+        chain.show(limit=1)
+        output = capsys.readouterr().out
+        assert "first" in output
+        assert "second" not in output
+    else:
+        result = chain.explode("payload", column="item").save("result")
+        assert sorted(result.to_values("item.n")) == ["first", "second"]
+    assert chain._query.hash() == query_hash
+
+
+@pytest.mark.parametrize("file_format", ["csv", "parquet", "json"])
+def test_delta_update_tabular_schema_sampling(test_session, tmp_path, file_format):
+    import json
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    for i in (1, 2):
+        path = tmp_path / f"part{i}.{file_format}"
+        if file_format == "csv":
+            path.write_text(f"id,value\n{i},{i * 10}\n")
+        elif file_format == "json":
+            path.write_text(json.dumps({"id": i, "value": i * 10}) + "\n")
+        else:
+            pq.write_table(pa.table({"id": [i], "value": [i * 10]}), path)
+    chain = dc.read_storage(
+        tmp_path.as_uri(),
+        session=test_session,
+        delta=True,
+        delta_on="file.path",
+        delta_result_on="source.file.path",
+    )
+    assert chain.count() == 2
+    before_files = sorted(chain.to_values("file.path"))
+    chain.parse_tabular(format=file_format, output={"id": int, "value": int}).save(
+        "result"
+    )
+    saved = dc.read_dataset("result", session=test_session)
+    assert sorted(saved.to_iter("id", "value")) == [(1, 10), (2, 20)]
+    assert sorted(chain.to_values("file.path")) == before_files
+    assert chain.count() == 2

@@ -99,7 +99,7 @@ def read_storage(  # noqa: PLR0913
             - True: Reprocess records missing from the result dataset (missing mode)
             - None: No retry processing (default)
         delta_unsafe: Allow restricted ops in delta: merge, union, subtract,
-            diff, file_diff, agg, group_by, distinct. When multiple delta
+            diff, file_diff, agg, group_by, distinct, limit, offset. When multiple delta
             sources participate in one composed query, this must be enabled on
             every participating delta source. Caller must ensure datasets are
             consistent and not partially updated.
