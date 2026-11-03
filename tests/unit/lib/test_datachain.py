@@ -183,17 +183,28 @@ def test_pandas_conversion_in_memory():
     assert chain.equals(df)
 
 
-@pytest.mark.parametrize("dtype", ["datetime64[ns]", object])
-def test_pandas_datetimes_floored_to_microseconds_with_nat_as_none(test_session, dtype):
-    ts = pd.Series([pd.Timestamp("2024-01-01 00:00:00.123456789"), pd.NaT], dtype=dtype)
-    df = pd.DataFrame({"id": [1, 2], "ts": ts})
+@pytest.mark.parametrize("dtype", ["datetime64[ns]", "timestamp[ns][pyarrow]", object])
+def test_pandas_datetimes_floored_to_microseconds_with_missing_as_none(
+    test_session, dtype
+):
+    values = [pd.NaT, pd.Timestamp("2024-01-01 00:00:00.123456789"), pd.NaT]
+    df = pd.DataFrame({"id": [1, 2, 3], "ts": pd.Series(values, dtype=dtype)})
 
     chain = dc.read_pandas(df, session=test_session).order_by("id")
 
     assert chain.to_values("ts") == [
+        None,
         dt.datetime(2024, 1, 1, 0, 0, 0, 123456, tzinfo=dt.UTC),
         None,
     ]
+
+
+def test_pandas_nullable_ints_with_na_as_none(test_session):
+    df = pd.DataFrame({"id": [1, 2], "n": pd.Series([1, None], dtype="Int64")})
+
+    chain = dc.read_pandas(df, session=test_session).order_by("id")
+
+    assert chain.to_values("n") == [1, None]
 
 
 def test_pandas_lists_of_datetimes_floored_to_microseconds(test_session):

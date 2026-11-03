@@ -63,5 +63,5 @@ def read_pandas(  # type: ignore[override]
 def _column_values(series: "pd.Series") -> list:
     import pandas as pd
 
-    # NaT isn't a datetime value, so missing datetimes are stored as None.
-    return [None if v is pd.NaT else v for v in series.tolist()]
+    # NaT and NA can't be stored, so they become None. Float NaN is kept.
+    return [None if v is pd.NaT or v is pd.NA else v for v in series.tolist()]
