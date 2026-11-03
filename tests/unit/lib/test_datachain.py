@@ -2894,6 +2894,12 @@ def test_from_features_column(test_session):
     assert "custom.fib" in chain.to_pandas(flatten=True).columns
 
 
+def test_read_values_one_signal_into_column(test_session):
+    chain = dc.read_values(fib=[1, 2, 3], column="custom", session=test_session)
+
+    assert chain.order_by("custom.fib").to_values("custom.fib") == [1, 2, 3]
+
+
 def test_parse_tabular_column(tmp_dir, test_session):
     df = pd.DataFrame(DF_DATA)
     path = tmp_dir / "test.parquet"

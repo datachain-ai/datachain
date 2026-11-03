@@ -33,6 +33,11 @@ def read_values(
         ```
     """
     tuple_type, output, tuples = values_to_tuples(ds_name, output, **fr_map)
+    if column:
+        if len(fr_map) == 1:
+            # One signal comes as bare values, but the column's model takes rows.
+            tuples = [(v,) for v in tuples]
+        output = {column: dict_to_data_model(column, output)}  # type: ignore[arg-type]
 
     def _func_fr() -> Iterator[tuple_type]:  # type: ignore[valid-type]
         yield from tuples
@@ -51,6 +56,4 @@ def read_values(
         settings=settings,
         in_memory=in_memory,
     )
-    if column:
-        output = {column: dict_to_data_model(column, output)}  # type: ignore[arg-type]
     return chain.gen(_func_fr, output=output)
