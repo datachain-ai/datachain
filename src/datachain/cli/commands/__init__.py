@@ -1,6 +1,6 @@
 from .bucket import bucket_status_cmd
 from .datasets import (
-    describe_dataset,
+    describe_dataset_cmd,
     edit_dataset,
     list_datasets,
     list_datasets_local,
@@ -17,7 +17,7 @@ __all__ = [
     "bucket_status_cmd",
     "clear_cache",
     "completion",
-    "describe_dataset",
+    "describe_dataset_cmd",
     "du",
     "edit_dataset",
     "garbage_collect",

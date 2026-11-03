@@ -1,7 +1,7 @@
 import json
 import sys
 from collections.abc import Iterable, Iterator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from tabulate import tabulate
 
@@ -9,22 +9,18 @@ from datachain import semver
 from datachain.catalog import is_namespace_local
 from datachain.cli.utils import determine_flavors
 from datachain.config import Config
-from datachain.dataset import (
-    DatasetDependencyType,
-    create_dataset_full_name,
-    parse_dataset_with_version,
-)
+from datachain.data_storage import JobStatus
 from datachain.error import (
     DataChainError,
     DatasetNotFoundError,
 )
-from datachain.lib.listing import CURRENT_LISTING_PREFIX, listing_uri_from_name
-from datachain.lib.signal_schema import SignalSchema
+from datachain.lib.dataset_description import DatasetDescription
+from datachain.lib.dc.datasets import describe_dataset
+from datachain.query.session import Session
 from datachain.studio import list_datasets as list_datasets_studio
 
 if TYPE_CHECKING:
     from datachain.catalog import Catalog
-    from datachain.dataset import DatasetDependency
 
 
 def group_dataset_versions(
@@ -262,144 +258,55 @@ def edit_dataset(
             )
 
 
-def _dependency_name(dep: "DatasetDependency") -> str:
-    if dep.is_dataset:
-        return f"{dep.namespace}.{dep.project}.{dep.name}"
-    return listing_uri_from_name(dep.name)
+def _refs_label(refs: list[str | None]) -> str:
+    return ", ".join(ref or "unavailable dependency" for ref in refs)
 
 
-def _dependency_info(catalog: "Catalog", dep: "DatasetDependency") -> dict[str, Any]:
-    rows = (
-        catalog.get_dataset(
-            dep.name,
-            namespace_name=dep.namespace,
-            project_name=dep.project,
-            versions=[dep.version],
+def print_dataset_description(info: DatasetDescription) -> None:
+    """Print a recorded dataset description for the CLI."""
+    selected = info.selected_version
+    print(info.ref)
+    print(f"Rows: {selected.num_objects}")
+    print(f"Created: {selected.created_at.isoformat()}")
+    if info.description:
+        print(f"Description: {info.description}")
+    print("Versions: " + ", ".join(info.available_versions))
+    print("Schema:")
+    info.schema.print_tree(start_at=2)
+    print("Sources: " + (", ".join(info.sources) or "none recorded"))
+    print("Depends on: " + (_refs_label(info.depends_on) or "none recorded"))
+    print("Lineage:" + ("" if info.lineage else " none recorded"))
+    for entry in info.lineage:
+        removed = " (removed)" if entry.removed else ""
+        print(f"  {entry.ref}{removed}")
+        if entry.depends_on:
+            print(f"    depends on: {_refs_label(entry.depends_on)}")
+    print("Dependents:" + ("" if info.dependents else " none recorded"))
+    for entry in info.dependents:
+        removed = " (removed)" if entry.removed else ""
+        print(f"  {entry.ref}{removed}")
+    if job := info.job:
+        print(f"Job: {job.id}")
+        print(f"Job status: {JobStatus(job.status).name}")
+        print(f"Job created: {job.created_at.isoformat()}")
+        print(
+            "Job finished: "
+            + (job.finished_at.isoformat() if job.finished_at else "not recorded")
         )
-        .get_version(dep.version)
-        .num_objects
-    )
-    info = {
-        "name": _dependency_name(dep),
-        "version": dep.version,
-        "type": dep.type,
-        "rows": rows,
-        "removed": dep.removed,
-        "created_at": dep.created_at.isoformat() if dep.created_at else None,
-    }
-
-    if dep.type == DatasetDependencyType.STORAGE:
-        info["listing_kind"] = (
-            "current only"
-            if dep.name.startswith(CURRENT_LISTING_PREFIX)
-            else "all versions"
-        )
-    return info
+        print(f"Workers: {job.workers}")
+        if job.python_version:
+            print(f"Python: {job.python_version}")
+    elif selected.job_id:
+        print(f"Job: {selected.job_id} (unavailable)")
+    print("Script:")
+    print(selected.query_script or "No script recorded.")
 
 
-def _dataset_info(catalog: "Catalog", name: str, version: str | None) -> dict[str, Any]:
-    name, name_version = parse_dataset_with_version(name)
-    namespace_name, project_name, name = catalog.get_full_dataset_name(name)
-    dataset = catalog.get_dataset(
-        name,
-        namespace_name=namespace_name,
-        project_name=project_name,
-        versions=None,
-        include_incomplete=False,
-    )
-    selected = dataset.get_version(version or name_version or dataset.latest_version)
-    lineage: dict[str, dict[str, Any]] = {}
-
-    def refs(deps: "list[DatasetDependency | None]") -> list[str | None]:
-        result: list[str | None] = []
-        for dep in deps:
-            if dep is None:
-                result.append(None)
-                continue
-            ref = create_dataset_full_name(
-                dep.namespace, dep.project, dep.name, dep.version
-            )
-            if ref not in lineage:
-                lineage[ref] = {"ref": ref, **_dependency_info(catalog, dep)}
-                lineage[ref]["depends_on"] = refs(dep.dependencies)
-            result.append(ref)
-        return result
-
-    depends_on = refs(catalog.get_dataset_dependencies_by_ids(dataset.id, selected.id))
-    storage = [
-        entry["name"]
-        for entry in lineage.values()
-        if entry["type"] == DatasetDependencyType.STORAGE
-    ]
-    dependents = catalog.metastore.get_direct_dataset_dependents(
-        dataset, selected.version
-    )
-    return {
-        "name": dataset.full_name,
-        "version": selected.version,
-        "description": dataset.description,
-        "rows": selected.num_objects,
-        "created_at": selected.created_at.isoformat(),
-        "finished_at": selected.finished_at.isoformat()
-        if selected.finished_at
-        else None,
-        "schema": selected.feature_schema,
-        "versions": [
-            {
-                "version": v.version,
-                "rows": v.num_objects,
-                "created_at": v.created_at.isoformat(),
-            }
-            for v in sorted(dataset.versions)
-        ],
-        "depends_on": depends_on,
-        "lineage": list(lineage.values()),
-        "dependents": [_dependency_info(catalog, d) for d in dependents if d],
-        "sources": sorted({*selected.sources.splitlines(), *storage} - {""}),
-        "query_script": selected.query_script,
-    }
-
-
-def _dependency_label(entry: dict[str, Any]) -> str:
-    kind = f" ({entry['listing_kind']})" if "listing_kind" in entry else ""
-    return f"{entry['name']}{kind}@{entry['version']}"
-
-
-def _version_label(entry: dict[str, Any]) -> str:
-    rows = "" if entry["rows"] is None else f" ({entry['rows']} rows)"
-    removed = " (removed)" if entry["removed"] else ""
-    return f"{_dependency_label(entry)}{rows}{removed}"
-
-
-def _refs_label(refs: list[str | None], labels: dict[str, str]) -> str:
-    return ", ".join(labels[ref] if ref else "unavailable dependency" for ref in refs)
-
-
-def describe_dataset(
+def describe_dataset_cmd(
     catalog: "Catalog", name: str, version: str | None = None, json_output: bool = False
 ) -> None:
-    info = _dataset_info(catalog, name, version)
+    info = describe_dataset(name, version=version, session=Session.get(catalog=catalog))
     if json_output:
-        print(json.dumps(info, indent=2))
-        return
-    labels = {e["ref"]: _dependency_label(e) for e in info["lineage"]}
-    print(f"{info['name']}@{info['version']}")
-    print(f"Rows: {info['rows']}")
-    print(f"Created: {info['created_at']}")
-    if info["description"]:
-        print(f"Description: {info['description']}")
-    print("Versions: " + ", ".join(v["version"] for v in info["versions"]))
-    print("Schema:")
-    SignalSchema.deserialize(info["schema"]).print_tree(start_at=2)
-    print("Sources: " + (", ".join(info["sources"]) or "none recorded"))
-    print("Depends on: " + (_refs_label(info["depends_on"], labels) or "none recorded"))
-    print("Lineage:" + ("" if info["lineage"] else " none recorded"))
-    for entry in info["lineage"]:
-        print(f"  {_version_label(entry)}")
-        if entry["depends_on"]:
-            print(f"    depends on: {_refs_label(entry['depends_on'], labels)}")
-    print("Dependents:" + ("" if info["dependents"] else " none recorded"))
-    for entry in info["dependents"]:
-        print(f"  {_version_label(entry)}")
-    print("Script:")
-    print(info["query_script"] or "No script recorded.")
+        print(json.dumps(info.to_dict(), indent=2))
+    else:
+        print_dataset_description(info)

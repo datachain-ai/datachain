@@ -3,6 +3,7 @@ from importlib.metadata import version
 from datachain import func, llm  # re-export submodule namespaces
 from datachain.client import BucketStatus, bucket_status
 from datachain.lib.data_model import DataModel, DataType, is_chain_type
+from datachain.lib.dataset_description import DatasetDescription
 from datachain.lib.dc import (
     C,
     Column,
@@ -13,6 +14,7 @@ from datachain.lib.dc import (
     Sys,
     datasets,
     delete_dataset,
+    describe_dataset,
     is_local,
     is_studio,
     list_storage,
@@ -74,6 +76,7 @@ __all__ = [
     "DataChainSchema",
     "DataModel",
     "DataType",
+    "DatasetDescription",
     "File",
     "FileError",
     "FileRow",
@@ -96,6 +99,7 @@ __all__ = [
     "datasets",
     "delete_dataset",
     "delete_namespace",
+    "describe_dataset",
     "func",
     "is_chain_type",
     "is_local",

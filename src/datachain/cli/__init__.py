@@ -11,7 +11,7 @@ from .commands import (
     bucket_status_cmd,
     clear_cache,
     completion,
-    describe_dataset,
+    describe_dataset_cmd,
     du,
     edit_dataset,
     garbage_collect,
@@ -167,7 +167,7 @@ def handle_dataset_command(args, catalog):
         return 1
 
     dataset_commands = {
-        "describe": lambda: describe_dataset(
+        "describe": lambda: describe_dataset_cmd(
             catalog, args.name, args.version, json_output=args.json_output
         ),
         "pull": lambda: catalog.pull_dataset(

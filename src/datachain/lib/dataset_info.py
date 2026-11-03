@@ -9,7 +9,9 @@ from datachain.dataset import (
     DEFAULT_DATASET_VERSION,
     DatasetListRecord,
     DatasetListVersion,
+    DatasetRecord,
     DatasetStatus,
+    DatasetVersion,
 )
 from datachain.job import Job
 from datachain.lib.data_model import DataModel
@@ -37,6 +39,7 @@ class DatasetInfo(DataModel):
     error_stack: str = Field(default="")
     attrs: list[str] = Field(default=[])
     query_script: str = Field(default="")
+    job_id: str | None = Field(default=None)
 
     @property
     def is_temp(self) -> bool:
@@ -94,8 +97,8 @@ class DatasetInfo(DataModel):
     @classmethod
     def from_models(
         cls,
-        dataset: DatasetListRecord,
-        version: DatasetListVersion,
+        dataset: DatasetListRecord | DatasetRecord,
+        version: DatasetListVersion | DatasetVersion,
         job: Job | None,
     ) -> "Self":
         return cls(
@@ -115,4 +118,5 @@ class DatasetInfo(DataModel):
             error_stack=version.error_stack,
             attrs=dataset.attrs,
             query_script=version.query_script,
+            job_id=version.job_id,
         )

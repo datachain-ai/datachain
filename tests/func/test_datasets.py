@@ -995,3 +995,13 @@ def test_dataset_storage_dependencies(cloud_test_catalog, cloud_type, indirect):
             "removed": False,
         }
     ]
+
+
+@pytest.mark.parametrize("column", [None, "dataset"])
+def test_datasets_job_id_matches_description(test_session, column):
+    dc.read_values(value=[1, 2], session=test_session).save("with_job")
+    description = dc.describe_dataset("with_job", session=test_session)
+    assert description.job is not None
+    chain = dc.datasets(column=column, session=test_session)
+    job_column = f"{column}.job_id" if column else "job_id"
+    assert chain.to_list(job_column) == [(description.job.id,)]

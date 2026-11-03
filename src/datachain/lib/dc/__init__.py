@@ -3,7 +3,13 @@
 from .csv import read_csv
 from .database import read_database
 from .datachain import C, Column, ColumnExpr, DataChain, DataChainSchema
-from .datasets import datasets, delete_dataset, move_dataset, read_dataset
+from .datasets import (
+    datasets,
+    delete_dataset,
+    describe_dataset,
+    move_dataset,
+    read_dataset,
+)
 from .hf import read_hf
 from .json import read_json
 from .listings import listings
@@ -27,6 +33,7 @@ __all__ = [
     "Sys",
     "datasets",
     "delete_dataset",
+    "describe_dataset",
     "is_local",
     "is_studio",
     "list_storage",

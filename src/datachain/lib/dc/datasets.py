@@ -1,4 +1,5 @@
 from collections.abc import Mapping, Sequence
+from dataclasses import fields
 from typing import TYPE_CHECKING, Any, get_origin, get_type_hints
 
 from datachain.dataset import parse_dataset_with_version
@@ -8,18 +9,25 @@ from datachain.error import (
     OutdatedDatasetFormatError,
     ProjectNotFoundError,
 )
+from datachain.job import Job
+from datachain.lib.dataset_description import DatasetDependencyInfo, DatasetDescription
 from datachain.lib.dataset_info import DatasetInfo
+from datachain.lib.listing import is_listing_dataset
+from datachain.lib.listing_info import ListingInfo
 from datachain.lib.projects import get as get_project
 from datachain.lib.settings import Settings
 from datachain.lib.signal_schema import SignalSchema
 from datachain.query import Session
 from datachain.query.dataset import DatasetQuery, DeltaSpec
+from datachain.utils import DatasetIdentifier
 
 from .utils import Sys, is_studio
 from .values import read_values
 
 if TYPE_CHECKING:
     from typing_extensions import ParamSpec
+
+    from datachain.dataset import DatasetDependency, DatasetRecord, DatasetVersion
 
     from .datachain import DataChain
 
@@ -254,6 +262,127 @@ def read_dataset(
         )
 
     return chain
+
+
+def describe_dataset(
+    name: str,
+    namespace: str | None = None,
+    project: str | None = None,
+    version: str | None = None,
+    session: Session | None = None,
+) -> DatasetDescription:
+    """Describe a saved local dataset using recorded metadata only.
+
+    Args:
+        name: Dataset name, optionally qualified and suffixed with ``@version``.
+        namespace: Namespace for an unqualified name, as in ``read_dataset``.
+        project: Project for an unqualified name, as in ``read_dataset``.
+        version: Exact version to describe; defaults to the latest complete version.
+        session: Optional session; defaults to the current session.
+
+    Returns:
+        DatasetDescription with a typed schema, every available completed version,
+        sources, ancestors, direct dependents, producing jobs, and the script.
+        Uses the session catalog without reading dataset rows or storage objects.
+        Studio datasets are not supported.
+
+    Example:
+        ```py
+        import datachain as dc
+
+        info = dc.describe_dataset("images")
+        print(info.selected_version.num_objects)
+        print(info.available_versions)
+        info.schema.print_tree()
+        ```
+    """
+    catalog = Session.get(session).catalog
+    identifier = catalog.parse_dataset_name(name, namespace, project)
+    dataset = catalog.get_dataset(
+        identifier.name,
+        namespace_name=identifier.namespace,
+        project_name=identifier.project,
+        versions=None,
+        include_incomplete=False,
+    )
+    selected = dataset.get_version(
+        version or identifier.version or dataset.latest_version
+    )
+
+    def version_info(record: "DatasetRecord", ver: "DatasetVersion") -> DatasetInfo:
+        info_cls = ListingInfo if is_listing_dataset(record.name) else DatasetInfo
+        return info_cls.from_models(record, ver, None)
+
+    def dependency_info(dep: "DatasetDependency") -> DatasetDependencyInfo:
+        record = catalog.get_dataset(
+            dep.name,
+            namespace_name=dep.namespace,
+            project_name=dep.project,
+            versions=[dep.version],
+            include_removed=True,
+        )
+        return DatasetDependencyInfo(
+            dataset=version_info(record, record.get_version(dep.version)),
+            removed=dep.removed,
+        )
+
+    lineage: dict[str, DatasetDependencyInfo] = {}
+
+    def refs(deps: "list[DatasetDependency | None]") -> list[str | None]:
+        result: list[str | None] = []
+        for dep in deps:
+            if dep is None:
+                result.append(None)
+                continue
+            identity = str(DatasetIdentifier.from_dataset_dependency(dep))
+            if identity not in lineage:
+                entry = dependency_info(dep)
+                lineage[identity] = entry
+                entry.depends_on = refs(dep.dependencies)
+            result.append(lineage[identity].ref)
+        return result
+
+    depends_on = refs(catalog.get_dataset_dependencies_by_ids(dataset.id, selected.id))
+    sources = set(selected.sources.splitlines()) - {""}
+    for entry in lineage.values():
+        if isinstance(entry.dataset, ListingInfo):
+            sources.discard(entry.dataset.uri)
+            sources.add(entry.ref)
+    dependents = catalog.metastore.get_direct_dataset_dependents(
+        dataset, selected.version
+    )
+    versions = [version_info(dataset, v) for v in sorted(dataset.versions)]
+    dependent_info = [dependency_info(dep) for dep in dependents if dep]
+    dependent_info.sort(key=lambda entry: entry.ref)
+    all_versions = [
+        *versions,
+        *(entry.dataset for entry in lineage.values()),
+        *(entry.dataset for entry in dependent_info),
+    ]
+    job_ids = sorted({v.job_id for v in all_versions if v.job_id})
+    jobs = (
+        {
+            job.id: Job(**{f.name: getattr(job, f.name) for f in fields(Job)})
+            for job in catalog.metastore.list_jobs_by_ids(job_ids)
+        }
+        if job_ids
+        else {}
+    )
+    for info in all_versions:
+        if job := jobs.get(info.job_id or ""):
+            info.params = job.params
+            info.metrics = job.metrics
+    return DatasetDescription(
+        selected_version=next(v for v in versions if v.version == selected.version),
+        feature_schema=selected.feature_schema,
+        versions=versions,
+        description=dataset.description,
+        sources=sorted(sources),
+        depends_on=depends_on,
+        lineage=list(lineage.values()),
+        dependents=dependent_info,
+        jobs=jobs,
+    )
 
 
 def datasets(
