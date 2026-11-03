@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import get_args
 
 import pandas as pd
@@ -209,6 +209,33 @@ def test_read_parquet_multiple_struct_list_columns_roundtrip(test_session, tmp_p
     (orders,) = back.to_values("orders")
     assert [user.name for user in users] == ["alice", "bob"]
     assert [order.amount for order in orders] == [5]
+
+
+def test_read_parquet_ns_timestamps_truncated_to_microseconds(test_session, tmp_path):
+    ns = pa.array([1704067200123456789], type=pa.timestamp("ns"))
+    event = pa.StructArray.from_arrays([ns], ["ts"])
+    path = tmp_path / "data.parquet"
+    pq.write_table(pa.table({"ts": ns, "event": event}), path)
+
+    chain = dc.read_parquet(path.as_posix(), session=test_session)
+
+    expected = datetime(2024, 1, 1, 0, 0, 0, 123456, tzinfo=UTC)
+    assert chain.to_values("ts") == [expected]
+    assert [e.ts for e in chain.to_values("event")] == [expected]
+
+
+def test_read_csv_fractional_timestamps_truncated_to_microseconds(
+    test_session, tmp_path
+):
+    path = tmp_path / "data.csv"
+    path.write_text("ts\n2024-01-01 00:00:00.5\n2024-01-01 00:00:00.123456789\n")
+
+    chain = dc.read_csv(path.as_posix(), session=test_session)
+
+    assert chain.order_by("ts").to_values("ts") == [
+        datetime(2024, 1, 1, 0, 0, 0, 123456, tzinfo=UTC),
+        datetime(2024, 1, 1, 0, 0, 0, 500000, tzinfo=UTC),
+    ]
 
 
 def test_arrow_type_error():

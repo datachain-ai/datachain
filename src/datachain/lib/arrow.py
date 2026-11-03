@@ -208,7 +208,7 @@ class ArrowGenerator(Generator):
 
         def iter_records():
             for record_batch in ds.to_batches(**kw):
-                yield from record_batch.to_pylist()
+                yield from _ns_timestamps_to_us(record_batch).to_pylist()
 
         it = islice(iter_records(), self.nrows)
         with tqdm(
@@ -296,6 +296,22 @@ class ArrowGenerator(Generator):
             else:
                 vals_dict[field] = val
         return [self.output_schema(**vals_dict)]
+
+
+def _ns_timestamps_to_us(batch: pa.RecordBatch) -> pa.RecordBatch | pa.Table:
+    # pyarrow returns ns timestamps as pandas.Timestamp, which SQLite can't store.
+    schema = pa.schema([f.with_type(_ns_type_to_us(f.type)) for f in batch.schema])
+    if schema.equals(batch.schema):
+        return batch
+    return pa.Table.from_batches([batch]).cast(schema, safe=False)
+
+
+def _ns_type_to_us(col_type: pa.DataType) -> pa.DataType:
+    if pa.types.is_timestamp(col_type) and col_type.unit == "ns":
+        return pa.timestamp("us", tz=col_type.tz)
+    if pa.types.is_struct(col_type):
+        return pa.struct([f.with_type(_ns_type_to_us(f.type)) for f in col_type])
+    return col_type
 
 
 def _file_datasets(chain: "DataChain", **kwargs) -> Iterator[Dataset]:
