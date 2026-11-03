@@ -1292,9 +1292,7 @@ class ImageFile(File):
         """
         Retrieves metadata and information about the image file.
 
-        Streams the parts of the file needed for metadata, using a cached copy
-        when available. Set prefetch=0 to avoid whole-file downloads before
-        this method runs.
+        Reuses cached content when available without populating the cache.
 
         Returns:
             Image: A Model containing image metadata such as width, height and format.
@@ -1406,9 +1404,7 @@ class VideoFile(File):
         """
         Retrieves metadata and information about the video file.
 
-        Streams the parts of the file needed for metadata, using a cached copy
-        when available. Set prefetch=0 to avoid whole-file downloads before
-        this method runs.
+        Reuses cached content when available without populating the cache.
 
         Args:
             video_stream_index: Zero-based index among video streams to inspect.
@@ -1585,9 +1581,7 @@ class AudioFile(File):
         """
         Retrieves metadata and information about the audio file.
 
-        Streams the parts of the file needed for metadata, using a cached copy
-        when available. Set prefetch=0 to avoid whole-file downloads before
-        this method runs.
+        Reuses cached content when available without populating the cache.
 
         Returns:
             Audio: A Model containing audio metadata such as duration,

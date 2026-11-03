@@ -48,7 +48,7 @@ In `batch_map()`, `prefetch` counts batches; see [Batched Inference](batch-infer
 
 Prefetch runs only when a UDF receives a `File` object. Attributes such as `file.path` and `file.size` come from the listing, so a UDF that receives only them through `params=` downloads nothing.
 
-For a UDF that calls `file.get_info()` or `file.read_bytes(n)` with `n > 0`, set `.settings(prefetch=0)` to disable downloading entire files ahead of the UDF. Metadata reads depend on the format: video inspection may read an index and decode a frame, and some image formats require reading the entire file. Partial reads reuse a cached copy when available.
+For metadata-only UDFs using `file.get_info()` or `file.read_bytes(n)` with `n > 0`, set `.settings(prefetch=0)`. These reads reuse cached files without populating the cache. The amount read depends on the format; some formats require the entire file.
 
 ## File Cache
 
