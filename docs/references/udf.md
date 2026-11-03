@@ -16,3 +16,5 @@ steps need to happen before or after the processing function runs.
 ::: datachain.lib.udf.Generator
 
 ::: datachain.lib.udf.Mapper
+
+::: datachain.lib.udf.BatchMapper
