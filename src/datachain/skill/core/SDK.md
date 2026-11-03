@@ -461,7 +461,7 @@ dc.read_database("SELECT * FROM t", "sqlite:///local.db")
 dc.read_dataset("name")  # latest version
 dc.read_dataset("name", version="2.0.0")
 
-# Local metadata only: typed schema, all versions, lineage and producing jobs
+# Recorded metadata only: typed schema, all versions, lineage and producing jobs
 info = dc.describe_dataset("name")
 info.available_versions
 info.selected_version.num_objects

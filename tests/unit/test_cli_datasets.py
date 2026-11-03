@@ -79,7 +79,9 @@ def test_group_dataset_versions_semver_parsing():
 @pytest.fixture
 def describe(capsys):
     def run(catalog, name, version=None):
-        describe_dataset_cmd(catalog, name, version, json_output=True)
+        describe_dataset_cmd(
+            catalog, f"{name}@{version}" if version else name, json_output=True
+        )
         return json.loads(capsys.readouterr().out)
 
     return run
@@ -122,27 +124,27 @@ def test_describe_selects_version(lineage, describe, prefix, name, version, qual
     if qualified:
         name = f"{prefix}.{name}"
     info = describe(lineage, name, version)
-    assert (info["ref"], info["num_objects"]) == (f"{prefix}.source@1.0.0", 2)
+    assert (info["name"], info["num_objects"]) == (f"{prefix}.source@1.0.0", 2)
     assert info["schema"]["value"] == "int"
     assert info["query_script"] == "MODEL = 'v1'\n"
-    assert [(v["ref"], v["num_objects"]) for v in info["versions"]] == [
+    assert [(v["name"], v["num_objects"]) for v in info["versions"]] == [
         (f"{prefix}.source@1.0.0", 2),
         (f"{prefix}.source@2.0.0", 1),
     ]
-    assert [(d["ref"], d["num_objects"]) for d in info["dependents"]] == [
+    assert [(d["name"], d["num_objects"]) for d in info["dependents"]] == [
         (f"{prefix}.derived@1.0.0", 2)
     ]
 
 
 def test_describe_only_complete_versions(lineage, describe, prefix):
     info = describe(lineage, "source")
-    assert (info["ref"], info["num_objects"], info["dependents"]) == (
+    assert (info["name"], info["num_objects"], info["dependents"]) == (
         f"{prefix}.source@2.0.0",
         1,
         [],
     )
     with pytest.raises(DatasetVersionNotFoundError):
-        describe_dataset_cmd(lineage, "source", "3.0.0")
+        describe_dataset_cmd(lineage, "source@3.0.0")
     with pytest.raises(DatasetVersionNotFoundError):
         describe_dataset_cmd(lineage, "source@99.0.0")
     with pytest.raises(DatasetNotFoundError):
@@ -152,12 +154,13 @@ def test_describe_only_complete_versions(lineage, describe, prefix):
 def test_describe_text(lineage, capsys, prefix):
     describe_dataset_cmd(lineage, "derived")
     output = capsys.readouterr().out
-    assert f"{prefix}.derived@1.0.0\nRows: 2\n" in output
+    assert f"Name: {prefix}.derived@1.0.0\nRows: 2\n" in output
     assert "Versions: 1.0.0\nSchema:\n  value: int\n" in output
     assert (
         "Sources: none recorded\n"
-        f"Depends on: {prefix}.source@1.0.0\n"
         "Lineage:\n"
+        f"  {prefix}.derived@1.0.0\n"
+        f"    depends_on: {prefix}.source@1.0.0\n"
         f"  {prefix}.source@1.0.0\n"
         "Dependents: none recorded\n"
     ) in output
@@ -165,10 +168,7 @@ def test_describe_text(lineage, capsys, prefix):
     describe_dataset_cmd(lineage, "source@1.0.0")
     output = capsys.readouterr().out
     assert (
-        "Depends on: none recorded\n"
-        "Lineage: none recorded\n"
-        "Dependents:\n"
-        f"  {prefix}.derived@1.0.0\n"
+        f"Lineage: none recorded\nDependents:\n  {prefix}.derived@1.0.0\n"
     ) in output
     assert "Script:\nMODEL = 'v1'\n" in output
 
@@ -190,19 +190,21 @@ def test_describe_storage_lineage_reads_metadata_only(
     uri = path_to_fsspec_uri(str(path)) + "/"
     listing = test_session.catalog.get_dataset_dependencies("inventory", "1.0.0")[0]
     assert listing is not None
-    listing_ref = f"{uri}@{listing.version} (all versions)"
+    listing_ref = (
+        f"{listing.namespace}.{listing.project}.{listing.name}@{listing.version}"
+    )
     typed = dc.describe_dataset("report", session=test_session)
     storage = typed.lineage[1]
     assert isinstance(storage.dataset, ListingInfo)
     assert storage.dataset.uri == uri
     assert storage.dataset.version == listing.version
-    assert storage.ref == listing_ref
+    assert storage.name == listing_ref
     assert storage.num_objects == 1
     info = describe(test_session.catalog, "report")
     assert info["sources"] == [listing_ref]
     assert info["depends_on"] == [f"{prefix}.inventory@1.0.0"]
     assert [
-        (e["ref"], e["type"], e["num_objects"], e["removed"], e["depends_on"])
+        (e["name"], e["type"], e["num_objects"], e["removed"], e["depends_on"])
         for e in info["lineage"]
     ] == [
         (f"{prefix}.inventory@1.0.0", "dataset", 1, False, [listing_ref]),
@@ -212,9 +214,7 @@ def test_describe_storage_lineage_reads_metadata_only(
     describe_dataset_cmd(test_session.catalog, "report")
     output = capsys.readouterr().out
     assert (
-        f"  {prefix}.inventory@1.0.0\n"
-        f"    depends on: {uri}@1.0.0 (all versions)\n"
-        f"  {uri}@1.0.0 (all versions)\n"
+        f"  {prefix}.inventory@1.0.0\n    depends_on: {uri}@1.0.0\n  {uri}@1.0.0\n"
     ) in output
     assert "Schema:\n  file: File@v1\n    source: str\n" in output
     assert "lst__" not in output
@@ -236,7 +236,7 @@ def test_describe_lineage_lists_each_version_once(test_session, describe, prefix
         f"{prefix}.second@1.0.0",
     ]
     lineage = {
-        e["ref"]: (e["num_objects"], sorted(e["depends_on"])) for e in info["lineage"]
+        e["name"]: (e["num_objects"], sorted(e["depends_on"])) for e in info["lineage"]
     }
     assert len(lineage) == len(info["lineage"])
     assert lineage == {
@@ -272,9 +272,9 @@ def test_describe_removed_dependency(
     describe_dataset_cmd(catalog, "derived")
     output = capsys.readouterr().out
     expected = (
-        f"Lineage:\n  {prefix}.source@1.0.0 (removed)\n"
+        f"  {prefix}.source@1.0.0 (removed)\n"
         if keep_metadata
-        else "Depends on: unavailable dependency\n"
+        else "    depends_on: unavailable dependency\n"
     )
     assert expected in output
     assert "Script:\nNo script recorded.\n" in output
@@ -351,15 +351,21 @@ def test_describe_keeps_listing_kinds_apart(test_session, describe, capsys, uri)
     )
     info = describe(test_session.catalog, "top")
     assert len(set(info["depends_on"])) == 2
-    assert set(info["depends_on"]) == {e["ref"] for e in info["lineage"]}
-    assert sorted((e["ref"], e["num_objects"]) for e in info["lineage"]) == [
-        (f"{uri}@1.0.0 (all versions)", 10),
-        (f"{uri}@1.0.0 (current only)", 3),
-    ]
+    assert set(info["depends_on"]) == {e["name"] for e in info["lineage"]}
+    listing_prefix = (
+        f"{metastore.system_namespace_name}.{metastore.listing_project_name}"
+    )
+    expected = {
+        f"{listing_prefix}.lst__{uri}@1.0.0": 10,
+        f"{listing_prefix}.lst__current__{uri}@1.0.0": 3,
+    }
+    assert {e["name"]: e["num_objects"] for e in info["lineage"]} == expected
+    assert all("listing_kind" not in e and "ref" not in e for e in info["lineage"])
     describe_dataset_cmd(test_session.catalog, "top")
     output = capsys.readouterr().out
-    assert output.count(f"{uri}@1.0.0 (all versions)") == 3
-    assert output.count(f"{uri}@1.0.0 (current only)") == 3
+    assert output.count(f"{uri}@1.0.0") == 6
+    assert f"{uri}@1.0.0 (all versions)" in output
+    assert f"{uri}@1.0.0 (current only)" in output
 
 
 @pytest.mark.parametrize("explicit_scope", [False, True])
@@ -377,20 +383,21 @@ def test_describe_python_api(lineage, test_session, prefix, capsys, explicit_sco
         info = dc.describe_dataset("source@1.0.0", **scope)
     assert isinstance(info, dc.DatasetDescription)
     assert isinstance(info.selected_version, DatasetInfo)
-    assert info.ref == f"{prefix}.source@1.0.0"
+    assert info.name == f"{prefix}.source@1.0.0"
     assert info.selected_version.version == "1.0.0"
     assert info.selected_version.num_objects == 2
     assert info.selected_version.query_script == "MODEL = 'v1'\n"
     assert info.available_versions == ["1.0.0", "2.0.0"]
     assert [v.num_objects for v in info.versions] == [2, 1]
     assert info.schema.serialize()["value"] == "int"
-    assert info.dependents[0].ref == f"{prefix}.derived@1.0.0"
+    assert info.dependents[0].name == f"{prefix}.derived@1.0.0"
+    assert info.dependents[0].depends_on is None
     assert capsys.readouterr().out == ""
     payload = info.to_dict()
-    assert "name" not in payload and "version" not in payload
+    assert "ref" not in payload and "version" not in payload
     for item in [*payload["versions"], *payload["lineage"], *payload["dependents"]]:
-        assert "ref" in item
-        assert "name" not in item and "version" not in item
+        assert "name" in item
+        assert "ref" not in item and "version" not in item
     assert json.loads(json.dumps(payload)) == payload
 
 
@@ -487,9 +494,9 @@ def test_describe_recorded_jobs(test_session, capsys, monkeypatch, job_state):
     describe_dataset_cmd(test_session.catalog, "job_output")
     output = capsys.readouterr().out
     if job_state == "recorded":
-        assert f"Job: {job_id}\nJob status: COMPLETE\n" in output
+        assert f"Job: {job_id}\nJob_status: COMPLETE\n" in output
         assert (
-            f"Job finished: {finished_at.isoformat()}\nWorkers: 4\nPython: 3.12\n"
+            "Job_finished: 2026-11-03 12:00:00 UTC\nWorkers: 4\nPython: 3.12\n"
             in output
         )
     elif job_state == "missing":
@@ -509,17 +516,19 @@ def test_describe_cli_dispatch(lineage, capsys, prefix, json_output):
     handle_dataset_command(args, lineage)
     output = capsys.readouterr().out
     if json_output:
-        assert json.loads(output)["ref"] == f"{prefix}.source@1.0.0"
+        assert json.loads(output)["name"] == f"{prefix}.source@1.0.0"
     else:
-        assert output.startswith(f"{prefix}.source@1.0.0\n")
+        assert output.startswith(f"Name: {prefix}.source@1.0.0\n")
         assert "Versions: 1.0.0, 2.0.0\n" in output
 
 
-def test_describe_nondefault_namespace_and_project(test_session):
+def test_describe_nondefault_namespace_and_project(test_session, monkeypatch):
     metastore = test_session.catalog.metastore
-    metastore.create_project("research", "analysis")
-    dc.read_values(value=[1, 2], session=test_session).save(
-        "research.analysis.scoped", version="2.0.0"
+    monkeypatch.setenv("DATACHAIN_IS_STUDIO", "true")
+    project = metastore.create_project("research", "analysis")
+    record = metastore.create_dataset(name="scoped", project_id=project.id)
+    metastore.create_dataset_version(
+        record, "2.0.0", status=DatasetStatus.COMPLETE, num_objects=2
     )
     for info in [
         dc.describe_dataset("research.analysis.scoped", session=test_session),
@@ -528,7 +537,7 @@ def test_describe_nondefault_namespace_and_project(test_session):
         ),
         dc.describe_dataset("scoped", "research", "analysis", "2.0.0", test_session),
     ]:
-        assert info.ref == "research.analysis.scoped@2.0.0"
+        assert info.name == "research.analysis.scoped@2.0.0"
         assert info.selected_version.num_objects == 2
     with pytest.raises(DatasetNotFoundError):
         dc.describe_dataset("scoped", session=test_session)

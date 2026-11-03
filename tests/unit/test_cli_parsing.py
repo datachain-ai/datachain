@@ -139,10 +139,10 @@ def test_determine_flavors_studio_without_token():
 
 
 def test_dataset_describe_parser():
-    args = get_parser().parse_args(
-        ("dataset", "describe", "labels", "--version", "1.0.0", "--json")
-    )
-    assert (args.name, args.version, args.json_output) == ("labels", "1.0.0", True)
+    args = get_parser().parse_args(("dataset", "describe", "labels@1.0.0", "--json"))
+    assert (args.name, args.json_output) == ("labels@1.0.0", True)
+    with pytest.raises(SystemExit):
+        get_parser().parse_args(("dataset", "describe", "labels", "--version", "1.0.0"))
 
 
 def test_dataset_help_lists_subcommands(capsys, monkeypatch):

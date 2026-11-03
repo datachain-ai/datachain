@@ -1,6 +1,8 @@
 import json
 import sys
-from collections.abc import Iterable, Iterator
+from collections import Counter
+from collections.abc import Iterable, Iterator, Sequence
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from tabulate import tabulate
@@ -15,9 +17,12 @@ from datachain.error import (
     DatasetNotFoundError,
 )
 from datachain.lib.dataset_description import DatasetDescription
+from datachain.lib.dataset_info import DatasetInfo
 from datachain.lib.dc.datasets import describe_dataset
+from datachain.lib.listing_info import ListingInfo
 from datachain.query.session import Session
 from datachain.studio import list_datasets as list_datasets_studio
+from datachain.utils import DatasetIdentifier
 
 if TYPE_CHECKING:
     from datachain.catalog import Catalog
@@ -258,40 +263,74 @@ def edit_dataset(
             )
 
 
-def _refs_label(refs: list[str | None]) -> str:
-    return ", ".join(ref or "unavailable dependency" for ref in refs)
+def _timestamp(value: datetime) -> str:
+    return value.strftime("%Y-%m-%d %H:%M:%S %Z").rstrip()
+
+
+def _dataset_label(info: DatasetInfo) -> str:
+    if isinstance(info, ListingInfo):
+        return f"{info.uri}@{info.version}"
+    return str(DatasetIdentifier(info.namespace, info.project, info.name, info.version))
 
 
 def print_dataset_description(info: DatasetDescription) -> None:
-    """Print a recorded dataset description for the CLI."""
+    """Print a dataset description for the CLI."""
     selected = info.selected_version
-    print(info.ref)
+    labels = {entry.name: _dataset_label(entry.dataset) for entry in info.lineage or []}
+    counts = Counter(labels.values())
+    for entry in info.lineage or []:
+        label = labels[entry.name]
+        if counts[label] > 1 and isinstance(entry.dataset, ListingInfo):
+            kind = "all versions" if entry.dataset.versions else "current only"
+            labels[entry.name] = f"{label} ({kind})"
+
+    def names(values: Sequence[str | None] | None) -> str:
+        if values is None:
+            return "unavailable"
+        return (
+            ", ".join(
+                labels.get(value, value) if value else "unavailable dependency"
+                for value in values
+            )
+            or "none recorded"
+        )
+
+    print(f"Name: {_dataset_label(selected)}")
     print(f"Rows: {selected.num_objects}")
-    print(f"Created: {selected.created_at.isoformat()}")
+    print("Created: " + _timestamp(selected.created_at))
     if info.description:
         print(f"Description: {info.description}")
     print("Versions: " + ", ".join(info.available_versions))
     print("Schema:")
     info.schema.print_tree(start_at=2)
-    print("Sources: " + (", ".join(info.sources) or "none recorded"))
-    print("Depends on: " + (_refs_label(info.depends_on) or "none recorded"))
-    print("Lineage:" + ("" if info.lineage else " none recorded"))
-    for entry in info.lineage:
+    print("Sources: " + names(info.sources))
+    if info.lineage is None:
+        print("Lineage: unavailable")
+    elif info.lineage or info.depends_on:
+        print("Lineage:")
+        print(f"  {_dataset_label(selected)}")
+        print(f"    depends_on: {names(info.depends_on)}")
+    else:
+        print("Lineage: none recorded")
+    for entry in info.lineage or []:
         removed = " (removed)" if entry.removed else ""
-        print(f"  {entry.ref}{removed}")
+        print(f"  {labels.get(entry.name, _dataset_label(entry.dataset))}{removed}")
         if entry.depends_on:
-            print(f"    depends on: {_refs_label(entry.depends_on)}")
-    print("Dependents:" + ("" if info.dependents else " none recorded"))
-    for entry in info.dependents:
+            print(f"    depends_on: {names(entry.depends_on)}")
+    if info.dependents is None:
+        print("Dependents: unavailable")
+    else:
+        print("Dependents:" + ("" if info.dependents else " none recorded"))
+    for entry in info.dependents or []:
         removed = " (removed)" if entry.removed else ""
-        print(f"  {entry.ref}{removed}")
+        print(f"  {labels.get(entry.name, _dataset_label(entry.dataset))}{removed}")
     if job := info.job:
         print(f"Job: {job.id}")
-        print(f"Job status: {JobStatus(job.status).name}")
-        print(f"Job created: {job.created_at.isoformat()}")
+        print(f"Job_status: {JobStatus(job.status).name}")
+        print("Job_created: " + _timestamp(job.created_at))
         print(
-            "Job finished: "
-            + (job.finished_at.isoformat() if job.finished_at else "not recorded")
+            "Job_finished: "
+            + (_timestamp(job.finished_at) if job.finished_at else "not recorded")
         )
         print(f"Workers: {job.workers}")
         if job.python_version:
@@ -303,9 +342,9 @@ def print_dataset_description(info: DatasetDescription) -> None:
 
 
 def describe_dataset_cmd(
-    catalog: "Catalog", name: str, version: str | None = None, json_output: bool = False
+    catalog: "Catalog", name: str, json_output: bool = False
 ) -> None:
-    info = describe_dataset(name, version=version, session=Session.get(catalog=catalog))
+    info = describe_dataset(name, session=Session.get(catalog=catalog))
     if json_output:
         print(json.dumps(info.to_dict(), indent=2))
     else:

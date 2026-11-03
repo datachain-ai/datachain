@@ -168,7 +168,7 @@ def handle_dataset_command(args, catalog):
 
     dataset_commands = {
         "describe": lambda: describe_dataset_cmd(
-            catalog, args.name, args.version, json_output=args.json_output
+            catalog, args.name, json_output=args.json_output
         ),
         "pull": lambda: catalog.pull_dataset(
             args.dataset,

@@ -285,14 +285,11 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
     describe_parser = datasets_subparser.add_parser(
         "describe",
         parents=[parent_parser],
-        description="Describe local schema, versions, lineage and saved code.",
-        help="Inspect local schema, versions, lineage and saved code",
+        description="Describe a dataset, its versions, lineage and saved code.",
+        help="Inspect a dataset, its versions, lineage and saved code",
         formatter_class=CustomHelpFormatter,
     )
     describe_parser.add_argument("name", help="Dataset name, optionally name@version")
-    describe_parser.add_argument(
-        "--version", help="Dataset version (default: latest complete version)"
-    )
     describe_parser.add_argument(
         "--json", action="store_true", dest="json_output", help="Print structured JSON"
     )
