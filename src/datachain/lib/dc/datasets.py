@@ -16,6 +16,7 @@ from datachain.error import (
 from datachain.job import Job
 from datachain.lib.dataset_description import DatasetDependencyInfo, DatasetDescription
 from datachain.lib.dataset_info import DatasetInfo
+from datachain.lib.dataset_metadata import read_dataset_metadata
 from datachain.lib.listing import is_listing_dataset
 from datachain.lib.listing_info import ListingInfo
 from datachain.lib.projects import get as get_project
@@ -31,9 +32,8 @@ from .values import read_values
 if TYPE_CHECKING:
     from typing_extensions import ParamSpec
 
-    from datachain.catalog import Catalog
+    from datachain.data_storage.metastore import AbstractMetastore
     from datachain.dataset import DatasetDependency, DatasetRecord, DatasetVersion
-    from datachain.remote.studio import StudioClient
 
     from .datachain import DataChain
 
@@ -304,34 +304,9 @@ def describe_dataset(
         ```
     """
     catalog = Session.get(session).catalog
-    metastore = catalog.metastore
-    bare_name, name_version = parse_dataset_with_version(name)
-    listing_prefix = (
-        f"{metastore.system_namespace_name}.{metastore.listing_project_name}."
-    )
-    listing_name = bare_name.removeprefix(listing_prefix)
-    if is_listing_dataset(listing_name):
-        identifier = DatasetIdentifier(
-            metastore.system_namespace_name,
-            metastore.listing_project_name,
-            listing_name,
-            name_version,
-        )
-    else:
-        identifier = catalog.parse_dataset_name(name, namespace, project)
-    namespaces = {metastore.default_namespace_name, metastore.system_namespace_name}
-    if not is_studio() and identifier.namespace not in namespaces:
-        return _describe_studio_dataset(catalog, identifier, version)
-    dataset = catalog.get_dataset(
-        identifier.name,
-        namespace_name=identifier.namespace,
-        project_name=identifier.project,
-        versions=None,
-        include_incomplete=False,
-    )
-    selected = dataset.get_version(
-        version or identifier.version or dataset.latest_version
-    )
+    metadata = read_dataset_metadata(catalog, name, namespace, project, version)
+    dataset = metadata.record
+    selected = metadata.selected_version
 
     def version_info(record: "DatasetRecord", ver: "DatasetVersion") -> DatasetInfo:
         info_cls = ListingInfo if is_listing_dataset(record.name) else DatasetInfo
@@ -366,42 +341,38 @@ def describe_dataset(
             result.append(lineage[identity].name)
         return result
 
-    depends_on = refs(catalog.get_dataset_dependencies_by_ids(dataset.id, selected.id))
+    depends_on = None
+    dependent_info = None
+    if metadata.metastore is not None:
+        depends_on = refs(
+            catalog.get_dataset_dependencies_by_ids(dataset.id, selected.id)
+        )
+        try:
+            dependents = metadata.metastore.get_direct_dataset_dependents(
+                dataset, selected.version
+            )
+        except NotImplementedError:
+            dependents = None
+        if dependents is not None:
+            dependent_info = sorted(
+                (dependency_info(dep) for dep in dependents if dep),
+                key=lambda e: e.name,
+            )
     sources = set(selected.sources.splitlines()) - {""}
     for entry in lineage.values():
         if isinstance(entry.dataset, ListingInfo):
             sources.discard(entry.dataset.uri)
             sources.add(entry.name)
-    try:
-        dependents = catalog.metastore.get_direct_dataset_dependents(
-            dataset, selected.version
-        )
-    except NotImplementedError:
-        dependents = None
-    versions = [version_info(dataset, v) for v in sorted(dataset.versions)]
-    dependent_info = (
-        sorted(
-            (dependency_info(dep) for dep in dependents if dep), key=lambda e: e.name
-        )
-        if dependents is not None
-        else None
-    )
+    versions = [version_info(dataset, v) for v in metadata.versions]
     all_versions = [
         *versions,
         *(entry.dataset for entry in lineage.values()),
         *(entry.dataset for entry in dependent_info or []),
     ]
     job_ids = sorted({v.job_id for v in all_versions if v.job_id})
-    jobs = (
-        {
-            job.id: Job(**{f.name: getattr(job, f.name) for f in fields(Job)})
-            for job in catalog.metastore.list_jobs_by_ids(job_ids)
-        }
-        if job_ids
-        else {}
-    )
+    jobs = _dataset_jobs(metadata.metastore, job_ids)
     for info in all_versions:
-        if job := jobs.get(info.job_id or ""):
+        if job := (jobs or {}).get(info.job_id or ""):
             info.params = job.params
             info.metrics = job.metrics
     return DatasetDescription(
@@ -411,13 +382,26 @@ def describe_dataset(
         description=dataset.description,
         sources=sorted(sources),
         depends_on=depends_on,
-        lineage=list(lineage.values()),
+        lineage=list(lineage.values()) if metadata.metastore is not None else None,
         dependents=dependent_info,
         jobs=jobs,
     )
 
 
-def _studio_jobs(client: "StudioClient", job_ids: list[str]) -> dict[str, Job] | None:
+def _dataset_jobs(
+    metastore: "AbstractMetastore | None", job_ids: list[str]
+) -> dict[str, Job] | None:
+    if not job_ids:
+        return {}
+    if metastore is not None:
+        return {
+            job.id: Job(**{f.name: getattr(job, f.name) for f in fields(Job)})
+            for job in metastore.list_jobs_by_ids(job_ids)
+        }
+
+    from datachain.remote.studio import StudioClient
+
+    client = StudioClient()
     jobs: dict[str, Job] = {}
     adapter = TypeAdapter(Job)
     for job_id in job_ids:
@@ -431,7 +415,7 @@ def _studio_jobs(client: "StudioClient", job_ids: list[str]) -> dict[str, Job] |
                 jobs[job_id] = adapter.validate_python(
                     {
                         **data,
-                        # Studio's public params field contains environment variables.
+                        # Public Studio params contain environment variables.
                         "params": {},
                         "status": JobStatus[data["status"]].value,
                         "query_type": JobQueryType[data["query_type"]].value,
@@ -439,38 +423,6 @@ def _studio_jobs(client: "StudioClient", job_ids: list[str]) -> dict[str, Job] |
                     }
                 )
     return jobs
-
-
-def _describe_studio_dataset(
-    catalog: "Catalog", identifier: DatasetIdentifier, version: str | None
-) -> DatasetDescription:
-    from datachain.remote.studio import StudioClient
-
-    dataset = catalog.get_remote_dataset(
-        identifier.namespace, identifier.project, identifier.name
-    )
-    selected = dataset.get_version(
-        version or identifier.version or dataset.latest_version
-    )
-    versions = [
-        DatasetInfo.from_models(dataset, v, None) for v in sorted(dataset.versions)
-    ]
-    job_ids = sorted({v.job_id for v in versions if v.job_id})
-    jobs = _studio_jobs(StudioClient(), job_ids) if job_ids else {}
-    for info in versions:
-        if job := (jobs or {}).get(info.job_id or ""):
-            info.metrics = job.metrics
-    return DatasetDescription(
-        selected_version=next(v for v in versions if v.version == selected.version),
-        feature_schema=selected.feature_schema,
-        versions=versions,
-        description=dataset.description,
-        sources=sorted(set(selected.sources.splitlines()) - {""}),
-        depends_on=None,
-        lineage=None,
-        dependents=None,
-        jobs=jobs,
-    )
 
 
 def datasets(

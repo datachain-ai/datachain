@@ -1,5 +1,6 @@
 import json
 from dataclasses import asdict
+from pathlib import Path
 
 import pytest
 
@@ -140,6 +141,43 @@ def test_describe_missing_local_dataset_does_not_contact_studio(
     assert not requests_mock.called
 
 
+@pytest.mark.parametrize(
+    "name", ["remote.analytics.inventory", "remote/analytics/inventory"]
+)
+def test_skill_studio_snapshot_reads_metadata_once(
+    test_session, studio_metadata, requests_mock, monkeypatch, name
+):
+    monkeypatch.syspath_prepend(
+        str(
+            Path(__file__).resolve().parents[2]
+            / "src/datachain/skill/knowledge/scripts"
+        )
+    )
+    import dataset
+
+    reads = []
+
+    def unavailable(name):
+        reads.append(name)
+        raise FileNotFoundError("rows unavailable")
+
+    monkeypatch.setattr(dataset, "get_catalog", lambda: test_session.catalog)
+    monkeypatch.setattr(dc, "read_dataset", unavailable)
+    snapshot = dataset.fetch_dataset_snapshot(name, summarize=True)
+
+    assert snapshot["name"] == "remote.analytics.inventory"
+    assert snapshot["source"] == "studio"
+    assert [v["version"] for v in snapshot["versions"]] == ["1.0.0", "2.0.0"]
+    assert snapshot["versions"][-1]["schema"] == {
+        "value": {"type": "int", "fields": None}
+    }
+    assert any("Dependencies are unavailable" in w for w in snapshot["warnings"])
+    assert any("rows unavailable" in w for w in snapshot["warnings"])
+    assert reads == ["remote.analytics.inventory@2.0.0"]
+    assert len(requests_mock.request_history) == 1
+    assert requests_mock.last_request.path == "/api/datachain/datasets/info"
+
+
 def test_describe_metastore_without_dependents(test_session, monkeypatch):
     def unavailable(*args):
         raise NotImplementedError
@@ -152,6 +190,15 @@ def test_describe_metastore_without_dependents(test_session, monkeypatch):
     assert info.lineage == []
     assert info.dependents is None
     assert info.to_dict()["dependents"] is None
+
+
+def test_describe_rejects_incomplete_only_dataset(test_session):
+    metastore = test_session.catalog.metastore
+    record = metastore.create_dataset(name="incomplete")
+    metastore.create_dataset_version(record, "1.0.0", status=DatasetStatus.CREATED)
+
+    with pytest.raises(DatasetVersionNotFoundError, match="no completed version"):
+        dc.describe_dataset("incomplete", session=test_session)
 
 
 @pytest.mark.parametrize("version", [None, "2.0.0"])

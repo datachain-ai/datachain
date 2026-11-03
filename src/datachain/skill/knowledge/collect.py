@@ -1,16 +1,16 @@
 from typing import TYPE_CHECKING
 
-from datachain.dataset import DatasetDependencyType, DatasetStatus
-from datachain.skill.knowledge.scripts.utils import dep_entry, parse_semver
+from datachain.dataset import DatasetDependencyType
+from datachain.error import DatasetVersionNotFoundError
+from datachain.lib.dataset_metadata import DatasetMetadata
+from datachain.skill.knowledge.scripts.utils import dep_entry
 from datachain.skill.knowledge.snapshot import build_dataset_snapshot
 
 if TYPE_CHECKING:
     from datachain.data_storage.metastore import AbstractMetastore
     from datachain.dataset import (
         DatasetDependency,
-        DatasetRecord,
         DatasetVersion,
-        Project,
     )
     from datachain.skill.knowledge.types import DatasetSnapshot, DependencyEntry
 
@@ -28,51 +28,50 @@ def collect_dataset_snapshot(
 
     Raises ValueError when the dataset has no such completed version.
     """
-    record = metastore.get_dataset(
-        name,
-        namespace,
-        project,
-        versions=None,
-        include_incomplete=True,
-        include_preview=True,
-    )
+    try:
+        metadata = DatasetMetadata.from_metastore(
+            metastore,
+            name,
+            namespace,
+            project,
+            version=version,
+            include_preview=True,
+            source=source,
+        )
+    except DatasetVersionNotFoundError as exc:
+        raise ValueError(str(exc)) from exc
+    return snapshot_from_metadata(metadata)
 
-    # Filtering here rather than through include_incomplete=False, which inner-joins
-    # and raises DatasetNotFoundError for a dataset whose versions are all incomplete.
-    completed = [v for v in record.versions if v.status == DatasetStatus.COMPLETE]
-    ordered = sorted(completed, key=lambda v: parse_semver(v.version))
-    target = next((i for i, v in enumerate(ordered) if v.version == version), None)
-    if target is None:
-        raise ValueError(f"{name} has no completed version {version}")
-    history = ordered[: target + 1]
+
+def snapshot_from_metadata(metadata: DatasetMetadata) -> "DatasetSnapshot":
+    record = metadata.record
 
     def deps_provider(ver: "DatasetVersion") -> "list[DependencyEntry]":
-        edges = metastore.get_direct_dataset_dependencies(record, ver.version) or []
+        edges = metadata.dependencies(ver.version) or []
         return [
-            dep_entry(_dep_name(e), e.version, e.type)
+            dep_entry(_dep_name(e, metadata.source), e.version, e.type)
             if e is not None
             else dep_entry(None, None, None)
             for e in edges
         ]
 
-    return build_dataset_snapshot(
-        name=_qualified_name(record),
-        source=source,
+    snapshot = build_dataset_snapshot(
+        name=record.name if metadata.source == "local" else metadata.name,
+        source=metadata.source,
         attrs=list(record.attrs or []),
         description=record.description or None,
-        versions=history,
+        versions=metadata.history,
         deps_provider=deps_provider,
     )
+    if metadata.metastore is None:
+        snapshot.setdefault("warnings", []).append(
+            "Dependencies are unavailable through the Studio API; "
+            "dependency changes could not be determined."
+        )
+    return snapshot
 
 
-def _dep_name(dep: "DatasetDependency") -> str:
-    if dep.type == DatasetDependencyType.STORAGE:
+def _dep_name(dep: "DatasetDependency", source: str) -> str:
+    if dep.type == DatasetDependencyType.STORAGE or source == "local":
         return dep.name
     return f"{dep.namespace}.{dep.project}.{dep.name}"
-
-
-def _qualified_name(record: "DatasetRecord") -> str:
-    project: Project | None = record.project
-    if project is None:
-        return record.name
-    return f"{project.namespace.name}.{project.name}.{record.name}"
