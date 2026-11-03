@@ -1,6 +1,6 @@
 # dataset describe
 
-Show a dataset's schema, versions, sources, lineage, saved script and jobs. Reads metadata only.
+Show a dataset's schema, versions, direct dependencies, saved script and jobs. Reads metadata only.
 
 ```bash
 datachain dataset describe joined
@@ -14,35 +14,32 @@ Use `name@version` to select a version; otherwise the latest complete version is
 ## Text output
 
 ```text
-Name: local.local.joined@2.0.0
+Name: joined@2.0.0
 Rows: 2
-Created: 2026-11-01 10:02:00 UTC
+Created: 2026-11-01 02:02:00 PST
 Versions: 1.0.0, 2.0.0
 Schema:
   value: int
-Sources: s3://bucket/photos/@1.0.0
-Lineage:
-  local.local.joined@2.0.0
-    depends_on: s3://bucket/photos/@1.0.0
+Dependencies:
   s3://bucket/photos/@1.0.0
 Dependents: none recorded
 Job: job-1
 Job_status: COMPLETE
-Job_created: 2026-11-01 10:02:00 UTC
-Job_finished: 2026-11-01 10:02:02 UTC
+Job_created: 2026-11-01 02:02:00 PST
+Job_finished: 2026-11-01 02:02:02 PST
 Workers: 1
 Python: 3.12
 Script:
 build()
 ```
 
-`Lineage` shows the dataset's inputs and their ancestors. `Dependents` lists datasets built from the selected version. Storage is shown as `URI@listing-version`.
+`Dependencies` lists direct inputs; `Dependents` lists datasets built from the selected version. Storage is shown as `URI@listing-version`. Dates use your local time zone.
 
 ## JSON output
 
-`name` and `depends_on` use canonical dataset names with versions. Unavailable sections are `null`.
+JSON uses canonical dataset names with versions and UTC timestamps. Unavailable sections are `null`.
 
-[Full JSON example](describe-example.json), including version, lineage and job metadata.
+[Full JSON example](describe-example.json), including version, dependency and job metadata.
 
 ## Python
 
@@ -58,4 +55,4 @@ if info.job:
     print(info.job.id, info.job.finished_at)
 ```
 
-Non-local namespaces are read from Studio. Its public API does not provide exact lineage, dependents or job parameters; jobs require read permission.
+Non-local namespaces are read from Studio. Its public API does not provide exact dependencies, dependents or job parameters; jobs require read permission.

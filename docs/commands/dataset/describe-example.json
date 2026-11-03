@@ -30,26 +30,6 @@
       "job_id": "job-1"
     }
   ],
-  "sources": [
-    "system.listing.lst__s3://bucket/photos/@1.0.0"
-  ],
-  "depends_on": [
-    "system.listing.lst__s3://bucket/photos/@1.0.0"
-  ],
-  "lineage": [
-    {
-      "name": "system.listing.lst__s3://bucket/photos/@1.0.0",
-      "num_objects": 2,
-      "created_at": "2026-11-01T10:02:00+00:00",
-      "finished_at": "2026-11-01T10:02:01+00:00",
-      "size": null,
-      "status": 4,
-      "job_id": null,
-      "type": "storage",
-      "removed": false,
-      "depends_on": []
-    }
-  ],
   "dependents": [],
   "query_script": "build()",
   "jobs": [
@@ -71,6 +51,19 @@
       "rerun_from_job_id": null,
       "run_group_id": null,
       "is_remote_execution": false
+    }
+  ],
+  "dependencies": [
+    {
+      "name": "system.listing.lst__s3://bucket/photos/@1.0.0",
+      "num_objects": 2,
+      "created_at": "2026-11-01T10:02:00+00:00",
+      "finished_at": "2026-11-01T10:02:01+00:00",
+      "size": null,
+      "status": 4,
+      "job_id": null,
+      "type": "storage",
+      "removed": false
     }
   ]
 }

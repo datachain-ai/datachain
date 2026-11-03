@@ -285,8 +285,8 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
     describe_parser = datasets_subparser.add_parser(
         "describe",
         parents=[parent_parser],
-        description="Describe a dataset, its versions, lineage and saved code.",
-        help="Inspect a dataset, its versions, lineage and saved code",
+        description="Describe a dataset, its versions, dependencies and saved code.",
+        help="Inspect a dataset, its versions, dependencies and saved code",
         formatter_class=CustomHelpFormatter,
     )
     describe_parser.add_argument("name", help="Dataset name, optionally name@version")

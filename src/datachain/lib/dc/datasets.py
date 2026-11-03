@@ -24,7 +24,6 @@ from datachain.lib.settings import Settings
 from datachain.lib.signal_schema import SignalSchema
 from datachain.query import Session
 from datachain.query.dataset import DatasetQuery, DeltaSpec
-from datachain.utils import DatasetIdentifier
 
 from .utils import Sys, is_studio
 from .values import read_values
@@ -288,7 +287,7 @@ def describe_dataset(
 
     Returns:
         DatasetDescription with a typed schema, every available completed version,
-        sources, ancestors, direct dependents, producing jobs, and the script.
+        direct dependencies, direct dependents, producing jobs, and the script.
         Uses the session catalog without reading dataset rows or storage objects.
         Outside Studio, other namespaces are read from Studio directly.
         Metadata unavailable through the Studio API is returned as None.
@@ -325,28 +324,17 @@ def describe_dataset(
             removed=dep.removed,
         )
 
-    lineage: dict[str, DatasetDependencyInfo] = {}
-
-    def refs(deps: "list[DatasetDependency | None]") -> list[str | None]:
-        result: list[str | None] = []
-        for dep in deps:
-            if dep is None:
-                result.append(None)
-                continue
-            identity = str(DatasetIdentifier.from_dataset_dependency(dep))
-            if identity not in lineage:
-                entry = dependency_info(dep)
-                lineage[identity] = entry
-                entry.depends_on = refs(dep.dependencies)
-            result.append(lineage[identity].name)
-        return result
-
-    depends_on = None
+    dependencies = metadata.dependencies(selected.version)
+    dependency_info_list = (
+        sorted(
+            (dependency_info(dep) if dep else None for dep in dependencies),
+            key=lambda entry: entry.name if entry else "",
+        )
+        if dependencies is not None
+        else None
+    )
     dependent_info = None
     if metadata.metastore is not None:
-        depends_on = refs(
-            catalog.get_dataset_dependencies_by_ids(dataset.id, selected.id)
-        )
         try:
             dependents = metadata.metastore.get_direct_dataset_dependents(
                 dataset, selected.version
@@ -356,17 +344,12 @@ def describe_dataset(
         if dependents is not None:
             dependent_info = sorted(
                 (dependency_info(dep) for dep in dependents if dep),
-                key=lambda e: e.name,
+                key=lambda entry: entry.name,
             )
-    sources = set(selected.sources.splitlines()) - {""}
-    for entry in lineage.values():
-        if isinstance(entry.dataset, ListingInfo):
-            sources.discard(entry.dataset.uri)
-            sources.add(entry.name)
     versions = [version_info(dataset, v) for v in metadata.versions]
     all_versions = [
         *versions,
-        *(entry.dataset for entry in lineage.values()),
+        *(entry.dataset for entry in dependency_info_list or [] if entry),
         *(entry.dataset for entry in dependent_info or []),
     ]
     job_ids = sorted({v.job_id for v in all_versions if v.job_id})
@@ -380,9 +363,7 @@ def describe_dataset(
         feature_schema=selected.feature_schema,
         versions=versions,
         description=dataset.description,
-        sources=sorted(sources),
-        depends_on=depends_on,
-        lineage=list(lineage.values()) if metadata.metastore is not None else None,
+        dependencies=dependency_info_list,
         dependents=dependent_info,
         jobs=jobs,
     )

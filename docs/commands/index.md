@@ -37,7 +37,7 @@ DataChain is a command-line tool for wrangling unstructured AI data at scale. Us
 
 3.  **Datasets**
 
-	- Inspect a saved dataset's versions, lineage and script with [`datachain dataset describe`](dataset/describe.md)
+	- Inspect a saved dataset's versions, dependencies and script with [`datachain dataset describe`](dataset/describe.md)
 
 
 4.  **Maintenance**

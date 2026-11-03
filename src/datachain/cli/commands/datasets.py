@@ -1,8 +1,8 @@
 import json
 import sys
 from collections import Counter
-from collections.abc import Iterable, Iterator, Sequence
-from datetime import datetime
+from collections.abc import Iterable, Iterator
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from tabulate import tabulate
@@ -264,36 +264,34 @@ def edit_dataset(
 
 
 def _timestamp(value: datetime) -> str:
-    return value.strftime("%Y-%m-%d %H:%M:%S %Z").rstrip()
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z").rstrip()
 
 
 def _dataset_label(info: DatasetInfo) -> str:
     if isinstance(info, ListingInfo):
         return f"{info.uri}@{info.version}"
+    if info.namespace == "local" and info.project == "local":
+        return f"{info.name}@{info.version}"
     return str(DatasetIdentifier(info.namespace, info.project, info.name, info.version))
 
 
 def print_dataset_description(info: DatasetDescription) -> None:
     """Print a dataset description for the CLI."""
     selected = info.selected_version
-    labels = {entry.name: _dataset_label(entry.dataset) for entry in info.lineage or []}
+    entries = [
+        entry
+        for entry in [*(info.dependencies or []), *(info.dependents or [])]
+        if entry is not None
+    ]
+    labels = {entry.name: _dataset_label(entry.dataset) for entry in entries}
     counts = Counter(labels.values())
-    for entry in info.lineage or []:
+    for entry in entries:
         label = labels[entry.name]
         if counts[label] > 1 and isinstance(entry.dataset, ListingInfo):
             kind = "all versions" if entry.dataset.versions else "current only"
             labels[entry.name] = f"{label} ({kind})"
-
-    def names(values: Sequence[str | None] | None) -> str:
-        if values is None:
-            return "unavailable"
-        return (
-            ", ".join(
-                labels.get(value, value) if value else "unavailable dependency"
-                for value in values
-            )
-            or "none recorded"
-        )
 
     print(f"Name: {_dataset_label(selected)}")
     print(f"Rows: {selected.num_objects}")
@@ -303,27 +301,22 @@ def print_dataset_description(info: DatasetDescription) -> None:
     print("Versions: " + ", ".join(info.available_versions))
     print("Schema:")
     info.schema.print_tree(start_at=2)
-    print("Sources: " + names(info.sources))
-    if info.lineage is None:
-        print("Lineage: unavailable")
-    elif info.lineage or info.depends_on:
-        print("Lineage:")
-        print(f"  {_dataset_label(selected)}")
-        print(f"    depends_on: {names(info.depends_on)}")
-    else:
-        print("Lineage: none recorded")
-    for entry in info.lineage or []:
-        removed = " (removed)" if entry.removed else ""
-        print(f"  {labels.get(entry.name, _dataset_label(entry.dataset))}{removed}")
-        if entry.depends_on:
-            print(f"    depends_on: {names(entry.depends_on)}")
-    if info.dependents is None:
-        print("Dependents: unavailable")
-    else:
-        print("Dependents:" + ("" if info.dependents else " none recorded"))
-    for entry in info.dependents or []:
-        removed = " (removed)" if entry.removed else ""
-        print(f"  {labels.get(entry.name, _dataset_label(entry.dataset))}{removed}")
+    for title, dependencies in [
+        ("Dependencies", info.dependencies),
+        ("Dependents", info.dependents),
+    ]:
+        if dependencies is None:
+            print(f"{title}: unavailable")
+        elif not dependencies:
+            print(f"{title}: none recorded")
+        else:
+            print(f"{title}:")
+            for dependency in dependencies:
+                if dependency is None:
+                    print("  unavailable dependency")
+                else:
+                    removed = " (removed)" if dependency.removed else ""
+                    print(f"  {labels[dependency.name]}{removed}")
     if job := info.job:
         print(f"Job: {job.id}")
         print(f"Job_status: {JobStatus(job.status).name}")

@@ -1,4 +1,6 @@
 import json
+import time
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -6,7 +8,7 @@ import datachain as dc
 from datachain.cli.commands.datasets import describe_dataset_cmd, group_dataset_versions
 from datachain.client import Client
 from datachain.data_storage import JobStatus
-from datachain.dataset import DatasetDependency, DatasetStatus
+from datachain.dataset import DatasetStatus
 from datachain.error import DatasetNotFoundError, DatasetVersionNotFoundError
 from datachain.fs.utils import path_to_fsspec_uri
 from datachain.lib.dataset_info import DatasetInfo
@@ -94,6 +96,11 @@ def prefix(test_session):
 
 
 @pytest.fixture
+def display_prefix(prefix):
+    return "" if prefix == "local.local" else prefix + "."
+
+
+@pytest.fixture
 def lineage(test_session):
     dc.read_values(value=[1, 2], session=test_session).save(
         "source", version="1.0.0", query_script="MODEL = 'v1'\n"
@@ -151,29 +158,26 @@ def test_describe_only_complete_versions(lineage, describe, prefix):
         describe_dataset_cmd(lineage, "missing")
 
 
-def test_describe_text(lineage, capsys, prefix):
+def test_describe_text(lineage, capsys, display_prefix):
     describe_dataset_cmd(lineage, "derived")
     output = capsys.readouterr().out
-    assert f"Name: {prefix}.derived@1.0.0\nRows: 2\n" in output
+    assert f"Name: {display_prefix}derived@1.0.0\nRows: 2\n" in output
     assert "Versions: 1.0.0\nSchema:\n  value: int\n" in output
     assert (
-        "Sources: none recorded\n"
-        "Lineage:\n"
-        f"  {prefix}.derived@1.0.0\n"
-        f"    depends_on: {prefix}.source@1.0.0\n"
-        f"  {prefix}.source@1.0.0\n"
-        "Dependents: none recorded\n"
+        f"Dependencies:\n  {display_prefix}source@1.0.0\nDependents: none recorded\n"
     ) in output
+    assert "Sources:" not in output and "Lineage:" not in output
+    assert "local.local." not in output
 
     describe_dataset_cmd(lineage, "source@1.0.0")
     output = capsys.readouterr().out
     assert (
-        f"Lineage: none recorded\nDependents:\n  {prefix}.derived@1.0.0\n"
+        f"Dependencies: none recorded\nDependents:\n  {display_prefix}derived@1.0.0\n"
     ) in output
     assert "Script:\nMODEL = 'v1'\n" in output
 
 
-def test_describe_storage_lineage_reads_metadata_only(
+def test_describe_storage_dependencies_read_metadata_only(
     test_session, tmp_path, monkeypatch, capsys, describe, prefix
 ):
     path = tmp_path / "source with spaces"
@@ -183,76 +187,59 @@ def test_describe_storage_lineage_reads_metadata_only(
     dc.read_dataset("inventory", session=test_session).save("report")
 
     def forbidden(*args, **kwargs):
-        raise AssertionError("describe must only read recorded metadata")
+        raise AssertionError("describe must only read direct recorded metadata")
 
     monkeypatch.setattr(Client, "get_implementation", forbidden)
     monkeypatch.setattr(test_session.catalog.warehouse, "get_table", forbidden)
+    monkeypatch.setattr(
+        test_session.catalog, "get_dataset_dependencies_by_ids", forbidden
+    )
     uri = path_to_fsspec_uri(str(path)) + "/"
     listing = test_session.catalog.get_dataset_dependencies("inventory", "1.0.0")[0]
     assert listing is not None
     listing_ref = (
         f"{listing.namespace}.{listing.project}.{listing.name}@{listing.version}"
     )
-    typed = dc.describe_dataset("report", session=test_session)
-    storage = typed.lineage[1]
+    typed = dc.describe_dataset("inventory", session=test_session)
+    storage = typed.dependencies[0]
     assert isinstance(storage.dataset, ListingInfo)
     assert storage.dataset.uri == uri
     assert storage.dataset.version == listing.version
     assert storage.name == listing_ref
     assert storage.num_objects == 1
-    info = describe(test_session.catalog, "report")
-    assert info["sources"] == [listing_ref]
-    assert info["depends_on"] == [f"{prefix}.inventory@1.0.0"]
-    assert [
-        (e["name"], e["type"], e["num_objects"], e["removed"], e["depends_on"])
-        for e in info["lineage"]
-    ] == [
-        (f"{prefix}.inventory@1.0.0", "dataset", 1, False, [listing_ref]),
-        (listing_ref, "storage", 1, False, []),
+    info = describe(test_session.catalog, "inventory")
+    assert [(e["name"], e["type"]) for e in info["dependencies"]] == [
+        (listing_ref, "storage")
     ]
+    assert not {"sources", "lineage", "depends_on"} & info.keys()
+    assert "depends_on" not in info["dependencies"][0]
+    report = describe(test_session.catalog, "report")
+    assert [e["name"] for e in report["dependencies"]] == [f"{prefix}.inventory@1.0.0"]
 
-    describe_dataset_cmd(test_session.catalog, "report")
+    describe_dataset_cmd(test_session.catalog, "inventory")
     output = capsys.readouterr().out
-    assert (
-        f"  {prefix}.inventory@1.0.0\n    depends_on: {uri}@1.0.0\n  {uri}@1.0.0\n"
-    ) in output
+    assert f"Dependencies:\n  {uri}@1.0.0\n" in output
     assert "Schema:\n  file: File@v1\n    source: str\n" in output
     assert "lst__" not in output
 
 
-def test_describe_lineage_lists_each_version_once(test_session, describe, prefix):
-    def read(name, version=None):
-        return dc.read_dataset(name, version=version, session=test_session)
-
+def test_describe_dependencies_keep_exact_versions(test_session, describe, prefix):
     dc.read_values(value=[1, 2], session=test_session).save("source", version="1.0.0")
-    read("source", "1.0.0").save("first")
     dc.read_values(value=[3], session=test_session).save("source", version="2.0.0")
-    read("first").union(read("source", "2.0.0")).save("second")
-    read("first").union(read("second")).save("top")
+    dc.read_dataset("source@1.0.0", session=test_session).union(
+        dc.read_dataset("source@2.0.0", session=test_session)
+    ).save("top")
 
     info = describe(test_session.catalog, "top")
-    assert sorted(info["depends_on"]) == [
-        f"{prefix}.first@1.0.0",
-        f"{prefix}.second@1.0.0",
+    assert [(e["name"], e["num_objects"]) for e in info["dependencies"]] == [
+        (f"{prefix}.source@1.0.0", 2),
+        (f"{prefix}.source@2.0.0", 1),
     ]
-    lineage = {
-        e["name"]: (e["num_objects"], sorted(e["depends_on"])) for e in info["lineage"]
-    }
-    assert len(lineage) == len(info["lineage"])
-    assert lineage == {
-        f"{prefix}.first@1.0.0": (2, [f"{prefix}.source@1.0.0"]),
-        f"{prefix}.second@1.0.0": (
-            3,
-            [f"{prefix}.first@1.0.0", f"{prefix}.source@2.0.0"],
-        ),
-        f"{prefix}.source@1.0.0": (2, []),
-        f"{prefix}.source@2.0.0": (1, []),
-    }
 
 
 @pytest.mark.parametrize("keep_metadata", [False, True])
 def test_describe_removed_dependency(
-    test_session, capsys, describe, prefix, keep_metadata
+    test_session, capsys, describe, prefix, display_prefix, keep_metadata
 ):
     catalog = test_session.catalog
     dc.read_values(value=[1, 2], session=test_session).save("source")
@@ -261,20 +248,19 @@ def test_describe_removed_dependency(
 
     info = describe(catalog, "derived")
     if keep_metadata:
-        assert info["depends_on"] == [f"{prefix}.source@1.0.0"]
-        assert [(e["num_objects"], e["removed"]) for e in info["lineage"]] == [
+        assert info["dependencies"][0]["name"] == f"{prefix}.source@1.0.0"
+        assert [(e["num_objects"], e["removed"]) for e in info["dependencies"]] == [
             (2, True)
         ]
     else:
-        assert info["depends_on"] == [None]
-        assert info["lineage"] == []
+        assert info["dependencies"] == [None]
 
     describe_dataset_cmd(catalog, "derived")
     output = capsys.readouterr().out
     expected = (
-        f"  {prefix}.source@1.0.0 (removed)\n"
+        f"  {display_prefix}source@1.0.0 (removed)\n"
         if keep_metadata
-        else "    depends_on: unavailable dependency\n"
+        else "  unavailable dependency\n"
     )
     assert expected in output
     assert "Script:\nNo script recorded.\n" in output
@@ -286,40 +272,6 @@ def test_describe_text_includes_description(test_session, capsys):
     )
     describe_dataset_cmd(test_session.catalog, "source")
     assert "Description: Recorded labels\n" in capsys.readouterr().out
-
-
-def test_describe_shared_lineage_populates_each_edge_once(
-    test_session, describe, monkeypatch
-):
-    metastore = test_session.catalog.metastore
-    previous = []
-    edge_count = 0
-    for layer in range(18):
-        current = []
-        for side in range(2):
-            record = metastore.create_dataset(name=f"layer_{layer}_{side}")
-            record, _ = metastore.create_dataset_version(
-                record, "1.0.0", status=DatasetStatus.COMPLETE, num_objects=1
-            )
-            for parent in previous:
-                metastore.add_dataset_dependency(record, "1.0.0", parent, "1.0.0")
-                edge_count += 1
-            current.append(record)
-        previous = current
-
-    original = DatasetDependency.__setattr__
-    writes = 0
-
-    def bounded(self, name, value):
-        nonlocal writes
-        if name == "dependencies":
-            writes += 1
-            assert writes <= 4 * edge_count
-        original(self, name, value)
-
-    monkeypatch.setattr(DatasetDependency, "__setattr__", bounded)
-    info = describe(test_session.catalog, "layer_17_0")
-    assert len(info["lineage"]) == 34
 
 
 @pytest.mark.parametrize(
@@ -350,8 +302,7 @@ def test_describe_keeps_listing_kinds_apart(test_session, describe, capsys, uri)
         full, "2.0.0", status=DatasetStatus.COMPLETE, num_objects=99
     )
     info = describe(test_session.catalog, "top")
-    assert len(set(info["depends_on"])) == 2
-    assert set(info["depends_on"]) == {e["name"] for e in info["lineage"]}
+    assert len({e["name"] for e in info["dependencies"]}) == 2
     listing_prefix = (
         f"{metastore.system_namespace_name}.{metastore.listing_project_name}"
     )
@@ -359,11 +310,11 @@ def test_describe_keeps_listing_kinds_apart(test_session, describe, capsys, uri)
         f"{listing_prefix}.lst__{uri}@1.0.0": 10,
         f"{listing_prefix}.lst__current__{uri}@1.0.0": 3,
     }
-    assert {e["name"]: e["num_objects"] for e in info["lineage"]} == expected
-    assert all("listing_kind" not in e and "ref" not in e for e in info["lineage"])
+    assert {e["name"]: e["num_objects"] for e in info["dependencies"]} == expected
+    assert all("listing_kind" not in e and "ref" not in e for e in info["dependencies"])
     describe_dataset_cmd(test_session.catalog, "top")
     output = capsys.readouterr().out
-    assert output.count(f"{uri}@1.0.0") == 6
+    assert output.count(f"{uri}@1.0.0") == 2
     assert f"{uri}@1.0.0 (all versions)" in output
     assert f"{uri}@1.0.0 (current only)" in output
 
@@ -391,11 +342,14 @@ def test_describe_python_api(lineage, test_session, prefix, capsys, explicit_sco
     assert [v.num_objects for v in info.versions] == [2, 1]
     assert info.schema.serialize()["value"] == "int"
     assert info.dependents[0].name == f"{prefix}.derived@1.0.0"
-    assert info.dependents[0].depends_on is None
     assert capsys.readouterr().out == ""
     payload = info.to_dict()
     assert "ref" not in payload and "version" not in payload
-    for item in [*payload["versions"], *payload["lineage"], *payload["dependents"]]:
+    for item in [
+        *payload["versions"],
+        *payload["dependencies"],
+        *payload["dependents"],
+    ]:
         assert "name" in item
         assert "ref" not in item and "version" not in item
     assert json.loads(json.dumps(payload)) == payload
@@ -423,8 +377,6 @@ def test_describe_all_available_versions(test_session, capsys):
 
 @pytest.mark.parametrize("job_state", ["recorded", "missing", "none"])
 def test_describe_recorded_jobs(test_session, capsys, monkeypatch, job_state):
-    from datetime import UTC, datetime
-
     from datachain.job import Job
 
     metastore = test_session.catalog.metastore
@@ -496,7 +448,9 @@ def test_describe_recorded_jobs(test_session, capsys, monkeypatch, job_state):
     if job_state == "recorded":
         assert f"Job: {job_id}\nJob_status: COMPLETE\n" in output
         assert (
-            "Job_finished: 2026-11-03 12:00:00 UTC\nWorkers: 4\nPython: 3.12\n"
+            "Job_finished: "
+            + finished_at.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z").rstrip()
+            + "\nWorkers: 4\nPython: 3.12\n"
             in output
         )
     elif job_state == "missing":
@@ -506,7 +460,7 @@ def test_describe_recorded_jobs(test_session, capsys, monkeypatch, job_state):
 
 
 @pytest.mark.parametrize("json_output", [False, True])
-def test_describe_cli_dispatch(lineage, capsys, prefix, json_output):
+def test_describe_cli_dispatch(lineage, capsys, prefix, display_prefix, json_output):
     from datachain.cli import get_parser, handle_dataset_command
 
     command = ["dataset", "describe", "source@1.0.0"]
@@ -518,11 +472,11 @@ def test_describe_cli_dispatch(lineage, capsys, prefix, json_output):
     if json_output:
         assert json.loads(output)["name"] == f"{prefix}.source@1.0.0"
     else:
-        assert output.startswith(f"Name: {prefix}.source@1.0.0\n")
+        assert output.startswith(f"Name: {display_prefix}source@1.0.0\n")
         assert "Versions: 1.0.0, 2.0.0\n" in output
 
 
-def test_describe_nondefault_namespace_and_project(test_session, monkeypatch):
+def test_describe_nondefault_namespace_and_project(test_session, monkeypatch, capsys):
     metastore = test_session.catalog.metastore
     monkeypatch.setenv("DATACHAIN_IS_STUDIO", "true")
     project = metastore.create_project("research", "analysis")
@@ -539,6 +493,8 @@ def test_describe_nondefault_namespace_and_project(test_session, monkeypatch):
     ]:
         assert info.name == "research.analysis.scoped@2.0.0"
         assert info.selected_version.num_objects == 2
+    describe_dataset_cmd(test_session.catalog, "research.analysis.scoped")
+    assert capsys.readouterr().out.startswith("Name: research.analysis.scoped@2.0.0\n")
     with pytest.raises(DatasetNotFoundError):
         dc.describe_dataset("scoped", session=test_session)
 
@@ -564,7 +520,9 @@ def test_describe_preserves_unresolved_schema(test_session, describe):
     assert describe(test_session.catalog, "legacy")["schema"] == schema
 
 
-def test_describe_jobs_include_lineage_and_dependents(test_session):
+def test_describe_jobs_include_direct_dependencies_and_dependents(
+    test_session, monkeypatch
+):
     metastore = test_session.catalog.metastore
 
     def record(name, job_id):
@@ -577,18 +535,89 @@ def test_describe_jobs_include_lineage_and_dependents(test_session):
             num_objects=1,
         )[0]
 
+    raw_job = metastore.create_job("raw", "")
+    raw = record("raw", raw_job)
     source_job = metastore.create_job("source", "")
     derived_job = metastore.create_job("derived", "")
     report_job = metastore.create_job("report", "")
     source = record("source", source_job)
     derived = record("derived", derived_job)
     report = record("report", report_job)
+    metastore.add_dataset_dependency(source, "1.0.0", raw, "1.0.0")
     metastore.add_dataset_dependency(derived, "1.0.0", source, "1.0.0")
     metastore.add_dataset_dependency(report, "1.0.0", derived, "1.0.0")
+    original = test_session.catalog.get_dataset
+    reads = []
+
+    def direct_only(name, *args, **kwargs):
+        assert name != "raw"
+        reads.append(name)
+        return original(name, *args, **kwargs)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("describe must not traverse the dependency graph")
+
+    monkeypatch.setattr(test_session.catalog, "get_dataset", direct_only)
+    monkeypatch.setattr(
+        test_session.catalog, "get_dataset_dependencies_by_ids", forbidden
+    )
     info = dc.describe_dataset("derived", session=test_session)
+    assert reads == ["source", "report"]
     assert info.job.id == derived_job
-    assert info.lineage[0].dataset.job_id == source_job
+    assert info.dependencies[0].dataset.job_id == source_job
     assert info.dependents[0].dataset.job_id == report_job
     assert set(info.jobs) == {source_job, derived_job, report_job}
     payload = info.to_dict()
     assert [job["id"] for job in payload["jobs"]] == sorted(info.jobs)
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="tzset is unavailable")
+@pytest.mark.parametrize(
+    "created_at,local_time",
+    [
+        (datetime(2026, 11, 1, 10, 2, tzinfo=UTC), "2026-11-01 02:02:00 PST"),
+        (datetime(2026, 7, 1, 10, 2, tzinfo=UTC), "2026-07-01 03:02:00 PDT"),
+        (datetime(2026, 11, 1, 10, 2), "2026-11-01 02:02:00 PST"),
+    ],
+)
+def test_describe_prints_local_time_and_keeps_json_utc(
+    test_session, monkeypatch, capsys, created_at, local_time
+):
+    from datachain.cli.commands.datasets import print_dataset_description
+
+    dc.read_values(value=[1], session=test_session).save("clock")
+    info = dc.describe_dataset("clock", session=test_session)
+    info.selected_version.created_at = created_at
+    info.selected_version.finished_at = created_at
+    info.job.created_at = created_at
+    info.job.finished_at = created_at
+    expected_utc = created_at.replace(tzinfo=UTC).isoformat()
+    try:
+        with monkeypatch.context() as patch:
+            patch.setenv("TZ", "America/Los_Angeles")
+            time.tzset()
+            print_dataset_description(info)
+            output = capsys.readouterr().out
+            assert f"Created: {local_time}\n" in output
+            assert f"Job_created: {local_time}\n" in output
+            assert f"Job_finished: {local_time}\n" in output
+            payload = info.to_dict()
+            assert payload["created_at"] == expected_utc
+            assert payload["finished_at"] == expected_utc
+            assert payload["jobs"][0]["created_at"] == expected_utc
+            assert payload["jobs"][0]["finished_at"] == expected_utc
+    finally:
+        time.tzset()
+
+
+def test_describe_json_normalizes_offsets_to_utc(test_session):
+    dc.read_values(value=[1], session=test_session).save("clock")
+    info = dc.describe_dataset("clock", session=test_session)
+    timestamp = datetime(
+        2026, 11, 1, 10, 2, tzinfo=timezone(timedelta(hours=5, minutes=30))
+    )
+    info.selected_version.created_at = timestamp
+    info.job.created_at = timestamp
+    payload = info.to_dict()
+    assert payload["created_at"] == "2026-11-01T04:32:00+00:00"
+    assert payload["jobs"][0]["created_at"] == "2026-11-01T04:32:00+00:00"

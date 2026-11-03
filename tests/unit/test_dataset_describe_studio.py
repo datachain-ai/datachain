@@ -78,7 +78,6 @@ def test_describe_studio_reads_metadata_only(
     assert info.selected_version.num_objects == (5 if version else 8)
     assert info.schema.serialize()["value"] == "int"
     assert info.selected_version.query_script == "process()"
-    assert info.sources == ["s3://bucket/photos/"]
     assert info.job.params == {}
     assert info.selected_version.params == {}
     assert "API_TOKEN" not in json.dumps(info.to_dict())
@@ -86,14 +85,14 @@ def test_describe_studio_reads_metadata_only(
     assert info.job.is_remote_execution is True
     assert not hasattr(info.job, "created_by")
     assert len(info.jobs) == 1
-    assert info.lineage is None and info.depends_on is None and info.dependents is None
-    assert info.to_dict()["lineage"] is None
+    assert info.dependencies is None and info.dependents is None
+    assert info.to_dict()["dependencies"] is None
     assert len(requests_mock.request_history) == 2
     assert all(r.method == "GET" for r in requests_mock.request_history)
     describe_dataset_cmd(test_session.catalog, name)
     output = capsys.readouterr().out
     assert output.startswith(f"Name: {info.name}\n")
-    assert "Lineage: unavailable\nDependents: unavailable\n" in output
+    assert "Dependencies: unavailable\nDependents: unavailable\n" in output
 
 
 @pytest.mark.parametrize("status", [403, 429])
@@ -187,7 +186,7 @@ def test_describe_metastore_without_dependents(test_session, monkeypatch):
         test_session.catalog.metastore, "get_direct_dataset_dependents", unavailable
     )
     info = dc.describe_dataset("recorded", session=test_session)
-    assert info.lineage == []
+    assert info.dependencies == []
     assert info.dependents is None
     assert info.to_dict()["dependents"] is None
 
@@ -214,7 +213,7 @@ def test_describe_studio_ignores_pulled_copy(test_session, studio_metadata, vers
     assert info.selected_version.version == "2.0.0"
     assert info.selected_version.num_objects == 8
     assert info.available_versions == ["1.0.0", "2.0.0"]
-    assert info.lineage is None
+    assert info.dependencies is None
 
 
 def test_describe_studio_missing_job(
@@ -281,7 +280,7 @@ def test_describe_uses_metastore_default_namespace(
     )
     info = dc.describe_dataset("teamuser.sandbox.recorded", session=test_session)
     assert info.selected_version.num_objects == 3
-    assert info.lineage == []
+    assert info.dependencies == []
     assert not requests_mock.called
 
 

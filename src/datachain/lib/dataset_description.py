@@ -1,7 +1,7 @@
 """Recorded dataset metadata for Python inspection and CLI rendering."""
 
 from dataclasses import dataclass, fields
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import cached_property
 from typing import Any
 
@@ -16,12 +16,18 @@ def _name(info: DatasetInfo) -> str:
     return str(DatasetIdentifier(info.namespace, info.project, info.name, info.version))
 
 
+def _timestamp(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).isoformat()
+
+
 def _version_dict(info: DatasetInfo) -> dict[str, Any]:
     return {
         "name": _name(info),
         "num_objects": info.num_objects,
-        "created_at": info.created_at.isoformat(),
-        "finished_at": info.finished_at.isoformat() if info.finished_at else None,
+        "created_at": _timestamp(info.created_at),
+        "finished_at": _timestamp(info.finished_at) if info.finished_at else None,
         "size": info.size,
         "status": info.status,
         "job_id": info.job_id,
@@ -32,17 +38,16 @@ def _job_dict(job: Job) -> dict[str, Any]:
     result = {f.name: getattr(job, f.name) for f in fields(Job)}
     for name, value in result.items():
         if isinstance(value, datetime):
-            result[name] = value.isoformat()
+            result[name] = _timestamp(value)
     return result
 
 
 @dataclass
 class DatasetDependencyInfo:
-    """A recorded ancestor or dependent, with its entire version's row count."""
+    """A recorded direct dependency or dependent and its saved version metadata."""
 
     dataset: DatasetInfo
     removed: bool = False
-    depends_on: list[str | None] | None = None
 
     @property
     def name(self) -> str:
@@ -60,13 +65,12 @@ class DatasetDependencyInfo:
             **_version_dict(self.dataset),
             "type": "storage" if isinstance(self.dataset, ListingInfo) else "dataset",
             "removed": self.removed,
-            "depends_on": self.depends_on,
         }
 
 
 @dataclass
 class DatasetDescription:
-    """A selected completed version, all available versions, and its lineage.
+    """A selected completed version, available versions, and direct dependencies.
 
     ``selected_version`` and ``versions`` use the same DatasetInfo model as
     ``dc.datasets()``. Storage dependencies use ListingInfo, as in ``dc.listings()``.
@@ -77,9 +81,7 @@ class DatasetDescription:
     feature_schema: dict[str, Any]
     versions: list[DatasetInfo]
     description: str | None
-    sources: list[str]
-    depends_on: list[str | None] | None
-    lineage: list[DatasetDependencyInfo] | None
+    dependencies: list[DatasetDependencyInfo | None] | None
     dependents: list[DatasetDependencyInfo] | None
     jobs: dict[str, Job] | None
 
@@ -111,10 +113,10 @@ class DatasetDescription:
             "description": self.description,
             "schema": self.feature_schema,
             "versions": [_version_dict(v) for v in self.versions],
-            "sources": self.sources,
-            "depends_on": self.depends_on,
-            "lineage": [entry.to_dict() for entry in self.lineage]
-            if self.lineage is not None
+            "dependencies": [
+                entry.to_dict() if entry else None for entry in self.dependencies
+            ]
+            if self.dependencies is not None
             else None,
             "dependents": [entry.to_dict() for entry in self.dependents]
             if self.dependents is not None
