@@ -61,7 +61,7 @@ def read_pandas(  # type: ignore[override]
 
 
 def _column_values(series: "pd.Series") -> list:
-    if series.dtype.kind == "M":
-        # NaT isn't a datetime value, so missing datetimes are stored as None.
-        return series.astype(object).where(series.notna(), None).tolist()
-    return series.tolist()
+    import pandas as pd
+
+    # NaT isn't a datetime value, so missing datetimes are stored as None.
+    return [None if v is pd.NaT else v for v in series.tolist()]

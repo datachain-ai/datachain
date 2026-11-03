@@ -183,10 +183,10 @@ def test_pandas_conversion_in_memory():
     assert chain.equals(df)
 
 
-def test_pandas_datetimes_floored_to_microseconds_with_nat_as_none(test_session):
-    df = pd.DataFrame(
-        {"id": [1, 2], "ts": pd.to_datetime(["2024-01-01 00:00:00.123456789", None])}
-    )
+@pytest.mark.parametrize("dtype", ["datetime64[ns]", object])
+def test_pandas_datetimes_floored_to_microseconds_with_nat_as_none(test_session, dtype):
+    ts = pd.Series([pd.Timestamp("2024-01-01 00:00:00.123456789"), pd.NaT], dtype=dtype)
+    df = pd.DataFrame({"id": [1, 2], "ts": ts})
 
     chain = dc.read_pandas(df, session=test_session).order_by("id")
 

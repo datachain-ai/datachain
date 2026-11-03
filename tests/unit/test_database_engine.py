@@ -1,9 +1,11 @@
 import base64
 import json
 import os
+import sys
+import types
 
 import pytest
-from sqlalchemy import Column, Integer, Table
+from sqlalchemy import Column, Integer, Table, select
 
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import (
@@ -71,6 +73,12 @@ def test_serialize(sqlite_db):
     assert obj3.db_file == ":memory:"
     assert obj3.clone_params() == sqlite_db.clone_params()
     obj3.close()
+
+
+def test_execute_during_pandas_import_succeeds(sqlite_db, monkeypatch):
+    monkeypatch.setitem(sys.modules, "pandas", types.ModuleType("pandas"))
+
+    assert list(sqlite_db.execute(select(1))) == [(1,)]
 
 
 def test_table(sqlite_db):

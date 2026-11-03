@@ -444,8 +444,11 @@ def adapt_datetime(val: datetime) -> str:
 def register_pandas_timestamp_adapter() -> None:
     # sqlite3 finds adapters by exact type, so adapt_datetime misses
     # pandas.Timestamp. pandas loads lazily, so this can't run in setup().
-    if (pd := sys.modules.get("pandas")) is not None:
-        sqlite3.register_adapter(pd.Timestamp, adapt_pandas_timestamp)
+    # pandas is in sys.modules before its import finishes, so Timestamp
+    # can still be missing.
+    timestamp = getattr(sys.modules.get("pandas"), "Timestamp", None)
+    if timestamp is not None:
+        sqlite3.register_adapter(timestamp, adapt_pandas_timestamp)
 
 
 def adapt_pandas_timestamp(val) -> str:
