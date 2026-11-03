@@ -6,6 +6,7 @@ import secrets
 import string
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Self, Union, cast
 from urllib.parse import urlparse
 
@@ -175,6 +176,10 @@ class AbstractWarehouse(ABC, Serializable):
                 ) from e
 
         if isinstance(val, col_python_type):
+            if col_python_type is datetime and value_type is not datetime:
+                # sqlite3 can't bind subclasses such as pandas.Timestamp.
+                # This drops nanoseconds, as the ClickHouse driver does.
+                return datetime.combine(val.date(), val.timetz())
             return val
         if col_python_type is float and isinstance(val, int):
             return float(val)
