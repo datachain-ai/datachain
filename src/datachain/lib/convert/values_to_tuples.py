@@ -1,5 +1,6 @@
 import itertools
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any
 
 from datachain.lib.data_model import (
@@ -101,7 +102,8 @@ def _infer_type_from_sequence(
         # Default to str if column is empty or all values are None
         return str
 
-    typ = type(first_element)
+    # pandas.Timestamp subclasses datetime and is stored as one.
+    typ = datetime if isinstance(first_element, datetime) else type(first_element)
 
     validate_chain_type(typ)
     if not is_chain_type(typ):

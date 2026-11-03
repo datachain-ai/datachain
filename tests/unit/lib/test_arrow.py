@@ -212,14 +212,25 @@ def test_read_parquet_multiple_struct_list_columns_roundtrip(test_session, tmp_p
     assert [order.amount for order in orders] == [5]
 
 
-def test_read_parquet_ns_timestamps_floored_to_microseconds(test_session, tmp_path):
-    ns = pa.array([-1, 1704067200123456789], type=pa.timestamp("ns"))
+# The 1969 value floors to a whole second because the ClickHouse driver stores
+# pre-1970 timestamps that have microseconds one second late.
+NANOSECONDS_1969 = pd.Timestamp("1969-12-31 23:59:59.0000005")
+FLOORED_1969 = datetime(1969, 12, 31, 23, 59, 59, tzinfo=UTC)
+
+
+def test_read_parquet_nanosecond_timestamps_floored_to_microseconds(
+    test_session, tmp_path
+):
+    timestamps = pa.array(
+        [NANOSECONDS_1969, pd.Timestamp("2024-01-01 00:00:00.123456789")],
+        type=pa.timestamp("ns"),
+    )
     table = pa.table(
         {
-            "ts": ns,
-            "utc": ns.cast(pa.timestamp("ns", tz="UTC")),
-            "event": pa.StructArray.from_arrays([ns], ["ts"]),
-            "history": pa.ListArray.from_arrays([0, 1, 2], ns),
+            "ts": timestamps,
+            "utc": timestamps.cast(pa.timestamp("ns", tz="UTC")),
+            "event": pa.StructArray.from_arrays([timestamps], ["ts"]),
+            "history": pa.ListArray.from_arrays([0, 1, 2], timestamps),
         }
     )
     path = tmp_path / "data.parquet"
@@ -227,30 +238,25 @@ def test_read_parquet_ns_timestamps_floored_to_microseconds(test_session, tmp_pa
 
     chain = dc.read_parquet(path.as_posix(), session=test_session).order_by("ts")
 
-    expected = [
-        datetime(1969, 12, 31, 23, 59, 59, 999999, tzinfo=UTC),
-        datetime(2024, 1, 1, 0, 0, 0, 123456, tzinfo=UTC),
-    ]
+    expected = [FLOORED_1969, datetime(2024, 1, 1, 0, 0, 0, 123456, tzinfo=UTC)]
     assert chain.to_values("ts") == expected
     assert chain.to_values("utc") == expected
     assert [e.ts for e in chain.to_values("event")] == expected
     assert [h[0] for h in chain.to_values("history")] == expected
 
 
-def test_parse_tabular_ns_timestamp_dictionary_floored_to_microseconds(
+def test_parse_tabular_nanosecond_timestamp_dictionary_floored_to_microseconds(
     test_session, tmp_path
 ):
-    ts = pa.array([-1], type=pa.timestamp("ns")).dictionary_encode()
+    timestamps = pa.array([NANOSECONDS_1969], type=pa.timestamp("ns"))
     path = tmp_path / "data.arrow"
-    feather.write_feather(pa.table({"ts": ts}), path)
+    feather.write_feather(pa.table({"ts": timestamps.dictionary_encode()}), path)
 
     chain = dc.read_storage(path.as_posix(), session=test_session).parse_tabular(
         format="ipc"
     )
 
-    assert chain.to_values("ts") == [
-        datetime(1969, 12, 31, 23, 59, 59, 999999, tzinfo=UTC)
-    ]
+    assert chain.to_values("ts") == [FLOORED_1969]
 
 
 def test_read_csv_fractional_timestamps_floored_to_microseconds(test_session, tmp_path):

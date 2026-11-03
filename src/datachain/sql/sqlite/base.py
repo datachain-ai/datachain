@@ -441,6 +441,18 @@ def adapt_datetime(val: datetime) -> str:
     return _serialize_datetime(val)
 
 
+def register_pandas_timestamp_adapter() -> None:
+    # sqlite3 finds adapters by exact type, so adapt_datetime misses
+    # pandas.Timestamp. pandas loads lazily, so this can't run in setup().
+    if (pd := sys.modules.get("pandas")) is not None:
+        sqlite3.register_adapter(pd.Timestamp, adapt_pandas_timestamp)
+
+
+def adapt_pandas_timestamp(val) -> str:
+    # Floors to microseconds, as ClickHouse does.
+    return adapt_datetime(val.to_pydatetime(warn=False))
+
+
 def convert_datetime(val: bytes) -> datetime:
     parsed = datetime.fromisoformat(val.decode())
     return _normalize_datetime_for_read(parsed)

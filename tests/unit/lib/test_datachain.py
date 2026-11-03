@@ -183,6 +183,19 @@ def test_pandas_conversion_in_memory():
     assert chain.equals(df)
 
 
+def test_pandas_datetimes_floored_to_microseconds_with_nat_as_none(test_session):
+    df = pd.DataFrame(
+        {"id": [1, 2], "ts": pd.to_datetime(["2024-01-01 00:00:00.123456789", None])}
+    )
+
+    chain = dc.read_pandas(df, session=test_session).order_by("id")
+
+    assert chain.to_values("ts") == [
+        dt.datetime(2024, 1, 1, 0, 0, 0, 123456, tzinfo=dt.UTC),
+        None,
+    ]
+
+
 def test_pandas_uppercase_columns(test_session):
     data = {
         "FirstName": ["Alice", "Bob", "Charlie", "David", "Eva"],

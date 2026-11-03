@@ -42,7 +42,10 @@ from datachain.namespace import Namespace
 from datachain.progress import tqdm
 from datachain.project import Project
 from datachain.sql.sqlite import create_user_defined_sql_functions, sqlite_dialect
-from datachain.sql.sqlite.base import load_usearch_extension
+from datachain.sql.sqlite.base import (
+    load_usearch_extension,
+    register_pandas_timestamp_adapter,
+)
 from datachain.sql.types import SQLType
 from datachain.utils import DataChainDir, batched_it
 
@@ -251,16 +254,19 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         if self.is_closed:
             # Reconnect in case of being closed previously.
             self._reconnect()
+        register_pandas_timestamp_adapter()
         return self.db.execute(*self.compile_to_args(query))
 
     @retry_sqlite_locks
     def executemany(self, sql: str, params) -> None:
+        register_pandas_timestamp_adapter()
         self.db.executemany(sql, params)
 
     @retry_sqlite_locks
     def execute_str(self, sql: str, parameters=None) -> sqlite3.Cursor:
         if parameters is None:
             return self.db.execute(sql)
+        register_pandas_timestamp_adapter()
         return self.db.execute(sql, parameters)
 
     def list_tables(self, pattern: str = "") -> list[str]:
