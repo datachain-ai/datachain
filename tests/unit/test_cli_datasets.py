@@ -200,7 +200,7 @@ def test_describe_storage_dependencies_read_metadata_only(
     listing_ref = (
         f"{listing.namespace}.{listing.project}.{listing.name}@{listing.version}"
     )
-    typed = dc.describe_dataset("inventory", session=test_session)
+    typed = dc.describe("inventory", session=test_session)
     storage = typed.dependencies[0]
     assert isinstance(storage.dataset, ListingInfo)
     assert storage.dataset.uri == uri
@@ -321,6 +321,8 @@ def test_describe_keeps_listing_kinds_apart(test_session, describe, capsys, uri)
 
 @pytest.mark.parametrize("explicit_scope", [False, True])
 def test_describe_python_api(lineage, test_session, prefix, capsys, explicit_scope):
+    from datachain import describe as describe_saved
+
     metastore = lineage.metastore
     scope = (
         {
@@ -331,7 +333,7 @@ def test_describe_python_api(lineage, test_session, prefix, capsys, explicit_sco
         else {}
     )
     with test_session:
-        info = dc.describe_dataset("source@1.0.0", **scope)
+        info = describe_saved("source@1.0.0", **scope)
     assert isinstance(info, dc.DatasetDescription)
     assert isinstance(info.selected_version, DatasetInfo)
     assert info.name == f"{prefix}.source@1.0.0"
@@ -362,10 +364,10 @@ def test_describe_all_available_versions(test_session, capsys):
         record, _ = metastore.create_dataset_version(
             record, f"{major}.0.0", status=DatasetStatus.COMPLETE, num_objects=major
         )
-    info = dc.describe_dataset("history", session=test_session)
+    info = dc.describe("history", session=test_session)
     assert info.selected_version.version == "55.0.0"
     assert info.available_versions == [f"{major}.0.0" for major in range(1, 56)]
-    older = dc.describe_dataset("history@2.0.0", session=test_session)
+    older = dc.describe("history@2.0.0", session=test_session)
     assert older.selected_version.num_objects == 2
     assert older.available_versions == info.available_versions
     describe_dataset_cmd(test_session.catalog, "history")
@@ -423,7 +425,7 @@ def test_describe_recorded_jobs(test_session, capsys, monkeypatch, job_state):
         return original(ids)
 
     monkeypatch.setattr(metastore, "list_jobs_by_ids", load)
-    info = dc.describe_dataset("job_output", session=test_session)
+    info = dc.describe("job_output", session=test_session)
     assert calls == ([[saved_job_id]] if saved_job_id else [])
     assert info.selected_version.job_id == saved_job_id
     payload = info.to_dict()
@@ -485,18 +487,18 @@ def test_describe_nondefault_namespace_and_project(test_session, monkeypatch, ca
         record, "2.0.0", status=DatasetStatus.COMPLETE, num_objects=2
     )
     for info in [
-        dc.describe_dataset("research.analysis.scoped", session=test_session),
-        dc.describe_dataset(
+        dc.describe("research.analysis.scoped", session=test_session),
+        dc.describe(
             "scoped", namespace="research", project="analysis", session=test_session
         ),
-        dc.describe_dataset("scoped", "research", "analysis", "2.0.0", test_session),
+        dc.describe("scoped", "research", "analysis", "2.0.0", test_session),
     ]:
         assert info.name == "research.analysis.scoped@2.0.0"
         assert info.selected_version.num_objects == 2
     describe_dataset_cmd(test_session.catalog, "research.analysis.scoped")
     assert capsys.readouterr().out.startswith("Name: research.analysis.scoped@2.0.0\n")
     with pytest.raises(DatasetNotFoundError):
-        dc.describe_dataset("scoped", session=test_session)
+        dc.describe("scoped", session=test_session)
 
 
 def test_describe_preserves_unresolved_schema(test_session, describe):
@@ -514,7 +516,7 @@ def test_describe_preserves_unresolved_schema(test_session, describe):
         feature_schema=schema,
         num_objects=5,
     )
-    info = dc.describe_dataset("legacy", session=test_session)
+    info = dc.describe("legacy", session=test_session)
     assert info.feature_schema == schema
     assert info.to_dict()["schema"] == schema
     assert describe(test_session.catalog, "legacy")["schema"] == schema
@@ -561,7 +563,7 @@ def test_describe_jobs_include_direct_dependencies_and_dependents(
     monkeypatch.setattr(
         test_session.catalog, "get_dataset_dependencies_by_ids", forbidden
     )
-    info = dc.describe_dataset("derived", session=test_session)
+    info = dc.describe("derived", session=test_session)
     assert reads == ["source", "report"]
     assert info.job.id == derived_job
     assert info.dependencies[0].dataset.job_id == source_job
@@ -586,7 +588,7 @@ def test_describe_prints_local_time_and_keeps_json_utc(
     from datachain.cli.commands.datasets import print_dataset_description
 
     dc.read_values(value=[1], session=test_session).save("clock")
-    info = dc.describe_dataset("clock", session=test_session)
+    info = dc.describe("clock", session=test_session)
     info.selected_version.created_at = created_at
     info.selected_version.finished_at = created_at
     info.job.created_at = created_at
@@ -612,7 +614,7 @@ def test_describe_prints_local_time_and_keeps_json_utc(
 
 def test_describe_json_normalizes_offsets_to_utc(test_session):
     dc.read_values(value=[1], session=test_session).save("clock")
-    info = dc.describe_dataset("clock", session=test_session)
+    info = dc.describe("clock", session=test_session)
     timestamp = datetime(
         2026, 11, 1, 10, 2, tzinfo=timezone(timedelta(hours=5, minutes=30))
     )

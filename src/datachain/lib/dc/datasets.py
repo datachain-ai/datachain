@@ -269,7 +269,7 @@ def read_dataset(
     return chain
 
 
-def describe_dataset(
+def describe(
     name: str,
     namespace: str | None = None,
     project: str | None = None,
@@ -296,7 +296,7 @@ def describe_dataset(
         ```py
         import datachain as dc
 
-        info = dc.describe_dataset("images")
+        info = dc.describe("images")
         print(info.selected_version.num_objects)
         print(info.available_versions)
         info.schema.print_tree()

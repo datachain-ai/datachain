@@ -72,7 +72,7 @@ def test_describe_studio_reads_metadata_only(
     monkeypatch.setattr(test_session.catalog.warehouse, "get_table", forbidden)
     monkeypatch.setattr(test_session.catalog, "pull_dataset", forbidden)
     name = "remote.analytics.inventory" + (f"@{version}" if version else "")
-    info = dc.describe_dataset(name, session=test_session)
+    info = dc.describe(name, session=test_session)
     assert info.name == "remote.analytics.inventory@" + (version or "2.0.0")
     assert info.available_versions == ["1.0.0", "2.0.0"]
     assert info.selected_version.num_objects == (5 if version else 8)
@@ -104,7 +104,7 @@ def test_describe_studio_jobs_unavailable(
         status_code=status,
         json={"message": "Jobs access denied"},
     )
-    info = dc.describe_dataset("remote.analytics.inventory", session=test_session)
+    info = dc.describe("remote.analytics.inventory", session=test_session)
     assert info.selected_version.num_objects == 8
     assert info.selected_version.job_id == studio_metadata[1]["id"]
     assert info.jobs is None and info.job is None
@@ -122,13 +122,13 @@ def test_describe_studio_dataset_error(
     )
     error = DatasetNotFoundError if status == 404 else DataChainError
     with pytest.raises(error):
-        dc.describe_dataset("remote.analytics.inventory", session=test_session)
+        dc.describe("remote.analytics.inventory", session=test_session)
     assert len(requests_mock.request_history) == 1
 
 
 def test_describe_studio_missing_version(test_session, studio_metadata, requests_mock):
     with pytest.raises(DatasetVersionNotFoundError):
-        dc.describe_dataset("remote.analytics.inventory@99.0.0", session=test_session)
+        dc.describe("remote.analytics.inventory@99.0.0", session=test_session)
     assert len(requests_mock.request_history) == 1
 
 
@@ -136,7 +136,7 @@ def test_describe_missing_local_dataset_does_not_contact_studio(
     test_session, requests_mock
 ):
     with pytest.raises(DatasetNotFoundError):
-        dc.describe_dataset("missing", session=test_session)
+        dc.describe("missing", session=test_session)
     assert not requests_mock.called
 
 
@@ -185,7 +185,7 @@ def test_describe_metastore_without_dependents(test_session, monkeypatch):
     monkeypatch.setattr(
         test_session.catalog.metastore, "get_direct_dataset_dependents", unavailable
     )
-    info = dc.describe_dataset("recorded", session=test_session)
+    info = dc.describe("recorded", session=test_session)
     assert info.dependencies == []
     assert info.dependents is None
     assert info.to_dict()["dependents"] is None
@@ -197,7 +197,7 @@ def test_describe_rejects_incomplete_only_dataset(test_session):
     metastore.create_dataset_version(record, "1.0.0", status=DatasetStatus.CREATED)
 
     with pytest.raises(DatasetVersionNotFoundError, match="no completed version"):
-        dc.describe_dataset("incomplete", session=test_session)
+        dc.describe("incomplete", session=test_session)
 
 
 @pytest.mark.parametrize("version", [None, "2.0.0"])
@@ -209,7 +209,7 @@ def test_describe_studio_ignores_pulled_copy(test_session, studio_metadata, vers
         cached, "1.0.0", status=DatasetStatus.COMPLETE, num_objects=1
     )
     name = "remote.analytics.inventory" + (f"@{version}" if version else "")
-    info = dc.describe_dataset(name, session=test_session)
+    info = dc.describe(name, session=test_session)
     assert info.selected_version.version == "2.0.0"
     assert info.selected_version.num_objects == 8
     assert info.available_versions == ["1.0.0", "2.0.0"]
@@ -220,7 +220,7 @@ def test_describe_studio_missing_job(
     test_session, studio_metadata, requests_mock, capsys
 ):
     requests_mock.get("https://studio.test/api/datachain/jobs/", json=[])
-    info = dc.describe_dataset("remote.analytics.inventory", session=test_session)
+    info = dc.describe("remote.analytics.inventory", session=test_session)
     assert info.jobs == {}
     assert info.selected_version.job_id == studio_metadata[1]["id"]
     assert info.job is None
@@ -237,7 +237,7 @@ def test_describe_studio_jobs_error(test_session, studio_metadata, requests_mock
         json={"message": "Job request failed"},
     )
     with pytest.raises(DataChainError, match="Job request failed"):
-        dc.describe_dataset("remote.analytics.inventory", session=test_session)
+        dc.describe("remote.analytics.inventory", session=test_session)
 
 
 def test_describe_studio_distinct_producing_jobs(
@@ -258,7 +258,7 @@ def test_describe_studio_distinct_producing_jobs(
         return [jobs[request.qs["job_id"][0]]]
 
     requests_mock.get("https://studio.test/api/datachain/jobs/", json=job_response)
-    info = dc.describe_dataset("remote.analytics.inventory", session=test_session)
+    info = dc.describe("remote.analytics.inventory", session=test_session)
     assert set(info.jobs) == set(jobs)
     assert info.job.id == second["id"]
     assert info.selected_version.metrics == {"score": 0.8}
@@ -278,7 +278,7 @@ def test_describe_uses_metastore_default_namespace(
     metastore.create_dataset_version(
         record, "1.0.0", status=DatasetStatus.COMPLETE, num_objects=3
     )
-    info = dc.describe_dataset("teamuser.sandbox.recorded", session=test_session)
+    info = dc.describe("teamuser.sandbox.recorded", session=test_session)
     assert info.selected_version.num_objects == 3
     assert info.dependencies == []
     assert not requests_mock.called
@@ -297,7 +297,7 @@ def test_describe_storage_name_roundtrip(test_session, requests_mock, qualified)
     canonical = (
         f"{metastore.system_namespace_name}.{metastore.listing_project_name}.{name}"
     )
-    info = dc.describe_dataset(canonical if qualified else name, session=test_session)
+    info = dc.describe(canonical if qualified else name, session=test_session)
     assert info.name == canonical
     assert info.to_dict()["name"] == canonical
     assert info.selected_version.num_objects == 4

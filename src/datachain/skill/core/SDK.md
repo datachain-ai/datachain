@@ -462,7 +462,7 @@ dc.read_dataset("name")  # latest version
 dc.read_dataset("name", version="2.0.0")
 
 # Recorded metadata only: typed schema, all versions, direct dependencies and producing jobs
-info = dc.describe_dataset("name")
+info = dc.describe("name")
 info.available_versions
 info.selected_version.num_objects
 info.job  # Recorded Job or None

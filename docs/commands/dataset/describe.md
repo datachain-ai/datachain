@@ -43,12 +43,12 @@ JSON uses canonical dataset names with versions and UTC timestamps. Unavailable 
 
 ## Python
 
-`dc.describe_dataset()` returns a `DatasetDescription` with `DatasetInfo` versions, a typed schema and recorded `Job` objects.
+`dc.describe()` returns a `DatasetDescription` with `DatasetInfo` versions, a typed schema and recorded `Job` objects.
 
 ```python
 import datachain as dc
 
-info = dc.describe_dataset("joined@1.0.0")
+info = dc.describe("joined@1.0.0")
 print(info.available_versions)
 info.schema.print_tree()
 if info.job:

@@ -6,7 +6,7 @@ from .datachain import C, Column, ColumnExpr, DataChain, DataChainSchema
 from .datasets import (
     datasets,
     delete_dataset,
-    describe_dataset,
+    describe,
     move_dataset,
     read_dataset,
 )
@@ -33,7 +33,7 @@ __all__ = [
     "Sys",
     "datasets",
     "delete_dataset",
-    "describe_dataset",
+    "describe",
     "is_local",
     "is_studio",
     "list_storage",
