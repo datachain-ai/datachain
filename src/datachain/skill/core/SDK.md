@@ -4,8 +4,8 @@ Apply every rule below when generating DataChain Python code.
 
 ## Pre-Generation Checklist
 
-- [ ] **Every UDF has a known output type.** Functions passed to `.map()`, `.gen()`, or `.agg()` must have their return type resolved. See §2 Rule 2 — the #1 runtime error.
-- [ ] **No `from __future__ import annotations` in UDF modules.** It stringifies type hints; DataChain's signal-schema resolution then rejects the string-vs-class mismatch.
+- [ ] **Every UDF has a known output type.** Functions passed to `.map()`, `.batch_map()`, `.gen()`, or `.agg()` must have their return type resolved. See §2 Rule 2 — the #1 runtime error.
+- [ ] **Use resolvable type annotations.** Postponed annotations resolve in the function's module; define model types at module level. Use explicit `output=` when a batched return type cannot be resolved.
 - [ ] **Heavy-init resources load via `.setup()`**, not module-level lazy globals:
   ```python
   chain.setup(model=lambda: load_model()).map(result=run_model)
@@ -46,7 +46,7 @@ saved.to_csv("similar_results.csv")
 
 **What to save — the UDF rule:**
 
-- **Any chain that runs a UDF (`.map()`, `.gen()`, `.agg()`)** must be saved with `.save("name")`. UDFs embody domain logic and produce structured output worth preserving.
+- **Any chain that runs a UDF (`.map()`, `.batch_map()`, `.gen()`, `.agg()`)** must be saved with `.save("name")`. UDFs embody domain logic and produce structured output worth preserving.
 - **Final pipeline results.** Rankings, filtered cohorts, evaluation outputs, aggregations — always `.save("name")`.
 - **Chains with no UDFs** (`read_storage` + `filter`/`mutate`/`select` only) may remain transient — cheap to recompute, easy to read from the code.
 
@@ -206,7 +206,7 @@ Lineage is tracked automatically when a chain reads one dataset and saves anothe
          .map(emb=encode_image)
          .save("my_bucket_emb"))
 
-2. EVERY UDF MUST HAVE A KNOWN OUTPUT TYPE. A UDF passed to map/gen/agg without
+2. EVERY UDF MUST HAVE A KNOWN OUTPUT TYPE. A UDF passed to map/batch_map/gen/agg without
    a resolved return type defaults to str and crashes at runtime for any non-str
    value. This is the #1 source of production errors — enforce strictly.
 
@@ -250,7 +250,7 @@ Lineage is tracked automatically when a chain reads one dataset and saves anothe
     ✓ chain.mutate(stem=dc.func.path.file_stem(dc.C("file.path")))   # pure SQL
     ✗ chain.map(category=lambda file: file.path.split("/")[-2])  # downloads entire file
 
-4. COLUMN NAMING: keyword in map/gen/agg = new column name.
+4. COLUMN NAMING: keyword in map/batch_map/gen/agg = new column name.
    chain.map(embedding=fn)  → column is named "embedding"
 
 5. INPUT PARAM: The file column is always named "file" regardless of modality.
@@ -278,6 +278,10 @@ Lineage is tracked automatically when a chain reads one dataset and saves anothe
    large files; tune to memory and service limits. In batch_map, prefetch counts
    batches, so budget their combined file sizes. UDFs receiving only file.path
    and/or file.size through params= download nothing. Respect explicit settings.
+
+   For `batch_map`, prefetch counts BATCHES, so do not apply this formula: keep
+   prefetch=1 or 2. Up to 2 × prefetch + 1 batches can be on local disk per
+   process.
 
 8. CACHE ONLY WHEN NEEDED: Do not add cache=True by default. Use only when the
    same files are read multiple times (multi-stage pipelines), or the user asks.
@@ -310,12 +314,17 @@ Lineage is tracked automatically when a chain reads one dataset and saves anothe
     - Many files in a directory: dc.read_storage()
     read_storage() is for directory listing — don't use it for a single known file.
 
-13. ONE SIGNAL PER MAP/GEN/AGG: Each call accepts exactly one signal.
-   For multiple columns, chain calls or return a Pydantic BaseModel.
-   ✗ chain.map(a=fn1, b=fn2)              # ERROR: multiple signals
+13. NAMED FUNCTIONS: map() and batch_map() accept multiple named functions.
+    Each produces one output signal and needs a return annotation. A function can
+    read a sibling function's output by matching its parameter name. Do not combine
+    multiple named functions with params= or output=; bind columns by parameter
+    name. gen() and agg() accept one function per call. Prefer a Pydantic model
+    for related fields produced by one function.
+    ✓ chain.map(stem=get_stem, category=classify)
+    ✓ chain.batch_map(embedding=encode_batch, label=classify_batch, batch=32)
 
 14. NO TUPLE RETURNS, NO DICT RETURNS: Always prefer Pydantic BaseModel classes to tuple
-    or dict in map/gen/agg functions until user directly asks for tuple.
+    or dict in map/batch_map/gen/agg functions until user directly asks for tuple.
     ✓ def fn(file: dc.File) -> MyModel: ...   # named fields via BaseModel
     ✓ def fn(file: dc.File) -> int: ...       # single scalar
     ✗ def fn(file: dc.File) -> tuple[int, int]: ...  # → col_0, col_1
@@ -334,7 +343,7 @@ Lineage is tracked automatically when a chain reads one dataset and saves anothe
     ✗ def get_dims(file: dc.ImageFile) -> tuple[int, int]: ...
       chain.map(dims=get_dims, output={"width": int, "height": int})  # ← anti-pattern
 
-    **Scope.** This rule covers UDFs passed to `.map()`, `.gen()`, `.agg()` — their
+    **Scope.** This rule covers UDFs passed to `.map()`, `.batch_map()`, `.gen()`, `.agg()` — their
     return values become chain signals (columns). Tuple returns force auto-generated
     names (`col_0`, `col_1`) that downstream `.merge()` / `.select_except()` can't
     address. The rule does NOT apply to:
@@ -517,9 +526,44 @@ chain.file_diff(other)
 
 ```python
 chain.map(col_name=fn)  # 1 input → 1 output record
+chain.batch_map(col_name=fn, batch=32)  # lists in, one output per input row
 chain.gen(col_name=fn)  # 1 input → N output records
 chain.agg(col_name=fn, partition_by="key")
 ```
+
+### Batched inference: batch_map()
+
+Use `batch_map()` when a model takes many inputs per call; use `map()` for one
+row per call. `agg()` groups rows into N:M outputs; it is not an inference
+batcher.
+
+| Call | Column argument | Embedding return annotation | Explicit `output=` |
+|---|---|---|---|
+| `map(emb=encode_one)` | `dc.ImageFile` | `list[float]` | `list[float]` |
+| `batch_map(emb=encode_batch, batch=32)` | `list[dc.ImageFile]` | `list[list[float]]` | `list[float]` |
+
+```python
+def encode_batch(file: list[dc.ImageFile], model) -> list[list[float]]:
+    return model.encode([f.read() for f in file]).tolist()
+
+
+chain = (
+    dc.read_storage("s3://bucket/images/", type="image")
+    .setup(model=load_model)
+    .batch_map(emb=encode_batch, batch=32)
+    .save("image_embeddings")
+)
+```
+
+- `batch=` is required; pick a size that fits the model and device. `batch=1`
+  still passes lists.
+- Return one result per input row, in input order. `output=` describes ONE ROW.
+  Convert tensors to Python values with `.tolist()`.
+- Setup resources (`model` above) are not lists. For a class, use
+  `dc.BatchMapper`.
+- A row's result must not depend on the other rows in its batch.
+- `.settings(batch_size=N)` is database insert buffering, not the call size.
+  `parallel=` and `prefetch=` also go in `.settings(...)` (see rule 7).
 
 **Setup and settings:**
 
