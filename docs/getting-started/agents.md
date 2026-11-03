@@ -29,7 +29,7 @@ datachain skill install --target claude --local
 ```
 
 Omit `--local` to install for your user account. The default `datachain` skill
-includes recipes for inventories, media headers, batched inference, video and recording readers,
+includes recipes for inventories, media metadata, batched inference, video and recording readers,
 saved-result queries, updates and interrupted runs.
 
 For shared team datasets and compute, the skill can also guide agents using
@@ -48,8 +48,8 @@ Report file counts and bytes by source, folder and extension without downloading
 | Task | DataChain pattern |
 |---|---|
 | One-off inventory | `list_storage()` and one aggregation pass |
-| Media headers | A typed file's `get_info()` inside `map()`, with `prefetch=0` |
-| Batched inference | `BatchMapper` with `setup()`, then `batch_map(..., batch=32)` |
+| Media metadata | A typed file's `get_info()` inside `map()`, with `prefetch=0` |
+| Batched inference | A function with `setup()` and `batch_map(..., batch=32)` |
 | Video and recordings | Use `VideoFile.get_frames` or a Python MCAP reader in map/gen; retain source files and timestamps |
 | Saved results | Inspect datasets and recorded code, then query `read_dataset()` |
 | File updates | A compatible pipeline with `read_storage(..., update=True, delta=True)` |
