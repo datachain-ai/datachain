@@ -222,6 +222,30 @@ def test_pandas_lists_of_datetimes_floored_to_microseconds(test_session):
     ]
 
 
+def test_read_records_pandas_timestamps_floored_to_microseconds(test_session):
+    ts = pd.Timestamp("2024-01-01 00:00:00.123456789", tz="Europe/Berlin")
+
+    chain = dc.read_records(
+        [{"ts": ts}], schema={"ts": dt.datetime}, session=test_session
+    )
+
+    assert chain.to_values("ts") == [
+        dt.datetime(2023, 12, 31, 23, 0, 0, 123456, tzinfo=dt.UTC)
+    ]
+
+
+def test_map_returning_pandas_timestamps_floored_to_microseconds(test_session):
+    ts = pd.Timestamp("2024-01-01 00:00:00.123456789", tz="Europe/Berlin")
+
+    chain = dc.read_values(id=[1], session=test_session).map(
+        ts=lambda id: ts, output=dt.datetime
+    )
+
+    assert chain.to_values("ts") == [
+        dt.datetime(2023, 12, 31, 23, 0, 0, 123456, tzinfo=dt.UTC)
+    ]
+
+
 def test_pandas_uppercase_columns(test_session):
     data = {
         "FirstName": ["Alice", "Bob", "Charlie", "David", "Eva"],
