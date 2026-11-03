@@ -196,6 +196,21 @@ def test_pandas_datetimes_floored_to_microseconds_with_nat_as_none(test_session,
     ]
 
 
+def test_pandas_lists_of_datetimes_floored_to_microseconds(test_session):
+    ts = [pd.Timestamp("2024-01-01 00:00:00.123456789"), pd.Timestamp("2024-01-02")]
+    df = pd.DataFrame({"user": [1, 1], "ts": ts})
+    lists = df.groupby("user")["ts"].agg(list).reset_index()
+
+    chain = dc.read_pandas(lists, session=test_session)
+
+    assert chain.to_values("ts") == [
+        [
+            dt.datetime(2024, 1, 1, 0, 0, 0, 123456, tzinfo=dt.UTC),
+            dt.datetime(2024, 1, 2, tzinfo=dt.UTC),
+        ]
+    ]
+
+
 def test_pandas_uppercase_columns(test_session):
     data = {
         "FirstName": ["Alice", "Bob", "Charlie", "David", "Eva"],
