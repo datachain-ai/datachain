@@ -1,5 +1,3 @@
-from collections.abc import Iterator
-
 import pytest
 
 import datachain as dc
@@ -52,111 +50,6 @@ def test_delta_with_unchanged_static_input_replays_changed_records(
     assert refreshed == [3, 4]
 
 
-@pytest.mark.parametrize("changed", ["left", "right", "both"])
-@pytest.mark.parametrize("how", ["inner", "left", "full"])
-def test_delta_join_with_independent_changes(test_session, changed, how):
-    def source(name, ids, values, column):
-        dc.read_values(id=ids, **{column: values}, session=test_session).save(name)
-
-    source("join_left", [1, 2], [10, 20], "left_value")
-    source("join_right", [1, 2, 3], [100, 200, 300], "right_value")
-
-    def build(delta):
-        kwargs = {
-            "delta": delta,
-            "delta_on": "id",
-            "delta_unsafe": True,
-            "session": test_session,
-        }
-        return dc.read_dataset("join_left", **kwargs).merge(
-            dc.read_dataset("join_right", **kwargs),
-            on="id",
-            inner=how == "inner",
-            full=how == "full",
-        )
-
-    def change():
-        if changed in ("left", "both"):
-            source("join_left", [1, 3], [11, 30], "left_value")
-        if changed in ("right", "both"):
-            source("join_right", [1, 2, 4], [100, 201, 400], "right_value")
-
-    assert_delta_refresh(build, "join_result", change)
-
-
-@pytest.mark.parametrize("changed", ["left", "right"])
-@pytest.mark.parametrize("delete", [False, True])
-def test_delta_union_with_overlapping_source_keys(test_session, changed, delete):
-    def source(name, ids, values):
-        dc.read_values(id=ids, value=values, session=test_session).save(name)
-
-    source("left", [1, 2], [10, 20])
-    source("right", [1, 3], [100, 300])
-
-    def build(delta):
-        kwargs = {
-            "delta": delta,
-            "delta_on": "id",
-            "delta_unsafe": True,
-            "session": test_session,
-        }
-        return dc.read_dataset("left", **kwargs).union(
-            dc.read_dataset("right", **kwargs)
-        )
-
-    assert_delta_refresh(
-        build,
-        "overlap_result",
-        lambda: source(
-            changed, [4] if delete else [1, 4], [40] if delete else [11, 40]
-        ),
-    )
-
-
-@pytest.mark.parametrize("operation", ["union", "merge"])
-@pytest.mark.parametrize("static_first", [False, True])
-@pytest.mark.parametrize(
-    "change", ["static", "source_with_inline_lookup", "source", "delete"]
-)
-def test_delta_composed_query_refreshes_static_and_source_inputs(
-    test_session, operation, static_first, change
-):
-    def source(ids, values):
-        dc.read_values(id=ids, value=values, session=test_session).save("changing")
-
-    source([1, 2], [10, 20])
-    dc.read_values(id=[1, 9], value=[100, 900], session=test_session).save("static")
-
-    def build(delta):
-        changing = dc.read_dataset(
-            "changing",
-            delta=delta,
-            delta_on="id",
-            delta_unsafe=True,
-            session=test_session,
-        )
-        static = (
-            dc.read_values(id=[1, 9], value=[100, 900], session=test_session)
-            if change == "source_with_inline_lookup"
-            else dc.read_dataset("static", session=test_session)
-        )
-        left, right = (static, changing) if static_first else (changing, static)
-        return left.union(right) if operation == "union" else left.merge(right, on="id")
-
-    def update():
-        if change == "static":
-            dc.read_values(id=[2, 3], value=[201, 300], session=test_session).save(
-                "static"
-            )
-        else:
-            source(
-                [1, 3] if change == "delete" else [1, 2, 3],
-                [10, 30] if change == "delete" else [10, 21, 30],
-            )
-
-    assert_delta_refresh(build, "static_result", update)
-
-
 def test_full_rebuild_cleans_legacy_delta_results(test_session, tmp_path):
     data = tmp_path / "files"
     data.mkdir()
@@ -191,134 +84,14 @@ def test_full_rebuild_cleans_legacy_delta_results(test_session, tmp_path):
     assert sorted(legacy.to_values("value")) == [2, 3, 4]
 
 
-@pytest.mark.parametrize(
-    "operation",
-    ["limit", "offset", "distinct", "group_by", "agg", "subtract", "window"],
-)
-def test_delta_cross_record_operations_match_full_recompute(test_session, operation):
-    def total(id: list[int], value: list[int]) -> Iterator[tuple[int, int]]:
-        yield min(id), sum(value)
+@pytest.mark.parametrize("reuse", [False, True])
+def test_delta_subtracts_filtered_occurrence_of_same_source(test_session, reuse):
+    processed = []
 
-    def source(ids, values):
-        dc.read_values(id=ids, value=values, session=test_session).save("global_source")
+    def record(id) -> int:
+        processed.append(id)
+        return id * 10
 
-    dc.read_values(value=[10], session=test_session).save("excluded")
-
-    def build(delta):
-        chain = dc.read_dataset(
-            "global_source",
-            delta=delta,
-            delta_on="id",
-            delta_unsafe=True,
-            session=test_session,
-        )
-        if operation in ("limit", "offset"):
-            ordered = chain.order_by("id")
-            return ordered.limit(2) if operation == "limit" else ordered.offset(1)
-        if operation == "distinct":
-            return chain.distinct("id")
-        if operation == "group_by":
-            return chain.group_by(partition_by="id", value=func.sum("value"))
-        if operation == "agg":
-            return chain.agg(
-                total, partition_by="value", output={"id": int, "value": int}
-            )
-        if operation == "subtract":
-            return chain.subtract(
-                dc.read_dataset("excluded", session=test_session), on="value"
-            )
-        return chain.mutate(
-            value=func.row_number().over(
-                func.window(partition_by=C.id > 0, order_by="id")
-            )
-        )
-
-    source([1, 2, 3], [10, 20, 30])
-    assert_delta_refresh(
-        build,
-        "global_result",
-        lambda: source([2, 3, 4], [21, 30, 30]),
-        columns=("id", "value"),
-    )
-
-
-@pytest.mark.parametrize("static_first", [False, True])
-def test_storage_delta_refreshes_changed_static_union_input(
-    test_session, tmp_path, static_first
-):
-    changing = tmp_path / "changing"
-    static = tmp_path / "static"
-    changing.mkdir()
-    static.mkdir()
-    (changing / "a.txt").write_text("2")
-    (static / "b.txt").write_text("3")
-
-    def read_number(file: File) -> int:
-        return int(file.read_text())
-
-    def build(delta):
-        left = dc.read_storage(
-            changing, update=True, delta=delta, delta_unsafe=True, session=test_session
-        )
-        right = dc.read_storage(static, update=True, session=test_session)
-        chain = right.union(left) if static_first else left.union(right)
-        return chain.map(value=read_number)
-
-    build(True).save("static_storage_result")
-    (static / "b.txt").write_text("99")
-    result = build(True).save("static_storage_result")
-    assert sorted(result.to_iter("file.path", "value")) == [("a.txt", 2), ("b.txt", 99)]
-    assert build(True).save("static_storage_result").version == result.version
-
-
-@pytest.mark.parametrize("changed", ["left", "right"])
-@pytest.mark.parametrize("delete", [False, True])
-def test_storage_delta_union_preserves_other_source_with_identical_key(
-    test_session, tmp_path, changed, delete
-):
-    import shutil
-
-    left = tmp_path / "left"
-    right = tmp_path / "right"
-    left.mkdir()
-    (left / "a.txt").write_text("2")
-    shutil.copytree(left, right)
-
-    def read_number(file: File) -> int:
-        return int(file.read_text())
-
-    def build(delta):
-        kwargs = {
-            "update": True,
-            "delta": delta,
-            "delta_unsafe": True,
-            "session": test_session,
-        }
-        return (
-            dc.read_storage(left, **kwargs)
-            .union(dc.read_storage(right, **kwargs))
-            .map(value=read_number)
-        )
-
-    first = build(True).save("mirrored_result")
-    assert first.count() == 2
-    for field in ("file.path", "file.etag", "file.version"):
-        values = first.to_values(field)
-        assert values[0] == values[1]
-    path = (left if changed == "left" else right) / "a.txt"
-    if delete:
-        path.unlink()
-    else:
-        path.write_text("99")
-    result = build(True).save("mirrored_result")
-    assert sorted(result.to_iter("file.source", "file.path", "value")) == sorted(
-        build(False).to_iter("file.source", "file.path", "value")
-    )
-    assert sorted(result.to_values("value")) == ([2] if delete else [2, 99])
-    assert first.to_values("value") == [2, 2]
-
-
-def test_delta_subtracts_filtered_occurrence_of_same_source(test_session):
     def source(ids, groups, blocked):
         dc.read_values(
             id=ids, group=groups, blocked=blocked, session=test_session
@@ -332,14 +105,184 @@ def test_delta_subtracts_filtered_occurrence_of_same_source(test_session):
             delta_unsafe=True,
             session=test_session,
         )
-        return chain.subtract(chain.filter(C.blocked == 1), on="group")
+        chain = chain.subtract(chain.filter(C.blocked == 1), on="group")
+        if reuse:
+            chain = chain.filter(C.id < 3).union(chain.filter(C.id >= 3))
+        return chain.map(value=record)
 
     source([1, 2, 3], [10, 10, 20], [0, 1, 0])
     initial = build(True).save("self_subtract_result")
     assert initial.to_values("id") == [3]
     source([1, 2, 3, 4], [10, 10, 20, 30], [0, 1, 0, 0])
+    processed.clear()
     result = build(True).save("self_subtract_result")
+    assert processed == [4]
     assert (
         sorted(result.to_values("id")) == sorted(build(False).to_values("id")) == [3, 4]
     )
     assert initial.to_values("id") == [3]
+
+
+@pytest.mark.parametrize("changed", ["left", "right", "both"])
+@pytest.mark.parametrize("rename", [False, True])
+def test_delta_unsafe_union_replays_independent_append_only_sources(
+    test_session, changed, rename
+):
+    processed = []
+
+    def record(id) -> int:
+        processed.append(id)
+        return id * 10
+
+    def source(name, ids):
+        dc.read_values(
+            **{f"{name[0]}_id" if rename else "id": ids}, session=test_session
+        ).save(name)
+
+    def build(delta):
+        def read(name):
+            key = f"{name[0]}_id" if rename else "id"
+            chain = dc.read_dataset(
+                name,
+                delta=delta,
+                delta_on=key,
+                delta_result_on="id",
+                delta_unsafe=True,
+                session=test_session,
+            )
+            return chain.select(id=C(key)) if rename else chain
+
+        return read("left").union(read("right")).map(value=record)
+
+    source("left", [1, 2])
+    source("right", [10, 20])
+    first = build(True).save("independent_result")
+    if changed in ("left", "both"):
+        source("left", [1, 2, 3])
+    if changed in ("right", "both"):
+        source("right", [10, 20, 30])
+    processed.clear()
+    result = build(True).save("independent_result")
+    assert sorted(processed) == (
+        [3, 30] if changed == "both" else [3] if changed == "left" else [30]
+    )
+    assert sorted(result.to_iter("id", "value")) == sorted(
+        build(False).to_iter("id", "value")
+    )
+    assert sorted(first.to_values("id")) == [1, 2, 10, 20]
+    assert build(True).save("independent_result").version == result.version
+
+
+@pytest.mark.parametrize("static_first", [False, True])
+def test_delta_unsafe_union_with_static_input_does_not_recompute_source(
+    test_session, static_first
+):
+    processed = []
+
+    def record(id) -> int:
+        processed.append(id)
+        return id * 10
+
+    def build(delta):
+        changing = dc.read_dataset(
+            "changing",
+            delta=delta,
+            delta_on="id",
+            delta_unsafe=True,
+            session=test_session,
+        ).map(value=record)
+        static = dc.read_dataset("static", session=test_session)
+        left, right = (static, changing) if static_first else (changing, static)
+        return left.union(right)
+
+    dc.read_values(id=[1, 2], session=test_session).save("changing")
+    dc.read_values(id=[9], value=[90], session=test_session).save("static")
+    first = build(True).save("static_result")
+    dc.read_values(id=[1, 2, 3], session=test_session).save("changing")
+    processed.clear()
+    result = build(True).save("static_result")
+    assert processed == [3]
+    assert sorted(result.to_iter("id", "value")) == [(1, 10), (2, 20), (3, 30), (9, 90)]
+    assert sorted(first.to_values("id")) == [1, 2, 9]
+
+
+@pytest.mark.parametrize("operation", ["distinct", "group_by"])
+def test_delta_unsafe_row_local_grouping_does_not_recompute(test_session, operation):
+    processed = []
+
+    def record(id) -> int:
+        processed.append(id)
+        return id * 10
+
+    def build(delta):
+        chain = dc.read_dataset(
+            "group_source",
+            delta=delta,
+            delta_on="id",
+            delta_unsafe=True,
+            session=test_session,
+        ).map(value=record)
+        if operation == "distinct":
+            return chain.distinct("id")
+        return chain.group_by(partition_by="id", value=func.sum("value"))
+
+    dc.read_values(id=[1, 2], session=test_session).save("group_source")
+    build(True).save("group_result")
+    dc.read_values(id=[1, 2, 3], session=test_session).save("group_source")
+    processed.clear()
+    result = build(True).save("group_result")
+    assert processed == [3]
+    assert sorted(result.to_iter("id", "value")) == [(1, 10), (2, 20), (3, 30)]
+
+
+def test_delta_changes_to_static_lookup_do_not_trigger_full_recompute(test_session):
+    def build(delta):
+        return dc.read_dataset(
+            "changing",
+            delta=delta,
+            delta_on="id",
+            delta_unsafe=True,
+            session=test_session,
+        ).merge(dc.read_dataset("labels", session=test_session), on="id")
+
+    dc.read_values(id=[1, 2], session=test_session).save("changing")
+    dc.read_values(id=[1, 2], label=["a", "b"], session=test_session).save("labels")
+    first = build(True).save("lookup_result")
+    dc.read_values(id=[1, 2], label=["a", "updated"], session=test_session).save(
+        "labels"
+    )
+    unchanged = build(True).save("lookup_result")
+    assert unchanged.version == first.version
+    assert sorted(unchanged.to_iter("id", "label")) == [(1, "a"), (2, "b")]
+    rebuilt = build(False).save("lookup_result")
+    assert sorted(rebuilt.to_iter("id", "label")) == [(1, "a"), (2, "updated")]
+
+
+@pytest.mark.parametrize("retry", [False, True])
+def test_storage_delta_changes_outside_glob_reuse_result_version(
+    test_session, tmp_path, retry
+):
+    (tmp_path / "a.txt").write_text("1")
+    processed = []
+
+    def record(file: File) -> int:
+        processed.append(file.path)
+        return int(file.read_text())
+
+    def build():
+        return dc.read_storage(
+            str(tmp_path / "*.txt"),
+            update=True,
+            delta=True,
+            delta_retry=retry,
+            session=test_session,
+        ).map(value=record)
+
+    first = build().save("glob_result")
+    processed.clear()
+    for index in range(2):
+        (tmp_path / f"ignored{index}.log").write_text("2")
+        result = build().save("glob_result")
+        assert result.version == first.version
+        assert result.to_values("value") == [1]
+        assert processed == []

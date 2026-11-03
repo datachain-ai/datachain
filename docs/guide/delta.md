@@ -19,7 +19,7 @@ For a fixed row-local pipeline using `map`, `gen`, and filters, the saved result
 
 All rows produced by `.gen(...)` for one source record are replaced or removed together. The function must yield the source key fields, or their counterparts named by `delta_result_on`, in every output row. Preserve those fields when using `select` or renaming them.
 
-Use `update=True` with `read_storage` to refresh the storage index. A deletion-only refresh can create a new result version without calling the UDF. Source changes that produce no output still advance the saved dependencies, so subsequent runs do not process those changes again. If neither source records nor retry inputs change, the existing result version is reused.
+Use `update=True` with `read_storage` to refresh the storage index. A deletion-only refresh can create a new result version without calling the UDF. If no saved rows are invalidated and replay produces no output, the existing result version is reused. Such source changes may be diffed again on later runs.
 
 ## Usage
 
@@ -113,16 +113,11 @@ delta_unsafe = True
 
 When combining multiple delta sources, use the same result key for all of them and set `delta_unsafe=True` on each source. Different result keys are unsupported.
 
-With `delta_unsafe=True`, these combinations can still process only changed records:
+With `delta_unsafe=True`, operations still run on the replay inputs: changed records and explicit retries from each delta source. An unchanged delta source contributes no replay rows; inputs without delta are read in full. For example, joining independently changing delta sources can drop matches when only one side replays a key; subtracting against another delta source can miss unchanged exclusions. There is no automatic full recomputation. The caller must ensure that this replay produces the same result as applying the pipeline to the full current source.
 
-- `merge` or `subtract` with an input that has no delta source, such as a lookup dataset, when the delta chain is on the left side and the merge is not `full`.
-- Multiple delta sources that share a result key and change the same keys, combined with `union` or merged on that key.
+Changes to a lookup input alone do not refresh saved results. Use `delta=False` when a full recompute is needed, for example after changing a lookup or a pipeline that depends on other records.
 
-## When a full recompute is needed
-
-Some operations need the full current source, so DataChain may rerun UDFs even for unchanged records. These include aggregation, full merges, independently changing delta sources, and changes to a saved lookup dataset. Window functions, `limit`, and `offset` also require a full recompute and can be used without `delta_unsafe=True`.
-
-Inline inputs such as `read_values`, single-file readers such as `read_csv`, and `persist()` results are treated as fixed; changes to them do not trigger recomputation. Save an input as a dataset first if it can change.
+`limit` and `offset` currently allow delta without this opt-in but can produce incorrect results; this existing bug is tracked in [#2159](https://github.com/datachain-ai/datachain/issues/2159). Avoid these operations in delta pipelines until it is addressed. Window functions also depend on other records; use `delta=False` to recompute them over the complete source.
 
 ## Upgrading existing delta datasets
 

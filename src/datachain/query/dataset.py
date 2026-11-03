@@ -22,14 +22,10 @@ from attrs import frozen
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback, TqdmCallback
 from sqlalchemy import Column
 from sqlalchemy.sql import func as f
-from sqlalchemy.sql import operators, visitors
 from sqlalchemy.sql.elements import (
-    BinaryExpression,
-    BooleanClauseList,
     ColumnClause,
     ColumnElement,
     Label,
-    Over,
 )
 from sqlalchemy.sql.expression import label
 from sqlalchemy.sql.selectable import (
@@ -301,21 +297,14 @@ class Step(ABC):
     ) -> list["DatasetQuery"]:
         return []
 
-    def can_replay_changed_keys(self, key: Sequence[str]) -> bool:
-        """Whether applying this step to the changed rows of its delta sources alone
-        yields exactly their output rows, given the shared delta result ``key``.
-        Steps whose output depends on other rows keep this default."""
-        return False
-
     @property
     def sub_queries(self) -> list["DatasetQuery"]:
         """Immediate sub-queries contained in this step."""
         return []
 
-    def replace_source(
+    def replace_sources(
         self,
-        source: "DatasetQuery",
-        replacement: "DatasetQuery",
+        replacements: dict[int, "DatasetQuery"],
     ) -> "Step":
         return self
 
@@ -432,14 +421,13 @@ class DatasetDiffOperation(Step):
     def sub_queries(self) -> list["DatasetQuery"]:
         return [self.dq]
 
-    def replace_source(
+    def replace_sources(
         self,
-        source: "DatasetQuery",
-        replacement: "DatasetQuery",
+        replacements: dict[int, "DatasetQuery"],
     ) -> "Step":
         return attrs.evolve(
             self,
-            dq=self.dq.replace_source(source, replacement),
+            dq=self.dq.replace_sources(replacements),
         )
 
     @abstractmethod
@@ -471,33 +459,12 @@ class DatasetDiffOperation(Step):
             *(c for c in target_full.selected_columns if not c.name.startswith("sys__"))
         )
 
-        # creating temp table that will hold subtract results
-        temp_table_name = self.catalog.warehouse.temp_table_name()
-        temp_tables.append(temp_table_name)
-
-        columns = [
-            c if isinstance(c, Column) else Column(c.name, c.type)
-            for c in source_query.selected_columns
-        ]
-        temp_table = self.catalog.warehouse.create_dataset_rows_table(
-            temp_table_name,
-            columns=columns,
-            if_not_exists=False,
-        )
-
-        diff_q = self.query(source_query, target_query)
-
-        insert_q = temp_table.insert().from_select(
-            source_query.selected_columns,  # type: ignore[arg-type]
-            diff_q,
-        )
-
-        self.catalog.warehouse.db.execute(insert_q)
+        diff_q = cast("SelectBase", self.query(source_query, target_query)).subquery()
 
         def q(*columns):
-            return sqlalchemy.select(*columns)
+            return sqlalchemy.select(*columns).select_from(diff_q)
 
-        return step_result(q, temp_table.c, dependencies=self.dq.dependencies)
+        return step_result(q, diff_q.c, dependencies=self.dq.dependencies)
 
 
 def _key_present(columns: Any, presence: KeyPresence) -> ColumnElement:
@@ -514,9 +481,6 @@ class Subtract(DatasetDiffOperation):
     on: Sequence[str | tuple[str, str]]
     # Key nodes compared by whether they hold a value on each side.
     presence: Sequence[tuple[KeyPresence, KeyPresence]] = ()
-
-    def can_replay_changed_keys(self, key: Sequence[str]) -> bool:
-        return not self.dq.delta_sources()
 
     def _normalize_on(self) -> list[tuple[str, str]]:
         return [(col, col) if isinstance(col, str) else col for col in self.on]
@@ -820,9 +784,6 @@ class UDFStep(Step, ABC):
     def is_single_partition_aggregator(self) -> bool:
         """Aggregator without partition_by — processes all rows as a single batch."""
         return self.is_aggregator and self.partition_by is None
-
-    def can_replay_changed_keys(self, key: Sequence[str]) -> bool:
-        return not self.is_aggregator
 
     def hash_inputs(self) -> str:
         partition_by = ensure_sequence(self.partition_by or [])
@@ -2078,15 +2039,6 @@ class RowGenerator(UDFStep):
         return q, [c for c in udf_table_query.columns if c.name not in excluded]
 
 
-def _contains_window(columns: Iterable[Any]) -> bool:
-    return any(
-        isinstance(element, Over)
-        for column in columns
-        if isinstance(column, ColumnElement)
-        for element in visitors.iterate(column)
-    )
-
-
 @frozen
 class SQLClause(Step, ABC):
     resets_query_state_after_apply: ClassVar[bool] = False
@@ -2138,9 +2090,6 @@ class RegenerateSystemColumns(Step):
 
     catalog: "Catalog"
 
-    def can_replay_changed_keys(self, key: Sequence[str]) -> bool:
-        return True
-
     def hash_inputs(self) -> str:
         return hashlib.sha256(b"regenerate_system_columns").hexdigest()
 
@@ -2168,9 +2117,6 @@ class RegenerateSystemColumns(Step):
 class SQLSelect(SQLClause):
     args: tuple[Function | ColumnElement, ...]
 
-    def can_replay_changed_keys(self, key: Sequence[str]) -> bool:
-        return not _contains_window(self.parse_cols(self.args))
-
     def hash_inputs(self) -> str:
         return hash_column_elements(self.args)
 
@@ -2190,9 +2136,6 @@ class SQLSelect(SQLClause):
 class SQLSelectExcept(SQLClause):
     args: tuple[Function | ColumnElement, ...]
 
-    def can_replay_changed_keys(self, key: Sequence[str]) -> bool:
-        return True
-
     def hash_inputs(self) -> str:
         return hash_column_elements(self.args)
 
@@ -2206,9 +2149,6 @@ class SQLSelectExcept(SQLClause):
 class SQLMutate(SQLClause):
     args: tuple[Label, ...]
     new_schema: SignalSchema
-
-    def can_replay_changed_keys(self, key: Sequence[str]) -> bool:
-        return not _contains_window(self.args)
 
     def hash_inputs(self) -> str:
         return hash_column_elements(self.args)
@@ -2242,9 +2182,6 @@ class SQLMutate(SQLClause):
 class SQLFilter(SQLClause):
     expressions: tuple[Function | ColumnElement, ...]
 
-    def can_replay_changed_keys(self, key: Sequence[str]) -> bool:
-        return True
-
     def hash_inputs(self) -> str:
         return hash_column_elements(self.expressions)
 
@@ -2270,9 +2207,6 @@ class SQLFilter(SQLClause):
 @frozen
 class SQLOrderBy(SQLClause):
     args: tuple[Function | ColumnElement, ...]
-
-    def can_replay_changed_keys(self, key: Sequence[str]) -> bool:
-        return True
 
     def hash_inputs(self) -> str:
         return hash_column_elements(self.args)
@@ -2378,22 +2312,18 @@ class SQLUnion(Step):
     ) -> list["DatasetQuery"]:
         return [*self.query1.delta_sources(), *self.query2.delta_sources()]
 
-    def can_replay_changed_keys(self, key: Sequence[str]) -> bool:
-        return bool(self.query1.delta_sources()) and bool(self.query2.delta_sources())
-
     @property
     def sub_queries(self) -> list["DatasetQuery"]:
         return [self.query1, self.query2]
 
-    def replace_source(
+    def replace_sources(
         self,
-        source: "DatasetQuery",
-        replacement: "DatasetQuery",
+        replacements: dict[int, "DatasetQuery"],
     ) -> "Step":
         return attrs.evolve(
             self,
-            query1=self.query1.replace_source(source, replacement),
-            query2=self.query2.replace_source(source, replacement),
+            query1=self.query1.replace_sources(replacements),
+            query2=self.query2.replace_sources(replacements),
         )
 
     def apply(
@@ -2491,54 +2421,18 @@ class SQLJoin(Step):
     ) -> list["DatasetQuery"]:
         return [*self.query1.delta_sources(), *self.query2.delta_sources()]
 
-    def can_replay_changed_keys(self, key: Sequence[str]) -> bool:
-        if self.full or not self.query1.delta_sources():
-            return False
-        if not self.query2.delta_sources():
-            return True
-        return self._joins_on(key)
-
-    def _joins_on(self, key: Sequence[str]) -> bool:
-        predicates = self.predicates
-        if (
-            isinstance(predicates, BooleanClauseList)
-            and predicates.operator is operators.and_
-        ):
-            predicates = tuple(predicates.clauses)
-        elif not isinstance(predicates, tuple):
-            predicates = (predicates,)
-        names = []
-        for predicate in predicates:
-            if isinstance(predicate, str):
-                names.append(predicate)
-            elif isinstance(predicate, ColumnClause):
-                names.append(predicate.name)
-            elif (
-                isinstance(predicate, BinaryExpression)
-                and predicate.operator is operators.eq
-                and isinstance(predicate.left, ColumnClause)
-                and isinstance(predicate.right, ColumnClause)
-                and predicate.left.name == predicate.right.name
-                and predicate.left.table is not predicate.right.table
-            ):
-                names.append(predicate.left.name)
-            else:
-                return False
-        return names == [field.replace(".", DEFAULT_DELIMITER) for field in key]
-
     @property
     def sub_queries(self) -> list["DatasetQuery"]:
         return [self.query1, self.query2]
 
-    def replace_source(
+    def replace_sources(
         self,
-        source: "DatasetQuery",
-        replacement: "DatasetQuery",
+        replacements: dict[int, "DatasetQuery"],
     ) -> "Step":
         return attrs.evolve(
             self,
-            query1=self.query1.replace_source(source, replacement),
-            query2=self.query2.replace_source(source, replacement),
+            query1=self.query1.replace_sources(replacements),
+            query2=self.query2.replace_sources(replacements),
         )
 
     def get_query(self, dq: "DatasetQuery", temp_tables: list[str]) -> sa.Subquery:
@@ -3160,35 +3054,17 @@ class DatasetQuery:
         if self.delta_spec is not None:
             sources.append(self)
 
-        return sources
+        return list({id(source): source for source in sources}.values())
 
-    def _contains_source(self, source: "DatasetQuery") -> bool:
-        return self is source or any(
-            query._contains_source(source)
-            for step in self.steps
-            for query in step.sub_queries
+    def replace_sources(self, replacements: dict[int, "DatasetQuery"]) -> "Self":
+        replacement = replacements.get(id(self))
+        rewritten = (replacement if replacement is not None else self).clone(
+            new_table=False
         )
-
-    def replace_source(
-        self,
-        source: "DatasetQuery",
-        replacement: "DatasetQuery",
-    ) -> "Self":
-        # Preserve other source occurrences for subsequent identity-based rewrites.
-        if not self._contains_source(source):
-            return self
-        if self is source:
-            rewritten = replacement.clone(new_table=False)
-            rewritten.table = self.table
-            rewritten_steps = rewritten.steps.copy()
-        else:
-            rewritten = self.clone(new_table=False)
-            rewritten_steps = []
-
-        rewritten_steps.extend(
-            step.replace_source(source, replacement) for step in self.steps
-        )
-        rewritten.steps = rewritten_steps
+        rewritten.table = self.table
+        steps = rewritten.steps.copy() if replacement is not None else []
+        steps.extend(step.replace_sources(replacements) for step in self.steps)
+        rewritten.steps = steps
         return cast("Self", rewritten)
 
     @detach
