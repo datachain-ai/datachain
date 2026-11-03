@@ -1097,12 +1097,10 @@ def test_get_file_versioned_special_char_in_key(
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
 @pytest.mark.parametrize("tree", [{"pinned": "woof"}], indirect=True)
 @pytest.mark.parametrize("block_size", [None, 0, 2])
-def test_open_object_reads_listed_version_without_head(client, mocker, block_size):
+def test_open_object_reads_listed_version(client, block_size):
     file = client.get_file_info("pinned")
     assert file.version
     client.fs.pipe_file(file.get_fs_path(), b"WOOF")
-    for name in ("info", "_info"):
-        mocker.patch.object(client.fs, name, side_effect=AssertionError("HEAD"))
     with client.open_object(file, use_cache=False, block_size=block_size) as stream:
         assert stream.read(2) == b"wo"
         stream.seek(0)
@@ -1122,33 +1120,14 @@ def test_open_object_rejects_changed_unversioned_object(client):
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
 @pytest.mark.parametrize(
-    "unknown", [{"etag": "", "version": ""}, {"size": 0}, {"size": -1}]
+    "unknown", [{"etag": "", "version": ""}, {"size": 0, "version": ""}, {"size": -1}]
 )
-def test_open_object_without_listing_metadata_uses_head(client, mocker, unknown):
+def test_open_object_reads_without_listing_metadata(client, unknown):
     file = client.get_file_info("dogs/dog1")
     for name, value in unknown.items():
         setattr(file, name, value)
-    info = mocker.spy(client.fs, "info")
     with client.open_object(file, use_cache=False) as stream:
         assert stream.read() == b"woof"
-    assert info.called
-
-
-@pytest.mark.parametrize("cloud_type", ["gs"], indirect=True)
-@pytest.mark.parametrize("version_aware", [True], indirect=True)
-@pytest.mark.parametrize("contents", [b"", b"woof"])
-def test_gcs_cache_download_reuses_listing_metadata(
-    cloud_test_catalog_upload, mocker, contents
-):
-    ctc = cloud_test_catalog_upload
-    client = ctc.catalog.get_client(ctc.src_uri)
-    file = client.upload(contents, "listed")
-    eligibility = mocker.spy(client, "_can_download_listed")
-    info = mocker.patch.object(client.fs, "_info", side_effect=AssertionError("HEAD"))
-    sync(get_loop(), client._download, file, callback=DEFAULT_CALLBACK)
-    assert Path(ctc.catalog.cache.get_path(file)).read_bytes() == contents
-    info.assert_not_called()
-    eligibility.assert_awaited_once()
 
 
 @pytest.mark.parametrize("cloud_type", ["gs"], indirect=True)
@@ -1173,13 +1152,12 @@ def test_gcs_rejects_stale_etag_without_pinned_version(
 
 @pytest.mark.parametrize("cloud_type", ["gs"], indirect=True)
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
-def test_gcs_cache_download_pins_listed_version(cloud_test_catalog_upload, mocker):
+def test_gcs_cache_download_pins_listed_version(cloud_test_catalog_upload):
     ctc = cloud_test_catalog_upload
     client = ctc.catalog.get_client(ctc.src_uri)
     file = client.upload(b"woof", "pinned-download")
     client.upload(b"WOOF", "pinned-download")
     file.etag = "stale-etag"
-    mocker.patch.object(client.fs, "_info", side_effect=AssertionError("HEAD"))
     sync(get_loop(), client._download, file, callback=DEFAULT_CALLBACK)
     assert Path(ctc.catalog.cache.get_path(file)).read_bytes() == b"woof"
 
@@ -1189,9 +1167,7 @@ def test_gcs_cache_download_pins_listed_version(cloud_test_catalog_upload, mocke
 @pytest.mark.filterwarnings(
     "ignore:Sending a large body directly with raw bytes:ResourceWarning"
 )
-def test_video_metadata_reads_ranges_without_head(cloud_test_catalog_upload, mocker):
-    from datachain.client.gcs import _ListedGCSFile
-    from datachain.client.s3 import _ListedS3File
+def test_video_metadata_reads_ranges(cloud_test_catalog_upload, fetched_bytes):
     from datachain.lib.file import VideoFile
 
     ctc = cloud_test_catalog_upload
@@ -1202,68 +1178,15 @@ def test_video_metadata_reads_ranges_without_head(cloud_test_catalog_upload, moc
     video = VideoFile(**uploaded.model_dump())
     video._set_stream(ctc.catalog, caching_enabled=True)
     expected = VideoFile.at(path).get_info()
-    ranges = []
-    remote_class = _ListedS3File if client.PREFIX == "s3://" else _ListedGCSFile
-    fetch = remote_class._fetch_range
-
-    def fetch_range(stream, start, end):
-        data = fetch(stream, start, end)
-        ranges.append(len(data))
-        return data
-
-    mocker.patch.object(remote_class, "_fetch_range", fetch_range)
-    head = mocker.patch.object(client.fs, "info", side_effect=AssertionError("HEAD"))
-    async_info = mocker.patch.object(
-        client.fs, "_info", side_effect=AssertionError("HEAD")
-    )
+    before = fetched_bytes[0]
     assert video.get_info() == expected
-    head.assert_not_called()
-    async_info.assert_not_called()
-    assert 0 < len(ranges) <= 20
-    assert sum(ranges) < len(contents) // 2
+    assert 0 < fetched_bytes[0] - before < len(contents) // 2
     assert not ctc.catalog.cache.contains(video)
-
-
-@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
-@pytest.mark.parametrize("tree", [{"changed": "woof"}], indirect=True)
-def test_s3_listed_local_expiry_check_rejects_changed_object(client):
-    client.fs.local_expiry_check = True
-    file = client.get_file_info("changed")
-    file.version = ""
-    client.fs.pipe_file(file.get_fs_path(), b"WOOF")
-    with pytest.raises(FileNotFoundError, match="changed on the source"):
-        with client.open_object(file, use_cache=False, block_size=2) as stream:
-            stream.read()
-
-
-@pytest.mark.parametrize("cloud_type", ["gs"], indirect=True)
-@pytest.mark.parametrize("version_aware", [False], indirect=True)
-def test_gcs_unpinned_read_reuses_open_metadata(cloud_test_catalog_upload, mocker):
-    ctc = cloud_test_catalog_upload
-    client = ctc.catalog.get_client(ctc.src_uri)
-    file = client.upload(b"woof", "unpinned-read")
-    file.version = ""
-    # Bucket discovery is cached independently of object metadata.
-    with client.fs.open(file.get_fs_path()) as stream:
-        assert stream.read() == b"woof"
-    calls = mocker.spy(client.fs, "_call")
-    client.fs.invalidate_cache()
-    with client.fs.open(file.get_fs_path()) as stream:
-        assert stream.read() == b"woof"
-    backend_calls = calls.call_count
-    assert backend_calls > 0
-
-    calls.reset_mock()
-    client.fs.invalidate_cache()
-    with client.open_object(file, use_cache=False) as stream:
-        assert stream.read() == b"woof"
-
-    assert calls.call_count == backend_calls
 
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
-def test_tar_member_uses_listing_without_head(cloud_test_catalog_upload, mocker):
+def test_tar_member_reads_prefix_without_caching(cloud_test_catalog_upload):
     import tarfile
 
     from datachain.lib.tar import build_tar_member
@@ -1278,8 +1201,6 @@ def test_tar_member_uses_listing_without_head(cloud_test_catalog_upload, mocker)
     with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
         member = build_tar_member(parent, archive.getmember("member.bin"))
     member._set_stream(ctc.catalog, caching_enabled=False)
-    for name in ("info", "_info"):
-        mocker.patch.object(client.fs, name, side_effect=AssertionError("HEAD"))
     assert member.read_bytes(10) == data[:10]
     assert not ctc.catalog.cache.contains(parent)
 
@@ -1293,7 +1214,9 @@ def test_s3_null_version_without_etag_uses_backend_open(client, mocker):
     file.etag = ""
     file.version = "null"
     replacement = b"a longer replacement"
-    opened = mocker.patch.object(client.fs, "open", return_value=BytesIO(replacement))
+    backend_stream = BytesIO(replacement)
+    backend_stream.details = {"size": len(replacement)}
+    opened = mocker.patch.object(client.fs, "open", return_value=backend_stream)
     with client.open_object(file, use_cache=False, block_size=2) as stream:
         assert stream.read() == replacement
     opened.assert_called_once_with(file.get_fs_path(), block_size=2, version_id="null")
@@ -1302,10 +1225,52 @@ def test_s3_null_version_without_etag_uses_backend_open(client, mocker):
 @pytest.mark.parametrize("cloud_type", ["gs"], indirect=True)
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
 @pytest.mark.parametrize("block_size", [None, 0, 2])
-def test_gcs_fallback_open_preserves_block_size(client, mocker, block_size):
+def test_gcs_open_preserves_block_size(client, mocker, block_size):
     file = client.get_file_info("dogs/dog1")
-    mocker.patch.object(client, "_can_read_listed", return_value=False)
+    opened = mocker.spy(client.fs, "open")
     with client.open_object(file, use_cache=False, block_size=block_size) as stream:
         assert stream.read(2) == b"wo"
         stream.seek(0)
         assert stream.read() == b"woof"
+
+    options = opened.call_args.kwargs
+    if block_size == 0:
+        assert options["cache_type"] == "none"
+    elif block_size:
+        assert options["cache_type"] == "readahead"
+        assert options["block_size"] == block_size
+    else:
+        assert "cache_type" not in options
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+@pytest.mark.parametrize("size", [0, 7])
+def test_open_object_rejects_inconsistent_pinned_size(client, mocker, size):
+    file = client.get_file_info("dogs/dog1")
+    file.size = size
+    opened = mocker.spy(client.fs, "open")
+    with pytest.raises(FileNotFoundError, match=f"size was {size}, now 4"):
+        client.open_object(file, use_cache=False)
+    assert opened.spy_return.closed
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+@pytest.mark.parametrize("tree", [{"empty": ""}], indirect=True)
+def test_open_object_reads_empty_pinned_file(client):
+    file = client.get_file_info("empty")
+    assert file.size == 0
+    with client.open_object(file, use_cache=False, block_size=0) as stream:
+        assert stream.read() == b""
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False, True], indirect=True)
+def test_open_object_reuses_backend_metadata_for_validation(client, mocker):
+    file = client.get_file_info("dogs/dog1")
+    info = mocker.spy(client.fs, "info")
+    async_info = mocker.spy(client.fs, "_info")
+    with client.open_object(file, use_cache=False, block_size=2) as stream:
+        assert stream.read() == b"woof"
+    assert info.call_count + async_info.call_count == 1

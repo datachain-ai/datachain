@@ -50,14 +50,6 @@ CLOUD_STORAGE_PROTOCOLS = {"s3", "gs", "az", "hf"}
 ResultQueue = asyncio.Queue[Sequence[Any] | None]
 
 
-def _file_changed_error(path: str, change: str) -> FileNotFoundError:
-    return FileNotFoundError(
-        f"{path} changed on the source since it was listed ({change}). "
-        "Re-run the original dc.read_storage(...) call with update=True "
-        "to refresh the listing."
-    )
-
-
 def is_cloud_uri(uri: str) -> bool:
     protocol = urlparse(uri).scheme
     return protocol in CLOUD_STORAGE_PROTOCOLS
@@ -306,11 +298,6 @@ class Client(ABC):
             rpath,
             callback=callback,
             **self._version_kwargs(version_id),
-        )
-
-    async def _download_file(self, file: "File", path: str, callback: Callback):
-        await self.get_file(
-            file.get_fs_path(), path, callback=callback, version_id=file.version
         )
 
     async def scandir(
@@ -640,11 +627,15 @@ class Client(ABC):
         await self._check_unchanged(file)
         await self.cache.download(file, self, callback=callback)
 
-    def check_unchanged(self, file: "File") -> None:
+    def check_unchanged(
+        self, file: "File", *, info: dict[str, Any] | None = None
+    ) -> None:
         """Fail if the file changed on the source since the catalog listed it."""
-        sync(get_loop(), self._check_unchanged, file)
+        sync(get_loop(), self._check_unchanged, file, info=info)
 
-    async def _check_unchanged(self, file: "File") -> None:
+    async def _check_unchanged(
+        self, file: "File", *, info: dict[str, Any] | None = None
+    ) -> None:
         # Metadata updates can change a pinned file's etag without changing its
         # bytes, so compare its size instead, which still catches appends. A negative
         # size means it's unknown, so nothing is compared.
@@ -654,11 +645,15 @@ class Client(ABC):
 
         change = ""
         if pinned and file.size >= 0:
-            size = await self.get_size(file)
+            size = int(info["size"]) if info is not None else await self.get_size(file)
             if size != file.size:
                 change = f"size was {file.size}, now {size}"
         elif not pinned and file.etag:
-            etag = await self.get_current_etag(file)
+            etag = (
+                self.info_to_file(info, file.path).etag
+                if info is not None
+                else await self.get_current_etag(file)
+            )
             if etag != file.etag:
                 change = (
                     f"etag was {self.format_etag(file.etag)}, "
@@ -666,7 +661,11 @@ class Client(ABC):
                 )
 
         if change:
-            raise _file_changed_error(f"{file.source}/{file.path}", change)
+            raise FileNotFoundError(
+                f"{file.source}/{file.path} changed on the source since it was listed "
+                f"({change}). Re-run the original dc.read_storage(...) call "
+                "with update=True to refresh the listing."
+            )
 
 
 class RangeListedClient(Client):

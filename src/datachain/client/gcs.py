@@ -5,16 +5,12 @@ from typing import TYPE_CHECKING, Any, BinaryIO, cast
 from urllib.parse import quote
 
 from fsspec.asyn import get_loop, sync
-from fsspec.callbacks import Callback
 from gcsfs import GCSFileSystem
-from gcsfs.checkers import get_consistency_checker
-from gcsfs.core import GCSFile
-from gcsfs.extended_gcsfs import BucketType
 from gcsfs.retry import HttpError
 
 from datachain.lib.file import File, FileRow
 
-from .fsspec import BucketStatus, RangeListedClient, _file_changed_error
+from .fsspec import BucketStatus, RangeListedClient
 from .ranges import Keep, Page
 
 if TYPE_CHECKING:
@@ -24,20 +20,6 @@ if TYPE_CHECKING:
 GCSFileSystem.set_session = GCSFileSystem._set_session
 # Skip the GCE metadata check — it adds latency and hangs outside GCE.
 os.environ.setdefault("NO_GCE_CHECK", "true")
-SMALL_FILE_SIZE = 5 * 1024 * 1024
-
-
-class _ListedGCSFile(GCSFile):
-    def __init__(self, fs, file: File, path: str, block_size: int | None):
-        path = fs._strip_protocol(path)
-        self._details = {"name": path, "size": file.size, "type": "file"}
-        super().__init__(
-            fs,
-            path,
-            mode="rb",
-            block_size=fs.default_block_size if block_size is None else block_size,
-            cache_type="readahead",  # bound reads instead of background prefetch
-        )
 
 
 class GCSClient(RangeListedClient):
@@ -224,41 +206,6 @@ class GCSClient(RangeListedClient):
         info = await self.fs._info(path)
         return self.info_to_file(info, file.path).etag
 
-    async def _can_read_listed(self, file: File) -> bool:
-        if file.size < 0 or not file.version:
-            return False
-        # The non-experimental gcsfs backend has no bucket-layout lookup.
-        lookup = getattr(self.fs, "_lookup_bucket_type", None)
-        return (
-            lookup is None or await lookup(self.name) != BucketType.ZONAL_HIERARCHICAL
-        )
-
-    async def _can_download_listed(self, file: File) -> bool:
-        return file.size <= SMALL_FILE_SIZE and await self._can_read_listed(file)
-
-    async def _put_in_cache(self, file: File, *, callback: Callback = None) -> None:
-        assert not file.location
-        await self.cache.download(file, self, callback=callback)
-
-    async def _download_file(self, file: File, path: str, callback: Callback):
-        if not await self._can_download_listed(file):
-            await self._check_unchanged(file)
-            return await super()._download_file(file, path, callback)
-        remote = self._path_with_generation(file.get_fs_path(), file.version)
-        headers, data = await self.fs._call("GET", self.fs.url(remote))
-        checker = get_consistency_checker(self.fs.consistency)
-        checker.update(data)
-        checker.validate_headers(headers)
-        if len(data) != file.size:
-            raise _file_changed_error(
-                f"{file.source}/{file.path}", f"size was {file.size}, now {len(data)}"
-            )
-        callback.set_size(len(data))
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "wb") as stream:  # noqa: ASYNC230
-            stream.write(data)
-        callback.relative_update(len(data))
-
     def get_file_info(self, path: str, version_id: str | None = None) -> File:
         self.validate_file_path(path)
         fs_path = self._path_with_generation(self.get_uri(path), version_id)
@@ -275,17 +222,15 @@ class GCSClient(RangeListedClient):
 
     def _open_remote(self, file: File, block_size: int | None = None) -> BinaryIO:
         full_path = self._path_with_generation(file.get_fs_path(), file.version)
-        if file.size > 0 and sync(self.fs.loop, self._can_read_listed, file):
-            return _ListedGCSFile(self.fs, file, full_path, block_size)
         open_kwargs = self._block_size_kwargs(block_size)
         if block_size:
             open_kwargs["cache_type"] = "readahead"
         stream = self.fs.open(full_path, **open_kwargs)
-        if not file.version and file.etag and stream.details.get("etag") != file.etag:
+        try:
+            self.check_unchanged(file, info=stream.details)
+        except BaseException:
             stream.close()
-            raise _file_changed_error(
-                f"{file.source}/{file.path}", "etag no longer matches the listing"
-            )
+            raise
         return stream
 
     @staticmethod

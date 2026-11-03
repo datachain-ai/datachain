@@ -13,12 +13,10 @@ from botocore.model import Shape
 from botocore.utils import parse_timestamp
 from fsspec.asyn import get_loop, sync, sync_wrapper
 from s3fs import S3FileSystem
-from s3fs.core import S3File
-from s3fs.utils import FileExpired
 
 from datachain.lib.file import File, FileRow
 
-from .fsspec import BucketStatus, RangeListedClient, _file_changed_error
+from .fsspec import BucketStatus, RangeListedClient
 from .ranges import PROCESS_LIST_WORKERS, Keep, Page
 
 if TYPE_CHECKING:
@@ -133,44 +131,6 @@ class _S3FileSystem(S3FileSystem):
     connect = sync_wrapper(set_session)
 
 
-class _NoVersionResolveFS:
-    """An S3FileSystem view that skips S3File's version resolution HEAD request."""
-
-    version_aware = False
-
-    def __init__(self, fs):
-        self._fs = fs
-
-    def __getattr__(self, name):
-        return getattr(self._fs, name)
-
-
-class _ListedS3File(S3File):
-    def __init__(self, fs, file: File, block_size: int | None):
-        path = file.get_fs_path()
-        self._details = {"name": path, "size": file.size, "type": "file"}
-        if file.etag and file.version in ("", "null"):
-            self._details["ETag"] = f'"{file.etag}"'
-        super().__init__(
-            _NoVersionResolveFS(fs),
-            path,
-            mode="rb",
-            block_size=fs.default_block_size if block_size is None else block_size,
-            cache_type=fs.default_cache_type,
-            version_id=file.version or None,
-            requester_pays=bool(fs.req_kw),  # as S3FileSystem._open does
-        )
-        self.fs = self.s3 = fs
-
-    def _fetch_range(self, start, end):
-        try:
-            return super()._fetch_range(start, end)
-        except FileExpired as exc:
-            raise _file_changed_error(
-                self.path, "object identity no longer matches the listing"
-            ) from exc
-
-
 class ClientS3(RangeListedClient):
     FS_CLASS = _S3FileSystem
     PREFIX = "s3://"
@@ -186,9 +146,17 @@ class ClientS3(RangeListedClient):
     _unversioned = False  # the server can't list versions
 
     def _open_remote(self, file: File, block_size: int | None = None):
-        if file.size > 0 and (file.etag or file.version not in ("", "null")):
-            return _ListedS3File(self.fs, file, block_size)
-        return super()._open_remote(file, block_size)
+        stream = self.fs.open(
+            file.get_fs_path(),
+            **self._block_size_kwargs(block_size),
+            **self._version_kwargs(file.version),
+        )
+        try:
+            self.check_unchanged(file, info=stream.details)
+        except BaseException:
+            stream.close()
+            raise
+        return stream
 
     @staticmethod
     def _normalize_s3_kwargs(kwargs: dict) -> dict:

@@ -125,7 +125,9 @@ class Cache:  # noqa: PLW1641
             size=size,
         )
         try:
-            await client._download_file(file, tmp_info, cb)
+            await client.get_file(
+                from_path, tmp_info, callback=cb, version_id=file.version
+            )
             oid = file.get_hash()
             self.odb.add(tmp_info, odb_fs, oid, hardlink=True)
         finally:
