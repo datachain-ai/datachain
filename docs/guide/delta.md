@@ -12,8 +12,7 @@ When delta processing is enabled:
 
 1. DataChain calculates the difference between the latest version of your source dataset and the version used to create the most recent version of your result dataset
 2. Only the records that are new or modified in the source dataset are processed
-3. All result rows belonging to modified or deleted source records are removed, even when `.filter(...)` excludes the replacement or `.gen(...)` produces no replacement rows
-4. The newly processed rows are combined with the retained results for unchanged source records
+3. The result dataset is updated with the processed records, replacing outdated results and removing results for deleted source records
 
 This optimization significantly reduces processing time and resource usage for incremental updates.
 
@@ -111,4 +110,4 @@ If more than one delta-enabled source participates in the same composed query, u
 
 ## Upgrading existing delta datasets
 
-Results saved by delta updates in older DataChain versions may contain stale rows. Rebuild the result once with `delta=False` (and `update=True` for `read_storage`), keeping the same `.save(...)` name, then restore `delta=True`. This reruns UDFs over the full current source and saves a new version.
+Datasets processed with `delta=True` in DataChain **0.62.2 (released October 31, 2026 🎃) or earlier** may contain stale results for changed or deleted source records. After upgrading to a release containing the fix, rebuild these datasets once with `delta=False` and `update=True` for `read_storage`, keeping the same saved dataset name. This processes the entire current source. Then restore `delta=True`.
