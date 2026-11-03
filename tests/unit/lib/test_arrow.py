@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import get_args
 
 import pandas as pd
@@ -7,6 +7,7 @@ import pyarrow.parquet as pq
 import pytest
 from datasets import Dataset
 from pyarrow.dataset import CsvFileFormat, JsonFileFormat, ParquetFileFormat
+from pydantic import field_validator
 
 import datachain as dc
 from datachain.lib.arrow import (
@@ -19,6 +20,7 @@ from datachain.lib.arrow import (
 from datachain.lib.data_model import dict_to_data_model
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.hf import HFClassLabel
+from datachain.query import dataset
 
 
 @pytest.mark.parametrize("cache", [True, False])
@@ -111,32 +113,136 @@ def test_arrow_generator_hf(tmp_path, catalog):
 
 
 @pytest.mark.parametrize("cache", [True, False])
-def test_arrow_generator_partitioned(tmp_path, catalog, cache):
-    pq_path = tmp_path / "parquets"
+def test_read_parquet_partitioned(tmp_path, test_session, cache):
     pylist = [
         {"first_name": "Alice", "age": 25, "city": "New York"},
         {"first_name": "Bob", "age": 30, "city": "Los Angeles"},
         {"first_name": "Charlie", "age": 35, "city": "Chicago"},
     ]
+    pq_path = tmp_path / "parquets"
     table = pa.Table.from_pylist(pylist)
     pq.write_to_dataset(table, pq_path, partition_cols=["first_name"])
 
-    output, original_names = schema_to_output(table.schema)
-    output_schema = dict_to_data_model("", output, original_names)
-    func = ArrowGenerator(
-        table.schema, output_schema=output_schema, partitioning="hive"
+    chain = dc.read_parquet(
+        pq_path.as_uri(),
+        partitioning="hive",
+        settings={"cache": cache},
+        session=test_session,
     )
 
-    for path in pq_path.rglob("*.parquet"):
-        stream = File(
-            path=path.relative_to(pq_path).as_posix(),
-            source=f"file://{pq_path}",
-        )
-        stream._set_stream(catalog, caching_enabled=cache)
+    rows = chain.to_list("first_name", "age", "city", "source")
+    assert sorted(row[:3] for row in rows) == sorted(tuple(r.values()) for r in pylist)
+    for name, *_, source in rows:
+        assert f"first_name={name}/" in source.file.path
+        assert source.index == 0
+        assert source.kwargs["partitioning"] == "hive"
 
-        (o,) = list(func.process(stream))
-        assert isinstance(o[0], ArrowRow)
-        assert dict(o[1]) in pylist
+
+class PlainTypes(dc.DataModel):
+    i8: int | None = None
+    u32: int | None = None
+    f32: float | None = None
+    f64: float | None = None
+    b: bool | None = None
+    s: str | None = None
+    ls: str | None = None
+    bin: bytes | None = None
+    ts: datetime | None = None
+    tz: datetime | None = None
+    cat: str | None = None
+    empty: str | None = None
+    fl: list[float | None] | None = None
+    il: list[int | None] | None = None
+    sl: list[str | None] | None = None
+
+
+@pytest.fixture
+def plain_types_parquet(tmp_path):
+    when = datetime(2026, 1, 2, 3, 4, 5, 6)
+    table = pa.table(
+        {
+            "i8": pa.array([-1, 2, 3], pa.int8()),
+            "u32": pa.array([2**32 - 1, 0, None], pa.uint32()),
+            "f32": pa.array([1.5, None, -2.5], pa.float32()),
+            "f64": pa.array([None, 2.25, -0.0], pa.float64()),
+            "b": pa.array([True, False, None]),
+            "s": pa.array(["x", None, ""]),
+            "ls": pa.array([None, "ü", "z"], pa.large_string()),
+            "bin": pa.array([b"\x00", None, b""]),
+            "ts": pa.array([when, None, None]),
+            "tz": pa.array(
+                [None, when.replace(tzinfo=UTC), None], pa.timestamp("ms", tz="UTC")
+            ),
+            "cat": pa.array(["a", None, "a"]).dictionary_encode(),
+            "empty": pa.array([None, None, None]),
+            "fl": pa.array([[1.5, -2.0], None, []]),
+            "il": pa.array([[1], [2, None], None]),
+            "sl": pa.array([None, ["x", None], ["ü"]]),
+        }
+    )
+    path = tmp_path / "plain.parquet"
+    pq.write_table(table, path, row_group_size=1)
+    return path
+
+
+@pytest.mark.parametrize("source", [True, False])
+@pytest.mark.parametrize("column", ["", "p"])
+def test_read_parquet_dict_output_matches_model_output(
+    plain_types_parquet, test_session, column, source
+):
+    output = {name: info.annotation for name, info in PlainTypes.model_fields.items()}
+    prefix = f"{column}." if column else ""
+    signals = [prefix + name for name in PlainTypes.model_fields]
+    if source:
+        signals.append("source")
+    by_types, by_model = (
+        dc.read_parquet(
+            plain_types_parquet.as_uri(),
+            output=out,
+            column=column,
+            source=source,
+            session=test_session,
+        )
+        .order_by(prefix + "i8")
+        .to_list(*signals)
+        for out in (output, PlainTypes)
+    )
+
+    assert by_types == by_model
+    assert [row[:2] for row in by_types] == [(-1, 2**32 - 1), (2, 0), (3, None)]
+    if source:
+        assert [row[-1].index for row in by_types] == [0, 1, 2]
+
+
+@pytest.mark.parametrize("source", [True, False])
+def test_read_parquet_stores_plain_columns_without_conversion(
+    plain_types_parquet, test_session, mocker, source
+):
+    spy = mocker.spy(dataset, "adjust_outputs")
+    chain = dc.read_parquet(
+        plain_types_parquet.as_uri(), source=source, session=test_session
+    )
+
+    assert sorted(chain.to_values("i8")) == [-1, 2, 3]
+    assert not [c for c in spy.call_args_list if "i8" in c.args[1]]
+
+
+class Declared(dc.DataModel):
+    a: int | None = None
+
+
+@pytest.mark.parametrize("base", [Declared, dict_to_data_model("Inferred", {"a": int})])
+def test_read_parquet_output_model_runs_its_validators(tmp_path, test_session, base):
+    class Doubled(base):
+        @field_validator("a")
+        @classmethod
+        def double(cls, value):
+            return value * 2
+
+    path = tmp_path / "a.parquet"
+    pq.write_table(pa.table({"a": [1, 2]}), path)
+    chain = dc.read_parquet(path.as_uri(), output=Doubled, session=test_session)
+    assert sorted(chain.to_values("a")) == [2, 4]
 
 
 @pytest.mark.parametrize(
