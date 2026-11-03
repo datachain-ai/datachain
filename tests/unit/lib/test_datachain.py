@@ -1017,6 +1017,16 @@ def test_gen_hydrates_models_in_nested_list_param(test_session):
     assert sorted(chain.to_values("count")) == [1, 2]
 
 
+def test_map_can_name_a_signal_batch(test_session):
+    result = (
+        dc.read_values(value=[1, 2], session=test_session)
+        .map(batch=lambda value: value * 2, output=int)
+        .order_by("value")
+        .to_values("batch")
+    )
+    assert result == [2, 4]
+
+
 def test_map_multiple_signals(test_session):
     chain = dc.read_values(name=["foo.txt", "bar.md"], session=test_session).map(
         stem=lambda name: name.rsplit(".", 1)[0],
@@ -1085,7 +1095,9 @@ def test_map_multiple_signals_rejects_bound_spec_multi_output(test_session):
             return 2
 
     chain = dc.read_values(name=["foo"], session=test_session)
-    with pytest.raises(DataChainParamsError, match="produces 2 outputs"):
+    with pytest.raises(
+        DataChainParamsError, match=r"produces 2 outputs.*output=\{\.\.\.\}"
+    ):
         chain.map(bad=TwoOutputSpec(), ok=lambda name: name.lower())
 
 
@@ -6799,3 +6811,16 @@ def test_adjust_outputs_calls_an_overridden_convert_type(test_session, mocker):
     row = adjust_outputs(warehouse, {"x": when}, col_types, None)  # type: ignore[arg-type]
 
     assert row["x"] == dt.datetime(2026, 1, 1, 10)
+
+
+def test_multi_signal_map_resolves_string_annotations(test_session):
+    def first(value: "int") -> "int":
+        return value + 1
+
+    def second(value: "int") -> "int":
+        return value * 2
+
+    result = dc.read_values(value=[1, 2], session=test_session).map(
+        first=first, second=second
+    )
+    assert sorted(result.to_list("first", "second")) == [(2, 2), (3, 4)]
