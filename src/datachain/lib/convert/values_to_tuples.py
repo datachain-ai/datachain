@@ -105,7 +105,7 @@ def infer_type_from_sequence(
 
     if first_element is None:
         # Default to str if column is empty or all values are None
-        return str
+        return str | None if sequence else str  # type: ignore[return-value]
 
     typ = _value_type(first_element)
 
