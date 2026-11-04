@@ -183,6 +183,69 @@ def test_pandas_conversion_in_memory():
     assert chain.equals(df)
 
 
+@pytest.mark.parametrize("dtype", ["datetime64[ns]", "timestamp[ns][pyarrow]", object])
+def test_pandas_datetimes_floored_to_microseconds_with_missing_as_none(
+    test_session, dtype
+):
+    values = [pd.NaT, pd.Timestamp("2024-01-01 00:00:00.123456789"), pd.NaT]
+    df = pd.DataFrame({"id": [1, 2, 3], "ts": pd.Series(values, dtype=dtype)})
+
+    chain = dc.read_pandas(df, session=test_session).order_by("id")
+
+    assert chain.to_values("ts") == [
+        None,
+        dt.datetime(2024, 1, 1, 0, 0, 0, 123456, tzinfo=dt.UTC),
+        None,
+    ]
+
+
+def test_pandas_nullable_ints_with_na_as_none(test_session):
+    df = pd.DataFrame({"id": [1, 2], "n": pd.Series([1, None], dtype="Int64")})
+
+    chain = dc.read_pandas(df, session=test_session).order_by("id")
+
+    assert chain.to_values("n") == [1, None]
+
+
+def test_pandas_lists_of_datetimes_floored_to_microseconds(test_session):
+    ts = [pd.Timestamp("2024-01-01 00:00:00.123456789"), pd.Timestamp("2024-01-02")]
+    df = pd.DataFrame({"user": [1, 1], "ts": ts})
+    lists = df.groupby("user")["ts"].agg(list).reset_index()
+
+    chain = dc.read_pandas(lists, session=test_session)
+
+    assert chain.to_values("ts") == [
+        [
+            dt.datetime(2024, 1, 1, 0, 0, 0, 123456, tzinfo=dt.UTC),
+            dt.datetime(2024, 1, 2, tzinfo=dt.UTC),
+        ]
+    ]
+
+
+def test_read_records_pandas_timestamps_floored_to_microseconds(test_session):
+    ts = pd.Timestamp("2024-01-01 00:00:00.123456789", tz="Europe/Berlin")
+
+    chain = dc.read_records(
+        [{"ts": ts}], schema={"ts": dt.datetime}, session=test_session
+    )
+
+    assert chain.to_values("ts") == [
+        dt.datetime(2023, 12, 31, 23, 0, 0, 123456, tzinfo=dt.UTC)
+    ]
+
+
+def test_map_returning_pandas_timestamps_floored_to_microseconds(test_session):
+    ts = pd.Timestamp("2024-01-01 00:00:00.123456789", tz="Europe/Berlin")
+
+    chain = dc.read_values(id=[1], session=test_session).map(
+        ts=lambda id: ts, output=dt.datetime
+    )
+
+    assert chain.to_values("ts") == [
+        dt.datetime(2023, 12, 31, 23, 0, 0, 123456, tzinfo=dt.UTC)
+    ]
+
+
 def test_pandas_uppercase_columns(test_session):
     data = {
         "FirstName": ["Alice", "Bob", "Charlie", "David", "Eva"],
