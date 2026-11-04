@@ -452,7 +452,7 @@ def arrow_type_mapper(col_type: pa.DataType, column: str = "") -> type:  # noqa:
         return dict_to_data_model(f"ArrowDataModel_{column}", type_dict)
     if pa.types.is_map(col_type):
         # JSON storage keeps these values, and the dict type restores the keys.
-        if arrow_type_mapper(col_type.item_type, column) in (int, float, str, bool):
+        if _is_scalar_type(col_type.key_type) and _is_scalar_type(col_type.item_type):
             key_type = arrow_type_mapper(col_type.key_type, column)
             item_type = _arrow_field_type_mapper(col_type.item_field, column)
             return dict[key_type, item_type]  # type: ignore[return-value, valid-type]
@@ -476,6 +476,16 @@ def _arrow_field_type_mapper(
     if ModelStore.is_pydantic(dtype):
         return dtype
     return dtype | None  # type: ignore[return-value]
+
+
+def _is_scalar_type(col_type: pa.DataType) -> bool:
+    return (
+        pa.types.is_integer(col_type)
+        or pa.types.is_floating(col_type)
+        or pa.types.is_boolean(col_type)
+        or pa.types.is_string(col_type)
+        or pa.types.is_large_string(col_type)
+    )
 
 
 def _get_hf_schema(

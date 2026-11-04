@@ -159,6 +159,8 @@ def test_arrow_generator_partitioned(tmp_path, catalog, cache):
         (pa.large_string(), str),
         (pa.map_(pa.string(), pa.int32()), dict[str, int | None]),
         (pa.map_(pa.string(), pa.struct([("x", pa.int64())])), dict),
+        (pa.map_(pa.string(), pa.list_(pa.int64(), 2)), dict),
+        (pa.map_(pa.decimal128(5, 2), pa.int64()), dict),
         (pa.dictionary(pa.int64(), pa.string()), str),
         (pa.list_(pa.string()), list[str | None]),
         (pa.list_(pa.field("item", pa.string(), nullable=False)), list[str]),
@@ -269,6 +271,23 @@ def test_read_parquet_map_keys_keep_their_type(test_session, tmp_path):
     chain = dc.read_parquet(path.as_posix(), session=test_session)
 
     assert chain.to_list("ints", "flags") == [({1: 10}, {True: 3})]
+
+
+def test_read_parquet_maps_of_fixed_and_large_lists(test_session, tmp_path):
+    fixed = pa.map_(pa.string(), pa.list_(pa.int64(), 2))
+    large = pa.map_(pa.string(), pa.large_list(pa.int64()))
+    table = pa.table(
+        {
+            "fixed": pa.array([[("k", [1, 2])]], fixed),
+            "large": pa.array([[("k", [3])]], large),
+        }
+    )
+    path = tmp_path / "maps.parquet"
+    pq.write_table(table, path)
+
+    chain = dc.read_parquet(path.as_posix(), session=test_session)
+
+    assert chain.to_list("fixed", "large") == [({"k": [1, 2]}, {"k": [3]})]
 
 
 # The 1969 value floors to a whole second because the ClickHouse driver stores
