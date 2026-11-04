@@ -1,6 +1,8 @@
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
+from pydantic import BaseModel
+
 from datachain.lib.convert.values_to_tuples import values_to_tuples
 from datachain.lib.data_model import dict_to_data_model
 from datachain.lib.dc.records import create_records_dataset
@@ -37,11 +39,7 @@ def read_values(
         model = dict_to_data_model(column, output)  # type: ignore[arg-type]
         rows = tuples if len(fr_map) > 1 else [(v,) for v in tuples]
         # Each row becomes the column's model, so it is flattened by its schema.
-        # model_construct skips validation, like rows without column.
-        tuples = [
-            model.model_construct(**dict(zip(model.model_fields, r, strict=True)))
-            for r in rows
-        ]
+        tuples = [_model_row(model, r) for r in rows]
         output = {column: model}
 
     def _func_fr() -> Iterator[tuple_type]:  # type: ignore[valid-type]
@@ -62,3 +60,12 @@ def read_values(
         in_memory=in_memory,
     )
     return chain.gen(_func_fr, output=output)
+
+
+def _model_row(model: type[BaseModel], values: tuple) -> BaseModel:
+    # Setting fields one by one skips validation, like rows without column, and
+    # allows a signal named "cls", which model_construct(**fields) rejects.
+    row = model.model_construct()
+    for name, value in zip(model.model_fields, values, strict=True):
+        setattr(row, name, value)
+    return row
