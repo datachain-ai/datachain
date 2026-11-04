@@ -222,6 +222,7 @@ def test_read_parquet_map_columns_as_dicts(test_session, tmp_path):
             "counts": pa.array([[("a", 1), ("b", 2)]], counts),
             "event": pa.array([{"tags": [("k", 3)]}], pa.struct([("tags", counts)])),
             "history": pa.array([[[("c", 4)]]], pa.list_(counts)),
+            "nested": pa.array([[("d", [("e", 5)])]], pa.map_(pa.string(), counts)),
         }
     )
     path = tmp_path / "maps.parquet"
@@ -229,14 +230,16 @@ def test_read_parquet_map_columns_as_dicts(test_session, tmp_path):
 
     chain = dc.read_parquet(path.as_posix(), source=True, session=test_session)
 
-    ((counts, tags, history, source),) = chain.to_list(
-        "counts", "event.tags", "history", "source"
+    ((counts, tags, history, nested, source),) = chain.to_list(
+        "counts", "event.tags", "history", "nested", "source"
     )
     assert (counts, tags, history) == ({"a": 1, "b": 2}, {"k": 3}, [{"c": 4}])
+    assert nested == {"d": {"e": 5}}
     assert source.read() == {
         "counts": {"a": 1, "b": 2},
         "event": {"tags": {"k": 3}},
         "history": [{"c": 4}],
+        "nested": {"d": {"e": 5}},
     }
 
 
