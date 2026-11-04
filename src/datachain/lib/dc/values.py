@@ -37,7 +37,7 @@ def read_values(
         model = dict_to_data_model(column, output)  # type: ignore[arg-type]
         rows = tuples if len(fr_map) > 1 else [(v,) for v in tuples]
         # Each row becomes the column's model, so it is flattened by its schema.
-        tuples = [model(**dict(zip(fr_map, r, strict=True))) for r in rows]
+        tuples = [model(**dict(zip(model.model_fields, r, strict=True))) for r in rows]
         output = {column: model}
 
     def _func_fr() -> Iterator[tuple_type]:  # type: ignore[valid-type]
