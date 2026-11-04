@@ -78,7 +78,11 @@ def _column_values(series: "pd.Series") -> list:
 def _column_type(
     series: "pd.Series", values: list, signal_name: str, ds_name: str
 ) -> "DataType":
-    if series.dtype.kind == "M":
-        # An all-missing column has no value to infer datetime from.
-        return datetime | None if series.hasnans else datetime  # type: ignore[return-value]
-    return infer_type_from_sequence(values, signal_name, ds_name)
+    typ = _KIND_TYPES.get(series.dtype.kind)
+    if typ is None:
+        return infer_type_from_sequence(values, signal_name, ds_name)
+    # Float NaN is a value, while NaT and NA are stored as None.
+    return typ | None if None in values else typ  # type: ignore[return-value]
+
+
+_KIND_TYPES = {"b": bool, "i": int, "u": int, "f": float, "M": datetime}
