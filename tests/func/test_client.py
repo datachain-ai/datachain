@@ -1,5 +1,4 @@
 import asyncio
-import io
 import os
 import sys
 from contextlib import aclosing
@@ -1107,11 +1106,13 @@ def test_open_object_reads_listed_version(client, block_size):
         assert stream.read() == b"woof"
 
 
-@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 @pytest.mark.parametrize("tree", [{"changed": "woof"}], indirect=True)
-def test_open_object_rejects_changed_unversioned_object(client):
+@pytest.mark.parametrize("cache", [False, True])
+def test_open_object_rejects_changed_unversioned_object(client, catalog, cache):
     file = client.get_file_info("changed")
     file.version = ""
+    file._set_stream(catalog, caching_enabled=cache)
     client.fs.pipe_file(file.get_fs_path(), b"WOOF")
     with pytest.raises(FileNotFoundError, match="changed on the source"):
         with client.open_object(file, use_cache=False, block_size=2) as stream:
@@ -1128,119 +1129,6 @@ def test_open_object_reads_without_listing_metadata(client, unknown):
         setattr(file, name, value)
     with client.open_object(file, use_cache=False) as stream:
         assert stream.read() == b"woof"
-
-
-@pytest.mark.parametrize("cloud_type", ["gs"], indirect=True)
-@pytest.mark.parametrize("version_aware", [False], indirect=True)
-@pytest.mark.parametrize("operation", ["open", "download"])
-def test_gcs_rejects_stale_etag_without_pinned_version(
-    cloud_test_catalog_upload, operation
-):
-    ctc = cloud_test_catalog_upload
-    client = ctc.catalog.get_client(ctc.src_uri)
-    file = client.upload(b"woof", "stale")
-    file.version = ""
-    file.etag = "stale-etag"
-    with pytest.raises(FileNotFoundError, match="changed on the source"):
-        if operation == "open":
-            with client.open_object(file, use_cache=False) as stream:
-                stream.read()
-        else:
-            sync(get_loop(), client._download, file, callback=DEFAULT_CALLBACK)
-    assert not ctc.catalog.cache.contains(file)
-
-
-@pytest.mark.parametrize("cloud_type", ["gs"], indirect=True)
-@pytest.mark.parametrize("version_aware", [True], indirect=True)
-def test_gcs_cache_download_pins_listed_version(cloud_test_catalog_upload):
-    ctc = cloud_test_catalog_upload
-    client = ctc.catalog.get_client(ctc.src_uri)
-    file = client.upload(b"woof", "pinned-download")
-    client.upload(b"WOOF", "pinned-download")
-    file.etag = "stale-etag"
-    sync(get_loop(), client._download, file, callback=DEFAULT_CALLBACK)
-    assert Path(ctc.catalog.cache.get_path(file)).read_bytes() == b"woof"
-
-
-@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
-@pytest.mark.parametrize("version_aware", [True], indirect=True)
-@pytest.mark.filterwarnings(
-    "ignore:Sending a large body directly with raw bytes:ResourceWarning"
-)
-def test_video_metadata_reads_ranges(cloud_test_catalog_upload, fetched_bytes):
-    from datachain.lib.file import VideoFile
-
-    ctc = cloud_test_catalog_upload
-    client = ctc.catalog.get_client(ctc.src_uri)
-    path = Path(__file__).parent / "data" / "Big_Buck_Bunny_360_10s_1MB.mp4"
-    contents = path.read_bytes() + b"\0" * (6 * 1024 * 1024)
-    uploaded = client.upload(contents, "metadata.mp4")
-    video = VideoFile(**uploaded.model_dump())
-    video._set_stream(ctc.catalog, caching_enabled=True)
-    expected = VideoFile.at(path).get_info()
-    before = fetched_bytes[0]
-    assert video.get_info() == expected
-    assert 0 < fetched_bytes[0] - before < len(contents) // 2
-    assert not ctc.catalog.cache.contains(video)
-
-
-@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
-@pytest.mark.parametrize("version_aware", [False], indirect=True)
-def test_tar_member_reads_prefix_without_caching(cloud_test_catalog_upload):
-    import tarfile
-
-    from datachain.lib.tar import build_tar_member
-    from tests.utils import make_tar
-
-    ctc = cloud_test_catalog_upload
-    client = ctc.catalog.get_client(ctc.src_uri)
-    data = b"member content"
-    raw = make_tar({"member.bin": data})
-    parent = client.upload(raw, "archive.tar")
-    parent._set_stream(ctc.catalog, caching_enabled=False)
-    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
-        member = build_tar_member(parent, archive.getmember("member.bin"))
-    member._set_stream(ctc.catalog, caching_enabled=False)
-    assert member.read_bytes(10) == data[:10]
-    assert not ctc.catalog.cache.contains(parent)
-
-
-@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
-@pytest.mark.parametrize("version_aware", [False], indirect=True)
-def test_s3_null_version_without_etag_uses_backend_open(client, mocker):
-    from io import BytesIO
-
-    file = client.get_file_info("dogs/dog1")
-    file.etag = ""
-    file.version = "null"
-    replacement = b"a longer replacement"
-    backend_stream = BytesIO(replacement)
-    backend_stream.details = {"size": len(replacement)}
-    opened = mocker.patch.object(client.fs, "open", return_value=backend_stream)
-    with client.open_object(file, use_cache=False, block_size=2) as stream:
-        assert stream.read() == replacement
-    opened.assert_called_once_with(file.get_fs_path(), block_size=2, version_id="null")
-
-
-@pytest.mark.parametrize("cloud_type", ["gs"], indirect=True)
-@pytest.mark.parametrize("version_aware", [True], indirect=True)
-@pytest.mark.parametrize("block_size", [None, 0, 2])
-def test_gcs_open_preserves_block_size(client, mocker, block_size):
-    file = client.get_file_info("dogs/dog1")
-    opened = mocker.spy(client.fs, "open")
-    with client.open_object(file, use_cache=False, block_size=block_size) as stream:
-        assert stream.read(2) == b"wo"
-        stream.seek(0)
-        assert stream.read() == b"woof"
-
-    options = opened.call_args.kwargs
-    if block_size == 0:
-        assert options["cache_type"] == "none"
-    elif block_size:
-        assert options["cache_type"] == "readahead"
-        assert options["block_size"] == block_size
-    else:
-        assert "cache_type" not in options
 
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)

@@ -1504,6 +1504,13 @@ def fetched_bytes(monkeypatch):
 
 
 class _QuietHandler(http.server.SimpleHTTPRequestHandler):
+    def end_headers(self):
+        path = Path(self.translate_path(self.path))
+        if path.is_file():
+            stat = path.stat()
+            self.send_header("ETag", f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"')
+        super().end_headers()
+
     def log_message(self, format, *args):
         pass
 

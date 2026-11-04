@@ -451,3 +451,21 @@ def test_list_page_falls_back_to_current_objects_without_version_support():
             ("a", "", True)
         ]
     assert s3.list_object_versions.call_count == 1
+
+
+def test_null_version_without_etag_uses_backend_open():
+    from io import BytesIO
+
+    from datachain.lib.file import File
+
+    client = ClientS3("bucket", {}, None)
+    client._fs = MagicMock()
+    file = File(source=client.uri, path="file.bin", version="null", size=4)
+    stream = BytesIO(b"a longer replacement")
+    stream.details = {"size": len(stream.getvalue())}
+    client.fs.open.return_value = stream
+    with client.open_object(file, use_cache=False, block_size=2) as opened:
+        assert opened.read() == b"a longer replacement"
+    client.fs.open.assert_called_once_with(
+        file.get_fs_path(), block_size=2, version_id="null"
+    )

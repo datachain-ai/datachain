@@ -1293,6 +1293,8 @@ class ImageFile(File):
         Retrieves metadata and information about the image file.
 
         Reuses cached content when available without populating the cache.
+        Use `.settings(prefetch=0)` for metadata-only pipelines to avoid downloading
+        files in advance.
 
         Returns:
             Image: A Model containing image metadata such as width, height and format.
@@ -1405,6 +1407,8 @@ class VideoFile(File):
         Retrieves metadata and information about the video file.
 
         Reuses cached content when available without populating the cache.
+        Use `.settings(prefetch=0)` for metadata-only pipelines to avoid downloading
+        files in advance.
 
         Args:
             video_stream_index: Zero-based index among video streams to inspect.
@@ -1582,6 +1586,8 @@ class AudioFile(File):
         Retrieves metadata and information about the audio file.
 
         Reuses cached content when available without populating the cache.
+        Use `.settings(prefetch=0)` for metadata-only pipelines to avoid downloading
+        files in advance.
 
         Returns:
             Audio: A Model containing audio metadata such as duration,

@@ -78,40 +78,41 @@ def test_media_file_metadata_then_content_in_one_udf_stage(
     assert result == [(path.stat().st_size,)]
 
 
-def test_media_file_metadata_reuses_persistent_cache(test_session, media_file, mocker):
-    from datachain.client.fsspec import Client
-
+def test_media_file_metadata_reuses_persistent_cache(test_session, media_file):
     kind, path = media_file
     chain = dc.read_storage(path.as_uri(), type=kind, session=test_session)
-    chain.settings(cache=True).map(
-        size=lambda file: len(file.read_bytes()), output=int
-    ).to_list("size")
-    remote = mocker.patch.object(
-        Client, "_open_remote", side_effect=AssertionError("uncached open")
+
+    def cache_and_describe(file) -> dict:
+        file.read_bytes()
+        return file.get_info().model_dump()
+
+    expected = chain.settings(cache=True).map(info=cache_and_describe).to_values("info")
+    path.unlink()
+    assert (
+        chain.settings(prefetch=0)
+        .map(info=lambda file: file.get_info().model_dump(), output=dict)
+        .to_values("info")
+        == expected
     )
-    assert chain.map(
-        info=lambda file: file.get_info().model_dump(), output=dict
-    ).to_list("info")
-    remote.assert_not_called()
 
 
-@pytest.mark.parametrize("cache", [False, True])
-@pytest.mark.parametrize("length", [-1, 0, 4])
-def test_read_bytes_preserves_full_read_cache_policy(
-    test_session, tmp_path, cache, length
-):
-    path = tmp_path / "content.bin"
-    path.write_bytes(b"hello world")
+@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+@pytest.mark.filterwarnings(
+    "ignore:Sending a large body directly with raw bytes:ResourceWarning"
+)
+def test_video_metadata_reads_ranges(cloud_test_catalog_upload, fetched_bytes):
+    from datachain.lib.file import VideoFile
 
-    def read(file: dc.File) -> bytes:
-        value = file.read_bytes(length)
-        assert file._catalog.cache.contains(file) == (cache and length < 0)
-        return value
-
-    result = (
-        dc.read_storage(path, session=test_session)
-        .settings(cache=cache, prefetch=0)
-        .map(value=read)
-        .to_values("value")
-    )
-    assert result == [b"hello world" if length < 0 else b"hello world"[:length]]
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+    path = Path(__file__).parent / "data" / "Big_Buck_Bunny_360_10s_1MB.mp4"
+    contents = path.read_bytes() + b"\0" * (6 * 1024 * 1024)
+    uploaded = client.upload(contents, "metadata.mp4")
+    video = VideoFile(**uploaded.model_dump())
+    video._set_stream(ctc.catalog, caching_enabled=True)
+    expected = VideoFile.at(path).get_info()
+    before = fetched_bytes[0]
+    assert video.get_info() == expected
+    assert 0 < fetched_bytes[0] - before < len(contents) // 2
+    assert not ctc.catalog.cache.contains(video)

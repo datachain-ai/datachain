@@ -494,8 +494,7 @@ class Client(ABC):
         return FileWrapper(self._open_remote(file, block_size), cb)  # type: ignore[return-value]
 
     def _open_remote(self, file: "File", block_size: int | None = None) -> BinaryIO:
-        if file._caching_enabled:
-            self.check_unchanged(file)
+        self.check_unchanged(file)
         return self.fs.open(
             file.get_fs_path(),
             **self._block_size_kwargs(block_size),

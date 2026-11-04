@@ -976,3 +976,43 @@ def test_uncached_partial_read_rejects_changed_local_file(
     cause = exc.value if operation == "prefix" else exc.value.__cause__
     assert "changed on the source" in str(cause)
     assert not test_session.catalog.cache.contains(file)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_tar_member_reads_prefix_without_caching(cloud_test_catalog_upload):
+    from datachain.lib.tar import build_tar_member
+
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+    data = b"member content"
+    raw = make_tar({"member.bin": data})
+    parent = client.upload(raw, "archive.tar")
+    parent._set_stream(ctc.catalog, caching_enabled=False)
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        member = build_tar_member(parent, archive.getmember("member.bin"))
+    member._set_stream(ctc.catalog, caching_enabled=False)
+    assert member.read_bytes(10) == data[:10]
+    assert not ctc.catalog.cache.contains(parent)
+
+
+@pytest.mark.parametrize("cache", [False, True])
+@pytest.mark.parametrize("length", [-1, 0, 4])
+def test_read_bytes_preserves_full_read_cache_policy(
+    test_session, tmp_path, cache, length
+):
+    path = tmp_path / "content.bin"
+    path.write_bytes(b"hello world")
+
+    def read(file: dc.File) -> bytes:
+        value = file.read_bytes(length)
+        assert file._catalog.cache.contains(file) == (cache and length < 0)
+        return value
+
+    result = (
+        dc.read_storage(path, session=test_session)
+        .settings(cache=cache, prefetch=0)
+        .map(value=read)
+        .to_values("value")
+    )
+    assert result == [b"hello world" if length < 0 else b"hello world"[:length]]
