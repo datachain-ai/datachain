@@ -5,13 +5,11 @@ from importlib.resources import files
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-SKILLS = ("datachain", "core", "knowledge")
+SKILLS = ("datachain",)
 DEFAULT_SKILLS = ("datachain",)
 _INSTALL_MARKER = ".datachain-installed"
-# Installable once, retired since. An upgrade must still be able to remove these:
-# a stale skill directory keeps instructing the agent that reads it.
-RETIRED_SKILLS = ("jobs",)
-SKILL_DEPENDENCIES = {"knowledge": ("core",)}
+# Retired instructions must be removed so agents do not keep following them.
+RETIRED_SKILLS = ("jobs", "core", "knowledge")
 
 
 TARGET_LAYOUT: dict[str, dict[bool, tuple[str, str | None, str]]] = {
@@ -180,9 +178,6 @@ def _write_companion(
         content = _transform_copilot_instructions(skill_md)
     else:
         content = skill_md.read_text(encoding="utf-8")
-    sdk_md = src / "SDK.md"
-    if sdk_md.exists():
-        content = f"{content.rstrip()}\n\n{sdk_md.read_text(encoding='utf-8')}"
     command = commands_dir / f"datachain-{src.name}{command_ext}"
     _write_text_atomic(command, _resolve_placeholders(content, skills_dir, dest))
 
@@ -210,12 +205,7 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
             raise ValueError(
                 f"Unknown skill(s): {', '.join(invalid)}. Valid skills: {valid}"
             )
-        skills_to_install = requested + [
-            dep
-            for skill in requested
-            for dep in SKILL_DEPENDENCIES.get(skill, ())
-            if dep not in requested
-        ]
+        skills_to_install = requested
     else:
         skills_to_install = list(DEFAULT_SKILLS)
 
@@ -226,7 +216,7 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
     missing = []
     for skill_name in skills_to_install:
         src = _skills_src() / skill_name
-        if not src.exists():
+        if not (src / "SKILL.md").is_file():
             print(f"Warning: skill source not found: {src}", file=sys.stderr)
             missing.append(skill_name)
             continue
@@ -256,14 +246,8 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
 
         installed.append(f"  {skill_name} -> {dest}")
 
-    old_skills: tuple[str, ...] = RETIRED_SKILLS
-    if "datachain" in skills_to_install and not missing:
-        old_skills += tuple(
-            name
-            for name in ("core", "knowledge")
-            if not (skills_dir / name / _INSTALL_MARKER).exists()
-        )
-    _sweep_retired(skills_dir, commands_dir, command_ext, old_skills)
+    if not missing:
+        _sweep_retired(skills_dir, commands_dir, command_ext, RETIRED_SKILLS)
 
     if installed:
         scope = "local" if local else "global"
@@ -292,20 +276,6 @@ def uninstall_skills(skills: str | None, target: str, local: bool) -> int:
         skills_to_uninstall = requested
     else:
         skills_to_uninstall = list(SKILLS) + list(RETIRED_SKILLS)
-
-    for skill_name in skills_to_uninstall:
-        dependents = [
-            dependent
-            for dependent, deps in SKILL_DEPENDENCIES.items()
-            if skill_name in deps
-            and dependent not in skills_to_uninstall
-            and (skills_dir / dependent).exists()
-        ]
-        if dependents:
-            raise ValueError(
-                f"Cannot uninstall {skill_name}: {', '.join(dependents)} depends "
-                "on it. Uninstall them together or run without --skills."
-            )
 
     removed = []
     not_found = []

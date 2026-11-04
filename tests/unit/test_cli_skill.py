@@ -22,8 +22,8 @@ def test_skill_install_defaults():
 
 def test_skill_install_one_skill():
     parser = get_parser()
-    args = parser.parse_args(["skill", "install", "knowledge"])
-    assert args.skills == "knowledge"
+    args = parser.parse_args(["skill", "install", "datachain"])
+    assert args.skills == "datachain"
 
 
 def test_skill_install_multiple_skills():
@@ -95,8 +95,6 @@ def _make_fake_skills_src(tmp_path: Path) -> Path:
             "```bash\npython3 scripts/plan.py\n```\n"
             f"Read `{{{resource_dir}}}/SDK.md`.\n"
         )
-        if skill_name != "datachain":
-            (skill_dir / "SDK.md").write_text(f"# {skill_name} rules\n")
         scripts = skill_dir / "scripts"
         scripts.mkdir()
         (scripts / "plan.py").write_text("# stub\n")
@@ -104,6 +102,8 @@ def _make_fake_skills_src(tmp_path: Path) -> Path:
         pycache = scripts / "__pycache__"
         pycache.mkdir()
         (pycache / "plan.cpython-312.pyc").write_bytes(b"\x00")
+    (skills_src / "core").mkdir()
+    (skills_src / "core" / "SDK.md").write_text("# DataChain SDK Rules\n")
     return skills_src
 
 
@@ -137,59 +137,13 @@ def _run_install(
         install_skills(skills=skills, target=target, local=local)
 
 
-def test_install_only_core_claude_global(tmp_path, fake_skills_src, fake_home):
+def test_install_explicit_datachain(tmp_path, fake_skills_src, fake_home):
     _run_install(
-        fake_skills_src, fake_home, skills="core", target="claude", local=False
+        fake_skills_src, fake_home, skills="datachain", target="claude", local=False
     )
-
-    skills_base = fake_home / ".claude" / "skills"
-    assert (skills_base / "core" / "SKILL.md").exists()
-    assert not (skills_base / "knowledge").exists()
-
-
-def test_install_only_graph_claude_global(tmp_path, fake_skills_src, fake_home):
-    _run_install(
-        fake_skills_src, fake_home, skills="knowledge", target="claude", local=False
-    )
-
-    skills_base = fake_home / ".claude" / "skills"
-    assert (skills_base / "knowledge" / "SKILL.md").exists()
-    assert (skills_base / "core" / "SDK.md").exists()
-
-
-def test_uninstall_core_refused_while_knowledge_installed(
-    tmp_path, fake_skills_src, fake_home
-):
-    from datachain.cli.commands.skill import uninstall_skills
-
-    _run_install(
-        fake_skills_src, fake_home, skills="knowledge", target="claude", local=False
-    )
-    skills_base = fake_home / ".claude" / "skills"
-
-    with (
-        patch("pathlib.Path.home", return_value=fake_home),
-        pytest.raises(ValueError, match=r"Cannot uninstall core: knowledge"),
-    ):
-        uninstall_skills(skills="core", target="claude", local=False)
-    assert (skills_base / "core" / "SDK.md").exists()
-
-    with patch("pathlib.Path.home", return_value=fake_home):
-        uninstall_skills(skills="core,knowledge", target="claude", local=False)
-    assert not (skills_base / "core").exists()
-    assert not (skills_base / "knowledge").exists()
-
-
-def test_install_knowledge_from_package_ships_core_sdk(tmp_path, fake_home):
-    from datachain.cli.commands.skill import install_skills
-
-    with patch("pathlib.Path.home", return_value=fake_home):
-        install_skills(skills="knowledge", target="claude", local=False)
-
-    skills_base = fake_home / ".claude" / "skills"
-    assert (skills_base / "core" / "SDK.md").exists()
-    content = (skills_base / "knowledge" / "SKILL.md").read_text(encoding="utf-8")
-    assert f"{(skills_base / 'core').resolve().as_posix()}/SDK.md" in content
+    skills = fake_home / ".claude" / "skills"
+    assert {p.name for p in skills.iterdir()} == {"datachain"}
+    assert (skills / "datachain" / "SDK.md").read_text() == "# DataChain SDK Rules\n"
 
 
 def test_pycache_not_copied(tmp_path, fake_skills_src, fake_home):
@@ -207,8 +161,8 @@ def test_list_skills_output(capsys):
     list_skills()
     out = capsys.readouterr().out
     assert "datachain" in out
-    assert "core" in out
-    assert "knowledge" in out
+    assert "core" not in out
+    assert "knowledge" not in out
     assert "claude" in out
     assert "cursor" in out
     assert "codex" in out
@@ -414,27 +368,34 @@ def test_uninstall_all_clears_a_retired_skill(tmp_path, fake_skills_src, fake_ho
     assert not command.exists()
 
 
-def test_uninstall_names_a_retired_skill(tmp_path, fake_skills_src, fake_home):
-    """`uninstall jobs` has to keep working for anyone who installed it."""
-    skill_dir, command = _seed_retired_install(fake_home)
+@pytest.mark.parametrize("name", ["jobs", "core", "knowledge"])
+def test_uninstall_names_a_retired_skill(tmp_path, fake_skills_src, fake_home, name):
+    skills = _seed_legacy_skills(fake_home, "cursor", False)
+    skill_dir = skills / name
+    command = fake_home / ".cursor" / "rules" / f"datachain-{name}.mdc"
     from datachain.cli.commands.skill import uninstall_skills
 
     with patch("pathlib.Path.home", return_value=fake_home):
-        assert uninstall_skills(skills="jobs", target="cursor", local=False) == 0
+        assert uninstall_skills(skills=name, target="cursor", local=False) == 0
 
     assert not skill_dir.exists()
     assert not command.exists()
 
 
-def test_install_does_not_offer_a_retired_skill(tmp_path, fake_skills_src, fake_home):
+@pytest.mark.parametrize("name", ["jobs", "core", "knowledge"])
+def test_install_does_not_offer_a_retired_skill(
+    tmp_path, fake_skills_src, fake_home, name
+):
     from datachain.cli.commands.skill import install_skills
 
     with (
         patch("datachain.cli.commands.skill._skills_src", return_value=fake_skills_src),
         patch("pathlib.Path.home", return_value=fake_home),
-        pytest.raises(ValueError, match=r"Unknown skill.*jobs"),
+        pytest.raises(
+            ValueError, match=rf"Unknown skill.*{name}.*Valid skills: datachain$"
+        ),
     ):
-        install_skills(skills="jobs", target="cursor", local=False)
+        install_skills(skills=name, target="cursor", local=False)
 
 
 def test_uninstall_error_names_the_retired_skill(tmp_path, fake_home):
@@ -545,48 +506,103 @@ def test_default_package_round_trip_and_reference_reachability(
         assert not (base / companion_path).exists()
 
 
-def test_default_upgrade_preserves_optional_skills_and_rules(
-    tmp_path, fake_home, monkeypatch
+def _seed_legacy_skills(base, target, local, marked=False):
+    from datachain.cli.commands.skill import RETIRED_SKILLS, TARGET_LAYOUT
+
+    skills_path, commands_path, suffix = TARGET_LAYOUT[target][local]
+    skills = base / skills_path
+    for name in RETIRED_SKILLS:
+        dest = skills / name
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text(f"---\nname: datachain-{name}\n---\n")
+        if marked:
+            (dest / ".datachain-installed").write_text(name)
+        if commands_path:
+            command = base / commands_path / f"datachain-{name}{suffix}"
+            command.parent.mkdir(parents=True, exist_ok=True)
+            command.write_text(f"# datachain-{name}\n")
+    return skills
+
+
+@pytest.mark.parametrize("target", ["claude", "cursor", "codex", "pi", "copilot"])
+@pytest.mark.parametrize("local", [False, True])
+@pytest.mark.parametrize("marked", [False, True])
+def test_upgrade_removes_legacy_skills_and_preserves_data(
+    tmp_path, fake_home, monkeypatch, target, local, marked
+):
+    from datachain.cli.commands.skill import TARGET_LAYOUT, install_skills
+
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    base = project if local else fake_home
+    skills = _seed_legacy_skills(base, target, local, marked)
+    untouched = [project / ".datachain" / "db", project / "dc-knowledge" / "index.md"]
+    other = project / ".other-agent" / "skills" / "knowledge" / "SKILL.md"
+    untouched.append(other)
+    for path in untouched:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"user data")
+    with patch("pathlib.Path.home", return_value=fake_home):
+        assert install_skills(None, target, local) == 0
+    assert {p.name for p in skills.iterdir()} == {"datachain"}
+    _, commands_path, suffix = TARGET_LAYOUT[target][local]
+    if commands_path:
+        assert {p.name for p in (base / commands_path).iterdir()} == {
+            f"datachain-datachain{suffix}"
+        }
+    assert all(path.read_bytes() == b"user data" for path in untouched)
+
+
+@pytest.mark.parametrize("failure", ["missing_source", "missing_skill", "copy_error"])
+def test_failed_default_upgrade_keeps_legacy_skills(
+    tmp_path, fake_home, monkeypatch, fake_skills_src, failure
 ):
     from datachain.cli.commands.skill import install_skills
 
     monkeypatch.chdir(tmp_path)
     with patch("pathlib.Path.home", return_value=fake_home):
-        assert install_skills("knowledge", "cursor", True) == 0
-        assert install_skills(None, "cursor", True) == 0
+        _seed_legacy_skills(tmp_path, "cursor", True, marked=True)
+        before = {
+            path: path.read_bytes()
+            for path in (tmp_path / ".cursor").rglob("*")
+            if path.is_file()
+        }
+        monkeypatch.setattr(
+            "datachain.cli.commands.skill._skills_src", lambda: fake_skills_src
+        )
+        if failure == "copy_error":
+            with (
+                patch("shutil.copytree", side_effect=OSError("copy failed")),
+                pytest.raises(OSError, match="copy failed"),
+            ):
+                install_skills(None, "cursor", True)
+        else:
+            (fake_skills_src / "datachain" / "SKILL.md").unlink()
+            if failure == "missing_source":
+                import shutil
 
-    skills = tmp_path / ".cursor" / "skills"
-    rules = tmp_path / ".cursor" / "rules"
-    assert {p.name for p in skills.iterdir()} == {"datachain", "core", "knowledge"}
-    assert {p.name for p in rules.iterdir()} == {
-        "datachain-datachain.mdc",
-        "datachain-core.mdc",
-        "datachain-knowledge.mdc",
-    }
+                shutil.rmtree(fake_skills_src / "datachain")
+            assert install_skills(None, "cursor", True) == 1
+    assert {path: path.read_bytes() for path in before} == before
 
 
-def test_failed_default_upgrade_keeps_legacy_skills(tmp_path, fake_home, monkeypatch):
-    from datachain.cli.commands.skill import install_skills
+@pytest.mark.parametrize("name", ["core", "knowledge"])
+def test_upgrade_preserves_unrelated_legacy_named_skill(
+    tmp_path, fake_home, monkeypatch, name
+):
+    from datachain.cli.commands.skill import install_skills, uninstall_skills
 
     monkeypatch.chdir(tmp_path)
+    dest = tmp_path / ".cursor" / "skills" / name
+    dest.mkdir(parents=True)
+    content = f"---\nname: my-{name}\n---\nUser instructions\n"
+    (dest / "SKILL.md").write_text(content)
     with patch("pathlib.Path.home", return_value=fake_home):
-        assert install_skills("knowledge", "cursor", True) == 0
-        skills = tmp_path / ".cursor" / "skills"
-        for name in ("core", "knowledge"):
-            (skills / name / ".datachain-installed").unlink()
-        before = {
-            name: (skills / name / "SKILL.md").read_bytes()
-            for name in ("core", "knowledge")
-        }
-        empty_source = tmp_path / "empty-source"
-        empty_source.mkdir()
-        monkeypatch.setattr(
-            "datachain.cli.commands.skill._skills_src", lambda: empty_source
-        )
-        assert install_skills(None, "cursor", True) == 1
-    assert {
-        name: (skills / name / "SKILL.md").read_bytes() for name in before
-    } == before
+        assert install_skills(None, "cursor", True) == 0
+        assert (dest / "SKILL.md").read_text() == content
+        assert uninstall_skills(None, "cursor", True) == 0
+    assert (dest / "SKILL.md").read_text() == content
 
 
 @pytest.mark.parametrize("encoding", ["utf-8", "cp1252"])
@@ -626,10 +642,8 @@ def test_default_upgrade_removes_previous_release_skills(
 
     monkeypatch.chdir(tmp_path)
     with patch("pathlib.Path.home", return_value=fake_home):
-        assert install_skills("knowledge", "cursor", True) == 0
-        skills = tmp_path / ".cursor" / "skills"
+        skills = _seed_legacy_skills(tmp_path, "cursor", True)
         for name in ("core", "knowledge"):
-            (skills / name / ".datachain-installed").unlink()
             text = f"---\nname: datachain-{name}\n---\nProfile: C:\\Users\\{profile}\n"
             (skills / name / "SKILL.md").write_bytes(text.encode(encoding))
         assert install_skills(None, "cursor", True) == 0

@@ -11,7 +11,7 @@ The **skill** ships with `pip install datachain` and teaches agents to inspect s
 | | Local SDK (OSS) | MCP (Studio) |
 |---|---|---|
 | Ships with | `pip install datachain` | Studio |
-| Reads | Local `.datachain/db` (SQLite); optional `dc-knowledge/` | Centralized data warehouse + shared Knowledge Base |
+| Reads | Local `.datachain/db` (SQLite) | Centralized data warehouse + shared Knowledge Base |
 | Compute | Local machine, parallel threads | Jobs with or without a cluster; clusters scale across dozens or hundreds of CPU/GPU machines |
 | Scale | One project's SQLite registry | Billions of typed records (LAION-scale corpora) |
 | Access control | Filesystem only | Teams, namespaces, per-team ACLs |
@@ -26,16 +26,7 @@ datachain skill install --target claude     # also: cursor, codex
 
 The Skill is the agent-side instruction package. Installing it places files into the agent harness's directory (for Claude Code: `~/.claude/skills/datachain/`). The default skill teaches the agent to inspect the Dataset DB, process data files, save expensive results and query them later.
 
-For a markdown Knowledge Base, explicitly install the optional knowledge skill and its core dependency:
-
-```bash
-datachain skill install knowledge --target claude
-```
-
-That workflow reads two local sources:
-
-- **`dc-knowledge/`** holds compiled markdown pages: schema, lineage, previews, links. The agent reads this first.
-- **`.datachain/db`** is the SQLite dataset registry: every named, versioned dataset and its provenance. The agent queries this when the Knowledge Base summary is not enough.
+Agents inspect saved datasets with `dc.datasets()`, `dc.describe()` and `dc.read_dataset()`. The skill does not maintain local markdown summaries.
 
 Compute runs locally. `map()`, `gen()`, and `agg()` execute on the developer's machine through the in-process [Compute Engine](compute-engine.md) with parallel threads and async prefetch. Single-machine reach.
 

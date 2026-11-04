@@ -63,30 +63,14 @@ model-change rebuild rule.
 A small shell command is sufficient for questions it answers directly. Use DuckDB
 or pandas for ready-made tables.
 
-## Optional Knowledge Base
+## Knowledge Base
 
-To generate and maintain markdown summaries in `dc-knowledge/`, explicitly install
-the `knowledge` skill, which also installs its `core` dependency:
+[Studio MCP](../studio/user-guide/agents/mcp.md) provides shared dataset descriptions and knowledge search. Locally, agents inspect saved datasets with `dc.datasets()`, `dc.describe()` and `dc.read_dataset()`.
 
-```bash
-datachain skill install knowledge --target claude --local
-```
-
-Then ask the agent to build a knowledge base for your saved datasets. See the
-[Knowledge Base guide](../guide/knowledge-base.md) for generation and browsing.
-The default skill does not require a knowledge base.
-
-Installing the default `datachain` skill replaces `core` and `knowledge`
-installations from earlier releases. Optional skills explicitly installed with
-this version remain installed. To use only the task-oriented skill, remove those explicitly in
-that target and scope:
-
-```bash
-datachain skill uninstall core,knowledge --target claude --local
-```
+Installing `datachain` replaces the retired `core`, `knowledge` and `jobs` skills in the selected target and scope, including their companion instructions. Existing datasets and `dc-knowledge/` files are preserved.
 
 ## Next Steps
 
 - [Concepts](../concepts/index.md): the Dataset DB, datasets and execution
-- [Knowledge Base guide](../guide/knowledge-base.md): optional markdown summaries
+- [Knowledge Base guide](../guide/knowledge-base.md): shared dataset descriptions
 - [Guides](../guide/index.md): in-depth coverage of each capability
