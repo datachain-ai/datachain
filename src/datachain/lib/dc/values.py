@@ -1,4 +1,4 @@
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from typing import TYPE_CHECKING
 
 from datachain.lib.convert.flatten import flatten_value
@@ -25,7 +25,7 @@ def read_values(
     in_memory: bool = False,
     output: OutputType = None,
     column: str = "",
-    **fr_map,
+    **fr_map: Sequence,
 ) -> "DataChain":
     """Generate chain from lists of values, one list per signal.
 

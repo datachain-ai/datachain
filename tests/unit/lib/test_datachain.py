@@ -2991,6 +2991,42 @@ def test_read_values_signals_named_like_model_attributes_into_column(
     assert chain.to_list(f"row.{name}", "row.n") == [(1, 2)]
 
 
+@pytest.mark.parametrize(
+    "typ,value",
+    [
+        (int | str, 1),
+        (int | str, "a"),
+        (int | str | None, "a"),
+        (int | str | None, None),
+    ],
+)
+def test_read_values_union_into_column_read_back_after_save(test_session, typ, value):
+    chain = dc.read_values(
+        u=[value], output={"u": typ}, column="row", session=test_session
+    )
+    chain.save("unions")
+
+    assert chain.to_values("row.u") == [value]
+    assert dc.read_dataset("unions", session=test_session).to_values("row.u") == [value]
+
+
+@pytest.mark.parametrize(
+    "typ,values", [(int | str, [1, "a"]), (int | str | None, [1, "a", None])]
+)
+def test_read_values_union_and_scalar_into_column_read_back_after_save(
+    test_session, typ, values
+):
+    n = list(range(len(values)))
+    chain = dc.read_values(
+        u=values, n=n, output={"u": typ, "n": int}, column="row", session=test_session
+    )
+    chain.save("unions")
+
+    assert chain.order_by("row.n").to_values("row.u") == values
+    saved = dc.read_dataset("unions", session=test_session)
+    assert saved.order_by("row.n").to_values("row.u") == values
+
+
 def test_parse_tabular_column(tmp_dir, test_session):
     df = pd.DataFrame(DF_DATA)
     path = tmp_dir / "test.parquet"
