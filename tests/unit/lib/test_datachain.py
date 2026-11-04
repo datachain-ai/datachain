@@ -2974,6 +2974,14 @@ def test_read_values_model_and_scalar_into_column(test_session):
     assert chain.to_list("row.fr", "row.n") == [(fr, 1)]
 
 
+def test_read_values_dicts_into_column_kept_as_given(test_session):
+    dicts = [{}, {"a": 1, "b": None}]
+
+    chain = dc.read_values(d=dicts, n=[1, 2], column="row", session=test_session)
+
+    assert chain.order_by("row.n").to_values("row.d") == dicts
+
+
 def test_parse_tabular_column(tmp_dir, test_session):
     df = pd.DataFrame(DF_DATA)
     path = tmp_dir / "test.parquet"
