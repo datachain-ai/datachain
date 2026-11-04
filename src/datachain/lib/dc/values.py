@@ -34,10 +34,11 @@ def read_values(
     """
     tuple_type, output, tuples = values_to_tuples(ds_name, output, **fr_map)
     if column:
-        if len(fr_map) == 1:
-            # One signal comes as bare values, but the column's model takes rows.
-            tuples = [(v,) for v in tuples]
-        output = {column: dict_to_data_model(column, output)}  # type: ignore[arg-type]
+        model = dict_to_data_model(column, output)  # type: ignore[arg-type]
+        rows = tuples if len(fr_map) > 1 else [(v,) for v in tuples]
+        # Each row becomes the column's model, so it is flattened by its schema.
+        tuples = [model(**dict(zip(fr_map, r, strict=True))) for r in rows]
+        output = {column: model}
 
     def _func_fr() -> Iterator[tuple_type]:  # type: ignore[valid-type]
         yield from tuples

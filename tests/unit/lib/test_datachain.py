@@ -2957,10 +2957,21 @@ def test_from_features_column(test_session):
     assert "custom.fib" in chain.to_pandas(flatten=True).columns
 
 
-def test_read_values_one_signal_into_column(test_session):
-    chain = dc.read_values(fib=[1, 2, 3], column="custom", session=test_session)
+@pytest.mark.parametrize(
+    "value", [1, MyFr(nnn="n1", count=3), File(source="s3://bucket", path="a.txt")]
+)
+def test_read_values_one_signal_into_column(test_session, value):
+    chain = dc.read_values(v=[value], column="row", session=test_session)
 
-    assert chain.order_by("custom.fib").to_values("custom.fib") == [1, 2, 3]
+    assert chain.to_values("row.v") == [value]
+
+
+def test_read_values_model_and_scalar_into_column(test_session):
+    fr = MyFr(nnn="n1", count=3)
+
+    chain = dc.read_values(fr=[fr], n=[1], column="row", session=test_session)
+
+    assert chain.to_list("row.fr", "row.n") == [(fr, 1)]
 
 
 def test_parse_tabular_column(tmp_dir, test_session):
