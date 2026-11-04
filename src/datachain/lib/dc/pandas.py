@@ -63,5 +63,9 @@ def read_pandas(  # type: ignore[override]
 def _column_values(series: "pd.Series") -> list:
     import pandas as pd
 
-    # NaT and NA can't be stored, so they become None. Float NaN is kept.
-    return [None if v is pd.NaT or v is pd.NA else v for v in series.tolist()]
+    values = series.tolist()
+    if series.dtype.kind == "f":
+        # Float NaN is a value, so only NA becomes None.
+        return [None if v is pd.NA else v for v in values]
+    # Other columns mark missing values with NaN, NaT or NA.
+    return [None if m else v for v, m in zip(values, series.isna(), strict=True)]
