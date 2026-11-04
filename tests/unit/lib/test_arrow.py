@@ -157,7 +157,7 @@ def test_arrow_generator_partitioned(tmp_path, catalog, cache):
         (pa.date32(), datetime),
         (pa.string(), str),
         (pa.large_string(), str),
-        (pa.map_(pa.string(), pa.int32()), dict),
+        (pa.map_(pa.string(), pa.int32()), dict[str, int | None]),
         (pa.dictionary(pa.int64(), pa.string()), str),
         (pa.list_(pa.string()), list[str | None]),
         (pa.list_(pa.field("item", pa.string(), nullable=False)), list[str]),
@@ -235,6 +235,21 @@ def test_read_parquet_map_columns_as_dicts(test_session, tmp_path):
         "event": {"tags": {"k": 3}},
         "history": [{"c": 4}],
     }
+
+
+def test_read_parquet_map_keys_keep_their_type(test_session, tmp_path):
+    table = pa.table(
+        {
+            "ints": pa.array([[(1, 10)]], pa.map_(pa.int64(), pa.int64())),
+            "flags": pa.array([[(True, 3)]], pa.map_(pa.bool_(), pa.int64())),
+        }
+    )
+    path = tmp_path / "maps.parquet"
+    pq.write_table(table, path)
+
+    chain = dc.read_parquet(path.as_posix(), session=test_session)
+
+    assert chain.to_list("ints", "flags") == [({1: 10}, {True: 3})]
 
 
 # The 1969 value floors to a whole second because the ClickHouse driver stores

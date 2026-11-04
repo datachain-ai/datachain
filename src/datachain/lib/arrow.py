@@ -451,7 +451,11 @@ def arrow_type_mapper(col_type: pa.DataType, column: str = "") -> type:  # noqa:
             type_dict[field.name] = _arrow_field_type_mapper(field, field.name)
         return dict_to_data_model(f"ArrowDataModel_{column}", type_dict)
     if pa.types.is_map(col_type):
-        return dict
+        key_type = arrow_type_mapper(col_type.key_type, column)
+        item_type = _arrow_field_type_mapper(
+            col_type.item_field, column, nullable_scalars_only=True
+        )
+        return dict[key_type, item_type]  # type: ignore[return-value, valid-type]
     if isinstance(col_type, pa.lib.DictionaryType):
         return arrow_type_mapper(col_type.value_type)  # type: ignore[return-value]
     if pa.types.is_null(col_type):
