@@ -953,9 +953,7 @@ def test_video_info_http_server_without_range_support(
 
 
 @pytest.mark.parametrize("operation", ["prefix", "metadata"])
-def test_uncached_partial_read_rejects_changed_local_file(
-    test_session, tmp_path, operation
-):
+def test_partial_read_rejects_changed_local_file(test_session, tmp_path, operation):
     from PIL import Image
 
     path = tmp_path / "image.png"

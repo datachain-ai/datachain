@@ -225,13 +225,7 @@ class GCSClient(RangeListedClient):
         open_kwargs = self._block_size_kwargs(block_size)
         if block_size:
             open_kwargs["cache_type"] = "readahead"
-        stream = self.fs.open(full_path, **open_kwargs)
-        try:
-            self.check_unchanged(file, info=stream.details)
-        except BaseException:
-            stream.close()
-            raise
-        return stream
+        return self._open_checked(file, full_path, **open_kwargs)
 
     @staticmethod
     def parse_timestamp(timestamp: str) -> datetime:

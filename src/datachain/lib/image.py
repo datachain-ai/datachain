@@ -25,7 +25,7 @@ def image_info(file: File | ImageFile) -> Image:
     """
     try:
         with file.as_image_file().open(
-            mode="rb", block_size=PARTIAL_READ_BLOCK_SIZE, cache=False
+            mode="rb", block_size=PARTIAL_READ_BLOCK_SIZE, _cache=False
         ) as stream:
             with PILImage.open(stream) as img:
                 return Image(

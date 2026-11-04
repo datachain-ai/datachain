@@ -146,17 +146,12 @@ class ClientS3(RangeListedClient):
     _unversioned = False  # the server can't list versions
 
     def _open_remote(self, file: File, block_size: int | None = None):
-        stream = self.fs.open(
+        return self._open_checked(
+            file,
             file.get_fs_path(),
             **self._block_size_kwargs(block_size),
             **self._version_kwargs(file.version),
         )
-        try:
-            self.check_unchanged(file, info=stream.details)
-        except BaseException:
-            stream.close()
-            raise
-        return stream
 
     @staticmethod
     def _normalize_s3_kwargs(kwargs: dict) -> dict:

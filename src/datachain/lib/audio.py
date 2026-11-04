@@ -38,7 +38,7 @@ def audio_info(file: "File | AudioFile") -> "Audio":
     file = file.as_audio_file()
 
     try:
-        with file.open(block_size=PARTIAL_READ_BLOCK_SIZE, cache=False) as f:
+        with file.open(block_size=PARTIAL_READ_BLOCK_SIZE, _cache=False) as f:
             _prime_soundfile_stream(f)
             info = sf.info(f)
 

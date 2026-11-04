@@ -569,7 +569,7 @@ class File(DataModel):
         metadata: dict[str, str] | None = None,
         write_options: dict[str, Any] | None = None,
         block_size: int | None = None,
-        cache: bool = True,
+        _cache: bool = True,
         **open_kwargs,
     ) -> Iterator[Any]:
         """Open the file and return a file-like object.
@@ -588,9 +588,6 @@ class File(DataModel):
         ``block_size`` sets the read-ahead block for uncached remote reads (0
         turns read-ahead off), and the upload part size for writes. HTTP(S)
         reads ignore it.
-        ``cache=False`` streams a read without downloading the whole file to
-        cache, while still using an existing cached copy. The default follows
-        the chain cache settings.
         """
         writing = any(ch in mode for ch in "wax+")
 
@@ -629,7 +626,7 @@ class File(DataModel):
                     with self._wrap_text(f, mode, open_kwargs=open_kwargs) as wrapped:
                         yield wrapped
                 return
-            if cache and self._caching_enabled:
+            if _cache and self._caching_enabled:
                 self.ensure_cached()
             with client.open_object(
                 self, use_cache=True, cb=self._download_cb, block_size=block_size
@@ -703,7 +700,7 @@ class File(DataModel):
     def read_bytes(self, length: int = -1):
         """Returns file contents as bytes."""
         block_size = min(length, PARTIAL_READ_BLOCK_SIZE) if length > 0 else None
-        with self.open(mode="rb", block_size=block_size, cache=length < 0) as stream:
+        with self.open(mode="rb", block_size=block_size, _cache=length < 0) as stream:
             return stream.read(length)
 
     def read_text(self, **open_kwargs):

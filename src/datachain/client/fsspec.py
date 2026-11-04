@@ -501,6 +501,15 @@ class Client(ABC):
             **self._version_kwargs(file.version),
         )
 
+    def _open_checked(self, file: "File", fs_path: str, **open_kwargs: Any) -> BinaryIO:
+        stream = self.fs.open(fs_path, **open_kwargs)
+        try:
+            self.check_unchanged(file, info=stream.details)
+        except BaseException:
+            stream.close()
+            raise
+        return stream
+
     def upload(
         self,
         data: bytes | bytearray | memoryview | BinaryIO,
