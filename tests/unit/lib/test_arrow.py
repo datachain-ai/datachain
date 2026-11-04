@@ -158,6 +158,7 @@ def test_arrow_generator_partitioned(tmp_path, catalog, cache):
         (pa.string(), str),
         (pa.large_string(), str),
         (pa.map_(pa.string(), pa.int32()), dict[str, int | None]),
+        (pa.map_(pa.string(), pa.struct([("x", pa.int64())])), dict),
         (pa.dictionary(pa.int64(), pa.string()), str),
         (pa.list_(pa.string()), list[str | None]),
         (pa.list_(pa.field("item", pa.string(), nullable=False)), list[str]),
@@ -235,6 +236,24 @@ def test_read_parquet_map_columns_as_dicts(test_session, tmp_path):
         "event": {"tags": {"k": 3}},
         "history": [{"c": 4}],
     }
+
+
+def test_read_parquet_maps_of_structs(test_session, tmp_path):
+    amounts = pa.map_(pa.string(), pa.struct([("amount", pa.int64())]))
+    table = pa.table(
+        {
+            "orders": pa.array([[("a", {"amount": 1}), ("b", None)]], amounts),
+            "history": pa.array([[[("c", {"amount": 2})]]], pa.list_(amounts)),
+        }
+    )
+    path = tmp_path / "maps.parquet"
+    pq.write_table(table, path)
+
+    chain = dc.read_parquet(path.as_posix(), session=test_session)
+
+    assert chain.to_list("orders", "history") == [
+        ({"a": {"amount": 1}, "b": None}, [{"c": {"amount": 2}}])
+    ]
 
 
 def test_read_parquet_map_keys_keep_their_type(test_session, tmp_path):
