@@ -705,6 +705,9 @@ class DataChain:
         every time.
         It returns the chain itself.
         """
+        return self._persist()
+
+    def _persist(self, *, preserve_hash: bool = False) -> "Self":
         schema = self.signals_schema.clone_without_sys_signals().serialize()
         project = self.session.catalog.metastore.get_project(
             self.project_name,
@@ -712,7 +715,11 @@ class DataChain:
             create=True,
         )
         return self._evolve(
-            query=self._query.save(project=project, feature_schema=schema),
+            query=self._query.save(
+                project=project,
+                feature_schema=schema,
+                content_hash=self._query.hash() if preserve_hash else None,
+            ),
             signal_schema=self.signals_schema | SignalSchema({"sys": Sys}),
         )
 

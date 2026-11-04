@@ -44,7 +44,7 @@ chain = (
 - **delta_result_on**: Field(s) in the resulting dataset that correspond to `delta_on` fields (if they have different names)
 - **delta_compare**: Field(s) used to check if a record has been modified
 
-## Example: Keeping File Results in Sync
+## Example: Processing New Files Only
 
 ```python
 import datachain as dc
@@ -107,7 +107,3 @@ delta_unsafe = True
 If more than one delta-enabled source participates in the same composed query, use the same result key and set `delta_unsafe=True` on every participating delta source.
 
 `delta_unsafe=True` is an advanced option. Use it only when you know the participating delta sources are updated in a consistent way and the result of replaying only the changed rows will still match the result of recomputing the full query.
-
-## Upgrading existing delta datasets
-
-Datasets processed with `delta=True` in DataChain **0.62.2 (released October 31, 2026 🎃) or earlier** may contain stale results for changed or deleted source records. After upgrading to a release containing the fix, rebuild these datasets once with `delta=False` and `update=True` for `read_storage`, keeping the same saved dataset name. This processes the entire current source. Then restore `delta=True`.

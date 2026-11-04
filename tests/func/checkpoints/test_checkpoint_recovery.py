@@ -1,3 +1,4 @@
+import uuid
 from collections.abc import Iterator
 
 import pytest
@@ -1182,3 +1183,52 @@ def test_checkpoint_resume_across_input_pages(
     )
     assert result == expected
     assert sorted(processed) == sorted(set(range(12)) - completed)
+
+
+def test_delta_resumes_partial_udf(test_session, monkeypatch):
+    metastore = test_session.catalog.metastore
+    state = {"fail": False, "calls": 0}
+
+    def record(id) -> int:
+        state["calls"] += 1
+        if state["fail"] and state["calls"] > 3:
+            raise RuntimeError("interrupted delta")
+        return id * 2
+
+    def save():
+        return (
+            dc.read_dataset(
+                "resume_source", delta=True, delta_on="id", session=test_session
+            )
+            .settings(batch_size=1)
+            .map(value=record)
+            .save("resume_result")
+        )
+
+    def new_job(**kwargs):
+        reset_session_job_state()
+        job_id = str(uuid.uuid4())
+        metastore.create_job("delta", "", job_id=job_id, **kwargs)
+        monkeypatch.setenv("DATACHAIN_JOB_ID", job_id)
+        return job_id
+
+    try:
+        dc.read_values(id=[1, 2, 3], session=test_session).save("resume_source")
+        new_job()
+        save()
+        dc.read_values(id=list(range(1, 10)), session=test_session).save(
+            "resume_source"
+        )
+        failed_job = new_job()
+        state.update(fail=True, calls=0)
+        with pytest.raises(RuntimeError, match="interrupted delta"):
+            save()
+        new_job(rerun_from_job_id=failed_job)
+        state.update(fail=False, calls=0)
+        result = save()
+        assert state["calls"] == 3
+        assert sorted(result.to_iter("id", "value")) == [
+            (id, id * 2) for id in range(1, 10)
+        ]
+    finally:
+        reset_session_job_state()

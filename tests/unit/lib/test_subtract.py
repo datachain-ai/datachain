@@ -35,8 +35,12 @@ class ReorderedNullableKey(DataModel):
     a: int | None = None
 
 
-@pytest.mark.parametrize("column", ["__dc_present_0", "__DC_PRESENT_0"])
-def test_subtract_preserves_columns_with_presence_label_names(test_session, column):
+@pytest.mark.parametrize(
+    "column",
+    ["label", "__dc_present_0", "__DC_PRESENT_0"],
+    ids=["plain", "label_collision", "case_insensitive_collision"],
+)
+def test_subtract_keeps_missing_model_with_user_named_columns(test_session, column):
     left = dc.read_values(
         key=[None, NullableKey()],
         **{column: [10, 20]},
@@ -401,7 +405,7 @@ def test_subtract_preserves_sys_columns(test_session):
 @pytest.mark.parametrize("implicit", [False, True])
 @pytest.mark.parametrize("left_optional", [False, True])
 @pytest.mark.parametrize("right_optional", [False, True])
-def test_subtract_nullable_model_uses_same_equality_with_default_keys(
+def test_subtract_distinguishes_none_from_model_with_null_fields(
     test_session, implicit, left_optional, right_optional
 ):
     left = dc.read_values(

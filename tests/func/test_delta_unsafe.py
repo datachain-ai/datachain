@@ -1,8 +1,7 @@
 import pytest
 
 import datachain as dc
-from datachain import C, File, func
-from tests.utils import assert_delta_refresh
+from datachain import C, func
 
 
 @pytest.mark.parametrize(
@@ -41,47 +40,19 @@ def test_delta_with_unchanged_static_input_replays_changed_records(
 
     dc.read_values(group=[1, 2], label=["a", "b"], session=test_session).save("labels")
     source([1, 2, 3], [1, 2, 3])
-    refreshed = assert_delta_refresh(
-        build,
-        "enriched_result",
-        lambda: source([1, 3, 4], [1, 2, 3]),
-        processed=processed,
+    first = build(True).save("enriched_result")
+    before = sorted(first.to_list(), key=repr)
+    source([1, 3, 4], [1, 2, 3])
+    processed.clear()
+    result = build(True).save("enriched_result")
+    assert sorted(processed) == [3, 4]
+    assert sorted(result.to_list(), key=repr) == sorted(
+        build(False).to_list(), key=repr
     )
-    assert refreshed == [3, 4]
-
-
-def test_full_rebuild_cleans_legacy_delta_results(test_session, tmp_path):
-    data = tmp_path / "files"
-    data.mkdir()
-    (data / "a.txt").write_text("2")
-    (data / "b.txt").write_text("3")
-
-    def read_number(file: File) -> int:
-        return int(file.read_text())
-
-    def build(delta):
-        return (
-            dc.read_storage(data, update=True, delta=delta, session=test_session)
-            .map(value=read_number)
-            .filter(C.value < 5)
-        )
-
-    first = build(True).save("numbers")
-    (data / "a.txt").write_text("99")
-    (data / "b.txt").unlink()
-    (data / "c.txt").write_text("4")
-    legacy = (
-        build(False)
-        .union(dc.read_dataset("numbers", version=first.version, session=test_session))
-        .save("numbers")
-    )
-    assert sorted(legacy.to_values("value")) == [2, 3, 4]
-    assert sorted(build(True).save("numbers").to_values("value")) == [2, 3, 4]
-    rebuilt = build(False).save("numbers")
-    assert rebuilt.to_values("value") == [4]
-    (data / "d.txt").write_text("1")
-    assert sorted(build(True).save("numbers").to_values("value")) == [1, 4]
-    assert sorted(legacy.to_values("value")) == [2, 3, 4]
+    assert sorted(first.to_list(), key=repr) == before
+    processed.clear()
+    assert build(True).save("enriched_result").version == result.version
+    assert processed == []
 
 
 @pytest.mark.parametrize("reuse", [False, True])
@@ -256,33 +227,3 @@ def test_delta_changes_to_static_lookup_do_not_trigger_full_recompute(test_sessi
     assert sorted(unchanged.to_iter("id", "label")) == [(1, "a"), (2, "b")]
     rebuilt = build(False).save("lookup_result")
     assert sorted(rebuilt.to_iter("id", "label")) == [(1, "a"), (2, "updated")]
-
-
-@pytest.mark.parametrize("retry", [False, True])
-def test_storage_delta_changes_outside_glob_reuse_result_version(
-    test_session, tmp_path, retry
-):
-    (tmp_path / "a.txt").write_text("1")
-    processed = []
-
-    def record(file: File) -> int:
-        processed.append(file.path)
-        return int(file.read_text())
-
-    def build():
-        return dc.read_storage(
-            str(tmp_path / "*.txt"),
-            update=True,
-            delta=True,
-            delta_retry=retry,
-            session=test_session,
-        ).map(value=record)
-
-    first = build().save("glob_result")
-    processed.clear()
-    for index in range(2):
-        (tmp_path / f"ignored{index}.log").write_text("2")
-        result = build().save("glob_result")
-        assert result.version == first.version
-        assert result.to_values("value") == [1]
-        assert processed == []

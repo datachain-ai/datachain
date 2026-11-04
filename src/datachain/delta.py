@@ -149,24 +149,6 @@ def _read_source(
     return chain
 
 
-def _persist_replay_input(chain: "DataChain") -> "DataChain":
-    from datachain.lib.dc import Sys
-    from datachain.lib.signal_schema import SignalSchema
-
-    schema = chain.signals_schema.clone_without_sys_signals()
-    project = chain.session.catalog.metastore.get_project(
-        chain.project_name, chain.namespace_name, create=True
-    )
-    return chain._evolve(
-        query=chain._query.save(
-            project=project,
-            feature_schema=schema.serialize(),
-            content_hash=chain._query.hash(),
-        ),
-        signal_schema=schema | SignalSchema({"sys": Sys}),
-    )
-
-
 def _build_source_retry_chain(
     result_dataset: "DataChain",
     source_ds_name: str,
@@ -295,6 +277,8 @@ def _get_shared_result_key(
 def _persist_keys(
     chains: Sequence["DataChain"], on: str | Sequence[str]
 ) -> "DataChain | None":
+    if len(chains) == 1:
+        return None if chains[0].empty else chains[0]
     fields = [on] if isinstance(on, str) else on
     keys = None
     for chain in chains:
@@ -352,14 +336,12 @@ def _build_source_replay_input(
         names = {name.casefold() for name in source.signals_schema.values}
         while status_col.casefold() in names:
             status_col = "_" + status_col
-        changes = _persist_replay_input(
-            source.diff(
-                previous,
-                on=target_source_spec.on,
-                compare=target_source_spec.compare,
-                status_col=status_col,
-            )
-        )
+        changes = source.diff(
+            previous,
+            on=target_source_spec.on,
+            compare=target_source_spec.compare,
+            status_col=status_col,
+        )._persist(preserve_hash=True)
         diff_chain = changes.filter(
             C(status_col) != CompareStatus.DELETED
         ).select_except(status_col)
@@ -381,7 +363,7 @@ def _build_source_replay_input(
 
     source_replay_input = diff_chain
     if retry_chain is not None:
-        retry_chain = _persist_replay_input(retry_chain)
+        retry_chain = retry_chain._persist(preserve_hash=True)
         changed.append(retry_chain)
         source_replay_input = (
             _safe_union(

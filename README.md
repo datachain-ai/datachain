@@ -318,8 +318,6 @@ Skipping 10,000 unchanged  ·  processing 500 new
 Saved pets_images@1.0.2  (+500 records)
 ```
 
-Upgrading from an older DataChain version? See [Upgrading existing delta datasets](docs/guide/delta.md#upgrading-existing-delta-datasets).
-
 ## 6. Knowledge Base
 
 DataChain maintains two layers. The **Dataset DB** is the ground truth: schemas, processing state, lineage, the vectors themselves. **The Knowledge Base** is derived from it: structured markdown for humans and agents to read. Because it's derived, it describes what actually ran rather than what someone wrote down. Rebuild it after a pass to bring it current. The Knowledge Base is stored in `dc-knowledge/`.

@@ -374,19 +374,3 @@ def reset_session_job_state():
     # Clear DATACHAIN_JOB_ID env var to allow new job creation on next run
     # This is important for studio/SaaS mode where job_id comes from env var
     os.environ.pop("DATACHAIN_JOB_ID", None)
-
-
-def assert_delta_refresh(build, name, change, columns=(), processed=None):
-    def rows(chain):
-        return sorted(chain.to_list(*columns), key=repr)
-
-    first = build(True).save(name)
-    before = rows(first)
-    change()
-    seen = len(processed) if processed is not None else 0
-    result = build(True).save(name)
-    refreshed = sorted(processed[seen:], key=repr) if processed is not None else []
-    assert rows(result) == rows(build(False))
-    assert rows(first) == before
-    assert build(True).save(name).version == result.version
-    return refreshed
