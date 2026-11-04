@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from datachain.dataset import RowDict
 from datachain.lib.convert.flatten import FieldKind, classify_field, flatten
 from datachain.lib.convert.unflatten import unflatten_to_json
-from datachain.lib.convert.values_to_tuples import _infer_type_from_sequence
+from datachain.lib.convert.values_to_tuples import values_to_tuples
 from datachain.lib.data_model import (
     DataModel,
     arm_selector,
@@ -332,8 +332,8 @@ def test_create_model_does_not_promote_non_optional_fields():
 
 
 def test_infer_optional_datamodel_from_nones():
-    seq = [_Addr(city="a"), None, _Addr(city="c")]
-    inner, is_optional = unwrap_optional(_infer_type_from_sequence(seq, "item", "ds"))
+    _, output, _ = values_to_tuples(item=[_Addr(city="a"), None, _Addr(city="c")])
+    inner, is_optional = unwrap_optional(output["item"])
     assert is_optional and inner is _Addr
 
 
@@ -346,13 +346,14 @@ def test_infer_optional_datamodel_from_nones():
     ],
 )
 def test_infer_optional_scalar_and_collection_from_nones(seq, expected_inner):
-    inner, is_optional = unwrap_optional(_infer_type_from_sequence(seq, "c", "ds"))
+    _, output, _ = values_to_tuples(c=seq)
+    inner, is_optional = unwrap_optional(output["c"])
     assert is_optional and inner == expected_inner
 
 
 def test_infer_non_optional_when_no_none():
-    typ = _infer_type_from_sequence([1, 2, 3], "c", "ds")
-    inner, is_optional = unwrap_optional(typ)
+    _, output, _ = values_to_tuples(c=[1, 2, 3])
+    inner, is_optional = unwrap_optional(output["c"])
     assert not is_optional and inner is int
 
 

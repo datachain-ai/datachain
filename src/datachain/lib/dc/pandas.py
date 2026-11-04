@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 def read_pandas(  # type: ignore[override]
     df: "pd.DataFrame",
-    name: str = "",
+    *,
     session: Session | None = None,
     settings: dict | None = None,
     in_memory: bool = False,
@@ -46,13 +46,12 @@ def read_pandas(  # type: ignore[override]
     for c in fr_map:
         if not c.isidentifier():
             raise DatasetPrepareError(
-                name,
+                "",
                 f"import from pandas error - '{c}' cannot be a column name",
             )
 
     return read_values(
-        name,
-        session,
+        session=session,
         settings=settings,
         column=column,
         in_memory=in_memory,

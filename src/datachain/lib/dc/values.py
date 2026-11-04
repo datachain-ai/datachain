@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 def read_values(
-    ds_name: str = "",
+    *,
     session: Session | None = None,
     settings: dict | None = None,
     in_memory: bool = False,
@@ -32,7 +32,7 @@ def read_values(
         dc.read_values(fib=[1, 2, 3, 5, 8])
         ```
     """
-    tuple_type, output, tuples = values_to_tuples(ds_name, output, **fr_map)
+    tuple_type, output, tuples = values_to_tuples(output, **fr_map)
 
     def _func_fr() -> Iterator[tuple_type]:  # type: ignore[valid-type]
         yield from tuples
