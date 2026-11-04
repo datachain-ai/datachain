@@ -41,7 +41,7 @@ def read_pandas(  # type: ignore[override]
         # Handle regular string column names
         return str(col).lower()
 
-    fr_map = {get_col_name(col): df[col].tolist() for col in df.columns}
+    fr_map = {get_col_name(col): _column_values(df[col]) for col in df.columns}
 
     for c in fr_map:
         if not c.isidentifier():
@@ -58,3 +58,10 @@ def read_pandas(  # type: ignore[override]
         in_memory=in_memory,
         **fr_map,
     )
+
+
+def _column_values(series: "pd.Series") -> list:
+    import pandas as pd
+
+    # NaT and NA can't be stored, so they become None. Float NaN is kept.
+    return [None if v is pd.NaT or v is pd.NA else v for v in series.tolist()]

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import get_args
 
 import pandas as pd
@@ -6,6 +6,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from datasets import Dataset
+from pyarrow import feather
 from pyarrow.dataset import CsvFileFormat, JsonFileFormat, ParquetFileFormat
 
 import datachain as dc
@@ -234,6 +235,65 @@ def test_read_parquet_map_columns_as_dicts(test_session, tmp_path):
         "event": {"tags": {"k": 3}},
         "history": [{"c": 4}],
     }
+
+
+# The 1969 value floors to a whole second because the ClickHouse driver stores
+# pre-1970 timestamps that have microseconds one second late.
+NANOSECONDS_1969 = pd.Timestamp("1969-12-31 23:59:59.0000005")
+FLOORED_1969 = datetime(1969, 12, 31, 23, 59, 59, tzinfo=UTC)
+
+
+def test_read_parquet_nanosecond_timestamps_floored_to_microseconds(
+    test_session, tmp_path
+):
+    timestamps = pa.array(
+        [NANOSECONDS_1969, pd.Timestamp("2024-01-01 00:00:00.123456789")],
+        type=pa.timestamp("ns"),
+    )
+    table = pa.table(
+        {
+            "ts": timestamps,
+            "utc": timestamps.cast(pa.timestamp("ns", tz="UTC")),
+            "event": pa.StructArray.from_arrays([timestamps], ["ts"]),
+            "history": pa.ListArray.from_arrays([0, 1, 2], timestamps),
+        }
+    )
+    path = tmp_path / "data.parquet"
+    pq.write_table(table, path)
+
+    chain = dc.read_parquet(path.as_posix(), session=test_session).order_by("ts")
+
+    expected = [FLOORED_1969, datetime(2024, 1, 1, 0, 0, 0, 123456, tzinfo=UTC)]
+    assert chain.to_values("ts") == expected
+    assert chain.to_values("utc") == expected
+    assert [e.ts for e in chain.to_values("event")] == expected
+    assert [h[0] for h in chain.to_values("history")] == expected
+
+
+def test_parse_tabular_nanosecond_timestamp_dictionary_floored_to_microseconds(
+    test_session, tmp_path
+):
+    timestamps = pa.array([NANOSECONDS_1969], type=pa.timestamp("ns"))
+    path = tmp_path / "data.arrow"
+    feather.write_feather(pa.table({"ts": timestamps.dictionary_encode()}), path)
+
+    chain = dc.read_storage(path.as_posix(), session=test_session).parse_tabular(
+        format="ipc"
+    )
+
+    assert chain.to_values("ts") == [FLOORED_1969]
+
+
+def test_read_csv_fractional_timestamps_floored_to_microseconds(test_session, tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("ts\n2024-01-01 00:00:00.5\n2024-01-01 00:00:00.123456789\n")
+
+    chain = dc.read_csv(path.as_posix(), session=test_session)
+
+    assert chain.order_by("ts").to_values("ts") == [
+        datetime(2024, 1, 1, 0, 0, 0, 123456, tzinfo=UTC),
+        datetime(2024, 1, 1, 0, 0, 0, 500000, tzinfo=UTC),
+    ]
 
 
 def test_arrow_type_error():
