@@ -151,6 +151,7 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
     add_anon_arg(datasets_parser)
     datasets_subparser = datasets_parser.add_subparsers(
         dest="datasets_cmd",
+        required=True,
         help="Use `datachain dataset CMD --help` to display command-specific help",
     )
 
