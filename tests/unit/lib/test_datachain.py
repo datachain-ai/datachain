@@ -222,6 +222,16 @@ def test_pandas_lists_of_datetimes_floored_to_microseconds(test_session):
     ]
 
 
+@pytest.mark.parametrize("dtype", ["datetime64[ns]", "timestamp[ns][pyarrow]"])
+def test_pandas_all_missing_datetimes_keep_datetime_type(test_session, dtype):
+    df = pd.DataFrame({"id": [1, 2], "ts": pd.Series([None, None], dtype=dtype)})
+
+    chain = dc.read_pandas(df, session=test_session)
+
+    assert chain.schema["ts"] == dt.datetime | None
+    assert chain.to_values("ts") == [None, None]
+
+
 def test_read_records_pandas_timestamps_floored_to_microseconds(test_session):
     ts = pd.Timestamp("2024-01-01 00:00:00.123456789", tz="Europe/Berlin")
 

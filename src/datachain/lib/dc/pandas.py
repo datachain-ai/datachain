@@ -1,5 +1,7 @@
+from datetime import datetime
 from typing import TYPE_CHECKING
 
+from datachain.lib.convert.values_to_tuples import infer_type_from_sequence
 from datachain.query import Session
 
 from .values import read_values
@@ -7,6 +9,8 @@ from .values import read_values
 if TYPE_CHECKING:
     import pandas as pd
     from typing_extensions import ParamSpec
+
+    from datachain.lib.data_model import DataType
 
     from .datachain import DataChain
 
@@ -41,14 +45,17 @@ def read_pandas(  # type: ignore[override]
         # Handle regular string column names
         return str(col).lower()
 
-    fr_map = {get_col_name(col): _column_values(df[col]) for col in df.columns}
+    columns = {get_col_name(col): df[col] for col in df.columns}
 
-    for c in fr_map:
+    for c in columns:
         if not c.isidentifier():
             raise DatasetPrepareError(
                 name,
                 f"import from pandas error - '{c}' cannot be a column name",
             )
+
+    fr_map = {c: _column_values(s) for c, s in columns.items()}
+    output = {c: _column_type(s, fr_map[c], c, name) for c, s in columns.items()}
 
     return read_values(
         name,
@@ -56,6 +63,7 @@ def read_pandas(  # type: ignore[override]
         settings=settings,
         column=column,
         in_memory=in_memory,
+        output=output,
         **fr_map,
     )
 
@@ -65,3 +73,12 @@ def _column_values(series: "pd.Series") -> list:
 
     # NaT and NA can't be stored, so they become None. Float NaN is kept.
     return [None if v is pd.NaT or v is pd.NA else v for v in series.tolist()]
+
+
+def _column_type(
+    series: "pd.Series", values: list, signal_name: str, ds_name: str
+) -> "DataType":
+    if series.dtype.kind == "M":
+        # An all-missing column has no value to infer datetime from.
+        return datetime | None if series.hasnans else datetime  # type: ignore[return-value]
+    return infer_type_from_sequence(values, signal_name, ds_name)
