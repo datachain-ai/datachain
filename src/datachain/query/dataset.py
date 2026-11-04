@@ -3305,7 +3305,7 @@ class DatasetQuery:
 
         Parallel can optionally be specified as >= 1 for parallel processing with a
         specific number of processes, or set to -1 for the default of
-        the number of CPUs (cores) on the current machine.
+        the CPUs available to the process, respecting affinity and container quotas.
 
         For distributed processing with the appropriate distributed module installed,
         workers can optionally be specified as >= 1 for a specific number of workers,
