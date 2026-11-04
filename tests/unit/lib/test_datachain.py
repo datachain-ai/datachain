@@ -240,6 +240,45 @@ def test_pandas_all_missing_columns_keep_dtype_type(test_session, dtype, expecte
     assert chain.to_values("c") == [None, None]
 
 
+@pytest.mark.parametrize("missing_first", [True, False])
+def test_pandas_all_missing_columns_union_with_populated(test_session, missing_first):
+    missing = dc.read_pandas(
+        pd.DataFrame(
+            {
+                "id": [1],
+                "n": pd.Series([None], dtype="Int64"),
+                "ts": pd.Series([None], dtype="datetime64[ns]"),
+            }
+        ),
+        session=test_session,
+    )
+    populated = dc.read_pandas(
+        pd.DataFrame({"id": [2], "n": [5], "ts": [pd.Timestamp("2024-01-01")]}),
+        session=test_session,
+    )
+
+    chain = missing.union(populated) if missing_first else populated.union(missing)
+
+    assert (chain.schema["n"], chain.schema["ts"]) == (int | None, dt.datetime | None)
+    assert chain.order_by("id").to_list("n", "ts") == [
+        (None, None),
+        (5, dt.datetime(2024, 1, 1, tzinfo=dt.UTC)),
+    ]
+
+
+def test_pandas_all_missing_column_carried_through_merge(test_session):
+    ids = dc.read_values(id=[1, 2], session=test_session)
+    missing = dc.read_pandas(
+        pd.DataFrame({"id": [1], "n": pd.Series([None], dtype="Int64")}),
+        session=test_session,
+    )
+
+    chain = ids.merge(missing, on="id", inner=False)
+
+    assert chain.schema["n"] == int | None
+    assert chain.order_by("id").to_values("n") == [None, None]
+
+
 def test_read_records_pandas_timestamps_floored_to_microseconds(test_session):
     ts = pd.Timestamp("2024-01-01 00:00:00.123456789", tz="Europe/Berlin")
 
