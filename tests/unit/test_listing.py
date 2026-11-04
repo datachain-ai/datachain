@@ -596,6 +596,31 @@ def test_path_filter_python_matches_sql(test_session, paths):
     assert sorted(chain.to_values("path")) == sorted(filter(paths.matcher(), names))
 
 
+@pytest.mark.parametrize("list_path", ["", "dir/"])
+@pytest.mark.parametrize("recursive", [False, True])
+def test_leading_globstar_literal_matches_zero_directories(
+    test_session, list_path, recursive
+):
+    matches = [
+        f"{list_path}{name}"
+        for name in ("report.json", "nested/report.json", "nested/deep/report.json")
+    ]
+    names = matches + [
+        f"{list_path}{name}"
+        for name in ("notreport.json", "report.json.bak", "nested/notreport.json")
+    ]
+    if list_path:
+        names.extend(["directory/report.json", "elsewhere/report.json"])
+    paths = path_filter(list_path, "**/report.json", recursive)
+    expected = matches if recursive else matches[:1]
+    chain = dc.read_values(path=names, session=test_session)
+    for condition in paths.sql(dc.C("path")):
+        chain = chain.filter(condition)
+
+    assert sorted(chain.to_values("path")) == sorted(expected)
+    assert sorted(filter(paths.matcher(), names)) == sorted(expected)
+
+
 def test_glob_match_is_sqlite_glob_on_random_patterns():
     rng = random.Random(0)  # noqa: S311
     with closing(sqlite3.connect(":memory:")) as conn:
