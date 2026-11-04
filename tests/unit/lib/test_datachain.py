@@ -2982,10 +2982,13 @@ def test_read_values_dicts_into_column_kept_as_given(test_session):
     assert chain.order_by("row.n").to_values("row.d") == dicts
 
 
-def test_read_values_signal_named_cls_into_column(test_session):
-    chain = dc.read_values(cls=[1], n=[2], column="row", session=test_session)
+@pytest.mark.parametrize("name", ["cls", "model_extra", "model_fields_set"])
+def test_read_values_signals_named_like_model_attributes_into_column(
+    test_session, name
+):
+    chain = dc.read_values(**{name: [1], "n": [2]}, column="row", session=test_session)
 
-    assert chain.to_list("row.cls", "row.n") == [(1, 2)]
+    assert chain.to_list(f"row.{name}", "row.n") == [(1, 2)]
 
 
 def test_parse_tabular_column(tmp_dir, test_session):
