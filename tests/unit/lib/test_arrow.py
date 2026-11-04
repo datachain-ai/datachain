@@ -243,6 +243,28 @@ def test_read_parquet_map_columns_as_dicts(test_session, tmp_path):
     }
 
 
+@pytest.mark.parametrize(
+    "values,col_type",
+    [
+        ([[("a", 1), ("a", 2)]], pa.map_(pa.string(), pa.int64())),
+        (
+            [[("d", [("e", 1), ("e", 2)])]],
+            pa.map_(pa.string(), pa.map_(pa.string(), pa.int64())),
+        ),
+    ],
+)
+def test_read_parquet_maps_with_duplicate_keys_raise(
+    test_session, tmp_path, values, col_type
+):
+    path = tmp_path / "maps.parquet"
+    pq.write_table(pa.table({"m": pa.array(values, col_type)}), path)
+
+    with pytest.raises(KeyError, match="duplicate keys"):
+        dc.read_parquet(path.as_posix(), session=test_session).exec()
+    with pytest.raises(KeyError, match="duplicate keys"):
+        ArrowRow(file=File.at(path.as_posix()), index=0, kwargs={}).read()
+
+
 def test_read_parquet_maps_of_structs(test_session, tmp_path):
     amounts = pa.map_(pa.string(), pa.struct([("amount", pa.int64())]))
     table = pa.table(

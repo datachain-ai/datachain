@@ -2173,7 +2173,7 @@ class ArrowRow(DataModel):
             fs = pyarrow_fs(self.file, kwargs.get("format"))
             ds = dataset(path, filesystem=fs, **kwargs)
 
-        return ds.take([self.index]).to_reader()
+        yield next(ds.take([self.index]).to_reader())
 
     def read(self):
         """Returns row contents as dict.
