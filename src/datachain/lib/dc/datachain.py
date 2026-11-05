@@ -605,7 +605,9 @@ class DataChain:
 
         from datachain.lib.arrow import schema_to_output
 
-        json_values = self.limit(schema_sample_size).to_list(col)
+        json_values = self._evolve(query=self._query.limit(schema_sample_size)).to_list(
+            col
+        )
         json_dicts = [
             json.loads(json_value) if isinstance(json_value, str) else json_value
             for (json_value,) in json_values
@@ -2706,7 +2708,7 @@ class DataChain:
         """
         import pandas as pd
 
-        dc = self.limit(limit) if limit > 0 else self  # type: ignore[misc]
+        dc = self._evolve(query=self._query.limit(limit)) if limit > 0 else self
         df = dc.to_pandas(
             flatten,
             include_hidden=include_hidden,
@@ -3511,6 +3513,7 @@ class DataChain:
         """
         return self._evolve(query=self._query.filter(*args))
 
+    @delta_disabled
     def limit(self, n: int) -> "Self":
         """Return the first `n` rows of the chain.
 
@@ -3576,6 +3579,7 @@ class DataChain:
             chain = chain.select_except(col_name)
         return chain
 
+    @delta_disabled
     def offset(self, offset: int) -> "Self":
         """Return the results starting with the offset row.
 
