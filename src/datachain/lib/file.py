@@ -2173,7 +2173,7 @@ class ArrowRow(DataModel):
             fs = pyarrow_fs(self.file, kwargs.get("format"))
             ds = dataset(path, filesystem=fs, **kwargs)
 
-        return ds.take([self.index]).to_reader()
+        yield next(ds.take([self.index]).to_reader())
 
     def read(self):
         """Returns row contents as dict.
@@ -2183,7 +2183,7 @@ class ArrowRow(DataModel):
         kept, e.g. column types.
         """
         with self.open() as record_batch:
-            return record_batch.to_pylist()[0]
+            return record_batch.to_pylist(maps_as_pydicts="strict")[0]
 
 
 def get_file_type(type_: FileType = "binary") -> type[File]:
