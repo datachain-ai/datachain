@@ -225,9 +225,7 @@ path                  usage        usage             usage
 
 ## Iterating over Python data structures
 
-In the previous examples, datasets were saved in the embedded database
-(`SQLite` in folder `.datachain` of the working directory). These datasets were automatically versioned, and
-can be accessed using `dc.read_dataset("dataset_name")`.
+In the previous examples, datasets were saved in SQLite in the project's `.datachain` folder (see [how DataChain finds it](../guide/env.md#project-files)). These datasets were automatically versioned and can be accessed using `dc.read_dataset("dataset_name")`.
 
 Here is how to retrieve a saved dataset and iterate over the objects:
 

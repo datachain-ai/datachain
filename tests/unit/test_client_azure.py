@@ -7,7 +7,7 @@ from xml.etree.ElementTree import fromstring
 import pytest
 from adlfs import AzureBlobFileSystem
 from azure.core.exceptions import ClientAuthenticationError
-from azure.identity import CredentialUnavailableError
+from azure.identity import ChainedTokenCredential, CredentialUnavailableError
 from fsspec.asyn import sync
 from fsspec.callbacks import DEFAULT_CALLBACK
 
@@ -360,6 +360,10 @@ def no_azure_env(monkeypatch):
     for var in list(os.environ):
         if var.startswith("AZURE_"):
             monkeypatch.delenv(var)
+    monkeypatch.setattr("datachain.client.azure._IDENTITY_CHECK", None)
+    AzureBlobFileSystem.clear_instance_cache()
+    yield
+    AzureBlobFileSystem.clear_instance_cache()
 
 
 class _Credential:
@@ -373,7 +377,7 @@ class _Credential:
 
 
 def _chain(*credentials):
-    return MagicMock(credentials=list(credentials))
+    return ChainedTokenCredential(*credentials)
 
 
 @pytest.mark.parametrize(
@@ -417,6 +421,50 @@ def test_create_fs_asks_again_after_no_identity(no_azure_env, mocker):
 
     now.return_value = 61.0  # then az login
     assert not AzureClient.create_fs(account_name="later").anon
+    assert probe.call_count == 2
+
+
+def test_identity_probe_keeps_found_identity_after_ttl(no_azure_env, mocker):
+    probe = mocker.patch(
+        "datachain.client.azure._finds_no_identity", return_value=False
+    )
+    now = mocker.patch("datachain.client.azure.time.monotonic", return_value=0.0)
+    assert not AzureClient.create_fs(account_name="first").anon
+    now.return_value = 61.0
+    assert not AzureClient.create_fs(account_name="second").anon
+    probe.assert_called_once()
+
+
+@pytest.mark.parametrize("absent", [False, True])
+def test_identity_probe_is_shared_across_accounts_and_listing_modes(
+    no_azure_env, mocker, absent
+):
+    probe = mocker.patch(
+        "datachain.client.azure._finds_no_identity", return_value=absent
+    )
+    for account, version_aware in [
+        ("first", False),
+        ("first", True),
+        ("second", False),
+    ]:
+        assert (
+            AzureClient.create_fs(
+                account_name=account, version_aware=version_aware
+            ).anon
+            is absent
+        )
+    probe.assert_called_once()
+
+
+def test_identity_probe_rechecks_after_configuration_changes(
+    no_azure_env, mocker, monkeypatch
+):
+    probe = mocker.patch(
+        "datachain.client.azure._finds_no_identity", side_effect=[True, False]
+    )
+    assert AzureClient.create_fs(account_name="first").anon
+    monkeypatch.setenv("AZURE_CLIENT_ID", "configured-client")
+    assert not AzureClient.create_fs(account_name="second").anon
     assert probe.call_count == 2
 
 

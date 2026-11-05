@@ -36,6 +36,7 @@ _COPY_BUFFER_SIZE = 8 * 1024 * 1024
 
 _SCOPE = "https://storage.azure.com/.default"
 _NO_IDENTITY_TTL = 60.0  # seconds: an az login or an identity may come later
+_IDENTITY_CHECK: tuple[frozenset[tuple[str, str]], float, bool] | None = None
 
 
 def _finds_no_identity(credential: Any) -> bool:
@@ -61,18 +62,20 @@ def _finds_no_identity(credential: Any) -> bool:
 
 
 def _no_identity(fs: AzureBlobFileSystem) -> bool:
-    """``_finds_no_identity`` for the credential adlfs built for ``fs``. fsspec
-    reuses fs instances: a found identity holds, no identity is asked again later."""
-    if getattr(fs, "_dc_has_identity", False):
-        return False
-    checked = getattr(fs, "_dc_no_identity_at", None)
-    if checked is not None and time.monotonic() - checked < _NO_IDENTITY_TTL:
-        return True
+    global _IDENTITY_CHECK  # noqa: PLW0603
+    environment = frozenset(
+        (name, value)
+        for name, value in os.environ.items()
+        if name.startswith(("AZURE_", "IDENTITY_", "MSI_", "IMDS_"))
+        or name in ("PATH", "HOME")
+    )
+    now = time.monotonic()
+    if _IDENTITY_CHECK is not None:
+        previous, checked, absent = _IDENTITY_CHECK
+        if previous == environment and (not absent or now - checked < _NO_IDENTITY_TTL):
+            return absent
     absent = _finds_no_identity(fs.sync_credential)
-    if absent:
-        fs._dc_no_identity_at = time.monotonic()
-    else:
-        fs._dc_has_identity = True
+    _IDENTITY_CHECK = environment, time.monotonic(), absent
     return absent
 
 
@@ -118,7 +121,6 @@ class AzureClient(RangeListedClient):
         if (
             "anon" not in kwargs
             and "AZURE_STORAGE_ANON" not in os.environ
-            and fs.connection_string is None
             and isinstance(getattr(fs, "sync_credential", None), DefaultAzureCredential)
             and _no_identity(fs)
         ):
