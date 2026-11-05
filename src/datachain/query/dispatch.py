@@ -1,6 +1,6 @@
 import contextlib
 import traceback
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from itertools import chain, islice
 from queue import Empty
 from sys import stdin
@@ -18,6 +18,7 @@ from datachain.catalog.catalog import clone_catalog_with_cache
 from datachain.catalog.loader import DISTRIBUTED_IMPORT_PATH, get_udf_distributor_class
 from datachain.lib.model_store import ModelStore
 from datachain.lib.udf import UdfRunError, _get_cache
+from datachain.query.batch import DEFAULT_BATCH_SIZE, Batch
 from datachain.query.dataset import (
     get_download_callback,
     get_generated_callback,
@@ -41,7 +42,6 @@ if TYPE_CHECKING:
     from datachain.lib.udf import UDFAdapter
     from datachain.query.batch import RowsOutput
 
-DEFAULT_BATCH_SIZE = 10000
 STOP_SIGNAL = "STOP"
 OK_STATUS = "OK"
 FINISHED_STATUS = "FINISHED"
@@ -58,12 +58,17 @@ def get_n_workers_from_arg(n_workers: int | None = None) -> int:
 
 
 def guided_tasks(
-    items: Iterable[Any], total: int, n_workers: int, max_size: int
+    items: Iterable[Any],
+    total: int,
+    n_workers: int,
+    max_size: int,
+    weight: Callable[[Any], int] | None = None,
 ) -> Iterator[tuple[Any, ...]]:
     """Split items into tasks that shrink with the work left (guided scheduling).
 
     Early tasks are large to amortize dispatch. With an accurate total, the last
     tasks hold single items so slow rows do not leave one worker running alone.
+    Weighted items stay intact, even when one exceeds max_size.
     """
     if n_workers < 1 or max_size < 1:
         raise ValueError("n_workers and max_size must be positive")
@@ -72,11 +77,21 @@ def guided_tasks(
     while True:
         left = remaining if remaining > 0 else done // 2
         size = max(1, min(max_size, -(-left // (2 * n_workers))))
-        task = tuple(islice(it, size))
+        if weight is None:
+            task = tuple(islice(it, size))
+            used = len(task)
+        else:
+            chunk, used = [], 0
+            for item in it:
+                chunk.append(item)
+                used += weight(item)
+                if used >= size:
+                    break
+            task = tuple(chunk)
         if not task:
             return
-        remaining -= len(task)
-        done += len(task)
+        remaining -= used
+        done += used
         yield task
 
 
@@ -146,7 +161,8 @@ class UDFDispatcher:
         self.udf_fields = udf_info["udf_fields"]
         self.cache = udf_info["cache"]
         self.is_generator = udf_info["is_generator"]
-        self.is_batching = udf_info["batching"].is_batching
+        self.batching = udf_info["batching"]
+        self.is_batching = self.batching.is_batching
         self.processes = udf_info["processes"]
         self.rows_total = udf_info["rows_total"]
         self.batch_size = udf_info["batch_size"]
@@ -216,6 +232,14 @@ class UDFDispatcher:
         elif not n_workers or n_workers < 1:
             n_workers = 1  # Single-threaded (on this worker)
         n_workers = get_n_workers_from_arg(n_workers)
+        if self.is_batching:
+            input_rows = iter(input_rows)
+            first = tuple(islice(input_rows, n_workers))
+            n_workers = max(1, len(first))
+            input_rows = chain(first, input_rows)
+            del first
+        else:
+            n_workers = max(1, min(n_workers, self.rows_total))
 
         with worker_thread_limits(n_workers):
             if n_workers == 1:
@@ -247,7 +271,7 @@ class UDFDispatcher:
 
         def get_inputs() -> Iterable["RowsOutput"]:
             warehouse = self.catalog.warehouse.clone()
-            for ids in batched(input_rows, DEFAULT_BATCH_SIZE):
+            for ids in batched(input_rows, self.input_batch_size(1)):
                 yield from warehouse.dataset_rows_select_from_ids(
                     self.query, ids, self.is_batching
                 )
@@ -272,6 +296,11 @@ class UDFDispatcher:
                     batch_size=self.batch_size,
                 )
 
+    def input_batch_size(self, n_workers: int) -> int:
+        rows_per_task = min(self.rows_total // n_workers, DEFAULT_BATCH_SIZE)
+        batch_size = self.batching.count if isinstance(self.batching, Batch) else 1
+        return max(1, rows_per_task // batch_size)
+
     def run_udf_parallel(  # noqa: C901, PLR0912
         self,
         n_workers: int,
@@ -294,11 +323,24 @@ class UDFDispatcher:
             input_finished = False
 
             if self.is_batching:
-                input_tasks = batched(input_rows, 1)
+                input_rows = iter(input_rows)
+                first = tuple(islice(input_rows, n_workers))
+                remaining = self.rows_total - sum(map(len, first))
             else:
-                input_tasks = guided_tasks(
-                    flatten(input_rows), self.rows_total, n_workers, DEFAULT_BATCH_SIZE
-                )
+                input_rows = flatten(input_rows)
+                first = ()
+                remaining = self.rows_total
+            input_tasks = chain(
+                ((batch,) for batch in first),
+                guided_tasks(
+                    input_rows,
+                    remaining,
+                    n_workers,
+                    DEFAULT_BATCH_SIZE,
+                    weight=len if self.is_batching else None,
+                ),
+            )
+            del first
 
             # Stop all workers after the input rows have finished processing
             input_data = chain(input_tasks, [STOP_SIGNAL] * n_workers)

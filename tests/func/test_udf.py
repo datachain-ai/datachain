@@ -1327,25 +1327,41 @@ def test_agg_list_file_persist_and_read(tmp_dir, test_session):
     ]
 
 
-def test_udf_parallel_workers_split_the_cpu_threads(test_session_tmpfile, monkeypatch):
+@pytest.mark.parametrize("method", ["map", "batch_map", "agg"])
+def test_udf_parallel_workers_split_the_cpu_threads(
+    test_session_tmpfile, monkeypatch, method
+):
     from datachain.utils import usable_cpu_count
 
     monkeypatch.setenv("OMP_NUM_THREADS", "1000")
     monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
     monkeypatch.setenv("MKL_NUM_THREADS", "1")
 
-    def threads(x: int) -> str:
+    def limits() -> str:
         return ",".join(
             os.environ.get(k, "")
             for k in ("DATACHAIN_WORKER_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS")
         )
 
-    values = (
-        dc.read_values(x=list(range(8)), session=test_session_tmpfile)
-        .settings(parallel=2)
-        .map(threads=threads)
-        .to_values("threads")
-    )
+    def threads(x: int) -> str:
+        return limits()
 
-    share = str(max(1, usable_cpu_count() // 2))
+    def batch_threads(x: list[int]) -> list[str]:
+        return [limits() for _ in x]
+
+    def agg_threads(x: list[int]) -> Iterator[str]:
+        yield limits()
+
+    chain = dc.read_values(x=list(range(8)), session=test_session_tmpfile).settings(
+        parallel=2
+    )
+    if method == "batch_map":
+        chain = chain.batch_map(threads=batch_threads, batch=8)
+    elif method == "agg":
+        chain = chain.agg(threads=agg_threads)
+    else:
+        chain = chain.map(threads=threads)
+    values = chain.to_values("threads")
+
+    share = str(max(1, usable_cpu_count() // (2 if method == "map" else 1)))
     assert set(values) == {f"{share},{share},1"}

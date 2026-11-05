@@ -357,9 +357,13 @@ def _frame_timestamp(frame, frame_index: int, fps: float, start_time: float) -> 
     raise ValueError("unable to determine frame timestamp")
 
 
+def _video_threads() -> int:
+    return min(worker_threads() or usable_cpu_count(), 16)
+
+
 def _set_decode_threads(stream: Any, *, frame_threads: bool = True) -> None:
     """Limit decode threads to the worker budget or usable CPUs."""
-    threads = min(worker_threads() or usable_cpu_count(), 16)
+    threads = _video_threads()
     stream.thread_type = "AUTO" if frame_threads and threads > 1 else "SLICE"
     stream.thread_count = threads
 
@@ -386,6 +390,8 @@ def sample_video_frames(
             start = _stream_start_time(stream)
             for frame_index, frame in enumerate(container.decode(stream)):
                 timestamp = _frame_timestamp(frame, frame_index, stream_fps, start)
+                if frame_index == 0 and stream.start_time is None:
+                    start = timestamp
                 while (timestamp - start) * fps + FRAME_INDEX_EPSILON >= sample_index:
                     result = VideoFrame(
                         video=video,
@@ -692,9 +698,10 @@ def save_video_fragment(
         ) as temp_dir:
             temp_output = os.path.join(temp_dir, f"fragment.{format}")
             try:
+                threads = _video_threads()
                 _run_ffmpeg(
-                    ffmpeg.input(input_file, ss=start, to=end).output(
-                        temp_output, **_ffmpeg_output_options(format)
+                    ffmpeg.input(input_file, ss=start, to=end, threads=threads).output(
+                        temp_output, threads=threads, **_ffmpeg_output_options(format)
                     ),
                     video,
                     timeout,

@@ -1281,9 +1281,15 @@ def test_save_video_fragment_uses_explicit_format(tmp_path, video_file, format):
 
 
 @requires_posix
+@pytest.mark.parametrize("budget,threads", [(None, 2), ("1", 1), ("4", 4), ("32", 16)])
 def test_save_video_fragment_invokes_ffmpeg_non_interactively(
-    tmp_path, monkeypatch, video_file
+    tmp_path, monkeypatch, video_file, budget, threads
 ):
+    if budget is None:
+        monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
+    else:
+        monkeypatch.setenv("DATACHAIN_WORKER_THREADS", budget)
+    monkeypatch.setattr("datachain.lib.video.usable_cpu_count", lambda: 2)
     args_file = tmp_path / "ffmpeg.args"
     monkeypatch.setenv("FFMPEG_ARGS_FILE", str(args_file))
     _install_fake_ffmpeg(
@@ -1298,6 +1304,12 @@ def test_save_video_fragment_invokes_ffmpeg_non_interactively(
     assert os.path.isabs(args[0])
     assert os.path.basename(args[0]) == "ffmpeg"
     assert args[1:5] == ["-nostdin", "-hide_banner", "-loglevel", "error"]
+    input_index = args.index("-i")
+    input_thread_index = args.index("-threads")
+    assert input_thread_index < input_index
+    assert args[input_thread_index + 1] == str(threads)
+    output_thread_index = args.index("-threads", input_index)
+    assert args[output_thread_index + 1] == str(threads)
     assert "pipe:1" not in args
     assert args[-1].endswith(".mp4")
 
@@ -1377,6 +1389,37 @@ def test_sample_frames_selects_first_frame_at_or_after_target(
     assert [frame.timestamp for frame in frames] == pytest.approx(
         [pts[i] / 30 for i in expected_indices]
     )
+
+
+def test_sample_frames_with_unknown_start_begin_at_the_first_frame(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "video.mov"
+    _write_single_stream_video(
+        path, codec="mpeg4", fps=30, frame_count=2, pts=[3000, 3030]
+    )
+    original_open = av.open
+
+    @contextmanager
+    def without_start_time(*args, **kwargs):
+        with original_open(*args, **kwargs) as container:
+            stream = container.streams.video[0]
+            metadata = SimpleNamespace(
+                start_time=None,
+                time_base=stream.time_base,
+                average_rate=stream.average_rate,
+                base_rate=stream.base_rate,
+                guessed_rate=stream.guessed_rate,
+            )
+            yield SimpleNamespace(
+                streams=SimpleNamespace(video=[metadata]),
+                decode=lambda _: container.decode(stream),
+            )
+
+    monkeypatch.setattr(av, "open", without_start_time)
+    frames = list(_generated_video(path).file.sample_frames(1))
+    assert [frame.frame for frame in frames] == [0, 1]
+    assert [frame.timestamp for frame in frames] == pytest.approx([100, 101])
 
 
 def test_sample_frames_handles_stream_start_offset(mpegts_video):

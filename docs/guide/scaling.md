@@ -8,9 +8,9 @@ DataChain has a layered optimization architecture. Each layer eliminates a sourc
 
 ## Parallel Execution
 
-`settings(parallel=N)` runs N processes, each with its own model instance. `parallel=True` (or `parallel=-1`) uses the CPUs available to the process, respecting affinity and container CPU quotas. Fractional quotas round up (a 1.5-CPU quota allows two workers), including automatic listing processes. An explicit positive process count keeps its value.
+`settings(parallel=N)` runs N processes, each with its own model instance. `parallel=True` uses the CPUs available to the job, respecting container CPU limits. Fractional limits round up: a 1.5-CPU limit gives two processes.
 
-In a 1-CPU container, automatic UDF execution uses one process even on a larger host. For network-bound work that benefits from more concurrency, set an explicit `parallel=N`.
+The process count is capped at the available work: rows, inference batches or aggregation partitions. Each process gets a share of the available CPUs for native-library threads, retaining smaller explicit thread limits.
 
 ```python
 import datachain as dc
@@ -45,6 +45,8 @@ DataChain's storage-native architecture means files live in cloud storage and ar
 ## Async Prefetch
 
 Prefetch downloads file content ahead of the UDF that reads it. `prefetch=N` downloads the next N files in full while the current one is processed. Default is 2; `prefetch=0` disables it. Tune by file size: ~10-16 for small files, 1 for large files.
+
+In `batch_map()`, `prefetch` counts batches; see [Batched Inference](batch-inference.md#prefetch).
 
 Prefetch runs only when a UDF receives a `File` object. Attributes such as `file.path` and `file.size` come from the listing, so a UDF that receives only them through `params=` downloads nothing.
 
