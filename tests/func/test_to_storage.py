@@ -15,7 +15,7 @@ import datachain as dc
 from datachain import Session
 from datachain.lib.file import File, ImageFile
 from tests.conftest import get_cloud_test_catalog, make_cloud_server
-from tests.utils import images_equal, skip_if_not_sqlite, tree_from_path
+from tests.utils import DEFAULT_TREE, images_equal, skip_if_not_sqlite, tree_from_path
 
 python_exc = sys.executable or "python3"
 
@@ -419,3 +419,17 @@ def test_to_storage_empty_segments_with_flat_placement(cloud_test_catalog, place
     finally:
         client.fs.rm(f"{client.name}/{key}")
         client.fs.invalidate_cache()
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+def test_to_storage_from_cloud_writes_exact_bytes_and_overwrites(
+    cloud_test_catalog, tmp_dir
+):
+    ctc = cloud_test_catalog
+    out = tmp_dir / "out"
+    chain = dc.read_storage(ctc.src_uri, session=ctc.session)
+    chain.to_storage(out, placement="filepath")
+    (out / "cats" / "cat1").write_text("stale contents")
+    chain.to_storage(out, placement="filepath")
+
+    assert tree_from_path(out) == DEFAULT_TREE

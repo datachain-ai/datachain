@@ -58,7 +58,7 @@ _FILE_STATE = {
 ExportPlacement = Literal["filename", "etag", "fullpath", "checksum", "filepath"]
 
 FileType = Literal["binary", "text", "image", "video", "audio"]
-EXPORT_FILES_MAX_THREADS = 5
+EXPORT_FILES_MAX_THREADS = 32
 PARTIAL_READ_BLOCK_SIZE = 1024 * 1024
 TAR_READ_BLOCK_SIZE = 5 * 1024 * 1024
 
@@ -921,6 +921,17 @@ class File(DataModel):
             except OSError as exc:
                 if exc.errno not in (errno.ENOTSUP, errno.EXDEV, errno.ENOSYS):
                     raise
+
+        if (
+            client.PREFIX == "file://"
+            and not self.location
+            and not self._caching_enabled
+            and write_options is None
+        ):
+            source = self._catalog.get_client(self.source)
+            if source.PREFIX != "file://":
+                source.download_to(self, dst)
+                return
 
         self.save(
             dst,

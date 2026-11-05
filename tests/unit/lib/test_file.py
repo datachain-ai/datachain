@@ -11,6 +11,7 @@ from fsspec.implementations.local import LocalFileSystem
 from PIL import Image
 
 from datachain.catalog import Catalog
+from datachain.client.fsspec import Client
 from datachain.fs.utils import path_to_fsspec_uri
 from datachain.lib.file import (
     Audio,
@@ -161,6 +162,9 @@ def test_export_placements_build_expected_destination_for_each_source(
         lambda _self, destination, client_config=None, **kwargs: saved.append(
             destination
         ),
+    )
+    monkeypatch.setattr(
+        Client, "download_to", lambda _self, _file, lpath: saved.append(lpath)
     )
 
     file.export(output, placement="filename", use_cache=False)

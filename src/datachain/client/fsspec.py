@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import functools
 import io
 import logging
@@ -7,6 +8,7 @@ import os
 import posixpath
 import re
 import shutil
+import tempfile
 from abc import ABC, abstractmethod
 from collections.abc import (
     AsyncIterator,
@@ -606,6 +608,25 @@ class Client(ABC):
         """
         cfg.reject_write_options()
         return {}
+
+    def download_to(self, file: "File", lpath: str) -> None:
+        """Stream a file to a local path with one request, replacing it atomically."""
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(lpath), suffix=".tmp")
+        os.close(fd)
+        try:
+            sync(
+                get_loop(),
+                self.get_file,
+                file.get_fs_path(),
+                tmp,
+                DEFAULT_CALLBACK,
+                file.version,
+            )
+            os.replace(tmp, lpath)
+        except BaseException:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(tmp)
+            raise
 
     def download(self, file: "File", *, callback: Callback = DEFAULT_CALLBACK) -> None:
         sync(get_loop(), functools.partial(self._download, file, callback=callback))
