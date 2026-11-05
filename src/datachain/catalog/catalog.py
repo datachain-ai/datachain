@@ -2390,7 +2390,10 @@ class Catalog:
                 )
 
             for src in matched_sources:
-                yield from du_dirs(src, src.node, depth)
+                if src.listing is None:
+                    yield src.get_node_uri(src.node), src.node.size
+                else:
+                    yield from du_dirs(src, src.node, depth)
 
     def find(
         self,
