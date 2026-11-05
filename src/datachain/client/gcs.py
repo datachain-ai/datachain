@@ -62,8 +62,14 @@ class GCSClient(RangeListedClient):
         }
 
         fs = cast("GCSFileSystem", super().create_fs(**kwargs))
-        if kwargs.get("token") is None and fs.credentials.method == "anon":
-            return cls.create_fs(**kwargs, anon=True)
+        if (
+            kwargs.get("token") is None
+            and "GOOGLE_APPLICATION_CREDENTIALS" not in os.environ
+            and fs.credentials.method == "anon"
+        ):
+            return cast(
+                "GCSFileSystem", super().create_fs(**kwargs | {"token": "anon"})
+            )
         return fs
 
     @classmethod

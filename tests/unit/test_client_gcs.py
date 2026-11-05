@@ -311,6 +311,17 @@ def test_create_fs_keeps_credentials():
     assert fs.credentials.credentials is token
 
 
+@pytest.mark.usefixtures("no_gcp_credentials")
+def test_broken_explicit_credentials_keep_authentication_error(monkeypatch, tmp_path):
+    from google.auth.exceptions import DefaultCredentialsError
+
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(tmp_path / "missing.json"))
+    client = GCSClient.from_name("b", MagicMock(), {"skip_instance_cache": True})
+    assert client.fs.storage_options.get("token") != "anon"
+    with pytest.raises(DefaultCredentialsError, match=r"missing\.json"):
+        client.url("private.txt")
+
+
 @pytest.mark.parametrize(
     "value",
     [

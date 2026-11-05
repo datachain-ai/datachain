@@ -5,6 +5,8 @@ from yarl import URL
 from datachain.client import BucketStatus, bucket_status
 from datachain.client.s3 import ClientS3
 
+pytestmark = pytest.mark.parametrize("tree", [{}], indirect=True)
+
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 def test_bucket_status_exists(cloud_server, cloud_server_credentials):
@@ -42,7 +44,7 @@ def test_anonymous_probe_uses_the_profiles_endpoint(
 
     async def record(self, method, url, **kwargs):
         assert URL(url).origin() == URL(endpoint).origin()
-        seen.append((method, bool(kwargs.get("headers", {}).get("Authorization"))))
+        seen.append((method, bool((kwargs.get("headers") or {}).get("Authorization"))))
         return await request(self, method, url, **kwargs)
 
     monkeypatch.setattr(aiohttp.ClientSession, "_request", record)
@@ -50,4 +52,4 @@ def test_anonymous_probe_uses_the_profiles_endpoint(
     status = ClientS3.bucket_status(name, profile="store", key="key")
 
     assert status.access == "anonymous"
-    assert seen and all(request == ("HEAD", False) for request in seen)
+    assert seen and all(probe == ("HEAD", False) for probe in seen)
