@@ -267,11 +267,11 @@ with f.open() as fh:
     )
 labels = dc.read_pandas(labels)
 
-images = dc.read_storage("s3://bucket/images/*.jpg", anon=True, type="image").mutate(
-    stem=func.path.file_stem("file.path")
-)
+images = dc.read_storage("s3://bucket/images/*.jpg", anon=True, type="image")
 # Right-side columns keep their names.
-joined = images.merge(labels, on="stem", inner=True)
+joined = images.merge(
+    labels, on=func.path.file_stem("file.path"), right_on="stem", inner=True
+)
 ```
 
 Large tabular sources: `dc.read_parquet(uri)` / `dc.read_csv(uri)` / `dc.read_json(uri, format="jsonl")`.

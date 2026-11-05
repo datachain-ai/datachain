@@ -8,7 +8,7 @@ Apply every rule below when generating DataChain Python code.
 - [ ] **Use resolvable type annotations.** Postponed annotations resolve in the function's module; define model types at module level. Use explicit `output=` when a batched return type cannot be resolved.
 - [ ] **Heavy-init resources load via `.setup()`**, not module-level lazy globals:
   ```python
-  chain.setup(model=lambda: load_model()).map(result=run_model)
+  chain.setup(model=load_model).map(result=run_model)
   ```
   Lazy globals leak across `parallel=N` workers and hide the dependency from the chain definition. See §2 Rule 20.
 - [ ] **`.settings(parallel=N)` is the right tool only when the workload benefits.** See §2 Rule 6.
@@ -84,7 +84,7 @@ embeddings = (
     dc.read_storage("s3://product-catalog/images/")
     .filter(dc.C("condition") != "refurbished")  # ← problem-specific
     .filter(dc.C("width") > 400)  # ← problem-specific
-    .setup(model=lambda: clip)
+    .setup(model=load_model)
     .map(emb=encode_image)
     .save("product_catalog_clip")  # ← USELESS for next question
 )
@@ -92,7 +92,7 @@ embeddings = (
 # ✓ Save embeddings over the WHOLE input, filter downstream.
 embeddings = (
     dc.read_storage("s3://product-catalog/images/")
-    .setup(model=lambda: clip)
+    .setup(model=load_model)
     .map(emb=encode_image)
     .save(
         "product_catalog_clip",
@@ -102,7 +102,7 @@ embeddings = (
 
 ranked = (
     dc.read_dataset("product_catalog_clip")
-    .merge(dc.read_dataset("product_catalog_meta"), on="file.stem")
+    .merge(dc.read_dataset("product_catalog_meta"), on="file.path")
     .filter(dc.C("condition") != "refurbished")  # ← problem-specific, downstream
     .filter(dc.C("width") > 400)
     .mutate(distance=dc.func.cosine_distance(dc.C("emb"), query_emb))
@@ -121,7 +121,7 @@ ranked = (
 embeddings = (
     dc.read_storage("s3://b/")
     .filter(dc.C("file.size") > 0)  # ← data-quality, OK
-    .setup(model=lambda: clip)
+    .setup(model=load_model)
     .map(emb=encode_image)
     .save("clip_embeddings")
 )
@@ -151,7 +151,7 @@ class Detection(BaseModel):
 
 A coarser grain is right when the operation itself emits one unit per file (one classification per video, one embedding per document), or when the user asks for it.
 
-**Provenance: every emitted row carries its source file, typed.** A UDF that fans one file out into many rows puts the originating file on each emitted row as `dc.File` or a subclass (`dc.VideoFile`, `dc.ImageFile`, `dc.AudioFile`, `dc.TextFile`) — never `source: str`. A bare path loses etag-based change detection and the link back to the listing, loses Studio previews, loses `.read()` / `.open()` / `.get_info()` on the row, and loses the access config (`anon=True`, credentials) that travels with a typed file. Do not rely on parent-column propagation to carry it implicitly — the saved schema is the contract the next session reads.
+**Provenance: every emitted row carries its source file, typed.** A UDF that fans one file out into many rows puts the originating file on each emitted row as `dc.File` or a subclass (`dc.VideoFile`, `dc.ImageFile`, `dc.AudioFile`, `dc.TextFile`) — never `source: str`. A bare path loses etag-based change detection and the link back to the listing, loses Studio previews, and loses `.read()` / `.open()` / `.get_info()` on the row. Do not rely on parent-column propagation to carry it implicitly — the saved schema is the contract the next session reads.
 
 ```python
 def detect_per_frame(file: dc.VideoFile, model) -> Iterator[Detection]:
@@ -166,7 +166,7 @@ When the user needs a plain string path, keep the typed file and add the string 
 
 Names describe content: `product_catalog_clip`, `cik_text_stats`. Keep them under ~30 characters — longer names are truncated in dataset lists and table headers. Parameters (model id, preset, threshold) belong in the code, never in the name.
 
-Every `.save()` sets `description=` — one line on what the dataset holds and what it is good for. That line helps the next reader understand the saved dataset.
+Use `description=` for reusable datasets: one line on what the dataset holds and what it is good for.
 
 ```python
 chain.save(
@@ -275,13 +275,11 @@ Lineage is tracked automatically when a chain reads one dataset and saves anothe
    attributes such as file.path and file.size. For partial reads (get_info(),
    read_bytes(n) with n > 0), set prefetch=0. For whole-file scalar UDFs, start
    with 16 for small files (under about 1 MB), the default 2 otherwise, or 1 for
-   large files; tune to memory and service limits. In batch_map, prefetch counts
-   batches, so budget their combined file sizes. UDFs receiving only file.path
-   and/or file.size through params= download nothing. Respect explicit settings.
-
-   For `batch_map`, prefetch counts BATCHES, so do not apply this formula: keep
-   prefetch=1 or 2. Up to 2 × prefetch + 1 batches can be on local disk per
-   process.
+   large files; tune to memory and service limits. For batch_map, prefetch counts
+   batches: start with 1 or 2 and budget their combined file sizes. Up to
+   2 × prefetch + 1 batches can be on local disk per process. UDFs receiving only
+   file.path and/or file.size through params= download nothing. Respect explicit
+   settings.
 
 8. CACHE ONLY WHEN NEEDED: Do not add cache=True by default. Use only when the
    same files are read multiple times (multi-stage pipelines), or the user asks.
@@ -460,7 +458,7 @@ dc.read_parquet("s3://bucket/data/*.parquet")
 dc.read_hf("dataset-name", split="train")  # requires datachain[hf]
 dc.read_pandas(df)
 dc.read_values(scores=[1.2, 3.4])
-dc.read_records([{"a": 1}, ...])
+dc.read_records([{"a": 1}], schema={"a": int})
 dc.read_database("SELECT * FROM t", "sqlite:///local.db")
 dc.read_dataset("name")  # latest version
 dc.read_dataset("name", version="2.0.0")
@@ -574,18 +572,18 @@ chain = (
 **Setup and settings:**
 
 ```python
-chain.setup(model=lambda: load_model()).map(fn)
-chain.settings(parallel=4, cache=True, prefetch=10)
+chain.setup(model=load_model).map(fn)
+chain.settings(parallel=True)
 if dc.is_studio():
     chain = chain.settings(workers=50)
 ```
 
-**Terminal operations.** `.save()` creates a named, versioned, KB-tracked dataset. `.persist()` materializes anonymously (calibration runs, intermediate materialization not entering KB).
+**Terminal operations.** `.save()` creates a named, versioned dataset listed in `dc.datasets()`. `.persist()` materializes a temporary dataset for reuse within the session.
 
 ```python
-chain.save("dataset_name")  # versioned, in dc.datasets() and KB
+chain.save("dataset_name")
 chain.save("ns.proj.name", update_version="minor")
-chain.persist()  # anonymous, NOT named, NOT in KB
+chain.persist()
 chain.show(limit=10)
 chain.to_values("col")  # → flat list
 chain.to_list("col1", "col2")  # → list of tuples
@@ -714,39 +712,37 @@ func.int_hash_64(C("file.path"))
 
 ## Section 8 — Common Pipeline Templates
 
-**Basic: read → filter → map → save**
+**Heavy-init via `.setup()`:**
 
 ```python
 import datachain as dc
 
 
-def compute_embedding(file: dc.File) -> list[float]:
-    return model.encode(file.read()).tolist()
+def load_encoder():
+    import open_clip, torch
+
+    torch.set_num_threads(1)
+    model, _, preprocess = open_clip.create_model_and_transforms(
+        "ViT-B-32", pretrained="laion2b_s34b_b79k"
+    )
+    model.eval()
+    return model, preprocess
 
 
-(
-    dc.read_storage("s3://bucket/data/")
-    .filter(dc.C("file.size") > 1000)
-    .settings(parallel=4)
-    .map(emb=compute_embedding)
-    .save("embeddings")
-)
-```
+def encode(file: dc.ImageFile, encoder) -> list[float]:
+    import torch
 
-**Heavy-init via `.setup()`:**
+    model, preprocess = encoder
+    img = preprocess(file.read().convert("RGB")).unsqueeze(0)
+    with torch.inference_mode():
+        vector = model.encode_image(img)
+        return (vector / vector.norm(dim=-1, keepdim=True))[0].tolist()
 
-```python
-def encode(file: dc.ImageFile, model, preprocess) -> list[float]:
-    img = preprocess(file.read()).unsqueeze(0)
-    return model.encode_image(img)[0].tolist()
-
-
-m, _, p = open_clip.create_model_and_transforms("ViT-B-32", "laion2b_s34b_b79k")
 
 (
     dc.read_storage("s3://bucket/images/", type="image")
-    .settings(parallel=4)
-    .setup(model=lambda: m, preprocess=lambda: p)
+    .settings(parallel=True)
+    .setup(encoder=load_encoder)
     .map(emb=encode)
     .save("image_embeddings")
 )
@@ -761,7 +757,7 @@ dc.read_storage("s3://docs/*.pdf").gen(chunk=split_pdf).save("chunks")
 # Stage 2 — build_chunk_embeddings.py
 (
     dc.read_dataset("chunks")
-    .setup(model=lambda: load_embedding_model())
+    .setup(model=load_embedding_model)
     .settings(parallel=4)
     .map(emb=embed_chunk)
     .save("chunk_embeddings")
@@ -770,7 +766,7 @@ dc.read_storage("s3://docs/*.pdf").gen(chunk=split_pdf).save("chunks")
 # Stage 3 — classify_chunks.py
 (
     dc.read_dataset("chunk_embeddings")
-    .setup(client=lambda: create_llm_client())
+    .setup(client=create_llm_client)
     .settings(parallel=8)
     .map(category=classify)
     .save("classified_chunks")
@@ -808,7 +804,7 @@ annotated = items.merge(meta, on="file.path", right_on="items.file_name")
 
 ```python
 annotations = dc.read_storage("gs://b/**/*.txt", type="text").gen(ann=parse_list)
-xmls = dc.read_storage("gs://b/**/*.xml").settings(prefetch=128).map(xml=parse_xml)
+xmls = dc.read_storage("gs://b/**/*.xml").map(xml=parse_xml)
 images = dc.read_storage("gs://b/**/*.jpg", type="image")
 
 (
@@ -850,7 +846,7 @@ def analyze(file: dc.File, client) -> Analysis:
     return Analysis.model_validate_json(resp.content[0].text)
 
 (dc.read_storage("s3://docs/")
-   .setup(client=lambda: anthropic.Anthropic())
+   .setup(client=anthropic.Anthropic)
    .settings(parallel=8)
    .map(result=analyze)
    .save("analyzed"))
@@ -885,7 +881,7 @@ def analyze(file: dc.File, client) -> Analysis:
 **In-memory data joined with storage files:**
 
 ```python
-labels = dc.read_records([{"name": "a.jpg", "cls": "cat"}, ...])
+labels = dc.read_values(name=["a.jpg"], cls=["cat"])
 items = dc.read_storage("s3://bucket/data/")
-combined = items.merge(labels, on="file.name", right_on="labels.name")
+combined = items.merge(labels, on=dc.func.path.name("file.path"), right_on="name")
 ```
