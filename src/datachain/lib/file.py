@@ -922,7 +922,9 @@ class File(DataModel):
                 if exc.errno not in (errno.ENOTSUP, errno.EXDEV, errno.ENOSYS):
                     raise
 
-        self.save(
+        # File.save, not a subclass's: subclasses re-encode (images, audio)
+        File.save(
+            self,
             dst,
             client_config=client_config,
             content_type=content_type,
