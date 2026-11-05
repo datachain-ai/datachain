@@ -3312,12 +3312,14 @@ class DataChain:
         arms, _ = union_arms(unwrap_optional(anno)[0])
         if any(inspect.isclass(a) and issubclass(a, File) for a in arms):
             return
-        inner = [s for s in schema.get_signals(File) if s.startswith(f"{signal}.")]
-        hint = f"; export a file inside it, such as '{inner[0]}'" if inner else ""
         name = anno.__name__ if inspect.isclass(anno) else str(anno)
-        raise DataChainParamsError(
-            f"to_storage() exports files, but signal '{signal}' is {name}{hint}"
-        )
+        msg = f"to_storage(): '{signal}' is {name}, not a file"
+        inner = [s for s in schema.get_signals(File) if s.startswith(f"{signal}.")]
+        if inner:
+            msg += f"; use signal='{inner[0]}'"
+            if hasattr(anno, "save"):
+                msg += f", or {signal}.save() in map()"
+        raise DataChainParamsError(msg)
 
     def to_storage(
         self,

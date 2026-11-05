@@ -433,7 +433,12 @@ def test_to_storage_rejects_a_signal_without_files(test_session, tmp_path, signa
         n=[1],
         session=test_session,
     )
-    hint = {"frag": "frag.video", "frame": "frame.video", "n": "is int$"}[signal]
+    hint = {
+        "frag": r"'frag' is VideoFragment, not a file; use signal='frag\.video', "
+        r"or frag\.save\(\) in map\(\)$",
+        "frame": r"'frame' is VideoFrame, not a file; use signal='frame\.video'",
+        "n": r"'n' is int, not a file$",
+    }[signal]
     with pytest.raises(DataChainParamsError, match=hint):
         chain.to_storage(tmp_path / "out", signal=signal)
     assert not (tmp_path / "out").exists()
