@@ -419,3 +419,21 @@ def test_to_storage_empty_segments_with_flat_placement(cloud_test_catalog, place
     finally:
         client.fs.rm(f"{client.name}/{key}")
         client.fs.invalidate_cache()
+
+
+@pytest.mark.parametrize("signal", ["frag", "frame", "n"])
+def test_to_storage_rejects_a_signal_without_files(test_session, tmp_path, signal):
+    from datachain.lib.file import VideoFile, VideoFragment, VideoFrame
+    from datachain.lib.utils import DataChainParamsError
+
+    video = VideoFile(source=tmp_path.as_uri(), path="v.mp4")
+    chain = dc.read_values(
+        frag=[VideoFragment(video=video, start=0, end=1)],
+        frame=[VideoFrame(video=video, frame=1, timestamp=0.1)],
+        n=[1],
+        session=test_session,
+    )
+    hint = {"frag": "frag.video", "frame": "frame.video", "n": "is int$"}[signal]
+    with pytest.raises(DataChainParamsError, match=hint):
+        chain.to_storage(tmp_path / "out", signal=signal)
+    assert not (tmp_path / "out").exists()

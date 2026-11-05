@@ -50,6 +50,7 @@ from datachain.lib.data_model import (
     StandardType,
     arm_selector,
     dict_to_data_model,
+    union_arms,
     union_layout,
     unwrap_optional,
 )
@@ -3304,6 +3305,20 @@ class DataChain:
         self._setup = self._setup | kwargs
         return self
 
+    def _check_file_signal(self, signal: str) -> None:
+        """Raise unless *signal* holds files (``File``, ``Optional`` or a union arm)."""
+        schema = self.signals_schema
+        anno = schema.get_column_type(signal, with_subtree=True)
+        arms, _ = union_arms(unwrap_optional(anno)[0])
+        if any(inspect.isclass(a) and issubclass(a, File) for a in arms):
+            return
+        inner = [s for s in schema.get_signals(File) if s.startswith(f"{signal}.")]
+        hint = f"; export a file inside it, such as '{inner[0]}'" if inner else ""
+        name = anno.__name__ if inspect.isclass(anno) else str(anno)
+        raise DataChainParamsError(
+            f"to_storage() exports files, but signal '{signal}' is {name}{hint}"
+        )
+
     def to_storage(
         self,
         output: str | os.PathLike[str],
@@ -3354,6 +3369,7 @@ class DataChain:
             ds.to_storage("gs://mybucket", placement="filename")
             ```
         """
+        self._check_file_signal(signal)
         chain = self.persist()
         count = chain.count()
 
