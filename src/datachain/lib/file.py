@@ -58,7 +58,8 @@ _FILE_STATE = {
 ExportPlacement = Literal["filename", "etag", "fullpath", "checksum", "filepath"]
 
 FileType = Literal["binary", "text", "image", "video", "audio"]
-EXPORT_FILES_MAX_THREADS = 32
+EXPORT_FILES_MAX_THREADS = 5
+EXPORT_LOCAL_FILES_MAX_THREADS = 32
 PARTIAL_READ_BLOCK_SIZE = 1024 * 1024
 TAR_READ_BLOCK_SIZE = 5 * 1024 * 1024
 
@@ -72,19 +73,25 @@ class FileExporter(NodesThreadPool):
         placement: ExportPlacement,
         use_cache: bool,
         link_type: Literal["copy", "symlink"],
-        max_threads: int = EXPORT_FILES_MAX_THREADS,
+        max_threads: int | None = None,
         client_config: dict | None = None,
     ):
         from datachain.client.fsspec import Client
         from datachain.client.local import FileClient
 
-        super().__init__(max_threads)
+        self.is_local = Client.get_implementation(output) is FileClient
+        if max_threads is None:
+            max_threads = (
+                EXPORT_LOCAL_FILES_MAX_THREADS
+                if self.is_local
+                else EXPORT_FILES_MAX_THREADS
+            )
+        super().__init__(max_threads or 1)
         self.output = output
         self.placement = placement
         self.use_cache = use_cache
         self.link_type = link_type
         self.client_config = client_config
-        self.is_local = Client.get_implementation(output) is FileClient
 
     def done_task(self, done):
         for task in done:
@@ -782,10 +789,30 @@ class File(DataModel):
             metadata=metadata,
             write_options=write_options,
         )
-        with self.open(mode="rb") as src:
-            result = client.upload(src, rel_path, write_config=write_config)
+        result = None
+        if write_options is None:
+            result = self._download_to_local(client, rel_path)
+        if result is None:
+            with self.open(mode="rb") as src:
+                result = client.upload(src, rel_path, write_config=write_config)
         result._set_stream(self._catalog)
         return result
+
+    def _download_to_local(self, client: "Client", rel_path: str) -> "File | None":
+        """Download a remote file to a local destination, or return None."""
+        if self.location or client.PREFIX != "file://":
+            return None
+        source = self._catalog.get_client(self.source)  # type: ignore[union-attr]
+        if source.PREFIX == "file://":
+            return None
+        client.validate_file_path(rel_path)
+        full_path = client.get_uri(rel_path)
+        client.fs.makedirs(posixpath.dirname(full_path), exist_ok=True)
+        if self._caching_enabled:
+            self.ensure_cached()
+        lpath = client.fs._strip_protocol(full_path)
+        source.download_to(self, lpath, callback=self._download_cb)
+        return client.info_to_file(client.fs.info(full_path), rel_path)
 
     def _resolve_destination(
         self, destination: str, client_config: dict | None = None
@@ -921,17 +948,6 @@ class File(DataModel):
             except OSError as exc:
                 if exc.errno not in (errno.ENOTSUP, errno.EXDEV, errno.ENOSYS):
                     raise
-
-        if (
-            client.PREFIX == "file://"
-            and not self.location
-            and not self._caching_enabled
-            and write_options is None
-        ):
-            source = self._catalog.get_client(self.source)
-            if source.PREFIX != "file://":
-                source.download_to(self, dst)
-                return
 
         self.save(
             dst,

@@ -8,7 +8,6 @@ import os
 import posixpath
 import re
 import shutil
-import tempfile
 from abc import ABC, abstractmethod
 from collections.abc import (
     AsyncIterator,
@@ -19,6 +18,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
+from uuid import uuid4
 
 from dvc_objects.fs.system import reflink
 from fsspec.asyn import get_loop, sync
@@ -609,19 +609,26 @@ class Client(ABC):
         cfg.reject_write_options()
         return {}
 
-    def download_to(self, file: "File", lpath: str) -> None:
-        """Stream a file to a local path with one request, replacing it atomically."""
-        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(lpath), suffix=".tmp")
-        os.close(fd)
+    def download_to(
+        self, file: "File", lpath: str, *, callback: Callback = DEFAULT_CALLBACK
+    ) -> None:
+        """Write a file to a local path atomically, from the cache if it holds it."""
+        head, name = os.path.split(lpath)
+        tmp = os.path.join(head, f".{name}.{uuid4().hex[:12]}.tmp")
         try:
-            sync(
-                get_loop(),
-                self.get_file,
-                file.get_fs_path(),
-                tmp,
-                DEFAULT_CALLBACK,
-                file.version,
-            )
+            if cached := self.cache.get_path(file):
+                shutil.copyfile(cached, tmp)
+            else:
+                # created up front so the file mode follows the umask
+                os.close(os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666))
+                sync(
+                    get_loop(),
+                    self.get_file,
+                    file.get_fs_path(),
+                    tmp,
+                    callback,
+                    file.version,
+                )
             os.replace(tmp, lpath)
         except BaseException:
             with contextlib.suppress(FileNotFoundError):
