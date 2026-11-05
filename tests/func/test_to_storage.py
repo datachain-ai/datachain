@@ -1,3 +1,4 @@
+import asyncio
 import os
 import posixpath
 import signal
@@ -473,7 +474,7 @@ def test_to_storage_failed_download_leaves_no_files(
     out = tmp_dir / "out"
 
     async def partial_download(self, src, dst, *args, **kwargs):
-        Path(dst).write_bytes(b"partial")
+        await asyncio.to_thread(Path(dst).write_bytes, b"partial")
         raise OSError("connection reset")
 
     monkeypatch.setattr(
