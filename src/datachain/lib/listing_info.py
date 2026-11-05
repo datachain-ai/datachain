@@ -2,8 +2,10 @@ from datetime import UTC, datetime, timedelta
 
 from datachain.lib.dataset_info import DatasetInfo
 from datachain.lib.listing import (
+    ALL_LISTING_PREFIX,
     CURRENT_LISTING_PREFIX,
     LISTING_TTL,
+    Versions,
     listing_uri_from_name,
 )
 
@@ -14,8 +16,11 @@ class ListingInfo(DatasetInfo):
         return listing_uri_from_name(self.name)
 
     @property
-    def versions(self) -> bool:
-        """False for a listing of current objects only."""
+    def versions(self) -> Versions:
+        """False for a listing of current objects only, "all" for a listing
+        with delete rows."""
+        if self.name.startswith(ALL_LISTING_PREFIX):
+            return "all"
         return not self.name.startswith(CURRENT_LISTING_PREFIX)
 
     @property

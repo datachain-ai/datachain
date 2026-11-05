@@ -111,6 +111,7 @@ class _PartialReadHandler(FSSpecHandler):
 
 
 def pyarrow_fs(file: File, format):
+    file._raise_if_deleted()
     client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
     if isinstance(client.fs, LocalFileSystem):
         return client.fs
@@ -163,6 +164,7 @@ class ArrowGenerator(Generator):
         return hashlib.sha256((super().hash(include_body) + read).encode()).hexdigest()
 
     def process(self, file: File):
+        file._raise_if_deleted()
         if file._caching_enabled:
             file.ensure_cached()
         if cache_path := file.get_local_path():

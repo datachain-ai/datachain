@@ -7,6 +7,13 @@ from sqlalchemy.sql.functions import GenericFunction
 from datachain.sql.types import String
 
 
+class json_value(GenericFunction):  # noqa: N801
+    type = String()
+    package = "conversion"
+    name = "JSON_VALUE"
+    inherit_cache = True
+
+
 class datetime_to_string(GenericFunction):  # noqa: N801
     type = String()
     package = "conversion"

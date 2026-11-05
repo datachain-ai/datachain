@@ -329,22 +329,36 @@ def test_listing_save_reuses_version_only_when_etag_does_not_count(
     assert _etags(test_session, name, "1.0.0") == ["e1"]
 
 
-@pytest.mark.parametrize(
-    "tree", [{"deleted": {"gone": "one", "kept": "two"}}], indirect=True
-)
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
-def test_listing_update_drops_deleted_file_on_versioned_storage(cloud_test_catalog):
+@pytest.mark.parametrize("versions", [True, "all"])
+def test_listing_update_drops_deleted_file_on_versioned_storage(
+    cloud_test_catalog, cloud_prefix, versions
+):
     ctc = cloud_test_catalog
-    uri = f"{ctc.src_uri}/deleted/"
-    dc.read_storage(uri, session=ctc.session).exec()
+    (ctc.src / cloud_prefix / "gone").write_text("one")
+    (ctc.src / cloud_prefix / "kept").write_text("two")
+    uri = f"{ctc.src_uri}/{cloud_prefix}/"
+    dc.read_storage(uri, session=ctc.session, versions=versions).exec()
 
     client = ctc.catalog.get_client(ctc.src_uri)
-    client.fs.rm(client.get_uri("deleted/gone"))
+    client.fs.rm(client.get_uri(f"{cloud_prefix}/gone"))
 
-    paths = dc.read_storage(uri, session=ctc.session, update=True).to_values(
-        "file.path"
+    paths = (
+        dc.read_storage(uri, session=ctc.session, update=True, versions=versions)
+        .filter(dc.C("file.is_latest"))
+        .to_values("file.path")
     )
-    assert paths == ["deleted/kept"]
+    assert paths == [f"{cloud_prefix}/kept"]
+
+
+def test_calc_fingerprint_reads_the_etag_of_a_null_version(test_session):
+    first = _fingerprint(
+        test_session, "s3://bucket/a/", File(path="x.jpg", version="null", etag="e1")
+    )
+    second = _fingerprint(
+        test_session, "s3://bucket/b/", File(path="x.jpg", version="null", etag="e2")
+    )
+    assert first != second
 
 
 def test_read_storage_single_local_file_deterministic_hash(test_session, tmp_dir):

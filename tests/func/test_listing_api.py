@@ -44,6 +44,35 @@ def test_listing_rows_match_saved_listing(cloud_test_catalog, versions):
     ]
 
 
+@pytest.mark.parametrize(
+    "cloud_type,version_aware", [("s3", True), ("gs", True)], indirect=True
+)
+@pytest.mark.parametrize(
+    "suffix,recursive", [("/", True), ("/", False), ("/*", True), ("/sub/", True)]
+)
+def test_listing_all_versions_matches_read_and_save(
+    cloud_test_catalog, cloud_prefix, suffix, recursive
+):
+    ctc = cloud_test_catalog
+    for folder in ("", "sub/"):
+        live = ctc.src / cloud_prefix / f"{folder}a"
+        live.write_text("before")
+        live.write_text("after")
+        deleted = ctc.src / cloud_prefix / f"{folder}b"
+        deleted.write_text("deleted")
+        deleted.unlink()
+    uri = f"{ctc.src_uri}/{cloud_prefix}{suffix}"
+    kwargs = {"versions": "all", "recursive": recursive, "session": ctc.session}
+    files = dc.read_storage(uri, **kwargs).to_values("file")
+    expected = sorted(flatten(file) for file in files)
+    listing = dc.list_storage(uri, **kwargs)
+
+    assert any(file.is_deleted for file in files)
+    assert len(files) > len({file.path for file in files})
+    assert sorted(listing.to_list()) == expected
+    assert sorted(flatten(f) for f in listing.save().to_values("file")) == expected
+
+
 @pytest.mark.parametrize("versions", [False, True])
 def test_listing_save_is_the_read_storage_cache(cloud_test_catalog, versions):
     ctc = cloud_test_catalog

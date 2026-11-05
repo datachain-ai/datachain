@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 
-from datachain.lib.listing import LISTING_PREFIX, ls
+from datachain.lib.listing import ALL_LISTING_PREFIX, LISTING_PREFIX, ls
 from datachain.lib.listing_info import ListingInfo
 from datachain.lib.settings import Settings
 from datachain.lib.signal_schema import SignalSchema
@@ -147,6 +147,7 @@ def read_listing_dataset(
     query.set_listing_fn(lambda: True)
 
     chain = DataChain(query, _settings, signal_schema)
-    chain = ls(chain, path, recursive=True, column="file")
+    latest = not name.startswith(ALL_LISTING_PREFIX)
+    chain = ls(chain, path, recursive=True, column="file", latest=latest)
 
     return chain, dataset.get_version(version)
