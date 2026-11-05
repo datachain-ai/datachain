@@ -20,9 +20,9 @@ if TYPE_CHECKING:
 
 
 class SavedListing:
-    """A saved listing dataset (``lst__...``) browsed as a tree with SQL: what
-    ``datachain ls``, ``du``, ``find`` and ``cp`` read. ``dc.Listing`` lists a
-    storage itself."""
+    """A saved listing dataset (``lst__...``, or a session-only one of a local
+    path in Studio) browsed as a tree with SQL: what ``datachain ls``, ``du``,
+    ``find`` and ``cp`` read. ``dc.Listing`` lists a storage itself."""
 
     def __init__(
         self,
@@ -32,6 +32,7 @@ class SavedListing:
         dataset_name: str | None = None,
         dataset_version: str | None = None,
         column: str = "file",
+        uri: str | None = None,
     ):
         self.metastore = metastore
         self.warehouse = warehouse
@@ -39,6 +40,7 @@ class SavedListing:
         self.dataset_name = dataset_name  # dataset representing bucket listing
         self.dataset_version = dataset_version  # dataset representing bucket listing
         self.column = column
+        self._uri = uri
         self._closed = False
 
     def clone(self) -> "SavedListing":
@@ -49,6 +51,7 @@ class SavedListing:
             self.dataset_name,
             self.dataset_version,
             self.column,
+            self._uri,
         )
 
     def __enter__(self) -> Self:
@@ -69,6 +72,9 @@ class SavedListing:
     @property
     def uri(self):
         from datachain.lib.listing import listing_uri_from_name
+
+        if self._uri:
+            return self._uri
 
         assert self.dataset_name
 

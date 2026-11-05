@@ -540,6 +540,36 @@ def ensure_listing(
     return dataset
 
 
+def ensure_session_listing(
+    uri: str,
+    session: "Session",
+    client_config: dict,
+    prepared: dict[str, str],
+    *,
+    column: str = "file",
+    file_type: type[File] = File,
+    settings: dict | None = None,
+    in_memory: bool = False,
+) -> str:
+    """Return the name of the session temp dataset that lists the prefix
+    ``uri``, writing it once per ``prepared``."""
+    name = prepared.get(uri)
+    if name is None:
+        name = session.generate_temp_dataset_name()
+        write_listing(
+            uri,
+            name,
+            session,
+            client_config,
+            column=column,
+            file_type=file_type,
+            settings=settings,
+            in_memory=in_memory,
+        )
+        prepared[uri] = name
+    return name
+
+
 def write_listing(
     uri: str,
     ds_name: str,
