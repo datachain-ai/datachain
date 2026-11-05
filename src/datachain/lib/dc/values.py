@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 
 def read_values(
-    ds_name: str = "",
+    *,
     session: Session | None = None,
     settings: dict | None = None,
     in_memory: bool = False,
@@ -32,7 +32,6 @@ def read_values(
     All values are held in memory. For large data, use `read_records()`.
 
     Parameters:
-        ds_name: Name shown in error messages.
         session: Session to use for the chain.
         settings: Settings to use for the chain.
         in_memory: If True, creates an in-memory session. Defaults to False.
@@ -90,7 +89,7 @@ def read_values(
         chain.to_values("row.fib")  # [1, 2, 3]
         ```
     """
-    tuple_type, output, tuples = values_to_tuples(ds_name, output, **fr_map)
+    tuple_type, output, tuples = values_to_tuples(output, **fr_map)
     if column:
         rows = tuples if len(fr_map) > 1 else [(v,) for v in tuples]
         # The UDF stores tuples as they are, so rows are flattened here.

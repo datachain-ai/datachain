@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 def read_pandas(  # type: ignore[override]
     df: "pd.DataFrame",
-    name: str = "",
+    *,
     session: Session | None = None,
     settings: dict | None = None,
     in_memory: bool = False,
@@ -50,16 +50,15 @@ def read_pandas(  # type: ignore[override]
     for c in columns:
         if not c.isidentifier():
             raise DatasetPrepareError(
-                name,
+                "",
                 f"import from pandas error - '{c}' cannot be a column name",
             )
 
     fr_map = {c: _column_values(s) for c, s in columns.items()}
-    output = {c: _column_type(s, fr_map[c], c, name) for c, s in columns.items()}
+    output = {c: _column_type(s, fr_map[c], c) for c, s in columns.items()}
 
     return read_values(
-        name,
-        session,
+        session=session,
         settings=settings,
         column=column,
         in_memory=in_memory,
@@ -79,12 +78,10 @@ def _column_values(series: "pd.Series") -> list:
     return [None if m else v for v, m in zip(values, series.isna(), strict=True)]
 
 
-def _column_type(
-    series: "pd.Series", values: list, signal_name: str, ds_name: str
-) -> "DataType":
+def _column_type(series: "pd.Series", values: list, signal_name: str) -> "DataType":
     typ = _KIND_TYPES.get(series.dtype.kind)
     if typ is None:
-        return infer_type_from_sequence(values, signal_name, ds_name)
+        return infer_type_from_sequence(values, signal_name)
     # Float NaN is a value, while NaT and NA are stored as None.
     return typ | None if None in values else typ  # type: ignore[return-value]
 

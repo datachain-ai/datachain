@@ -5028,6 +5028,18 @@ def test_read_values_nan_inf(test_session):
     assert any(r for r in res if np.isneginf(r))
 
 
+def test_read_values_signal_named_ds_name(test_session):
+    chain = dc.read_values(ds_name=[1, 2], session=test_session)
+
+    assert sorted(chain.to_values("ds_name")) == [1, 2]
+
+
+def test_read_pandas_column_named_ds_name(test_session):
+    chain = dc.read_pandas(pd.DataFrame({"ds_name": [1, 2]}), session=test_session)
+
+    assert sorted(chain.to_values("ds_name")) == [1, 2]
+
+
 def test_read_pandas_nan_inf(test_session):
     vals = [float("nan"), float("inf"), float("-inf")]
     df = pd.DataFrame({"vals": vals})
