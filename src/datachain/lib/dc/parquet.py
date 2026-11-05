@@ -34,7 +34,8 @@ def read_parquet(
         output: Result names and Python types as a dictionary, assigned by
             insertion order with exactly one field per column read. Use `columns`
             to select inputs by name. Omit to infer names and types. Parquet
-            exported by DataChain restores its saved schema.
+            exported by DataChain restores its saved schema; there each field
+            takes one picked signal, or one top-level signal without `columns`.
         column: Created column name.
         model_name: Generated model name.
         source: Whether to include info about the source file.
@@ -42,7 +43,7 @@ def read_parquet(
         settings: Settings to use for the chain.
         columns: Input columns to read, in order; all if omitted. Accepts original
             or normalized names, e.g. "ZIP Code" or "zip_code". For Parquet exported
-            by DataChain, omit this parameter and use `.select(...)` after reading.
+            by DataChain, it picks signals as `select()` does, e.g. "p.x".
         kwargs: Parameters to pass to `read_storage`. A directory or glob is
             listed once and the listing is reused for 4 hours, so files added or
             changed since are missed or fail to read. Pass `update=True` to list
