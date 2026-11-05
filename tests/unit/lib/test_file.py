@@ -1218,3 +1218,14 @@ def test_subclass_private_attributes_keep_their_values():
 
     assert file._catalog is catalog
     assert file._caching_enabled
+
+
+@pytest.mark.parametrize("file_cls", [TextFile, ImageFile, VideoFile, AudioFile])
+def test_export_copies_bytes_as_stored(tmp_path, catalog, file_cls):
+    (tmp_path / "a.jpg").write_bytes(b"not decoded")
+    file = file_cls(path="a.jpg", source=tmp_path.as_uri())
+    file._set_stream(catalog)
+
+    file.export(tmp_path / "out", placement="filename")
+
+    assert (tmp_path / "out" / "a.jpg").read_bytes() == b"not decoded"

@@ -922,7 +922,7 @@ class File(DataModel):
                 if exc.errno not in (errno.ENOTSUP, errno.EXDEV, errno.ENOSYS):
                     raise
 
-        # the bytes as stored; a subclass save() may convert them
+        # copy as stored; subclass save() overrides may re-encode
         File.save(
             self,
             dst,

@@ -13,7 +13,7 @@ from PIL import Image
 
 import datachain as dc
 from datachain import Session
-from datachain.lib.file import AudioFile, File, ImageFile
+from datachain.lib.file import File, ImageFile
 from tests.conftest import get_cloud_test_catalog, make_cloud_server
 from tests.utils import images_equal, skip_if_not_sqlite, tree_from_path
 
@@ -115,40 +115,6 @@ def test_export_images_files(test_session, tmp_dir, tmp_path, use_cache):
     for img in images:
         with Image.open(tmp_dir / "output" / img["name"]) as exported_img:
             assert images_equal(img["data"], exported_img)
-
-
-def _write_jpeg(path):
-    Image.new("RGB", (64, 64), (10, 200, 30)).save(path, quality=95)
-
-
-def _write_webp(path):
-    Image.new("RGB", (64, 64), (1, 2, 3)).save(path, lossless=True)
-
-
-def _write_audio(path):
-    sf = pytest.importorskip("soundfile")
-    np = pytest.importorskip("numpy")
-    sf.write(path, np.sin(np.arange(8000) / 5).astype("float32") * 0.3, 8000)
-
-
-@pytest.mark.parametrize(
-    "file_cls,name,write",
-    [
-        (ImageFile, "i.jpg", _write_jpeg),
-        (ImageFile, "i.webp", _write_webp),
-        (AudioFile, "a.wav", _write_audio),
-        (AudioFile, "a.flac", _write_audio),
-    ],
-)
-def test_to_storage_copies_media_bytes(
-    test_session, tmp_dir, tmp_path, file_cls, name, write
-):
-    write(tmp_path / name)
-    dc.read_values(
-        file=[file_cls(path=name, source=tmp_path.as_uri())], session=test_session
-    ).to_storage(tmp_dir / "out", placement="filename")
-
-    assert (tmp_dir / "out" / name).read_bytes() == (tmp_path / name).read_bytes()
 
 
 def test_to_storage_skips_none_optional_file(test_session, tmp_dir, tmp_path):
