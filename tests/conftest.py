@@ -11,7 +11,7 @@ import threading
 import uuid
 from collections.abc import Generator
 from datetime import datetime
-from pathlib import PosixPath
+from pathlib import Path, PosixPath
 from time import sleep
 from typing import NamedTuple
 
@@ -153,6 +153,17 @@ def clean_environment(
     Make sure we have a clean environment and won't write to userspace.
     """
     working_dir = str(tmp_path_factory.mktemp("default_working_dir"))
+    # Ancestor repositories outside pytest's temporary tree are not test projects.
+    outer_git_markers = {
+        str(parent / ".git") for parent in tmp_path_factory.getbasetemp().parents
+    }
+    path_exists = os.path.exists
+    monkeypatch_session.setattr(
+        os.path,
+        "exists",
+        lambda path: str(path) not in outer_git_markers and path_exists(path),
+    )
+    (Path(working_dir) / ".git").mkdir()
     monkeypatch_session.chdir(working_dir)
     monkeypatch_session.delenv(DataChainDir.ENV_VAR, raising=False)
     monkeypatch_session.delenv(DataChainDir.ENV_VAR_DATACHAIN_ROOT, raising=False)

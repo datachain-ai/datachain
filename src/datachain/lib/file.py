@@ -196,7 +196,7 @@ class TarVFile(VFile):
 
 
 class DeletedVFile(VFile):
-    """A delete row of a version listing: the object has no content."""
+    """A row for a deleted object of a version listing: the object has no content."""
 
     @classmethod
     def get_vtype(cls) -> str:
@@ -583,7 +583,7 @@ class File(DataModel):
 
     @property
     def is_deleted(self) -> bool:
-        """True for a delete row of ``read_storage(versions="all")``.
+        """True for a row for a deleted object of ``read_storage(versions="all")``.
 
         Such a row records that the object was deleted: ``last_modified`` is the
         time of the delete and ``version`` the id of the delete. It has no
@@ -679,7 +679,7 @@ class File(DataModel):
 
         # write path
         full_path = self.get_fs_path()
-        fs_mode = mode if "b" in mode else f"{mode}b"
+        fs_mode = mode if "b" in mode else mode.replace("t", "", 1) + "b"
         binary_kwargs = {
             k: v for k, v in open_kwargs.items() if k not in self._TEXT_WRAPPER_ALLOWED
         }
@@ -2220,7 +2220,7 @@ class ArrowRow(DataModel):
             fs = pyarrow_fs(self.file, kwargs.get("format"))
             ds = dataset(path, filesystem=fs, **kwargs)
 
-        return ds.take([self.index]).to_reader()
+        yield next(ds.take([self.index]).to_reader())
 
     def read(self):
         """Returns row contents as dict.
@@ -2230,7 +2230,7 @@ class ArrowRow(DataModel):
         kept, e.g. column types.
         """
         with self.open() as record_batch:
-            return record_batch.to_pylist()[0]
+            return record_batch.to_pylist(maps_as_pydicts="strict")[0]
 
 
 def get_file_type(type_: FileType = "binary") -> type[File]:

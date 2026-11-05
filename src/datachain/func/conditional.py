@@ -315,9 +315,7 @@ def isnone(col: str | ColumnExpr) -> Func:
 
 def is_deleted(file: str = "file") -> Func:
     """
-    Selects the delete rows of ``read_storage(versions="all")``.
-
-    Uses the location's delete marker, matching ``File.is_deleted`` in Python.
+    Return whether a row records an object deletion.
 
     Args:
         file (str): Name of the `File` signal. Defaults to "file".

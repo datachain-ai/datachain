@@ -67,7 +67,7 @@ def read_storage(  # noqa: PLR0913
     A saved listing of the URI, or of a prefix above it, younger than 4 hours
     is reused; otherwise the storage is listed and saved, as
     `dc.list_storage(uri).save()` does. By default the chain holds current objects;
-    `versions="all"` includes retained versions and delete rows. To list a storage
+    `versions="all"` includes retained versions and rows for deleted objects. To list a storage
     without saving it, use `dc.list_storage()`.
 
     Parameters:
@@ -87,7 +87,7 @@ def read_storage(  # noqa: PLR0913
         anon: If True, we will treat cloud bucket as public one.
         versions: If False, list only current objects, without versions.
             If True, list every version and return the latest ones. If "all",
-            return every version and a delete row for each delete the storage
+            return every version and a row for a deleted object for each delete the storage
             records (see Notes). None is equivalent to False.
         client_config: Optional client configuration for the storage client.
             Replaces the session's.
@@ -120,7 +120,7 @@ def read_storage(  # noqa: PLR0913
         DataChain: A DataChain object containing the file information.
 
     Notes:
-        With ``versions="all"``, a delete row is a ``File`` whose
+        With ``versions="all"``, a row for a deleted object is a ``File`` whose
         ``is_deleted`` is True: ``last_modified`` is the time of the delete,
         ``version`` the id of the delete (the delete marker id on S3,
         ``deleted:<deleted version>`` on GCS and Azure), ``size`` 0, ``etag`` empty and
@@ -134,7 +134,7 @@ def read_storage(  # noqa: PLR0913
           seconds, and a multipart upload is stamped with its start time),
           so ordering by time may not match the order of the writes.
         - Azure keeps neither past deletes nor the time of a delete: a key
-          that is deleted now gets one delete row, with ``last_modified``
+          that is deleted now gets one row for a deleted object, with ``last_modified``
           set to 1970-01-01 (epoch 0).
         - S3 records a delete marker for every delete, also of a key that is
           already deleted or never existed; GCS records only the delete of a
@@ -333,7 +333,7 @@ def list_storage(
         recursive: If False, list only the files directly in the folder.
         versions: True, the default, returns current files with version ids.
             False omits version ids for a faster listing. "all" includes every
-            retained version and delete row, as in `read_storage`. None is equivalent
+            retained version and row for a deleted object, as in `read_storage`. None is equivalent
             to False.
         anon: If True, read the bucket as public, without credentials. If
             None, the default, a public bucket is detected.

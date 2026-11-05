@@ -210,7 +210,8 @@ class ArrowGenerator(Generator):
 
         def iter_records():
             for record_batch in ds.to_batches(**kw):
-                yield from record_batch.to_pylist()
+                # Maps are read as dicts. Duplicate keys raise an error.
+                yield from record_batch.to_pylist(maps_as_pydicts="strict")
 
         it = islice(iter_records(), self.nrows)
         with tqdm(
@@ -452,6 +453,11 @@ def arrow_type_mapper(col_type: pa.DataType, column: str = "") -> type:  # noqa:
             type_dict[field.name] = _arrow_field_type_mapper(field, field.name)
         return dict_to_data_model(f"ArrowDataModel_{column}", type_dict)
     if pa.types.is_map(col_type):
+        # JSON storage keeps these values, and the dict type restores the keys.
+        if _is_scalar_type(col_type.key_type) and _is_scalar_type(col_type.item_type):
+            key_type = arrow_type_mapper(col_type.key_type, column)
+            item_type = _arrow_field_type_mapper(col_type.item_field, column)
+            return dict[key_type, item_type]  # type: ignore[return-value, valid-type]
         return dict
     if isinstance(col_type, pa.lib.DictionaryType):
         return arrow_type_mapper(col_type.value_type)  # type: ignore[return-value]
@@ -472,6 +478,16 @@ def _arrow_field_type_mapper(
     if ModelStore.is_pydantic(dtype):
         return dtype
     return dtype | None  # type: ignore[return-value]
+
+
+def _is_scalar_type(col_type: pa.DataType) -> bool:
+    return (
+        pa.types.is_integer(col_type)
+        or pa.types.is_floating(col_type)
+        or pa.types.is_boolean(col_type)
+        or pa.types.is_string(col_type)
+        or pa.types.is_large_string(col_type)
+    )
 
 
 def _get_hf_schema(

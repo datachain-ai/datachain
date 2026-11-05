@@ -1,4 +1,6 @@
+import io
 import os
+import tarfile
 import time
 from datetime import UTC, datetime
 
@@ -371,3 +373,54 @@ def test_read_listing_dataset_keeps_delete_rows(cloud_test_catalog, cloud_prefix
     chain, _ = read_listing_dataset(name, session=ctc.session)
 
     assert sorted(f.is_deleted for f in chain.to_values("file")) == [False, True]
+
+
+@pytest.mark.parametrize(
+    "cloud_type,version_aware", [("s3", True), ("gs", True)], indirect=True
+)
+def test_deleted_archive_keeps_retained_version_members_readable(
+    cloud_test_catalog, cloud_prefix
+):
+    from datachain.lib.tar import process_tar
+
+    data = b"retained archive member"
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
+        member = tarfile.TarInfo("member.txt")
+        member.size = len(data)
+        tar.addfile(member, io.BytesIO(data))
+    archive = buffer.getvalue()
+    ctc = cloud_test_catalog
+    client = ctc.catalog.get_client(ctc.src_uri)
+    key = f"{cloud_prefix}/archive.tar"
+    archive_path = ctc.working_dir / "archive.tar"
+    archive_path.write_bytes(archive)
+    client.fs.put_file(str(archive_path), f"{client.name}/{key}")
+    (file,) = dc.read_storage(f"{ctc.src_uri}/{key}", session=ctc.session).to_values(
+        "file"
+    )
+    members = list(process_tar(file))
+    for member in members:
+        member._set_stream(ctc.catalog)
+    assert file.version
+    client.fs.rm(f"{client.name}/{key}")
+    history = dc.read_storage(
+        f"{ctc.src_uri}/{cloud_prefix}/",
+        versions="all",
+        update=True,
+        session=ctc.session,
+    )
+    (deleted,) = history.filter(func.is_deleted("file")).to_values("file")
+    assert deleted.is_deleted
+    with pytest.raises(VFileError, match="object was deleted"):
+        list(process_tar(deleted))
+    (retained,) = history.filter(
+        func.not_(func.is_deleted("file")), dc.C("file.is_latest").is_(False)
+    ).to_values("file")
+    retained_members = list(process_tar(retained))
+    for member in retained_members:
+        member._set_stream(ctc.catalog)
+    assert data in [member.read() for member in retained_members]
+    assert members
+    assert data in [member.read() for member in members]
+    assert all(not member.is_deleted for member in members)

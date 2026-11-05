@@ -44,9 +44,9 @@ On a bucket with versioning enabled (S3, GCS, Azure), `list_storage()` and `read
 
 - `versions=True`, the default: each file has its `version` id. The listing asks the storage for versions, so it is slower, and `save()` keeps old versions in the saved listing too.
 - `versions=False`: no version ids; a faster listing.
-- `versions="all"`: every retained version and the delete rows recorded by the storage.
+- `versions="all"`: every retained version and the deleted objects recorded by the storage.
 
-`File.is_deleted` identifies delete rows on objects from `to_objects()` or a chain. Use `func.is_deleted("file")` to filter them in a query.
+Use `File.is_deleted` to identify rows for deleted objects, or `func.is_deleted("file")` to filter them in a query.
 
 ```python
 total = sum(
