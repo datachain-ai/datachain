@@ -67,8 +67,8 @@ def read_storage(  # noqa: PLR0913
     A saved listing of the URI, or of a prefix above it, younger than 4 hours
     is reused; otherwise the storage is listed and saved, as
     `dc.list_storage(uri).save()` does. By default the chain holds current objects;
-    `versions="all"` includes retained versions and rows for deleted objects. To list a storage
-    without saving it, use `dc.list_storage()`.
+    `versions="all"` includes retained versions and rows for deleted objects.
+    To list storage without saving it, use `dc.list_storage()`.
 
     Parameters:
         uri: Storage path(s) or URI(s). Can be a local path or start with a
@@ -87,8 +87,8 @@ def read_storage(  # noqa: PLR0913
         anon: If True, we will treat cloud bucket as public one.
         versions: If False, list only current objects, without versions.
             If True, list every version and return the latest ones. If "all",
-            return every version and a row for a deleted object for each delete the storage
-            records (see Notes). None is equivalent to False.
+            return retained versions and rows for deleted objects (see Notes).
+            None is equivalent to False.
         client_config: Optional client configuration for the storage client.
             Replaces the session's.
         delta: If True, only process new or changed files instead of reprocessing
@@ -333,8 +333,8 @@ def list_storage(
         recursive: If False, list only the files directly in the folder.
         versions: True, the default, returns current files with version ids.
             False omits version ids for a faster listing. "all" includes every
-            retained version and row for a deleted object, as in `read_storage`. None is equivalent
-            to False.
+            retained version and rows for deleted objects, as in `read_storage`.
+            None is equivalent to False.
         anon: If True, read the bucket as public, without credentials. If
             None, the default, a public bucket is detected.
         client_config: Client configuration, such as credentials or an
