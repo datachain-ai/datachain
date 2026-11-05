@@ -3033,6 +3033,76 @@ def test_from_features_column(test_session):
     assert "custom.fib" in chain.to_pandas(flatten=True).columns
 
 
+@pytest.mark.parametrize(
+    "value", [1, MyFr(nnn="n1", count=3), File(source="s3://bucket", path="a.txt")]
+)
+def test_read_values_one_signal_into_column(test_session, value):
+    chain = dc.read_values(v=[value], column="row", session=test_session)
+
+    assert chain.to_values("row.v") == [value]
+
+
+def test_read_values_model_and_scalar_into_column(test_session):
+    fr = MyFr(nnn="n1", count=3)
+
+    chain = dc.read_values(fr=[fr], n=[1], column="row", session=test_session)
+
+    assert chain.to_list("row.fr", "row.n") == [(fr, 1)]
+
+
+def test_read_values_dicts_into_column_kept_as_given(test_session):
+    dicts = [{}, {"a": 1, "b": None}]
+
+    chain = dc.read_values(d=dicts, n=[1, 2], column="row", session=test_session)
+
+    assert chain.order_by("row.n").to_values("row.d") == dicts
+
+
+@pytest.mark.parametrize("name", ["cls", "model_extra", "model_fields_set"])
+def test_read_values_signals_named_like_model_attributes_into_column(
+    test_session, name
+):
+    chain = dc.read_values(**{name: [1], "n": [2]}, column="row", session=test_session)
+
+    assert chain.to_list(f"row.{name}", "row.n") == [(1, 2)]
+
+
+@pytest.mark.parametrize(
+    "typ,value",
+    [
+        (int | str, 1),
+        (int | str, "a"),
+        (int | str | None, "a"),
+        (int | str | None, None),
+    ],
+)
+def test_read_values_union_into_column_read_back_after_save(test_session, typ, value):
+    chain = dc.read_values(
+        u=[value], output={"u": typ}, column="row", session=test_session
+    )
+    chain.save("unions")
+
+    assert chain.to_values("row.u") == [value]
+    assert dc.read_dataset("unions", session=test_session).to_values("row.u") == [value]
+
+
+@pytest.mark.parametrize(
+    "typ,values", [(int | str, [1, "a"]), (int | str | None, [1, "a", None])]
+)
+def test_read_values_union_and_scalar_into_column_read_back_after_save(
+    test_session, typ, values
+):
+    n = list(range(len(values)))
+    chain = dc.read_values(
+        u=values, n=n, output={"u": typ, "n": int}, column="row", session=test_session
+    )
+    chain.save("unions")
+
+    assert chain.order_by("row.n").to_values("row.u") == values
+    saved = dc.read_dataset("unions", session=test_session)
+    assert saved.order_by("row.n").to_values("row.u") == values
+
+
 def test_parse_tabular_column(tmp_dir, test_session):
     df = pd.DataFrame(DF_DATA)
     path = tmp_dir / "test.parquet"
