@@ -4,7 +4,6 @@ import os
 import posixpath
 import tarfile
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -481,87 +480,6 @@ def test_save_binary_data(tmp_path, catalog: Catalog):
     assert result.name == file2_name
     assert result.source == path_to_fsspec_uri(str(tmp_path))
     assert result.read() == data
-
-
-@pytest.mark.parametrize("prefix", ["", "file://"])
-def test_save_refuses_a_local_path_with_an_empty_segment(tmp_path, catalog, prefix):
-    file = File(path="d//e.txt", source="s3://bucket")
-    file._set_stream(catalog, False)
-
-    with pytest.raises(ValueError, match="must not contain empty segments"):
-        file.save(f"{prefix}{tmp_path}/out/d//e.txt")  # the OS writes out/d/e.txt
-    assert not (tmp_path / "out").exists()
-
-
-@pytest.mark.parametrize("base", [".", "./", "", "/", "file:///"])
-def test_save_rejects_rebased_empty_segment_at_local_root(catalog, base):
-    file = File(path="d//e.txt", source="s3://src")
-    file._set_stream(catalog, False)
-    destination = file.rebase("s3://src/d", base)
-
-    with pytest.raises(ValueError, match="must not contain empty segments"):
-        file._resolve_destination(destination)
-
-
-@pytest.mark.parametrize(
-    "destination, unsafe",
-    [
-        ("//e.txt", True),
-        ("file:////e.txt", True),
-        ("///e.txt", True),
-        ("//server/share/e.txt", False),
-        ("//server/share//e.txt", True),
-        (r"\\server\share\e.txt", False),
-        (r"\\server\share\\e.txt", True),
-    ],
-)
-def test_save_checks_unc_server_and_share(catalog, monkeypatch, destination, unsafe):
-    monkeypatch.setattr("datachain.lib.file.os", SimpleNamespace(name="nt"))
-    file = File(path="d//e.txt", source="s3://src")
-    file._set_stream(catalog, False)
-
-    if unsafe:
-        with pytest.raises(ValueError, match="must not contain empty segments"):
-            file._resolve_destination(destination)
-    else:
-        file._resolve_destination(destination)
-
-
-@pytest.mark.skipif(os.name == "nt", reason="Colon is not valid in Windows filenames")
-def test_save_allows_colon_in_local_filename(tmp_path, catalog, monkeypatch, mocker):
-    monkeypatch.chdir(tmp_path)
-    file = File(path="d//e.txt", source="s3://bucket")
-    file._set_stream(catalog, False)
-    mocker.patch.object(File, "open", return_value=io.BytesIO(b"content"))
-
-    file.save("report:2026.txt")
-
-    assert (tmp_path / "report:2026.txt").read_bytes() == b"content"
-
-
-def test_save_allows_an_empty_segment_for_a_plain_key(tmp_path, catalog):
-    (tmp_path / "src.bin").write_bytes(b"x")
-    file = File(path="src.bin", source=f"file://{tmp_path}")
-    file._set_stream(catalog, False)
-
-    file.save(f"{tmp_path}/out//x.bin")  # f"{out}/{name}" with out ending in "/"
-    assert (tmp_path / "out" / "x.bin").read_bytes() == b"x"
-
-
-@pytest.mark.parametrize("prefix", ["", "file://"])
-def test_image_save_refuses_empty_segments_without_overwriting(
-    tmp_path, catalog, prefix, mocker
-):
-    file = ImageFile(path="d//e.png", source="s3://bucket")
-    file._set_stream(catalog, False)
-    mocker.patch.object(ImageFile, "read", return_value=Image.new("RGB", (1, 1)))
-    dest = tmp_path / "out" / "d" / "e.png"
-    dest.parent.mkdir(parents=True)
-    dest.write_bytes(b"existing content")
-
-    with pytest.raises(ValueError, match="must not contain empty segments"):
-        file.save(f"{prefix}{tmp_path}/out/d//e.png")
-    assert dest.read_bytes() == b"existing content"
 
 
 def test_save_accepts_file_fsspec_uri_destination(tmp_path, catalog: Catalog):
@@ -1094,6 +1012,93 @@ def test_open_write_metadata_ignored_on_local(tmp_path, catalog: Catalog):
     with f.open("wb", content_type="application/pdf", metadata={"a": "b"}) as h:
         h.write(b"payload")
     assert f.read() == b"payload"
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "w",
+        "wt",
+        "tw",
+        "w+",
+        "wt+",
+        "w+t",
+        "tw+",
+        "a",
+        "at",
+        "ta",
+        "a+",
+        "at+",
+        "a+t",
+        "x",
+        "xt",
+        "tx",
+        "x+",
+        "xt+",
+        "x+t",
+    ],
+)
+def test_open_text_write_modes(tmp_path, test_session, mode):
+    path = tmp_path / "text.txt"
+    initial = "first\r\n" if "a" in mode else ""
+    if "x" not in mode:
+        path.write_bytes(initial.encode("utf-16-le"))
+    file = File.at(path, session=test_session)
+    content = "世界\n"
+
+    with file.open(mode, encoding="utf-16-le", newline="\r\n") as stream:
+        assert stream.write(content) == len(content)
+        if "+" in mode:
+            stream.seek(0)
+            assert stream.read() == (initial if "a" in mode else "") + "世界\r\n"
+
+    expected = ((initial if "a" in mode else "") + "世界\r\n").encode("utf-16-le")
+    assert path.read_bytes() == expected
+    assert file.size == len(expected)
+    assert file.read() == expected
+
+
+@pytest.mark.parametrize("mode", ["r", "rt", "tr"])
+def test_open_text_read_modes(tmp_path, test_session, mode):
+    path = tmp_path / "text.txt"
+    path.write_bytes("世界\r\n".encode("utf-16-le"))
+    file = File.at(path, session=test_session)
+    with file.open(mode, encoding="utf-16-le", newline=None) as stream:
+        assert stream.read() == "世界\n"
+
+
+@pytest.mark.parametrize("mode", ["wb", "ab", "xb", "w+b", "r+b"])
+def test_open_binary_write_modes(tmp_path, test_session, mode):
+    path = tmp_path / "binary.bin"
+    initial = b"first" if "a" in mode else b""
+    if "x" not in mode:
+        path.write_bytes(initial)
+    file = File.at(path, session=test_session)
+    with file.open(mode) as stream:
+        assert stream.write(b"payload") == 7
+    assert path.read_bytes() == initial + b"payload"
+    assert file.size == len(initial) + 7
+
+
+@pytest.mark.parametrize("mode", ["wtt", "twt", "wbt", "w+btt", "att", "xtt"])
+def test_open_invalid_text_write_modes(tmp_path, test_session, mode):
+    path = tmp_path / "text.txt"
+    file = File.at(path, session=test_session)
+    with pytest.raises(ValueError):
+        with file.open(mode):
+            pass
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("mode", ["w", "wt"])
+def test_open_text_write_closes_on_error(tmp_path, test_session, mode):
+    path = tmp_path / "text.txt"
+    file = File.at(path, session=test_session)
+    with pytest.raises(RuntimeError, match="write failed"):
+        with file.open(mode, encoding="utf-16-le") as stream:
+            stream.write("世界")
+            raise RuntimeError("write failed")
+    assert path.read_bytes() == "世界".encode("utf-16-le")
 
 
 def test_open_read_mode_rejects_write_metadata(tmp_path, catalog: Catalog):

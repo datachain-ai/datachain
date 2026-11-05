@@ -1643,26 +1643,29 @@ class UDFStep(Step, ABC):
         # `input_query` is rebuilt from the input table and lacks partition_id.
         unprocessed_input = query if self.partition_by is not None else input_query
 
-        unprocessed_query = self.calculate_unprocessed_rows(
-            unprocessed_input,
-            partial_table,
-            incomplete_input_ids,
-        )
+        # The anti-join must stay fixed while resumed outputs are appended.
+        with self._snapshot_processed_input_ids(partial_table) as processed_ids:
+            unprocessed_query = self.calculate_unprocessed_rows(
+                unprocessed_input,
+                partial_table,
+                incomplete_input_ids,
+                processed_ids=processed_ids,
+            )
 
-        # Count rows before populating with new rows
-        output_rows_reused = self.warehouse.table_rows_count(partial_table)
-        rows_input = self.warehouse.table_rows_count(input_table)
-        rows_to_process = self.warehouse.query_count(unprocessed_query)
-        rows_reused = rows_input - rows_to_process  # input rows reused
+            # Count rows before populating with new rows
+            output_rows_reused = self.warehouse.table_rows_count(partial_table)
+            rows_input = self.warehouse.table_rows_count(input_table)
+            rows_to_process = self.warehouse.query_count(unprocessed_query)
+            rows_reused = rows_input - rows_to_process  # input rows reused
 
-        self.populate_udf_output_table(
-            partial_table,
-            unprocessed_query,
-            continued=True,
-            rows_reused=rows_reused,
-            output_rows_reused=output_rows_reused,
-            rows_total=rows_input,
-        )
+            self.populate_udf_output_table(
+                partial_table,
+                unprocessed_query,
+                continued=True,
+                rows_reused=rows_reused,
+                output_rows_reused=output_rows_reused,
+                rows_total=rows_input,
+            )
 
         output_table = self.warehouse.rename_table(
             partial_table, Checkpoint.output_table_name(job.id, hash_output)
@@ -1700,6 +1703,18 @@ class UDFStep(Step, ABC):
 
         return output_table, input_table
 
+    @contextlib.contextmanager
+    def _snapshot_processed_input_ids(self, partial_table):
+        processed_ids = self.processed_input_ids_query(partial_table)
+        snapshot = self.warehouse.create_pre_udf_table(
+            sa.select(processed_ids.c.sys__processed_id),
+            self.warehouse.temp_table_name(),
+        )
+        try:
+            yield snapshot
+        finally:
+            self.warehouse.db.drop_table(snapshot, if_exists=True)
+
     @abstractmethod
     def processed_input_ids_query(self, partial_table: "Table"):
         """
@@ -1729,6 +1744,7 @@ class UDFStep(Step, ABC):
         input_query: Select,
         partial_table: "Table",
         incomplete_input_ids: list[int] | None = None,
+        processed_ids: "Table | None" = None,
     ) -> Select:
         """
         Calculate which input rows haven't been processed yet.
@@ -1738,12 +1754,18 @@ class UDFStep(Step, ABC):
             partial_table: The UDF partial table
             incomplete_input_ids: List of input IDs that were partially processed
                 and need to be re-run (for generators only)
+            processed_ids: Table of processed input IDs to use instead of a live
+                query on the partial table
 
         Returns:
             A filtered query containing only unprocessed rows
         """
         incomplete_input_ids = incomplete_input_ids or []
-        processed_input_ids_subquery = self.processed_input_ids_query(partial_table)
+        processed_input_ids_subquery = (
+            self.processed_input_ids_query(partial_table)
+            if processed_ids is None
+            else processed_ids
+        )
 
         # For Aggregator with partition_by: filter by partition_id
         unprocessed_filter: sa.ColumnElement[bool]
@@ -2581,8 +2603,8 @@ class SQLGroupBy(SQLClause):
                 key = c.name
                 value = c.get_column()
             elif isinstance(c, (str, C)):
-                key = str(c)
-                value = subquery.c[str(c)]
+                key = c.name if isinstance(c, C) else str(c)  # str() quotes names
+                value = subquery.c[key]
             else:
                 key = c.name
                 value = c  # type: ignore[assignment]
@@ -3261,7 +3283,7 @@ class DatasetQuery:
 
         Parallel can optionally be specified as >= 1 for parallel processing with a
         specific number of processes, or set to -1 for the default of
-        the number of CPUs (cores) on the current machine.
+        the CPUs available to the process, respecting affinity and container quotas.
 
         For distributed processing with the appropriate distributed module installed,
         workers can optionally be specified as >= 1 for a specific number of workers,

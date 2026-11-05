@@ -4,7 +4,9 @@ import logging
 import secrets
 import string
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Self, Union, cast
 from urllib.parse import urlparse
 
@@ -24,7 +26,7 @@ from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.udf import JsonSerializationError
 from datachain.node import DirType, DirTypeGroup, Node, NodeWithPath, get_path
-from datachain.query.batch import RowsOutput
+from datachain.query.batch import DEFAULT_BATCH_SIZE, RowsOutput
 from datachain.query.schema import ColumnMeta
 from datachain.sql.functions import path as pathfunc
 from datachain.sql.types import SQLType
@@ -174,6 +176,10 @@ class AbstractWarehouse(ABC, Serializable):
                 ) from e
 
         if isinstance(val, col_python_type):
+            if col_python_type is datetime and value_type is not datetime:
+                # sqlite3 can't bind subclasses such as pandas.Timestamp.
+                # This drops nanoseconds, as the ClickHouse driver does.
+                return datetime.combine(val.date(), val.timetz())
             return val
         if col_python_type is float and isinstance(val, int):
             return float(val)
@@ -438,8 +444,33 @@ class AbstractWarehouse(ABC, Serializable):
         query = query._clone().offset(None).limit(None).order_by(None)
 
         if is_batched:
+            id_index = next(
+                i for i, column in enumerate(query.selected_columns) if column is id_col
+            )
+
+            def fetch(batches):
+                rows_by_id = defaultdict(list)
+                row_ids = itertools.chain.from_iterable(batches)
+                for row in self.dataset_rows_select(query.where(id_col.in_(row_ids))):
+                    rows_by_id[row[id_index]].append(row)
+                for batch in batches:
+                    yield [
+                        row
+                        for row_id in dict.fromkeys(batch)
+                        for row in rows_by_id[row_id]
+                    ]
+
+            batches: list[RowsOutput] = []
+            count = 0
             for batch in ids:
-                yield list(self.dataset_rows_select(query.where(id_col.in_(batch))))
+                if batches and count + len(batch) > DEFAULT_BATCH_SIZE:
+                    yield from fetch(batches)
+                    batches = []
+                    count = 0
+                batches.append(batch)
+                count += len(batch)
+            if batches:
+                yield from fetch(batches)
         else:
             yield from self.dataset_rows_select(query.where(id_col.in_(ids)))
 

@@ -21,7 +21,7 @@ from datachain.lib.convert.flatten import flatten
 from datachain.lib.file import File, FileRow
 from datachain.query.schema import C, Column
 from datachain.sql.functions import path as pathfunc
-from datachain.utils import uses_glob
+from datachain.utils import parent_path, uses_glob
 
 if TYPE_CHECKING:
     from sqlalchemy import ColumnElement
@@ -194,11 +194,8 @@ def select_paths(dc: D, paths: "PathFilter", column: str = "file") -> D:
     return dc
 
 
-def _listing_folder(path: str) -> str:
-    path = path.lstrip("/")
-    if path.rstrip("/").endswith("*"):
-        path = path.rstrip("/").rstrip("*")
-    return path.removesuffix("/")
+def list_folder(path: str) -> str:
+    return path.lstrip("/").removesuffix("/")
 
 
 @dataclass(frozen=True)
@@ -213,7 +210,7 @@ class PathFilter:
     @classmethod
     def ls(cls, path: str, recursive: bool | None) -> "PathFilter":
         if not recursive:
-            return cls(any_of=(("parent", _listing_folder(path)),))
+            return cls(any_of=(("parent", list_folder(path)),))
         if not path or path == "/":
             return cls()
         if uses_glob(path):
@@ -246,7 +243,7 @@ class PathFilter:
             if op == "glob":
                 regex = _glob_regex(value)
                 return lambda path: regex is not None and bool(regex.fullmatch(path))
-            return lambda path: _parent(path) == value
+            return lambda path: parent_path(path) == value
 
         any_of = [check(*c) for c in self.any_of]
         all_of = [check(*c) for c in self.all_of]
@@ -254,10 +251,6 @@ class PathFilter:
             (not any_of or any(c(path) for c in any_of))
             and all(c(path) for c in all_of)
         )
-
-
-def _parent(path: str) -> str:
-    return path.rpartition("/")[0]
 
 
 @functools.lru_cache(maxsize=256)

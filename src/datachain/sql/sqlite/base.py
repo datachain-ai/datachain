@@ -1,12 +1,14 @@
 import hashlib
+import importlib.util
 import logging
+import os
 import re
 import sqlite3
-import warnings
+import subprocess
+import sys
 from collections.abc import Callable, Iterable
 from contextlib import closing
 from datetime import MAXYEAR, MINYEAR, UTC, date, datetime
-from functools import cache
 from types import MappingProxyType
 
 import sqlalchemy as sa
@@ -43,6 +45,7 @@ from datachain.sql.types import (
     register_type_read_converters,
     validate_datetime_cast_input_type,
 )
+from datachain.utils import parent_path
 
 logger = logging.getLogger("datachain")
 
@@ -216,6 +219,10 @@ def missing_vector_function(name, exc):
     return unavailable_func
 
 
+def sqlite_path_parent(path: str | None) -> str | None:
+    return None if path is None else parent_path(path)
+
+
 def sqlite_string_split(string: str, sep: str, maxsplit: int = -1) -> str:
     return json.dumps(string.split(sep, maxsplit), ensure_ascii=False)
 
@@ -378,6 +385,9 @@ def register_user_defined_sql_functions() -> None:
         _create_function(conn, "split", 2, sqlite_string_split, deterministic=True)
         _create_function(conn, "split", 3, sqlite_string_split, deterministic=True)
         _create_function(
+            conn, "dc_path_parent", 1, sqlite_path_parent, deterministic=True
+        )
+        _create_function(
             conn, "regexp_replace", 3, sqlite_regexp_replace, deterministic=True
         )
         _create_function(
@@ -445,8 +455,7 @@ def convert_datetime(val: bytes) -> datetime:
 
 
 def path_parent(path):
-    upto_last_slash = func.rtrim(path, func.replace(path, slash, empty_str))
-    return func.substr(upto_last_slash, 1, func.length(upto_last_slash) - 1)
+    return func.dc_path_parent(path)
 
 
 def path_name(path):
@@ -745,24 +754,53 @@ def compile_collect(element, compiler, **kwargs):
     return compiler.process(func.json_group_array(*element.clauses.clauses), **kwargs)
 
 
-@cache
+USEARCH_SQLITE_ENV = "DATACHAIN_USEARCH_SQLITE"
+_USEARCH_SQLITE_PATH_CODE = """
+import sys, warnings
+sys.path[:] = {path!r}
+warnings.simplefilter("ignore")
+import usearch
+print(usearch.sqlite_path())
+"""
+
+
 def usearch_sqlite_path() -> str | None:
-    try:
-        import usearch
-    except ImportError:
+    """Path of usearch's SQLite extension, or None if it is not available.
+
+    Resolved in a subprocess to keep NumKong's RTLD_GLOBAL symbols out of the
+    process running user model libraries. The result is passed to child
+    processes in an env variable.
+    """
+    if (path := os.environ.get(USEARCH_SQLITE_ENV)) is None:
+        path = os.environ[USEARCH_SQLITE_ENV] = _resolve_usearch_sqlite_path() or ""
+    return path or None
+
+
+def _resolve_usearch_sqlite_path() -> str | None:
+    if (
+        not sys.executable
+        or getattr(sys, "frozen", False)
+        or importlib.util.find_spec("usearch") is None
+    ):
         return None
-
-    with warnings.catch_warnings():
-        # usearch binary is not available for Windows, see: https://github.com/unum-cloud/usearch/issues/427.
-        # and, sometimes fail to download the binary in other platforms
-        # triggering UserWarning.
-
-        warnings.filterwarnings("ignore", category=UserWarning, module="usearch")
-
-        try:
-            return usearch.sqlite_path()
-        except (FileNotFoundError, OSError):
-            return None
+    try:
+        result = subprocess.run(  # noqa: S603
+            [
+                sys.executable,
+                "-c",
+                _USEARCH_SQLITE_PATH_CODE.format(
+                    path=[p for p in sys.path if isinstance(p, str)]
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        logger.debug("Failed to locate usearch SQLite extension", exc_info=True)
+        return None
+    lines = result.stdout.strip().splitlines()
+    return lines[-1].strip() if lines else None
 
 
 def load_usearch_extension(conn: sqlite3.Connection) -> bool:
@@ -780,7 +818,8 @@ def load_usearch_extension(conn: sqlite3.Connection) -> bool:
 
     try:
         conn.load_extension(ext_path)
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as exc:
+        logger.debug("Failed to load usearch SQLite extension %s: %s", ext_path, exc)
         return False
     else:
         return True

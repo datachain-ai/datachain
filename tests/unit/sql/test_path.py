@@ -74,3 +74,9 @@ def test_file_ext(warehouse, path):
     query = select(func.path.file_ext(func.literal(path)))
     result = tuple(warehouse.db.execute(query))
     assert result == ((file_ext(path),),)
+
+
+@pytest.mark.parametrize("name", ["parent", "name", "file_stem", "file_ext"])
+def test_path_functions_propagate_null(warehouse, name):
+    query = select(getattr(pathfunc, name)(None))
+    assert tuple(warehouse.db.execute(query)) == ((None,),)

@@ -314,7 +314,6 @@ def prepare_output_for_cp(
     node_groups: list[NodeGroup],
     output: str,
     force: bool = False,
-    no_cp: bool = False,
 ) -> tuple[bool, str | None]:
     total_node_count = 0
     for node_group in node_groups:
@@ -326,9 +325,6 @@ def prepare_output_for_cp(
 
     always_copy_dir_contents = False
     copy_to_filename = None
-
-    if no_cp:
-        return always_copy_dir_contents, copy_to_filename
 
     if not os.path.isdir(output):
         if all(n.is_dataset for n in node_groups):
@@ -415,24 +411,12 @@ def instantiate_node_groups(
         total=total_files,
         leave=False,
     ) as instantiate_progress_bar:
-        for node_group, nodes in plans:
-            listing = node_group.listing
-            if not listing:
-                (node,) = nodes
+        for group, nodes in plans:
+            for node in nodes:
                 node.instantiate(
-                    node_group.sources[0].client,
-                    output,
-                    instantiate_progress_bar,
-                    force=force,
+                    group.client, output, instantiate_progress_bar, force=force
                 )
-            else:
-                listing.instantiate_nodes(
-                    nodes,
-                    output,
-                    total_files,
-                    force=force,
-                    shared_progress_bar=instantiate_progress_bar,
-                )
+                instantiate_progress_bar.update()
 
 
 def find_column_to_str(  # noqa: PLR0911
@@ -2255,7 +2239,6 @@ class Catalog:
                 update=update,
                 recursive=recursive,
                 no_glob=no_glob,
-                no_cp=no_cp,
                 client_config=client_config,
             )
         else:
@@ -2283,7 +2266,6 @@ class Catalog:
         force: bool = False,
         update: bool = False,
         recursive: bool = False,
-        no_cp: bool = False,
         no_glob: bool = False,
         *,
         client_config: dict | None = None,
@@ -2300,7 +2282,7 @@ class Catalog:
         )
         try:
             always_copy_dir_contents, copy_to_filename = prepare_output_for_cp(
-                node_groups, output, force, no_cp
+                node_groups, output, force
             )
             total_size, total_files = collect_nodes_for_cp(node_groups, recursive)
             if not total_files:
@@ -2314,9 +2296,6 @@ class Catalog:
                 for group in node_groups
                 if group.sources
             ]
-            if no_cp:
-                return
-
             desc_max_len = max(len(output) + 16, 19)
             bar_format = (
                 "{desc:<"

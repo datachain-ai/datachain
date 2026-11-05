@@ -25,6 +25,7 @@ from datachain.lib.utils import (
     type_to_str,
 )
 from datachain.sql.types import (
+    JSON,
     Array,
     String,
 )
@@ -44,6 +45,7 @@ class MyFeature(BaseModel):
         (list[str], Array(String())),
         (Iterable[str], Array(String())),
         (list[list[str]], Array(Array(String()))),
+        (list[str | int], JSON()),
     ),
 )
 def test_convert_type_to_datachain_array(typ, expected):
@@ -54,7 +56,6 @@ def test_convert_type_to_datachain_array(typ, expected):
     "typ",
     (
         str | int,
-        list[str | int],
         MyFeature,
         MyModel,
     ),
@@ -139,16 +140,10 @@ def test_normalize_column_names_repeat_generated_after_normalize():
         ("s3://src/d/e.txt", "s3://src", "s3://dst/new", "s3://dst/new/d/e.txt"),
         ("s3://src/d//e.txt", "s3://src", "s3://dst/new", "s3://dst/new/d//e.txt"),
         ("s3://src/d///e.txt", "s3://src", "s3://dst/", "s3://dst/d///e.txt"),
-        ("s3://src/d//e.txt", "s3://src", "/out", "/out/d//e.txt"),
         ("s3://src/d//e.txt", "s3://src/d", "s3://dst", "s3://dst//e.txt"),
         ("s3://src/d///e.txt", "s3://src/d//", "s3://dst", "s3://dst//e.txt"),
         ("s3://src/e.txt", "s3://src", "s3://dst/d//", "s3://dst/d//e.txt"),
         (r"s3://src/a\b.txt", "s3://src", "s3://dst", r"s3://dst/a\b.txt"),
-        ("s3://src/d//e.txt", "s3://src/d", ".", ".//e.txt"),
-        ("s3://src/d//e.txt", "s3://src/d", "./", ".//e.txt"),
-        ("s3://src/d//e.txt", "s3://src/d", "", ".//e.txt"),
-        ("s3://src/d//e.txt", "s3://src/d", "/", "//e.txt"),
-        ("s3://src/d//e.txt", "s3://src/d", "file:///", "file:////e.txt"),
     ],
 )
 def test_rebase_path_keeps_cloud_keys_as_is(src, old_base, new_base, expected):
@@ -162,18 +157,16 @@ def test_rebase_path_converts_windows_bases_of_a_file_uri():
 @pytest.mark.parametrize(
     "new_base,expected",
     [
-        (r"file:///C:\out", "file:///C:/out/d//e.txt"),
-        ("file:///tmp/out//", "file:///tmp/out/d//e.txt"),
-        ("file:///tmp/./out", "file:///tmp/out/d//e.txt"),
-        ("file:///", "file:///d//e.txt"),
-        (r"\\server\share\out", "//server/share/out/d//e.txt"),
-        ("file:////server/share/out", "file:////server/share/out/d//e.txt"),
+        (r"file:///C:\out", "file:///C:/out/d/e.txt"),
+        ("file:///tmp/out//", "file:///tmp/out/d/e.txt"),
+        ("file:///tmp/./out", "file:///tmp/out/d/e.txt"),
+        ("file:///", "file:///d/e.txt"),
+        (r"\\server\share\out", "//server/share/out/d/e.txt"),
+        ("file:////server/share/out", "file:////server/share/out/d/e.txt"),
     ],
 )
-def test_rebase_path_normalizes_local_uri_base_without_changing_cloud_key(
-    new_base, expected
-):
-    assert rebase_path("s3://src/d//e.txt", "s3://src", new_base) == expected
+def test_rebase_path_normalizes_local_uri_base(new_base, expected):
+    assert rebase_path("s3://src/d/e.txt", "s3://src", new_base) == expected
 
 
 def test_rebase_path_basic():
@@ -428,3 +421,10 @@ def test_callable_name_udf_like():
 )
 def test_callable_name_non_callable(obj, expected):
     assert callable_name(obj) == expected
+
+
+@pytest.mark.parametrize("base", [".", "./", "", "/", "file:///", "./out"])
+@pytest.mark.parametrize("old_base", ["s3://src", "s3://src/d"])
+def test_rebase_rejects_empty_key_segments_for_local_destinations(base, old_base):
+    with pytest.raises(ValueError, match="must not contain empty segments"):
+        rebase_path("s3://src/d//e.txt", old_base, base)

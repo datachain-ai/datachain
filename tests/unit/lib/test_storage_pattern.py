@@ -196,10 +196,7 @@ def test_expand_brace_pattern_edge_cases():
     [
         ("dir/", None, True, None),
         ("dir/", None, False, ListScope("dir/", "dir/", True)),
-        ("dir/**", None, False, ListScope("dir/", "dir/", True)),
-        ("dir/*/", None, False, ListScope("dir/", "dir/", True)),
-        ("dir//**", None, False, ListScope("dir//", "dir//", True)),
-        ("dir//**/", None, False, ListScope("dir//", "dir//", True)),
+        ("dir//", None, False, ListScope("dir//", "dir//", True)),
         ("", None, False, ListScope("", "", True)),
         ("dir", "*.jpg", True, ListScope("dir/", "dir/", True)),
         ("dir//", "*.jpg", True, ListScope("dir//", "dir//", True)),

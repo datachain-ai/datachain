@@ -158,7 +158,8 @@ jobs:
           PYTHONPATH="$(pwd)/..:${PYTHONPATH}"
           pytest
           --config-file=pyproject.toml -rs
-          --splits=6 --group=${{ matrix.group }} --durations-path=../../.github/.test_durations
+          --splits=6 --group=${{ matrix.group }} --durations-path=../.github/.test_durations
+          --splitting-algorithm=least_duration
           --benchmark-skip
           tests ../datachain/tests
         working-directory: datachain_saas

@@ -8,7 +8,6 @@ from sqlalchemy import Column
 from sqlalchemy.sql import func
 
 from datachain.node import DirType, Node, NodeWithPath
-from datachain.progress import tqdm
 from datachain.sql.functions import path as pathfunc
 from datachain.utils import suffix_to_number
 
@@ -142,33 +141,6 @@ class SavedListing:
                     node_path = [node.name]
                 all_nodes.append(NodeWithPath(node, path=node_path))
         return all_nodes
-
-    def instantiate_nodes(
-        self,
-        all_nodes: Iterable[NodeWithPath],
-        output,
-        total_files=None,
-        force=False,
-        shared_progress_bar=None,
-    ) -> None:
-        progress_bar = shared_progress_bar or tqdm(
-            desc=f"Instantiating '{output}'",
-            unit=" files",
-            unit_scale=True,
-            unit_divisor=1000,
-            total=total_files,
-            leave=False,
-        )
-
-        counter = 0
-        for node in all_nodes:
-            node.instantiate(self.client, output, progress_bar, force=force)
-            counter += 1
-            if counter > 1000:
-                progress_bar.update(counter)
-                counter = 0
-
-        progress_bar.update(counter)
 
     def find(
         self,

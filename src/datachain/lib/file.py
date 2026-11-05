@@ -27,7 +27,7 @@ from datachain.lib.data_model import DataModel
 from datachain.lib.utils import DataChainError, rebase_path
 from datachain.nodes_thread_pool import NodesThreadPool
 from datachain.sql.types import JSON, Boolean, DateTime, Int, String
-from datachain.utils import TIME_ZERO
+from datachain.utils import TIME_ZERO, parent_path
 
 if TYPE_CHECKING:
     from typing import Self
@@ -91,7 +91,8 @@ class FileExporter(NodesThreadPool):
             task.result()
 
     def do_task(self, file: "File | None"):
-        if file is not None:
+        # a union arm may be a non-File value (e.g. Union[File, str]); skip it
+        if isinstance(file, File):
             # a local disk cannot hold an empty path segment
             if self.is_local and "//" in file._get_destination_suffix(self.placement):
                 logger.warning("File '%s' not exported: path has '//'", file.path)
@@ -553,7 +554,7 @@ class File(DataModel):
             file.parent  # 'data/subdir'
             ```
         """
-        return self.path.rsplit("/", 1)[0] if "/" in self.path else "."
+        return parent_path(self.path) if "/" in self.path else "."
 
     @contextmanager
     def open(
@@ -635,7 +636,7 @@ class File(DataModel):
 
         # write path
         full_path = self.get_fs_path()
-        fs_mode = mode if "b" in mode else f"{mode}b"
+        fs_mode = mode if "b" in mode else mode.replace("t", "", 1) + "b"
         binary_kwargs = {
             k: v for k, v in open_kwargs.items() if k not in self._TEXT_WRAPPER_ALLOWED
         }
@@ -756,12 +757,6 @@ class File(DataModel):
             A ``File`` representing the newly written destination, with
             ``version`` populated on versioned backends.
 
-        Raises:
-            ValueError: If the file's path has an empty segment, such as
-                ``d//e.txt``, and so does a local destination (``file://`` URIs
-                included), such as ``out/d//e.txt``: the local disk would write
-                it to ``out/d/e.txt``, over the file ``d/e.txt``.
-
         Example:
             ```py
             file.save("/local/output/result.bin")
@@ -797,21 +792,9 @@ class File(DataModel):
     ) -> "tuple[Client, str]":
         """Return (client rooted at the storage, rel_path) for *destination*."""
         from datachain.client.fsspec import Client as FSClient
-        from datachain.client.local import FileClient
 
         uri = path_to_fsspec_uri(destination)
         client_cls = FSClient.get_implementation(uri)
-        # a local disk collapses "//": d//e.txt would overwrite d/e.txt
-        if "//" in self.path and client_cls is FileClient:
-            path = destination.removeprefix("file://")
-            canonical = path.replace("\\", "/") if os.name == "nt" else path
-            if os.name == "nt" and re.match(r"^//[^/]+/[^/]+(?:/|$)", canonical):
-                canonical = canonical.removeprefix("//")
-            if "//" in canonical:
-                raise ValueError(
-                    f"unsafe file path {destination!r}: must not contain empty segments"
-                )
-
         storage, rel_path = client_cls.split_url(uri)
         client = self._catalog.get_client(  # type: ignore[union-attr]
             client_cls.storage_uri(storage), **(client_config or {})
@@ -1217,7 +1200,7 @@ class FileRow(NamedTuple):
 
     @property
     def parent(self) -> str:
-        return self.path.rsplit("/", 1)[0] if "/" in self.path else "."
+        return parent_path(self.path) if "/" in self.path else "."
 
     def get_file_suffix(self) -> str:
         return PurePosixPath(self.path).suffix
@@ -2190,7 +2173,7 @@ class ArrowRow(DataModel):
             fs = pyarrow_fs(self.file, kwargs.get("format"))
             ds = dataset(path, filesystem=fs, **kwargs)
 
-        return ds.take([self.index]).to_reader()
+        yield next(ds.take([self.index]).to_reader())
 
     def read(self):
         """Returns row contents as dict.
@@ -2200,7 +2183,7 @@ class ArrowRow(DataModel):
         kept, e.g. column types.
         """
         with self.open() as record_batch:
-            return record_batch.to_pylist()[0]
+            return record_batch.to_pylist(maps_as_pydicts="strict")[0]
 
 
 def get_file_type(type_: FileType = "binary") -> type[File]:
