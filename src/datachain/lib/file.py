@@ -789,30 +789,20 @@ class File(DataModel):
             metadata=metadata,
             write_options=write_options,
         )
-        result = None
-        if write_options is None:
-            result = self._download_to_local(client, rel_path)
-        if result is None:
+        source = self._catalog.get_client(self.source)
+        if self.location or client.PREFIX != "file://" or source.PREFIX == "file://":
             with self.open(mode="rb") as src:
                 result = client.upload(src, rel_path, write_config=write_config)
+        else:
+            client.validate_file_path(rel_path)
+            lpath = client.fs._strip_protocol(client.get_uri(rel_path))
+            os.makedirs(os.path.dirname(lpath), exist_ok=True)
+            if self._caching_enabled:
+                self.ensure_cached()
+            source.download_to(self, lpath, callback=self._download_cb)
+            result = client.get_file_info(rel_path)
         result._set_stream(self._catalog)
         return result
-
-    def _download_to_local(self, client: "Client", rel_path: str) -> "File | None":
-        """Download a remote file to a local destination, or return None."""
-        if self.location or client.PREFIX != "file://":
-            return None
-        source = self._catalog.get_client(self.source)  # type: ignore[union-attr]
-        if source.PREFIX == "file://":
-            return None
-        client.validate_file_path(rel_path)
-        full_path = client.get_uri(rel_path)
-        client.fs.makedirs(posixpath.dirname(full_path), exist_ok=True)
-        if self._caching_enabled:
-            self.ensure_cached()
-        lpath = client.fs._strip_protocol(full_path)
-        source.download_to(self, lpath, callback=self._download_cb)
-        return client.info_to_file(client.fs.info(full_path), rel_path)
 
     def _resolve_destination(
         self, destination: str, client_config: dict | None = None

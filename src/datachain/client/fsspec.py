@@ -613,27 +613,22 @@ class Client(ABC):
         self, file: "File", lpath: str, *, callback: Callback = DEFAULT_CALLBACK
     ) -> None:
         """Write a file to a local path atomically, from the cache if it holds it."""
-        head, name = os.path.split(lpath)
-        tmp = os.path.join(head, f".{name}.{uuid4().hex[:12]}.tmp")
+        tmp = os.path.join(os.path.dirname(lpath), f".{uuid4().hex}.tmp")
         try:
             if cached := self.cache.get_path(file):
                 shutil.copyfile(cached, tmp)
             else:
-                # created up front so the file mode follows the umask
-                os.close(os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666))
-                sync(
-                    get_loop(),
-                    self.get_file,
-                    file.get_fs_path(),
-                    tmp,
-                    callback,
-                    file.version,
-                )
+                sync(get_loop(), self._download_stream, file, tmp, callback)
             os.replace(tmp, lpath)
         except BaseException:
             with contextlib.suppress(FileNotFoundError):
                 os.remove(tmp)
             raise
+
+    async def _download_stream(
+        self, file: "File", lpath: str, callback: Callback
+    ) -> None:
+        await self.get_file(file.get_fs_path(), lpath, callback, file.version)
 
     def download(self, file: "File", *, callback: Callback = DEFAULT_CALLBACK) -> None:
         sync(get_loop(), functools.partial(self._download, file, callback=callback))

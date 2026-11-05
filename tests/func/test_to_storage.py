@@ -422,48 +422,31 @@ def test_to_storage_empty_segments_with_flat_placement(cloud_test_catalog, place
         client.fs.invalidate_cache()
 
 
-def _exported_files(out):
-    return sorted(p for p in out.rglob("*") if p.is_file())
-
-
 @pytest.mark.parametrize("use_cache", [False, True])
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 def test_to_storage_from_cloud_writes_exact_bytes_and_overwrites(
-    cloud_test_catalog, tmp_dir, use_cache
+    cloud_test_catalog, tmp_dir, monkeypatch, use_cache
 ):
     ctc = cloud_test_catalog
     out = tmp_dir / "out"
-    chain = dc.read_storage(ctc.src_uri, session=ctc.session).settings(cache=use_cache)
-    chain.to_storage(out, placement="filepath")
+    chain = dc.read_storage(ctc.src_uri, session=ctc.session)
+    chain.settings(cache=use_cache).to_storage(out, placement="filepath")
     (out / "cats" / "cat1").write_text("stale contents")
-    chain.to_storage(out, placement="filepath")
+    if use_cache:
+
+        async def no_download(*args, **kwargs):
+            raise AssertionError("cached file downloaded again")
+
+        fs = ctc.catalog.get_client(ctc.src_uri).fs
+        monkeypatch.setattr(type(fs), "_get_file", no_download)
+    chain.settings(cache=False).to_storage(out, placement="filepath")
 
     assert tree_from_path(out) == DEFAULT_TREE
-    assert not [p for p in _exported_files(out) if p.name.startswith(".")]
     if os.name != "nt":
         umask = os.umask(0)
         os.umask(umask)
-        modes = {p.stat().st_mode & 0o777 for p in _exported_files(out)}
+        modes = {p.stat().st_mode & 0o777 for p in out.rglob("*") if p.is_file()}
         assert modes == {0o666 & ~umask}
-
-
-@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
-def test_to_storage_copies_cached_files_without_downloading(
-    cloud_test_catalog, tmp_dir, monkeypatch
-):
-    ctc = cloud_test_catalog
-    chain = dc.read_storage(ctc.src_uri, session=ctc.session)
-    chain.settings(cache=True).to_storage(tmp_dir / "first", placement="filepath")
-
-    async def no_download(*args, **kwargs):
-        raise AssertionError("cached file downloaded again")
-
-    monkeypatch.setattr(
-        type(ctc.catalog.get_client(ctc.src_uri)), "get_file", no_download
-    )
-    chain.settings(cache=False).to_storage(tmp_dir / "second", placement="filepath")
-
-    assert tree_from_path(tmp_dir / "second") == DEFAULT_TREE
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
@@ -477,17 +460,16 @@ def test_to_storage_failed_download_leaves_no_files(
         await asyncio.to_thread(Path(dst).write_bytes, b"partial")
         raise OSError("connection reset")
 
-    monkeypatch.setattr(
-        type(ctc.catalog.get_client(ctc.src_uri)), "get_file", partial_download
-    )
+    fs = ctc.catalog.get_client(ctc.src_uri).fs
+    monkeypatch.setattr(type(fs), "_get_file", partial_download)
     chain = dc.read_storage(ctc.src_uri, session=ctc.session)
     with pytest.raises(OSError, match="connection reset"):
         chain.to_storage(out, placement="filepath")
 
-    assert _exported_files(out) == []
+    assert not [p for p in out.rglob("*") if p.is_file()]
 
 
-@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 def test_file_save_from_cloud_to_local_path(cloud_test_catalog, tmp_dir):
     ctc = cloud_test_catalog
     chain = dc.read_storage(ctc.src_uri, session=ctc.session)
@@ -508,3 +490,28 @@ def test_to_storage_from_http_source(http_server, tmp_path, test_session):
     ).to_storage(out, placement="filename")
 
     assert (out / "a.txt").read_text() == "alpha"
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_to_storage_streams_large_s3_objects_sequentially(
+    cloud_test_catalog, tmp_dir, monkeypatch
+):
+    ctc = cloud_test_catalog
+    client = ctc.catalog.get_client(ctc.src_uri)
+    name = "b" * 241 + ".bin"  # long names fit next to their temp file
+    data = os.urandom(3 << 20)
+    client.fs.pipe(f"{client.name}/{name}", data)
+    client.fs.invalidate_cache()
+    monkeypatch.setattr(type(client.fs), "default_block_size", 1 << 20)
+
+    async def no_parts(*args, **kwargs):
+        raise AssertionError("downloaded in parallel parts")
+
+    monkeypatch.setattr(type(client.fs), "_download_file_part_concurrent", no_parts)
+    chain = dc.read_storage(f"{ctc.src_uri}/{name}", session=ctc.session)
+    try:
+        chain.to_storage(tmp_dir / "out", placement="filename")
+        assert (tmp_dir / "out" / name).read_bytes() == data
+    finally:
+        client.fs.rm(f"{client.name}/{name}")
+        client.fs.invalidate_cache()

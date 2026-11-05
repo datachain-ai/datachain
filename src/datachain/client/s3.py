@@ -145,6 +145,16 @@ class ClientS3(RangeListedClient):
     PINNED_VERSION_IS_IMMUTABLE = True
     _unversioned = False  # the server can't list versions
 
+    async def _download_stream(self, file: File, lpath: str, callback) -> None:
+        # one sequential stream: flat memory, and a failed read resumes from its offset
+        await self.fs._get_file(
+            file.get_fs_path(),
+            lpath,
+            callback=callback,
+            max_concurrency=1,
+            **self._version_kwargs(file.version),
+        )
+
     @staticmethod
     def _normalize_s3_kwargs(kwargs: dict) -> dict:
         if "aws_endpoint_url" in kwargs:
