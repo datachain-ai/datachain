@@ -252,7 +252,8 @@ def test_open_write_binary(cloud_test_catalog):
     catalog.get_client(src_uri).fs.rm(file_path)
 
 
-def test_open_write_text(cloud_test_catalog):
+@pytest.mark.parametrize("mode", ["w", "wt"])
+def test_open_write_text(cloud_test_catalog, mode):
     ctc = cloud_test_catalog
     catalog = ctc.catalog
     src_uri = ctc.src_uri
@@ -261,7 +262,7 @@ def test_open_write_text(cloud_test_catalog):
     content = "Привет Мир\nSecond line"
 
     file = File.at(file_path, ctc.session)
-    with file.open("w", encoding="utf-16-le") as f:
+    with file.open(mode, encoding="utf-16-le") as f:
         written_chars = f.write(content)
 
     assert written_chars == len(content)
