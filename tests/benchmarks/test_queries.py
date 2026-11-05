@@ -197,8 +197,6 @@ def test_delta_changed(benchmark, test_session, retry):
     result = benchmark.pedantic(
         lambda: build(True).save("bench_delta_changed"),
         setup=setup,
-        rounds=3,
-        iterations=1,
     )
     expected_ids = [1, *range(NUM_FILES, NUM_FILES + 10)] + ([2] if retry else [])
     assert sorted(processed) == sorted(expected_ids)
