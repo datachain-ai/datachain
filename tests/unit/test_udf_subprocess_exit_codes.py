@@ -1,4 +1,5 @@
 import os
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -137,6 +138,8 @@ def test_subprocess_keeps_caller_pythonpath(
     monkeypatch.delenv("DATACHAIN_DISTRIBUTED", raising=False)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PYTHONPATH", "/a")
+    monkeypatch.delenv("PYTHONSAFEPATH", raising=False)
+    monkeypatch.setattr(sys, "path", [str(tmp_path / "scripts"), *sys.path[1:]])
     chain = _build_parallel_chain(test_session_tmpfile)
 
     with patch(
@@ -144,5 +147,10 @@ def test_subprocess_keeps_caller_pythonpath(
     ) as popen:
         chain.to_list()
 
+    assert popen.call_args.kwargs["env"]["PYTHONSAFEPATH"] == "1"
     pythonpath = popen.call_args.kwargs["env"]["PYTHONPATH"]
-    assert pythonpath.split(os.pathsep) == [str(tmp_path), "/a"]
+    assert pythonpath.split(os.pathsep) == [
+        str(tmp_path / "scripts"),
+        "/a",
+        str(tmp_path),
+    ]

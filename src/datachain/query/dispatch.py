@@ -1,9 +1,9 @@
 import contextlib
+import os
 import threading
 import traceback
 from collections.abc import Iterable, Sequence
 from itertools import chain
-from multiprocessing import cpu_count
 from queue import Empty
 from sys import stdin
 from time import monotonic, sleep
@@ -20,6 +20,7 @@ from datachain.catalog.catalog import clone_catalog_with_cache
 from datachain.catalog.loader import DISTRIBUTED_IMPORT_PATH, get_udf_distributor_class
 from datachain.lib.model_store import ModelStore
 from datachain.lib.udf import UdfRunError, _get_cache
+from datachain.query.batch import DEFAULT_BATCH_SIZE, Batch
 from datachain.query.dataset import (
     get_download_callback,
     get_generated_callback,
@@ -28,7 +29,7 @@ from datachain.query.dataset import (
 )
 from datachain.query.queue import get_from_queue, put_into_queue
 from datachain.query.udf import UdfInfo
-from datachain.utils import batched, flatten, safe_closing
+from datachain.utils import batched, flatten, safe_closing, usable_cpu_count
 
 if TYPE_CHECKING:
     from sqlalchemy import Select, Table
@@ -37,18 +38,17 @@ if TYPE_CHECKING:
     from datachain.lib.udf import UDFAdapter
     from datachain.query.batch import RowsOutput
 
-DEFAULT_BATCH_SIZE = 10000
 STOP_SIGNAL = "STOP"
 OK_STATUS = "OK"
 FINISHED_STATUS = "FINISHED"
 FAILED_STATUS = "FAILED"
 NOTIFY_STATUS = "NOTIFY"
-STATS_INTERVAL_SEC = 3.0
+STATS_INTERVAL_SEC = 0.1
 
 
 def get_n_workers_from_arg(n_workers: int | None = None) -> int:
     if not n_workers:
-        return cpu_count()
+        return usable_cpu_count()
     if n_workers < 1:
         raise RuntimeError("Must use at least one worker for parallel UDF execution!")
     return n_workers
@@ -56,6 +56,8 @@ def get_n_workers_from_arg(n_workers: int | None = None) -> int:
 
 def udf_entrypoint() -> int:
     """Parallel processing (faster for more CPU-heavy UDFs)."""
+    if os.environ.pop("_DATACHAIN_UDF_SAFE_PATH", None):
+        os.environ.pop("PYTHONSAFEPATH", None)
     # Load UDF info from stdin
     udf_info: UdfInfo = load(stdin.buffer)
 
@@ -120,7 +122,8 @@ class UDFDispatcher:
         self.udf_fields = udf_info["udf_fields"]
         self.cache = udf_info["cache"]
         self.is_generator = udf_info["is_generator"]
-        self.is_batching = udf_info["batching"].is_batching
+        self.batching = udf_info["batching"]
+        self.is_batching = self.batching.is_batching
         self.processes = udf_info["processes"]
         self.rows_total = udf_info["rows_total"]
         self.batch_size = udf_info["batch_size"]
@@ -221,7 +224,7 @@ class UDFDispatcher:
 
         def get_inputs() -> Iterable["RowsOutput"]:
             warehouse = self.catalog.warehouse.clone()
-            for ids in batched(input_rows, DEFAULT_BATCH_SIZE):
+            for ids in batched(input_rows, self.input_batch_size(1)):
                 yield from warehouse.dataset_rows_select_from_ids(
                     self.query, ids, self.is_batching
                 )
@@ -247,12 +250,9 @@ class UDFDispatcher:
                 )
 
     def input_batch_size(self, n_workers: int) -> int:
-        input_batch_size = self.rows_total // n_workers
-        if input_batch_size == 0:
-            input_batch_size = 1
-        elif input_batch_size > DEFAULT_BATCH_SIZE:
-            input_batch_size = DEFAULT_BATCH_SIZE
-        return input_batch_size
+        rows_per_task = min(self.rows_total // n_workers, DEFAULT_BATCH_SIZE)
+        batch_size = self.batching.count if isinstance(self.batching, Batch) else 1
+        return max(1, rows_per_task // batch_size)
 
     def run_udf_parallel(  # noqa: C901, PLR0912
         self,
@@ -381,24 +381,35 @@ class UDFDispatcher:
 class WorkerStats:
     def __init__(self, queue: MultiprocessQueue) -> None:
         self.queue = queue
-        self.lock = threading.Lock()  # prefetch and download threads add too
+        self.lock = threading.Lock()
         self.counts: dict[str, int] = {}
-        self.sent_at = monotonic()
 
     def add(self, name: str, inc: int = 1) -> None:
         with self.lock:
             self.counts[name] = self.counts.get(name, 0) + inc
-            if monotonic() - self.sent_at >= STATS_INTERVAL_SEC:
-                self._send(NOTIFY_STATUS)
 
     def send(self, status: str) -> None:
         with self.lock:
-            self._send(status)
+            if status != NOTIFY_STATUS or self.counts:
+                put_into_queue(self.queue, {"status": status, **self.counts})
+                self.counts = {}
 
-    def _send(self, status: str) -> None:
-        put_into_queue(self.queue, {"status": status, **self.counts})
-        self.counts = {}
-        self.sent_at = monotonic()
+    @contextlib.contextmanager
+    def track(self):
+        stopped = threading.Event()
+
+        def send_updates():
+            while not stopped.wait(STATS_INTERVAL_SEC):
+                self.send(NOTIFY_STATUS)
+
+        thread = threading.Thread(target=send_updates, daemon=True)
+        thread.start()
+        try:
+            yield
+        finally:
+            stopped.set()
+            thread.join()
+            self.send(NOTIFY_STATUS)
 
 
 class DownloadCallback(Callback):
@@ -459,7 +470,10 @@ class UDFWorker:
 
     def run(self) -> None:
         prefetch = self.udf.prefetch
-        with _get_cache(self.catalog.cache, prefetch, use_cache=self.cache) as _cache:
+        with (
+            self.stats.track(),
+            _get_cache(self.catalog.cache, prefetch, use_cache=self.cache) as _cache,
+        ):
             catalog = clone_catalog_with_cache(self.catalog, _cache)
             udf_results = self.udf.run(
                 self.udf_fields,

@@ -1,20 +1,21 @@
+import os
 import queue as queue_mod
-import threading
 from queue import Empty, Full
-from types import SimpleNamespace
 from unittest.mock import MagicMock
+
+import pytest
 
 from datachain.query.dispatch import (
     FINISHED_STATUS,
-    STATS_INTERVAL_SEC,
     STOP_SIGNAL,
     DownloadCallback,
     ProcessedCallback,
-    UDFDispatcher,
     UDFWorker,
     WorkerStats,
     get_from_queue,
+    get_n_workers_from_arg,
     put_into_queue,
+    udf_entrypoint,
 )
 
 
@@ -53,98 +54,114 @@ def test_put_into_queue():
     assert mock_queue.put_signal == STOP_SIGNAL
 
 
-def test_worker_sends_progress_once_per_interval(monkeypatch):
-    now = [0]
-    monkeypatch.setattr("datachain.query.dispatch.monotonic", lambda: now[0])
-    queue: queue_mod.Queue = queue_mod.Queue()
+def test_worker_aggregates_progress_until_flushed():
+    queue = queue_mod.Queue()
     stats = WorkerStats(queue)
     processed = ProcessedCallback("processed", stats)
     download = DownloadCallback(stats)
-
     for _ in range(300):
-        now[0] += 1
         processed.relative_update(1)
         download.increment_file_count(1)
         download.relative_update(10)
     stats.send(FINISHED_STATUS)
-
-    messages = list(queue.queue)
-    assert len(messages) == 300 // STATS_INTERVAL_SEC + 1
-    assert sum(m.get("processed", 0) for m in messages) == 300
-    assert sum(m.get("downloaded", 0) for m in messages) == 300
-    assert sum(m.get("bytes_downloaded", 0) for m in messages) == 3000
-
-
-class ThreadQueue(queue_mod.Queue):
-    def close(self) -> None:
-        pass
-
-    def join_thread(self) -> None:
-        pass
+    assert queue.get_nowait() == {
+        "status": FINISHED_STATUS,
+        "processed": 300,
+        "downloaded": 300,
+        "bytes_downloaded": 3000,
+    }
+    assert queue.empty()
 
 
-class ThreadProcess:
-    def __init__(self, name: str, target) -> None:
-        self.name = name
-        self.thread = threading.Thread(target=target, daemon=True)
-        self.exitcode = None
-
-    def start(self) -> None:
-        self.thread.start()
-
-    def is_alive(self) -> bool:
-        return self.thread.is_alive()
+def test_worker_reports_pending_progress_without_another_update():
+    queue = queue_mod.Queue()
+    stats = WorkerStats(queue)
+    with stats.track():
+        stats.add("processed", 1)
+        assert queue.get(timeout=1) == {"status": "NOTIFY", "processed": 1}
+    assert queue.empty()
 
 
-def test_dispatcher_runs_more_batches_than_its_buffer(monkeypatch):
-    dispatcher = UDFDispatcher.__new__(UDFDispatcher)
-    dispatcher.ctx = SimpleNamespace(Queue=ThreadQueue, Process=ThreadProcess)
-    dispatcher.is_batching = False
-    dispatcher.buffer_size = 2
-    dispatcher.input_batch_size = lambda n_workers: 3
-
-    def join_workers(pool):
-        for worker in pool:
-            worker.thread.join(timeout=5)
-            assert not worker.is_alive()
-
-    monkeypatch.setattr(dispatcher, "_terminate_pool", join_workers)
-    seen = []
+def test_worker_acknowledges_tasks_before_fetching_rows():
+    tasks = queue_mod.Queue()
+    done = queue_mod.Queue()
+    tasks.put([[1], [2]])
+    tasks.put(STOP_SIGNAL)
     catalog = MagicMock()
-    catalog.warehouse.clone().dataset_rows_select_from_ids = lambda _, ids, __: ids
-
-    def run_worker() -> None:
-        worker = UDFWorker(
-            catalog,
-            MagicMock(),
-            dispatcher.task_queue,
-            dispatcher.done_queue,
-            MagicMock(),
-            MagicMock(),
-            cache=False,
-            is_batching=False,
-            batch_size=None,
-            udf_fields=[],
-        )
-        seen.extend(worker.get_inputs())
-        worker.stats.send(FINISHED_STATUS)
-
-    dispatcher._run_worker = run_worker
-    errors = []
-
-    def run_dispatcher():
-        try:
-            dispatcher.run_udf_parallel(2, [[i] for i in range(300)])
-        except BaseException as exc:  # noqa: BLE001
-            errors.append(exc)
-
-    runner = threading.Thread(
-        target=run_dispatcher,
-        daemon=True,
+    fetch = catalog.warehouse.clone().dataset_rows_select_from_ids
+    fetch.return_value = iter(["first", "second"])
+    worker = UDFWorker(
+        catalog,
+        MagicMock(),
+        tasks,
+        done,
+        MagicMock(),
+        MagicMock(),
+        cache=False,
+        is_batching=False,
+        batch_size=None,
+        udf_fields=[],
     )
-    runner.start()
-    runner.join(timeout=30)
+    rows = iter(worker.get_inputs())
+    assert next(rows) == "first"
+    assert done.get_nowait() == {"status": "OK"}
+    assert list(rows) == ["second"]
+    assert done.empty()
+    fetch.assert_called_once()
 
-    assert not runner.is_alive()
-    assert not errors
-    assert sorted(seen) == list(range(300))
+
+def test_worker_flushes_progress_when_processing_fails(monkeypatch):
+    catalog = MagicMock()
+    done = queue_mod.Queue()
+    udf = MagicMock(prefetch=0)
+    worker = UDFWorker(
+        catalog,
+        udf,
+        queue_mod.Queue(),
+        done,
+        MagicMock(),
+        MagicMock(),
+        cache=False,
+        is_batching=False,
+        batch_size=None,
+        udf_fields=[],
+    )
+
+    def fail(*args, **kwargs):
+        worker.processed_cb.relative_update(3)
+        worker.download_cb.relative_update(1024)
+        raise RuntimeError("processing failed")
+
+    monkeypatch.setattr("datachain.query.dispatch.process_udf_outputs", fail)
+    with pytest.raises(RuntimeError, match="processing failed"):
+        worker.run()
+    assert done.get_nowait() == {
+        "status": "NOTIFY",
+        "processed": 3,
+        "bytes_downloaded": 1024,
+    }
+
+
+@pytest.mark.parametrize(
+    "cpus,requested,expected", [(8, None, 8), (1, None, 1), (8, 12, 12)]
+)
+def test_worker_count_respects_cpu_quota_and_explicit_override(
+    monkeypatch, cpus, requested, expected
+):
+    monkeypatch.setattr("datachain.query.dispatch.usable_cpu_count", lambda: cpus)
+
+    assert get_n_workers_from_arg(requested) == expected
+
+
+@pytest.mark.parametrize("injected", [False, True])
+def test_udf_entrypoint_restores_only_injected_safe_path(monkeypatch, mocker, injected):
+    monkeypatch.setenv("PYTHONSAFEPATH", "1")
+    if injected:
+        monkeypatch.setenv("_DATACHAIN_UDF_SAFE_PATH", "1")
+    else:
+        monkeypatch.delenv("_DATACHAIN_UDF_SAFE_PATH", raising=False)
+    mocker.patch("datachain.query.dispatch.load", side_effect=RuntimeError("stop"))
+    with pytest.raises(RuntimeError, match="stop"):
+        udf_entrypoint()
+    assert ("PYTHONSAFEPATH" in os.environ) is not injected
+    assert "_DATACHAIN_UDF_SAFE_PATH" not in os.environ

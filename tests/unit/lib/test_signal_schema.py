@@ -1762,6 +1762,12 @@ def test_slice():
             True,
             [("name", str), ("age", float)],
         ),
+        (
+            {"name": str | None, "age": float | None, "address": str | None},
+            {"name": list, "age": list[Any], "address": list[str | None]},
+            True,
+            [("name", str), ("age", float), ("address", str)],
+        ),
     ],
 )
 def test_slice_typed(schema, keys, is_batch, result):
