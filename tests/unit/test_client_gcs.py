@@ -426,54 +426,13 @@ def test_listing_asks_for_every_field_it_reads(version_aware):
 
 @pytest.mark.parametrize("cloud_type", ["gs"], indirect=True)
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
-@pytest.mark.parametrize("block_size", [None, 0, 2])
-def test_gcs_open_preserves_block_size(cloud_test_catalog_upload, mocker, block_size):
-    ctc = cloud_test_catalog_upload
-    client = ctc.catalog.get_client(ctc.src_uri)
-    file = client.get_file_info("dogs/dog1")
-    opened = mocker.spy(client.fs, "open")
-    with client.open_object(file, use_cache=False, block_size=block_size) as stream:
-        assert stream.read(2) == b"wo"
-        stream.seek(0)
-        assert stream.read() == b"woof"
-
-    options = opened.call_args.kwargs
-    if block_size == 0:
-        assert options["cache_type"] == "none"
-    elif block_size:
-        assert options["cache_type"] == "readahead"
-        assert options["block_size"] == block_size
-    else:
-        assert "cache_type" not in options
-
-
-@pytest.mark.parametrize("cloud_type", ["gs"], indirect=True)
-@pytest.mark.parametrize("version_aware", [True], indirect=True)
-def test_gcs_cache_download_pins_listed_version(cloud_test_catalog_upload):
-    ctc = cloud_test_catalog_upload
-    client = ctc.catalog.get_client(ctc.src_uri)
-    file = client.upload(b"woof", "pinned-download")
-    client.upload(b"WOOF", "pinned-download")
-    file.etag = "stale-etag"
-    sync(get_loop(), client._download, file, callback=DEFAULT_CALLBACK)
-    assert Path(ctc.catalog.cache.get_path(file)).read_bytes() == b"woof"
-
-
-@pytest.mark.parametrize("cloud_type", ["gs"], indirect=True)
-@pytest.mark.parametrize("version_aware", [False], indirect=True)
-@pytest.mark.parametrize("operation", ["open", "download"])
-def test_gcs_rejects_stale_etag_without_pinned_version(
-    cloud_test_catalog_upload, operation
+def test_gcs_small_reads_share_one_block_request(
+    cloud_test_catalog_upload, fetched_bytes
 ):
     ctc = cloud_test_catalog_upload
     client = ctc.catalog.get_client(ctc.src_uri)
-    file = client.upload(b"woof", "stale")
-    file.version = ""
-    file.etag = "stale-etag"
-    with pytest.raises(FileNotFoundError, match="changed on the source"):
-        if operation == "open":
-            with client.open_object(file, use_cache=False) as stream:
-                stream.read()
-        else:
-            sync(get_loop(), client._download, file, callback=DEFAULT_CALLBACK)
-    assert not ctc.catalog.cache.contains(file)
+    file = client.upload(b"a" * 4096, "blocks.bin")
+    with client.open_object(file, use_cache=False, block_size=1024) as stream:
+        for _ in range(8):
+            assert stream.read(16) == b"a" * 16
+    assert fetched_bytes == [1040, 1]

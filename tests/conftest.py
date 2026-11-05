@@ -1490,6 +1490,7 @@ def fetched_bytes(monkeypatch):
             return data
 
         monkeypatch.setattr(cls, "_fetch_range", fetch_range)
+    # GCS full reads can bypass GCSFile._fetch_range.
     original_call = GCSFileSystem._call
 
     async def call(self, method, *args, **kwargs):

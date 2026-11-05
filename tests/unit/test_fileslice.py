@@ -78,3 +78,14 @@ def test_wrapper_reads_remainder_in_one_call(prefix, mocker):
         read.assert_called_once_with()
         assert callback.value == len(data)
     assert source.closed
+
+
+def test_slice_reads_remainder_in_one_call(mocker):
+    data = b"a" * (256 * 1024)
+    source = io.BytesIO(b"header" + data + b"trailer")
+    readinto = mocker.spy(source, "readinto")
+    with FileSlice(source, 6, len(data), "member") as stream:
+        assert stream.read(7) == data[:7]
+        assert stream.read() == data[7:]
+        assert stream.read() == b""
+    assert readinto.call_count == 2

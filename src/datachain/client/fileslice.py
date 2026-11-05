@@ -106,6 +106,9 @@ class FileSlice(io.RawIOBase):
         self.position += res
         return res
 
+    def readall(self) -> bytes:
+        return self.read(max(self.size - self.position, 0))
+
     def close(self):
         self.fileobj.close()
         super().close()

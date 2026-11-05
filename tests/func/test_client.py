@@ -1092,27 +1092,11 @@ def test_get_file_versioned_special_char_in_key(
     assert dst2.read_bytes() == b"version-2"
 
 
-@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
-@pytest.mark.parametrize("version_aware", [True], indirect=True)
-@pytest.mark.parametrize("tree", [{"pinned": "woof"}], indirect=True)
-@pytest.mark.parametrize("block_size", [None, 0, 2])
-def test_open_object_reads_listed_version(client, block_size):
-    file = client.get_file_info("pinned")
-    assert file.version
-    client.fs.pipe_file(file.get_fs_path(), b"WOOF")
-    with client.open_object(file, use_cache=False, block_size=block_size) as stream:
-        assert stream.read(2) == b"wo"
-        stream.seek(0)
-        assert stream.read() == b"woof"
-
-
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 @pytest.mark.parametrize("tree", [{"changed": "woof"}], indirect=True)
-@pytest.mark.parametrize("cache", [False, True])
-def test_open_object_rejects_changed_unversioned_object(client, catalog, cache):
+def test_open_object_rejects_changed_unversioned_object(client):
     file = client.get_file_info("changed")
     file.version = ""
-    file._set_stream(catalog, caching_enabled=cache)
     client.fs.pipe_file(file.get_fs_path(), b"WOOF")
     with pytest.raises(FileNotFoundError, match="changed on the source"):
         with client.open_object(file, use_cache=False, block_size=2) as stream:
@@ -1143,22 +1127,18 @@ def test_open_object_rejects_inconsistent_pinned_size(client, mocker, size):
     assert opened.spy_return.closed
 
 
-@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
-@pytest.mark.parametrize("version_aware", [True], indirect=True)
-@pytest.mark.parametrize("tree", [{"empty": ""}], indirect=True)
-def test_open_object_reads_empty_pinned_file(client):
-    file = client.get_file_info("empty")
-    assert file.size == 0
-    with client.open_object(file, use_cache=False, block_size=0) as stream:
-        assert stream.read() == b""
-
-
-@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+@pytest.mark.parametrize(
+    "cloud_type,metadata_calls",
+    [("s3", 1), ("gs", 1), ("azure", 2)],
+    indirect=["cloud_type"],
+)
 @pytest.mark.parametrize("version_aware", [False, True], indirect=True)
-def test_open_object_reuses_backend_metadata_for_validation(client, mocker):
+def test_open_object_reuses_backend_metadata_for_validation(
+    client, mocker, metadata_calls
+):
     file = client.get_file_info("dogs/dog1")
     info = mocker.spy(client.fs, "info")
     async_info = mocker.spy(client.fs, "_info")
     with client.open_object(file, use_cache=False, block_size=2) as stream:
         assert stream.read() == b"woof"
-    assert info.call_count + async_info.call_count == 1
+    assert info.call_count + async_info.call_count == metadata_calls

@@ -224,6 +224,7 @@ class GCSClient(RangeListedClient):
         full_path = self._path_with_generation(file.get_fs_path(), file.version)
         open_kwargs = self._block_size_kwargs(block_size)
         if block_size:
+            # gcsfs ignores block_size unless cache_type is set.
             open_kwargs["cache_type"] = "readahead"
         return self._open_checked(file, full_path, **open_kwargs)
 

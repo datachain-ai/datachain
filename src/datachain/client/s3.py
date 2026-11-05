@@ -145,14 +145,6 @@ class ClientS3(RangeListedClient):
     PINNED_VERSION_IS_IMMUTABLE = True
     _unversioned = False  # the server can't list versions
 
-    def _open_remote(self, file: File, block_size: int | None = None):
-        return self._open_checked(
-            file,
-            file.get_fs_path(),
-            **self._block_size_kwargs(block_size),
-            **self._version_kwargs(file.version),
-        )
-
     @staticmethod
     def _normalize_s3_kwargs(kwargs: dict) -> dict:
         if "aws_endpoint_url" in kwargs:

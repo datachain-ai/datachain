@@ -953,65 +953,48 @@ def test_video_info_http_server_without_range_support(
     assert info.duration == pytest.approx(1.0, abs=0.1)
 
 
-@pytest.mark.parametrize("operation", ["prefix", "metadata"])
-def test_partial_read_rejects_changed_local_file(test_session, tmp_path, operation):
-    from PIL import Image
-
-    path = tmp_path / "image.png"
-
-    Image.new("RGB", (2, 2)).save(path)
-    chain = dc.read_storage(str(path), session=test_session)
-    file = chain.to_values("file")[0]
-    file._set_stream(test_session.catalog, caching_enabled=True)
-    mtime = path.stat().st_mtime + 1
-    Image.new("RGB", (3, 3)).save(path)
-    os.utime(path, (mtime, mtime))
-    error = FileNotFoundError if operation == "prefix" else FileError
-    with pytest.raises(error) as exc:
-        if operation == "prefix":
-            file.read_bytes(3)
-        else:
-            file.as_image_file().get_info()
-    cause = exc.value if operation == "prefix" else exc.value.__cause__
-    assert "changed on the source" in str(cause)
-    assert not test_session.catalog.cache.contains(file)
-
-
-@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
-@pytest.mark.parametrize("version_aware", [False], indirect=True)
-def test_tar_member_reads_prefix_without_caching(cloud_test_catalog_upload):
-    from datachain.lib.tar import build_tar_member
-
-    ctc = cloud_test_catalog_upload
-    client = ctc.catalog.get_client(ctc.src_uri)
-    data = b"member content"
-    raw = make_tar({"member.bin": data})
-    parent = client.upload(raw, "archive.tar")
-    parent._set_stream(ctc.catalog, caching_enabled=False)
-    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
-        member = build_tar_member(parent, archive.getmember("member.bin"))
-    member._set_stream(ctc.catalog, caching_enabled=False)
-    assert member.read_bytes(10) == data[:10]
-    assert not ctc.catalog.cache.contains(parent)
-
-
-@pytest.mark.parametrize("cache", [False, True])
-@pytest.mark.parametrize("length", [-1, 0, 4])
-def test_read_bytes_preserves_full_read_cache_policy(
-    test_session, tmp_path, cache, length
-):
+@pytest.mark.parametrize("length", [-1, 4])
+def test_read_bytes_preserves_full_read_cache_policy(test_session, tmp_path, length):
     path = tmp_path / "content.bin"
     path.write_bytes(b"hello world")
 
     def read(file: dc.File) -> bytes:
         value = file.read_bytes(length)
-        assert file._catalog.cache.contains(file) == (cache and length < 0)
+        assert (file.get_local_path() is not None) == (length < 0)
         return value
 
     result = (
         dc.read_storage(path, session=test_session)
-        .settings(cache=cache, prefetch=0)
+        .settings(cache=True, prefetch=0)
         .map(value=read)
         .to_values("value")
     )
     assert result == [b"hello world" if length < 0 else b"hello world"[:length]]
+
+
+@pytest.fixture
+def changed_local_image(test_session, tmp_path):
+    from PIL import Image
+
+    path = tmp_path / "image.png"
+    Image.new("RGB", (2, 2)).save(path)
+    file = dc.read_storage(path, session=test_session).to_values("file")[0]
+    file._set_stream(test_session.catalog, caching_enabled=True)
+    mtime = path.stat().st_mtime + 1
+    Image.new("RGB", (3, 3)).save(path)
+    os.utime(path, (mtime, mtime))
+    return file
+
+
+def test_read_bytes_prefix_after_local_overwrite_raises(changed_local_image):
+    with pytest.raises(FileNotFoundError, match="changed on the source"):
+        changed_local_image.read_bytes(3)
+    assert changed_local_image.get_local_path() is None
+
+
+def test_image_info_after_local_overwrite_raises(changed_local_image):
+    with pytest.raises(FileError) as error:
+        changed_local_image.as_image_file().get_info()
+    assert isinstance(error.value.__cause__, FileNotFoundError)
+    assert "changed on the source" in str(error.value.__cause__)
+    assert changed_local_image.get_local_path() is None

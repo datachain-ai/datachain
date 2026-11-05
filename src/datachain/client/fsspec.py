@@ -681,6 +681,14 @@ class RangeListedClient(Client):
 
     LISTS_LEVELS: ClassVar[bool] = False  # whether _list_page takes a delimiter
 
+    def _open_remote(self, file: "File", block_size: int | None = None) -> BinaryIO:
+        return self._open_checked(
+            file,
+            file.get_fs_path(),
+            **self._block_size_kwargs(block_size),
+            **self._version_kwargs(file.version),
+        )
+
     @staticmethod
     def key_order(key: str) -> Any:
         """The sort key of the order the server lists keys in."""
