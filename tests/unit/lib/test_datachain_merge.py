@@ -729,16 +729,17 @@ def test_merge_computed_keys_after_union_and_limit(test_session, reverse):
     ]
 
 
-def test_merge_computed_keys_do_not_collide_with_signal_names(test_session):
+@pytest.mark.parametrize("left_key", ["stored", "computed"])
+def test_merge_computed_keys_do_not_collide_with_signal_names(test_session, left_key):
     left = dc.read_values(
-        path=["a/x.jpg", "b/y.jpg"],
-        session=test_session,
-        **{f"anon_{i}": ["p", "q"] for i in range(1, 8)},
-        __dc_join_key_0=["p", "q"],
-    ).mutate(stem=dc.func.path.file_stem("path"))
+        path=["a/x.jpg", "b/y.jpg"], stem=["x", "y"], session=test_session
+    )
     right = dc.read_values(
-        path=["c/x.png", "d/y.png"], score=[1, 2], session=test_session
-    ).mutate(stem=dc.func.path.file_stem("path"))
-    assert left.merge(right, on="stem").order_by("path").to_list(
-        "path", "anon_1", "score"
-    ) == [("a/x.jpg", "p", 1), ("b/y.jpg", "q", 2)]
+        path=["c/x.png", "d/y.png"], __dc_join_key_0=["p", "q"], session=test_session
+    )
+    on = "stem" if left_key == "stored" else dc.func.path.file_stem(left.c("path"))
+    merged = left.merge(right, on=on, right_on=dc.func.path.file_stem(right.c("path")))
+    assert merged.order_by("path").to_list("path", "__dc_join_key_0") == [
+        ("a/x.jpg", "p"),
+        ("b/y.jpg", "q"),
+    ]

@@ -8,7 +8,18 @@ from datachain import func
 from datachain.sql import select
 from datachain.sql.functions import path as pathfunc
 
-PATHS = ["", "/", "name", "/name", "name/", "some/long/path"]
+PATHS = [
+    "",
+    "/",
+    "name",
+    "/name",
+    "name/",
+    "some/long/path",
+    "d//x",
+    "d///x",
+    "d//",
+    "d///",
+]
 EXT_PATHS = [
     "",
     "abc.txt",
@@ -97,3 +108,9 @@ def test_path_functions_edge_cases(warehouse, path, parent, name, stem, ext):
         func.path.file_ext(func.literal(path)),
     )
     assert tuple(warehouse.db.execute(query)) == ((parent, name, stem, ext),)
+
+
+@pytest.mark.parametrize("name", ["parent", "name", "file_stem", "file_ext"])
+def test_path_functions_propagate_null(warehouse, name):
+    query = select(getattr(pathfunc, name)(None))
+    assert tuple(warehouse.db.execute(query)) == ((None,),)

@@ -1,4 +1,14 @@
+from importlib.metadata import version
+
+from packaging.version import Version
+
 try:
+    datasets_version = version("datasets")
+    if Version(datasets_version) < Version("4.0.0"):
+        raise ImportError(
+            f"datachain requires 'datasets>=4.0.0' but version {datasets_version} "
+            "is installed."
+        )
     from datasets import (
         Array2D,
         Array3D,
@@ -20,7 +30,7 @@ try:
 
 except ImportError as exc:
     raise ImportError(
-        "Missing dependencies for huggingface datasets.\n"
+        f"Missing dependencies for huggingface datasets: {exc}\n"
         "To install run:\n\n"
         "  pip install 'datachain[hf]'\n"
     ) from exc

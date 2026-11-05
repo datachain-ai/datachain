@@ -1,5 +1,6 @@
 import base64
 import json
+from collections import Counter
 from unittest.mock import patch
 
 import pytest
@@ -8,6 +9,7 @@ import sqlalchemy as sa
 import datachain as dc
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SQLiteWarehouse
+from datachain.data_storage.warehouse import AbstractWarehouse
 from datachain.lib.file import File
 from tests.utils import skip_if_not_sqlite
 
@@ -284,66 +286,37 @@ def test_insert_into_reads_all_ids_before_inserting_batches(
     assert warehouse.table_rows_count(dst) == 10
 
 
+def _nested_scans(db, query):
+    sql, params = db.compile_to_args(query)
+    plan = db.db.execute(f"EXPLAIN QUERY PLAN {sql}", params).fetchall()
+    loops = Counter(parent for _, parent, _, step in plan if step.startswith("SCAN"))
+    return [step for _, parent, _, step in plan if loops[parent] > 1]
+
+
 @skip_if_not_sqlite
+@pytest.mark.parametrize("direct", [False, True])
 @pytest.mark.parametrize(
-    "kind,direct",
-    [(kind, direct) for kind in ("inner", "left", "full") for direct in (False, True)]
-    + [("subtract", False)],
+    "kind,computed,lazy",
+    [
+        ("inner", "left", True),
+        ("inner", "right", True),
+        ("inner", "both", False),
+        ("left", "left", True),
+        ("left", "right", False),
+        ("left", "both", False),
+        ("full", "left", False),
+        ("full", "right", False),
+        ("full", "both", False),
+        ("subtract", "left", True),
+        ("subtract", "right", False),
+        ("subtract", "both", False),
+    ],
 )
-@pytest.mark.parametrize("computed_side", ["left", "right", "both"])
-@pytest.mark.parametrize("typed", [False, True])
-def test_join_computed_keys_evaluated_linearly(
-    warehouse, numbers_table, kind, computed_side, direct, typed
+def test_computed_join_keys_scale_linearly(
+    warehouse, numbers_table, kind, computed, lazy, direct
 ):
-    sqlite_db = warehouse.db
-    calls = 0
-
-    def join_key(value):
-        nonlocal calls
-        calls += 1
-        return value
-
-    sqlite_db.db.create_function("test_join_key", 1, join_key, deterministic=True)
-
-    def make_side(table, computed):
-        key = table.c.number.label("key")
-        if computed and not direct:
-            key = sa.func.test_join_key(key, type_=sa.Integer if typed else None).label(
-                "key"
-            )
-        side = sa.select(key).subquery()
-        predicate = side.c.key
-        if computed and direct:
-            predicate = sa.func.test_join_key(
-                predicate, type_=sa.Integer if typed else None
-            )
-        return side, predicate
-
-    left, left_key = make_side(numbers_table, computed_side in ("left", "both"))
-    right, right_key = make_side(numbers_table, computed_side in ("right", "both"))
-    if kind == "subtract":
-        query = warehouse.subtract_query(
-            left.select(), right.select(), [("key", "key")]
-        )
-        expected = []
-    else:
-        query = warehouse.join(
-            left,
-            right,
-            left_key == right_key,
-            inner=kind == "inner",
-            full=kind == "full",
-            columns=[left.c.key, right.c.key.label("right_key")],
-        )
-        expected = [(i, i) for i in range(1, 74)]
-
-    assert sorted(sqlite_db.execute(query).fetchall()) == expected
-    assert calls == 73 * (2 if computed_side == "both" else 1)
-
-
-@skip_if_not_sqlite
-@pytest.mark.parametrize("kind", ["inner", "left", "full"])
-def test_computed_join_skips_unused_payload(warehouse, numbers_table, kind):
+    if kind == "subtract" and direct:
+        pytest.skip("subtract joins on column names")
     calls = 0
 
     def join_key(value):
@@ -354,150 +327,219 @@ def test_computed_join_skips_unused_payload(warehouse, numbers_table, kind):
     def unused_payload(value):
         raise AssertionError("unused payload must not be evaluated")
 
-    warehouse.db.db.create_function("test_pruned_join_key", 1, join_key)
+    warehouse.db.db.create_function("test_join_key", 1, join_key, deterministic=True)
     warehouse.db.db.create_function("test_unused_payload", 1, unused_payload)
 
-    def side():
-        return sa.select(
-            sa.func.test_pruned_join_key(numbers_table.c.number).label("key"),
-            sa.func.test_unused_payload(numbers_table.c.number).label("payload"),
-        ).subquery()
+    def side(is_computed):
+        number = numbers_table.c.number
+        key = sa.func.test_join_key(number) if is_computed and not direct else number
+        payload = sa.func.test_unused_payload(number).label("payload")
+        side = sa.select(number.label("id"), key.label("key"), payload).subquery()
+        if is_computed and direct:
+            return side, sa.func.test_join_key(side.c.key)
+        return side, side.c.key
 
-    left, right = side(), side()
-    query = warehouse.join(
-        left,
-        right,
-        left.c.key == right.c.key,
-        inner=kind == "inner",
-        full=kind == "full",
-        columns=[left.c.key, right.c.key.label("right_key")],
+    (left, left_key), (right, right_key) = (
+        side(computed != "right"),
+        side(computed != "left"),
     )
-    assert sorted(warehouse.db.execute(query).fetchall()) == [
-        (i, i) for i in range(1, 74)
-    ]
-    assert calls == 2 * 73
-
-
-@skip_if_not_sqlite
-@pytest.mark.parametrize("direct", [False, True])
-@pytest.mark.parametrize(
-    "left_value,right_value,expected",
-    [(1, "1", []), (1, 1.5, []), (1.5, 1.5, [(1.5, 1.5)])],
-)
-def test_join_computed_keys_preserves_comparison_semantics(
-    sqlite_db, direct, left_value, right_value, expected
-):
-    warehouse = SQLiteWarehouse(sqlite_db)
-    sqlite_db.db.create_function(
-        "test_left_key", 1, lambda value: left_value, deterministic=True
-    )
-    sqlite_db.db.create_function(
-        "test_right_key", 1, lambda value: right_value, deterministic=True
-    )
-    tables = [
-        sa.Table(name, sqlite_db.metadata, sa.Column("key", sa.Integer))
-        for name in ("join_comparison_left", "join_comparison_right")
-    ]
-    for table in tables:
-        sqlite_db.create_table(table)
-        warehouse.insert_rows(table, [{"key": 1}])
-        warehouse.insert_rows_done(table)
-    left_expression = sa.func.test_left_key(tables[0].c.key, type_=sa.Integer)
-    right_expression = sa.func.test_right_key(
-        tables[1].c.key, type_=sa.String if isinstance(right_value, str) else sa.Float
-    )
-    if direct:
-        left, right = tables
-        columns = [
-            left_expression.label("left_key"),
-            right_expression.label("right_key"),
-        ]
-    else:
-        left = sa.select(left_expression.label("key")).subquery()
-        right = sa.select(right_expression.label("key")).subquery()
-        left_expression, right_expression = left.c.key, right.c.key
-        columns = [left.c.key, right.c.key.label("right_key")]
-    query = warehouse.join(
-        left, right, left_expression == right_expression, columns=columns
-    )
-    assert sqlite_db.execute(query).fetchall() == expected
-
-
-@skip_if_not_sqlite
-@pytest.mark.parametrize("rename", [False, True])
-def test_join_plain_keys_do_not_materialize_computed_payload(sqlite_db, rename):
-    table = sa.Table(
-        "plain_join_keys", sqlite_db.metadata, sa.Column("key", sa.Integer)
-    )
-    key = table.c.key.label("renamed") if rename else table.c.key
-    left = sa.select(key, (table.c.key + 1).label("payload")).subquery()
-    right = sa.select(key).subquery()
-    key_name = key.name
-    query = SQLiteWarehouse(sqlite_db).join(
-        left, right, left.c[key_name] == right.c[key_name], columns=[left.c.payload]
-    )
-    sql, _ = sqlite_db.compile_to_args(query)
-    assert "OFFSET" not in sql
-
-
-@skip_if_not_sqlite
-def test_join_expression_on_derived_key_evaluates_each_function_once(
-    warehouse, numbers_table
-):
-    calls = 0
-
-    def join_key(value):
-        nonlocal calls
-        calls += 1
-        return value
-
-    warehouse.db.db.create_function("test_nested_join_key", 1, join_key)
-    left = sa.select(
-        sa.func.test_nested_join_key(numbers_table.c.number, type_=sa.Integer).label(
-            "key"
-        )
-    ).subquery()
-    right = sa.select(numbers_table.c.number).subquery()
-    query = warehouse.join(
-        left,
-        right,
-        sa.func.test_nested_join_key(left.c.key, type_=sa.Integer) == right.c.number,
-        columns=[left.c.key, right.c.number],
-    )
-    rows = warehouse.db.execute(query).fetchall()
-    assert sorted(rows) == [(i, i) for i in range(1, 74)]
-    assert calls == 2 * 73
-
-
-@skip_if_not_sqlite
-@pytest.mark.parametrize("kind", ["inner", "left", "full", "subtract"])
-def test_computed_join_does_not_coerce_runtime_text_to_numeric(sqlite_db, kind):
-    warehouse = SQLiteWarehouse(sqlite_db)
-    left_table = sa.Table(
-        "nullable_keys", sqlite_db.metadata, sa.Column("key", sa.Integer)
-    )
-    right_table = sa.Table("text_keys", sqlite_db.metadata, sa.Column("key", sa.String))
-    for table, value in [(left_table, None), (right_table, "missing")]:
-        sqlite_db.create_table(table)
-        warehouse.insert_rows(table, [{"key": value}])
-        warehouse.insert_rows_done(table)
-    left = sa.select(
-        sa.func.coalesce(left_table.c.key, "missing").label("key")
-    ).subquery()
-    right = right_table.alias()
     if kind == "subtract":
         query = warehouse.subtract_query(
-            left.select(), right.select(), [("key", "key")]
+            sa.select(left.c.id, left.c.key), sa.select(right.c.key), [("key", "key")]
         )
         expected = []
     else:
         query = warehouse.join(
             left,
             right,
-            left.c.key == right.c.key,
+            left_key == right_key,
             inner=kind == "inner",
             full=kind == "full",
-            columns=[left.c.key, right.c.key.label("right_key")],
+            columns=[left.c.id, right.c.id.label("right_id")],
         )
-        expected = [("missing", "missing")]
-    assert sqlite_db.execute(query).fetchall() == expected
+        expected = [(i, i) for i in range(1, 74)]
+
+    assert sorted(warehouse.db.execute(query)) == expected
+    assert calls <= 4 * 73
+    assert not _nested_scans(warehouse.db, query)
+    if lazy:
+        # A filter on the computed side reaches it before its keys are computed.
+        calls = 0
+        result = query.subquery()
+        computed_id = result.c.id if computed == "left" else result.c.right_id
+        list(warehouse.db.execute(sa.select(result).where(computed_id <= 5)))
+        assert calls <= 10
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize("kind", ["inner", "left", "full", "subtract"])
+@pytest.mark.parametrize("computed", ["left", "right", "both"])
+@pytest.mark.parametrize("stored", [sa.Integer, sa.Float, sa.String, sa.LargeBinary])
+@pytest.mark.parametrize(
+    "declared",
+    [
+        sa.Integer,
+        sa.Float,
+        sa.String,
+        sa.LargeBinary,
+        sa.types.NullType,
+        sa.BINARY,
+        sa.Numeric,
+    ],
+)
+@pytest.mark.parametrize("cast_key", [False, True])
+def test_computed_join_keys_keep_sqlite_comparison_semantics(
+    sqlite_db, kind, computed, stored, declared, cast_key
+):
+    values = [1, 1.0, 1.5, "1", "1.0", "01", "abc", "1e0", b"1", None, 0, True, 2**62]
+    sqlite_db.db.create_function("test_value", 1, values.__getitem__)
+    table = sa.Table(
+        "join_values",
+        sqlite_db.metadata,
+        sa.Column("id", sa.Integer),
+        sa.Column("key", stored),
+    )
+    sqlite_db.create_table(table)
+    sqlite_db.db.executemany(
+        "INSERT INTO join_values VALUES (?, ?)", list(enumerate(values))
+    )
+
+    def side(is_computed, *where):
+        key = (
+            sa.func.test_value(table.c.id, type_=declared)
+            if is_computed
+            else table.c.key
+        )
+        if is_computed and cast_key:
+            key = sa.cast(key, declared) if declared is not sa.types.NullType else key
+        return sa.select(table.c.id, key.label("key")).where(*where).subquery()
+
+    left = side(computed != "right")
+    right = side(computed != "left", table.c.id % 2 == 0)
+    warehouse = SQLiteWarehouse(sqlite_db)
+    if kind == "subtract":
+        args = (sa.select(left), sa.select(right), [("key", "key")])
+        query = warehouse.subtract_query(*args)
+        plain = AbstractWarehouse.subtract_query(warehouse, *args)
+    else:
+        on = left.c.key == right.c.key
+        columns = [left.c.id, right.c.id.label("right_id")]
+        query = warehouse.join(
+            left, right, on, inner=kind == "inner", full=kind == "full", columns=columns
+        )
+        joins = [sa.join(left, right, on, isouter=kind != "inner")]
+        if kind == "full":
+            joins.append(sa.join(right, left, on, isouter=True))
+        plain = sa.union(*(sa.select(*columns).select_from(j) for j in joins))
+
+    assert sorted(sqlite_db.execute(query), key=repr) == sorted(
+        sqlite_db.execute(plain), key=repr
+    )
+
+
+@pytest.mark.parametrize("fetch_size,selects", [(100, 1), (3, 3)])
+def test_batched_id_fetch_groups_queries_and_preserves_rows(
+    numbers_table, warehouse, monkeypatch, fetch_size, selects
+):
+    monkeypatch.setattr(
+        "datachain.data_storage.warehouse.DEFAULT_BATCH_SIZE", fetch_size
+    )
+    query = sa.select(numbers_table.c.number, numbers_table.c.sys__id)
+    rows = list(
+        warehouse.dataset_rows_select(query.order_by(numbers_table.c.number).limit(4))
+    )
+    a, b, c, d = [row[1] for row in rows]
+    ids = [[c, a, c], [], [b], [d, a], [0]]
+    with patch.object(
+        type(warehouse), "dataset_rows_select", wraps=warehouse.dataset_rows_select
+    ) as select:
+        batches = list(
+            warehouse.dataset_rows_select_from_ids(
+                query.limit(1).offset(20), iter(ids), True
+            )
+        )
+    assert select.call_count == selects
+    assert [[row[0] for row in batch] for batch in batches] == [
+        [3, 1],
+        [],
+        [2],
+        [4, 1],
+        [],
+    ]
+
+
+def test_batched_id_fetch_preserves_join_fanout(numbers_table, warehouse):
+    left = (
+        sa.select(numbers_table.c.sys__id, numbers_table.c.primality)
+        .where(numbers_table.c.number == 2)
+        .subquery("left_rows")
+    )
+    right = (
+        sa.select(numbers_table.c.primality, numbers_table.c.number)
+        .where(numbers_table.c.number.in_([2, 3]))
+        .subquery("right_rows")
+    )
+    query = sa.select(left.c.sys__id, right.c.number).select_from(
+        left.join(right, left.c.primality == right.c.primality)
+    )
+    row_id = next(warehouse.dataset_rows_select(query))[0]
+    batches = list(
+        warehouse.dataset_rows_select_from_ids(query, [[row_id], [], [row_id]], True)
+    )
+    assert [sorted(row[1] for row in batch) for batch in batches] == [
+        [2, 3],
+        [],
+        [2, 3],
+    ]
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize("full", [False, True])
+def test_computed_join_keeps_disjunctive_predicate_matches(sqlite_db, full):
+    warehouse = SQLiteWarehouse(sqlite_db)
+    table = sa.Table(
+        "disjunctive_keys", sqlite_db.metadata, sa.Column("key", sa.Integer)
+    )
+    sqlite_db.create_table(table)
+    warehouse.insert_rows(table, [{"key": key} for key in [0, 1, 2]])
+    warehouse.insert_rows_done(table)
+    left = table.alias()
+    right = sa.select((table.c.key + 1).label("key")).subquery()
+    on = sa.or_(left.c.key == right.c.key, left.c.key == 0)
+    columns = [left.c.key, right.c.key.label("right_key")]
+    query = warehouse.join(left, right, on, full=full, columns=columns)
+    plain = sa.select(*columns).select_from(sa.join(left, right, on, isouter=True))
+    if full:
+        plain = sa.union(
+            plain,
+            sa.select(*columns).select_from(sa.join(right, left, on, isouter=True)),
+        )
+    assert sorted(sqlite_db.execute(query), key=repr) == sorted(
+        sqlite_db.execute(plain), key=repr
+    )
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize("full,inner", [(False, False), (False, True), (True, False)])
+def test_computed_join_type_coercion_keeps_column_affinity(sqlite_db, full, inner):
+    warehouse = SQLiteWarehouse(sqlite_db)
+    left = sa.Table("text_codes", sqlite_db.metadata, sa.Column("key", sa.String))
+    right_table = sa.Table(
+        "numeric_codes", sqlite_db.metadata, sa.Column("key", sa.Integer)
+    )
+    for table, values in [(left, ["01", "1", "1e0"]), (right_table, [1])]:
+        sqlite_db.create_table(table)
+        warehouse.insert_rows(table, [{"key": value} for value in values])
+        warehouse.insert_rows_done(table)
+    right = sa.select(
+        sa.type_coerce(right_table.c.key, sa.String).label("key")
+    ).subquery()
+    query = warehouse.join(
+        left,
+        right,
+        left.c.key == right.c.key,
+        full=full,
+        inner=inner,
+        columns=[left.c.key, right.c.key.label("right_key")],
+    )
+    assert sorted(sqlite_db.execute(query)) == [("01", 1), ("1", 1), ("1e0", 1)]

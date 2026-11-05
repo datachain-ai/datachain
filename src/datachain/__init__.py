@@ -50,7 +50,7 @@ from datachain.lib.file import (
 from datachain.lib.model_store import ModelStore
 from datachain.lib.namespaces import delete_namespace
 from datachain.lib.projects import create as create_project
-from datachain.lib.udf import Aggregator, Generator, Mapper
+from datachain.lib.udf import Aggregator, BatchMapper, Generator, Mapper
 from datachain.lib.utils import AbstractUDF, DataChainError
 from datachain.query import metrics, param
 from datachain.query.session import Session
@@ -64,6 +64,7 @@ __all__ = [
     "Audio",
     "AudioFile",
     "AudioFragment",
+    "BatchMapper",
     "BucketStatus",
     "C",
     "Column",

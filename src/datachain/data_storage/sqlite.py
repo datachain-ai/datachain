@@ -28,6 +28,7 @@ from sqlalchemy.sql.elements import (
     BooleanClauseList,
     ColumnClause,
     Label,
+    TypeCoerce,
 )
 from sqlalchemy.sql.expression import cast
 from sqlalchemy.sql.selectable import Join, Select
@@ -135,73 +136,98 @@ def _replace(element, replacements):
     return replacement_traverse(element, {}, lambda e, **_kwargs: replacements.get(e))
 
 
-def _materialize_join_side(
-    side: "FromClause", onclause: "ColumnElement", columns: "Sequence[ClauseElement]"
-) -> tuple["FromClause", dict["ClauseElement", "ClauseElement"]]:
-    keys: dict[ColumnElement, None] = {}
-    for expression in iterate(onclause):
-        if not isinstance(expression, BinaryExpression) or expression.operator not in (
-            operators.eq,
-            operators.is_not_distinct_from,
-        ):
-            continue
-        for key in (expression.left, expression.right):
-            tables = {
-                column.table
-                for column in iterate(key)
-                if isinstance(column, ColumnClause) and column.table is not None
-            }
-            if tables == {side} and any(
-                not isinstance(proxy, (ColumnClause, Label)) for proxy in key.proxy_set
-            ):
-                keys[key] = None
+_EQUALITY = (operators.eq, operators.is_not_distinct_from)
 
-    if not keys:
-        return side, {}
 
-    # OFFSET prevents flattening without requiring SQLite's AS MATERIALIZED.
-    required = {
+def _is_computed(expression: "ColumnElement") -> bool:
+    return any(not isinstance(p, (ColumnClause, Label)) for p in expression.proxy_set)
+
+
+def _key_affinity(key: "ColumnElement", other: "ColumnElement") -> "TypeEngine | None":
+    if _is_computed(other):
+        return None
+    try:
+        other_type = other.type.python_type
+    except NotImplementedError:
+        return None
+    if other_type in (int, float, bool):
+        return sqlalchemy.Numeric()
+    try:
+        key_type = key.type.python_type
+    except NotImplementedError:
+        return None
+    if (
+        other_type is str
+        and key_type is str
+        and not any(isinstance(proxy, TypeCoerce) for proxy in key.proxy_set)
+    ):
+        return sqlalchemy.String()
+    return None
+
+
+def _probe_computed_keys(
+    join: Join, required: "Sequence[ClauseElement]", full: bool = False
+) -> tuple[Join, dict["ClauseElement", "ClauseElement"]]:
+    # Fence only probed computed keys. Affinity-cast copies make them indexable;
+    # the original comparisons preserve SQLite's runtime comparison semantics.
+    assert join.onclause is not None
+    keys: dict[FromClause, dict] = {join.left: {}, join.right: {}}
+    terms = [join.onclause]
+    if (
+        isinstance(join.onclause, BooleanClauseList)
+        and join.onclause.operator is operators.and_
+    ):
+        terms = list(join.onclause.clauses)
+    for term in terms:
+        if isinstance(term, BinaryExpression) and term.operator in _EQUALITY:
+            for key, other in ((term.left, term.right), (term.right, term.left)):
+                tables = {c.table for c in iterate(key) if isinstance(c, ColumnClause)}
+                for side, side_keys in keys.items():
+                    if tables == {side} and _is_computed(key):
+                        side_keys[key] = (term, other)
+    probed = (
+        [join.right]
+        if keys[join.right] and (keys[join.left] or join.isouter or full)
+        else []
+    )
+    probed += [join.left] if keys[join.left] and full else []
+    if not probed:
+        return join, {}
+    needed = {
         element
-        for expression in (*columns, onclause)
+        for expression in (*required, join.onclause)
         for element in iterate(expression)
         if isinstance(element, ColumnClause)
     }
-    selected = [column for column in side.c if column in required]
-    inputs = select(*selected).offset(0).cte()
-    input_columns = {column: inputs.c[column.name] for column in selected}
-    names = set(inputs.c.keys())
-    computed = {}
-    for i, key in enumerate(keys):
-        if isinstance(key, ColumnClause):
-            continue
-        name = f"__dc_join_key_{i}"
-        while name in names:
-            name += "_"
-        names.add(name)
-        computed[key] = _replace(key, input_columns).label(name)
-    values = (
-        select(*inputs.c, *computed.values()).offset(0).cte() if computed else inputs
-    )
-    column_names: dict[ClauseElement, str] = {
-        column: column.name for column in selected
-    }
-    column_names.update({key: label.name for key, label in computed.items()})
-    # Keep runtime values and affinity intact. Declared SQL types cannot prove
-    # that an extra cast predicate preserves every original match.
-    return values, {key: values.c[name] for key, name in column_names.items()}
-
-
-def _materialize_join(
-    join: Join, required: "Sequence[ClauseElement]"
-) -> tuple[Join, dict["ClauseElement", "ClauseElement"]]:
-    assert join.onclause is not None
-    left, left_columns = _materialize_join_side(join.left, join.onclause, required)
-    right, right_columns = _materialize_join_side(join.right, join.onclause, required)
-    columns = left_columns | right_columns
-    if not columns:
-        return join, columns
-    onclause = _replace(join.onclause, columns)
-    return sqlalchemy.join(left, right, onclause, isouter=join.isouter), columns
+    sides: dict[FromClause, FromClause] = {}
+    replacements: dict[ClauseElement, ClauseElement] = {}
+    index_terms: list[ColumnElement] = []
+    for side in probed:
+        planned: list = []
+        for key, (term, other) in keys[side].items():
+            affinity = _key_affinity(key, other)
+            if affinity is None and isinstance(key, ColumnClause):
+                continue
+            name = f"__dc_join_key_{len(planned)}"
+            while name in side.c:
+                name += "_"
+            value = key if affinity is None else cast(key, affinity)
+            planned.append((key, term, other, affinity, value.label(name)))
+        selected = [column for column in side.c if column in needed]
+        values = select(*selected, *(p[-1] for p in planned)).offset(0).cte()
+        sides[side] = values
+        replacements |= {column: values.c[column.name] for column in selected}
+        for key, term, other, affinity, label in planned:
+            column = values.c[label.name]
+            if affinity is None:
+                replacements[key] = column
+                continue
+            other = cast(other, affinity)
+            operands = (column, other) if key is term.left else (other, column)
+            index_terms.append(term.operator(*operands))
+    left, right = (sides.get(side, side) for side in (join.left, join.right))
+    onclause = _replace(sqlalchemy.and_(join.onclause, *index_terms), replacements)
+    return sqlalchemy.join(left, right, onclause, isouter=join.isouter), replacements
 
 
 class SQLiteDatabaseEngine(DatabaseEngine):
@@ -1014,16 +1040,11 @@ class SQLiteWarehouse(AbstractWarehouse):
         """
         Join two tables together.
         """
-        join_query, replacements = _materialize_join(
-            sqlalchemy.join(left, right, onclause, isouter=not inner), columns
+        join_query, replacements = _probe_computed_keys(
+            sqlalchemy.join(left, right, onclause, isouter=not inner), columns, full
         )
         if replacements:
-            columns = [
-                replacement_traverse(
-                    column, {}, lambda element, **_kwargs: replacements.get(element)
-                )
-                for column in columns
-            ]
+            columns = [_replace(column, replacements) for column in columns]
         if not full:
             return sqlalchemy.select(*columns).select_from(join_query)
 
@@ -1041,9 +1062,9 @@ class SQLiteWarehouse(AbstractWarehouse):
             Adds filter to right_left_join to remove unmatched left table rows by
             getting column names that need to be NULL from BinaryExpressions in onclause
             """
-            return right_left_join.where(
-                getattr(left.c, exp.left.name) == None  # type: ignore[union-attr] # noqa: E711
-            )
+            if isinstance(exp.left, ColumnClause):
+                return right_left_join.where(left.c[exp.left.name].is_(None))
+            return right_left_join
 
         if isinstance(onclause, BinaryExpression):
             right_left_join = add_left_rows_filter(onclause)
@@ -1067,7 +1088,7 @@ class SQLiteWarehouse(AbstractWarehouse):
         (join,) = (child for child in query.get_children() if isinstance(child, Join))
         assert isinstance(join, Join)
         assert query.whereclause is not None
-        materialized_join, replacements = _materialize_join(
+        materialized_join, replacements = _probe_computed_keys(
             join, [*query.selected_columns, query.whereclause]
         )
         if not replacements:
@@ -1079,9 +1100,7 @@ class SQLiteWarehouse(AbstractWarehouse):
             join.right: materialized_join.right,
             **replacements,
         }
-        result = replacement_traverse(
-            query, {}, lambda element, **_kwargs: query_replacements.get(element)
-        )
+        result = _replace(query, query_replacements)
         assert isinstance(result, Select)
         return result
 
