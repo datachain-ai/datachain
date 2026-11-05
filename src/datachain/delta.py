@@ -274,31 +274,13 @@ def _get_shared_result_key(
     return next(iter(result_keys))
 
 
-def _persist_keys(
-    chains: Sequence["DataChain"], on: str | Sequence[str]
-) -> "DataChain | None":
-    if len(chains) == 1:
-        return None if chains[0].empty else chains[0]
-    fields = [on] if isinstance(on, str) else on
-    keys = None
-    for chain in chains:
-        selected = chain._evolve(
-            signal_schema=chain.signals_schema.clone_without_sys_signals()
-        ).select(*fields)
-        keys = selected if keys is None else keys.union(selected)
-    if keys is None:
-        return None
-    keys = keys.persist()
-    return None if keys.empty else keys
-
-
 def _build_source_replay_input(
     target_source_query: "DatasetQuery",
     target_source_spec: "DeltaSpec",
     result_dataset: "DataChain",
     result_dependencies: list[DatasetDependency | None],
-) -> tuple["DataChain | None", "DataChain | None", str | None]:
-    """Return replay input, persisted replacement keys and latest source version."""
+) -> tuple["DataChain | None", list["DataChain"], str | None]:
+    """Return replay input, persisted changed rows and latest source version."""
     if target_source_query.starting_step is None:  # pragma: no cover
         raise RuntimeError("Source dataset must be resolved before processing delta")
 
@@ -311,7 +293,7 @@ def _build_source_replay_input(
     )
 
     if source_ds_name is None:
-        return None, None, None
+        return None, [], None
 
     assert source_ds_project is not None
     assert source_ds_version is not None
@@ -377,7 +359,7 @@ def _build_source_replay_input(
 
     return (
         source_replay_input if source_replay_input is not None else source.limit(0),
-        _persist_keys(changed, target_source_spec.on),
+        [chain for chain in changed if not chain.empty],
         source_ds_latest_version,
     )
 
@@ -441,7 +423,7 @@ def delta_retry_update(
     result_key = _get_shared_result_key(delta_sources)
 
     source_replacements: list[tuple[DatasetQuery, DataChain]] = []
-    changed_keys: list[tuple[DeltaSpec, DataChain | None]] = []
+    changed_rows: list[tuple[DeltaSpec, DataChain]] = []
     for source in delta_sources:
         target_source_spec = source.delta_spec
         assert target_source_spec is not None
@@ -451,7 +433,7 @@ def delta_retry_update(
 
         (
             source_replay_input,
-            source_keys,
+            source_changed,
             source_ds_latest_version,
         ) = _build_source_replay_input(
             target_source_query=source,
@@ -465,29 +447,25 @@ def delta_retry_update(
         updated_versions[_dataset_identity(target_source_dataset)] = (
             source_ds_latest_version
         )
-        changed_keys.append((target_source_spec, source_keys))
+        changed_rows.extend((target_source_spec, rows) for rows in source_changed)
         assert source_replay_input is not None
         source_replacements.append((source, source_replay_input))
 
-    if all(keys is None for _, keys in changed_keys):
+    if not changed_rows:
         return None, None, False
 
     retained_chain = latest_dataset
-    for spec, keys in changed_keys:
-        if keys is not None:
-            retained_chain = retained_chain.subtract(
-                keys, on=result_key, right_on=spec.on
-            )
+    for spec, rows in changed_rows:
+        retained_chain = retained_chain.subtract(rows, on=result_key, right_on=spec.on)
 
     replayed_delta_chain = _rewrite_query_for_delta_replay(
         source_replacements,
         dc,
     ).persist()
     if replayed_delta_chain.empty and all(
-        keys is None
-        or keys.subtract(latest_dataset, on=spec.on, right_on=result_key).count()
-        == keys.count()
-        for spec, keys in changed_keys
+        rows.subtract(latest_dataset, on=spec.on, right_on=result_key).count()
+        == rows.count()
+        for spec, rows in changed_rows
     ):
         return None, None, False
     normalized_dependencies = _normalize_dependencies(dependencies, updated_versions)

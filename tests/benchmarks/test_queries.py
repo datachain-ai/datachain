@@ -159,3 +159,51 @@ def test_delta_warm(benchmark, files_uri, test_session):
 
     run()
     assert benchmark(run) == NUM_FILES
+
+
+@pytest.mark.parametrize("retry", [False, True, "error"])
+def test_delta_changed(benchmark, test_session, retry):
+    processed = []
+
+    def generate(id, value):
+        processed.append(id)
+        if retry is True and id == 2:
+            return
+        yield id, value * 2, "retry" if retry == "error" and id == 2 else ""
+
+    def build(delta):
+        return dc.read_dataset(
+            "bench_delta_source",
+            delta=delta,
+            delta_on="id",
+            delta_retry=retry,
+            session=test_session,
+        ).gen(generate, output={"id": int, "score": int, "error": str})
+
+    def setup():
+        dc.read_values(
+            id=list(range(NUM_FILES)),
+            value=list(range(NUM_FILES)),
+            session=test_session,
+        ).save("bench_delta_source")
+        build(False).save("bench_delta_changed")
+        dc.read_values(
+            id=list(range(1, NUM_FILES + 10)),
+            value=[-1, *range(2, NUM_FILES + 10)],
+            session=test_session,
+        ).save("bench_delta_source")
+        processed.clear()
+
+    result = benchmark.pedantic(
+        lambda: build(True).save("bench_delta_changed"),
+        setup=setup,
+        rounds=3,
+        iterations=1,
+    )
+    expected_ids = [1, *range(NUM_FILES, NUM_FILES + 10)] + ([2] if retry else [])
+    assert sorted(processed) == sorted(expected_ids)
+    assert sorted(result.to_list("id", "score", "error")) == [
+        (id, -2 if id == 1 else id * 2, "retry" if retry == "error" and id == 2 else "")
+        for id in range(1, NUM_FILES + 10)
+        if not (retry is True and id == 2)
+    ]

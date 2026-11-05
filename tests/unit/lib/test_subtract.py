@@ -35,12 +35,23 @@ class ReorderedNullableKey(DataModel):
     a: int | None = None
 
 
-@pytest.mark.parametrize(
-    "column",
-    ["label", "__dc_present_0", "__DC_PRESENT_0"],
-    ids=["plain", "label_collision", "case_insensitive_collision"],
-)
-def test_subtract_keeps_missing_model_with_user_named_columns(test_session, column):
+def test_subtract_keeps_missing_model(test_session):
+    left = dc.read_values(
+        key=[None, NullableKey()],
+        label=[10, 20],
+        output={"key": NullableKey | None, "label": int},
+        session=test_session,
+    )
+    right = dc.read_values(
+        key=[NullableKey()],
+        output={"key": NullableKey | None},
+        session=test_session,
+    )
+    assert left.subtract(right, on="key").to_list("key", "label") == [(None, 10)]
+
+
+@pytest.mark.parametrize("column", ["__dc_present_0", "__DC_PRESENT_0"])
+def test_subtract_model_presence_label_collision(test_session, column):
     left = dc.read_values(
         key=[None, NullableKey()],
         **{column: [10, 20]},
@@ -54,6 +65,65 @@ def test_subtract_keeps_missing_model_with_user_named_columns(test_session, colu
         session=test_session,
     )
     assert left.subtract(right, on="key").to_list("key", column) == [(None, 10)]
+
+
+@pytest.mark.parametrize(
+    "operation", ["union", "nested_union", "inner", "left", "full"]
+)
+def test_subtract_composed_right_side(test_session, operation):
+    def chain(ids):
+        return dc.read_values(id=ids, output={"id": int}, session=test_session)
+
+    left, right = chain([1, 2]), chain([2, 3])
+    if operation == "union":
+        target = left.union(right)
+        expected = [(0,), (4,)]
+    elif operation == "nested_union":
+        target = left.union(right.union(chain([4])))
+        expected = [(0,)]
+    else:
+        target = left.merge(
+            right, on="id", inner=operation == "inner", full=operation == "full"
+        )
+        expected = (
+            [(0,), (1,), (3,), (4,)] if operation == "inner" else [(0,), (3,), (4,)]
+        )
+    assert sorted(chain(range(5)).subtract(target, on="id").to_list("id")) == expected
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_subtract_optional_model_key_against_union(test_session, empty):
+    def chain(keys):
+        return dc.read_values(
+            key=keys, output={"key": NullableKey | None}, session=test_session
+        )
+
+    left = chain([None, NullableKey(), NullableKey(a=1)])
+    right = chain([] if empty else [NullableKey()]).union(
+        chain([] if empty else [None])
+    )
+    expected = (
+        [NullableKey(a=1)] if not empty else [None, NullableKey(), NullableKey(a=1)]
+    )
+    assert sorted(left.subtract(right, on="key").to_values("key"), key=repr) == sorted(
+        expected, key=repr
+    )
+
+
+def test_subtract_optional_model_key_against_left_merge(test_session):
+    keys = dc.read_values(
+        id=[1],
+        key=[NullableKey()],
+        output={"id": int, "key": NullableKey | None},
+        session=test_session,
+    )
+    right = dc.read_values(id=[1, 2], session=test_session).merge(keys, on="id")
+    left = dc.read_values(
+        key=[None, NullableKey(), NullableKey(a=1)],
+        output={"key": NullableKey | None},
+        session=test_session,
+    )
+    assert left.subtract(right, on="key").to_values("key") == [NullableKey(a=1)]
 
 
 class Holder(DataModel):

@@ -1625,6 +1625,51 @@ def test_delta_refresh_retry_uses_current_records_once(test_session, retry):
     ]
 
 
+@pytest.mark.parametrize("retry", [True, "error"])
+def test_delta_changes_and_retries_with_null_and_renamed_keys(test_session, retry):
+    processed = []
+    state = {"fail": True}
+
+    def generate(id, value):
+        processed.append((id, value))
+        failed = state["fail"] and id == 1
+        if failed and retry is True:
+            return
+        yield id, value * 2, "retry" if failed else ""
+
+    def build():
+        return dc.read_dataset(
+            "combined_retry_source",
+            delta=True,
+            delta_on="id",
+            delta_result_on="result_id",
+            delta_retry=retry,
+            session=test_session,
+        ).gen(generate, output={"result_id": int | None, "score": int, "error": str})
+
+    dc.read_values(
+        id=[None, 1, 2, 3], value=[10, 20, 30, 40], session=test_session
+    ).save("combined_retry_source")
+    first = build().save("combined_retry_result")
+    previous = sorted(first.to_list("result_id", "score", "error"), key=repr)
+    dc.read_values(
+        id=[None, 1, 3, 4], value=[100, 20, 40, 50], session=test_session
+    ).save("combined_retry_source")
+    state["fail"] = False
+    processed.clear()
+    result = build().save("combined_retry_result")
+    assert sorted(processed, key=repr) == sorted(
+        [(None, 100), (1, 20), (4, 50)], key=repr
+    )
+    assert sorted(result.to_list("result_id", "score", "error"), key=repr) == sorted(
+        [(None, 200, ""), (1, 40, ""), (3, 80, ""), (4, 100, "")], key=repr
+    )
+    assert sorted(first.to_list("result_id", "score", "error"), key=repr) == previous
+    processed.clear()
+    assert build().save("combined_retry_result").version == result.version
+    assert processed == []
+
+
 @pytest.mark.parametrize("operation", ["map", "gen"])
 def test_delta_refresh_to_empty_and_back(test_session, operation):
     processed = []

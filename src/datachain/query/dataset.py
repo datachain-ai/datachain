@@ -452,8 +452,6 @@ class DatasetDiffOperation(Step):
         right_before = len(self.dq.temp_table_names)
         target_full = self.dq.apply_steps().select()
         temp_tables.extend(self.dq.temp_table_names[right_before:])
-        if any(isinstance(step, (SQLJoin, SQLUnion)) for step in self.dq.steps):
-            target_full = _materialize_query(target_full, self.catalog, temp_tables)
         # Exclude sys columns from target - only key columns are used for matching
         target_query = target_full.with_only_columns(
             *(c for c in target_full.selected_columns if not c.name.startswith("sys__"))
