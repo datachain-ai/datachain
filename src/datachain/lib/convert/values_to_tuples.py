@@ -87,7 +87,7 @@ def _infer_dict_value_type(dct: dict) -> type:
     return _value_type(first_value)
 
 
-def _infer_type_from_sequence(sequence: Sequence[DataValue], signal_name: str) -> type:
+def infer_type_from_sequence(sequence: Sequence[DataValue], signal_name: str) -> type:
     """
     Infer the type from a sequence of values.
 
@@ -184,7 +184,7 @@ def values_to_tuples(
             # FIXME: Stops as soon as it finds the first non-None value.
             # If a non-None value appears early, it won't check the remaining items for
             # `None` values.
-            typ = _infer_type_from_sequence(v, k)
+            typ = infer_type_from_sequence(v, k)
             types_map[k] = typ
 
         if length < 0:
