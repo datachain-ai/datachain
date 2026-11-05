@@ -361,7 +361,7 @@ def _sanitize_ds_name(raw: str) -> str:
 # _y(4 hex | _y) →  BMP char or literal _y
 # _z(6 hex | _z) →  supplementary char or literal _z
 # _x(_x | 2 hex) →  literal _x or low-ISO char
-_DS_DECODE_RE = re.compile(r"_y([0-9a-f]{4}|_y)|_z([0-9a-f]{6}|_z)|_x(_x|[0-9a-f]{2})")
+DS_DECODE_RE = re.compile(r"_y([0-9a-f]{4}|_y)|_z([0-9a-f]{6}|_z)|_x(_x|[0-9a-f]{2})")
 
 
 def _desanitize_ds_name(encoded: str) -> str:
@@ -380,7 +380,7 @@ def _desanitize_ds_name(encoded: str) -> str:
             return "_z" if g2 == "_z" else chr(int(g2, 16))
         return "_x" if g3 == "_x" else chr(int(g3, 16))
 
-    return _DS_DECODE_RE.sub(_repl, encoded)
+    return DS_DECODE_RE.sub(_repl, encoded)
 
 
 def parse_listing_uri(uri: str, versions: bool = True) -> tuple[str, str, str]:
