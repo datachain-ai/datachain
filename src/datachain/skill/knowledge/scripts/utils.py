@@ -39,6 +39,19 @@ def dc_import():
         sys.exit(1)
 
 
+def local_db_files() -> list[str]:
+    """Find database files using the library's project and environment rules."""
+    from glob import escape, glob
+
+    from datachain.utils import DataChainDir
+
+    try:
+        db = DataChainDir.find(create=False).db
+    except NotADirectoryError:
+        return []
+    return glob(escape(db) + "*")
+
+
 def studio_available() -> bool:
     """Return True if a Studio token is configured."""
     try:

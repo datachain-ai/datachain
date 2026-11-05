@@ -91,7 +91,8 @@ class FileExporter(NodesThreadPool):
             task.result()
 
     def do_task(self, file: "File | None"):
-        if file is not None:
+        # a union arm may be a non-File value (e.g. Union[File, str]); skip it
+        if isinstance(file, File):
             # a local disk cannot hold an empty path segment
             if self.is_local and "//" in file._get_destination_suffix(self.placement):
                 logger.warning("File '%s' not exported: path has '//'", file.path)
@@ -583,8 +584,9 @@ class File(DataModel):
         ``write_options`` escape hatch set object metadata on the written
         object (mapped per backend, ignored on the local filesystem).
 
-        ``block_size`` sets the read-ahead block for uncached remote reads, and
-        the upload part size for writes. HTTP(S) reads ignore it.
+        ``block_size`` sets the read-ahead block for uncached remote reads (0
+        turns read-ahead off), and the upload part size for writes. HTTP(S)
+        reads ignore it.
         """
         writing = any(ch in mode for ch in "wax+")
 
@@ -634,7 +636,7 @@ class File(DataModel):
 
         # write path
         full_path = self.get_fs_path()
-        fs_mode = mode if "b" in mode else f"{mode}b"
+        fs_mode = mode if "b" in mode else mode.replace("t", "", 1) + "b"
         binary_kwargs = {
             k: v for k, v in open_kwargs.items() if k not in self._TEXT_WRAPPER_ALLOWED
         }
@@ -2147,7 +2149,7 @@ class ArrowRow(DataModel):
         from pyarrow.csv import ParseOptions, ReadOptions
         from pyarrow.dataset import CsvFileFormat, dataset
 
-        from datachain.lib.arrow import fix_pyarrow_format
+        from datachain.lib.arrow import fix_pyarrow_format, pyarrow_fs
 
         kwargs = dict(self.kwargs)
         if csv := kwargs.pop("csv", None):
@@ -2168,9 +2170,10 @@ class ArrowRow(DataModel):
             ds = dataset(path, **kwargs)
         else:
             path = self.file.get_fs_path()
-            ds = dataset(path, filesystem=self.file.get_fs(), **kwargs)
+            fs = pyarrow_fs(self.file, kwargs.get("format"))
+            ds = dataset(path, filesystem=fs, **kwargs)
 
-        return ds.take([self.index]).to_reader()
+        yield next(ds.take([self.index]).to_reader())
 
     def read(self):
         """Returns row contents as dict.
@@ -2180,7 +2183,7 @@ class ArrowRow(DataModel):
         kept, e.g. column types.
         """
         with self.open() as record_batch:
-            return record_batch.to_pylist()[0]
+            return record_batch.to_pylist(maps_as_pydicts="strict")[0]
 
 
 def get_file_type(type_: FileType = "binary") -> type[File]:

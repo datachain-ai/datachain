@@ -77,3 +77,5 @@ with dc.Session("ingest", client_config=minio):
     chain = dc.list_storage("s3://my-bucket/data/").save()  # saved in "ingest"
     same = dc.read_storage("s3://my-bucket/data/")  # reuses that snapshot
 ```
+
+Both functions distinguish `None` from `{}`: omit `client_config` (or pass `None`) to inherit the session's configuration. Passing `{}` replaces it with empty client options.

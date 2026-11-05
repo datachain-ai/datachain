@@ -1,9 +1,5 @@
-import functools
-import http.server
 import io
-import socketserver
 import tarfile
-import threading
 from pathlib import Path
 
 import numpy as np
@@ -255,7 +251,8 @@ def test_open_write_binary(cloud_test_catalog):
     catalog.get_client(src_uri).fs.rm(file_path)
 
 
-def test_open_write_text(cloud_test_catalog):
+@pytest.mark.parametrize("mode", ["w", "wt"])
+def test_open_write_text(cloud_test_catalog, mode):
     ctc = cloud_test_catalog
     catalog = ctc.catalog
     src_uri = ctc.src_uri
@@ -264,7 +261,7 @@ def test_open_write_text(cloud_test_catalog):
     content = "Привет Мир\nSecond line"
 
     file = File.at(file_path, ctc.session)
-    with file.open("w", encoding="utf-16-le") as f:
+    with file.open(mode, encoding="utf-16-le") as f:
         written_chars = f.write(content)
 
     assert written_chars == len(content)
@@ -688,25 +685,6 @@ def test_open_exclusive_azure_conflict(cloud_test_catalog_upload, meta):
     assert File.at(path, ctc.session).read() == b"first"
 
 
-@pytest.fixture
-def fetched_bytes(monkeypatch):
-    from adlfs.spec import AzureBlobFile
-    from gcsfs.core import GCSFile
-    from s3fs.core import S3File
-
-    fetched = [0, 0]
-    for cls in (S3File, GCSFile, AzureBlobFile):
-
-        def fetch_range(self, *args, _orig=cls._fetch_range, **kwargs):
-            data = _orig(self, *args, **kwargs)
-            fetched[0] += len(data)
-            fetched[1] += 1
-            return data
-
-        monkeypatch.setattr(cls, "_fetch_range", fetch_range)
-    return fetched
-
-
 def _noise_png() -> bytes:
     from PIL import Image
 
@@ -950,15 +928,9 @@ def test_open_write_passes_block_size(cloud_test_catalog_upload, monkeypatch):
     assert file.read_bytes() == b"x" * (11 * 1024 * 1024)
 
 
-class _NoRangeHandler(http.server.SimpleHTTPRequestHandler):
-    def log_message(self, format, *args):
-        pass
-
-    def handle_error(self, request, client_address):
-        pass
-
-
-def test_video_info_http_server_without_range_support(tmp_path, test_session):
+def test_video_info_http_server_without_range_support(
+    http_server_without_ranges, tmp_path, test_session
+):
     import av
 
     with av.open(str(tmp_path / "v.mp4"), "w") as container:
@@ -973,17 +945,8 @@ def test_video_info_http_server_without_range_support(tmp_path, test_session):
         container.mux(stream.encode())
     assert 1024 * 1024 < (tmp_path / "v.mp4").stat().st_size < 5 * 1024 * 1024
 
-    handler = functools.partial(_NoRangeHandler, directory=str(tmp_path))
-    with socketserver.TCPServer(("127.0.0.1", 0), handler) as server:
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            source = f"http://127.0.0.1:{server.server_address[1]}"
-            file = File(source=source, path="v.mp4").as_video_file()
-            file._set_stream(test_session.catalog, caching_enabled=False)
-            info = file.get_info()
-        finally:
-            server.shutdown()
-            thread.join()
+    file = File(source=http_server_without_ranges, path="v.mp4").as_video_file()
+    file._set_stream(test_session.catalog, caching_enabled=False)
+    info = file.get_info()
 
     assert info.duration == pytest.approx(1.0, abs=0.1)

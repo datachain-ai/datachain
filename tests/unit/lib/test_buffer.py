@@ -1,4 +1,4 @@
-import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -123,62 +123,41 @@ def test_insert_many_lazy_iteration(mock_db):
     assert flush_yielded_counts[2] == 30
 
 
-def test_time_based_flush(mock_db):
-    buffer = InsertBuffer(
-        table="test_table",
-        columns=["id"],
-        execute_callback=mock_db["insert"],
-        buffer_size=100,
-        flush_interval=0.1,
+@pytest.fixture
+def clock(monkeypatch):
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(
+        "datachain.data_storage.buffer.time",
+        SimpleNamespace(monotonic=lambda: clock.now),
     )
-
-    buffer.insert((1,))
-    assert len(mock_db["flush_calls"]) == 0
-
-    time.sleep(0.15)
-
-    buffer.insert((2,))
-    assert len(mock_db["flush_calls"]) == 1
-    assert mock_db["flush_calls"][0]["count"] == 2
+    return clock
 
 
-def test_time_based_flush_resets_timer(mock_db):
+@pytest.fixture(params=["insert", "insert_many"])
+def add(request):
+    if request.param == "insert":
+        return lambda buffer, row: buffer.insert(row)
+    return lambda buffer, row: buffer.insert_many([row])
+
+
+def test_time_based_flush(mock_db, clock, add):
     buffer = InsertBuffer(
-        table="test_table",
-        columns=["id"],
-        execute_callback=mock_db["insert"],
-        buffer_size=100,
-        flush_interval=0.1,
+        "test_table", ["id"], mock_db["insert"], buffer_size=100, flush_interval=2.0
     )
-
-    buffer.insert((1,))
-    time.sleep(0.15)
-    buffer.insert((2,))
-
-    assert len(mock_db["flush_calls"]) == 1
-
-    buffer.insert((3,))
-    assert len(mock_db["flush_calls"]) == 1
-
-    time.sleep(0.15)
-    buffer.insert((4,))
-    assert len(mock_db["flush_calls"]) == 2
+    for now, row in [(0.0, 1), (1.9, 2), (2.0, 3), (3.9, 4), (4.0, 5)]:
+        clock.now = now
+        add(buffer, (row,))
+    assert [call["count"] for call in mock_db["flush_calls"]] == [3, 2]
 
 
-def test_no_time_flush_when_interval_none(mock_db):
+def test_no_time_flush_when_interval_none(mock_db, clock, add):
     buffer = InsertBuffer(
-        table="test_table",
-        columns=["id"],
-        execute_callback=mock_db["insert"],
-        buffer_size=100,
-        flush_interval=None,
+        "test_table", ["id"], mock_db["insert"], buffer_size=100, flush_interval=None
     )
-
-    buffer.insert((1,))
-    time.sleep(0.1)
-    buffer.insert((2,))
-
-    assert len(mock_db["flush_calls"]) == 0
+    add(buffer, (1,))
+    clock.now = 10.0
+    add(buffer, (2,))
+    assert not mock_db["flush_calls"]
     assert len(buffer) == 2
 
 
@@ -213,33 +192,14 @@ def test_len(buffer):
     assert len(buffer) == 2
 
 
-@pytest.mark.parametrize("flush_interval", [None, 2.0])
-def test_insert_many_fast_rows_keep_full_batches(mock_db, monkeypatch, flush_interval):
-    monkeypatch.setattr("datachain.data_storage.buffer.time.monotonic", lambda: 0.0)
-    buffer = InsertBuffer(
-        "test_table",
-        ["id"],
-        mock_db["insert"],
-        buffer_size=10,
-        flush_interval=flush_interval,
-    )
-    buffer.insert_many((i,) for i in range(25))
-
-    assert [call["count"] for call in mock_db["flush_calls"]] == [10, 10]
-    assert len(buffer) == 5
-
-
-def test_insert_many_flushes_slow_iterator_before_exhaustion(mock_db, monkeypatch):
-    clock = 0.0
-    monkeypatch.setattr("datachain.data_storage.buffer.time.monotonic", lambda: clock)
+def test_insert_many_flushes_slow_iterator_before_exhaustion(mock_db, clock):
     buffer = InsertBuffer(
         "test_table", ["id"], mock_db["insert"], buffer_size=100, flush_interval=2.0
     )
 
     def rows():
-        nonlocal clock
         for i in range(10):
-            clock += 0.5
+            clock.now += 0.5
             yield (i,)
             assert len(mock_db["tables"].get("test_table", [])) == ((i + 1) // 4) * 4
 
@@ -251,21 +211,23 @@ def test_insert_many_flushes_slow_iterator_before_exhaustion(mock_db, monkeypatc
     assert mock_db["flush_calls"][-1]["final"] is True
 
 
-def test_insert_many_time_flush_retains_rows_on_insert_error(mock_db, monkeypatch):
-    clock = 0.0
-    monkeypatch.setattr("datachain.data_storage.buffer.time.monotonic", lambda: clock)
+def test_insert_many_time_flush_retains_rows_on_insert_error(mock_db, clock):
+    attempts = 0
 
     def insert(*args, **kwargs):
-        raise RuntimeError("insert failed")
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("insert failed")
+        mock_db["insert"](*args, **kwargs)
 
     buffer = InsertBuffer(
         "test_table", ["id"], insert, buffer_size=100, flush_interval=2.0
     )
     buffer.insert_many([(1,)])
-    clock = 2.0
+    clock.now = 2.0
     with pytest.raises(RuntimeError, match="insert failed"):
         buffer.insert_many([(2,)])
     assert len(buffer) == 2
-    buffer.execute_callback = mock_db["insert"]
     buffer.flush()
     assert mock_db["tables"]["test_table"] == [(1,), (2,)]

@@ -9,6 +9,7 @@ import datachain as dc
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SQLiteWarehouse
 from datachain.lib.file import File
+from tests.utils import skip_if_not_sqlite
 
 
 def test_serialize(sqlite_db):
@@ -257,3 +258,83 @@ def test_map_tuples_are_validated(sqlite_db):
 
     with pytest.raises(UdfError):
         process_udf_outputs(warehouse, table, iter([[(1, "x", None)]]), udf)
+
+
+@skip_if_not_sqlite
+def test_insert_into_reads_all_ids_before_inserting_batches(
+    warehouse_tmpfile, monkeypatch
+):
+    warehouse = warehouse_tmpfile
+    monkeypatch.setattr(type(warehouse), "INSERT_BATCH_SIZE", 3)
+    src, dst, unrelated = (
+        warehouse.create_udf_table([sa.Column("value", sa.Integer)]) for _ in range(3)
+    )
+    warehouse.insert_rows(src, [{"value": i} for i in range(10)])
+    warehouse.insert_rows_done(src)
+
+    # Another connection commits after each batch. With the id cursor still open,
+    # the next batch fails with "database is locked".
+    with warehouse.clone() as other:
+        warehouse.insert_into(
+            dst,
+            sa.select(src),
+            progress_cb=lambda _: other.db.execute(unrelated.insert().values(value=0)),
+        )
+
+    assert warehouse.table_rows_count(dst) == 10
+
+
+@pytest.mark.parametrize("fetch_size,selects", [(100, 1), (3, 3)])
+def test_batched_id_fetch_groups_queries_and_preserves_rows(
+    numbers_table, warehouse, monkeypatch, fetch_size, selects
+):
+    monkeypatch.setattr(
+        "datachain.data_storage.warehouse.DEFAULT_BATCH_SIZE", fetch_size
+    )
+    query = sa.select(numbers_table.c.number, numbers_table.c.sys__id)
+    rows = list(
+        warehouse.dataset_rows_select(query.order_by(numbers_table.c.number).limit(4))
+    )
+    a, b, c, d = [row[1] for row in rows]
+    ids = [[c, a, c], [], [b], [d, a], [0]]
+    with patch.object(
+        type(warehouse), "dataset_rows_select", wraps=warehouse.dataset_rows_select
+    ) as select:
+        batches = list(
+            warehouse.dataset_rows_select_from_ids(
+                query.limit(1).offset(20), iter(ids), True
+            )
+        )
+    assert select.call_count == selects
+    assert [[row[0] for row in batch] for batch in batches] == [
+        [3, 1],
+        [],
+        [2],
+        [4, 1],
+        [],
+    ]
+
+
+def test_batched_id_fetch_preserves_join_fanout(numbers_table, warehouse):
+    left = (
+        sa.select(numbers_table.c.sys__id, numbers_table.c.primality)
+        .where(numbers_table.c.number == 2)
+        .subquery("left_rows")
+    )
+    right = (
+        sa.select(numbers_table.c.primality, numbers_table.c.number)
+        .where(numbers_table.c.number.in_([2, 3]))
+        .subquery("right_rows")
+    )
+    query = sa.select(left.c.sys__id, right.c.number).select_from(
+        left.join(right, left.c.primality == right.c.primality)
+    )
+    row_id = next(warehouse.dataset_rows_select(query))[0]
+    batches = list(
+        warehouse.dataset_rows_select_from_ids(query, [[row_id], [], [row_id]], True)
+    )
+    assert [sorted(row[1] for row in batch) for batch in batches] == [
+        [2, 3],
+        [],
+        [2, 3],
+    ]

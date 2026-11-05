@@ -1,10 +1,11 @@
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, get_origin, get_type_hints
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any, get_origin, get_type_hints
 
 from datachain.dataset import parse_dataset_with_version
 from datachain.error import (
     DatasetNotFoundError,
     DatasetVersionNotFoundError,
+    OutdatedDatasetFormatError,
     ProjectNotFoundError,
 )
 from datachain.lib.dataset_info import DatasetInfo
@@ -23,6 +24,21 @@ if TYPE_CHECKING:
     from .datachain import DataChain
 
     P = ParamSpec("P")
+
+
+def _reject_legacy_tags(
+    name: str, schema: "SignalSchema", column_types: Mapping[str, Any]
+) -> None:
+    """Queries read the discriminator as an arm name, so a dataset holding the
+    numeric one answers isnone()/count() wrongly instead of failing.
+    """
+    legacy = schema.legacy_tag_columns(column_types)
+    if legacy:
+        raise OutdatedDatasetFormatError(
+            f"dataset {name!r} stores a numeric Optional[DataModel] discriminator "
+            f"in {', '.join(legacy)}; re-create the dataset with this version to "
+            "read it"
+        )
 
 
 def read_dataset(
@@ -221,6 +237,8 @@ def read_dataset(
 
     if delta:
         signals_schema = signals_schema.clone_without_sys_signals()
+
+    _reject_legacy_tags(name, signals_schema, query.column_types or {})
 
     chain = DataChain(query, _settings, signals_schema)
 

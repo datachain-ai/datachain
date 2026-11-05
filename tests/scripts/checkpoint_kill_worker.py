@@ -10,8 +10,8 @@ import datachain as dc
 root = Path(sys.argv[1])
 kind = sys.argv[2]
 parallel = int(sys.argv[3])
-# inputs from this number on never finish: the run can only end by being killed
-block_from = int(sys.argv[4]) if len(sys.argv) > 4 else None
+flush_interval = float(sys.argv[4])
+block = len(sys.argv) > 5
 delay = 0.32 if parallel else 0.08
 
 
@@ -20,13 +20,13 @@ def record(event: str, num: int) -> None:
         stream.write(json.dumps([event, num, time.monotonic()]) + "\n")
         stream.flush()
         os.fsync(stream.fileno())
-    if event == "start" and block_from is not None and num >= block_from:
-        time.sleep(3600)
 
 
 def mapper(file: dc.File) -> int:
     num = int(Path(file.path).stem)
     record("start", num)
+    if block and num >= 90:
+        time.sleep(3600)
     time.sleep(delay)
     record("done", num)
     return num * 10
@@ -38,13 +38,12 @@ def generator(file: dc.File) -> Iterator[int]:
     if num % 5 == 0:
         time.sleep(delay)
     else:
-        large = kind == "gen-large" and num % (30 if parallel else 120) == (
-            14 if parallel else 59
-        )
+        large = num == 91
         for offset in range(60 if large else 3):
-            if large and block_from is not None and offset == 30:
-                time.sleep(3600)  # stop halfway: rows saved, no final marker
-            time.sleep(0.08 if large else delay / 3)
+            if large and block and offset == 30:
+                record("blocked", num)
+                time.sleep(3600)
+            time.sleep((flush_interval + 0.4) / 30 if large else delay / 3)
             yield num * 100 + offset
     record("done", num)
 

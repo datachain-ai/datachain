@@ -6,9 +6,11 @@ import pytest
 from botocore.exceptions import ClientError
 
 import datachain as dc
+import datachain.lib.listing as listing_lib
 from datachain.client.fsspec import RangeListedClient
+from datachain.lib import storage_config
 from datachain.lib.convert.flatten import flatten
-from datachain.lib.dc import DataChain, storage
+from datachain.lib.dc import DataChain
 from datachain.lib.file import File, FileRow
 from datachain.lib.listing import get_listing
 from datachain.lib.settings import Settings
@@ -318,11 +320,13 @@ def test_listing_probes_and_keeps_active_session_config(catalog, mocker):
     config = {"endpoint_url": "https://minio.example.com"}
     configured = catalog.copy()
     configured.client_config = config
-    probe = mocker.patch.object(storage, "_all_buckets_anonymous", return_value=True)
+    probe = mocker.patch.object(
+        storage_config, "_all_buckets_anonymous", return_value=True
+    )
 
     with dc.Session("ingest", catalog=configured):
         lst = dc.list_storage("s3://bucket/data/")
-        _, read_config = storage._client_configs(
+        _, read_config = storage_config.client_configs(
             ["s3://bucket/data/"], None, None, None, True
         )
 
@@ -336,7 +340,9 @@ def test_client_config_replaces_the_session_config(catalog, mocker):
     given = {"endpoint_url": "https://b.example.com"}
     configured = catalog.copy()
     configured.client_config = own
-    probe = mocker.patch.object(storage, "_all_buckets_anonymous", return_value=True)
+    probe = mocker.patch.object(
+        storage_config, "_all_buckets_anonymous", return_value=True
+    )
     session = dc.Session("explicit", catalog=configured)
 
     lst = dc.list_storage("s3://bucket/data/", session=session, client_config=given)
@@ -349,7 +355,7 @@ def test_client_config_replaces_the_session_config(catalog, mocker):
 
 def test_save_of_an_explicit_session_lists_with_anon(test_session, tmp_dir, mocker):
     (tmp_dir / "a.txt").write_text("a")
-    spy = mocker.spy(storage, "get_listing")
+    spy = mocker.spy(listing_lib, "get_listing")
 
     chain = dc.list_storage(f"{tmp_dir}/", session=test_session, anon=True).save()
 
@@ -366,7 +372,7 @@ def test_read_storage_of_an_explicit_session_lists_with_anon(
     test_session, tmp_dir, mocker
 ):
     (tmp_dir / "a.txt").write_text("a")
-    spy = mocker.spy(storage, "get_listing")
+    spy = mocker.spy(listing_lib, "get_listing")
 
     chain = dc.read_storage(f"{tmp_dir}/", session=test_session, anon=True)
 
@@ -377,7 +383,7 @@ def test_read_storage_of_an_explicit_session_lists_with_anon(
 def test_listing_save_lists_a_shared_listing_once(test_session, tmp_dir, mocker):
     (tmp_dir / "a.txt").write_text("a")
     (tmp_dir / "b.csv").write_text("b")
-    write = mocker.spy(storage, "_write_listing")
+    write = mocker.spy(listing_lib, "write_listing")
 
     saved = dc.list_storage(f"{tmp_dir.as_uri()}/*.{{txt,csv}}", session=test_session)
     chain = saved.save()
@@ -391,7 +397,7 @@ def test_listing_save_lists_a_shared_listing_once(test_session, tmp_dir, mocker)
 
 def test_listing_uses_cache_of_active_session(test_session, tmp_dir, mocker):
     (tmp_dir / "a.txt").write_text("a")
-    pages = mocker.spy(storage, "list_pages")
+    pages = mocker.spy(listing_lib, "list_pages")
 
     catalog = test_session.catalog.copy()
     with dc.Session("active", catalog=catalog):
@@ -425,7 +431,7 @@ def test_expired_parent_listing_is_listed_whole(test_session, tmp_dir, mocker):
     chain = dc.read_storage(f"{tmp_dir.as_uri()}/d/", session=test_session)
 
     mocker.patch(
-        "datachain.query.dataset.listing_dataset_expired", side_effect=[True, False]
+        "datachain.lib.listing.listing_dataset_expired", side_effect=[True, False]
     )
     assert sorted(chain.to_values("file.path")) == ["d/c.txt", "d/e.jpg"]
 
@@ -505,3 +511,83 @@ def test_brace_alternatives_of_one_folder_list_it_once(cloud_test_catalog, mocke
 
     assert paths == [f"{prefix}/a.jpg", f"{prefix}/b.png", f"{prefix}/c.gif"]
     assert level.call_count == 1  # one scan for the three alternatives
+
+
+def test_empty_client_config_replaces_session_config(test_session, tmp_dir):
+    test_session.catalog.client_config = {"endpoint_url": "https://session.example"}
+    listing = dc.list_storage(tmp_dir, session=test_session, client_config={})
+    assert listing.client_config == {}
+    assert listing.session.catalog.client_config == {}
+    assert test_session.catalog.client_config == {
+        "endpoint_url": "https://session.example"
+    }
+
+
+@pytest.fixture
+def configured_listing_source(catalog, tmp_path):
+    source = tmp_path / "input"
+    source.mkdir()
+    (source / "a.txt").write_text("contents")
+    with dc.Session("owner", catalog=catalog) as parent:
+        kept = dc.read_values(value=[1], session=parent).persist()
+        yield parent, str(source) + "/"
+        assert kept.to_values("value") == [1]
+        temporary = list(
+            catalog.metastore.list_datasets_by_prefix(
+                "session_", include_incomplete=True
+            )
+        )
+        assert temporary
+        assert all(d.name.startswith(parent.get_temp_prefix()) for d in temporary)
+        assert catalog.client_config == {}
+    assert not list(
+        catalog.metastore.list_datasets_by_prefix("session_", include_incomplete=True)
+    )
+
+
+def test_catalog_config_override_keeps_parent_cleanup(configured_listing_source):
+    parent, uri = configured_listing_source
+    rows = [
+        row
+        for _, result in parent.catalog.ls(
+            [uri],
+            fields=["name"],
+            update=True,
+            client_config={"use_symlinks": True},
+        )
+        for row in result
+    ]
+    assert rows == [("a.txt",)]
+
+
+def test_cli_config_override_keeps_parent_cleanup(configured_listing_source, capsys):
+    from datachain.cli import ls
+
+    parent, uri = configured_listing_source
+    ls([uri], catalog=parent.catalog, client_config={"use_symlinks": True})
+    assert capsys.readouterr().out.strip() == "a.txt"
+
+
+def test_read_config_override_keeps_parent_cleanup(configured_listing_source):
+    parent, uri = configured_listing_source
+    chain = dc.read_storage(uri, session=parent, client_config={"use_symlinks": True})
+    assert chain.to_values("file.path") == ["a.txt"]
+
+
+def test_save_config_override_keeps_parent_cleanup(configured_listing_source):
+    parent, uri = configured_listing_source
+    saved = dc.list_storage(
+        uri, session=parent, client_config={"use_symlinks": True}
+    ).save()
+    assert saved.to_values("file.path") == ["a.txt"]
+
+
+def test_dataset_copy_config_override_keeps_parent_cleanup(configured_listing_source):
+    parent, uri = configured_listing_source
+    saved = dc.read_storage(uri, session=parent).save("source")
+    parent.catalog.create_dataset_from_sources(
+        "copy",
+        [f"ds://{saved.dataset.full_name}"],
+        client_config={"use_symlinks": True},
+    )
+    assert dc.read_dataset("copy", session=parent).to_values("file.path") == ["a.txt"]
