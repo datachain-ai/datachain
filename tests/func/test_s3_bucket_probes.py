@@ -25,9 +25,11 @@ def isolated_aws(monkeypatch, tmp_path):
     credentials = tmp_path / "credentials"
     credentials.write_text("")
     monkeypatch.setenv("AWS_CONFIG_FILE", str(config))
+    monkeypatch.setenv("BOTO_CONFIG", str(tmp_path / "boto"))
     monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(credentials))
     monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
     monkeypatch.setattr(s3, "_BUCKET_REGIONS", {})
+    monkeypatch.setattr(s3, "_CREDENTIAL_CHECKS", {})
     classes = (S3FileSystem, s3._S3FileSystem)
     existing = {cls: set(cls._cache) for cls in classes}
     yield
@@ -313,6 +315,7 @@ def test_filesystem_without_credentials_is_anonymous(in_loop):
 @pytest.mark.parametrize(
     "credentials",
     [
+        {"username": "key", "password": "secret"},
         _CREDENTIALS,
         {
             "client_kwargs": {
@@ -344,3 +347,14 @@ def test_filesystem_rechecks_changed_credentials(monkeypatch, source):
             "[default]\naws_access_key_id = key\naws_secret_access_key = secret\n"
         )
     assert not ClientS3.create_fs(skip_instance_cache=True).anon
+
+
+def test_missing_credentials_are_rechecked_after_ttl(monkeypatch, mocker):
+    probe = mocker.patch("datachain.client.s3.Session")
+    probe.return_value.get_credentials.side_effect = [None, object()]
+    now = mocker.patch("datachain.client.s3.monotonic", return_value=0.0)
+    assert ClientS3.create_fs(skip_instance_cache=True).anon
+    assert ClientS3.create_fs(skip_instance_cache=True).anon
+    now.return_value = 61.0
+    assert not ClientS3.create_fs(skip_instance_cache=True).anon
+    assert probe.call_count == 2

@@ -9,7 +9,8 @@ from datachain.client.s3 import ClientS3, _head_bucket
 
 
 @pytest.fixture(autouse=True)
-def regions(monkeypatch):
+def regions(monkeypatch, tmp_path):
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "config"))
     monkeypatch.setattr(s3, "_BUCKET_REGIONS", {})
     monkeypatch.delenv("AWS_PROFILE", raising=False)
     monkeypatch.delenv("AWS_DEFAULT_PROFILE", raising=False)

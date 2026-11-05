@@ -2,6 +2,7 @@ import os
 from collections.abc import Callable
 from datetime import datetime
 from functools import lru_cache
+from time import monotonic
 from typing import TYPE_CHECKING, Any, cast
 from xml.etree.ElementTree import Element, ParseError, fromstring
 
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
     from datachain.client.writeconfig import WriteConfig
 
 _BUCKET_REGIONS: dict[tuple, str] = {}
+_CREDENTIAL_CHECKS: dict[tuple, tuple[float, bool]] = {}
 
 
 @lru_cache(maxsize=16)
@@ -88,6 +90,7 @@ def _has_credentials(kwargs: dict[str, Any]) -> bool:
     client_kwargs = kwargs.get("client_kwargs") or {}
     if (
         kwargs.get("key")
+        or kwargs.get("username")
         or client_kwargs.get("aws_access_key_id")
         or "session" in kwargs
     ):
@@ -114,9 +117,17 @@ def _has_credentials(kwargs: dict[str, Any]) -> bool:
     return _finds_credentials(kwargs.get("profile"), env, tuple(files))
 
 
-@lru_cache(maxsize=16)
-def _finds_credentials(profile: str | None, _env: frozenset, _files: tuple) -> bool:
-    return Session(profile=profile).get_credentials() is not None
+def _finds_credentials(profile: str | None, env: frozenset, files: tuple) -> bool:
+    key = profile, env, files
+    if key in _CREDENTIAL_CHECKS:
+        checked, found = _CREDENTIAL_CHECKS[key]
+        if found or monotonic() - checked < 60:
+            return found
+    found = Session(profile=profile).get_credentials() is not None
+    if len(_CREDENTIAL_CHECKS) >= 16:
+        _CREDENTIAL_CHECKS.pop(next(iter(_CREDENTIAL_CHECKS)))
+    _CREDENTIAL_CHECKS[key] = monotonic(), found
+    return found
 
 
 def _head_bucket(fs: S3FileSystem, name: str) -> tuple[int, str | None]:
@@ -254,7 +265,16 @@ class ClientS3(RangeListedClient):
     LISTS_LEVELS = True
     protocol = "s3"
     CREDENTIAL_KEYS = frozenset(
-        {"key", "secret", "token", "aws_key", "aws_secret", "aws_token"}
+        {
+            "key",
+            "secret",
+            "token",
+            "aws_key",
+            "aws_secret",
+            "aws_token",
+            "username",
+            "password",
+        }
     )
     # A version id always names the same bytes, except "null". S3 gives that id to
     # objects written while versioning is off or suspended, and another write in
@@ -265,9 +285,9 @@ class ClientS3(RangeListedClient):
     @staticmethod
     def _normalize_s3_kwargs(kwargs: dict) -> dict:
         if "aws_endpoint_url" in kwargs:
-            kwargs.setdefault("client_kwargs", {}).setdefault(
-                "endpoint_url", kwargs.pop("aws_endpoint_url")
-            )
+            kwargs["client_kwargs"] = {
+                "endpoint_url": kwargs.pop("aws_endpoint_url")
+            } | (kwargs.get("client_kwargs") or {})
         if "aws_key" in kwargs:
             kwargs.setdefault("key", kwargs.pop("aws_key"))
         if "aws_secret" in kwargs:
@@ -307,6 +327,8 @@ class ClientS3(RangeListedClient):
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:
         # HeadBucket returns the region; do not discover it with another probe.
         kwargs["cache_regions"] = False
+        kwargs.pop("asynchronous", None)
+        kwargs.pop("loop", None)
         not_found = BucketStatus(
             exists=False, access="denied", error=f"S3 bucket '{name}' not found"
         )
