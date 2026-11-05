@@ -381,6 +381,7 @@ def test_describe_all_available_versions(test_session, capsys):
 def test_describe_recorded_jobs(test_session, capsys, monkeypatch, job_state):
     from datachain.job import Job
 
+    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
     metastore = test_session.catalog.metastore
     parent_id = metastore.create_job("parent", "")
     job_id = metastore.create_job(
