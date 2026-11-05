@@ -9,7 +9,7 @@ from collections.abc import (
     Iterable,
     Iterator,
 )
-from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import ThreadPoolExecutor
 from typing import Generic, TypeVar
 
 from fsspec.asyn import get_loop
@@ -178,7 +178,15 @@ class AsyncMapper(Generic[InputT, ResultT]):
     def iterate(self, timeout=None) -> Generator[ResultT, None, None]:
         init = asyncio.run_coroutine_threadsafe(self.init(), self.loop)
         init.result()
-        async_run = asyncio.run_coroutine_threadsafe(self.run(), self.loop)
+        finished = threading.Event()
+
+        async def run():
+            try:
+                await self.run()
+            finally:
+                finished.set()
+
+        async_run = asyncio.run_coroutine_threadsafe(run(), self.loop)
         try:
             while True:
                 if (result := self.next_result(timeout)) is not None:
@@ -191,7 +199,7 @@ class AsyncMapper(Generic[InputT, ResultT]):
             self.shutdown_producer()
             if not async_run.done():
                 async_run.cancel()
-                wait([async_run])
+            finished.wait()
             self._producer_is_shutdown.wait()
 
     def __iter__(self):

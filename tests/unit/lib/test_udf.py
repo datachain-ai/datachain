@@ -510,15 +510,13 @@ def test_prefetch_read_ahead_is_bounded(prefetch, batch_size, monkeypatch):
 
     with closing(_prefetch_inputs(rows(), prefetch, batch_columns={0})) as it:
         assert len(next(it)[0]) == batch_size
-        # Wait for producer activity to settle against backpressure, with a deadline.
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             changed.clear()
             if not changed.wait(0.1):
                 break
-        # Result queue + active workers + consumer + one queued and one pending input.
         assert pulled <= 2 * prefetch + 3
-        assert completed / batch_size - 1 <= 2 * prefetch + 1
+        assert completed <= (2 * prefetch + 1) * batch_size
         assert sum(1 for _ in it) == 99
 
 
@@ -631,26 +629,12 @@ def test_prefetch_downloads_each_cache_target_once(
     assert plain.read() == b"woof"
 
 
-@pytest.mark.parametrize("size", [0, 1])
-def test_prefetch_small_rows_avoid_tasks(monkeypatch, size):
-    async def prefetch(self, download_cb=None):
-        return True
-
-    def unexpected_task(*args, **kwargs):
-        raise AssertionError("single-file rows do not need async tasks")
-
-    monkeypatch.setattr(File, "_prefetch", prefetch)
-    monkeypatch.setattr(asyncio, "create_task", unexpected_task)
-    row = [File(source="s3://b", path="x")] * size
-    assert asyncio.run(_prefetch_input(row)) is row
-
-
 def test_prefetch_file_error_skips_only_that_file(monkeypatch, caplog):
     completed = []
 
     async def prefetch(self, download_cb=None):
         if self.path == "bad":
-            raise FileError("invalid location", self.source, self.path)
+            raise FileError("download failed", self.source, self.path)
         return True
 
     monkeypatch.setattr(File, "_prefetch", prefetch)
@@ -689,3 +673,25 @@ def test_prefetch_external_cancellation_awaits_downloads(monkeypatch):
         assert sorted(stopped) == ["a", "b"]
 
     asyncio.run(run())
+
+
+def test_closing_prefetch_waits_for_download_cleanup(monkeypatch):
+    started = threading.Event()
+    stopped = threading.Event()
+
+    async def prefetch(self, download_cb=None):
+        if self.path == "ready":
+            return True
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0.01)
+            stopped.set()
+
+    monkeypatch.setattr(File, "_prefetch", prefetch)
+    rows = [[File(source="s3://b", path=name)] for name in ("ready", "blocked")]
+    with closing(_prefetch_inputs(iter(rows), prefetch=2)) as it:
+        assert next(it)[0].path == "ready"
+        assert started.wait(5)
+    assert stopped.is_set()

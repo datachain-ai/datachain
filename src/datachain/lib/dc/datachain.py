@@ -72,7 +72,11 @@ from datachain.lib.udf import (
     UDFBase,
     _MultiSignalMapper,
 )
-from datachain.lib.udf_signature import UdfSignature, _resolve_annotation
+from datachain.lib.udf_signature import (
+    UdfSignature,
+    _param_column_types,
+    _resolve_annotation,
+)
 from datachain.lib.utils import (
     DataChainColumnError,
     DataChainParamsError,
@@ -516,8 +520,9 @@ class DataChain:
                 Set to 0 or False for UDFs that read only part of a file, such as
                 `get_info()`.
             parallel: Number of processes to use for processing user-defined functions
-                (UDFs) in parallel. If an integer is provided, it specifies the number
-                of CPUs to use. If True, all available CPUs are used. Defaults to 1.
+                (UDFs) in parallel. Each process has its own UDF and setup resources.
+                If an integer is provided, it specifies the number of CPUs to use.
+                If True, all available CPUs are used. Defaults to 1.
             namespace: Namespace to use for the chain by default.
             project: Project to use for the chain by default.
             min_task_size: Minimum number of rows per worker/process for parallel
@@ -1261,7 +1266,11 @@ class DataChain:
                 input_types, types, _, annotated = UdfSignature._func_signature(
                     self.name or "", fn, is_batch_map=True
                 )
-                batch_params[name] = input_types
+                batch_params[name] = (
+                    _param_column_types(bound_columns[name], input_types, True)
+                    if name in bound_columns
+                    else input_types
+                )
                 if isinstance(types, tuple):
                     raise DataChainParamsError(
                         f"{method}() entry {name!r} must produce one output per row"

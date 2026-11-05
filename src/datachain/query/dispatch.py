@@ -2,7 +2,6 @@ import contextlib
 import traceback
 from collections.abc import Iterable, Sequence
 from itertools import chain
-from multiprocessing import cpu_count
 from queue import Empty
 from sys import stdin
 from time import monotonic, sleep
@@ -19,7 +18,7 @@ from datachain.catalog.catalog import clone_catalog_with_cache
 from datachain.catalog.loader import DISTRIBUTED_IMPORT_PATH, get_udf_distributor_class
 from datachain.lib.model_store import ModelStore
 from datachain.lib.udf import UdfRunError, _get_cache
-from datachain.query.batch import Batch
+from datachain.query.batch import DEFAULT_BATCH_SIZE, Batch
 from datachain.query.dataset import (
     get_download_callback,
     get_generated_callback,
@@ -28,7 +27,7 @@ from datachain.query.dataset import (
 )
 from datachain.query.queue import get_from_queue, put_into_queue
 from datachain.query.udf import UdfInfo
-from datachain.utils import batched, flatten, safe_closing
+from datachain.utils import batched, flatten, safe_closing, usable_cpu_count
 
 if TYPE_CHECKING:
     from sqlalchemy import Select, Table
@@ -37,7 +36,6 @@ if TYPE_CHECKING:
     from datachain.lib.udf import UDFAdapter
     from datachain.query.batch import RowsOutput
 
-DEFAULT_BATCH_SIZE = 10000
 STOP_SIGNAL = "STOP"
 OK_STATUS = "OK"
 FINISHED_STATUS = "FINISHED"
@@ -47,7 +45,7 @@ NOTIFY_STATUS = "NOTIFY"
 
 def get_n_workers_from_arg(n_workers: int | None = None) -> int:
     if not n_workers:
-        return cpu_count()
+        return usable_cpu_count()
     if n_workers < 1:
         raise RuntimeError("Must use at least one worker for parallel UDF execution!")
     return n_workers

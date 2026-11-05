@@ -29,7 +29,7 @@ def _resolve_annotation(anno: Any, func: Callable) -> Any:
     while isinstance(target, partial):
         target = inspect.unwrap(target.func)
     if not hasattr(target, "__globals__"):
-        target = target.__call__
+        target = inspect.unwrap(target.__call__)
     namespace = getattr(target, "__globals__", {})
     try:
         resolved = get_type_hints(
@@ -40,9 +40,10 @@ def _resolve_annotation(anno: Any, func: Callable) -> Any:
         return anno
 
 
-def _column_params(
+def _param_column_types(
     params: str | Sequence[str], annotations: dict[str, Any], batched: bool
 ) -> dict[str, Any]:
+    # Match positional columns to annotations for batched UDF validation.
     columns = [params] if isinstance(params, str) else params
     resolved = dict.fromkeys(columns, Any)
     if batched:
@@ -142,7 +143,7 @@ class UdfSignature:  # noqa: PLW1641
 
         udf_params: dict[str, DataType | Any] = {}
         if params is not None:
-            udf_params = _column_params(params, func_params_map_sign, is_batch_map)
+            udf_params = _param_column_types(params, func_params_map_sign, is_batch_map)
         elif func_params_map_sign:
             udf_params = {
                 param: (
@@ -292,7 +293,7 @@ class UdfSignature:  # noqa: PLW1641
                     f"list[T] or Iterator[T], where T describes one row; got {anno}. "
                     "For embeddings, return list[list[float]]; "
                     "use map() for scalar functions or output= "
-                    "for an explicit row type",
+                    "to specify the output row type",
                 )
             if (
                 not is_batch_list

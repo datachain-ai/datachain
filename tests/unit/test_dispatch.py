@@ -1,6 +1,13 @@
 from queue import Empty, Full
 
-from datachain.query.dispatch import STOP_SIGNAL, get_from_queue, put_into_queue
+import pytest
+
+from datachain.query.dispatch import (
+    STOP_SIGNAL,
+    get_from_queue,
+    get_n_workers_from_arg,
+    put_into_queue,
+)
 
 
 class MockQueue:
@@ -36,3 +43,14 @@ def test_put_into_queue():
 
     assert put_into_queue(mock_queue, STOP_SIGNAL) is None
     assert mock_queue.put_signal == STOP_SIGNAL
+
+
+@pytest.mark.parametrize(
+    "cpus,requested,expected", [(8, None, 8), (1, None, 1), (8, 12, 12)]
+)
+def test_worker_count_respects_cpu_quota_and_explicit_override(
+    monkeypatch, cpus, requested, expected
+):
+    monkeypatch.setattr("datachain.query.dispatch.usable_cpu_count", lambda: cpus)
+
+    assert get_n_workers_from_arg(requested) == expected
