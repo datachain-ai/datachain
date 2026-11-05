@@ -15,7 +15,7 @@ from datachain.sql.types import (
     SQLType,
     String,
     TypeReadConverter,
-    register_type_read_converters,
+    _read_converter_registry,
     validate_datetime_cast_input_type,
 )
 
@@ -185,15 +185,14 @@ def test_type_read_converter_float_array(item_type, value, expected):
 
 
 @pytest.mark.parametrize("item_type", [Float, Float32, Float64])
-def test_float_array_preserves_registered_conversion(item_type):
+def test_float_array_preserves_registered_conversion(item_type, monkeypatch):
     class CustomConverter(TypeReadConverter):
         def float(self, value):
             return value + 10
 
     dialect = sa.engine.default.DefaultDialect()
     dialect.name = "custom_float_array"
-    # A distinct dialect avoids changing converters used by other tests.
-    register_type_read_converters(dialect.name, CustomConverter())
+    monkeypatch.setitem(_read_converter_registry, dialect.name, CustomConverter())
     assert Array(item_type()).on_read_convert([0.5, 1.5], dialect) == [10.5, 11.5]
 
 

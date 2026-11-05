@@ -4,13 +4,13 @@ title: Python Operations
 
 # Python Operations
 
-Python operations run your Python functions on each record in a chain. Use them when you need file content, ML models, or LLM calls. For everything else, use [data operations](operations.md).
+These operations run functions on records in a chain. Use them when you need file content, ML models, or LLM calls. For everything else, use [data operations](operations.md).
 
-## Three Types
+## Operation types
 
 ### Mapper: map()
 
-Runs a Python function once per record. Returns data added to the same record.
+Runs a function once per record. Returns data added to the same record.
 
 ```python
 import datachain as dc
@@ -25,6 +25,10 @@ def analyze(file: dc.File, client) -> Analysis:
     resp = client.messages.create(model="claude-sonnet-4-20250514", ...)
     return Analysis.model_validate_json(resp.content[0].text)
 ```
+
+### Batch mapper: batch_map()
+
+Runs a function on a batch of records per call, such as a model that encodes many images at once, and adds one result to each record. See [Batched Inference](batch-inference.md).
 
 ### Generator: gen()
 
@@ -101,7 +105,7 @@ chain.map(ext=lambda path: path.rsplit(".", 1)[-1], params=["file.path"])
 
 ## Setup for Expensive Resources
 
-When a Python function needs an expensive resource (model, tokenizer, API client), `.setup()` initializes it once per worker:
+When a Python function needs an expensive resource (model, tokenizer, API client), `.setup()` initializes it once per process:
 
 ```python
 from transformers import Pipeline, pipeline
@@ -126,7 +130,7 @@ chain = (
 )
 ```
 
-The keyword argument name in `.setup()` must match the parameter name in the function. The lambda runs once per worker at startup.
+The keyword argument name in `.setup()` must match the parameter name in the function. The lambda runs once per process at startup.
 
 Works the same for LLM API clients:
 
@@ -151,13 +155,13 @@ chain = (
 
 ## Class-Based Lifecycle
 
-When `.setup()` is not enough (you need `teardown()`, shared mutable state across records, or multi-resource initialization), use the `Mapper`, `Generator`, and `Aggregator` base classes:
+When `.setup()` is not enough (you need `teardown()`, shared mutable state across records, or multi-resource initialization), use the `dc.Mapper`, `dc.BatchMapper`, `dc.Generator`, and `dc.Aggregator` base classes:
 
 ```python
-from datachain.lib.udf import Mapper  # internal module name
+import datachain as dc
 
 
-class ImageEncoder(Mapper):
+class ImageEncoder(dc.Mapper):
     def setup(self):
         self.model = load_model("ViT-B-32")
 
@@ -221,9 +225,7 @@ class Result(BaseModel):
 chain.map(result=classify)
 ```
 
-A function that returns a tuple is the exception. In the keyword form its parts
-are split into suffixed signals (`res_0`, `res_1`, ...) with no error, so name
-them explicitly with `output`:
+A function that returns a tuple is the exception. In the keyword form its parts are split into suffixed signals (`res_0`, `res_1`, ...) with no error, so name them explicitly with `output`:
 
 ```python
 def split(text) -> tuple[str, float]: ...
@@ -237,7 +239,7 @@ chain.map(split, output={"label": str, "score": float})  # label, score
 
 ### Image Captioning
 
-Read images from storage, load a HuggingFace model once per worker, caption each image, save as a versioned dataset:
+Read images from storage, load a HuggingFace model once per process, caption each image, save as a versioned dataset:
 
 ```python
 from transformers import pipeline

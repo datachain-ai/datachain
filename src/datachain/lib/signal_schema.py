@@ -919,9 +919,16 @@ class SignalSchema:
                     continue
 
                 if param_origin is not list:
-                    raise SignalResolvingError(param.split("."), "is not a list")
+                    raise SignalResolvingError(
+                        param.split("."), "is not a list; annotate it as list[T]"
+                    )
 
                 param_type = get_args(param_type)[0]
+                if param_type is Any:
+                    schema[param] = schema_type
+                    continue
+                if schema_opt:
+                    param_type = unwrap_optional(param_type)[0]
 
             if param_type == schema_type or (
                 isclass(param_type)
@@ -959,8 +966,14 @@ class SignalSchema:
         read_model = _model_reader(build_model)
         res = []
         pos = 0
-        for reader in self._signal_plan.values():
-            value, pos = self._read_signal(reader, row, pos, read_model, convert_scalar)
+        for name, reader in self._signal_plan.items():
+            value, pos = self._read_signal(
+                reader,
+                row,
+                pos,
+                read_model,
+                convert_scalar if self._row_conversion_required[name] else None,
+            )
             res.append(value)
         return res
 
