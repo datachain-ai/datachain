@@ -636,7 +636,7 @@ class File(DataModel):
 
         # write path
         full_path = self.get_fs_path()
-        fs_mode = mode if "b" in mode else f"{mode}b"
+        fs_mode = mode if "b" in mode else mode.replace("t", "", 1) + "b"
         binary_kwargs = {
             k: v for k, v in open_kwargs.items() if k not in self._TEXT_WRAPPER_ALLOWED
         }
