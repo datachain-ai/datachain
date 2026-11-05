@@ -413,3 +413,65 @@ def test_an_insert_error_closes_the_udf_outputs(test_session, mocker):
     # the error's traceback holds the generator: it must be closed already
     assert closed == [1000]
     assert error.value.__traceback__ is not None
+
+
+UDF_CLASSES = {
+    "map": dc.Mapper,
+    "batch_map": dc.BatchMapper,
+    "gen": dc.Generator,
+    "agg": dc.Aggregator,
+}
+
+
+def _apply(chain, verb, **signal_map):
+    kwargs = {"batch": 2} if verb == "batch_map" else {}
+    return getattr(chain, verb)(output=int, **kwargs, **signal_map)
+
+
+@pytest.mark.parametrize("verb", list(UDF_CLASSES))
+@pytest.mark.parametrize("process_error", [False, True])
+def test_teardown_runs_once_and_keeps_process_error(
+    test_session, caplog, verb, process_error
+):
+    calls = []
+
+    class Broken(UDF_CLASSES[verb]):
+        def process(self, value):
+            if process_error:
+                raise ValueError("boom-process")
+            return value if verb in ("map", "batch_map") else [1]
+
+        def teardown(self):
+            calls.append("teardown")
+            raise RuntimeError("boom-teardown")
+
+    chain = dc.read_values(value=[1, 2], session=test_session)
+    with pytest.raises(
+        ValueError if process_error else RuntimeError,
+        match="boom-process" if process_error else "boom-teardown",
+    ):
+        _apply(chain, verb, result=Broken()).to_values("result")
+    assert calls == ["teardown"]
+    assert ("Failed to tear down" in caplog.text) == process_error
+
+
+@pytest.mark.parametrize("verb", list(UDF_CLASSES))
+def test_udf_instance_shared_by_chains(test_session, verb):
+    process = {
+        "map": lambda value: value * 2,
+        "batch_map": lambda value: [v * 2 for v in value],
+        "gen": lambda value: [value * 2],
+        "agg": lambda value: [v * 2 for v in value],
+    }[verb]
+
+    class Twice(UDF_CLASSES[verb]):
+        def process(self, value):
+            return process(value)
+
+    udf = Twice()
+    chain = dc.read_values(value=[1, 2, 3], session=test_session)
+    first = _apply(chain, verb, first=udf)
+    second = _apply(chain, verb, second=udf)
+    assert sorted(first.to_values("first")) == [2, 4, 6]
+    assert sorted(second.to_values("second")) == [2, 4, 6]
+    assert udf.params is None

@@ -675,7 +675,10 @@ class SignalSchema:
         if (
             self.setup_func
             or any(self._row_conversion_required.values())
-            or any(reader.layout is not None for reader in self._signal_plan.values())
+            or any(
+                reader.layout is not None or reader.model is not None
+                for reader in self._signal_plan.values()
+            )
         ):
             return None
         return [
@@ -930,9 +933,16 @@ class SignalSchema:
                     continue
 
                 if param_origin is not list:
-                    raise SignalResolvingError(param.split("."), "is not a list")
+                    raise SignalResolvingError(
+                        param.split("."), "is not a list; annotate it as list[T]"
+                    )
 
                 param_type = get_args(param_type)[0]
+                if param_type is Any:
+                    schema[param] = schema_type
+                    continue
+                if schema_opt:
+                    param_type = unwrap_optional(param_type)[0]
 
             if param_type == schema_type or (
                 isclass(param_type)

@@ -172,3 +172,55 @@ def test_file_udf_inputs_keep_prefetch_and_streams(
     result = getattr(chain, method)(result=read if method == "map" else generate)
     assert result.to_values("result") == ["content"] * (2 if setup else 1)
     assert prefetch.call_count >= 1
+
+
+@pytest.mark.parametrize("setup", [False, True])
+def test_batch_map_plain_inputs_and_setup(test_session, mocker, setup):
+    def transform(value: list[int]) -> list[str]:
+        return [f"p{v}" for v in value]
+
+    def configured(value: list[int], prefix: str) -> list[str]:
+        return [f"{prefix}{v}" for v in value]
+
+    chain = dc.read_values(value=[1, 2, 3], session=test_session)
+    if setup:
+        chain = chain.setup(prefix=lambda: "p")
+    else:
+        mocker.patch(
+            "datachain.lib.udf.AsyncMapper", side_effect=AssertionError("prefetch")
+        )
+    result = chain.batch_map(result=configured if setup else transform, batch=2)
+    assert sorted(result.to_values("result")) == ["p1", "p2", "p3"]
+
+
+def test_batch_map_without_inputs(test_session):
+    def constant() -> list[str]:
+        return ["fixed"]
+
+    chain = dc.read_values(value=[1, 2], session=test_session)
+    assert (
+        chain.batch_map(result=constant, batch=1).to_values("result") == ["fixed"] * 2
+    )
+
+
+@pytest.mark.parametrize("method", ["map", "batch_map"])
+def test_multiple_plain_udfs_share_prepared_inputs(test_session, method):
+    def left(first: int) -> int:
+        return first * 2
+
+    def right(second: int) -> int:
+        return second * 3
+
+    def batch_left(first: list[int]) -> list[int]:
+        return [v * 2 for v in first]
+
+    def batch_right(second: list[int]) -> list[int]:
+        return [v * 3 for v in second]
+
+    chain = dc.read_values(first=[1, 2], second=[3, 4], session=test_session)
+    result = (
+        chain.map(a=left, b=right)
+        if method == "map"
+        else chain.batch_map(a=batch_left, b=batch_right, batch=2)
+    )
+    assert result.order_by("first").to_list("a", "b") == [(2, 9), (4, 12)]
