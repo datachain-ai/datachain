@@ -157,7 +157,10 @@ def test_arrow_generator_partitioned(tmp_path, catalog, cache):
         (pa.date32(), datetime),
         (pa.string(), str),
         (pa.large_string(), str),
-        (pa.map_(pa.string(), pa.int32()), dict),
+        (pa.map_(pa.string(), pa.int32()), dict[str, int | None]),
+        (pa.map_(pa.string(), pa.struct([("x", pa.int64())])), dict),
+        (pa.map_(pa.string(), pa.list_(pa.int64(), 2)), dict),
+        (pa.map_(pa.decimal128(5, 2), pa.int64()), dict),
         (pa.dictionary(pa.int64(), pa.string()), str),
         (pa.list_(pa.string()), list[str | None]),
         (pa.list_(pa.field("item", pa.string(), nullable=False)), list[str]),
@@ -210,6 +213,106 @@ def test_read_parquet_multiple_struct_list_columns_roundtrip(test_session, tmp_p
     (orders,) = back.to_values("orders")
     assert [user.name for user in users] == ["alice", "bob"]
     assert [order.amount for order in orders] == [5]
+
+
+def test_read_parquet_map_columns_as_dicts(test_session, tmp_path):
+    counts = pa.map_(pa.string(), pa.int64())
+    table = pa.table(
+        {
+            "counts": pa.array([[("a", 1), ("b", 2)]], counts),
+            "event": pa.array([{"tags": [("k", 3)]}], pa.struct([("tags", counts)])),
+            "history": pa.array([[[("c", 4)]]], pa.list_(counts)),
+            "nested": pa.array([[("d", [("e", 5)])]], pa.map_(pa.string(), counts)),
+        }
+    )
+    path = tmp_path / "maps.parquet"
+    pq.write_table(table, path)
+
+    chain = dc.read_parquet(path.as_posix(), source=True, session=test_session)
+
+    ((counts, tags, history, nested, source),) = chain.to_list(
+        "counts", "event.tags", "history", "nested", "source"
+    )
+    assert (counts, tags, history) == ({"a": 1, "b": 2}, {"k": 3}, [{"c": 4}])
+    assert nested == {"d": {"e": 5}}
+    assert source.read() == {
+        "counts": {"a": 1, "b": 2},
+        "event": {"tags": {"k": 3}},
+        "history": [{"c": 4}],
+        "nested": {"d": {"e": 5}},
+    }
+
+
+@pytest.mark.parametrize(
+    "values,col_type",
+    [
+        ([[("a", 1), ("a", 2)]], pa.map_(pa.string(), pa.int64())),
+        (
+            [[("d", [("e", 1), ("e", 2)])]],
+            pa.map_(pa.string(), pa.map_(pa.string(), pa.int64())),
+        ),
+    ],
+)
+def test_read_parquet_maps_with_duplicate_keys_raise(
+    test_session, tmp_path, values, col_type
+):
+    path = tmp_path / "maps.parquet"
+    pq.write_table(pa.table({"m": pa.array(values, col_type)}), path)
+
+    with pytest.raises(KeyError, match="duplicate keys"):
+        dc.read_parquet(path.as_posix(), session=test_session).exec()
+    with pytest.raises(KeyError, match="duplicate keys"):
+        ArrowRow(file=File.at(path.as_posix()), index=0, kwargs={}).read()
+
+
+def test_read_parquet_maps_of_structs(test_session, tmp_path):
+    amounts = pa.map_(pa.string(), pa.struct([("amount", pa.int64())]))
+    table = pa.table(
+        {
+            "orders": pa.array([[("a", {"amount": 1}), ("b", None)]], amounts),
+            "history": pa.array([[[("c", {"amount": 2})]]], pa.list_(amounts)),
+        }
+    )
+    path = tmp_path / "maps.parquet"
+    pq.write_table(table, path)
+
+    chain = dc.read_parquet(path.as_posix(), session=test_session)
+
+    assert chain.to_list("orders", "history") == [
+        ({"a": {"amount": 1}, "b": None}, [{"c": {"amount": 2}}])
+    ]
+
+
+def test_read_parquet_map_keys_keep_their_type(test_session, tmp_path):
+    table = pa.table(
+        {
+            "ints": pa.array([[(1, 10)]], pa.map_(pa.int64(), pa.int64())),
+            "flags": pa.array([[(True, 3)]], pa.map_(pa.bool_(), pa.int64())),
+        }
+    )
+    path = tmp_path / "maps.parquet"
+    pq.write_table(table, path)
+
+    chain = dc.read_parquet(path.as_posix(), session=test_session)
+
+    assert chain.to_list("ints", "flags") == [({1: 10}, {True: 3})]
+
+
+def test_read_parquet_maps_of_fixed_and_large_lists(test_session, tmp_path):
+    fixed = pa.map_(pa.string(), pa.list_(pa.int64(), 2))
+    large = pa.map_(pa.string(), pa.large_list(pa.int64()))
+    table = pa.table(
+        {
+            "fixed": pa.array([[("k", [1, 2])]], fixed),
+            "large": pa.array([[("k", [3])]], large),
+        }
+    )
+    path = tmp_path / "maps.parquet"
+    pq.write_table(table, path)
+
+    chain = dc.read_parquet(path.as_posix(), session=test_session)
+
+    assert chain.to_list("fixed", "large") == [({"k": [1, 2]}, {"k": [3]})]
 
 
 # The 1969 value floors to a whole second because the ClickHouse driver stores
