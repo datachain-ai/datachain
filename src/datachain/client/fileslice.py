@@ -92,11 +92,18 @@ class FileSlice(io.RawIOBase):
         max_size = self.size - self.position
         if max_size <= 0:
             return 0
+        b = memoryview(b)
+        if b.readonly or not b.c_contiguous:
+            raise TypeError(
+                "readinto() argument must be a writable C-contiguous buffer"
+            )
+        # Empty multidimensional views cannot be cast to a flat byte view.
+        b = b.cast("B") if b.nbytes else memoryview(bytearray())
         self.fileobj.seek(self.offset + self.position)
-        if len(b) > max_size:
-            b = memoryview(b)[:max_size]
+        if b.nbytes > max_size:
+            b = b[:max_size]
         res = self.fileobj.readinto(b)
-        if res != len(b):
+        if res != b.nbytes:
             raise RuntimeError("unexpected end of data")
         self.position += res
         return res
