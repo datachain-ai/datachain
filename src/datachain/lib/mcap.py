@@ -1,7 +1,7 @@
-import io
 from collections.abc import Iterator, Sequence
+from typing import Any
 
-from pydantic import Field
+from pydantic import Field, PrivateAttr
 
 from datachain.lib.data_model import DataModel
 from datachain.lib.file import PARTIAL_READ_BLOCK_SIZE, File, FileError
@@ -36,7 +36,11 @@ class McapSummary(DataModel):
 
 
 class McapMessage(DataModel):
-    """A raw MCAP message; times are in nanoseconds."""
+    """An MCAP message; times are in nanoseconds.
+
+    `decoded` holds the decoded message when `messages()` got `decoder_factories`;
+    it isn't saved with the dataset.
+    """
 
     topic: str
     log_time: int
@@ -45,6 +49,11 @@ class McapMessage(DataModel):
     message_encoding: str
     schema_name: str
     schema_encoding: str
+    _decoded: Any = PrivateAttr(default=None)
+
+    @property
+    def decoded(self) -> Any:
+        return self._decoded
 
 
 def _topic_list(topics: str | Sequence[str] | None) -> list[str] | None:
@@ -59,7 +68,7 @@ def _schema_fields(schema) -> dict[str, str]:
     return {"schema_name": schema.name, "schema_encoding": schema.encoding}
 
 
-def _reader(stream):
+def _reader(stream, decoder_factories=()):
     try:
         from mcap.reader import make_reader
     except ImportError as exc:
@@ -68,10 +77,7 @@ def _reader(stream):
             "To install run:\n\n"
             "  pip install 'datachain[mcap]'\n"
         ) from exc
-    # mcap closes a raw stream when its temporary buffers are collected
-    if isinstance(stream, io.RawIOBase):
-        stream = io.BufferedReader(stream)
-    return make_reader(stream)
+    return make_reader(stream, decoder_factories=decoder_factories)
 
 
 class McapFile(File):
@@ -113,17 +119,26 @@ class McapFile(File):
         topics: str | Sequence[str] | None = None,
         start: int | None = None,
         end: int | None = None,
+        decoder_factories: Sequence[Any] = (),
     ) -> Iterator[McapMessage]:
         """Yield messages in log-time order, logged in `[start, end)` nanoseconds.
 
-        Only the chunks that may hold matching messages are read.
+        Only the chunks that may hold matching messages are read. With
+        `decoder_factories` (e.g. `mcap_protobuf.decoder.DecoderFactory()`), each
+        message also carries its `decoded` object.
         """
         window = start is not None or end is not None
         with self.open(block_size=PARTIAL_READ_BLOCK_SIZE if window else None) as f:
-            for schema, channel, msg in _reader(f).iter_messages(
-                _topic_list(topics), starting_at=start, ending_before=end
-            ):
-                yield McapMessage(
+            reader = _reader(f, decoder_factories)
+            names = _topic_list(topics)
+            args = {"topics": names, "starting_at": start, "ending_before": end}
+            rows = (
+                reader.iter_decoded_messages(**args)
+                if decoder_factories
+                else ((*row, None) for row in reader.iter_messages(**args))
+            )
+            for schema, channel, msg, decoded in rows:
+                message = McapMessage(
                     topic=channel.topic,
                     log_time=msg.log_time,
                     publish_time=msg.publish_time,
@@ -131,6 +146,8 @@ class McapFile(File):
                     message_encoding=channel.message_encoding,
                     **_schema_fields(schema),
                 )
+                message._decoded = decoded
+                yield message
 
 
 class McapSlice(DataModel):
@@ -149,9 +166,11 @@ class McapSlice(DataModel):
     topics: list[str] = Field(default_factory=list)
 
     def messages(
-        self, topics: str | Sequence[str] | None = None
+        self,
+        topics: str | Sequence[str] | None = None,
+        decoder_factories: Sequence[Any] = (),
     ) -> Iterator[McapMessage]:
         """Yield the window's messages, of `topics` or else of `self.topics`."""
         if topics is None:
             topics = self.topics or None
-        return self.mcap.messages(topics, self.start, self.end)
+        return self.mcap.messages(topics, self.start, self.end, decoder_factories)

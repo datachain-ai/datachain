@@ -281,3 +281,15 @@ def test_read_mcap_does_not_prefetch_large_files():
     assert _SummaryOnly(lambda file: iter(())).prefetch_max_size == (
         PARTIAL_READ_PREFETCH_MAX_SIZE
     )
+
+
+class UpperDecoder:
+    def decoder_for(self, message_encoding, schema):
+        return bytes.upper if message_encoding == "json" else None
+
+
+def test_messages_decoded_by_factories(mcap_file):
+    factories = [UpperDecoder()]
+    msgs = list(mcap_file.messages("/a", end=T0 + 2 * SEC, decoder_factories=factories))
+    assert [m.decoded for m in msgs] == [b"A0", b"A1"]
+    assert [m.decoded for m in mcap_file.messages("/a", end=T0 + SEC)] == [None]
