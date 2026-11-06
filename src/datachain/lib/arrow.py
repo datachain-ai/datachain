@@ -256,14 +256,6 @@ class ArrowGenerator(Generator):
                 # A copy, so the files read after this one keep their CSV options.
                 kwargs = {**kwargs, "format": "csv", "csv": csv}
             arrow_file = ArrowRow(file=file, index=index, kwargs=kwargs)
-
-            if self.output_schema and hasattr(vals[0], "source"):
-                # if we are reading parquet file written by datachain it might have
-                # source inside of it already, so we should not duplicate it, instead
-                # we are re-creating it of the self.source flag
-                vals[0].source = arrow_file  # type: ignore[attr-defined]
-
-                return vals
             return [arrow_file, *vals]
 
         if self.output is not None and len(self.output.values) == 1:
@@ -403,12 +395,15 @@ def merge_schemas(
 
 
 def schema_to_output(
-    schema: pa.Schema, col_names: Sequence[str] | None = None
+    schema: pa.Schema,
+    col_names: Sequence[str] | None = None,
+    existing_column_names: list[str] | None = None,
 ) -> tuple[dict[str, type], list[str]]:
     """
     Generate UDF output schema from pyarrow schema.
     Returns a tuple of output schema and original column names (since they may be
-    normalized in the output dict).
+    normalized in the output dict). Columns are renamed to avoid the names in
+    `existing_column_names`.
     """
     signal_schema = _get_datachain_schema(schema)
     if signal_schema:
@@ -422,7 +417,10 @@ def schema_to_output(
     if not col_names:
         col_names = schema.names or []
 
-    normalized_col_dict = normalize_col_names(col_names)
+    existing_column_names = existing_column_names or []
+    normalized_col_dict = normalize_col_names(existing_column_names + list(col_names))
+    for name in existing_column_names:
+        del normalized_col_dict[name]
     col_names = list(normalized_col_dict)
 
     hf_schema = _get_hf_schema(schema)
