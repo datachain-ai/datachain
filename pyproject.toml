@@ -38,6 +38,7 @@ dependencies = [
   "adlfs>=2024.2.0",
   "azure-storage-blob>=12.28.0",
   "dvc-data>=3.10,<4",
+  "mcap>=1.6.0",
   "dvc-objects>=4,<6",
   "shtab>=1.3.4,<2",
   "sqlalchemy>=2",
@@ -104,11 +105,8 @@ postgres = [
 zarr = [
   "zarr>=3.0.0"
 ]
-mcap = [
-  "mcap>=1.6.0"
-]
 tests = [
-  "datachain[torch,audio,remote,vector,hf,video,postgres,zarr,mcap]",
+  "datachain[torch,audio,remote,vector,hf,video,postgres,zarr]",
   "pytest>=8,<9.3",
   "pytest-asyncio",
   "pytest-sugar>=0.9.6",

@@ -122,7 +122,7 @@ Parquet exported by DataChain restores its saved schema and does not support `co
 
 ## MCAP Robotics Logs
 
-`dc.read_mcap()` reads [MCAP](https://mcap.dev) logs (ROS 2, Foxglove) and needs `pip install 'datachain[mcap]'`. By default it gives one row per file: an [`McapFile`](../references/data-types/mcapfile.md) and its summary (topics, message counts, start/end time), read from the summary section at the end of the file. With `duration=` it gives one [`McapSlice`](../references/data-types/mcapfile.md) row per time window instead. `messages()` yields message bytes and reads only the chunks that overlap the topics and time window; pass `decoder_factories` (e.g. `mcap_protobuf.decoder.DecoderFactory()`) to also get each message `decoded`. Times are nanoseconds.
+`dc.read_mcap()` reads [MCAP](https://mcap.dev) logs (ROS 2, Foxglove). By default it gives one row per file: an [`McapFile`](../references/data-types/mcapfile.md) and its summary (topics, message counts, start/end time), read from the summary section at the end of the file. With `duration=` it gives one [`McapSlice`](../references/data-types/mcapfile.md) row per time window instead. `messages()` yields message bytes and reads only the chunks that overlap the topics and time window; pass `decoder_factories` (e.g. `mcap_protobuf.decoder.DecoderFactory()`) to also get each message `decoded`. Times are nanoseconds.
 
 ```python
 import datachain as dc

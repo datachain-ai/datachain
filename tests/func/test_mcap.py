@@ -2,13 +2,12 @@ import io
 import tarfile
 
 import pytest
+from mcap.writer import Writer as McapWriter
 
 import datachain as dc
 from datachain.lib.file import FileError
 from datachain.lib.mcap import McapFile, McapSlice
 from datachain.lib.tar import process_tar
-
-mcap_writer = pytest.importorskip("mcap.writer")
 
 T0 = 1_700_000_000_000_000_000
 SEC = 1_000_000_000
@@ -19,7 +18,7 @@ B_TIMES = [T0 + i * 2_500_000_000 for i in range(4)]
 
 def mcap_bytes(**writer_options) -> bytes:
     buf = io.BytesIO()
-    w = mcap_writer.Writer(buf, chunk_size=64, **writer_options)
+    w = McapWriter(buf, chunk_size=64, **writer_options)
     w.start()
     schema = w.register_schema("A", "jsonschema", b"{}")
     a = w.register_channel("/a", "json", schema)

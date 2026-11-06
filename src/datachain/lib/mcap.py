@@ -69,14 +69,8 @@ def _schema_fields(schema) -> dict[str, str]:
 
 
 def _reader(stream, decoder_factories=()):
-    try:
-        from mcap.reader import make_reader
-    except ImportError as exc:
-        raise ImportError(
-            "Missing dependencies for reading MCAP files.\n"
-            "To install run:\n\n"
-            "  pip install 'datachain[mcap]'\n"
-        ) from exc
+    from mcap.reader import make_reader
+
     return make_reader(stream, decoder_factories=decoder_factories)
 
 
