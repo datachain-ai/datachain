@@ -260,3 +260,24 @@ def test_read_mcap_from_cloud_without_cache(cloud_test_catalog, cloud_prefix):
 
     (summary,) = dc.read_mcap(uri, session=ctc.session).to_values("summary")
     assert summary.messages == 14
+
+
+def test_summary_and_windows_read_small_blocks(mcap_file, mocker):
+    from datachain.lib.file import PARTIAL_READ_BLOCK_SIZE
+
+    spy = mocker.spy(McapFile, "open")
+    mcap_file.summary()
+    list(mcap_file.messages(start=T0))
+    list(mcap_file.messages())
+
+    sizes = [call.kwargs.get("block_size") for call in spy.call_args_list]
+    assert sizes == [PARTIAL_READ_BLOCK_SIZE, PARTIAL_READ_BLOCK_SIZE, None]
+
+
+def test_read_mcap_does_not_prefetch_large_files():
+    from datachain.lib.arrow import PARTIAL_READ_PREFETCH_MAX_SIZE
+    from datachain.lib.dc.mcap import _SummaryOnly
+
+    assert _SummaryOnly(lambda file: iter(())).prefetch_max_size == (
+        PARTIAL_READ_PREFETCH_MAX_SIZE
+    )

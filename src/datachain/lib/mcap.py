@@ -4,7 +4,7 @@ from collections.abc import Iterator, Sequence
 from pydantic import Field
 
 from datachain.lib.data_model import DataModel
-from datachain.lib.file import File, FileError
+from datachain.lib.file import PARTIAL_READ_BLOCK_SIZE, File, FileError
 
 
 class McapTopic(DataModel):
@@ -80,7 +80,7 @@ class McapFile(File):
     def summary(self, topics: str | Sequence[str] | None = None) -> McapSummary:
         """Read the summary section only, optionally counting just `topics`."""
         topics = _topic_list(topics)
-        with self.open() as f:
+        with self.open(block_size=PARTIAL_READ_BLOCK_SIZE) as f:
             s = _reader(f).get_summary()
         st = s and s.statistics
         if st is None or (st.channel_count, st.schema_count) != (
@@ -118,7 +118,8 @@ class McapFile(File):
 
         Only the chunks that may hold matching messages are read.
         """
-        with self.open() as f:
+        window = start is not None or end is not None
+        with self.open(block_size=PARTIAL_READ_BLOCK_SIZE if window else None) as f:
             for schema, channel, msg in _reader(f).iter_messages(
                 _topic_list(topics), starting_at=start, ending_before=end
             ):

@@ -2,7 +2,9 @@ import os
 from collections.abc import Iterator, Sequence
 from typing import TYPE_CHECKING, Any
 
+from datachain.lib.arrow import PARTIAL_READ_PREFETCH_MAX_SIZE
 from datachain.lib.file import File
+from datachain.lib.udf import Generator
 from datachain.query import Session
 
 if TYPE_CHECKING:
@@ -68,6 +70,17 @@ def read_mcap(
                     mcap=mcap, start=start, end=start + step, topics=list(topics or [])
                 )
 
-    if step is None:
-        return chain.gen(rows, output={"mcap": McapFile, "summary": McapSummary})
-    return chain.gen(rows, output={"mcap": McapSlice})
+    output: dict[str, Any] = (
+        {"mcap": McapSlice} if step else {"mcap": McapFile, "summary": McapSummary}
+    )
+    return chain.gen(_SummaryOnly(rows), output=output)
+
+
+class _SummaryOnly(Generator):
+    """Reads only each file's summary section, so large files aren't prefetched."""
+
+    prefetch_max_size = PARTIAL_READ_PREFETCH_MAX_SIZE
+
+    def __init__(self, rows):
+        super().__init__()
+        self.process = rows  # type: ignore[method-assign]
