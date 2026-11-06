@@ -222,4 +222,6 @@ def process_webdataset(
             with tarfile.open(fileobj=fd) as tar:
                 yield from get_tar_groups(file, tar, core_extensions, spec, encoding)
 
+    # UDF hashing skips closures, so the name carries the options.
+    wds_func.__name__ = f"process_webdataset{(tuple(core_extensions), encoding)!r}"
     return wds_func

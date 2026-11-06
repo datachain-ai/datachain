@@ -120,6 +120,16 @@ With `header=False` and no `columns`, `output` is required and supplies names fo
 
 Parquet exported by DataChain restores its saved schema and does not support `columns=`. Read it without `columns` and use `.select(...)` on the chain. With `columns` or `output`, read it separately from other Parquet files.
 
+## WebDataset
+
+`read_webdataset()` reads WebDataset tar shards without extracting them, one row per sample. The `spec=` model maps member extensions to fields, e.g. `WDSLaion` for LAION-style `.jpg` + `.json` + `.txt` samples:
+
+```python
+from datachain.lib.webdataset_laion import WDSLaion
+
+samples = dc.read_webdataset("gs://bucket/shards/", spec=WDSLaion)
+```
+
 ## SQL Databases
 
 `read_database()` connects to any SQLAlchemy-compatible database:

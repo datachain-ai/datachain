@@ -8,7 +8,7 @@ import pytest
 
 import datachain as dc
 from datachain.lib.file import File
-from datachain.lib.webdataset import process_webdataset
+from datachain.lib.webdataset import WDSAllFile, process_webdataset
 from datachain.lib.webdataset_laion import Laion, WDSLaion
 from tests.examples.wds_data import WDS_META, WDS_TAR_SHARDS
 
@@ -23,7 +23,7 @@ def webdataset_tars(tmp_path):
     shards_path = data_path / "shards"
 
     fh = io.BytesIO()
-    with tarfile.open(fileobj=fh, mode="w:gz") as tar:
+    with tarfile.open(fileobj=fh, mode="w") as tar:
         for idx, rec in enumerate(WDS_TAR_SHARDS):
             # json file
             data = json.dumps(rec).encode()
@@ -129,3 +129,53 @@ def test_wds_merge_with_parquet_meta(
         assert laion_uid == uid
     for caption, text in res.to_iter("laion.json.caption", "text"):
         assert caption == text
+
+
+def test_read_webdataset_matches_gen(test_session, webdataset_tars):
+    uri = Path(webdataset_tars).as_uri()
+    expected = (
+        dc.read_storage(uri, session=test_session)
+        .gen(laion=process_webdataset(spec=WDSLaion))
+        .order_by("laion.file.path")
+        .to_values("laion")
+    )
+
+    res = dc.read_webdataset(uri, spec=WDSLaion, column="laion", session=test_session)
+
+    assert res.schema == {"laion": WDSLaion}
+    assert res.order_by("laion.file.path").to_values("laion") == expected
+    assert len(expected) == len(WDS_TAR_SHARDS)
+    assert {r.file.read() for r in expected} == {b"123"}
+
+
+def test_read_webdataset_defaults_skip_non_tar_files(test_session, webdataset_tars):
+    shard = (webdataset_tars / "00000000.tar").read_bytes()
+    (webdataset_tars / "00000001.tar").write_bytes(shard)
+    (webdataset_tars / "00000002.tar.gz").write_bytes(shard)
+    (webdataset_tars / "00000000_stats.json").write_text("{}")
+
+    res = dc.read_webdataset(Path(webdataset_tars).as_uri(), session=test_session)
+
+    assert res.schema == {"wds": WDSAllFile}
+    rows = res.to_values("wds")
+    assert len(rows) == 2 * len(WDS_TAR_SHARDS)
+    assert sorted(r.txt for r in rows) == sorted(
+        2 * [d["caption"] for d in WDS_TAR_SHARDS]
+    )
+    assert {r.file.parent for r in rows} == {"00000000.tar", "00000001.tar"}
+
+
+def test_read_webdataset_options_change_saved_result(test_session, tmp_path):
+    with tarfile.open(tmp_path / "shard.tar", "w") as tar:
+        for name, data in [("0.jpg", b"img"), ("0.txt", "é".encode())]:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+
+    for encoding, text in [("utf-8", "é"), ("latin-1", "Ã©")]:
+        dc.read_webdataset(
+            tmp_path.as_uri(), encoding=encoding, session=test_session
+        ).save("samples")
+        assert dc.read_dataset("samples", session=test_session).to_values(
+            "wds.txt"
+        ) == [text]
