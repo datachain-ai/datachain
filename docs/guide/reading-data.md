@@ -122,27 +122,48 @@ Parquet exported by DataChain restores its saved schema and does not support `co
 
 ## LeRobot Datasets
 
-`read_lerobot()` reads a [LeRobot](https://github.com/huggingface/lerobot) v3 dataset with one row per episode: the episode metadata (`episode_index`, `length`, `tasks`, ...) and, in `videos`, one `VideoFragment` per camera that spans the episode in its mp4. Column names and camera keys are normalized like `read_parquet` columns, e.g. `observation.image` becomes `videos.observation_image`.
+`dc.read_lerobot()` reads a [LeRobot](https://github.com/huggingface/lerobot) v3 dataset as a row per episode: its metadata (`episode_index`, `length`, `tasks`, ...) and, under `videos`, a `VideoFragment` per camera that points into the shared mp4. Only the metadata is read, so the rows are ready in seconds; the videos are not downloaded. Column names and camera keys are normalized like `read_parquet` columns, e.g. `observation.image` becomes `videos.observation_image`.
+
+**Questions about episodes and frames run as SQL, without touching the videos.**
 
 ```python
 import datachain as dc
 
 episodes = dc.read_lerobot("hf://datasets/lerobot/pusht")
-frames = dc.read_parquet("hf://datasets/lerobot/pusht/data/")  # per-frame table
-
 fps = 10  # "fps" in meta/info.json
 
-
-def first_frame_mean(cam: dc.VideoFragment) -> float:
-    return float(cam.video.get_frame(round(cam.start * fps)).get_np().mean())
-
-
-stats = episodes.settings(cache=True).map(
-    brightness=first_frame_mean, params=["videos.observation_image"]
-)
+# hours of data, and how many episodes are longer than 20 s
+hours = episodes.sum("length") / fps / 3600
+long_ones = episodes.filter(dc.C("length") > 20 * fps).count()
 ```
 
-Many episodes share one mp4. A UDF that takes a fragment reads only that episode's bytes; with `settings(cache=True)` each mp4 downloads once and is reused by the other episodes.
+```python
+# short episodes that reached a high reward, from the per-frame table
+frames = dc.read_parquet("hf://datasets/lerobot/pusht/data/")
+max_reward = dc.func.max("next_reward")
+rewards = frames.group_by(reward=max_reward, partition_by="episode_index")
+episodes = episodes.merge(rewards, on="episode_index")
+good = episodes.filter((dc.C("reward") > 0.9) & (dc.C("length") < 150))
+```
+
+**Questions about the video run your Python code on the frames of each episode.** Decoding a fragment reads only that episode's bytes from the shared mp4. Episodes are processed in parallel, and the results become columns you can filter with SQL again:
+
+```python
+def motion(cam: dc.VideoFragment) -> float:
+    start, end = round(cam.start * fps), round(cam.end * fps)
+    sampled = cam.video.get_frames(start, end, fps)  # a frame per second
+    frames = [f.get_np().astype("float32") for f in sampled]
+    diffs = [abs(a - b).mean() for a, b in zip(frames, frames[1:])]
+    return float(sum(diffs) / len(diffs)) if diffs else 0.0
+```
+
+```python
+camera = "videos.observation_image"
+scored = good.settings(parallel=8).map(motion=motion, params=[camera])
+stuck = scored.filter(dc.C("motion") < 1.0)  # the scene barely changes
+```
+
+Many episodes share one mp4. A function that takes a fragment reads only that episode's bytes; with `settings(cache=True)` each mp4 downloads once and is reused by the other episodes.
 
 ## SQL Databases
 
