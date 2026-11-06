@@ -147,6 +147,6 @@ def read_listing_dataset(
     query.set_listing_fn(lambda: True)
 
     chain = DataChain(query, _settings, signal_schema)
-    chain = ls(chain, path, recursive=True, column="file")
+    chain = ls(chain, path, recursive=True)
 
     return chain, dataset.get_version(version)
