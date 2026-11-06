@@ -8,7 +8,15 @@ DataChain ships built-in functions in `dc.func` that run inside the Query Engine
 
 All functions are accessed through `dc.func` after `import datachain as dc`.
 
-A string passed as a function argument names a column (`dc.func.sum("price")`), but a string on the right side of a comparison is a literal value (`dc.func.path.file_ext("path") == "jpg"`). Use `dc.C("name")` to compare with a column.
+## Column Names and Values
+
+A string passed to a function is a column name: `dc.func.sum("price")`. In a comparison, strings and numbers are values; to compare with a column, use `dc.C("name")`:
+
+```python
+ext = dc.func.path.file_ext("file.path")
+chain.filter(ext == "jpg")
+chain.filter(ext == dc.C("expected_ext"))
+```
 
 ## Distance Functions
 
