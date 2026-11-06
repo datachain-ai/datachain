@@ -129,14 +129,19 @@ import datachain as dc
 
 episodes = dc.read_mcap("s3://bucket/episodes/")  # columns: mcap, summary
 long_ones = episodes.filter(dc.C("summary.duration") > 60)
+```
 
-windows = dc.read_mcap("s3://bucket/episodes/", topics=["/joint_states"], duration=10)
+A function over `McapSlice` rows reads the messages of one window:
 
-
+```python
 def joint_messages(mcap: dc.McapSlice) -> int:
     return sum(1 for msg in mcap.messages())
+```
 
+Count the joint messages in 10-second windows:
 
+```python
+windows = dc.read_mcap("s3://bucket/episodes/", topics=["/joint_states"], duration=10)
 windows.map(n=joint_messages).show()
 ```
 
