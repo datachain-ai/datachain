@@ -122,7 +122,7 @@ Parquet exported by DataChain restores its saved schema and does not support `co
 
 ## LeRobot Datasets
 
-`read_lerobot()` reads a [LeRobot](https://github.com/huggingface/lerobot) v3 dataset with one row per episode: the episode metadata (`episode_index`, `length`, `tasks`, ...) and, in `videos`, one `VideoFragment` per camera that spans the episode in its mp4. Camera keys become field names with `.` turned into `_`.
+`read_lerobot()` reads a [LeRobot](https://github.com/huggingface/lerobot) v3 dataset with one row per episode: the episode metadata (`episode_index`, `length`, `tasks`, ...) and, in `videos`, one `VideoFragment` per camera that spans the episode in its mp4. Column names and camera keys are normalized like `read_parquet` columns, e.g. `observation.image` becomes `videos.observation_image`.
 
 ```python
 import datachain as dc

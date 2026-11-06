@@ -8,8 +8,6 @@ import pytest
 
 import datachain as dc
 
-av = pytest.importorskip("av")
-
 FPS = 10
 TOP = "observation.images.top"
 WRIST = "observation.images.wrist"
@@ -17,6 +15,7 @@ VIDEO_PATH = "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.m
 
 
 def _write_video(path, n_frames):
+    av = pytest.importorskip("av")
     path.parent.mkdir(parents=True, exist_ok=True)
     with av.open(str(path), "w") as container:
         stream = container.add_stream("mpeg4", rate=FPS)
@@ -28,7 +27,7 @@ def _write_video(path, n_frames):
         container.mux(stream.encode())
 
 
-def _make_dataset(root, version="v3.0"):
+def _write_info(root, version="v3.0"):
     (root / "meta" / "episodes" / "chunk-000").mkdir(parents=True)
     info = {
         "codebase_version": version,
@@ -42,6 +41,10 @@ def _make_dataset(root, version="v3.0"):
         "video_path": VIDEO_PATH,
     }
     (root / "meta" / "info.json").write_text(json.dumps(info))
+
+
+def _make_dataset(root):
+    _write_info(root)
     # Episodes of 5, 3 and 4 frames: TOP holds all in one file, WRIST splits 0-1 | 2.
     episodes = {
         "episode_index": [0, 1, 2],
@@ -61,8 +64,12 @@ def _make_dataset(root, version="v3.0"):
         f"videos/{WRIST}/to_timestamp": [0.5, 0.8, 0.4],
         "stats/action/mean": [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
     }
+    # Two shards, the second with its columns in reverse order.
+    table = pa.table(episodes)
+    shards = root / "meta" / "episodes" / "chunk-000"
+    pq.write_table(table.slice(0, 2), shards / "file-000.parquet")
     pq.write_table(
-        pa.table(episodes), root / "meta/episodes/chunk-000/file-000.parquet"
+        table.slice(2).select(table.column_names[::-1]), shards / "file-001.parquet"
     )
     _write_video(
         root / VIDEO_PATH.format(video_key=TOP, chunk_index=0, file_index=0), 12
@@ -168,7 +175,7 @@ def test_read_lerobot_skips_episodes_with_missing_videos(
 
 
 def test_read_lerobot_rejects_non_v3(tmp_dir, test_session):
-    _make_dataset(tmp_dir / "old", version="v2.1")
+    _write_info(tmp_dir / "old", version="v2.1")
 
     with pytest.raises(ValueError, match=r"LeRobot v2\.1, only v3 is supported"):
         dc.read_lerobot((tmp_dir / "old").as_uri(), session=test_session)
@@ -180,3 +187,31 @@ def test_read_lerobot_requires_info_json(tmp_dir, test_session):
 
     with pytest.raises(ValueError, match=r"Expected one meta/info\.json"):
         dc.read_lerobot((tmp_dir / "empty").as_uri(), session=test_session)
+
+
+def test_read_lerobot_keeps_schema_when_all_videos_missing(
+    lerobot_dataset, test_session
+):
+    for video in (lerobot_dataset / "videos").rglob("*.mp4"):
+        video.unlink()
+
+    chain = dc.read_lerobot(lerobot_dataset.as_uri(), session=test_session)
+
+    assert chain.count() == 0
+    assert chain.schema["episode_index"] == int | None
+    assert chain.schema["tasks"] == list[str | None] | None
+    assert chain.to_values("videos.observation_images_top.start") == []
+
+
+@pytest.mark.parametrize("cache", [False, True])
+def test_read_lerobot_fails_on_metadata_changed_since_listing(
+    lerobot_dataset, test_session, cache
+):
+    dc.read_lerobot(lerobot_dataset.as_uri(), session=test_session)
+    shard = lerobot_dataset / "meta" / "episodes" / "chunk-000" / "file-000.parquet"
+    pq.write_table(pq.read_table(shard).slice(0, 1), shard)
+
+    with pytest.raises(FileNotFoundError, match="changed on the source"):
+        dc.read_lerobot(
+            lerobot_dataset.as_uri(), session=test_session, settings={"cache": cache}
+        )
