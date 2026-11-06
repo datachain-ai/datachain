@@ -157,12 +157,11 @@ def test_read_webdataset_defaults_skip_non_tar_files(test_session, webdataset_ta
     res = dc.read_webdataset(Path(webdataset_tars).as_uri(), session=test_session)
 
     assert res.schema == {"wds": WDSAllFile}
-    rows = res.to_values("wds")
-    assert len(rows) == 2 * len(WDS_TAR_SHARDS)
-    assert sorted(r.txt for r in rows) == sorted(
+    rows = res.to_list("wds.txt", "wds.file.path")
+    assert sorted(txt for txt, _ in rows) == sorted(
         2 * [d["caption"] for d in WDS_TAR_SHARDS]
     )
-    assert {r.file.parent for r in rows} == {"00000000.tar", "00000001.tar"}
+    assert {path.split("/")[0] for _, path in rows} == {"00000000.tar", "00000001.tar"}
 
 
 def test_read_webdataset_options_change_saved_result(test_session, tmp_path):
