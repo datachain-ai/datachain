@@ -97,6 +97,14 @@ def gen_datamodel_code(
             json_object = json_object[0]  # sample the 1st object from JSON array
         if format == "jsonl":
             format = "json"  # treat json line as plain JSON in auto-schema
+
+        from datachain.lib.utils import normalize_col_names
+
+        column_mapping = normalize_col_names(list(json_object.keys()))
+        json_object = {
+            new_key: json_object[old_key] for new_key, old_key in column_mapping.items()
+        }
+
         data_string = json.dumps(json_object)
 
     import datamodel_code_generator
