@@ -1,6 +1,11 @@
-from collections.abc import Iterator, Sequence
+import asyncio
+from collections import deque
+from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import Future
+from contextlib import contextmanager
 from typing import Any
 
+from fsspec.asyn import get_loop
 from pydantic import Field, PrivateAttr
 
 from datachain.lib.data_model import DataModel
@@ -74,6 +79,91 @@ def _reader(stream, decoder_factories=()):
     return make_reader(stream, decoder_factories=decoder_factories)
 
 
+_RANGED_PROTOCOLS = ("s3", "gs", "az")
+_MAX_CHUNKS_IN_FLIGHT = 8
+_MAX_BYTES_IN_FLIGHT = 64 << 20
+
+
+def _chunk_spans(summary, topics, start, end) -> list[tuple[int, int]]:
+    """Byte ranges of chunks that may hold matches, in the reader's read order."""
+    ids = None
+    if topics is not None:
+        ids = {i for i, ch in summary.channels.items() if ch.topic in topics}
+    chunks = sorted(
+        (
+            c
+            for c in summary.chunk_indexes
+            if (start is None or c.message_end_time >= start)
+            and (end is None or c.message_start_time < end)
+            and (
+                ids is None
+                or not c.message_index_offsets
+                or not ids.isdisjoint(c.message_index_offsets)
+            )
+        ),
+        key=lambda c: (c.message_start_time, c.chunk_start_offset),
+    )
+    return [
+        (c.chunk_start_offset, c.chunk_start_offset + c.chunk_length) for c in chunks
+    ]
+
+
+class _ChunkPrefetcher:
+    """Seekable view of `f` that serves planned byte ranges from parallel reads.
+
+    Ranges are fetched ahead in plan order, a bounded number at a time; any other
+    read goes to `f`.
+    """
+
+    def __init__(self, f, fetch: Callable[[int, int], Future]):
+        self._f = f
+        self._fetch = fetch
+        self._todo: deque[tuple[int, int]] = deque()
+        self._window: deque[tuple[int, int, Future]] = deque()
+
+    def plan(self, spans: list[tuple[int, int]]) -> None:
+        self._todo.extend(spans)
+        self._fill()
+
+    def _fill(self) -> None:
+        size = sum(e - s for s, e, _ in self._window)
+        while self._todo and len(self._window) < _MAX_CHUNKS_IN_FLIGHT:
+            s, e = self._todo[0]
+            if self._window and size + e - s > _MAX_BYTES_IN_FLIGHT:
+                break
+            self._todo.popleft()
+            self._window.append((s, e, self._fetch(s, e)))
+            size += e - s
+
+    def close(self) -> None:
+        self._todo.clear()
+        while self._window:
+            self._window.popleft()[2].cancel()
+
+    def read(self, n: int = -1) -> bytes:
+        pos = self._f.tell()
+        for i, (s, e, fut) in enumerate(self._window):
+            if s <= pos and 0 <= n <= e - pos:
+                for _ in range(i):
+                    self._window.popleft()[2].cancel()
+                self._fill()
+                self._f.seek(pos + n)
+                return fut.result()[pos - s : pos - s + n]
+        return self._f.read(n)
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        return self._f.seek(offset, whence)
+
+    def tell(self) -> int:
+        return self._f.tell()
+
+    def seekable(self) -> bool:
+        return True
+
+    def readable(self) -> bool:
+        return True
+
+
 class McapFile(File):
     """`File` holding an MCAP robotics log (ROS 2, Foxglove)."""
 
@@ -121,10 +211,8 @@ class McapFile(File):
         `decoder_factories` (e.g. `mcap_protobuf.decoder.DecoderFactory()`), each
         message also carries its `decoded` object.
         """
-        window = start is not None or end is not None
-        with self.open(block_size=PARTIAL_READ_BLOCK_SIZE if window else None) as f:
-            reader = _reader(f, decoder_factories)
-            names = _topic_list(topics)
+        names = _topic_list(topics)
+        with self._message_reader(names, start, end, decoder_factories) as reader:
             args = {"topics": names, "starting_at": start, "ending_before": end}
             rows = (
                 reader.iter_decoded_messages(**args)
@@ -142,6 +230,36 @@ class McapFile(File):
                 )
                 message._decoded = decoded
                 yield message
+
+    @contextmanager
+    def _message_reader(self, topics, start, end, decoder_factories):
+        client = self._catalog.get_client(self.source) if self._catalog else None
+        if (
+            client
+            and client.protocol in _RANGED_PROTOCOLS
+            and not (self.location or self._caching_enabled)
+            and not client.cache.contains(self)
+        ):
+            with self.open(block_size=PARTIAL_READ_BLOCK_SIZE) as f:
+                loop = get_loop()
+                view = _ChunkPrefetcher(
+                    f,
+                    lambda s, e: asyncio.run_coroutine_threadsafe(
+                        client.read_range(self, s, e), loop
+                    ),
+                )
+                reader = _reader(view, decoder_factories)
+                summary = reader.get_summary()
+                if summary is not None and summary.chunk_indexes:
+                    view.plan(_chunk_spans(summary, topics, start, end))
+                    try:
+                        yield reader
+                    finally:
+                        view.close()
+                    return
+        window = start is not None or end is not None
+        with self.open(block_size=PARTIAL_READ_BLOCK_SIZE if window else None) as f:
+            yield _reader(f, decoder_factories)
 
 
 class McapSlice(DataModel):

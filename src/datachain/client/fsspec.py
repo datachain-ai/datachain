@@ -300,6 +300,15 @@ class Client(ABC):
             **self._version_kwargs(version_id),
         )
 
+    async def read_range(self, file: "File", start: int, end: int) -> bytes:
+        """Read bytes `[start, end)` of `file` at its version."""
+        return await self.fs._cat_file(
+            file.get_fs_path(),
+            start=start,
+            end=end,
+            **self._version_kwargs(file.version),
+        )
+
     async def scandir(
         self, start_prefix: str, method: str = "default"
     ) -> AsyncIterator[Sequence[Any]]:

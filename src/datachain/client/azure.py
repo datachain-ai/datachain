@@ -259,6 +259,13 @@ class AzureClient(RangeListedClient):
             lpath = f"{lpath}?versionid={version_id}"
         await self.fs._get_file(lpath, rpath, callback=callback)
 
+    async def read_range(self, file: File, start: int, end: int) -> bytes:
+        path = file.get_fs_path()
+        if file.version:
+            # adlfs._cat_file() reads version_id only from the path.
+            path = f"{path}?versionid={file.version}"
+        return await self.fs._cat_file(path, start=start, end=end)
+
     _hns = False
 
     @staticmethod
