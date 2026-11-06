@@ -168,3 +168,15 @@ def test_open_object_huggingface_block_size_zero_reads_only_asked_bytes(
     assert [(start, end) for _, start, end in requests] == [
         (len(raw) - 10, len(raw) - 5)
     ]
+
+
+def test_pinned_version_is_read_by_revision():
+    client = HfClient("datasets/org/repo", {}, Mock(spec=Cache))
+    client._fs = Mock()
+    client._fs._get_file = AsyncMock()
+
+    sync(get_loop(), client.get_file, "org/repo/a.txt", "local/a", None, "commit123")
+
+    client._fs._get_file.assert_awaited_once_with(
+        "org/repo/a.txt", "local/a", callback=None, revision="commit123"
+    )

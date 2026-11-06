@@ -73,6 +73,10 @@ class HfClient(Client):
     def FS_CLASS(cls):  # noqa: N802, N805
         return get_hf_filesystem_cls()
 
+    def _version_kwargs(self, version_id: str | None) -> dict[str, Any]:
+        # HfFileSystem pins a commit with `revision`; it ignores `version_id`
+        return {"revision": version_id} if version_id else {}
+
     def _file_info_kwargs(self, version_id: str | None = None) -> dict[str, Any]:
         return {
             **self._version_kwargs(version_id),
