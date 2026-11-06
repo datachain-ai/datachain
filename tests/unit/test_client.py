@@ -174,7 +174,7 @@ class _ReorderingClient(RangeListedClient):
         raise NotImplementedError
 
     async def _list_page(
-        self, prefix, start_after, token, hi=None, page_size=None
+        self, prefix, start_after, token, hi=None, page_size=None, delimiter=""
     ) -> Page:
         keep = Keep(self, start_after, hi)
         if token is None:
@@ -241,7 +241,7 @@ class _OverSeekingClient(RangeListedClient):
         raise NotImplementedError
 
     async def _list_page(
-        self, prefix, start_after, token, hi=None, page_size=None
+        self, prefix, start_after, token, hi=None, page_size=None, delimiter=""
     ) -> Page:
         keep = Keep(self, start_after, hi)
         keys = [k for k in self.keys if k.startswith(prefix)]
@@ -306,7 +306,7 @@ class _HiddenInversionClient(RangeListedClient):
         raise NotImplementedError
 
     async def _list_page(
-        self, prefix, start_after, token, hi=None, page_size=None
+        self, prefix, start_after, token, hi=None, page_size=None, delimiter=""
     ) -> Page:
         keep = Keep(self, start_after, hi)
         if token is None:

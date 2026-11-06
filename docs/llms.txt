@@ -18,6 +18,7 @@ Never use: `from datachain import File, C, func`
 ## Key Patterns
 
 ### Read data
+- `dc.list_storage("s3://bucket/path/")` -- list storage files without a chain or saved dataset ([guide](https://docs.datachain.ai/guide/listing-storage/))
 - `dc.read_storage("s3://bucket/path/", type="image")` -- files from cloud storage
 - `dc.read_csv()`, `dc.read_json()`, `dc.read_parquet()` -- structured formats
 - `dc.read_database(query, connection_string)` -- SQL databases
@@ -28,6 +29,7 @@ Never use: `from datachain import File, C, func`
 - `.filter(dc.C("col") > value)` -- SQL-compiled filter (warehouse speed)
 - `.mutate(new_col=dc.func.path.file_ext("file.path"))` -- SQL-compiled column derivation
 - `.map(result=my_function)` -- Python operation per record (needs `settings(parallel=N)` for perf)
+- `.batch_map(result=my_function, batch=32)` -- one call per batch of up to 32 records: lists in, one result per record out ([guide](https://docs.datachain.ai/guide/batch-inference/))
 - `.gen(chunks=split_function)` -- expand one record to many
 - `.agg(summary=aggregate_fn, partition_by="group_col")` -- group and reduce
 - `.merge(other, on="key")` -- join two chains
@@ -48,9 +50,10 @@ Never use: `from datachain import File, C, func`
 3. Pass `anon=True` for public buckets
 4. Use `save()` before `filter()` on expensive Python operation output
 5. Use `settings(parallel=True)` for ML/LLM operations
-6. Use data-engine operations (filter, mutate, group_by) over Python when possible
-7. One output signal per map/gen/agg -- use Pydantic models for multiple fields
-8. Use `dc.func.*` for SQL-speed analytics: distance, aggregate, window, path, string, conditional
+6. Use `batch_map(batch=N)` when the model takes a list of inputs per call
+7. Use data-engine operations (filter, mutate, group_by) over Python when possible
+8. `map` and `batch_map` support named functions for multiple signals; use a Pydantic model for related fields from one function
+9. Use `dc.func.*` for SQL-speed analytics: distance, aggregate, window, path, string, conditional
 
 ## Documentation Sections
 

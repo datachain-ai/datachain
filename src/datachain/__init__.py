@@ -9,11 +9,13 @@ from datachain.lib.dc import (
     ColumnExpr,
     DataChain,
     DataChainSchema,
+    Listing,
     Sys,
     datasets,
     delete_dataset,
     is_local,
     is_studio,
+    list_storage,
     listings,
     move_dataset,
     read_csv,
@@ -35,6 +37,7 @@ from datachain.lib.file import (
     AudioFragment,
     File,
     FileError,
+    FileRow,
     Image,
     ImageFile,
     TarVFile,
@@ -47,7 +50,7 @@ from datachain.lib.file import (
 from datachain.lib.model_store import ModelStore
 from datachain.lib.namespaces import delete_namespace
 from datachain.lib.projects import create as create_project
-from datachain.lib.udf import Aggregator, Generator, Mapper
+from datachain.lib.udf import Aggregator, BatchMapper, Generator, Mapper
 from datachain.lib.utils import AbstractUDF, DataChainError
 from datachain.query import metrics, param
 from datachain.query.session import Session
@@ -61,6 +64,7 @@ __all__ = [
     "Audio",
     "AudioFile",
     "AudioFragment",
+    "BatchMapper",
     "BucketStatus",
     "C",
     "Column",
@@ -72,9 +76,11 @@ __all__ = [
     "DataType",
     "File",
     "FileError",
+    "FileRow",
     "Generator",
     "Image",
     "ImageFile",
+    "Listing",
     "Mapper",
     "ModelStore",
     "Session",
@@ -94,6 +100,7 @@ __all__ = [
     "is_chain_type",
     "is_local",
     "is_studio",
+    "list_storage",
     "listings",
     "llm",
     "metrics",

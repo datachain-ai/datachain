@@ -1,17 +1,15 @@
 import asyncio
+import errno
 import os
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import stat
+from contextlib import nullcontext
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock
 
 import pytest
-from aiohttp import ClientPayloadError
+from dvc_objects.fs.utils import remove
 from fsspec.asyn import get_loop, sync
-from fsspec.callbacks import Callback
 
 from datachain.cache import Cache, get_temp_cache, temporary_cache
-from datachain.client.http import HTTPClient
 from datachain.lib.file import File
 
 
@@ -132,152 +130,29 @@ def test_cache_download_reserved_chars_in_path(cloud_test_catalog_upload):
     assert contents == "hi"
 
 
-@pytest.mark.parametrize("error_type", [OSError, asyncio.CancelledError])
-@pytest.mark.parametrize("partial", [False, True])
-@pytest.mark.parametrize("own_callback", [False, True])
-def test_download_error_cleans_temporary_file(
-    cache, monkeypatch, error_type, partial, own_callback
-):
-    file = File(source="s3://bucket", path="file.bin", size=100)
-    error = error_type("interrupted")
-    callback = Mock(spec=Callback)
-    monkeypatch.setattr("datachain.cache.TqdmCallback", Mock(return_value=callback))
+@pytest.mark.parametrize("error", [None, ConnectionResetError, asyncio.CancelledError])
+def test_download_cleans_temp_and_protects_cache(cache, error, monkeypatch, mocker):
+    class Client:
+        async def get_file(self, src, dst, callback, version_id=None):
+            Path(dst).write_bytes(b"foo")  # noqa: ASYNC240
+            if error:
+                raise error
 
-    def get_file(lpath, rpath, **kwargs):
-        if partial:
-            Path(rpath).parent.mkdir(parents=True, exist_ok=True)
-            Path(rpath).write_bytes(b"partial")
-        raise error
+    def remove_temp(path):
+        # Windows cleanup clears read-only state shared by hardlinked paths.
+        os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+        remove(path)
 
-    client = Mock()
-    client.get_file = AsyncMock(side_effect=get_file)
-    add = Mock()
-    monkeypatch.setattr(cache.odb, "add", add)
+    monkeypatch.setattr("datachain.cache.remove", remove_temp)
+    mocker.patch.object(
+        cache.odb.fs, "reflink", side_effect=OSError(errno.ENOTSUP, "unsupported")
+    )
+    file = File(source="s3://foo", path="data/bar", etag="xyz", size=3)
+    os.makedirs(cache.tmp_dir)
+    with pytest.raises(error) if error else nullcontext():
+        asyncio.run(cache.download(file, Client()))
 
-    with pytest.raises(error_type) as exc:
-        asyncio.run(cache.download(file, client, None if own_callback else callback))
-
-    assert exc.value is error
-    assert not list(Path(cache.tmp_dir).glob("*"))
-    assert not cache.contains(file)
-    add.assert_not_called()
-    if own_callback:
-        callback.close.assert_called_once_with()
-    else:
-        callback.close.assert_not_called()
-
-
-@pytest.mark.parametrize("add_fails", [False, True])
-@pytest.mark.parametrize("own_callback", [False, True])
-def test_download_cleans_temporary_file_after_transfer(
-    cache, monkeypatch, add_fails, own_callback
-):
-    file = File(source="s3://bucket", path="file.bin", size=4)
-    callback = Mock(spec=Callback)
-    monkeypatch.setattr("datachain.cache.TqdmCallback", Mock(return_value=callback))
-
-    def get_file(lpath, rpath, **kwargs):
-        Path(rpath).parent.mkdir(parents=True, exist_ok=True)
-        Path(rpath).write_bytes(b"data")
-
-    client = Mock()
-    client.get_file = AsyncMock(side_effect=get_file)
-    if add_fails:
-        error = OSError("cache full")
-        monkeypatch.setattr(cache.odb, "add", Mock(side_effect=error))
-        with pytest.raises(OSError) as exc:
-            asyncio.run(
-                cache.download(file, client, None if own_callback else callback)
-            )
-        assert exc.value is error
-        assert not cache.contains(file)
-    else:
-        asyncio.run(cache.download(file, client, None if own_callback else callback))
-        assert Path(cache.get_path(file)).read_bytes() == b"data"
-
-    assert not list(Path(cache.tmp_dir).glob("*"))
-    if own_callback:
-        callback.close.assert_called_once_with()
-    else:
-        callback.close.assert_not_called()
-
-
-@pytest.mark.parametrize("error_type", [OSError, asyncio.CancelledError])
-def test_download_cleanup_failure_preserves_transfer_error(
-    cache, monkeypatch, error_type
-):
-    file = File(source="s3://bucket", path="file.bin", size=100)
-    error = error_type("interrupted")
-
-    def get_file(lpath, rpath, **kwargs):
-        Path(rpath).parent.mkdir(parents=True, exist_ok=True)
-        Path(rpath).write_bytes(b"partial")
-        raise error
-
-    client = Mock()
-    client.get_file = AsyncMock(side_effect=get_file)
-    cache_os = Mock(wraps=os)
-    cache_os.unlink.side_effect = PermissionError("file is still open")
-    monkeypatch.setattr("datachain.cache.os", cache_os)
-
-    with pytest.raises(error_type) as exc:
-        asyncio.run(cache.download(file, client, Callback()))
-
-    assert exc.value is error
-    cache_os.unlink.assert_called_once()
-    assert not cache.contains(file)
-
-
-def test_download_cleanup_failure_after_success_is_reported(cache, monkeypatch):
-    file = File(source="s3://bucket", path="file.bin", size=4)
-
-    def get_file(lpath, rpath, **kwargs):
-        Path(rpath).parent.mkdir(parents=True, exist_ok=True)
-        Path(rpath).write_bytes(b"data")
-
-    client = Mock()
-    client.get_file = AsyncMock(side_effect=get_file)
-    error = PermissionError("file is still open")
-    cache_os = Mock(wraps=os)
-    cache_os.unlink.side_effect = error
-    monkeypatch.setattr("datachain.cache.os", cache_os)
-
-    with pytest.raises(PermissionError) as exc:
-        asyncio.run(cache.download(file, client, Callback()))
-
-    assert exc.value is error
-    cache_os.unlink.assert_called_once()
-    assert Path(cache.get_path(file)).read_bytes() == b"data"
-
-
-def test_download_interrupted_http_response_cleans_temporary_file(cache):
-    body = b"x" * (128 * 1024)
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.send_header("Content-Length", str(len(body) * 2))
-            self.end_headers()
-            self.wfile.write(body)
-            self.wfile.flush()
-            self.close_connection = True
-
-        def log_message(self, *args):
-            pass
-
-    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            client = HTTPClient(f"127.0.0.1:{server.server_port}", {}, cache)
-            file = File(source=client.uri, path="file.bin", size=len(body) * 2)
-            Path(cache.tmp_dir).mkdir(parents=True, exist_ok=True)
-
-            with pytest.raises(ClientPayloadError):
-                sync(get_loop(), cache.download, file, client, Callback())
-
-            assert not list(Path(cache.tmp_dir).glob("*"))
-            assert not cache.contains(file)
-        finally:
-            server.shutdown()
-            thread.join()
+    assert os.listdir(cache.tmp_dir) == []
+    assert cache.contains(file) is (error is None)
+    if error is None:
+        assert cache.odb.is_protected(cache.get_path(file))

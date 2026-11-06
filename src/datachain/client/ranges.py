@@ -173,9 +173,11 @@ class RangeListing:
         prefix: str,
         result_queue: "ResultQueue",
         pool: "Pool | None",
+        delimiter: str = "",
     ) -> None:
         self.client = client
         self.prefix = prefix
+        self.delimiter = delimiter  # with it, keys past a delimiter are skipped
         self.result_queue = result_queue
         self.pool = pool
         self.order = client.key_order
@@ -236,7 +238,14 @@ class RangeListing:
         page = await self.pool.list_page(lo, token, hi) if self.pool else None
         if page is None:
             async with self.own_requests:
-                page = await self.client._list_page(self.prefix, lo, token, hi)
+                # only a level listing passes it: a client that lists no levels
+                # needn't take it
+                kwargs: dict[str, Any] = (
+                    {"delimiter": self.delimiter} if self.delimiter else {}
+                )
+                page = await self.client._list_page(
+                    self.prefix, lo, token, hi, **kwargs
+                )
         if token is not None and page.token == token:
             raise RuntimeError(
                 f"Listing {self.client.uri}: the server returned the page token it"

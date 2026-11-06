@@ -134,10 +134,15 @@ class _S3FileSystem(S3FileSystem):
 class ClientS3(RangeListedClient):
     FS_CLASS = _S3FileSystem
     PREFIX = "s3://"
+    LISTS_LEVELS = True
     protocol = "s3"
     CREDENTIAL_KEYS = frozenset(
         {"key", "secret", "token", "aws_key", "aws_secret", "aws_token"}
     )
+    # A version id always names the same bytes, except "null". S3 gives that id to
+    # objects written while versioning is off or suspended, and another write in
+    # that state replaces them, so those files are checked by etag.
+    PINNED_VERSION_IS_IMMUTABLE = True
     _unversioned = False  # the server can't list versions
 
     @staticmethod
@@ -285,9 +290,10 @@ class ClientS3(RangeListedClient):
         token: Any,
         hi: str | None = None,
         page_size: int | None = None,
+        delimiter: str = "",
     ) -> Page:
         versions = self._is_version_aware() and not self._unversioned
-        kwargs: dict[str, Any] = {}
+        kwargs: dict[str, Any] = {"Delimiter": delimiter} if delimiter else {}
         if versions:
             if token is not None:
                 kwargs["KeyMarker"], version_marker = token
@@ -316,9 +322,13 @@ class ClientS3(RangeListedClient):
                 raise
             # stores without version support, such as R2, hold only current objects
             self._unversioned = True
-            return await self._list_page(prefix, start_after, None, hi, page_size)
+            return await self._list_page(
+                prefix, start_after, None, hi, page_size, delimiter
+            )
         entries = page.get("Versions" if versions else "Contents", [])
         keys = [d["Key"] for d in entries + page.get("DeleteMarkers", [])]
+        # folders past a delimiter: listed past, though they make no rows
+        keys += [p["Prefix"] for p in page.get("CommonPrefixes", [])]
         if not page.get("IsTruncated"):
             token = None
         elif versions:

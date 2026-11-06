@@ -296,6 +296,30 @@ def test_create_dataset_from_sources_dataset(cloud_test_catalog, dogs_dataset, p
     assert dataset_version.preview
 
 
+@pytest.mark.parametrize("cloud_type", ["file"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize(
+    "config", [None, {}, {"use_symlinks": False}], ids=["inherit", "empty", "replace"]
+)
+def test_create_dataset_from_dataset_client_config(
+    cloud_test_catalog, dogs_dataset, config
+):
+    catalog = cloud_test_catalog.catalog
+    original = {"use_symlinks": True}
+    catalog.client_config = original.copy()
+    chain = catalog.create_dataset_from_sources(
+        "configured_copy", [f"ds://{dogs_dataset.full_name}"], client_config=config
+    )
+    expected = original if config is None else config
+    assert chain.session.catalog.client_config == expected
+    files = chain.to_values("file")
+    assert files
+    for file in files:
+        assert file._catalog.client_config == expected
+        assert file.read_text() == (cloud_test_catalog.src / file.path).read_text()
+    assert catalog.client_config == original
+
+
 def test_create_dataset_from_sources_empty_sources(test_session, project):
     dataset_name = uuid.uuid4().hex
     catalog = test_session.catalog

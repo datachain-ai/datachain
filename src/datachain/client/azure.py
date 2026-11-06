@@ -49,6 +49,9 @@ class AzureClient(RangeListedClient):
     PREFIX = "az://"
     protocol = "az"
     LIST_PAGE_SIZE = 5000
+    # Page and append blobs can be changed without a new version id, so the same
+    # version id can name different bytes.
+    PINNED_VERSION_IS_IMMUTABLE = False
     CREDENTIAL_KEYS = frozenset(
         {
             "account_key",
@@ -273,7 +276,9 @@ class AzureClient(RangeListedClient):
         token: Any,
         hi: str | None = None,
         page_size: int | None = None,
+        delimiter: str = "",
     ) -> Page:
+        assert not delimiter, "Azure lists with no delimiter"
         kwargs = {"start_from": start_after} if start_after and token is None else {}
         include = ["metadata", "versions"] if self._is_version_aware() else ["metadata"]
         async with self.fs.service_client.get_container_client(

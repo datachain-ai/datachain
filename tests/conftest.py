@@ -1,11 +1,17 @@
+import functools
+import http.server
+import io
 import os
 import os.path
 import signal
+import socketserver
 import subprocess  # nosec B404
+import tarfile
+import threading
 import uuid
 from collections.abc import Generator
 from datetime import datetime
-from pathlib import PosixPath
+from pathlib import Path, PosixPath
 from time import sleep
 from typing import NamedTuple
 
@@ -34,6 +40,8 @@ from datachain.dataset import (
 )
 from datachain.error import DatasetNotFoundError
 from datachain.lib.dc import Sys
+from datachain.lib.file import File
+from datachain.lib.tar import build_tar_member
 from datachain.namespace import Namespace
 from datachain.project import Project
 from datachain.query.session import Session
@@ -45,7 +53,7 @@ from datachain.utils import (
     DataChainDir,
 )
 
-from .utils import DEFAULT_TREE, instantiate_tree, reset_session_job_state
+from .utils import DEFAULT_TREE, instantiate_tree, make_tar, reset_session_job_state
 
 # gcsfs 2026.3+ turns on HNS/zonal support by default, so every gs op probes the
 # Storage Control API over gRPC. The mock gcs server can't answer that, so the
@@ -145,6 +153,17 @@ def clean_environment(
     Make sure we have a clean environment and won't write to userspace.
     """
     working_dir = str(tmp_path_factory.mktemp("default_working_dir"))
+    # Ancestor repositories outside pytest's temporary tree are not test projects.
+    outer_git_markers = {
+        str(parent / ".git") for parent in tmp_path_factory.getbasetemp().parents
+    }
+    path_exists = os.path.exists
+    monkeypatch_session.setattr(
+        os.path,
+        "exists",
+        lambda path: str(path) not in outer_git_markers and path_exists(path),
+    )
+    (Path(working_dir) / ".git").mkdir()
     monkeypatch_session.chdir(working_dir)
     monkeypatch_session.delenv(DataChainDir.ENV_VAR, raising=False)
     monkeypatch_session.delenv(DataChainDir.ENV_VAR_DATACHAIN_ROOT, raising=False)
@@ -276,6 +295,54 @@ def catalog(metastore, warehouse):
 
     # Clean up job-related atexit hooks to prevent errors during pytest shutdown
     reset_session_job_state()
+
+
+@pytest.fixture
+def small_tar_member_data():
+    data = b"m" * (100 * 1024)
+    raw = make_tar(
+        {
+            "prefix.bin": b"prefix",
+            "member.bin": data,
+            "padding.bin": bytes(4 * 1024 * 1024),
+        }
+    )
+    return data, raw
+
+
+@pytest.fixture
+def small_tar_member(catalog, monkeypatch, small_tar_member_data):
+    _, raw = small_tar_member_data
+
+    def make_member(client, version=""):
+        monkeypatch.setattr(catalog, "get_client", lambda *args, **kwargs: client)
+        parent = File(
+            source=client.uri, path="archive.tar", size=len(raw), version=version
+        )
+        parent._set_stream(catalog, caching_enabled=False)
+        with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+            member = build_tar_member(parent, archive.getmember("member.bin"))
+        member._set_stream(catalog, caching_enabled=False)
+        return member
+
+    return make_member
+
+
+@pytest.fixture
+def tar_member_range_requests(monkeypatch, small_tar_member_data):
+    _, raw = small_tar_member_data
+
+    def patch_ranges(file_type):
+        requests = []
+
+        def fetch_range(file, start, end):
+            requests.append((file, start, min(end, len(raw))))
+            return raw[start:end]
+
+        monkeypatch.setattr(file_type, "_fetch_range", fetch_range)
+        return requests
+
+    return patch_ranges
 
 
 @pytest.fixture
@@ -604,12 +671,12 @@ def _moto_lists_after_key_marker(monkeypatch):
     monkeypatch.setattr(S3Backend, "list_object_versions", list_object_versions)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def cloud_server(
-    request, tmp_upath_factory, cloud_type, version_aware, tree, monkeypatch_session
+    request, tmp_upath_factory, cloud_type, version_aware, tree, monkeypatch
 ):
     if cloud_type == "s3":
-        _moto_lists_after_key_marker(monkeypatch_session)
+        _moto_lists_after_key_marker(monkeypatch)
     if cloud_type == "azure" and version_aware:
         if conn_str := request.config.getoption("--azure-connection-string"):
             src_path = tmp_upath_factory.azure(conn_str)
@@ -640,17 +707,15 @@ def datachain_job_id(test_session, monkeypatch):
     yield _create_job(test_session.catalog.metastore)
 
 
-@pytest.fixture(scope="session")
-def cloud_server_credentials(cloud_server, monkeypatch_session):
+@pytest.fixture
+def cloud_server_credentials(cloud_server, monkeypatch):
     if cloud_server.kind == "s3":
         cfg = cloud_server.src.fs.client_kwargs
-        monkeypatch_session.delenv("AWS_PROFILE", raising=False)
-        monkeypatch_session.setenv("AWS_ACCESS_KEY_ID", cfg["aws_access_key_id"])
-        monkeypatch_session.setenv(
-            "AWS_SECRET_ACCESS_KEY", cfg["aws_secret_access_key"]
-        )
-        monkeypatch_session.setenv("AWS_SESSION_TOKEN", cfg["aws_session_token"])
-        monkeypatch_session.setenv("AWS_DEFAULT_REGION", cfg["region_name"])
+        monkeypatch.delenv("AWS_PROFILE", raising=False)
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", cfg["aws_access_key_id"])
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", cfg["aws_secret_access_key"])
+        monkeypatch.setenv("AWS_SESSION_TOKEN", cfg["aws_session_token"])
+        monkeypatch.setenv("AWS_DEFAULT_REGION", cfg["region_name"])
 
 
 def get_cloud_test_catalog(cloud_server, tmp_path, metastore, warehouse):
@@ -695,15 +760,18 @@ def cloud_test_catalog_upload(cloud_test_catalog):
     src = cloud_test_catalog.src_uri
     client = Client.get_implementation(src)
     fsspec_fs = client.create_fs(**cloud_test_catalog.client_config)
-    original_paths = set(fsspec_fs.ls(src))
+    local = cloud_test_catalog.server.kind == "file"
+    original_paths = set(fsspec_fs.find(src, withdirs=local))
 
     yield cloud_test_catalog
 
-    # Cleanup any written files
-    new_paths = set(fsspec_fs.ls(src))
-    cleanup_paths = new_paths - original_paths
-    for p in cleanup_paths:
-        fsspec_fs.rm(p, recursive=True)
+    # Cleanup any written files, children before their directories
+    new_paths = set(fsspec_fs.find(src, withdirs=local, refresh=True))
+    for p in sorted(new_paths - original_paths, reverse=True):
+        if local and fsspec_fs.isdir(p):
+            fsspec_fs.rmdir(p)
+        else:
+            fsspec_fs.rm_file(p)
 
 
 @pytest.fixture
@@ -1404,3 +1472,69 @@ def mock_parquet_data(compressed_parquet_data, dog_entries, version="1.0.0"):
 def mock_parquet_data_cloud(compressed_parquet_data, dog_entries, cloud_test_catalog):
     src_uri = cloud_test_catalog.src_uri
     return compressed_parquet_data(dog_entries("1.0.0"), src_uri)
+
+
+@pytest.fixture
+def fetched_bytes(monkeypatch):
+    from adlfs.spec import AzureBlobFile
+    from gcsfs.core import GCSFile
+    from s3fs.core import S3File
+
+    fetched = [0, 0]
+    for cls in (S3File, GCSFile, AzureBlobFile):
+
+        def fetch_range(self, *args, _orig=cls._fetch_range, **kwargs):
+            data = _orig(self, *args, **kwargs)
+            fetched[0] += len(data)
+            fetched[1] += 1
+            return data
+
+        monkeypatch.setattr(cls, "_fetch_range", fetch_range)
+    return fetched
+
+
+class _QuietHandler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+
+    def handle_error(self, request, client_address):
+        pass
+
+
+class _RangeHandler(_QuietHandler):
+    def send_head(self):
+        if not (ranges := self.headers.get("Range")):
+            return super().send_head()
+        with open(self.translate_path(self.path), "rb") as f:
+            data = f.read()
+        start, end = map(int, ranges.removeprefix("bytes=").split("-"))
+        body = data[start : end + 1]
+        self.send_response(206)
+        self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        return io.BytesIO(body)
+
+
+def _serve(directory, handler_class):
+    handler = functools.partial(handler_class, directory=str(directory))
+    with socketserver.TCPServer(("127.0.0.1", 0), handler) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield f"http://127.0.0.1:{server.server_address[1]}"
+        finally:
+            server.shutdown()
+            thread.join()
+
+
+@pytest.fixture
+def http_server(tmp_path):
+    """Serve `tmp_path` over HTTP with range support; yields its base URL."""
+    yield from _serve(tmp_path, _RangeHandler)
+
+
+@pytest.fixture
+def http_server_without_ranges(tmp_path):
+    """Serve `tmp_path` over HTTP without range support; yields its base URL."""
+    yield from _serve(tmp_path, _QuietHandler)

@@ -89,6 +89,7 @@ nav:
           - Overview: guide/index.md
           - Get Data In:
               - Reading Data: guide/reading-data.md
+              - Listing Storage: guide/listing-storage.md
               - Remote Storage: guide/remotes.md
           - Transform:
               - Data Engine Operations: guide/operations.md
@@ -101,6 +102,7 @@ nav:
           - Knowledge Base: guide/knowledge-base.md
           - Scale and Recover:
               - Scaling and Performance: guide/scaling.md
+              - Batched Inference: guide/batch-inference.md
               - Delta Processing: guide/delta.md
               - Checkpoints: guide/checkpoints.md
               - Multi-Stage Pipelines: guide/multi-stage-pipelines.md

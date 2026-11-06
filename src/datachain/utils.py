@@ -8,9 +8,10 @@ import re
 import sys
 import time
 from collections.abc import Iterable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import cloudpickle
@@ -61,6 +62,8 @@ class DataChainDir:
         db: str | None = None,
         config: str | None = None,
     ) -> None:
+        if root is None:
+            root = os.environ.get(self.ENV_VAR)
         self.root = osp.abspath(root) if root is not None else self.default_root()
         self.cache = (
             osp.abspath(cache) if cache is not None else osp.join(self.root, self.CACHE)
@@ -88,21 +91,30 @@ class DataChainDir:
             root_dir = os.environ[cls.ENV_VAR_DATACHAIN_ROOT]
         except KeyError:
             root_dir = os.getcwd()
+            cwd = Path(root_dir)
+            nearest = None
+            for directory in (cwd, *cwd.parents):
+                datachain_dir = directory / cls.DEFAULT
+                if nearest is None and (
+                    osp.isfile(datachain_dir / cls.DB)
+                    or osp.isfile(datachain_dir / cls.CONFIG)
+                ):
+                    nearest = datachain_dir
+                # Only reuse ancestor state inside a containing Git project.
+                # Worktrees and submodules use a .git file instead of a directory.
+                if osp.exists(directory / ".git"):
+                    return str(nearest or datachain_dir)
 
         return osp.join(root_dir, cls.DEFAULT)
 
     @classmethod
     def find(cls, create: bool = True) -> "Self":
-        try:
-            root = os.environ[cls.ENV_VAR]
-        except KeyError:
-            root = cls.default_root()
-        instance = cls(root)
-        if not osp.isdir(root):
+        instance = cls()
+        if not osp.isdir(instance.root):
             if create:
                 instance.init()
             else:
-                raise NotADirectoryError(root)
+                raise NotADirectoryError(instance.root)
         return instance
 
 
@@ -449,6 +461,54 @@ def determine_processes(
         # Disable parallel processing if only one process is requested.
         return False
     return parallel
+
+
+def _cpu_quotas(
+    root: str = "/sys/fs/cgroup", membership: str = "/proc/self/cgroup"
+) -> list[tuple[int, int]]:
+    """``(quota, period)`` of each cgroup this process is in, and their parents."""
+    quotas = []
+    with suppress(OSError, ValueError):
+        for line in Path(membership).read_text().splitlines():
+            try:
+                _, controllers, path = line.split(":", 2)
+            except ValueError:
+                continue
+            if not controllers:  # v2
+                base, files = root, ["cpu.max"]
+            elif "cpu" in controllers.split(","):  # v1
+                base = os.path.join(root, controllers)
+                if not os.path.isdir(base):
+                    base = os.path.join(root, "cpu")
+                files = ["cpu.cfs_quota_us", "cpu.cfs_period_us"]
+            else:
+                continue
+            parts = [p for p in path.split("/") if p]
+            for depth in range(len(parts) + 1):
+                folder = os.path.join(base, *parts[:depth])
+                with suppress(OSError, ValueError):
+                    quota, period = " ".join(
+                        Path(folder, name).read_text() for name in files
+                    ).split()
+                    if quota not in ("max", "-1"):
+                        quotas.append((int(quota), int(period)))
+    return quotas
+
+
+def usable_cpu_count() -> int:
+    """CPUs this process may use: its affinity, capped by its cgroups' CPU quotas.
+
+    ``os.cpu_count()`` reports the host inside containers; a fractional quota
+    rounds up.
+    """
+    cpus = os.cpu_count() or 1
+    with suppress(OSError):
+        if hasattr(os, "process_cpu_count"):
+            cpus = os.process_cpu_count() or cpus
+        elif hasattr(os, "sched_getaffinity"):
+            cpus = len(os.sched_getaffinity(0))
+    caps = [-(-quota // period) for quota, period in _cpu_quotas() if period > 0]
+    return max(min([cpus, *caps]), 1)
 
 
 def get_env_list(

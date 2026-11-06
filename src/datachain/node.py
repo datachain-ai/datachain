@@ -1,3 +1,4 @@
+import logging
 import os
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -7,6 +8,8 @@ import attrs
 from datachain.dataset import StorageURI
 from datachain.lib.file import File
 from datachain.utils import TIME_ZERO, time_to_str
+
+logger = logging.getLogger("datachain")
 
 if TYPE_CHECKING:
     from typing import Self
@@ -57,7 +60,7 @@ class Node:
     is_latest: bool = True
     last_modified: datetime | None = None
     size: int = 0
-    location: str | None = None
+    location: dict | list[dict] | None = None
     source: StorageURI = StorageURI("")  # noqa: RUF009
     dir_type: int = DirType.FILE
 
@@ -114,7 +117,7 @@ class Node:
             size=f.size,
             last_modified=f.last_modified,
             version=f.version,
-            location=str(f.location) if f.location else None,
+            location=f.location,
             dir_type=DirType.FILE,
         )
 
@@ -133,8 +136,8 @@ class Node:
             size=_dval("size"),
             last_modified=_dval("last_modified"),
             version=_dval("version"),
-            location=_dval("location"),
-            dir_type=DirType.FILE,
+            location=None if _dval("location") == "" else _dval("location"),
+            dir_type=d.get(f"{file_prefix}__dir_type", DirType.FILE),
         )
 
     @classmethod
@@ -176,9 +179,17 @@ class NodeWithPath:
             path += "/"
         return path
 
+    @property
+    def has_empty_segments(self) -> bool:
+        return any(not part or "//" in part for part in self.path)
+
     def instantiate(
         self, client: "Client", output: str, progress_bar, *, force: bool = False
     ):
+        # a local disk cannot hold an empty path segment
+        if self.has_empty_segments:
+            logger.warning("File '%s' not copied: path has '//'", self.n.path)
+            return
         dst = os.path.join(output, *self.path)
         dst_dir = os.path.dirname(dst)
         os.makedirs(dst_dir, exist_ok=True)

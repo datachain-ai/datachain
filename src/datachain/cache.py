@@ -1,6 +1,6 @@
 import os
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from tempfile import mkdtemp
 from typing import TYPE_CHECKING
 
@@ -125,23 +125,16 @@ class Cache:  # noqa: PLW1641
             size=size,
         )
         try:
-            try:
-                await client.get_file(
-                    from_path, tmp_info, callback=cb, version_id=file.version
-                )
-            finally:
-                if not callback:
-                    cb.close()
-
+            await client.get_file(
+                from_path, tmp_info, callback=cb, version_id=file.version
+            )
             oid = file.get_hash()
-            self.odb.add(tmp_info, self.odb.fs, oid)
-        except BaseException:
-            with suppress(OSError):
-                os.unlink(tmp_info)
-            raise
-        else:
-            with suppress(FileNotFoundError):
-                os.unlink(tmp_info)
+            self.odb.add(tmp_info, odb_fs, oid, hardlink=True)
+        finally:
+            if not callback:
+                cb.close()
+            remove(tmp_info)
+        self.odb.protect(self.odb.oid_to_path(oid))
 
     def store_data(self, file: "File", contents: bytes) -> None:
         self.odb.add_bytes(file.get_hash(), contents)

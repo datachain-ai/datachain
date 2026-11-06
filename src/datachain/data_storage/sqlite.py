@@ -1,6 +1,7 @@
 import logging
 import os
 import sqlite3
+from array import array
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from functools import cached_property, wraps
@@ -890,7 +891,9 @@ class SQLiteWarehouse(AbstractWarehouse):
             return
 
         select_ids = query.with_only_columns(col_id)
-        ids = self.db.execute(select_ids).fetchall()
+        # Read all ids up front (8 bytes each) so no read cursor stays open and
+        # holds a WAL snapshot while the batches are inserted.
+        ids = array("q", (row[0] for row in self.db.execute(select_ids)))
 
         if preserve_sys_ids:
             select_q = query.offset(None).limit(None)
@@ -904,7 +907,7 @@ class SQLiteWarehouse(AbstractWarehouse):
             )
 
         for batch in batched_it(ids, self.INSERT_BATCH_SIZE):
-            batch_ids = [row[0] for row in batch]
+            batch_ids = list(batch)
             low, high = min(batch_ids), max(batch_ids)
             # binding thousands of ids dominates the copy: a batch that is a whole
             # range of ids is copied as that range

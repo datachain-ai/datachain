@@ -4,10 +4,11 @@ from datetime import UTC, datetime
 
 import pytest
 import sqlalchemy as sa
+from pydantic import ValidationError
 
 import datachain as dc
 from datachain.lib.convert.flatten import iter_flat_columns
-from datachain.lib.file import FileRow
+from datachain.lib.file import File, FileRow
 from datachain.lib.udf import UdfError
 from datachain.query import dataset
 
@@ -86,3 +87,41 @@ def test_file_validators_are_known():
     validators = dc.File.__pydantic_decorators__
     assert set(validators.field_validators) == {"validate_location", "validate_source"}
     assert set(validators.model_validators) == {"_normalize_path"}
+
+
+def test_file_rows_take_file_attributes():
+    row = FileRow("s3://bucket", "dir/a.txt", 3)
+
+    assert row.get_fs_path() == "s3://bucket/dir/a.txt"
+    assert row.name == "a.txt"
+    assert row.get_file_ext() == "txt"
+    with pytest.raises(AttributeError):
+        row.missing  # noqa: B018
+
+
+def test_file_rows_only_take_path_helpers():
+    row = FileRow("s3://bucket", "dir/a.txt")
+
+    assert row.parent == "dir"
+    assert not hasattr(row, "read")
+    assert not hasattr(row, "model_dump")
+    with pytest.raises(AttributeError):  # rows read no files: see to_objects()
+        row.open()
+
+
+def test_invalid_file_rows_have_path_helpers_only():
+    row = FileRow("no-scheme", "d/a.txt")
+
+    assert (row.name, row.parent, row.get_file_ext()) == ("a.txt", "d", "txt")
+    with pytest.raises(ValidationError):  # it needs a valid File
+        row.get_fs_path()
+
+
+@pytest.mark.parametrize("path", ["d/e.tar.gz", "e", "d//e.txt", "a/b/.hidden", ""])
+def test_file_row_path_helpers_match_file(path):
+    row = FileRow("s3://b", path)
+    file = File(source="s3://b", path=path)
+
+    assert (row.name, row.parent) == (file.name, file.parent)
+    for helper in ("get_file_ext", "get_file_stem", "get_file_suffix"):
+        assert getattr(row, helper)() == getattr(file, helper)()

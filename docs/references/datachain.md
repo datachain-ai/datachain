@@ -12,6 +12,10 @@ for examples of how to create a chain.
 
 ::: datachain.lib.dc.listings.listings
 
+::: datachain.lib.dc.storage.list_storage
+
+::: datachain.lib.dc.storage.Listing
+
 ::: datachain.lib.dc.csv.read_csv
 
 ::: datachain.lib.dc.datasets.read_dataset
