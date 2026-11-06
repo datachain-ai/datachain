@@ -120,6 +120,30 @@ With `header=False` and no `columns`, `output` is required and supplies names fo
 
 Parquet exported by DataChain restores its saved schema and does not support `columns=`. Read it without `columns` and use `.select(...)` on the chain. With `columns` or `output`, read it separately from other Parquet files.
 
+## LeRobot Datasets
+
+`read_lerobot()` reads a [LeRobot](https://github.com/huggingface/lerobot) v3 dataset with one row per episode: the episode metadata (`episode_index`, `length`, `tasks`, ...) and, in `videos`, one `VideoFragment` per camera that spans the episode in its mp4. Camera keys become field names with `.` turned into `_`.
+
+```python
+import datachain as dc
+
+episodes = dc.read_lerobot("hf://datasets/lerobot/pusht")
+frames = dc.read_parquet("hf://datasets/lerobot/pusht/data/")  # per-frame table
+
+fps = 10  # "fps" in meta/info.json
+
+
+def first_frame_mean(cam: dc.VideoFragment) -> float:
+    return float(cam.video.get_frame(round(cam.start * fps)).get_np().mean())
+
+
+stats = episodes.settings(cache=True).map(
+    brightness=first_frame_mean, params=["videos.observation_image"]
+)
+```
+
+Many episodes share one mp4: to process a set of episodes, use `settings(cache=True)` so each mp4 downloads once; to read a few episodes, use `settings(prefetch=0)` so only their bytes are read.
+
 ## SQL Databases
 
 `read_database()` connects to any SQLAlchemy-compatible database:
