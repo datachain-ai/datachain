@@ -40,10 +40,9 @@ def read_webdataset(
     Example:
         ```py
         import datachain as dc
-        from datachain.lib.webdataset_laion import WDSLaion
 
-        chain = dc.read_webdataset("gs://bucket/shards/", spec=WDSLaion, anon=True)
-        chain.filter(dc.C("wds.json.original_width") > 200).show()
+        chain = dc.read_webdataset("gs://bucket/shards/", anon=True)
+        chain.filter(dc.func.string.length("wds.txt") > 5).show()
         ```
     """
     from .datachain import C

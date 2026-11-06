@@ -122,13 +122,13 @@ Parquet exported by DataChain restores its saved schema and does not support `co
 
 ## WebDataset
 
-`read_webdataset()` reads WebDataset tar shards without extracting them, one row per sample. The `spec=` model maps member extensions to fields, e.g. `WDSLaion` for LAION-style `.jpg` + `.json` + `.txt` samples:
+`read_webdataset()` reads WebDataset tar shards without extracting them, one row per sample: the `.jpg`/`.png` member is `wds.file`, and the other members fill fields named after their extensions (`wds.txt`, `wds.json`, `wds.cls`, ...).
 
 ```python
-from datachain.lib.webdataset_laion import WDSLaion
-
-samples = dc.read_webdataset("gs://bucket/shards/", spec=WDSLaion)
+samples = dc.read_webdataset("gs://bucket/shards/")
 ```
+
+To get typed fields from the JSON member, pass a `spec=` model, e.g. `WDSLaion` from `datachain.lib.webdataset_laion` for LAION shards.
 
 ## SQL Databases
 
