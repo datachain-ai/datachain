@@ -142,7 +142,7 @@ stats = episodes.settings(cache=True).map(
 )
 ```
 
-Many episodes share one mp4: to process a set of episodes, use `settings(cache=True)` so each mp4 downloads once; to read a few episodes, use `settings(prefetch=0)` so only their bytes are read.
+Many episodes share one mp4. A UDF that takes a fragment reads only that episode's bytes; with `settings(cache=True)` each mp4 downloads once and is reused by the other episodes.
 
 ## SQL Databases
 

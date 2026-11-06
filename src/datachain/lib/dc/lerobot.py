@@ -35,9 +35,9 @@ def read_lerobot(
     Per-frame data is not included; read it with
     `dc.read_parquet(path + "/data/")` and merge on `episode_index`.
 
-    Many episodes share one mp4: to process a set of episodes, use
-    `settings(cache=True)` so each mp4 downloads once; to read a few episodes,
-    use `settings(prefetch=0)` so only their bytes are read.
+    Many episodes share one mp4. A UDF that takes a fragment reads only that
+    episode's bytes; with `settings(cache=True)` each mp4 downloads once and is
+    reused by the other episodes.
 
     Parameters:
         path: Dataset root, e.g. `hf://datasets/lerobot/aloha_mobile_cabinet` or
@@ -60,7 +60,6 @@ def read_lerobot(
             dc.read_lerobot("s3://robolake/droid/droid_10k/", anon=True)
             .filter(dc.C("length") > 100)
             .limit(10)
-            .settings(prefetch=0)
             .map(
                 brightness=first_frame,
                 params=["videos.observation_images_wrist_left"],
