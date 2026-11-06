@@ -44,7 +44,7 @@ def read_csv(
         column: Created column name.
         model_name: Generated model name.
         source: Whether to include info about the source file. If so, a data
-            column named "source" is read as "c0_source".
+            column named "source" is renamed, usually to "c0_source".
         nrows: Optional row limit per file.
         session: Session to use for the chain.
         settings: Settings to use for the chain.

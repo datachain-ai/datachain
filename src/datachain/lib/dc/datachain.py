@@ -2768,7 +2768,7 @@ class DataChain:
             column: Generated column name.
             model_name: Generated model name.
             source: Whether to include info about the source file. If so, a data
-                column named "source" is read as "c0_source".
+                column named "source" is renamed, usually to "c0_source".
             nrows: Optional row limit per file.
             columns: Input columns to read, in order; all if omitted. Accepts original
                 or normalized names, e.g. "ZIP Code" or "zip_code". For Parquet exported

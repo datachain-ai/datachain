@@ -38,7 +38,7 @@ def read_parquet(
         column: Created column name.
         model_name: Generated model name.
         source: Whether to include info about the source file. If so, a data
-            column named "source" is read as "c0_source".
+            column named "source" is renamed, usually to "c0_source".
         session: Session to use for the chain.
         settings: Settings to use for the chain.
         columns: Input columns to read, in order; all if omitted. Accepts original
