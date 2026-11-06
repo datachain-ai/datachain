@@ -120,6 +120,21 @@ With `header=False` and no `columns`, `output` is required and supplies names fo
 
 Parquet exported by DataChain restores its saved schema and does not support `columns=`. Read it without `columns` and use `.select(...)` on the chain. With `columns` or `output`, read it separately from other Parquet files.
 
+## MCAP Robotics Logs
+
+`dc.read_mcap()` reads [MCAP](https://mcap.dev) logs (ROS 2, Foxglove) and needs `pip install 'datachain[mcap]'`. By default it gives one row per file: an [`McapFile`](../references/data-types/mcapfile.md) and its summary (topics, message counts, start/end time), read from the summary section at the end of the file. With `duration=` it gives one [`McapSlice`](../references/data-types/mcapfile.md) row per time window instead. `messages()` yields raw message bytes and reads only the chunks that overlap the topics and time window. Times are nanoseconds.
+
+```python
+import datachain as dc
+
+episodes = dc.read_mcap("s3://bucket/episodes/")  # columns: mcap, summary
+long_ones = episodes.filter(dc.C("summary.duration") > 60)
+
+slices = dc.read_mcap("s3://bucket/episodes/", topics=["/joint_states"], duration=10)
+for (s,) in slices.limit(1).to_iter("mcap"):
+    print(s.start, sum(len(m.data) for m in s.messages()))
+```
+
 ## SQL Databases
 
 `read_database()` connects to any SQLAlchemy-compatible database:
