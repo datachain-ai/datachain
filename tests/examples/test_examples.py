@@ -11,12 +11,15 @@ llm_and_nlp_examples = sorted(glob.glob("examples/llm_and_nlp/**/*.py", recursiv
 
 # The heaviest examples (~1 GB downloads, minutes of CPU inference) form their own
 # group, so CI can run them on a separate runner
-heavy_multimodal_examples = {"wds.py", "hf_pipeline.py"}
+heavy_multimodal_examples = {
+    os.path.join("examples", "multimodal", "wds.py"),
+    os.path.join("examples", "multimodal", "hf_pipeline.py"),
+}
 multimodal_examples = [
     pytest.param(
         example,
         marks=pytest.mark.multimodal_heavy
-        if os.path.basename(example) in heavy_multimodal_examples
+        if os.path.normpath(example) in heavy_multimodal_examples
         else pytest.mark.multimodal,
     )
     for example in sorted(glob.glob("examples/multimodal/**/*.py", recursive=True))

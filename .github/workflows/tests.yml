@@ -185,6 +185,10 @@ jobs:
         include:
           # HF runs against actual API - thus run it only once
           - {os: ubuntu-latest, pyv: "3.14", group: llm_and_nlp}
+        exclude:
+          # Heavy multimodal examples (GCS tarballs, HF inference) have not been
+          # validated on Windows; run them on Linux only.
+          - {os: windows-latest, group: multimodal_heavy}
 
     steps:
       - uses: actions/checkout@v7
@@ -234,7 +238,7 @@ jobs:
           # which now hits HTTP 429 rate limits. Authenticating raises the limit.
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           ANTHROPIC_API_KEY: ${{ matrix.group == 'llm_and_nlp' && secrets.ANTHROPIC_API_KEY || '' }}
-          OPENAI_API_KEY: ${{ (matrix.group == 'multimodal' || matrix.group == 'llm_and_nlp') && secrets.OPENAI_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ (matrix.group == 'multimodal' || matrix.group == 'multimodal_heavy' || matrix.group == 'llm_and_nlp') && secrets.OPENAI_API_KEY || '' }}
         run: nox -s examples -p ${{ matrix.pyv }} -- -m "${{ matrix.group }}"
 
   check:
