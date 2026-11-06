@@ -396,9 +396,11 @@ def video_frames(
 ) -> Iterator[VideoFrame]:
     """Yield video frames with decoded timestamps when available."""
     _validate_video_stream_index(video_stream_index)
+    # a read from mid-file seeks; large read-ahead blocks fetch mostly unused bytes
+    block_size = PARTIAL_READ_BLOCK_SIZE if start > 0 else None
 
     try:
-        with video.open() as f:
+        with video.open(block_size=block_size) as f:
             with av.open(f) as container:
                 input_container: Any = container
                 video_stream = _video_stream(
@@ -470,7 +472,7 @@ def _decode_video_frame(video: VideoFile, frame: int, video_stream_index: int = 
     _validate_video_stream_index(video_stream_index)
 
     try:
-        with video.open() as f:
+        with video.open(block_size=PARTIAL_READ_BLOCK_SIZE if frame > 0 else None) as f:
             with av.open(f) as container:
                 input_container: Any = container
                 video_stream = _video_stream(

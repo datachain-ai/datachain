@@ -1330,3 +1330,24 @@ def test_save_fragments(tmp_path, video_file):
             "format": "mov,mp4,m4a,3gp,3g2,mj2",
             "codec": "h264",
         }
+
+
+def test_frames_read_from_mid_file_use_small_blocks(video_file, monkeypatch):
+    from datachain.lib.file import PARTIAL_READ_BLOCK_SIZE
+
+    video = video_file.as_video_file()
+    block_sizes = []
+    open_file = VideoFile.open
+
+    def spy(self, *args, **kwargs):
+        block_sizes.append(kwargs.get("block_size"))
+        return open_file(self, *args, **kwargs)
+
+    monkeypatch.setattr(VideoFile, "open", spy)
+    list(video.get_frames(0, 2))
+    from_start = block_sizes[-1]
+    list(video.get_frames(100, 102))
+    video.get_frame(100).get_np()
+
+    assert from_start is None
+    assert block_sizes[-2:] == [PARTIAL_READ_BLOCK_SIZE, PARTIAL_READ_BLOCK_SIZE]
