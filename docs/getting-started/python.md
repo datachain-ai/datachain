@@ -83,9 +83,7 @@ def is_positive_dialogue_ending(file) -> bool:
 
 
 chain = (
-    dc.read_storage(
-        "gs://datachain-demo/chatbot-KiT/", column="file", type="text", anon=True
-    )
+    dc.read_storage("gs://datachain-demo/chatbot-KiT/", type="text", anon=True)
     .settings(parallel=8, cache=True)
     .map(is_positive=is_positive_dialogue_ending)
     .save("file_response")
