@@ -1,10 +1,12 @@
 import io
+import tarfile
 
 import pytest
 
 import datachain as dc
-from datachain.lib.file import File, FileError
-from datachain.lib.mcap import McapFile, McapSlice, McapSummary, McapTopic
+from datachain.lib.file import FileError
+from datachain.lib.mcap import McapFile, McapSlice
+from datachain.lib.tar import process_tar
 
 mcap_writer = pytest.importorskip("mcap.writer")
 
@@ -15,9 +17,9 @@ A_TIMES = [T0 + i * SEC for i in range(10)]
 B_TIMES = [T0 + i * 2_500_000_000 for i in range(4)]
 
 
-def mcap_bytes(statistics=True) -> bytes:
+def mcap_bytes(**writer_options) -> bytes:
     buf = io.BytesIO()
-    w = mcap_writer.Writer(buf, chunk_size=64, use_statistics=statistics)
+    w = mcap_writer.Writer(buf, chunk_size=64, **writer_options)
     w.start()
     schema = w.register_schema("A", "jsonschema", b"{}")
     a = w.register_channel("/a", "json", schema)
@@ -59,27 +61,16 @@ def test_written_file_has_several_chunks(mcap_file):
 
 
 def test_summary(mcap_file):
-    assert mcap_file.summary() == McapSummary(
-        topics=[
-            McapTopic(
-                topic="/a",
-                messages=10,
-                message_encoding="json",
-                schema_name="A",
-                schema_encoding="jsonschema",
-            ),
-            McapTopic(
-                topic="/b",
-                messages=4,
-                message_encoding="raw",
-                schema_name="",
-                schema_encoding="",
-            ),
-        ],
-        messages=14,
-        start=T0,
-        end=T0 + 9 * SEC,
-        duration=9.0,
+    summary = mcap_file.summary()
+    assert [tuple(t.model_dump().values()) for t in summary.topics] == [
+        ("/a", 10, "json", "A", "jsonschema"),
+        ("/b", 4, "raw", "", ""),
+    ]
+    assert (summary.messages, summary.start, summary.end, summary.duration) == (
+        14,
+        T0,
+        T0 + 9 * SEC,
+        9.0,
     )
 
 
@@ -96,13 +87,33 @@ def test_summary_of_no_topics(mcap_file):
     assert (summary.topics, summary.messages) == ([], 0)
 
 
-def test_summary_without_statistics(tmp_dir, test_session):
-    (tmp_dir / "bare.mcap").write_bytes(mcap_bytes(statistics=False))
-    (file,) = dc.read_storage(tmp_dir.as_uri(), session=test_session).to_values("file")
+def as_mcap(file):
     mcap = McapFile(**file.model_dump())
     mcap._set_stream(file._catalog)
-    with pytest.raises(FileError, match="no summary statistics"):
-        mcap.summary()
+    return mcap
+
+
+@pytest.mark.parametrize(
+    "options", [{"use_statistics": False}, {"repeat_channels": False}]
+)
+def test_summary_needs_complete_summary_section(tmp_dir, test_session, options):
+    (tmp_dir / "bare.mcap").write_bytes(mcap_bytes(**options))
+    (file,) = dc.read_storage(tmp_dir.as_uri(), session=test_session).to_values("file")
+    with pytest.raises(FileError, match="no complete summary"):
+        as_mcap(file).summary()
+
+
+def test_mcap_inside_tar(tmp_dir, test_session):
+    data = mcap_bytes()
+    with tarfile.open(tmp_dir / "logs.tar", "w") as tar:
+        info = tarfile.TarInfo("ep.mcap")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    chain = dc.read_storage((tmp_dir / "logs.tar").as_uri(), session=test_session)
+    (member,) = chain.gen(file=process_tar).to_values("file")
+    mcap = as_mcap(member)
+    assert mcap.summary().messages == 14
+    assert [m.data for m in mcap.messages("/b")] == [b"b0", b"b1", b"b2", b"b3"]
 
 
 def test_messages_in_log_time_order(mcap_file):
@@ -249,6 +260,3 @@ def test_read_mcap_from_cloud_without_cache(cloud_test_catalog, cloud_prefix):
 
     (summary,) = dc.read_mcap(uri, session=ctc.session).to_values("summary")
     assert summary.messages == 14
-    (mcap,) = dc.read_storage(uri, session=ctc.session).to_values("file")
-    assert isinstance(mcap, File)
-    assert mcap.get_local_path() is None

@@ -1,6 +1,6 @@
 import os
 from collections.abc import Iterator, Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from datachain.lib.file import File
 from datachain.query import Session
@@ -43,7 +43,7 @@ def read_mcap(
                 print(msg.topic, msg.log_time, len(msg.data))
         ```
     """
-    from datachain.lib.mcap import McapFile, McapSlice, McapSummary, to_mcap_file
+    from datachain.lib.mcap import McapFile, McapSlice, McapSummary
 
     from .datachain import C
     from .storage import read_storage
@@ -56,21 +56,18 @@ def read_mcap(
     chain = read_storage(path, session=session, settings=settings, **kwargs)
     chain = chain.filter(C("file.path").glob("*.mcap"))
 
-    if step is None:
-
-        def summarize(file: File) -> Iterator[tuple[McapFile, McapSummary]]:
-            mcap = to_mcap_file(file)
-            yield mcap, mcap.summary(topics)
-
-        return chain.gen(summarize, output={"mcap": McapFile, "summary": McapSummary})
-
-    def slices(file: File) -> Iterator[McapSlice]:
-        mcap = to_mcap_file(file)
-        s = mcap.summary(topics)
-        if s.messages:
-            for t in range(s.start, s.end + 1, step):
+    def rows(file: File) -> Iterator[Any]:
+        mcap = McapFile(**file.model_dump())
+        mcap._set_stream(file._catalog, caching_enabled=file._caching_enabled)
+        summary = mcap.summary(topics)
+        if step is None:
+            yield mcap, summary
+        elif summary.messages:
+            for start in range(summary.start, summary.end + 1, step):
                 yield McapSlice(
-                    mcap=mcap, start=t, end=t + step, topics=list(topics or [])
+                    mcap=mcap, start=start, end=start + step, topics=list(topics or [])
                 )
 
-    return chain.gen(slices, output={"mcap": McapSlice})
+    if step is None:
+        return chain.gen(rows, output={"mcap": McapFile, "summary": McapSummary})
+    return chain.gen(rows, output={"mcap": McapSlice})

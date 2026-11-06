@@ -1,3 +1,4 @@
+import io
 from collections.abc import Iterator, Sequence
 
 from pydantic import Field
@@ -67,6 +68,9 @@ def _reader(stream):
             "To install run:\n\n"
             "  pip install 'datachain[mcap]'\n"
         ) from exc
+    # mcap closes a raw stream when its temporary buffers are collected
+    if isinstance(stream, io.RawIOBase):
+        stream = io.BufferedReader(stream)
     return make_reader(stream)
 
 
@@ -78,11 +82,13 @@ class McapFile(File):
         topics = _topic_list(topics)
         with self.open() as f:
             s = _reader(f).get_summary()
-        if s is None or s.statistics is None:
-            raise FileError(
-                "MCAP file has no summary statistics", self.source, self.path
-            )
-        counts = s.statistics.channel_message_counts
+        st = s and s.statistics
+        if st is None or (st.channel_count, st.schema_count) != (
+            len(s.channels),
+            len(s.schemas),
+        ):
+            raise FileError("MCAP file has no complete summary", self.source, self.path)
+        counts = st.channel_message_counts
         channels = [
             McapTopic(
                 topic=ch.topic,
@@ -93,7 +99,7 @@ class McapFile(File):
             for ch in s.channels.values()
             if topics is None or ch.topic in topics
         ]
-        start, end = s.statistics.message_start_time, s.statistics.message_end_time
+        start, end = st.message_start_time, st.message_end_time
         return McapSummary(
             topics=channels,
             messages=sum(t.messages for t in channels),
@@ -148,9 +154,3 @@ class McapSlice(DataModel):
         if topics is None:
             topics = self.topics or None
         return self.mcap.messages(topics, self.start, self.end)
-
-
-def to_mcap_file(file: File) -> McapFile:
-    mcap = McapFile(**file.model_dump())
-    mcap._set_stream(file._catalog, caching_enabled=file._caching_enabled)
-    return mcap
