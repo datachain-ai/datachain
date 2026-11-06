@@ -5,7 +5,6 @@ from concurrent.futures import Future
 from contextlib import contextmanager
 from typing import Any
 
-from fsspec.asyn import get_loop
 from pydantic import Field, PrivateAttr
 
 from datachain.lib.data_model import DataModel
@@ -144,24 +143,16 @@ class _ChunkPrefetcher:
         pos = self._f.tell()
         for i, (s, e, fut) in enumerate(self._window):
             if s <= pos and 0 <= n <= e - pos:
-                for _ in range(i):
+                data = fut.result()[pos - s : pos - s + n]
+                for _ in range(i + (pos + n == e)):
                     self._window.popleft()[2].cancel()
                 self._fill()
                 self._f.seek(pos + n)
-                return fut.result()[pos - s : pos - s + n]
+                return data
         return self._f.read(n)
 
-    def seek(self, offset: int, whence: int = 0) -> int:
-        return self._f.seek(offset, whence)
-
-    def tell(self) -> int:
-        return self._f.tell()
-
-    def seekable(self) -> bool:
-        return True
-
-    def readable(self) -> bool:
-        return True
+    def __getattr__(self, name):
+        return getattr(self._f, name)
 
 
 class McapFile(File):
@@ -241,7 +232,8 @@ class McapFile(File):
             and not client.cache.contains(self)
         ):
             with self.open(block_size=PARTIAL_READ_BLOCK_SIZE) as f:
-                loop = get_loop()
+                # The filesystem is created here, outside its event loop.
+                loop = client.fs.loop
                 view = _ChunkPrefetcher(
                     f,
                     lambda s, e: asyncio.run_coroutine_threadsafe(

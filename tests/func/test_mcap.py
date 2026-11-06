@@ -2,6 +2,7 @@ import io
 import tarfile
 
 import pytest
+from mcap.writer import CompressionType, IndexType
 from mcap.writer import Writer as McapWriter
 
 import datachain as dc
@@ -16,19 +17,25 @@ A_TIMES = [T0 + i * SEC for i in range(10)]
 B_TIMES = [T0 + i * 2_500_000_000 for i in range(4)]
 
 
-def mcap_bytes(**writer_options) -> bytes:
+def write_mcap(messages, chunk_size=64, **writer_options) -> bytes:
     buf = io.BytesIO()
-    w = McapWriter(buf, chunk_size=64, **writer_options)
+    w = McapWriter(buf, chunk_size=chunk_size, **writer_options)
     w.start()
     schema = w.register_schema("A", "jsonschema", b"{}")
-    a = w.register_channel("/a", "json", schema)
-    b = w.register_channel("/b", "raw", 0)
-    msgs = [(t, a, b"a%d" % i) for i, t in enumerate(A_TIMES)]
-    msgs += [(t, b, b"b%d" % i) for i, t in enumerate(B_TIMES)]
-    for t, ch, data in sorted(msgs):
-        w.add_message(ch, log_time=t, data=data, publish_time=t + 1)
+    channels = {
+        "/a": w.register_channel("/a", "json", schema),
+        "/b": w.register_channel("/b", "raw", 0),
+    }
+    for t, topic, data in messages:
+        w.add_message(channels[topic], log_time=t, data=data, publish_time=t + 1)
     w.finish()
     return buf.getvalue()
+
+
+def mcap_bytes(**writer_options) -> bytes:
+    msgs = [(t, "/a", b"a%d" % i) for i, t in enumerate(A_TIMES)]
+    msgs += [(t, "/b", b"b%d" % i) for i, t in enumerate(B_TIMES)]
+    return write_mcap(sorted(msgs), **writer_options)
 
 
 @pytest.fixture
@@ -295,36 +302,26 @@ def test_messages_decoded_by_factories(mcap_file):
 
 
 def many_chunks_mcap(**writer_options) -> bytes:
-    buf = io.BytesIO()
-    w = mcap_writer.Writer(buf, chunk_size=256, **writer_options)
-    w.start()
-    a = w.register_channel("/a", "json", w.register_schema("A", "jsonschema", b"{}"))
-    b = w.register_channel("/b", "raw", 0)
-    msgs = [(T0 + i * SEC // 10, a, b"a%d" % i) for i in range(200)]
-    msgs += [(T0 + i * SEC, b, b"b%d" % i * 20) for i in range(20)]
+    msgs = [(T0 + i * SEC // 10, "/a", b"a%d" % i) for i in range(200)]
+    msgs += [(T0 + i * SEC, "/b", b"b%d" % i * 20) for i in range(20)]
     msgs.sort()
     # Reversed runs make chunks overlap in log time.
-    for k in range(0, len(msgs), 7):
-        for t, ch, data in reversed(msgs[k : k + 7]):
-            w.add_message(ch, log_time=t, data=data, publish_time=t + 1)
-    w.finish()
-    return buf.getvalue()
+    runs = [reversed(msgs[k : k + 7]) for k in range(0, len(msgs), 7)]
+    return write_mcap([m for run in runs for m in run], 256, **writer_options)
 
 
 def expected_messages(data, topics, start, end, decoder_factories=()):
-    from mcap.reader import make_reader
+    from mcap.reader import NonSeekingReader
 
-    reader = make_reader(io.BytesIO(data), decoder_factories=decoder_factories)
+    if isinstance(topics, str):
+        topics = [topics]
+    reader = NonSeekingReader(io.BytesIO(data), decoder_factories=decoder_factories)
     args = {"starting_at": start, "ending_before": end}
     if decoder_factories:
-        return [
-            (c.topic, m.log_time, m.publish_time, m.data, d)
-            for _, c, m, d in reader.iter_decoded_messages(topics, **args)
-        ]
-    return [
-        (c.topic, m.log_time, m.publish_time, m.data, None)
-        for _, c, m in reader.iter_messages(topics, **args)
-    ]
+        rows = reader.iter_decoded_messages(topics, **args)
+    else:
+        rows = ((*row, None) for row in reader.iter_messages(topics, **args))
+    return [(c.topic, m.log_time, m.publish_time, m.data, d) for _, c, m, d in rows]
 
 
 def as_tuples(messages):
@@ -347,6 +344,12 @@ def read_ranges(spy):
     return sorted(call.args[2:] for call in spy.call_args_list)
 
 
+def chunk_count(data):
+    from mcap.reader import make_reader
+
+    return len(make_reader(io.BytesIO(data)).get_summary().chunk_indexes)
+
+
 WINDOWS = [
     (None, None, None),
     ("/b", None, None),
@@ -362,45 +365,38 @@ WINDOWS = [
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
-def test_cloud_messages_match_sequential_reader(
-    cloud_test_catalog, cloud_prefix, mocker
-):
-    data = many_chunks_mcap()
-    mcap = cloud_mcap(cloud_test_catalog, cloud_prefix, data)
-    spy = spy_range_reads(mocker, mcap)
-
-    for topics, start, end in WINDOWS:
-        names = [topics] if isinstance(topics, str) else topics
-        expected = expected_messages(data, names, start, end)
-        assert as_tuples(mcap.messages(topics, start, end)) == expected
-    assert spy.call_count > 0
-
-    factories = [UpperDecoder()]
-    msgs = mcap.messages("/a", T0 + SEC, T0 + 2 * SEC, decoder_factories=factories)
-    expected = expected_messages(data, ["/a"], T0 + SEC, T0 + 2 * SEC, factories)
-    assert as_tuples(msgs) == expected
-
-
-@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
-@pytest.mark.parametrize("version_aware", [False], indirect=True)
 @pytest.mark.parametrize(
     "options",
     [
-        {"compression": mcap_writer.CompressionType.NONE},
-        {"index_types": mcap_writer.IndexType.CHUNK},
-        {"index_types": mcap_writer.IndexType.NONE},
+        {},
+        {"compression": CompressionType.NONE},
+        {"index_types": IndexType.CHUNK},
+        {"index_types": IndexType.NONE},
         {"use_chunking": False},
     ],
 )
-def test_cloud_messages_of_other_layouts(
+def test_cloud_messages_match_linear_scan(
     cloud_test_catalog, cloud_prefix, mocker, options
 ):
     data = many_chunks_mcap(**options)
     mcap = cloud_mcap(cloud_test_catalog, cloud_prefix, data)
+    spy = spy_range_reads(mocker, mcap)
+
     for topics, start, end in WINDOWS:
-        names = [topics] if isinstance(topics, str) else topics
-        expected = expected_messages(data, names, start, end)
+        expected = expected_messages(data, topics, start, end)
         assert as_tuples(mcap.messages(topics, start, end)) == expected
+    assert (spy.call_count > 0) == (chunk_count(data) > 0)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_cloud_messages_decoded_by_factories(cloud_test_catalog, cloud_prefix):
+    data = many_chunks_mcap()
+    mcap = cloud_mcap(cloud_test_catalog, cloud_prefix, data)
+    factories = [UpperDecoder()]
+    msgs = mcap.messages("/a", T0 + SEC, T0 + 2 * SEC, decoder_factories=factories)
+    expected = expected_messages(data, "/a", T0 + SEC, T0 + 2 * SEC, factories)
+    assert as_tuples(msgs) == expected
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
@@ -452,6 +448,20 @@ def test_cloud_messages_fetch_a_bounded_window_ahead(
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_cloud_messages_fetch_chunks_larger_than_the_byte_budget(
+    cloud_test_catalog, cloud_prefix, mocker
+):
+    mocker.patch("datachain.lib.mcap._MAX_BYTES_IN_FLIGHT", 1)
+    data = many_chunks_mcap()
+    mcap = cloud_mcap(cloud_test_catalog, cloud_prefix, data)
+    spy = spy_range_reads(mocker, mcap)
+
+    assert as_tuples(mcap.messages()) == expected_messages(data, None, None, None)
+    assert spy.call_count == chunk_count(data)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
 def test_cloud_messages_of_cached_file_read_the_cache(
     cloud_test_catalog, cloud_prefix, mocker
 ):
@@ -460,7 +470,7 @@ def test_cloud_messages_of_cached_file_read_the_cache(
     mcap._set_stream(mcap._catalog, caching_enabled=True)
     spy = spy_range_reads(mocker, mcap)
 
-    assert as_tuples(mcap.messages("/b")) == expected_messages(data, ["/b"], None, None)
+    assert as_tuples(mcap.messages("/b")) == expected_messages(data, "/b", None, None)
     assert mcap.get_local_path()
     assert spy.call_count == 0
 
@@ -473,5 +483,47 @@ def test_cloud_messages_read_the_listed_version(cloud_test_catalog, cloud_prefix
     (cloud_test_catalog.src / cloud_prefix / "ep.mcap").write_bytes(mcap_bytes())
 
     assert mcap.version
-    expected = expected_messages(old, ["/b"], T0 + 3 * SEC, None)
+    expected = expected_messages(old, "/b", T0 + 3 * SEC, None)
     assert as_tuples(mcap.messages("/b", T0 + 3 * SEC)) == expected
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_cloud_messages_fail_when_the_file_changes_while_read(
+    cloud_test_catalog, cloud_prefix, monkeypatch
+):
+    mcap = cloud_mcap(cloud_test_catalog, cloud_prefix, many_chunks_mcap())
+    client_cls = type(mcap._catalog.get_client(mcap.source))
+    read_range = client_cls.read_range
+    new = [many_chunks_mcap(compression=CompressionType.NONE)]
+
+    async def overwrite_then_read(self, file, start, end):
+        if new:
+            await self.fs._pipe_file(file.get_fs_path(), new.pop())
+        return await read_range(self, file, start, end)
+
+    monkeypatch.setattr(client_cls, "read_range", overwrite_then_read)
+    with pytest.raises(FileNotFoundError, match="changed on the source"):
+        list(mcap.messages("/b"))
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_cloud_messages_create_filesystems_outside_the_event_loop(
+    cloud_test_catalog, cloud_prefix, mocker
+):
+    import threading
+
+    mcap = cloud_mcap(cloud_test_catalog, cloud_prefix, many_chunks_mcap())
+    client_cls = type(mcap._catalog.get_client(mcap.source))
+    threads = []
+    create_fs = client_cls.create_fs
+
+    def record(**kwargs):
+        threads.append(threading.current_thread().name)
+        return create_fs(**kwargs)
+
+    mocker.patch.object(client_cls, "create_fs", side_effect=record)
+    assert len(list(mcap.messages("/b"))) == 20
+    assert threads
+    assert "fsspecIO" not in threads

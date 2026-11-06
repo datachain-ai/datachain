@@ -190,6 +190,27 @@ class ClientS3(RangeListedClient):
 
         return cast("S3FileSystem", super().create_fs(**kwargs))
 
+    async def read_range(self, file: File, start: int, end: int) -> bytes:
+        if not file.etag or file.version not in ("", "null"):
+            return await super().read_range(file, start, end)
+        bucket, key, _ = self.fs.split_path(file.get_fs_path())
+        try:
+            resp = await self.fs._call_s3(
+                "get_object",
+                Bucket=bucket,
+                Key=key,
+                Range=f"bytes={start}-{end - 1}",
+                IfMatch=f'"{file.etag}"',
+                **({"VersionId": file.version} if file.version else {}),
+            )
+        except OSError:
+            await self._check_unchanged(file)
+            raise
+        try:
+            return await resp["Body"].read()
+        finally:
+            resp["Body"].close()
+
     @classmethod
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:
         # Step 1: Anonymous probe. cache_regions=True handles PermanentRedirect
