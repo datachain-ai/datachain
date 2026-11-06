@@ -5,10 +5,7 @@ from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 
 
 class FileWrapper(io.BufferedIOBase):
-    """Instrumented wrapper around an existing buffered file object.
-
-    It wraps the file's reads to update the callback with the number of bytes read.
-    It is buffered like the file it wraps, as a cached file's stream is.
+    """Buffered wrapper that reports bytes read through a callback.
 
     It assumes exclusive access to the underlying file object and closes it when it
     gets closed itself.
@@ -35,17 +32,13 @@ class FileWrapper(io.BufferedIOBase):
         """Seek to a position in the file."""
         return self.fileobj.seek(position, whence)
 
-    def readinto(self, b) -> int:
-        res = self.fileobj.readinto(b)
-        self.callback.relative_update(res)
-        return res
-
     def read(self, size: int | None = -1) -> bytes:
         data = self.fileobj.read(-1 if size is None else size)
         self.callback.relative_update(len(data))
         return data
 
-    read1 = read
+    def read1(self, size: int | None = -1) -> bytes:
+        return self.read(io.DEFAULT_BUFFER_SIZE if size is None or size < 0 else size)
 
     def close(self):
         self.fileobj.close()

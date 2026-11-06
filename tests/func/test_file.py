@@ -953,16 +953,15 @@ def test_video_info_http_server_without_range_support(
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
-def test_open_gives_a_buffered_stream_with_and_without_cache(cloud_test_catalog):
+def test_open_gives_the_same_buffered_stream_with_and_without_cache(
+    cloud_test_catalog,
+):
     ctc = cloud_test_catalog
     chain = dc.read_storage(ctc.src_uri, session=ctc.session)
     (file,) = chain.filter(dc.C("file.path").glob("*cat1")).to_values("file")
 
-    with file.open() as streamed:
-        assert isinstance(streamed, io.BufferedIOBase)
-        assert streamed.read(2) == b"me"
-        assert streamed.read() == b"ow"
-
-    file.ensure_cached()
-    with file.open() as cached:
-        assert isinstance(cached, io.BufferedIOBase)
+    for _ in range(2):  # streamed, then cached
+        with file.open() as f:
+            assert isinstance(f, io.BufferedIOBase)
+            assert (f.read(2), f.read1(), f.read()) == (b"me", b"ow", b"")
+        file.ensure_cached()

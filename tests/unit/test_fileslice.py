@@ -2,7 +2,7 @@ import io
 
 import pytest
 
-from datachain.client.fileslice import FileSlice
+from datachain.client.fileslice import FileSlice, FileWrapper
 
 
 def test_positions():
@@ -62,3 +62,8 @@ def test_implicit_close():
     assert base.closed is False
     f = None  # noqa: F841
     assert base.closed is True
+
+
+def test_file_wrapper_read1_reads_at_most_one_buffer():
+    wrapper = FileWrapper(io.BytesIO(b"x" * 3 * io.DEFAULT_BUFFER_SIZE))
+    assert len(wrapper.read1()) == io.DEFAULT_BUFFER_SIZE
