@@ -34,6 +34,7 @@ from datachain.error import (
     ProjectCreateNotAllowedError,
 )
 from datachain.func import string
+from datachain.lib.arrow import ArrowRow
 from datachain.lib.data_model import DataModel
 from datachain.lib.dc import C, DatasetPrepareError, Sys
 from datachain.lib.dc.listings import read_listing_dataset
@@ -2837,6 +2838,20 @@ def test_read_parquet_exported_with_source_into_column_keeps_both_sources(
     assert data.n == 1
 
 
+def test_read_parquet_exported_with_optional_source_replaces_it(test_session, tmp_dir):
+    path = tmp_dir / "df.parquet"
+    dc.read_values(
+        source=[None],
+        n=[1],
+        output={"source": ArrowRow | None, "n": int},
+        session=test_session,
+    ).to_parquet(path)
+
+    chain = dc.read_parquet(path.as_uri(), session=test_session)
+    ((source, n),) = chain.to_list("source", "n")
+    assert (source.file.path, n) == ("df.parquet", 1)
+
+
 def test_read_parquet_exported_with_str_source_raises(test_session, tmp_dir):
     path = tmp_dir / "df.parquet"
     dc.read_values(source=["s3"], session=test_session).to_parquet(path)
@@ -2866,6 +2881,17 @@ def test_read_csv_with_source_and_c0_source_columns_reads_source_as_c1_source(
 
     chain = dc.read_csv(path.as_uri(), session=test_session)
     assert chain.to_list("c1_source", "c0_source") == [("a", "b")]
+
+
+@pytest.mark.parametrize("column", ["source", "c1_source"])
+def test_read_csv_columns_with_source_column_keep_full_read_names(
+    tmp_dir, test_session, column
+):
+    path = tmp_dir / "df.csv"
+    path.write_text("source,c0_source\na,b\n")
+
+    chain = dc.read_csv(path.as_uri(), columns=[column], session=test_session)
+    assert chain.to_values("c1_source") == ["a"]
 
 
 def test_read_csv_with_source_column_into_column_keeps_its_name(tmp_dir, test_session):

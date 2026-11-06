@@ -2832,10 +2832,10 @@ class DataChain:
         try:
             if infer:
                 schemas = file_schemas(self, **kwargs, parse_options=parse_options)
-                schema, names = merge_schemas(schemas, columns)
                 taken = ["source"] if source and not column else []
+                schema, names = merge_schemas(schemas, columns, taken)
                 output, _ = schema_to_output(schema, col_names or names, taken)
-                if taken and output.get("source") is ArrowRow:
+                if taken and unwrap_optional(output.get("source"))[0] is ArrowRow:
                     # A file written by DataChain already has a source, which this
                     # read replaces.
                     del output["source"]
