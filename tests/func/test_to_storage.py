@@ -13,7 +13,7 @@ import pytest
 from PIL import Image
 
 import datachain as dc
-from datachain import Session
+from datachain import DataModel, Session
 from datachain.lib.file import File, ImageFile, VideoFile, VideoFragment
 from datachain.lib.utils import DataChainParamsError
 from tests.conftest import get_cloud_test_catalog, make_cloud_server
@@ -423,6 +423,11 @@ def test_to_storage_empty_segments_with_flat_placement(cloud_test_catalog, place
         client.fs.invalidate_cache()
 
 
+class FilePair(DataModel):
+    file: File
+    n: int
+
+
 @pytest.mark.parametrize(
     "signal,msg",
     [
@@ -433,6 +438,7 @@ def test_to_storage_empty_segments_with_flat_placement(cloud_test_catalog, place
                 "or frag.save(output) in map()"
             ),
         ),
+        ("pair", "'pair' is FilePair, not a file; use signal='pair.file'"),
         ("files", "'files' is list, not a file"),
         ("n", "'n' is int, not a file"),
     ],
@@ -441,6 +447,7 @@ def test_to_storage_rejects_a_signal_without_files(test_session, tmp_path, signa
     file = File(source=tmp_path.as_uri(), path="v.mp4")
     chain = dc.read_values(
         frag=[VideoFragment(video=VideoFile(**file.model_dump()), start=0, end=1)],
+        pair=[FilePair(file=file, n=1)],
         files=[[file]],
         n=[1],
         session=test_session,
