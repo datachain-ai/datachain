@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from datachain.query import Session
 
@@ -20,7 +20,7 @@ def read_lerobot(
     path: str | os.PathLike[str],
     session: Session | None = None,
     settings: dict | None = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> "DataChain":
     """Generate a chain with one row per episode of a LeRobot v3 dataset.
 
