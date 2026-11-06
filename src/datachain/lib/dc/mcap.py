@@ -17,7 +17,7 @@ def read_mcap(
     duration: float | None = None,
     session: Session | None = None,
     settings: dict | None = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> "DataChain":
     """Generate a chain from MCAP robotics logs (ROS 2, Foxglove), `*.mcap` files.
 
