@@ -122,13 +122,46 @@ Parquet exported by DataChain restores its saved schema and does not support `co
 
 ## WebDataset
 
-`read_webdataset()` reads WebDataset tar shards without extracting them, one row per sample: the `.jpg`/`.png` member is `wds.file`, and the other members fill fields named after their extensions (`wds.txt`, `wds.json`, `wds.cls`, ...).
+`dc.read_webdataset()` reads WebDataset tar shards without extracting them, a row per sample: the image member is `wds.file`, and the other members (`.txt`, `.json`, `.cls`, ...) become columns, parsed once while the shards are indexed. A `spec=` model, such as `WDSLaion` for LAION-style shards, gives the JSON member typed fields.
+
+**Questions about captions and metadata run as SQL, without reading the images.**
 
 ```python
-samples = dc.read_webdataset("gs://bucket/shards/")
+import datachain as dc
+from datachain.lib.webdataset_laion import WDSLaion
+
+shards = "gs://datachain-demo/datacomp-small/shards/"
+samples = dc.read_webdataset(shards, spec=WDSLaion, anon=True)
 ```
 
-To get typed fields from the JSON member, pass a `spec=` model, e.g. `WDSLaion` from `datachain.lib.webdataset_laion` for LAION shards.
+```python
+# captions of 3+ words, images of at least 200 px with aspect ratio under 3
+w, h = "wds.json.original_width", "wds.json.original_height"
+words = dc.func.array.length(dc.func.string.split("wds.txt", " "))
+short_side, long_side = dc.func.least(w, h), dc.func.greatest(w, h)
+good = samples.filter((words > 2) & (short_side > 200) & (long_side < 3 * short_side))
+```
+
+```python
+# join a Parquet table of CLIP scores and keep the best-matching captions
+metadata = "gs://datachain-demo/datacomp-small/metadata/*.parquet"
+scores = dc.read_parquet(metadata, anon=True)
+matched = good.merge(scores, on="wds.json.uid", right_on="uid")
+best = matched.filter(dc.C("clip_l14_similarity_score") > 0.3)
+```
+
+**Questions about the pixels run your Python code on the images.** Images are read from their shards directly, without extracting them. Samples are processed in parallel, and the results become columns you can filter with SQL again:
+
+```python
+def contrast(file: dc.File) -> int:
+    low, high = file.as_image_file().read().convert("L").getextrema()
+    return high - low
+```
+
+```python
+scored = best.settings(parallel=8).map(contrast=contrast, params=["wds.file"])
+flat = scored.filter(dc.C("contrast") < 40)  # nearly blank images
+```
 
 ## SQL Databases
 
