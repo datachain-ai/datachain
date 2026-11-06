@@ -3017,14 +3017,6 @@ def test_extend_features(test_session):
     assert res == sum(range(len(features)))
 
 
-def test_read_storage_column(tmp_dir, test_session):
-    df = pd.DataFrame(DF_DATA)
-    path = tmp_dir / "test.parquet"
-    df.to_parquet(path)
-    chain = dc.read_storage(path.as_uri(), column="custom", session=test_session)
-    assert chain.schema["custom"] == File
-
-
 def test_from_features_column(test_session):
     fib = [1, 1, 2, 3, 5, 8]
     values = ["odd" if num % 2 else "even" for num in fib]

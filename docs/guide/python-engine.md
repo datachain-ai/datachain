@@ -286,7 +286,7 @@ def eval_dialogue(file: dc.File) -> bool:
 
 
 chain = (
-    dc.read_storage("gs://datachain-demo/chatbot-KiT/", column="file", anon=True)
+    dc.read_storage("gs://datachain-demo/chatbot-KiT/", anon=True)
     .settings(parallel=4)
     .map(is_success=eval_dialogue)
     .save("mistral_evaluations")
@@ -314,7 +314,7 @@ def eval_dialog(file: dc.File) -> ChatCompletionResponse:
 
 
 chain = (
-    dc.read_storage("gs://datachain-demo/chatbot-KiT/", column="file", anon=True)
+    dc.read_storage("gs://datachain-demo/chatbot-KiT/", anon=True)
     .settings(parallel=4, cache=True)
     .map(response=eval_dialog)
     .map(status=lambda response: response.choices[0].message.content.lower()[:7])
