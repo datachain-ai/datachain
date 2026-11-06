@@ -1332,22 +1332,18 @@ def test_save_fragments(tmp_path, video_file):
         }
 
 
-def test_frames_read_from_mid_file_use_small_blocks(video_file, monkeypatch):
+def test_frames_read_from_mid_file_use_small_blocks(video_file, mocker):
     from datachain.lib.file import PARTIAL_READ_BLOCK_SIZE
 
     video = video_file.as_video_file()
-    block_sizes = []
-    open_file = VideoFile.open
+    video.get_info()
+    huge = video.model_copy(update={"size": 10**12})
+    spy = mocker.spy(VideoFile, "open")
 
-    def spy(self, *args, **kwargs):
-        block_sizes.append(kwargs.get("block_size"))
-        return open_file(self, *args, **kwargs)
-
-    monkeypatch.setattr(VideoFile, "open", spy)
     list(video.get_frames(0, 2))
-    from_start = block_sizes[-1]
     list(video.get_frames(100, 102))
     video.get_frame(100).get_np()
+    list(huge.get_frames(100, 102))
 
-    assert from_start is None
-    assert block_sizes[-2:] == [PARTIAL_READ_BLOCK_SIZE, PARTIAL_READ_BLOCK_SIZE]
+    sizes = [call.kwargs.get("block_size") for call in spy.call_args_list]
+    assert sizes == [None, PARTIAL_READ_BLOCK_SIZE, PARTIAL_READ_BLOCK_SIZE, None]
