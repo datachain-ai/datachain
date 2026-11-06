@@ -122,28 +122,47 @@ Parquet exported by DataChain restores its saved schema and does not support `co
 
 ## MCAP Robotics Logs
 
-`dc.read_mcap()` reads [MCAP](https://mcap.dev) logs (ROS 2, Foxglove). By default it gives one row per file: an [`McapFile`](../references/data-types/mcapfile.md) and its summary (topics, message counts, start/end time), read from the summary section at the end of the file. With `duration=` it gives one [`McapSlice`](../references/data-types/mcapfile.md) row per time window instead. `messages()` yields message bytes and reads only the chunks that overlap the topics and time window; pass `decoder_factories` (e.g. `mcap_protobuf.decoder.DecoderFactory()`) to also get each message `decoded`. Times are nanoseconds.
+`dc.read_mcap()` reads [MCAP](https://mcap.dev) logs (ROS 2, Foxglove). It reads only the summary section at the end of each file (about 1 MB), so a row per log, an [`McapFile`](../references/data-types/mcapfile.md) with its topics, message counts and duration, is ready in seconds even for terabytes of logs.
+
+**Questions about the summary run as SQL and never touch the files.** For example, find logs where joint states were dropped, or count hours of data per robot:
 
 ```python
 import datachain as dc
 
-episodes = dc.read_mcap("s3://bucket/episodes/")  # columns: mcap, summary
-long_ones = episodes.filter(dc.C("summary.duration") > 60)
+# joint states are logged at 15 Hz; find logs that recorded less
+joints = dc.read_mcap("s3://bucket/logs/", topics="/joint_states")
+hz = dc.C("summary.messages") / dc.C("summary.duration")
+dropped = joints.mutate(hz=hz).filter(dc.C("hz") < 14)
 ```
-
-A function over `McapSlice` rows reads the messages of one window:
 
 ```python
-def joint_messages(mcap: dc.McapSlice) -> int:
-    return sum(1 for msg in mcap.messages())
+# hours of data and number of logs per robot folder
+inventory = (
+    dc.read_mcap("s3://bucket/logs/")
+    .mutate(robot=dc.func.path.parent("mcap.path"))
+    .group_by(
+        logs=dc.func.count(),
+        hours=dc.func.sum("summary.duration") / 3600,
+        partition_by="robot",
+    )
+)
 ```
 
-Count the joint messages in 10-second windows:
+**Questions about message content run your Python code on the messages.** With `duration=`, `read_mcap` gives a row per time window, an [`McapSlice`](../references/data-types/mcapfile.md). `messages()` reads only the chunks of that window and topic, and `decoder_factories` decodes them into ROS 2 or Protobuf objects (with `DecoderFactory` from `mcap_ros2.decoder` or `mcap_protobuf.decoder`, packages `mcap-ros2-support` and `mcap-protobuf-support`). The windows are processed in parallel, and the results become columns you can filter with SQL again:
 
 ```python
-windows = dc.read_mcap("s3://bucket/episodes/", topics=["/joint_states"], duration=10)
-windows.map(n=joint_messages).show()
+def max_joint_speed(mcap: dc.McapSlice) -> float:
+    messages = mcap.messages(decoder_factories=[DecoderFactory()])
+    return max((abs(v) for m in messages for v in m.decoded.velocity), default=0.0)
 ```
+
+```python
+windows = dc.read_mcap("s3://bucket/logs/", topics="/joint_states", duration=10)
+speeds = windows.settings(parallel=8).map(speed=max_joint_speed)
+fast = speeds.filter(dc.C("speed") > 2.0)
+```
+
+Times are nanoseconds.
 
 ## SQL Databases
 
