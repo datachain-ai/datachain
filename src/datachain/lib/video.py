@@ -387,22 +387,20 @@ def _frame_timestamp(frame, frame_index: int, fps: float) -> float:
     raise ValueError("unable to determine frame timestamp")
 
 
-# A window of frames up to this size, read from mid-file, uses small read blocks.
-SHORT_WINDOW_MAX_SIZE = 16 * 1024 * 1024
+SMALL_BLOCK_WINDOW_MAX_SIZE = 16 * 1024 * 1024
 
 
 def _frames_block_size(
     video: VideoFile, start: int, end: int, video_stream_index: int
 ) -> int | None:
-    """Small blocks for a short window from mid-file: it seeks, and the default
-    read-ahead would fetch mostly unused bytes. Long windows keep the default."""
+    """Small blocks for a short window from mid-file, where read-ahead is wasted."""
     if start == 0:
         return None
     try:
         frames = video.get_info(video_stream_index=video_stream_index).frames
     except FileError:
         return None
-    if frames <= 0 or video.size * (end - start) > SHORT_WINDOW_MAX_SIZE * frames:
+    if frames <= 0 or video.size * (end - start) > SMALL_BLOCK_WINDOW_MAX_SIZE * frames:
         return None
     return PARTIAL_READ_BLOCK_SIZE
 
