@@ -130,9 +130,14 @@ import datachain as dc
 episodes = dc.read_mcap("s3://bucket/episodes/")  # columns: mcap, summary
 long_ones = episodes.filter(dc.C("summary.duration") > 60)
 
-slices = dc.read_mcap("s3://bucket/episodes/", topics=["/joint_states"], duration=10)
-for (s,) in slices.limit(1).to_iter("mcap"):
-    print(s.start, sum(len(m.data) for m in s.messages()))
+windows = dc.read_mcap("s3://bucket/episodes/", topics=["/joint_states"], duration=10)
+
+
+def joint_messages(mcap: dc.McapSlice) -> int:
+    return sum(1 for msg in mcap.messages())
+
+
+windows.map(n=joint_messages).show()
 ```
 
 ## SQL Databases

@@ -40,8 +40,8 @@ def read_mcap(
         import datachain as dc
 
         chain = dc.read_mcap("s3://bucket/logs/", topics="/joint_states", duration=10)
-        for (s,) in chain.limit(1).to_iter("mcap"):
-            for msg in s.messages():
+        for (window,) in chain.limit(1).to_iter("mcap"):
+            for msg in window.messages():
                 print(msg.topic, msg.log_time, len(msg.data))
         ```
     """
