@@ -2,7 +2,6 @@ import os
 from collections.abc import Iterator, Sequence
 from typing import TYPE_CHECKING, Any
 
-from datachain.lib.arrow import PARTIAL_READ_PREFETCH_MAX_SIZE
 from datachain.lib.file import File
 from datachain.lib.udf import Generator
 from datachain.query import Session
@@ -79,8 +78,9 @@ def read_mcap(
 class _SummaryOnly(Generator):
     """Reads only each file's summary section, so large files aren't prefetched."""
 
-    prefetch_max_size = PARTIAL_READ_PREFETCH_MAX_SIZE
-
     def __init__(self, rows):
+        from datachain.lib.arrow import PARTIAL_READ_PREFETCH_MAX_SIZE
+
         super().__init__()
         self.process = rows  # type: ignore[method-assign]
+        self.prefetch_max_size = PARTIAL_READ_PREFETCH_MAX_SIZE
