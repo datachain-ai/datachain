@@ -1,8 +1,10 @@
+import io
 import json
 import math
 import os
 import posixpath
 import re
+import tarfile
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -960,6 +962,19 @@ def test_similarity_search(cloud_test_catalog):
         assert p1.endswith(p2)
         assert math.isclose(c1, c2, abs_tol=1e-5)
         assert math.isclose(e1, e2, abs_tol=1e-5)
+
+
+def test_process_tar_rejects_compressed_archive(tmp_dir, test_session):
+    with tarfile.open(tmp_dir / "animals.tar", mode="w:gz") as tar:
+        info = tarfile.TarInfo("cat1")
+        info.size = 4
+        tar.addfile(info, io.BytesIO(b"meow"))
+
+    chain = dc.read_storage(tmp_dir.as_uri(), session=test_session).gen(
+        file=process_tar
+    )
+    with pytest.raises(Exception, match="compressed tars are not supported"):
+        chain.to_list()
 
 
 @pytest.mark.parametrize("tree", [TARRED_TREE], indirect=True)

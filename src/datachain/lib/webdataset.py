@@ -10,7 +10,7 @@ from pydantic import Field
 from datachain import json
 from datachain.lib.data_model import DataModel
 from datachain.lib.file import File
-from datachain.lib.tar import build_tar_member
+from datachain.lib.tar import build_tar_member, open_tar
 from datachain.lib.utils import DataChainError
 
 # The `json` method of the Pydantic `BaseModel` class has been deprecated
@@ -219,7 +219,7 @@ def process_webdataset(
 ) -> Callable[[File], Iterator]:
     def wds_func(file: File) -> Iterator[spec]:  # type: ignore[valid-type]
         with file.open() as fd:
-            with tarfile.open(fileobj=fd) as tar:
+            with open_tar(fd, file) as tar:
                 yield from get_tar_groups(file, tar, core_extensions, spec, encoding)
 
     return wds_func
