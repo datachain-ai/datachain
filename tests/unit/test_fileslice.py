@@ -67,3 +67,10 @@ def test_implicit_close():
 def test_file_wrapper_read1_reads_at_most_one_buffer():
     wrapper = FileWrapper(io.BytesIO(b"x" * 3 * io.DEFAULT_BUFFER_SIZE))
     assert len(wrapper.read1()) == io.DEFAULT_BUFFER_SIZE
+
+
+def test_file_slice_is_buffered():
+    f = FileSlice(io.BytesIO(b"0123456789" * 1000), 5, 9000, "foo")
+    assert isinstance(f, io.BufferedIOBase)
+    assert f.read(3) == b"567"
+    assert len(f.read1()) == min(io.DEFAULT_BUFFER_SIZE, 9000 - 3)

@@ -45,9 +45,8 @@ class FileWrapper(io.BufferedIOBase):
         super().close()
 
 
-class FileSlice(io.RawIOBase):
-    """A thin wrapper around an existing file object that provides a part of its data
-    as an individual file object.
+class FileSlice(io.BufferedIOBase):
+    """A buffered view of a part of an existing file object, as an individual file.
 
     It assumes exclusive access to the underlying file object and closes it when it
     gets closed itself.
@@ -87,6 +86,15 @@ class FileSlice(io.RawIOBase):
         else:
             raise ValueError("Invalid argument")
         return self.position
+
+    def read(self, size: int | None = -1) -> bytes:
+        left = self.size - self.position
+        n = left if size is None or size < 0 else min(size, left)
+        buf = bytearray(n)
+        return bytes(buf[: self.readinto(buf)])
+
+    def read1(self, size: int | None = -1) -> bytes:
+        return self.read(io.DEFAULT_BUFFER_SIZE if size is None or size < 0 else size)
 
     def readinto(self, b):
         max_size = self.size - self.position
