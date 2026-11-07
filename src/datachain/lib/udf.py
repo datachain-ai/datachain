@@ -34,6 +34,7 @@ from datachain.query.batch import (
     Partition,
     RowsOutputBatch,
 )
+from datachain.query.schema import DEFAULT_DELIMITER
 from datachain.utils import safe_closing, with_last_flag
 
 logger = logging.getLogger("datachain")
@@ -895,6 +896,8 @@ class Generator(UDFBase):
     is_output_batched = True
     prefetch: int = 2
     prefetch_max_size: int | None = None
+    # (input, output) columns of a delta key each output row must keep
+    delta_key: "Sequence[tuple[str, str]]" = ()
 
     def run(
         self,
@@ -908,16 +911,29 @@ class Generator(UDFBase):
         self.setup()
         signal_names = list(self.signal_names)
         file_row = FileRow if self._file_row_output() else None
+        key_inputs = [udf_fields.index(column) for column, _ in self.delta_key]
+        input_keys: dict[Any, tuple] = {}
 
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
             with safe_closing(udf_inputs):
                 for row in udf_inputs:
-                    yield self._prepare_row(
+                    prepared = self._prepare_row(
                         row, udf_fields, catalog, cache, download_cb, include_id=True
                     )
+                    if key_inputs:
+                        input_keys[prepared[0]] = tuple(row[i] for i in key_inputs)
+                    yield prepared
+
+        def _check_delta_key(key, output):
+            if tuple(output[column] for _, column in self.delta_key) != key:
+                from datachain.delta import delta_key_changed_error
+
+                column = self.delta_key[0][1].split(DEFAULT_DELIMITER)[0]
+                raise delta_key_changed_error(column, "gen()")
 
         def _process_row(row):
             row_id, *row = row
+            key = input_keys.pop(row_id) if key_inputs else None
             has_output = False
             result = self.process(*row)
             if result is None:
@@ -926,10 +942,15 @@ class Generator(UDFBase):
                 for result_obj, is_last in with_last_flag(result_objs):
                     has_output = True
                     if type(result_obj) is file_row:
+                        if key is not None:
+                            output = dict(zip(signal_names, result_obj, strict=True))
+                            _check_delta_key(key, output)
                         yield result_obj + (row_id, not is_last, None)  # noqa: RUF005
                         continue
                     udf_output = self._flatten_row(result_obj)
                     udf_output = dict(zip(signal_names, udf_output, strict=False))
+                    if key is not None:
+                        _check_delta_key(key, udf_output)
                     udf_output["sys__input_id"] = row_id
                     udf_output["sys__partial"] = not is_last
                     udf_output["sys__empty"] = None
