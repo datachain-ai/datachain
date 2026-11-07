@@ -143,9 +143,14 @@ def read_lerobot(
 
 
 def _open(file: "File"):
-    """Open a listed file, failing if it changed since listing, like `read_parquet`."""
+    """Open a listed file, failing if it changed since listing, like `read_parquet`.
+
+    Small blocks: only the needed Parquet columns are read, not the stats.
+    """
+    from datachain.lib.file import PARTIAL_READ_BLOCK_SIZE
+
     if file._caching_enabled:
         file.ensure_cached()
     elif not file.get_local_path():
         file._catalog.get_client(file.source).check_unchanged(file)  # type: ignore[union-attr]
-    return file.open()
+    return file.open(block_size=PARTIAL_READ_BLOCK_SIZE)

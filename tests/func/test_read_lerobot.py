@@ -215,3 +215,16 @@ def test_read_lerobot_fails_on_metadata_changed_since_listing(
         dc.read_lerobot(
             lerobot_dataset.as_uri(), session=test_session, settings={"cache": cache}
         )
+
+
+def test_read_lerobot_reads_metadata_in_small_blocks(
+    lerobot_dataset, test_session, mocker
+):
+    from datachain.lib.file import PARTIAL_READ_BLOCK_SIZE, File
+
+    spy = mocker.spy(File, "open")
+    dc.read_lerobot(lerobot_dataset.as_uri(), session=test_session)
+    assert spy.call_count
+    assert {c.kwargs.get("block_size") for c in spy.call_args_list} == {
+        PARTIAL_READ_BLOCK_SIZE
+    }
