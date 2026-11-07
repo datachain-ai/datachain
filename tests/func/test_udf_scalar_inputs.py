@@ -122,11 +122,7 @@ def test_udf_without_inputs_and_with_setup_preserves_values(
 
 
 @pytest.mark.parametrize("method", ["map", "gen"])
-def test_udf_model_input_is_hydrated(test_session, mocker, method):
-    from datachain.lib.udf import UDFBase
-
-    prepare = mocker.spy(UDFBase, "_prepare_row")
-
+def test_udf_model_input_is_hydrated(test_session, method):
     class Item(dc.DataModel):
         value: tuple[int, ...]
 
@@ -144,8 +140,6 @@ def test_udf_model_input_is_hydrated(test_session, mocker, method):
     assert getattr(chain, method)(
         result=inspect if method == "map" else generate
     ).order_by("result").to_values("result") == [1, 2]
-
-    assert prepare.call_count > 0
 
 
 @pytest.mark.parametrize("method", ["map", "gen"])

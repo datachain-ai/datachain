@@ -224,7 +224,7 @@ class UDFAdapter:
 
     @property
     def prefetch(self) -> int:
-        return self.inner._effective_prefetch
+        return self.inner.prefetch
 
 
 class UDFBase(AbstractUDF):
