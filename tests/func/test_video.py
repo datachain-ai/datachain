@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import tarfile
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -814,7 +815,10 @@ def test_get_frames(video_file):
     )
 
 
-def test_get_frames_get_np_no_double_decode(video_file, monkeypatch):
+@pytest.mark.parametrize(
+    "method,args", [("get_frames", (0, 5)), ("sample_frames", (1,))]
+)
+def test_get_frames_get_np_no_double_decode(video_file, monkeypatch, method, args):
     open_call_count = 0
     real_open = VideoFile.open
 
@@ -825,13 +829,13 @@ def test_get_frames_get_np_no_double_decode(video_file, monkeypatch):
 
     monkeypatch.setattr(VideoFile, "open", counting_open)
 
-    frames = list(video_file.as_video_file().get_frames(0, 5))
-    assert open_call_count == 1, "get_frames() should open the file exactly once"
+    frames = list(getattr(video_file.as_video_file(), method)(*args))
+    assert open_call_count == 1, f"{method}() should open the file exactly once"
 
     open_call_count = 0
     arrays = [frame.get_np() for frame in frames]
     assert open_call_count == 0, (
-        "get_np() should not re-open the file for frames from get_frames()"
+        f"get_np() should not re-open the file for frames from {method}()"
     )
     assert all(isinstance(arr, ndarray) for arr in arrays)
     assert all(arr.shape == (360, 640, 3) for arr in arrays)
@@ -927,6 +931,10 @@ def test_video_stream_index_selects_video_stream(multi_stream_video):
     assert [frame.video_stream_index for frame in frames] == [1, 1]
     assert [frame.timestamp for frame in frames] == pytest.approx([0, 1 / 30])
 
+    frames = list(file.sample_frames(30, video_stream_index=1))
+    assert [frame.video_stream_index for frame in frames] == [1, 1]
+    assert all(frame.get_np().shape == (24, 32, 3) for frame in frames)
+
 
 def test_video_stream_index_is_relative_to_video_streams(audio_first_video):
     video_path = audio_first_video.path
@@ -943,6 +951,11 @@ def test_video_stream_index_is_relative_to_video_streams(audio_first_video):
 
 def test_video_stream_index_error(video_file):
     with pytest.raises(ValueError):
+        list(video_file.as_video_file().sample_frames(video_stream_index=-1))
+    with pytest.raises(FileError):
+        list(video_file.as_video_file().sample_frames(video_stream_index=1))
+
+    with pytest.raises(ValueError):
         video_file.as_video_file().get_frame(0, video_stream_index=-1)
 
     with pytest.raises(FileError):
@@ -952,11 +965,18 @@ def test_video_stream_index_error(video_file):
         list(video_file.as_video_file().get_frames(0, 1, video_stream_index=1))
 
 
-def test_get_frames_wraps_decode_errors():
+@pytest.mark.parametrize(
+    "method,args,message",
+    [
+        ("get_frames", (0, 1), "unable to read video frames"),
+        ("sample_frames", (), "unable to sample video frames"),
+    ],
+)
+def test_get_frames_wraps_decode_errors(method, args, message):
     file = VideoFile.upload(b"not a video", "broken.mp4")
 
-    with pytest.raises(FileError, match="unable to read video frames"):
-        list(file.get_frames(0, 1))
+    with pytest.raises(FileError, match=message):
+        list(getattr(file, method)(*args))
 
 
 @requires_ffmpeg
@@ -1261,9 +1281,15 @@ def test_save_video_fragment_uses_explicit_format(tmp_path, video_file, format):
 
 
 @requires_posix
+@pytest.mark.parametrize("budget,threads", [(None, 2), ("1", 1), ("4", 4), ("32", 16)])
 def test_save_video_fragment_invokes_ffmpeg_non_interactively(
-    tmp_path, monkeypatch, video_file
+    tmp_path, monkeypatch, video_file, budget, threads
 ):
+    if budget is None:
+        monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
+    else:
+        monkeypatch.setenv("DATACHAIN_WORKER_THREADS", budget)
+    monkeypatch.setattr("datachain.lib.video.usable_cpu_count", lambda: 2)
     args_file = tmp_path / "ffmpeg.args"
     monkeypatch.setenv("FFMPEG_ARGS_FILE", str(args_file))
     _install_fake_ffmpeg(
@@ -1278,6 +1304,12 @@ def test_save_video_fragment_invokes_ffmpeg_non_interactively(
     assert os.path.isabs(args[0])
     assert os.path.basename(args[0]) == "ffmpeg"
     assert args[1:5] == ["-nostdin", "-hide_banner", "-loglevel", "error"]
+    input_index = args.index("-i")
+    input_thread_index = args.index("-threads")
+    assert input_thread_index < input_index
+    assert args[input_thread_index + 1] == str(threads)
+    output_thread_index = args.index("-threads", input_index)
+    assert args[output_thread_index + 1] == str(threads)
     assert "pipe:1" not in args
     assert args[-1].endswith(".mp4")
 
@@ -1330,3 +1362,188 @@ def test_save_fragments(tmp_path, video_file):
             "format": "mov,mp4,m4a,3gp,3g2,mj2",
             "codec": "h264",
         }
+
+
+@pytest.mark.parametrize(
+    "pts,fps,expected_indices",
+    [
+        ([0, 1, 5, 6], 1, [0]),
+        ([0, 1, 5, 6], 10, [0, 2, 3]),
+        ([0, 1, 5, 6], 30, [0, 1, 2, 2, 2, 2, 3]),
+        ([0, 1, 5, 6], 60, [0, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3]),
+        ([0, 29, 31, 95], 1, [0, 2, 3, 3]),
+        ([0, 29, 31, 95], 1.5, [0, 1, 3, 3, 3]),
+        ([0, 29, 31, 95], 0.5, [0, 3]),
+        ([30, 60], 1, [0, 1]),
+    ],
+)
+def test_sample_frames_selects_first_frame_at_or_after_target(
+    tmp_path, pts, fps, expected_indices
+):
+    path = tmp_path / "video.mov"
+    _write_single_stream_video(
+        path, codec="mpeg4", fps=30, frame_count=len(pts), pts=pts
+    )
+    frames = list(_generated_video(path).file.sample_frames(fps))
+    assert [frame.frame for frame in frames] == expected_indices
+    assert [frame.timestamp for frame in frames] == pytest.approx(
+        [pts[i] / 30 for i in expected_indices]
+    )
+
+
+def test_sample_frames_with_unknown_start_begin_at_the_first_frame(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "video.mov"
+    _write_single_stream_video(
+        path, codec="mpeg4", fps=30, frame_count=2, pts=[3000, 3030]
+    )
+    original_open = av.open
+
+    @contextmanager
+    def without_start_time(*args, **kwargs):
+        with original_open(*args, **kwargs) as container:
+            stream = container.streams.video[0]
+            metadata = SimpleNamespace(
+                start_time=None,
+                time_base=stream.time_base,
+                average_rate=stream.average_rate,
+                base_rate=stream.base_rate,
+                guessed_rate=stream.guessed_rate,
+            )
+            yield SimpleNamespace(
+                streams=SimpleNamespace(video=[metadata]),
+                decode=lambda _: container.decode(stream),
+            )
+
+    monkeypatch.setattr(av, "open", without_start_time)
+    frames = list(_generated_video(path).file.sample_frames(1))
+    assert [frame.frame for frame in frames] == [0, 1]
+    assert [frame.timestamp for frame in frames] == pytest.approx([100, 101])
+
+
+def test_sample_frames_handles_stream_start_offset(mpegts_video):
+    frames = list(mpegts_video.file.sample_frames(24))
+    assert [frame.frame for frame in frames] == list(range(10))
+    assert [frame.timestamp for frame in frames] == pytest.approx(
+        [(i + 1) / 24 for i in range(10)]
+    )
+
+
+@pytest.mark.parametrize(
+    "method,args", [("get_frames", (0, 10)), ("sample_frames", (24,))]
+)
+def test_frame_iterators_estimate_missing_timestamps_with_stream_offset(
+    mpegts_video, monkeypatch, method, args
+):
+    original_open = av.open
+    starts = []
+
+    @contextmanager
+    def without_timestamps(*args, **kwargs):
+        with original_open(*args, **kwargs) as container:
+
+            def decode(stream):
+                starts.append(float(stream.start_time * stream.time_base))
+                for frame in container.decode(stream):
+                    frame.pts = None
+                    yield frame
+
+            yield SimpleNamespace(streams=container.streams, decode=decode)
+
+    monkeypatch.setattr(av, "open", without_timestamps)
+    frames = list(getattr(mpegts_video.file, method)(*args))
+
+    assert [frame.frame for frame in frames] == list(range(10))
+    assert [frame.timestamp for frame in frames] == pytest.approx(
+        [starts[0] + i / 24 for i in range(10)]
+    )
+
+
+def test_sample_frames_estimates_missing_timestamps(raw_h264_video):
+    frames = list(raw_h264_video.file.sample_frames(25))
+    assert [frame.frame for frame in frames] == list(range(4))
+    assert [frame.timestamp for frame in frames] == pytest.approx(
+        [i / 25 for i in range(4)]
+    )
+
+
+@pytest.mark.parametrize("fps", [0, -1, float("nan"), float("inf"), -float("inf")])
+def test_sample_frames_invalid_rate(video_file, fps, mocker):
+    opened = mocker.spy(av, "open")
+    with pytest.raises(ValueError, match="fps must be finite and positive"):
+        list(video_file.as_video_file().sample_frames(fps))
+    opened.assert_not_called()
+
+
+@requires_display_rotation
+@pytest.mark.parametrize("rotation", [90, 180, 270])
+def test_sample_frames_display_orientation(make_rotated_video, rotation):
+    generated = make_rotated_video(rotation)
+    frames = list(generated.file.sample_frames())
+    assert frames
+    _assert_matches_autorotated(frames[0].get_np(), _autorotated_frame(generated.path))
+
+
+def test_sample_frames_closes_container_when_consumer_stops(video_file, monkeypatch):
+    original_open = av.open
+    closed = []
+
+    @contextmanager
+    def tracked_open(*args, **kwargs):
+        with original_open(*args, **kwargs) as container:
+            try:
+                yield container
+            finally:
+                closed.append(True)
+
+    monkeypatch.setattr(av, "open", tracked_open)
+    frames = video_file.as_video_file().sample_frames()
+    next(frames)
+    assert not closed
+    frames.close()
+    assert closed == [True]
+
+
+def test_get_np_does_not_retain_decoded_frame_references(video_file):
+    import sys
+
+    frame = next(video_file.as_video_file().get_frames(0, 1))
+    decoded = frame._decoded
+    before = sys.getrefcount(decoded)
+    for _ in range(5):
+        frame.get_np()
+    assert sys.getrefcount(decoded) == before
+
+
+@pytest.mark.parametrize("metadata", [False, True])
+def test_single_frame_and_metadata_follow_thread_budget(
+    video_file, monkeypatch, metadata
+):
+    original_open = av.open
+    seen = []
+
+    @contextmanager
+    def tracked_open(*args, **kwargs):
+        with original_open(*args, **kwargs) as container:
+
+            def decode(stream):
+                seen.append((stream.thread_type.name, stream.thread_count))
+                yield from container.decode(stream)
+
+            yield SimpleNamespace(
+                streams=container.streams,
+                decode=decode,
+                format=container.format,
+                duration=container.duration,
+            )
+
+    monkeypatch.setenv("DATACHAIN_WORKER_THREADS", "3")
+    monkeypatch.setattr(av, "open", tracked_open)
+    if metadata:
+        info = video_file.as_video_file().get_info()
+        assert (info.width, info.height) == (640, 360)
+    else:
+        frame = VideoFrame(video=video_file.as_video_file(), frame=0, timestamp=0)
+        assert frame.get_np().shape == (360, 640, 3)
+    assert seen == [("SLICE", 3)]

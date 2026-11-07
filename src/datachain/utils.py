@@ -511,6 +511,81 @@ def usable_cpu_count() -> int:
     return max(min([cpus, *caps]), 1)
 
 
+WORKER_THREADS_ENV = "DATACHAIN_WORKER_THREADS"
+# Read at import by torch/OpenMP, MKL, OpenBLAS, numexpr and Accelerate.
+_THREAD_ENVS = (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+)
+
+
+def worker_thread_env(n_workers: int) -> dict[str, str]:
+    """Thread-count variables splitting the CPUs among ``n_workers`` processes.
+
+    A smaller value already set is kept; a larger one (e.g. a platform default
+    of all CPUs per process) is capped at the worker's share.
+    """
+    if n_workers < 1:
+        raise ValueError("n_workers must be positive")
+    share = max(1, usable_cpu_count() // n_workers)
+    env = {}
+    for name in (WORKER_THREADS_ENV, *_THREAD_ENVS):
+        try:
+            if name == "OMP_NUM_THREADS":
+                levels = [int(value) for value in os.environ[name].split(",")]
+                env[name] = ",".join(str(max(1, min(value, share))) for value in levels)
+                continue
+            current = int(os.environ[name])
+        except (KeyError, ValueError):
+            current = share
+        env[name] = str(max(1, min(current, share)))
+    return env
+
+
+@contextmanager
+def worker_thread_limits(n_workers: int) -> Iterator[None]:
+    """Apply a CPU-share budget throughout UDF worker execution."""
+    from threadpoolctl import ThreadpoolController
+
+    env = worker_thread_env(n_workers)
+    controller = ThreadpoolController()
+    limits: dict[str, int] = {}
+    api_env = {
+        "openblas": "OPENBLAS_NUM_THREADS",
+        "mkl": "MKL_NUM_THREADS",
+        "openmp": "OMP_NUM_THREADS",
+    }
+    for pool in controller.info():
+        if pool["num_threads"] is None:
+            continue
+        budget = int(
+            env[api_env.get(pool["internal_api"], WORKER_THREADS_ENV)].split(",")[0]
+        )
+        prefix = pool["prefix"]
+        limits[prefix] = min(limits.get(prefix, budget), pool["num_threads"])
+    saved = {name: os.environ.get(name) for name in env}
+    try:
+        os.environ.update(env)
+        with controller.limit(limits=limits):
+            yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def worker_threads() -> int | None:
+    """CPU thread budget from DATACHAIN_WORKER_THREADS; None if unset or invalid."""
+    with suppress(KeyError, ValueError):
+        return max(1, int(os.environ[WORKER_THREADS_ENV]))
+    return None
+
+
 def get_env_list(
     key: str, default: Sequence | None = None, sep: str = ","
 ) -> Sequence[str] | None:
