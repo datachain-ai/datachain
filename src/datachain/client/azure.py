@@ -1,9 +1,11 @@
+import os
 import shutil
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from email.utils import parsedate_to_datetime
 from tempfile import SpooledTemporaryFile
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import unquote
 from xml.etree.ElementTree import Element
 
@@ -30,6 +32,57 @@ if TYPE_CHECKING:
 _SPOOL_MAX_SIZE = 128 * 1024 * 1024
 # Copy chunk size when spooling a source stream, matching the fsspec upload path.
 _COPY_BUFFER_SIZE = 8 * 1024 * 1024
+
+
+_SCOPE = "https://storage.azure.com/.default"
+_NO_IDENTITY_TTL = 60.0  # seconds: an az login or an identity may come later
+_IDENTITY_CHECK: tuple[object, float, bool] | None = None
+
+
+def _finds_no_identity(credential: Any) -> bool:
+    """Whether every credential in a ``DefaultAzureCredential`` chain is unavailable,
+    that is, nothing is configured. An identity that fails to authenticate is
+    found: its error must reach the user."""
+    from azure.identity import CredentialUnavailableError
+    from azure.identity._internal import within_credential_chain
+
+    in_chain = within_credential_chain.set(True)  # unavailable, as the chain sees it
+    try:
+        for each in credential.credentials:
+            try:
+                each.get_token(_SCOPE)
+            except CredentialUnavailableError:
+                continue
+            except Exception:  # noqa: BLE001
+                return False
+            return False
+        return True
+    finally:
+        within_credential_chain.reset(in_chain)
+
+
+def _no_identity(fs: AzureBlobFileSystem) -> bool:
+    global _IDENTITY_CHECK  # noqa: PLW0603
+    environment = frozenset(
+        (name, value)
+        for name, value in os.environ.items()
+        if name.startswith(("AZURE_", "IDENTITY_", "MSI_", "IMDS_"))
+        or name in ("PATH", "HOME")
+    )
+    now = time.monotonic()
+    # adlfs forwards its extra kwargs to DefaultAzureCredential. Filesystem
+    # options such as account_name and version_aware do not change that chain.
+    key = (
+        environment,
+        frozenset((name, repr(value)) for name, value in fs.kwargs.items()),
+    )
+    if _IDENTITY_CHECK is not None:
+        previous, checked, absent = _IDENTITY_CHECK
+        if previous == key and (not absent or now - checked < _NO_IDENTITY_TTL):
+            return absent
+    absent = _finds_no_identity(fs.sync_credential)
+    _IDENTITY_CHECK = key, time.monotonic(), absent
+    return absent
 
 
 class _AzureWriteBuffer(SpooledTemporaryFile):
@@ -65,6 +118,22 @@ class AzureClient(RangeListedClient):
     )
 
     @classmethod
+    def create_fs(cls, **kwargs) -> AzureBlobFileSystem:
+        from azure.identity import DefaultAzureCredential
+
+        fs = cast("AzureBlobFileSystem", super().create_fs(**kwargs))
+        # Nothing configured: adlfs falls back to DefaultAzureCredential, which
+        # then fails every request, public containers included; go anonymous.
+        if (
+            "anon" not in kwargs
+            and "AZURE_STORAGE_ANON" not in os.environ
+            and isinstance(getattr(fs, "sync_credential", None), DefaultAzureCredential)
+            and _no_identity(fs)
+        ):
+            fs = cast("AzureBlobFileSystem", super().create_fs(**kwargs, anon=True))
+        return fs
+
+    @classmethod
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:
         # Step 1: Anonymous probe — uses BlobServiceClient directly (not adlfs)
         # to avoid picking up credentials from environment variables like
@@ -88,9 +157,9 @@ class AzureClient(RangeListedClient):
                 if e.status_code not in (401, 403):
                     raise
 
-        # Step 2: Authenticated probe.
+        # Step 2: Authenticated probe, bypassing create_fs()'s auto-anon fallback.
         try:
-            auth_fs = cls.create_fs(**kwargs)
+            auth_fs = super().create_fs(**kwargs)
             sync(get_loop(), auth_fs._info, name)
             return BucketStatus(exists=True, access="authenticated")
         except (PermissionError, ClientAuthenticationError):
