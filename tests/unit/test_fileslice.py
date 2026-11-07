@@ -1,4 +1,5 @@
 import io
+from array import array
 
 import pytest
 
@@ -69,8 +70,36 @@ def test_file_wrapper_read1_reads_at_most_one_buffer():
     assert len(wrapper.read1()) == io.DEFAULT_BUFFER_SIZE
 
 
-def test_file_slice_is_buffered():
+def test_file_wrapper_read_fills_short_reads():
+    class Trickle(io.RawIOBase):
+        def __init__(self, data):
+            self.data = data
+
+        def readable(self):
+            return True
+
+        def read(self, size=-1):
+            n = min(3, size)
+            chunk, self.data = self.data[:n], self.data[n:]
+            return chunk
+
+    wrapper = FileWrapper(Trickle(b"0123456789"))
+    assert (wrapper.read(8), wrapper.read(8), wrapper.read(8)) == (
+        b"01234567",
+        b"89",
+        b"",
+    )
+
+
+def test_file_slice_read1_reads_at_most_one_buffer():
     f = FileSlice(io.BytesIO(b"0123456789" * 1000), 5, 9000, "foo")
     assert isinstance(f, io.BufferedIOBase)
     assert f.read(3) == b"567"
     assert len(f.read1()) == min(io.DEFAULT_BUFFER_SIZE, 9000 - 3)
+
+
+def test_file_slice_readinto_int_array_larger_than_slice_reads_slice():
+    f = FileSlice(io.BytesIO(b"prefix" + bytes(range(10)) + b"suffix"), 6, 10, "m")
+    buf = array("I", [0] * 4)
+    assert f.readinto(buf) == 10
+    assert bytes(buf)[:10] == bytes(range(10))

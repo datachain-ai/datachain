@@ -33,7 +33,15 @@ class FileWrapper(io.BufferedIOBase):
         return self.fileobj.seek(position, whence)
 
     def read(self, size: int | None = -1) -> bytes:
-        data = self.fileobj.read(-1 if size is None else size)
+        if size is None or size < 0:
+            data = self.fileobj.read(-1)
+        else:
+            data = self.fileobj.read(size)
+            # Streams without range support may return less; buffered reads don't
+            while 0 < len(data) < size and (
+                more := self.fileobj.read(size - len(data))
+            ):
+                data += more
         self.callback.relative_update(len(data))
         return data
 
@@ -90,24 +98,17 @@ class FileSlice(io.BufferedIOBase):
     def read(self, size: int | None = -1) -> bytes:
         left = self.size - self.position
         n = left if size is None or size < 0 else min(size, left)
-        buf = bytearray(n)
-        return bytes(buf[: self.readinto(buf)])
+        if n <= 0:
+            return b""
+        self.fileobj.seek(self.offset + self.position)
+        data = self.fileobj.read(n)
+        if len(data) != n:
+            raise RuntimeError("unexpected end of data")
+        self.position += n
+        return data
 
     def read1(self, size: int | None = -1) -> bytes:
         return self.read(io.DEFAULT_BUFFER_SIZE if size is None or size < 0 else size)
-
-    def readinto(self, b):
-        max_size = self.size - self.position
-        if max_size <= 0:
-            return 0
-        self.fileobj.seek(self.offset + self.position)
-        if len(b) > max_size:
-            b = memoryview(b)[:max_size]
-        res = self.fileobj.readinto(b)
-        if res != len(b):
-            raise RuntimeError("unexpected end of data")
-        self.position += res
-        return res
 
     def close(self):
         self.fileobj.close()
