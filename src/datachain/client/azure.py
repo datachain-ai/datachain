@@ -36,7 +36,7 @@ _COPY_BUFFER_SIZE = 8 * 1024 * 1024
 
 _SCOPE = "https://storage.azure.com/.default"
 _NO_IDENTITY_TTL = 60.0  # seconds: an az login or an identity may come later
-_IDENTITY_CHECK: tuple[frozenset[tuple[str, str]], float, bool] | None = None
+_IDENTITY_CHECK: tuple[object, float, bool] | None = None
 
 
 def _finds_no_identity(credential: Any) -> bool:
@@ -70,12 +70,18 @@ def _no_identity(fs: AzureBlobFileSystem) -> bool:
         or name in ("PATH", "HOME")
     )
     now = time.monotonic()
+    # adlfs forwards its extra kwargs to DefaultAzureCredential. Filesystem
+    # options such as account_name and version_aware do not change that chain.
+    key = (
+        environment,
+        frozenset((name, repr(value)) for name, value in fs.kwargs.items()),
+    )
     if _IDENTITY_CHECK is not None:
         previous, checked, absent = _IDENTITY_CHECK
-        if previous == environment and (not absent or now - checked < _NO_IDENTITY_TTL):
+        if previous == key and (not absent or now - checked < _NO_IDENTITY_TTL):
             return absent
     absent = _finds_no_identity(fs.sync_credential)
-    _IDENTITY_CHECK = environment, time.monotonic(), absent
+    _IDENTITY_CHECK = key, time.monotonic(), absent
     return absent
 
 

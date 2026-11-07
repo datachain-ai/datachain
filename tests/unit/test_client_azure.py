@@ -435,6 +435,19 @@ def test_identity_probe_keeps_found_identity_after_ttl(no_azure_env, mocker):
     probe.assert_called_once()
 
 
+def test_identity_probe_does_not_share_different_credential_selections(
+    no_azure_env, mocker
+):
+    probe = mocker.patch(
+        "datachain.client.azure._finds_no_identity", side_effect=[True, False]
+    )
+    assert AzureClient.create_fs(
+        account_name="first", exclude_environment_credential=True
+    ).anon
+    assert not AzureClient.create_fs(account_name="second").anon
+    assert probe.call_count == 2
+
+
 @pytest.mark.parametrize("absent", [False, True])
 def test_identity_probe_is_shared_across_accounts_and_listing_modes(
     no_azure_env, mocker, absent
