@@ -217,11 +217,13 @@ def process_webdataset(
     spec: type[WDSBasic] = WDSAllFile,
     encoding: str = "utf-8",
 ) -> Callable[[File], Iterator]:
+    core_extensions = tuple(core_extensions)
+
     def wds_func(file: File) -> Iterator[spec]:  # type: ignore[valid-type]
         with file.open() as fd:
             with tarfile.open(fileobj=fd) as tar:
                 yield from get_tar_groups(file, tar, core_extensions, spec, encoding)
 
     # UDF hashing skips closures, so the name carries the options.
-    wds_func.__name__ = f"process_webdataset{(tuple(core_extensions), encoding)!r}"
+    wds_func.__name__ = f"process_webdataset{(core_extensions, encoding)!r}"
     return wds_func

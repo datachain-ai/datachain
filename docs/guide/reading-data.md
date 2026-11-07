@@ -130,7 +130,7 @@ Parquet exported by DataChain restores its saved schema and does not support `co
 import datachain as dc
 from datachain.lib.webdataset_laion import WDSLaion
 
-shards = "gs://datachain-demo/datacomp-small/shards/"
+shards = "gs://datachain-demo/datacomp-small/shards/000000[0-5]*.tar"
 samples = dc.read_webdataset(shards, spec=WDSLaion, anon=True)
 ```
 
@@ -144,7 +144,7 @@ good = samples.filter((words > 2) & (short_side > 200) & (long_side < 3 * short_
 
 ```python
 # join a Parquet table of CLIP scores and keep the best-matching captions
-metadata = "gs://datachain-demo/datacomp-small/metadata/*.parquet"
+metadata = "gs://datachain-demo/datacomp-small/metadata/0020f*.parquet"
 scores = dc.read_parquet(metadata, anon=True)
 matched = good.merge(scores, on="wds.json.uid", right_on="uid")
 best = matched.filter(dc.C("clip_l14_similarity_score") > 0.3)
