@@ -18,7 +18,13 @@ from numpy import ndarray
 from PIL import Image
 
 from datachain import VideoFragment, VideoFrame
-from datachain.lib.file import File, FileError, ImageFile, VideoFile
+from datachain.lib.file import (
+    PARTIAL_READ_BLOCK_SIZE,
+    File,
+    FileError,
+    ImageFile,
+    VideoFile,
+)
 from datachain.lib.tar import process_tar
 from datachain.lib.video import save_video_fragment, video_frame_np
 
@@ -865,8 +871,16 @@ def test_get_frames_uses_seek_for_large_start(video_file):
     )
 
 
-def test_get_frames_retries_when_seek_lands_after_start(video_file, monkeypatch):
+@pytest.mark.parametrize("small_blocks", [False, True])
+def test_get_frames_retries_when_seek_lands_after_start(
+    video_file, monkeypatch, mocker, small_blocks
+):
     start = 250
+    video = video_file.as_video_file()
+    video.get_info()
+    if not small_blocks:
+        video = video.model_copy(update={"size": 10**12})
+    open_spy = mocker.spy(VideoFile, "open")
     real_av_open = av.open
 
     def open_with_seek_ahead(*args, **kwargs):
@@ -874,8 +888,11 @@ def test_get_frames_retries_when_seek_lands_after_start(video_file, monkeypatch)
 
     monkeypatch.setattr(av, "open", open_with_seek_ahead)
 
-    frames = list(video_file.as_video_file().get_frames(start, start + 3))
+    frames = list(video.get_frames(start, start + 3))
 
+    assert [call.kwargs.get("block_size") for call in open_spy.call_args_list] == (
+        [PARTIAL_READ_BLOCK_SIZE, None] if small_blocks else [None]
+    )
     assert [frame.frame for frame in frames] == [250, 251, 252]
     assert [frame.timestamp for frame in frames] == pytest.approx(
         [250 / 30, 251 / 30, 252 / 30]
@@ -1330,3 +1347,96 @@ def test_save_fragments(tmp_path, video_file):
             "format": "mov,mp4,m4a,3gp,3g2,mj2",
             "codec": "h264",
         }
+
+
+@pytest.mark.parametrize(
+    "start,size,block_size",
+    [
+        (0, None, None),
+        (100, None, PARTIAL_READ_BLOCK_SIZE),
+        (100, 10**12, None),
+    ],
+)
+def test_get_frames_block_size_by_window(video_file, mocker, start, size, block_size):
+    video = video_file.as_video_file()
+    video.get_info()
+    if size:
+        video = video.model_copy(update={"size": size})
+    open_spy = mocker.spy(VideoFile, "open")
+
+    list(video.get_frames(start, start + 2))
+
+    open_spy.assert_called_once()
+    assert open_spy.call_args.kwargs.get("block_size") == block_size
+
+
+def test_get_frame_from_mid_file_reads_small_blocks(video_file, mocker):
+    video = video_file.as_video_file()
+    open_spy = mocker.spy(VideoFile, "open")
+
+    video.get_frame(100).get_np()
+
+    assert open_spy.call_args.kwargs.get("block_size") == PARTIAL_READ_BLOCK_SIZE
+
+
+def test_decoding_from_frame_zero_keeps_default_blocks(mpegts_video, mocker):
+    video = mpegts_video.file
+    video.get_info()
+    open_spy = mocker.spy(VideoFile, "open")
+
+    frames = list(video.get_frames(5, 8))
+    image = video.get_frame(5).get_np()
+
+    assert [frame.frame for frame in frames] == [5, 6, 7]
+    np.testing.assert_array_equal(image, frames[0].get_np())
+    sizes = [call.kwargs.get("block_size") for call in open_spy.call_args_list]
+    assert sizes == 2 * [PARTIAL_READ_BLOCK_SIZE, None]  # reopened once seek failed
+
+
+def test_get_frame_reopens_with_default_blocks_when_seek_lands_after_start(
+    video_file, monkeypatch, mocker
+):
+    video = video_file.as_video_file()
+    expected = video.get_frame(250).get_np()
+    real_av_open = av.open
+
+    def open_with_seek_ahead(*args, **kwargs):
+        return SeekAheadContainer(real_av_open(*args, **kwargs), 250)
+
+    monkeypatch.setattr(av, "open", open_with_seek_ahead)
+    open_spy = mocker.spy(VideoFile, "open")
+    image = video.get_frame(250).get_np()
+
+    np.testing.assert_array_equal(image, expected)
+    assert [call.kwargs.get("block_size") for call in open_spy.call_args_list] == [
+        PARTIAL_READ_BLOCK_SIZE,
+        None,
+    ]
+
+
+@pytest.mark.parametrize("metadata_error", [False, True])
+def test_get_frames_uses_default_blocks_without_frame_count(
+    video_file, mocker, metadata_error
+):
+    video = video_file.as_video_file()
+    info = video.get_info()
+    expected = [frame.get_np() for frame in video.get_frames(100, 102)]
+    if metadata_error:
+        mocker.patch.object(
+            VideoFile,
+            "get_info",
+            side_effect=FileError("metadata unavailable", video.source, video.path),
+        )
+    else:
+        mocker.patch.object(
+            VideoFile, "get_info", return_value=info.model_copy(update={"frames": 0})
+        )
+    open_spy = mocker.spy(VideoFile, "open")
+
+    frames = list(video.get_frames(100, 102))
+
+    assert [frame.frame for frame in frames] == [100, 101]
+    for frame, pixels in zip(frames, expected, strict=True):
+        np.testing.assert_array_equal(frame.get_np(), pixels)
+    open_spy.assert_called_once()
+    assert open_spy.call_args.kwargs.get("block_size") is None
