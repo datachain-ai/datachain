@@ -580,6 +580,7 @@ def test_glob_match_is_sqlite_glob(pattern):
         PathFilter(),
         PathFilter.ls("dir/", True),
         PathFilter.ls("dir/", False),
+        PathFilter.ls("dir//", False),
         PathFilter.ls("", False),
         PathFilter.ls("d*/x", True),
         PathFilter.ls("dir/", True).glob("dir/*.txt"),
@@ -587,7 +588,20 @@ def test_glob_match_is_sqlite_glob(pattern):
     ],
 )
 def test_path_filter_python_matches_sql(test_session, paths):
-    names = ["a", "ab", "x.txt", "dir", "dir/x.txt", "dir/a/x.txt", "dirx/x", "d/x"]
+    names = [
+        "a",
+        "ab",
+        "x.txt",
+        "dir",
+        "dir/x.txt",
+        "dir/a/x.txt",
+        "dirx/x",
+        "d/x",
+        "dir//x.txt",
+        "dir///y.txt",
+        "dir//",
+        "dir///",
+    ]
     chain = dc.read_values(path=names, session=test_session)
     for condition in paths.sql(dc.C("path")):
         chain = chain.filter(condition)
@@ -650,3 +664,13 @@ def test_select_paths_keeps_filter_steps(test_session, list_path, pattern, recur
     assert [s.hash() for s in actual._query.steps] == [
         s.hash() for s in expected._query.steps
     ]
+
+
+def test_nonrecursive_listing_selects_empty_folder_segment(test_session):
+    chain = dc.read_values(
+        file=[File(path="dir/x.txt"), File(path="dir//x.txt")], session=test_session
+    )
+    paths = PathFilter.ls("dir//", False)
+    assert paths.matcher()("dir//x.txt")
+    assert not paths.matcher()("dir/x.txt")
+    assert select_paths(chain, paths).to_values("file.path") == ["dir//x.txt"]
