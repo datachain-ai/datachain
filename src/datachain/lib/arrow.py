@@ -262,9 +262,8 @@ class ArrowGenerator(Generator):
                 # source inside of it already, so we should not duplicate it, instead
                 # we are re-creating it of the self.source flag
                 vals[0].source = arrow_file  # type: ignore[attr-defined]
-
-                return vals
-            return [arrow_file, *vals]
+            else:
+                vals = [arrow_file, *vals]
 
         if self.output is not None and len(self.output.values) == 1:
             # A single output signal takes its value itself, not a list of values.

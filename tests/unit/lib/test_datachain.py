@@ -34,6 +34,7 @@ from datachain.error import (
     ProjectCreateNotAllowedError,
 )
 from datachain.func import string
+from datachain.lib.arrow import ArrowRow
 from datachain.lib.data_model import DataModel
 from datachain.lib.dc import C, DatasetPrepareError, Sys
 from datachain.lib.dc.listings import read_listing_dataset
@@ -2804,6 +2805,24 @@ def test_read_parquet_one_column_without_source(
         pq.write_table(pa.table({"b": [2]}), path)
     chain = dc.read_parquet(path.as_uri(), source=False, session=test_session, **kwargs)
     assert chain.to_values(signal) == [2]
+
+
+@pytest.mark.parametrize("source_type", [ArrowRow, ArrowRow | None])
+def test_read_parquet_exported_with_only_source_reads_new_source(
+    test_session, tmp_dir, source_type
+):
+    csv = tmp_dir / "df.csv"
+    csv.write_text("n\n1\n")
+    old = dc.read_csv(csv.as_uri(), session=test_session).to_values("source")
+    path = tmp_dir / "df.parquet"
+    dc.read_values(
+        source=old, output={"source": source_type}, session=test_session
+    ).to_parquet(path)
+
+    chain = dc.read_parquet(path.as_uri(), session=test_session)
+    assert [(s.file.path, s.index) for s in chain.to_values("source")] == [
+        ("df.parquet", 0)
+    ]
 
 
 def test_read_parquet_exported_with_source(test_session, tmp_dir):
