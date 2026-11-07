@@ -81,6 +81,7 @@ from datachain.lib.utils import (
     DataChainColumnError,
     DataChainParamsError,
     assert_unique_export_columns,
+    unique_name,
 )
 from datachain.progress import tqdm
 from datachain.project import Project
@@ -2868,9 +2869,7 @@ class DataChain:
 
         if source:
             # The data keeps its names, so on a clash the source signal is renamed.
-            name, i = "source", 0
-            while name in output:  # type: ignore[operator]
-                name, i = f"c{i}_source", i + 1
+            name = unique_name("source", output)  # type: ignore[arg-type]
             output = {name: ArrowRow} | output  # type: ignore[assignment,operator]
 
         # Prefetch downloads whole files, so a partial read prefetches only small ones.
