@@ -163,7 +163,6 @@ scored = best.settings(parallel=8).map(contrast=contrast, params=["wds.file"])
 flat = scored.filter(dc.C("contrast") < 40)  # nearly blank images
 ```
 
-
 ## LeRobot Datasets
 
 `dc.read_lerobot()` reads a [LeRobot](https://github.com/huggingface/lerobot) v3 dataset as a row per episode: its metadata (`episode_index`, `length`, `tasks`, ...) and, under `videos`, a `VideoFragment` per camera that points into the shared mp4. Only the metadata is read, so the rows are ready in seconds; the videos are not downloaded. Column names and camera keys are normalized like `read_parquet` columns, e.g. `observation.image` becomes `videos.observation_image`.
