@@ -485,13 +485,24 @@ class Client(ABC):
         if use_cache and (cache_path := self.cache.get_path(file)):
             return open(cache_path, mode="rb")
         assert not file.location
-        kwargs = self._version_kwargs(file.version)
-        kwargs |= self._block_size_kwargs(block_size)
-        full_path = file.get_fs_path()
-        return FileWrapper(
-            self.fs.open(full_path, **kwargs),
-            cb,
-        )  # type: ignore[return-value]
+        return FileWrapper(self._open_remote(file, block_size), cb)  # type: ignore[return-value]
+
+    def _open_remote(self, file: "File", block_size: int | None = None) -> BinaryIO:
+        self.check_unchanged(file)
+        return self.fs.open(
+            file.get_fs_path(),
+            **self._block_size_kwargs(block_size),
+            **self._version_kwargs(file.version),
+        )
+
+    def _open_checked(self, file: "File", fs_path: str, **open_kwargs: Any) -> BinaryIO:
+        stream = self.fs.open(fs_path, **open_kwargs)
+        try:
+            self.check_unchanged(file, info=stream.details)
+        except BaseException:
+            stream.close()
+            raise
+        return stream
 
     def upload(
         self,
@@ -618,11 +629,15 @@ class Client(ABC):
         await self._check_unchanged(file)
         await self.cache.download(file, self, callback=callback)
 
-    def check_unchanged(self, file: "File") -> None:
+    def check_unchanged(
+        self, file: "File", *, info: dict[str, Any] | None = None
+    ) -> None:
         """Fail if the file changed on the source since the catalog listed it."""
-        sync(get_loop(), self._check_unchanged, file)
+        sync(get_loop(), self._check_unchanged, file, info=info)
 
-    async def _check_unchanged(self, file: "File") -> None:
+    async def _check_unchanged(
+        self, file: "File", *, info: dict[str, Any] | None = None
+    ) -> None:
         # Metadata updates can change a pinned file's etag without changing its
         # bytes, so compare its size instead, which still catches appends. A negative
         # size means it's unknown, so nothing is compared.
@@ -632,11 +647,15 @@ class Client(ABC):
 
         change = ""
         if pinned and file.size >= 0:
-            size = await self.get_size(file)
+            size = int(info["size"]) if info is not None else await self.get_size(file)
             if size != file.size:
                 change = f"size was {file.size}, now {size}"
         elif not pinned and file.etag:
-            etag = await self.get_current_etag(file)
+            etag = (
+                self.info_to_file(info, file.path).etag
+                if info is not None
+                else await self.get_current_etag(file)
+            )
             if etag != file.etag:
                 change = (
                     f"etag was {self.format_etag(file.etag)}, "
@@ -645,9 +664,9 @@ class Client(ABC):
 
         if change:
             raise FileNotFoundError(
-                f"{file.source}/{file.path} changed on the source since the catalog "
-                f"was created ({change}). Re-run the original dc.read_storage(...) "
-                "call with update=True to refresh the catalog."
+                f"{file.source}/{file.path} changed on the source since it was listed "
+                f"({change}). Re-run the original dc.read_storage(...) call "
+                "with update=True to refresh the listing."
             )
 
 
@@ -655,6 +674,14 @@ class RangeListedClient(Client):
     """A client that lists in parallel key ranges (``RangeListing``)."""
 
     LISTS_LEVELS: ClassVar[bool] = False  # whether _list_page takes a delimiter
+
+    def _open_remote(self, file: "File", block_size: int | None = None) -> BinaryIO:
+        return self._open_checked(
+            file,
+            file.get_fs_path(),
+            **self._block_size_kwargs(block_size),
+            **self._version_kwargs(file.version),
+        )
 
     @staticmethod
     def key_order(key: str) -> Any:
