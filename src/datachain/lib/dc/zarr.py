@@ -2,6 +2,7 @@ import os
 from functools import reduce
 from typing import TYPE_CHECKING
 
+from datachain.lib.utils import unique_name
 from datachain.query import Session
 
 if TYPE_CHECKING:
@@ -27,7 +28,8 @@ def read_zarr(
         path: Storage path(s) or URI(s). Can be a local path or start with a
             storage prefix like `s3://`, `gs://`, `az://` or `file://`.
             Supports glob patterns.
-        column: Created column name. Defaults to ``"zarr"``.
+        column: Created column name. Defaults to ``"zarr"``. If it is ``"file"``,
+            the file signal is renamed to ``"c0_file"``.
         session: Session to use for the chain.
         settings: Settings to use for the chain.
         in_memory: If True, use an in-memory database.
@@ -70,4 +72,8 @@ def read_zarr(
         conditions.append(C("file.path") == marker)
     chain = chain.filter(reduce(lambda a, b: a | b, conditions))
 
-    return chain.map(file_to_store, output={column: ZarrStore})
+    # The store keeps its column name, so on a clash the file signal is renamed.
+    file_name = unique_name("file", [column])
+    if file_name != "file":
+        chain = chain.mutate(**{file_name: C("file")})
+    return chain.map(file_to_store, params=file_name, output={column: ZarrStore})
