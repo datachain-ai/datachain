@@ -137,7 +137,26 @@ class ClientS3(RangeListedClient):
     LISTS_LEVELS = True
     protocol = "s3"
     CREDENTIAL_KEYS = frozenset(
-        {"key", "secret", "token", "aws_key", "aws_secret", "aws_token"}
+        {
+            "key",
+            "secret",
+            "token",
+            "profile",
+            "aws_key",
+            "aws_secret",
+            "aws_token",
+            "aws_access_key_id",
+            "aws_secret_access_key",
+            "aws_session_token",
+        }
+    )
+    _KEY_ALIASES = (
+        ("aws_key", "key"),
+        ("aws_secret", "secret"),
+        ("aws_token", "token"),
+        ("aws_access_key_id", "key"),
+        ("aws_secret_access_key", "secret"),
+        ("aws_session_token", "token"),
     )
     # A version id always names the same bytes, except "null". S3 gives that id to
     # objects written while versioning is off or suspended, and another write in
@@ -151,12 +170,9 @@ class ClientS3(RangeListedClient):
             kwargs.setdefault("client_kwargs", {}).setdefault(
                 "endpoint_url", kwargs.pop("aws_endpoint_url")
             )
-        if "aws_key" in kwargs:
-            kwargs.setdefault("key", kwargs.pop("aws_key"))
-        if "aws_secret" in kwargs:
-            kwargs.setdefault("secret", kwargs.pop("aws_secret"))
-        if "aws_token" in kwargs:
-            kwargs.setdefault("token", kwargs.pop("aws_token"))
+        for alias, name in ClientS3._KEY_ALIASES:
+            if alias in kwargs:
+                kwargs.setdefault(name, kwargs.pop(alias))
         return kwargs
 
     @classmethod
@@ -194,8 +210,9 @@ class ClientS3(RangeListedClient):
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:
         # Step 1: Anonymous probe. cache_regions=True handles PermanentRedirect
         # (bucket-in-wrong-region) transparently so the bucket is found → exists=True.
-        # Preserve endpoint/region settings from caller kwargs; strip credentials.
-        strip = cls.CREDENTIAL_KEYS | {"anon"}
+        # Preserve endpoint/region settings from caller kwargs (including the
+        # profile's); strip credentials.
+        strip = (cls.CREDENTIAL_KEYS - {"profile"}) | {"anon"}
         anon_kwargs = cls._normalize_s3_kwargs(
             {k: v for k, v in kwargs.items() if k not in strip}
         )

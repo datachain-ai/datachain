@@ -48,6 +48,38 @@ def test_normalize_s3_kwargs_secret_and_token():
 
 
 @pytest.mark.parametrize(
+    "alias,name",
+    [
+        ("aws_access_key_id", "key"),
+        ("aws_secret_access_key", "secret"),
+        ("aws_session_token", "token"),
+    ],
+)
+def test_normalize_s3_kwargs_boto3_names(alias, name):
+    assert ClientS3._normalize_s3_kwargs({alias: "v"}) == {name: "v"}
+    assert ClientS3.has_explicit_credentials({alias: "v"})
+
+
+def test_create_fs_accepts_boto3_credential_names():
+    creds = {
+        "aws_access_key_id": "AKIAEXAMPLE",
+        "aws_secret_access_key": "secret",
+        "aws_session_token": "token",
+    }
+    with patch.object(ClientS3, "FS_CLASS") as fs_cls:
+        ClientS3.create_fs(**creds)
+
+    kwargs = fs_cls.call_args.kwargs
+    assert (kwargs["key"], kwargs["secret"], kwargs["token"]) == (
+        "AKIAEXAMPLE",
+        "secret",
+        "token",
+    )
+    assert not set(creds) & set(kwargs)
+    assert not kwargs.get("anon")
+
+
+@pytest.mark.parametrize(
     "anon_effect, auth_effect, expected",
     [
         (None, None, BucketStatus(True, "anonymous")),
