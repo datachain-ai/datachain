@@ -256,7 +256,7 @@ class ArrowGenerator(Generator):
                 # A copy, so the files read after this one keep their CSV options.
                 kwargs = {**kwargs, "format": "csv", "csv": csv}
             arrow_file = ArrowRow(file=file, index=index, kwargs=kwargs)
-            return [arrow_file, *vals]
+            vals = [arrow_file, *vals]
 
         if self.output is not None and len(self.output.values) == 1:
             # A single output signal takes its value itself, not a list of values.
