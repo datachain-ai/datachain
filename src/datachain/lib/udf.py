@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import inspect
 import logging
@@ -24,7 +25,7 @@ from datachain.lib.convert.flatten import (
     flatten_value,
     union_value_match,
 )
-from datachain.lib.file import File, FileError, FileRow
+from datachain.lib.file import File, FileError, FileRow, VFileRegistry
 from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.utils import AbstractUDF, DataChainParamsError
 from datachain.query.batch import (
@@ -37,6 +38,8 @@ from datachain.query.batch import (
 from datachain.utils import safe_closing, with_last_flag
 
 logger = logging.getLogger("datachain")
+PREFETCH_FILE_WORKERS = 20
+
 
 if TYPE_CHECKING:
     from collections import abc
@@ -501,14 +504,49 @@ async def _prefetch_input(
     batch_columns: set[int] | None = None,
     max_size: int | None = None,
 ) -> T:
-    for obj in _row_files(row, batch_columns):  # type: ignore[arg-type]
-        if not obj.path or (max_size is not None and not 0 < obj.size <= max_size):
-            continue
+    files = [
+        obj
+        for obj in _row_files(row, batch_columns)
+        if obj.path and (max_size is None or 0 < obj.size <= max_size)
+    ]
+    targets: dict[str, list[File]] = {}
+    for obj in files:
         try:
-            if await obj._prefetch(download_cb):
-                after_prefetch()
+            target = obj
+            if obj.location:
+                target = VFileRegistry.parent(obj, obj.location)  # type: ignore[arg-type]
+            targets.setdefault(target.get_hash(), []).append(obj)
         except FileError as e:
             logger.warning("Skipping prefetch for '%s/%s': %s", obj.source, obj.path, e)
+    pending = iter(targets.values())
+
+    async def download() -> None:
+        for group in pending:
+            for obj in group:
+                try:
+                    prefetched = await obj._prefetch(download_cb)
+                    if prefetched:
+                        after_prefetch()
+                except FileError as e:
+                    logger.warning(
+                        "Skipping prefetch for '%s/%s': %s", obj.source, obj.path, e
+                    )
+
+    if len(targets) < 2:
+        await download()
+        return row
+    tasks = [
+        asyncio.create_task(download())
+        for _ in range(min(len(targets), PREFETCH_FILE_WORKERS))
+    ]
+    try:
+        await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            if not task.done() and not task.cancelling():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
     return row
 
 
@@ -548,7 +586,7 @@ def _prefetch_inputs(
         batch_columns=batch_columns,
         max_size=max_size,
     )
-    mapper = AsyncMapper(f, prepared_inputs, workers=prefetch)
+    mapper = AsyncMapper(f, prepared_inputs, workers=prefetch, queue_size=1)
     with closing(mapper.iterate()) as row_iter:
         for row in row_iter:
             try:

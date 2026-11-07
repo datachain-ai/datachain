@@ -302,3 +302,9 @@ def test_iter_over_async_exits_after_an_error():
     )
     assert out.returncode == 1
     assert b"No space left on device" in out.stderr
+
+
+@pytest.mark.parametrize("workers,queue_size", [(0, None), (-1, 1), (1, 0), (1, -1)])
+def test_mapper_requires_positive_limits(workers, queue_size):
+    with pytest.raises(ValueError, match="must be positive"):
+        AsyncMapper(fake_io, [], workers=workers, queue_size=queue_size)
