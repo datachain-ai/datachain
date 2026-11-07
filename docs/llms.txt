@@ -29,6 +29,7 @@ Never use: `from datachain import File, C, func`
 - `dc.list_storage("s3://bucket/path/")` -- list storage files without a chain or saved dataset ([guide](https://docs.datachain.ai/guide/listing-storage/))
 - `dc.read_storage("s3://bucket/path/", type="image")` -- files from cloud storage
 - `dc.read_csv()`, `dc.read_json()`, `dc.read_parquet()` -- structured formats
+- `dc.read_lerobot("hf://datasets/lerobot/pusht")` -- LeRobot v3 robotics dataset, one row per episode with camera `VideoFragment`s
 - `dc.read_database(query, connection_string)` -- SQL databases
 - `dc.read_dataset("name", version="1.0.0")` -- an explicit saved version
 - `datachain dataset describe NAME --json` -- recorded schema, versions, lineage and code; metadata only
