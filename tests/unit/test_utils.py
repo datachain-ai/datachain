@@ -801,8 +801,6 @@ def test_worker_thread_env_requires_positive_workers(workers):
 
 @pytest.mark.parametrize("fail", [False, True])
 def test_worker_thread_limits_restore_environment(monkeypatch, fail):
-    import threadpoolctl  # noqa: F401
-
     monkeypatch.setenv("OMP_NUM_THREADS", "1000")
     monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
     monkeypatch.setattr(utils, "usable_cpu_count", lambda: 8)
@@ -869,3 +867,43 @@ def test_worker_thread_limits_handle_unknown_and_duplicate_native_pools(monkeypa
     with utils.worker_thread_limits(2):
         assert utils.worker_threads() is not None
     controller.limit.assert_called_once_with(limits={"libgomp": 1})
+
+
+@pytest.mark.parametrize("name", ["OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS"])
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_worker_thread_env_uses_cpu_share_for_nonpositive_native_limits(
+    monkeypatch, name, value
+):
+    monkeypatch.setattr(utils, "usable_cpu_count", lambda: 8)
+    monkeypatch.setenv(name, value)
+    assert utils.worker_thread_env(2)[name] == "4"
+
+
+@pytest.mark.parametrize("value", ["4,0", "-1,2", "1,-1"])
+def test_worker_thread_env_rejects_nonpositive_nested_openmp_limits(monkeypatch, value):
+    monkeypatch.setattr(utils, "usable_cpu_count", lambda: 8)
+    monkeypatch.setenv("OMP_NUM_THREADS", value)
+    assert utils.worker_thread_env(2)["OMP_NUM_THREADS"] == "4"
+
+
+@pytest.mark.parametrize("kmp", [None, "FALSE"])
+def test_worker_thread_limits_first_import_preserves_openmp_policy(monkeypatch, kmp):
+    import subprocess
+    import sys
+
+    if kmp is None:
+        monkeypatch.delenv("KMP_DUPLICATE_LIB_OK", raising=False)
+    else:
+        monkeypatch.setenv("KMP_DUPLICATE_LIB_OK", kmp)
+    code = """
+import os
+import sys
+from datachain.utils import worker_thread_limits
+
+assert "threadpoolctl" not in sys.modules
+before = os.environ.get("KMP_DUPLICATE_LIB_OK")
+with worker_thread_limits(1):
+    assert os.environ.get("KMP_DUPLICATE_LIB_OK") == before
+assert os.environ.get("KMP_DUPLICATE_LIB_OK") == before
+"""
+    subprocess.run([sys.executable, "-c", code], check=True)  # noqa: S603

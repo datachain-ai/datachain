@@ -498,7 +498,7 @@ def test_get_frame_reuses_metadata(video_file, monkeypatch):
     def fail_open(self, *args, **kwargs):
         raise AssertionError("get_frame should reuse cached video metadata")
 
-    monkeypatch.setattr(VideoFile, "open", fail_open)
+    monkeypatch.setattr(VideoFile, "_open_read", fail_open)
 
     frame = video.get_frame(38)
 

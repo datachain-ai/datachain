@@ -536,9 +536,13 @@ def worker_thread_env(n_workers: int) -> dict[str, str]:
         try:
             if name == "OMP_NUM_THREADS":
                 levels = [int(value) for value in os.environ[name].split(",")]
+                if any(value < 1 for value in levels):
+                    raise ValueError("nonpositive OpenMP thread count")
                 env[name] = ",".join(str(max(1, min(value, share))) for value in levels)
                 continue
             current = int(os.environ[name])
+            if name != WORKER_THREADS_ENV and current < 1:
+                raise ValueError("nonpositive native thread count")
         except (KeyError, ValueError):
             current = share
         env[name] = str(max(1, min(current, share)))
@@ -548,7 +552,12 @@ def worker_thread_env(n_workers: int) -> dict[str, str]:
 @contextmanager
 def worker_thread_limits(n_workers: int) -> Iterator[None]:
     """Apply a CPU-share budget throughout UDF worker execution."""
+    kmp = os.environ.get("KMP_DUPLICATE_LIB_OK")
     from threadpoolctl import ThreadpoolController
+
+    # The import opts into duplicate OpenMP runtimes; do not change user policy.
+    if kmp is None:
+        os.environ.pop("KMP_DUPLICATE_LIB_OK", None)
 
     env = worker_thread_env(n_workers)
     controller = ThreadpoolController()
