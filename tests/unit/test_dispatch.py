@@ -73,7 +73,8 @@ def test_worker_aggregates_progress_until_flushed():
     assert queue.empty()
 
 
-def test_worker_reports_pending_progress_without_another_update():
+def test_worker_reports_pending_progress_without_another_update(monkeypatch):
+    monkeypatch.setattr("datachain.query.dispatch.STATS_INTERVAL_SEC", 0.01)
     queue = queue_mod.Queue()
     stats = WorkerStats(queue)
     with stats.track():

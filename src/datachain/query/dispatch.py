@@ -43,7 +43,7 @@ OK_STATUS = "OK"
 FINISHED_STATUS = "FINISHED"
 FAILED_STATUS = "FAILED"
 NOTIFY_STATUS = "NOTIFY"
-STATS_INTERVAL_SEC = 0.1
+STATS_INTERVAL_SEC = 3.0
 
 
 def get_n_workers_from_arg(n_workers: int | None = None) -> int:

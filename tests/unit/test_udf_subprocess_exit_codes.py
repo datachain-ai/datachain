@@ -132,12 +132,13 @@ def test_canceled_exit_code_closes_warehouse(test_session_tmpfile, monkeypatch):
     assert close_called
 
 
+@pytest.mark.parametrize("empty_entry", [False, True])
 def test_subprocess_keeps_caller_pythonpath(
-    test_session_tmpfile, monkeypatch, tmp_path
+    test_session_tmpfile, monkeypatch, tmp_path, empty_entry
 ):
     monkeypatch.delenv("DATACHAIN_DISTRIBUTED", raising=False)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("PYTHONPATH", "/a")
+    monkeypatch.setenv("PYTHONPATH", os.pathsep + "/a" if empty_entry else "/a")
     monkeypatch.delenv("PYTHONSAFEPATH", raising=False)
     monkeypatch.setattr(sys, "path", [str(tmp_path / "scripts"), *sys.path[1:]])
     chain = _build_parallel_chain(test_session_tmpfile)
@@ -151,6 +152,5 @@ def test_subprocess_keeps_caller_pythonpath(
     pythonpath = popen.call_args.kwargs["env"]["PYTHONPATH"]
     assert pythonpath.split(os.pathsep) == [
         str(tmp_path / "scripts"),
-        "/a",
-        str(tmp_path),
+        *([str(tmp_path), "/a"] if empty_entry else ["/a", str(tmp_path)]),
     ]

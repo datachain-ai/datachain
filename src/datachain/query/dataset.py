@@ -954,7 +954,7 @@ class UDFStep(Step, ABC):
                         os.getcwd(),
                     ]
                     envs["PYTHONPATH"] = os.pathsep.join(
-                        dict.fromkeys(filter(None, paths))
+                        dict.fromkeys(path or os.getcwd() for path in paths)
                     )
                     process_data = filtered_cloudpickle_dumps(udf_info)
 
