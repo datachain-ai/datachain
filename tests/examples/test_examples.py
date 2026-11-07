@@ -104,3 +104,13 @@ def test_incremental_processing_examples(example):
 @pytest.mark.parametrize("example", computer_vision_examples)
 def test_computer_vision_examples(example):
     smoke_test(example)
+
+
+def test_heavy_multimodal_examples_exist():
+    root = os.path.abspath(os.path.join(__file__, "..", "..", ".."))
+    missing = [
+        path
+        for path in sorted(heavy_multimodal_examples)
+        if not os.path.isfile(os.path.join(root, path))
+    ]
+    assert not missing
