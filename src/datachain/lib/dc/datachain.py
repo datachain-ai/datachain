@@ -2829,10 +2829,10 @@ class DataChain:
         schema, read = None, None
         col_names = output if isinstance(output, Sequence) else None
         infer = bool(col_names) or not output
+        taken = ["source"] if source and not column else []
         try:
             if infer:
                 schemas = file_schemas(self, **kwargs, parse_options=parse_options)
-                taken = ["source"] if source and not column else []
                 schema, names = merge_schemas(schemas, columns, taken)
                 output, _ = schema_to_output(schema, col_names or names, taken)
                 if taken and unwrap_optional(output.get("source"))[0] is ArrowRow:
@@ -2850,7 +2850,7 @@ class DataChain:
             if not infer:
                 fields = len(model.model_fields)
                 read = read_columns(
-                    self, columns, fields, **kwargs, parse_options=parse_options
+                    self, columns, fields, taken, **kwargs, parse_options=parse_options
                 )
         except (ValueError, pa.ArrowTypeError) as e:
             raise DatasetPrepareError(self.name, e) from e

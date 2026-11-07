@@ -328,18 +328,23 @@ def file_schemas(chain: "DataChain", **kwargs) -> list[pa.Schema]:
 
 
 def read_columns(
-    chain: "DataChain", columns: Sequence[str] | None, fields: int, **kwargs
+    chain: "DataChain",
+    columns: Sequence[str] | None,
+    fields: int,
+    existing_column_names: Sequence[str] = (),
+    **kwargs,
 ) -> list[str] | None:
     """Return the columns to read from each file when output gives their types.
 
     Like pyarrow, they come from the first file (by path). Each file is read by
     these names with its own types. Partition and pandas index columns at the end
-    are left out when output has no fields for them.
+    are left out when output has no fields for them. `columns` names are cleaned
+    as in `merge_schemas`.
     """
     ds = next(_file_datasets(chain.order_by("file.path").limit(1), **kwargs))
     schema = ds.schema
     if columns is not None:
-        schema, _ = merge_schemas([schema], columns)
+        schema, _ = merge_schemas([schema], columns, existing_column_names)
     elif _get_datachain_schema(schema):
         return None
     elif len(schema) > fields:

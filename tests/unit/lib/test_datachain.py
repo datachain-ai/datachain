@@ -2883,15 +2883,18 @@ def test_read_csv_with_source_and_c0_source_columns_reads_source_as_c1_source(
     assert chain.to_list("c1_source", "c0_source") == [("a", "b")]
 
 
+@pytest.mark.parametrize(
+    "kwargs,signal", [({}, "c1_source"), ({"output": {"value": str}}, "value")]
+)
 @pytest.mark.parametrize("column", ["source", "c1_source"])
 def test_read_csv_columns_with_source_column_keep_full_read_names(
-    tmp_dir, test_session, column
+    tmp_dir, test_session, column, kwargs, signal
 ):
     path = tmp_dir / "df.csv"
     path.write_text("source,c0_source\na,b\n")
 
-    chain = dc.read_csv(path.as_uri(), columns=[column], session=test_session)
-    assert chain.to_values("c1_source") == ["a"]
+    chain = dc.read_csv(path.as_uri(), columns=[column], session=test_session, **kwargs)
+    assert chain.to_values(signal) == ["a"]
 
 
 def test_read_csv_with_source_column_into_column_keeps_its_name(tmp_dir, test_session):
