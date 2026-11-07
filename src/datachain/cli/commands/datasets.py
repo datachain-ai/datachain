@@ -20,7 +20,6 @@ from datachain.lib.dataset_description import DatasetDescription
 from datachain.lib.dataset_info import DatasetInfo
 from datachain.lib.dc.datasets import describe
 from datachain.lib.listing_info import ListingInfo
-from datachain.query.session import Session
 from datachain.studio import list_datasets as list_datasets_studio
 from datachain.utils import DatasetIdentifier
 
@@ -337,7 +336,7 @@ def print_dataset_description(info: DatasetDescription) -> None:
 def describe_dataset_cmd(
     catalog: "Catalog", name: str, json_output: bool = False
 ) -> None:
-    info = describe(name, session=Session.get(catalog=catalog))
+    info = describe(name, session=catalog.session)
     if json_output:
         print(json.dumps(info.to_dict(), indent=2))
     else:

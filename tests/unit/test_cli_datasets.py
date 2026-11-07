@@ -15,6 +15,14 @@ from datachain.lib.dataset_info import DatasetInfo
 from datachain.lib.listing_info import ListingInfo
 
 
+def test_describe_command_uses_supplied_catalog_with_an_active_session(
+    test_session, catalog_tmpfile, capsys
+):
+    dc.read_values(id=[1], session=catalog_tmpfile.session).save("other_catalog")
+    describe_dataset_cmd(catalog_tmpfile, "other_catalog")
+    assert "other_catalog" in capsys.readouterr().out
+
+
 def test_group_dataset_versions_latest_only():
     """Test grouping datasets with latest_only=True returns only highest version."""
     datasets = [

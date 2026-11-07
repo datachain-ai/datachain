@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 from uuid import uuid4
 
 from pydantic import Field, field_validator
@@ -23,6 +23,8 @@ if TYPE_CHECKING:
 
 
 class DatasetInfo(DataModel):
+    _version: ClassVar[int] = 2
+
     name: str
     namespace: str
     project: str
