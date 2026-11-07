@@ -2767,8 +2767,8 @@ class DataChain:
                 Omit to infer names and types or restore a saved DataChain schema.
             column: Generated column name.
             model_name: Generated model name.
-            source: Whether to include info about the source file. If so, a data
-                column named "source" is renamed, usually to "c0_source".
+            source: Whether to include info about the source file. It is named
+                "source", or the first free "cN_source" if that name is taken.
             nrows: Optional row limit per file.
             columns: Input columns to read, in order; all if omitted. Accepts original
                 or normalized names, e.g. "ZIP Code" or "zip_code". For Parquet exported
@@ -2829,13 +2829,16 @@ class DataChain:
         schema, read = None, None
         col_names = output if isinstance(output, Sequence) else None
         infer = bool(col_names) or not output
-        taken = ["source"] if source and not column else []
         try:
             if infer:
                 schemas = file_schemas(self, **kwargs, parse_options=parse_options)
-                schema, names = merge_schemas(schemas, columns, taken)
-                output, _ = schema_to_output(schema, col_names or names, taken)
-                if taken and unwrap_optional(output.get("source"))[0] is ArrowRow:
+                schema, names = merge_schemas(schemas, columns)
+                output, _ = schema_to_output(schema, col_names or names)
+                if (
+                    source
+                    and not column
+                    and unwrap_optional(output.get("source"))[0] is ArrowRow
+                ):
                     # A file written by DataChain already has a source, which this
                     # read replaces.
                     del output["source"]
@@ -2850,7 +2853,7 @@ class DataChain:
             if not infer:
                 fields = len(model.model_fields)
                 read = read_columns(
-                    self, columns, fields, taken, **kwargs, parse_options=parse_options
+                    self, columns, fields, **kwargs, parse_options=parse_options
                 )
         except (ValueError, pa.ArrowTypeError) as e:
             raise DatasetPrepareError(self.name, e) from e
@@ -2864,13 +2867,11 @@ class DataChain:
             }
 
         if source:
-            if "source" in output:  # type: ignore[operator]
-                raise DatasetPrepareError(
-                    self.name,
-                    "'source' is the source file signal. "
-                    "Use another name, set column=, or pass source=False.",
-                )
-            output = {"source": ArrowRow} | output  # type: ignore[assignment,operator]
+            # The data keeps its names, so on a clash the source signal is renamed.
+            name, i = "source", 0
+            while name in output:  # type: ignore[operator]
+                name, i = f"c{i}_source", i + 1
+            output = {name: ArrowRow} | output  # type: ignore[assignment,operator]
 
         # Prefetch downloads whole files, so a partial read prefetches only small ones.
         partial = nrows or (columns is not None and is_parquet(format))
