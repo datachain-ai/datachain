@@ -1,0 +1,69 @@
+{
+  "name": "local.local.joined@2.0.0",
+  "num_objects": 2,
+  "created_at": "2026-11-01T10:02:00+00:00",
+  "finished_at": "2026-11-01T10:02:01+00:00",
+  "size": 16,
+  "status": 4,
+  "job_id": "job-1",
+  "description": null,
+  "schema": {
+    "value": "int"
+  },
+  "versions": [
+    {
+      "name": "local.local.joined@1.0.0",
+      "num_objects": 1,
+      "created_at": "2026-11-01T10:02:00+00:00",
+      "finished_at": "2026-11-01T10:02:01+00:00",
+      "size": 8,
+      "status": 4,
+      "job_id": "job-1"
+    },
+    {
+      "name": "local.local.joined@2.0.0",
+      "num_objects": 2,
+      "created_at": "2026-11-01T10:02:00+00:00",
+      "finished_at": "2026-11-01T10:02:01+00:00",
+      "size": 16,
+      "status": 4,
+      "job_id": "job-1"
+    }
+  ],
+  "dependents": [],
+  "query_script": "build()",
+  "jobs": [
+    {
+      "id": "job-1",
+      "name": "build.py",
+      "status": 5,
+      "created_at": "2026-11-01T10:02:00+00:00",
+      "query": "build()",
+      "query_type": 1,
+      "workers": 1,
+      "params": {},
+      "metrics": {},
+      "finished_at": "2026-11-01T10:02:02+00:00",
+      "python_version": "3.12",
+      "error_message": "",
+      "error_stack": "",
+      "parent_job_id": null,
+      "rerun_from_job_id": null,
+      "run_group_id": null,
+      "is_remote_execution": false
+    }
+  ],
+  "dependencies": [
+    {
+      "name": "system.listing.lst__s3://bucket/photos/@1.0.0",
+      "num_objects": 2,
+      "created_at": "2026-11-01T10:02:00+00:00",
+      "finished_at": "2026-11-01T10:02:01+00:00",
+      "size": null,
+      "status": 4,
+      "job_id": null,
+      "type": "storage",
+      "removed": false
+    }
+  ]
+}

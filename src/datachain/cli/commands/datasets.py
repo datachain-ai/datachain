@@ -1,5 +1,8 @@
+import json
 import sys
+from collections import Counter
 from collections.abc import Iterable, Iterator
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from tabulate import tabulate
@@ -8,8 +11,17 @@ from datachain import semver
 from datachain.catalog import is_namespace_local
 from datachain.cli.utils import determine_flavors
 from datachain.config import Config
-from datachain.error import DataChainError, DatasetNotFoundError
+from datachain.data_storage import JobStatus
+from datachain.error import (
+    DataChainError,
+    DatasetNotFoundError,
+)
+from datachain.lib.dataset_description import DatasetDescription
+from datachain.lib.dataset_info import DatasetInfo
+from datachain.lib.dc.datasets import describe
+from datachain.lib.listing_info import ListingInfo
 from datachain.studio import list_datasets as list_datasets_studio
+from datachain.utils import DatasetIdentifier
 
 if TYPE_CHECKING:
     from datachain.catalog import Catalog
@@ -248,3 +260,84 @@ def edit_dataset(
             raise DataChainError(
                 "Not logged in to Studio. Log in with 'datachain auth login'."
             )
+
+
+def _timestamp(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z").rstrip()
+
+
+def _dataset_label(info: DatasetInfo) -> str:
+    if isinstance(info, ListingInfo):
+        return f"{info.uri}@{info.version}"
+    if info.namespace == "local" and info.project == "local":
+        return f"{info.name}@{info.version}"
+    return str(DatasetIdentifier(info.namespace, info.project, info.name, info.version))
+
+
+def print_dataset_description(info: DatasetDescription) -> None:
+    """Print a dataset description for the CLI."""
+    selected = info.selected_version
+    entries = [
+        entry
+        for entry in [*(info.dependencies or []), *(info.dependents or [])]
+        if entry is not None
+    ]
+    labels = {entry.name: _dataset_label(entry.dataset) for entry in entries}
+    counts = Counter(labels.values())
+    for entry in entries:
+        label = labels[entry.name]
+        if counts[label] > 1 and isinstance(entry.dataset, ListingInfo):
+            kind = "all versions" if entry.dataset.versions else "current only"
+            labels[entry.name] = f"{label} ({kind})"
+
+    print(f"Name: {_dataset_label(selected)}")
+    print(f"Rows: {selected.num_objects}")
+    print("Created: " + _timestamp(selected.created_at))
+    if info.description:
+        print(f"Description: {info.description}")
+    print("Versions: " + ", ".join(info.available_versions))
+    print("Schema:")
+    info.schema.print_tree(start_at=2)
+    for title, dependencies in [
+        ("Dependencies", info.dependencies),
+        ("Dependents", info.dependents),
+    ]:
+        if dependencies is None:
+            print(f"{title}: unavailable")
+        elif not dependencies:
+            print(f"{title}: none recorded")
+        else:
+            print(f"{title}:")
+            for dependency in dependencies:
+                if dependency is None:
+                    print("  unavailable dependency")
+                else:
+                    removed = " (removed)" if dependency.removed else ""
+                    print(f"  {labels[dependency.name]}{removed}")
+    if job := info.job:
+        print(f"Job: {job.id}")
+        print(f"Job_status: {JobStatus(job.status).name}")
+        print("Job_created: " + _timestamp(job.created_at))
+        print(
+            "Job_finished: "
+            + (_timestamp(job.finished_at) if job.finished_at else "not recorded")
+        )
+        print(f"Workers: {job.workers}")
+        if job.python_version:
+            print(f"Python: {job.python_version}")
+    elif selected.job_id:
+        print(f"Job: {selected.job_id} (unavailable)")
+    print("Script:")
+    print(selected.query_script or "No script recorded.")
+
+
+def describe_dataset_cmd(
+    catalog: "Catalog", name: str, json_output: bool = False
+) -> None:
+    info = describe(name, session=catalog.session)
+    if json_output:
+        print(json.dumps(info.to_dict(), indent=2))
+    else:
+        print_dataset_description(info)

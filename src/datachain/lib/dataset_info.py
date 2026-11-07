@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 from uuid import uuid4
 
 from pydantic import Field, field_validator
@@ -9,7 +9,9 @@ from datachain.dataset import (
     DEFAULT_DATASET_VERSION,
     DatasetListRecord,
     DatasetListVersion,
+    DatasetRecord,
     DatasetStatus,
+    DatasetVersion,
 )
 from datachain.job import Job
 from datachain.lib.data_model import DataModel
@@ -21,6 +23,8 @@ if TYPE_CHECKING:
 
 
 class DatasetInfo(DataModel):
+    _version: ClassVar[int] = 2
+
     name: str
     namespace: str
     project: str
@@ -37,6 +41,7 @@ class DatasetInfo(DataModel):
     error_stack: str = Field(default="")
     attrs: list[str] = Field(default=[])
     query_script: str = Field(default="")
+    job_id: str | None = Field(default=None)
 
     @property
     def is_temp(self) -> bool:
@@ -94,8 +99,8 @@ class DatasetInfo(DataModel):
     @classmethod
     def from_models(
         cls,
-        dataset: DatasetListRecord,
-        version: DatasetListVersion,
+        dataset: DatasetListRecord | DatasetRecord,
+        version: DatasetListVersion | DatasetVersion,
         job: Job | None,
     ) -> "Self":
         return cls(
@@ -115,4 +120,5 @@ class DatasetInfo(DataModel):
             error_stack=version.error_stack,
             attrs=dataset.attrs,
             query_script=version.query_script,
+            job_id=version.job_id,
         )

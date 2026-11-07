@@ -4,6 +4,7 @@ from unittest.mock import ANY
 
 import pytest
 import sqlalchemy as sa
+from pydantic import create_model
 
 import datachain as dc
 from datachain.data_storage.schema import DataTable
@@ -12,11 +13,34 @@ from datachain.error import (
     DatasetInvalidVersionError,
     DatasetNotFoundError,
 )
+from datachain.lib.data_model import DataModel
+from datachain.lib.dataset_info import DatasetInfo
 from datachain.lib.file import File
 from datachain.lib.listing import parse_listing_uri
+from datachain.lib.listing_info import ListingInfo
+from datachain.lib.model_store import ModelStore
 from datachain.query.dataset import DatasetQuery
 from datachain.sql.types import Float32, Int, Int64
 from tests.utils import assert_row_names, dataset_dependency_asdict, table_row_count
+
+
+@pytest.mark.parametrize("model", [DatasetInfo, ListingInfo])
+def test_saved_dataset_info_v1_is_readable_after_adding_job_id(test_session, model):
+    legacy = create_model(
+        model.__name__,
+        __base__=DataModel,
+        **{
+            name: (field.annotation, field)
+            for name, field in model.model_fields.items()
+            if name != "job_id"
+        },
+    )
+    value = legacy(name="inventory", namespace="local", project="local")
+    dc.read_values(dataset=[value], session=test_session).save("legacy_info")
+    ModelStore.remove(legacy)
+    row = dc.read_dataset("legacy_info", session=test_session).to_values("dataset")[0]
+    assert row.name == "inventory"
+    assert "job_id" not in type(row).model_fields
 
 
 @pytest.fixture
@@ -995,3 +1019,13 @@ def test_dataset_storage_dependencies(cloud_test_catalog, cloud_type, indirect):
             "removed": False,
         }
     ]
+
+
+@pytest.mark.parametrize("column", [None, "dataset"])
+def test_datasets_job_id_matches_description(test_session, column):
+    dc.read_values(value=[1, 2], session=test_session).save("with_job")
+    description = dc.describe("with_job", session=test_session)
+    assert description.job is not None
+    chain = dc.datasets(column=column, session=test_session)
+    job_column = f"{column}.job_id" if column else "job_id"
+    assert chain.to_list(job_column) == [(description.job.id,)]
