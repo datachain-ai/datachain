@@ -441,15 +441,24 @@ class FilePair(DataModel):
         ("pair", "'pair' is FilePair, not a file; use signal='pair.file'"),
         ("files", "'files' is list, not a file"),
         ("n", "'n' is int, not a file"),
+        ("mixed", "'mixed' is int | str, not a file"),
     ],
 )
 def test_to_storage_rejects_a_signal_without_files(test_session, tmp_path, signal, msg):
-    file = File(source=tmp_path.as_uri(), path="v.mp4")
+    file = VideoFile(source=tmp_path.as_uri(), path="v.mp4")
     chain = dc.read_values(
-        frag=[VideoFragment(video=VideoFile(**file.model_dump()), start=0, end=1)],
+        frag=[VideoFragment(video=file, start=0, end=1)],
         pair=[FilePair(file=file, n=1)],
         files=[[file]],
         n=[1],
+        mixed=[1],
+        output={
+            "frag": VideoFragment,
+            "pair": FilePair,
+            "files": list[File],
+            "n": int,
+            "mixed": int | str,
+        },
         session=test_session,
     )
     with pytest.raises(DataChainParamsError, match=re.escape(msg) + "$"):
