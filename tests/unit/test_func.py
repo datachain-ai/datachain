@@ -829,6 +829,29 @@ def test_ge_mutate(chain):
     assert res == [1, 1, 1, 1, 1]
 
 
+def test_compare_with_str_literal_mutate(chain):
+    size = case((dc.C("num") > 2, "big"), else_="small")
+
+    res = chain.mutate(test=size == "big").order_by("num").to_values("test")
+    assert res == [0, 0, 1, 1, 1]
+
+    res = chain.mutate(test=size != "big").order_by("num").to_values("test")
+    assert res == [1, 1, 0, 0, 0]
+
+    res = chain.mutate(test=size > "m").order_by("num").to_values("test")
+    assert res == [1, 1, 0, 0, 0]
+
+    res = chain.filter(size == "small").order_by("num").to_values("num")
+    assert res == [1, 2]
+
+    res = (
+        chain.mutate(test=ifelse(dc.C("num") > 2, "xxx", "y") == dc.C("val"))
+        .order_by("num")
+        .to_values("test")
+    )
+    assert res == [0, 0, 1, 0, 0]
+
+
 @pytest.mark.parametrize(
     "value,inthash",
     [

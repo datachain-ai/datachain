@@ -376,32 +376,32 @@ class Func(Function):  # noqa: PLW1641
         )
 
     def __lt__(self, other: ColT | float) -> "Func":
-        if isinstance(other, (int, float)):
+        if isinstance(other, (int, float, str)):
             return Func("lt", lambda a: a < other, [self], result_type=bool)
         return Func("lt", lambda a1, a2: a1 < a2, [self, other], result_type=bool)
 
     def __le__(self, other: ColT | float) -> "Func":
-        if isinstance(other, (int, float)):
+        if isinstance(other, (int, float, str)):
             return Func("le", lambda a: a <= other, [self], result_type=bool)
         return Func("le", lambda a1, a2: a1 <= a2, [self, other], result_type=bool)
 
     def __eq__(self, other):
-        if isinstance(other, (int, float)):
+        if isinstance(other, (int, float, str)):
             return Func("eq", lambda a: a == other, [self], result_type=bool)
         return Func("eq", lambda a1, a2: a1 == a2, [self, other], result_type=bool)
 
     def __ne__(self, other):
-        if isinstance(other, (int, float)):
+        if isinstance(other, (int, float, str)):
             return Func("ne", lambda a: a != other, [self], result_type=bool)
         return Func("ne", lambda a1, a2: a1 != a2, [self, other], result_type=bool)
 
     def __gt__(self, other: ColT | float) -> "Func":
-        if isinstance(other, (int, float)):
+        if isinstance(other, (int, float, str)):
             return Func("gt", lambda a: a > other, [self], result_type=bool)
         return Func("gt", lambda a1, a2: a1 > a2, [self, other], result_type=bool)
 
     def __ge__(self, other: ColT | float) -> "Func":
-        if isinstance(other, (int, float)):
+        if isinstance(other, (int, float, str)):
             return Func("ge", lambda a: a >= other, [self], result_type=bool)
         return Func("ge", lambda a1, a2: a1 >= a2, [self, other], result_type=bool)
 
