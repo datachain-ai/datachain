@@ -790,10 +790,12 @@ class File(DataModel):
             write_options=write_options,
         )
         source = self._catalog.get_client(self.source)
-        if self.location or client.PREFIX != "file://" or source.PREFIX == "file://":
-            with self.open(mode="rb") as src:
-                result = client.upload(src, rel_path, write_config=write_config)
-        else:
+        downloads = (
+            not self.location
+            and client.PREFIX == "file://"
+            and source.PREFIX != "file://"
+        )
+        if downloads:
             client.validate_file_path(rel_path)
             lpath = client.fs._strip_protocol(client.get_uri(rel_path))
             os.makedirs(os.path.dirname(lpath), exist_ok=True)
@@ -801,6 +803,9 @@ class File(DataModel):
                 self.ensure_cached()
             source.download_to(self, lpath, callback=self._download_cb)
             result = client.get_file_info(rel_path)
+        else:
+            with self.open(mode="rb") as src:
+                result = client.upload(src, rel_path, write_config=write_config)
         result._set_stream(self._catalog)
         return result
 

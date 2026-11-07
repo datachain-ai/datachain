@@ -425,33 +425,62 @@ def test_to_storage_empty_segments_with_flat_placement(cloud_test_catalog, place
 @pytest.mark.parametrize("use_cache", [False, True])
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 def test_to_storage_from_cloud_writes_exact_bytes_and_overwrites(
-    cloud_test_catalog, tmp_dir, monkeypatch, use_cache
+    cloud_test_catalog, tmp_dir, use_cache
 ):
     ctc = cloud_test_catalog
     out = tmp_dir / "out"
     chain = dc.read_storage(ctc.src_uri, session=ctc.session)
     chain.settings(cache=use_cache).to_storage(out, placement="filepath")
     (out / "cats" / "cat1").write_text("stale contents")
-    if use_cache:
-
-        async def no_download(*args, **kwargs):
-            raise AssertionError("cached file downloaded again")
-
-        fs = ctc.catalog.get_client(ctc.src_uri).fs
-        monkeypatch.setattr(type(fs), "_get_file", no_download)
     chain.settings(cache=False).to_storage(out, placement="filepath")
 
     assert tree_from_path(out) == DEFAULT_TREE
-    if os.name != "nt":
-        umask = os.umask(0)
-        os.umask(umask)
-        modes = {p.stat().st_mode & 0o777 for p in out.rglob("*") if p.is_file()}
-        assert modes == {0o666 & ~umask}
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+def test_to_storage_after_cached_export_does_not_download_again(
+    cloud_test_catalog, tmp_dir, monkeypatch
+):
+    ctc = cloud_test_catalog
+    chain = dc.read_storage(ctc.src_uri, session=ctc.session).settings(cache=True)
+    chain.to_storage(tmp_dir / "first", placement="filepath")
+
+    async def no_download(*args, **kwargs):
+        raise AssertionError("cached file downloaded again")
+
+    fs = ctc.catalog.get_client(ctc.src_uri).fs
+    monkeypatch.setattr(type(fs), "_get_file", no_download)
+    chain.settings(cache=False).to_storage(tmp_dir / "second", placement="filepath")
+    assert tree_from_path(tmp_dir / "second") == DEFAULT_TREE
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permissions")
+@pytest.mark.parametrize("use_cache", [False, True])
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+def test_to_storage_preserves_existing_permissions_and_new_file_umask(
+    cloud_test_catalog, tmp_dir, existing, use_cache
+):
+    ctc = cloud_test_catalog
+    out = tmp_dir / "out"
+    target = out / "cats" / "cat1"
+    if existing:
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"private old contents")
+        target.chmod(0o600)
+    dc.read_storage(ctc.src_uri, session=ctc.session).settings(
+        cache=use_cache
+    ).to_storage(out, placement="filepath")
+    umask = os.umask(0)
+    os.umask(umask)
+    assert target.stat().st_mode & 0o777 == (0o600 if existing else 0o666 & ~umask)
+    assert target.read_bytes() == b"meow"
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
-def test_to_storage_failed_download_leaves_no_files(
-    cloud_test_catalog, tmp_dir, monkeypatch
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_to_storage_failed_download_preserves_error(
+    cloud_test_catalog, tmp_dir, monkeypatch, cleanup_fails
 ):
     ctc = cloud_test_catalog
     out = tmp_dir / "out"
@@ -460,13 +489,24 @@ def test_to_storage_failed_download_leaves_no_files(
         await asyncio.to_thread(Path(dst).write_bytes, b"partial")
         raise OSError("connection reset")
 
+    if cleanup_fails:
+        remove = os.remove
+
+        def fail_tmp_remove(path, *args, **kwargs):
+            if str(path).endswith(".tmp"):
+                raise PermissionError("cleanup denied")
+            return remove(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "remove", fail_tmp_remove)
+
     fs = ctc.catalog.get_client(ctc.src_uri).fs
     monkeypatch.setattr(type(fs), "_get_file", partial_download)
     chain = dc.read_storage(ctc.src_uri, session=ctc.session)
     with pytest.raises(OSError, match="connection reset"):
         chain.to_storage(out, placement="filepath")
 
-    assert not [p for p in out.rglob("*") if p.is_file()]
+    if not cleanup_fails:
+        assert not [p for p in out.rglob("*") if p.is_file()]
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
@@ -498,7 +538,7 @@ def test_to_storage_streams_large_s3_objects_sequentially(
 ):
     ctc = cloud_test_catalog
     client = ctc.catalog.get_client(ctc.src_uri)
-    name = "b" * 241 + ".bin"  # long names fit next to their temp file
+    name = "big.bin"
     data = os.urandom(3 << 20)
     client.fs.pipe(f"{client.name}/{name}", data)
     client.fs.invalidate_cache()
