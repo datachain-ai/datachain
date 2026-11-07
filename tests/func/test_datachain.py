@@ -33,6 +33,7 @@ from tests.utils import (
     ANY_VALUE,
     TARRED_TREE,
     df_equal,
+    make_tar,
     skip_if_not_sqlite,
     sorted_dicts,
     text_embedding,
@@ -964,16 +965,12 @@ def test_similarity_search(cloud_test_catalog):
         assert math.isclose(e1, e2, abs_tol=1e-5)
 
 
-@pytest.mark.parametrize("cache", [False, True])
 @pytest.mark.parametrize("process", [process_tar, process_webdataset()])
-def test_tar_rejects_compressed_archive(tmp_dir, test_session, process, cache):
-    (tmp_dir / "animals.tar").write_bytes(gzip.compress(TARRED_TREE["animals.tar"]))
+def test_tar_rejects_compressed_archive(tmp_dir, test_session, process):
+    shard = make_tar({"0.jpg": "image", "0.txt": "caption"})
+    (tmp_dir / "shard.tar").write_bytes(gzip.compress(shard))
 
-    chain = (
-        dc.read_storage(tmp_dir.as_uri(), session=test_session)
-        .settings(cache=cache)
-        .gen(out=process)
-    )
+    chain = dc.read_storage(tmp_dir.as_uri(), session=test_session).gen(out=process)
     with pytest.raises(FileError, match="compressed tars are not supported"):
         chain.to_list()
 

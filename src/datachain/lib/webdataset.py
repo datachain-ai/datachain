@@ -218,8 +218,7 @@ def process_webdataset(
     encoding: str = "utf-8",
 ) -> Callable[[File], Iterator]:
     def wds_func(file: File) -> Iterator[spec]:  # type: ignore[valid-type]
-        with file.open() as fd:
-            with open_tar(fd, file) as tar:
-                yield from get_tar_groups(file, tar, core_extensions, spec, encoding)
+        with open_tar(file) as tar:
+            yield from get_tar_groups(file, tar, core_extensions, spec, encoding)
 
     return wds_func
