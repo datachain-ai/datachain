@@ -1,3 +1,4 @@
+import os
 from datetime import UTC, datetime
 from unittest.mock import Mock, mock_open, patch
 
@@ -6,7 +7,7 @@ import pytest
 from datachain.cache import Cache
 from datachain.client.fsspec import Client
 from datachain.client.http import HTTPClient, HTTPSClient
-from datachain.lib.file import File
+from datachain.lib.file import File, FileError
 
 
 def test_protocol_detection_https():
@@ -177,14 +178,14 @@ async def test_fetch_dir():
 
 
 @pytest.mark.asyncio
-async def test_get_file():
+async def test_get_file(monkeypatch):
     cache = Mock(spec=Cache)
     client = HTTPSClient("example.com", {}, cache)
 
     async def mock_get_file(lpath, rpath, callback):
         return "data"
 
-    client.fs._get_file = mock_get_file
+    monkeypatch.setattr(client.fs, "_get_file", mock_get_file)
     result = await client.get_file("/local", "/remote", None)
     assert result == "data"
 
@@ -192,3 +193,50 @@ async def test_get_file():
 def test_storage_uri():
     assert str(HTTPSClient.storage_uri("https://example.com")) == "https://example.com"
     assert str(HTTPSClient.storage_uri("example.com")) == "https://example.com"
+
+
+@pytest.mark.parametrize("cache", [False, True])
+@pytest.mark.parametrize("operation", ["prefix", "metadata", "full"])
+def test_http_reads_reject_overwritten_source(
+    http_server, tmp_path, catalog, cache, operation
+):
+    from PIL import Image
+
+    if operation == "metadata":
+        pytest.importorskip("torch")
+
+    path = tmp_path / "image.png"
+    Image.new("RGB", (2, 2)).save(path)
+    client = catalog.get_client(http_server)
+    file = client.get_file_info("image.png")
+    assert file.etag
+    file._set_stream(catalog, caching_enabled=cache)
+    mtime = path.stat().st_mtime + 1
+    Image.new("RGB", (3, 3)).save(path)
+    os.utime(path, (mtime, mtime))
+
+    error = FileError if operation == "metadata" else FileNotFoundError
+    with pytest.raises(error) as exc:
+        if operation == "prefix":
+            file.read_bytes(3)
+        elif operation == "metadata":
+            file.as_image_file().get_info()
+        else:
+            file.read_bytes()
+    cause = exc.value.__cause__ if operation == "metadata" else exc.value
+    assert isinstance(cause, FileNotFoundError)
+    assert "changed on the source" in str(cause)
+    assert not catalog.cache.contains(file)
+
+
+def test_http_cache_hit_reads_saved_content_after_source_changes(
+    http_server, tmp_path, catalog
+):
+    path = tmp_path / "content.bin"
+    path.write_bytes(b"original")
+    file = catalog.get_client(http_server).get_file_info("content.bin")
+    file._set_stream(catalog, caching_enabled=True)
+    file.ensure_cached()
+    path.unlink()
+    assert file.read_bytes(3) == b"ori"
+    assert file.read_bytes() == b"original"
