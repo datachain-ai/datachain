@@ -50,6 +50,7 @@ from datachain.lib.data_model import (
     StandardType,
     arm_selector,
     dict_to_data_model,
+    union_arms,
     union_layout,
     unwrap_optional,
 )
@@ -3316,6 +3317,21 @@ class DataChain:
         self._setup = self._setup | kwargs
         return self
 
+    def _validate_file_signal(self, signal: str) -> None:
+        schema = self.signals_schema
+        arms, _ = union_arms(schema.get_column_type(signal, with_subtree=True))
+        if not any(inspect.isclass(a) and issubclass(a, File) for a in arms):
+            name = " | ".join(getattr(a, "__name__", str(a)) for a in arms)
+            msg = f"to_storage(): '{signal}' is {name}, not a file"
+            prefix = f"{signal}."
+            if inner := next(
+                (s for s in schema.get_signals(File) if s.startswith(prefix)), None
+            ):
+                msg += f"; use signal='{inner}'"
+                if any(hasattr(a, "save") for a in arms):
+                    msg += f", or {signal}.save(output) in map()"
+            raise DataChainParamsError(msg)
+
     def to_storage(
         self,
         output: str | os.PathLike[str],
@@ -3366,6 +3382,8 @@ class DataChain:
             ds.to_storage("gs://mybucket", placement="filename")
             ```
         """
+        self._validate_file_signal(signal)
+
         chain = self.persist()
         count = chain.count()
 

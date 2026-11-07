@@ -1,5 +1,6 @@
 import os
 import posixpath
+import re
 import signal
 import subprocess
 import sys
@@ -12,8 +13,9 @@ import pytest
 from PIL import Image
 
 import datachain as dc
-from datachain import Session
-from datachain.lib.file import File, ImageFile
+from datachain import DataModel, Session
+from datachain.lib.file import File, ImageFile, VideoFile, VideoFragment
+from datachain.lib.utils import DataChainParamsError
 from tests.conftest import get_cloud_test_catalog, make_cloud_server
 from tests.utils import images_equal, skip_if_not_sqlite, tree_from_path
 
@@ -419,3 +421,45 @@ def test_to_storage_empty_segments_with_flat_placement(cloud_test_catalog, place
     finally:
         client.fs.rm(f"{client.name}/{key}")
         client.fs.invalidate_cache()
+
+
+class FilePair(DataModel):
+    file: File
+    n: int
+
+
+@pytest.mark.parametrize(
+    "signal,msg",
+    [
+        (
+            "frag",
+            (
+                "'frag' is VideoFragment, not a file; use signal='frag.video', "
+                "or frag.save(output) in map()"
+            ),
+        ),
+        ("pair", "'pair' is FilePair, not a file; use signal='pair.file'"),
+        ("files", "'files' is list, not a file"),
+        ("n", "'n' is int, not a file"),
+        ("mixed", "'mixed' is int | str, not a file"),
+    ],
+)
+def test_to_storage_rejects_a_signal_without_files(test_session, tmp_path, signal, msg):
+    file = VideoFile(source=tmp_path.as_uri(), path="v.mp4")
+    chain = dc.read_values(
+        frag=[VideoFragment(video=file, start=0, end=1)],
+        pair=[FilePair(file=file, n=1)],
+        files=[[file]],
+        n=[1],
+        mixed=[1],
+        output={
+            "frag": VideoFragment,
+            "pair": FilePair,
+            "files": list[File],
+            "n": int,
+            "mixed": int | str,
+        },
+        session=test_session,
+    )
+    with pytest.raises(DataChainParamsError, match=re.escape(msg) + "$"):
+        chain.to_storage(tmp_path / "out", signal=signal)
