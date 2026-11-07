@@ -1263,7 +1263,7 @@ def test_delta_update_with_no_retry_rows_reuses_udf_between_sibling_saves(test_s
     dc.read_values(id=[1, 2], session=test_session).save("sibling_source")
     save("sibling_a")
     save("sibling_b")
-    assert processed == [1, 2]
+    assert sorted(processed) == [1, 2]
     dc.read_values(id=[1, 2, 3], session=test_session).save("sibling_source")
     processed.clear()
     a, b = save("sibling_a"), save("sibling_b")
