@@ -87,6 +87,7 @@ nav:
           - Skill and MCP: concepts/skill-and-mcp.md
       - 📚 Guides:
           - Overview: guide/index.md
+          - File Pipelines: guide/file-pipelines.md
           - Get Data In:
               - Reading Data: guide/reading-data.md
               - Listing Storage: guide/listing-storage.md
@@ -114,6 +115,7 @@ nav:
               - Namespaces: guide/namespaces.md
               - Local DB Migrations: guide/db_migrations.md
       - 🎬 Examples: examples.md
+      - "⏱️ Benchmarks": benchmarks.md
       - 🐍 API Reference:
           - Overview: references/index.md
           - DataChain: references/datachain.md
