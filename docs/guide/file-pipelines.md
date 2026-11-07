@@ -120,7 +120,7 @@ import datachain as dc
 
 
 def image_info(file: dc.ImageFile) -> dc.Image:
-    with file.open(cache=False, block_size=64 * 1024) as stream:
+    with file.open(block_size=64 * 1024) as stream:
         with Image.open(stream) as image:
             return dc.Image(width=image.width, height=image.height)
 

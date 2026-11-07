@@ -1,4 +1,4 @@
-# Benchmarks: what is faster, and what we measured
+# Benchmarks: What Is Faster, and What We Measured
 
 DataChain has two distinct performance claims: faster file operations, and less time for a coding agent to
 produce a verified result. The latter measures the library together with its skill and the agent's choices.
