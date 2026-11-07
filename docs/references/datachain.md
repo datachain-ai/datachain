@@ -24,6 +24,8 @@ for examples of how to create a chain.
 
 ::: datachain.lib.dc.json.read_json
 
+::: datachain.lib.dc.mcap.read_mcap
+
 ::: datachain.lib.dc.pandas.read_pandas
 
 ::: datachain.lib.dc.parquet.read_parquet

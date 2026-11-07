@@ -120,6 +120,50 @@ With `header=False` and no `columns`, `output` is required and supplies names fo
 
 Parquet exported by DataChain restores its saved schema and does not support `columns=`. Read it without `columns` and use `.select(...)` on the chain. With `columns` or `output`, read it separately from other Parquet files.
 
+## MCAP Robotics Logs
+
+`dc.read_mcap()` reads [MCAP](https://mcap.dev) logs (ROS 2, Foxglove). It reads only the summary section at the end of each file (about 1 MB), so a row per log, an [`McapFile`](../references/data-types/mcapfile.md) with its topics, message counts and duration, is ready in seconds even for terabytes of logs.
+
+**Questions about the summary run as SQL and never touch the files.** For example, find logs where joint states were dropped, or count hours of data per robot:
+
+```python
+import datachain as dc
+
+# joint states are logged at 15 Hz; find logs that recorded less
+joints = dc.read_mcap("s3://bucket/logs/", topics="/joint_states")
+hz = dc.C("summary.messages") / dc.C("summary.duration")
+dropped = joints.mutate(hz=hz).filter(dc.C("hz") < 14)
+```
+
+```python
+# hours of data and number of logs per robot folder
+inventory = (
+    dc.read_mcap("s3://bucket/logs/")
+    .mutate(robot=dc.func.path.parent("mcap.path"))
+    .group_by(
+        logs=dc.func.count(),
+        hours=dc.func.sum("summary.duration") / 3600,
+        partition_by="robot",
+    )
+)
+```
+
+**Questions about message content run your Python code on the messages.** With `duration=`, `read_mcap` gives a row per time window, an [`McapSlice`](../references/data-types/mcapfile.md). `messages()` reads only the chunks of that window and topic, and `decoder_factories` decodes them into ROS 2 or Protobuf objects (with `DecoderFactory` from `mcap_ros2.decoder` or `mcap_protobuf.decoder`, packages `mcap-ros2-support` and `mcap-protobuf-support`). The windows are processed in parallel, and the results become columns you can filter with SQL again:
+
+```python
+def max_joint_speed(mcap: dc.McapSlice) -> float:
+    messages = mcap.messages(decoder_factories=[DecoderFactory()])
+    return max((abs(v) for m in messages for v in m.decoded.velocity), default=0.0)
+```
+
+```python
+windows = dc.read_mcap("s3://bucket/logs/", topics="/joint_states", duration=10)
+speeds = windows.settings(parallel=8).map(speed=max_joint_speed)
+fast = speeds.filter(dc.C("speed") > 2.0)
+```
+
+Times are nanoseconds.
+
 ## SQL Databases
 
 `read_database()` connects to any SQLAlchemy-compatible database:
