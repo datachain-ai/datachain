@@ -1325,3 +1325,48 @@ def test_agg_list_file_persist_and_read(tmp_dir, test_session):
     assert [f.model_dump() for f in actual_sorted] == [
         f.model_dump() for f in expected_sorted
     ]
+
+
+def test_parallel_udf_imports_sibling_modules_from_another_directory(
+    tmp_path, catalog_tmpfile, monkeypatch
+):
+    from tests.utils import (
+        e2e_subprocess_env,
+        run_test_subprocess,
+        wait_for_test_subprocess,
+    )
+
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    (extra / "factor.py").write_text("FACTOR = 3\n")
+    (scripts / "child_module.py").write_text("VALUE = 1\n")
+    (scripts / "child.py").write_text(
+        "from child_module import VALUE\nassert VALUE == 1\n"
+    )
+    (scripts / "helper.py").write_text(
+        "import subprocess, sys\nfrom pathlib import Path\nfrom factor import FACTOR\n"
+        "def multiply(value: int) -> int:\n"
+        "    child = str(Path(__file__).with_name('child.py'))\n"
+        "    subprocess.run([sys.executable, child], check=True)\n"
+        "    return value * FACTOR\n"
+    )
+    (tmp_path / "helper.py").write_text("raise AssertionError('wrong helper')\n")
+    script = scripts / "pipeline.py"
+    script.write_text(
+        "import datachain as dc\nfrom helper import multiply\n"
+        "result = dc.read_values(value=[1, 2, 3]).settings(parallel=2)\n"
+        "result = result.map(result=multiply)\n"
+        "assert sorted(result.to_values('result')) == [3, 6, 9]\n"
+    )
+    env = e2e_subprocess_env(catalog_tmpfile)
+    env.pop("PYTHONSAFEPATH", None)
+    env["PYTHONPATH"] = os.pathsep.join(
+        filter(None, [str(extra), env.get("PYTHONPATH")])
+    )
+    monkeypatch.chdir(tmp_path)
+    rc, _, stderr = wait_for_test_subprocess(
+        run_test_subprocess([sys.executable, str(script)], env)
+    )
+    assert rc == 0, stderr

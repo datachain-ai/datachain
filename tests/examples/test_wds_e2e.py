@@ -23,7 +23,7 @@ def webdataset_tars(tmp_path):
     shards_path = data_path / "shards"
 
     fh = io.BytesIO()
-    with tarfile.open(fileobj=fh, mode="w:gz") as tar:
+    with tarfile.open(fileobj=fh, mode="w") as tar:
         for idx, rec in enumerate(WDS_TAR_SHARDS):
             # json file
             data = json.dumps(rec).encode()
