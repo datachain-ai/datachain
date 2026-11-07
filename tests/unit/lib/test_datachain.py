@@ -2841,6 +2841,100 @@ def test_read_parquet_exported_with_source(test_session, tmp_dir):
     assert df_equal(df1, df)
 
 
+def test_read_parquet_exported_with_source_into_column_keeps_both_sources(
+    test_session, tmp_dir
+):
+    path = tmp_dir / "df.parquet"
+    exported = tmp_dir / "exported.parquet"
+    pd.DataFrame({"n": [1]}).to_parquet(path)
+    dc.read_parquet(path.as_uri(), session=test_session).to_parquet(exported)
+
+    chain = dc.read_parquet(exported.as_uri(), column="data", session=test_session)
+    ((source, data),) = chain.to_list("source", "data")
+    assert source.file.path == "exported.parquet"
+    assert data.source.file.path == "df.parquet"
+    assert data.n == 1
+
+
+def test_read_parquet_exported_with_optional_source_replaces_it(test_session, tmp_dir):
+    path = tmp_dir / "df.parquet"
+    dc.read_values(
+        source=[None],
+        n=[1],
+        output={"source": ArrowRow | None, "n": int},
+        session=test_session,
+    ).to_parquet(path)
+
+    chain = dc.read_parquet(path.as_uri(), session=test_session)
+    ((source, n),) = chain.to_list("source", "n")
+    assert (source.file.path, n) == ("df.parquet", 1)
+
+
+def test_read_parquet_exported_with_str_source_raises(test_session, tmp_dir):
+    path = tmp_dir / "df.parquet"
+    dc.read_values(source=["s3"], session=test_session).to_parquet(path)
+    with pytest.raises(DatasetPrepareError, match="'source' is the source file"):
+        dc.read_parquet(path.as_uri(), session=test_session)
+
+
+@pytest.mark.parametrize("name", ["source", "Source"])
+@pytest.mark.parametrize("fmt", ["csv", "parquet"])
+def test_read_file_with_source_column_reads_it_as_c0_source(
+    tmp_dir, test_session, fmt, name
+):
+    path = tmp_dir / f"df.{fmt}"
+    getattr(pd.DataFrame({name: ["s3"], "n": [1]}), f"to_{fmt}")(path, index=False)
+
+    chain = getattr(dc, f"read_{fmt}")(path.as_uri(), session=test_session)
+    ((source, c0_source, n),) = chain.to_list("source", "c0_source", "n")
+    assert source.read() == {name: "s3", "n": 1}
+    assert (c0_source, n) == ("s3", 1)
+
+
+def test_read_csv_with_source_and_c0_source_columns_reads_source_as_c1_source(
+    tmp_dir, test_session
+):
+    path = tmp_dir / "df.csv"
+    path.write_text("source,c0_source\na,b\n")
+
+    chain = dc.read_csv(path.as_uri(), session=test_session)
+    assert chain.to_list("c1_source", "c0_source") == [("a", "b")]
+
+
+@pytest.mark.parametrize(
+    "kwargs,signal", [({}, "c1_source"), ({"output": {"value": str}}, "value")]
+)
+@pytest.mark.parametrize("column", ["source", "c1_source"])
+def test_read_csv_columns_with_source_column_keep_full_read_names(
+    tmp_dir, test_session, column, kwargs, signal
+):
+    path = tmp_dir / "df.csv"
+    path.write_text("source,c0_source\na,b\n")
+
+    chain = dc.read_csv(path.as_uri(), columns=[column], session=test_session, **kwargs)
+    assert chain.to_values(signal) == ["a"]
+
+
+def test_read_csv_with_source_column_into_column_keeps_its_name(tmp_dir, test_session):
+    path = tmp_dir / "df.csv"
+    path.write_text("source,n\ns3,1\n")
+
+    chain = dc.read_csv(path.as_uri(), column="data", session=test_session)
+    ((source, data_source),) = chain.to_list("source", "data.source")
+    assert source.read() == {"source": "s3", "n": 1}
+    assert data_source == "s3"
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{"column": "source"}, {"output": {"source": str, "n": int}}]
+)
+def test_read_csv_with_output_named_source_raises(tmp_dir, test_session, kwargs):
+    path = tmp_dir / "df.csv"
+    path.write_text("a,n\ns3,1\n")
+    with pytest.raises(DatasetPrepareError, match="'source' is the source file"):
+        dc.read_csv(path.as_uri(), session=test_session, **kwargs)
+
+
 @skip_if_not_sqlite
 def test_read_parquet_in_memory(tmp_dir):
     df = pd.DataFrame(DF_DATA)
