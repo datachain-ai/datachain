@@ -30,15 +30,19 @@ def test_udf(test_session, monkeypatch):
 
         def teardown(self):
             self.value = MyMapper.TEARDOWN_VALUE
+            teardowns.append(self.value)
 
     vals = ["a", "b", "c", "d", "e", "f"]
     chain = dc.read_values(key=vals, session=test_session)
 
+    teardowns = []
     udf = MyMapper()
     res = chain.map(res=udf).to_values("res")
 
     assert res == [MyMapper.BOOTSTRAP_VALUE] * len(vals)
-    assert udf.value == MyMapper.TEARDOWN_VALUE
+    assert teardowns == [MyMapper.TEARDOWN_VALUE]
+    # The chain runs its own copy of the instance.
+    assert udf.value == MyMapper.DEFAULT_VALUE
 
 
 def test_no_bootstrap_for_callable(test_session):

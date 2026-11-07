@@ -2,7 +2,6 @@ import contextlib
 import traceback
 from collections.abc import Iterable, Sequence
 from itertools import chain
-from multiprocessing import cpu_count
 from queue import Empty
 from sys import stdin
 from time import monotonic, sleep
@@ -19,6 +18,7 @@ from datachain.catalog.catalog import clone_catalog_with_cache
 from datachain.catalog.loader import DISTRIBUTED_IMPORT_PATH, get_udf_distributor_class
 from datachain.lib.model_store import ModelStore
 from datachain.lib.udf import UdfRunError, _get_cache
+from datachain.query.batch import DEFAULT_BATCH_SIZE, Batch
 from datachain.query.dataset import (
     get_download_callback,
     get_generated_callback,
@@ -27,7 +27,7 @@ from datachain.query.dataset import (
 )
 from datachain.query.queue import get_from_queue, put_into_queue
 from datachain.query.udf import UdfInfo
-from datachain.utils import batched, flatten, safe_closing
+from datachain.utils import batched, flatten, safe_closing, usable_cpu_count
 
 if TYPE_CHECKING:
     from sqlalchemy import Select, Table
@@ -36,7 +36,6 @@ if TYPE_CHECKING:
     from datachain.lib.udf import UDFAdapter
     from datachain.query.batch import RowsOutput
 
-DEFAULT_BATCH_SIZE = 10000
 STOP_SIGNAL = "STOP"
 OK_STATUS = "OK"
 FINISHED_STATUS = "FINISHED"
@@ -46,7 +45,7 @@ NOTIFY_STATUS = "NOTIFY"
 
 def get_n_workers_from_arg(n_workers: int | None = None) -> int:
     if not n_workers:
-        return cpu_count()
+        return usable_cpu_count()
     if n_workers < 1:
         raise RuntimeError("Must use at least one worker for parallel UDF execution!")
     return n_workers
@@ -118,7 +117,8 @@ class UDFDispatcher:
         self.udf_fields = udf_info["udf_fields"]
         self.cache = udf_info["cache"]
         self.is_generator = udf_info["is_generator"]
-        self.is_batching = udf_info["batching"].is_batching
+        self.batching = udf_info["batching"]
+        self.is_batching = self.batching.is_batching
         self.processes = udf_info["processes"]
         self.rows_total = udf_info["rows_total"]
         self.batch_size = udf_info["batch_size"]
@@ -219,7 +219,7 @@ class UDFDispatcher:
 
         def get_inputs() -> Iterable["RowsOutput"]:
             warehouse = self.catalog.warehouse.clone()
-            for ids in batched(input_rows, DEFAULT_BATCH_SIZE):
+            for ids in batched(input_rows, self.input_batch_size(1)):
                 yield from warehouse.dataset_rows_select_from_ids(
                     self.query, ids, self.is_batching
                 )
@@ -245,12 +245,9 @@ class UDFDispatcher:
                 )
 
     def input_batch_size(self, n_workers: int) -> int:
-        input_batch_size = self.rows_total // n_workers
-        if input_batch_size == 0:
-            input_batch_size = 1
-        elif input_batch_size > DEFAULT_BATCH_SIZE:
-            input_batch_size = DEFAULT_BATCH_SIZE
-        return input_batch_size
+        rows_per_task = min(self.rows_total // n_workers, DEFAULT_BATCH_SIZE)
+        batch_size = self.batching.count if isinstance(self.batching, Batch) else 1
+        return max(1, rows_per_task // batch_size)
 
     def run_udf_parallel(  # noqa: C901, PLR0912
         self,
