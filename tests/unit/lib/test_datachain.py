@@ -34,6 +34,7 @@ from datachain.error import (
     ProjectCreateNotAllowedError,
 )
 from datachain.func import string
+from datachain.lib.arrow import ArrowRow
 from datachain.lib.data_model import DataModel
 from datachain.lib.dc import C, DatasetPrepareError, Sys
 from datachain.lib.dc.listings import read_listing_dataset
@@ -181,6 +182,146 @@ def test_pandas_conversion_in_memory():
     assert chain.session.catalog.warehouse.db.db_file == ":memory:"
     chain = chain.select("first_name", "age", "city").to_pandas()
     assert chain.equals(df)
+
+
+@pytest.mark.parametrize("dtype", ["datetime64[ns]", "timestamp[ns][pyarrow]", object])
+def test_pandas_datetimes_floored_to_microseconds_with_missing_as_none(
+    test_session, dtype
+):
+    values = [pd.NaT, pd.Timestamp("2024-01-01 00:00:00.123456789"), pd.NaT]
+    df = pd.DataFrame({"id": [1, 2, 3], "ts": pd.Series(values, dtype=dtype)})
+
+    chain = dc.read_pandas(df, session=test_session).order_by("id")
+
+    assert chain.to_values("ts") == [
+        None,
+        dt.datetime(2024, 1, 1, 0, 0, 0, 123456, tzinfo=dt.UTC),
+        None,
+    ]
+
+
+def test_pandas_nullable_ints_with_na_as_none(test_session):
+    df = pd.DataFrame({"id": [1, 2], "n": pd.Series([1, None], dtype="Int64")})
+
+    chain = dc.read_pandas(df, session=test_session).order_by("id")
+
+    assert chain.to_values("n") == [1, None]
+
+
+@pytest.mark.parametrize("dtype", ["str", "category", object])
+def test_pandas_text_columns_with_nan_as_none(test_session, dtype):
+    df = pd.DataFrame({"id": [1, 2], "s": pd.Series(["a", np.nan], dtype=dtype)})
+
+    chain = dc.read_pandas(df, session=test_session).order_by("id")
+
+    assert chain.schema["s"] == str | None
+    assert chain.to_values("s") == ["a", None]
+
+
+@pytest.mark.parametrize("dtype", ["str", "category", "string[pyarrow]", object])
+def test_pandas_all_missing_text_columns_as_nullable_str(test_session, dtype):
+    df = pd.DataFrame({"id": [1, 2], "s": pd.Series([np.nan, np.nan], dtype=dtype)})
+
+    chain = dc.read_pandas(df, session=test_session)
+
+    assert chain.schema["s"] == str | None
+    assert chain.to_values("s") == [None, None]
+
+
+def test_pandas_lists_of_datetimes_floored_to_microseconds(test_session):
+    ts = [pd.Timestamp("2024-01-01 00:00:00.123456789"), pd.Timestamp("2024-01-02")]
+    df = pd.DataFrame({"user": [1, 1], "ts": ts})
+    lists = df.groupby("user")["ts"].agg(list).reset_index()
+
+    chain = dc.read_pandas(lists, session=test_session)
+
+    assert chain.to_values("ts") == [
+        [
+            dt.datetime(2024, 1, 1, 0, 0, 0, 123456, tzinfo=dt.UTC),
+            dt.datetime(2024, 1, 2, tzinfo=dt.UTC),
+        ]
+    ]
+
+
+@pytest.mark.parametrize(
+    "dtype,expected",
+    [
+        ("datetime64[ns]", dt.datetime | None),
+        ("timestamp[ns][pyarrow]", dt.datetime | None),
+        ("Int64", int | None),
+        ("boolean", bool | None),
+    ],
+)
+def test_pandas_all_missing_columns_keep_dtype_type(test_session, dtype, expected):
+    df = pd.DataFrame({"id": [1, 2], "c": pd.Series([None, None], dtype=dtype)})
+
+    chain = dc.read_pandas(df, session=test_session)
+
+    assert chain.schema["c"] == expected
+    assert chain.to_values("c") == [None, None]
+
+
+@pytest.mark.parametrize("missing_first", [True, False])
+def test_pandas_all_missing_columns_union_with_populated(test_session, missing_first):
+    missing = dc.read_pandas(
+        pd.DataFrame(
+            {
+                "id": [1],
+                "n": pd.Series([None], dtype="Int64"),
+                "ts": pd.Series([None], dtype="datetime64[ns]"),
+            }
+        ),
+        session=test_session,
+    )
+    populated = dc.read_pandas(
+        pd.DataFrame({"id": [2], "n": [5], "ts": [pd.Timestamp("2024-01-01")]}),
+        session=test_session,
+    )
+
+    chain = missing.union(populated) if missing_first else populated.union(missing)
+
+    assert (chain.schema["n"], chain.schema["ts"]) == (int | None, dt.datetime | None)
+    assert chain.order_by("id").to_list("n", "ts") == [
+        (None, None),
+        (5, dt.datetime(2024, 1, 1, tzinfo=dt.UTC)),
+    ]
+
+
+def test_pandas_all_missing_column_carried_through_merge(test_session):
+    ids = dc.read_values(id=[1, 2], session=test_session)
+    missing = dc.read_pandas(
+        pd.DataFrame({"id": [1], "n": pd.Series([None], dtype="Int64")}),
+        session=test_session,
+    )
+
+    chain = ids.merge(missing, on="id", inner=False)
+
+    assert chain.schema["n"] == int | None
+    assert chain.order_by("id").to_values("n") == [None, None]
+
+
+def test_read_records_pandas_timestamps_floored_to_microseconds(test_session):
+    ts = pd.Timestamp("2024-01-01 00:00:00.123456789", tz="Europe/Berlin")
+
+    chain = dc.read_records(
+        [{"ts": ts}], schema={"ts": dt.datetime}, session=test_session
+    )
+
+    assert chain.to_values("ts") == [
+        dt.datetime(2023, 12, 31, 23, 0, 0, 123456, tzinfo=dt.UTC)
+    ]
+
+
+def test_map_returning_pandas_timestamps_floored_to_microseconds(test_session):
+    ts = pd.Timestamp("2024-01-01 00:00:00.123456789", tz="Europe/Berlin")
+
+    chain = dc.read_values(id=[1], session=test_session).map(
+        ts=lambda id: ts, output=dt.datetime
+    )
+
+    assert chain.to_values("ts") == [
+        dt.datetime(2023, 12, 31, 23, 0, 0, 123456, tzinfo=dt.UTC)
+    ]
 
 
 def test_pandas_uppercase_columns(test_session):
@@ -842,8 +983,7 @@ def test_from_features_more_simple_types(test_session):
         dict[str, int],  # from dd2
         list[str],  # from ll1 (starts with empty list)
         list[int],  # from ll
-        str,  # from nn (all None -> defaults to str)
-        str | None,  # from ss (has a None -> inferred Optional)
+        str | None,  # from nn (all None) and ss (has a None)
         dt.datetime,
         float,
     }
@@ -1017,6 +1157,16 @@ def test_gen_hydrates_models_in_nested_list_param(test_session):
     assert sorted(chain.to_values("count")) == [1, 2]
 
 
+def test_map_can_name_a_signal_batch(test_session):
+    result = (
+        dc.read_values(value=[1, 2], session=test_session)
+        .map(batch=lambda value: value * 2, output=int)
+        .order_by("value")
+        .to_values("batch")
+    )
+    assert result == [2, 4]
+
+
 def test_map_multiple_signals(test_session):
     chain = dc.read_values(name=["foo.txt", "bar.md"], session=test_session).map(
         stem=lambda name: name.rsplit(".", 1)[0],
@@ -1085,7 +1235,9 @@ def test_map_multiple_signals_rejects_bound_spec_multi_output(test_session):
             return 2
 
     chain = dc.read_values(name=["foo"], session=test_session)
-    with pytest.raises(DataChainParamsError, match="produces 2 outputs"):
+    with pytest.raises(
+        DataChainParamsError, match=r"produces 2 outputs.*output=\{\.\.\.\}"
+    ):
         chain.map(bad=TwoOutputSpec(), ok=lambda name: name.lower())
 
 
@@ -2655,6 +2807,24 @@ def test_read_parquet_one_column_without_source(
     assert chain.to_values(signal) == [2]
 
 
+@pytest.mark.parametrize("source_type", [ArrowRow, ArrowRow | None])
+def test_read_parquet_exported_with_only_source_reads_new_source(
+    test_session, tmp_dir, source_type
+):
+    csv = tmp_dir / "df.csv"
+    csv.write_text("n\n1\n")
+    old = dc.read_csv(csv.as_uri(), session=test_session).to_values("source")
+    path = tmp_dir / "df.parquet"
+    dc.read_values(
+        source=old, output={"source": source_type}, session=test_session
+    ).to_parquet(path)
+
+    chain = dc.read_parquet(path.as_uri(), session=test_session)
+    assert [(s.file.path, s.index) for s in chain.to_values("source")] == [
+        ("df.parquet", 0)
+    ]
+
+
 def test_read_parquet_exported_with_source(test_session, tmp_dir):
     path = tmp_dir / "df.parquet"
     path2 = tmp_dir / "df2.parquet"
@@ -2669,6 +2839,104 @@ def test_read_parquet_exported_with_source(test_session, tmp_dir):
     )
 
     assert df_equal(df1, df)
+
+
+def test_read_parquet_exported_with_source_into_column_keeps_both_sources(
+    test_session, tmp_dir
+):
+    path = tmp_dir / "df.parquet"
+    exported = tmp_dir / "exported.parquet"
+    pd.DataFrame({"n": [1]}).to_parquet(path)
+    dc.read_parquet(path.as_uri(), session=test_session).to_parquet(exported)
+
+    chain = dc.read_parquet(exported.as_uri(), column="data", session=test_session)
+    ((source, data),) = chain.to_list("source", "data")
+    assert source.file.path == "exported.parquet"
+    assert data.source.file.path == "df.parquet"
+    assert data.n == 1
+
+
+def test_read_parquet_exported_with_optional_source_replaces_it(test_session, tmp_dir):
+    path = tmp_dir / "df.parquet"
+    dc.read_values(
+        source=[None],
+        n=[1],
+        output={"source": ArrowRow | None, "n": int},
+        session=test_session,
+    ).to_parquet(path)
+
+    chain = dc.read_parquet(path.as_uri(), session=test_session)
+    ((source, n),) = chain.to_list("source", "n")
+    assert (source.file.path, n) == ("df.parquet", 1)
+
+
+def test_read_parquet_exported_with_str_source_names_new_source_c0_source(
+    test_session, tmp_dir
+):
+    path = tmp_dir / "df.parquet"
+    dc.read_values(source=["s3"], session=test_session).to_parquet(path)
+
+    chain = dc.read_parquet(path.as_uri(), session=test_session)
+    ((c0_source, source),) = chain.to_list("c0_source", "source")
+    assert (c0_source.file.path, source) == ("df.parquet", "s3")
+
+
+@pytest.mark.parametrize("name", ["source", "Source"])
+@pytest.mark.parametrize("fmt", ["csv", "parquet"])
+def test_read_file_with_source_column_names_new_source_c0_source(
+    tmp_dir, test_session, fmt, name
+):
+    path = tmp_dir / f"df.{fmt}"
+    getattr(pd.DataFrame({name: ["s3"], "n": [1]}), f"to_{fmt}")(path, index=False)
+
+    chain = getattr(dc, f"read_{fmt}")(path.as_uri(), session=test_session)
+    ((c0_source, source, n),) = chain.to_list("c0_source", "source", "n")
+    assert c0_source.read() == {name: "s3", "n": 1}
+    assert (source, n) == ("s3", 1)
+
+
+def test_read_csv_with_source_and_c0_source_columns_names_new_source_c1_source(
+    tmp_dir, test_session
+):
+    path = tmp_dir / "df.csv"
+    path.write_text("source,c0_source\na,b\n")
+
+    chain = dc.read_csv(path.as_uri(), session=test_session)
+    ((c1_source, source, c0_source),) = chain.to_list(
+        "c1_source", "source", "c0_source"
+    )
+    assert c1_source.read() == {"source": "a", "c0_source": "b"}
+    assert (source, c0_source) == ("a", "b")
+
+
+def test_read_csv_with_source_column_into_column_keeps_its_name(tmp_dir, test_session):
+    path = tmp_dir / "df.csv"
+    path.write_text("source,n\ns3,1\n")
+
+    chain = dc.read_csv(path.as_uri(), column="data", session=test_session)
+    ((source, data_source),) = chain.to_list("source", "data.source")
+    assert source.read() == {"source": "s3", "n": 1}
+    assert data_source == "s3"
+
+
+@pytest.mark.parametrize(
+    "kwargs,signal",
+    [
+        ({"output": ["source", "n"]}, "source"),
+        ({"output": {"source": str, "n": int}}, "source"),
+        ({"column": "source"}, "source.a"),
+    ],
+)
+def test_read_csv_with_output_named_source_names_new_source_c0_source(
+    tmp_dir, test_session, kwargs, signal
+):
+    path = tmp_dir / "df.csv"
+    path.write_text("a,n\ns3,1\n")
+
+    chain = dc.read_csv(path.as_uri(), session=test_session, **kwargs)
+    ((c0_source, value),) = chain.to_list("c0_source", signal)
+    assert c0_source.read() == {"a": "s3", "n": 1}
+    assert value == "s3"
 
 
 @skip_if_not_sqlite
@@ -2866,20 +3134,82 @@ def test_extend_features(test_session):
     assert res == sum(range(len(features)))
 
 
-def test_read_storage_column(tmp_dir, test_session):
-    df = pd.DataFrame(DF_DATA)
-    path = tmp_dir / "test.parquet"
-    df.to_parquet(path)
-    chain = dc.read_storage(path.as_uri(), column="custom", session=test_session)
-    assert chain.schema["custom"] == File
-
-
 def test_from_features_column(test_session):
     fib = [1, 1, 2, 3, 5, 8]
     values = ["odd" if num % 2 else "even" for num in fib]
 
     chain = dc.read_values(fib=fib, odds=values, column="custom", session=test_session)
     assert "custom.fib" in chain.to_pandas(flatten=True).columns
+
+
+@pytest.mark.parametrize(
+    "value", [1, MyFr(nnn="n1", count=3), File(source="s3://bucket", path="a.txt")]
+)
+def test_read_values_one_signal_into_column(test_session, value):
+    chain = dc.read_values(v=[value], column="row", session=test_session)
+
+    assert chain.to_values("row.v") == [value]
+
+
+def test_read_values_model_and_scalar_into_column(test_session):
+    fr = MyFr(nnn="n1", count=3)
+
+    chain = dc.read_values(fr=[fr], n=[1], column="row", session=test_session)
+
+    assert chain.to_list("row.fr", "row.n") == [(fr, 1)]
+
+
+def test_read_values_dicts_into_column_kept_as_given(test_session):
+    dicts = [{}, {"a": 1, "b": None}]
+
+    chain = dc.read_values(d=dicts, n=[1, 2], column="row", session=test_session)
+
+    assert chain.order_by("row.n").to_values("row.d") == dicts
+
+
+@pytest.mark.parametrize("name", ["cls", "model_extra", "model_fields_set"])
+def test_read_values_signals_named_like_model_attributes_into_column(
+    test_session, name
+):
+    chain = dc.read_values(**{name: [1], "n": [2]}, column="row", session=test_session)
+
+    assert chain.to_list(f"row.{name}", "row.n") == [(1, 2)]
+
+
+@pytest.mark.parametrize(
+    "typ,value",
+    [
+        (int | str, 1),
+        (int | str, "a"),
+        (int | str | None, "a"),
+        (int | str | None, None),
+    ],
+)
+def test_read_values_union_into_column_read_back_after_save(test_session, typ, value):
+    chain = dc.read_values(
+        u=[value], output={"u": typ}, column="row", session=test_session
+    )
+    chain.save("unions")
+
+    assert chain.to_values("row.u") == [value]
+    assert dc.read_dataset("unions", session=test_session).to_values("row.u") == [value]
+
+
+@pytest.mark.parametrize(
+    "typ,values", [(int | str, [1, "a"]), (int | str | None, [1, "a", None])]
+)
+def test_read_values_union_and_scalar_into_column_read_back_after_save(
+    test_session, typ, values
+):
+    n = list(range(len(values)))
+    chain = dc.read_values(
+        u=values, n=n, output={"u": typ, "n": int}, column="row", session=test_session
+    )
+    chain.save("unions")
+
+    assert chain.order_by("row.n").to_values("row.u") == values
+    saved = dc.read_dataset("unions", session=test_session)
+    assert saved.order_by("row.n").to_values("row.u") == values
 
 
 def test_parse_tabular_column(tmp_dir, test_session):
@@ -4805,6 +5135,18 @@ def test_read_values_nan_inf(test_session):
     assert any(r for r in res if np.isnan(r))
     assert any(r for r in res if np.isposinf(r))
     assert any(r for r in res if np.isneginf(r))
+
+
+def test_read_values_signal_named_ds_name(test_session):
+    chain = dc.read_values(ds_name=[1, 2], session=test_session)
+
+    assert sorted(chain.to_values("ds_name")) == [1, 2]
+
+
+def test_read_pandas_column_named_ds_name(test_session):
+    chain = dc.read_pandas(pd.DataFrame({"ds_name": [1, 2]}), session=test_session)
+
+    assert sorted(chain.to_values("ds_name")) == [1, 2]
 
 
 def test_read_pandas_nan_inf(test_session):
@@ -6799,3 +7141,16 @@ def test_adjust_outputs_calls_an_overridden_convert_type(test_session, mocker):
     row = adjust_outputs(warehouse, {"x": when}, col_types, None)  # type: ignore[arg-type]
 
     assert row["x"] == dt.datetime(2026, 1, 1, 10)
+
+
+def test_multi_signal_map_resolves_string_annotations(test_session):
+    def first(value: "int") -> "int":
+        return value + 1
+
+    def second(value: "int") -> "int":
+        return value * 2
+
+    result = dc.read_values(value=[1, 2], session=test_session).map(
+        first=first, second=second
+    )
+    assert sorted(result.to_list("first", "second")) == [(2, 2), (3, 4)]

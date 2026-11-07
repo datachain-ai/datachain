@@ -1,4 +1,14 @@
+from importlib.metadata import version
+
+from packaging.version import Version
+
 try:
+    datasets_version = version("datasets")
+    if Version(datasets_version) < Version("4.0.0"):
+        raise ImportError(
+            f"datachain requires 'datasets>=4.0.0' but version {datasets_version} "
+            "is installed."
+        )
     from datasets import (
         Array2D,
         Array3D,
@@ -20,7 +30,7 @@ try:
 
 except ImportError as exc:
     raise ImportError(
-        "Missing dependencies for huggingface datasets.\n"
+        f"Missing dependencies for huggingface datasets: {exc}\n"
         "To install run:\n\n"
         "  pip install 'datachain[hf]'\n"
     ) from exc
@@ -73,6 +83,7 @@ class HFGenerator(Generator):
         output_schema: type["BaseModel"],
         limit: int = 0,
         *args,
+        split_name: str = "",
         **kwargs,
     ):
         """
@@ -85,11 +96,13 @@ class HFGenerator(Generator):
             limit : Limit the number of items to read from the HF dataset.
                     Defaults to 0 (no limit).
             output_schema : Pydantic model for validation.
+            split_name : Field of `output_schema` that gets the split name, if any.
         """
         super().__init__()
         self.ds = ds
         self.output_schema = output_schema
         self.limit = limit
+        self.split_name = split_name
         self.args = args
         self.kwargs = kwargs
 
@@ -107,8 +120,8 @@ class HFGenerator(Generator):
         with tqdm(desc=desc, unit=" rows", leave=False) as pbar:
             for row in ds:
                 output_dict = {}
-                if split and "split" in self.output_schema.model_fields:
-                    output_dict["split"] = split
+                if self.split_name:
+                    output_dict[self.split_name] = split
                 for name, feat in ds.features.items():
                     normalized_name, info = model_fields[name]
                     anno = info.annotation
@@ -180,21 +193,17 @@ def _list_item_type(anno: Any) -> Any:
 
 
 def get_output_schema(
-    features: Features, existing_column_names: list[str] | None = None
+    features: Features,
 ) -> tuple[dict[str, DataType], dict[str, str]]:
     """
     Generate UDF output schema from Hugging Face datasets features. It normalizes the
     column names and returns a mapping of normalized names to original names along with
-    the data types. `existing_column_names` is the list of column names that already
-    exist in the dataset (to avoid name collisions due to normalization).
+    the data types.
     """
-    existing_column_names = existing_column_names or []
     fields_dict = {}
-    normalized_names = normalize_col_names(
-        existing_column_names + list(features.keys())
-    )
+    normalized_names = normalize_col_names(list(features.keys()))
     # List of tuple(str, str) for HF dataset feature names, (normalized, original)
-    new_feature_names = list(normalized_names.items())[len(existing_column_names) :]
+    new_feature_names = list(normalized_names.items())
     for idx, feat in enumerate(features.items()):
         name, val = feat
         fields_dict[new_feature_names[idx][0]] = _feature_to_chain_type(name, val)

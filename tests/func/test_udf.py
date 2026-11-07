@@ -1435,6 +1435,39 @@ def test_prefetch_temp_cache_destroyed_on_udf_exception(
         assert not os.path.exists(d), f"Cache dir still exists after exception: {d}"
 
 
+@pytest.mark.parametrize("batch", [2, 3])
+def test_prefetch_shared_file_not_deleted_across_batches(
+    tmp_dir, test_session, monkeypatch, batch
+):
+    monkeypatch.delenv("DATACHAIN_DISTRIBUTED", raising=False)
+
+    parquet_path = str(tmp_dir / "rows.parquet")
+    pq.write_table(pa.table({"a": [1, 2, 3, 4, 5]}), parquet_path)
+
+    def read_local(files: list[dc.File]) -> list[int]:
+        sizes = []
+        for file in files:
+            local = file.get_local_path()
+            assert local is not None, "shared prefetched file was removed too early"
+            with open(local, "rb") as f:
+                sizes.append(len(f.read()))
+        return sizes
+
+    sizes = (
+        dc.read_parquet(
+            parquet_path,
+            columns=["a"],
+            settings={"cache": False, "prefetch": 2},
+            session=test_session,
+        )
+        .batch_map(size=read_local, params=["source.file"], batch=batch)
+        .to_values("size")
+    )
+
+    assert len(sizes) == 5
+    assert all(s > 0 for s in sizes)
+
+
 def test_generator_ineligible_file_does_not_release_prefetched_shared_hash(
     tmp_dir, test_session, monkeypatch
 ):

@@ -58,11 +58,11 @@ def test_remove_prefetched_refcount_delays_removal():
     refcounts: Counter[str] = Counter({h: 2})
     lock = Lock()
 
-    _remove_prefetched((file1,), refcounts, lock)
+    _remove_prefetched((file1,), refcounts=refcounts, refcounts_lock=lock)
     catalog.cache.remove.assert_not_called()
     assert refcounts[h] == 1
 
-    _remove_prefetched((file2,), refcounts, lock)
+    _remove_prefetched((file2,), refcounts=refcounts, refcounts_lock=lock)
     catalog.cache.remove.assert_called_once_with(file2)
     assert h not in refcounts
 
@@ -84,7 +84,7 @@ def test_remove_prefetched_distinct_files_cleaned_up_independently():
     refcounts: Counter[str] = Counter({hash_a: 1, hash_b: 1})
     lock = Lock()
 
-    _remove_prefetched((file_a, file_b), refcounts, lock)
+    _remove_prefetched((file_a, file_b), refcounts=refcounts, refcounts_lock=lock)
 
     assert catalog.cache.remove.call_count == 2
     assert hash_a not in refcounts
@@ -101,7 +101,12 @@ def test_n_concurrent_removals_call_cache_remove_exactly_once():
         files = [_make_file(catalog, h) for _ in range(n)]
 
         _run_concurrently(
-            *(partial(_remove_prefetched, (f,), refcounts, lock) for f in files)
+            *(
+                partial(
+                    _remove_prefetched, (f,), refcounts=refcounts, refcounts_lock=lock
+                )
+                for f in files
+            )
         )
 
         catalog.cache.remove.assert_called_once()
@@ -118,7 +123,12 @@ def test_new_consumer_added_while_existing_consumer_finishes():
         lock = Lock()
 
         _run_concurrently(
-            partial(_remove_prefetched, (finishing,), refcounts, lock),
+            partial(
+                _remove_prefetched,
+                (finishing,),
+                refcounts=refcounts,
+                refcounts_lock=lock,
+            ),
             partial(_register, (arriving,), refcounts, lock),
         )
 
@@ -159,7 +169,7 @@ def test_file_error_row_still_returned_refcount_balanced():
     assert row == (f,)
     assert refcounts[h] == 1
 
-    _remove_prefetched(row, refcounts, lock)
+    _remove_prefetched(row, refcounts=refcounts, refcounts_lock=lock)
 
     assert h not in refcounts
     # The reference was taken before the failed fetch, so its release still removes.
@@ -181,11 +191,11 @@ def test_file_error_shared_file_not_deleted_for_other_consumer():
     _register((file_n,), refcounts, lock)
     assert refcounts[h] == 2
 
-    _remove_prefetched((file_m,), refcounts, lock)
+    _remove_prefetched((file_m,), refcounts=refcounts, refcounts_lock=lock)
     catalog.cache.remove.assert_not_called()
     assert refcounts[h] == 1
 
-    _remove_prefetched((file_n,), refcounts, lock)
+    _remove_prefetched((file_n,), refcounts=refcounts, refcounts_lock=lock)
     catalog.cache.remove.assert_called_once()
     assert h not in refcounts
 
@@ -242,7 +252,7 @@ def test_cache_remove_held_inside_lock():
 
     worker = threading.Thread(target=new_worker)
     worker.start()
-    _remove_prefetched((f,), refcounts, lock)
+    _remove_prefetched((f,), refcounts=refcounts, refcounts_lock=lock)
     worker.join(timeout=5.0)
 
     assert not worker.is_alive(), "worker thread did not complete within 5 s"
@@ -250,6 +260,31 @@ def test_cache_remove_held_inside_lock():
     assert lock_was_held == [True], "cache.remove must run while the lock is held"
     assert order == ["remove", "increment"]
     assert refcounts[h] == 1
+
+
+def test_batch_column_files_counted_per_occurrence():
+    catalog = _make_catalog()
+    h = "shared"
+    batch = [_make_file(catalog, h), _make_file(catalog, h)]
+    other_row = (_make_file(catalog, h),)
+    refcounts: Counter[str] = Counter()
+    lock = Lock()
+
+    asyncio.run(
+        _prefetch_input(
+            (batch,), batch_columns={0}, refcounts=refcounts, refcounts_lock=lock
+        )
+    )
+    _register(other_row, refcounts, lock)
+    assert refcounts[h] == 3
+
+    _remove_prefetched((batch,), {0}, refcounts=refcounts, refcounts_lock=lock)
+    catalog.cache.remove.assert_not_called()
+    assert refcounts[h] == 1
+
+    _remove_prefetched(other_row, refcounts=refcounts, refcounts_lock=lock)
+    catalog.cache.remove.assert_called_once()
+    assert h not in refcounts
 
 
 @pytest.mark.parametrize(
@@ -278,10 +313,14 @@ def test_ineligible_file_does_not_release_prefetched_shared_hash(path, size):
     ineligible._prefetch.assert_not_called()
     assert refcounts[h] == 1
 
-    _remove_prefetched((ineligible,), refcounts, lock, max_size)
+    _remove_prefetched(
+        (ineligible,), refcounts=refcounts, refcounts_lock=lock, max_size=max_size
+    )
     catalog.cache.remove.assert_not_called()
     assert refcounts[h] == 1
 
-    _remove_prefetched((eligible,), refcounts, lock, max_size)
+    _remove_prefetched(
+        (eligible,), refcounts=refcounts, refcounts_lock=lock, max_size=max_size
+    )
     catalog.cache.remove.assert_called_once_with(eligible)
     assert h not in refcounts

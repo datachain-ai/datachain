@@ -11,7 +11,7 @@ import threading
 import uuid
 from collections.abc import Generator
 from datetime import datetime
-from pathlib import PosixPath
+from pathlib import Path, PosixPath
 from time import sleep
 from typing import NamedTuple
 
@@ -153,6 +153,17 @@ def clean_environment(
     Make sure we have a clean environment and won't write to userspace.
     """
     working_dir = str(tmp_path_factory.mktemp("default_working_dir"))
+    # Ancestor repositories outside pytest's temporary tree are not test projects.
+    outer_git_markers = {
+        str(parent / ".git") for parent in tmp_path_factory.getbasetemp().parents
+    }
+    path_exists = os.path.exists
+    monkeypatch_session.setattr(
+        os.path,
+        "exists",
+        lambda path: str(path) not in outer_git_markers and path_exists(path),
+    )
+    (Path(working_dir) / ".git").mkdir()
     monkeypatch_session.chdir(working_dir)
     monkeypatch_session.delenv(DataChainDir.ENV_VAR, raising=False)
     monkeypatch_session.delenv(DataChainDir.ENV_VAR_DATACHAIN_ROOT, raising=False)
@@ -660,12 +671,12 @@ def _moto_lists_after_key_marker(monkeypatch):
     monkeypatch.setattr(S3Backend, "list_object_versions", list_object_versions)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def cloud_server(
-    request, tmp_upath_factory, cloud_type, version_aware, tree, monkeypatch_session
+    request, tmp_upath_factory, cloud_type, version_aware, tree, monkeypatch
 ):
     if cloud_type == "s3":
-        _moto_lists_after_key_marker(monkeypatch_session)
+        _moto_lists_after_key_marker(monkeypatch)
     if cloud_type == "azure" and version_aware:
         if conn_str := request.config.getoption("--azure-connection-string"):
             src_path = tmp_upath_factory.azure(conn_str)
@@ -696,17 +707,15 @@ def datachain_job_id(test_session, monkeypatch):
     yield _create_job(test_session.catalog.metastore)
 
 
-@pytest.fixture(scope="session")
-def cloud_server_credentials(cloud_server, monkeypatch_session):
+@pytest.fixture
+def cloud_server_credentials(cloud_server, monkeypatch):
     if cloud_server.kind == "s3":
         cfg = cloud_server.src.fs.client_kwargs
-        monkeypatch_session.delenv("AWS_PROFILE", raising=False)
-        monkeypatch_session.setenv("AWS_ACCESS_KEY_ID", cfg["aws_access_key_id"])
-        monkeypatch_session.setenv(
-            "AWS_SECRET_ACCESS_KEY", cfg["aws_secret_access_key"]
-        )
-        monkeypatch_session.setenv("AWS_SESSION_TOKEN", cfg["aws_session_token"])
-        monkeypatch_session.setenv("AWS_DEFAULT_REGION", cfg["region_name"])
+        monkeypatch.delenv("AWS_PROFILE", raising=False)
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", cfg["aws_access_key_id"])
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", cfg["aws_secret_access_key"])
+        monkeypatch.setenv("AWS_SESSION_TOKEN", cfg["aws_session_token"])
+        monkeypatch.setenv("AWS_DEFAULT_REGION", cfg["region_name"])
 
 
 def get_cloud_test_catalog(cloud_server, tmp_path, metastore, warehouse):
@@ -751,15 +760,18 @@ def cloud_test_catalog_upload(cloud_test_catalog):
     src = cloud_test_catalog.src_uri
     client = Client.get_implementation(src)
     fsspec_fs = client.create_fs(**cloud_test_catalog.client_config)
-    original_paths = set(fsspec_fs.ls(src))
+    local = cloud_test_catalog.server.kind == "file"
+    original_paths = set(fsspec_fs.find(src, withdirs=local))
 
     yield cloud_test_catalog
 
-    # Cleanup any written files
-    new_paths = set(fsspec_fs.ls(src))
-    cleanup_paths = new_paths - original_paths
-    for p in cleanup_paths:
-        fsspec_fs.rm(p, recursive=True)
+    # Cleanup any written files, children before their directories
+    new_paths = set(fsspec_fs.find(src, withdirs=local, refresh=True))
+    for p in sorted(new_paths - original_paths, reverse=True):
+        if local and fsspec_fs.isdir(p):
+            fsspec_fs.rmdir(p)
+        else:
+            fsspec_fs.rm_file(p)
 
 
 @pytest.fixture

@@ -1006,6 +1006,93 @@ def test_open_write_metadata_ignored_on_local(tmp_path, catalog: Catalog):
     assert f.read() == b"payload"
 
 
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "w",
+        "wt",
+        "tw",
+        "w+",
+        "wt+",
+        "w+t",
+        "tw+",
+        "a",
+        "at",
+        "ta",
+        "a+",
+        "at+",
+        "a+t",
+        "x",
+        "xt",
+        "tx",
+        "x+",
+        "xt+",
+        "x+t",
+    ],
+)
+def test_open_text_write_modes(tmp_path, test_session, mode):
+    path = tmp_path / "text.txt"
+    initial = "first\r\n" if "a" in mode else ""
+    if "x" not in mode:
+        path.write_bytes(initial.encode("utf-16-le"))
+    file = File.at(path, session=test_session)
+    content = "世界\n"
+
+    with file.open(mode, encoding="utf-16-le", newline="\r\n") as stream:
+        assert stream.write(content) == len(content)
+        if "+" in mode:
+            stream.seek(0)
+            assert stream.read() == (initial if "a" in mode else "") + "世界\r\n"
+
+    expected = ((initial if "a" in mode else "") + "世界\r\n").encode("utf-16-le")
+    assert path.read_bytes() == expected
+    assert file.size == len(expected)
+    assert file.read() == expected
+
+
+@pytest.mark.parametrize("mode", ["r", "rt", "tr"])
+def test_open_text_read_modes(tmp_path, test_session, mode):
+    path = tmp_path / "text.txt"
+    path.write_bytes("世界\r\n".encode("utf-16-le"))
+    file = File.at(path, session=test_session)
+    with file.open(mode, encoding="utf-16-le", newline=None) as stream:
+        assert stream.read() == "世界\n"
+
+
+@pytest.mark.parametrize("mode", ["wb", "ab", "xb", "w+b", "r+b"])
+def test_open_binary_write_modes(tmp_path, test_session, mode):
+    path = tmp_path / "binary.bin"
+    initial = b"first" if "a" in mode else b""
+    if "x" not in mode:
+        path.write_bytes(initial)
+    file = File.at(path, session=test_session)
+    with file.open(mode) as stream:
+        assert stream.write(b"payload") == 7
+    assert path.read_bytes() == initial + b"payload"
+    assert file.size == len(initial) + 7
+
+
+@pytest.mark.parametrize("mode", ["wtt", "twt", "wbt", "w+btt", "att", "xtt"])
+def test_open_invalid_text_write_modes(tmp_path, test_session, mode):
+    path = tmp_path / "text.txt"
+    file = File.at(path, session=test_session)
+    with pytest.raises(ValueError):
+        with file.open(mode):
+            pass
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("mode", ["w", "wt"])
+def test_open_text_write_closes_on_error(tmp_path, test_session, mode):
+    path = tmp_path / "text.txt"
+    file = File.at(path, session=test_session)
+    with pytest.raises(RuntimeError, match="write failed"):
+        with file.open(mode, encoding="utf-16-le") as stream:
+            stream.write("世界")
+            raise RuntimeError("write failed")
+    assert path.read_bytes() == "世界".encode("utf-16-le")
+
+
 def test_open_read_mode_rejects_write_metadata(tmp_path, catalog: Catalog):
     (tmp_path / "src.bin").write_bytes(b"data")
     file = File(path="src.bin", source=f"file://{tmp_path}")
