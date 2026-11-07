@@ -100,14 +100,14 @@ def test_image_info_streams_does_not_slurp(image_file, monkeypatch):
     """
     img = image_file.as_image_file()
     bytes_read: list[int] = [0]
-    real_open = ImageFile.open
+    real_open = ImageFile._open_read
 
     @contextmanager
     def counting_open(self, *args, **kwargs):
         with real_open(self, *args, **kwargs) as raw:
             yield _CountingStream(raw, bytes_read)
 
-    monkeypatch.setattr(ImageFile, "open", counting_open)
+    monkeypatch.setattr(ImageFile, "_open_read", counting_open)
 
     info = image_info(img)
 
