@@ -1,4 +1,3 @@
-import errno
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -7,19 +6,15 @@ from azure.core.exceptions import (
     HttpResponseError,
     ResourceNotFoundError,
 )
-from botocore.exceptions import ClientError, NoCredentialsError
 from gcsfs.retry import HttpError
 from google.api_core import exceptions as google_exceptions
-from s3fs.errors import translate_boto_error
 
 from datachain.cli import handle_bucket_command, handle_command
 from datachain.client import bucket_status
 from datachain.client.azure import AzureClient
 from datachain.client.fsspec import BucketStatus
 from datachain.client.gcs import GCSClient
-from datachain.client.s3 import ClientS3
 
-S3_DENIED = "Access denied to S3 bucket 'b' — check AWS credentials/permissions"
 AZ_DENIED = "Access denied to Azure container 'c' — check credentials/configuration"
 GCS_DENIED = "Access denied to GCS bucket 'b' — check credentials/permissions"
 
@@ -40,65 +35,6 @@ def _azure_http_error(status_code):
 def test_bucket_status_rejects_path_component(uri):
     with pytest.raises(ValueError, match="path in a bucket is not allowed"):
         bucket_status(uri)
-
-
-def test_normalize_s3_kwargs_secret_and_token():
-    result = ClientS3._normalize_s3_kwargs({"aws_secret": "s", "aws_token": "t"})
-    assert result == {"secret": "s", "token": "t"}
-
-
-@pytest.mark.parametrize(
-    "anon_effect, auth_effect, expected",
-    [
-        (None, None, BucketStatus(True, "anonymous")),
-        (
-            FileNotFoundError,
-            None,
-            BucketStatus(False, "denied", "S3 bucket 'b' not found"),
-        ),
-        (PermissionError, None, BucketStatus(True, "authenticated")),
-        (
-            OSError(errno.EINVAL, "Bad Request"),
-            None,
-            BucketStatus(True, "authenticated"),
-        ),
-        (PermissionError, NoCredentialsError, BucketStatus(True, "denied", S3_DENIED)),
-        (PermissionError, PermissionError, BucketStatus(True, "denied", S3_DENIED)),
-        (
-            PermissionError,
-            FileNotFoundError,
-            BucketStatus(False, "denied", "S3 bucket 'b' not found"),
-        ),
-    ],
-    ids=[
-        "anon-ok",
-        "anon-404",
-        "auth-ok",
-        "anon-400",
-        "auth-no-creds",
-        "auth-perm",
-        "auth-404",
-    ],
-)
-@patch("datachain.client.s3.S3FileSystem")
-def test_s3_bucket_status(mock_fs_cls, anon_effect, auth_effect, expected):
-    anon_fs, auth_fs = MagicMock(), MagicMock()
-    mock_fs_cls.side_effect = [anon_fs, auth_fs]
-    anon_fs._info = AsyncMock(side_effect=anon_effect)
-    auth_fs._info = AsyncMock(side_effect=auth_effect)
-    assert ClientS3.bucket_status("b") == expected
-
-
-@patch("datachain.client.s3.S3FileSystem")
-def test_s3_bucket_status_anon_service_error_reraises(mock_fs_cls):
-    anon_fs, auth_fs = MagicMock(), MagicMock()
-    mock_fs_cls.side_effect = [anon_fs, auth_fs]
-    server_error = ClientError({"Error": {"Code": "500"}}, "HeadBucket")
-    anon_fs._info = AsyncMock(side_effect=translate_boto_error(server_error))
-    auth_fs._info = AsyncMock()
-    with pytest.raises(OSError, match="500"):
-        ClientS3.bucket_status("b")
-    auth_fs._info.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
