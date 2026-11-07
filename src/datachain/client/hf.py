@@ -57,11 +57,11 @@ def get_hf_filesystem_cls():
             f"{fsspec_version} is installed."
         )
 
-    from huggingface_hub import HfFileSystem
+    from .hf_file_system import PinnedHfFileSystem
 
-    fs_cls = _wrap_class(HfFileSystem)
-    # AsyncFileSystemWrapper does not set class properties, so we need to set them back.
-    fs_cls.protocol = HfFileSystem.protocol
+    fs_cls = _wrap_class(PinnedHfFileSystem)
+    # AsyncFileSystemWrapper does not set class properties, so we set them back.
+    fs_cls.protocol = PinnedHfFileSystem.protocol
     return fs_cls
 
 
@@ -72,6 +72,9 @@ class HfClient(Client):
     @classproperty
     def FS_CLASS(cls):  # noqa: N802, N805
         return get_hf_filesystem_cls()
+
+    def _version_kwargs(self, version_id: str | None) -> dict[str, Any]:
+        return {"revision": version_id} if version_id else {}
 
     def _file_info_kwargs(self, version_id: str | None = None) -> dict[str, Any]:
         return {
