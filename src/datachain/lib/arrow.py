@@ -1,6 +1,7 @@
 import hashlib
 import math
 from collections.abc import Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from itertools import islice
 from typing import TYPE_CHECKING, Any
 
@@ -27,6 +28,8 @@ from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.udf import Generator
 from datachain.lib.utils import normalize_col_names
 from datachain.progress import tqdm
+
+SCHEMA_READ_THREADS = 32
 
 if TYPE_CHECKING:
     from datasets.features.features import Features
@@ -299,18 +302,32 @@ class ArrowGenerator(Generator):
         return [self.output_schema(**vals_dict)]
 
 
-def _file_datasets(chain: "DataChain", **kwargs) -> Iterator[Dataset]:
+def _dataset_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    kwargs = dict(kwargs)
     parse_options = kwargs.pop("parse_options", None)
     if format := kwargs.get("format"):
         kwargs["format"] = fix_pyarrow_format(format, parse_options)
+    return kwargs
+
+
+def _file_dataset(file: File, kwargs: dict[str, Any]) -> Dataset:
+    fs = pyarrow_fs(file, kwargs.get("format"))
+    return dataset(file.get_fs_path(), filesystem=fs, **kwargs)  # type: ignore[union-attr]
+
+
+def _file_datasets(chain: "DataChain", **kwargs) -> Iterator[Dataset]:
+    kwargs = _dataset_kwargs(kwargs)
     for (file,) in chain.to_iter("file"):
-        fs = pyarrow_fs(file, kwargs.get("format"))  # type: ignore[arg-type]
-        yield dataset(file.get_fs_path(), filesystem=fs, **kwargs)  # type: ignore[union-attr]
+        yield _file_dataset(file, kwargs)  # type: ignore[arg-type]
 
 
 def file_schemas(chain: "DataChain", **kwargs) -> list[pa.Schema]:
     """Return the schema of each file in the chain."""
-    schemas = [ds.schema for ds in _file_datasets(chain, **kwargs)]
+    kwargs = _dataset_kwargs(kwargs)
+    files = chain.to_values("file")
+    # one remote footer read per file
+    with ThreadPoolExecutor(max(1, min(SCHEMA_READ_THREADS, len(files)))) as pool:
+        schemas = list(pool.map(lambda f: _file_dataset(f, kwargs).schema, files))
     if not schemas:
         raise ValueError(
             "Cannot infer schema (no files to process or can't access them)"
