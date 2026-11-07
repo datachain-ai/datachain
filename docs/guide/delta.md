@@ -42,6 +42,7 @@ chain = (
 - **delta**: Boolean flag to enable delta processing
 - **delta_on**: Field(s) that uniquely identify rows in the source dataset. The default is `("file.path", "file.etag", "file.version")`.
 - **delta_result_on**: Field(s) in the resulting dataset that correspond to `delta_on` fields (if they have different names)
+  The chain must keep the key values: `mutate` or `gen` that changes them raises an error unless `delta_unsafe=True`.
 - **delta_compare**: Field(s) used to check if a record has been modified
 
 ## Example: Processing New Files Only

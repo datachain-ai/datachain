@@ -1197,13 +1197,17 @@ def test_delta_save_without_result_key_explains_required_fields(test_session):
 
 
 @pytest.mark.parametrize("operation", ["mutate", "gen"])
-def test_delta_updates_do_not_duplicate_rewritten_result_keys(test_session, operation):
+def test_delta_rejects_chain_that_changes_the_key(test_session, operation):
     def generate(id, value):
         yield id * 10, value
 
-    def build(delta):
+    def build(delta_unsafe):
         chain = dc.read_dataset(
-            "rewrite_source", delta=delta, delta_on="id", session=test_session
+            "rewrite_source",
+            delta=True,
+            delta_on="id",
+            delta_unsafe=delta_unsafe,
+            session=test_session,
         )
         if operation == "mutate":
             return chain.mutate(id=C.id + 10)
@@ -1212,10 +1216,9 @@ def test_delta_updates_do_not_duplicate_rewritten_result_keys(test_session, oper
     dc.read_values(id=[1, 2], value=[10, 20], session=test_session).save(
         "rewrite_source"
     )
-    first = build(True).save("rewrite_result")
-    dc.read_values(id=[1, 2], value=[10, 200], session=test_session).save(
-        "rewrite_source"
+    with pytest.raises(DataChainParamsError, match="change delta key 'id'"):
+        build(delta_unsafe=False).save("rewrite_result")
+    result = build(delta_unsafe=True).save("rewrite_result")
+    assert sorted(result.to_values("id")) == (
+        [11, 12] if operation == "mutate" else [10, 20]
     )
-    result = build(True).save("rewrite_result")
-    assert sorted(result.to_list()) == sorted(build(False).to_list())
-    assert sorted(first.to_values("value")) == [10, 20]

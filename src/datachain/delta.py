@@ -77,6 +77,15 @@ def delta_disabled(
     return _inner
 
 
+def delta_key_changed_error(key: str, method: str) -> Exception:
+    from datachain.lib.utils import DataChainParamsError
+
+    return DataChainParamsError(
+        f"{method} can't change delta key {key!r}: write the new value to another"
+        " column, or set delta_unsafe=True"
+    )
+
+
 def _format_schema_drift_message(
     context: str,
     existing_schema: "SignalSchema",

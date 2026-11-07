@@ -30,7 +30,7 @@ from datachain import json, semver
 from datachain.checkpoint import CheckpointStatus
 from datachain.checkpoint_event import CheckpointEventType, CheckpointStepType
 from datachain.dataset import DatasetRecord, create_dataset_full_name
-from datachain.delta import delta_disabled
+from datachain.delta import delta_disabled, delta_key_changed_error
 from datachain.error import (
     JobAncestryDepthExceededError,
     ProjectCreateNotAllowedError,
@@ -1433,6 +1433,7 @@ class DataChain:
         udf_obj = self._udf_to_obj(Generator, func, params, output, signal_map)
         if (prefetch := self._settings.prefetch) is not None:
             udf_obj.prefetch = prefetch
+        udf_obj.delta_key = self._delta_key_columns(udf_obj.output)
         return self._evolve(
             query=self._query.generate(
                 udf_obj.to_udf_wrapper(self._settings.batch_size),
@@ -1440,6 +1441,35 @@ class DataChain:
             ),
             signal_schema=SignalSchema({"sys": Sys}) | udf_obj.output,
         )
+
+    def _delta_key_specs(self) -> list[tuple[list[str], list[str]]]:
+        """Source and result key fields of each delta source, unless unsafe."""
+        if self.delta_unsafe:
+            return []
+        specs = []
+        for source in self._query.delta_sources():
+            spec = source.delta_spec
+            assert spec is not None
+            on = [spec.on] if isinstance(spec.on, str) else list(spec.on)
+            result_on = spec.right_on or spec.on
+            specs.append(
+                (on, [result_on] if isinstance(result_on, str) else list(result_on))
+            )
+        return specs
+
+    def _delta_key_columns(self, output: SignalSchema) -> list[tuple[str, str]]:
+        """Pairs of input and output columns of the delta key a `gen` must keep."""
+        pairs: list[tuple[str, str]] = []
+        for on, result_on in self._delta_key_specs():
+            for key in (on, result_on):  # the key may already be renamed
+                try:
+                    pairs += _paired_key_columns(
+                        self.signals_schema, key, output, result_on
+                    )[0]
+                    break
+                except (SignalResolvingError, DataChainParamsError):
+                    continue
+        return list(dict.fromkeys(pairs))
 
     @delta_disabled
     def agg(
@@ -2017,6 +2047,16 @@ class DataChain:
         """
         if args:
             raise self._named_expression_error("mutate()", args[0])
+        sources: dict[str, set[str]] = {}  # result key -> columns it may copy
+        for on, result_on in self._delta_key_specs():
+            for key, result_key in zip(on, result_on, strict=False):
+                root = result_key.split(".")[0]
+                sources.setdefault(root, {root}).add(key.split(".")[0])
+        for name, value in kwargs.items():
+            if name in sources and not (
+                isinstance(value, Column) and value.name in sources[name]
+            ):
+                raise delta_key_changed_error(name, "mutate()")
         return self._mutate("mutate()", **kwargs)
 
     def _resolve_arm_columns(self, kwargs: dict[str, Any]) -> dict[str, Any]:
