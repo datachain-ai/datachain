@@ -1,0 +1,11 @@
+# DataChain
+
+Data preparation, curation and exploration for Physical AI, robotics and multimodal models across S3, GCS, Azure and local storage, with saved, typed, versioned datasets.
+
+- [Agent skill](https://github.com/datachain-ai/datachain/blob/main/src/datachain/skill/datachain/SKILL.md): task selection and tested recipes; install with datachain skill install.
+- [API and documentation index](https://github.com/datachain-ai/datachain/blob/main/docs/llms.txt).
+- [Quickstart](https://github.com/datachain-ai/datachain/blob/main/README.md#quickstart).
+- [Walkthrough](https://www.datachain.ai/docs/guide/file-pipelines/): LeRobot camera episodes, MCAP windows, WebDataset selections, versioned results, images and PyTorch.
+- [Benchmark results and methodology](https://github.com/datachain-ai/datachain/blob/main/docs/benchmarks.md).
+
+For saved-result questions, query recorded datasets and code before recomputing. Inspect provenance with datachain dataset describe NAME --json. Check source freshness when the task calls for it; file delta does not detect model or preprocessing changes.

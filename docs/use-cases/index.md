@@ -4,7 +4,16 @@ title: Use Cases
 
 # Use Cases
 
-Five patterns where running an agent through DataChain changes the work, instead of just speeding it up. Each page is short: a concrete agent failure mode without the harness, the DataChain pattern that fixes it, and runnable code.
+## Data workflows
+
+- **Training and evaluation data:** [extract metadata, curate a selection and feed PyTorch](../guide/file-pipelines.md#public-images).
+- **Physical AI and robotics:** [curate LeRobot camera episodes](../guide/file-pipelines.md#robot-demonstrations) or [select MCAP recordings by sensor topics](../guide/file-pipelines.md#catalog-mcap-recordings).
+- **Data exploration:** query saved metadata and model outputs to investigate failures, find rare conditions and compare data coverage. See [data operations](../guide/operations.md).
+- **Large inventories:** discover objects across S3, GCS and Azure from storage metadata. See [multi-cloud inventory](../guide/file-pipelines.md#inventory-across-clouds).
+
+## Agent workflows
+
+Patterns for building on saved results across sessions, with examples and code.
 
 - [Agent compounding across sessions](agent-compounding.md): each session reads typed datasets the last session produced, instead of re-deriving from raw bytes.
 - [Agent anti-patterns over object storage](agent-anti-patterns.md): the things coding agents do wrong on S3 by default, and the chain pattern that replaces each one.
