@@ -80,7 +80,6 @@ def listing(test_session):
         catalog.warehouse.clone(),
         Client.get_client(fake_uri, catalog.cache, **catalog.client_config),
         dataset_name=dataset_name,
-        column="file",
     ) as listing_obj:
         yield listing_obj
 
