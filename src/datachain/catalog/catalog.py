@@ -588,7 +588,6 @@ class Catalog:
         source: str,
         update=False,
         client_config=None,
-        column="file",
         skip_indexing=False,
         *,
         _prepared_listings: set[str] | None = None,
@@ -627,7 +626,6 @@ class Catalog:
                     list_ds_name,
                     session,
                     config,
-                    column=column,
                 ),
                 update=update and list_ds_name not in prepared,
             )
@@ -647,7 +645,6 @@ class Catalog:
                 self.warehouse.clone(),
                 client,
                 dataset_name=list_ds_name,
-                column=column,
             )
 
         return lst, client, list_path
