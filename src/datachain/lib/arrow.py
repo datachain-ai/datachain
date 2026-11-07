@@ -256,15 +256,7 @@ class ArrowGenerator(Generator):
                 # A copy, so the files read after this one keep their CSV options.
                 kwargs = {**kwargs, "format": "csv", "csv": csv}
             arrow_file = ArrowRow(file=file, index=index, kwargs=kwargs)
-
-            if self.output_schema and hasattr(vals[0], "source"):
-                # if we are reading parquet file written by datachain it might have
-                # source inside of it already, so we should not duplicate it, instead
-                # we are re-creating it of the self.source flag
-                vals[0].source = arrow_file  # type: ignore[attr-defined]
-
-                return vals
-            return [arrow_file, *vals]
+            vals = [arrow_file, *vals]
 
         if self.output is not None and len(self.output.values) == 1:
             # A single output signal takes its value itself, not a list of values.
