@@ -13,11 +13,67 @@ from PIL import Image
 
 import datachain as dc
 from datachain import Session
-from datachain.lib.file import File, ImageFile
+from datachain.lib.file import AudioFile, File, ImageFile, TextFile, VideoFile
 from tests.conftest import get_cloud_test_catalog, make_cloud_server
 from tests.utils import images_equal, skip_if_not_sqlite, tree_from_path
 
 python_exc = sys.executable or "python3"
+
+
+@pytest.mark.parametrize("same", [False, True])
+def test_file_save_checks_full_destination_path(
+    test_session, tmp_path, monkeypatch, same
+):
+    source = tmp_path / "source"
+    other = tmp_path / "other"
+    source.mkdir()
+    other.mkdir()
+    (source / "a.bin").write_bytes(b"source bytes")
+    (other / "a.bin").write_bytes(b"old bytes")
+    file = File.at(source / "a.bin", session=test_session)
+    monkeypatch.chdir(other if same else source)
+    destination = (source if same else other) / "a.bin"
+    saved = file.save(str(destination))
+    assert destination.read_bytes() == b"source bytes"
+    assert (source / "a.bin").read_bytes() == b"source bytes"
+    assert saved.read() == b"source bytes"
+
+
+@pytest.mark.parametrize("file_cls", [File, TextFile, ImageFile, VideoFile, AudioFile])
+def test_to_storage_copies_bytes_as_stored(test_session, tmp_path, file_cls):
+    (tmp_path / "a.jpg").write_bytes(b"not decoded")
+    dc.read_values(
+        file=[file_cls(path="a.jpg", source=tmp_path.as_uri())], session=test_session
+    ).to_storage(tmp_path / "out", placement="filename")
+    assert (tmp_path / "out" / "a.jpg").read_bytes() == b"not decoded"
+
+
+@pytest.mark.parametrize("file_cls", [File, ImageFile])
+@pytest.mark.parametrize("cache", [False, True])
+@pytest.mark.parametrize("alias", ["same", "hardlink", "symlink"])
+@pytest.mark.parametrize("link_type", ["copy", "symlink"])
+def test_to_storage_over_source_preserves_bytes(
+    test_session, tmp_path, file_cls, cache, alias, link_type
+):
+    source = tmp_path / "a.jpg"
+    source.write_bytes(b"original bytes")
+    output = tmp_path if alias == "same" else tmp_path / "out"
+    if alias != "same":
+        output.mkdir()
+        if alias == "symlink":
+            if os.name == "nt":
+                pytest.skip("Creating symlinks needs privileges on Windows")
+            (output / source.name).symlink_to(source)
+        else:
+            os.link(source, output / source.name)
+    dc.read_values(
+        file=[file_cls(path=source.name, source=tmp_path.as_uri())],
+        session=test_session,
+    ).settings(cache=cache).to_storage(
+        output, placement="filename", link_type=link_type
+    )
+    assert source.read_bytes() == b"original bytes"
+    assert (output / source.name).read_bytes() == b"original bytes"
 
 
 @pytest.mark.parametrize("placement", ["fullpath", "filename", "filepath"])
