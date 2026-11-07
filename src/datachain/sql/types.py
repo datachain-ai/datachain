@@ -573,10 +573,11 @@ class TypeReadConverter:
     def array(self, value, item_type, dialect):
         if value is None or item_type is None:
             return value
-        if self._reads_floats_as_is(item_type, dialect) and set(map(type, value)) <= {
-            float,
-            int,
-        }:
+        if (
+            isinstance(value, (list, tuple))
+            and self._reads_floats_as_is(item_type, dialect)
+            and set(map(type, value)) <= {float, int}
+        ):
             return list(value)
         return [item_type.on_read_convert(x, dialect) for x in value]
 

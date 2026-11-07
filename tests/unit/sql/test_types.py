@@ -168,6 +168,7 @@ def test_cache_ok_opt_out_is_inherited():
 
 
 @pytest.mark.parametrize("item_type", [Float, Float32, Float64])
+@pytest.mark.parametrize("as_iterator", [False, True])
 @pytest.mark.parametrize(
     "value,expected",
     [
@@ -178,8 +179,9 @@ def test_cache_ok_opt_out_is_inherited():
         ([], []),
     ],
 )
-def test_type_read_converter_float_array(item_type, value, expected):
-    result = TypeReadConverter().array(value, item_type(), sqlite.dialect())
+def test_type_read_converter_float_array(item_type, value, expected, as_iterator):
+    value = iter(value) if as_iterator else value
+    result = Array(item_type()).on_read_convert(value, sqlite.dialect())
     assert isinstance(result, list)
     assert result == pytest.approx(expected, nan_ok=True)
 
