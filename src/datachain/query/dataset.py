@@ -945,7 +945,17 @@ class UDFStep(Step, ABC):
                     exec_cmd = get_datachain_executable()
                     cmd = [*exec_cmd, "internal-run-udf"]
                     envs = dict(os.environ)
-                    envs["PYTHONPATH"] = os.getcwd()
+                    if "PYTHONSAFEPATH" not in envs:
+                        envs["PYTHONSAFEPATH"] = "1"
+                        envs["_DATACHAIN_UDF_SAFE_PATH"] = "1"
+                    paths = [
+                        sys.path[0] or os.getcwd(),
+                        *os.environ.get("PYTHONPATH", "").split(os.pathsep),
+                        os.getcwd(),
+                    ]
+                    envs["PYTHONPATH"] = os.pathsep.join(
+                        dict.fromkeys(path or os.getcwd() for path in paths)
+                    )
                     process_data = filtered_cloudpickle_dumps(udf_info)
 
                     with subprocess.Popen(  # noqa: S603
