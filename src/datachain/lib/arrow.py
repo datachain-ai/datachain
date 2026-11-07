@@ -256,14 +256,6 @@ class ArrowGenerator(Generator):
                 # A copy, so the files read after this one keep their CSV options.
                 kwargs = {**kwargs, "format": "csv", "csv": csv}
             arrow_file = ArrowRow(file=file, index=index, kwargs=kwargs)
-
-            if self.output_schema and hasattr(vals[0], "source"):
-                # if we are reading parquet file written by datachain it might have
-                # source inside of it already, so we should not duplicate it, instead
-                # we are re-creating it of the self.source flag
-                vals[0].source = arrow_file  # type: ignore[attr-defined]
-
-                return vals
             return [arrow_file, *vals]
 
         if self.output is not None and len(self.output.values) == 1:
@@ -336,18 +328,23 @@ def file_schemas(chain: "DataChain", **kwargs) -> list[pa.Schema]:
 
 
 def read_columns(
-    chain: "DataChain", columns: Sequence[str] | None, fields: int, **kwargs
+    chain: "DataChain",
+    columns: Sequence[str] | None,
+    fields: int,
+    existing_column_names: Sequence[str] = (),
+    **kwargs,
 ) -> list[str] | None:
     """Return the columns to read from each file when output gives their types.
 
     Like pyarrow, they come from the first file (by path). Each file is read by
     these names with its own types. Partition and pandas index columns at the end
-    are left out when output has no fields for them.
+    are left out when output has no fields for them. `columns` names are cleaned
+    as in `merge_schemas`.
     """
     ds = next(_file_datasets(chain.order_by("file.path").limit(1), **kwargs))
     schema = ds.schema
     if columns is not None:
-        schema, _ = merge_schemas([schema], columns)
+        schema, _ = merge_schemas([schema], columns, existing_column_names)
     elif _get_datachain_schema(schema):
         return None
     elif len(schema) > fields:
@@ -366,14 +363,16 @@ def read_columns(
 
 
 def merge_schemas(
-    schemas: list[pa.Schema], columns: Sequence[str] | None = None
+    schemas: list[pa.Schema],
+    columns: Sequence[str] | None = None,
+    existing_column_names: Sequence[str] = (),
 ) -> tuple[pa.Schema, list[str] | None]:
     """Merge the files' schemas. With `columns`, keep only those, in that order.
 
     Column names can be written as in the file or as DataChain cleans them, e.g.
     "Unit Price (USD)" or "unit_price_usd". With `columns`, also returns the
     cleaned names of the kept columns, cleaned over the whole header as in a
-    full read.
+    full read with the same `existing_column_names`.
     """
     if columns is None:
         return pa.unify_schemas(schemas), None
@@ -383,7 +382,7 @@ def merge_schemas(
     if any(_get_datachain_schema(s) for s in schemas):
         raise ValueError("columns can't be used with files written by DataChain")
     names = list(dict.fromkeys(n for s in schemas for n in s.names))
-    cleaned = normalize_col_names(names)
+    cleaned = normalize_col_names(names, existing_column_names)
     raw = {n: n for n in names} | cleaned
     if missing := [c for c in columns if c not in raw]:
         raise ValueError(f"Columns {missing} not found. Available columns: {names}")
@@ -403,12 +402,15 @@ def merge_schemas(
 
 
 def schema_to_output(
-    schema: pa.Schema, col_names: Sequence[str] | None = None
+    schema: pa.Schema,
+    col_names: Sequence[str] | None = None,
+    existing_column_names: Sequence[str] = (),
 ) -> tuple[dict[str, type], list[str]]:
     """
     Generate UDF output schema from pyarrow schema.
     Returns a tuple of output schema and original column names (since they may be
-    normalized in the output dict).
+    normalized in the output dict). Columns are renamed to avoid the names in
+    `existing_column_names`.
     """
     signal_schema = _get_datachain_schema(schema)
     if signal_schema:
@@ -422,7 +424,7 @@ def schema_to_output(
     if not col_names:
         col_names = schema.names or []
 
-    normalized_col_dict = normalize_col_names(col_names)
+    normalized_col_dict = normalize_col_names(col_names, existing_column_names)
     col_names = list(normalized_col_dict)
 
     hf_schema = _get_hf_schema(schema)

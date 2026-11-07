@@ -72,8 +72,13 @@ def callable_name(obj: object) -> str:
     return str(obj)
 
 
-def normalize_col_names(col_names: Sequence[str]) -> dict[str, str]:
-    """Returns normalized_name -> original_name dict."""
+def normalize_col_names(
+    col_names: Sequence[str], existing_column_names: Sequence[str] = ()
+) -> dict[str, str]:
+    """Returns normalized_name -> original_name dict.
+
+    Normalized names avoid the names in `existing_column_names`.
+    """
     gen_col_counter = 0
     new_col_names = {}
     org_col_names = set(col_names)
@@ -88,6 +93,7 @@ def normalize_col_names(col_names: Sequence[str]) -> dict[str, str]:
         while (
             not generated_column.isidentifier()
             or generated_column in new_col_names
+            or generated_column in existing_column_names
             or (generated_column != org_column and generated_column in org_col_names)
         ):
             if new_column:
