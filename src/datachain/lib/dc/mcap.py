@@ -1,3 +1,4 @@
+import hashlib
 import os
 from collections.abc import Iterator, Sequence
 from typing import TYPE_CHECKING, Any
@@ -29,7 +30,8 @@ def read_mcap(
         path: Storage path(s) or URI(s), e.g. `s3://bucket/logs/`. Supports globs.
         topics: Topics the summary counts and slice `messages()` return.
             Files with no messages on these topics give no slices.
-        duration: Slice length in seconds.
+        duration: Slice length in seconds. Slice `start` and `end` are log times
+            in nanoseconds.
         session: Session to use for the chain.
         settings: Settings to use for the chain.
         kwargs: Parameters to pass to `read_storage`.
@@ -44,7 +46,7 @@ def read_mcap(
                 print(msg.topic, msg.log_time, len(msg.data))
         ```
     """
-    from datachain.lib.mcap import McapFile, McapSlice, McapSummary
+    from datachain.lib.mcap import McapFile, McapSlice, McapSummary, _topic_list
 
     from .datachain import C
     from .storage import read_storage
@@ -52,8 +54,7 @@ def read_mcap(
     step = None if duration is None else round(duration * 1e9)
     if step is not None and step <= 0:
         raise ValueError("duration must be positive")
-    if isinstance(topics, str):
-        topics = [topics]
+    topics = _topic_list(topics)
     chain = read_storage(path, session=session, settings=settings, **kwargs)
     chain = chain.filter(C("file.path").glob("*.mcap"))
 
@@ -66,21 +67,27 @@ def read_mcap(
         elif summary.messages:
             for start in range(summary.start, summary.end + 1, step):
                 yield McapSlice(
-                    mcap=mcap, start=start, end=start + step, topics=list(topics or [])
+                    mcap=mcap, start=start, end=start + step, topics=topics or []
                 )
 
     output: dict[str, Any] = (
         {"mcap": McapSlice} if step else {"mcap": McapFile, "summary": McapSummary}
     )
-    return chain.gen(_SummaryOnly(rows), output=output)
+    return chain.gen(_SummaryOnly(rows, options=(topics, step)), output=output)
 
 
 class _SummaryOnly(Generator):
     """Reads only each file's summary section, so large files aren't prefetched."""
 
-    def __init__(self, rows):
+    def __init__(self, rows, options: tuple):
         from datachain.lib.arrow import PARTIAL_READ_PREFETCH_MAX_SIZE
 
         super().__init__()
         self.process = rows  # type: ignore[method-assign]
         self.prefetch_max_size = PARTIAL_READ_PREFETCH_MAX_SIZE
+        self.options = repr(options)
+
+    def hash(self, include_body: bool = True) -> str:
+        # `rows` closes over the options, which UDF hashing doesn't see
+        base = super().hash(include_body)
+        return hashlib.sha256((base + self.options).encode()).hexdigest()

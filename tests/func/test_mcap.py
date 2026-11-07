@@ -273,13 +273,31 @@ def test_summary_and_windows_read_small_blocks(mcap_file, mocker):
     assert sizes == [PARTIAL_READ_BLOCK_SIZE, PARTIAL_READ_BLOCK_SIZE, None]
 
 
-def test_read_mcap_does_not_prefetch_large_files():
-    from datachain.lib.arrow import PARTIAL_READ_PREFETCH_MAX_SIZE
-    from datachain.lib.dc.mcap import _SummaryOnly
+@pytest.mark.parametrize(
+    "first,second,column,expected",
+    [
+        ({"duration": 1}, {"duration": 0.5}, "mcap.start", 38),
+        ({"topics": "/a"}, {"topics": "/b"}, "summary.messages", 8),
+    ],
+)
+def test_read_mcap_after_option_change_reads_again(
+    mcap_dir, test_session, first, second, column, expected
+):
+    uri = mcap_dir.as_uri()
+    dc.read_mcap(uri, session=test_session, **first).to_values(column)
 
-    assert _SummaryOnly(lambda file: iter(())).prefetch_max_size == (
-        PARTIAL_READ_PREFETCH_MAX_SIZE
-    )
+    values = dc.read_mcap(uri, session=test_session, **second).to_values(column)
+
+    assert (len(values) if "duration" in second else sum(values)) == expected
+
+
+def test_read_mcap_ignores_topics_changed_after_the_call(mcap_dir, test_session):
+    topics = ["/b"]
+    chain = dc.read_mcap(mcap_dir.as_uri(), topics=topics, session=test_session)
+
+    topics[0] = "/a"
+
+    assert chain.to_values("summary.messages") == [4, 4]
 
 
 class UpperDecoder:
