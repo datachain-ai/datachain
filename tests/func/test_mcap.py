@@ -1,5 +1,4 @@
 import io
-import tarfile
 
 import pytest
 from mcap.writer import Writer as McapWriter
@@ -8,6 +7,7 @@ import datachain as dc
 from datachain.lib.file import FileError
 from datachain.lib.mcap import McapFile, McapSlice
 from datachain.lib.tar import process_tar
+from tests.utils import make_tar
 
 T0 = 1_700_000_000_000_000_000
 SEC = 1_000_000_000
@@ -103,11 +103,7 @@ def test_summary_needs_complete_summary_section(tmp_dir, test_session, options):
 
 
 def test_mcap_inside_tar(tmp_dir, test_session):
-    data = mcap_bytes()
-    with tarfile.open(tmp_dir / "logs.tar", "w") as tar:
-        info = tarfile.TarInfo("ep.mcap")
-        info.size = len(data)
-        tar.addfile(info, io.BytesIO(data))
+    (tmp_dir / "logs.tar").write_bytes(make_tar({"ep.mcap": mcap_bytes()}))
     chain = dc.read_storage((tmp_dir / "logs.tar").as_uri(), session=test_session)
     (member,) = chain.gen(file=process_tar).to_values("file")
     mcap = as_mcap(member)

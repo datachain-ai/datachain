@@ -116,6 +116,7 @@ class _PartialReadHandler(FSSpecHandler):
 def pyarrow_fs(file: File, format):
     client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
     if isinstance(client.fs, LocalFileSystem):
+        client.check_unchanged(file)
         return client.fs
     block_size = 0 if is_parquet(format) else None
     return PyFileSystem(_PartialReadHandler(client, file, block_size=block_size))
@@ -172,11 +173,6 @@ class ArrowGenerator(Generator):
             fs_path = file.path
             fs = ReferenceFileSystem({fs_path: [cache_path]})
         else:
-            client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
-            # The File may come from a reused listing or a saved dataset, so the
-            # object may have changed since. A download into the cache checks
-            # this; a read that skips the cache checks it here.
-            client.check_unchanged(file)
             fs = pyarrow_fs(file, self.kwargs.get("format"))
             fs_path = file.get_fs_path()
 
@@ -256,15 +252,7 @@ class ArrowGenerator(Generator):
                 # A copy, so the files read after this one keep their CSV options.
                 kwargs = {**kwargs, "format": "csv", "csv": csv}
             arrow_file = ArrowRow(file=file, index=index, kwargs=kwargs)
-
-            if self.output_schema and hasattr(vals[0], "source"):
-                # if we are reading parquet file written by datachain it might have
-                # source inside of it already, so we should not duplicate it, instead
-                # we are re-creating it of the self.source flag
-                vals[0].source = arrow_file  # type: ignore[attr-defined]
-
-                return vals
-            return [arrow_file, *vals]
+            vals = [arrow_file, *vals]
 
         if self.output is not None and len(self.output.values) == 1:
             # A single output signal takes its value itself, not a list of values.
