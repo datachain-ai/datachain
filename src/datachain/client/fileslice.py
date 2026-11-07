@@ -35,6 +35,11 @@ class FileWrapper(io.RawIOBase):
         """Seek to a position in the file."""
         return self.fileobj.seek(position, whence)
 
+    def readall(self) -> bytes:
+        data = self.fileobj.read()
+        self.callback.relative_update(len(data))
+        return data
+
     def readinto(self, b) -> int:
         res = self.fileobj.readinto(b)
         self.callback.relative_update(res)
@@ -100,6 +105,9 @@ class FileSlice(io.RawIOBase):
             raise RuntimeError("unexpected end of data")
         self.position += res
         return res
+
+    def readall(self) -> bytes:
+        return self.read(max(self.size - self.position, 0))
 
     def close(self):
         self.fileobj.close()
