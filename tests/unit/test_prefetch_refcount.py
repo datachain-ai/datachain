@@ -250,3 +250,38 @@ def test_cache_remove_held_inside_lock():
     assert lock_was_held == [True], "cache.remove must run while the lock is held"
     assert order == ["remove", "increment"]
     assert refcounts[h] == 1
+
+
+@pytest.mark.parametrize(
+    "path,size",
+    [("bucket/key.bin", 0), ("bucket/key.bin", 200), ("", 30)],
+    ids=["zero-size", "oversized", "no-path"],
+)
+def test_ineligible_file_does_not_release_prefetched_shared_hash(path, size):
+    catalog = _make_catalog()
+    h = "shared"
+    max_size = 50
+    eligible = _make_file(catalog, h)
+    eligible.size = 30
+    ineligible = _make_file(catalog, h)
+    ineligible.path = path
+    ineligible.size = size
+    refcounts: Counter[str] = Counter()
+    lock = Lock()
+
+    for f in (eligible, ineligible):
+        asyncio.run(
+            _prefetch_input(
+                (f,), max_size=max_size, refcounts=refcounts, refcounts_lock=lock
+            )
+        )
+    ineligible._prefetch.assert_not_called()
+    assert refcounts[h] == 1
+
+    _remove_prefetched((ineligible,), refcounts, lock, max_size)
+    catalog.cache.remove.assert_not_called()
+    assert refcounts[h] == 1
+
+    _remove_prefetched((eligible,), refcounts, lock, max_size)
+    catalog.cache.remove.assert_called_once_with(eligible)
+    assert h not in refcounts

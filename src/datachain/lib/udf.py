@@ -465,6 +465,14 @@ def noop(*args, **kwargs):
     pass
 
 
+def _is_prefetchable(obj: Any, max_size: int | None) -> bool:
+    return (
+        isinstance(obj, File)
+        and bool(obj.path)
+        and (max_size is None or 0 < obj.size <= max_size)
+    )
+
+
 async def _prefetch_input(
     row: T,
     download_cb: Callback | None = None,
@@ -474,11 +482,7 @@ async def _prefetch_input(
     refcounts_lock: "Lock | None" = None,
 ) -> T:
     for obj in row:
-        if (
-            isinstance(obj, File)
-            and obj.path
-            and (max_size is None or 0 < obj.size <= max_size)
-        ):
+        if _is_prefetchable(obj, max_size):
             # Pre-increment so _remove_prefetched still sees this slot while in-flight.
             if refcounts is not None and refcounts_lock is not None:
                 with refcounts_lock:
@@ -497,6 +501,7 @@ def _remove_prefetched(
     row: T,
     refcounts: "Counter[str] | None" = None,
     refcounts_lock: "Lock | None" = None,
+    max_size: int | None = None,
 ) -> None:
     for obj in row:
         if isinstance(obj, File):
@@ -504,6 +509,10 @@ def _remove_prefetched(
             assert catalog is not None
             try:
                 if refcounts is not None and refcounts_lock is not None:
+                    # get_hash() ignores size: an ineligible file can share the
+                    # hash of a prefetched one, so release only what was taken.
+                    if not _is_prefetchable(obj, max_size):
+                        continue
                     with refcounts_lock:
                         h = obj.get_hash()
                         refcounts[h] -= 1
@@ -552,7 +561,7 @@ def _prefetch_inputs(
                 yield row  # type: ignore[misc]
             finally:
                 if remove_prefetched:
-                    _remove_prefetched(row, refcounts, refcounts_lock)
+                    _remove_prefetched(row, refcounts, refcounts_lock, max_size)
 
 
 def _get_cache(

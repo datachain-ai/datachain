@@ -1433,3 +1433,45 @@ def test_prefetch_temp_cache_destroyed_on_udf_exception(
     assert len(destroyed) >= 1, "Cache.destroy() must be called even on UDF exception"
     for d in destroyed:
         assert not os.path.exists(d), f"Cache dir still exists after exception: {d}"
+
+
+def test_generator_ineligible_file_does_not_release_prefetched_shared_hash(
+    tmp_dir, test_session, monkeypatch
+):
+    monkeypatch.delenv("DATACHAIN_DISTRIBUTED", raising=False)
+
+    (tmp_dir / "data.bin").write_bytes(b"x" * 100)
+    eligible = (
+        dc.read_storage(tmp_dir.as_uri(), session=test_session)
+        .filter(dc.C("file.path").glob("*data.bin"))
+        .to_values("file")[0]
+    )
+    ineligible = eligible.model_copy(update={"size": 0})
+    assert ineligible.get_hash() == eligible.get_hash()
+
+    class ReadLocal(dc.Generator):
+        prefetch_max_size = 1024
+
+        def process(self, file: File) -> Iterator[int]:
+            if file.size == 0:
+                # Hold this row until the eligible row's prefetch has landed.
+                deadline = time.monotonic() + 5
+                while file.get_local_path() is None:
+                    assert time.monotonic() < deadline, "eligible file never fetched"
+                    time.sleep(0.01)
+                yield 0
+                return
+            local = file.get_local_path()
+            assert local is not None, "an ineligible row released the prefetched file"
+            with open(local, "rb") as f:
+                yield len(f.read())
+
+    sizes = (
+        dc.read_values(idx=[0, 1], file=[ineligible, eligible], session=test_session)
+        .settings(cache=False, prefetch=1)
+        .order_by("idx")
+        .gen(ReadLocal(), params=["file"], output={"n": int})
+        .to_values("n")
+    )
+
+    assert sorted(sizes) == [0, 100]
