@@ -27,6 +27,7 @@ import sqlalchemy
 from pydantic import BaseModel
 
 from datachain import json, semver
+from datachain.checkpoint import CheckpointStatus
 from datachain.checkpoint_event import CheckpointEventType, CheckpointStepType
 from datachain.dataset import DatasetRecord, create_dataset_full_name
 from datachain.delta import delta_disabled
@@ -136,6 +137,7 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session as OrmSession
     from typing_extensions import ParamSpec
 
+    from datachain.checkpoint import Checkpoint
     from datachain.lib.settings import LLMParams
 
     P = ParamSpec("P")
@@ -211,6 +213,26 @@ class DataChainSchema(dict[str, DataType]):
         return file.getvalue().removesuffix("\n")
 
 
+def _paired_key(
+    left: SignalSchema, left_key: str, right: SignalSchema, right_key: str
+) -> tuple[list[tuple[str, str]], list[tuple[KeyPresence, KeyPresence]]] | None:
+    """Pair a key's fields by name and its Optional-model presence.
+
+    Presence distinguishes None from a model with all-null fields. Return None
+    when the key fields differ.
+    """
+    left_columns, left_nodes = left.key_columns(left_key)
+    right_columns, right_nodes = right.key_columns(right_key)
+    if left_columns.keys() != right_columns.keys():
+        return None
+    pairs = [(column, right_columns[path]) for path, column in left_columns.items()]
+    presence = [
+        (left.key_presence(left_key, path), right.key_presence(right_key, path))
+        for path in sorted(left_nodes | right_nodes)
+    ]
+    return pairs, presence
+
+
 def _paired_key_columns(
     left: SignalSchema,
     on: Sequence[str],
@@ -225,20 +247,14 @@ def _paired_key_columns(
     pairs: list[tuple[str, str]] = []
     presence: list[tuple[KeyPresence, KeyPresence]] = []
     for left_key, right_key in zip(on, right_on, strict=True):
-        left_columns, left_nodes = left.key_columns(left_key)
-        right_columns, right_nodes = right.key_columns(right_key)
-        if left_columns.keys() != right_columns.keys():
+        paired = _paired_key(left, left_key, right, right_key)
+        if paired is None:
             raise DataChainParamsError(
                 f"'on' key {left_key!r} and 'right_on' key {right_key!r} have different"
                 " fields; the key must have the same shape on both sides"
             )
-        pairs.extend(
-            (column, right_columns[path]) for path, column in left_columns.items()
-        )
-        presence.extend(
-            (left.key_presence(left_key, path), right.key_presence(right_key, path))
-            for path in sorted(left_nodes | right_nodes)
-        )
+        pairs.extend(paired[0])
+        presence.extend(paired[1])
     return pairs, presence
 
 
@@ -254,19 +270,15 @@ def _common_key_columns(
         raise DataChainParamsError("subtract(): no common columns")
     signals = list(zip(common_signals, common_signals, strict=False))
     for name in sorted(left_schema.values.keys() & right_schema.values.keys()):
-        left_columns, _ = left_schema.key_columns(name)
-        right_columns, _ = right_schema.key_columns(name)
-        if left_columns.keys() != right_columns.keys():
+        paired = _paired_key(left_schema, name, right_schema, name)
+        if paired is None or not paired[1]:
             continue
-        model_keys, model_presence = _paired_key_columns(
-            left_schema, [name], right_schema, [name]
-        )
-        if model_presence:
-            columns = set(left_schema.resolve(name).db_signals())
-            columns.update(right_schema.resolve(name).db_signals())
-            signals = [(a, b) for a, b in signals if a not in columns]
-            signals.extend(model_keys)
-            presence.extend(model_presence)
+        columns = {
+            *left_schema.resolve(name).db_signals(),
+            *right_schema.resolve(name).db_signals(),
+        }
+        signals = [(a, b) for a, b in signals if a not in columns] + paired[0]
+        presence.extend(paired[1])
     return signals, presence
 
 
@@ -707,7 +719,12 @@ class DataChain:
         """
         return self._persist()
 
-    def _persist(self, *, preserve_hash: bool = False) -> "Self":
+    def _persist(self, *, preserve_hash: bool = False, hash_salt: str = "") -> "Self":
+        content_hash = self._query.hash() if preserve_hash else None
+        if content_hash is not None and hash_salt:
+            content_hash = hashlib.sha256(
+                (content_hash + hash_salt).encode()
+            ).hexdigest()
         schema = self.signals_schema.clone_without_sys_signals().serialize()
         project = self.session.catalog.metastore.get_project(
             self.project_name,
@@ -718,7 +735,7 @@ class DataChain:
             query=self._query.save(
                 project=project,
                 feature_schema=schema,
-                content_hash=self._query.hash() if preserve_hash else None,
+                content_hash=content_hash,
             ),
             signal_schema=self.signals_schema | SignalSchema({"sys": Sys}),
         )
@@ -779,6 +796,7 @@ class DataChain:
             name_salt += f"/{version}"
         _hash = hashlib.sha256((base_hash + name_salt).encode("utf-8")).hexdigest()
 
+        retry_attempt = None
         result = self._resolve_checkpoint(name, project, _hash, kwargs)
         if bool(result):
             print(
@@ -791,6 +809,9 @@ class DataChain:
 
         # Handle retry and delta functionality
         if not result:
+            retry_attempt = self._start_delta_retry_attempt(
+                f"{namespace_name}/{project_name}/{name}"
+            )
             result = self._handle_delta(
                 name=name,
                 version=version,
@@ -800,6 +821,9 @@ class DataChain:
                 attrs=attrs,
                 update_version=update_version,
                 kwargs=kwargs,
+                retry_salt=retry_attempt.created_at.isoformat()
+                if retry_attempt
+                else "",
             )
 
         if not result:
@@ -833,6 +857,10 @@ class DataChain:
 
         if self._checkpoints_enabled:
             catalog.metastore.get_or_create_checkpoint(self.job.id, _hash)
+        if retry_attempt is not None:
+            catalog.metastore.update_checkpoints(
+                [retry_attempt.id], status=CheckpointStatus.DELETED
+            )
         return result
 
     def _validate_version(self, version: str | None) -> None:
@@ -1000,6 +1028,21 @@ class DataChain:
 
         return None
 
+    def _start_delta_retry_attempt(self, name: str) -> "Checkpoint | None":
+        if not self._checkpoints_enabled or not any(
+            source.delta_spec is not None and source.delta_spec.delta_retry
+            for source in self._query.delta_sources()
+        ):
+            return None
+        # Failed attempts keep this marker across reruns. Successful saves
+        # retire it, even when an empty retry reuses the result version.
+        attempt_hash = hashlib.sha256(f"delta_retry:{name}".encode()).hexdigest()
+        metastore = self.session.catalog.metastore
+        job_id = self.job.run_group_id or self.job.id
+        return metastore.find_checkpoint(
+            job_id, attempt_hash
+        ) or metastore.get_or_create_checkpoint(job_id, attempt_hash)
+
     def _handle_delta(
         self,
         name: str,
@@ -1010,6 +1053,7 @@ class DataChain:
         attrs: list[str] | None,
         update_version: str | None,
         kwargs: dict,
+        retry_salt: str = "",
     ) -> "DataChain | None":
         """Try to save as a delta dataset.
 
@@ -1029,6 +1073,7 @@ class DataChain:
             project.namespace.name,
             project.name,
             name,
+            retry_salt=retry_salt,
         )
 
         # Case 1: delta produced a new dataset

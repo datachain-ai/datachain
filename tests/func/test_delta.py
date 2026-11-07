@@ -15,6 +15,85 @@ from datachain.lib.utils import DataChainParamsError
 from datachain.toolkit import train_test_split
 
 
+class DeltaKey(DataModel):
+    a: int
+    b: str
+
+
+class ReorderedDeltaKey(DataModel):
+    b: str
+    a: int
+
+
+class IncompatibleDeltaKey(DataModel):
+    a: int
+    c: str
+
+
+class NullableDeltaKey(DataModel):
+    a: int | None = None
+
+
+def test_delta_update_with_missing_and_empty_model_keys_matches_full_recompute(
+    test_session,
+):
+    def source(keys, values):
+        dc.read_values(
+            key=keys,
+            value=values,
+            output={"key": NullableDeltaKey | None, "value": int},
+            session=test_session,
+        ).save("nullable_model_source")
+
+    def build(delta):
+        return dc.read_dataset(
+            "nullable_model_source", delta=delta, delta_on="key", session=test_session
+        ).map(score=lambda value: value * 2, output=int)
+
+    source([None, NullableDeltaKey(), NullableDeltaKey(a=1)], [10, 20, 30])
+    first = build(True).save("nullable_model_result")
+    source([None, NullableDeltaKey()], [100, 20])
+    result = build(True).save("nullable_model_result")
+    assert sorted(result.to_list("key", "score"), key=repr) == sorted(
+        build(False).to_list("key", "score"), key=repr
+    )
+    assert sorted(result.to_list("key", "score"), key=repr) == sorted(
+        [(None, 200), (NullableDeltaKey(), 40)], key=repr
+    )
+    assert first.count() == 3
+
+
+def test_delta_update_with_source_column_named_like_status_column_keeps_its_values(
+    test_session,
+):
+    def build():
+        return dc.read_dataset(
+            "status_source", delta=True, delta_on="id", session=test_session
+        ).map(value=lambda id: id * 10, output=int)
+
+    dc.read_values(id=[1, 2], DC_DELTA_STATUS=["a", "b"], session=test_session).save(
+        "status_source"
+    )
+    build().save("status_result")
+    dc.read_values(
+        id=[1, 2, 3], DC_DELTA_STATUS=["a", "x", "c"], session=test_session
+    ).save("status_source")
+    result = build().save("status_result")
+    assert sorted(result.to_list("id", "DC_DELTA_STATUS", "value")) == [
+        (1, "a", 10),
+        (2, "x", 20),
+        (3, "c", 30),
+    ]
+
+
+def _delta_unsafe_required_message(method_name: str) -> str:
+    return (
+        f"Cannot use {method_name} with delta datasets - may cause inconsistency."
+        " Set delta_unsafe=True on every participating delta source"
+        " to allow this operation."
+    )
+
+
 def _get_short_ds_name(catalog, name, project_name, namespace_name) -> str:
     if project_name == catalog.metastore.default_project.name:
         return name
@@ -36,14 +115,6 @@ def _get_dependencies(catalog, name, version) -> list[tuple[str, str]]:
                 indirect=False,
             )
         ]
-    )
-
-
-def _delta_unsafe_required_message(method_name: str) -> str:
-    return (
-        f"Cannot use {method_name} with delta datasets - may cause inconsistency."
-        " Set delta_unsafe=True on every participating delta source"
-        " to allow this operation."
     )
 
 
@@ -329,451 +400,6 @@ def test_delta_no_change_records_reused_output_access(test_session, monkeypatch)
     assert (output_name, "1.0.0") in accessed
 
 
-def test_delta_update_unsafe(test_session):
-    catalog = test_session.catalog
-
-    starting_ds_name = "starting_ds"
-    merge_ds_name = "merge_ds"
-    ds_name = "delta_ds"
-
-    # create dataset which will be merged to delta one
-    merge_ds = dc.read_values(
-        id=[1, 2, 3, 4, 5, 6], value=[1, 2, 3, 4, 5, 6], session=test_session
-    ).save(merge_ds_name)
-
-    # first version of starting dataset
-    dc.read_values(id=[1, 2, 3], session=test_session).save(starting_ds_name)
-    # first version of delta dataset
-    dc.read_dataset(
-        starting_ds_name,
-        session=test_session,
-        delta_on="id",
-        delta=True,
-        delta_unsafe=True,
-    ).merge(merge_ds, on="id", inner=True).save(ds_name)
-
-    assert set(_get_dependencies(catalog, ds_name, "1.0.0")) == {
-        (starting_ds_name, "1.0.0"),
-        (merge_ds_name, "1.0.0"),
-    }
-
-    # second version of starting dataset
-    dc.read_values(id=[1, 2, 3, 4, 5, 6], session=test_session).save(starting_ds_name)
-    # second version of delta dataset
-    dc.read_dataset(
-        starting_ds_name,
-        session=test_session,
-        delta_on="id",
-        delta=True,
-        delta_unsafe=True,
-    ).merge(merge_ds, on="id", inner=True).save(ds_name)
-
-    assert set(_get_dependencies(catalog, ds_name, "1.0.1")) == {
-        (starting_ds_name, "1.0.1"),
-        (merge_ds_name, "1.0.0"),
-    }
-
-    assert set((dc.read_dataset(ds_name, version="1.0.0")).to_list("id", "value")) == {
-        (1, 1),
-        (2, 2),
-        (3, 3),
-    }
-
-    assert set((dc.read_dataset(ds_name, version="1.0.1")).to_list("id", "value")) == {
-        (1, 1),
-        (2, 2),
-        (3, 3),
-        (4, 4),
-        (5, 5),
-        (6, 6),
-    }
-
-
-def test_delta_update_unsafe_no_changes_reuses_previous_version(
-    test_session, no_studio_dataset
-):
-    source_name = f"unsafe_same_source_{uuid.uuid4().hex[:8]}"
-    merge_name = f"unsafe_same_merge_{uuid.uuid4().hex[:8]}"
-    result_name = f"unsafe_same_result_{uuid.uuid4().hex[:8]}"
-
-    dc.read_values(id=[1, 2, 3], value=[1, 2, 3], session=test_session).save(merge_name)
-    dc.read_values(id=[1, 2, 3], session=test_session).save(source_name)
-
-    dc.read_dataset(
-        source_name,
-        session=test_session,
-        delta=True,
-        delta_on="id",
-        delta_unsafe=True,
-    ).merge(
-        dc.read_dataset(merge_name, session=test_session),
-        on="id",
-        inner=True,
-    ).save(result_name)
-
-    res = (
-        dc.read_dataset(
-            source_name,
-            session=test_session,
-            delta=True,
-            delta_on="id",
-            delta_unsafe=True,
-        )
-        .merge(
-            dc.read_dataset(merge_name, session=test_session),
-            on="id",
-            inner=True,
-        )
-        .save(result_name)
-    )
-
-    assert res.version == "1.0.0"
-    with pytest.raises(DatasetNotFoundError):
-        dc.read_dataset(result_name, version="1.0.1", session=test_session)
-
-
-def test_delta_update_unsafe_only_processes_new_rows(test_session):
-    source_name = f"unsafe_add_source_{uuid.uuid4().hex[:8]}"
-    merge_name = f"unsafe_add_merge_{uuid.uuid4().hex[:8]}"
-    result_name = f"unsafe_add_result_{uuid.uuid4().hex[:8]}"
-    processed: list[tuple[int, int]] = []
-
-    def record(id: int, value: int) -> int:
-        processed.append((id, value))
-        return value
-
-    dc.read_values(
-        id=[1, 2, 3, 4, 5, 6],
-        value=[1, 2, 3, 4, 5, 6],
-        session=test_session,
-    ).save(merge_name)
-    dc.read_values(id=[1, 2, 3], session=test_session).save(source_name)
-
-    (
-        dc.read_dataset(
-            source_name,
-            session=test_session,
-            delta=True,
-            delta_on="id",
-            delta_unsafe=True,
-        )
-        .merge(dc.read_dataset(merge_name, session=test_session), on="id", inner=True)
-        .map(new_value=record, params=["id", "value"], output=int)
-        .save(result_name)
-    )
-
-    assert sorted(processed) == [(1, 1), (2, 2), (3, 3)]
-
-    dc.read_values(id=[1, 2, 3, 4, 5, 6], session=test_session).save(source_name)
-
-    (
-        dc.read_dataset(
-            source_name,
-            session=test_session,
-            delta=True,
-            delta_on="id",
-            delta_unsafe=True,
-        )
-        .merge(dc.read_dataset(merge_name, session=test_session), on="id", inner=True)
-        .map(new_value=record, params=["id", "value"], output=int)
-        .save(result_name)
-    )
-
-    assert sorted(processed[3:]) == [(4, 4), (5, 5), (6, 6)]
-
-
-def test_delta_update_unsafe_replays_aligned_delta_sources_together(test_session):
-    left_name = f"unsafe_multi_left_{uuid.uuid4().hex[:8]}"
-    right_name = f"unsafe_multi_right_{uuid.uuid4().hex[:8]}"
-    result_name = f"unsafe_multi_result_{uuid.uuid4().hex[:8]}"
-    processed: list[int] = []
-
-    def record(id: int, left_value: int, right_value: int) -> int:
-        processed.append(id)
-        return left_value + right_value
-
-    dc.read_values(
-        id=[1, 2],
-        left_value=[10, 20],
-        session=test_session,
-    ).save(left_name)
-    dc.read_values(
-        id=[1, 2],
-        right_value=[100, 200],
-        session=test_session,
-    ).save(right_name)
-
-    def build_chain():
-        return (
-            dc.read_dataset(
-                left_name,
-                session=test_session,
-                delta=True,
-                delta_on="id",
-                delta_unsafe=True,
-            )
-            .merge(
-                dc.read_dataset(
-                    right_name,
-                    session=test_session,
-                    delta=True,
-                    delta_on="id",
-                    delta_unsafe=True,
-                ),
-                on="id",
-                inner=True,
-            )
-            .map(
-                joined_value=record,
-                params=["id", "left_value", "right_value"],
-                output=int,
-            )
-        )
-
-    build_chain().save(result_name)
-
-    assert sorted(processed) == [1, 2]
-    assert set(dc.read_dataset(result_name, session=test_session).to_values("id")) == {
-        1,
-        2,
-    }
-
-    dc.read_values(
-        id=[1, 2, 3],
-        left_value=[10, 20, 30],
-        session=test_session,
-    ).save(left_name)
-    dc.read_values(
-        id=[1, 2, 3],
-        right_value=[100, 200, 300],
-        session=test_session,
-    ).save(right_name)
-
-    build_chain().save(result_name)
-
-    assert processed[2:] == [3]
-    assert set(dc.read_dataset(result_name, session=test_session).to_values("id")) == {
-        1,
-        2,
-        3,
-    }
-
-
-def test_delta_update_unsafe_matches_same_named_aligned_sources_by_full_identity(
-    test_session,
-):
-    catalog = test_session.catalog
-    suffix = uuid.uuid4().hex[:8]
-    source_short = f"shared_source_{suffix}"
-    left_name = f"namespace_a_{suffix}.project_a_{suffix}.{source_short}"
-    right_name = f"namespace_b_{suffix}.project_b_{suffix}.{source_short}"
-    result_name = f"same_name_delta_result_{suffix}"
-    processed: list[int] = []
-
-    catalog.metastore.create_project(f"namespace_a_{suffix}", f"project_a_{suffix}")
-    catalog.metastore.create_project(f"namespace_b_{suffix}", f"project_b_{suffix}")
-
-    def record(id: int, left_value: int, right_value: int) -> int:
-        processed.append(id)
-        return left_value + right_value
-
-    dc.read_values(
-        id=[1],
-        left_value=[10],
-        session=test_session,
-    ).save(left_name)
-    dc.read_values(
-        id=[1],
-        right_value=[100],
-        session=test_session,
-    ).save(right_name)
-
-    def build_chain():
-        return (
-            dc.read_dataset(
-                left_name,
-                session=test_session,
-                delta=True,
-                delta_on="id",
-                delta_unsafe=True,
-            )
-            .merge(
-                dc.read_dataset(
-                    right_name,
-                    session=test_session,
-                    delta=True,
-                    delta_on="id",
-                    delta_unsafe=True,
-                ),
-                on="id",
-                inner=True,
-            )
-            .map(
-                joined_value=record,
-                params=["id", "left_value", "right_value"],
-                output=int,
-            )
-        )
-
-    build_chain().save(result_name)
-
-    assert processed == [1]
-    assert _get_dependencies(catalog, result_name, "1.0.0") == [
-        (left_name, "1.0.0"),
-        (right_name, "1.0.0"),
-    ]
-    assert set(dc.read_dataset(result_name, session=test_session).to_values("id")) == {
-        1
-    }
-
-    dc.read_values(
-        id=[1, 2],
-        left_value=[10, 20],
-        session=test_session,
-    ).save(left_name)
-    dc.read_values(
-        id=[1, 2],
-        right_value=[100, 200],
-        session=test_session,
-    ).save(right_name)
-
-    build_chain().save(result_name)
-
-    assert processed[1:] == [2]
-    assert _get_dependencies(catalog, result_name, "1.0.1") == [
-        (left_name, "1.0.1"),
-        (right_name, "1.0.1"),
-    ]
-    assert set(dc.read_dataset(result_name, session=test_session).to_values("id")) == {
-        1,
-        2,
-    }
-
-
-def test_delta_update_unsafe_replays_same_dataset_join_on_non_key(
-    test_session,
-):
-    source_name = f"unsafe_same_occ_source_{uuid.uuid4().hex[:8]}"
-    result_name = f"unsafe_same_occ_result_{uuid.uuid4().hex[:8]}"
-    processed: list[int] = []
-
-    def record(row_id: int) -> int:
-        processed.append(row_id)
-        return row_id
-
-    dc.read_values(
-        row_id=[1, 10],
-        group=[1, 1],
-        side=["L", "R"],
-        session=test_session,
-    ).save(source_name)
-
-    def build_chain():
-        left = dc.read_dataset(
-            source_name,
-            session=test_session,
-            delta=True,
-            delta_on="row_id",
-            delta_unsafe=True,
-        ).filter(C("side") == "L")
-        right = dc.read_dataset(
-            source_name,
-            session=test_session,
-            delta=True,
-            delta_on="row_id",
-            delta_unsafe=True,
-        ).filter(C("side") == "R")
-        return left.merge(right, on="group", inner=True).map(
-            seen_id=record,
-            params=["row_id"],
-            output=int,
-        )
-
-    build_chain().save(result_name)
-
-    assert processed == [1]
-    assert dc.read_dataset(result_name, session=test_session).to_values("row_id") == [1]
-
-    dc.read_values(
-        row_id=[1, 2, 10, 20],
-        group=[1, 1, 1, 1],
-        side=["L", "L", "R", "R"],
-        session=test_session,
-    ).save(source_name)
-
-    build_chain().save(result_name)
-
-    assert processed[1:] == [2]
-    assert sorted(
-        dc.read_dataset(result_name, session=test_session).to_iter(
-            "row_id", "right_row_id"
-        )
-    ) == [(1, 10), (2, 20)]
-
-
-def test_delta_update_unsafe_merge_with_two_storage_sources(test_session, tmp_dir):
-    left_dir = tmp_dir / f"unsafe_storage_left_{uuid.uuid4().hex[:8]}"
-    right_dir = tmp_dir / f"unsafe_storage_right_{uuid.uuid4().hex[:8]}"
-    left_dir.mkdir()
-    right_dir.mkdir()
-
-    result_name = f"unsafe_storage_merge_result_{uuid.uuid4().hex[:8]}"
-    processed: list[int] = []
-
-    def record(row_id: int) -> int:
-        processed.append(row_id)
-        return row_id
-
-    def file_id(file: File) -> int:
-        match = re.search(r"item(\d+)\.txt$", file.path)
-        assert match
-        return int(match.group(1))
-
-    (left_dir / "item1.txt").write_text("left-1")
-    (right_dir / "item1.txt").write_text("right-1")
-
-    def build_chain():
-        left = dc.read_storage(
-            left_dir.as_uri(),
-            session=test_session,
-            update=True,
-            delta=True,
-            delta_on=["file.path"],
-            delta_result_on=["id"],
-            delta_unsafe=True,
-        ).map(id=file_id, output=int)
-        right = dc.read_storage(
-            right_dir.as_uri(),
-            session=test_session,
-            update=True,
-            delta=True,
-            delta_on=["file.path"],
-            delta_result_on=["id"],
-            delta_unsafe=True,
-        ).map(id=file_id, output=int)
-        return left.merge(right, on="id", inner=True).map(
-            seen_id=record,
-            params=["id"],
-            output=int,
-        )
-
-    build_chain().save(result_name)
-
-    assert processed == [1]
-    assert dc.read_dataset(result_name, session=test_session).to_values("id") == [1]
-
-    (left_dir / "item2.txt").write_text("left-2")
-    (right_dir / "item2.txt").write_text("right-2")
-
-    build_chain().save(result_name)
-
-    assert processed[1:] == [2]
-    assert set(dc.read_dataset(result_name, session=test_session).to_values("id")) == {
-        1,
-        2,
-    }
-
-
 def test_delta_replay_regenerates_system_columns(test_session):
     source_name = f"regen_source_{uuid.uuid4().hex[:8]}"
     result_name = f"regen_result_{uuid.uuid4().hex[:8]}"
@@ -887,7 +513,9 @@ def test_delta_update_fails_on_schema_change(
     assert expected_detail in msg
 
 
-def test_delta_update_retry_union_detects_source_schema_change(test_session):
+def test_delta_retry_update_after_source_schema_change_raises_schema_drift(
+    test_session,
+):
     source_name = f"delta_retry_drift_source_{uuid.uuid4().hex[:8]}"
     result_name = f"delta_retry_drift_result_{uuid.uuid4().hex[:8]}"
 
@@ -1077,6 +705,151 @@ def test_delta_update_from_storage(test_session, tmp_dir, tmp_path):
     ).to_values("file.etag")[0] > etags[6]
 
 
+@pytest.mark.parametrize("explicit_key", [False, True])
+def test_delta_update_from_storage_after_overwrite_delete_and_add(
+    test_session, tmp_path, explicit_key
+):
+    data_dir = tmp_path / "refresh"
+    data_dir.mkdir()
+    for index in range(1, 5):
+        (data_dir / f"f{index}.txt").write_text(str(index))
+    processed = []
+
+    def read(file: File) -> int:
+        processed.append(file.path)
+        return int(file.read_text())
+
+    def generate(file: File):
+        value = read(file)
+        for index in range(value):
+            yield file, index
+
+    def build(delta):
+        kwargs = (
+            {"delta_on": "file.path", "delta_compare": ["file.etag", "file.version"]}
+            if explicit_key
+            else {}
+        )
+        chain = dc.read_storage(
+            data_dir.as_uri(),
+            update=True,
+            delta=delta,
+            session=test_session,
+            **kwargs,
+        )
+        return chain.gen(generate, output={"file": File, "value": int}).filter(
+            C.value < 4
+        )
+
+    def rows(chain):
+        return sorted(
+            [
+                (file.model_dump(), value)
+                for file, value in chain.to_iter("file", "value")
+            ],
+            key=lambda row: (row[0]["path"], row[1]),
+        )
+
+    initial = build(True).save("refresh_result")
+    initial_rows = rows(initial)
+    old_mtime = (data_dir / "f2.txt").stat().st_mtime
+    (data_dir / "f2.txt").write_text("9")
+    os.utime(data_dir / "f2.txt", (old_mtime + 10, old_mtime + 10))
+    (data_dir / "f3.txt").unlink()
+    old_mtime = (data_dir / "f4.txt").stat().st_mtime
+    (data_dir / "f4.txt").write_text("00")
+    os.utime(data_dir / "f4.txt", (old_mtime + 10, old_mtime + 10))
+    (data_dir / "f5.txt").write_text("5")
+    processed.clear()
+
+    refreshed = build(True).save("refresh_result")
+    assert sorted(processed) == ["f2.txt", "f4.txt", "f5.txt"]
+    assert rows(refreshed) == rows(build(False))
+    assert rows(initial) == initial_rows
+    processed.clear()
+    assert build(True).save("refresh_result").version == refreshed.version
+    assert processed == []
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_delta_update_from_versioned_storage_matches_full_recompute(
+    cloud_test_catalog_upload,
+):
+    ctc = cloud_test_catalog_upload
+    prefix = "delta-" + uuid.uuid4().hex[:8]
+    uri = f"{ctc.src_uri}/{prefix}/"
+    File.upload(b"2", uri + "a.txt", ctc.catalog)
+    File.upload(b"3", uri + "b.txt", ctc.catalog)
+    processed = []
+
+    def read_number(file: File) -> int:
+        processed.append(file.path)
+        return int(file.read_text())
+
+    def generate(file: File):
+        value = read_number(file)
+        for index in range(value):
+            yield file, value, index
+
+    def build(delta, retry=False):
+        return (
+            dc.read_storage(
+                uri,
+                update=True,
+                delta=delta,
+                delta_retry=retry,
+                delta_on="file.path",
+                delta_compare=["file.etag", "file.version"],
+                versions=True,
+                session=ctc.session,
+            )
+            .gen(generate, output={"file": File, "value": int, "index": int})
+            .filter(C.value < 5)
+        )
+
+    def rows(chain):
+        return sorted(chain.to_iter("file.path", "value", "index"))
+
+    first = build(True).save("versioned_result")
+    initial = rows(first)
+    File.upload(b"9", uri + "a.txt", ctc.catalog)
+    (ctc.src / prefix / "b.txt").unlink()
+    File.upload(b"4", uri + "c.txt", ctc.catalog)
+    processed.clear()
+    result = build(True).save("versioned_result")
+    assert sorted(processed) == [prefix + "/a.txt", prefix + "/c.txt"]
+    assert (
+        rows(result)
+        == rows(build(False))
+        == [(prefix + "/c.txt", 4, index) for index in range(4)]
+    )
+    assert rows(first) == initial
+    processed.clear()
+    assert build(True).save("versioned_result").version == result.version
+    assert processed == []
+    # Only the current filtered-out a.txt is eligible for retry, never its old
+    # version or deleted b.txt. Retrying it must not restore outdated results.
+    assert build(True, retry=True).save("versioned_result").version == result.version
+    assert processed == [prefix + "/a.txt"]
+    for value in (3, 1):
+        File.upload(str(value).encode(), uri + "c.txt", ctc.catalog)
+        processed.clear()
+        updated = build(True).save("versioned_result")
+        assert processed == [prefix + "/c.txt"]
+        assert (
+            rows(updated)
+            == rows(build(False))
+            == [(prefix + "/c.txt", value, index) for index in range(value)]
+        )
+    processed.clear()
+    (ctc.src / prefix / "c.txt").unlink()
+    emptied = build(True).save("versioned_result")
+    assert emptied.count() == 0
+    assert processed == []
+    assert build(True).save("versioned_result").version == emptied.version
+
+
 def test_delta_update_check_num_calls(
     test_session, tmp_dir, tmp_path, capsys, monkeypatch
 ):
@@ -1180,6 +953,33 @@ def test_delta_update_no_diff(test_session, tmp_dir, tmp_path, no_studio_dataset
         dc.read_dataset(ds_name, version="1.0.1")
 
 
+def test_delta_update_after_file_added_outside_glob_reuses_version(
+    test_session, tmp_path
+):
+    (tmp_path / "a.txt").write_text("1")
+    processed = []
+
+    def record(file: File) -> int:
+        processed.append(file.path)
+        return int(file.read_text())
+
+    def build():
+        return dc.read_storage(
+            str(tmp_path / "*.txt"),
+            update=True,
+            delta=True,
+            session=test_session,
+        ).map(value=record)
+
+    first = build().save("glob_result")
+    processed.clear()
+    (tmp_path / "ignored.log").write_text("2")
+    result = build().save("glob_result")
+    assert result.version == first.version
+    assert result.to_values("value") == [1]
+    assert processed == []
+
+
 @pytest.fixture
 def file_dataset(test_session):
     return dc.read_values(
@@ -1221,196 +1021,6 @@ def test_delta_update_merge(test_session, file_dataset):
     assert str(excinfo.value) == _delta_unsafe_required_message("merge")
 
 
-def test_delta_update_merge_requires_all_delta_inputs_unsafe(test_session):
-    left_name = f"mixed_merge_left_{uuid.uuid4().hex[:8]}"
-    right_name = f"mixed_merge_right_{uuid.uuid4().hex[:8]}"
-
-    dc.read_values(id=[1, 2], left_value=[10, 20], session=test_session).save(left_name)
-    dc.read_values(id=[1, 2], right_value=[100, 200], session=test_session).save(
-        right_name
-    )
-
-    with pytest.raises(NotImplementedError) as excinfo:
-        (
-            dc.read_dataset(
-                left_name,
-                session=test_session,
-                delta=True,
-                delta_on="id",
-                delta_unsafe=True,
-            ).merge(
-                dc.read_dataset(
-                    right_name,
-                    session=test_session,
-                    delta=True,
-                    delta_on="id",
-                ),
-                on="id",
-                inner=True,
-            )
-        )
-
-    assert str(excinfo.value) == _delta_unsafe_required_message("merge")
-
-
-def test_delta_update_subtract_requires_all_delta_inputs_unsafe(test_session):
-    left_name = f"mixed_subtract_left_{uuid.uuid4().hex[:8]}"
-    right_name = f"mixed_subtract_right_{uuid.uuid4().hex[:8]}"
-
-    dc.read_values(id=[1, 2], left_value=[10, 20], session=test_session).save(left_name)
-    dc.read_values(id=[1, 2], right_value=[100, 200], session=test_session).save(
-        right_name
-    )
-
-    with pytest.raises(NotImplementedError) as excinfo:
-        (
-            dc.read_dataset(
-                left_name,
-                session=test_session,
-                delta=True,
-                delta_on="id",
-                delta_unsafe=True,
-            ).subtract(
-                dc.read_dataset(
-                    right_name,
-                    session=test_session,
-                    delta=True,
-                    delta_on="id",
-                ),
-                on="id",
-            )
-        )
-
-    assert str(excinfo.value) == _delta_unsafe_required_message("subtract")
-
-    with pytest.raises(NotImplementedError) as excinfo:
-        (
-            dc.read_dataset(
-                left_name,
-                session=test_session,
-                delta=True,
-                delta_on="id",
-            ).subtract(
-                dc.read_dataset(
-                    right_name,
-                    session=test_session,
-                    delta=True,
-                    delta_on="id",
-                    delta_unsafe=True,
-                ),
-                on="id",
-            )
-        )
-
-    assert str(excinfo.value) == _delta_unsafe_required_message("subtract")
-
-
-def test_delta_update_diff_requires_all_delta_inputs_unsafe(test_session):
-    left_name = f"mixed_diff_left_{uuid.uuid4().hex[:8]}"
-    right_name = f"mixed_diff_right_{uuid.uuid4().hex[:8]}"
-
-    dc.read_values(id=[1, 2], left_value=[10, 20], session=test_session).save(left_name)
-    dc.read_values(id=[1, 2], right_value=[100, 200], session=test_session).save(
-        right_name
-    )
-
-    with pytest.raises(NotImplementedError) as excinfo:
-        (
-            dc.read_dataset(
-                left_name,
-                session=test_session,
-                delta=True,
-                delta_on="id",
-                delta_unsafe=True,
-            ).diff(
-                dc.read_dataset(
-                    right_name,
-                    session=test_session,
-                    delta=True,
-                    delta_on="id",
-                ),
-                on="id",
-            )
-        )
-
-    assert str(excinfo.value) == _delta_unsafe_required_message("diff")
-
-
-def test_delta_update_file_diff_requires_all_delta_inputs_unsafe(test_session):
-    left_name = f"mixed_file_diff_left_{uuid.uuid4().hex[:8]}"
-    right_name = f"mixed_file_diff_right_{uuid.uuid4().hex[:8]}"
-
-    dc.read_values(
-        file=[File(path="a.jpg", source="s3://left-bucket")],
-        session=test_session,
-    ).save(left_name)
-    dc.read_values(
-        file=[File(path="a.jpg", source="s3://right-bucket")],
-        session=test_session,
-    ).save(right_name)
-
-    with pytest.raises(NotImplementedError) as excinfo:
-        (
-            dc.read_dataset(
-                left_name,
-                session=test_session,
-                delta=True,
-                delta_on=["file.source", "file.path"],
-                delta_unsafe=True,
-            ).file_diff(
-                dc.read_dataset(
-                    right_name,
-                    session=test_session,
-                    delta=True,
-                    delta_on=["file.source", "file.path"],
-                )
-            )
-        )
-
-    assert str(excinfo.value) == _delta_unsafe_required_message("file_diff")
-
-    with pytest.raises(NotImplementedError) as excinfo:
-        (
-            dc.read_dataset(
-                left_name,
-                session=test_session,
-                delta=True,
-                delta_on=["file.source", "file.path"],
-            ).file_diff(
-                dc.read_dataset(
-                    right_name,
-                    session=test_session,
-                    delta=True,
-                    delta_on=["file.source", "file.path"],
-                    delta_unsafe=True,
-                )
-            )
-        )
-
-    assert str(excinfo.value) == _delta_unsafe_required_message("file_diff")
-
-    with pytest.raises(NotImplementedError) as excinfo:
-        (
-            dc.read_dataset(
-                left_name,
-                session=test_session,
-                delta=True,
-                delta_on="id",
-            ).diff(
-                dc.read_dataset(
-                    right_name,
-                    session=test_session,
-                    delta=True,
-                    delta_on="id",
-                    delta_unsafe=True,
-                ),
-                on="id",
-            )
-        )
-
-    assert str(excinfo.value) == _delta_unsafe_required_message("diff")
-
-
 def test_delta_update_distinct(test_session, file_dataset):
     with pytest.raises(NotImplementedError) as excinfo:
         (
@@ -1422,34 +1032,6 @@ def test_delta_update_distinct(test_session, file_dataset):
         )
 
     assert str(excinfo.value) == _delta_unsafe_required_message("distinct")
-
-
-def test_delta_update_union_requires_all_delta_inputs_unsafe(test_session):
-    left_name = f"mixed_union_left_{uuid.uuid4().hex[:8]}"
-    right_name = f"mixed_union_right_{uuid.uuid4().hex[:8]}"
-
-    dc.read_values(id=[1, 2], session=test_session).save(left_name)
-    dc.read_values(id=[3, 4], session=test_session).save(right_name)
-
-    with pytest.raises(NotImplementedError) as excinfo:
-        (
-            dc.read_dataset(
-                left_name,
-                session=test_session,
-                delta=True,
-                delta_on="id",
-                delta_unsafe=True,
-            ).union(
-                dc.read_dataset(
-                    right_name,
-                    session=test_session,
-                    delta=True,
-                    delta_on="id",
-                )
-            )
-        )
-
-    assert str(excinfo.value) == _delta_unsafe_required_message("union")
 
 
 def test_delta_update_group_by(test_session, file_dataset):
@@ -1478,84 +1060,10 @@ def test_delta_update_agg(test_session, file_dataset):
     assert str(excinfo.value) == _delta_unsafe_required_message("agg")
 
 
-@pytest.mark.parametrize("operation", ["map", "gen"])
-@pytest.mark.parametrize("filter_at", [None, "before", "after"])
-@pytest.mark.parametrize("explicit_key", [False, True])
-def test_storage_delta_refresh_matches_full_recompute(
-    test_session, tmp_path, operation, filter_at, explicit_key
-):
-    data_dir = tmp_path / "refresh"
-    data_dir.mkdir()
-    for index in range(1, 5):
-        (data_dir / f"f{index}.txt").write_text(str(index))
-    processed = []
-
-    def read(file: File) -> int:
-        processed.append(file.path)
-        return int(file.read_text())
-
-    def generate(file: File):
-        value = read(file)
-        for index in range(value):
-            yield file, index
-
-    def build(delta):
-        kwargs = (
-            {"delta_on": "file.path", "delta_compare": ["file.etag", "file.version"]}
-            if explicit_key
-            else {}
-        )
-        chain = dc.read_storage(
-            data_dir.as_uri(),
-            update=True,
-            delta=delta,
-            session=test_session,
-            **kwargs,
-        )
-        if filter_at == "before":
-            chain = chain.filter(C("file.size") == 1)
-        if operation == "map":
-            chain = chain.map(value=read)
-        else:
-            chain = chain.gen(generate, output={"file": File, "value": int})
-        if filter_at == "after":
-            chain = chain.filter(C.value < 4)
-        return chain
-
-    def rows(chain):
-        return sorted(
-            [
-                (file.model_dump(), value)
-                for file, value in chain.to_iter("file", "value")
-            ],
-            key=lambda row: (row[0]["path"], row[1]),
-        )
-
-    initial = build(True).save("refresh_result")
-    initial_rows = rows(initial)
-    old_mtime = (data_dir / "f2.txt").stat().st_mtime
-    (data_dir / "f2.txt").write_text("9")
-    os.utime(data_dir / "f2.txt", (old_mtime + 10, old_mtime + 10))
-    (data_dir / "f3.txt").unlink()
-    (data_dir / "f4.txt").write_text("00")
-    (data_dir / "f5.txt").write_text("5")
-    processed.clear()
-
-    refreshed = build(True).save("refresh_result")
-    assert sorted(processed) == (
-        ["f2.txt", "f5.txt"]
-        if filter_at == "before"
-        else ["f2.txt", "f4.txt", "f5.txt"]
-    )
-    assert rows(refreshed) == rows(build(False))
-    assert rows(initial) == initial_rows
-    processed.clear()
-    assert build(True).save("refresh_result").version == refreshed.version
-    assert processed == []
-
-
 @pytest.mark.parametrize("change", ["delete", "filter", "zero"])
-def test_delta_refresh_removes_rows_without_replacement(test_session, change):
+def test_delta_update_after_record_loses_its_output_removes_old_rows(
+    test_session, change
+):
     processed = []
 
     def generate(id, value):
@@ -1586,330 +1094,7 @@ def test_delta_refresh_removes_rows_without_replacement(test_session, change):
     assert build().save("empty_result").version == result.version
 
 
-@pytest.mark.parametrize("retry", [None, True, "error"])
-def test_delta_refresh_retry_uses_current_records_once(test_session, retry):
-    processed = []
-
-    def generate(id, value):
-        processed.append((id, value))
-        for index in range(value):
-            yield id, index, "retry"
-
-    def build():
-        return dc.read_dataset(
-            "retry_refresh_source",
-            delta=True,
-            delta_on="id",
-            delta_result_on="source_id",
-            delta_retry=retry,
-            session=test_session,
-        ).gen(generate, output={"source_id": int, "index": int, "error": str})
-
-    dc.read_values(id=[1, 2, 3], value=[2, 2, 2], session=test_session).save(
-        "retry_refresh_source"
-    )
-    build().save("retry_refresh_result")
-    dc.read_values(id=[1, 3, 4], value=[1, 2, 1], session=test_session).save(
-        "retry_refresh_source"
-    )
-    processed.clear()
-    result = build().save("retry_refresh_result")
-    assert sorted(processed) == (
-        [(1, 1), (3, 2), (4, 1)] if retry == "error" else [(1, 1), (4, 1)]
-    )
-    assert sorted(result.to_iter("source_id", "index")) == [
-        (1, 0),
-        (3, 0),
-        (3, 1),
-        (4, 0),
-    ]
-
-
-@pytest.mark.parametrize("retry", [True, "error"])
-def test_delta_changes_and_retries_with_null_and_renamed_keys(test_session, retry):
-    processed = []
-    state = {"fail": True}
-
-    def generate(id, value):
-        processed.append((id, value))
-        failed = state["fail"] and id == 1
-        if failed and retry is True:
-            return
-        yield id, value * 2, "retry" if failed else ""
-
-    def build():
-        return dc.read_dataset(
-            "combined_retry_source",
-            delta=True,
-            delta_on="id",
-            delta_result_on="result_id",
-            delta_retry=retry,
-            session=test_session,
-        ).gen(generate, output={"result_id": int | None, "score": int, "error": str})
-
-    dc.read_values(
-        id=[None, 1, 2, 3], value=[10, 20, 30, 40], session=test_session
-    ).save("combined_retry_source")
-    first = build().save("combined_retry_result")
-    previous = sorted(first.to_list("result_id", "score", "error"), key=repr)
-    dc.read_values(
-        id=[None, 1, 3, 4], value=[100, 20, 40, 50], session=test_session
-    ).save("combined_retry_source")
-    state["fail"] = False
-    processed.clear()
-    result = build().save("combined_retry_result")
-    assert sorted(processed, key=repr) == sorted(
-        [(None, 100), (1, 20), (4, 50)], key=repr
-    )
-    assert sorted(result.to_list("result_id", "score", "error"), key=repr) == sorted(
-        [(None, 200, ""), (1, 40, ""), (3, 80, ""), (4, 100, "")], key=repr
-    )
-    assert sorted(first.to_list("result_id", "score", "error"), key=repr) == previous
-    processed.clear()
-    assert build().save("combined_retry_result").version == result.version
-    assert processed == []
-
-
-@pytest.mark.parametrize("operation", ["map", "gen"])
-def test_delta_refresh_to_empty_and_back(test_session, operation):
-    processed = []
-
-    def record(id):
-        processed.append(id)
-        return id
-
-    def generate(id):
-        yield id, record(id)
-        yield id, id * 2
-
-    def source(ids):
-        dc.read_values(id=ids, output={"id": int}, session=test_session).save(
-            "clear_source"
-        )
-
-    def build():
-        chain = dc.read_dataset(
-            "clear_source", delta=True, delta_on="id", session=test_session
-        )
-        if operation == "map":
-            return chain.map(value=record, output=int)
-        return chain.gen(generate, output={"id": int, "value": int})
-
-    source([1, 2])
-    first = build().save("clear_result")
-    processed.clear()
-    source([])
-    empty = build().save("clear_result")
-    assert empty.count() == 0
-    assert processed == []
-    assert first.count() == (2 if operation == "map" else 4)
-    assert build().save("clear_result").version == empty.version
-    source([1])
-    result = build().save("clear_result")
-    assert result.count() == (1 if operation == "map" else 2)
-    assert processed == [1]
-
-
-@pytest.mark.parametrize("latest_only", [False, True])
-def test_delta_refresh_versioned_listing_latest_transition(test_session, latest_only):
-    processed = []
-
-    def record(file: File) -> str:
-        processed.append((file.path, file.version))
-        return file.etag
-
-    def save_source(files):
-        dc.read_values(file=files, session=test_session).save("versioned_source")
-
-    def build():
-        chain = dc.read_dataset(
-            "versioned_source", delta=True, session=test_session
-        ).settings(prefetch=0)
-        if latest_only:
-            chain = chain.filter(C("file.is_latest"))
-        return chain.map(value=record)
-
-    old = File(path="a.txt", version="v1", etag="one")
-    save_source([old, File(path="b.txt", version="v1", etag="b")])
-    build().save("versioned_result")
-    save_source(
-        [
-            old.model_copy(update={"is_latest": False}),
-            File(path="a.txt", version="v2", etag="two"),
-            File(path="b.txt", version="v1", etag="b", is_latest=False),
-        ]
-    )
-    processed.clear()
-    result = build().save("versioned_result")
-    assert sorted(processed) == (
-        [("a.txt", "v2")]
-        if latest_only
-        else [("a.txt", "v1"), ("a.txt", "v2"), ("b.txt", "v1")]
-    )
-    assert sorted(result.to_iter("file.path", "file.version", "value")) == (
-        [("a.txt", "v2", "two")]
-        if latest_only
-        else [("a.txt", "v1", "one"), ("a.txt", "v2", "two"), ("b.txt", "v1", "b")]
-    )
-    assert build().save("versioned_result").version == result.version
-
-
-@pytest.mark.parametrize("operation", ["merge", "union"])
-def test_delta_refresh_aligned_multiple_sources(test_session, operation):
-    processed = []
-
-    def record(id, value):
-        processed.append(id)
-        return value * 2
-
-    def save_sources(ids, values):
-        for name, scale in [("multi_left", 1), ("multi_right", 10)]:
-            dc.read_values(
-                id=ids, value=[value * scale for value in values], session=test_session
-            ).save(name)
-
-    def build(delta):
-        kwargs = {"delta": delta, "delta_on": "id", "delta_unsafe": True}
-        left = dc.read_dataset("multi_left", session=test_session, **kwargs)
-        right = dc.read_dataset("multi_right", session=test_session, **kwargs)
-        chain = (
-            left.merge(right, on="id", inner=True)
-            if operation == "merge"
-            else left.union(right)
-        )
-        return chain.map(result=record, output=int)
-
-    save_sources([1, 2, 3], [1, 2, 3])
-    build(True).save("multi_result")
-    save_sources([1, 3, 4], [9, 3, 4])
-    processed.clear()
-    result = build(True).save("multi_result")
-    assert sorted(processed) == ([1, 4] if operation == "merge" else [1, 1, 4, 4])
-    columns = ["id", "value", "result"]
-    if operation == "merge":
-        columns.append("right_value")
-    assert sorted(result.to_iter(*columns)) == sorted(build(False).to_iter(*columns))
-
-
-@pytest.mark.parametrize("retry", [False, True])
-def test_delta_ignores_changes_outside_storage_glob(test_session, tmp_path, retry):
-    (tmp_path / "a.txt").write_text("1")
-    processed = []
-
-    def record(file: File) -> int:
-        processed.append(file.path)
-        return int(file.read_text())
-
-    def build():
-        return dc.read_storage(
-            str(tmp_path / "*.txt"),
-            update=True,
-            delta=True,
-            delta_retry=retry,
-            session=test_session,
-        ).map(value=record)
-
-    first = build().save("glob_result")
-    processed.clear()
-    for index in range(2):
-        (tmp_path / f"ignored{index}.log").write_text("2")
-        result = build().save("glob_result")
-        assert result.version == first.version
-        assert result.to_values("value") == [1]
-        assert processed == []
-
-
-@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
-@pytest.mark.parametrize("version_aware", [True], indirect=True)
-@pytest.mark.parametrize("versions", [False, True])
-@pytest.mark.parametrize("explicit_key", [False, True])
-@pytest.mark.parametrize("operation", ["map", "gen"])
-def test_delta_refresh_on_versioned_storage(
-    cloud_test_catalog_upload, versions, explicit_key, operation
-):
-    ctc = cloud_test_catalog_upload
-    prefix = "delta-" + uuid.uuid4().hex[:8]
-    uri = f"{ctc.src_uri}/{prefix}/"
-    File.upload(b"2", uri + "a.txt", ctc.catalog)
-    File.upload(b"3", uri + "b.txt", ctc.catalog)
-    processed = []
-
-    def read_number(file: File) -> int:
-        processed.append(file.path)
-        return int(file.read_text())
-
-    def generate(file: File):
-        value = read_number(file)
-        for index in range(value):
-            yield file, value, index
-
-    def build(delta):
-        kwargs = (
-            {"delta_on": "file.path", "delta_compare": ["file.etag", "file.version"]}
-            if explicit_key
-            else {}
-        )
-        chain = dc.read_storage(
-            uri,
-            update=True,
-            delta=delta,
-            versions=versions,
-            session=ctc.session,
-            **kwargs,
-        )
-        if operation == "gen":
-            chain = chain.gen(
-                generate, output={"file": File, "value": int, "index": int}
-            )
-        else:
-            chain = chain.map(value=read_number).map(index=lambda: 0, output=int)
-        return chain.filter(C.value < 5)
-
-    def rows(chain):
-        return sorted(chain.to_iter("file.path", "value", "index"))
-
-    first = build(True).save("versioned_result")
-    initial = rows(first)
-    File.upload(b"9", uri + "a.txt", ctc.catalog)
-    (ctc.src / prefix / "b.txt").unlink()
-    File.upload(b"4", uri + "c.txt", ctc.catalog)
-    processed.clear()
-    result = build(True).save("versioned_result")
-    assert sorted(processed) == [prefix + "/a.txt", prefix + "/c.txt"]
-    assert (
-        rows(result)
-        == rows(build(False))
-        == [
-            (prefix + "/c.txt", 4, index)
-            for index in (range(4) if operation == "gen" else [0])
-        ]
-    )
-    assert rows(first) == initial
-    processed.clear()
-    assert build(True).save("versioned_result").version == result.version
-    assert processed == []
-    for value in (3, 1):
-        File.upload(str(value).encode(), uri + "c.txt", ctc.catalog)
-        processed.clear()
-        updated = build(True).save("versioned_result")
-        assert processed == [prefix + "/c.txt"]
-        assert (
-            rows(updated)
-            == rows(build(False))
-            == [
-                (prefix + "/c.txt", value, index)
-                for index in (range(value) if operation == "gen" else [0])
-            ]
-        )
-    processed.clear()
-    (ctc.src / prefix / "c.txt").unlink()
-    emptied = build(True).save("versioned_result")
-    assert emptied.count() == 0
-    assert processed == []
-    assert build(True).save("versioned_result").version == emptied.version
-
-
-def test_delta_split_is_disjoint_and_complete(test_session):
+def test_train_test_split_after_delta_update_is_disjoint_and_complete(test_session):
     def split():
         chain = dc.read_dataset(
             "split_source", delta=True, delta_on="id", session=test_session
@@ -1928,107 +1113,17 @@ def test_delta_split_is_disjoint_and_complete(test_session):
     assert train | test == set(range(200))
 
 
-@pytest.mark.parametrize("operation", ["filter_before", "filter_after", "gen"])
-def test_delta_empty_retry_reuses_result_version(test_session, operation):
-    def generate(id):
-        if id < 3:
-            yield id, id * 2
-
-    def build():
-        chain = dc.read_dataset(
-            "retry_source",
-            delta=True,
-            delta_on="id",
-            delta_retry=True,
-            session=test_session,
-        )
-        if operation == "gen":
-            return chain.gen(generate, output={"id": int, "value": int})
-        if operation == "filter_before":
-            chain = chain.filter(C.id < 3)
-        chain = chain.map(value=lambda id: id * 2, output=int)
-        return chain.filter(C.value < 6) if operation == "filter_after" else chain
-
-    dc.read_values(id=[1, 2, 3], session=test_session).save("retry_source")
-    first = build().save("retry_result")
-    for _ in range(2):
-        result = build().save("retry_result")
-        assert result.version == first.version
-        assert sorted(result.to_iter("id", "value")) == [(1, 2), (2, 4)]
-
-
-@pytest.mark.parametrize("keys", [[1, None, 2], [1, 3, 2]])
-def test_delta_retry_preserves_replayed_records(test_session, keys):
-    def build():
-        return (
-            dc.read_dataset(
-                "retry_keys_source",
-                delta=True,
-                delta_on="id",
-                delta_retry=True,
-                session=test_session,
-            )
-            .filter(C.name != "skip")
-            .map(score=len, params="name", output=int)
-        )
-
-    dc.read_values(id=keys, name=["a", "n", "skip"], session=test_session).save(
-        "retry_keys_source"
-    )
-    expected = sorted(zip(keys[:2], ["a", "n"], strict=True), key=repr)
-    first = build().save("retry_keys_result")
-    for _ in range(3):
-        result = build().save("retry_keys_result")
-        assert result.version == first.version
-        assert sorted(result.to_list("id", "name"), key=repr) == expected
-
-
-def test_delta_retry_can_remove_existing_result(test_session):
-    state = {"offset": 0}
-
-    def record(id) -> int:
-        return id + state["offset"]
-
-    def build():
-        return (
-            dc.read_dataset(
-                "retry_removal_source",
-                delta=True,
-                delta_on="id",
-                delta_retry="error",
-                session=test_session,
-            )
-            .map(value=record)
-            .map(error=lambda: "retry", output=str)
-            .filter(C.value < 2)
-        )
-
-    dc.read_values(id=[1, 2], session=test_session).save("retry_removal_source")
-    first = build().save("retry_removal_result")
-    assert first.count() == 1
-    state["offset"] = 10
-    result = build().save("retry_removal_result")
-    assert result.version != first.version
-    assert result.count() == 0
-
-
-class DeltaKey(DataModel):
-    a: int
-    b: str
-
-
-class ReorderedDeltaKey(DataModel):
-    b: str
-    a: int
-
-
-@pytest.mark.parametrize("source_optional", [False, True])
-@pytest.mark.parametrize("result_key", [DeltaKey, DeltaKey | None, ReorderedDeltaKey])
-@pytest.mark.parametrize("rename", [False, True])
-def test_delta_model_key_matches_fields(
-    test_session, source_optional, result_key, rename
+@pytest.mark.parametrize(
+    "source_key,result_key,rename",
+    [
+        (DeltaKey, DeltaKey, False),
+        (DeltaKey | None, DeltaKey | None, False),
+        (DeltaKey | None, ReorderedDeltaKey, True),
+    ],
+)
+def test_delta_update_with_model_key_matches_fields_by_name(
+    test_session, source_key, result_key, rename
 ):
-    source_key = DeltaKey | None if source_optional else DeltaKey
     result_field = "result_key" if rename else "key"
 
     def source(keys, values):
@@ -2066,12 +1161,7 @@ def test_delta_model_key_matches_fields(
     assert rows(result) == rows(build(False)) == [(1, "x", 10), (2, "y", 50)]
 
 
-class IncompatibleDeltaKey(DataModel):
-    a: int
-    c: str
-
-
-def test_delta_model_key_rejects_incompatible_fields(test_session):
+def test_delta_update_with_model_key_of_different_fields_raises(test_session):
     def generate(key, value):
         yield IncompatibleDeltaKey(a=key.a, c=key.b), value
 
@@ -2084,51 +1174,26 @@ def test_delta_model_key_rejects_incompatible_fields(test_session):
             .save("incompatible_result")
         )
 
-    for value in [10, 20]:
-        dc.read_values(
-            key=[DeltaKey(a=1, b="x")], value=[value], session=test_session
-        ).save("incompatible_source")
-        if value == 10:
-            save()
-        else:
-            with pytest.raises(DataChainParamsError, match="same shape on both sides"):
-                save()
+    dc.read_values(key=[DeltaKey(a=1, b="x")], value=[10], session=test_session).save(
+        "incompatible_source"
+    )
+    with pytest.raises(DataChainParamsError, match="same shape on both sides"):
+        save()
+    with pytest.raises(DatasetNotFoundError):
+        dc.read_dataset("incompatible_result", session=test_session)
 
 
-@pytest.mark.parametrize("rename", [False, True])
-def test_delta_error_retry_reprocesses_null_keys(test_session, rename):
-    state = {"fail": True}
-
-    def error(value: int) -> str:
-        return "retry" if state["fail"] else ""
-
-    def build(delta):
-        chain = dc.read_dataset(
-            "nullable_retry",
-            delta=delta,
-            delta_on="id",
-            delta_result_on="result_id" if rename else None,
-            delta_retry="error",
-            session=test_session,
-        ).map(error=error)
-        return (
-            chain.mutate(result_id=C.id).select("result_id", "error")
-            if rename
-            else chain
+def test_delta_save_without_result_key_explains_required_fields(test_session):
+    dc.read_values(id=[1], session=test_session).save("missing_key_source")
+    chain = (
+        dc.read_dataset(
+            "missing_key_source", delta=True, delta_on="id", session=test_session
         )
-
-    dc.read_values(id=[None, 1], value=[10, 20], session=test_session).save(
-        "nullable_retry"
+        .map(score=lambda id: id * 2, output=int)
+        .select("score")
     )
-    first = build(True).save("nullable_result")
-    state["fail"] = False
-    result = build(True).save("nullable_result")
-    assert result.to_values("error") == ["", ""]
-    assert first.to_values("error") == ["retry", "retry"]
-    assert sorted(result.to_list(), key=repr) == sorted(
-        build(False).to_list(), key=repr
-    )
-    assert build(True).save("nullable_result").version == result.version
+    with pytest.raises(DataChainParamsError, match=r"delta_on.*delta_result_on"):
+        chain.save("missing_key_result")
 
 
 @pytest.mark.parametrize("operation", ["mutate", "gen"])

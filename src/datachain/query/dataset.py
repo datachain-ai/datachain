@@ -22,11 +22,7 @@ from attrs import frozen
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback, TqdmCallback
 from sqlalchemy import Column
 from sqlalchemy.sql import func as f
-from sqlalchemy.sql.elements import (
-    ColumnClause,
-    ColumnElement,
-    Label,
-)
+from sqlalchemy.sql.elements import ColumnClause, ColumnElement, Label
 from sqlalchemy.sql.expression import label
 from sqlalchemy.sql.selectable import (
     GenerativeSelect,
@@ -383,22 +379,6 @@ def generator_then_call(generator, func: Callable):
     yield func() or []
 
 
-def _materialize_query(
-    query: Select, catalog: "Catalog", temp_tables: list[str]
-) -> Select:
-    warehouse = catalog.warehouse
-    columns = [
-        c if isinstance(c, Column) else Column(c.name, c.type)
-        for c in query.subquery().columns
-    ]
-    table = warehouse.create_dataset_rows_table(
-        warehouse.temp_table_name(), columns=columns
-    )
-    temp_tables.append(table.name)
-    warehouse.insert_into(table, query)
-    return table.select()
-
-
 @frozen
 class DatasetDiffOperation(Step):
     """
@@ -462,7 +442,8 @@ class DatasetDiffOperation(Step):
         def q(*columns):
             return sqlalchemy.select(*columns).select_from(diff_q)
 
-        return step_result(q, diff_q.c, dependencies=self.dq.dependencies)
+        columns = [diff_q.c[c.name] for c in source_query.selected_columns]
+        return step_result(q, columns, dependencies=self.dq.dependencies)
 
 
 def _key_present(columns: Any, presence: KeyPresence) -> ColumnElement:
@@ -512,22 +493,19 @@ class Subtract(DatasetDiffOperation):
             used.add(name.casefold())
 
         def with_presence(query: Select, side: int) -> Select:
-            columns = query.subquery().c
-            return sa.select(
-                *columns,
+            columns = query.selected_columns
+            return query.add_columns(
                 *(
                     sa.case((_key_present(columns, pair[side]), 1), else_=0).label(name)
                     for name, pair in zip(names, self.presence, strict=True)
                 ),
             )
 
-        diff = self.catalog.warehouse.subtract_query(
+        return self.catalog.warehouse.subtract_query(
             with_presence(source_query, 0),
             with_presence(target_query, 1),
             [*on, *zip(names, names, strict=True)],
         )
-        rows = cast("Select", diff).subquery()
-        return sa.select(*(rows.c[c.name] for c in source_query.selected_columns))
 
 
 class ColType(NamedTuple):
@@ -2441,9 +2419,17 @@ class SQLJoin(Step):
         if not any(isinstance(step, (SQLJoin, SQLUnion)) for step in dq.steps):
             return query.subquery(dq.table.name)
 
-        return _materialize_query(query, self.catalog, temp_tables).subquery(
-            dq.table.name
+        warehouse = self.catalog.warehouse
+        columns = [
+            c if isinstance(c, Column) else Column(c.name, c.type)
+            for c in query.subquery().columns
+        ]
+        table = warehouse.create_dataset_rows_table(
+            warehouse.temp_table_name(), columns=columns
         )
+        temp_tables.append(table.name)
+        warehouse.insert_into(table, query)
+        return table.select().subquery(dq.table.name)
 
     def bind_and_validate_expression(self, exp: ColumnElement, q1, q2) -> ColumnElement:
         left_name = self.query1.table.name
