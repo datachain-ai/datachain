@@ -120,14 +120,15 @@ def _installed_by_datachain(skill_dest: Path, name: str) -> bool:
 def _remove_skill(
     skills_dir: Path, commands_dir: Path | None, command_ext: str | None, name: str
 ) -> bool:
-    """Delete a skill's directory and its command file. True if either existed.
+    """Delete a skill's directory and command file. True if anything was removed.
 
-    The directory goes only if we installed it; the command file is named
-    `datachain-<skill>`, so it can never be someone else's.
+    An unrelated skill keeps both its directory and companion instructions.
     """
     found = False
     skill_dest = skills_dir / name
-    if skill_dest.exists() and _installed_by_datachain(skill_dest, name):
+    if skill_dest.exists():
+        if not _installed_by_datachain(skill_dest, name):
+            return False
         shutil.rmtree(skill_dest)
         found = True
     if commands_dir and command_ext:

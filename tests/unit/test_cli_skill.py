@@ -598,11 +598,15 @@ def test_upgrade_preserves_unrelated_legacy_named_skill(
     dest.mkdir(parents=True)
     content = f"---\nname: my-{name}\n---\nUser instructions\n"
     (dest / "SKILL.md").write_text(content)
+    companion = tmp_path / ".cursor" / "rules" / f"datachain-{name}.mdc"
+    companion.parent.mkdir(parents=True)
+    companion.write_text("User-written companion instructions")
     with patch("pathlib.Path.home", return_value=fake_home):
         assert install_skills(None, "cursor", True) == 0
         assert (dest / "SKILL.md").read_text() == content
         assert uninstall_skills(None, "cursor", True) == 0
     assert (dest / "SKILL.md").read_text() == content
+    assert companion.read_text() == "User-written companion instructions"
 
 
 @pytest.mark.parametrize("encoding", ["utf-8", "cp1252"])
