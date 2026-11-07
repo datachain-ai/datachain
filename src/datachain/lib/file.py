@@ -30,7 +30,7 @@ from datachain.sql.types import JSON, Boolean, DateTime, Int, String
 from datachain.utils import TIME_ZERO, parent_path
 
 if TYPE_CHECKING:
-    from typing import Self
+    from typing import BinaryIO, Self
 
     from numpy import ndarray
 
@@ -616,20 +616,7 @@ class File(DataModel):
         client: Client = self._catalog.get_client(self.source, **merged_cfg)
 
         if not writing:
-            if self.location:
-                with VFileRegistry.open(
-                    self,
-                    self.location,  # type: ignore[arg-type]
-                    block_size=block_size,
-                ) as f:
-                    with self._wrap_text(f, mode, open_kwargs=open_kwargs) as wrapped:
-                        yield wrapped
-                return
-            if self._caching_enabled:
-                self.ensure_cached()
-            with client.open_object(
-                self, use_cache=True, cb=self._download_cb, block_size=block_size
-            ) as f:
+            with self._open_read(client=client, block_size=block_size) as f:
                 with self._wrap_text(f, mode, open_kwargs=open_kwargs) as wrapped:
                     yield wrapped
             return
@@ -658,6 +645,32 @@ class File(DataModel):
         refreshed = client.get_file_info(self.path, version_id=version_hint)
         for k, v in refreshed.model_dump().items():
             setattr(self, k, v)
+
+    @contextmanager
+    def _open_read(
+        self,
+        *,
+        block_size: int | None = None,
+        cache: bool = True,
+        client: "Client | None" = None,
+    ) -> Iterator["BinaryIO"]:
+        if self._catalog is None:
+            raise RuntimeError("Cannot open file: catalog is not set")
+        if self.location:
+            with VFileRegistry.open(
+                self,
+                self.location,  # type: ignore[arg-type]
+                block_size=block_size,
+            ) as stream:
+                yield stream
+            return
+        if cache and self._caching_enabled:
+            self.ensure_cached()
+        client = client or self._catalog.get_client(self.source)
+        with client.open_object(
+            self, use_cache=True, cb=self._download_cb, block_size=block_size
+        ) as stream:
+            yield stream
 
     @contextmanager
     def _wrap_text(
@@ -699,7 +712,7 @@ class File(DataModel):
     def read_bytes(self, length: int = -1):
         """Returns file contents as bytes."""
         block_size = min(length, PARTIAL_READ_BLOCK_SIZE) if length > 0 else None
-        with self.open(mode="rb", block_size=block_size) as stream:
+        with self._open_read(block_size=block_size, cache=length < 0) as stream:
             return stream.read(length)
 
     def read_text(self, **open_kwargs):
@@ -1302,7 +1315,9 @@ class ImageFile(File):
         """
         Retrieves metadata and information about the image file.
 
-        With prefetch and cache off, reads only the parts of the file it needs.
+        Reuses cached content when available without populating the cache.
+        Use `.settings(prefetch=0)` for metadata-only pipelines to avoid downloading
+        files in advance.
 
         Returns:
             Image: A Model containing image metadata such as width, height and format.
@@ -1414,7 +1429,9 @@ class VideoFile(File):
         """
         Retrieves metadata and information about the video file.
 
-        With prefetch and cache off, reads only the parts of the file it needs.
+        Reuses cached content when available without populating the cache.
+        Use `.settings(prefetch=0)` for metadata-only pipelines to avoid downloading
+        files in advance.
 
         Args:
             video_stream_index: Zero-based index among video streams to inspect.
@@ -1591,7 +1608,9 @@ class AudioFile(File):
         """
         Retrieves metadata and information about the audio file.
 
-        With prefetch and cache off, reads only the parts of the file it needs.
+        Reuses cached content when available without populating the cache.
+        Use `.settings(prefetch=0)` for metadata-only pipelines to avoid downloading
+        files in advance.
 
         Returns:
             Audio: A Model containing audio metadata such as duration,
