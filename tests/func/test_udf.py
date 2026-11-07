@@ -7,6 +7,8 @@ import time
 from collections.abc import Iterator
 
 import multiprocess as mp
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 import datachain as dc
@@ -1327,55 +1329,18 @@ def test_agg_list_file_persist_and_read(tmp_dir, test_session):
     ]
 
 
-def test_prefetch_shared_file_not_deleted_before_all_rows_processed(
-    tmp_dir, test_session, monkeypatch
-):
-    monkeypatch.delenv("DATACHAIN_DISTRIBUTED", raising=False)
-
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
-    parquet_path = str(tmp_dir / "rows.parquet")
-    pq.write_table(pa.table({"a": [1, 2]}), parquet_path)
-
-    def read_local(file: dc.File) -> int:
-        local = file.get_local_path()
-        assert local is not None, (
-            "get_local_path() returned None — shared prefetched file was deleted too early"
-        )
-        with open(local, "rb") as f:
-            return len(f.read())
-
-    sizes = (
-        dc.read_parquet(
-            parquet_path,
-            columns=["a"],
-            settings={"cache": False, "prefetch": 2},
-            session=test_session,
-        )
-        .map(size=read_local, params=["source.file"])
-        .to_values("size")
-    )
-
-    assert len(sizes) == 2
-    assert all(s > 0 for s in sizes)
-
-
 @pytest.mark.parametrize("prefetch", [1, 2, 4])
-def test_prefetch_shared_file_different_prefetch_sizes(
+def test_prefetch_shared_file_not_deleted_before_all_rows_processed(
     tmp_dir, test_session, monkeypatch, prefetch
 ):
     monkeypatch.delenv("DATACHAIN_DISTRIBUTED", raising=False)
 
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
-    parquet_path = str(tmp_dir / "multi.parquet")
-    pq.write_table(pa.table({"a": [1, 2, 3]}), parquet_path)
+    parquet_path = str(tmp_dir / "rows.parquet")
+    pq.write_table(pa.table({"a": [1, 2, 3, 4, 5]}), parquet_path)
 
     def read_local(file: dc.File) -> int:
         local = file.get_local_path()
-        assert local is not None
+        assert local is not None, "shared prefetched file was removed too early"
         with open(local, "rb") as f:
             return len(f.read())
 
@@ -1390,18 +1355,13 @@ def test_prefetch_shared_file_different_prefetch_sizes(
         .to_values("size")
     )
 
-    assert len(sizes) == 3
+    assert len(sizes) == 5
     assert all(s > 0 for s in sizes)
 
 
 def test_prefetch_shared_file_temp_cache_cleaned_up_after_all_rows(
     tmp_dir, test_session, monkeypatch
 ):
-    import os
-
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
     monkeypatch.delenv("DATACHAIN_DISTRIBUTED", raising=False)
 
     parquet_path = str(tmp_dir / "rows.parquet")
@@ -1436,46 +1396,9 @@ def test_prefetch_shared_file_temp_cache_cleaned_up_after_all_rows(
     )
 
 
-def test_prefetch_shared_file_five_rows_pipeline_depth(
-    tmp_dir, test_session, monkeypatch
-):
-    monkeypatch.delenv("DATACHAIN_DISTRIBUTED", raising=False)
-
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
-    parquet_path = str(tmp_dir / "five.parquet")
-    pq.write_table(pa.table({"a": [1, 2, 3, 4, 5]}), parquet_path)
-
-    def read_local(file: dc.File) -> int:
-        local = file.get_local_path()
-        assert local is not None, (
-            "get_local_path() returned None — shared prefetched file deleted too early"
-        )
-        with open(local, "rb") as f:
-            return len(f.read())
-
-    sizes = (
-        dc.read_parquet(
-            parquet_path,
-            columns=["a"],
-            settings={"cache": False, "prefetch": 2},
-            session=test_session,
-        )
-        .map(size=read_local, params=["source.file"])
-        .to_values("size")
-    )
-
-    assert len(sizes) == 5
-    assert all(s > 0 for s in sizes)
-
-
 def test_prefetch_temp_cache_destroyed_on_udf_exception(
     tmp_dir, test_session, monkeypatch
 ):
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
     from datachain.cache import Cache
 
     monkeypatch.delenv("DATACHAIN_DISTRIBUTED", raising=False)
@@ -1495,7 +1418,7 @@ def test_prefetch_temp_cache_destroyed_on_udf_exception(
     def failing_udf(file: dc.File) -> int:
         raise RuntimeError("intentional UDF failure")
 
-    with pytest.raises(Exception):
+    with pytest.raises(RuntimeError, match="intentional UDF failure"):
         (
             dc.read_parquet(
                 parquet_path,
@@ -1509,6 +1432,4 @@ def test_prefetch_temp_cache_destroyed_on_udf_exception(
 
     assert len(destroyed) >= 1, "Cache.destroy() must be called even on UDF exception"
     for d in destroyed:
-        import os
-
         assert not os.path.exists(d), f"Cache dir still exists after exception: {d}"
