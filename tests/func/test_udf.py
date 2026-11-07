@@ -1338,6 +1338,15 @@ def test_udf_parallel_workers_split_the_cpu_threads(
     monkeypatch.setenv("MKL_NUM_THREADS", "1")
 
     def limits() -> str:
+        import numpy as np
+        from threadpoolctl import threadpool_info
+
+        np.ones((2, 2)) @ np.ones((2, 2))
+        budget = int(os.environ["DATACHAIN_WORKER_THREADS"])
+        assert all(
+            pool["num_threads"] is None or pool["num_threads"] <= budget
+            for pool in threadpool_info()
+        )
         return ",".join(
             os.environ.get(k, "")
             for k in ("DATACHAIN_WORKER_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS")

@@ -534,6 +534,10 @@ def worker_thread_env(n_workers: int) -> dict[str, str]:
     env = {}
     for name in (WORKER_THREADS_ENV, *_THREAD_ENVS):
         try:
+            if name == "OMP_NUM_THREADS":
+                levels = [int(value) for value in os.environ[name].split(",")]
+                env[name] = ",".join(str(max(1, min(value, share))) for value in levels)
+                continue
             current = int(os.environ[name])
         except (KeyError, ValueError):
             current = share
@@ -544,11 +548,29 @@ def worker_thread_env(n_workers: int) -> dict[str, str]:
 @contextmanager
 def worker_thread_limits(n_workers: int) -> Iterator[None]:
     """Apply a CPU-share budget throughout UDF worker execution."""
+    from threadpoolctl import ThreadpoolController
+
     env = worker_thread_env(n_workers)
+    controller = ThreadpoolController()
+    limits: dict[str, int] = {}
+    api_env = {
+        "openblas": "OPENBLAS_NUM_THREADS",
+        "mkl": "MKL_NUM_THREADS",
+        "openmp": "OMP_NUM_THREADS",
+    }
+    for pool in controller.info():
+        if pool["num_threads"] is None:
+            continue
+        budget = int(
+            env[api_env.get(pool["internal_api"], WORKER_THREADS_ENV)].split(",")[0]
+        )
+        prefix = pool["prefix"]
+        limits[prefix] = min(limits.get(prefix, budget), pool["num_threads"])
     saved = {name: os.environ.get(name) for name in env}
     try:
         os.environ.update(env)
-        yield
+        with controller.limit(limits=limits):
+            yield
     finally:
         for name, value in saved.items():
             if value is None:
