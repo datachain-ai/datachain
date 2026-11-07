@@ -116,6 +116,7 @@ class _PartialReadHandler(FSSpecHandler):
 def pyarrow_fs(file: File, format):
     client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
     if isinstance(client.fs, LocalFileSystem):
+        client.check_unchanged(file)
         return client.fs
     block_size = 0 if is_parquet(format) else None
     return PyFileSystem(_PartialReadHandler(client, file, block_size=block_size))
@@ -172,11 +173,6 @@ class ArrowGenerator(Generator):
             fs_path = file.path
             fs = ReferenceFileSystem({fs_path: [cache_path]})
         else:
-            client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
-            # The File may come from a reused listing or a saved dataset, so the
-            # object may have changed since. A download into the cache checks
-            # this; a read that skips the cache checks it here.
-            client.check_unchanged(file)
             fs = pyarrow_fs(file, self.kwargs.get("format"))
             fs_path = file.get_fs_path()
 
