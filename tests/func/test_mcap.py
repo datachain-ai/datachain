@@ -257,10 +257,11 @@ def test_read_mcap_from_cloud_without_cache(cloud_test_catalog, cloud_prefix):
     assert summary.messages == 14
 
 
-def test_summary_and_windows_read_small_blocks(mcap_file, mocker):
+def test_summary_and_windows_read_small_blocks(mcap_file, test_session, mocker):
     from datachain.lib.file import PARTIAL_READ_BLOCK_SIZE
 
-    spy = mocker.spy(McapFile, "open")
+    client = test_session.catalog.get_client(mcap_file.source)
+    spy = mocker.spy(type(client), "open_object")
     mcap_file.summary()
     list(mcap_file.messages(start=T0))
     list(mcap_file.messages())
@@ -306,3 +307,24 @@ def test_messages_decoded_by_factories(mcap_file):
     msgs = list(mcap_file.messages("/a", end=T0 + 2 * SEC, decoder_factories=factories))
     assert [m.decoded for m in msgs] == [b"A0", b"A1"]
     assert [m.decoded for m in mcap_file.messages("/a", end=T0 + SEC)] == [None]
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("cache", [False, True])
+def test_read_mcap_summary_does_not_populate_cache(
+    cloud_test_catalog, cloud_prefix, cache
+):
+    ctc = cloud_test_catalog
+    (ctc.src / cloud_prefix / "ep.mcap").write_bytes(mcap_bytes())
+    chain = dc.read_mcap(
+        f"{ctc.src_uri}/{cloud_prefix}",
+        session=ctc.session,
+        settings={"cache": cache, "prefetch": 0},
+    )
+
+    [(mcap, summary)] = chain.to_list("mcap", "summary")
+
+    assert summary.messages == 14
+    assert mcap.get_local_path() is None
+    assert len(list(mcap.messages())) == 14
+    assert (mcap.get_local_path() is not None) == cache

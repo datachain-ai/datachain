@@ -80,7 +80,7 @@ class McapFile(File):
     def summary(self, topics: str | Sequence[str] | None = None) -> McapSummary:
         """Read the summary section only, optionally counting just `topics`."""
         topics = _topic_list(topics)
-        with self.open(block_size=PARTIAL_READ_BLOCK_SIZE) as f:
+        with self._open_read(block_size=PARTIAL_READ_BLOCK_SIZE, cache=False) as f:
             s = _reader(f).get_summary()
         st = s and s.statistics
         if st is None or (st.channel_count, st.schema_count) != (
