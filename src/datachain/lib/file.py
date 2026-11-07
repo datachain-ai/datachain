@@ -782,8 +782,13 @@ class File(DataModel):
             metadata=metadata,
             write_options=write_options,
         )
-        with self.open(mode="rb") as src:
-            result = client.upload(src, rel_path, write_config=write_config)
+        if client.PREFIX == "file://" and self._is_local_file(
+            client.fs._strip_protocol(client.get_uri(rel_path))
+        ):
+            result = client.get_file_info(rel_path)
+        else:
+            with self.open(mode="rb") as src:
+                result = client.upload(src, rel_path, write_config=write_config)
         result._set_stream(self._catalog)
         return result
 
@@ -800,6 +805,14 @@ class File(DataModel):
             client_cls.storage_uri(storage), **(client_config or {})
         )
         return client, rel_path
+
+    def _is_local_file(self, destination: str) -> bool:
+        return (
+            self.source.startswith("file://")
+            and not self.location
+            and os.path.exists(destination)
+            and os.path.samefile(self.get_fs_path(), destination)
+        )
 
     def _symlink_to(self, destination: str) -> None:
         if self.location:
@@ -908,6 +921,8 @@ class File(DataModel):
                     stringify_path(output),
                     dst,
                 )
+            if link_type == "symlink" and self._is_local_file(dst):
+                return
         else:
             # For cloud exports, simply join the output prefix and suffix.
             # Relying on cloud clients to do their own validation.
@@ -922,7 +937,9 @@ class File(DataModel):
                 if exc.errno not in (errno.ENOTSUP, errno.EXDEV, errno.ENOSYS):
                     raise
 
-        self.save(
+        # copy as stored; subclass save() overrides may re-encode
+        File.save(
+            self,
             dst,
             client_config=client_config,
             content_type=content_type,
