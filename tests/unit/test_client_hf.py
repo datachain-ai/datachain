@@ -1,3 +1,4 @@
+import pickle
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -180,3 +181,62 @@ def test_pinned_version_is_read_by_revision():
     client._fs._get_file.assert_awaited_once_with(
         "org/repo/a.txt", "local/a", callback=None, revision="commit123"
     )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "org/repo@main/archive.tar",
+        "org/repo@refs/pr/1/archive.tar",
+        "org/repo@refs%2Fpr%2F1/archive.tar",
+        "org/repo@v1/archive.tar",
+        "org/repo/archive.tar",
+    ],
+)
+@pytest.mark.parametrize("block_size", [None, 0])
+@pytest.mark.parametrize("repo_type", ["datasets", "models"])
+def test_open_reads_listed_commit_with_revision_in_uri(
+    catalog,
+    monkeypatch,
+    small_tar_member_data,
+    tar_member_range_requests,
+    path,
+    block_size,
+    repo_type,
+):
+    from huggingface_hub import HfFileSystem
+
+    monkeypatch.setattr(
+        HfFileSystem, "_repo_and_revision_exist", lambda *a, **kw: (True, None)
+    )
+    client = HfClient(repo_type, {"token": False}, catalog.cache)
+    _, raw = small_tar_member_data
+    monkeypatch.setattr(client.fs.sync_fs, "info", lambda *a, **kw: {"size": len(raw)})
+    tar_member_range_requests(HfFileSystemFile)
+    file = File(source=client.uri, path=path, size=len(raw), version="commit123")
+    with client.open_object(file, use_cache=False, block_size=block_size) as stream:
+        assert stream.fileobj.resolved_path.revision == "commit123"
+        assert stream.read(5) == raw[:5]
+    assert file.path == path
+
+
+def test_unpinned_uri_keeps_branch_and_at_in_filename(catalog, monkeypatch):
+    from huggingface_hub import HfFileSystem
+
+    monkeypatch.setattr(
+        HfFileSystem, "_repo_and_revision_exist", lambda *a, **kw: (True, None)
+    )
+    fs = HfClient("datasets", {"token": False}, catalog.cache).fs.sync_fs
+    assert fs.resolve_path("datasets/org/repo@main/a@b.txt").revision == "main"
+    from datachain.client.hf_file_system import _drop_path_revision
+
+    assert (
+        _drop_path_revision("datasets/org/repo/a@b.txt") == "datasets/org/repo/a@b.txt"
+    )
+
+
+def test_hf_filesystem_is_pickleable(catalog):
+    fs = HfClient("datasets", {"token": False}, catalog.cache).fs.sync_fs
+    restored = pickle.loads(pickle.dumps(fs))  # noqa: S301
+    assert type(restored) is type(fs)
+    assert restored.storage_options == fs.storage_options
