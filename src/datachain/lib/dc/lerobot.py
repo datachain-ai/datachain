@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import os
@@ -6,6 +7,8 @@ from typing import TYPE_CHECKING, Any, cast
 from datachain.query import Session
 
 if TYPE_CHECKING:
+    import pyarrow as pa
+
     from datachain.lib.file import File, VideoFile
 
     from .datachain import DataChain
@@ -35,9 +38,9 @@ def read_lerobot(
     Per-frame data is not included; read it with
     `dc.read_parquet(path + "/data/")` and merge on `episode_index`.
 
-    Many episodes share one mp4. A UDF that takes a fragment reads only that
-    episode's bytes; with `settings(cache=True)` each mp4 downloads once and is
-    reused by the other episodes.
+    Many episodes share one mp4. A UDF that takes a fragment seeks to that
+    episode's span instead of reading the whole file; with `settings(cache=True)`
+    each mp4 downloads once and is reused by the other episodes.
 
     Parameters:
         path: Dataset root, e.g. `hf://datasets/lerobot/aloha_mobile_cabinet` or
@@ -67,13 +70,6 @@ def read_lerobot(
         )
         ```
     """
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
-    from datachain.lib.arrow import schema_to_output
-    from datachain.lib.data_model import dict_to_data_model
-    from datachain.lib.file import VideoFragment
-
     from .records import read_records
     from .storage import read_storage
 
@@ -81,15 +77,29 @@ def read_lerobot(
         path, type="video", session=session, settings=settings, **kwargs
     )
     files = {f.path: f for f in cast("list[VideoFile]", listing.to_values("file"))}
+    root, info = _read_info(files, path)
+    table = _read_episodes(files, root, path)
+    schema, records = _episode_records(table, info, files, root, path)
+    return read_records(records, schema, session=listing.session, settings=settings)
+
+
+def _read_info(files: dict[str, "VideoFile"], path) -> tuple[str, dict]:
+    """The dataset root inside the listing, and its `meta/info.json`."""
     infos = [p for p in files if p == INFO or p.endswith(f"/{INFO}")]
     if len(infos) != 1:
         raise ValueError(f"Expected one {INFO} under '{path}', found {len(infos)}")
-    root = infos[0].removesuffix(INFO)
     with _open(files[infos[0]]) as f:
         info = json.load(f)
     version = info.get("codebase_version")
     if not str(version).startswith("v3."):
         raise ValueError(f"'{path}' is LeRobot {version}, only v3 is supported")
+    return infos[0].removesuffix(INFO), info
+
+
+def _read_episodes(files: dict[str, "VideoFile"], root: str, path) -> "pa.Table":
+    """All `meta/episodes/` shards as one table, without the stats columns."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
 
     tables = []
     for p in sorted(files):
@@ -100,13 +110,27 @@ def read_lerobot(
                 tables.append(pf.read(columns=cols))
     if not tables:
         raise ValueError(f"No {EPISODES} parquet files under '{path}'")
-    table = pa.concat_tables(tables, promote_options="default")
+    return pa.concat_tables(tables, promote_options="default")
+
+
+def _episode_records(
+    table: "pa.Table", info: dict, files: dict[str, "VideoFile"], root: str, path
+) -> tuple[dict, list[dict]]:
+    """The schema and a record per episode whose video files all exist."""
+    from datachain.lib.arrow import schema_to_output
+    from datachain.lib.data_model import dict_to_data_model
+    from datachain.lib.file import VideoFragment
+
     meta = [c for c in table.column_names if not c.startswith("videos/")]
     output, names = schema_to_output(table.select(meta).schema.remove_metadata())
     schema = dict(output)
     keys = [k for k, f in info["features"].items() if f["dtype"] == "video"]
     if keys:
-        schema["videos"] = dict_to_data_model("", dict.fromkeys(keys, VideoFragment))
+        # Named by its cameras, so rereading the dataset gives the same schema
+        digest = hashlib.sha256(",".join(keys).encode()).hexdigest()[:8]
+        schema["videos"] = dict_to_data_model(
+            f"LeRobotVideos_{digest}", dict.fromkeys(keys, VideoFragment)
+        )
 
     def fragment(row: dict, key: str) -> VideoFragment | None:
         p = info["video_path"].format(
@@ -139,18 +163,14 @@ def read_lerobot(
             len(rows),
             path,
         )
-    return read_records(records, schema, session=listing.session, settings=settings)
+    return schema, records
 
 
 def _open(file: "File"):
-    """Open a listed file, failing if it changed since listing, like `read_parquet`.
+    """Open a listed file uncached, failing if it changed since listing.
 
-    Small blocks: only the needed Parquet columns are read, not the stats.
+    Each read fetches only the bytes asked for: the Parquet columns, not the stats.
     """
-    from datachain.lib.file import PARTIAL_READ_BLOCK_SIZE
-
-    if file._caching_enabled:
-        file.ensure_cached()
-    elif not file.get_local_path():
-        file._catalog.get_client(file.source).check_unchanged(file)  # type: ignore[union-attr]
-    return file.open(block_size=PARTIAL_READ_BLOCK_SIZE)
+    client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
+    client.check_unchanged(file)
+    return client.open_object(file, use_cache=False, block_size=0)

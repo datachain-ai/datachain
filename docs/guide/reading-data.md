@@ -146,7 +146,7 @@ episodes = episodes.merge(rewards, on="episode_index")
 good = episodes.filter((dc.C("reward") > 0.9) & (dc.C("length") < 150))
 ```
 
-**Questions about the video run your Python code on the frames of each episode.** Decoding a fragment reads only that episode's bytes from the shared mp4. Episodes are processed in parallel, and the results become columns you can filter with SQL again:
+**Questions about the video run your Python code on the frames of each episode.** Decoding a fragment seeks to that episode's span of the shared mp4 instead of reading the whole file. Episodes are processed in parallel, and the results become columns you can filter with SQL again:
 
 ```python
 def motion(cam: dc.VideoFragment) -> float:
@@ -163,7 +163,7 @@ scored = good.settings(parallel=8).map(motion=motion, params=[camera])
 stuck = scored.filter(dc.C("motion") < 1.0)  # the scene barely changes
 ```
 
-Many episodes share one mp4. A function that takes a fragment reads only that episode's bytes; with `settings(cache=True)` each mp4 downloads once and is reused by the other episodes.
+Many episodes share one mp4. A function that takes a fragment seeks to that episode's span instead of reading the whole file; with `settings(cache=True)` each mp4 downloads once and is reused by the other episodes.
 
 ## SQL Databases
 

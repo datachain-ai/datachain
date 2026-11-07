@@ -217,14 +217,40 @@ def test_read_lerobot_fails_on_metadata_changed_since_listing(
         )
 
 
-def test_read_lerobot_reads_metadata_in_small_blocks(
+def test_read_lerobot_reads_metadata_uncached_in_exact_ranges(
     lerobot_dataset, test_session, mocker
 ):
-    from datachain.lib.file import PARTIAL_READ_BLOCK_SIZE, File
+    from datachain.client.fsspec import Client
 
-    spy = mocker.spy(File, "open")
-    dc.read_lerobot(lerobot_dataset.as_uri(), session=test_session)
-    assert spy.call_count
-    assert {c.kwargs.get("block_size") for c in spy.call_args_list} == {
-        PARTIAL_READ_BLOCK_SIZE
-    }
+    spy = mocker.spy(Client, "open_object")
+    dc.read_lerobot(
+        lerobot_dataset.as_uri(), session=test_session, settings={"cache": True}
+    )
+
+    assert spy.call_count == 3  # info.json and two episode shards
+    for call in spy.call_args_list:
+        assert call.kwargs == {"use_cache": False, "block_size": 0}
+    files = dc.read_storage(lerobot_dataset.as_uri(), session=test_session)
+    cache = test_session.catalog.cache
+    assert not any(cache.contains(f) for f in files.to_values("file"))
+
+
+def test_read_lerobot_twice_keeps_the_same_schema(lerobot_dataset, test_session):
+    first = dc.read_lerobot(lerobot_dataset.as_uri(), session=test_session)
+    second = dc.read_lerobot(lerobot_dataset.as_uri(), session=test_session)
+
+    assert first.schema["videos"].__name__ == second.schema["videos"].__name__
+    assert first.signals_schema.serialize() == second.signals_schema.serialize()
+
+
+def test_read_lerobot_names_videos_by_cameras(lerobot_dataset, test_session):
+    both = dc.read_lerobot(lerobot_dataset.as_uri(), session=test_session)
+    info_path = lerobot_dataset / "meta" / "info.json"
+    info = json.loads(info_path.read_text())
+    del info["features"][WRIST]
+    info_path.write_text(json.dumps(info))
+
+    top = dc.read_lerobot(lerobot_dataset.as_uri(), session=test_session, update=True)
+
+    assert list(top.schema["videos"].model_fields) == ["observation_images_top"]
+    assert top.schema["videos"].__name__ != both.schema["videos"].__name__
