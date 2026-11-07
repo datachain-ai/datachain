@@ -265,8 +265,20 @@ def path_filter(
     """The paths a URI with glob ``pattern`` selects from its base's listing."""
     if pattern is None:
         return PathFilter.ls(list_path, recursive)
-    glob, use_recursive = _pattern(pattern, list_path, recursive)
-    return PathFilter.ls(list_path, use_recursive).glob(glob)
+    glob_pattern, use_recursive = _pattern(pattern, list_path, recursive)
+    paths = PathFilter.ls(list_path, use_recursive)
+    filename = pattern.removeprefix("**/")
+    if (
+        filename != pattern
+        and filename
+        and "/" not in filename
+        and not glob.has_magic(filename)
+    ):
+        return PathFilter(
+            any_of=(("eq", _glob_pattern(filename, list_path)), ("glob", glob_pattern)),
+            all_of=() if use_recursive else paths.any_of,
+        )
+    return paths.glob(glob_pattern)
 
 
 def _pattern(pattern: str, list_path: str, recursive: bool | None) -> tuple[str, bool]:
