@@ -175,7 +175,6 @@ def ls(
     dc: D,
     path: str,
     recursive: bool | None = True,
-    column="file",
 ) -> D:
     """
     Return files by some path from DataChain instance which contains bucket listing.
@@ -183,13 +182,13 @@ def ls(
     If recursive is set to False, only first level children will be returned by
     specified path
     """
-    return select_paths(dc, PathFilter.ls(path, recursive), column)
+    return select_paths(dc, PathFilter.ls(path, recursive))
 
 
-def select_paths(dc: D, paths: "PathFilter", column: str = "file") -> D:
+def select_paths(dc: D, paths: "PathFilter") -> D:
     """The latest files of a listing chain whose paths ``paths`` selects."""
-    dc = dc.filter(Column(f"{column}.is_latest") == true())
-    for condition in paths.sql(Column(f"{column}.path")):
+    dc = dc.filter(Column("file.is_latest") == true())
+    for condition in paths.sql(Column("file.path")):
         dc = dc.filter(condition)
     return dc
 
@@ -547,7 +546,6 @@ def write_listing(
     session: "Session",
     client_config: dict,
     *,
-    column: str = "file",
     file_type: type[File] = File,
     settings: dict | None = None,
     in_memory: bool = False,
@@ -585,7 +583,7 @@ def write_listing(
                 namespace=namespace,
                 project=project,
             )
-            .gen(list_func, output={column: file_type})
+            .gen(list_func, output={"file": file_type})
             # for internal listing datasets, we always bump major version
             .save(ds_name, listing=True, update_version="major")
         )

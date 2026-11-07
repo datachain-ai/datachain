@@ -37,7 +37,8 @@ def read_parquet(
             exported by DataChain restores its saved schema.
         column: Created column name.
         model_name: Generated model name.
-        source: Whether to include info about the source file.
+        source: Whether to include info about the source file. It is named
+            "source", or the first free "cN_source" if that name is taken.
         session: Session to use for the chain.
         settings: Settings to use for the chain.
         columns: Input columns to read, in order; all if omitted. Accepts original

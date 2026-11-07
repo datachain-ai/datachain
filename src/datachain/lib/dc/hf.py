@@ -1,12 +1,12 @@
 from typing import TYPE_CHECKING, Any
 
 from datachain.lib.data_model import dict_to_data_model
+from datachain.lib.utils import unique_name
 from datachain.query import Session
 
 if TYPE_CHECKING:
     from typing_extensions import ParamSpec
 
-    from datachain.lib.data_model import DataType
     from datachain.lib.hf import HFDatasetType
 
     from .datachain import DataChain
@@ -39,6 +39,9 @@ def read_hf(
             Defaults to 0 (no limit).
         kwargs: Parameters to pass to `datasets.load_dataset`.
 
+    With several splits, each row also gets its split name in a "split" signal,
+    or in the first free "cN_split" if the data has a "split" column.
+
     Example:
         Load from Hugging Face Hub:
         ```py
@@ -70,18 +73,23 @@ def read_hf(
 
     from .values import read_values
 
-    output: dict[str, DataType] = {}
     ds_dict = stream_splits(dataset, *args, **kwargs)
-    if len(ds_dict) > 1:
-        output = {"split": str}
-
     model_name = model_name or column or ""
     hf_features = next(iter(ds_dict.values())).features
-    hf_output, normalized_names = get_output_schema(hf_features, list(output.keys()))
-    output = output | hf_output
-    model = dict_to_data_model(model_name, output, list(normalized_names.values()))
+    output, normalized_names = get_output_schema(hf_features)
+    original_names = list(normalized_names.values())
+    split_name = ""
+    if len(ds_dict) > 1:
+        # The data keeps its names, so on a clash the split signal is renamed.
+        split_name = unique_name("split", output)
+        output = {split_name: str} | output
+        original_names = [split_name, *original_names]
+    model = dict_to_data_model(model_name, output, original_names)
     if column:
         output = {column: model}
 
     chain = read_values(split=list(ds_dict.keys()), session=session, settings=settings)
-    return chain.gen(HFGenerator(dataset, model, limit, *args, **kwargs), output=output)
+    generator = HFGenerator(
+        dataset, model, limit, *args, split_name=split_name, **kwargs
+    )
+    return chain.gen(generator, output=output)

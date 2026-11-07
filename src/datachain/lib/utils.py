@@ -3,7 +3,7 @@ import re
 import types
 import warnings
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Container, Sequence
 from pathlib import PurePosixPath
 from typing import Annotated, Any, Final, Literal, Union, get_args, get_origin
 from typing import Literal as LiteralEx
@@ -99,6 +99,14 @@ def normalize_col_names(col_names: Sequence[str]) -> dict[str, str]:
         new_col_names[generated_column] = org_column
 
     return new_col_names
+
+
+def unique_name(name: str, taken: Container[str]) -> str:
+    """Return `name`, or the first `cN_name` that is not taken."""
+    new_name, i = name, 0
+    while new_name in taken:
+        new_name, i = f"c{i}_{name}", i + 1
+    return new_name
 
 
 def rebase_path(

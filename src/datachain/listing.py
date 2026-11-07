@@ -30,14 +30,12 @@ class SavedListing:
         client: "Client",
         dataset_name: str | None = None,
         dataset_version: str | None = None,
-        column: str = "file",
     ):
         self.metastore = metastore
         self.warehouse = warehouse
         self.client = client
         self.dataset_name = dataset_name  # dataset representing bucket listing
         self.dataset_version = dataset_version  # dataset representing bucket listing
-        self.column = column
         self._closed = False
 
     def clone(self) -> "SavedListing":
@@ -47,7 +45,6 @@ class SavedListing:
             self.client,
             self.dataset_name,
             self.dataset_version,
-            self.column,
         )
 
     def __enter__(self) -> Self:
@@ -88,9 +85,7 @@ class SavedListing:
     def dataset_rows(self):
         dataset = self.dataset
         return self.warehouse.dataset_rows(
-            dataset,
-            self.dataset_version or dataset.latest_version,
-            column=self.column,
+            dataset, self.dataset_version or dataset.latest_version
         )
 
     def expand_path(self, path, use_glob=True) -> list[Node]:
