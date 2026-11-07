@@ -2,6 +2,7 @@ import hashlib
 import inspect
 import logging
 from abc import ABC, abstractmethod
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from contextlib import closing, contextmanager, nullcontext
@@ -9,6 +10,7 @@ from dataclasses import dataclass
 from functools import cached_property, partial
 from graphlib import CycleError, TopologicalSorter
 from itertools import islice
+from threading import Lock
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import attrs
@@ -494,16 +496,26 @@ def _row_files(row: Iterable, batch_columns: set[int] | None) -> Iterator[File]:
             yield from (item for item in obj if isinstance(item, File))
 
 
+def _is_prefetchable(file: File, max_size: int | None) -> bool:
+    return bool(file.path) and (max_size is None or 0 < file.size <= max_size)
+
+
 async def _prefetch_input(
     row: T,
     download_cb: Callback | None = None,
     after_prefetch: "Callable[[], None]" = noop,
     batch_columns: set[int] | None = None,
     max_size: int | None = None,
+    refcounts: "Counter[str] | None" = None,
+    refcounts_lock: "Lock | None" = None,
 ) -> T:
     for obj in _row_files(row, batch_columns):  # type: ignore[arg-type]
-        if not obj.path or (max_size is not None and not 0 < obj.size <= max_size):
+        if not _is_prefetchable(obj, max_size):
             continue
+        # Pre-increment so _remove_prefetched still sees this slot while in-flight.
+        if refcounts is not None and refcounts_lock is not None:
+            with refcounts_lock:
+                refcounts[obj.get_hash()] += 1
         try:
             if await obj._prefetch(download_cb):
                 after_prefetch()
@@ -512,12 +524,31 @@ async def _prefetch_input(
     return row
 
 
-def _remove_prefetched(row: T, batch_columns: set[int] | None = None) -> None:
+def _remove_prefetched(
+    row: T,
+    batch_columns: set[int] | None = None,
+    refcounts: "Counter[str] | None" = None,
+    refcounts_lock: "Lock | None" = None,
+    max_size: int | None = None,
+) -> None:
     for obj in _row_files(row, batch_columns):  # type: ignore[arg-type]
         catalog = obj._catalog
         assert catalog is not None
         try:
-            catalog.cache.remove(obj)
+            if refcounts is not None and refcounts_lock is not None:
+                # get_hash() ignores size: an ineligible file can share the
+                # hash of a prefetched one, so release only what was taken.
+                if not _is_prefetchable(obj, max_size):
+                    continue
+                with refcounts_lock:
+                    h = obj.get_hash()
+                    refcounts[h] -= 1
+                    if refcounts[h] > 0:
+                        continue
+                    del refcounts[h]
+                    catalog.cache.remove(obj)
+            else:
+                catalog.cache.remove(obj)
         except Exception as e:  # noqa: BLE001
             logger.warning("Failed to remove prefetched item %r: %s", obj.name, e)
 
@@ -541,12 +572,16 @@ def _prefetch_inputs(
             increment_file_count: Callable[[], None] = download_cb.increment_file_count
             after_prefetch = increment_file_count
 
+    refcounts: Counter[str] | None = Counter() if remove_prefetched else None
+    refcounts_lock: Lock | None = Lock() if remove_prefetched else None
     f = partial(
         _prefetch_input,
         download_cb=download_cb,
         after_prefetch=after_prefetch,
         batch_columns=batch_columns,
         max_size=max_size,
+        refcounts=refcounts,
+        refcounts_lock=refcounts_lock,
     )
     mapper = AsyncMapper(f, prepared_inputs, workers=prefetch)
     with closing(mapper.iterate()) as row_iter:
@@ -555,7 +590,9 @@ def _prefetch_inputs(
                 yield row  # type: ignore[misc]
             finally:
                 if remove_prefetched:
-                    _remove_prefetched(row, batch_columns)
+                    _remove_prefetched(
+                        row, batch_columns, refcounts, refcounts_lock, max_size
+                    )
 
 
 def _get_cache(
