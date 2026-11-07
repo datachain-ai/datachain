@@ -260,3 +260,28 @@ def test_cache_remove_held_inside_lock():
     assert lock_was_held == [True], "cache.remove must run while the lock is held"
     assert order == ["remove", "increment"]
     assert refcounts[h] == 1
+
+
+def test_batch_column_files_counted_per_occurrence():
+    catalog = _make_catalog()
+    h = "shared"
+    batch = [_make_file(catalog, h), _make_file(catalog, h)]
+    other_row = (_make_file(catalog, h),)
+    refcounts: Counter[str] = Counter()
+    lock = Lock()
+
+    asyncio.run(
+        _prefetch_input(
+            (batch,), batch_columns={0}, refcounts=refcounts, refcounts_lock=lock
+        )
+    )
+    _register(other_row, refcounts, lock)
+    assert refcounts[h] == 3
+
+    _remove_prefetched((batch,), {0}, refcounts=refcounts, refcounts_lock=lock)
+    catalog.cache.remove.assert_not_called()
+    assert refcounts[h] == 1
+
+    _remove_prefetched(other_row, refcounts=refcounts, refcounts_lock=lock)
+    catalog.cache.remove.assert_called_once()
+    assert h not in refcounts
