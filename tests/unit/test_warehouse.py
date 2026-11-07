@@ -543,3 +543,52 @@ def test_computed_join_type_coercion_keeps_column_affinity(sqlite_db, full, inne
         columns=[left.c.key, right.c.key.label("right_key")],
     )
     assert sorted(sqlite_db.execute(query)) == [("01", 1), ("1", 1), ("1e0", 1)]
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("full", [False, True])
+@pytest.mark.parametrize("collation", ["left_column", "right_expression"])
+def test_computed_join_preserves_collation_precedence(
+    sqlite_db, reverse, full, collation
+):
+    warehouse = SQLiteWarehouse(sqlite_db)
+    left = sa.Table(
+        "collated_left",
+        sqlite_db.metadata,
+        sa.Column(
+            "key",
+            sa.String(collation="NOCASE" if collation == "left_column" else "BINARY"),
+        ),
+    )
+    right = sa.Table("collated_right", sqlite_db.metadata, sa.Column("key", sa.String))
+    for table, value in [(left, "A"), (right, "a")]:
+        sqlite_db.create_table(table)
+        warehouse.insert_rows(table, [{"key": value}])
+        warehouse.insert_rows_done(table)
+    key = sa.func.lower(right.c.key, type_=sa.String)
+    if collation == "right_expression":
+        key = key.collate("NOCASE")
+    query = warehouse.join(
+        left,
+        right,
+        key == left.c.key if reverse else left.c.key == key,
+        full=full,
+        columns=[left.c.key, right.c.key.label("right_key")],
+    )
+    assert list(sqlite_db.execute(query)) == [("A", "a")]
+
+
+@skip_if_not_sqlite
+def test_full_computed_join_with_reversed_predicate(sqlite_db):
+    warehouse = SQLiteWarehouse(sqlite_db)
+    left = sa.select(sa.literal("a").label("key")).subquery()
+    right = sa.select(sa.literal("a").label("key")).subquery()
+    query = warehouse.join(
+        left,
+        right,
+        sa.func.lower(right.c.key, type_=sa.String) == left.c.key,
+        full=True,
+        columns=[left.c.key, right.c.key.label("right_key")],
+    )
+    assert list(sqlite_db.execute(query)) == [("a", "a")]

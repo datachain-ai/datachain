@@ -21,7 +21,7 @@ from datachain.lib.convert.flatten import flatten
 from datachain.lib.file import File, FileRow
 from datachain.query.schema import C, Column
 from datachain.sql.functions import path as pathfunc
-from datachain.utils import uses_glob
+from datachain.utils import parent_path, uses_glob
 
 if TYPE_CHECKING:
     from sqlalchemy import ColumnElement
@@ -205,7 +205,11 @@ class PathFilter:
     @classmethod
     def ls(cls, path: str, recursive: bool | None) -> "PathFilter":
         if not recursive:
-            return cls(any_of=(("parent", path.lstrip("/").rstrip("/*")),))
+            folder = path.lstrip("/")
+            folder = (
+                folder.rstrip("/*") if uses_glob(path) else folder.removesuffix("/")
+            )
+            return cls(any_of=(("parent", folder),))
         if not path or path == "/":
             return cls()
         if uses_glob(path):
@@ -238,7 +242,7 @@ class PathFilter:
             if op == "glob":
                 regex = _glob_regex(value)
                 return lambda path: regex is not None and bool(regex.fullmatch(path))
-            return lambda path: _parent(path) == value
+            return lambda path: parent_path(path) == value
 
         any_of = [check(*c) for c in self.any_of]
         all_of = [check(*c) for c in self.all_of]
@@ -246,12 +250,6 @@ class PathFilter:
             (not any_of or any(c(path) for c in any_of))
             and all(c(path) for c in all_of)
         )
-
-
-def _parent(path: str) -> str:
-    """SQLite's ``path_parent``: the path without its name and the slashes
-    before it."""
-    return path.rstrip(path.replace("/", "")).rstrip("/")
 
 
 @functools.lru_cache(maxsize=256)

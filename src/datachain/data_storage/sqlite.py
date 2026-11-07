@@ -171,6 +171,14 @@ def _probe_computed_keys(
     # Fence only probed computed keys. Affinity-cast copies make them indexable;
     # the original comparisons preserve SQLite's runtime comparison semantics.
     assert join.onclause is not None
+    # Materialized keys must not erase SQLite's collation precedence. Keep the
+    # original query for collated joins; ordinary keys retain the indexed path.
+    if any(
+        isinstance(node, (ColumnClause, Label, BinaryExpression))
+        and getattr(node.type, "collation", None)
+        for node in iterate(join.onclause)
+    ):
+        return join, {}
     keys: dict[FromClause, dict] = {join.left: {}, join.right: {}}
     terms = [join.onclause]
     if (
@@ -1062,8 +1070,9 @@ class SQLiteWarehouse(AbstractWarehouse):
             Adds filter to right_left_join to remove unmatched left table rows by
             getting column names that need to be NULL from BinaryExpressions in onclause
             """
-            if isinstance(exp.left, ColumnClause):
-                return right_left_join.where(left.c[exp.left.name].is_(None))
+            for operand in (exp.left, exp.right):
+                if isinstance(operand, ColumnClause) and operand.table is left:
+                    return right_left_join.where(operand.is_(None))
             return right_left_join
 
         if isinstance(onclause, BinaryExpression):
