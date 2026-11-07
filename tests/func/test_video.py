@@ -18,7 +18,13 @@ from numpy import ndarray
 from PIL import Image
 
 from datachain import VideoFragment, VideoFrame
-from datachain.lib.file import File, FileError, ImageFile, VideoFile
+from datachain.lib.file import (
+    PARTIAL_READ_BLOCK_SIZE,
+    File,
+    FileError,
+    ImageFile,
+    VideoFile,
+)
 from datachain.lib.tar import process_tar
 from datachain.lib.video import save_video_fragment, video_frame_np
 
@@ -1332,18 +1338,45 @@ def test_save_fragments(tmp_path, video_file):
         }
 
 
-def test_frames_read_from_mid_file_use_small_blocks(video_file, mocker):
-    from datachain.lib.file import PARTIAL_READ_BLOCK_SIZE
-
+@pytest.mark.parametrize(
+    "start,size,block_size",
+    [
+        (0, None, None),
+        (100, None, PARTIAL_READ_BLOCK_SIZE),
+        (100, 10**12, None),
+    ],
+)
+def test_get_frames_block_size_by_window(video_file, mocker, start, size, block_size):
     video = video_file.as_video_file()
     video.get_info()
-    huge = video.model_copy(update={"size": 10**12})
-    spy = mocker.spy(VideoFile, "open")
+    if size:
+        video = video.model_copy(update={"size": size})
+    open_spy = mocker.spy(VideoFile, "open")
 
-    list(video.get_frames(0, 2))
-    list(video.get_frames(100, 102))
+    list(video.get_frames(start, start + 2))
+
+    open_spy.assert_called_once()
+    assert open_spy.call_args.kwargs.get("block_size") == block_size
+
+
+def test_get_frame_from_mid_file_reads_small_blocks(video_file, mocker):
+    video = video_file.as_video_file()
+    open_spy = mocker.spy(VideoFile, "open")
+
     video.get_frame(100).get_np()
-    list(huge.get_frames(100, 102))
 
-    sizes = [call.kwargs.get("block_size") for call in spy.call_args_list]
-    assert sizes == [None, PARTIAL_READ_BLOCK_SIZE, PARTIAL_READ_BLOCK_SIZE, None]
+    assert open_spy.call_args.kwargs.get("block_size") == PARTIAL_READ_BLOCK_SIZE
+
+
+def test_decoding_from_frame_zero_keeps_default_blocks(mpegts_video, mocker):
+    video = mpegts_video.file
+    video.get_info()
+    open_spy = mocker.spy(VideoFile, "open")
+
+    frames = list(video.get_frames(5, 8))
+    image = video.get_frame(5).get_np()
+
+    assert [frame.frame for frame in frames] == [5, 6, 7]
+    np.testing.assert_array_equal(image, frames[0].get_np())
+    sizes = [call.kwargs.get("block_size") for call in open_spy.call_args_list]
+    assert sizes == 2 * [PARTIAL_READ_BLOCK_SIZE, None]  # reopened once seek failed
