@@ -1180,7 +1180,7 @@ def test_delta_update_with_model_key_of_different_fields_raises(test_session):
     with pytest.raises(DataChainParamsError, match="same shape on both sides"):
         save()
     with pytest.raises(DatasetNotFoundError):
-        dc.read_dataset("incompatible_result", session=test_session)
+        test_session.catalog.get_dataset("incompatible_result")
 
 
 def test_delta_save_without_result_key_explains_required_fields(test_session):

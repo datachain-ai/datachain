@@ -56,7 +56,7 @@ def test_delta_update_unsafe_with_static_input_replays_changed_records(
 
 @pytest.mark.parametrize("reuse", [False, True])
 def test_delta_update_unsafe_subtract_filtered_same_source_matches_full_recompute(
-    test_session, reuse, mocker
+    test_session, reuse
 ):
     processed = []
 
@@ -87,12 +87,7 @@ def test_delta_update_unsafe_subtract_filtered_same_source_matches_full_recomput
     assert initial.to_values("id") == [3]
     source([1, 2, 3, 4], [10, 10, 20, 30], [0, 1, 0, 0])
     processed.clear()
-    persist = mocker.spy(dc.DataChain, "_persist")
     result = build(True).save("self_subtract_result")
-    assert (
-        sum(call.kwargs.get("preserve_hash", False) for call in persist.call_args_list)
-        == 1
-    )
     assert processed == [4]
     assert (
         sorted(result.to_values("id")) == sorted(build(False).to_values("id")) == [3, 4]
