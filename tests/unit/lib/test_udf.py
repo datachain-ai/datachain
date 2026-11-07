@@ -374,7 +374,6 @@ def test_udf_output_type_error_message_json_serialization_failure(
 def test_map_prefetch_skips_invalid_path_files(
     monkeypatch, test_session, caplog, bad_path
 ):
-
     monkeypatch.delenv("DATACHAIN_DISTRIBUTED", raising=False)
 
     files = [File(source="s3://bucket", path=bad_path) for _ in range(3)]
@@ -566,7 +565,8 @@ def test_prefetch_failure_cancels_and_awaits_other_downloads(monkeypatch, error)
     asyncio.run(run())
 
 
-def test_prefetch_reuses_finished_slots_while_one_file_is_slow(monkeypatch):
+@pytest.mark.parametrize("duplicates", [False, True])
+def test_prefetch_reuses_finished_slots_while_one_file_is_slow(monkeypatch, duplicates):
     async def run():
         later_started = asyncio.Event()
         release_slow = asyncio.Event()
@@ -579,7 +579,11 @@ def test_prefetch_reuses_finished_slots_while_one_file_is_slow(monkeypatch):
             return True
 
         monkeypatch.setattr(File, "_prefetch", prefetch)
-        names = ["slow", *[str(i) for i in range(PREFETCH_FILE_WORKERS - 1)], "later"]
+        names = (
+            ["slow"] * PREFETCH_FILE_WORKERS + ["later"]
+            if duplicates
+            else ["slow", *[str(i) for i in range(PREFETCH_FILE_WORKERS - 1)], "later"]
+        )
         row = [[File(source="s3://b", path=name) for name in names]]
         task = asyncio.create_task(_prefetch_input(row, batch_columns={0}))
         try:
@@ -661,6 +665,8 @@ def test_prefetch_external_cancellation_awaits_downloads(monkeypatch):
             try:
                 await asyncio.Event().wait()
             finally:
+                if self.path == "b":
+                    await asyncio.sleep(0.01)
                 stopped.append(self.path)
 
         monkeypatch.setattr(File, "_prefetch", prefetch)

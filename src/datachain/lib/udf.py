@@ -509,39 +509,42 @@ async def _prefetch_input(
         for obj in _row_files(row, batch_columns)
         if obj.path and (max_size is None or 0 < obj.size <= max_size)
     ]
-    pending = iter(files)
-    locks: dict[str, asyncio.Lock] = {}
+    targets: dict[str, list[File]] = {}
+    for obj in files:
+        try:
+            target = obj
+            if obj.location:
+                target = VFileRegistry.parent(obj, obj.location)  # type: ignore[arg-type]
+            targets.setdefault(target.get_hash(), []).append(obj)
+        except FileError as e:
+            logger.warning("Skipping prefetch for '%s/%s': %s", obj.source, obj.path, e)
+    pending = iter(targets.values())
 
     async def download() -> None:
-        for obj in pending:
-            try:
-                if len(files) > 1:
-                    target = obj
-                    if obj.location:
-                        target = VFileRegistry.parent(obj, obj.location)  # type: ignore[arg-type]
-                    async with locks.setdefault(target.get_hash(), asyncio.Lock()):
-                        prefetched = await obj._prefetch(download_cb)
-                else:
+        for group in pending:
+            for obj in group:
+                try:
                     prefetched = await obj._prefetch(download_cb)
-                if prefetched:
-                    after_prefetch()
-            except FileError as e:
-                logger.warning(
-                    "Skipping prefetch for '%s/%s': %s", obj.source, obj.path, e
-                )
+                    if prefetched:
+                        after_prefetch()
+                except FileError as e:
+                    logger.warning(
+                        "Skipping prefetch for '%s/%s': %s", obj.source, obj.path, e
+                    )
 
-    if len(files) < 2:
+    if len(targets) < 2:
         await download()
         return row
     tasks = [
         asyncio.create_task(download())
-        for _ in range(min(len(files), PREFETCH_FILE_WORKERS))
+        for _ in range(min(len(targets), PREFETCH_FILE_WORKERS))
     ]
     try:
         await asyncio.gather(*tasks)
     except BaseException:
         for task in tasks:
-            task.cancel()
+            if not task.done() and not task.cancelling():
+                task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         raise
     return row
