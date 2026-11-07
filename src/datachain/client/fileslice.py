@@ -36,12 +36,13 @@ class FileWrapper(io.BufferedIOBase):
         if size is None or size < 0:
             data = self.fileobj.read(-1)
         else:
-            data = self.fileobj.read(size)
-            # Streams without range support may return less; buffered reads don't
-            while 0 < len(data) < size and (
-                more := self.fileobj.read(size - len(data))
-            ):
-                data += more
+            parts = [self.fileobj.read(size)]
+            received = len(parts[0])
+            # Streams without range support may return less; buffered reads don't.
+            while 0 < received < size and (more := self.fileobj.read(size - received)):
+                parts.append(more)
+                received += len(more)
+            data = b"".join(parts)
         self.callback.relative_update(len(data))
         return data
 

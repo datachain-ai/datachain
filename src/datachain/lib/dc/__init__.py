@@ -6,6 +6,7 @@ from .datachain import C, Column, ColumnExpr, DataChain, DataChainSchema
 from .datasets import datasets, delete_dataset, move_dataset, read_dataset
 from .hf import read_hf
 from .json import read_json
+from .lerobot import read_lerobot
 from .listings import listings
 from .pandas import read_pandas
 from .parquet import read_parquet
@@ -37,6 +38,7 @@ __all__ = [
     "read_dataset",
     "read_hf",
     "read_json",
+    "read_lerobot",
     "read_pandas",
     "read_parquet",
     "read_records",

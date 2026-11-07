@@ -103,3 +103,31 @@ def test_file_slice_readinto_int_array_larger_than_slice_reads_slice():
     buf = array("I", [0] * 4)
     assert f.readinto(buf) == 10
     assert bytes(buf)[:10] == bytes(range(10))
+
+
+@pytest.mark.parametrize("prefix", [0, 7])
+def test_wrapper_reads_remainder_in_one_call(prefix, mocker):
+    from fsspec.callbacks import Callback
+
+    data = b"a" * (256 * 1024)
+    source = io.BytesIO(data)
+    read = mocker.spy(source, "read")
+    callback = Callback()
+    with FileWrapper(source, callback) as stream:
+        assert stream.read(prefix) == data[:prefix]
+        read.reset_mock()
+        assert stream.read() == data[prefix:]
+        read.assert_called_once_with(-1)
+        assert callback.value == len(data)
+    assert source.closed
+
+
+def test_slice_reads_remainder_in_one_call(mocker):
+    data = b"a" * (256 * 1024)
+    source = io.BytesIO(b"header" + data + b"trailer")
+    read = mocker.spy(source, "read")
+    with FileSlice(source, 6, len(data), "member") as stream:
+        assert stream.read(7) == data[:7]
+        assert stream.read() == data[7:]
+        assert stream.read() == b""
+    assert read.call_count == 2
