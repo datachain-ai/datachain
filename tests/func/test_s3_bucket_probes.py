@@ -300,16 +300,35 @@ def test_probe_preserves_an_unresolved_redirect(endpoints, statuses):
 
 
 @pytest.mark.parametrize("in_loop", [False, True])
-def test_filesystem_without_credentials_is_anonymous(in_loop):
+@pytest.mark.parametrize("session", [False, True])
+def test_filesystem_without_credentials_is_anonymous(in_loop, session):
     async def create():
-        return ClientS3.create_fs(skip_instance_cache=True)
+        return ClientS3.create_fs(**kwargs)
 
-    fs = (
-        sync(get_loop(), create)
-        if in_loop
-        else ClientS3.create_fs(skip_instance_cache=True)
-    )
+    kwargs = {"skip_instance_cache": True, **({"session": None} if session else {})}
+    fs = sync(get_loop(), create) if in_loop else ClientS3.create_fs(**kwargs)
     assert fs.anon
+
+
+def test_shared_config_region_does_not_reuse_another_partitions_bucket(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "config"
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(path))
+    for name in (
+        "AWS_REGION",
+        "AWS_DEFAULT_REGION",
+        "AWS_PROFILE",
+        "AWS_DEFAULT_PROFILE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    path.write_text("[default]\nregion = us-west-2\n")
+    key = s3._region_key("bucket", {})
+    assert key is not None
+    s3._BUCKET_REGIONS[key] = "us-west-2"
+    path.write_text("[default]\nregion = cn-north-1\n")
+    client = ClientS3.from_name("bucket", None, _CREDENTIALS)
+    assert client.fs_kwargs.get("region_name") != "us-west-2"
 
 
 @pytest.mark.parametrize(

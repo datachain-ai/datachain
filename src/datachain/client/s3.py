@@ -82,6 +82,7 @@ def _region_key(name: str, kwargs: dict[str, Any]) -> tuple | None:
         or config_kwargs.get("region_name")
         or os.environ.get("AWS_REGION")
         or os.environ.get("AWS_DEFAULT_REGION")
+        or scoped.get("region")
     )
     return name, profile, region
 
@@ -92,7 +93,7 @@ def _has_credentials(kwargs: dict[str, Any]) -> bool:
         kwargs.get("key")
         or kwargs.get("username")
         or client_kwargs.get("aws_access_key_id")
-        or "session" in kwargs
+        or kwargs.get("session") is not None
     ):
         return True
     env = frozenset(
