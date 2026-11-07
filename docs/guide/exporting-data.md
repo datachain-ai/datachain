@@ -41,10 +41,18 @@ chain.to_storage("./local-copy/", signal="file", placement="filepath")
 ```
 
 Object keys can contain empty segments, such as `d//e.txt`. Local `to_storage`
-exports skip paths with empty segments and log a warning; cloud storage with a
+exports skip files whose destination path has an empty segment (with the
+`filepath` and `fullpath` placements) and log a warning; cloud storage with a
 flat namespace preserves them. Azure Data Lake Storage Gen2 accounts with a
 hierarchical namespace normalize empty segments, so use `placement="etag"` when
 exporting these keys there to avoid overwriting a distinct key such as `d/e.txt`.
+
+`File.rebase()` rejects empty key segments when building a local destination,
+including `file://` URIs, to prevent distinct object keys from overwriting the
+same local file. This also protects rebased paths passed to `open()`, media
+writers or `File.upload()`. Hand-built local paths use the operating system's
+normal path rules; choose an explicit filename or `placement="etag"` for keys
+that a local filesystem cannot preserve.
 
 ## PyTorch DataLoader Integration
 

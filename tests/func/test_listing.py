@@ -116,7 +116,7 @@ def test_parse_listing_uri_with_glob(cloud_test_catalog):
     ctc = cloud_test_catalog
     dataset_name, listing_uri, listing_path = parse_listing_uri(f"{ctc.src_uri}/dogs/*")
     assert dataset_name == _sanitize_ds_name(f"lst__{ctc.src_uri}/dogs/")
-    assert listing_uri == f"{ctc.src_uri}/dogs"
+    assert listing_uri == f"{ctc.src_uri}/dogs/"
     assert listing_path == "dogs/*"
 
 
