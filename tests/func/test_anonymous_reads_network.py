@@ -30,6 +30,7 @@ def _anon_env(tmp_path, drop_prefix):
     env = {k: v for k, v in os.environ.items() if not k.startswith(drop_prefix)}
     env |= {
         "DATACHAIN_ROOT_DIR": str(tmp_path),
+        "DATACHAIN_DIR": str(tmp_path / ".datachain"),
         "CLOUDSDK_CONFIG": str(tmp_path / "gcloud"),
     }
     return env

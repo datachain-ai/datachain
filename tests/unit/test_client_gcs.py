@@ -312,6 +312,16 @@ def test_create_fs_keeps_credentials():
 
 
 @pytest.mark.usefixtures("no_gcp_credentials")
+def test_nonmatching_cached_credentials_use_anonymous_reads(monkeypatch):
+    monkeypatch.setattr(
+        "gcsfs.credentials.GoogleCredentials.tokens",
+        {("another-project", "read_only"): Credentials("unrelated")},
+    )
+    fs = GCSClient.create_fs(project="public-project", skip_instance_cache=True)
+    assert fs.storage_options.get("token") == "anon"
+
+
+@pytest.mark.usefixtures("no_gcp_credentials")
 def test_broken_explicit_credentials_keep_authentication_error(monkeypatch, tmp_path):
     from google.auth.exceptions import DefaultCredentialsError
 
