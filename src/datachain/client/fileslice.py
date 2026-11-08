@@ -47,7 +47,11 @@ class FileWrapper(io.BufferedIOBase):
         return data
 
     def read1(self, size: int | None = -1) -> bytes:
-        return self.read(io.DEFAULT_BUFFER_SIZE if size is None or size < 0 else size)
+        size = io.DEFAULT_BUFFER_SIZE if size is None or size < 0 else size
+        read = getattr(self.fileobj, "read1", self.fileobj.read)
+        data = read(size)
+        self.callback.relative_update(len(data))
+        return data
 
     def close(self):
         self.fileobj.close()
@@ -109,7 +113,17 @@ class FileSlice(io.BufferedIOBase):
         return data
 
     def read1(self, size: int | None = -1) -> bytes:
-        return self.read(io.DEFAULT_BUFFER_SIZE if size is None or size < 0 else size)
+        size = io.DEFAULT_BUFFER_SIZE if size is None or size < 0 else size
+        n = min(size, self.size - self.position)
+        if n <= 0:
+            return b""
+        self.fileobj.seek(self.offset + self.position)
+        read = getattr(self.fileobj, "read1", self.fileobj.read)
+        data = read(n)
+        if not data:
+            raise RuntimeError("unexpected end of data")
+        self.position += len(data)
+        return data
 
     def close(self):
         self.fileobj.close()

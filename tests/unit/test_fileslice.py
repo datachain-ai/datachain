@@ -131,3 +131,48 @@ def test_slice_reads_remainder_in_one_call(mocker):
         assert stream.read() == data[7:]
         assert stream.read() == b""
     assert read.call_count == 2
+
+
+@pytest.mark.parametrize("slice_member", [False, True])
+@pytest.mark.parametrize("has_read1", [False, True])
+def test_read1_returns_an_available_short_chunk_once(slice_member, has_read1):
+    from fsspec.callbacks import Callback
+
+    class ShortReader(io.RawIOBase):
+        def __init__(self):
+            self.data = io.BytesIO(b"prefixline\nnext\nsuffix")
+            self.calls = 0
+
+        def read(self, size=-1):
+            self.calls += 1
+            return self.data.read(min(5, size))
+
+        def seek(self, *args):
+            return self.data.seek(*args)
+
+        def seekable(self):
+            return True
+
+    class ShortBufferedReader(ShortReader):
+        def read1(self, size=-1):
+            return super().read(size)
+
+        def read(self, size=-1):
+            raise AssertionError("read1 must not call the filling read")
+
+    source = ShortBufferedReader() if has_read1 else ShortReader()
+    source.seek(6)
+    callback = Callback()
+    wrapped = FileWrapper(source, callback)
+    stream = FileSlice(wrapped, 6, 10, "member") if slice_member else wrapped
+
+    assert stream.read1(100 if slice_member else 10) == b"line\n"
+    assert source.calls == 1
+    assert callback.value == 5
+    if slice_member:
+        assert stream.tell() == 5
+        assert stream.read1(100) == b"next\n"
+        assert stream.read1(100) == b""
+        assert stream.tell() == 10
+        assert source.calls == 2
+        assert callback.value == 10
