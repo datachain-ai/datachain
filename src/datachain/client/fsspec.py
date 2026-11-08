@@ -639,6 +639,7 @@ class Client(ABC):
             if cached := self.cache.get_path(file):
                 shutil.copyfile(cached, tmp)
             else:
+                self.check_unchanged(file)
                 sync(get_loop(), self._download_stream, file, tmp, callback)
             os.replace(tmp, lpath)
         except BaseException:
