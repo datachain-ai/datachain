@@ -560,3 +560,17 @@ def test_hadoop_folder_markers_are_not_files():
     _, _, paths = _listed("".join(blobs))
 
     assert paths == ["year=2008/month=1/part-0.parquet"]
+
+
+def test_identity_probe_cache_evicts_old_configurations(no_azure_env, mocker):
+    probe = mocker.patch("datachain.client.azure._finds_no_identity", return_value=True)
+    for timeout in range(1, 18):
+        assert AzureClient.create_fs(
+            account_name="account", process_timeout=timeout
+        ).anon
+    assert probe.call_count == 17
+
+    assert AzureClient.create_fs(account_name="account", process_timeout=1).anon
+    assert probe.call_count == 18
+    assert AzureClient.create_fs(account_name="account", process_timeout=17).anon
+    assert probe.call_count == 18
