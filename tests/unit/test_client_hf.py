@@ -171,16 +171,30 @@ def test_open_object_huggingface_block_size_zero_reads_only_asked_bytes(
     ]
 
 
-def test_pinned_version_is_read_by_revision():
-    client = HfClient("datasets/org/repo", {}, Mock(spec=Cache))
-    client._fs = Mock()
-    client._fs._get_file = AsyncMock()
-
-    sync(get_loop(), client.get_file, "org/repo/a.txt", "local/a", None, "commit123")
-
-    client._fs._get_file.assert_awaited_once_with(
-        "org/repo/a.txt", "local/a", callback=None, revision="commit123"
+def test_cache_fill_with_branch_uri_downloads_listed_commit(catalog, monkeypatch):
+    monkeypatch.setattr(
+        hf_file_system.HfFileSystem,
+        "_repo_and_revision_exist",
+        lambda *a, **kw: (True, None),
     )
+    client = HfClient("datasets", {"token": False}, catalog.cache)
+    monkeypatch.setattr(
+        client.fs.sync_fs, "info", lambda *a, **kw: {"size": 4, "type": "file"}
+    )
+    urls = []
+
+    def download(url, temp_file, **kwargs):
+        urls.append(url)
+        temp_file.write(b"data")
+
+    monkeypatch.setattr(hf_file_system, "http_get", download)
+    file = File(source=client.uri, path="org/repo@main/a.txt", size=4, version="c1")
+
+    client.put_in_cache(file)
+
+    assert [url.split("/resolve/")[1] for url in urls] == ["c1/a.txt"]
+    with client.open_object(file) as stream:
+        assert stream.read() == b"data"
 
 
 @pytest.mark.parametrize(
@@ -220,19 +234,25 @@ def test_open_reads_listed_commit_with_revision_in_uri(
     assert file.path == path
 
 
-def test_unpinned_uri_keeps_branch_and_at_in_filename(catalog, monkeypatch):
-    from huggingface_hub import HfFileSystem
-
+@pytest.mark.parametrize(
+    "path,revision,expected",
+    [
+        ("datasets/org/repo@main/a@b.txt", None, ("main", "a@b.txt")),
+        ("datasets/org/repo@main/a@b.txt", "c1", ("c1", "a@b.txt")),
+        ("datasets/org/repo/a@b.txt", "c1", ("c1", "a@b.txt")),
+    ],
+)
+def test_resolve_path_keeps_at_sign_in_file_name(
+    catalog, monkeypatch, path, revision, expected
+):
     monkeypatch.setattr(
-        HfFileSystem, "_repo_and_revision_exist", lambda *a, **kw: (True, None)
+        hf_file_system.HfFileSystem,
+        "_repo_and_revision_exist",
+        lambda *a, **kw: (True, None),
     )
     fs = HfClient("datasets", {"token": False}, catalog.cache).fs.sync_fs
-    assert fs.resolve_path("datasets/org/repo@main/a@b.txt").revision == "main"
-    from datachain.client.hf_file_system import _drop_path_revision
-
-    assert (
-        _drop_path_revision("datasets/org/repo/a@b.txt") == "datasets/org/repo/a@b.txt"
-    )
+    resolved = fs.resolve_path(path, revision=revision)
+    assert (resolved.revision, resolved.path_in_repo) == expected
 
 
 def test_hf_filesystem_is_pickleable(catalog):
