@@ -366,7 +366,7 @@ def validate_frame_range(
     _validate_video_stream_index(video_stream_index)
 
     if end is None:
-        end = video_info(video, video_stream_index=video_stream_index).frames
+        end = video.get_info(video_stream_index=video_stream_index).frames
 
     if end < 0:
         raise ValueError("end_frame must be a non-negative integer.")
@@ -393,7 +393,7 @@ def _frames_block_size(
     video: VideoFile, start: int, end: int, video_stream_index: int
 ) -> int | None:
     """Small blocks for a short window from mid-file, where read-ahead is wasted."""
-    if start == 0:
+    if start == 0 or video.size <= 0:
         return None
     try:
         frames = video.get_info(video_stream_index=video_stream_index).frames

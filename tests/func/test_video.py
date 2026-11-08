@@ -1354,13 +1354,15 @@ def test_save_fragments(tmp_path, video_file):
     [
         (0, None, None),
         (100, None, PARTIAL_READ_BLOCK_SIZE),
+        (100, 0, None),
+        (100, -1, None),
         (100, 10**12, None),
     ],
 )
 def test_get_frames_block_size_by_window(video_file, mocker, start, size, block_size):
     video = video_file.as_video_file()
     video.get_info()
-    if size:
+    if size is not None:
         video = video.model_copy(update={"size": size})
     open_spy = mocker.spy(VideoFile, "open")
 
@@ -1455,3 +1457,15 @@ def test_get_frames_uses_default_blocks_without_frame_count(
         np.testing.assert_array_equal(frame.get_np(), pixels)
     open_spy.assert_called_once()
     assert open_spy.call_args.kwargs.get("block_size") is None
+
+
+def test_get_frames_reuses_metadata_when_end_is_omitted(video_file, mocker):
+    from datachain.lib import video as video_module
+
+    video = video_file.as_video_file()
+    info = mocker.spy(video_module, "video_info")
+
+    frames = list(video.get_frames(100))
+
+    assert frames
+    info.assert_called_once()
