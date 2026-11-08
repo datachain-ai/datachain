@@ -20,6 +20,7 @@ from .records import read_records
 from .storage import Listing, list_storage, read_storage
 from .utils import DatasetMergeError, DatasetPrepareError, Sys, is_local, is_studio
 from .values import read_values
+from .webdataset import read_webdataset
 from .zarr import read_zarr
 
 __all__ = [
@@ -51,5 +52,6 @@ __all__ = [
     "read_records",
     "read_storage",
     "read_values",
+    "read_webdataset",
     "read_zarr",
 ]

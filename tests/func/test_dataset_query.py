@@ -1052,12 +1052,12 @@ def test_dataset_dependencies_one_dataset_as_dependency(
     ] == expected
 
 
-@pytest.mark.parametrize("method", ["union", "join"])
+@pytest.mark.parametrize("method", ["union", "join", "subtract"])
 def test_dataset_dependencies_multiple_direct_dataset_dependencies(
     cloud_test_catalog, dogs_dataset, cats_dataset, method
 ):
     # multiple direct dataset dependencies can be achieved with methods that are
-    # combining multiple DatasetQuery instances into new one like union or join
+    # combining multiple DatasetQuery instances, like union, join or subtract
     ds_name = uuid.uuid4().hex
     catalog = cloud_test_catalog.catalog
     listing = catalog.listings()[0]
@@ -1068,8 +1068,10 @@ def test_dataset_dependencies_multiple_direct_dataset_dependencies(
 
     if method == "union":
         dogs.union(cats).save(ds_name)
-    else:
+    elif method == "join":
         dogs.join(cats, "file__path").save(ds_name)
+    else:
+        dogs.subtract(cats, [("file__path", "file__path")]).save(ds_name)
 
     storage_depenedncy = {
         "id": ANY,

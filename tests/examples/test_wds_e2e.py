@@ -8,9 +8,10 @@ import pytest
 
 import datachain as dc
 from datachain.lib.file import File
-from datachain.lib.webdataset import process_webdataset
+from datachain.lib.webdataset import WDSAllFile, process_webdataset
 from datachain.lib.webdataset_laion import Laion, WDSLaion
 from tests.examples.wds_data import WDS_META, WDS_TAR_SHARDS
+from tests.utils import make_tar
 
 
 @pytest.fixture
@@ -129,3 +130,69 @@ def test_wds_merge_with_parquet_meta(
         assert laion_uid == uid
     for caption, text in res.to_iter("laion.json.caption", "text"):
         assert caption == text
+
+
+def test_read_webdataset_matches_gen(test_session, webdataset_tars):
+    uri = Path(webdataset_tars).as_uri()
+    expected = (
+        dc.read_storage(uri, session=test_session)
+        .gen(laion=process_webdataset(spec=WDSLaion))
+        .order_by("laion.file.path")
+        .to_values("laion")
+    )
+
+    res = dc.read_webdataset(uri, spec=WDSLaion, column="laion", session=test_session)
+
+    assert res.schema == {"laion": WDSLaion}
+    assert res.order_by("laion.file.path").to_values("laion") == expected
+    assert len(expected) == len(WDS_TAR_SHARDS)
+    assert {r.file.read() for r in res.to_values("laion")} == {b"123"}
+
+
+def test_read_webdataset_defaults_skip_non_tar_files(test_session, webdataset_tars):
+    shard = (webdataset_tars / "00000000.tar").read_bytes()
+    (webdataset_tars / "00000001.tar").write_bytes(shard)
+    (webdataset_tars / "00000002.tar.gz").write_bytes(shard)
+    (webdataset_tars / "00000000_stats.json").write_text("{}")
+
+    res = dc.read_webdataset(Path(webdataset_tars).as_uri(), session=test_session)
+
+    assert res.schema == {"wds": WDSAllFile}
+    rows = res.to_list("wds.txt", "wds.file.path")
+    assert sorted(txt for txt, _ in rows) == sorted(
+        2 * [d["caption"] for d in WDS_TAR_SHARDS]
+    )
+    assert {path.split("/")[0] for _, path in rows} == {"00000000.tar", "00000001.tar"}
+
+
+@pytest.mark.parametrize(
+    "options,column,values",
+    [
+        ({"encoding": "latin-1"}, "wds.txt", ["Ã©"]),
+        ({"core_extensions": ("txt",)}, "wds.file.path", ["shard.tar/0.txt"]),
+    ],
+)
+def test_read_webdataset_save_after_option_change_rebuilds(
+    test_session, tmp_path, options, column, values
+):
+    (tmp_path / "shard.tar").write_bytes(make_tar({"0.cap": "c", "0.txt": "é"}))
+    base = {"core_extensions": ("cap",), "session": test_session}
+    dc.read_webdataset(tmp_path.as_uri(), **base).save("samples")
+
+    dc.read_webdataset(tmp_path.as_uri(), **(base | options)).save("samples")
+
+    assert dc.read_dataset("samples", session=test_session).to_values(column) == values
+
+
+def test_read_webdataset_ignores_core_extensions_changed_after_the_call(
+    test_session, tmp_path
+):
+    (tmp_path / "shard.tar").write_bytes(make_tar({"0.cap": "c", "0.txt": "t"}))
+    extensions = ["cap"]
+    chain = dc.read_webdataset(
+        tmp_path.as_uri(), core_extensions=extensions, session=test_session
+    )
+
+    extensions[0] = "txt"
+
+    assert chain.to_values("wds.file.path") == ["shard.tar/0.cap"]
