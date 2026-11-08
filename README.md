@@ -1,376 +1,179 @@
-# ![DataChain](docs/assets/datachain.svg) DataChain: The Context Layer for Unstructured Data
+# ![DataChain](https://raw.githubusercontent.com/datachain-ai/datachain/main/docs/assets/datachain.svg) Data preparation and exploration for Physical AI
 
 [![PyPI](https://img.shields.io/pypi/v/datachain.svg)](https://pypi.org/project/datachain/)
-[![Python Version](https://img.shields.io/pypi/pyversions/datachain)](https://pypi.org/project/datachain)
-[![Codecov](https://codecov.io/gh/datachain-ai/datachain/graph/badge.svg?token=byliXGGyGB)](https://codecov.io/gh/datachain-ai/datachain)
+[![Python Version](https://img.shields.io/pypi/pyversions/datachain)](https://pypi.org/project/datachain/)
 [![Tests](https://github.com/datachain-ai/datachain/actions/workflows/tests.yml/badge.svg)](https://github.com/datachain-ai/datachain/actions/workflows/tests.yml)
-[![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/datachain-ai/datachain)
 
-**A Python library that turns files in S3, GCS, and Azure into versioned, typed datasets, queryable at warehouse speed.**
+DataChain is a Python library for processing large file collections in S3, GCS, Azure and local storage.
+Run your readers and models over images, video, audio and sensor recordings, then save the results as typed, versioned datasets.
 
-- **Compute Engine**: parallel Python over files, distributed on Studio. Async I/O, checkpoint recovery, incremental updates.
-- **Dataset DB**: Pydantic schemas, versioning, file pointers, automatic lineage. Sub-second filter, join, and group_by over millions of typed records locally, hundreds of millions on Studio. Vector search over the same rows, no separate store.
+Query saved metadata to find relevant files, episodes and clips. Build new training selections from existing
+labels, embeddings and features without repeating the original processing. Your coding agent can inspect
+the saved results and producing code, then continue the work in a new session.
 
-Optional, for agent workflows:
+- **Training and evaluation:** combine metadata and model outputs, select useful examples, and export datasets to training tools.
+- **Physical AI and robotics:** select recordings by sensor topics, extract video frames, and curate data for robot learning.
+- **Data exploration:** investigate model failures, find rare conditions and gaps in data coverage, and answer new questions from saved results.
+- **Large inventories:** discover millions of objects using storage metadata, before reading their contents.
 
-- **Knowledge Base**: markdown summaries derived from the Dataset DB and enriched by LLM. Readable by humans and LLMs.
-- **Agent Harness**: a skill that plugs all three into Claude Code, Cursor, Codex, GitHub Copilot, and Pi, so they understand your data. On Studio, agents reach the same datasets over MCP.
+DataChain handles parallel workers, download overlap and checkpoints; your Python defines the processing.
+`File` gives readers streaming access or a reusable local cache; delta updates process changed files and reuse saved results.
+LeRobot episodes, MCAP time windows and WebDataset samples use the same Python API.
 
-Bytes never leave your storage. Every run deposits a typed dataset the next pipeline (or agent) reads instead of recomputing.
+[Quickstart](#quickstart) · [Python API](#the-python-pipeline) · [Examples](#python-and-more-examples)
 
-## 1. Install
+## Performance
 
-```bash
-pip install datachain
-```
+### Object storage
 
-To add the agent skill (Knowledge Base + code generation):
+DataChain was **~10× faster than rclone and s5cmd** when listing and saving **10M S3 object versions**.
+Below: **257K objects per store**.
 
-```bash
-datachain skill install --target claude     # also: cursor, codex, copilot, pi
-```
+| Tool | S3 | GCS | Azure |
+|---|---:|---:|---:|
+| **DataChain** | **15 s** | **7 s** | **26 s** |
+| rclone | 23 s (1.5×) | 20 s (2.9×) | 95 s (3.7×) |
+| obstore | 20 s (1.3×) | 15 s (2.1×) | 66 s (2.5×) |
+| AWS CLI / gcloud / azcopy | 66 s (4.4×) | 175 s (25×) | 94 s (3.6×) |
 
-Works with S3, GCS, Azure, and local filesystems.
+Times include saving. [Full comparison, including faster single-cloud tools](https://github.com/datachain-ai/datachain/blob/main/docs/benchmarks.md#comparison-with-dedicated-listing-tools).
 
-## 2. Quickstart: agent-driven pipeline
+### Training-data workflows
 
-Task: find dogs in S3 similar to a reference image, filtered by breed, mask availability, and image dimensions.
+DataChain created and read these training selections **2.1–8.1× faster**:
 
-Grab a reference image and run Claude Code (or other agent):
-```bash
-datachain cp --anon s3://dc-readme/fiona.jpg .
+| Workload | Compared with | Speedup |
+|---|---|---:|
+| LeRobot: 300 DROID episodes (S3) | LeRobot streaming (HF Hub) | **8.1×** |
+| MCAP: 207 grasp clips | `mcap filter` | **2.1×** |
 
-claude
-```
+Development runs; DROID compares S3 with HF Hub. [Details](https://github.com/datachain-ai/datachain/blob/main/docs/benchmarks.md#training-subsets-across-file-formats).
 
-Prompt:
-```prompt
-Find dogs in s3://dc-readme/oxford-pets-micro/ similar to ./fiona.jpg:
-  - Pull breed metadata and mask files from annotations/
-  - Exclude images without mask
-  - Exclude Cocker Spaniels
-  - Only include images wider than 400px
-```
+### Coding agents
 
-Result:
-```
-  ┌──────┬───────────────────────────────────┬────────────────────────────┬──────────┐
-  │ Rank │               Image               │           Breed            │ Distance │
-  ├──────┼───────────────────────────────────┼────────────────────────────┼──────────┤
-  │    1 │ shiba_inu_52.jpg                  │ shiba_inu                  │    0.244 │
-  ├──────┼───────────────────────────────────┼────────────────────────────┼──────────┤
-  │    2 │ shiba_inu_53.jpg                  │ shiba_inu                  │    0.323 │
-  ├──────┼───────────────────────────────────┼────────────────────────────┼──────────┤
-  │    3 │ great_pyrenees_17.jpg             │ great_pyrenees             │    0.325 │
-  └──────┴───────────────────────────────────┴────────────────────────────┴──────────┘
+DataChain + skill delivered verified results **up to 2.7× faster** than no skill.
 
-  Fiona's closest matches are shiba inus (both top spots), which makes sense given her
-  tan coloring and pointed ears.
-```
+| Agent / LLM | Task | Speedup |
+|---|---|---:|
+| Claude Code / Opus 5.5 | Held-out media tasks | **2.69×** |
+| Codex / GPT-6.1 Sol | Bucket inventory | **1.67×** |
+| Codex / GPT-6.1 Sol | Video updates | **2.05×** |
 
-The agent decomposed the task into steps - embeddings, breed metadata, mask join, quality filter - and saved each as a named, versioned dataset. Next time you ask a related question, it starts from what's already built.
+Codex: two runs per development task; no overall gain in held-out tests. [Details](https://github.com/datachain-ai/datachain/blob/main/docs/benchmarks.md#codex-on-development-tasks).
 
-The datasets are registered in a Knowledge Base optimized for both agents and humans:
+## Quickstart
+
+In an empty project directory, install DataChain:
 
 ```bash
-dc-knowledge
-├── buckets
-│   └── s3
-│       └── dc_readme.md
-├── datasets
-│   ├── oxford_micro_dog_breeds.md
-│   ├── oxford_micro_dog_embeddings.md
-│   └── similar_to_fiona.md
-└── index.md
+pip install 'datachain[video]'
 ```
 
-Browse it as markdown files, navigate with wikilinks, or open in [Obsidian](https://obsidian.md/):
-
-![Visualize data Knowledge Base](docs/assets/readme_obsidian.gif)
-
-
-## 3. Data Harness
-
-Code harnesses (Claude Code, Cursor, Codex, GitHub Copilot, Pi) give agents repo context, dedicated tools, and memory across sessions. DataChain adds the same for data: typed datasets the agent reads, chain operations the agent calls (`read_storage`, `map`, `save`), a Dataset DB where its results persist.
-
-<p align="center">
-  <img src="docs/assets/harness.svg" alt="DataChain as a data harness" width="500" />
-</p>
-
-A **dataset** is the unit of work - a named, versioned result of a pipeline step like `pets_embeddings@1.0.0`. Every `.save()` registers one.
-
-For the data-flow architecture (Compute Engine, Dataset DB, Knowledge Base) and how the components connect, see [Architecture](https://www.datachain.ai/docs/architecture).
-
-
-## 4. Core concepts
-
-### 4.1. Dataset
-
-A dataset is a versioned data reasoning step - what was computed, from what input, producing what schema. DataChain indexes your storage into one: no data copied, just typed metadata and file pointers. Re-runs only process new or changed files.
-
-Create a dataset manually `create_dataset.py`:
-```python
-from PIL import Image
-import io
-from pydantic import BaseModel
-import datachain as dc
-
-
-class ImageInfo(BaseModel):
-    width: int
-    height: int
-
-
-def get_info(file: dc.File) -> ImageInfo:
-    img = Image.open(io.BytesIO(file.read()))
-    return ImageInfo(width=img.width, height=img.height)
-
-
-ds = (
-    dc.read_storage(
-        "s3://dc-readme/oxford-pets-micro/images/**/*.jpg",
-        anon=True,
-        update=True,
-        delta=True,  # re-runs skip unchanged files
-    )
-    .settings(prefetch=64)
-    .map(info=get_info)
-    .save("pets_images")
-)
-ds.show(5)
-```
-
-`pets_images@1.0.0` is now the shared reference to this data - schema, version, lineage, and metadata.
-
-Every `.save()` registers the dataset in the **Dataset DB**, DataChain's persistent store for schemas, versions, lineage, and processing state, kept locally in SQLite DB `.datachain/db`. Pipelines reference datasets by name, not paths. When the code or input data changes, the next run bumps dataset version.
-
-This is what makes a **dataset a management unit:** owned, versioned, and queryable by everyone on the team.
-
-### 4.2. Schemas and types
-
-DataChain uses Pydantic to define the shape of every column. The return type of your UDF becomes the dataset schema - each field a queryable column in the Dataset DB.
-
-`show()` in the previous script renders nested fields as dotted columns:
+For a coding agent, also install the skill and start a new agent session in that directory:
 
 ```bash
-                                          file    file  info   info
-                                          path    size width height
-0  oxford-pets-micro/images/Abyssinian_141.jpg  111270   461    500
-1  oxford-pets-micro/images/Abyssinian_157.jpg  139948   500    375
-2  oxford-pets-micro/images/Abyssinian_175.jpg   31265   600    234
-3  oxford-pets-micro/images/Abyssinian_220.jpg   10687   300    225
-4    oxford-pets-micro/images/Abyssinian_3.jpg   61533   600    869
-
-[Limited by 5 rows]
+datachain skill install --target claude --local
+# Or: --target codex, cursor, copilot, pi
 ```
 
-`print(ds.schema)` renders its schema:
-```bash
-file: File@v1
-  source: str
-  path: str
-  size: int
-  version: str
-  etag: str
-  is_latest: bool
-  last_modified: datetime
-  location: Union[dict, list[dict], NoneType]
-info: ImageInfo
-  width: int
-  height: int
+Ask your agent:
+
+```text
+Prepare a training selection from the robot demonstrations at
+s3://robolake/droid/droid_100/
+Score wrist-camera motion over the first second: mean absolute pixel change.
+Keep scores of at least 10. Save the scores, camera references and training manifest.
+Save and run build_episodes.py.
 ```
 
-Models can be arbitrarily nested - a `BBox` inside an `Annotation`, a `List[Citation]` inside an LLM Response - every leaf field stays queryable the same way. The schema lives in the Dataset DB and is enforced at dataset creation time.
+### The Python pipeline
 
-The Dataset DB handles datasets of any size - 100 millions of files, hundreds of metadata rows - without loading anything into memory. **Pandas is limited by RAM; DataChain is not.** Export to pandas when you need it, on a filtered subset:
+Here is the same task in Python. Save it as `build_episodes.py` and run `python build_episodes.py`:
 
 ```python
 import datachain as dc
 
-df = dc.read_dataset("pets_images").filter(dc.C("info.width") > 500).to_pandas()
-print(df)
+
+def motion(camera: dc.VideoFragment) -> float:
+    start = round(camera.start * 15)
+    end = round(camera.end * 15) - 1
+    first = camera.video.get_frame(start).get_np().astype("float32")
+    later = camera.video.get_frame(min(start + 15, end)).get_np()
+    return float(abs(later - first).mean())
+
+
+episodes = dc.read_lerobot("s3://robolake/droid/droid_100/", anon=True)
+scored = (
+    episodes.settings(parallel=4, prefetch=0)
+    .map(motion=motion, params=["videos.observation_images_wrist_image_left"])
+    .save("robot_episodes")
+)
+training = scored.filter(dc.C("motion") >= 10).save("training_episodes")
+training.to_parquet("training_manifest.parquet")
 ```
 
-### 4.3. Fast queries
+This [DROID](https://droid-dataset.github.io/) sample records at 15 fps. Each episode keeps the
+camera files and time windows as references; no video repacking, model download or GPU is needed.
+A reference run produced:
 
-Filters, aggregations, and joins run as vectorized operations directly against the Dataset DB - metadata never leaves your machine, no files downloaded.
+```text
+robot_episodes@1.0.0      100 rows
+training_episodes@1.0.0   63 rows
+training_manifest.parquet
+```
+
+For MCAP sensor logs, create time windows with the same API:
 
 ```python
-import datachain as dc
-
-cnt = (
-    dc.read_dataset("pets_images")
-    .filter(
-        (dc.C("info.width") > 400)
-        & ~dc.C("file.path").ilike("%cocker_spaniel%")  # case-insensitive
-    )
-    .count()
-)
-print(f"Large images with Cocker Spaniel: {cnt}")
+windows = dc.read_mcap("recordings/*.mcap", topics="/joint_states", duration=10)
+windows.save("joint_state_windows")
 ```
 
-Milliseconds, even at 100M-file scale.
-```
-Large images with Cocker Spaniel: 6
-```
+The [standalone MCAP example](https://www.datachain.ai/docs/guide/file-pipelines/#catalog-mcap-recordings) includes local recordings to try.
 
-## 5. Resilient Pipelines
+### Continue in a new session
 
-When computation is expensive, bugs and new data are both inevitable. DataChain tracks processing state in the Dataset DB - so crashes and new data are handled automatically, without changing how you write pipelines.
+Keep the project directory: it contains `.datachain/`, the Python script and the manifest.
+Start a new agent session in the same project and ask:
 
-### 5.1. Data checkpoints
-
-Save to `embed.py`:
-```python
-import open_clip, torch, io
-from PIL import Image
-import datachain as dc
-
-model, _, preprocess = open_clip.create_model_and_transforms(
-    "ViT-B-32", "laion2b_s34b_b79k"
-)
-model.eval()
-
-counter = 0
-
-
-def encode(file: dc.File, model, preprocess) -> list[float]:
-    global counter
-    counter += 1
-    if counter > 236:  # ← bug: remove these two lines
-        raise Exception("some bug")  # ←
-    img = Image.open(io.BytesIO(file.read())).convert("RGB")
-    with torch.no_grad():
-        return model.encode_image(preprocess(img).unsqueeze(0))[0].tolist()
-
-
-(
-    dc.read_dataset("pets_images")
-    .settings(batch_size=100)
-    .setup(model=lambda: model, preprocess=lambda: preprocess)
-    .map(emb=encode)
-    .save("pets_embeddings")
-)
+```text
+Which episodes did we exclude? How many would pass at threshold 5? Use the saved scores.
 ```
 
-It fails due to a bug in the code:
-```
-Exception: some bug
-```
-
-Remove the two marked lines and re-run - DataChain resumes from image 201 (two 100 size batches are completed), the start of the last uncommitted batch:
-
-```
-$ python embed.py
-UDF 'encode': Continuing from checkpoint
-```
-
-### 5.2. Similarity search
-
-The vectors live in the Dataset DB alongside all the metadata - `list[float]` type in pydentic schemas. Querying them is instant - no files re-read and can be combined with not vector filters like `info.width`:
-
-Prepare data:
-```bash
-datachain cp s3://dc-readme/fiona.jpg .
-```
-
-`similar.py`:
-```python
-import open_clip, torch, io
-from PIL import Image
-import datachain as dc
-
-model, _, preprocess = open_clip.create_model_and_transforms(
-    "ViT-B-32", "laion2b_s34b_b79k"
-)
-model.eval()
-
-ref_emb = model.encode_image(preprocess(Image.open("fiona.jpg")).unsqueeze(0))[
-    0
-].tolist()
-
-(
-    dc.read_dataset("pets_embeddings")
-    .filter(dc.C("info.width") > 500)  # from pets_images - no re-read
-    .mutate(dist=dc.func.cosine_distance(dc.C("emb"), ref_emb))
-    .order_by("dist")
-    .limit(3)
-    .show()
-)
-```
-
-Under a second - everything runs against the Dataset DB.
-
-
-### 5.3. Incremental updates
-
-The bucket in this walkthrough is static, so there's nothing new to process. In production, rerun the same scripts when files are added, changed, or deleted. With `delta=True`, new and changed files are processed, results for deleted files are removed, and results for unchanged files are reused:
-
-```python
-$ python create_dataset.py   # 500 new images arrived
-Skipping 10,000 unchanged  ·  indexing 500 new
-Saved pets_images@1.0.1  (+500 records)
-
-# Next day:
-
-$ python create_dataset.py
-Skipping 10,000 unchanged  ·  processing 500 new
-Saved pets_images@1.0.2  (+500 records)
-```
-
-## 6. Knowledge Base
-
-DataChain maintains two layers. The **Dataset DB** is the ground truth: schemas, processing state, lineage, the vectors themselves. **The Knowledge Base** is derived from it: structured markdown for humans and agents to read. Because it's derived, it describes what actually ran rather than what someone wrote down. Rebuild it after a pass to bring it current. The Knowledge Base is stored in `dc-knowledge/`.
-
-Ask the agent to build it (from Claude Code, Cursor, Codex, GitHub Copilot, or Pi):
-```bash
-claude
-```
-
-Prompt:
-```prompt
-Build a Knowledge Base for my current datasets
-```
-
-The skill generates `dc-knowledge/` directory from the Dataset DB - one file per dataset and bucket:
-
-
-## 7. AI-Generated Pipelines
-
-The skill gives the agent data awareness: it reads `dc-knowledge/` to understand what datasets exist, their schemas, which fields can be joined - and the meaning of columns inferred from the code that produced them.
-
-See section `2. Quickstart: agent-driven pipeline` above. All the steps that were manually created could be just generated.
-
-
-## 8. Team and cloud: Studio
-
-Data context built locally stays local. DataChain Studio makes it shared.
+Inspect the saved scores, camera windows and producing code:
 
 ```bash
-datachain auth login
-datachain job run --workers 20 --cluster gpu-pool caption.py
-# ✓ Job submitted → studio.datachain.ai/jobs/1042
-# Resuming from checkpoint (4,218 already done)...
-# Saved oxford-pets-caps@0.0.1  (3,182 processed)
+datachain dataset describe training_episodes --json
+datachain show training_episodes --limit 3
 ```
 
-<p align="center">
-  <img src="docs/assets/studio_architecture.svg" alt="DataChain Studio Architecture" width="600" />
-</p>
+See the [walkthrough](https://www.datachain.ai/docs/guide/file-pipelines/) for versioned reads, robot demonstrations and an image-to-PyTorch example.
 
-Studio adds: shared dataset registry, distributed compute across attached clusters, an MCP endpoint for agents, access control, UI for video/DICOM/NIfTI/point clouds, lineage graphs, reproducible runs.
+**Agents reading this:** start with the [skill](https://github.com/datachain-ai/datachain/blob/main/src/datachain/skill/datachain/SKILL.md).
+[llms.txt](https://github.com/datachain-ai/datachain/blob/main/llms.txt) links to the API and documentation.
 
-Bring Your Own Cloud - all data and compute stay in your infrastructure. AWS, GCP, Azure, on-prem Kubernetes.
+## Python and more examples
 
-→ [studio.datachain.ai](https://studio.datachain.ai)
+- [Robot learning: curate LeRobot episodes](https://www.datachain.ai/docs/guide/file-pipelines/#robot-demonstrations): process camera clips and reuse saved selections.
+- [WebDataset: revise a saved selection](https://www.datachain.ai/docs/guide/file-pipelines/#webdataset-samples): filter samples inside TAR shards without repacking them.
+- [Video datasets: extract frames and timestamps](https://www.datachain.ai/docs/references/data-types/videofile/): read video with `datachain[video]`.
+- [Training: load a saved selection into PyTorch](https://www.datachain.ai/docs/guide/file-pipelines/#feed-pytorch): use a pinned version in a new process.
+- [Public image pipeline](https://www.datachain.ai/docs/guide/file-pipelines/#public-images): typed `.map()`, selection and manifest.
+- [Multi-cloud inventory](https://www.datachain.ai/docs/guide/file-pipelines/#inventory-across-clouds): aggregate S3, GCS and Azure listings.
+- [Updates and resume](https://www.datachain.ai/docs/guide/file-pipelines/#update-and-resume): refresh saved results and continue interrupted work.
 
-## 9. Contributing
+## Where it runs
 
-Contributions are very welcome. To learn more, see the [Contributor Guide](https://www.datachain.ai/docs/contributing).
+Locally, dataset rows and provenance live in `.datachain/db` (SQLite); downloaded files use `.datachain/cache`.
+Keep that project state for later sessions. Local use needs no DataChain account or server.
 
-## 10. Community and Support
+Optional [DataChain Studio](https://datachain.ai) adds shared datasets, versions and jobs, with AI-generated descriptions.
+People and agents can reuse the same catalog through the UI and [MCP](https://www.datachain.ai/docs/studio/user-guide/agents/mcp/).
+Jobs run with or without a cluster; clusters process large workloads across dozens or hundreds of machines.
 
-- [Report an issue](https://github.com/datachain-ai/datachain/issues) if you encounter any problems
-- [Docs](https://www.datachain.ai/docs)
-- [Email](mailto:support@datachain.ai)
-- [Twitter](https://twitter.com/datachain_ai)
+Cloud reads incur normal provider request and transfer charges. The library is
+[Apache-2.0](https://github.com/datachain-ai/datachain/blob/main/LICENSE). [Storage configuration](https://www.datachain.ai/docs/guide/remotes) · [Dataset DB](https://www.datachain.ai/docs/concepts/dataset-db)
+
+[Documentation](https://www.datachain.ai/docs) · [Examples](https://github.com/datachain-ai/datachain/blob/main/examples) ·
+[Contributing](https://www.datachain.ai/docs/contributing) · [Issues](https://github.com/datachain-ai/datachain/issues) ·
+[Discord](https://discord.com/invite/datachain)

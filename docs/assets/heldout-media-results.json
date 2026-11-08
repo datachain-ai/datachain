@@ -1,0 +1,1234 @@
+{
+  "evaluation": "October 2026 held-out media tasks",
+  "build": "pre-release 3a0710ab",
+  "metric": "RMST: each failed run is charged the full 120 minute budget",
+  "bootstrap": {
+    "resamples": 10000,
+    "seed": 20261028
+  },
+  "runs": [
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "claude",
+      "arm": "expert",
+      "rep": 4,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 10.645000000000001,
+      "verified": true,
+      "Y_min": 10.645000000000001
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "claude",
+      "arm": "vanilla",
+      "rep": 4,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 26.923333333333336,
+      "verified": true,
+      "Y_min": 26.923333333333336
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "codex",
+      "arm": "expert",
+      "rep": 4,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 14.488333333333333,
+      "verified": true,
+      "Y_min": 14.488333333333333
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "claude",
+      "arm": "dc",
+      "rep": 4,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 12.93,
+      "verified": true,
+      "Y_min": 12.93
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "codex",
+      "arm": "dc",
+      "rep": 4,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 11.651666666666667,
+      "verified": true,
+      "Y_min": 11.651666666666667
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "codex",
+      "arm": "vanilla",
+      "rep": 4,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 18.711666666666666,
+      "verified": true,
+      "Y_min": 18.711666666666666
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "codex",
+      "arm": "vanilla",
+      "rep": 4,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 8.918333333333333,
+      "verified": true,
+      "Y_min": 8.918333333333333
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "codex",
+      "arm": "expert",
+      "rep": 4,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 8.305,
+      "verified": true,
+      "Y_min": 8.305
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "claude",
+      "arm": "expert",
+      "rep": 4,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 6.431666666666667,
+      "verified": true,
+      "Y_min": 6.431666666666667
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "claude",
+      "arm": "vanilla",
+      "rep": 4,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 19.653333333333332,
+      "verified": true,
+      "Y_min": 19.653333333333332
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "claude",
+      "arm": "dc",
+      "rep": 4,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 8.34,
+      "verified": true,
+      "Y_min": 8.34
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "codex",
+      "arm": "dc",
+      "rep": 4,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 9.711666666666668,
+      "verified": true,
+      "Y_min": 9.711666666666668
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "claude",
+      "arm": "vanilla",
+      "rep": 3,
+      "B_min": 120.0,
+      "success": false,
+      "T_min": 29.173333333333336,
+      "verified": false,
+      "Y_min": 120.0
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "claude",
+      "arm": "dc",
+      "rep": 3,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 12.713333333333333,
+      "verified": true,
+      "Y_min": 12.713333333333333
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "claude",
+      "arm": "expert",
+      "rep": 3,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 16.18,
+      "verified": true,
+      "Y_min": 16.18
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "codex",
+      "arm": "dc",
+      "rep": 3,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 15.281666666666666,
+      "verified": true,
+      "Y_min": 15.281666666666666
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "codex",
+      "arm": "vanilla",
+      "rep": 3,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 15.655,
+      "verified": true,
+      "Y_min": 15.655
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "codex",
+      "arm": "expert",
+      "rep": 3,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 11.263333333333334,
+      "verified": true,
+      "Y_min": 11.263333333333334
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "codex",
+      "arm": "expert",
+      "rep": 2,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 12.04,
+      "verified": true,
+      "Y_min": 12.04
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "claude",
+      "arm": "dc",
+      "rep": 2,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 14.896666666666667,
+      "verified": true,
+      "Y_min": 14.896666666666667
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "codex",
+      "arm": "vanilla",
+      "rep": 2,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 12.678333333333335,
+      "verified": true,
+      "Y_min": 12.678333333333335
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "claude",
+      "arm": "vanilla",
+      "rep": 2,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 30.645,
+      "verified": true,
+      "Y_min": 30.645
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "codex",
+      "arm": "dc",
+      "rep": 2,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 15.135,
+      "verified": true,
+      "Y_min": 15.135
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "claude",
+      "arm": "expert",
+      "rep": 2,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 16.683333333333334,
+      "verified": true,
+      "Y_min": 16.683333333333334
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "claude",
+      "arm": "vanilla",
+      "rep": 0,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 19.858333333333334,
+      "verified": true,
+      "Y_min": 19.858333333333334
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "codex",
+      "arm": "dc",
+      "rep": 0,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 9.966666666666667,
+      "verified": true,
+      "Y_min": 9.966666666666667
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "codex",
+      "arm": "expert",
+      "rep": 0,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 8.473333333333333,
+      "verified": true,
+      "Y_min": 8.473333333333333
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "claude",
+      "arm": "expert",
+      "rep": 0,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 9.573333333333332,
+      "verified": true,
+      "Y_min": 9.573333333333332
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "claude",
+      "arm": "dc",
+      "rep": 0,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 7.946666666666667,
+      "verified": true,
+      "Y_min": 7.946666666666667
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "codex",
+      "arm": "vanilla",
+      "rep": 0,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 12.591666666666667,
+      "verified": true,
+      "Y_min": 12.591666666666667
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "codex",
+      "arm": "expert",
+      "rep": 1,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 11.6,
+      "verified": true,
+      "Y_min": 11.6
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "claude",
+      "arm": "vanilla",
+      "rep": 1,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 53.35333333333333,
+      "verified": true,
+      "Y_min": 53.35333333333333
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "claude",
+      "arm": "dc",
+      "rep": 1,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 19.168333333333333,
+      "verified": true,
+      "Y_min": 19.168333333333333
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "codex",
+      "arm": "dc",
+      "rep": 1,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 13.501666666666667,
+      "verified": true,
+      "Y_min": 13.501666666666667
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "codex",
+      "arm": "vanilla",
+      "rep": 1,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 12.958333333333334,
+      "verified": true,
+      "Y_min": 12.958333333333334
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "claude",
+      "arm": "expert",
+      "rep": 1,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 14.128333333333334,
+      "verified": true,
+      "Y_min": 14.128333333333334
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "claude",
+      "arm": "vanilla",
+      "rep": 1,
+      "B_min": 120.0,
+      "success": false,
+      "T_min": 12.416666666666666,
+      "verified": false,
+      "Y_min": 120.0
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "codex",
+      "arm": "expert",
+      "rep": 1,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 7.1866666666666665,
+      "verified": true,
+      "Y_min": 7.1866666666666665
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "codex",
+      "arm": "vanilla",
+      "rep": 1,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 5.739999999999999,
+      "verified": true,
+      "Y_min": 5.739999999999999
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "claude",
+      "arm": "expert",
+      "rep": 1,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 8.953333333333335,
+      "verified": true,
+      "Y_min": 8.953333333333335
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "codex",
+      "arm": "dc",
+      "rep": 1,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 5.253333333333333,
+      "verified": true,
+      "Y_min": 5.253333333333333
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "claude",
+      "arm": "dc",
+      "rep": 1,
+      "B_min": 120.0,
+      "success": false,
+      "T_min": 10.993333333333334,
+      "verified": false,
+      "Y_min": 120.0
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "claude",
+      "arm": "vanilla",
+      "rep": 0,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 28.990000000000002,
+      "verified": true,
+      "Y_min": 28.990000000000002
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "codex",
+      "arm": "dc",
+      "rep": 0,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 11.815,
+      "verified": true,
+      "Y_min": 11.815
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "claude",
+      "arm": "dc",
+      "rep": 0,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 12.59,
+      "verified": true,
+      "Y_min": 12.59
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "claude",
+      "arm": "expert",
+      "rep": 0,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 14.745,
+      "verified": true,
+      "Y_min": 14.745
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "codex",
+      "arm": "vanilla",
+      "rep": 0,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 14.854999999999999,
+      "verified": true,
+      "Y_min": 14.854999999999999
+    },
+    {
+      "case": "bins_heldout",
+      "family": "amazon-bin-images",
+      "agent": "codex",
+      "arm": "expert",
+      "rep": 0,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 14.389999999999999,
+      "verified": true,
+      "Y_min": 14.389999999999999
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "codex",
+      "arm": "expert",
+      "rep": 0,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 6.386666666666668,
+      "verified": true,
+      "Y_min": 6.386666666666668
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "claude",
+      "arm": "dc",
+      "rep": 0,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 5.986666666666667,
+      "verified": true,
+      "Y_min": 5.986666666666667
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "claude",
+      "arm": "expert",
+      "rep": 0,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 10.916666666666666,
+      "verified": true,
+      "Y_min": 10.916666666666666
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "claude",
+      "arm": "vanilla",
+      "rep": 0,
+      "B_min": 120.0,
+      "success": false,
+      "T_min": 11.028333333333334,
+      "verified": false,
+      "Y_min": 120.0
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "codex",
+      "arm": "vanilla",
+      "rep": 0,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 4.803333333333333,
+      "verified": true,
+      "Y_min": 4.803333333333333
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "codex",
+      "arm": "dc",
+      "rep": 0,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 7.38,
+      "verified": true,
+      "Y_min": 7.38
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "claude",
+      "arm": "vanilla",
+      "rep": 4,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 5.025,
+      "verified": true,
+      "Y_min": 5.025
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "codex",
+      "arm": "dc",
+      "rep": 4,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 5.6483333333333325,
+      "verified": true,
+      "Y_min": 5.6483333333333325
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "claude",
+      "arm": "expert",
+      "rep": 4,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 6.911666666666666,
+      "verified": true,
+      "Y_min": 6.911666666666666
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "codex",
+      "arm": "expert",
+      "rep": 4,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 5.055000000000001,
+      "verified": true,
+      "Y_min": 5.055000000000001
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "codex",
+      "arm": "vanilla",
+      "rep": 4,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 4.16,
+      "verified": true,
+      "Y_min": 4.16
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "claude",
+      "arm": "dc",
+      "rep": 4,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 11.008333333333333,
+      "verified": true,
+      "Y_min": 11.008333333333333
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "codex",
+      "arm": "dc",
+      "rep": 2,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 9.815,
+      "verified": true,
+      "Y_min": 9.815
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "codex",
+      "arm": "expert",
+      "rep": 2,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 6.031666666666666,
+      "verified": true,
+      "Y_min": 6.031666666666666
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "claude",
+      "arm": "vanilla",
+      "rep": 2,
+      "B_min": 120.0,
+      "success": false,
+      "T_min": 11.5,
+      "verified": false,
+      "Y_min": 120.0
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "claude",
+      "arm": "expert",
+      "rep": 2,
+      "B_min": 120.0,
+      "success": false,
+      "T_min": 18.78666666666667,
+      "verified": false,
+      "Y_min": 120.0
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "codex",
+      "arm": "vanilla",
+      "rep": 2,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 4.89,
+      "verified": true,
+      "Y_min": 4.89
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "claude",
+      "arm": "dc",
+      "rep": 2,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 7.596666666666667,
+      "verified": true,
+      "Y_min": 7.596666666666667
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "codex",
+      "arm": "expert",
+      "rep": 2,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 10.876666666666667,
+      "verified": true,
+      "Y_min": 10.876666666666667
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "codex",
+      "arm": "vanilla",
+      "rep": 2,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 8.575,
+      "verified": true,
+      "Y_min": 8.575
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "codex",
+      "arm": "dc",
+      "rep": 2,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 8.061666666666666,
+      "verified": true,
+      "Y_min": 8.061666666666666
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "claude",
+      "arm": "expert",
+      "rep": 2,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 7.180000000000001,
+      "verified": true,
+      "Y_min": 7.180000000000001
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "claude",
+      "arm": "vanilla",
+      "rep": 2,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 16.880000000000003,
+      "verified": true,
+      "Y_min": 16.880000000000003
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "claude",
+      "arm": "dc",
+      "rep": 2,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 9.456666666666667,
+      "verified": true,
+      "Y_min": 9.456666666666667
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "claude",
+      "arm": "dc",
+      "rep": 3,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 6.665,
+      "verified": true,
+      "Y_min": 6.665
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "claude",
+      "arm": "vanilla",
+      "rep": 3,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 5.586666666666667,
+      "verified": true,
+      "Y_min": 5.586666666666667
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "claude",
+      "arm": "expert",
+      "rep": 3,
+      "B_min": 120.0,
+      "success": false,
+      "T_min": 14.305,
+      "verified": false,
+      "Y_min": 120.0
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "codex",
+      "arm": "expert",
+      "rep": 3,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 4.135,
+      "verified": true,
+      "Y_min": 4.135
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "codex",
+      "arm": "vanilla",
+      "rep": 3,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 4.803333333333333,
+      "verified": true,
+      "Y_min": 4.803333333333333
+    },
+    {
+      "case": "sentinel_ndvi_catalog",
+      "family": "sentinel2-cogs",
+      "agent": "codex",
+      "arm": "dc",
+      "rep": 3,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 6.765,
+      "verified": true,
+      "Y_min": 6.765
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "codex",
+      "arm": "expert",
+      "rep": 3,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 10.021666666666667,
+      "verified": true,
+      "Y_min": 10.021666666666667
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "claude",
+      "arm": "expert",
+      "rep": 3,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 6.608333333333333,
+      "verified": true,
+      "Y_min": 6.608333333333333
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "claude",
+      "arm": "dc",
+      "rep": 3,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 9.905,
+      "verified": true,
+      "Y_min": 9.905
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "codex",
+      "arm": "dc",
+      "rep": 3,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 7.751666666666666,
+      "verified": true,
+      "Y_min": 7.751666666666666
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "codex",
+      "arm": "vanilla",
+      "rep": 3,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 8.031666666666666,
+      "verified": true,
+      "Y_min": 8.031666666666666
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "claude",
+      "arm": "vanilla",
+      "rep": 3,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 16.435,
+      "verified": true,
+      "Y_min": 16.435
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "claude",
+      "arm": "expert",
+      "rep": 1,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 8.816666666666666,
+      "verified": true,
+      "Y_min": 8.816666666666666
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "codex",
+      "arm": "expert",
+      "rep": 1,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 7.24,
+      "verified": true,
+      "Y_min": 7.24
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "codex",
+      "arm": "vanilla",
+      "rep": 1,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 13.366666666666667,
+      "verified": true,
+      "Y_min": 13.366666666666667
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "claude",
+      "arm": "vanilla",
+      "rep": 1,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 15.868333333333332,
+      "verified": true,
+      "Y_min": 15.868333333333332
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "codex",
+      "arm": "dc",
+      "rep": 1,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 9.488333333333333,
+      "verified": true,
+      "Y_min": 9.488333333333333
+    },
+    {
+      "case": "coco_photo_refresh",
+      "family": "coco-photos",
+      "agent": "claude",
+      "arm": "dc",
+      "rep": 1,
+      "B_min": 120.0,
+      "success": true,
+      "T_min": 7.87,
+      "verified": true,
+      "Y_min": 7.87
+    }
+  ],
+  "contrasts": {
+    "claude expert/dc held-out": {
+      "pooled": {
+        "ratio": 1.414,
+        "ci95": [
+          0.408,
+          4.037
+        ],
+        "blocks": 15
+      },
+      "amazon-bin-images": {
+        "ratio": 1.001,
+        "ci95": [
+          0.817,
+          1.199
+        ],
+        "blocks": 5
+      },
+      "coco-photos": {
+        "ratio": 0.887,
+        "ci95": [
+          0.723,
+          1.086
+        ],
+        "blocks": 5
+      },
+      "sentinel2-cogs": {
+        "ratio": 1.764,
+        "ci95": [
+          0.159,
+          14.225
+        ],
+        "blocks": 5
+      }
+    },
+    "claude vanilla/dc held-out": {
+      "pooled": {
+        "ratio": 2.693,
+        "ci95": [
+          1.485,
+          5.828
+        ],
+        "blocks": 15
+      },
+      "amazon-bin-images": {
+        "ratio": 3.595,
+        "ci95": [
+          2.112,
+          6.394
+        ],
+        "blocks": 5
+      },
+      "coco-photos": {
+        "ratio": 2.038,
+        "ci95": [
+          1.771,
+          2.346
+        ],
+        "blocks": 5
+      },
+      "sentinel2-cogs": {
+        "ratio": 2.45,
+        "ci95": [
+          0.909,
+          14.353
+        ],
+        "blocks": 5
+      }
+    },
+    "codex expert/dc held-out": {
+      "pooled": {
+        "ratio": 0.934,
+        "ci95": [
+          0.825,
+          1.058
+        ],
+        "blocks": 15
+      },
+      "amazon-bin-images": {
+        "ratio": 0.947,
+        "ci95": [
+          0.783,
+          1.148
+        ],
+        "blocks": 5
+      },
+      "coco-photos": {
+        "ratio": 0.999,
+        "ci95": [
+          0.817,
+          1.22
+        ],
+        "blocks": 5
+      },
+      "sentinel2-cogs": {
+        "ratio": 0.826,
+        "ci95": [
+          0.654,
+          1.076
+        ],
+        "blocks": 5
+      }
+    },
+    "codex vanilla/dc held-out": {
+      "pooled": {
+        "ratio": 1.024,
+        "ci95": [
+          0.909,
+          1.155
+        ],
+        "blocks": 15
+      },
+      "amazon-bin-images": {
+        "ratio": 1.111,
+        "ci95": [
+          0.922,
+          1.353
+        ],
+        "blocks": 5
+      },
+      "coco-photos": {
+        "ratio": 1.145,
+        "ci95": [
+          0.988,
+          1.315
+        ],
+        "blocks": 5
+      },
+      "sentinel2-cogs": {
+        "ratio": 0.7,
+        "ci95": [
+          0.565,
+          0.903
+        ],
+        "blocks": 5
+      }
+    }
+  },
+  "fields": {
+    "T_min": "Observed elapsed minutes",
+    "Y_min": "Scored minutes: elapsed on success, full budget on failure",
+    "B_min": "Per-run time budget in minutes"
+  }
+}
