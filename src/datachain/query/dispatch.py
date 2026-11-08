@@ -2,12 +2,12 @@ import contextlib
 import os
 import threading
 import traceback
-from collections.abc import Iterable, Sequence
-from itertools import chain
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from itertools import chain, islice
 from queue import Empty
 from sys import stdin
 from time import monotonic, sleep
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import multiprocess
 from cloudpickle import load, loads
@@ -29,7 +29,13 @@ from datachain.query.dataset import (
 )
 from datachain.query.queue import get_from_queue, put_into_queue
 from datachain.query.udf import UdfInfo
-from datachain.utils import batched, flatten, safe_closing, usable_cpu_count
+from datachain.utils import (
+    batched,
+    flatten,
+    safe_closing,
+    usable_cpu_count,
+    worker_thread_limits,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy import Select, Table
@@ -52,6 +58,44 @@ def get_n_workers_from_arg(n_workers: int | None = None) -> int:
     if n_workers < 1:
         raise RuntimeError("Must use at least one worker for parallel UDF execution!")
     return n_workers
+
+
+def guided_tasks(
+    items: Iterable[Any],
+    total: int,
+    n_workers: int,
+    max_size: int,
+    weight: Callable[[Any], int] | None = None,
+) -> Iterator[tuple[Any, ...]]:
+    """Split items into tasks that shrink with the work left (guided scheduling).
+
+    Early tasks are large to amortize dispatch. With an accurate total, the last
+    tasks hold single items so slow rows do not leave one worker running alone.
+    Weighted items stay intact, even when one exceeds max_size.
+    """
+    if n_workers < 1 or max_size < 1:
+        raise ValueError("n_workers and max_size must be positive")
+    it = iter(items)
+    remaining, done = total, 0
+    while True:
+        left = remaining if remaining > 0 else done // 2
+        size = max(1, min(max_size, -(-left // (2 * n_workers))))
+        if weight is None:
+            task = tuple(islice(it, size))
+            used = len(task)
+        else:
+            chunk, used = [], 0
+            for item in it:
+                chunk.append(item)
+                used += weight(item)
+                if used >= size:
+                    break
+            task = tuple(chunk)
+        if not task:
+            return
+        remaining -= used
+        done += used
+        yield task
 
 
 def udf_entrypoint() -> int:
@@ -193,20 +237,28 @@ class UDFDispatcher:
         elif not n_workers or n_workers < 1:
             n_workers = 1  # Single-threaded (on this worker)
         n_workers = get_n_workers_from_arg(n_workers)
-
-        if n_workers == 1:
-            # no need to spawn worker processes if we are running in a single process
-            self.run_udf_single(input_rows, download_cb, processed_cb, generated_cb)
+        if self.is_batching:
+            input_rows = iter(input_rows)
+            first = tuple(islice(input_rows, n_workers))
+            n_workers = max(1, len(first))
+            input_rows = chain(first, input_rows)
+            del first
         else:
-            if self.buffer_size < n_workers:
-                raise RuntimeError(
-                    "Parallel run error: buffer size is smaller than "
-                    f"number of workers: {self.buffer_size} < {n_workers}"
-                )
+            n_workers = max(1, min(n_workers, self.rows_total))
 
-            self.run_udf_parallel(
-                n_workers, input_rows, download_cb, processed_cb, generated_cb
-            )
+        with worker_thread_limits(n_workers):
+            if n_workers == 1:
+                self.run_udf_single(input_rows, download_cb, processed_cb, generated_cb)
+            else:
+                if self.buffer_size < n_workers:
+                    raise RuntimeError(
+                        "Parallel run error: buffer size is smaller than "
+                        f"number of workers: {self.buffer_size} < {n_workers}"
+                    )
+
+                self.run_udf_parallel(
+                    n_workers, input_rows, download_cb, processed_cb, generated_cb
+                )
 
     def run_udf_single(
         self,
@@ -269,20 +321,34 @@ class UDFDispatcher:
             self.ctx.Process(name=f"Worker-UDF-{i}", target=self._run_worker)
             for i in range(n_workers)
         ]
-        for p in pool:
-            p.start()
-
         try:
+            for p in pool:
+                p.start()
             # Will be set to True when the input is exhausted
             input_finished = False
 
-            input_rows = batched(
-                input_rows if self.is_batching else flatten(input_rows),
-                self.input_batch_size(n_workers),
+            if self.is_batching:
+                input_rows = iter(input_rows)
+                first = tuple(islice(input_rows, n_workers))
+                remaining = self.rows_total - sum(map(len, first))
+            else:
+                input_rows = flatten(input_rows)
+                first = ()
+                remaining = self.rows_total
+            input_tasks = chain(
+                ((batch,) for batch in first),
+                guided_tasks(
+                    input_rows,
+                    remaining,
+                    n_workers,
+                    DEFAULT_BATCH_SIZE,
+                    weight=len if self.is_batching else None,
+                ),
             )
+            del first
 
             # Stop all workers after the input rows have finished processing
-            input_data = chain(input_rows, [STOP_SIGNAL] * n_workers)
+            input_data = chain(input_tasks, [STOP_SIGNAL] * n_workers)
 
             # Add initial buffer of tasks
             for _ in range(self.buffer_size):

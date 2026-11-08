@@ -761,3 +761,149 @@ def test_usable_cpu_count_is_the_affinity_capped_by_quotas(
     monkeypatch.setattr(os, "cpu_count", lambda: host)
     monkeypatch.setattr(utils, "_cpu_quotas", lambda: quotas)
     assert usable_cpu_count() == expected
+
+
+def test_worker_thread_env_caps_settings_at_the_worker_share(monkeypatch):
+    for name in ("DATACHAIN_WORKER_THREADS", *utils._THREAD_ENVS):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OMP_NUM_THREADS", "8")
+    monkeypatch.setenv("MKL_NUM_THREADS", "1")
+    monkeypatch.setenv("OPENBLAS_NUM_THREADS", "junk")
+    monkeypatch.setattr(utils, "usable_cpu_count", lambda: 8)
+
+    env = utils.worker_thread_env(4)
+
+    assert env["DATACHAIN_WORKER_THREADS"] == env["OMP_NUM_THREADS"] == "2"
+    assert env["MKL_NUM_THREADS"] == "1"
+    assert env["OPENBLAS_NUM_THREADS"] == "2"
+    assert utils.worker_thread_env(24)["NUMEXPR_NUM_THREADS"] == "1"
+
+
+@pytest.mark.parametrize(
+    "value,expected", [(None, None), ("3", 3), ("0", 1), ("x", None)]
+)
+def test_worker_threads(value, expected, monkeypatch):
+    if value is None:
+        monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
+    else:
+        monkeypatch.setenv("DATACHAIN_WORKER_THREADS", value)
+
+    assert utils.worker_threads() == expected
+
+
+@pytest.mark.parametrize("workers", [0, -1])
+def test_worker_thread_env_requires_positive_workers(workers):
+    from datachain.utils import worker_thread_env
+
+    with pytest.raises(ValueError, match="n_workers must be positive"):
+        worker_thread_env(workers)
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_worker_thread_limits_restore_environment(monkeypatch, fail):
+    monkeypatch.setenv("OMP_NUM_THREADS", "1000")
+    monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
+    monkeypatch.setattr(utils, "usable_cpu_count", lambda: 8)
+    before = dict(os.environ)
+
+    def start_worker():
+        with utils.worker_thread_limits(4):
+            assert os.environ["OMP_NUM_THREADS"] == "2"
+            assert utils.worker_threads() == 2
+            if fail:
+                raise RuntimeError("worker could not start")
+
+    if fail:
+        with pytest.raises(RuntimeError, match="could not start"):
+            start_worker()
+    else:
+        start_worker()
+    assert dict(os.environ) == before
+
+
+@pytest.mark.parametrize("value,expected", [("1,1", "1,1"), ("8,2", "4,2")])
+def test_worker_thread_env_keeps_nested_openmp_limits(monkeypatch, value, expected):
+    monkeypatch.setattr(utils, "usable_cpu_count", lambda: 8)
+    monkeypatch.setenv("OMP_NUM_THREADS", value)
+    assert utils.worker_thread_env(2)["OMP_NUM_THREADS"] == expected
+
+
+def test_worker_thread_limits_resize_initialized_numpy_pool(monkeypatch):
+    import numpy as np
+    from threadpoolctl import ThreadpoolController
+
+    np.ones((2, 2)) @ np.ones((2, 2))
+    # Accelerate-backed NumPy has no runtime thread control; exercise SciPy BLAS.
+    scipy_linalg = pytest.importorskip("scipy.linalg")
+    scipy_linalg.blas.dgemm(1, np.ones((2, 2)), np.ones((2, 2)))
+    controller = ThreadpoolController()
+    if not controller.info():
+        pytest.skip("NumPy has no supported native thread pool")
+    for name in utils._THREAD_ENVS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(utils, "usable_cpu_count", lambda: 1)
+    with controller.limit(limits=2):
+        before = controller.info()
+        with utils.worker_thread_limits(1):
+            assert all(pool["num_threads"] == 1 for pool in controller.info())
+        assert controller.info() == before
+
+
+def test_worker_thread_limits_handle_unknown_and_duplicate_native_pools(monkeypatch):
+    from contextlib import nullcontext
+    from unittest.mock import Mock
+
+    import threadpoolctl
+
+    controller = Mock()
+    controller.info.return_value = [
+        {"prefix": "unknown", "internal_api": "openmp", "num_threads": None},
+        {"prefix": "libgomp", "internal_api": "openmp", "num_threads": 1},
+        {"prefix": "libgomp", "internal_api": "openmp", "num_threads": 8},
+    ]
+    controller.limit.return_value = nullcontext()
+    monkeypatch.setattr(threadpoolctl, "ThreadpoolController", lambda: controller)
+    monkeypatch.setattr(utils, "usable_cpu_count", lambda: 8)
+    with utils.worker_thread_limits(2):
+        assert utils.worker_threads() is not None
+    controller.limit.assert_called_once_with(limits={"libgomp": 1})
+
+
+@pytest.mark.parametrize("name", ["OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS"])
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_worker_thread_env_uses_cpu_share_for_nonpositive_native_limits(
+    monkeypatch, name, value
+):
+    monkeypatch.setattr(utils, "usable_cpu_count", lambda: 8)
+    monkeypatch.setenv(name, value)
+    assert utils.worker_thread_env(2)[name] == "4"
+
+
+@pytest.mark.parametrize("value", ["4,0", "-1,2", "1,-1"])
+def test_worker_thread_env_rejects_nonpositive_nested_openmp_limits(monkeypatch, value):
+    monkeypatch.setattr(utils, "usable_cpu_count", lambda: 8)
+    monkeypatch.setenv("OMP_NUM_THREADS", value)
+    assert utils.worker_thread_env(2)["OMP_NUM_THREADS"] == "4"
+
+
+@pytest.mark.parametrize("kmp", [None, "FALSE"])
+def test_worker_thread_limits_first_import_preserves_openmp_policy(monkeypatch, kmp):
+    import subprocess
+    import sys
+
+    if kmp is None:
+        monkeypatch.delenv("KMP_DUPLICATE_LIB_OK", raising=False)
+    else:
+        monkeypatch.setenv("KMP_DUPLICATE_LIB_OK", kmp)
+    code = """
+import os
+import sys
+from datachain.utils import worker_thread_limits
+
+assert "threadpoolctl" not in sys.modules
+before = os.environ.get("KMP_DUPLICATE_LIB_OK")
+with worker_thread_limits(1):
+    assert os.environ.get("KMP_DUPLICATE_LIB_OK") == before
+assert os.environ.get("KMP_DUPLICATE_LIB_OK") == before
+"""
+    subprocess.run([sys.executable, "-c", code], check=True)  # noqa: S603
