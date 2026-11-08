@@ -6,7 +6,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 SKILLS = ("datachain",)
-DEFAULT_SKILLS = ("datachain",)
 _INSTALL_MARKER = ".datachain-installed"
 # Retired instructions must be removed so agents do not keep following them.
 RETIRED_SKILLS = ("jobs", "core", "knowledge")
@@ -34,11 +33,6 @@ def _layout(target: str, local: bool) -> tuple[Path, Path | None, str]:
     skills_dir, commands_dir, command_ext = TARGET_LAYOUT[target][local]
     base = Path() if local else Path.home()
     return base / skills_dir, base / commands_dir if commands_dir else None, command_ext
-
-
-_COPYTREE_IGNORE = shutil.ignore_patterns(
-    "__pycache__", "*.pyc", ".datachain", "SKILL.md"
-)
 
 
 def _skills_src() -> Path:
@@ -170,13 +164,10 @@ def _write_text_atomic(path: Path, content: str) -> None:
 def _write_companion(
     src: Path,
     dest: Path,
-    skills_dir: Path,
     commands_dir: Path,
     command_ext: str,
 ) -> None:
     skill_md = src / "SKILL.md"
-    if not skill_md.exists():
-        return
     commands_dir.mkdir(parents=True, exist_ok=True)
     if command_ext == ".mdc":
         content = _transform_cursor_mdc(skill_md)
@@ -185,7 +176,7 @@ def _write_companion(
     else:
         content = skill_md.read_text(encoding="utf-8")
     command = commands_dir / f"datachain-{src.name}{command_ext}"
-    _write_text_atomic(command, _resolve_placeholders(content, skills_dir, dest))
+    _write_text_atomic(command, _resolve_placeholders(content, dest))
 
 
 def _check_install_destinations(skills_dir: Path, names: list[str]) -> bool:
@@ -213,7 +204,7 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
             )
         skills_to_install = requested
     else:
-        skills_to_install = list(DEFAULT_SKILLS)
+        skills_to_install = list(SKILLS)
 
     if not _check_install_destinations(skills_dir, skills_to_install):
         return 1
@@ -232,22 +223,18 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
         dest.mkdir(parents=True, exist_ok=True)
         try:
             _write_text_atomic(dest / _INSTALL_MARKER, skill_name)
-            shutil.copytree(src, dest, dirs_exist_ok=True, ignore=_COPYTREE_IGNORE)
-            if skill_name == "datachain":
-                _write_text_atomic(
-                    dest / "SDK.md",
-                    (_skills_src() / "core" / "SDK.md").read_text(encoding="utf-8"),
-                )
-            skill_md = src / "SKILL.md"
-            if skill_md.exists():
-                _write_text_atomic(
-                    dest / "SKILL.md",
-                    _resolve_placeholders(
-                        skill_md.read_text(encoding="utf-8"), skills_dir, dest
-                    ),
-                )
+            _write_text_atomic(
+                dest / "SDK.md",
+                (_skills_src() / "core" / "SDK.md").read_text(encoding="utf-8"),
+            )
+            _write_text_atomic(
+                dest / "SKILL.md",
+                _resolve_placeholders(
+                    (src / "SKILL.md").read_text(encoding="utf-8"), dest
+                ),
+            )
             if commands_dir is not None:
-                _write_companion(src, dest, skills_dir, commands_dir, command_ext)
+                _write_companion(src, dest, commands_dir, command_ext)
         except BaseException:
             if fresh:
                 shutil.rmtree(dest)
@@ -318,8 +305,5 @@ def list_skills() -> int:
     return 0
 
 
-def _resolve_placeholders(text: str, skills_dir: Path, dest: Path) -> str:
-    text = text.replace("{skill_dir}", dest.as_posix())
-    for name in SKILLS:
-        text = text.replace(f"{{{name}_skill_dir}}", (skills_dir / name).as_posix())
-    return text
+def _resolve_placeholders(text: str, dest: Path) -> str:
+    return text.replace("{skill_dir}", dest.as_posix())

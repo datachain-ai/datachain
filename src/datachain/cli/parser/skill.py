@@ -1,5 +1,4 @@
 from datachain.cli.commands.skill import (
-    DEFAULT_SKILLS,
     RETIRED_SKILLS,
     SKILLS,
     TARGET_LAYOUT,
@@ -41,7 +40,7 @@ def add_skill_parser(subparsers, parent_parser) -> None:
         metavar="SKILLS",
         help=(
             f"Comma-separated skill names to install: {', '.join(SKILLS)} "
-            f"(default: {', '.join(DEFAULT_SKILLS)})"
+            f"(default: {', '.join(SKILLS)})"
         ),
     )
     install_parser.add_argument(

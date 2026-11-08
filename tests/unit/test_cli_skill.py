@@ -81,27 +81,13 @@ def test_install_invalid_skill_raises(tmp_path, fake_skills_src, fake_home):
 
 
 def _make_fake_skills_src(tmp_path: Path) -> Path:
-    """Create a minimal skills source tree for testing."""
     skills_src = tmp_path / "skills_src"
-    for skill_name in SKILLS:
-        skill_dir = skills_src / skill_name
-        skill_dir.mkdir(parents=True)
-        name = "datachain" if skill_name == "datachain" else f"datachain-{skill_name}"
-        resource_dir = "skill_dir" if skill_name == "datachain" else "core_skill_dir"
-        (skill_dir / "SKILL.md").write_text(
-            f"---\nname: {name}\n"
-            f"description: Test skill {skill_name}\n"
-            f"---\n# {skill_name}\n"
-            "```bash\npython3 scripts/plan.py\n```\n"
-            f"Read `{{{resource_dir}}}/SDK.md`.\n"
-        )
-        scripts = skill_dir / "scripts"
-        scripts.mkdir()
-        (scripts / "plan.py").write_text("# stub\n")
-        # Add __pycache__ junk to verify it gets filtered
-        pycache = scripts / "__pycache__"
-        pycache.mkdir()
-        (pycache / "plan.cpython-312.pyc").write_bytes(b"\x00")
+    skill_source = skills_src / "datachain"
+    skill_source.mkdir(parents=True)
+    (skill_source / "SKILL.md").write_text(
+        "---\nname: datachain\ndescription: Test skill datachain\n"
+        "---\n# datachain\nRead `{skill_dir}/SDK.md`.\n"
+    )
     (skills_src / "core").mkdir()
     (skills_src / "core" / "SDK.md").write_text("# DataChain SDK Rules\n")
     return skills_src
@@ -146,13 +132,15 @@ def test_install_explicit_datachain(tmp_path, fake_skills_src, fake_home):
     assert (skills / "datachain" / "SDK.md").read_text() == "# DataChain SDK Rules\n"
 
 
-def test_pycache_not_copied(tmp_path, fake_skills_src, fake_home):
-    """Verify __pycache__ and .pyc files are not copied to the destination."""
+def test_install_writes_only_skill_and_reference(tmp_path, fake_skills_src, fake_home):
     _run_install(fake_skills_src, fake_home, skills=None, target="claude", local=False)
 
-    skills_base = fake_home / ".claude" / "skills"
-    assert (skills_base / "datachain" / "scripts" / "plan.py").exists()
-    assert not (skills_base / "datachain" / "scripts" / "__pycache__").exists()
+    installed = fake_home / ".claude" / "skills" / "datachain"
+    assert {p.name for p in installed.iterdir()} == {
+        "SKILL.md",
+        "SDK.md",
+        ".datachain-installed",
+    }
 
 
 def test_list_skills_output(capsys):
@@ -262,41 +250,13 @@ def test_transform_copilot_instructions_no_frontmatter():
 
 def test_skills_src_resolves_real_package():
     """importlib.resources finds the bundled SKILL.md files."""
-    from datachain.cli.commands.skill import SKILLS, _skills_src
+    from datachain.cli.commands.skill import _skills_src
 
     src = _skills_src()
     assert src.is_dir(), f"_skills_src() returned non-directory: {src}"
     for skill_name in SKILLS:
         skill_md = src / skill_name / "SKILL.md"
         assert skill_md.exists(), f"Missing bundled {skill_name}/SKILL.md"
-
-
-def _seed_retired_install(fake_home: Path, target: str = "cursor") -> tuple[Path, Path]:
-    """A jobs skill left over from a release that still shipped one."""
-    from datachain.cli.commands.skill import TARGET_LAYOUT
-
-    skills_path, commands_dir, command_ext = TARGET_LAYOUT[target][False]
-    assert commands_dir and command_ext, f"{target} writes a command file"
-
-    skill_dir = fake_home / skills_path / "jobs"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text("---\nname: datachain-jobs\n---\n# jobs\n")
-
-    command = fake_home / commands_dir / f"datachain-jobs{command_ext}"
-    command.parent.mkdir(parents=True, exist_ok=True)
-    command.write_text("# datachain-jobs\n")
-    return skill_dir, command
-
-
-def test_install_clears_a_retired_skill(tmp_path, fake_skills_src, fake_home):
-    """Upgrading over an install with `jobs` must not leave it instructing agents."""
-    skill_dir, command = _seed_retired_install(fake_home)
-
-    _run_install(fake_skills_src, fake_home, skills=None, target="cursor", local=False)
-
-    assert not skill_dir.exists()
-    assert not command.exists()
-    assert (fake_home / ".cursor" / "skills" / "datachain" / "SKILL.md").exists()
 
 
 def _seed_someone_elses_jobs_skill(fake_home: Path, target: str = "cursor") -> Path:
@@ -358,14 +318,14 @@ def test_uninstall_leaves_a_jobs_skill_we_did_not_install(
 
 
 def test_uninstall_all_clears_a_retired_skill(tmp_path, fake_skills_src, fake_home):
-    skill_dir, command = _seed_retired_install(fake_home)
+    skills = _seed_legacy_skills(fake_home, "cursor", False)
     from datachain.cli.commands.skill import uninstall_skills
 
     with patch("pathlib.Path.home", return_value=fake_home):
         assert uninstall_skills(skills=None, target="cursor", local=False) == 0
 
-    assert not skill_dir.exists()
-    assert not command.exists()
+    assert not any(skills.iterdir())
+    assert not any((fake_home / ".cursor" / "rules").iterdir())
 
 
 @pytest.mark.parametrize("name", ["jobs", "core", "knowledge"])
@@ -554,7 +514,7 @@ def test_upgrade_removes_legacy_skills_and_preserves_data(
     assert all(path.read_bytes() == b"user data" for path in untouched)
 
 
-@pytest.mark.parametrize("failure", ["missing_source", "missing_skill", "copy_error"])
+@pytest.mark.parametrize("failure", ["missing_source", "missing_skill", "write_error"])
 def test_failed_default_upgrade_keeps_legacy_skills(
     tmp_path, fake_home, monkeypatch, fake_skills_src, failure
 ):
@@ -571,10 +531,13 @@ def test_failed_default_upgrade_keeps_legacy_skills(
         monkeypatch.setattr(
             "datachain.cli.commands.skill._skills_src", lambda: fake_skills_src
         )
-        if failure == "copy_error":
+        if failure == "write_error":
             with (
-                patch("shutil.copytree", side_effect=OSError("copy failed")),
-                pytest.raises(OSError, match="copy failed"),
+                patch(
+                    "datachain.cli.commands.skill._write_text_atomic",
+                    side_effect=OSError("write failed"),
+                ),
+                pytest.raises(OSError, match="write failed"),
             ):
                 install_skills(None, "cursor", True)
         else:
@@ -675,22 +638,24 @@ def test_uninstall_reports_only_requested_missing_skills(
         assert capsys.readouterr().out == "Not found (already uninstalled): core\n"
 
 
-@pytest.mark.parametrize("copy_first", [False, True])
+@pytest.mark.parametrize("write_first", [False, True])
 def test_interrupted_install_can_be_retried(
-    tmp_path, fake_home, monkeypatch, copy_first
+    tmp_path, fake_home, monkeypatch, write_first
 ):
     from datachain.cli.commands import skill
 
     monkeypatch.chdir(tmp_path)
-    original = skill.shutil.copytree
+    original = skill._write_text_atomic
 
-    def interrupted(*args, **kwargs):
-        if copy_first:
-            original(*args, **kwargs)
-        raise OSError("disk full")
+    def interrupted(path, content):
+        if path.name == "SDK.md":
+            if write_first:
+                original(path, content)
+            raise OSError("disk full")
+        return original(path, content)
 
     with patch("pathlib.Path.home", return_value=fake_home):
-        with patch.object(skill.shutil, "copytree", interrupted):
+        with patch.object(skill, "_write_text_atomic", interrupted):
             with pytest.raises(OSError, match="disk full"):
                 skill.install_skills(None, "claude", True)
         assert not (tmp_path / ".claude/skills/datachain").exists()
