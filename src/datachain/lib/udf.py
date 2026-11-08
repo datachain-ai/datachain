@@ -511,13 +511,10 @@ async def _prefetch_input(
     ]
     targets: dict[str, list[File]] = {}
     for obj in files:
-        try:
-            target = obj
-            if obj.location:
-                target = VFileRegistry.parent(obj, obj.location)  # type: ignore[arg-type]
-            targets.setdefault(target.get_hash(), []).append(obj)
-        except FileError as e:
-            logger.warning("Skipping prefetch for '%s/%s': %s", obj.source, obj.path, e)
+        target = obj
+        if obj.location:
+            target = VFileRegistry.parent(obj, obj.location)  # type: ignore[arg-type]
+        targets.setdefault(target.get_hash(), []).append(obj)
     pending = iter(targets.values())
 
     async def download() -> None:
