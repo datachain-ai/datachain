@@ -4,7 +4,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, PartialCredentialsError
 from fsspec.asyn import get_loop, sync
 from s3fs import S3FileSystem
 
@@ -345,6 +345,23 @@ def test_filesystem_creation_does_not_send_s3_requests(monkeypatch, credentials)
     monkeypatch.setattr("aiobotocore.endpoint.AioEndpoint.make_request", unexpected)
     fs = ClientS3.create_fs(skip_instance_cache=True, **credentials)
     assert not fs.anon
+
+
+@pytest.mark.parametrize(
+    "credentials",
+    [
+        {"secret": "secret"},
+        {"aws_secret": "secret"},
+        {"password": "secret"},
+        {"client_kwargs": {"aws_secret_access_key": "secret"}},
+    ],
+)
+def test_partial_credentials_do_not_fall_back_to_anonymous(credentials):
+    with pytest.raises(PartialCredentialsError):
+        fs = ClientS3.create_fs(
+            cache_regions=False, skip_instance_cache=True, **credentials
+        )
+        fs.sign("s3://bucket/object")
 
 
 @pytest.mark.parametrize("source", ["environment", "credentials-file"])

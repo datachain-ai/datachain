@@ -90,9 +90,15 @@ def _region_key(name: str, kwargs: dict[str, Any]) -> tuple | None:
 def _has_credentials(kwargs: dict[str, Any]) -> bool:
     client_kwargs = kwargs.get("client_kwargs") or {}
     if (
-        kwargs.get("key")
-        or kwargs.get("username")
-        or client_kwargs.get("aws_access_key_id")
+        any(kwargs.get(key) is not None for key in ClientS3.CREDENTIAL_KEYS)
+        or any(
+            client_kwargs.get(key) is not None
+            for key in (
+                "aws_access_key_id",
+                "aws_secret_access_key",
+                "aws_session_token",
+            )
+        )
         or kwargs.get("session") is not None
     ):
         return True
@@ -371,13 +377,12 @@ class ClientS3(RangeListedClient):
             " — check AWS credentials/permissions",
         )
 
-    @classmethod
-    def from_name(cls, name: str, cache: "Cache", kwargs: dict[str, Any]) -> "ClientS3":
-        key = _region_key(name, kwargs)
+    def __init__(self, name: str, fs_kwargs: dict[str, Any], cache: "Cache") -> None:
+        key = _region_key(name, fs_kwargs)
         region = _BUCKET_REGIONS.get(key) if key else None
-        if region and "region_name" not in kwargs:
-            kwargs = {**kwargs, "region_name": region}
-        return cls(name, kwargs, cache)
+        if region and "region_name" not in fs_kwargs:
+            fs_kwargs = {**fs_kwargs, "region_name": region}
+        super().__init__(name, fs_kwargs, cache)
 
     @staticmethod
     def _write_kwargs(cfg: "WriteConfig", *, streaming: bool) -> dict[str, Any]:

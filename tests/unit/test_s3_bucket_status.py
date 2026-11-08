@@ -5,6 +5,7 @@ from botocore.exceptions import ReadTimeoutError
 from s3fs import S3FileSystem
 
 from datachain.client import s3
+from datachain.client.fsspec import Client
 from datachain.client.s3 import ClientS3, _head_bucket
 
 
@@ -101,7 +102,7 @@ def test_s3_bucket_region_is_kept_per_profile(_head):
     assert "region_name" not in ClientS3.from_name("b", MagicMock(), {}).fs_kwargs
 
 
-def test_s3_bucket_region_reaches_the_listing_filesystem(mocker):
+def test_s3_bucket_region_reaches_the_listing_filesystem(mocker, catalog):
     head = AsyncMock(
         return_value={
             "ResponseMetadata": {
@@ -116,10 +117,11 @@ def test_s3_bucket_region_reaches_the_listing_filesystem(mocker):
     )
 
     assert ClientS3.bucket_status("b").access == "anonymous"
-    fs = ClientS3.from_name("b", MagicMock(), {"anon": True}).fs
+    fs = Client.get_client("s3://b", catalog.cache, anon=True).fs
 
     assert head.call_count == 1
     assert fs.config_kwargs["region_name"] == "eu-west-3"
+    assert catalog.get_client("s3://b", anon=True).fs is fs
 
 
 @patch("datachain.client.s3._head_bucket", return_value=(200, "cn-north-1"))
