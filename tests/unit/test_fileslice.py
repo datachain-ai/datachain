@@ -176,3 +176,11 @@ def test_read1_returns_an_available_short_chunk_once(slice_member, has_read1):
         assert stream.tell() == 10
         assert source.calls == 2
         assert callback.value == 10
+
+
+def test_file_slice_read1_rejects_a_truncated_member():
+    stream = FileSlice(io.BytesIO(b"headabc"), 4, 5, "member")
+
+    assert stream.read1() == b"abc"
+    with pytest.raises(RuntimeError, match="unexpected end of data"):
+        stream.read1()
