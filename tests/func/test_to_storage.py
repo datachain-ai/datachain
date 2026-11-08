@@ -114,6 +114,22 @@ def test_export_over_source_uses_the_saved_file_contents(
         assert destination.read_bytes() == b"new"
 
 
+@pytest.mark.parametrize("cache", [False, True])
+def test_remote_export_links_cached_bytes_or_falls_back_to_copy(
+    test_session, http_server, tmp_path, cache
+):
+    if cache and os.name == "nt":
+        pytest.skip("Creating symlinks needs privileges on Windows")
+    (tmp_path / "source.bin").write_bytes(b"original")
+    file = File.at(f"{http_server}/source.bin", session=test_session)
+    output = tmp_path / "out"
+
+    file.export(output, placement="filename", use_cache=cache, link_type="symlink")
+
+    assert (output / "source.bin").read_bytes() == b"original"
+    assert (output / "source.bin").is_symlink() == cache
+
+
 def test_to_storage_reexports_cached_file_after_source_is_deleted(
     test_session, tmp_path
 ):
