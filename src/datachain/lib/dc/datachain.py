@@ -1434,7 +1434,9 @@ class DataChain:
         udf_obj = self._udf_to_obj(Generator, func, params, output, signal_map)
         if (prefetch := self._settings.prefetch) is not None:
             udf_obj.prefetch = prefetch
-        udf_obj.delta_key = self._delta_key_columns(udf_obj.output)
+        udf_obj.delta_key, udf_obj.delta_key_presence = self._delta_key_columns(
+            udf_obj.output
+        )
         return self._evolve(
             query=self._query.generate(
                 udf_obj.to_udf_wrapper(self._settings.batch_size),
@@ -1458,19 +1460,24 @@ class DataChain:
             )
         return specs
 
-    def _delta_key_columns(self, output: SignalSchema) -> list[tuple[str, str]]:
-        """Pairs of input and output columns of the delta key a `gen` must keep."""
+    def _delta_key_columns(
+        self, output: SignalSchema
+    ) -> tuple[list[tuple[str, str]], list[tuple[KeyPresence, KeyPresence]]]:
+        """Input/output key columns and optional-model presence a `gen` must keep."""
         pairs: list[tuple[str, str]] = []
+        presence: list[tuple[KeyPresence, KeyPresence]] = []
         for on, result_on in self._delta_key_specs():
             for key in (on, result_on):  # the key may already be renamed
                 try:
-                    pairs += _paired_key_columns(
+                    columns, present = _paired_key_columns(
                         self.signals_schema, key, output, result_on
-                    )[0]
+                    )
+                    pairs.extend(columns)
+                    presence.extend(present)
                     break
                 except (SignalResolvingError, DataChainParamsError):
                     continue
-        return list(dict.fromkeys(pairs))
+        return list(dict.fromkeys(pairs)), list(dict.fromkeys(presence))
 
     @delta_disabled
     def agg(
@@ -2063,16 +2070,28 @@ class DataChain:
         return resolved_kwargs
 
     def _check_delta_key_mutation(self, method: str, kwargs: dict[str, Any]) -> None:
-        sources: dict[str, set[str]] = {}  # result key -> columns it may copy
+        protected: dict[str, set[str]] = {}
         for on, result_on in self._delta_key_specs():
-            for key, result_key in zip(on, result_on, strict=False):
-                root = result_key.split(".")[0]
-                sources.setdefault(root, {root}).add(key.split(".")[0])
+            for key, result_key in zip(on, result_on, strict=True):
+                path = ColumnMeta.to_db_name(result_key)
+                protected.setdefault(path, {path}).add(ColumnMeta.to_db_name(key))
         for name, value in kwargs.items():
-            if name in sources and not (
-                isinstance(value, Column) and value.name in sources[name]
-            ):
-                raise delta_key_changed_error(name, method)
+            target = ColumnMeta.to_db_name(name)
+            for key, sources in protected.items():
+                if key == target or key.startswith(target + DEFAULT_DELIMITER):
+                    suffix = key[len(target) :]
+                    unchanged = (
+                        isinstance(value, Column) and value.name + suffix in sources
+                    )
+                elif target.startswith(key + DEFAULT_DELIMITER):
+                    suffix = target[len(key) :]
+                    unchanged = isinstance(value, Column) and any(
+                        value.name == source + suffix for source in sources
+                    )
+                else:
+                    continue
+                if not unchanged:
+                    raise delta_key_changed_error(name, method)
 
     def _mutate(self, method: str, **kwargs) -> "Self":
         from sqlalchemy.sql.sqltypes import NullType

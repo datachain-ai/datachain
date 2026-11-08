@@ -10,7 +10,7 @@ import datachain as dc
 from datachain import DataModel, func
 from datachain.error import DatasetNotFoundError, SchemaDriftError
 from datachain.lib.dc import C
-from datachain.lib.file import File, ImageFile
+from datachain.lib.file import File, FileRow, ImageFile
 from datachain.lib.utils import DataChainParamsError
 from datachain.toolkit import train_test_split
 
@@ -1240,3 +1240,128 @@ def test_delta_gen_reports_the_key_column_that_changed(test_session):
 
     with pytest.raises(DataChainParamsError, match="change delta key 'ts'"):
         chain.save("composite_key_result")
+
+
+@pytest.mark.parametrize("operation", ["mutate", "select"])
+@pytest.mark.parametrize("name", ["file.path", "file__path"])
+def test_delta_rejects_changing_a_nested_key(test_session, operation, name):
+    dc.read_values(file=[File(path="a")], session=test_session).save("nested_source")
+    chain = dc.read_dataset(
+        "nested_source", delta=True, delta_on="file.path", session=test_session
+    )
+
+    with pytest.raises(DataChainParamsError, match="change delta key"):
+        getattr(chain, operation)(**{name: "changed"})
+
+
+@pytest.mark.parametrize("rename", [False, True])
+def test_delta_preserves_nested_keys_when_copying_columns(test_session, rename):
+    dc.read_values(file=[File(path="a", size=1)], session=test_session).save(
+        "nested_source"
+    )
+    chain = dc.read_dataset(
+        "nested_source",
+        delta=True,
+        delta_on="file.path",
+        delta_result_on="result_path" if rename else None,
+        session=test_session,
+    )
+    if rename:
+        chain = chain.mutate(result_path=C("file.path"))
+    else:
+        chain = chain.mutate(file__size=C("file.size") + 1)
+
+    result = chain.save("nested_result")
+
+    assert result.to_values("result_path" if rename else "file.path") == ["a"]
+    if not rename:
+        assert result.to_values("file.size") == [2]
+
+
+@pytest.mark.parametrize("source_missing", [False, True])
+def test_delta_gen_rejects_changing_model_key_presence(test_session, source_missing):
+    source = None if source_missing else NullableDeltaKey()
+
+    def generate(key):
+        yield NullableDeltaKey() if key is None else None
+
+    dc.read_values(
+        key=[source], output={"key": NullableDeltaKey | None}, session=test_session
+    ).save("presence_source")
+    chain = dc.read_dataset(
+        "presence_source", delta=True, delta_on="key", session=test_session
+    ).gen(generate, output={"key": NullableDeltaKey | None})
+
+    with pytest.raises(DataChainParamsError, match="change delta key 'key'"):
+        chain.save("presence_result")
+
+
+def test_delta_gen_preserves_presence_when_renaming_model_types(test_session):
+    class ResultKey(DataModel):
+        a: int | None = None
+
+    def generate(key):
+        yield None if key is None else ResultKey(a=key.a)
+
+    dc.read_values(
+        key=[None, NullableDeltaKey()],
+        output={"key": NullableDeltaKey | None},
+        session=test_session,
+    ).save("presence_source")
+    result = (
+        dc.read_dataset(
+            "presence_source",
+            delta=True,
+            delta_on="key",
+            delta_result_on="result_key",
+            session=test_session,
+        )
+        .gen(generate, output={"result_key": ResultKey | None})
+        .save("presence_result")
+    )
+
+    keys = result.to_values("result_key")
+    assert len(keys) == 2
+    assert sum(key is None for key in keys) == 1
+    assert sum(isinstance(key, ResultKey) and key.a is None for key in keys) == 1
+
+
+def test_delta_allows_changing_a_source_field_after_preserving_its_key(test_session):
+    dc.read_values(file=[File(path="a")], session=test_session).save("renamed_source")
+    result = (
+        dc.read_dataset(
+            "renamed_source",
+            delta=True,
+            delta_on="file.path",
+            delta_result_on="source_path",
+            session=test_session,
+        )
+        .mutate(source_path=C("file.path"))
+        .mutate(file__path="out/a")
+        .save("renamed_result")
+    )
+
+    assert result.to_list("source_path", "file.path") == [("a", "out/a")]
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_delta_gen_keeps_keys_in_file_rows(test_session, changed):
+    def generate(file):
+        yield FileRow(source=file.source, path="changed" if changed else file.path)
+
+    dc.read_values(
+        file=[File(source="s3://bucket", path="a")], session=test_session
+    ).save("file_row_source")
+    chain = (
+        dc.read_dataset(
+            "file_row_source", delta=True, delta_on="file.path", session=test_session
+        )
+        .settings(prefetch=0)
+        .gen(generate, output={"file": File})
+    )
+
+    if changed:
+        with pytest.raises(DataChainParamsError, match="change delta key"):
+            chain.save("file_row_result")
+    else:
+        assert chain.save("file_row_result").to_values("file.path") == ["a"]
