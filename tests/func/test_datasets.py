@@ -38,6 +38,7 @@ def test_saved_dataset_info_v1_is_readable_after_adding_job_id(test_session, mod
     value = legacy(name="inventory", namespace="local", project="local")
     dc.read_values(dataset=[value], session=test_session).save("legacy_info")
     ModelStore.remove(legacy)
+    ModelStore.register(model)
     row = dc.read_dataset("legacy_info", session=test_session).to_values("dataset")[0]
     assert row.name == "inventory"
     assert "job_id" not in type(row).model_fields
