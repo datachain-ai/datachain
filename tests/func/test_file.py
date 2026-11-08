@@ -998,3 +998,23 @@ def test_image_info_after_local_overwrite_raises(changed_local_image):
     assert isinstance(error.value.__cause__, FileNotFoundError)
     assert "changed on the source" in str(error.value.__cause__)
     assert changed_local_image.get_local_path() is None
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_save_allows_explicit_rename_with_redundant_local_slash(
+    cloud_test_catalog, tmp_dir
+):
+    ctc = cloud_test_catalog
+    key = "dir//file.txt"
+    client = ctc.catalog.get_client(ctc.src_uri)
+    client.fs.pipe(f"{client.name}/{key}", b"contents")
+    client.fs.invalidate_cache()
+    (file,) = (
+        dc.read_storage(ctc.src_uri, session=ctc.session)
+        .filter(C("file.path") == key)
+        .to_values("file")
+    )
+
+    file.save(str(tmp_dir) + "//renamed.txt")
+
+    assert (tmp_dir / "renamed.txt").read_bytes() == b"contents"

@@ -1238,20 +1238,3 @@ def test_save_rejects_empty_local_destination_segments(create_file, tmp_path, ur
     with pytest.raises(FileError, match="must not contain empty segments"):
         file.save(destination)
     assert not (tmp_path / "output").exists()
-
-
-def test_save_allows_explicit_rename_in_a_local_directory_with_redundant_slash(
-    create_file, tmp_path, monkeypatch
-):
-    from contextlib import contextmanager
-    from io import BytesIO
-
-    @contextmanager
-    def open_bytes(self, **kwargs):
-        yield BytesIO(b"contents")
-
-    monkeypatch.setattr(File, "open", open_bytes)
-    file = create_file("s3://mybkt", path="dir//file.txt", etag="etag")
-    destination = str(tmp_path) + "//renamed.txt"
-    file.save(destination)
-    assert (tmp_path / "renamed.txt").read_bytes() == b"contents"
