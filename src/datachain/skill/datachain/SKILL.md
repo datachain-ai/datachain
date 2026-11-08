@@ -294,7 +294,7 @@ the UDF; rows of overwritten files are replaced and rows of deleted files remove
 full recompute.
 Put `update=True, delta=True` in the very first build script, so later refreshes are a re-run.
 
-File delta tracks source files, not model code, weights or preprocessing. For a model change, rebuild with `update=True, delta=False` and save a new version under the same dataset name. Use another name when the user asks to keep parallel model variants.
+File delta tracks source files, not model code, weights or preprocessing. For a model change, rebuild with `update=True, delta=False` and save a new version under the same dataset name. If only weights or external preprocessing changed and the script did not, run with `DATACHAIN_IGNORE_CHECKPOINTS=1` to avoid reusing the checkpoint. Use another name when the user asks to keep parallel model variants.
 
 ### Resume a crashed or killed run
 
