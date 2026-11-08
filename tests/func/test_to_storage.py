@@ -76,6 +76,44 @@ def test_to_storage_over_source_preserves_bytes(
     assert (output / source.name).read_bytes() == b"original bytes"
 
 
+@pytest.mark.parametrize("cache", [False, True])
+@pytest.mark.parametrize("alias", ["same", "hardlink"])
+@pytest.mark.parametrize("operation", ["save", "copy", "symlink"])
+def test_export_over_source_uses_the_saved_file_contents(
+    catalog, tmp_path, cache, alias, operation
+):
+    source = tmp_path / "input.bin"
+    source.write_bytes(b"old")
+    file = catalog.get_client(tmp_path.as_uri()).get_file_info(source.name)
+    file._set_stream(catalog)
+    if cache:
+        file.ensure_cached()
+    output = tmp_path if alias == "same" else tmp_path / "out"
+    output.mkdir(exist_ok=True)
+    destination = output / source.name
+    if alias == "hardlink":
+        os.link(source, destination)
+    mtime = source.stat().st_mtime + 1
+    source.write_bytes(b"new")
+    os.utime(source, (mtime, mtime))
+
+    def export():
+        if operation == "save":
+            file.save(str(destination))
+        else:
+            file.export(
+                output, placement="filename", use_cache=cache, link_type=operation
+            )
+
+    if cache:
+        export()
+        assert destination.read_bytes() == b"old"
+    else:
+        with pytest.raises(FileNotFoundError, match="changed on the source"):
+            export()
+        assert destination.read_bytes() == b"new"
+
+
 def test_to_storage_reexports_cached_file_after_source_is_deleted(
     test_session, tmp_path
 ):

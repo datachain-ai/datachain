@@ -795,12 +795,20 @@ class File(DataModel):
             metadata=metadata,
             write_options=write_options,
         )
-        if client.PREFIX == "file://" and self._is_local_file(
-            client.fs._strip_protocol(client.get_uri(rel_path))
-        ):
-            result = client.get_file_info(rel_path)
-        else:
-            with self.open(mode="rb") as src:
+        with self.open(mode="rb") as src:
+            source = self.get_local_path()
+            if source is None and self.source.startswith("file://"):
+                source = self.get_fs_path()
+            if (
+                not self.location
+                and source is not None
+                and client.PREFIX == "file://"
+                and self._same_file(
+                    source, client.fs._strip_protocol(client.get_uri(rel_path))
+                )
+            ):
+                result = client.get_file_info(rel_path)
+            else:
                 result = client.upload(src, rel_path, write_config=write_config)
         result._set_stream(self._catalog)
         return result
@@ -822,8 +830,12 @@ class File(DataModel):
     def _is_local_file(self, destination: str) -> bool:
         if not self.source.startswith("file://") or self.location:
             return False
+        return self._same_file(self.get_fs_path(), destination)
+
+    @staticmethod
+    def _same_file(source: str, destination: str) -> bool:
         try:
-            return os.path.samefile(self.get_fs_path(), destination)
+            return os.path.samefile(source, destination)
         except OSError:
             return False
 
@@ -935,6 +947,7 @@ class File(DataModel):
                     dst,
                 )
             if link_type == "symlink" and self._is_local_file(dst):
+                File.save(self, dst)
                 return
         else:
             # For cloud exports, simply join the output prefix and suffix.
