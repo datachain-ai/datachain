@@ -75,6 +75,17 @@ def test_describe_studio_reads_metadata_only(
     info = dc.describe(name, session=test_session)
     assert info.name == "remote.analytics.inventory@" + (version or "2.0.0")
     assert info.available_versions == ["1.0.0", "2.0.0"]
+    payload = studio_metadata[0]
+    selected = next(
+        v for v in payload["versions"] if v["version"] == (version or "2.0.0")
+    )
+    assert info.dataset_uuid == payload["uuid"]
+    assert info.version_uuid == selected["uuid"]
+    assert info.to_dict()["dataset_uuid"] == payload["uuid"]
+    assert info.to_dict()["version_uuid"] == selected["uuid"]
+    assert [v["version_uuid"] for v in info.to_dict()["versions"]] == [
+        v["uuid"] for v in payload["versions"]
+    ]
     assert info.selected_version.num_objects == (5 if version else 8)
     assert info.schema.serialize()["value"] == "int"
     assert info.selected_version.query_script == "process()"

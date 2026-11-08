@@ -25,23 +25,39 @@ from tests.utils import assert_row_names, dataset_dependency_asdict, table_row_c
 
 
 @pytest.mark.parametrize("model", [DatasetInfo, ListingInfo])
-def test_saved_dataset_info_v1_is_readable_after_adding_job_id(test_session, model):
+@pytest.mark.parametrize("legacy_version", [1, 2])
+def test_saved_dataset_info_older_versions_are_readable(
+    test_session, model, legacy_version
+):
+    excluded = {"dataset_uuid"} | ({"job_id"} if legacy_version == 1 else set())
     legacy = create_model(
         model.__name__,
         __base__=DataModel,
         **{
             name: (field.annotation, field)
             for name, field in model.model_fields.items()
-            if name != "job_id"
+            if name not in excluded
         },
     )
-    value = legacy(name="inventory", namespace="local", project="local")
+    ModelStore.remove(legacy)
+    legacy._version = legacy_version
+    ModelStore.register(legacy)
+    value = legacy(
+        name="inventory",
+        namespace="local",
+        project="local",
+        **({"job_id": "recorded-job"} if legacy_version == 2 else {}),
+    )
     dc.read_values(dataset=[value], session=test_session).save("legacy_info")
     ModelStore.remove(legacy)
     ModelStore.register(model)
+
     row = dc.read_dataset("legacy_info", session=test_session).to_values("dataset")[0]
+
     assert row.name == "inventory"
-    assert "job_id" not in type(row).model_fields
+    assert set(type(row).model_fields) == set(legacy.model_fields)
+    if legacy_version == 2:
+        assert row.job_id == "recorded-job"
 
 
 @pytest.fixture
@@ -1030,3 +1046,18 @@ def test_datasets_job_id_matches_description(test_session, column):
     chain = dc.datasets(column=column, session=test_session)
     job_column = f"{column}.job_id" if column else "job_id"
     assert chain.to_list(job_column) == [(description.job.id,)]
+
+
+def test_saved_dataset_catalog_keeps_dataset_and_version_uuids(test_session):
+    source = dc.read_values(value=[1], session=test_session).save("inventory")
+    record = test_session.catalog.get_dataset("inventory", versions=None)
+    dc.datasets(column="dataset", session=test_session).filter(
+        dc.C("dataset.name") == "inventory"
+    ).save("catalog_snapshot")
+
+    (info,) = dc.read_dataset("catalog_snapshot", session=test_session).to_values(
+        "dataset"
+    )
+
+    assert info.dataset_uuid == record.uuid
+    assert info.uuid == record.get_version(source.version).uuid

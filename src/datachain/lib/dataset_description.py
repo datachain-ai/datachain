@@ -25,6 +25,8 @@ def _timestamp(value: datetime) -> str:
 def _version_dict(info: DatasetInfo) -> dict[str, Any]:
     return {
         "name": _name(info),
+        "dataset_uuid": info.dataset_uuid,
+        "version_uuid": info.uuid,
         "num_objects": info.num_objects,
         "created_at": _timestamp(info.created_at),
         "finished_at": _timestamp(info.finished_at) if info.finished_at else None,
@@ -60,7 +62,7 @@ class DatasetDependencyInfo:
         return self.dataset.num_objects
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-compatible dependency with one version identifier."""
+        """Return JSON-compatible dependency metadata."""
         return {
             **_version_dict(self.dataset),
             "type": "storage" if isinstance(self.dataset, ListingInfo) else "dataset",
@@ -101,12 +103,22 @@ class DatasetDescription:
         return _name(self.selected_version)
 
     @property
+    def dataset_uuid(self) -> str | None:
+        """Dataset identifier, stable across versions and renames within its catalog."""
+        return self.selected_version.dataset_uuid
+
+    @property
+    def version_uuid(self) -> str:
+        """Identifier of the selected saved version."""
+        return self.selected_version.uuid
+
+    @property
     def available_versions(self) -> list[str]:
         """Every available completed version, in ascending semantic-version order."""
         return [v.version for v in self.versions]
 
     def to_dict(self) -> dict[str, Any]:
-        """Return JSON-compatible metadata with one identifier per version."""
+        """Return JSON-compatible metadata with dataset and version UUIDs."""
         selected = self.selected_version
         return {
             **_version_dict(selected),

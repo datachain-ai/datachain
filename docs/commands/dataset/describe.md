@@ -37,7 +37,7 @@ build()
 
 ## JSON output
 
-JSON uses canonical dataset names with versions and UTC timestamps. Unavailable sections are `null`.
+JSON includes canonical names, stable `dataset_uuid` and `version_uuid` identifiers, and UTC timestamps. The dataset UUID stays the same across versions and renames within a catalog. Unavailable sections are `null`.
 
 [Full JSON example](describe-example.json), including version, dependency and job metadata.
 
@@ -49,6 +49,7 @@ JSON uses canonical dataset names with versions and UTC timestamps. Unavailable 
 import datachain as dc
 
 info = dc.describe("joined@1.0.0")
+print(info.dataset_uuid, info.version_uuid)
 print(info.available_versions)
 info.schema.print_tree()
 if info.job:

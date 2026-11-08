@@ -632,3 +632,44 @@ def test_describe_json_normalizes_offsets_to_utc(test_session):
     payload = info.to_dict()
     assert payload["created_at"] == "2026-11-01T04:32:00+00:00"
     assert payload["jobs"][0]["created_at"] == "2026-11-01T04:32:00+00:00"
+
+
+def test_describe_uuids_survive_renames_and_distinguish_versions(
+    test_session, describe
+):
+    first = dc.read_values(value=[1], session=test_session).save("stable")
+    dc.read_dataset("stable", session=test_session).save("derived_stable")
+    older = dc.describe("stable@1.0.0", session=test_session)
+    dc.read_values(value=[2], session=test_session).save("stable", version="2.0.0")
+    latest = dc.describe("stable", session=test_session)
+    record = test_session.catalog.get_dataset("stable", versions=None)
+
+    assert older.dataset_uuid == latest.dataset_uuid == record.uuid
+    assert older.version_uuid == record.get_version("1.0.0").uuid
+    assert latest.version_uuid == record.get_version("2.0.0").uuid
+    assert older.version_uuid != latest.version_uuid
+    payload = describe(test_session.catalog, "stable")
+    assert payload["dataset_uuid"] == record.uuid
+    assert payload["version_uuid"] == latest.version_uuid
+    assert {v["dataset_uuid"] for v in payload["versions"]} == {record.uuid}
+    assert [v["version_uuid"] for v in payload["versions"]] == [
+        older.version_uuid,
+        latest.version_uuid,
+    ]
+    derived = dc.describe("derived_stable", session=test_session)
+    dependent = describe(test_session.catalog, "stable@1.0.0")["dependents"][0]
+    assert dependent["dataset_uuid"] == derived.dataset_uuid
+    assert dependent["version_uuid"] == derived.version_uuid
+    dependency = describe(test_session.catalog, "derived_stable")["dependencies"][0]
+    assert dependency["dataset_uuid"] == record.uuid
+    assert dependency["version_uuid"] == older.version_uuid
+
+    test_session.catalog.edit_dataset(
+        "stable", first.dataset.project, new_name="renamed"
+    )
+    renamed = dc.describe("renamed@1.0.0", session=test_session)
+
+    assert renamed.name != older.name
+    assert renamed.dataset_uuid == older.dataset_uuid
+    assert renamed.version_uuid == older.version_uuid
+    assert dc.read_dataset("renamed", session=test_session).to_values("value") == [2]

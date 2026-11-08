@@ -23,12 +23,13 @@ if TYPE_CHECKING:
 
 
 class DatasetInfo(DataModel):
-    _version: ClassVar[int] = 2
+    _version: ClassVar[int] = 3
 
     name: str
     namespace: str
     project: str
     uuid: str = Field(default=str(uuid4()))
+    dataset_uuid: str | None = Field(default=None)
     version: str = Field(default=DEFAULT_DATASET_VERSION)
     status: int = Field(default=DatasetStatus.CREATED)
     created_at: datetime = Field(default=TIME_ZERO)
@@ -105,6 +106,7 @@ class DatasetInfo(DataModel):
     ) -> "Self":
         return cls(
             uuid=version.uuid,
+            dataset_uuid=dataset.uuid,
             name=dataset.name,
             namespace=dataset.project.namespace.name,
             project=dataset.project.name,
