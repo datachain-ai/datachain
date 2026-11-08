@@ -67,9 +67,9 @@ def test_udf_input_types_survive_saved_dataset(test_session, annotation, value, 
 
 @pytest.mark.parametrize("method", ["map", "gen"])
 def test_udf_dotted_model_input_and_reordered_params(test_session, mocker, method):
-    from datachain.lib.udf import UDFBase
+    from datachain.lib.signal_schema import SignalSchema
 
-    prepare = mocker.spy(UDFBase, "_prepare_row")
+    prepare = mocker.spy(SignalSchema, "row_to_objs")
 
     class Item(dc.DataModel):
         text: str
