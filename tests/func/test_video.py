@@ -1379,18 +1379,33 @@ def test_get_frame_from_mid_file_reads_small_blocks(video_file, mocker):
     assert open_spy.call_args.kwargs.get("block_size") == PARTIAL_READ_BLOCK_SIZE
 
 
-def test_decoding_from_frame_zero_keeps_default_blocks(mpegts_video, mocker):
+def test_get_frames_after_declined_seek_reopens_with_default_blocks(
+    mpegts_video, mocker
+):
     video = mpegts_video.file
     video.get_info()
     open_spy = mocker.spy(VideoFile, "open")
 
     frames = list(video.get_frames(5, 8))
-    image = video.get_frame(5).get_np()
 
     assert [frame.frame for frame in frames] == [5, 6, 7]
-    np.testing.assert_array_equal(image, frames[0].get_np())
+    assert [round(frame.get_np().mean()) for frame in frames] == [100, 120, 140]
     sizes = [call.kwargs.get("block_size") for call in open_spy.call_args_list]
-    assert sizes == 2 * [PARTIAL_READ_BLOCK_SIZE, None]  # reopened once seek failed
+    assert sizes == [PARTIAL_READ_BLOCK_SIZE, None]
+
+
+def test_get_frame_after_declined_seek_reopens_with_default_blocks(
+    mpegts_video, mocker
+):
+    video = mpegts_video.file
+    video.get_info()
+    open_spy = mocker.spy(VideoFile, "open")
+
+    image = video.get_frame(5).get_np()
+
+    assert round(image.mean()) == 100
+    sizes = [call.kwargs.get("block_size") for call in open_spy.call_args_list]
+    assert sizes == [PARTIAL_READ_BLOCK_SIZE, None]
 
 
 def test_get_frame_reopens_with_default_blocks_when_seek_lands_after_start(
