@@ -14,8 +14,6 @@ from types import MappingProxyType
 import sqlalchemy as sa
 from sqlalchemy.dialects import sqlite
 from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.sql.elements import literal
-from sqlalchemy.sql.expression import case
 from sqlalchemy.sql.functions import func
 
 from datachain import json
@@ -45,6 +43,7 @@ from datachain.sql.types import (
     register_type_read_converters,
     validate_datetime_cast_input_type,
 )
+from datachain.utils import parent_path
 
 logger = logging.getLogger("datachain")
 
@@ -57,9 +56,6 @@ sqlite_dialect = sqlite.dialect(paramstyle="named")
 
 setup_is_complete: bool = False
 
-slash = literal("/")
-empty_str = literal("")
-dot = literal(".")
 
 MAX_INT64 = 2**64 - 1
 
@@ -222,6 +218,30 @@ def sqlite_string_split(string: str, sep: str, maxsplit: int = -1) -> str:
     return json.dumps(string.split(sep, maxsplit), ensure_ascii=False)
 
 
+def sqlite_path_parent(path: str | None) -> str | None:
+    return None if path is None else parent_path(path)
+
+
+def sqlite_path_name(path: str | None) -> str | None:
+    return None if path is None else path.rpartition("/")[2]
+
+
+def sqlite_path_file_stem(path: str | None) -> str | None:
+    name = sqlite_path_name(path)
+    if name is None:
+        return None
+    stem, dot, _ = name.rpartition(".")
+    return stem.rstrip(".") if dot else name
+
+
+def sqlite_path_file_ext(path: str | None) -> str | None:
+    name = sqlite_path_name(path)
+    if name is None:
+        return None
+    _, dot, ext = name.rpartition(".")
+    return ext if dot else ""
+
+
 def sqlite_int_hash_64(x: int) -> int:
     """IntHash64 implementation from ClickHouse."""
     x ^= 0x4CF2D2BAAE6DA887
@@ -379,6 +399,13 @@ def register_user_defined_sql_functions() -> None:
     def create_string_functions(conn):
         _create_function(conn, "split", 2, sqlite_string_split, deterministic=True)
         _create_function(conn, "split", 3, sqlite_string_split, deterministic=True)
+        for name, fn in (
+            ("dc_path_parent", sqlite_path_parent),
+            ("dc_path_name", sqlite_path_name),
+            ("dc_path_file_stem", sqlite_path_file_stem),
+            ("dc_path_file_ext", sqlite_path_file_ext),
+        ):
+            _create_function(conn, name, 1, fn, deterministic=True)
         _create_function(
             conn, "regexp_replace", 3, sqlite_regexp_replace, deterministic=True
         )
@@ -446,72 +473,20 @@ def convert_datetime(val: bytes) -> datetime:
     return _normalize_datetime_for_read(parsed)
 
 
-def path_parent(path):
-    return func.rtrim(func.rtrim(path, func.replace(path, slash, empty_str)), slash)
-
-
-def path_name(path):
-    return func.ltrim(func.substr(path, func.length(path_parent(path)) + 1), slash)
-
-
-def name_file_ext_length(name):
-    expr = func.length(name) - func.length(
-        func.rtrim(name, func.replace(name, dot, empty_str))
-    )
-    return case((func.instr(name, dot) == 0, 0), else_=expr)
-
-
-def path_file_ext_length(path):
-    name = path_name(path)
-    return name_file_ext_length(name)
-
-
-def path_file_stem(path):
-    path_length = func.length(path)
-    parent_length = func.length(path_parent(path))
-
-    name_expr = func.rtrim(
-        func.substr(
-            path,
-            1,
-            path_length - name_file_ext_length(path),
-        ),
-        dot,
-    )
-
-    full_path_expr = func.ltrim(
-        func.rtrim(
-            func.substr(
-                path,
-                parent_length + 1,
-                path_length - parent_length - path_file_ext_length(path),
-            ),
-            dot,
-        ),
-        slash,
-    )
-
-    return case((func.instr(path, slash) == 0, name_expr), else_=full_path_expr)
-
-
-def path_file_ext(path):
-    return func.substr(path, func.length(path) - path_file_ext_length(path) + 1)
-
-
 def compile_path_parent(element, compiler, **kwargs):
-    return compiler.process(path_parent(*element.clauses.clauses), **kwargs)
+    return compiler.process(func.dc_path_parent(*element.clauses.clauses), **kwargs)
 
 
 def compile_path_name(element, compiler, **kwargs):
-    return compiler.process(path_name(*element.clauses.clauses), **kwargs)
+    return compiler.process(func.dc_path_name(*element.clauses.clauses), **kwargs)
 
 
 def compile_path_file_stem(element, compiler, **kwargs):
-    return compiler.process(path_file_stem(*element.clauses.clauses), **kwargs)
+    return compiler.process(func.dc_path_file_stem(*element.clauses.clauses), **kwargs)
 
 
 def compile_path_file_ext(element, compiler, **kwargs):
-    return compiler.process(path_file_ext(*element.clauses.clauses), **kwargs)
+    return compiler.process(func.dc_path_file_ext(*element.clauses.clauses), **kwargs)
 
 
 def compile_cast(element, compiler, **kwargs):
