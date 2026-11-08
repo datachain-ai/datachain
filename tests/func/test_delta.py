@@ -1196,7 +1196,7 @@ def test_delta_save_without_result_key_explains_required_fields(test_session):
         chain.save("missing_key_result")
 
 
-@pytest.mark.parametrize("operation", ["mutate", "gen"])
+@pytest.mark.parametrize("operation", ["mutate", "select", "gen"])
 def test_delta_rejects_chain_that_changes_the_key(test_session, operation):
     def generate(id, value):
         yield id * 10, value
@@ -1211,6 +1211,8 @@ def test_delta_rejects_chain_that_changes_the_key(test_session, operation):
         )
         if operation == "mutate":
             return chain.mutate(id=C.id + 10)
+        if operation == "select":
+            return chain.select("value", id=C.id + 10)
         return chain.gen(generate, output={"id": int, "value": int})
 
     dc.read_values(id=[1, 2], value=[10, 20], session=test_session).save(
@@ -1220,5 +1222,21 @@ def test_delta_rejects_chain_that_changes_the_key(test_session, operation):
         build(delta_unsafe=False).save("rewrite_result")
     result = build(delta_unsafe=True).save("rewrite_result")
     assert sorted(result.to_values("id")) == (
-        [11, 12] if operation == "mutate" else [10, 20]
+        [10, 20] if operation == "gen" else [11, 12]
     )
+
+
+def test_delta_gen_reports_the_key_column_that_changed(test_session):
+    def generate(id, ts):
+        yield id, ts + 1
+
+    dc.read_values(id=[1], ts=[10], session=test_session).save("composite_key_source")
+    chain = dc.read_dataset(
+        "composite_key_source",
+        delta=True,
+        delta_on=["id", "ts"],
+        session=test_session,
+    ).gen(generate, output={"id": int, "ts": int})
+
+    with pytest.raises(DataChainParamsError, match="change delta key 'ts'"):
+        chain.save("composite_key_result")

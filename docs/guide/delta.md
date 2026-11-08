@@ -41,8 +41,8 @@ chain = (
 
 - **delta**: Boolean flag to enable delta processing
 - **delta_on**: Field(s) that uniquely identify rows in the source dataset. The default is `("file.path", "file.etag", "file.version")`.
-- **delta_result_on**: Field(s) in the resulting dataset that correspond to `delta_on` fields (if they have different names)
-  The chain must keep the key values: `mutate` or `gen` that changes them raises an error unless `delta_unsafe=True`.
+- **delta_result_on**: Field(s) in the resulting dataset that correspond to `delta_on` fields (if they have different names).
+  The chain must keep the key values: changing them through `mutate`, `select` or `gen` raises an error unless `delta_unsafe=True`.
 - **delta_compare**: Field(s) used to check if a record has been modified
 
 ## Example: Processing New Files Only
@@ -94,6 +94,7 @@ By default, delta updates cannot be combined with the following methods:
 6. `distinct`
 7. `agg`
 8. `group_by`
+9. `mutate`, `select` or `gen` that changes delta-key values
 
 These methods are restricted because they may produce **unexpected results** when used with delta processing. Delta runs the chain only on a subset of rows (new and changed records), while methods like `distinct`, `agg`, or `group_by` are designed to operate on the entire dataset.
 

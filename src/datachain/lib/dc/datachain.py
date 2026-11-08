@@ -2048,16 +2048,6 @@ class DataChain:
         """
         if args:
             raise self._named_expression_error("mutate()", args[0])
-        sources: dict[str, set[str]] = {}  # result key -> columns it may copy
-        for on, result_on in self._delta_key_specs():
-            for key, result_key in zip(on, result_on, strict=False):
-                root = result_key.split(".")[0]
-                sources.setdefault(root, {root}).add(key.split(".")[0])
-        for name, value in kwargs.items():
-            if name in sources and not (
-                isinstance(value, Column) and value.name in sources[name]
-            ):
-                raise delta_key_changed_error(name, "mutate()")
         return self._mutate("mutate()", **kwargs)
 
     def _resolve_arm_columns(self, kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -2072,8 +2062,22 @@ class DataChain:
                 resolved_kwargs[col_name] = Column(ColumnMeta.to_db_name(resolved))
         return resolved_kwargs
 
+    def _check_delta_key_mutation(self, method: str, kwargs: dict[str, Any]) -> None:
+        sources: dict[str, set[str]] = {}  # result key -> columns it may copy
+        for on, result_on in self._delta_key_specs():
+            for key, result_key in zip(on, result_on, strict=False):
+                root = result_key.split(".")[0]
+                sources.setdefault(root, {root}).add(key.split(".")[0])
+        for name, value in kwargs.items():
+            if name in sources and not (
+                isinstance(value, Column) and value.name in sources[name]
+            ):
+                raise delta_key_changed_error(name, method)
+
     def _mutate(self, method: str, **kwargs) -> "Self":
         from sqlalchemy.sql.sqltypes import NullType
+
+        self._check_delta_key_mutation(method, kwargs)
 
         primitives = (bool, str, int, float)
 
