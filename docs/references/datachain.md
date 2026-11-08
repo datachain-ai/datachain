@@ -38,6 +38,8 @@ for examples of how to create a chain.
 
 ::: datachain.lib.dc.values.read_values
 
+::: datachain.lib.dc.webdataset.read_webdataset
+
 ::: datachain.lib.dc.database.read_database
 
 ::: datachain.lib.dc.datasets.datasets
