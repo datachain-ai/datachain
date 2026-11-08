@@ -24,11 +24,13 @@ from datachain.lib.dc import (
     read_hf,
     read_json,
     read_lerobot,
+    read_mcap,
     read_pandas,
     read_parquet,
     read_records,
     read_storage,
     read_values,
+    read_webdataset,
     read_zarr,
 )
 from datachain.lib.file import (
@@ -48,6 +50,7 @@ from datachain.lib.file import (
     VideoFragment,
     VideoFrame,
 )
+from datachain.lib.mcap import McapFile, McapSlice
 from datachain.lib.model_store import ModelStore
 from datachain.lib.namespaces import delete_namespace
 from datachain.lib.projects import create as create_project
@@ -83,6 +86,8 @@ __all__ = [
     "ImageFile",
     "Listing",
     "Mapper",
+    "McapFile",
+    "McapSlice",
     "ModelStore",
     "Session",
     "Sys",
@@ -113,10 +118,12 @@ __all__ = [
     "read_hf",
     "read_json",
     "read_lerobot",
+    "read_mcap",
     "read_pandas",
     "read_parquet",
     "read_records",
     "read_storage",
     "read_values",
+    "read_webdataset",
     "read_zarr",
 ]
