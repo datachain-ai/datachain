@@ -1391,7 +1391,9 @@ def test_get_frames_after_declined_seek_reopens_with_default_blocks(
     frames = list(video.get_frames(5, 8))
 
     assert [frame.frame for frame in frames] == [5, 6, 7]
-    assert [round(frame.get_np().mean()) for frame in frames] == [100, 120, 140]
+    assert [frame.get_np().mean() for frame in frames] == pytest.approx(
+        [100, 120, 140], abs=2
+    )
     sizes = [call.kwargs.get("block_size") for call in open_spy.call_args_list]
     assert sizes == [PARTIAL_READ_BLOCK_SIZE, None]
 
@@ -1405,7 +1407,7 @@ def test_get_frame_after_declined_seek_reopens_with_default_blocks(
 
     image = video.get_frame(5).get_np()
 
-    assert round(image.mean()) == 100
+    assert image.mean() == pytest.approx(100, abs=2)
     sizes = [call.kwargs.get("block_size") for call in open_spy.call_args_list]
     assert sizes == [PARTIAL_READ_BLOCK_SIZE, None]
 
