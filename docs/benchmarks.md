@@ -30,9 +30,8 @@ than DataChain on the smaller prefix, slower on the larger one.
 
 ## Comparison with dedicated listing tools
 
-A separate comparison in [PR #2027](https://github.com/datachain-ai/datachain/pull/2027#issuecomment-6128223196)
-reports both a 257K-object comparison across three stores and larger S3 workloads. These are separate from
-the GOES inventory/aggregation benchmark above.
+The following measurements cover 257K objects across three stores and larger S3 workloads.
+These are separate from the GOES inventory/aggregation benchmark above.
 
 ### The same listing API across stores
 
@@ -76,14 +75,13 @@ current-object ratios are rclone/DataChain 6.43×, s5cmd/DataChain 6.68×, AWS C
 s3p/DataChain 2.14×. The version-listing ratios are rclone/DataChain 9.91×, s5cmd/DataChain 10.25× and
 s3ls-rs/DataChain 5.18×. The near tie with swath is not evidence of a dependable speed advantage.
 
-The external-tool source does not provide a complete per-tool command, version and repetition ledger.
-Treat these as reported engineering measurements, not a fresh reproduced benchmark. The table is a
-selection of the reported tools; the source also records tools that failed on particular object keys.
+These reported results do not include a complete per-tool command, version and repetition ledger.
+Treat them as engineering measurements, not a fresh reproduced benchmark.
+Tools that failed on particular object keys are omitted.
 
 ## Lightweight and scoped listing
 
-[PR #2051's measurements](https://github.com/datachain-ai/datachain/pull/2051#issuecomment-6247914415)
-compare saved `read_storage` snapshots with the lightweight `list_storage` iterator.
+These measurements compare saved `read_storage` snapshots with the lightweight `list_storage` iterator.
 
 Each fresh process lists once, then answers totals, grouping, top 100 and modification-time questions.
 `read_storage(update=True)` saves the snapshot and queries SQLite; the lightweight path collects rows once
@@ -102,9 +100,9 @@ They are not an additional multiplier to apply to the external-tool table or the
 `list_storage` itself is iterable; the benchmark's `.to_list()` materializes all rows, while a one-pass
 inventory can aggregate as it iterates.
 
-The same comment measures scoped listing: reading one level or a fixed part of a glob instead of scanning
+Scoped listing reads one level or a fixed part of a glob instead of scanning
 the full prefix. For the top level of `gs://gresearch/`, returning 28 objects, the lightweight listing falls
-from 44.0 s to 1.4 s. Its approximately 31× figure compares the old and new lightweight paths; the saved path took 2.3 min.
+from 44.0 s to 1.4 s, about 31× faster than the old lightweight path; the saved path took 2.3 min.
 For `s3://robolake-lab/199*/**`, it falls from 7.5 s to 2.3 s, returning 5,868 objects. These are historical
 optimization measurements for particular URI shapes, not a promise that every glob is faster by 31×.
 
@@ -306,8 +304,6 @@ release-wide speedup.
 
 ## Evidence and reproduction
 
-- [Dedicated listing tools: measurements and limitations](https://github.com/datachain-ai/datachain/pull/2027#issuecomment-6128223196).
-- [Lightweight and scoped listing measurements](https://github.com/datachain-ai/datachain/pull/2051#issuecomment-6247914415).
 - [Held-out media evaluation: sanitized run timings and contrasts](assets/heldout-media-results.json).
 
 The full agent harness and raw traces are not publicly available. The published timings do not make
