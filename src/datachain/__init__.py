@@ -30,6 +30,7 @@ from datachain.lib.dc import (
     read_records,
     read_storage,
     read_values,
+    read_webdataset,
     read_zarr,
 )
 from datachain.lib.file import (
@@ -123,5 +124,6 @@ __all__ = [
     "read_records",
     "read_storage",
     "read_values",
+    "read_webdataset",
     "read_zarr",
 ]
