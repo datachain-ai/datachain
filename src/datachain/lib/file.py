@@ -1302,7 +1302,7 @@ class ImageFile(File):
         Retrieves metadata and information about the image file.
 
         Reuses cached content when available without populating the cache.
-        Use `.settings(prefetch=0)` for metadata-only pipelines to avoid downloading
+        Use `.settings(prefetch=0)` for metadata-only chains to avoid downloading
         files in advance.
 
         Returns:
@@ -1416,7 +1416,7 @@ class VideoFile(File):
         Retrieves metadata and information about the video file.
 
         Reuses cached content when available without populating the cache.
-        Use `.settings(prefetch=0)` for metadata-only pipelines to avoid downloading
+        Use `.settings(prefetch=0)` for metadata-only chains to avoid downloading
         files in advance.
 
         Args:
@@ -1595,7 +1595,7 @@ class AudioFile(File):
         Retrieves metadata and information about the audio file.
 
         Reuses cached content when available without populating the cache.
-        Use `.settings(prefetch=0)` for metadata-only pipelines to avoid downloading
+        Use `.settings(prefetch=0)` for metadata-only chains to avoid downloading
         files in advance.
 
         Returns:
