@@ -102,15 +102,20 @@ def _installed_by_datachain(skill_dest: Path, name: str) -> bool:
     """
     try:
         text = (skill_dest / "SKILL.md").read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        text = None
     except OSError:
         return False
-    frontmatter = _frontmatter(text)
-    if not re.search(
-        rf"^name:\s*{re.escape(_frontmatter_name(name))}\s*$", frontmatter, re.MULTILINE
-    ):
-        return False
-    if name != "datachain":
-        return True
+    if text is not None:
+        frontmatter = _frontmatter(text)
+        if not re.search(
+            rf"^name:\s*{re.escape(_frontmatter_name(name))}\s*$",
+            frontmatter,
+            re.MULTILINE,
+        ):
+            return False
+        if name != "datachain":
+            return True
     try:
         return (skill_dest / _INSTALL_MARKER).read_text(encoding="utf-8") == name
     except (OSError, UnicodeError):
@@ -229,7 +234,10 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
             _write_text_atomic(dest / _INSTALL_MARKER, skill_name)
             shutil.copytree(src, dest, dirs_exist_ok=True, ignore=_COPYTREE_IGNORE)
             if skill_name == "datachain":
-                shutil.copyfile(_skills_src() / "core" / "SDK.md", dest / "SDK.md")
+                _write_text_atomic(
+                    dest / "SDK.md",
+                    (_skills_src() / "core" / "SDK.md").read_text(encoding="utf-8"),
+                )
             skill_md = src / "SKILL.md"
             if skill_md.exists():
                 _write_text_atomic(

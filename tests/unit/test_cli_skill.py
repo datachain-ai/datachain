@@ -726,3 +726,57 @@ def test_interrupted_skill_rewrite_preserves_retryable_ownership(
             assert not dest.exists()
         assert skill.install_skills(None, "claude", True) == 0
         assert skill.uninstall_skills(None, "claude", True) == 0
+
+
+@pytest.mark.parametrize("action", ["install", "uninstall"])
+def test_marker_only_install_can_be_retried_or_removed(
+    tmp_path, fake_home, fake_skills_src, monkeypatch, action
+):
+    from datachain.cli.commands import skill
+
+    monkeypatch.chdir(tmp_path)
+    dest = tmp_path / ".claude/skills/datachain"
+    dest.mkdir(parents=True)
+    (dest / ".datachain-installed").write_text("datachain")
+
+    with (
+        patch("pathlib.Path.home", return_value=fake_home),
+        patch.object(skill, "_skills_src", return_value=fake_skills_src),
+    ):
+        if action == "install":
+            assert skill.install_skills(None, "claude", True) == 0
+            assert (dest / "SKILL.md").is_file()
+            assert (dest / "SDK.md").is_file()
+        else:
+            assert skill.uninstall_skills(None, "claude", True) == 0
+            assert not dest.exists()
+
+
+def test_failed_sdk_upgrade_preserves_installed_reference(
+    tmp_path, fake_home, fake_skills_src, monkeypatch
+):
+    from datachain.cli.commands import skill
+
+    monkeypatch.chdir(tmp_path)
+    original = Path.write_text
+    dest = tmp_path / ".claude/skills/datachain"
+
+    def interrupted(path, *args, **kwargs):
+        if path.name == "SDK.md":
+            original(path, "partial", encoding="utf-8")
+            raise OSError("disk full")
+        return original(path, *args, **kwargs)
+
+    with (
+        patch("pathlib.Path.home", return_value=fake_home),
+        patch.object(skill, "_skills_src", return_value=fake_skills_src),
+    ):
+        assert skill.install_skills(None, "claude", True) == 0
+        sdk = (dest / "SDK.md").read_text()
+        (fake_skills_src / "core/SDK.md").write_text("new reference")
+        with patch.object(Path, "write_text", interrupted):
+            with pytest.raises(OSError, match="disk full"):
+                skill.install_skills(None, "claude", True)
+        assert (dest / "SDK.md").read_text() == sdk
+        assert skill.install_skills(None, "claude", True) == 0
+        assert (dest / "SDK.md").read_text() == "new reference"
