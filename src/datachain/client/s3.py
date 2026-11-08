@@ -46,7 +46,7 @@ def _region_key(name: str, kwargs: dict[str, Any]) -> tuple | None:
     client_kwargs = kwargs.get("client_kwargs") or {}
     config_kwargs = kwargs.get("config_kwargs") or {}
     if (
-        "session" in kwargs
+        kwargs.get("session") is not None
         or kwargs.get("endpoint_url")
         or kwargs.get("aws_endpoint_url")
         or client_kwargs.get("endpoint_url")

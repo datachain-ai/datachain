@@ -1,6 +1,7 @@
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 from botocore.exceptions import ClientError
@@ -310,24 +311,17 @@ def test_filesystem_without_credentials_is_anonymous(in_loop, session):
     assert fs.anon
 
 
-def test_shared_config_region_does_not_reuse_another_partitions_bucket(
-    tmp_path, monkeypatch
-):
-    path = tmp_path / "config"
-    monkeypatch.setenv("AWS_CONFIG_FILE", str(path))
-    for name in (
-        "AWS_REGION",
-        "AWS_DEFAULT_REGION",
-        "AWS_PROFILE",
-        "AWS_DEFAULT_PROFILE",
-    ):
-        monkeypatch.delenv(name, raising=False)
+@pytest.mark.parametrize("kwargs", [{}, {"session": None}])
+def test_shared_config_region_does_not_reuse_another_partitions_bucket(kwargs):
+    path = Path(os.environ["AWS_CONFIG_FILE"])
     path.write_text("[default]\nregion = us-west-2\n")
     key = s3._region_key("bucket", {})
     assert key is not None
     s3._BUCKET_REGIONS[key] = "us-west-2"
+    client = ClientS3.from_name("bucket", None, _CREDENTIALS | kwargs)
+    assert client.fs_kwargs["region_name"] == "us-west-2"
     path.write_text("[default]\nregion = cn-north-1\n")
-    client = ClientS3.from_name("bucket", None, _CREDENTIALS)
+    client = ClientS3.from_name("bucket", None, _CREDENTIALS | kwargs)
     assert client.fs_kwargs.get("region_name") != "us-west-2"
 
 
