@@ -477,36 +477,55 @@ def test_to_storage_preserves_existing_permissions_and_new_file_umask(
     assert target.read_bytes() == b"meow"
 
 
-@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
-@pytest.mark.parametrize("cleanup_fails", [False, True])
-def test_to_storage_failed_download_preserves_error(
-    cloud_test_catalog, tmp_dir, monkeypatch, cleanup_fails
-):
+@pytest.fixture
+def failed_download_chain(cloud_test_catalog, monkeypatch):
     ctc = cloud_test_catalog
-    out = tmp_dir / "out"
 
     async def partial_download(self, src, dst, *args, **kwargs):
         await asyncio.to_thread(Path(dst).write_bytes, b"partial")
         raise OSError("connection reset")
 
-    if cleanup_fails:
-        remove = os.remove
-
-        def fail_tmp_remove(path, *args, **kwargs):
-            if str(path).endswith(".tmp"):
-                raise PermissionError("cleanup denied")
-            return remove(path, *args, **kwargs)
-
-        monkeypatch.setattr(os, "remove", fail_tmp_remove)
-
     fs = ctc.catalog.get_client(ctc.src_uri).fs
     monkeypatch.setattr(type(fs), "_get_file", partial_download)
-    chain = dc.read_storage(ctc.src_uri, session=ctc.session)
-    with pytest.raises(OSError, match="connection reset"):
-        chain.to_storage(out, placement="filepath")
+    return dc.read_storage(ctc.src_uri, session=ctc.session).filter(
+        dc.C("file.path").glob("*cat1")
+    )
 
-    if not cleanup_fails:
-        assert not [p for p in out.rglob("*") if p.is_file()]
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("existing", [False, True])
+def test_to_storage_failed_download_cleans_up_and_preserves_destination(
+    failed_download_chain, tmp_dir, existing
+):
+    out = tmp_dir / "out"
+    out.mkdir()
+    target = out / "cat1"
+    if existing:
+        target.write_bytes(b"old bytes")
+
+    with pytest.raises(OSError, match="connection reset"):
+        failed_download_chain.to_storage(out, placement="filename")
+
+    assert list(out.iterdir()) == ([target] if existing else [])
+    if existing:
+        assert target.read_bytes() == b"old bytes"
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_to_storage_cleanup_failure_preserves_download_error(
+    failed_download_chain, tmp_dir, monkeypatch
+):
+    remove = os.remove
+
+    def fail_tmp_remove(path, *args, **kwargs):
+        if str(path).endswith(".tmp"):
+            raise PermissionError("cleanup denied")
+        return remove(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "remove", fail_tmp_remove)
+
+    with pytest.raises(OSError, match="connection reset"):
+        failed_download_chain.to_storage(tmp_dir / "out", placement="filename")
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
