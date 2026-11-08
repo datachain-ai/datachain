@@ -151,6 +151,9 @@ inventory = (
 **Questions about message content run your Python code on the messages.** With `duration=`, `read_mcap` gives a row per time window, an [`McapSlice`](../references/data-types/mcapfile.md). `messages()` reads only the chunks of that window and topic, and `decoder_factories` decodes them into ROS 2 or Protobuf objects (with `DecoderFactory` from `mcap_ros2.decoder` or `mcap_protobuf.decoder`, packages `mcap-ros2-support` and `mcap-protobuf-support`). The windows are processed in parallel, and the results become columns you can filter with SQL again:
 
 ```python
+from mcap_ros2.decoder import DecoderFactory
+
+
 def max_joint_speed(mcap: dc.McapSlice) -> float:
     messages = mcap.messages(decoder_factories=[DecoderFactory()])
     return max((abs(v) for m in messages for v in m.decoded.velocity), default=0.0)
