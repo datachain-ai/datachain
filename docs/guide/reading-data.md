@@ -120,6 +120,49 @@ With `header=False` and no `columns`, `output` is required and supplies names fo
 
 Parquet exported by DataChain restores its saved schema and does not support `columns=`. Read it without `columns` and use `.select(...)` on the chain. With `columns` or `output`, read it separately from other Parquet files.
 
+## WebDataset
+
+`dc.read_webdataset()` reads WebDataset tar shards without extracting them, a row per sample: the image member is `wds.file`, and the other members (`.txt`, `.json`, `.cls`, ...) become columns, parsed once while the shards are indexed. A `spec=` model, such as `WDSLaion` for LAION-style shards, gives the JSON member typed fields.
+
+**Questions about captions and metadata run as SQL, without reading the images.**
+
+```python
+import datachain as dc
+from datachain.lib.webdataset_laion import WDSLaion
+
+shards = "gs://datachain-demo/datacomp-small/shards/000000[0-5]*.tar"
+samples = dc.read_webdataset(shards, spec=WDSLaion, anon=True)
+```
+
+```python
+# captions of 3+ words, images of at least 200 px with aspect ratio under 3
+w, h = "wds.json.original_width", "wds.json.original_height"
+words = dc.func.array.length(dc.func.string.split("wds.txt", " "))
+short_side, long_side = dc.func.least(w, h), dc.func.greatest(w, h)
+good = samples.filter((words > 2) & (short_side > 200) & (long_side < 3 * short_side))
+```
+
+```python
+# join a Parquet table of CLIP scores and keep the best-matching captions
+metadata = "gs://datachain-demo/datacomp-small/metadata/0020f*.parquet"
+scores = dc.read_parquet(metadata, anon=True)
+matched = good.merge(scores, on="wds.json.uid", right_on="uid")
+best = matched.filter(dc.C("clip_l14_similarity_score") > 0.3)
+```
+
+**Questions about the pixels run your Python code on the images.** Images are read from their shards directly, without extracting them. Samples are processed in parallel, and the results become columns you can filter with SQL again:
+
+```python
+def contrast(file: dc.File) -> int:
+    low, high = file.as_image_file().read().convert("L").getextrema()
+    return high - low
+```
+
+```python
+scored = best.settings(parallel=8).map(contrast=contrast, params=["wds.file"])
+flat = scored.filter(dc.C("contrast") < 40)  # nearly blank images
+```
+
 ## LeRobot Datasets
 
 `dc.read_lerobot()` reads a [LeRobot](https://github.com/huggingface/lerobot) v3 dataset as a row per episode: its metadata (`episode_index`, `length`, `tasks`, ...) and, under `videos`, a `VideoFragment` per camera that points into the shared mp4. Only the metadata is read, so the rows are ready in seconds; the videos are not downloaded. Column names and camera keys are normalized like `read_parquet` columns, e.g. `observation.image` becomes `videos.observation_image`.
