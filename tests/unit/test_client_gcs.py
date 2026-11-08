@@ -286,7 +286,8 @@ def no_gcp_credentials(monkeypatch, mocker, tmp_path):
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("CLOUDSDK_CONFIG", str(tmp_path))
-    monkeypatch.setattr("google.auth.compute_engine._metadata._NO_GCE_CHECK", True)
+    monkeypatch.setenv("NO_GCE_CHECK", "true")
+    mocker.patch("google.auth.compute_engine._metadata.is_on_gce", return_value=False)
     monkeypatch.setattr("gcsfs.credentials.GoogleCredentials.tokens", {})
     mocker.patch(
         "google.auth.compute_engine.Credentials.refresh",
