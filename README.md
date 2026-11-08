@@ -288,7 +288,7 @@ Under a second - everything runs against the Dataset DB.
 
 ### 5.3. Incremental updates
 
-The bucket in this walkthrough is static, so there's nothing new to process. But in production - when new images land in your bucket - re-run the same scripts unchanged. `delta=True` in the original dataset ensures only new files are processed end to end while the whole dataset will be updated to `pets_images@1.0.1`:
+The bucket in this walkthrough is static, so there's nothing new to process. In production, rerun the same scripts when files are added, changed, or deleted. With `delta=True`, new and changed files are processed, results for deleted files are removed, and results for unchanged files are reused:
 
 ```python
 $ python create_dataset.py   # 500 new images arrived
