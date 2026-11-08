@@ -820,12 +820,12 @@ class File(DataModel):
         return client, rel_path
 
     def _is_local_file(self, destination: str) -> bool:
-        return (
-            self.source.startswith("file://")
-            and not self.location
-            and os.path.exists(destination)
-            and os.path.samefile(self.get_fs_path(), destination)
-        )
+        if not self.source.startswith("file://") or self.location:
+            return False
+        try:
+            return os.path.samefile(self.get_fs_path(), destination)
+        except OSError:
+            return False
 
     def _symlink_to(self, destination: str) -> None:
         if self.location:

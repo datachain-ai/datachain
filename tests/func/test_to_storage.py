@@ -76,6 +76,27 @@ def test_to_storage_over_source_preserves_bytes(
     assert (output / source.name).read_bytes() == b"original bytes"
 
 
+def test_to_storage_reexports_cached_file_after_source_is_deleted(
+    test_session, tmp_path
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    path = source / "a.bin"
+    path.write_bytes(b"original bytes")
+    chain = (
+        dc.read_storage(source.as_uri(), session=test_session)
+        .settings(cache=True)
+        .persist()
+    )
+    output = tmp_path / "out"
+    chain.to_storage(output, placement="filename")
+    path.unlink()
+
+    chain.to_storage(output, placement="filename")
+
+    assert (output / "a.bin").read_bytes() == b"original bytes"
+
+
 @pytest.mark.parametrize("placement", ["fullpath", "filename", "filepath"])
 @pytest.mark.parametrize("use_map", [True, False])
 @pytest.mark.parametrize("use_cache", [True, False])
