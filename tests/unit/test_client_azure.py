@@ -360,7 +360,7 @@ def no_azure_env(monkeypatch):
     for var in list(os.environ):
         if var.startswith("AZURE_"):
             monkeypatch.delenv(var)
-    monkeypatch.setattr("datachain.client.azure._IDENTITY_CHECK", None)
+    monkeypatch.setattr("datachain.client.azure._IDENTITY_CHECKS", {})
     AzureBlobFileSystem.clear_instance_cache()
     yield
     AzureBlobFileSystem.clear_instance_cache()
@@ -441,6 +441,10 @@ def test_identity_probe_does_not_share_different_credential_selections(
     probe = mocker.patch(
         "datachain.client.azure._finds_no_identity", side_effect=[True, False]
     )
+    assert AzureClient.create_fs(
+        account_name="first", exclude_environment_credential=True
+    ).anon
+    assert not AzureClient.create_fs(account_name="second").anon
     assert AzureClient.create_fs(
         account_name="first", exclude_environment_credential=True
     ).anon

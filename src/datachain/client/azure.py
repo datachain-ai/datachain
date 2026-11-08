@@ -36,7 +36,7 @@ _COPY_BUFFER_SIZE = 8 * 1024 * 1024
 
 _SCOPE = "https://storage.azure.com/.default"
 _NO_IDENTITY_TTL = 60.0  # seconds: an az login or an identity may come later
-_IDENTITY_CHECK: tuple[object, float, bool] | None = None
+_IDENTITY_CHECKS: dict[tuple, tuple[float, bool]] = {}
 
 
 def _finds_no_identity(credential: Any) -> bool:
@@ -62,7 +62,6 @@ def _finds_no_identity(credential: Any) -> bool:
 
 
 def _no_identity(fs: AzureBlobFileSystem) -> bool:
-    global _IDENTITY_CHECK  # noqa: PLW0603
     environment = frozenset(
         (name, value)
         for name, value in os.environ.items()
@@ -76,12 +75,14 @@ def _no_identity(fs: AzureBlobFileSystem) -> bool:
         environment,
         frozenset((name, repr(value)) for name, value in fs.kwargs.items()),
     )
-    if _IDENTITY_CHECK is not None:
-        previous, checked, absent = _IDENTITY_CHECK
-        if previous == key and (not absent or now - checked < _NO_IDENTITY_TTL):
+    if cached := _IDENTITY_CHECKS.get(key):
+        checked, absent = cached
+        if not absent or now - checked < _NO_IDENTITY_TTL:
             return absent
     absent = _finds_no_identity(fs.sync_credential)
-    _IDENTITY_CHECK = key, time.monotonic(), absent
+    if key not in _IDENTITY_CHECKS and len(_IDENTITY_CHECKS) >= 16:
+        _IDENTITY_CHECKS.pop(next(iter(_IDENTITY_CHECKS), ()), None)
+    _IDENTITY_CHECKS[key] = time.monotonic(), absent
     return absent
 
 
