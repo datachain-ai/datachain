@@ -48,6 +48,8 @@ FFMPEG_FRAGMENT_TIMEOUT_FACTOR = 10.0
 FFMPEG_FRAGMENT_EXECUTABLE = "ffmpeg"
 FFMPEG_FRAGMENT_ARGS = ("-nostdin", "-hide_banner", "-loglevel", "error")
 FRAME_INDEX_EPSILON = 1e-9
+# Frame windows up to this estimated size are read in small blocks
+SMALL_BLOCK_WINDOW_MAX_SIZE = 16 * 1024 * 1024
 
 
 class _SeekLandedAfterStartError(Exception):
@@ -125,7 +127,7 @@ def video_info(file: File | VideoFile, video_stream_index: int = 0) -> Video:
     _validate_video_stream_index(video_stream_index)
 
     try:
-        with file.open(block_size=PARTIAL_READ_BLOCK_SIZE) as f:
+        with file._open_read(block_size=PARTIAL_READ_BLOCK_SIZE, cache=False) as f:
             with av.open(f) as container:
                 video_stream = _video_stream(
                     container,
@@ -364,7 +366,7 @@ def validate_frame_range(
     _validate_video_stream_index(video_stream_index)
 
     if end is None:
-        end = video_info(video, video_stream_index=video_stream_index).frames
+        end = video.get_info(video_stream_index=video_stream_index).frames
 
     if end < 0:
         raise ValueError("end_frame must be a non-negative integer.")
@@ -387,6 +389,25 @@ def _frame_timestamp(frame, frame_index: int, fps: float) -> float:
     raise ValueError("unable to determine frame timestamp")
 
 
+def _frames_block_size(
+    video: VideoFile, start: int, end: int, video_stream_index: int
+) -> int | None:
+    """Small blocks for a short window from mid-file, where read-ahead is wasted."""
+    if start == 0 or video.size <= 0:
+        return None
+    try:
+        frames = video.get_info(video_stream_index=video_stream_index).frames
+    except FileError:
+        return None
+    if frames <= 0 or video.size * (end - start) > SMALL_BLOCK_WINDOW_MAX_SIZE * frames:
+        return None
+    return PARTIAL_READ_BLOCK_SIZE
+
+
+class _SequentialDecodeError(Exception):
+    """Decoding has to start from frame 0, so small blocks would only slow it."""
+
+
 def video_frames(
     video: VideoFile,
     start: int,
@@ -398,57 +419,80 @@ def video_frames(
     _validate_video_stream_index(video_stream_index)
 
     try:
-        with video.open() as f:
-            with av.open(f) as container:
-                input_container: Any = container
-                video_stream = _video_stream(
-                    input_container,
-                    video_stream_index,
-                    video.source,
-                    video.path,
-                    "unable to read video frames",
-                )
-                fps = _video_fps(video_stream)
-                seeked = _seek_to_frame(input_container, f, video_stream, start, fps)
-
-                try:
-                    yield from _video_frames_from_decoded(
-                        video=video,
-                        decoded_frames=_decoded_frames(
-                            input_container, video_stream, start, fps, seeked
-                        ),
-                        start=start,
-                        end=end,
-                        step=step,
-                        fps=fps,
-                        video_stream_index=video_stream_index,
-                    )
-                except _SeekLandedAfterStartError:
-                    if not seeked:
-                        raise
-                    input_container.seek(
-                        video_stream.start_time or 0,
-                        backward=True,
-                        any_frame=False,
-                        stream=video_stream,
-                    )
-                    yield from _video_frames_from_decoded(
-                        video=video,
-                        decoded_frames=_decoded_frames(
-                            input_container, video_stream, start, fps, False
-                        ),
-                        start=start,
-                        end=end,
-                        step=step,
-                        fps=fps,
-                        video_stream_index=video_stream_index,
-                    )
+        block_size = _frames_block_size(video, start, end, video_stream_index)
+        try:
+            yield from _read_video_frames(
+                video, start, end, step, video_stream_index, block_size
+            )
+        except _SequentialDecodeError:
+            yield from _read_video_frames(
+                video, start, end, step, video_stream_index, None
+            )
     except FileError:
         raise
     except Exception as exc:
         raise FileError(
             "unable to read video frames", video.source, video.path
         ) from exc
+
+
+def _read_video_frames(
+    video: VideoFile,
+    start: int,
+    end: int,
+    step: int,
+    video_stream_index: int,
+    block_size: int | None,
+) -> Iterator[VideoFrame]:
+    with video.open(block_size=block_size) as f:
+        with av.open(f) as container:
+            input_container: Any = container
+            video_stream = _video_stream(
+                input_container,
+                video_stream_index,
+                video.source,
+                video.path,
+                "unable to read video frames",
+            )
+            fps = _video_fps(video_stream)
+            seeked = _seek_to_frame(input_container, f, video_stream, start, fps)
+            if block_size and not seeked:
+                raise _SequentialDecodeError
+
+            try:
+                yield from _video_frames_from_decoded(
+                    video=video,
+                    decoded_frames=_decoded_frames(
+                        input_container, video_stream, start, fps, seeked
+                    ),
+                    start=start,
+                    end=end,
+                    step=step,
+                    fps=fps,
+                    video_stream_index=video_stream_index,
+                )
+            except _SeekLandedAfterStartError:
+                if not seeked:
+                    raise
+                if block_size:
+                    raise _SequentialDecodeError from None
+                input_container.seek(
+                    video_stream.start_time or 0,
+                    backward=True,
+                    any_frame=False,
+                    stream=video_stream,
+                )
+                yield from _video_frames_from_decoded(
+                    video=video,
+                    decoded_frames=_decoded_frames(
+                        input_container, video_stream, start, fps, False
+                    ),
+                    start=start,
+                    end=end,
+                    step=step,
+                    fps=fps,
+                    video_stream_index=video_stream_index,
+                )
 
 
 def video_frame(
@@ -470,43 +514,60 @@ def _decode_video_frame(video: VideoFile, frame: int, video_stream_index: int = 
     _validate_video_stream_index(video_stream_index)
 
     try:
-        with video.open() as f:
-            with av.open(f) as container:
-                input_container: Any = container
-                video_stream = _video_stream(
-                    input_container,
-                    video_stream_index,
-                    video.source,
-                    video.path,
-                    "unable to read video frame",
-                )
-                fps = _video_fps(video_stream)
-                seeked = _seek_to_frame(input_container, f, video_stream, frame, fps)
-
-                decoded_frame = _find_decoded_frame(
-                    input_container, video_stream, frame, fps, seeked
-                )
-                if decoded_frame is not None:
-                    return decoded_frame, fps
-
-                if seeked:
-                    input_container.seek(
-                        video_stream.start_time or 0,
-                        backward=True,
-                        any_frame=False,
-                        stream=video_stream,
-                    )
-                    decoded_frame = _find_decoded_frame(
-                        input_container, video_stream, frame, fps, False
-                    )
-                    if decoded_frame is not None:
-                        return decoded_frame, fps
+        block_size = PARTIAL_READ_BLOCK_SIZE if frame > 0 else None
+        try:
+            decoded = _find_video_frame(video, frame, video_stream_index, block_size)
+        except _SequentialDecodeError:
+            decoded = _find_video_frame(video, frame, video_stream_index, None)
     except FileError:
         raise
     except Exception as exc:
         raise FileError("unable to read video frame", video.source, video.path) from exc
 
-    raise FileError("unable to read video frame", video.source, video.path)
+    if decoded is None:
+        raise FileError("unable to read video frame", video.source, video.path)
+    return decoded
+
+
+def _find_video_frame(
+    video: VideoFile, frame: int, video_stream_index: int, block_size: int | None
+):
+    with video.open(block_size=block_size) as f:
+        with av.open(f) as container:
+            input_container: Any = container
+            video_stream = _video_stream(
+                input_container,
+                video_stream_index,
+                video.source,
+                video.path,
+                "unable to read video frame",
+            )
+            fps = _video_fps(video_stream)
+            seeked = _seek_to_frame(input_container, f, video_stream, frame, fps)
+            if block_size and not seeked:
+                raise _SequentialDecodeError
+
+            decoded_frame = _find_decoded_frame(
+                input_container, video_stream, frame, fps, seeked
+            )
+            if decoded_frame is not None:
+                return decoded_frame, fps
+
+            if seeked:
+                if block_size:
+                    raise _SequentialDecodeError
+                input_container.seek(
+                    video_stream.start_time or 0,
+                    backward=True,
+                    any_frame=False,
+                    stream=video_stream,
+                )
+                decoded_frame = _find_decoded_frame(
+                    input_container, video_stream, frame, fps, False
+                )
+                if decoded_frame is not None:
+                    return decoded_frame, fps
+    return None
 
 
 def _image_format(format: str) -> str:

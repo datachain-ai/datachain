@@ -46,7 +46,8 @@ def test_tar_member_versioned_gcs_read_ahead(
     open_file = fs.open
 
     def open_readahead(path, **kwargs):
-        return open_file(path, cache_type="readahead", **kwargs)
+        kwargs.setdefault("cache_type", "readahead")
+        return open_file(path, **kwargs)
 
     monkeypatch.setattr(fs, "open", open_readahead)
     member = small_tar_member(client, version="123")
@@ -480,3 +481,17 @@ def test_listing_asks_for_every_field_it_reads(version_aware):
     fields = client._fs._call.call_args.kwargs["fields"]
     assert fields == GCSClient.LIST_FIELDS
     assert item.read <= set(fields.removeprefix("items(").split(")")[0].split(","))
+
+
+@pytest.mark.parametrize("cloud_type", ["gs"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_gcs_small_reads_share_one_block_request(
+    cloud_test_catalog_upload, fetched_bytes
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+    file = client.upload(b"a" * 4096, "blocks.bin")
+    with client.open_object(file, use_cache=False, block_size=1024) as stream:
+        for _ in range(8):
+            assert stream.read(16) == b"a" * 16
+    assert fetched_bytes == [1040, 1]

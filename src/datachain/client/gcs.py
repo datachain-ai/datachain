@@ -5,11 +5,9 @@ from typing import TYPE_CHECKING, Any, BinaryIO, cast
 from urllib.parse import quote
 
 from fsspec.asyn import get_loop, sync
-from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from gcsfs import GCSFileSystem
 from gcsfs.retry import HttpError
 
-from datachain.client.fileslice import FileWrapper
 from datachain.lib.file import File, FileRow
 
 from .fsspec import BucketStatus, RangeListedClient
@@ -229,24 +227,13 @@ class GCSClient(RangeListedClient):
             raise FileNotFoundError(file.get_fs_path())
         return int(size)
 
-    def open_object(
-        self,
-        file: File,
-        use_cache: bool = True,
-        cb: Callback = DEFAULT_CALLBACK,
-        block_size: int | None = None,
-    ) -> BinaryIO:
-        if use_cache and (cache_path := self.cache.get_path(file)):
-            return open(cache_path, mode="rb")
-        assert not file.location
-        full_path = self._path_with_generation(
-            file.get_fs_path(),
-            file.version,
-        )
-        return FileWrapper(
-            self.fs.open(full_path, **self._block_size_kwargs(block_size)),
-            cb,
-        )  # type: ignore[return-value]
+    def _open_remote(self, file: File, block_size: int | None = None) -> BinaryIO:
+        full_path = self._path_with_generation(file.get_fs_path(), file.version)
+        open_kwargs = self._block_size_kwargs(block_size)
+        if block_size:
+            # gcsfs ignores block_size unless cache_type is set.
+            open_kwargs["cache_type"] = "readahead"
+        return self._open_checked(file, full_path, **open_kwargs)
 
     @staticmethod
     def parse_timestamp(timestamp: str) -> datetime:

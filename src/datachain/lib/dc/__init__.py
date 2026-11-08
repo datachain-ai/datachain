@@ -6,13 +6,16 @@ from .datachain import C, Column, ColumnExpr, DataChain, DataChainSchema
 from .datasets import datasets, delete_dataset, move_dataset, read_dataset
 from .hf import read_hf
 from .json import read_json
+from .lerobot import read_lerobot
 from .listings import listings
+from .mcap import read_mcap
 from .pandas import read_pandas
 from .parquet import read_parquet
 from .records import read_records
 from .storage import Listing, list_storage, read_storage
 from .utils import DatasetMergeError, DatasetPrepareError, Sys, is_local, is_studio
 from .values import read_values
+from .webdataset import read_webdataset
 from .zarr import read_zarr
 
 __all__ = [
@@ -37,10 +40,13 @@ __all__ = [
     "read_dataset",
     "read_hf",
     "read_json",
+    "read_lerobot",
+    "read_mcap",
     "read_pandas",
     "read_parquet",
     "read_records",
     "read_storage",
     "read_values",
+    "read_webdataset",
     "read_zarr",
 ]
