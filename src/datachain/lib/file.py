@@ -802,15 +802,16 @@ class File(DataModel):
                 else self
             )
             source = backing.get_local_path()
-            if source is None and (
-                not backing.source or backing.source.startswith("file://")
-            ):
-                source = backing.get_fs_path()
-            if (
-                source is not None
-                and client.PREFIX == "file://"
-                and self._same_file(
-                    source, client.fs._strip_protocol(client.get_uri(rel_path))
+            local_destination = (
+                client.fs._strip_protocol(client.get_uri(rel_path))
+                if client.PREFIX == "file://"
+                else None
+            )
+            if local_destination is not None and (
+                (source is not None and self._same_file(source, local_destination))
+                or (
+                    (source is None or self.location)
+                    and backing._is_local_file(local_destination)
                 )
             ):
                 if self.location:

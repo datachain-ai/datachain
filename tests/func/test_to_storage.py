@@ -71,13 +71,19 @@ def test_to_storage_relative_source_preserves_bytes(
 
 
 @pytest.mark.parametrize("alias", ["same", "hardlink", "symlink"])
-def test_virtual_image_export_preserves_backing_archive(test_session, tmp_path, alias):
+@pytest.mark.parametrize("cached_archive", [False, True])
+def test_virtual_image_export_preserves_backing_archive(
+    test_session, tmp_path, alias, cached_archive
+):
     image = BytesIO()
     Image.new("RGB", (1, 1)).save(image, format="JPEG")
     archive = tmp_path / "archive.tar"
     original = make_tar({archive.name: image.getvalue()})
     archive.write_bytes(original)
-    member = next(process_tar(File.at(archive, session=test_session)))
+    archive_file = File.at(archive, session=test_session)
+    if cached_archive:
+        archive_file.ensure_cached()
+    member = next(process_tar(archive_file))
     output = tmp_path if alias == "same" else tmp_path / "out"
     if alias != "same":
         output.mkdir()
