@@ -16,6 +16,7 @@ from botocore.model import Shape
 from botocore.session import Session
 from botocore.utils import parse_timestamp
 from fsspec.asyn import get_loop, sync, sync_wrapper
+from fsspec.utils import tokenize
 from s3fs import S3FileSystem
 
 from datachain.lib.file import File, FileRow
@@ -88,17 +89,21 @@ def _region_key(name: str, kwargs: dict[str, Any]) -> tuple | None:
     return name, profile, region
 
 
-def _has_credentials(kwargs: dict[str, Any]) -> bool:
+def _has_explicit_credentials(kwargs: dict[str, Any]) -> bool:
     client_kwargs = kwargs.get("client_kwargs") or {}
-    if any(kwargs.get(key) is not None for key in ClientS3.CREDENTIAL_KEYS) or any(
+    return any(
+        kwargs.get(key) is not None for key in ClientS3.CREDENTIAL_KEYS - {"profile"}
+    ) or any(
         client_kwargs.get(key) is not None
         for key in (
             "aws_access_key_id",
             "aws_secret_access_key",
             "aws_session_token",
         )
-    ):
-        return True
+    )
+
+
+def _credential_key(kwargs: dict[str, Any]) -> tuple:
     env = frozenset(
         (k, v)
         for k, v in os.environ.items()
@@ -118,7 +123,13 @@ def _has_credentials(kwargs: dict[str, Any]) -> bool:
         else:
             stamp = (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
         files.append((path, stamp))
-    return _finds_credentials(kwargs.get("profile"), env, tuple(files))
+    return kwargs.get("profile"), env, tuple(files)
+
+
+def _has_credentials(kwargs: dict[str, Any]) -> bool:
+    return _has_explicit_credentials(kwargs) or _finds_credentials(
+        *_credential_key(kwargs)
+    )
 
 
 def _finds_credentials(profile: str | None, env: frozenset, files: tuple) -> bool:
@@ -129,7 +140,7 @@ def _finds_credentials(profile: str | None, env: frozenset, files: tuple) -> boo
             return found
     found = Session(profile=profile).get_credentials() is not None
     if len(_CREDENTIAL_CHECKS) >= 16:
-        _CREDENTIAL_CHECKS.pop(next(iter(_CREDENTIAL_CHECKS)))
+        _CREDENTIAL_CHECKS.pop(next(iter(_CREDENTIAL_CHECKS), ()), None)
     _CREDENTIAL_CHECKS[key] = monotonic(), found
     return found
 
@@ -252,30 +263,21 @@ class _ListingSession(AioSession):
 class _S3FileSystem(S3FileSystem):
     """Every session it makes parses listings with ``_ListingParser``."""
 
+    def __init__(self, *args, credential_token=None, **kwargs):
+        # The token partitions fsspec's instance cache when provider inputs change.
+        super().__init__(*args, **kwargs)
+
     async def set_session(self, refresh=False, kwargs={}):  # noqa: B006
-        if self._s3 is None and not self.anon:
-            if self.session is None:
+        mine = isinstance(self.session, _ListingSession)
+        if (self._s3 is None or refresh) and not self.storage_options.get("anon"):
+            if self.session is None or mine:
+                if refresh:
+                    _CREDENTIAL_CHECKS.pop(_credential_key(self.storage_options), None)
                 self.anon = not await asyncio.to_thread(
                     _has_credentials, self.storage_options
                 )
-            elif not any(
-                value is not None
-                for value in (
-                    self.key,
-                    self.secret,
-                    self.token,
-                    *(
-                        self.client_kwargs.get(key)
-                        for key in (
-                            "aws_access_key_id",
-                            "aws_secret_access_key",
-                            "aws_session_token",
-                        )
-                    ),
-                )
-            ):
+            elif not _has_explicit_credentials(self.storage_options):
                 self.anon = await self.session.get_credentials() is None
-        mine = isinstance(self.session, _ListingSession)
         if self.session is None or (refresh and mine):
             self.session = _ListingSession(**self.kwargs)
         self._session_is_owned = False  # s3fs keeps the session, even on refresh
@@ -344,6 +346,13 @@ class ClientS3(RangeListedClient):
             # it tries to randomly guess and creates wrong signature
             kwargs.setdefault("cache_regions", True)
 
+        if not kwargs.get("anon") and not _has_explicit_credentials(kwargs):
+            key = _credential_key(kwargs)
+            _, found = _CREDENTIAL_CHECKS.get(key, (0, False))
+            kwargs["credential_token"] = tokenize(
+                key, 0 if found else int(monotonic() // 60)
+            )
+
         return cast("S3FileSystem", super().create_fs(**kwargs))
 
     @classmethod
@@ -355,7 +364,7 @@ class ClientS3(RangeListedClient):
         not_found = BucketStatus(
             exists=False, access="denied", error=f"S3 bucket '{name}' not found"
         )
-        strip = cls.CREDENTIAL_KEYS | {"anon"}
+        strip = (cls.CREDENTIAL_KEYS - {"profile"}) | {"anon"}
         anon_kwargs = cls._normalize_s3_kwargs(
             {k: v for k, v in kwargs.items() if k not in strip}
         )

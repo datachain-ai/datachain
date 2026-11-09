@@ -363,6 +363,35 @@ def test_supplied_session_preserves_explicit_credentials(source):
     assert fs.s3._request_signer._credentials.access_key == "key"
 
 
+@pytest.mark.parametrize("explicit_anon", [False, True])
+def test_refresh_rechecks_supplied_session_credentials(explicit_anon):
+    session = AioSession()
+    fs = ClientS3.create_fs(
+        session=session,
+        anon=explicit_anon,
+        cache_regions=False,
+        skip_instance_cache=True,
+    )
+    fs.connect()
+    assert fs.anon
+    session.set_credentials("key", "secret")
+    fs.connect(refresh=True)
+    assert fs.anon is explicit_anon
+    if not explicit_anon:
+        assert fs.s3._request_signer._credentials.access_key == "key"
+
+
+def test_refresh_rechecks_default_credentials(monkeypatch):
+    fs = ClientS3.create_fs(cache_regions=False, skip_instance_cache=True)
+    fs.connect()
+    assert fs.anon
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "key")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secret")
+    fs.connect(refresh=True)
+    assert not fs.anon
+    assert fs.s3._request_signer._credentials.access_key == "key"
+
+
 @pytest.mark.parametrize("kwargs", [{}, {"session": None}])
 def test_shared_config_region_does_not_reuse_another_partitions_bucket(kwargs):
     path = Path(os.environ["AWS_CONFIG_FILE"])
@@ -391,12 +420,18 @@ def test_shared_config_region_does_not_reuse_another_partitions_bucket(kwargs):
     ],
 )
 def test_filesystem_creation_does_not_send_s3_requests(monkeypatch, credentials):
+    requests = []
+
     async def unexpected(*args, **kwargs):
-        pytest.fail("Filesystem creation sent an S3 request")
+        requests.append((args, kwargs))
 
     monkeypatch.setattr("aiobotocore.endpoint.AioEndpoint.make_request", unexpected)
-    fs = ClientS3.create_fs(skip_instance_cache=True, **credentials)
+    fs = ClientS3.create_fs(
+        cache_regions=False, skip_instance_cache=True, **credentials
+    )
+    fs.connect()
     assert not fs.anon
+    assert not requests
 
 
 @pytest.mark.parametrize(
@@ -418,7 +453,7 @@ def test_partial_credentials_do_not_fall_back_to_anonymous(credentials):
 
 @pytest.mark.parametrize("source", ["environment", "credentials-file"])
 def test_filesystem_rechecks_changed_credentials(monkeypatch, source):
-    fs = ClientS3.create_fs(cache_regions=False, skip_instance_cache=True)
+    fs = ClientS3.create_fs(cache_regions=False)
     fs.connect()
     assert fs.anon
     if source == "environment":
@@ -428,7 +463,7 @@ def test_filesystem_rechecks_changed_credentials(monkeypatch, source):
         Path(os.environ["AWS_SHARED_CREDENTIALS_FILE"]).write_text(
             "[default]\naws_access_key_id = key\naws_secret_access_key = secret\n"
         )
-    fs = ClientS3.create_fs(cache_regions=False, skip_instance_cache=True)
+    fs = ClientS3.create_fs(cache_regions=False)
     fs.connect()
     assert not fs.anon
 
@@ -439,7 +474,7 @@ def test_missing_credentials_are_rechecked_after_ttl(monkeypatch, mocker):
     now = mocker.patch("datachain.client.s3.monotonic", return_value=0.0)
 
     def connect():
-        fs = ClientS3.create_fs(cache_regions=False, skip_instance_cache=True)
+        fs = ClientS3.create_fs(cache_regions=False)
         fs.connect()
         return fs
 
