@@ -796,17 +796,29 @@ class File(DataModel):
             write_options=write_options,
         )
         with self.open(mode="rb") as src:
-            source = self.get_local_path()
-            if source is None and self.source.startswith("file://"):
-                source = self.get_fs_path()
+            backing = (
+                VFileRegistry.parent(self, self.location)  # type: ignore[arg-type]
+                if self.location
+                else self
+            )
+            source = backing.get_local_path()
+            if source is None and (
+                not backing.source or backing.source.startswith("file://")
+            ):
+                source = backing.get_fs_path()
             if (
-                not self.location
-                and source is not None
+                source is not None
                 and client.PREFIX == "file://"
                 and self._same_file(
                     source, client.fs._strip_protocol(client.get_uri(rel_path))
                 )
             ):
+                if self.location:
+                    raise FileError(
+                        "Cannot overwrite a virtual file's backing file",
+                        self.source,
+                        self.path,
+                    )
                 result = client.get_file_info(rel_path)
             else:
                 result = client.upload(src, rel_path, write_config=write_config)
@@ -828,7 +840,7 @@ class File(DataModel):
         return client, rel_path
 
     def _is_local_file(self, destination: str) -> bool:
-        if not self.source.startswith("file://") or self.location:
+        if (self.source and not self.source.startswith("file://")) or self.location:
             return False
         return self._same_file(self.get_fs_path(), destination)
 

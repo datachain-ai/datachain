@@ -4,6 +4,7 @@ import signal
 import subprocess
 import sys
 import textwrap
+from io import BytesIO
 from pathlib import Path, PurePosixPath
 from typing import cast
 from urllib.parse import urlparse
@@ -13,9 +14,17 @@ from PIL import Image
 
 import datachain as dc
 from datachain import Session
-from datachain.lib.file import AudioFile, File, ImageFile, TextFile, VideoFile
+from datachain.lib.file import (
+    AudioFile,
+    File,
+    FileError,
+    ImageFile,
+    TextFile,
+    VideoFile,
+)
+from datachain.lib.tar import process_tar
 from tests.conftest import get_cloud_test_catalog, make_cloud_server
-from tests.utils import images_equal, skip_if_not_sqlite, tree_from_path
+from tests.utils import images_equal, make_tar, skip_if_not_sqlite, tree_from_path
 
 python_exc = sys.executable or "python3"
 
@@ -46,6 +55,44 @@ def test_to_storage_copies_bytes_as_stored(test_session, tmp_path, file_cls):
         file=[file_cls(path="a.jpg", source=tmp_path.as_uri())], session=test_session
     ).to_storage(tmp_path / "out", placement="filename")
     assert (tmp_path / "out" / "a.jpg").read_bytes() == b"not decoded"
+
+
+@pytest.mark.parametrize("link_type", ["copy", "symlink"])
+def test_to_storage_relative_source_preserves_bytes(
+    test_session, tmp_path, monkeypatch, link_type
+):
+    monkeypatch.chdir(tmp_path)
+    source = tmp_path / "a.jpg"
+    source.write_bytes(b"original bytes")
+    dc.read_values(file=[ImageFile(path=source.name)], session=test_session).settings(
+        cache=False, prefetch=0
+    ).to_storage(tmp_path, placement="filename", link_type=link_type)
+    assert source.read_bytes() == b"original bytes"
+
+
+@pytest.mark.parametrize("alias", ["same", "hardlink", "symlink"])
+def test_virtual_image_export_preserves_backing_archive(test_session, tmp_path, alias):
+    image = BytesIO()
+    Image.new("RGB", (1, 1)).save(image, format="JPEG")
+    archive = tmp_path / "archive.tar"
+    original = make_tar({archive.name: image.getvalue()})
+    archive.write_bytes(original)
+    member = next(process_tar(File.at(archive, session=test_session)))
+    output = tmp_path if alias == "same" else tmp_path / "out"
+    if alias != "same":
+        output.mkdir()
+        if alias == "symlink":
+            if os.name == "nt":
+                pytest.skip("Creating symlinks needs privileges on Windows")
+            (output / archive.name).symlink_to(archive)
+        else:
+            os.link(archive, output / archive.name)
+    with pytest.raises(FileError, match="backing file"):
+        dc.read_values(
+            file=[ImageFile(**member.model_dump())], session=test_session
+        ).settings(cache=False, prefetch=0).to_storage(output, placement="filename")
+    assert archive.read_bytes() == original
+    assert (output / archive.name).read_bytes() == original
 
 
 @pytest.mark.parametrize("file_cls", [File, ImageFile])
