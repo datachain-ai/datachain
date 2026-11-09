@@ -4,6 +4,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from aiobotocore.session import AioSession
 from botocore.exceptions import ClientError, PartialCredentialsError
 from fsspec.asyn import get_loop, sync
 from s3fs import S3FileSystem
@@ -301,14 +302,39 @@ def test_probe_preserves_an_unresolved_redirect(endpoints, statuses):
 
 
 @pytest.mark.parametrize("in_loop", [False, True])
-@pytest.mark.parametrize("session", [False, True])
+@pytest.mark.parametrize("session", ["default", "none", "credentialless"])
 def test_filesystem_without_credentials_is_anonymous(in_loop, session):
     async def create():
-        return ClientS3.create_fs(**kwargs)
+        fs = ClientS3.create_fs(cache_regions=False, **kwargs)
+        await fs.set_session()
+        return fs
 
-    kwargs = {"skip_instance_cache": True, **({"session": None} if session else {})}
-    fs = sync(get_loop(), create) if in_loop else ClientS3.create_fs(**kwargs)
+    kwargs = {"skip_instance_cache": True}
+    if session != "default":
+        kwargs["session"] = AioSession() if session == "credentialless" else None
+    if in_loop:
+        fs = sync(get_loop(), create)
+    else:
+        fs = ClientS3.create_fs(cache_regions=False, **kwargs)
+        fs.connect()
     assert fs.anon
+
+
+def test_credential_discovery_does_not_block_the_filesystem_loop(monkeypatch):
+    loop_thread = None
+
+    def credentials(self):
+        assert threading.get_ident() != loop_thread
+
+    async def connect():
+        nonlocal loop_thread
+        loop_thread = threading.get_ident()
+        await ClientS3.create_fs(
+            cache_regions=False, skip_instance_cache=True
+        ).set_session()
+
+    monkeypatch.setattr(s3.Session, "get_credentials", credentials)
+    sync(get_loop(), connect)
 
 
 @pytest.mark.parametrize("kwargs", [{}, {"session": None}])
@@ -366,25 +392,33 @@ def test_partial_credentials_do_not_fall_back_to_anonymous(credentials):
 
 @pytest.mark.parametrize("source", ["environment", "credentials-file"])
 def test_filesystem_rechecks_changed_credentials(monkeypatch, source):
-    assert ClientS3.create_fs(skip_instance_cache=True).anon
+    fs = ClientS3.create_fs(cache_regions=False, skip_instance_cache=True)
+    fs.connect()
+    assert fs.anon
     if source == "environment":
         monkeypatch.setenv("AWS_ACCESS_KEY_ID", "key")
         monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secret")
     else:
-        from pathlib import Path
-
         Path(os.environ["AWS_SHARED_CREDENTIALS_FILE"]).write_text(
             "[default]\naws_access_key_id = key\naws_secret_access_key = secret\n"
         )
-    assert not ClientS3.create_fs(skip_instance_cache=True).anon
+    fs = ClientS3.create_fs(cache_regions=False, skip_instance_cache=True)
+    fs.connect()
+    assert not fs.anon
 
 
 def test_missing_credentials_are_rechecked_after_ttl(monkeypatch, mocker):
     probe = mocker.patch("datachain.client.s3.Session")
     probe.return_value.get_credentials.side_effect = [None, object()]
     now = mocker.patch("datachain.client.s3.monotonic", return_value=0.0)
-    assert ClientS3.create_fs(skip_instance_cache=True).anon
-    assert ClientS3.create_fs(skip_instance_cache=True).anon
+
+    def connect():
+        fs = ClientS3.create_fs(cache_regions=False, skip_instance_cache=True)
+        fs.connect()
+        return fs
+
+    assert connect().anon
+    assert connect().anon
     now.return_value = 61.0
-    assert not ClientS3.create_fs(skip_instance_cache=True).anon
+    assert not connect().anon
     assert probe.call_count == 2

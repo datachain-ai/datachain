@@ -1,3 +1,4 @@
+import asyncio
 import os
 from collections.abc import Callable
 from datetime import datetime
@@ -89,17 +90,13 @@ def _region_key(name: str, kwargs: dict[str, Any]) -> tuple | None:
 
 def _has_credentials(kwargs: dict[str, Any]) -> bool:
     client_kwargs = kwargs.get("client_kwargs") or {}
-    if (
-        any(kwargs.get(key) is not None for key in ClientS3.CREDENTIAL_KEYS)
-        or any(
-            client_kwargs.get(key) is not None
-            for key in (
-                "aws_access_key_id",
-                "aws_secret_access_key",
-                "aws_session_token",
-            )
+    if any(kwargs.get(key) is not None for key in ClientS3.CREDENTIAL_KEYS) or any(
+        client_kwargs.get(key) is not None
+        for key in (
+            "aws_access_key_id",
+            "aws_secret_access_key",
+            "aws_session_token",
         )
-        or kwargs.get("session") is not None
     ):
         return True
     env = frozenset(
@@ -256,6 +253,28 @@ class _S3FileSystem(S3FileSystem):
     """Every session it makes parses listings with ``_ListingParser``."""
 
     async def set_session(self, refresh=False, kwargs={}):  # noqa: B006
+        if self._s3 is None and not self.anon:
+            if self.session is None:
+                self.anon = not await asyncio.to_thread(
+                    _has_credentials, self.storage_options
+                )
+            elif not any(
+                value is not None
+                for value in (
+                    self.key,
+                    self.secret,
+                    self.token,
+                    *(
+                        self.client_kwargs.get(key)
+                        for key in (
+                            "aws_access_key_id",
+                            "aws_secret_access_key",
+                            "aws_session_token",
+                        )
+                    ),
+                )
+            ):
+                self.anon = await self.session.get_credentials() is None
         mine = isinstance(self.session, _ListingSession)
         if self.session is None or (refresh and mine):
             self.session = _ListingSession(**self.kwargs)
@@ -324,9 +343,6 @@ class ClientS3(RangeListedClient):
             # caching bucket regions to use the right one in signed urls, otherwise
             # it tries to randomly guess and creates wrong signature
             kwargs.setdefault("cache_regions", True)
-
-        if not kwargs.get("anon") and not _has_credentials(kwargs):
-            kwargs["anon"] = True
 
         return cast("S3FileSystem", super().create_fs(**kwargs))
 
