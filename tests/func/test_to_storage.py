@@ -552,9 +552,8 @@ def test_failed_cached_export_removes_readonly_temporary_file(
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
-@pytest.mark.parametrize("version", ["", "null"])
 def test_s3_export_rejects_overwrite_after_identity_check(
-    cloud_test_catalog, tmp_dir, monkeypatch, version
+    cloud_test_catalog, tmp_dir, monkeypatch
 ):
     ctc = cloud_test_catalog
     (file,) = (
@@ -563,7 +562,7 @@ def test_s3_export_rejects_overwrite_after_identity_check(
         .to_values("file")
     )
     client = file._catalog.get_client(file.source)
-    file.version = version
+    file.version = ""
     check = type(client).check_unchanged
     overwritten = []
 
@@ -577,9 +576,9 @@ def test_s3_export_rejects_overwrite_after_identity_check(
     out.mkdir()
     target = out / "cat1"
     target.write_bytes(b"old bytes")
-    with pytest.raises(OSError):
+    with pytest.raises(OSError) as error:
         file.save(str(target))
-    assert overwritten == [file.path]
+    assert overwritten == [file.path], str(error.value)
     assert list(out.iterdir()) == [target]
     assert target.read_bytes() == b"old bytes"
 

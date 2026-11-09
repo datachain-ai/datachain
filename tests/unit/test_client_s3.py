@@ -53,13 +53,14 @@ def test_write_kwargs_empty_config_maps_nothing():
     assert ClientS3._write_kwargs(WriteConfig(), streaming=False) == {}
 
 
+@pytest.mark.parametrize("version", ["", "null"])
 def test_resumed_s3_export_preserves_identity_and_existing_destination(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, version
 ):
     client = ClientS3(
         "bucket", {"anon": True}, Cache(tmp_path / "cache", tmp_path / "tmp")
     )
-    file = File(source="s3://bucket", path="a", etag="listed", size=6)
+    file = File(source="s3://bucket", path="a", etag="listed", size=6, version=version)
     body = MagicMock()
     body.read = AsyncMock(side_effect=[b"old", TimeoutError()])
     requests = []
@@ -79,6 +80,7 @@ def test_resumed_s3_export_preserves_identity_and_existing_destination(
         client.download_to(file, str(destination))
     assert [r["IfMatch"] for r in requests] == ['"listed"', '"listed"']
     assert requests[1]["Range"] == "bytes=3-"
+    assert [r.get("VersionId", "") for r in requests] == [version, version]
     assert destination.read_bytes() == b"existing"
     assert not list(tmp_path.glob("*.tmp"))
 
