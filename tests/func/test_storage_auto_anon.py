@@ -58,6 +58,30 @@ def test_read_storage_no_auto_anon_when_credentials_in_config(cloud_server):
     assert "anon" not in chain.session.catalog.client_config
 
 
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_endpoint_only_profile_reads_public_bucket(cloud_server, tmp_path, monkeypatch):
+    endpoint = cloud_server.client_config["aws_endpoint_url"]
+    config = tmp_path / "config"
+    config.write_text(
+        f"[profile public]\nendpoint_url = {endpoint}\nregion = us-east-1\n"
+    )
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(config))
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(tmp_path / "none"))
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
+    for name in (
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_PROFILE",
+        "AWS_DEFAULT_PROFILE",
+        "AWS_ENDPOINT_URL",
+        "AWS_ENDPOINT_URL_S3",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    chain = dc.read_storage(cloud_server.src_uri, client_config={"profile": "public"})
+    assert chain.count() == 7
+
+
 def test_auto_anon_unsupported_backend_yields_no_anon(tmp_dir, catalog):
     # FileClient doesn't implement bucket_status → helper returns False
     # without patching, so anon stays unset.

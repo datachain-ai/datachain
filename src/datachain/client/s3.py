@@ -141,7 +141,6 @@ class ClientS3(RangeListedClient):
             "key",
             "secret",
             "token",
-            "profile",
             "aws_key",
             "aws_secret",
             "aws_token",
@@ -212,7 +211,7 @@ class ClientS3(RangeListedClient):
         # (bucket-in-wrong-region) transparently so the bucket is found → exists=True.
         # Preserve endpoint/region settings from caller kwargs (including the
         # profile's); strip credentials.
-        strip = (cls.CREDENTIAL_KEYS - {"profile"}) | {"anon"}
+        strip = cls.CREDENTIAL_KEYS | {"anon"}
         anon_kwargs = cls._normalize_s3_kwargs(
             {k: v for k, v in kwargs.items() if k not in strip}
         )
