@@ -2629,17 +2629,17 @@ class DataChain:
             if not on:
                 raise DataChainParamsError("'on' cannot be an empty string")
             on = [on]
-        elif isinstance(on, Sequence):
-            if not on or any(not col for col in on):
-                raise DataChainParamsError("'on' cannot contain empty strings")
+        elif isinstance(on, Sequence) and (not on or any(not col for col in on)):
+            raise DataChainParamsError("'on' cannot contain empty strings")
 
         if isinstance(right_on, str):
             if not right_on:
                 raise DataChainParamsError("'right_on' cannot be an empty string")
             right_on = [right_on]
-        elif isinstance(right_on, Sequence):
-            if not right_on or any(not col for col in right_on):
-                raise DataChainParamsError("'right_on' cannot contain empty strings")
+        elif isinstance(right_on, Sequence) and (
+            not right_on or any(not col for col in right_on)
+        ):
+            raise DataChainParamsError("'right_on' cannot contain empty strings")
 
         presence: list[tuple[KeyPresence, KeyPresence]] = []
         if on is None and right_on is None:
