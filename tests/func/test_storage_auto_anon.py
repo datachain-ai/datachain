@@ -47,15 +47,24 @@ def test_read_storage_auto_anon_on_public_cloud_bucket(cloud_server):
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
-def test_read_storage_no_auto_anon_when_credentials_in_config(cloud_server):
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("key", "secret", "token"),
+        ("aws_access_key_id", "aws_secret_access_key", "aws_session_token"),
+    ],
+)
+def test_read_storage_no_auto_anon_when_credentials_in_config(cloud_server, names):
     """Creds in client_config → credential gate short-circuits, anon NOT set."""
-    config = {
-        **_config_without_credentials(cloud_server),
-        "key": "fake",
-        "secret": "fake",
+    boto_names = ("aws_access_key_id", "aws_secret_access_key", "aws_session_token")
+    credentials = cloud_server.src.fs.client_kwargs
+    config = _config_without_credentials(cloud_server) | {
+        name: credentials.get(boto_name)
+        for name, boto_name in zip(names, boto_names, strict=True)
     }
     chain = dc.read_storage(cloud_server.src_uri, client_config=config)
     assert "anon" not in chain.session.catalog.client_config
+    assert chain.count() == 7
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
