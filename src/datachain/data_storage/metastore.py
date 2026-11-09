@@ -524,6 +524,14 @@ class AbstractMetastore(ABC, Serializable):
         """
         raise NotImplementedError("This metastore does not support dataset dependents")
 
+    def get_dataset_related_versions(
+        self,
+        dependencies: Sequence[DatasetDependency],
+        dependents: Sequence[DatasetDependency],
+    ) -> list[tuple[DatasetRecord, str]]:
+        """Load direct inputs and outputs together, when supported by the metastore."""
+        raise NotImplementedError
+
     @abstractmethod
     def get_dataset_dependency_nodes(
         self, dataset_id: int, version_id: int
@@ -2297,9 +2305,33 @@ class AbstractDBMetastore(AbstractMetastore):
                 dd.c.dataset_id == dataset.id,
                 dd.c.dataset_version_id == dataset.get_version(version).id,
                 dv.c.status == DatasetStatus.COMPLETE,
+                ~d.c.name.startswith(SESSION_DATASET_PREFIX, autoescape=True),
             )
         )
         return [self.dependency_class.parse(*r) for r in self.db.execute(query)]
+
+    def get_dataset_related_versions(
+        self,
+        dependencies: Sequence[DatasetDependency],
+        dependents: Sequence[DatasetDependency],
+    ) -> list[tuple[DatasetRecord, str]]:
+        dd = self._datasets_dependencies
+        related_ids = (
+            select(dd.c.dataset_version_id)
+            .where(dd.c.id.in_([dep.id for dep in dependencies]))
+            .union(
+                select(dd.c.source_dataset_version_id).where(
+                    dd.c.id.in_([dep.id for dep in dependents])
+                )
+            )
+        )
+        columns, base_from = self._dataset_version_query_base()
+        query = (
+            self._datasets_select(*columns)
+            .select_from(base_from)
+            .where(self._datasets_versions.c.id.in_(related_ids))
+        )
+        return self._fetch_version_pairs(query)
 
     def get_dataset_dependency_nodes(
         self, dataset_id: int, version_id: int, depth_limit: int = DEPTH_LIMIT_DEFAULT

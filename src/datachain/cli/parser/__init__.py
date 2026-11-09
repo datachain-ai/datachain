@@ -290,6 +290,7 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
         formatter_class=CustomHelpFormatter,
     )
     describe_parser.add_argument("name", help="Dataset name, optionally name@version")
+    describe_parser.add_argument("--team", help="Studio team to read from")
     describe_parser.add_argument(
         "--json", action="store_true", dest="json_output", help="Print structured JSON"
     )

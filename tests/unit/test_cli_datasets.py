@@ -573,7 +573,7 @@ def test_describe_jobs_include_direct_dependencies_and_dependents(
         test_session.catalog, "get_dataset_dependencies_by_ids", forbidden
     )
     info = dc.describe("derived", session=test_session)
-    assert reads == ["source", "report"]
+    assert reads == []
     assert info.job.id == derived_job
     assert info.dependencies[0].dataset.job_id == source_job
     assert info.dependents[0].dataset.job_id == report_job

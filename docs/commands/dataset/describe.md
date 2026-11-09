@@ -7,6 +7,7 @@ datachain dataset describe joined
 datachain dataset describe joined@1.0.0
 datachain dataset describe joined --json
 datachain dataset describe dev.project.joined
+datachain dataset describe dev.project.joined --team my-team
 ```
 
 Use `name@version` to select a version; otherwise the latest complete version is selected. All available complete versions are listed.
@@ -56,4 +57,6 @@ if info.job:
     print(info.job.id, info.job.finished_at)
 ```
 
-Non-local namespaces are read from Studio. Its public API does not provide exact dependencies, dependents or job parameters; jobs require read permission.
+Local metadata is used first, with Studio fallback for missing remote datasets or versions. Use `--team` or `dc.describe(..., team="my-team")` to read Studio directly.
+
+Studio includes the selected version's job details and every version's job ID. Exact dependencies, dependents and job parameters are unavailable through its public API.

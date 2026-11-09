@@ -1,24 +1,16 @@
 from collections.abc import Mapping, Sequence
-from dataclasses import fields
 from typing import TYPE_CHECKING, Any, get_origin, get_type_hints
 
-from pydantic import TypeAdapter
-
-from datachain.data_storage import JobQueryType, JobStatus
 from datachain.dataset import parse_dataset_with_version
 from datachain.error import (
-    DataChainError,
     DatasetNotFoundError,
     DatasetVersionNotFoundError,
     OutdatedDatasetFormatError,
     ProjectNotFoundError,
 )
-from datachain.job import Job
-from datachain.lib.dataset_description import DatasetDependencyInfo, DatasetDescription
+from datachain.lib.dataset_description import DatasetDescription
 from datachain.lib.dataset_info import DatasetInfo
 from datachain.lib.dataset_metadata import read_dataset_metadata
-from datachain.lib.listing import is_listing_dataset
-from datachain.lib.listing_info import ListingInfo
 from datachain.lib.projects import get as get_project
 from datachain.lib.settings import Settings
 from datachain.lib.signal_schema import SignalSchema
@@ -30,9 +22,6 @@ from .values import read_values
 
 if TYPE_CHECKING:
     from typing_extensions import ParamSpec
-
-    from datachain.data_storage.metastore import AbstractMetastore
-    from datachain.dataset import DatasetDependency, DatasetRecord, DatasetVersion
 
     from .datachain import DataChain
 
@@ -275,6 +264,8 @@ def describe(
     project: str | None = None,
     version: str | None = None,
     session: Session | None = None,
+    *,
+    team: str | None = None,
 ) -> DatasetDescription:
     """Describe a saved dataset using recorded metadata only.
 
@@ -284,12 +275,13 @@ def describe(
         project: Project for an unqualified name, as in ``read_dataset``.
         version: Exact version to describe; defaults to the latest complete version.
         session: Optional session; defaults to the current session.
+        team: Studio team; when provided, reads Studio directly.
 
     Returns:
         DatasetDescription with a typed schema, every available completed version,
         direct dependencies, direct dependents, producing jobs, and the script.
         Uses the session catalog without reading dataset rows or storage objects.
-        Outside Studio, other namespaces are read from Studio directly.
+        Reads the local catalog first, then Studio for remote namespaces.
         Metadata unavailable through the Studio API is returned as None.
 
     Example:
@@ -302,108 +294,10 @@ def describe(
         info.schema.print_tree()
         ```
     """
-    catalog = Session.get(session).catalog
-    metadata = read_dataset_metadata(catalog, name, namespace, project, version)
-    dataset = metadata.record
-    selected = metadata.selected_version
-
-    def version_info(record: "DatasetRecord", ver: "DatasetVersion") -> DatasetInfo:
-        info_cls = ListingInfo if is_listing_dataset(record.name) else DatasetInfo
-        return info_cls.from_models(record, ver, None)
-
-    def dependency_info(dep: "DatasetDependency") -> DatasetDependencyInfo:
-        record = catalog.get_dataset(
-            dep.name,
-            namespace_name=dep.namespace,
-            project_name=dep.project,
-            versions=[dep.version],
-            include_removed=True,
-        )
-        return DatasetDependencyInfo(
-            dataset=version_info(record, record.get_version(dep.version)),
-            removed=dep.removed,
-        )
-
-    dependencies = metadata.dependencies(selected.version)
-    dependency_info_list = (
-        sorted(
-            (dependency_info(dep) if dep else None for dep in dependencies),
-            key=lambda entry: entry.name if entry else "",
-        )
-        if dependencies is not None
-        else None
+    metadata = read_dataset_metadata(
+        Session.get(session).catalog, name, namespace, project, version, team=team
     )
-    dependent_info = None
-    if metadata.metastore is not None:
-        try:
-            dependents = metadata.metastore.get_direct_dataset_dependents(
-                dataset, selected.version
-            )
-        except NotImplementedError:
-            dependents = None
-        if dependents is not None:
-            dependent_info = sorted(
-                (dependency_info(dep) for dep in dependents if dep),
-                key=lambda entry: entry.name,
-            )
-    versions = [version_info(dataset, v) for v in metadata.versions]
-    all_versions = [
-        *versions,
-        *(entry.dataset for entry in dependency_info_list or [] if entry),
-        *(entry.dataset for entry in dependent_info or []),
-    ]
-    job_ids = sorted({v.job_id for v in all_versions if v.job_id})
-    jobs = _dataset_jobs(metadata.metastore, job_ids)
-    for info in all_versions:
-        if job := (jobs or {}).get(info.job_id or ""):
-            info.params = job.params
-            info.metrics = job.metrics
-    return DatasetDescription(
-        selected_version=next(v for v in versions if v.version == selected.version),
-        feature_schema=selected.feature_schema,
-        versions=versions,
-        description=dataset.description,
-        dependencies=dependency_info_list,
-        dependents=dependent_info,
-        jobs=jobs,
-    )
-
-
-def _dataset_jobs(
-    metastore: "AbstractMetastore | None", job_ids: list[str]
-) -> dict[str, Job] | None:
-    if not job_ids:
-        return {}
-    if metastore is not None:
-        return {
-            job.id: Job(**{f.name: getattr(job, f.name) for f in fields(Job)})
-            for job in metastore.list_jobs_by_ids(job_ids)
-        }
-
-    from datachain.remote.studio import StudioClient
-
-    client = StudioClient()
-    jobs: dict[str, Job] = {}
-    adapter = TypeAdapter(Job)
-    for job_id in job_ids:
-        response = client.get_jobs(job_id=job_id)
-        if not response.ok:
-            if response.status in (403, 429):
-                return None
-            raise DataChainError(response.message)
-        for data in response.data or []:
-            if data["id"] == job_id:
-                jobs[job_id] = adapter.validate_python(
-                    {
-                        **data,
-                        # Public Studio params contain environment variables.
-                        "params": {},
-                        "status": JobStatus[data["status"]].value,
-                        "query_type": JobQueryType[data["query_type"]].value,
-                        "is_remote_execution": True,
-                    }
-                )
-    return jobs
+    return metadata.describe()
 
 
 def datasets(

@@ -141,6 +141,10 @@ def test_determine_flavors_studio_without_token():
 def test_dataset_describe_parser():
     args = get_parser().parse_args(("dataset", "describe", "labels@1.0.0", "--json"))
     assert (args.name, args.json_output) == ("labels@1.0.0", True)
+    args = get_parser().parse_args(
+        ("dataset", "describe", "dev.proj.labels", "--team", "other")
+    )
+    assert args.team == "other"
     with pytest.raises(SystemExit):
         get_parser().parse_args(("dataset", "describe", "labels", "--version", "1.0.0"))
 

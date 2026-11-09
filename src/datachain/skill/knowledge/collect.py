@@ -5,6 +5,7 @@ from datachain.error import DatasetVersionNotFoundError
 from datachain.lib.dataset_metadata import DatasetMetadata
 from datachain.skill.knowledge.scripts.utils import dep_entry
 from datachain.skill.knowledge.snapshot import build_dataset_snapshot
+from datachain.utils import DatasetIdentifier
 
 if TYPE_CHECKING:
     from datachain.data_storage.metastore import AbstractMetastore
@@ -49,14 +50,22 @@ def snapshot_from_metadata(metadata: DatasetMetadata) -> "DatasetSnapshot":
     def deps_provider(ver: "DatasetVersion") -> "list[DependencyEntry]":
         edges = metadata.dependencies(ver.version) or []
         return [
-            dep_entry(_dep_name(e, metadata.source), e.version, e.type)
+            dep_entry(_dep_name(e, metadata), e.version, e.type)
             if e is not None
             else dep_entry(None, None, None)
             for e in edges
         ]
 
+    local_default = (
+        metadata.source == "local"
+        and metadata.metastore is not None
+        and record.project is not None
+        and metadata.metastore.is_default_project(
+            record.project.name, record.project.namespace.name
+        )
+    )
     snapshot = build_dataset_snapshot(
-        name=record.name if metadata.source == "local" else metadata.name,
+        name=record.name if local_default else metadata.name,
         source=metadata.source,
         attrs=list(record.attrs or []),
         description=record.description or None,
@@ -71,7 +80,11 @@ def snapshot_from_metadata(metadata: DatasetMetadata) -> "DatasetSnapshot":
     return snapshot
 
 
-def _dep_name(dep: "DatasetDependency", source: str) -> str:
-    if dep.type == DatasetDependencyType.STORAGE or source == "local":
+def _dep_name(dep: "DatasetDependency", metadata: DatasetMetadata) -> str:
+    if dep.type == DatasetDependencyType.STORAGE or (
+        metadata.source == "local"
+        and metadata.metastore is not None
+        and metadata.metastore.is_default_project(dep.project, dep.namespace)
+    ):
         return dep.name
-    return f"{dep.namespace}.{dep.project}.{dep.name}"
+    return str(DatasetIdentifier(dep.namespace, dep.project, dep.name, None))

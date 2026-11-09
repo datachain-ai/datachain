@@ -202,6 +202,156 @@ def test_describe_metastore_without_dependents(test_session, monkeypatch):
     assert info.to_dict()["dependents"] is None
 
 
+@pytest.mark.parametrize("missing_version", [None, "9.0.0"])
+def test_describe_missing_dependency_version_is_unavailable(
+    test_session, monkeypatch, capsys, missing_version
+):
+    from datachain.dataset import DatasetDependency
+
+    metastore = test_session.catalog.metastore
+    record = metastore.create_dataset(name="output")
+    metastore.create_dataset_version(record, "1.0.0", status=DatasetStatus.COMPLETE)
+    dependency = DatasetDependency.parse(
+        metastore.default_namespace_name,
+        metastore.default_project_name,
+        1,
+        1,
+        None,
+        "input",
+        missing_version,
+        None,
+    )
+    monkeypatch.setattr(
+        metastore, "get_direct_dataset_dependencies", lambda *args: [dependency]
+    )
+    info = dc.describe("output", session=test_session)
+    assert info.to_dict()["dependencies"] == [None]
+    describe_dataset_cmd(test_session.catalog, "output")
+    assert "unavailable dependency" in capsys.readouterr().out
+
+
+def test_describe_explicit_team_overrides_pulled_copy(
+    test_session, studio_metadata, requests_mock, capsys
+):
+    metastore = test_session.catalog.metastore
+    project = metastore.create_project("remote", "analytics")
+    record = metastore.create_dataset(name="inventory", project_id=project.id)
+    metastore.create_dataset_version(record, "1.0.0", status=DatasetStatus.COMPLETE)
+    describe_dataset_cmd(
+        test_session.catalog, "remote.analytics.inventory", team="chosen-team"
+    )
+    assert "Name: remote.analytics.inventory@2.0.0" in capsys.readouterr().out
+    assert len(requests_mock.request_history) == 2
+    assert all(
+        request.qs["team_name"] == ["chosen-team"]
+        for request in requests_mock.request_history
+    )
+
+
+def test_metadata_batches_and_reuses_direct_relation_records(test_session, monkeypatch):
+    from datachain.lib.dataset_metadata import read_dataset_metadata
+
+    metastore = test_session.catalog.metastore
+
+    def record(name):
+        dataset = metastore.create_dataset(name=name)
+        return metastore.create_dataset_version(
+            dataset, "1.0.0", status=DatasetStatus.COMPLETE
+        )[0]
+
+    selected = record("selected")
+    for i in range(3):
+        metastore.add_dataset_dependency(
+            selected, "1.0.0", record(f"input{i}"), "1.0.0"
+        )
+        metastore.add_dataset_dependency(
+            record(f"output{i}"), "1.0.0", selected, "1.0.0"
+        )
+    reads = []
+    get_dataset = metastore.get_dataset
+
+    def root_only(name, *args, **kwargs):
+        reads.append(name)
+        assert name == "selected"
+        return get_dataset(name, *args, **kwargs)
+
+    batches = []
+    related = metastore.get_dataset_related_versions
+
+    def batch(*args):
+        batches.append(args)
+        return related(*args)
+
+    monkeypatch.setattr(metastore, "get_dataset", root_only)
+    monkeypatch.setattr(metastore, "get_dataset_related_versions", batch)
+    metadata = read_dataset_metadata(test_session.catalog, "selected")
+    for _ in range(2):
+        info = metadata.describe()
+        assert len(info.dependencies) == len(info.dependents) == 3
+    assert reads == ["selected"]
+    assert len(batches) == 1
+
+
+def test_metadata_groups_api_relations_by_dataset(test_session, monkeypatch):
+    from datachain.dataset import DatasetDependency
+
+    metastore = test_session.catalog.metastore
+    source = metastore.create_dataset(name="input")
+    for version in ["1.0.0", "2.0.0"]:
+        metastore.create_dataset_version(source, version, status=DatasetStatus.COMPLETE)
+    output = metastore.create_dataset(name="output")
+    metastore.create_dataset_version(output, "1.0.0", status=DatasetStatus.COMPLETE)
+    dependencies = [
+        DatasetDependency.parse(
+            metastore.default_namespace_name,
+            metastore.default_project_name,
+            i,
+            source.id,
+            i,
+            source.name,
+            version,
+            None,
+        )
+        for i, version in enumerate(["1.0.0", "2.0.0"], start=1)
+    ]
+
+    def unavailable(*args):
+        raise NotImplementedError
+
+    monkeypatch.setattr(metastore, "get_dataset_related_versions", unavailable)
+    monkeypatch.setattr(
+        metastore, "get_direct_dataset_dependencies", lambda *a: dependencies
+    )
+    original = metastore.get_dataset
+    calls = []
+
+    def read(name, *args, **kwargs):
+        calls.append((name, kwargs.get("versions")))
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(metastore, "get_dataset", read)
+    info = dc.describe("output", session=test_session)
+    assert [entry.dataset.version for entry in info.dependencies] == ["1.0.0", "2.0.0"]
+    assert [name for name, _ in calls] == ["output", "input"]
+    assert set(calls[-1][1]) == {"1.0.0", "2.0.0"}
+
+
+def test_describe_omits_temporary_dependents(test_session):
+    metastore = test_session.catalog.metastore
+    source = metastore.create_dataset(name="input")
+    source, _ = metastore.create_dataset_version(
+        source, "1.0.0", status=DatasetStatus.COMPLETE
+    )
+    for name in ["visible", "session_hidden"]:
+        output = metastore.create_dataset(name=name)
+        output, _ = metastore.create_dataset_version(
+            output, "1.0.0", status=DatasetStatus.COMPLETE
+        )
+        metastore.add_dataset_dependency(output, "1.0.0", source, "1.0.0")
+    info = dc.describe("input", session=test_session)
+    assert [entry.dataset.name for entry in info.dependents] == ["visible"]
+
+
 def test_describe_rejects_incomplete_only_dataset(test_session):
     metastore = test_session.catalog.metastore
     record = metastore.create_dataset(name="incomplete")
@@ -212,7 +362,9 @@ def test_describe_rejects_incomplete_only_dataset(test_session):
 
 
 @pytest.mark.parametrize("version", [None, "2.0.0"])
-def test_describe_studio_ignores_pulled_copy(test_session, studio_metadata, version):
+def test_describe_prefers_pulled_copy_and_fetches_missing_version(
+    test_session, studio_metadata, requests_mock, version
+):
     metastore = test_session.catalog.metastore
     project = metastore.create_project("remote", "analytics")
     cached = metastore.create_dataset(name="inventory", project_id=project.id)
@@ -221,10 +373,11 @@ def test_describe_studio_ignores_pulled_copy(test_session, studio_metadata, vers
     )
     name = "remote.analytics.inventory" + (f"@{version}" if version else "")
     info = dc.describe(name, session=test_session)
-    assert info.selected_version.version == "2.0.0"
-    assert info.selected_version.num_objects == 8
-    assert info.available_versions == ["1.0.0", "2.0.0"]
-    assert info.dependencies is None
+    assert info.selected_version.version == ("2.0.0" if version else "1.0.0")
+    assert info.selected_version.num_objects == (8 if version else 1)
+    assert info.available_versions == (["1.0.0", "2.0.0"] if version else ["1.0.0"])
+    assert info.dependencies == (None if version else [])
+    assert len(requests_mock.request_history) == (2 if version else 0)
 
 
 def test_describe_studio_missing_job(
@@ -270,11 +423,11 @@ def test_describe_studio_distinct_producing_jobs(
 
     requests_mock.get("https://studio.test/api/datachain/jobs/", json=job_response)
     info = dc.describe("remote.analytics.inventory", session=test_session)
-    assert set(info.jobs) == set(jobs)
+    assert set(info.jobs) == {second["id"]}
     assert info.job.id == second["id"]
     assert info.selected_version.metrics == {"score": 0.8}
-    assert [v.metrics for v in info.versions] == [{"score": 0.9}, {"score": 0.8}]
-    assert len(requests_mock.request_history) == 3
+    assert [v.metrics for v in info.versions] == [{}, {"score": 0.8}]
+    assert len(requests_mock.request_history) == 2
 
 
 def test_describe_uses_metastore_default_namespace(
@@ -292,6 +445,39 @@ def test_describe_uses_metastore_default_namespace(
     info = dc.describe("teamuser.sandbox.recorded", session=test_session)
     assert info.selected_version.num_objects == 3
     assert info.dependencies == []
+    assert not requests_mock.called
+
+
+def test_describe_prints_metastore_default_scope(test_session, monkeypatch, capsys):
+    metastore = test_session.catalog.metastore
+    project = metastore.create_project("teamuser", "sandbox")
+    record = metastore.create_dataset(name="recorded", project_id=project.id)
+    metastore.create_dataset_version(record, "1.0.0", status=DatasetStatus.COMPLETE)
+    monkeypatch.setattr(
+        type(metastore), "default_namespace_name", property(lambda s: "teamuser")
+    )
+    monkeypatch.setattr(
+        type(metastore), "default_project_name", property(lambda s: "sandbox")
+    )
+    describe_dataset_cmd(test_session.catalog, "recorded")
+    assert capsys.readouterr().out.startswith("Name: recorded@1.0.0\n")
+
+
+def test_skill_pulled_snapshot_keeps_qualified_name(
+    test_session, monkeypatch, requests_mock
+):
+    from datachain.lib.dataset_metadata import read_dataset_metadata
+    from datachain.skill.knowledge.collect import snapshot_from_metadata
+
+    metastore = test_session.catalog.metastore
+    project = metastore.create_project("remote", "analytics")
+    record = metastore.create_dataset(name="inventory", project_id=project.id)
+    metastore.create_dataset_version(record, "1.0.0", status=DatasetStatus.COMPLETE)
+    snapshot = snapshot_from_metadata(
+        read_dataset_metadata(test_session.catalog, "remote.analytics.inventory")
+    )
+    assert snapshot["name"] == "remote.analytics.inventory"
+    assert snapshot["source"] == "local"
     assert not requests_mock.called
 
 

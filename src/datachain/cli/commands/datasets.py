@@ -268,15 +268,22 @@ def _timestamp(value: datetime) -> str:
     return value.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z").rstrip()
 
 
-def _dataset_label(info: DatasetInfo) -> str:
+def _dataset_label(
+    info: DatasetInfo, default_namespace: str = "local", default_project: str = "local"
+) -> str:
     if isinstance(info, ListingInfo):
         return f"{info.uri}@{info.version}"
-    if info.namespace == "local" and info.project == "local":
+    if info.namespace == default_namespace and info.project == default_project:
         return f"{info.name}@{info.version}"
     return str(DatasetIdentifier(info.namespace, info.project, info.name, info.version))
 
 
-def print_dataset_description(info: DatasetDescription) -> None:
+def print_dataset_description(
+    info: DatasetDescription,
+    *,
+    default_namespace: str = "local",
+    default_project: str = "local",
+) -> None:
     """Print a dataset description for the CLI."""
     selected = info.selected_version
     entries = [
@@ -284,7 +291,10 @@ def print_dataset_description(info: DatasetDescription) -> None:
         for entry in [*(info.dependencies or []), *(info.dependents or [])]
         if entry is not None
     ]
-    labels = {entry.name: _dataset_label(entry.dataset) for entry in entries}
+    labels = {
+        entry.name: _dataset_label(entry.dataset, default_namespace, default_project)
+        for entry in entries
+    }
     counts = Counter(labels.values())
     for entry in entries:
         label = labels[entry.name]
@@ -292,7 +302,7 @@ def print_dataset_description(info: DatasetDescription) -> None:
             kind = "all versions" if entry.dataset.versions else "current only"
             labels[entry.name] = f"{label} ({kind})"
 
-    print(f"Name: {_dataset_label(selected)}")
+    print(f"Name: {_dataset_label(selected, default_namespace, default_project)}")
     print(f"Rows: {selected.num_objects}")
     print("Created: " + _timestamp(selected.created_at))
     if info.description:
@@ -334,10 +344,14 @@ def print_dataset_description(info: DatasetDescription) -> None:
 
 
 def describe_dataset_cmd(
-    catalog: "Catalog", name: str, json_output: bool = False
+    catalog: "Catalog", name: str, json_output: bool = False, team: str | None = None
 ) -> None:
-    info = describe(name, session=catalog.session)
+    info = describe(name, session=catalog.session, team=team)
     if json_output:
         print(json.dumps(info.to_dict(), indent=2))
     else:
-        print_dataset_description(info)
+        print_dataset_description(
+            info,
+            default_namespace=catalog.metastore.default_namespace_name,
+            default_project=catalog.metastore.default_project_name,
+        )
