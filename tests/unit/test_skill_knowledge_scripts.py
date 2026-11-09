@@ -619,6 +619,7 @@ def test_fetch_version_data_preserves_metadata_when_rows_are_unavailable(
     assert any("rows unavailable" in warning for warning in selected["warnings"])
     assert len(reads) == 1 and reads[0].endswith("@2.0.0")
     unchanged = dataset.fetch_version_data("metadata_only@3.0.0")
+    assert unchanged["query_script"] == "b"
     assert unchanged["changes"]["previous_script"] is None
     assert unchanged["changes"]["script_changed"] is False
     changed = dataset.fetch_version_data("metadata_only@4.0.0")

@@ -334,11 +334,13 @@ def read_dataset_metadata(
                 include_preview=include_preview,
                 source="studio" if is_studio() else "local",
             )
-        except (DatasetNotFoundError, NamespaceNotFoundError, ProjectNotFoundError):
+        except (
+            DatasetNotFoundError,
+            DatasetVersionNotFoundError,
+            NamespaceNotFoundError,
+            ProjectNotFoundError,
+        ):
             if not remote_fallback:
-                raise
-        except DatasetVersionNotFoundError:
-            if not remote_fallback or version is None:
                 raise
     record = catalog.get_remote_dataset(
         identifier.namespace, identifier.project, identifier.name, team=team

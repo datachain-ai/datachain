@@ -361,6 +361,23 @@ def test_describe_rejects_incomplete_only_dataset(test_session):
         dc.describe("incomplete", session=test_session)
 
 
+@pytest.mark.parametrize("status", [DatasetStatus.CREATED, DatasetStatus.FAILED])
+def test_describe_falls_back_from_incomplete_remote_copy(
+    test_session, studio_metadata, requests_mock, status
+):
+    metastore = test_session.catalog.metastore
+    project = metastore.create_project("remote", "analytics")
+    cached = metastore.create_dataset(name="inventory", project_id=project.id)
+    metastore.create_dataset_version(cached, "1.0.0", status=status)
+
+    info = dc.describe("remote.analytics.inventory", session=test_session)
+
+    assert info.selected_version.version == "2.0.0"
+    assert info.selected_version.num_objects == 8
+    assert info.available_versions == ["1.0.0", "2.0.0"]
+    assert len(requests_mock.request_history) == 2
+
+
 @pytest.mark.parametrize("version", [None, "2.0.0"])
 def test_describe_prefers_pulled_copy_and_fetches_missing_version(
     test_session, studio_metadata, requests_mock, version
