@@ -466,12 +466,13 @@ def test_filesystem_rechecks_changed_credentials(monkeypatch, source):
     fs = ClientS3.create_fs(cache_regions=False)
     fs.connect()
     assert not fs.anon
+    assert ClientS3.create_fs(cache_regions=False) is fs
 
 
 def test_missing_credentials_are_rechecked_after_ttl(monkeypatch, mocker):
     probe = mocker.patch("datachain.client.s3.Session")
     probe.return_value.get_credentials.side_effect = [None, object()]
-    now = mocker.patch("datachain.client.s3.monotonic", return_value=0.0)
+    now = mocker.patch("datachain.client.s3.monotonic", return_value=59.0)
 
     def connect():
         fs = ClientS3.create_fs(cache_regions=False)
@@ -479,7 +480,8 @@ def test_missing_credentials_are_rechecked_after_ttl(monkeypatch, mocker):
         return fs
 
     assert connect().anon
+    now.return_value = 60.5
     assert connect().anon
-    now.return_value = 61.0
+    now.return_value = 119.5
     assert not connect().anon
     assert probe.call_count == 2

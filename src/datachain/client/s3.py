@@ -15,7 +15,7 @@ from botocore.exceptions import ClientError, ConfigNotFound, NoCredentialsError
 from botocore.model import Shape
 from botocore.session import Session
 from botocore.utils import parse_timestamp
-from fsspec.asyn import get_loop, sync, sync_wrapper
+from fsspec.asyn import sync_wrapper
 from fsspec.utils import tokenize
 from s3fs import S3FileSystem
 
@@ -147,10 +147,7 @@ def _finds_credentials(profile: str | None, env: frozenset, files: tuple) -> boo
 
 def _head_bucket(fs: S3FileSystem, name: str) -> tuple[int, str | None]:
     try:
-        # An asynchronous filesystem has no fs.loop for its sync wrappers.
-        meta = sync(get_loop(), fs._call_s3, "head_bucket", Bucket=name)[
-            "ResponseMetadata"
-        ]
+        meta = fs.call_s3("head_bucket", Bucket=name)["ResponseMetadata"]
     except OSError as e:
         if not isinstance(e.__cause__, ClientError):
             raise
@@ -269,7 +266,16 @@ class _S3FileSystem(S3FileSystem):
 
     async def set_session(self, refresh=False, kwargs={}):  # noqa: B006
         mine = isinstance(self.session, _ListingSession)
-        if (self._s3 is None or refresh) and not self.storage_options.get("anon"):
+        retry_credentials = False
+        if self._s3 is not None and self.anon and mine:
+            checked, found = _CREDENTIAL_CHECKS.get(
+                _credential_key(self.storage_options), (0.0, False)
+            )
+            retry_credentials = found or monotonic() - checked >= 60
+        if (
+            self._s3 is None or refresh or retry_credentials
+        ) and not self.storage_options.get("anon"):
+            was_anonymous = self.anon
             if self.session is None or mine:
                 if refresh:
                     _CREDENTIAL_CHECKS.pop(_credential_key(self.storage_options), None)
@@ -278,6 +284,7 @@ class _S3FileSystem(S3FileSystem):
                 )
             elif not _has_explicit_credentials(self.storage_options):
                 self.anon = await self.session.get_credentials() is None
+            refresh = refresh or (self._s3 is not None and was_anonymous != self.anon)
         if self.session is None or (refresh and mine):
             self.session = _ListingSession(**self.kwargs)
         self._session_is_owned = False  # s3fs keeps the session, even on refresh
@@ -347,11 +354,7 @@ class ClientS3(RangeListedClient):
             kwargs.setdefault("cache_regions", True)
 
         if not kwargs.get("anon") and not _has_explicit_credentials(kwargs):
-            key = _credential_key(kwargs)
-            _, found = _CREDENTIAL_CHECKS.get(key, (0, False))
-            kwargs["credential_token"] = tokenize(
-                key, 0 if found else int(monotonic() // 60)
-            )
+            kwargs["credential_token"] = tokenize(_credential_key(kwargs))
 
         return cast("S3FileSystem", super().create_fs(**kwargs))
 
