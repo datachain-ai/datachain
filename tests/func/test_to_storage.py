@@ -515,17 +515,73 @@ def test_to_storage_failed_download_cleans_up_and_preserves_destination(
 def test_to_storage_cleanup_failure_preserves_download_error(
     failed_download_chain, tmp_dir, monkeypatch
 ):
-    remove = os.remove
+    def fail_tmp_remove(path):
+        raise PermissionError("cleanup denied")
 
-    def fail_tmp_remove(path, *args, **kwargs):
-        if str(path).endswith(".tmp"):
-            raise PermissionError("cleanup denied")
-        return remove(path, *args, **kwargs)
-
-    monkeypatch.setattr(os, "remove", fail_tmp_remove)
+    monkeypatch.setattr("datachain.client.fsspec.remove", fail_tmp_remove)
 
     with pytest.raises(OSError, match="connection reset"):
         failed_download_chain.to_storage(tmp_dir / "out", placement="filename")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows read-only file semantics")
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_failed_cached_export_removes_readonly_temporary_file(
+    cloud_test_catalog, tmp_dir
+):
+    ctc = cloud_test_catalog
+    (file,) = (
+        dc.read_storage(ctc.src_uri, session=ctc.session)
+        .filter(dc.C("file.path").glob("*cat1"))
+        .to_values("file")
+    )
+    file.ensure_cached()
+    out = tmp_dir / "out"
+    out.mkdir()
+    target = out / "cat1"
+    target.write_bytes(b"old bytes")
+    target.chmod(0o444)
+    try:
+        with pytest.raises(PermissionError):
+            file.save(str(target))
+        assert list(out.iterdir()) == [target]
+        assert target.read_bytes() == b"old bytes"
+    finally:
+        target.chmod(0o666)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize("version", ["", "null"])
+def test_s3_export_rejects_overwrite_after_identity_check(
+    cloud_test_catalog, tmp_dir, monkeypatch, version
+):
+    ctc = cloud_test_catalog
+    (file,) = (
+        dc.read_storage(ctc.src_uri, session=ctc.session)
+        .filter(dc.C("file.path").glob("*cat1"))
+        .to_values("file")
+    )
+    client = file._catalog.get_client(file.source)
+    file.version = version
+    check = type(client).check_unchanged
+    overwritten = []
+
+    def overwrite_after_check(self, file):
+        check(self, file)
+        self.fs.pipe(file.get_fs_path(), b"changed bytes")
+        overwritten.append(file.path)
+
+    monkeypatch.setattr(type(client), "check_unchanged", overwrite_after_check)
+    out = tmp_dir / "out"
+    out.mkdir()
+    target = out / "cat1"
+    target.write_bytes(b"old bytes")
+    with pytest.raises(OSError):
+        file.save(str(target))
+    assert overwritten == [file.path]
+    assert list(out.iterdir()) == [target]
+    assert target.read_bytes() == b"old bytes"
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)

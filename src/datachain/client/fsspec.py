@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from dvc_objects.fs.system import reflink
+from dvc_objects.fs.utils import remove
 from fsspec.asyn import get_loop, sync
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 
@@ -644,7 +645,7 @@ class Client(ABC):
             os.replace(tmp, lpath)
         except BaseException:
             with contextlib.suppress(OSError):
-                os.remove(tmp)
+                remove(tmp)
             raise
 
     async def _download_stream(
