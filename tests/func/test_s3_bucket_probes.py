@@ -101,14 +101,17 @@ def endpoints():
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("provided_session", [False, True])
 def test_async_filesystem_supports_probe_and_read_storage(
-    endpoints, test_session, monkeypatch, asynchronous
+    endpoints, test_session, monkeypatch, asynchronous, provided_session
 ):
     endpoint, requests = endpoints()
     config = {
         "endpoint_url": endpoint,
         "asynchronous": asynchronous,
     }
+    if provided_session:
+        config["session"] = AioSession()
     monkeypatch.setattr("datachain.client.listing_worker.LIST_PROCESSES", 0)
 
     assert ClientS3.bucket_status("bucket", **config).access == "anonymous"
@@ -335,6 +338,29 @@ def test_credential_discovery_does_not_block_the_filesystem_loop(monkeypatch):
 
     monkeypatch.setattr(s3.Session, "get_credentials", credentials)
     sync(get_loop(), connect)
+
+
+@pytest.mark.parametrize("source", ["session", "kwargs", "client_kwargs"])
+def test_supplied_session_preserves_explicit_credentials(source):
+    session = AioSession()
+    kwargs = {}
+    if source == "session":
+        session.set_credentials("key", "secret")
+    elif source == "kwargs":
+        kwargs = {"key": "key", "secret": "secret"}
+    else:
+        kwargs = {
+            "client_kwargs": {
+                "aws_access_key_id": "key",
+                "aws_secret_access_key": "secret",
+            }
+        }
+    fs = ClientS3.create_fs(
+        session=session, cache_regions=False, skip_instance_cache=True, **kwargs
+    )
+    fs.connect()
+    assert not fs.anon
+    assert fs.s3._request_signer._credentials.access_key == "key"
 
 
 @pytest.mark.parametrize("kwargs", [{}, {"session": None}])
