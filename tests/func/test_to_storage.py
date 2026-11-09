@@ -133,12 +133,11 @@ def test_to_storage_over_source_preserves_bytes(
 @pytest.mark.parametrize("alias", ["same", "hardlink"])
 @pytest.mark.parametrize("operation", ["save", "copy", "symlink"])
 def test_export_over_source_uses_the_saved_file_contents(
-    catalog, tmp_path, cache, alias, operation
+    test_session, tmp_path, cache, alias, operation
 ):
     source = tmp_path / "input.bin"
     source.write_bytes(b"old")
-    file = catalog.get_client(tmp_path.as_uri()).get_file_info(source.name)
-    file._set_stream(catalog)
+    (file,) = dc.read_storage(source.as_uri(), session=test_session).to_values("file")
     if cache:
         file.ensure_cached()
     output = tmp_path if alias == "same" else tmp_path / "out"

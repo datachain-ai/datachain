@@ -960,8 +960,7 @@ class File(DataModel):
                     dst,
                 )
             if link_type == "symlink" and self._is_local_file(dst):
-                File.save(self, dst)
-                return
+                link_type = "copy"
         else:
             # For cloud exports, simply join the output prefix and suffix.
             # Relying on cloud clients to do their own validation.
