@@ -266,15 +266,14 @@ class _S3FileSystem(S3FileSystem):
 
     async def set_session(self, refresh=False, kwargs={}):  # noqa: B006
         mine = isinstance(self.session, _ListingSession)
+        auto_anon = not self.storage_options.get("anon")
         retry_credentials = False
-        if self._s3 is not None and self.anon and mine:
+        if auto_anon and self._s3 is not None and self.anon and mine:
             checked, found = _CREDENTIAL_CHECKS.get(
                 _credential_key(self.storage_options), (0.0, False)
             )
             retry_credentials = found or monotonic() - checked >= 60
-        if (
-            self._s3 is None or refresh or retry_credentials
-        ) and not self.storage_options.get("anon"):
+        if (self._s3 is None or refresh or retry_credentials) and auto_anon:
             was_anonymous = self.anon
             if self.session is None or mine:
                 if refresh:
