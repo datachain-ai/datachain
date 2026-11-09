@@ -88,6 +88,7 @@ def test_endpoint_only_profile_reads_public_bucket(cloud_server, tmp_path, monke
     ):
         monkeypatch.delenv(name, raising=False)
     chain = dc.read_storage(cloud_server.src_uri, client_config={"profile": "public"})
+    assert chain.session.catalog.client_config.get("anon") is True
     assert chain.count() == 7
 
 
