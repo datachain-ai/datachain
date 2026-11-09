@@ -100,7 +100,12 @@ def test_concurrent_s3_exports_keep_separate_read_conditions(tmp_path, monkeypat
         return {"Body": body, "ContentLength": 1}
 
     async def download():
+        async def outside():
+            await asyncio.sleep(0)
+            await client.fs._call_s3("get_object", Bucket="bucket", Key="outside")
+
         await asyncio.gather(
+            outside(),
             *(
                 client._download_stream(
                     File(source="s3://bucket", path=key, etag=key, version=version),
@@ -108,9 +113,8 @@ def test_concurrent_s3_exports_keep_separate_read_conditions(tmp_path, monkeypat
                     DEFAULT_CALLBACK,
                 )
                 for key, version in [("a", ""), ("b", "null"), ("c", "pinned")]
-            )
+            ),
         )
-        await client.fs._call_s3("get_object", Bucket="bucket", Key="outside")
 
     monkeypatch.setattr(S3FileSystem, "_call_s3", request)
     sync(get_loop(), download)

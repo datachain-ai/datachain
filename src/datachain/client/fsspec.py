@@ -8,7 +8,6 @@ import os
 import posixpath
 import re
 import shutil
-import stat
 from abc import ABC, abstractmethod
 from collections.abc import (
     AsyncIterator,
@@ -628,15 +627,12 @@ class Client(ABC):
         """Write a file to a local path atomically, from the cache if it holds it."""
         tmp = os.path.join(os.path.dirname(lpath), f".{uuid4().hex}.tmp")
         try:
-            mode = None
-            with contextlib.suppress(FileNotFoundError):
-                mode = stat.S_IMODE(os.stat(lpath).st_mode)
             # Establish permissions before writing any contents. New files use
             # the ordinary umask; replacements retain the destination's mode.
             with open(tmp, "xb"):
                 pass
-            if mode is not None:
-                os.chmod(tmp, mode)
+            with contextlib.suppress(FileNotFoundError):
+                shutil.copymode(lpath, tmp)
             if cached := self.cache.get_path(file):
                 shutil.copyfile(cached, tmp)
             else:
