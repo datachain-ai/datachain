@@ -1,6 +1,7 @@
 import json
 import time
 from datetime import UTC, datetime, timedelta, timezone
+from unittest.mock import Mock
 
 import pytest
 
@@ -576,7 +577,10 @@ def test_describe_loads_only_selected_job_and_keeps_related_job_ids(
     monkeypatch.setattr(
         test_session.catalog, "get_dataset_dependencies_by_ids", forbidden
     )
+    job_reads = Mock(wraps=metastore.list_jobs_by_ids)
+    monkeypatch.setattr(metastore, "list_jobs_by_ids", job_reads)
     info = dc.describe("derived", session=test_session)
+    job_reads.assert_called_once_with([derived_job])
     assert reads == []
     assert info.job.id == derived_job
     assert info.dependencies[0].dataset.job_id == source_job

@@ -146,6 +146,17 @@ def is_pulled_copy(metadata: DatasetMetadata, metastore: "AbstractMetastore") ->
     )
 
 
+def read_direct_dependencies(
+    metastore: "AbstractMetastore", metadata: DatasetMetadata, version: str
+) -> "list[DatasetDependency | None] | None":
+    dependencies = metastore.get_direct_dataset_dependencies(metadata.record, version)
+    if dependencies is None or (
+        not dependencies and is_pulled_copy(metadata, metastore)
+    ):
+        return None
+    return [dep if dep and dep.version else None for dep in dependencies]
+
+
 def _read_related_versions(
     metastore: "AbstractMetastore",
     dependencies: "list[DatasetDependency | None] | None",
@@ -233,15 +244,7 @@ def read_dataset_description(
     else:
         metastore = catalog.metastore
         pulled_copy = is_pulled_copy(metadata, metastore)
-        dependencies = metastore.get_direct_dataset_dependencies(
-            record, selected.version
-        )
-        if dependencies is not None:
-            dependencies = [
-                dep if dep and dep.version else None for dep in dependencies
-            ]
-        if not dependencies and pulled_copy:
-            dependencies = None
+        dependencies = read_direct_dependencies(metastore, metadata, selected.version)
         try:
             dependents = metastore.get_direct_dataset_dependents(
                 record, selected.version

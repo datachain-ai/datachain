@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING
 
 from datachain.dataset import DatasetDependencyType
 from datachain.error import DatasetVersionNotFoundError
-from datachain.lib.dataset_metadata import DatasetMetadata, is_pulled_copy
+from datachain.lib.dataset_metadata import DatasetMetadata, read_direct_dependencies
 from datachain.skill.knowledge.scripts.utils import dep_entry
 from datachain.skill.knowledge.snapshot import (
     MAX_VERSION_ENTRIES,
@@ -54,17 +54,16 @@ def snapshot_from_metadata(
     max_version_entries: int | None = MAX_VERSION_ENTRIES,
 ) -> "DatasetSnapshot":
     record = metadata.record
-    pulled_copy = metastore is not None and is_pulled_copy(metadata, metastore)
 
     def deps_provider(ver: "DatasetVersion") -> "list[DependencyEntry] | None":
         if metastore is None:
             return None
-        edges = metastore.get_direct_dataset_dependencies(record, ver.version)
-        if edges is None or (not edges and pulled_copy):
+        edges = read_direct_dependencies(metastore, metadata, ver.version)
+        if edges is None:
             return None
         return [
             dep_entry(_dep_name(e, metastore, metadata.source), e.version, e.type)
-            if e is not None and e.version
+            if e is not None
             else dep_entry(None, None, None)
             for e in edges
         ]
