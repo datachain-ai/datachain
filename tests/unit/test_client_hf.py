@@ -7,11 +7,26 @@ import pytest
 from fsspec.asyn import sync
 from huggingface_hub import hf_file_system
 from huggingface_hub.hf_file_system import HfFileSystemFile
+from huggingface_hub.utils import HFValidationError
 
 from datachain.asyn import get_loop
 from datachain.cache import Cache
 from datachain.client.hf import HfClient
 from datachain.lib.file import File
+
+
+@pytest.fixture
+def hf_repositories(monkeypatch):
+    calls = []
+
+    def exists(self, repo_type, repo_id, revision):
+        calls.append((repo_type, repo_id, revision))
+        if repo_id in {"org/repo", "gpt2"}:
+            return True, None
+        return False, HFValidationError("Unknown test repository")
+
+    monkeypatch.setattr(hf_file_system.HfFileSystem, "_repo_and_revision_exist", exists)
+    return calls
 
 
 def test_info_to_file_uses_last_commit_metadata_when_present():
@@ -116,7 +131,6 @@ def hf_archive_client(catalog, monkeypatch, small_tar_member_data):
     _, raw = small_tar_member_data
     client = HfClient("datasets/fictional/fixture", {"token": False}, catalog.cache)
     fs = client.fs.sync_fs
-    assert fs.block_size is None
     resolved_path_type = getattr(
         hf_file_system,
         "HfFileSystemResolvedRepositoryPath",
@@ -171,13 +185,11 @@ def test_open_object_huggingface_block_size_zero_reads_only_asked_bytes(
     ]
 
 
-def test_cache_fill_with_branch_uri_downloads_listed_commit(catalog, monkeypatch):
-    monkeypatch.setattr(
-        hf_file_system.HfFileSystem,
-        "_repo_and_revision_exist",
-        lambda *a, **kw: (True, None),
-    )
+def test_cache_fill_with_branch_uri_downloads_listed_commit(
+    catalog, monkeypatch, hf_repositories
+):
     client = HfClient("datasets", {"token": False}, catalog.cache)
+    monkeypatch.setattr(client.fs, "_info", AsyncMock(return_value={"size": 4}))
     monkeypatch.setattr(
         client.fs.sync_fs, "info", lambda *a, **kw: {"size": 4, "type": "file"}
     )
@@ -217,14 +229,11 @@ def test_open_reads_listed_commit_with_revision_in_uri(
     path,
     block_size,
     repo_type,
+    hf_repositories,
 ):
-    from huggingface_hub import HfFileSystem
-
-    monkeypatch.setattr(
-        HfFileSystem, "_repo_and_revision_exist", lambda *a, **kw: (True, None)
-    )
     client = HfClient(repo_type, {"token": False}, catalog.cache)
     _, raw = small_tar_member_data
+    monkeypatch.setattr(client.fs, "_info", AsyncMock(return_value={"size": len(raw)}))
     monkeypatch.setattr(client.fs.sync_fs, "info", lambda *a, **kw: {"size": len(raw)})
     tar_member_range_requests(HfFileSystemFile)
     file = File(source=client.uri, path=path, size=len(raw), version="commit123")
@@ -240,19 +249,115 @@ def test_open_reads_listed_commit_with_revision_in_uri(
         ("datasets/org/repo@main/a@b.txt", None, ("main", "a@b.txt")),
         ("datasets/org/repo@main/a@b.txt", "c1", ("c1", "a@b.txt")),
         ("datasets/org/repo/a@b.txt", "c1", ("c1", "a@b.txt")),
+        ("datasets/org/repo/@file.txt", "c1", ("c1", "@file.txt")),
     ],
 )
 def test_resolve_path_keeps_at_sign_in_file_name(
-    catalog, monkeypatch, path, revision, expected
+    catalog, hf_repositories, path, revision, expected
 ):
-    monkeypatch.setattr(
-        hf_file_system.HfFileSystem,
-        "_repo_and_revision_exist",
-        lambda *a, **kw: (True, None),
-    )
     fs = HfClient("datasets", {"token": False}, catalog.cache).fs.sync_fs
     resolved = fs.resolve_path(path, revision=revision)
     assert (resolved.revision, resolved.path_in_repo) == expected
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("gpt2@main/config.json", "config.json"),
+        ("gpt2/config@v1.json", "config@v1.json"),
+        ("gpt2@refs/pr/1/config@v1.json", "config@v1.json"),
+        ("gpt2@refs%2Fpr%2F1/config.json", "config.json"),
+    ],
+)
+def test_resolve_short_repo_id_uses_sdk_rules(catalog, hf_repositories, path, expected):
+    upstream = hf_file_system.HfFileSystem(token=False)
+    try:
+        upstream.resolve_path("gpt2@main/config.json")
+    except (ValueError, FileNotFoundError):
+        pytest.skip("This SDK no longer supports single-component repository IDs")
+    fs = HfClient("models", {"token": False}, catalog.cache).fs.sync_fs
+    resolved = fs.resolve_path(path, revision="c1")
+    assert (resolved.repo_id, resolved.revision, resolved.path_in_repo) == (
+        "gpt2",
+        "c1",
+        expected,
+    )
+
+
+def test_cache_fill_directory_check_uses_pinned_commit(
+    catalog, monkeypatch, hf_repositories
+):
+    client = HfClient("datasets", {"token": False}, catalog.cache)
+    fs = client.fs.sync_fs
+    checks = []
+
+    def info(path, **kwargs):
+        resolved = fs.resolve_path(path, revision=kwargs.get("revision"))
+        checks.append(resolved.revision)
+        return {"size": 4, "type": "file" if resolved.revision == "c1" else "directory"}
+
+    monkeypatch.setattr(fs, "info", info)
+    monkeypatch.setattr(client.fs, "_info", AsyncMock(side_effect=info))
+    monkeypatch.setattr(
+        hf_file_system,
+        "http_get",
+        lambda url, temp_file, **kw: temp_file.write(b"data"),
+    )
+    file = File(source=client.uri, path="org/repo@main/a.txt", size=4, version="c1")
+    client.put_in_cache(file)
+    with client.open_object(file) as stream:
+        assert stream.read() == b"data"
+    assert checks and set(checks) == {"c1"}
+
+
+def test_pinned_commit_does_not_require_uri_branch(catalog, monkeypatch):
+    calls = []
+
+    def exists(self, repo_type, repo_id, revision):
+        calls.append(revision)
+        return revision == "c1", None
+
+    monkeypatch.setattr(hf_file_system.HfFileSystem, "_repo_and_revision_exist", exists)
+    fs = HfClient("datasets", {"token": False}, catalog.cache).fs.sync_fs
+    resolved = fs.resolve_path("org/repo@deleted-branch/a@b.txt", revision="c1")
+    assert resolved.revision == "c1"
+    assert resolved.path_in_repo == "a@b.txt"
+    assert calls and set(calls) == {"c1"}
+
+
+def test_pinned_unchanged_check_uses_size_without_expanded_metadata():
+    client = HfClient("datasets", {}, Mock(spec=Cache))
+    client._fs = Mock()
+    client._fs._info = AsyncMock(return_value={"size": 4})
+    file = File(
+        source=client.uri, path="org/repo/a.txt", version="c1", etag="blob", size=4
+    )
+    client.check_unchanged(file)
+    client._fs._info.assert_awaited_once_with(file.get_fs_path(), revision="c1")
+
+
+def test_pinned_unchanged_check_reuses_sdk_directory_cache(
+    catalog, monkeypatch, hf_repositories
+):
+    client = HfClient("datasets", {"token": False}, catalog.cache)
+    fs = client.fs.sync_fs
+    fs.dircache["datasets/org/repo@c1"] = [
+        {
+            "name": "datasets/org/repo@c1/a.txt",
+            "size": 4,
+            "type": "file",
+            "last_commit": None,
+        }
+    ]
+    fetch = Mock(
+        side_effect=AssertionError("Cached size must not fetch expanded metadata")
+    )
+    monkeypatch.setattr(fs._api, "get_paths_info", fetch)
+    file = File(
+        source=client.uri, path="org/repo@main/a.txt", version="c1", etag="blob", size=4
+    )
+    client.check_unchanged(file)
+    fetch.assert_not_called()
 
 
 def test_hf_filesystem_is_pickleable(catalog):

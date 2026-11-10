@@ -68,6 +68,7 @@ def get_hf_filesystem_cls():
 class HfClient(Client):
     PREFIX = "hf://"
     protocol = "hf"
+    PINNED_VERSION_IS_IMMUTABLE = True
 
     @classproperty
     def FS_CLASS(cls):  # noqa: N802, N805
