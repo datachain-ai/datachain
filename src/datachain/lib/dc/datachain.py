@@ -3483,10 +3483,8 @@ class DataChain:
             name = " | ".join(getattr(a, "__name__", str(a)) for a in arms)
             msg = f"to_storage(): '{signal}' is {name}, not a file"
             prefix = f"{signal}."
-            if inner := next(
-                (s for s in schema.get_signals(File) if s.startswith(prefix)), None
-            ):
-                msg += f"; use signal='{inner}'"
+            if inner := [s for s in schema.get_signals(File) if s.startswith(prefix)]:
+                msg += "; use " + " or ".join(f"signal='{s}'" for s in inner)
                 if any(hasattr(a, "save") for a in arms):
                     msg += f", or {signal}.save(output) in map()"
             raise DataChainParamsError(msg)
@@ -3547,9 +3545,21 @@ class DataChain:
         count = chain.count()
 
         if placement == "filename":
-            path_col = chain.signals_schema.to_db_col(f"{signal}.path")
-            named = chain._query.filter(C(path_col).isnot(None))
-            if named.distinct(pathfunc.name(C(path_col))).count() != named.count():
+            schema = chain.signals_schema
+            layout = union_layout(schema.get_column_type(signal, with_subtree=True))
+            signals = (
+                [
+                    f"{signal}.{arm_selector(arm)}"
+                    for arm in layout.arms
+                    if inspect.isclass(arm) and issubclass(arm, File)
+                ]
+                if layout and layout.use_slots
+                else [signal]
+            )
+            paths = [C(schema.to_db_col(f"{s}.path")) for s in signals]
+            path_col = sqlalchemy.func.coalesce(*paths) if len(paths) > 1 else paths[0]
+            named = chain._query.filter(path_col.isnot(None))
+            if named.distinct(pathfunc.name(path_col)).count() != named.count():
                 raise ValueError("Files with the same name found")
 
         if anon is not None:
@@ -3572,10 +3582,20 @@ class DataChain:
             client_config=client_config,
         )
         with closing(chain.to_iter(signal)) as rows_iter:
-            file_exporter.run(
-                (rows[0] for rows in rows_iter),
-                progress_bar,
-            )
+
+            def files():
+                has_file = False
+                has_value = False
+                for (value,) in rows_iter:
+                    has_file |= isinstance(value, File)
+                    has_value |= value is not None
+                    yield value
+                if has_value and not has_file:
+                    raise DataChainParamsError(
+                        f"to_storage(): '{signal}' contains no files"
+                    )
+
+            file_exporter.run(files(), progress_bar)
 
     def shuffle(self) -> "Self":
         """Shuffle rows with a best-effort deterministic ordering.

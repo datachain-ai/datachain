@@ -17,6 +17,7 @@ import datachain as dc
 from datachain import DataModel, Session
 from datachain.lib.file import (
     AudioFile,
+    AudioFragment,
     File,
     FileError,
     ImageFile,
@@ -647,3 +648,74 @@ def test_to_storage_rejects_a_signal_without_files(test_session, tmp_path, signa
     )
     with pytest.raises(DataChainParamsError, match=re.escape(msg) + "$"):
         chain.to_storage(tmp_path / "out", signal=signal)
+
+
+@pytest.mark.parametrize("num_threads", [1, 2])
+@pytest.mark.parametrize("case", ["empty", "absent", "nonfiles", "mixed"])
+def test_to_storage_validates_union_values(test_session, tmp_path, case, num_threads):
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "a.txt").write_text("content")
+    file = File(source=source.as_uri(), path="a.txt")
+    values = {
+        "empty": [],
+        "absent": [None],
+        "nonfiles": ["plain", None],
+        "mixed": ["plain", file, None],
+    }[case]
+    chain = dc.read_values(
+        value=values, output={"value": File | str | None}, session=test_session
+    )
+    output = tmp_path / "out"
+    if case == "nonfiles":
+        with pytest.raises(DataChainParamsError, match="'value' contains no files"):
+            chain.to_storage(output, signal="value", num_threads=num_threads)
+        assert not output.exists()
+    else:
+        chain.to_storage(output, signal="value", num_threads=num_threads)
+        files = [p for p in output.rglob("*") if p.is_file()]
+        assert [p.read_text() for p in files] == (
+            ["content"] if case == "mixed" else []
+        )
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_to_storage_filename_handles_file_subclass_union(
+    test_session, tmp_path, duplicate
+):
+    (tmp_path / "left").mkdir()
+    (tmp_path / "right").mkdir()
+    (tmp_path / "left" / "a.bin").write_bytes(b"image")
+    second = "a.bin" if duplicate else "b.bin"
+    (tmp_path / "right" / second).write_bytes(b"video")
+    chain = dc.read_values(
+        value=[
+            ImageFile(source=tmp_path.as_uri(), path="left/a.bin"),
+            VideoFile(source=tmp_path.as_uri(), path=f"right/{second}"),
+        ],
+        output={"value": ImageFile | VideoFile},
+        session=test_session,
+    )
+    output = tmp_path / "out"
+    if duplicate:
+        with pytest.raises(ValueError, match="Files with the same name found"):
+            chain.to_storage(output, signal="value", placement="filename")
+        assert not output.exists()
+    else:
+        chain.to_storage(output, signal="value", placement="filename")
+        assert {p.name: p.read_bytes() for p in output.iterdir()} == {
+            "a.bin": b"image",
+            "b.bin": b"video",
+        }
+
+
+def test_to_storage_hint_includes_all_fragment_union_arms(test_session, tmp_path):
+    chain = dc.read_values(
+        frag=[VideoFragment(video=VideoFile(path="video.mp4"), start=0, end=1)],
+        output={"frag": VideoFragment | AudioFragment},
+        session=test_session,
+    )
+    with pytest.raises(DataChainParamsError) as error:
+        chain.to_storage(tmp_path / "out", signal="frag")
+    assert "signal='frag.VideoFragment.video'" in str(error.value)
+    assert "signal='frag.AudioFragment.audio'" in str(error.value)
