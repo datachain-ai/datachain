@@ -49,12 +49,14 @@ class _StubMetastore:
         self._record = record
         self._deps = deps_by_version or {}
         self.get_dataset_calls = []
+        self.get_dependencies_calls = []
 
     def get_dataset(self, name, namespace=None, project=None, **kwargs):
         self.get_dataset_calls.append((name, namespace, project, kwargs))
         return self._record
 
     def get_direct_dataset_dependencies(self, dataset, version):
+        self.get_dependencies_calls.append(version)
         return self._deps.get(version, [])
 
 
@@ -155,6 +157,7 @@ def test_collect_dataset_snapshot_keeps_the_target_when_history_is_capped():
 
     assert snap["versions"][-1]["version"] == "25.0.0"
     assert len(snap["versions"]) == 20
+    assert len(ms.get_dependencies_calls) == 21
     assert any("truncated" in w for w in snap["warnings"])
 
 

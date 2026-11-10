@@ -46,14 +46,18 @@ def collect_dataset_snapshot(
 
 def snapshot_from_metadata(metadata: DatasetMetadata) -> "DatasetSnapshot":
     record = metadata.record
+    dependencies_unavailable = False
 
     def deps_provider(ver: "DatasetVersion") -> "list[DependencyEntry]":
-        edges = metadata.dependencies(ver.version) or []
+        nonlocal dependencies_unavailable
+        edges = metadata.dependencies(ver.version)
+        if edges is None:
+            dependencies_unavailable = True
         return [
             dep_entry(_dep_name(e, metadata), e.version, e.type)
             if e is not None
             else dep_entry(None, None, None)
-            for e in edges
+            for e in edges or []
         ]
 
     local_default = (
@@ -72,7 +76,7 @@ def snapshot_from_metadata(metadata: DatasetMetadata) -> "DatasetSnapshot":
         versions=metadata.history,
         deps_provider=deps_provider,
     )
-    if any(metadata.dependencies(v.version) is None for v in metadata.history):
+    if dependencies_unavailable:
         snapshot.setdefault("warnings", []).append(
             "Dependencies are unavailable; dependency changes could not be determined."
         )

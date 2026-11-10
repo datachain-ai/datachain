@@ -398,13 +398,14 @@ def test_describe_prefers_pulled_copy_and_fetches_missing_version(
     assert len(requests_mock.request_history) == (2 if version else 0)
 
 
-def test_describe_pulled_copy_preserves_locally_recorded_relations(
-    test_session, studio_metadata, requests_mock
+@pytest.mark.parametrize("dependent", ["downstream", "session_hidden"])
+def test_describe_pulled_copy_preserves_visible_locally_recorded_relations(
+    test_session, studio_metadata, requests_mock, dependent
 ):
     metastore = test_session.catalog.metastore
     project = metastore.create_project("remote", "analytics")
     records = {}
-    for name in ["upstream", "inventory", "downstream"]:
+    for name in ["upstream", "inventory", dependent]:
         record = metastore.create_dataset(name=name, project_id=project.id)
         record, _ = metastore.create_dataset_version(
             record, "1.0.0", status=DatasetStatus.COMPLETE
@@ -414,13 +415,16 @@ def test_describe_pulled_copy_preserves_locally_recorded_relations(
         records["inventory"], "1.0.0", records["upstream"], "1.0.0"
     )
     metastore.add_dataset_dependency(
-        records["downstream"], "1.0.0", records["inventory"], "1.0.0"
+        records[dependent], "1.0.0", records["inventory"], "1.0.0"
     )
 
     info = dc.describe("remote.analytics.inventory", session=test_session)
 
     assert [dep.dataset.name for dep in info.dependencies] == ["upstream"]
-    assert [dep.dataset.name for dep in info.dependents] == ["downstream"]
+    if dependent == "downstream":
+        assert [dep.dataset.name for dep in info.dependents] == [dependent]
+    else:
+        assert info.dependents is None
     assert not requests_mock.called
 
 

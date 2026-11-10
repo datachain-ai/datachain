@@ -150,17 +150,15 @@ class DatasetMetadata:
                 )
             except NotImplementedError:
                 dependents = None
-            if not dependents and self._is_remote_copy:
-                dependents = None
-            self._dependents[version] = (
-                [
+            if dependents is not None:
+                dependents = [
                     dep
                     for dep in dependents
                     if dep and not Session.is_temp_dataset(dep.name)
                 ]
-                if dependents is not None
-                else None
-            )
+            if not dependents and self._is_remote_copy:
+                dependents = None
+            self._dependents[version] = dependents
         return self._dependents[version]
 
     @cached_property
@@ -277,6 +275,20 @@ class DatasetMetadata:
 
         dependencies = self.dependencies(self.selected_version.version)
         dependents = self.dependents(self.selected_version.version)
+        dependent_info = (
+            sorted(
+                [
+                    info
+                    for dep in dependents
+                    if (info := dependency_info(dep)) is not None
+                ],
+                key=lambda entry: entry.name,
+            )
+            if dependents is not None
+            else None
+        )
+        if not dependent_info and self._is_remote_copy:
+            dependent_info = None
         versions = [version_info(self.record, v) for v in self.versions]
         return DatasetDescription(
             selected_version=next(
@@ -291,16 +303,7 @@ class DatasetMetadata:
             )
             if dependencies is not None
             else None,
-            dependents=sorted(
-                [
-                    info
-                    for dep in dependents
-                    if (info := dependency_info(dep)) is not None
-                ],
-                key=lambda entry: entry.name,
-            )
-            if dependents is not None
-            else None,
+            dependents=dependent_info,
             jobs=self.jobs,
         )
 
