@@ -26,7 +26,7 @@ if TYPE_CHECKING:
         SchemaEntry,
     )
 
-    DepsProvider = Callable[[Any], "Sequence[DependencyEntry]"]
+    DepsProvider = Callable[[Any], "Sequence[DependencyEntry] | None"]
 
 
 # Cap version history so the snapshot stays within the prompt budget.
@@ -44,7 +44,7 @@ def build_dataset_snapshot(
     description: str | None,
     versions: "Sequence[Any]",
     deps_provider: "DepsProvider",
-    max_version_entries: int = MAX_VERSION_ENTRIES,
+    max_version_entries: int | None = MAX_VERSION_ENTRIES,
 ) -> "DatasetSnapshot":
     """Assemble the ``DatasetSnapshot`` for one dataset."""
     versions_sorted = sorted(versions, key=lambda v: parse_semver(v.version))
@@ -54,22 +54,34 @@ def build_dataset_snapshot(
     if not versions_sorted:
         warnings.append("dataset has no versions")
     else:
-        if len(versions_sorted) > max_version_entries:
+        recent = versions_sorted
+        window = versions_sorted
+        prev = None
+        if (
+            max_version_entries is not None
+            and len(versions_sorted) > max_version_entries
+        ):
             warnings.append(
                 f"version history truncated to {max_version_entries} most recent "
                 f"of {len(versions_sorted)} versions"
             )
+            recent = versions_sorted[-max_version_entries:]
+            # The version before the window anchors the oldest kept version's diff.
+            window = versions_sorted[-max_version_entries - 1 :]
+            prev = window[0]
         latest = versions_sorted[-1]
-        recent = versions_sorted[-max_version_entries:]
-        # The version before the window anchors the oldest kept version's diff.
-        window = versions_sorted[-max_version_entries - 1 :]
-        deps = {v.version: list(deps_provider(v)) for v in window}
-
-        truncated = len(versions_sorted) > max_version_entries
-        prev = window[0] if truncated else None
+        deps = {
+            v.version: list(edges) if (edges := deps_provider(v)) is not None else None
+            for v in window
+        }
+        if any(edges is None for edges in deps.values()):
+            warnings.append(
+                "Dependencies are unavailable; "
+                "dependency changes could not be determined."
+            )
         for version in recent:
             is_latest = version.version == latest.version
-            if any(d["name"] is None for d in deps.get(version.version, [])):
+            if any(d["name"] is None for d in deps.get(version.version) or []):
                 warnings.append(
                     f"version {version.version} depends on a deleted dataset "
                     "(lineage incomplete)"
@@ -181,7 +193,7 @@ def expand_signal(typ: "DataType") -> "SchemaEntry":
 def _version_entry(
     version: Any,
     prev: Any | None,
-    deps_by_version: "dict[str, list[DependencyEntry]]",
+    deps_by_version: "dict[str, list[DependencyEntry] | None]",
     *,
     is_latest: bool,
 ) -> "DatasetVersionEntry":
@@ -207,7 +219,7 @@ def _version_entry(
         "query_script": version.query_script or None,
         "changes": changes,
         # name=None edges (deleted targets) drive the warning but aren't rendered.
-        "dependencies": [d for d in deps if d["name"] is not None],
+        "dependencies": [d for d in deps or [] if d["name"] is not None],
     }
 
 

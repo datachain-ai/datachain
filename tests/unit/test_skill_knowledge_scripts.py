@@ -627,6 +627,60 @@ def test_fetch_version_data_preserves_metadata_when_rows_are_unavailable(
     assert changed["changes"]["script_changed"] is True
 
 
+@pytest.mark.parametrize("studio", [False, True])
+def test_dataset_all_retains_complete_planned_history(
+    test_session, monkeypatch, requests_mock, tmp_path, studio
+):
+    import dataset
+    import dataset_all
+
+    from datachain.dataset import DatasetStatus
+
+    monkeypatch.setenv("DATACHAIN_IS_STUDIO", "false")
+    metastore = test_session.catalog.metastore
+    record = metastore.create_dataset(name="long_history")
+    versions = [f"{i}.0.0" for i in range(1, 26)]
+    for version in versions:
+        record, _ = metastore.create_dataset_version(
+            record, version, status=DatasetStatus.COMPLETE, query_script=version
+        )
+    name = "long_history"
+    if studio:
+        payload = metastore.get_dataset(name, versions=None).to_dict()
+        payload["project"]["name"] = "analytics"
+        payload["project"]["namespace"]["name"] = "remote"
+        payload = json.loads(json.dumps(payload, default=lambda v: v.isoformat()))
+        monkeypatch.setenv("DATACHAIN_STUDIO_URL", "https://studio.test")
+        monkeypatch.setenv("DATACHAIN_STUDIO_TOKEN", "test-token")
+        monkeypatch.setenv("DATACHAIN_STUDIO_TEAM", "team")
+        requests_mock.get(
+            "https://studio.test/api/datachain/datasets/info", json=payload
+        )
+        name = "remote.analytics.long_history"
+
+    def unavailable(name):
+        raise FileNotFoundError("rows unavailable")
+
+    monkeypatch.setattr(dataset, "get_catalog", lambda: test_session.catalog)
+    monkeypatch.setattr(
+        dataset, "dc_import", lambda: SimpleNamespace(read_dataset=unavailable)
+    )
+    bounded = dataset.fetch_dataset_snapshot(name)
+    assert len(bounded["versions"]) == 20
+    assert any("truncated" in w for w in bounded["warnings"])
+
+    plan_path = tmp_path / "plan.json"
+    output_path = tmp_path / "dataset.json"
+    for planned in [versions, versions[:5]]:
+        plan_path.write_text(
+            json.dumps({"datasets": [{"name": name, "versions_to_fetch": planned}]})
+        )
+        dataset_all.cmd_dataset_all(name, str(plan_path), str(output_path))
+        saved = json.loads(output_path.read_text())
+        assert [v["version"] for v in saved["versions"]] == versions
+        assert not any("truncated" in w for w in saved.get("warnings", []))
+
+
 @pytest.mark.parametrize("script", ["dataset", "dataset_all"])
 def test_dataset_scripts_report_metadata_errors_as_json(
     test_session, monkeypatch, capsys, script

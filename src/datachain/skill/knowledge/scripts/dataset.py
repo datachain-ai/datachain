@@ -9,13 +9,17 @@ from datachain.dataset import parse_dataset_with_version
 from datachain.error import DataChainError, NotFoundError
 from datachain.lib.dataset_metadata import read_dataset_metadata
 from datachain.skill.knowledge.collect import snapshot_from_metadata
+from datachain.skill.knowledge.snapshot import MAX_VERSION_ENTRIES
 
 if TYPE_CHECKING:
     from datachain.skill.knowledge.types import DatasetSnapshot
 
 
 def fetch_dataset_snapshot(
-    name_version: str, *, summarize: bool = False
+    name_version: str,
+    *,
+    summarize: bool = False,
+    max_version_entries: int | None = MAX_VERSION_ENTRIES,
 ) -> "DatasetSnapshot":
     name, version = parse_dataset_with_version(name_version)
     # Skills also accept the legacy namespace/project/name notation.
@@ -25,7 +29,7 @@ def fetch_dataset_snapshot(
     metadata = read_dataset_metadata(
         get_catalog(), name, version=version, include_preview=True
     )
-    snapshot = snapshot_from_metadata(metadata)
+    snapshot = snapshot_from_metadata(metadata, max_version_entries=max_version_entries)
     selected = snapshot["versions"][-1]
     warnings = snapshot.setdefault("warnings", [])
     try:

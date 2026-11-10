@@ -175,3 +175,35 @@ def test_collect_dataset_snapshot_excludes_incomplete_versions_from_history():
     snap = collect_dataset_snapshot(ms, "pet_images", "ns", "proj", version="3.0.0")
 
     assert [v["version"] for v in snap["versions"]] == ["1.0.0", "3.0.0"]
+
+
+@pytest.mark.parametrize("unavailable", [{"1.0.0"}, {"2.0.0"}, {"1.0.0", "2.0.0"}])
+def test_collect_dataset_snapshot_skips_unknown_dependency_changes(unavailable):
+    versions = [
+        _version("1.0.0", query_script="old"),
+        _version("2.0.0", query_script="new"),
+        _version("3.0.0", query_script="third"),
+        _version("4.0.0", query_script="fourth"),
+    ]
+    deps = {
+        v.version: None
+        if v.version in unavailable
+        else [_dep(DatasetDependencyType.DATASET, "upstream", v.version)]
+        for v in versions
+    }
+    deps["4.0.0"] = []
+    ms = _StubMetastore(_record(versions), deps)
+
+    snapshot = collect_dataset_snapshot(ms, "pet_images", version="4.0.0")
+
+    compared = snapshot["versions"][1]
+    assert compared["query_script"] == "new"
+    assert compared["changes"]["script_changed"] is True
+    assert compared["changes"]["previous_version"] == "1.0.0"
+    for key in ("deps_added", "deps_removed", "deps_updated"):
+        assert compared["changes"][key] == []
+    assert snapshot["versions"][-1]["changes"]["deps_removed"] == [
+        {"name": "ns.proj.upstream", "version": "3.0.0"}
+    ]
+    assert any("Dependencies are unavailable" in w for w in snapshot["warnings"])
+    assert ms.get_dependencies_calls == [v.version for v in versions]

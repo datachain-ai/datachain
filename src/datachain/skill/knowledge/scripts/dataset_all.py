@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 
 def _fetch_all_versions(name: str) -> "DatasetSnapshot":
-    return fetch_dataset_snapshot(name, summarize=True)
+    return fetch_dataset_snapshot(name, summarize=True, max_version_entries=None)
 
 
 def _merge_versions(existing_versions, new_versions, versions_to_fetch):

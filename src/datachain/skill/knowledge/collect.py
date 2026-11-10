@@ -4,7 +4,10 @@ from datachain.dataset import DatasetDependencyType
 from datachain.error import DatasetVersionNotFoundError
 from datachain.lib.dataset_metadata import DatasetMetadata
 from datachain.skill.knowledge.scripts.utils import dep_entry
-from datachain.skill.knowledge.snapshot import build_dataset_snapshot
+from datachain.skill.knowledge.snapshot import (
+    MAX_VERSION_ENTRIES,
+    build_dataset_snapshot,
+)
 from datachain.utils import DatasetIdentifier
 
 if TYPE_CHECKING:
@@ -44,20 +47,20 @@ def collect_dataset_snapshot(
     return snapshot_from_metadata(metadata)
 
 
-def snapshot_from_metadata(metadata: DatasetMetadata) -> "DatasetSnapshot":
+def snapshot_from_metadata(
+    metadata: DatasetMetadata, *, max_version_entries: int | None = MAX_VERSION_ENTRIES
+) -> "DatasetSnapshot":
     record = metadata.record
-    dependencies_unavailable = False
 
-    def deps_provider(ver: "DatasetVersion") -> "list[DependencyEntry]":
-        nonlocal dependencies_unavailable
+    def deps_provider(ver: "DatasetVersion") -> "list[DependencyEntry] | None":
         edges = metadata.dependencies(ver.version)
         if edges is None:
-            dependencies_unavailable = True
+            return None
         return [
             dep_entry(_dep_name(e, metadata), e.version, e.type)
             if e is not None
             else dep_entry(None, None, None)
-            for e in edges or []
+            for e in edges
         ]
 
     local_default = (
@@ -68,19 +71,15 @@ def snapshot_from_metadata(metadata: DatasetMetadata) -> "DatasetSnapshot":
             record.project.name, record.project.namespace.name
         )
     )
-    snapshot = build_dataset_snapshot(
+    return build_dataset_snapshot(
         name=record.name if local_default else metadata.name,
         source=metadata.source,
         attrs=list(record.attrs or []),
         description=record.description or None,
         versions=metadata.history,
         deps_provider=deps_provider,
+        max_version_entries=max_version_entries,
     )
-    if dependencies_unavailable:
-        snapshot.setdefault("warnings", []).append(
-            "Dependencies are unavailable; dependency changes could not be determined."
-        )
-    return snapshot
 
 
 def _dep_name(dep: "DatasetDependency", metadata: DatasetMetadata) -> str:
