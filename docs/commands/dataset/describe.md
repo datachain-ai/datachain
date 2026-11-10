@@ -18,6 +18,7 @@ Use `name@version` to select a version; otherwise the latest complete version is
 ```text
 Name: joined@2.0.0
 Rows: 2
+Source: local
 Created: 2026-11-01 02:02:00 PST
 Versions: 1.0.0, 2.0.0
 Schema:

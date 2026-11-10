@@ -305,6 +305,7 @@ class DatasetMetadata:
             else None,
             dependents=dependent_info,
             jobs=self.jobs,
+            source=self.source,
         )
 
 

@@ -503,6 +503,7 @@ def test_describe_nondefault_namespace_and_project(test_session, monkeypatch, ca
         dc.describe("scoped", "research", "analysis", "2.0.0", test_session),
     ]:
         assert info.name == "research.analysis.scoped@2.0.0"
+        assert info.source == "studio"
         assert info.selected_version.num_objects == 2
     describe_dataset_cmd(test_session.catalog, "research.analysis.scoped")
     assert capsys.readouterr().out.startswith("Name: research.analysis.scoped@2.0.0\n")

@@ -77,6 +77,7 @@ class DatasetDescription:
     ``selected_version`` and ``versions`` use the same DatasetInfo model as
     ``dc.datasets()``. Storage dependencies use ListingInfo, as in ``dc.listings()``.
     The schema is a SignalSchema; no dataset rows or current storage objects are read.
+    ``source`` identifies the metadata location: ``local`` or ``studio``.
     """
 
     selected_version: DatasetInfo
@@ -86,6 +87,7 @@ class DatasetDescription:
     dependencies: list[DatasetDependencyInfo | None] | None
     dependents: list[DatasetDependencyInfo] | None
     jobs: dict[str, Job] | None
+    source: str
 
     @cached_property
     def schema(self) -> SignalSchema:
@@ -122,6 +124,7 @@ class DatasetDescription:
         selected = self.selected_version
         return {
             **_version_dict(selected),
+            "source": self.source,
             "description": self.description,
             "schema": self.feature_schema,
             "versions": [_version_dict(v) for v in self.versions],

@@ -74,6 +74,8 @@ def test_describe_studio_reads_metadata_only(
     name = "remote.analytics.inventory" + (f"@{version}" if version else "")
     info = dc.describe(name, session=test_session)
     assert info.name == "remote.analytics.inventory@" + (version or "2.0.0")
+    assert info.source == "studio"
+    assert info.to_dict()["source"] == "studio"
     assert info.available_versions == ["1.0.0", "2.0.0"]
     payload = studio_metadata[0]
     selected = next(
@@ -103,6 +105,7 @@ def test_describe_studio_reads_metadata_only(
     describe_dataset_cmd(test_session.catalog, name)
     output = capsys.readouterr().out
     assert output.startswith(f"Name: {info.name}\n")
+    assert "Source: studio\n" in output
     assert "Dependencies: unavailable\nDependents: unavailable\n" in output
 
 
@@ -244,7 +247,9 @@ def test_describe_studio_flag_bypasses_pulled_copy(
         team="chosen-team",
         studio=True,
     )
-    assert "Name: remote.analytics.inventory@2.0.0" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "Name: remote.analytics.inventory@2.0.0" in output
+    assert "Source: studio\n" in output
     assert len(requests_mock.request_history) == 2
     assert all(
         request.qs["team_name"] == ["chosen-team"]
@@ -268,11 +273,16 @@ def test_describe_team_preserves_local_lookup(
 
     info = dc.describe(name, session=test_session, team="chosen-team")
     assert info.selected_version.version == "1.0.0"
+    assert info.source == "local"
     args = get_parser().parse_args(
         ["dataset", "describe", name, "--team", "chosen-team", "--json"]
     )
     handle_dataset_command(args, test_session.catalog)
-    assert json.loads(capsys.readouterr().out)["name"].endswith("inventory@1.0.0")
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["name"].endswith("inventory@1.0.0")
+    assert payload["source"] == "local"
+    describe_dataset_cmd(test_session.catalog, name, team="chosen-team")
+    assert "Source: local\n" in capsys.readouterr().out
     assert not requests_mock.called
 
 
@@ -434,6 +444,8 @@ def test_describe_prefers_pulled_copy_and_fetches_missing_version(
     info = dc.describe(name, session=test_session)
     assert info.selected_version.version == ("2.0.0" if version else "1.0.0")
     assert info.selected_version.num_objects == (8 if version else 1)
+    assert info.source == ("studio" if version else "local")
+    assert info.to_dict()["source"] == ("studio" if version else "local")
     assert info.available_versions == (["1.0.0", "2.0.0"] if version else ["1.0.0"])
     assert info.dependencies is None
     assert info.dependents is None

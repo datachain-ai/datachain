@@ -8,6 +8,7 @@
   "size": 16,
   "status": 4,
   "job_id": "job-1",
+  "source": "local",
   "description": null,
   "schema": {
     "value": "int"

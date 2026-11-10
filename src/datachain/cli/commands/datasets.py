@@ -304,6 +304,7 @@ def print_dataset_description(
 
     print(f"Name: {_dataset_label(selected, default_namespace, default_project)}")
     print(f"Rows: {selected.num_objects}")
+    print(f"Source: {info.source}")
     print("Created: " + _timestamp(selected.created_at))
     if info.description:
         print(f"Description: {info.description}")
