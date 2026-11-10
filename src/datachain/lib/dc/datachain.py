@@ -3549,9 +3549,8 @@ class DataChain:
             ds.to_storage("gs://mybucket", placement="filename")
             ```
         """
-        signal = self.signals_schema.resolve_arm_path(signal) or signal.replace(
-            DEFAULT_DELIMITER, "."
-        )
+        signal = signal.replace(DEFAULT_DELIMITER, ".")
+        signal = self.signals_schema.resolve_arm_path(signal) or signal
         self._validate_file_signal(signal)
 
         chain = self.persist()

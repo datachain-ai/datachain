@@ -621,6 +621,10 @@ class FragmentHolder(DataModel):
     frag: VideoFragment
 
 
+class NestedFragmentHolder(DataModel):
+    holder: FragmentHolder
+
+
 @pytest.mark.parametrize(
     "signal,msg",
     [
@@ -764,3 +768,17 @@ def test_to_storage_hint_normalizes_readable_union_arm(test_session, tmp_path):
     with pytest.raises(DataChainParamsError) as error:
         chain.to_storage(tmp_path / "out", signal="item.frag")
     assert "signal='item.FragmentHolder.frag.video'" in str(error.value)
+
+
+def test_to_storage_normalizes_mixed_delimiters_before_union_arm(
+    test_session, tmp_path
+):
+    frag = VideoFragment(video=VideoFile(path="v.mp4"), start=0, end=1)
+    chain = dc.read_values(
+        item=[NestedFragmentHolder(holder=FragmentHolder(frag=frag))],
+        output={"item": NestedFragmentHolder | int},
+        session=test_session,
+    )
+    with pytest.raises(DataChainParamsError) as error:
+        chain.to_storage(tmp_path / "out", signal="item__holder.frag")
+    assert "signal='item.NestedFragmentHolder.holder.frag.video'" in str(error.value)
