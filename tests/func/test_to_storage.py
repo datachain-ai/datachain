@@ -751,7 +751,7 @@ def test_to_storage_hint_uses_nested_union_root(test_session, tmp_path):
         chain.to_storage(tmp_path / "out", signal="item")
     assert "signal='item.media'" in str(error.value)
     assert "item.media.File" not in str(error.value)
-    with pytest.raises(DataChainParamsError, match="'item.media' contains no files"):
+    with pytest.raises(DataChainParamsError, match=r"'item\.media' contains no files"):
         chain.to_storage(tmp_path / "out", signal="item.media")
 
 
