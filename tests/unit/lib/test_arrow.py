@@ -1,3 +1,4 @@
+import os
 from datetime import UTC, datetime
 from typing import get_args
 
@@ -20,6 +21,34 @@ from datachain.lib.arrow import (
 from datachain.lib.data_model import dict_to_data_model
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.hf import HFClassLabel
+
+
+@pytest.mark.parametrize("source", ["local", "http"])
+@pytest.mark.parametrize("format", ["parquet", "csv", "json"])
+def test_arrow_rejects_overwritten_uncached_source(
+    tmp_path, catalog, http_server, source, format
+):
+    path = tmp_path / f"table.{format}"
+
+    def write(value):
+        frame = pd.DataFrame({"value": [value]})
+        if format == "parquet":
+            frame.to_parquet(path, index=False)
+        elif format == "csv":
+            frame.to_csv(path, index=False)
+        else:
+            frame.to_json(path, orient="records", lines=True)
+
+    write(1)
+    uri = tmp_path.as_uri() if source == "local" else http_server
+    file = catalog.get_client(uri).get_file_info(path.name)
+    assert file.etag
+    file._set_stream(catalog, caching_enabled=False)
+    mtime = path.stat().st_mtime + 1
+    write(2)
+    os.utime(path, (mtime, mtime))
+    with pytest.raises(FileNotFoundError, match="changed on the source"):
+        list(ArrowGenerator(format=format).process(file))
 
 
 @pytest.mark.parametrize("cache", [True, False])
