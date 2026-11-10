@@ -265,7 +265,6 @@ def describe(
     version: str | None = None,
     session: Session | None = None,
     *,
-    team: str | None = None,
     studio: bool = False,
 ) -> DatasetDescription:
     """Describe a saved dataset using recorded metadata only.
@@ -276,7 +275,6 @@ def describe(
         project: Project for an unqualified name, as in ``read_dataset``.
         version: Exact version to describe; defaults to the latest complete version.
         session: Optional session; defaults to the current session.
-        team: Team for Studio requests; defaults to the configured team.
         studio: Read Studio directly instead of a local copy.
 
     Returns:
@@ -302,7 +300,6 @@ def describe(
         namespace,
         project,
         version,
-        team=team,
         studio=studio,
     )
     return metadata.describe()

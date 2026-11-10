@@ -39,7 +39,6 @@ class DatasetMetadata:
     selected_version: "DatasetVersion"
     metastore: "AbstractMetastore | None"
     source: str
-    team: str | None = None
     _dependencies: dict[str, "list[DatasetDependency | None] | None"] = field(
         default_factory=dict, init=False, repr=False
     )
@@ -229,7 +228,7 @@ class DatasetMetadata:
 
         from datachain.remote.studio import StudioClient
 
-        client = StudioClient(team=self.team)
+        client = StudioClient()
         jobs: dict[str, Job] = {}
         adapter = TypeAdapter(Job)
         for job_id in ids:
@@ -317,7 +316,6 @@ def read_dataset_metadata(
     version: str | None = None,
     *,
     include_preview: bool = False,
-    team: str | None = None,
     studio: bool = False,
 ) -> DatasetMetadata:
     from datachain.lib.dc.utils import is_studio
@@ -362,8 +360,6 @@ def read_dataset_metadata(
             if not remote_fallback:
                 raise
     record = catalog.get_remote_dataset(
-        identifier.namespace, identifier.project, identifier.name, team=team
+        identifier.namespace, identifier.project, identifier.name
     )
-    metadata = DatasetMetadata.from_record(record, version, None, "studio")
-    metadata.team = team
-    return metadata
+    return DatasetMetadata.from_record(record, version, None, "studio")

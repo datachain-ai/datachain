@@ -171,7 +171,6 @@ def handle_dataset_command(args, catalog):
             catalog,
             args.name,
             json_output=args.json_output,
-            team=args.team,
             studio=args.studio,
         ),
         "pull": lambda: catalog.pull_dataset(

@@ -7,7 +7,6 @@ datachain dataset describe joined
 datachain dataset describe joined@1.0.0
 datachain dataset describe joined --json
 datachain dataset describe dev.project.joined
-datachain dataset describe dev.project.joined --team my-team
 datachain dataset describe dev.project.joined --studio
 ```
 
@@ -59,6 +58,6 @@ if info.job:
     print(info.job.id, info.job.finished_at)
 ```
 
-Datasets in the `local` namespace use the local catalog. Other namespaces use a pulled copy first, then Studio if the dataset or version hasn't been pulled. A copy lists only pulled versions. `--studio` (`studio=True`) skips the copy; `--team` (`team=`) selects the Studio team. Inside Studio jobs, reads always use Studio. `Source` identifies the catalog used.
+Datasets in the `local` namespace use the local catalog. Other namespaces use a pulled copy first, then Studio if the dataset or version hasn't been pulled. A copy lists only pulled versions. `--studio` (`studio=True`) skips the copy. Studio uses the team set by `datachain auth team` or `DATACHAIN_STUDIO_TEAM`. Inside Studio jobs, reads always use Studio. `Source` identifies the catalog used.
 
 Studio's public API provides no dependencies or dependents, and job `params` is empty. Inside Studio jobs, dependencies are available; dependents are not. Pulling does not copy lineage. Unavailable sections show `unavailable` (`null` in JSON), missing inputs show `unavailable dependency`, and jobs without details show `Job: <id> (unavailable)`.

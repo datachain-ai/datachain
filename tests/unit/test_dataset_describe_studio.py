@@ -148,10 +148,12 @@ def test_describe_studio_missing_version(test_session, studio_metadata, requests
 
 @pytest.mark.parametrize("team", [None, "chosen-team"])
 def test_describe_missing_local_dataset_does_not_contact_studio(
-    test_session, requests_mock, team
+    test_session, requests_mock, monkeypatch, team
 ):
+    if team:
+        monkeypatch.setenv("DATACHAIN_STUDIO_TEAM", team)
     with pytest.raises(DatasetNotFoundError):
-        dc.describe("missing", session=test_session, team=team)
+        dc.describe("missing", session=test_session)
     assert not requests_mock.called
 
 
@@ -235,8 +237,9 @@ def test_describe_missing_dependency_version_is_unavailable(
 
 
 def test_describe_studio_flag_bypasses_pulled_copy(
-    test_session, studio_metadata, requests_mock, capsys
+    test_session, studio_metadata, requests_mock, monkeypatch, capsys
 ):
+    monkeypatch.setenv("DATACHAIN_STUDIO_TEAM", "chosen-team")
     metastore = test_session.catalog.metastore
     project = metastore.create_project("remote", "analytics")
     record = metastore.create_dataset(name="inventory", project_id=project.id)
@@ -244,7 +247,6 @@ def test_describe_studio_flag_bypasses_pulled_copy(
     describe_dataset_cmd(
         test_session.catalog,
         "remote.analytics.inventory",
-        team="chosen-team",
         studio=True,
     )
     output = capsys.readouterr().out
@@ -258,11 +260,12 @@ def test_describe_studio_flag_bypasses_pulled_copy(
 
 
 @pytest.mark.parametrize("remote", [False, True])
-def test_describe_team_preserves_local_lookup(
-    test_session, studio_metadata, requests_mock, capsys, remote
+def test_describe_configured_team_preserves_local_lookup(
+    test_session, studio_metadata, requests_mock, monkeypatch, capsys, remote
 ):
     from datachain.cli import get_parser, handle_dataset_command
 
+    monkeypatch.setenv("DATACHAIN_STUDIO_TEAM", "chosen-team")
     metastore = test_session.catalog.metastore
     project = metastore.create_project("remote", "analytics") if remote else None
     record = metastore.create_dataset(
@@ -271,27 +274,33 @@ def test_describe_team_preserves_local_lookup(
     metastore.create_dataset_version(record, "1.0.0", status=DatasetStatus.COMPLETE)
     name = "remote.analytics.inventory" if remote else "inventory"
 
-    info = dc.describe(name, session=test_session, team="chosen-team")
+    info = dc.describe(name, session=test_session)
     assert info.selected_version.version == "1.0.0"
     assert info.source == "local"
-    args = get_parser().parse_args(
-        ["dataset", "describe", name, "--team", "chosen-team", "--json"]
-    )
+    args = get_parser().parse_args(["dataset", "describe", name, "--json"])
     handle_dataset_command(args, test_session.catalog)
     payload = json.loads(capsys.readouterr().out)
     assert payload["name"].endswith("inventory@1.0.0")
     assert payload["source"] == "local"
-    describe_dataset_cmd(test_session.catalog, name, team="chosen-team")
+    describe_dataset_cmd(test_session.catalog, name)
     assert "Source: local\n" in capsys.readouterr().out
     assert not requests_mock.called
 
 
-def test_describe_team_selects_fallback_team(
-    test_session, studio_metadata, requests_mock
+@pytest.mark.parametrize("setting", ["environment", "config"])
+def test_describe_uses_configured_team_for_dataset_and_job(
+    test_session, studio_metadata, requests_mock, monkeypatch, setting
 ):
-    info = dc.describe(
-        "remote.analytics.inventory", session=test_session, team="chosen-team"
-    )
+    if setting == "environment":
+        monkeypatch.setenv("DATACHAIN_STUDIO_TEAM", "chosen-team")
+    else:
+        from datachain.config import Config
+
+        monkeypatch.delenv("DATACHAIN_STUDIO_TEAM")
+        monkeypatch.setattr(
+            Config, "read", lambda self: {"studio": {"team": "chosen-team"}}
+        )
+    info = dc.describe("remote.analytics.inventory", session=test_session)
     assert info.selected_version.version == "2.0.0"
     assert len(requests_mock.request_history) == 2
     assert all(

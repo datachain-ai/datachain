@@ -290,7 +290,6 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
         formatter_class=CustomHelpFormatter,
     )
     describe_parser.add_argument("name", help="Dataset name, optionally name@version")
-    describe_parser.add_argument("--team", help="Studio team to read from")
     describe_parser.add_argument(
         "--studio", action="store_true", help="Read Studio instead of the local copy"
     )

@@ -348,10 +348,9 @@ def describe_dataset_cmd(
     catalog: "Catalog",
     name: str,
     json_output: bool = False,
-    team: str | None = None,
     studio: bool = False,
 ) -> None:
-    info = describe(name, session=catalog.session, team=team, studio=studio)
+    info = describe(name, session=catalog.session, studio=studio)
     if json_output:
         print(json.dumps(info.to_dict(), indent=2))
     else:

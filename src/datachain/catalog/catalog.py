@@ -1589,11 +1589,11 @@ class Catalog:
         return self.get_remote_dataset(namespace_name, project_name, name)
 
     def get_remote_dataset(
-        self, namespace: str, project: str, name: str, *, team: str | None = None
+        self, namespace: str, project: str, name: str
     ) -> DatasetRecord:
         from datachain.remote.studio import StudioClient
 
-        studio_client = StudioClient(team=team)
+        studio_client = StudioClient()
 
         info_response = studio_client.dataset_info(namespace, project, name)
         if not info_response.ok:
