@@ -37,6 +37,21 @@
       "job_id": "job-1"
     }
   ],
+  "dependencies": [
+    {
+      "name": "system.listing.lst__s3://bucket/photos/@1.0.0",
+      "dataset_uuid": "33333333-3333-4333-8333-333333333333",
+      "version_uuid": "44444444-4444-4444-8444-444444444444",
+      "num_objects": 2,
+      "created_at": "2026-11-01T10:02:00+00:00",
+      "finished_at": "2026-11-01T10:02:01+00:00",
+      "size": null,
+      "status": 4,
+      "job_id": null,
+      "type": "storage",
+      "removed": false
+    }
+  ],
   "dependents": [],
   "query_script": "build()",
   "jobs": [
@@ -58,21 +73,6 @@
       "rerun_from_job_id": null,
       "run_group_id": null,
       "is_remote_execution": false
-    }
-  ],
-  "dependencies": [
-    {
-      "name": "system.listing.lst__s3://bucket/photos/@1.0.0",
-      "dataset_uuid": "33333333-3333-4333-8333-333333333333",
-      "version_uuid": "44444444-4444-4444-8444-444444444444",
-      "num_objects": 2,
-      "created_at": "2026-11-01T10:02:00+00:00",
-      "finished_at": "2026-11-01T10:02:01+00:00",
-      "size": null,
-      "status": 4,
-      "job_id": null,
-      "type": "storage",
-      "removed": false
     }
   ]
 }

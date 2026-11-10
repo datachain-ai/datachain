@@ -281,7 +281,7 @@ def describe(
 
     Returns:
         DatasetDescription with a typed schema, every available completed version,
-        direct dependencies, direct dependents, producing jobs, and the script.
+        direct dependencies, direct dependents, the producing job, and the script.
         Uses the session catalog without reading dataset rows or storage objects.
         Reads the local catalog first, then Studio for remote namespaces.
         Metadata unavailable through the Studio API is returned as None.

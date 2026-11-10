@@ -1,6 +1,6 @@
 # dataset describe
 
-Show a dataset's schema, versions, direct dependencies, saved script and jobs. Reads metadata only.
+Show a dataset version's schema, direct dependencies and dependents, saved script and producing job. Reads metadata only.
 
 ```bash
 datachain dataset describe joined
@@ -11,7 +11,7 @@ datachain dataset describe dev.project.joined --team my-team
 datachain dataset describe dev.project.joined --studio
 ```
 
-Use `name@version` to select a version; otherwise the latest complete version is selected. All available complete versions are listed.
+Details describe one version: the latest complete version, or an exact version selected with `name@version`. `Versions` lists all available complete versions.
 
 ## Text output
 
@@ -46,7 +46,7 @@ JSON includes canonical names, stable `dataset_uuid` and `version_uuid` identifi
 
 ## Python
 
-`dc.describe()` returns a `DatasetDescription` with `DatasetInfo` versions, a typed schema and recorded `Job` objects.
+`dc.describe()` returns a `DatasetDescription` with `DatasetInfo` versions, a typed schema and the selected version's `Job`.
 
 ```python
 import datachain as dc
@@ -59,6 +59,6 @@ if info.job:
     print(info.job.id, info.job.finished_at)
 ```
 
-Local metadata is used first. Missing remote datasets or versions are read from Studio. `--team` selects the Studio team; `--studio` skips the local copy. Python accepts the same options as `team=` and `studio=True`.
+Datasets in the `local` namespace use the local catalog. Other namespaces use a pulled copy first, then Studio if the dataset or version hasn't been pulled. A copy lists only pulled versions. `--studio` (`studio=True`) skips the copy; `--team` (`team=`) selects the Studio team. Inside Studio jobs, reads always use Studio. `Source` identifies the catalog used.
 
-Studio does not expose dependencies, dependents or job parameters.
+Studio's public API provides no dependencies or dependents, and job `params` is empty. Inside Studio jobs, dependencies are available; dependents are not. Pulling does not copy lineage. Unavailable sections show `unavailable` (`null` in JSON), missing inputs show `unavailable dependency`, and jobs without details show `Job: <id> (unavailable)`.
