@@ -104,8 +104,8 @@ def prefix(test_session):
 
 
 @pytest.fixture
-def display_prefix(prefix):
-    return "" if prefix == "local.local" else prefix + "."
+def display_prefix():
+    return ""
 
 
 @pytest.fixture
@@ -531,7 +531,7 @@ def test_describe_preserves_unresolved_schema(test_session, describe):
     assert describe(test_session.catalog, "legacy")["schema"] == schema
 
 
-def test_describe_jobs_include_direct_dependencies_and_dependents(
+def test_describe_loads_only_selected_job_and_keeps_related_job_ids(
     test_session, monkeypatch
 ):
     metastore = test_session.catalog.metastore
@@ -553,6 +553,9 @@ def test_describe_jobs_include_direct_dependencies_and_dependents(
     report_job = metastore.create_job("report", "")
     source = record("source", source_job)
     derived = record("derived", derived_job)
+    metastore.create_dataset_version(
+        derived, "0.1.0", status=DatasetStatus.COMPLETE, job_id=raw_job
+    )
     report = record("report", report_job)
     metastore.add_dataset_dependency(source, "1.0.0", raw, "1.0.0")
     metastore.add_dataset_dependency(derived, "1.0.0", source, "1.0.0")
@@ -577,7 +580,8 @@ def test_describe_jobs_include_direct_dependencies_and_dependents(
     assert info.job.id == derived_job
     assert info.dependencies[0].dataset.job_id == source_job
     assert info.dependents[0].dataset.job_id == report_job
-    assert set(info.jobs) == {source_job, derived_job, report_job}
+    assert [v.job_id for v in info.versions] == [raw_job, derived_job]
+    assert set(info.jobs) == {derived_job}
     payload = info.to_dict()
     assert [job["id"] for job in payload["jobs"]] == sorted(info.jobs)
 

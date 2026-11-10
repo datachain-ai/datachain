@@ -72,10 +72,9 @@ def snapshot_from_metadata(metadata: DatasetMetadata) -> "DatasetSnapshot":
         versions=metadata.history,
         deps_provider=deps_provider,
     )
-    if metadata.metastore is None:
+    if any(metadata.dependencies(v.version) is None for v in metadata.history):
         snapshot.setdefault("warnings", []).append(
-            "Dependencies are unavailable through the Studio API; "
-            "dependency changes could not be determined."
+            "Dependencies are unavailable; dependency changes could not be determined."
         )
     return snapshot
 

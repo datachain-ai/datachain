@@ -59,4 +59,4 @@ if info.job:
 
 Local metadata is used first, with Studio fallback for missing remote datasets or versions. Use `--team` or `dc.describe(..., team="my-team")` to read Studio directly.
 
-Studio includes the selected version's job details and every version's job ID. Exact dependencies, dependents and job parameters are unavailable through its public API.
+Only the selected version's job details are loaded; every version's job ID remains available. Studio's public API does not provide exact dependencies, dependents or job parameters. Pulled copies show locally recorded dependencies and dependents; missing relations are marked unavailable.

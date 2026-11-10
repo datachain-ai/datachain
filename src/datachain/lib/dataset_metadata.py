@@ -108,6 +108,20 @@ class DatasetMetadata:
     def history(self) -> "list[DatasetVersion]":
         return self.versions[: self.versions.index(self.selected_version) + 1]
 
+    @property
+    def _is_remote_copy(self) -> bool:
+        project = self.record.project
+        return (
+            self.source == "local"
+            and self.metastore is not None
+            and project is not None
+            and project.namespace.name
+            not in {
+                self.metastore.default_namespace_name,
+                self.metastore.system_namespace_name,
+            }
+        )
+
     def dependencies(self, version: str) -> "list[DatasetDependency | None] | None":
         if version not in self._dependencies:
             dependencies = (
@@ -115,6 +129,8 @@ class DatasetMetadata:
                 if self.metastore is not None
                 else None
             )
+            if not dependencies and self._is_remote_copy:
+                dependencies = None
             self._dependencies[version] = (
                 [dep if dep and dep.version else None for dep in dependencies]
                 if dependencies is not None
@@ -133,6 +149,8 @@ class DatasetMetadata:
                     else None
                 )
             except NotImplementedError:
+                dependents = None
+            if not dependents and self._is_remote_copy:
                 dependents = None
             self._dependents[version] = (
                 [
@@ -202,11 +220,7 @@ class DatasetMetadata:
 
     @cached_property
     def jobs(self) -> dict[str, Job] | None:
-        if self.source == "studio":
-            ids = [self.selected_version.job_id] if self.selected_version.job_id else []
-        else:
-            versions = [*self.versions, *(v for _, v in self.related_versions.values())]
-            ids = sorted({v.job_id for v in versions if v.job_id})
+        ids = [self.selected_version.job_id] if self.selected_version.job_id else []
         if not ids:
             return {}
         if self.metastore is not None:

@@ -5,13 +5,16 @@ from types import SimpleNamespace
 
 import pytest
 
+from datachain import semver
 from datachain.dataset import DatasetDependencyType, DatasetStatus
 from datachain.skill.knowledge.collect import collect_dataset_snapshot
+from datachain.skill.knowledge.scripts.utils import parse_semver
 
 
 def _version(version, *, query_script="", status=DatasetStatus.COMPLETE):
     return SimpleNamespace(
         version=version,
+        version_value=semver.value(".".join(map(str, parse_semver(version)))),
         status=status,
         uuid=f"uuid-{version}",
         num_objects=10,
