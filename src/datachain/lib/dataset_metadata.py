@@ -317,6 +317,7 @@ def read_dataset_metadata(
     *,
     include_preview: bool = False,
     team: str | None = None,
+    studio: bool = False,
 ) -> DatasetMetadata:
     from datachain.lib.dc.utils import is_studio
 
@@ -340,7 +341,7 @@ def read_dataset_metadata(
         metastore.default_namespace_name,
         metastore.system_namespace_name,
     }
-    if team is None:
+    if not studio or is_studio():
         try:
             return DatasetMetadata.from_metastore(
                 metastore,

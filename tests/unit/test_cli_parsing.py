@@ -142,9 +142,10 @@ def test_dataset_describe_parser():
     args = get_parser().parse_args(("dataset", "describe", "labels@1.0.0", "--json"))
     assert (args.name, args.json_output) == ("labels@1.0.0", True)
     args = get_parser().parse_args(
-        ("dataset", "describe", "dev.proj.labels", "--team", "other")
+        ("dataset", "describe", "dev.proj.labels", "--team", "other", "--studio")
     )
     assert args.team == "other"
+    assert args.studio is True
     with pytest.raises(SystemExit):
         get_parser().parse_args(("dataset", "describe", "labels", "--version", "1.0.0"))
 
