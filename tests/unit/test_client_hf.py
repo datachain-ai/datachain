@@ -21,7 +21,7 @@ def hf_repositories(monkeypatch):
 
     def exists(self, repo_type, repo_id, revision):
         calls.append((repo_type, repo_id, revision))
-        if repo_id in {"org/repo", "gpt2"}:
+        if repo_id in {"org/repo", "gpt2"} and revision != "missing":
             return True, None
         return False, HFValidationError("Unknown test repository")
 
@@ -261,22 +261,29 @@ def test_resolve_path_keeps_at_sign_in_file_name(
 
 
 @pytest.mark.parametrize(
-    "path,expected",
+    "path,revision,expected",
     [
-        ("gpt2@main/config.json", "config.json"),
-        ("gpt2/config@v1.json", "config@v1.json"),
-        ("gpt2@refs/pr/1/config@v1.json", "config@v1.json"),
-        ("gpt2@refs%2Fpr%2F1/config.json", "config.json"),
+        ("gpt2@main/config.json", "c1", "config.json"),
+        ("gpt2/config@v1.json", "c1", "config@v1.json"),
+        ("gpt2@refs/pr/1/config@v1.json", "c1", "config@v1.json"),
+        ("gpt2@refs%2Fpr%2F1/config.json", "c1", "config.json"),
+        ("gpt2@main/config.json", "missing", None),
     ],
 )
-def test_resolve_short_repo_id_uses_sdk_rules(catalog, hf_repositories, path, expected):
+def test_resolve_short_repo_id_uses_sdk_rules(
+    catalog, hf_repositories, path, revision, expected
+):
     upstream = hf_file_system.HfFileSystem(token=False)
     try:
         upstream.resolve_path("gpt2@main/config.json")
     except (ValueError, FileNotFoundError):
         pytest.skip("This SDK no longer supports single-component repository IDs")
     fs = HfClient("models", {"token": False}, catalog.cache).fs.sync_fs
-    resolved = fs.resolve_path(path, revision="c1")
+    if expected is None:
+        with pytest.raises(FileNotFoundError):
+            fs.resolve_path(path, revision=revision)
+        return
+    resolved = fs.resolve_path(path, revision=revision)
     assert (resolved.repo_id, resolved.revision, resolved.path_in_repo) == (
         "gpt2",
         "c1",
@@ -284,8 +291,9 @@ def test_resolve_short_repo_id_uses_sdk_rules(catalog, hf_repositories, path, ex
     )
 
 
+@pytest.mark.parametrize("revision", ["c1", "main"])
 def test_cache_fill_directory_check_uses_pinned_commit(
-    catalog, monkeypatch, hf_repositories
+    catalog, monkeypatch, hf_repositories, revision
 ):
     client = HfClient("datasets", {"token": False}, catalog.cache)
     fs = client.fs.sync_fs
@@ -294,7 +302,10 @@ def test_cache_fill_directory_check_uses_pinned_commit(
     def info(path, **kwargs):
         resolved = fs.resolve_path(path, revision=kwargs.get("revision"))
         checks.append(resolved.revision)
-        return {"size": 4, "type": "file" if resolved.revision == "c1" else "directory"}
+        return {
+            "size": 4,
+            "type": "file" if resolved.revision == revision else "directory",
+        }
 
     monkeypatch.setattr(fs, "info", info)
     monkeypatch.setattr(client.fs, "_info", AsyncMock(side_effect=info))
@@ -303,11 +314,41 @@ def test_cache_fill_directory_check_uses_pinned_commit(
         "http_get",
         lambda url, temp_file, **kw: temp_file.write(b"data"),
     )
-    file = File(source=client.uri, path="org/repo@main/a.txt", size=4, version="c1")
+    file = File(
+        source=client.uri,
+        path="org/repo@moved-branch/a@b.txt",
+        size=4,
+        version=revision,
+    )
     client.put_in_cache(file)
     with client.open_object(file) as stream:
         assert stream.read() == b"data"
-    assert checks and set(checks) == {"c1"}
+    assert checks and set(checks) == {revision}
+
+
+def test_pinned_missing_namespaced_repo_does_not_fall_back_to_short_repo(
+    catalog, hf_repositories
+):
+    fs = HfClient("models", {"token": False}, catalog.cache).fs.sync_fs
+    with pytest.raises(FileNotFoundError):
+        fs.resolve_path("gpt2/missing@main/file.txt", revision="c1")
+
+
+@pytest.mark.parametrize("path", ["models/org/repo/a.txt", "datasets/org/repo/a.txt"])
+def test_unpinned_paths_use_sdk_repo_type(catalog, hf_repositories, path):
+    fs = HfClient("models", {"token": False}, catalog.cache).fs.sync_fs
+    resolved = fs.resolve_path(path)
+    assert resolved.repo_id == "org/repo"
+    assert resolved.path_in_repo == "a.txt"
+
+
+def test_special_ref_path_matches_sdk_parsing(catalog, hf_repositories):
+    path = "datasets/org/repo@refs/convert/parquet-v2/a.parquet"
+    expected = hf_file_system.HfFileSystem(token=False).resolve_path(path)
+    fs = HfClient("datasets", {"token": False}, catalog.cache).fs.sync_fs
+    resolved = fs.resolve_path(path, revision="c1")
+    assert resolved.path_in_repo == expected.path_in_repo
+    assert resolved.revision == "c1"
 
 
 def test_pinned_commit_does_not_require_uri_branch(catalog, monkeypatch):
