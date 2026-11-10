@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING
 
 from datachain.dataset import DatasetDependencyType
 from datachain.error import DatasetVersionNotFoundError
-from datachain.lib.dataset_metadata import DatasetMetadata
+from datachain.lib.dataset_metadata import DatasetMetadata, is_pulled_copy
 from datachain.skill.knowledge.scripts.utils import dep_entry
 from datachain.skill.knowledge.snapshot import (
     MAX_VERSION_ENTRIES,
@@ -33,41 +33,47 @@ def collect_dataset_snapshot(
     Raises ValueError when the dataset has no such completed version.
     """
     try:
-        metadata = DatasetMetadata.from_metastore(
-            metastore,
+        record = metastore.get_dataset(
             name,
             namespace,
             project,
-            version=version,
+            versions=None,
+            include_incomplete=True,
             include_preview=True,
-            source=source,
         )
+        metadata = DatasetMetadata.from_record(record, version, source)
     except DatasetVersionNotFoundError as exc:
         raise ValueError(str(exc)) from exc
-    return snapshot_from_metadata(metadata)
+    return snapshot_from_metadata(metadata, metastore)
 
 
 def snapshot_from_metadata(
-    metadata: DatasetMetadata, *, max_version_entries: int | None = MAX_VERSION_ENTRIES
+    metadata: DatasetMetadata,
+    metastore: "AbstractMetastore | None",
+    *,
+    max_version_entries: int | None = MAX_VERSION_ENTRIES,
 ) -> "DatasetSnapshot":
     record = metadata.record
+    pulled_copy = metastore is not None and is_pulled_copy(metadata, metastore)
 
     def deps_provider(ver: "DatasetVersion") -> "list[DependencyEntry] | None":
-        edges = metadata.dependencies(ver.version)
-        if edges is None:
+        if metastore is None:
+            return None
+        edges = metastore.get_direct_dataset_dependencies(record, ver.version)
+        if edges is None or (not edges and pulled_copy):
             return None
         return [
-            dep_entry(_dep_name(e, metadata), e.version, e.type)
-            if e is not None
+            dep_entry(_dep_name(e, metastore, metadata.source), e.version, e.type)
+            if e is not None and e.version
             else dep_entry(None, None, None)
             for e in edges
         ]
 
     local_default = (
         metadata.source == "local"
-        and metadata.metastore is not None
+        and metastore is not None
         and record.project is not None
-        and metadata.metastore.is_default_project(
+        and metastore.is_default_project(
             record.project.name, record.project.namespace.name
         )
     )
@@ -82,11 +88,11 @@ def snapshot_from_metadata(
     )
 
 
-def _dep_name(dep: "DatasetDependency", metadata: DatasetMetadata) -> str:
+def _dep_name(
+    dep: "DatasetDependency", metastore: "AbstractMetastore", source: str
+) -> str:
     if dep.type == DatasetDependencyType.STORAGE or (
-        metadata.source == "local"
-        and metadata.metastore is not None
-        and metadata.metastore.is_default_project(dep.project, dep.namespace)
+        source == "local" and metastore.is_default_project(dep.project, dep.namespace)
     ):
         return dep.name
     return str(DatasetIdentifier(dep.namespace, dep.project, dep.name, None))

@@ -1,6 +1,5 @@
 from collections import defaultdict
-from dataclasses import dataclass, field, fields
-from functools import cached_property
+from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING
 
 from pydantic import TypeAdapter
@@ -32,26 +31,18 @@ if TYPE_CHECKING:
     )
 
 
-@dataclass
+@dataclass(frozen=True)
 class DatasetMetadata:
     record: "DatasetRecord"
     versions: "list[DatasetVersion]"
     selected_version: "DatasetVersion"
-    metastore: "AbstractMetastore | None"
     source: str
-    _dependencies: dict[str, "list[DatasetDependency | None] | None"] = field(
-        default_factory=dict, init=False, repr=False
-    )
-    _dependents: dict[str, "list[DatasetDependency | None] | None"] = field(
-        default_factory=dict, init=False, repr=False
-    )
 
     @classmethod
     def from_record(
         cls,
         record: "DatasetRecord",
         version: str | None,
-        metastore: "AbstractMetastore | None",
         source: str,
     ) -> "DatasetMetadata":
         versions = sorted(
@@ -67,30 +58,7 @@ class DatasetMetadata:
             raise DatasetVersionNotFoundError(
                 f"{record.name} has no completed version {version or '(latest)'}"
             )
-        return cls(record, versions, selected, metastore, source)
-
-    @classmethod
-    def from_metastore(
-        cls,
-        metastore: "AbstractMetastore",
-        name: str,
-        namespace: str | None = None,
-        project: str | None = None,
-        *,
-        version: str | None = None,
-        include_preview: bool = False,
-        source: str = "studio",
-    ) -> "DatasetMetadata":
-        record = metastore.get_dataset(
-            name,
-            namespace,
-            project,
-            versions=None,
-            # Incomplete-only datasets must remain distinguishable from missing ones.
-            include_incomplete=True,
-            include_preview=include_preview,
-        )
-        return cls.from_record(record, version, metastore, source)
+        return cls(record, versions, selected, source)
 
     @property
     def name(self) -> str:
@@ -106,206 +74,6 @@ class DatasetMetadata:
     @property
     def history(self) -> "list[DatasetVersion]":
         return self.versions[: self.versions.index(self.selected_version) + 1]
-
-    @property
-    def _is_remote_copy(self) -> bool:
-        project = self.record.project
-        return (
-            self.source == "local"
-            and self.metastore is not None
-            and project is not None
-            and project.namespace.name
-            not in {
-                self.metastore.default_namespace_name,
-                self.metastore.system_namespace_name,
-            }
-        )
-
-    def dependencies(self, version: str) -> "list[DatasetDependency | None] | None":
-        if version not in self._dependencies:
-            dependencies = (
-                self.metastore.get_direct_dataset_dependencies(self.record, version)
-                if self.metastore is not None
-                else None
-            )
-            if not dependencies and self._is_remote_copy:
-                dependencies = None
-            self._dependencies[version] = (
-                [dep if dep and dep.version else None for dep in dependencies]
-                if dependencies is not None
-                else None
-            )
-        return self._dependencies[version]
-
-    def dependents(self, version: str) -> "list[DatasetDependency | None] | None":
-        from datachain.query.session import Session
-
-        if version not in self._dependents:
-            try:
-                dependents = (
-                    self.metastore.get_direct_dataset_dependents(self.record, version)
-                    if self.metastore is not None
-                    else None
-                )
-            except NotImplementedError:
-                dependents = None
-            if dependents is not None:
-                dependents = [
-                    dep
-                    for dep in dependents
-                    if dep and not Session.is_temp_dataset(dep.name)
-                ]
-            if not dependents and self._is_remote_copy:
-                dependents = None
-            self._dependents[version] = dependents
-        return self._dependents[version]
-
-    @cached_property
-    def related_versions(
-        self,
-    ) -> "dict[DatasetIdentifier, tuple[DatasetRecord, DatasetVersion]]":
-        version = self.selected_version.version
-        dependencies = [
-            dep for dep in self.dependencies(version) or [] if dep and dep.version
-        ]
-        dependents = [
-            dep for dep in self.dependents(version) or [] if dep and dep.version
-        ]
-        refs = [*dependencies, *dependents]
-        requested = {
-            DatasetIdentifier.from_dataset_dependency(dep)
-            for dep in refs
-            if dep and dep.version
-        }
-        if not requested or self.metastore is None:
-            return {}
-        try:
-            pairs = self.metastore.get_dataset_related_versions(
-                dependencies, dependents
-            )
-        except NotImplementedError:
-            grouped: dict[tuple[str, str, str], list[str]] = defaultdict(list)
-            for ref in requested:
-                assert ref.version is not None
-                grouped[ref.namespace, ref.project, ref.name].append(ref.version)
-            pairs = []
-            for (namespace, project, name), versions in grouped.items():
-                try:
-                    record = self.metastore.get_dataset(
-                        name,
-                        namespace,
-                        project,
-                        versions=versions,
-                        include_removed=True,
-                    )
-                except (
-                    DatasetNotFoundError,
-                    DatasetVersionNotFoundError,
-                    NamespaceNotFoundError,
-                    ProjectNotFoundError,
-                ):
-                    continue
-                pairs.extend((record, v.version) for v in record.all_versions)
-        result = {}
-        for record, ver in pairs:
-            key = DatasetIdentifier(
-                record.project.namespace.name, record.project.name, record.name, ver
-            )
-            if key in requested:
-                result[key] = record, record.get_version(ver)
-        return result
-
-    @cached_property
-    def jobs(self) -> dict[str, Job] | None:
-        ids = [self.selected_version.job_id] if self.selected_version.job_id else []
-        if not ids:
-            return {}
-        if self.metastore is not None:
-            return {
-                job.id: Job(**{f.name: getattr(job, f.name) for f in fields(Job)})
-                for job in self.metastore.list_jobs_by_ids(ids)
-            }
-
-        from datachain.remote.studio import StudioClient
-
-        client = StudioClient()
-        jobs: dict[str, Job] = {}
-        adapter = TypeAdapter(Job)
-        for job_id in ids:
-            response = client.get_jobs(job_id=job_id)
-            if not response.ok:
-                if response.status in (403, 429):
-                    return jobs or None
-                raise DataChainError(response.message)
-            for data in response.data or []:
-                if data["id"] == job_id:
-                    jobs[job_id] = adapter.validate_python(
-                        {
-                            **data,
-                            # Public Studio params contain environment variables.
-                            "params": {},
-                            "status": JobStatus[data["status"]].value,
-                            "query_type": JobQueryType[data["query_type"]].value,
-                            "is_remote_execution": True,
-                        }
-                    )
-        return jobs
-
-    def describe(self) -> DatasetDescription:
-        def version_info(record: "DatasetRecord", ver: "DatasetVersion") -> DatasetInfo:
-            info_cls = ListingInfo if is_listing_dataset(record.name) else DatasetInfo
-            return info_cls.from_models(
-                record, ver, (self.jobs or {}).get(ver.job_id or "")
-            )
-
-        def dependency_info(
-            dep: "DatasetDependency | None",
-        ) -> DatasetDependencyInfo | None:
-            if not dep or not dep.version:
-                return None
-            pair = self.related_versions.get(
-                DatasetIdentifier.from_dataset_dependency(dep)
-            )
-            return (
-                DatasetDependencyInfo(version_info(*pair), removed=dep.removed)
-                if pair
-                else None
-            )
-
-        dependencies = self.dependencies(self.selected_version.version)
-        dependents = self.dependents(self.selected_version.version)
-        dependent_info = (
-            sorted(
-                [
-                    info
-                    for dep in dependents
-                    if (info := dependency_info(dep)) is not None
-                ],
-                key=lambda entry: entry.name,
-            )
-            if dependents is not None
-            else None
-        )
-        if not dependent_info and self._is_remote_copy:
-            dependent_info = None
-        versions = [version_info(self.record, v) for v in self.versions]
-        return DatasetDescription(
-            selected_version=next(
-                v for v in versions if v.version == self.selected_version.version
-            ),
-            feature_schema=self.selected_version.feature_schema,
-            versions=versions,
-            description=self.record.description,
-            dependencies=sorted(
-                [dependency_info(dep) for dep in dependencies],
-                key=lambda entry: entry.name if entry else "",
-            )
-            if dependencies is not None
-            else None,
-            dependents=dependent_info,
-            jobs=self.jobs,
-            source=self.source,
-        )
 
 
 def read_dataset_metadata(
@@ -342,14 +110,17 @@ def read_dataset_metadata(
     }
     if not studio or is_studio():
         try:
-            return DatasetMetadata.from_metastore(
-                metastore,
+            record = metastore.get_dataset(
                 identifier.name,
                 identifier.namespace,
                 identifier.project,
-                version=version,
+                versions=None,
+                # Incomplete-only datasets must stay distinct from missing ones.
+                include_incomplete=True,
                 include_preview=include_preview,
-                source="studio" if is_studio() else "local",
+            )
+            return DatasetMetadata.from_record(
+                record, version, "studio" if is_studio() else "local"
             )
         except (
             DatasetNotFoundError,
@@ -362,4 +133,175 @@ def read_dataset_metadata(
     record = catalog.get_remote_dataset(
         identifier.namespace, identifier.project, identifier.name
     )
-    return DatasetMetadata.from_record(record, version, None, "studio")
+    return DatasetMetadata.from_record(record, version, "studio")
+
+
+def is_pulled_copy(metadata: DatasetMetadata, metastore: "AbstractMetastore") -> bool:
+    project = metadata.record.project
+    return (
+        metadata.source == "local"
+        and project is not None
+        and project.namespace.name
+        not in {metastore.default_namespace_name, metastore.system_namespace_name}
+    )
+
+
+def _read_related_versions(
+    metastore: "AbstractMetastore",
+    dependencies: "list[DatasetDependency | None] | None",
+    dependents: "list[DatasetDependency | None] | None",
+) -> "dict[DatasetIdentifier, tuple[DatasetRecord, DatasetVersion]]":
+    inputs = [dep for dep in dependencies or [] if dep and dep.version]
+    outputs = [dep for dep in dependents or [] if dep and dep.version]
+    requested = {
+        DatasetIdentifier.from_dataset_dependency(dep) for dep in [*inputs, *outputs]
+    }
+    if not requested:
+        return {}
+    try:
+        pairs = metastore.get_dataset_related_versions(inputs, outputs)
+    except NotImplementedError:
+        grouped: dict[tuple[str, str, str], list[str]] = defaultdict(list)
+        for ref in requested:
+            assert ref.version is not None
+            grouped[ref.namespace, ref.project, ref.name].append(ref.version)
+        pairs = []
+        for (namespace, project, name), versions in grouped.items():
+            try:
+                record = metastore.get_dataset(
+                    name, namespace, project, versions=versions, include_removed=True
+                )
+            except (
+                DatasetNotFoundError,
+                DatasetVersionNotFoundError,
+                NamespaceNotFoundError,
+                ProjectNotFoundError,
+            ):
+                continue
+            pairs.extend((record, v.version) for v in record.all_versions)
+    result = {}
+    for record, version in pairs:
+        key = DatasetIdentifier(
+            record.project.namespace.name, record.project.name, record.name, version
+        )
+        if key in requested:
+            result[key] = record, record.get_version(version)
+    return result
+
+
+def _read_studio_job(job_id: str) -> dict[str, Job] | None:
+    from datachain.remote.studio import StudioClient
+
+    response = StudioClient().get_jobs(job_id=job_id)
+    if not response.ok:
+        if response.status in (403, 429):
+            return None
+        raise DataChainError(response.message)
+    adapter = TypeAdapter(Job)
+    return {
+        data["id"]: adapter.validate_python(
+            {
+                **data,
+                # Public Studio params contain environment variables.
+                "params": {},
+                "status": JobStatus[data["status"]].value,
+                "query_type": JobQueryType[data["query_type"]].value,
+                "is_remote_execution": True,
+            }
+        )
+        for data in response.data or []
+        if data["id"] == job_id
+    }
+
+
+def read_dataset_description(
+    catalog: "Catalog", metadata: DatasetMetadata
+) -> DatasetDescription:
+    from datachain.lib.dc.utils import is_studio
+    from datachain.query.session import Session
+
+    record = metadata.record
+    selected = metadata.selected_version
+    dependencies: list[DatasetDependency | None] | None = None
+    dependents: list[DatasetDependency | None] | None = None
+    related: dict[DatasetIdentifier, tuple[DatasetRecord, DatasetVersion]] = {}
+    jobs: dict[str, Job] | None = {}
+    pulled_copy = False
+    if metadata.source == "studio" and not is_studio():
+        if selected.job_id:
+            jobs = _read_studio_job(selected.job_id)
+    else:
+        metastore = catalog.metastore
+        pulled_copy = is_pulled_copy(metadata, metastore)
+        dependencies = metastore.get_direct_dataset_dependencies(
+            record, selected.version
+        )
+        if dependencies is not None:
+            dependencies = [
+                dep if dep and dep.version else None for dep in dependencies
+            ]
+        if not dependencies and pulled_copy:
+            dependencies = None
+        try:
+            dependents = metastore.get_direct_dataset_dependents(
+                record, selected.version
+            )
+        except NotImplementedError:
+            dependents = None
+        if dependents is not None:
+            dependents = [
+                dep
+                for dep in dependents
+                if dep and not Session.is_temp_dataset(dep.name)
+            ]
+        related = _read_related_versions(metastore, dependencies, dependents)
+        if selected.job_id:
+            jobs = {
+                job.id: Job(**{f.name: getattr(job, f.name) for f in fields(Job)})
+                for job in metastore.list_jobs_by_ids([selected.job_id])
+            }
+
+    def version_info(record: "DatasetRecord", version: "DatasetVersion") -> DatasetInfo:
+        info_cls = ListingInfo if is_listing_dataset(record.name) else DatasetInfo
+        return info_cls.from_models(
+            record, version, (jobs or {}).get(version.job_id or "")
+        )
+
+    def dependency_info(
+        dep: "DatasetDependency | None",
+    ) -> DatasetDependencyInfo | None:
+        if not dep or not dep.version:
+            return None
+        pair = related.get(DatasetIdentifier.from_dataset_dependency(dep))
+        return (
+            DatasetDependencyInfo(version_info(*pair), removed=dep.removed)
+            if pair
+            else None
+        )
+
+    dependent_info = (
+        sorted(
+            [info for dep in dependents if (info := dependency_info(dep)) is not None],
+            key=lambda entry: entry.name,
+        )
+        if dependents is not None
+        else None
+    )
+    if not dependent_info and pulled_copy:
+        dependent_info = None
+    versions = [version_info(record, version) for version in metadata.versions]
+    return DatasetDescription(
+        selected_version=next(v for v in versions if v.version == selected.version),
+        feature_schema=selected.feature_schema,
+        versions=versions,
+        description=record.description,
+        dependencies=sorted(
+            [dependency_info(dep) for dep in dependencies],
+            key=lambda entry: entry.name if entry else "",
+        )
+        if dependencies is not None
+        else None,
+        dependents=dependent_info,
+        jobs=jobs,
+        source=metadata.source,
+    )

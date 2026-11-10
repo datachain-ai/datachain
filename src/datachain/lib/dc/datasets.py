@@ -10,7 +10,10 @@ from datachain.error import (
 )
 from datachain.lib.dataset_description import DatasetDescription
 from datachain.lib.dataset_info import DatasetInfo
-from datachain.lib.dataset_metadata import read_dataset_metadata
+from datachain.lib.dataset_metadata import (
+    read_dataset_description,
+    read_dataset_metadata,
+)
 from datachain.lib.projects import get as get_project
 from datachain.lib.settings import Settings
 from datachain.lib.signal_schema import SignalSchema
@@ -294,15 +297,16 @@ def describe(
         info.schema.print_tree()
         ```
     """
+    catalog = Session.get(session).catalog
     metadata = read_dataset_metadata(
-        Session.get(session).catalog,
+        catalog,
         name,
         namespace,
         project,
         version,
         studio=studio,
     )
-    return metadata.describe()
+    return read_dataset_description(catalog, metadata)
 
 
 def datasets(

@@ -1,6 +1,7 @@
 import json
 from dataclasses import asdict
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -309,9 +310,7 @@ def test_describe_uses_configured_team_for_dataset_and_job(
     )
 
 
-def test_metadata_batches_and_reuses_direct_relation_records(test_session, monkeypatch):
-    from datachain.lib.dataset_metadata import read_dataset_metadata
-
+def test_describe_reads_each_direct_relation_once(test_session, monkeypatch):
     metastore = test_session.catalog.metastore
 
     def record(name):
@@ -345,12 +344,16 @@ def test_metadata_batches_and_reuses_direct_relation_records(test_session, monke
 
     monkeypatch.setattr(metastore, "get_dataset", root_only)
     monkeypatch.setattr(metastore, "get_dataset_related_versions", batch)
-    metadata = read_dataset_metadata(test_session.catalog, "selected")
-    for _ in range(2):
-        info = metadata.describe()
-        assert len(info.dependencies) == len(info.dependents) == 3
+    dependencies = Mock(wraps=metastore.get_direct_dataset_dependencies)
+    dependents = Mock(wraps=metastore.get_direct_dataset_dependents)
+    monkeypatch.setattr(metastore, "get_direct_dataset_dependencies", dependencies)
+    monkeypatch.setattr(metastore, "get_direct_dataset_dependents", dependents)
+    info = dc.describe("selected", session=test_session)
+    assert len(info.dependencies) == len(info.dependents) == 3
     assert reads == ["selected"]
     assert len(batches) == 1
+    dependencies.assert_called_once()
+    dependents.assert_called_once()
 
 
 def test_metadata_groups_api_relations_by_dataset(test_session, monkeypatch):
@@ -585,7 +588,8 @@ def test_skill_pulled_snapshot_keeps_qualified_name(
     record = metastore.create_dataset(name="inventory", project_id=project.id)
     metastore.create_dataset_version(record, "1.0.0", status=DatasetStatus.COMPLETE)
     snapshot = snapshot_from_metadata(
-        read_dataset_metadata(test_session.catalog, "remote.analytics.inventory")
+        read_dataset_metadata(test_session.catalog, "remote.analytics.inventory"),
+        metastore,
     )
     assert snapshot["name"] == "remote.analytics.inventory"
     assert snapshot["source"] == "local"

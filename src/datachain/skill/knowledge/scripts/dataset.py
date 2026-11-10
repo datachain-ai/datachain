@@ -8,6 +8,7 @@ from utils import dc_import
 from datachain.dataset import parse_dataset_with_version
 from datachain.error import DataChainError, NotFoundError
 from datachain.lib.dataset_metadata import read_dataset_metadata
+from datachain.lib.dc.utils import is_studio
 from datachain.skill.knowledge.collect import snapshot_from_metadata
 from datachain.skill.knowledge.snapshot import MAX_VERSION_ENTRIES
 
@@ -26,10 +27,14 @@ def fetch_dataset_snapshot(
     namespace, project, bare_name = parse_dataset_name(name)
     if namespace and project and "://" not in name:
         name = f"{namespace}.{project}.{bare_name}"
+    catalog = get_catalog()
     metadata = read_dataset_metadata(
-        get_catalog(), name, version=version, include_preview=True
+        catalog, name, version=version, include_preview=True
     )
-    snapshot = snapshot_from_metadata(metadata, max_version_entries=max_version_entries)
+    metastore = catalog.metastore if metadata.source == "local" or is_studio() else None
+    snapshot = snapshot_from_metadata(
+        metadata, metastore, max_version_entries=max_version_entries
+    )
     selected = snapshot["versions"][-1]
     warnings = snapshot.setdefault("warnings", [])
     try:
