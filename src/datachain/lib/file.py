@@ -796,7 +796,33 @@ class File(DataModel):
             write_options=write_options,
         )
         with self.open(mode="rb") as src:
-            result = client.upload(src, rel_path, write_config=write_config)
+            backing = (
+                VFileRegistry.parent(self, self.location)  # type: ignore[arg-type]
+                if self.location
+                else self
+            )
+            source = backing.get_local_path()
+            local_destination = (
+                client.fs._strip_protocol(client.get_uri(rel_path))
+                if client.PREFIX == "file://"
+                else None
+            )
+            if local_destination is not None and (
+                (source is not None and self._same_file(source, local_destination))
+                or (
+                    (source is None or self.location)
+                    and backing._is_local_file(local_destination)
+                )
+            ):
+                if self.location:
+                    raise FileError(
+                        "Cannot overwrite a virtual file's backing file",
+                        self.source,
+                        self.path,
+                    )
+                result = client.get_file_info(rel_path)
+            else:
+                result = client.upload(src, rel_path, write_config=write_config)
         result._set_stream(self._catalog)
         return result
 
@@ -813,6 +839,18 @@ class File(DataModel):
             client_cls.storage_uri(storage), **(client_config or {})
         )
         return client, rel_path
+
+    def _is_local_file(self, destination: str) -> bool:
+        if (self.source and not self.source.startswith("file://")) or self.location:
+            return False
+        return self._same_file(self.get_fs_path(), destination)
+
+    @staticmethod
+    def _same_file(source: str, destination: str) -> bool:
+        try:
+            return os.path.samefile(source, destination)
+        except OSError:
+            return False
 
     def _symlink_to(self, destination: str) -> None:
         if self.location:
@@ -921,6 +959,8 @@ class File(DataModel):
                     stringify_path(output),
                     dst,
                 )
+            if link_type == "symlink" and self._is_local_file(dst):
+                link_type = "copy"
         else:
             # For cloud exports, simply join the output prefix and suffix.
             # Relying on cloud clients to do their own validation.
@@ -935,7 +975,9 @@ class File(DataModel):
                 if exc.errno not in (errno.ENOTSUP, errno.EXDEV, errno.ENOSYS):
                     raise
 
-        self.save(
+        # copy as stored; subclass save() overrides may re-encode
+        File.save(
+            self,
             dst,
             client_config=client_config,
             content_type=content_type,
@@ -1302,7 +1344,7 @@ class ImageFile(File):
         Retrieves metadata and information about the image file.
 
         Reuses cached content when available without populating the cache.
-        Use `.settings(prefetch=0)` for metadata-only pipelines to avoid downloading
+        Use `.settings(prefetch=0)` for metadata-only chains to avoid downloading
         files in advance.
 
         Returns:
@@ -1416,7 +1458,7 @@ class VideoFile(File):
         Retrieves metadata and information about the video file.
 
         Reuses cached content when available without populating the cache.
-        Use `.settings(prefetch=0)` for metadata-only pipelines to avoid downloading
+        Use `.settings(prefetch=0)` for metadata-only chains to avoid downloading
         files in advance.
 
         Args:
@@ -1595,7 +1637,7 @@ class AudioFile(File):
         Retrieves metadata and information about the audio file.
 
         Reuses cached content when available without populating the cache.
-        Use `.settings(prefetch=0)` for metadata-only pipelines to avoid downloading
+        Use `.settings(prefetch=0)` for metadata-only chains to avoid downloading
         files in advance.
 
         Returns:
