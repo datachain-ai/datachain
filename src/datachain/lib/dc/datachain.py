@@ -3483,7 +3483,17 @@ class DataChain:
             name = " | ".join(getattr(a, "__name__", str(a)) for a in arms)
             msg = f"to_storage(): '{signal}' is {name}, not a file"
             prefix = f"{signal}."
-            if inner := [s for s in schema.get_signals(File) if s.startswith(prefix)]:
+            inner: list[str] = []
+            for path, type_, _, _ in schema.get_flat_tree():
+                candidate = ".".join(path)
+                if not candidate.startswith(prefix) or any(
+                    candidate.startswith(f"{s}.") for s in inner
+                ):
+                    continue
+                nested_arms, _ = union_arms(type_)
+                if any(inspect.isclass(a) and issubclass(a, File) for a in nested_arms):
+                    inner.append(candidate)
+            if inner:
                 msg += "; use " + " or ".join(f"signal='{s}'" for s in inner)
                 if any(hasattr(a, "save") for a in arms):
                     msg += f", or {signal}.save(output) in map()"
@@ -3539,6 +3549,9 @@ class DataChain:
             ds.to_storage("gs://mybucket", placement="filename")
             ```
         """
+        signal = self.signals_schema.resolve_arm_path(signal) or signal.replace(
+            DEFAULT_DELIMITER, "."
+        )
         self._validate_file_signal(signal)
 
         chain = self.persist()

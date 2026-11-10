@@ -613,6 +613,14 @@ class FilePair(DataModel):
     n: int
 
 
+class MediaHolder(DataModel):
+    media: File | str
+
+
+class FragmentHolder(DataModel):
+    frag: VideoFragment
+
+
 @pytest.mark.parametrize(
     "signal,msg",
     [
@@ -719,3 +727,40 @@ def test_to_storage_hint_includes_all_fragment_union_arms(test_session, tmp_path
         chain.to_storage(tmp_path / "out", signal="frag")
     assert "signal='frag.VideoFragment.video'" in str(error.value)
     assert "signal='frag.AudioFragment.audio'" in str(error.value)
+
+
+@pytest.mark.parametrize("signal", ["pair.file", "pair__file"])
+@pytest.mark.parametrize("placement", ["filename", "filepath"])
+def test_to_storage_normalizes_nested_signal(test_session, tmp_path, signal, placement):
+    (tmp_path / "source.txt").write_text("content")
+    chain = dc.read_values(
+        pair=[FilePair(file=File(source=tmp_path.as_uri(), path="source.txt"), n=1)],
+        session=test_session,
+    )
+    chain.to_storage(tmp_path / "out", signal=signal, placement=placement)
+    assert (tmp_path / "out" / "source.txt").read_text() == "content"
+
+
+def test_to_storage_hint_uses_nested_union_root(test_session, tmp_path):
+    chain = dc.read_values(item=[MediaHolder(media="plain")], session=test_session)
+    with pytest.raises(DataChainParamsError) as error:
+        chain.to_storage(tmp_path / "out", signal="item")
+    assert "signal='item.media'" in str(error.value)
+    assert "item.media.File" not in str(error.value)
+    with pytest.raises(DataChainParamsError, match="'item.media' contains no files"):
+        chain.to_storage(tmp_path / "out", signal="item.media")
+
+
+def test_to_storage_hint_normalizes_readable_union_arm(test_session, tmp_path):
+    chain = dc.read_values(
+        item=[
+            FragmentHolder(
+                frag=VideoFragment(video=VideoFile(path="v.mp4"), start=0, end=1)
+            )
+        ],
+        output={"item": FragmentHolder | int},
+        session=test_session,
+    )
+    with pytest.raises(DataChainParamsError) as error:
+        chain.to_storage(tmp_path / "out", signal="item.frag")
+    assert "signal='item.FragmentHolder.frag.video'" in str(error.value)
