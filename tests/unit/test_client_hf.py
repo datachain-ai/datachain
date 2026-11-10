@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import huggingface_hub
 import pytest
 from fsspec.asyn import sync
 from huggingface_hub import hf_file_system
@@ -185,8 +186,9 @@ def test_open_object_huggingface_block_size_zero_reads_only_asked_bytes(
     ]
 
 
-def test_cache_fill_with_branch_uri_downloads_listed_commit(
-    catalog, monkeypatch, hf_repositories
+@pytest.mark.parametrize("revision", ["c1", None])
+def test_cache_fill_with_branch_uri_downloads_selected_revision(
+    catalog, monkeypatch, hf_repositories, revision
 ):
     client = HfClient("datasets", {"token": False}, catalog.cache)
     monkeypatch.setattr(client.fs, "_info", AsyncMock(return_value={"size": 4}))
@@ -200,11 +202,15 @@ def test_cache_fill_with_branch_uri_downloads_listed_commit(
         temp_file.write(b"data")
 
     monkeypatch.setattr(hf_file_system, "http_get", download)
-    file = File(source=client.uri, path="org/repo@main/a.txt", size=4, version="c1")
+    file = File(
+        source=client.uri, path="org/repo@main/a.txt", size=4, version=revision or ""
+    )
 
     client.put_in_cache(file)
 
-    assert [url.split("/resolve/")[1] for url in urls] == ["c1/a.txt"]
+    assert [url.split("/resolve/")[1] for url in urls] == [
+        f"{revision or 'main'}/a.txt"
+    ]
     with client.open_object(file) as stream:
         assert stream.read() == b"data"
 
@@ -258,6 +264,29 @@ def test_resolve_path_keeps_at_sign_in_file_name(
     fs = HfClient("datasets", {"token": False}, catalog.cache).fs.sync_fs
     resolved = fs.resolve_path(path, revision=revision)
     assert (resolved.revision, resolved.path_in_repo) == expected
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("datasets/org/repo@main/a@b.txt", "a@b.txt"),
+        ("datasets/org/repo/a@b.txt", "a@b.txt"),
+        ("datasets/org/repo@refs/pr/1/a.txt", "a.txt"),
+        ("models/org/repo/a.txt", "a.txt"),
+        ("datasets/org/repo/@a.txt", "@a.txt"),
+    ],
+)
+def test_pinned_paths_without_sdk_uri_parser(
+    catalog, monkeypatch, hf_repositories, path, expected
+):
+    monkeypatch.setattr(huggingface_hub, "parse_hf_uri", None, raising=False)
+    fs = HfClient("datasets", {"token": False}, catalog.cache).fs.sync_fs
+    resolved = fs.resolve_path(path, revision="c1")
+    assert (resolved.repo_id, resolved.revision, resolved.path_in_repo) == (
+        "org/repo",
+        "c1",
+        expected,
+    )
 
 
 @pytest.mark.parametrize(
