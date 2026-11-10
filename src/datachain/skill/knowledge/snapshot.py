@@ -197,10 +197,10 @@ def _version_entry(
     *,
     is_latest: bool,
 ) -> "DatasetVersionEntry":
-    deps = deps_by_version.get(version.version, [])
+    deps = deps_by_version.get(version.version)
     changes = None
     if prev is not None:
-        prev_deps = deps_by_version.get(prev.version, [])
+        prev_deps = deps_by_version.get(prev.version)
         changes = build_changes(
             version.query_script or None,
             prev.version,

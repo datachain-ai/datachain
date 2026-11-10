@@ -202,6 +202,15 @@ def test_collect_dataset_snapshot_skips_unknown_dependency_changes(unavailable):
     assert compared["changes"]["previous_version"] == "1.0.0"
     for key in ("deps_added", "deps_removed", "deps_updated"):
         assert compared["changes"][key] == []
+    third = snapshot["versions"][2]["changes"]
+    assert third["deps_added"] == third["deps_removed"] == []
+    assert third["deps_updated"] == (
+        []
+        if "2.0.0" in unavailable
+        else [
+            {"name": "ns.proj.upstream", "version_from": "2.0.0", "version_to": "3.0.0"}
+        ]
+    )
     assert snapshot["versions"][-1]["changes"]["deps_removed"] == [
         {"name": "ns.proj.upstream", "version": "3.0.0"}
     ]
