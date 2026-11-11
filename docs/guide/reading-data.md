@@ -57,6 +57,8 @@ data = dc.read_parquet("s3://bucket/data/*.parquet")
 data = dc.read_parquet("s3://bucket/202{1..4}/{yellow,green}-{01..12}.parquet")
 ```
 
+Timestamps are read as Python `datetime`, which holds microseconds. Digits beyond microseconds are dropped, for example in the nanosecond timestamps that pandas 2 writes to Parquet by default.
+
 JMESPath is powerful for real-world JSON formats like COCO, where images, annotations, and categories live under different top-level keys. Each `read_json()` call with a different `jmespath` extracts one array, and you merge them together on shared IDs.
 
 For complex JSON, auto-generate a Pydantic model from a sample file:
@@ -117,6 +119,141 @@ data = dc.read_csv(
 With `header=False` and no `columns`, `output` is required and supplies names for every input column.
 
 Parquet exported by DataChain restores its saved schema and does not support `columns=`. Read it without `columns` and use `.select(...)` on the chain. With `columns` or `output`, read it separately from other Parquet files.
+
+## WebDataset
+
+`dc.read_webdataset()` reads WebDataset tar shards without extracting them, a row per sample: the image member is `wds.file`, and the other members (`.txt`, `.json`, `.cls`, ...) become columns, parsed once while the shards are indexed. A `spec=` model, such as `WDSLaion` for LAION-style shards, gives the JSON member typed fields.
+
+**Questions about captions and metadata run as SQL, without reading the images.**
+
+```python
+import datachain as dc
+from datachain.lib.webdataset_laion import WDSLaion
+
+shards = "gs://datachain-demo/datacomp-small/shards/000000[0-5]*.tar"
+samples = dc.read_webdataset(shards, spec=WDSLaion, anon=True)
+```
+
+```python
+# captions of 3+ words, images of at least 200 px with aspect ratio under 3
+w, h = "wds.json.original_width", "wds.json.original_height"
+words = dc.func.array.length(dc.func.string.split("wds.txt", " "))
+short_side, long_side = dc.func.least(w, h), dc.func.greatest(w, h)
+good = samples.filter((words > 2) & (short_side > 200) & (long_side < 3 * short_side))
+```
+
+```python
+# join a Parquet table of CLIP scores and keep the best-matching captions
+metadata = "gs://datachain-demo/datacomp-small/metadata/0020f*.parquet"
+scores = dc.read_parquet(metadata, anon=True)
+matched = good.merge(scores, on="wds.json.uid", right_on="uid")
+best = matched.filter(dc.C("clip_l14_similarity_score") > 0.3)
+```
+
+**Questions about the pixels run your Python code on the images.** Images are read from their shards directly, without extracting them. Samples are processed in parallel, and the results become columns you can filter with SQL again:
+
+```python
+def contrast(file: dc.File) -> int:
+    low, high = file.as_image_file().read().convert("L").getextrema()
+    return high - low
+```
+
+```python
+scored = best.settings(parallel=8).map(contrast=contrast, params=["wds.file"])
+flat = scored.filter(dc.C("contrast") < 40)  # nearly blank images
+```
+
+## MCAP Robotics Logs
+
+`dc.read_mcap()` reads [MCAP](https://mcap.dev) logs (ROS 2, Foxglove). It reads only the summary section at the end of each file (about 1 MB), so a row per log, an [`McapFile`](../references/data-types/mcapfile.md) with its topics, message counts and duration, is ready in seconds even for terabytes of logs.
+
+**Questions about the summary run as SQL and never touch the files.** For example, find logs where joint states were dropped, or count hours of data per robot:
+
+```python
+import datachain as dc
+
+# joint states are logged at 15 Hz; find logs that recorded less
+joints = dc.read_mcap("s3://bucket/logs/", topics="/joint_states")
+hz = dc.C("summary.messages") / dc.C("summary.duration")
+dropped = joints.mutate(hz=hz).filter(dc.C("hz") < 14)
+```
+
+```python
+# hours of data and number of logs per robot folder
+inventory = (
+    dc.read_mcap("s3://bucket/logs/")
+    .mutate(robot=dc.func.path.parent("mcap.path"))
+    .group_by(
+        logs=dc.func.count(),
+        hours=dc.func.sum("summary.duration") / 3600,
+        partition_by="robot",
+    )
+)
+```
+
+**Questions about message content run your Python code on the messages.** With `duration=`, `read_mcap` gives a row per time window, an [`McapSlice`](../references/data-types/mcapfile.md). `messages()` reads only the chunks of that window and topic, and `decoder_factories` decodes them into ROS 2 or Protobuf objects (with `DecoderFactory` from `mcap_ros2.decoder` or `mcap_protobuf.decoder`, packages `mcap-ros2-support` and `mcap-protobuf-support`). The windows are processed in parallel, and the results become columns you can filter with SQL again:
+
+```python
+from mcap_ros2.decoder import DecoderFactory
+
+
+def max_joint_speed(mcap: dc.McapSlice) -> float:
+    messages = mcap.messages(decoder_factories=[DecoderFactory()])
+    return max((abs(v) for m in messages for v in m.decoded.velocity), default=0.0)
+```
+
+```python
+windows = dc.read_mcap("s3://bucket/logs/", topics="/joint_states", duration=10)
+speeds = windows.settings(parallel=8).map(speed=max_joint_speed)
+fast = speeds.filter(dc.C("speed") > 2.0)
+```
+
+Times are nanoseconds.
+
+## LeRobot Datasets
+
+`dc.read_lerobot()` reads a [LeRobot](https://github.com/huggingface/lerobot) v3 dataset as a row per episode: its metadata (`episode_index`, `length`, `tasks`, ...) and, under `videos`, a `VideoFragment` per camera that points into the shared mp4. Only the metadata is read, so the rows are ready in seconds; the videos are not downloaded. Column names and camera keys are normalized like `read_parquet` columns, e.g. `observation.image` becomes `videos.observation_image`.
+
+**Questions about episodes and frames run as SQL, without touching the videos.**
+
+```python
+import datachain as dc
+
+episodes = dc.read_lerobot("hf://datasets/lerobot/pusht")
+fps = 10  # "fps" in meta/info.json
+
+# hours of data, and how many episodes are longer than 20 s
+hours = episodes.sum("length") / fps / 3600
+long_ones = episodes.filter(dc.C("length") > 20 * fps).count()
+```
+
+```python
+# short episodes that reached a high reward, from the per-frame table
+frames = dc.read_parquet("hf://datasets/lerobot/pusht/data/")
+max_reward = dc.func.max("next_reward")
+rewards = frames.group_by(reward=max_reward, partition_by="episode_index")
+episodes = episodes.merge(rewards, on="episode_index")
+good = episodes.filter((dc.C("reward") > 0.9) & (dc.C("length") < 150))
+```
+
+**Questions about the video run your Python code on the frames of each episode.** Decoding a fragment seeks to that episode's span of the shared mp4 instead of reading the whole file. Episodes are processed in parallel, and the results become columns you can filter with SQL again:
+
+```python
+def motion(cam: dc.VideoFragment) -> float:
+    start, end = round(cam.start * fps), round(cam.end * fps)
+    sampled = cam.video.get_frames(start, end, fps)  # a frame per second
+    frames = [f.get_np().astype("float32") for f in sampled]
+    diffs = [abs(a - b).mean() for a, b in zip(frames, frames[1:])]
+    return float(sum(diffs) / len(diffs)) if diffs else 0.0
+```
+
+```python
+camera = "videos.observation_image"
+scored = good.settings(parallel=8).map(motion=motion, params=[camera])
+stuck = scored.filter(dc.C("motion") < 1.0)  # the scene barely changes
+```
+
+Many episodes share one mp4. A function that takes a fragment seeks to that episode's span instead of reading the whole file; with `settings(cache=True)` each mp4 downloads once and is reused by the other episodes.
 
 ## SQL Databases
 

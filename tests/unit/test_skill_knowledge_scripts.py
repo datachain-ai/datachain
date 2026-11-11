@@ -1,10 +1,13 @@
 """Tests for knowledge skill scripts (pure utility functions)."""
 
+import importlib
 import json
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 # Insert the scripts directory so bare imports work (matches runtime behavior).
 SCRIPTS_DIR = str(
@@ -26,6 +29,7 @@ from utils import (  # noqa: E402
     extract_description,
     human_size,
     is_sys_column,
+    local_db_files,
     parse_semver,
     parse_uri,
     read_frontmatter,
@@ -36,6 +40,37 @@ from utils import (  # noqa: E402
     source_to_https,
     split_frontmatter,
 )
+
+
+@pytest.mark.parametrize("override", [None, "DATACHAIN_DIR", "DATACHAIN_ROOT_DIR"])
+def test_local_db_files_follow_project_and_env(tmp_path, monkeypatch, override):
+    (tmp_path / ".git").mkdir()
+    state = tmp_path / ".datachain"
+    if override:
+        # Glob metacharacters in explicit paths must remain literal.
+        destination = tmp_path / "override[1]"
+        monkeypatch.setenv(override, str(destination))
+        state = (
+            destination if override == "DATACHAIN_DIR" else destination / ".datachain"
+        )
+    state.mkdir(parents=True)
+    db = state / "db"
+    wal = state / "db-wal"
+    db.touch()
+    wal.touch()
+    nested = tmp_path / "scripts"
+    nested.mkdir()
+    monkeypatch.chdir(nested)
+
+    assert set(local_db_files()) == {str(db), str(wal)}
+    assert not (nested / ".datachain").exists()
+
+
+def test_local_db_files_does_not_create_state(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    assert local_db_files() == []
+    assert not (tmp_path / ".datachain").exists()
 
 
 def test_parse_semver_valid():
@@ -474,56 +509,58 @@ def test_merge_versions_no_duplicates():
     assert [v["version"] for v in merged] == ["1.0.0", "1.0.1", "1.0.2"]
 
 
-def _ds_version(version, version_value, *, query_script=""):
-    return SimpleNamespace(
-        version=version,
-        version_value=version_value,
-        uuid=f"uuid-{version}",
-        num_objects=1,
-        size=1,
-        created_at=datetime(2026, 1, 1, tzinfo=UTC),
-        finished_at=datetime(2026, 1, 2, tzinfo=UTC),
-        query_script=query_script,
-        schema={},
-        feature_schema=None,
-        preview=None,
-    )
-
-
-def test_fetch_all_versions_overlays_live_enrichment_on_latest(monkeypatch):
+@pytest.mark.parametrize("qualified", [False, True])
+def test_fetch_all_versions_overlays_live_enrichment_on_latest(
+    test_session, monkeypatch, qualified, requests_mock
+):
+    import dataset
     import dataset_all
     import summary
 
-    record = SimpleNamespace(
-        attrs=["pets"],
-        description="pets",
-        versions=[_ds_version("1.0.1", 2, query_script="b"), _ds_version("1.0.0", 1)],
+    from datachain.dataset import DatasetStatus
+
+    metastore = test_session.catalog.metastore
+    record = metastore.create_dataset(name="my_ds", attrs=["pets"], description="pets")
+    for version, script in [("1.0.0", "a"), ("1.0.1", "b")]:
+        record, _ = metastore.create_dataset_version(
+            record,
+            version,
+            status=DatasetStatus.COMPLETE,
+            feature_schema={"stored": "str"},
+            query_script=script,
+        )
+    upstream = metastore.create_dataset(name="upstream")
+    upstream, _ = metastore.create_dataset_version(
+        upstream, "1.0.0", status=DatasetStatus.COMPLETE
     )
-    catalog = SimpleNamespace(
-        get_dataset=lambda *a, **k: record,
-        get_dataset_dependencies=lambda **k: [],
-    )
-    monkeypatch.setattr(dataset_all, "get_catalog", lambda: catalog)
+    metastore.add_dataset_dependency(record, "1.0.1", upstream, "1.0.0")
+    reads = []
+
+    def read_dataset(name):
+        reads.append(name)
+        return object()
+
+    monkeypatch.setattr(dataset, "get_catalog", lambda: test_session.catalog)
     monkeypatch.setattr(
-        dataset_all,
-        "dc_import",
-        lambda: SimpleNamespace(read_dataset=lambda name: object()),
+        dataset, "dc_import", lambda: SimpleNamespace(read_dataset=read_dataset)
     )
     monkeypatch.setattr(
-        dataset_all,
+        dataset,
         "extract_schema",
         lambda chain: {"col": {"type": "str", "fields": None}},
     )
     monkeypatch.setattr(
-        dataset_all,
+        dataset,
         "extract_preview",
         lambda chain: {"columns": ["col"], "rows": [["v"]]},
     )
     monkeypatch.setattr(
         summary, "dataset_summary_from_chain", lambda chain: {"overview": "1 items"}
     )
-
-    snap = dataset_all._fetch_all_versions("my_ds")
+    full_name = (
+        f"{metastore.default_namespace_name}.{metastore.default_project_name}.my_ds"
+    )
+    snap = dataset_all._fetch_all_versions(full_name if qualified else "my_ds")
 
     assert snap["name"] == "my_ds"
     assert snap["source"] == "local"
@@ -532,9 +569,134 @@ def test_fetch_all_versions_overlays_live_enrichment_on_latest(monkeypatch):
     assert latest["schema"] == {"col": {"type": "str", "fields": None}}
     assert latest["preview"] == {"columns": ["col"], "rows": [["v"]]}
     assert latest["summary"] == {"overview": "1 items"}
+    assert latest["dependencies"][0]["name"] == "upstream"
+    assert latest["dependencies"][0]["file_path"] == "datasets/upstream"
     assert oldest["schema"] == {}
     assert oldest["preview"] is None
     assert oldest["summary"] is None
+    assert reads == [f"{full_name}@1.0.1"]
+    assert not requests_mock.called
+
+
+def test_fetch_version_data_preserves_metadata_when_rows_are_unavailable(
+    test_session, monkeypatch
+):
+    import dataset
+
+    from datachain.dataset import DatasetStatus
+
+    metastore = test_session.catalog.metastore
+    record = metastore.create_dataset(name="metadata_only")
+    for version, script in [
+        ("1.0.0", "a"),
+        ("2.0.0", "b"),
+        ("3.0.0", "b"),
+        ("4.0.0", "c"),
+    ]:
+        record, _ = metastore.create_dataset_version(
+            record,
+            version,
+            status=DatasetStatus.COMPLETE,
+            feature_schema={"stored": "str"},
+            query_script=script,
+        )
+    reads = []
+
+    def unavailable(name):
+        reads.append(name)
+        raise FileNotFoundError("rows unavailable")
+
+    monkeypatch.setattr(dataset, "get_catalog", lambda: test_session.catalog)
+    monkeypatch.setattr(
+        dataset, "dc_import", lambda: SimpleNamespace(read_dataset=unavailable)
+    )
+    selected = dataset.fetch_version_data("metadata_only@2.0.0")
+    assert selected["schema"] == {"stored": {"type": "str", "fields": None}}
+    assert selected["query_script"] == "b"
+    assert selected["changes"]["previous_version"] == "1.0.0"
+    assert selected["changes"]["previous_script"] == "a"
+    assert selected["changes"]["script_changed"] is True
+    assert any("rows unavailable" in warning for warning in selected["warnings"])
+    assert len(reads) == 1 and reads[0].endswith("@2.0.0")
+    unchanged = dataset.fetch_version_data("metadata_only@3.0.0")
+    assert unchanged["query_script"] == "b"
+    assert unchanged["changes"]["previous_script"] is None
+    assert unchanged["changes"]["script_changed"] is False
+    changed = dataset.fetch_version_data("metadata_only@4.0.0")
+    assert changed["changes"]["previous_script"] == "b"
+    assert changed["changes"]["script_changed"] is True
+
+
+@pytest.mark.parametrize("studio", [False, True])
+def test_dataset_all_retains_complete_planned_history(
+    test_session, monkeypatch, requests_mock, tmp_path, studio
+):
+    import dataset
+    import dataset_all
+
+    from datachain.dataset import DatasetStatus
+
+    monkeypatch.setenv("DATACHAIN_IS_STUDIO", "false")
+    metastore = test_session.catalog.metastore
+    record = metastore.create_dataset(name="long_history")
+    versions = [f"{i}.0.0" for i in range(1, 26)]
+    for version in versions:
+        record, _ = metastore.create_dataset_version(
+            record, version, status=DatasetStatus.COMPLETE, query_script=version
+        )
+    name = "long_history"
+    if studio:
+        payload = metastore.get_dataset(name, versions=None).to_dict()
+        payload["project"]["name"] = "analytics"
+        payload["project"]["namespace"]["name"] = "remote"
+        payload = json.loads(json.dumps(payload, default=lambda v: v.isoformat()))
+        monkeypatch.setenv("DATACHAIN_STUDIO_URL", "https://studio.test")
+        monkeypatch.setenv("DATACHAIN_STUDIO_TOKEN", "test-token")
+        monkeypatch.setenv("DATACHAIN_STUDIO_TEAM", "team")
+        requests_mock.get(
+            "https://studio.test/api/datachain/datasets/info", json=payload
+        )
+        name = "remote.analytics.long_history"
+
+    def unavailable(name):
+        raise FileNotFoundError("rows unavailable")
+
+    monkeypatch.setattr(dataset, "get_catalog", lambda: test_session.catalog)
+    monkeypatch.setattr(
+        dataset, "dc_import", lambda: SimpleNamespace(read_dataset=unavailable)
+    )
+    bounded = dataset.fetch_dataset_snapshot(name)
+    assert len(bounded["versions"]) == 20
+    assert any("truncated" in w for w in bounded["warnings"])
+
+    plan_path = tmp_path / "plan.json"
+    output_path = tmp_path / "dataset.json"
+    for planned in [versions, versions[:5]]:
+        plan_path.write_text(
+            json.dumps({"datasets": [{"name": name, "versions_to_fetch": planned}]})
+        )
+        dataset_all.cmd_dataset_all(name, str(plan_path), str(output_path))
+        saved = json.loads(output_path.read_text())
+        assert [v["version"] for v in saved["versions"]] == versions
+        assert not any("truncated" in w for w in saved.get("warnings", []))
+
+
+@pytest.mark.parametrize("script", ["dataset", "dataset_all"])
+def test_dataset_scripts_report_metadata_errors_as_json(
+    test_session, monkeypatch, capsys, script
+):
+    import dataset
+
+    monkeypatch.setattr(dataset, "get_catalog", lambda: test_session.catalog)
+    monkeypatch.setattr(sys, "argv", [script, "missing"])
+
+    with pytest.raises(SystemExit) as exc:
+        importlib.import_module(script).main()
+
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "missing" in json.loads(captured.err)["error"]
 
 
 def test_type_name_primitives():

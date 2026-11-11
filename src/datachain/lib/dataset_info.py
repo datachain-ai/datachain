@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 from uuid import uuid4
 
 from pydantic import Field, field_validator
@@ -9,7 +9,9 @@ from datachain.dataset import (
     DEFAULT_DATASET_VERSION,
     DatasetListRecord,
     DatasetListVersion,
+    DatasetRecord,
     DatasetStatus,
+    DatasetVersion,
 )
 from datachain.job import Job
 from datachain.lib.data_model import DataModel
@@ -21,10 +23,13 @@ if TYPE_CHECKING:
 
 
 class DatasetInfo(DataModel):
+    _version: ClassVar[int] = 3
+
     name: str
     namespace: str
     project: str
     uuid: str = Field(default=str(uuid4()))
+    dataset_uuid: str | None = Field(default=None)
     version: str = Field(default=DEFAULT_DATASET_VERSION)
     status: int = Field(default=DatasetStatus.CREATED)
     created_at: datetime = Field(default=TIME_ZERO)
@@ -37,6 +42,7 @@ class DatasetInfo(DataModel):
     error_stack: str = Field(default="")
     attrs: list[str] = Field(default=[])
     query_script: str = Field(default="")
+    job_id: str | None = Field(default=None)
 
     @property
     def is_temp(self) -> bool:
@@ -94,12 +100,13 @@ class DatasetInfo(DataModel):
     @classmethod
     def from_models(
         cls,
-        dataset: DatasetListRecord,
-        version: DatasetListVersion,
+        dataset: DatasetListRecord | DatasetRecord,
+        version: DatasetListVersion | DatasetVersion,
         job: Job | None,
     ) -> "Self":
         return cls(
             uuid=version.uuid,
+            dataset_uuid=dataset.uuid,
             name=dataset.name,
             namespace=dataset.project.namespace.name,
             project=dataset.project.name,
@@ -115,4 +122,5 @@ class DatasetInfo(DataModel):
             error_stack=version.error_stack,
             attrs=dataset.attrs,
             query_script=version.query_script,
+            job_id=version.job_id,
         )
