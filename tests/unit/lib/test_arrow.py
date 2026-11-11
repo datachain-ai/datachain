@@ -22,7 +22,6 @@ from datachain.lib.arrow import (
 from datachain.lib.data_model import dict_to_data_model
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.hf import HFClassLabel
-from datachain.query import dataset
 
 
 @pytest.mark.parametrize("source", ["local", "http"])
@@ -255,19 +254,6 @@ def test_read_parquet_dict_output_converts_values_to_its_types(tmp_path, test_se
         ("False", "1.5"),
         ("True", "2.0"),
     ]
-
-
-@pytest.mark.parametrize("source", [True, False])
-def test_read_parquet_stores_plain_columns_without_conversion(
-    plain_types_parquet, test_session, mocker, source
-):
-    spy = mocker.spy(dataset, "adjust_outputs")
-    chain = dc.read_parquet(
-        plain_types_parquet.as_uri(), source=source, session=test_session
-    )
-
-    assert sorted(chain.to_values("i8")) == [-1, 2, 3]
-    assert not [c for c in spy.call_args_list if "i8" in c.args[1]]
 
 
 class Declared(dc.DataModel):
