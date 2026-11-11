@@ -44,6 +44,12 @@ for examples of how to create a chain.
 
 ::: datachain.lib.dc.database.read_database
 
+::: datachain.lib.dc.datasets.describe
+
+::: datachain.lib.dataset_description.DatasetDescription
+
+::: datachain.lib.dataset_description.DatasetDependencyInfo
+
 ::: datachain.lib.dc.datasets.datasets
 
 ::: datachain.lib.dc.datasets.delete_dataset

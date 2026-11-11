@@ -1,16 +1,20 @@
 from typing import TYPE_CHECKING
 
-from datachain.dataset import DatasetDependencyType, DatasetStatus
-from datachain.skill.knowledge.scripts.utils import dep_entry, parse_semver
-from datachain.skill.knowledge.snapshot import build_dataset_snapshot
+from datachain.dataset import DatasetDependencyType
+from datachain.error import DatasetVersionNotFoundError
+from datachain.lib.dataset_metadata import DatasetMetadata, read_direct_dependencies
+from datachain.skill.knowledge.scripts.utils import dep_entry
+from datachain.skill.knowledge.snapshot import (
+    MAX_VERSION_ENTRIES,
+    build_dataset_snapshot,
+)
+from datachain.utils import DatasetIdentifier
 
 if TYPE_CHECKING:
     from datachain.data_storage.metastore import AbstractMetastore
     from datachain.dataset import (
         DatasetDependency,
-        DatasetRecord,
         DatasetVersion,
-        Project,
     )
     from datachain.skill.knowledge.types import DatasetSnapshot, DependencyEntry
 
@@ -28,51 +32,66 @@ def collect_dataset_snapshot(
 
     Raises ValueError when the dataset has no such completed version.
     """
-    record = metastore.get_dataset(
-        name,
-        namespace,
-        project,
-        versions=None,
-        include_incomplete=True,
-        include_preview=True,
-    )
+    try:
+        record = metastore.get_dataset(
+            name,
+            namespace,
+            project,
+            versions=None,
+            include_incomplete=True,
+            include_preview=True,
+        )
+        metadata = DatasetMetadata.from_record(record, version, source)
+    except DatasetVersionNotFoundError as exc:
+        raise ValueError(str(exc)) from exc
+    return snapshot_from_metadata(metadata, metastore)
 
-    # Filtering here rather than through include_incomplete=False, which inner-joins
-    # and raises DatasetNotFoundError for a dataset whose versions are all incomplete.
-    completed = [v for v in record.versions if v.status == DatasetStatus.COMPLETE]
-    ordered = sorted(completed, key=lambda v: parse_semver(v.version))
-    target = next((i for i, v in enumerate(ordered) if v.version == version), None)
-    if target is None:
-        raise ValueError(f"{name} has no completed version {version}")
-    history = ordered[: target + 1]
 
-    def deps_provider(ver: "DatasetVersion") -> "list[DependencyEntry]":
-        edges = metastore.get_direct_dataset_dependencies(record, ver.version) or []
+def snapshot_from_metadata(
+    metadata: DatasetMetadata,
+    metastore: "AbstractMetastore | None",
+    *,
+    max_version_entries: int | None = MAX_VERSION_ENTRIES,
+) -> "DatasetSnapshot":
+    record = metadata.record
+
+    def deps_provider(ver: "DatasetVersion") -> "list[DependencyEntry] | None":
+        if metastore is None:
+            return None
+        edges = read_direct_dependencies(metastore, metadata, ver.version)
+        if edges is None:
+            return None
         return [
-            dep_entry(_dep_name(e), e.version, e.type)
+            dep_entry(_dep_name(e, metastore, metadata.source), e.version, e.type)
             if e is not None
             else dep_entry(None, None, None)
             for e in edges
         ]
 
+    local_default = (
+        metadata.source == "local"
+        and metastore is not None
+        and record.project is not None
+        and metastore.is_default_project(
+            record.project.name, record.project.namespace.name
+        )
+    )
     return build_dataset_snapshot(
-        name=_qualified_name(record),
-        source=source,
+        name=record.name if local_default else metadata.name,
+        source=metadata.source,
         attrs=list(record.attrs or []),
         description=record.description or None,
-        versions=history,
+        versions=metadata.history,
         deps_provider=deps_provider,
+        max_version_entries=max_version_entries,
     )
 
 
-def _dep_name(dep: "DatasetDependency") -> str:
-    if dep.type == DatasetDependencyType.STORAGE:
+def _dep_name(
+    dep: "DatasetDependency", metastore: "AbstractMetastore", source: str
+) -> str:
+    if dep.type == DatasetDependencyType.STORAGE or (
+        source == "local" and metastore.is_default_project(dep.project, dep.namespace)
+    ):
         return dep.name
-    return f"{dep.namespace}.{dep.project}.{dep.name}"
-
-
-def _qualified_name(record: "DatasetRecord") -> str:
-    project: Project | None = record.project
-    if project is None:
-        return record.name
-    return f"{project.namespace.name}.{project.name}.{record.name}"
+    return str(DatasetIdentifier(dep.namespace, dep.project, dep.name, None))

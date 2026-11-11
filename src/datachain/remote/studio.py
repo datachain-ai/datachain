@@ -442,7 +442,7 @@ class StudioClient:
         def _parse_dataset_info(dataset_info):
             _parse_dates(dataset_info, ["created_at", "finished_at"])
             for version in dataset_info.get("versions"):
-                _parse_dates(version, ["created_at"])
+                _parse_dates(version, ["created_at", "finished_at", "removed_at"])
             _parse_dates(dataset_info.get("project"), ["created_at"])
             _parse_dates(dataset_info.get("project").get("namespace"), ["created_at"])
 
