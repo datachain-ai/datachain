@@ -25,9 +25,9 @@ pip install datachain
 datachain skill install --target claude   # also: --target cursor, --target codex
 ```
 
-The skill is the instructions, MCP is the tools. The skill tells the agent to check the
-knowledge base before computing anything, how to name and save datasets, and which SDK
-rules a script must follow; MCP is how it acts on the team's data in Studio.
+The default `datachain` skill guides agents to inspect shared datasets and jobs before
+computing, use knowledge descriptions for discovery, and save reusable results. MCP
+provides the tools for working with the team's data and Knowledge Base in Studio.
 
 ## Connect
 
