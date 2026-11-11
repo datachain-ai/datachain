@@ -586,14 +586,14 @@ class TypeReadConverter:
         """Whether float items of this array type read back unchanged."""
         if not (
             isinstance(item_type, Float)
-            and type(item_type).on_read_convert in _FLOAT_READS
+            and getattr(item_type.on_read_convert, "__func__", None) in _FLOAT_READS
         ):
             return False
-        conv, base = type(read_converter(dialect)), TypeReadConverter
+        conv, base = read_converter(dialect), TypeReadConverter
         return (
-            conv.float is base.float
-            and conv.float32 is base.float32
-            and conv.float64 is base.float64
+            getattr(conv.float, "__func__", None) is base.float
+            and getattr(conv.float32, "__func__", None) is base.float32
+            and getattr(conv.float64, "__func__", None) is base.float64
         )
 
     def json(self, value):

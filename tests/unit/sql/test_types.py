@@ -207,3 +207,30 @@ def test_float_array_preserves_item_subtype_conversion():
         10.5,
         11.5,
     ]
+
+
+@pytest.mark.parametrize(
+    "item_type,method",
+    [
+        (Float, "on_read_convert"),
+        (Float32, "on_read_convert"),
+        (Float64, "on_read_convert"),
+        (Float, "float"),
+        (Float32, "float"),
+        (Float64, "float"),
+        (Float32, "float32"),
+        (Float64, "float64"),
+    ],
+)
+def test_float_array_preserves_instance_conversion(item_type, method, monkeypatch):
+    item = item_type()
+    converter = TypeReadConverter()
+    dialect = sa.engine.default.DefaultDialect()
+    dialect.name = "instance_float_array"
+    monkeypatch.setitem(_read_converter_registry, dialect.name, converter)
+    if method == "on_read_convert":
+        monkeypatch.setattr(item, method, lambda value, dialect: value + 10)
+    else:
+        monkeypatch.setattr(converter, method, lambda value: value + 10)
+
+    assert Array(item).on_read_convert([0.5, 1.5], dialect) == [10.5, 11.5]
