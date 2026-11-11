@@ -1,3 +1,4 @@
+import gzip
 import json
 import math
 import os
@@ -22,15 +23,17 @@ from datachain.dataset import DatasetDependencyType
 from datachain.fs.utils import path_to_fsspec_uri
 from datachain.lib.arrow import PARTIAL_READ_PREFETCH_MAX_SIZE
 from datachain.lib.data_model import compute_model_fingerprint
-from datachain.lib.file import File, ImageFile
+from datachain.lib.file import File, FileError, ImageFile
 from datachain.lib.listing import LISTING_TTL, is_listing_dataset, parse_listing_uri
 from datachain.lib.model_store import ModelStore
 from datachain.lib.tar import process_tar
+from datachain.lib.webdataset import process_webdataset
 from datachain.query.dataset import QueryStep, get_download_callback
 from tests.utils import (
     ANY_VALUE,
     TARRED_TREE,
     df_equal,
+    make_tar,
     skip_if_not_sqlite,
     sorted_dicts,
     text_embedding,
@@ -960,6 +963,16 @@ def test_similarity_search(cloud_test_catalog):
         assert p1.endswith(p2)
         assert math.isclose(c1, c2, abs_tol=1e-5)
         assert math.isclose(e1, e2, abs_tol=1e-5)
+
+
+@pytest.mark.parametrize("process", [process_tar, process_webdataset()])
+def test_tar_rejects_compressed_archive(tmp_dir, test_session, process):
+    shard = make_tar({"0.jpg": "image", "0.txt": "caption"})
+    (tmp_dir / "shard.tar").write_bytes(gzip.compress(shard))
+
+    chain = dc.read_storage(tmp_dir.as_uri(), session=test_session).gen(out=process)
+    with pytest.raises(FileError, match="compressed tars are not supported"):
+        chain.to_list()
 
 
 @pytest.mark.parametrize("tree", [TARRED_TREE], indirect=True)

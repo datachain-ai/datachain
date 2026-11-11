@@ -17,6 +17,26 @@ from datachain.sql.types import String
 from tests.utils import assert_row_names, dataset_dependency_asdict
 
 
+def test_shared_dependency_edges_are_not_duplicated(test_session):
+    catalog = test_session.catalog
+    dc.read_values(value=[1], session=test_session).save("source")
+    dc.read_dataset("source", session=test_session).save("first")
+    dc.read_dataset("first", session=test_session).save("second")
+    dc.read_dataset("first", session=test_session).union(
+        dc.read_dataset("second", session=test_session)
+    ).save("top")
+
+    deps = {
+        dep.name: dep
+        for dep in catalog.get_dataset_dependencies("top", "1.0.0", indirect=True)
+        if dep is not None
+    }
+    first = [deps["first"], *deps["second"].dependencies]
+    for dep in first:
+        assert dep is not None
+        assert [child.name for child in dep.dependencies if child] == ["source"]
+
+
 def from_result_row(col_names, row):
     return dict(zip(col_names, row, strict=False))
 
@@ -1032,12 +1052,12 @@ def test_dataset_dependencies_one_dataset_as_dependency(
     ] == expected
 
 
-@pytest.mark.parametrize("method", ["union", "join"])
+@pytest.mark.parametrize("method", ["union", "join", "subtract"])
 def test_dataset_dependencies_multiple_direct_dataset_dependencies(
     cloud_test_catalog, dogs_dataset, cats_dataset, method
 ):
     # multiple direct dataset dependencies can be achieved with methods that are
-    # combining multiple DatasetQuery instances into new one like union or join
+    # combining multiple DatasetQuery instances, like union, join or subtract
     ds_name = uuid.uuid4().hex
     catalog = cloud_test_catalog.catalog
     listing = catalog.listings()[0]
@@ -1048,8 +1068,10 @@ def test_dataset_dependencies_multiple_direct_dataset_dependencies(
 
     if method == "union":
         dogs.union(cats).save(ds_name)
-    else:
+    elif method == "join":
         dogs.join(cats, "file__path").save(ds_name)
+    else:
+        dogs.subtract(cats, [("file__path", "file__path")]).save(ds_name)
 
     storage_depenedncy = {
         "id": ANY,

@@ -4,11 +4,8 @@ from typing import IO
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 
 
-class FileWrapper(io.RawIOBase):
-    """Instrumented wrapper around an existing file object.
-
-    It wraps the file's read() method to update the callback with the number of
-    bytes read.
+class FileWrapper(io.BufferedIOBase):
+    """Buffered wrapper that reports bytes read through a callback.
 
     It assumes exclusive access to the underlying file object and closes it when it
     gets closed itself.
@@ -35,19 +32,34 @@ class FileWrapper(io.RawIOBase):
         """Seek to a position in the file."""
         return self.fileobj.seek(position, whence)
 
-    def readinto(self, b) -> int:
-        res = self.fileobj.readinto(b)
-        self.callback.relative_update(res)
-        return res
+    def read(self, size: int | None = -1) -> bytes:
+        if size is None or size < 0:
+            data = self.fileobj.read(-1)
+        else:
+            parts = [self.fileobj.read(size)]
+            received = len(parts[0])
+            # Streams without range support may return less; buffered reads don't.
+            while 0 < received < size and (more := self.fileobj.read(size - received)):
+                parts.append(more)
+                received += len(more)
+            data = b"".join(parts)
+        self.callback.relative_update(len(data))
+        return data
+
+    def read1(self, size: int | None = -1) -> bytes:
+        size = io.DEFAULT_BUFFER_SIZE if size is None or size < 0 else size
+        read = getattr(self.fileobj, "read1", self.fileobj.read)
+        data = read(size)
+        self.callback.relative_update(len(data))
+        return data
 
     def close(self):
         self.fileobj.close()
         super().close()
 
 
-class FileSlice(io.RawIOBase):
-    """A thin wrapper around an existing file object that provides a part of its data
-    as an individual file object.
+class FileSlice(io.BufferedIOBase):
+    """A buffered view of a part of an existing file object, as an individual file.
 
     It assumes exclusive access to the underlying file object and closes it when it
     gets closed itself.
@@ -88,18 +100,30 @@ class FileSlice(io.RawIOBase):
             raise ValueError("Invalid argument")
         return self.position
 
-    def readinto(self, b):
-        max_size = self.size - self.position
-        if max_size <= 0:
-            return 0
+    def read(self, size: int | None = -1) -> bytes:
+        left = self.size - self.position
+        n = left if size is None or size < 0 else min(size, left)
+        if n <= 0:
+            return b""
         self.fileobj.seek(self.offset + self.position)
-        if len(b) > max_size:
-            b = memoryview(b)[:max_size]
-        res = self.fileobj.readinto(b)
-        if res != len(b):
+        data = self.fileobj.read(n)
+        if len(data) != n:
             raise RuntimeError("unexpected end of data")
-        self.position += res
-        return res
+        self.position += n
+        return data
+
+    def read1(self, size: int | None = -1) -> bytes:
+        size = io.DEFAULT_BUFFER_SIZE if size is None or size < 0 else size
+        n = min(size, self.size - self.position)
+        if n <= 0:
+            return b""
+        self.fileobj.seek(self.offset + self.position)
+        read = getattr(self.fileobj, "read1", self.fileobj.read)
+        data = read(n)
+        if not data:
+            raise RuntimeError("unexpected end of data")
+        self.position += len(data)
+        return data
 
     def close(self):
         self.fileobj.close()

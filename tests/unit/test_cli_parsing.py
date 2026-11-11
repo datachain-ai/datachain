@@ -136,3 +136,27 @@ def test_determine_flavors(studio, local, all, token, expected):
 def test_determine_flavors_studio_without_token():
     with pytest.raises(DataChainError, match="Not logged in to Studio"):
         determine_flavors(studio=True, local=False, all=False, token=None)
+
+
+def test_dataset_describe_parser():
+    args = get_parser().parse_args(("dataset", "describe", "labels@1.0.0", "--json"))
+    assert (args.name, args.json_output) == ("labels@1.0.0", True)
+    args = get_parser().parse_args(
+        ("dataset", "describe", "dev.proj.labels", "--studio")
+    )
+    assert args.studio is True
+    with pytest.raises(SystemExit):
+        get_parser().parse_args(("dataset", "describe", "labels", "--version", "1.0.0"))
+
+
+def test_dataset_help_lists_subcommands(capsys, monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    with pytest.raises(SystemExit) as exc:
+        get_parser().parse_args(["dataset", "--help"])
+    assert exc.value.code == 0
+    listed = {
+        line.split()[0]
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("    ")
+    }
+    assert {"pull", "edit", "ls", "describe", "rm"} <= listed
