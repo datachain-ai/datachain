@@ -122,3 +122,24 @@ def test_configured_anon_skips_auto_detect(
     chain = dc.read_storage(tmp_dir.as_uri(), **kwargs)
     probe.assert_not_called()
     assert chain.session.catalog.client_config.get("anon") is explicit
+
+
+@pytest.mark.parametrize(
+    "uri,protocol,config",
+    [
+        ("s3://public", "s3", {"anon": False}),
+        ("s3://public", "s3", {"key": "key", "secret": "secret"}),
+        ("gs://public", "gs", {"token": "configured"}),
+        ("az://public", "abfs", {"anon": False}),
+    ],
+)
+def test_fsspec_auth_settings_prevent_auto_detect(uri, protocol, config, monkeypatch):
+    from fsspec.config import conf
+
+    from datachain.lib.storage_config import client_configs
+
+    monkeypatch.setitem(conf, protocol, config)
+    with patch("datachain.lib.storage_config._all_buckets_anonymous") as probe:
+        _, options = client_configs([uri], None, None, None, False)
+    probe.assert_not_called()
+    assert options.get("anon") is not True

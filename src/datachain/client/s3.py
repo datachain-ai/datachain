@@ -173,7 +173,7 @@ class ClientS3(RangeListedClient):
         for alias, name in ClientS3._KEY_ALIASES:
             if alias in kwargs:
                 value = kwargs.pop(alias)
-                if kwargs.get(name) is None:
+                if value is not None and kwargs.get(name) is None:
                     kwargs[name] = value
         return kwargs
 

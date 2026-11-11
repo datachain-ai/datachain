@@ -50,6 +50,8 @@ class GCSClient(RangeListedClient):
             "GOOGLE_APPLICATION_CREDENTIALS"
         ):
             kwargs["token"] = "google_default"  # noqa: S105
+        if anon is False and kwargs.get("token") == "anon":
+            raise ValueError("anon=False conflicts with token='anon'")
         # Read gzip-encoded objects without decompressing them, so the bytes match
         # File.size and range reads work. GCS decompresses unless the request accepts
         # gzip, and aiohttp decompresses unless told not to.
@@ -120,8 +122,8 @@ class GCSClient(RangeListedClient):
 
         # Step 2: Authenticated probe — create_fs resolves credentials from
         # kwargs, environment, or application-default credentials.
-        auth_fs = cls.create_fs(**kwargs)
         try:
+            auth_fs = cls.create_fs(**kwargs | {"anon": False})
             sync(get_loop(), auth_fs._info, name)
             return BucketStatus(exists=True, access="authenticated")
         except FileNotFoundError:
@@ -129,6 +131,8 @@ class GCSClient(RangeListedClient):
                 exists=False, access="denied", error=f"GCS bucket '{name}' not found"
             )
         except (google_exceptions.Forbidden, google_exceptions.PermissionDenied) as e:
+            return BucketStatus(exists=True, access="denied", error=str(e))
+        except (GoogleAuthError, ValueError) as e:
             return BucketStatus(exists=True, access="denied", error=str(e))
         except (PermissionError, HttpError, OSError) as e:
             if isinstance(e, HttpError) and e.code == 404:

@@ -365,6 +365,12 @@ def test_explicit_authenticated_mode_requires_credentials():
 
 
 @pytest.mark.usefixtures("no_gcp_credentials")
+def test_explicit_authenticated_mode_rejects_anonymous_token():
+    with pytest.raises(ValueError, match="anon=False conflicts"):
+        GCSClient.create_fs(anon=False, token="anon")  # noqa: S106
+
+
+@pytest.mark.usefixtures("no_gcp_credentials")
 def test_explicit_cloud_credentials_remain_supported(mocker):
     refresh = mocker.patch("google.auth.compute_engine.Credentials.refresh")
     fs = GCSClient.create_fs(token="cloud", skip_instance_cache=True)  # noqa: S106
