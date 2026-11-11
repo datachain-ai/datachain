@@ -3,7 +3,6 @@ import math
 from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from itertools import islice
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
@@ -30,6 +29,7 @@ from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.udf import FlatRow, Generator
 from datachain.lib.utils import normalize_col_names
 from datachain.progress import tqdm
+from datachain.utils import safe_closing
 
 SCHEMA_READ_THREADS = 32
 
@@ -205,8 +205,8 @@ class ArrowGenerator(Generator):
         if self.nrows:
             kw = {"batch_size": min(self.DEFAULT_BATCH_SIZE, self.nrows)}
         if (names := self._flat_columns(schema)) is not None:
-            batches = ds.to_batches(columns=names, **kw)
-            yield from self._flat_rows(batches, file, source_kwargs)
+            kw["columns"] = names
+            yield from self._flat_rows(self._batches(ds, kw), file, source_kwargs)
             return
         if self.columns is not None:
             present = set(schema.names)
@@ -216,16 +216,10 @@ class ArrowGenerator(Generator):
             schema = pa.schema(fields, metadata=schema.metadata)
         hf_schema = _get_hf_schema(schema)
 
-        def iter_records():
-            for record_batch in ds.to_batches(**kw):
-                # Maps are read as dicts. Duplicate keys raise an error.
-                yield from record_batch.to_pylist(maps_as_pydicts="strict")
-
-        it = islice(iter_records(), self.nrows)
-        with tqdm(
-            it, desc="Parsed by pyarrow", unit="rows", total=self.nrows, leave=False
-        ) as pbar:
-            for index, record in enumerate(pbar):
+        for start, batch in self._batches(ds, kw):
+            # Maps are read as dicts. Duplicate keys raise an error.
+            records = batch.to_pylist(maps_as_pydicts="strict")
+            for index, record in enumerate(records, start):
                 yield self._process_record(
                     record,
                     file,
@@ -234,6 +228,28 @@ class ArrowGenerator(Generator):
                     use_datachain_schema,
                     source_kwargs,
                 )
+
+    def _batches(
+        self, ds: Dataset, kw: dict[str, Any]
+    ) -> Iterator[tuple[int, pa.RecordBatch]]:
+        """Yield the file's batches up to nrows rows, each with its first row's
+        index."""
+        start, remaining = 0, self.nrows
+        with (
+            tqdm(
+                desc="Parsed by pyarrow", unit="rows", total=self.nrows, leave=False
+            ) as pbar,
+            safe_closing(ds.to_batches(**kw)) as batches,
+        ):
+            for batch in batches:
+                if remaining is not None:
+                    batch = batch.slice(0, remaining)
+                    remaining -= batch.num_rows
+                yield start, batch
+                start += batch.num_rows
+                pbar.update(batch.num_rows)
+                if remaining == 0:
+                    break
 
     def _source_kwargs(self) -> dict[str, Any]:
         """Return the read options that each row's source keeps."""
@@ -283,7 +299,7 @@ class ArrowGenerator(Generator):
 
     def _flat_rows(
         self,
-        batches: Iterator[pa.RecordBatch],
+        batches: Iterator[tuple[int, pa.RecordBatch]],
         file: File,
         source_kwargs: dict[str, Any] | None,
     ) -> Iterator[FlatRow]:
@@ -292,24 +308,13 @@ class ArrowGenerator(Generator):
             # the index, then the read options.
             source = ArrowRow(file=file, index=0, kwargs=source_kwargs)
             *file_values, _, stored_options = map(_json_text, flatten(source))
-        next_index, remaining = 0, self.nrows
-        with tqdm(
-            desc="Parsed by pyarrow", unit="rows", total=self.nrows, leave=False
-        ) as pbar:
-            for batch in batches:
-                if remaining is not None:
-                    batch = batch.slice(0, remaining)
-                    remaining -= batch.num_rows
-                rows = zip(*(c.to_pylist() for c in batch.columns), strict=True)
-                if source_kwargs is None:
-                    yield from map(FlatRow, rows)
-                else:
-                    for index, values in enumerate(rows, next_index):
-                        yield FlatRow((*file_values, index, stored_options, *values))
-                next_index += batch.num_rows
-                pbar.update(batch.num_rows)
-                if remaining == 0:
-                    break
+        for start, batch in batches:
+            rows = zip(*(c.to_pylist() for c in batch.columns), strict=True)
+            if source_kwargs is None:
+                yield from map(FlatRow, rows)
+            else:
+                for index, values in enumerate(rows, start):
+                    yield FlatRow((*file_values, index, stored_options, *values))
 
     def _process_record(
         self,
