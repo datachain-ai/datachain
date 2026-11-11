@@ -2656,6 +2656,17 @@ def test_read_parquet_columns_or_output_some_files_written_by_datachain(
         ).to_list()
 
 
+def test_read_parquet_output_names_the_file_unlike_the_first(
+    some_files_written_by_datachain, test_session
+):
+    with pytest.raises(ValueError, match=r"'2\.parquet' is"):
+        dc.read_parquet(
+            some_files_written_by_datachain,
+            output={"u": int, "v": int},
+            session=test_session,
+        ).to_list()
+
+
 class Point(DataModel):
     x: int
     y: int

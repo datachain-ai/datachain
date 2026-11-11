@@ -205,7 +205,10 @@ class ArrowGenerator(Generator):
 
         use_datachain_schema = _written_by_datachain(ds.schema)
         if self.written_by_datachain not in (None, use_datachain_schema):
-            raise ValueError(_MIXED_FILES)
+            kind = "is" if use_datachain_schema else "isn't"
+            raise ValueError(
+                f"{_MIXED_FILES}, and '{file.path}' {kind} written by DataChain"
+            )
 
         schema = ds.schema
         kw: dict[str, Any] = {}
