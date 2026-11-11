@@ -60,6 +60,34 @@ def test_normalize_s3_kwargs_boto3_names(alias, name):
     assert ClientS3.has_explicit_credentials({alias: "v"})
 
 
+@pytest.mark.parametrize("canonical", [None, "canonical"])
+@pytest.mark.parametrize("alias,name", ClientS3._KEY_ALIASES)
+def test_normalize_s3_kwargs_keeps_nonempty_canonical_credentials(
+    canonical, alias, name
+):
+    assert ClientS3._normalize_s3_kwargs({name: canonical, alias: "alias"}) == {
+        name: canonical if canonical is not None else "alias"
+    }
+
+
+def test_explicit_s3_authenticated_mode_does_not_fall_back():
+    with patch.object(ClientS3, "FS_CLASS") as fs_cls:
+        fs_cls.return_value.sign.side_effect = NoCredentialsError()
+        fs = ClientS3.create_fs(anon=False)
+    assert fs_cls.call_args.kwargs["anon"] is False
+    fs.sign.assert_not_called()
+
+
+def test_s3_fsspec_authenticated_mode_does_not_fall_back(monkeypatch):
+    from fsspec.config import conf
+
+    monkeypatch.setitem(conf, "s3", {"anon": False})
+    with patch.object(ClientS3.FS_CLASS, "sign") as sign:
+        fs = ClientS3.create_fs(skip_instance_cache=True)
+    assert fs.anon is False
+    sign.assert_not_called()
+
+
 def test_create_fs_accepts_boto3_credential_names():
     creds = {
         "aws_access_key_id": "AKIAEXAMPLE",

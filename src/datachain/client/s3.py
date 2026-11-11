@@ -12,6 +12,7 @@ from botocore.exceptions import ClientError, NoCredentialsError
 from botocore.model import Shape
 from botocore.utils import parse_timestamp
 from fsspec.asyn import get_loop, sync, sync_wrapper
+from fsspec.config import apply_config
 from s3fs import S3FileSystem
 
 from datachain.lib.file import File, FileRow
@@ -171,11 +172,14 @@ class ClientS3(RangeListedClient):
             )
         for alias, name in ClientS3._KEY_ALIASES:
             if alias in kwargs:
-                kwargs.setdefault(name, kwargs.pop(alias))
+                value = kwargs.pop(alias)
+                if kwargs.get(name) is None:
+                    kwargs[name] = value
         return kwargs
 
     @classmethod
     def create_fs(cls, **kwargs) -> S3FileSystem:
+        kwargs = apply_config(cls.FS_CLASS, kwargs)
         kwargs = cls._normalize_s3_kwargs(kwargs)
 
         # We want to use newer v4 signature version since regions added after
@@ -194,7 +198,7 @@ class ClientS3(RangeListedClient):
             # it tries to randomly guess and creates wrong signature
             kwargs.setdefault("cache_regions", True)
 
-        if not kwargs.get("anon"):
+        if kwargs.get("anon") is None:
             try:
                 # Run an inexpensive check to see if credentials are available
                 super().create_fs(**kwargs).sign("s3://bucket/object")

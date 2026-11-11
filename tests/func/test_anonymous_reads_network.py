@@ -36,6 +36,9 @@ def _anon_env(tmp_path):
         "DATACHAIN_ROOT_DIR": str(tmp_path),
         "DATACHAIN_DIR": str(tmp_path / ".datachain"),
         "CLOUDSDK_CONFIG": str(tmp_path / "gcloud"),
+        "HOME": str(tmp_path),
+        "USERPROFILE": str(tmp_path),
+        "NO_GCE_CHECK": "true",
     }
     return env
 
@@ -65,6 +68,7 @@ def test_smoke_environment_ignores_inherited_backends(tmp_path, monkeypatch):
         monkeypatch.setenv(key, value)
     env = _anon_env(tmp_path / "smoke")
     assert not inherited.keys() & env.keys()
+    assert env["HOME"] == env["USERPROFILE"] == str(tmp_path / "smoke")
     _run('import datachain as dc; dc.read_values(x=[1]).save("ep")', env)
     assert not caller_db.exists()
 

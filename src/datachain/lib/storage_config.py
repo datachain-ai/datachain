@@ -64,6 +64,8 @@ def client_configs(
     for single_uri in uris:
         validate_cloud_bucket_name(str(single_uri))
     config = _session_client_config(session, client_config)
+    if anon is None:
+        anon = config.get("anon")
     if (
         anon is None
         and not _backends_have_credentials(uris, config)

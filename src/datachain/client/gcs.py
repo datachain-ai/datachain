@@ -5,8 +5,10 @@ from typing import TYPE_CHECKING, Any, BinaryIO, cast
 from urllib.parse import quote
 
 from fsspec.asyn import get_loop, sync
+from fsspec.config import apply_config
 from gcsfs import GCSFileSystem
 from gcsfs.retry import HttpError
+from google.auth.exceptions import DefaultCredentialsError, GoogleAuthError
 
 from datachain.lib.file import File, FileRow
 
@@ -38,10 +40,16 @@ class GCSClient(RangeListedClient):
 
     @classmethod
     def create_fs(cls, **kwargs) -> GCSFileSystem:
+        kwargs = apply_config(cls.FS_CLASS, kwargs)
+        anon = kwargs.pop("anon", None)
         if os.environ.get("DATACHAIN_GCP_CREDENTIALS"):
             kwargs["token"] = json.loads(os.environ["DATACHAIN_GCP_CREDENTIALS"])
-        if kwargs.pop("anon", False):
+        if anon:
             kwargs["token"] = "anon"  # noqa: S105
+        elif kwargs.get("token") is None and os.environ.get(
+            "GOOGLE_APPLICATION_CREDENTIALS"
+        ):
+            kwargs["token"] = "google_default"  # noqa: S105
         # Read gzip-encoded objects without decompressing them, so the bytes match
         # File.size and range reads work. GCS decompresses unless the request accepts
         # gzip, and aiohttp decompresses unless told not to.
@@ -59,16 +67,21 @@ class GCSClient(RangeListedClient):
             "headers": headers,
         }
 
-        fs = cast("GCSFileSystem", super().create_fs(**kwargs))
-        if (
-            kwargs.get("token") is None
-            and "GOOGLE_APPLICATION_CREDENTIALS" not in os.environ
-            and fs.credentials.credentials is None
-        ):
-            return cast(
-                "GCSFileSystem", super().create_fs(**kwargs | {"token": "anon"})
-            )
-        return fs
+        if kwargs.get("token") is None:
+            error: GoogleAuthError | ValueError | None = None
+            # ADC already discovers GCE credentials; gcsfs's cloud fallback repeats it.
+            for method in ("google_default", "cache"):
+                try:
+                    fs = super().create_fs(**kwargs | {"token": method})
+                except (GoogleAuthError, ValueError) as exc:
+                    error = error or exc
+                    continue
+                if fs.credentials.credentials is not None:
+                    return cast("GCSFileSystem", fs)
+            if anon is False:
+                raise error or DefaultCredentialsError("No GCS credentials found")
+            kwargs["token"] = "anon"  # noqa: S105
+        return cast("GCSFileSystem", super().create_fs(**kwargs))
 
     @classmethod
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:  # noqa: PLR0911

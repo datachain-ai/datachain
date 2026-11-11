@@ -105,3 +105,20 @@ def test_explicit_anon_skips_auto_detect(probe, explicit, tmp_dir, catalog):
     chain = dc.read_storage(tmp_dir.as_uri(), anon=explicit)
     probe.assert_not_called()
     assert chain.session.catalog.client_config.get("anon") is explicit
+
+
+@pytest.mark.parametrize("explicit", [True, False])
+@pytest.mark.parametrize("source", ["config", "session"])
+@patch("datachain.lib.storage_config._all_buckets_anonymous")
+def test_configured_anon_skips_auto_detect(
+    probe, explicit, source, tmp_dir, test_session
+):
+    config = {"anon": explicit}
+    if source == "session":
+        test_session.catalog.client_config = config
+        kwargs = {"session": test_session}
+    else:
+        kwargs = {"client_config": config}
+    chain = dc.read_storage(tmp_dir.as_uri(), **kwargs)
+    probe.assert_not_called()
+    assert chain.session.catalog.client_config.get("anon") is explicit
