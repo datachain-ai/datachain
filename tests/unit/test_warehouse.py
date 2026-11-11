@@ -270,14 +270,6 @@ def test_gen_progress_reports_rows_once_per_interval(warehouse, monkeypatch):
     from datachain.query.dataset import PROGRESS_INTERVAL, process_udf_outputs
     from datachain.sql.types import Boolean, Int
 
-    class Updates(Callback):
-        def __init__(self):
-            super().__init__()
-            self.incs = []
-
-        def relative_update(self, inc=1):
-            self.incs.append(inc)
-
     table = warehouse.create_udf_table(
         [
             sa.Column("a", Int),
@@ -301,10 +293,12 @@ def test_gen_progress_reports_rows_once_per_interval(warehouse, monkeypatch):
             now = intervals * PROGRESS_INTERVAL
             yield (i, i, False, None)
 
-    updates = Updates()
+    reported = []
+    updates = Callback(hooks={"record": lambda size, value: reported.append(value)})
     process_udf_outputs(warehouse, table, iter([rows()]), udf, cb=updates)
 
-    assert updates.incs == [1, 2, 3, 1]
+    assert reported == [1, 3, 6, 7]
+    assert updates.value == 7
     assert warehouse.table_rows_count(table) == 7
 
 

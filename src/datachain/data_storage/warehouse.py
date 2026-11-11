@@ -70,18 +70,10 @@ def _to_jsonable(obj: Any) -> Any:
         return obj.model_dump(mode="json", fallback=json.numpy_to_python)
 
     if isinstance(obj, dict):
-        out: dict[str, Any] = {}
-        for k, v in obj.items():
-            if not isinstance(k, str):
-                key_str = json.dumps(
-                    _to_jsonable(k),
-                    ensure_ascii=False,
-                    serialize_numpy=True,
-                )
-            else:
-                key_str = k
-            out[key_str] = _to_jsonable(v)
-        return out
+        return {
+            k if isinstance(k, str) else to_json_text(k): _to_jsonable(v)
+            for k, v in obj.items()
+        }
 
     if isinstance(obj, (list, tuple, set)):
         return [_to_jsonable(i) for i in obj]

@@ -275,8 +275,9 @@ class ArrowGenerator(Generator):
             return None
         for name, field in zip(names, fields, strict=True):
             i = schema.get_field_index(name)
-            kind = classify_field(field.annotation)
-            if i < 0 or kind.inner != _plain_type(schema.field(i).type):
+            if i < 0 or not _is_plain_type(col_type := schema.field(i).type):
+                return None
+            if classify_field(field.annotation).inner != arrow_type_mapper(col_type):
                 return None
         return names
 
@@ -503,8 +504,6 @@ def schema_to_output(
 
 def arrow_type_mapper(col_type: pa.DataType, column: str = "") -> type:  # noqa: PLR0911
     """Convert pyarrow types to basic types."""
-    from datetime import datetime
-
     if pa.types.is_timestamp(col_type):
         return datetime
     if pa.types.is_binary(col_type):
@@ -567,30 +566,27 @@ def _is_scalar_type(col_type: pa.DataType) -> bool:
     )
 
 
-def _plain_type(col_type: pa.DataType) -> Any:  # noqa: PLR0911
-    """Return the type of the column's values when pyarrow gives values that
-    pydantic and the DB keep as they are, else None."""
+def _is_plain_type(col_type: pa.DataType) -> bool:
+    """Whether pyarrow gives the column's values as pydantic and the DB keep them,
+    typed as `arrow_type_mapper` types them."""
     if pa.types.is_dictionary(col_type):
-        return _plain_type(col_type.value_type)
-    if pa.types.is_null(col_type):
-        return str  # as arrow_type_mapper reads it, with only None values
+        return _is_plain_type(col_type.value_type)
     if pa.types.is_list(col_type):
-        item = _plain_type(col_type.value_type)
-        return arrow_type_mapper(col_type) if item in NULLABLE_SCALARS else None
-    if pa.types.is_integer(col_type):
-        return int
-    if pa.types.is_float32(col_type) or pa.types.is_float64(col_type):
-        return float
-    if pa.types.is_boolean(col_type):
-        return bool
-    if pa.types.is_string(col_type) or pa.types.is_large_string(col_type):
-        return str
-    if pa.types.is_binary(col_type):
-        return bytes
-    # pyarrow gives nanoseconds as pandas Timestamps.
-    if pa.types.is_timestamp(col_type) and col_type.unit != "ns":
-        return datetime
-    return None
+        item = col_type.value_type
+        return not pa.types.is_list(item) and _is_plain_type(item)
+    if pa.types.is_timestamp(col_type):
+        # pyarrow gives nanoseconds as pandas Timestamps.
+        return col_type.unit != "ns"
+    return (
+        pa.types.is_integer(col_type)
+        or pa.types.is_float32(col_type)
+        or pa.types.is_float64(col_type)
+        or pa.types.is_boolean(col_type)
+        or pa.types.is_string(col_type)
+        or pa.types.is_large_string(col_type)
+        or pa.types.is_binary(col_type)
+        or pa.types.is_null(col_type)
+    )
 
 
 def _json_text(value: Any) -> Any:

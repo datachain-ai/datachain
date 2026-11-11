@@ -11,7 +11,13 @@ from datachain import Mapper
 from datachain.dataset import RowDict
 from datachain.lib.file import File
 from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.udf import JsonSerializationError, UDFBase, UdfError, UdfRunError
+from datachain.lib.udf import (
+    FlatRow,
+    JsonSerializationError,
+    UDFBase,
+    UdfError,
+    UdfRunError,
+)
 from datachain.lib.utils import DataChainError
 
 from .test_udf_signature import get_sign
@@ -475,3 +481,18 @@ def test_udf_instance_shared_by_chains(test_session, verb):
     assert sorted(first.to_values("first")) == [2, 4, 6]
     assert sorted(second.to_values("second")) == [2, 4, 6]
     assert udf.params is None
+
+
+@pytest.mark.parametrize(
+    "output,value,stored",
+    [(list[float], [1, 2.5], "[1.0, 2.5]"), (list[list[float]], [[1]], "[[1.0]]")],
+)
+def test_gen_flat_rows_convert_list_items_to_the_column_type(
+    test_session, output, value, stored
+):
+    def rows(n: int) -> Iterator[list]:
+        yield FlatRow((value,))  # type: ignore[misc]
+
+    chain = dc.read_values(n=[1], session=test_session).gen(v=rows, output=output)
+
+    assert repr(chain.to_values("v")[0]) == stored

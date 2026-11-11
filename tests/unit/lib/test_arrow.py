@@ -244,6 +244,19 @@ def test_read_parquet_dict_output_matches_model_output(
         assert [row[-1].index for row in by_types] == [0, 1, 2]
 
 
+def test_read_parquet_dict_output_converts_values_to_its_types(tmp_path, test_session):
+    path = tmp_path / "t.parquet"
+    pq.write_table(pa.table({"i": [0, 1], "s": ["1.5", "2"]}), path)
+    chain = dc.read_parquet(
+        path.as_uri(), output={"i": bool, "s": float}, session=test_session
+    )
+    rows = sorted(chain.to_list("i", "s"))
+    assert [tuple(map(repr, row)) for row in rows] == [
+        ("False", "1.5"),
+        ("True", "2.0"),
+    ]
+
+
 @pytest.mark.parametrize("source", [True, False])
 def test_read_parquet_stores_plain_columns_without_conversion(
     plain_types_parquet, test_session, mocker, source
