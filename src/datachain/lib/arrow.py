@@ -13,6 +13,7 @@ from pyarrow.dataset import CsvFileFormat, Dataset, ParquetFileFormat, dataset
 from pyarrow.fs import FileInfo, FileType, FSSpecHandler, PyFileSystem
 
 from datachain import json
+from datachain.data_storage.warehouse import to_json_text
 from datachain.fs.reference import ReferenceFileSystem
 from datachain.lib.convert.flatten import classify_field, flatten, iter_flat_columns
 from datachain.lib.data_model import (
@@ -598,7 +599,7 @@ def _json_text(value: Any) -> Any:
     if not isinstance(value, (dict, list)):
         return value
     try:
-        return json.dumps(value, ensure_ascii=False, serialize_numpy=True)
+        return to_json_text(value)
     except TypeError:
         return value  # the DB conversion reports it
 
