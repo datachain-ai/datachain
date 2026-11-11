@@ -643,9 +643,10 @@ def _tuple_adjuster(col_types: list[ColType]) -> Callable[[tuple], tuple | None]
     """For a gen row of the output columns, then ``sys__input_id``,
     ``sys__partial`` and ``sys__empty``: the row with column defaults in place of
     None, or None when ``adjust_outputs`` must convert it."""
-    kept_types = [
-        frozenset({type(None), list if c.item_type else c.kept_type}) for c in col_types
-    ]
+    kept_types = []
+    for c in col_types:
+        kept = list if c.item_type else c.kept_type
+        kept_types.append(frozenset({type(None), kept} if kept else {type(None)}))
     lists = [(i, c.item_type) for i, c in enumerate(col_types) if c.item_type]
     defaults = [
         (i, c.default) for i, c in enumerate(col_types) if c.default is not None
