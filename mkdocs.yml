@@ -149,6 +149,8 @@ nav:
           - Overview: commands/index.md
           - Commands:
               - gc: commands/gc.md
+              - dataset:
+                  - describe: commands/dataset/describe.md
               - auth:
                   - login: commands/auth/login.md
                   - logout: commands/auth/logout.md
