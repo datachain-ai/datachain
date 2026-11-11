@@ -701,8 +701,8 @@ def process_udf_outputs(
     adjust_tuple = _tuple_adjuster(udf_col_types)
 
     def _insert_rows():
-        # Progress goes out every PROGRESS_INTERVAL, not per row: a parallel
-        # worker sends each update to the main process.
+        # Progress is reported every PROGRESS_INTERVAL, not per row: a call per
+        # row adds about a sixth to the time to read plain columns.
         generated = 0
         report_at = 0.0
         for udf_output in udf_results:
