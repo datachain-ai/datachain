@@ -166,9 +166,9 @@ class AzureClient(RangeListedClient):
                 if e.status_code not in (401, 403):
                     raise
 
-        # Step 2: Authenticated probe, bypassing create_fs()'s auto-anon fallback.
+        # Step 2: Require authentication, including in anonymous default configurations.
         try:
-            auth_fs = super().create_fs(**kwargs)
+            auth_fs = cls.create_fs(**kwargs | {"anon": False})
             sync(get_loop(), auth_fs._info, name)
             return BucketStatus(exists=True, access="authenticated")
         except (PermissionError, ClientAuthenticationError):

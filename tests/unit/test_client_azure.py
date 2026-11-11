@@ -594,6 +594,40 @@ def test_create_fs_reloads_environment_credentials_for_same_account(
     assert keyed is not second
 
 
+@pytest.mark.parametrize("anonymous_default", [False, True])
+def test_bucket_status_refreshes_authenticated_environment(
+    no_azure_env, monkeypatch, mocker, anonymous_default
+):
+    if anonymous_default:
+        monkeypatch.setenv("AZURE_STORAGE_ANON", "true")
+    service = mocker.patch("datachain.client.azure.BlobServiceClient")
+    container = service.return_value.get_container_client.return_value
+    container.get_container_properties.side_effect = ClientAuthenticationError(
+        "private container"
+    )
+    filesystems = []
+
+    async def info(fs, name):
+        assert not fs.anon
+        filesystems.append(fs)
+        if not fs.account_key:
+            raise ClientAuthenticationError("no credentials")
+        return {}
+
+    mocker.patch.object(AzureClient.FS_CLASS, "_info", new=info)
+    mocker.patch(
+        "datachain.client.azure._cannot_authenticate",
+        side_effect=AssertionError("Authenticated probes must not fall back"),
+    )
+    assert AzureClient.bucket_status("private", account_name="same").access == "denied"
+    monkeypatch.setenv("AZURE_STORAGE_ACCOUNT_KEY", "a2V5")
+    assert (
+        AzureClient.bucket_status("private", account_name="same").access
+        == "authenticated"
+    )
+    assert filesystems[0] is not filesystems[1]
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [
