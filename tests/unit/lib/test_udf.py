@@ -1,9 +1,10 @@
 import pickle
+import time
 from collections.abc import Iterator
 
 import pytest
 from cloudpickle import dumps, loads
-from fsspec.callbacks import DEFAULT_CALLBACK
+from fsspec.callbacks import DEFAULT_CALLBACK, TqdmCallback
 from pydantic import BaseModel
 
 import datachain as dc
@@ -19,6 +20,7 @@ from datachain.lib.udf import (
     UdfRunError,
 )
 from datachain.lib.utils import DataChainError
+from datachain.query import dataset
 
 from .test_udf_signature import get_sign
 
@@ -496,3 +498,25 @@ def test_gen_flat_rows_convert_list_items_to_the_column_type(
     chain = dc.read_values(n=[1], session=test_session).gen(v=rows, output=output)
 
     assert repr(chain.to_values("v")[0]) == stored
+
+
+def test_gen_reports_generated_rows_once_per_interval(
+    test_session, mocker, monkeypatch
+):
+    now = 0.0
+    monkeypatch.setattr(time, "monotonic", lambda: now)
+    callbacks = mocker.spy(dataset, "get_generated_callback")
+    updates = mocker.spy(TqdmCallback, "relative_update")
+
+    def rows(n: int) -> Iterator[int]:
+        nonlocal now
+        for i, seconds in enumerate([0, 0, 1, 1, 1, 2, 2]):
+            now = seconds
+            yield i
+
+    chain = dc.read_values(n=[1], session=test_session).gen(v=rows, output=int)
+
+    assert chain.count() == 7
+    generated = callbacks.spy_return
+    reported = [c.args[1] for c in updates.call_args_list if c.args[0] is generated]
+    assert (len(reported), sum(reported)) == (4, 7)

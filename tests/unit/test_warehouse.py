@@ -1,5 +1,6 @@
 import base64
 import json
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -9,6 +10,10 @@ import datachain as dc
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SQLiteWarehouse
 from datachain.lib.file import File
+from datachain.lib.signal_schema import SignalSchema
+from datachain.lib.udf import UdfError
+from datachain.query.dataset import process_udf_outputs
+from datachain.sql.types import Int, String
 from tests.utils import skip_if_not_sqlite
 
 
@@ -240,13 +245,6 @@ def test_empty_rows_insert_defaults(sqlite_db):
 
 
 def test_map_tuples_are_validated(sqlite_db):
-    from types import SimpleNamespace
-
-    from datachain.lib.signal_schema import SignalSchema
-    from datachain.lib.udf import UdfError
-    from datachain.query.dataset import process_udf_outputs
-    from datachain.sql.types import Int, String
-
     warehouse = SQLiteWarehouse(sqlite_db)
     table = warehouse.create_udf_table([sa.Column("a", Int), sa.Column("b", String)])
     inner = SimpleNamespace(
@@ -258,48 +256,6 @@ def test_map_tuples_are_validated(sqlite_db):
 
     with pytest.raises(UdfError):
         process_udf_outputs(warehouse, table, iter([[(1, "x", None)]]), udf)
-
-
-def test_gen_progress_reports_rows_once_per_interval(warehouse, monkeypatch):
-    import time
-    from types import SimpleNamespace
-
-    from fsspec.callbacks import Callback
-
-    from datachain.lib.signal_schema import SignalSchema
-    from datachain.query.dataset import PROGRESS_INTERVAL, process_udf_outputs
-    from datachain.sql.types import Boolean, Int
-
-    table = warehouse.create_udf_table(
-        [
-            sa.Column("a", Int),
-            sa.Column("sys__input_id", Int),
-            sa.Column("sys__partial", Boolean),
-            sa.Column("sys__empty", Boolean),
-        ]
-    )
-    inner = SimpleNamespace(
-        output=SignalSchema({"a": int}),
-        is_input_batched=False,
-        is_output_batched=True,
-    )
-    udf = SimpleNamespace(output={"a": Int}, inner=inner)
-    now = 0.0
-    monkeypatch.setattr(time, "monotonic", lambda: now)
-
-    def rows():
-        nonlocal now
-        for i, intervals in enumerate([0, 0, 1, 1, 1, 2, 2]):
-            now = intervals * PROGRESS_INTERVAL
-            yield (i, i, False, None)
-
-    reported = []
-    updates = Callback(hooks={"record": lambda size, value: reported.append(value)})
-    process_udf_outputs(warehouse, table, iter([rows()]), udf, cb=updates)
-
-    assert reported == [1, 3, 6, 7]
-    assert updates.value == 7
-    assert warehouse.table_rows_count(table) == 7
 
 
 @skip_if_not_sqlite
