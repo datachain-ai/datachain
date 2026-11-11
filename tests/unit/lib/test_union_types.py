@@ -439,29 +439,20 @@ def test_union_arm_named_like_the_discriminator_rejected():
         SignalSchema({"value": _type_tag | str}).db_signals()
 
 
-def _write_v(path, session, values, anno, tags=None):
-    dc.read_values(
-        id=list(range(len(values))),
-        v=values,
-        output={"id": int, "v": anno},
-        session=session,
-    ).order_by("id").to_parquet(path)
-    if tags is not None:
-        table = pq.read_table(path).drop_columns(["v._type_tag"])
-        pq.write_table(table.append_column("v._type_tag", tags), path)
-
-
-def _read_v(path, session):
-    chain = dc.read_parquet(path.as_uri(), source=False, session=session)
-    return chain.order_by("id").to_values("v")
-
-
 def test_read_parquet_reads_an_optional_model_under_any_tag_name(tmp_dir, test_session):
     path = tmp_dir / "v.parquet"
+    dc.read_values(
+        id=[0, 1, 2],
+        v=[Foo(a=5)] * 3,
+        output={"id": int, "v": Foo | None},
+        session=test_session,
+    ).order_by("id").to_parquet(path)
     # A partial model's name, NULL, and ClickHouse's NULL
     tags = pa.array(["FooPartial_1a2b_v1", None, ""])
-    _write_v(path, test_session, [Foo(a=5)] * 3, Foo | None, tags)
-    assert [v and v.a for v in _read_v(path, test_session)] == [5, None, None]
+    table = pq.read_table(path).drop_columns(["v._type_tag"])
+    pq.write_table(table.append_column("v._type_tag", tags), path)
+    chain = dc.read_parquet(path.as_uri(), source=False, session=test_session)
+    assert [v and v.a for v in chain.order_by("id").to_values("v")] == [5, None, None]
 
 
 def test_arm_name_wins_over_a_field_of_the_same_name():
@@ -560,7 +551,9 @@ def test_read_parquet_union_arm_must_have_the_stored_arm_shape(tmp_dir, test_ses
         foo: Foo
 
     path = tmp_dir / "v.parquet"
-    _write_v(path, test_session, [Holder(foo=Foo())], Holder | int)
+    dc.read_values(
+        v=[Holder(foo=Foo())], output={"v": Holder | int}, session=test_session
+    ).to_parquet(path)
 
     class Holder(DataModel):  # type: ignore[no-redef]
         _version: ClassVar[int] = 2

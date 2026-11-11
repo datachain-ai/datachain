@@ -3005,7 +3005,7 @@ class DataChain:
                 model = output  # type: ignore[assignment]
 
             if not infer:
-                read, written_by_datachain = read_columns(
+                read, schema = read_columns(
                     self,
                     columns,
                     model,
@@ -3013,6 +3013,7 @@ class DataChain:
                     **kwargs,
                     parse_options=parse_options,
                 )
+                written_by_datachain = schema is not None
         except (ValueError, pa.ArrowTypeError) as e:
             raise DatasetPrepareError(self.name, e) from e
 

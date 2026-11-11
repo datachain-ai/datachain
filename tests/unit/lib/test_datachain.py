@@ -2685,15 +2685,21 @@ def point_parquet(tmp_dir, test_session):
     return path.as_uri()
 
 
-def test_read_parquet_columns_written_by_datachain(point_parquet, test_session):
+def test_read_parquet_columns_keep_the_requested_signal_order(
+    point_parquet, test_session
+):
     chain = dc.read_parquet(point_parquet, columns=["p", "a"], session=test_session)
     assert [s for s in chain.schema if s != "source"] == ["p", "a"]
     ((p, a),) = chain.to_list("p", "a")
     assert (p.x, p.y, a) == (2, 3, 1)
 
+
+def test_read_parquet_columns_build_a_partial_model(point_parquet, test_session):
     chain = dc.read_parquet(point_parquet, columns=["p.x"], session=test_session)
     assert [p.model_dump() for p in chain.to_values("p")] == [{"x": 2}]
 
+
+def test_read_parquet_columns_reject_an_unknown_signal(point_parquet, test_session):
     with pytest.raises(DatasetPrepareError, match="'x': is not found"):
         dc.read_parquet(point_parquet, columns=["x"], session=test_session)
 
@@ -2914,6 +2920,22 @@ def _write_x_then_no_x(path, session, optional=False):
 
 
 @pytest.mark.parametrize("optional", [False, True])
+def test_read_parquet_output_reads_a_field_missing_from_a_file_as_none(
+    tmp_dir, test_session, optional
+):
+    uri = _write_x_then_no_x(tmp_dir / "parts", test_session, optional)
+    model = DefaultX | None if optional else DefaultX
+    chain = dc.read_parquet(
+        uri,
+        columns=["id", "p"],
+        output={"id": int, "v": model},
+        source=False,
+        session=test_session,
+    )
+    assert [v.x for v in chain.order_by("id").to_values("v")] == [1, None]
+
+
+@pytest.mark.parametrize("optional", [False, True])
 def test_read_parquet_columns_read_a_field_missing_from_a_file_as_none(
     tmp_dir, test_session, optional
 ):
@@ -2995,6 +3017,94 @@ def test_read_parquet_columns_read_a_model_in_an_optional_or_union_by_its_parent
         None,
         None,
     ]
+
+
+@pytest.fixture
+def card_in_first_file_only(tmp_dir, test_session):
+    path = tmp_dir / "parts"
+    path.mkdir()
+    dc.read_values(
+        id=[1],
+        c=[Card(note=Note(text="a"))],
+        output={"id": int, "c": Card | None},
+        session=test_session,
+    ).to_parquet(path / "1.parquet")
+    dc.read_values(id=[2], session=test_session).to_parquet(path / "2.parquet")
+    return path.as_uri()
+
+
+@pytest.mark.parametrize(
+    "kwargs,signal",
+    [
+        ({"columns": ["id", "c.note"]}, "c"),
+        ({"columns": ["id", "c"], "output": {"id": int, "v": Card | None}}, "v"),
+        ({"columns": ["id", "c.note"], "output": ["id", "v"]}, "v"),
+    ],
+)
+def test_read_parquet_columns_read_a_parent_missing_from_a_file_as_none(
+    card_in_first_file_only, test_session, kwargs, signal
+):
+    chain = dc.read_parquet(
+        card_in_first_file_only, source=False, session=test_session, **kwargs
+    )
+    values = chain.order_by("id").to_values(signal)
+    assert [v is None for v in values] == [False, True]
+
+
+class PointAndNote(DataModel):
+    x: int
+    note: Note | None = None
+
+
+@pytest.mark.parametrize("columns", [["p"], None])
+def test_read_parquet_output_model_field_not_in_the_file_keeps_its_default(
+    point_parquet, test_session, columns
+):
+    output = {"v": PointAndNote} if columns else {"n": int, "v": PointAndNote, "s": str}
+    chain = dc.read_parquet(
+        point_parquet, columns=columns, output=output, session=test_session
+    )
+    assert [(v.x, v.note) for v in chain.to_values("v")] == [(2, None)]
+
+
+def test_read_parquet_columns_reject_a_union_path_named_twice(
+    nested_parquet, test_session
+):
+    with pytest.raises(DatasetPrepareError, match="name a column more than once"):
+        dc.read_parquet(
+            nested_parquet.as_uri(),
+            columns=["u.text", "u.Note.text"],
+            session=test_session,
+        )
+
+
+class RequiredUnion(DataModel):
+    v: Note | Card
+
+
+def test_read_parquet_output_union_must_be_optional_as_its_signal(
+    nested_parquet, test_session
+):
+    with pytest.raises(DatasetPrepareError, match="v must be optional, as u can be"):
+        dc.read_parquet(
+            nested_parquet.as_uri(),
+            columns=["u"],
+            output=RequiredUnion,
+            session=test_session,
+        )
+
+
+@pytest.mark.parametrize("columns", [["id", "c.note"], None])
+def test_read_parquet_rejects_a_file_written_before_union_types(
+    nested_parquet, test_session, columns
+):
+    table = pq.read_table(nested_parquet)
+    tags = [c for c in table.column_names if c.endswith("._type_tag")]
+    pq.write_table(table.drop_columns(tags), nested_parquet)
+    with pytest.raises(ValueError, match="written before union types"):
+        dc.read_parquet(
+            nested_parquet.as_uri(), columns=columns, session=test_session
+        ).to_list()
 
 
 @pytest.mark.parametrize(

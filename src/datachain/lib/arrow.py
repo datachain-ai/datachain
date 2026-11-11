@@ -12,7 +12,7 @@ from pyarrow.fs import FileInfo, FileType, FSSpecHandler, PyFileSystem
 
 from datachain import json
 from datachain.fs.reference import ReferenceFileSystem
-from datachain.lib.convert.flatten import classify_field
+from datachain.lib.convert.flatten import classify_field, iter_field_columns
 from datachain.lib.data_model import (
     NULLABLE_SCALARS,
     TYPE_TAG_FIELD,
@@ -209,6 +209,8 @@ class ArrowGenerator(Generator):
             raise ValueError(
                 f"{_MIXED_FILES}, and '{file.path}' {kind} written by DataChain"
             )
+        if use_datachain_schema:
+            _check_type_tags(file, next(ds.get_fragments()).physical_schema)
 
         schema = ds.schema
         kw: dict[str, Any] = {}
@@ -222,10 +224,7 @@ class ArrowGenerator(Generator):
         ):
             signals = _model_signals(self.output_schema, self.columns)
             parents = _parent_tags(signal_schema, schema.names, self.columns)
-            tags = {tag for tag, _, _ in parents.values()}
-            kw["columns"] = [
-                c for c in schema.names if c in tags or _in_signals(c, signals)
-            ]
+            kw["columns"] = [c for c in schema.names if _in_signals(c, signals)]
         elif self.columns is not None:
             present = set(schema.names)
             kw["columns"] = [c for c in self.columns if c in present]
@@ -380,14 +379,7 @@ def infer_output(
         schema = pa.unify_schemas(schemas)
     else:
         columns = list(signals)  # as stored, e.g. "u.Model.x" for "u.x"
-        # Only the picked signals need compatible types across files.
-        picked = [
-            pa.schema(
-                [f for f in s if _in_signals(f.name, columns)], metadata=s.metadata
-            )
-            for s in schemas
-        ]
-        schema = pa.unify_schemas(picked)
+        schema = _picked_schema(schemas, columns)
     if col_names:
         _check_fields_fit(len(col_names), len(signals))
         names = list(normalize_col_names(col_names))
@@ -405,9 +397,9 @@ def read_columns(
     model: type["BaseModel"],
     replace_source: bool,
     **kwargs,
-) -> tuple[list[str], bool]:
-    """Return the columns the output fields read, in order, and whether they are
-    signals of files written by DataChain.
+) -> tuple[list[str], pa.Schema | None]:
+    """Return the columns the output fields read, in order, and for files written
+    by DataChain, the schema to read them with (None for other files).
 
     Like pyarrow, they come from the first file (by path). Each file is read by
     these names with its own types. Partition and pandas index columns at the end
@@ -423,7 +415,7 @@ def read_columns(
             model.model_fields.items(), signals.items(), strict=True
         ):
             _check_output_shape(field, info.annotation, path, stored)
-        return list(signals), True
+        return list(signals), _picked_schema([schema], list(signals))
 
     if columns is not None:
         schema, _ = merge_schemas([schema], columns)
@@ -435,7 +427,7 @@ def read_columns(
         if set(schema.names[fields:]) <= extra:
             schema = pa.schema(list(schema)[:fields])
     _check_fields_fit(fields, len(schema))
-    return schema.names, False
+    return schema.names, None
 
 
 def _check_fields_fit(fields: int, read: int) -> None:
@@ -502,8 +494,6 @@ def _signal_paths(
             for name, anno in signal_schema.values.items()
             if not (replace_source and _is_read_source(name, anno))
         ]
-    elif len(set(columns)) < len(columns):
-        raise ValueError(f"Columns {list(columns)} name a column more than once")
     else:
         paths = list(columns)
     try:
@@ -511,6 +501,9 @@ def _signal_paths(
     except SignalSchemaError as e:
         available = list(signal_schema.values)
         raise ValueError(f"{e}. Available signals: {available}") from e
+    # A readable path such as "u.x" resolves to the same signal as "u.Model.x".
+    if len(signals) < len(paths):
+        raise ValueError(f"Columns {list(paths)} name a column more than once")
     return {
         path: anno | None if signal_schema.tagged_parent(path) else anno  # type: ignore[misc]
         for path, anno in signals.items()
@@ -530,26 +523,27 @@ def _check_output_shape(field: str, anno: Any, path: str, stored: Any) -> None:
     if output_kind.is_model != stored_kind.is_model:
         kind = "a model" if output_kind.is_model else "not a model"
         raise ValueError(f"output field {field} is {kind}, unlike {path}")
+    output_layout, stored_layout = union_layout(anno), union_layout(stored)
     if not output_kind.is_model:
-        output_layout, stored_layout = union_layout(anno), union_layout(stored)
         if (arms := _union_arms(output_layout)) != _union_arms(stored_layout):
             kind = f"a union of {arms}" if arms else "not a union"
             raise ValueError(f"output field {field} is {kind}, unlike {path}")
-        if output_layout and stored_layout:
-            for arm, stored_arm in zip(
-                output_layout.arms, stored_layout.arms, strict=True
-            ):
-                name = arm_selector(arm)
-                _check_output_shape(
-                    f"{field}.{name}", arm, f"{path}.{name}", stored_arm
-                )
+        if output_layout is None:
+            return
+    if stored_kind.is_optional and not output_kind.is_optional:
+        raise ValueError(
+            f"output field {field} must be optional, as {path} can be None"
+        )
+    # A union reads its own tag, so it may be optional where the signal isn't.
+    if output_kind.is_model and output_kind.is_optional and not stored_kind.is_optional:
+        raise ValueError(
+            f"output field {field} can't be optional, as {path} is never None"
+        )
+    if output_layout and stored_layout and not output_kind.is_model:
+        for arm, stored_arm in zip(output_layout.arms, stored_layout.arms, strict=True):
+            name = arm_selector(arm)
+            _check_output_shape(f"{field}.{name}", arm, f"{path}.{name}", stored_arm)
         return
-    if output_kind.is_optional != stored_kind.is_optional:
-        if stored_kind.is_optional:
-            reason = f"must be optional, as {path} can be None"
-        else:
-            reason = f"can't be optional, as {path} is never None"
-        raise ValueError(f"output field {field} {reason}")
     fields = stored_kind.inner.model_fields
     for name, info in output_kind.inner.model_fields.items():
         if name in fields:
@@ -567,8 +561,23 @@ def _union_arms(layout: "UnionLayout | None") -> str | None:
 
 
 def _in_signals(column: str, signals: Sequence[str]) -> bool:
-    """Whether a stored column belongs to one of the signals, e.g. "p.x" to "p"."""
+    """Whether a stored column belongs to one of the signals, e.g. "p.x" to "p",
+    or is the type tag of a parent of one, e.g. "p._type_tag" to "p.x"."""
+    if column.endswith(f".{TYPE_TAG_FIELD}"):
+        parent = column.removesuffix(TYPE_TAG_FIELD)
+        if any(s.startswith(parent) for s in signals):
+            return True
     return any(column == s or column.startswith(f"{s}.") for s in signals)
+
+
+def _picked_schema(schemas: list[pa.Schema], signals: Sequence[str]) -> pa.Schema:
+    """Unify the files' schemas over the picked signals. Only these need compatible
+    types across files, and a file that lacks one reads it as null."""
+    picked = [
+        pa.schema([f for f in s if _in_signals(f.name, signals)], metadata=s.metadata)
+        for s in schemas
+    ]
+    return pa.unify_schemas(picked)
 
 
 def _parent_tags(
@@ -591,19 +600,13 @@ def _parent_tags(
 
 
 def _model_signals(model: type["BaseModel"], paths: Sequence[str]) -> list[str]:
-    """Return the signals that the model's fields read, each from its path. An
-    optional model also reads its ``_type_tag``."""
-    read = []
-    for info, path in zip(model.model_fields.values(), paths, strict=True):
-        kind = classify_field(info.annotation)
-        if kind.is_model:
-            fields = [f"{path}.{field}" for field in kind.inner.model_fields]
-            read += _model_signals(kind.inner, fields)
-            if kind.is_optional:
-                read.append(f"{path}.{TYPE_TAG_FIELD}")
-        else:
-            read.append(path)
-    return read
+    """Return the stored columns that the model's fields read, each from its
+    path."""
+    return [
+        ".".join((*col.path, TYPE_TAG_FIELD) if col.is_sentinel else col.path)
+        for info, path in zip(model.model_fields.values(), paths, strict=True)
+        for col in iter_field_columns(info.annotation, (path,))
+    ]
 
 
 def schema_to_output(
@@ -709,6 +712,20 @@ def _is_scalar_type(col_type: pa.DataType) -> bool:
     )
 
 
+def _check_type_tags(file: File, schema: pa.Schema) -> None:
+    """Raise for a file written by DataChain before union types: its schema has
+    optional models or unions, but the file has no ``_type_tag`` for them."""
+    if not (signal_schema := _get_datachain_schema(schema)):
+        return
+    names = set(schema.names)
+    for path, *_ in signal_schema.get_flat_tree(include_sentinels=True):
+        if path[-1] == TYPE_TAG_FIELD and (tag := ".".join(path)) not in names:
+            raise ValueError(
+                f"'{file.path}' has no {tag}, as it was written before union "
+                "types. Export it again to read it."
+            )
+
+
 def _get_hf_schema(
     schema: "pa.Schema",
 ) -> tuple["Features", dict[str, "DataType"]] | None:
@@ -775,7 +792,9 @@ def _nested_model_instantiate(
         else:
             cur_path = f"{prefix}.{field}" if prefix else field
         if (layout := union_layout(anno)) is not None:
-            vals_dict[field] = _union_value(column_values, layout, cur_path)
+            # A field that the file's schema doesn't have keeps its default.
+            if f"{cur_path}.{TYPE_TAG_FIELD}" in column_values:
+                vals_dict[field] = _union_value(column_values, layout, cur_path)
             continue
         kind = classify_field(anno)
         if kind.is_model:

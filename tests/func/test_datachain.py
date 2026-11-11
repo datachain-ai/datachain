@@ -1641,38 +1641,29 @@ def _put_wide(ctc, tmp_path, anno):
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
-@pytest.mark.parametrize("anno", [_Wide, _Wide | None])
+@pytest.mark.parametrize(
+    "anno,output,signal",
+    [
+        (_Wide, None, "p.x"),
+        (_Wide | None, None, "p.x"),
+        (_Wide | None, {"x": float | None}, "x"),
+    ],
+)
 def test_read_parquet_columns_fetch_only_picked_signals_written_by_datachain(
-    cloud_test_catalog_upload, fetched_bytes, tmp_path, anno
+    cloud_test_catalog_upload, fetched_bytes, tmp_path, anno, output, signal
 ):
     ctc = cloud_test_catalog_upload
     uri, size, points = _put_wide(ctc, tmp_path, anno)
     chain = dc.read_parquet(
-        uri, columns=["p.x"], settings={"prefetch": 0}, session=ctc.session
-    )
-    fetched_bytes[:] = [0, 0]
-
-    assert sorted(chain.to_values("p.x")) == sorted(p.x for p in points)
-    assert 0 < fetched_bytes[0] < size // 2
-
-
-@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
-@pytest.mark.parametrize("version_aware", [False], indirect=True)
-def test_read_parquet_columns_with_scalar_output_under_optional_parent_fetch_only_it(
-    cloud_test_catalog_upload, fetched_bytes, tmp_path
-):
-    ctc = cloud_test_catalog_upload
-    uri, size, points = _put_wide(ctc, tmp_path, _Wide | None)
-    chain = dc.read_parquet(
         uri,
         columns=["p.x"],
-        output={"x": float | None},
+        output=output,
         settings={"prefetch": 0},
         session=ctc.session,
     )
     fetched_bytes[:] = [0, 0]
 
-    assert sorted(chain.to_values("x")) == sorted(p.x for p in points)
+    assert sorted(chain.to_values(signal)) == sorted(p.x for p in points)
     assert 0 < fetched_bytes[0] < size // 2
 
 
