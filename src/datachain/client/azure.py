@@ -18,6 +18,8 @@ from azure.core.exceptions import (
 )
 from azure.storage.blob import BlobServiceClient
 from fsspec.asyn import get_loop, sync
+from fsspec.config import apply_config
+from fsspec.utils import tokenize
 
 from datachain.lib.file import File, FileRow
 
@@ -35,55 +37,58 @@ _COPY_BUFFER_SIZE = 8 * 1024 * 1024
 
 
 _SCOPE = "https://storage.azure.com/.default"
-_NO_IDENTITY_TTL = 60.0  # seconds: an az login or an identity may come later
-_IDENTITY_CHECKS: dict[tuple, tuple[float, bool]] = {}
+_AUTH_RETRY_TTL = 60.0  # seconds: an az login or an identity may come later
+_CREDENTIAL_CHECKS: dict[tuple, tuple[float, bool]] = {}
 
 
-def _finds_no_identity(credential: Any) -> bool:
-    """Whether every credential in a ``DefaultAzureCredential`` chain is unavailable,
-    that is, nothing is configured. An identity that fails to authenticate is
-    found: its error must reach the user."""
-    from azure.identity import CredentialUnavailableError
-    from azure.identity._internal import within_credential_chain
-
-    in_chain = within_credential_chain.set(True)  # unavailable, as the chain sees it
-    try:
-        for each in credential.credentials:
-            try:
-                each.get_token(_SCOPE)
-            except CredentialUnavailableError:
-                continue
-            except Exception:  # noqa: BLE001
-                return False
-            return False
-        return True
-    finally:
-        within_credential_chain.reset(in_chain)
-
-
-def _no_identity(fs: AzureBlobFileSystem) -> bool:
-    environment = frozenset(
+def _identity_environment() -> frozenset[tuple[str, str]]:
+    return frozenset(
         (name, value)
         for name, value in os.environ.items()
         if name.startswith(("AZURE_", "IDENTITY_", "MSI_", "IMDS_"))
-        or name in ("PATH", "HOME")
+        or name
+        in (
+            "PATH",
+            "HOME",
+            "AZD_CONFIG_DIR",
+            "USERPROFILE",
+            "SYSTEMROOT",
+            "PROGRAMDATA",
+        )
     )
+
+
+# Partition fsspec's instance cache when environment credentials change.
+class _AzureFileSystem(AzureBlobFileSystem):
+    def __init__(self, *args, credential_token=None, **kwargs):
+        super().__init__(*args, **kwargs)
+
+
+def _cannot_authenticate(credential: Any) -> bool:
+    try:
+        credential.get_token(_SCOPE)
+    except ClientAuthenticationError:
+        return True
+    return False
+
+
+def _credentials_unavailable(fs: AzureBlobFileSystem) -> bool:
     now = time.monotonic()
     # adlfs forwards its extra kwargs to DefaultAzureCredential. Filesystem
     # options such as account_name and version_aware do not change that chain.
     key = (
-        environment,
+        _identity_environment(),
         frozenset((name, repr(value)) for name, value in fs.kwargs.items()),
     )
-    if cached := _IDENTITY_CHECKS.get(key):
-        checked, absent = cached
-        if not absent or now - checked < _NO_IDENTITY_TTL:
-            return absent
-    absent = _finds_no_identity(fs.sync_credential)
-    if key not in _IDENTITY_CHECKS and len(_IDENTITY_CHECKS) >= 16:
-        _IDENTITY_CHECKS.pop(next(iter(_IDENTITY_CHECKS), ()), None)
-    _IDENTITY_CHECKS[key] = time.monotonic(), absent
-    return absent
+    if cached := _CREDENTIAL_CHECKS.get(key):
+        checked, unavailable = cached
+        if now - checked < _AUTH_RETRY_TTL:
+            return unavailable
+    unavailable = _cannot_authenticate(fs.sync_credential)
+    if key not in _CREDENTIAL_CHECKS and len(_CREDENTIAL_CHECKS) >= 16:
+        _CREDENTIAL_CHECKS.pop(next(iter(_CREDENTIAL_CHECKS), ()), None)
+    _CREDENTIAL_CHECKS[key] = time.monotonic(), unavailable
+    return unavailable
 
 
 class _AzureWriteBuffer(SpooledTemporaryFile):
@@ -99,7 +104,7 @@ class _AzureWriteBuffer(SpooledTemporaryFile):
 
 
 class AzureClient(RangeListedClient):
-    FS_CLASS = AzureBlobFileSystem
+    FS_CLASS = _AzureFileSystem
     PREFIX = "az://"
     protocol = "az"
     LIST_PAGE_SIZE = 5000
@@ -122,16 +127,19 @@ class AzureClient(RangeListedClient):
     def create_fs(cls, **kwargs) -> AzureBlobFileSystem:
         from azure.identity import DefaultAzureCredential
 
+        kwargs = apply_config(cls.FS_CLASS, kwargs)
+        kwargs["credential_token"] = tokenize(_identity_environment())
         fs = cast("AzureBlobFileSystem", super().create_fs(**kwargs))
-        # Nothing configured: adlfs falls back to DefaultAzureCredential, which
-        # then fails every request, public containers included; go anonymous.
+        # Failed default credentials cannot authenticate even public-container reads.
         if (
-            "anon" not in kwargs
+            kwargs.get("anon") is None
             and "AZURE_STORAGE_ANON" not in os.environ
             and isinstance(getattr(fs, "sync_credential", None), DefaultAzureCredential)
-            and _no_identity(fs)
+            and _credentials_unavailable(fs)
         ):
-            fs = cast("AzureBlobFileSystem", super().create_fs(**kwargs, anon=True))
+            fs = cast(
+                "AzureBlobFileSystem", super().create_fs(**kwargs | {"anon": True})
+            )
         return fs
 
     @classmethod
