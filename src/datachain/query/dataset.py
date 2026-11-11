@@ -56,7 +56,11 @@ from datachain.hash_utils import hash_column_elements
 from datachain.job import Job
 from datachain.lib.data_model import NULLABLE_SCALARS
 from datachain.lib.listing import ensure_listing, is_listing_dataset
-from datachain.lib.signal_schema import SignalSchema, generate_merge_root_mapping
+from datachain.lib.signal_schema import (
+    KeyPresence,
+    SignalSchema,
+    generate_merge_root_mapping,
+)
 from datachain.lib.udf import JsonSerializationError, UdfError, _get_cache
 from datachain.lib.utils import type_to_str
 from datachain.progress import (
@@ -294,10 +298,9 @@ class Step(ABC):
         """Immediate sub-queries contained in this step."""
         return []
 
-    def replace_source(
+    def replace_sources(
         self,
-        source: "DatasetQuery",
-        replacement: "DatasetQuery",
+        replacements: dict[int, "DatasetQuery"],
     ) -> "Step":
         return self
 
@@ -398,14 +401,13 @@ class DatasetDiffOperation(Step):
     def sub_queries(self) -> list["DatasetQuery"]:
         return [self.dq]
 
-    def replace_source(
+    def replace_sources(
         self,
-        source: "DatasetQuery",
-        replacement: "DatasetQuery",
+        replacements: dict[int, "DatasetQuery"],
     ) -> "Step":
         return attrs.evolve(
             self,
-            dq=self.dq.replace_source(source, replacement),
+            dq=self.dq.replace_sources(replacements),
         )
 
     @abstractmethod
@@ -435,38 +437,29 @@ class DatasetDiffOperation(Step):
             *(c for c in target_full.selected_columns if not c.name.startswith("sys__"))
         )
 
-        # creating temp table that will hold subtract results
-        temp_table_name = self.catalog.warehouse.temp_table_name()
-        temp_tables.append(temp_table_name)
-
-        columns = [
-            c if isinstance(c, Column) else Column(c.name, c.type)
-            for c in source_query.selected_columns
-        ]
-        temp_table = self.catalog.warehouse.create_dataset_rows_table(
-            temp_table_name,
-            columns=columns,
-            if_not_exists=False,
-        )
-
-        diff_q = self.query(source_query, target_query)
-
-        insert_q = temp_table.insert().from_select(
-            source_query.selected_columns,  # type: ignore[arg-type]
-            diff_q,
-        )
-
-        self.catalog.warehouse.db.execute(insert_q)
+        diff_q = cast("SelectBase", self.query(source_query, target_query)).subquery()
 
         def q(*columns):
-            return sqlalchemy.select(*columns)
+            return sqlalchemy.select(*columns).select_from(diff_q)
 
-        return step_result(q, temp_table.c)
+        columns = [diff_q.c[c.name] for c in source_query.selected_columns]
+        return step_result(q, columns, dependencies=self.dq.dependencies)
+
+
+def _key_present(columns: Any, presence: KeyPresence) -> ColumnElement:
+    """Whether a key node holds a value, by ``SignalSchema.key_presence``."""
+    if presence is None:
+        return sa.true()
+    tag, arm = presence
+    is_set = columns[tag].is_not(None)
+    return is_set if arm is None else sa.and_(is_set, columns[tag] == arm)
 
 
 @frozen
 class Subtract(DatasetDiffOperation):
     on: Sequence[str | tuple[str, str]]
+    # Key nodes compared by whether they hold a value on each side.
+    presence: Sequence[tuple[KeyPresence, KeyPresence]] = ()
 
     def _normalize_on(self) -> list[tuple[str, str]]:
         return [(col, col) if isinstance(col, str) else col for col in self.on]
@@ -477,14 +470,41 @@ class Subtract(DatasetDiffOperation):
             f"{a}:{b}".encode()
             for a, b in sorted(normalized, key=lambda t: (t[0], t[1]))
         )
+        on_bytes += "".join(sorted(f"{a}:{b}" for a, b in self.presence)).encode()
 
         return hashlib.sha256(bytes.fromhex(self.dq.hash()) + on_bytes).hexdigest()
 
     def query(self, source_query: Select, target_query: Select) -> sa.Selectable:
+        on = self._normalize_on()
+        if not self.presence:
+            return self.catalog.warehouse.subtract_query(source_query, target_query, on)
+        # Compare presence as extra key columns, dropped again from the result.
+        used = {
+            c.name.casefold()
+            for query in (source_query, target_query)
+            for c in query.selected_columns
+        }
+        names = []
+        for i in range(len(self.presence)):
+            name = f"__dc_present_{i}"
+            while name.casefold() in used:
+                name = "_" + name
+            names.append(name)
+            used.add(name.casefold())
+
+        def with_presence(query: Select, side: int) -> Select:
+            columns = query.selected_columns
+            return query.add_columns(
+                *(
+                    sa.case((_key_present(columns, pair[side]), 1), else_=0).label(name)
+                    for name, pair in zip(names, self.presence, strict=True)
+                ),
+            )
+
         return self.catalog.warehouse.subtract_query(
-            source_query,
-            target_query,
-            self._normalize_on(),
+            with_presence(source_query, 0),
+            with_presence(target_query, 1),
+            [*on, *zip(names, names, strict=True)],
         )
 
 
@@ -945,7 +965,17 @@ class UDFStep(Step, ABC):
                     exec_cmd = get_datachain_executable()
                     cmd = [*exec_cmd, "internal-run-udf"]
                     envs = dict(os.environ)
-                    envs["PYTHONPATH"] = os.getcwd()
+                    if "PYTHONSAFEPATH" not in envs:
+                        envs["PYTHONSAFEPATH"] = "1"
+                        envs["_DATACHAIN_UDF_SAFE_PATH"] = "1"
+                    paths = [
+                        sys.path[0] or os.getcwd(),
+                        *os.environ.get("PYTHONPATH", "").split(os.pathsep),
+                        os.getcwd(),
+                    ]
+                    envs["PYTHONPATH"] = os.pathsep.join(
+                        dict.fromkeys(path or os.getcwd() for path in paths)
+                    )
                     process_data = filtered_cloudpickle_dumps(udf_info)
 
                     with subprocess.Popen(  # noqa: S603
@@ -1643,26 +1673,29 @@ class UDFStep(Step, ABC):
         # `input_query` is rebuilt from the input table and lacks partition_id.
         unprocessed_input = query if self.partition_by is not None else input_query
 
-        unprocessed_query = self.calculate_unprocessed_rows(
-            unprocessed_input,
-            partial_table,
-            incomplete_input_ids,
-        )
+        # The anti-join must stay fixed while resumed outputs are appended.
+        with self._snapshot_processed_input_ids(partial_table) as processed_ids:
+            unprocessed_query = self.calculate_unprocessed_rows(
+                unprocessed_input,
+                partial_table,
+                incomplete_input_ids,
+                processed_ids=processed_ids,
+            )
 
-        # Count rows before populating with new rows
-        output_rows_reused = self.warehouse.table_rows_count(partial_table)
-        rows_input = self.warehouse.table_rows_count(input_table)
-        rows_to_process = self.warehouse.query_count(unprocessed_query)
-        rows_reused = rows_input - rows_to_process  # input rows reused
+            # Count rows before populating with new rows
+            output_rows_reused = self.warehouse.table_rows_count(partial_table)
+            rows_input = self.warehouse.table_rows_count(input_table)
+            rows_to_process = self.warehouse.query_count(unprocessed_query)
+            rows_reused = rows_input - rows_to_process  # input rows reused
 
-        self.populate_udf_output_table(
-            partial_table,
-            unprocessed_query,
-            continued=True,
-            rows_reused=rows_reused,
-            output_rows_reused=output_rows_reused,
-            rows_total=rows_input,
-        )
+            self.populate_udf_output_table(
+                partial_table,
+                unprocessed_query,
+                continued=True,
+                rows_reused=rows_reused,
+                output_rows_reused=output_rows_reused,
+                rows_total=rows_input,
+            )
 
         output_table = self.warehouse.rename_table(
             partial_table, Checkpoint.output_table_name(job.id, hash_output)
@@ -1700,6 +1733,18 @@ class UDFStep(Step, ABC):
 
         return output_table, input_table
 
+    @contextlib.contextmanager
+    def _snapshot_processed_input_ids(self, partial_table):
+        processed_ids = self.processed_input_ids_query(partial_table)
+        snapshot = self.warehouse.create_pre_udf_table(
+            sa.select(processed_ids.c.sys__processed_id),
+            self.warehouse.temp_table_name(),
+        )
+        try:
+            yield snapshot
+        finally:
+            self.warehouse.db.drop_table(snapshot, if_exists=True)
+
     @abstractmethod
     def processed_input_ids_query(self, partial_table: "Table"):
         """
@@ -1729,6 +1774,7 @@ class UDFStep(Step, ABC):
         input_query: Select,
         partial_table: "Table",
         incomplete_input_ids: list[int] | None = None,
+        processed_ids: "Table | None" = None,
     ) -> Select:
         """
         Calculate which input rows haven't been processed yet.
@@ -1738,12 +1784,18 @@ class UDFStep(Step, ABC):
             partial_table: The UDF partial table
             incomplete_input_ids: List of input IDs that were partially processed
                 and need to be re-run (for generators only)
+            processed_ids: Table of processed input IDs to use instead of a live
+                query on the partial table
 
         Returns:
             A filtered query containing only unprocessed rows
         """
         incomplete_input_ids = incomplete_input_ids or []
-        processed_input_ids_subquery = self.processed_input_ids_query(partial_table)
+        processed_input_ids_subquery = (
+            self.processed_input_ids_query(partial_table)
+            if processed_ids is None
+            else processed_ids
+        )
 
         # For Aggregator with partition_by: filter by partition_id
         unprocessed_filter: sa.ColumnElement[bool]
@@ -2250,15 +2302,14 @@ class SQLUnion(Step):
     def sub_queries(self) -> list["DatasetQuery"]:
         return [self.query1, self.query2]
 
-    def replace_source(
+    def replace_sources(
         self,
-        source: "DatasetQuery",
-        replacement: "DatasetQuery",
+        replacements: dict[int, "DatasetQuery"],
     ) -> "Step":
         return attrs.evolve(
             self,
-            query1=self.query1.replace_source(source, replacement),
-            query2=self.query2.replace_source(source, replacement),
+            query1=self.query1.replace_sources(replacements),
+            query2=self.query2.replace_sources(replacements),
         )
 
     def apply(
@@ -2360,15 +2411,14 @@ class SQLJoin(Step):
     def sub_queries(self) -> list["DatasetQuery"]:
         return [self.query1, self.query2]
 
-    def replace_source(
+    def replace_sources(
         self,
-        source: "DatasetQuery",
-        replacement: "DatasetQuery",
+        replacements: dict[int, "DatasetQuery"],
     ) -> "Step":
         return attrs.evolve(
             self,
-            query1=self.query1.replace_source(source, replacement),
-            query2=self.query2.replace_source(source, replacement),
+            query1=self.query1.replace_sources(replacements),
+            query2=self.query2.replace_sources(replacements),
         )
 
     def get_query(self, dq: "DatasetQuery", temp_tables: list[str]) -> sa.Subquery:
@@ -2380,20 +2430,16 @@ class SQLJoin(Step):
             return query.subquery(dq.table.name)
 
         warehouse = self.catalog.warehouse
-
         columns = [
             c if isinstance(c, Column) else Column(c.name, c.type)
             for c in query.subquery().columns
         ]
-        temp_table = warehouse.create_dataset_rows_table(
-            warehouse.temp_table_name(),
-            columns=columns,
+        table = warehouse.create_dataset_rows_table(
+            warehouse.temp_table_name(), columns=columns
         )
-        temp_tables.append(temp_table.name)
-
-        warehouse.insert_into(temp_table, query)
-
-        return temp_table.select().subquery(dq.table.name)
+        temp_tables.append(table.name)
+        warehouse.insert_into(table, query)
+        return table.select().subquery(dq.table.name)
 
     def bind_and_validate_expression(self, exp: ColumnElement, q1, q2) -> ColumnElement:
         left_name = self.query1.table.name
@@ -3002,25 +3048,17 @@ class DatasetQuery:
         if self.delta_spec is not None:
             sources.append(self)
 
-        return sources
+        return list({id(source): source for source in sources}.values())
 
-    def replace_source(
-        self,
-        source: "DatasetQuery",
-        replacement: "DatasetQuery",
-    ) -> "Self":
-        if self is source:
-            rewritten = replacement.clone(new_table=False)
-            rewritten.table = self.table
-            rewritten_steps = rewritten.steps.copy()
-        else:
-            rewritten = self.clone(new_table=False)
-            rewritten_steps = []
-
-        rewritten_steps.extend(
-            step.replace_source(source, replacement) for step in self.steps
+    def replace_sources(self, replacements: dict[int, "DatasetQuery"]) -> "Self":
+        replacement = replacements.get(id(self))
+        rewritten = (replacement if replacement is not None else self).clone(
+            new_table=False
         )
-        rewritten.steps = rewritten_steps
+        rewritten.table = self.table
+        steps = rewritten.steps.copy() if replacement is not None else []
+        steps.extend(step.replace_sources(replacements) for step in self.steps)
+        rewritten.steps = steps
         return cast("Self", rewritten)
 
     @detach
@@ -3261,7 +3299,7 @@ class DatasetQuery:
 
         Parallel can optionally be specified as >= 1 for parallel processing with a
         specific number of processes, or set to -1 for the default of
-        the number of CPUs (cores) on the current machine.
+        the CPUs available to the process, respecting affinity and container quotas.
 
         For distributed processing with the appropriate distributed module installed,
         workers can optionally be specified as >= 1 for a specific number of workers,
@@ -3286,9 +3324,14 @@ class DatasetQuery:
         return query
 
     @detach
-    def subtract(self, dq: "DatasetQuery", on: Sequence[tuple[str, str]]) -> "Self":
+    def subtract(
+        self,
+        dq: "DatasetQuery",
+        on: Sequence[tuple[str, str]],
+        presence: Sequence[tuple[KeyPresence, KeyPresence]] = (),
+    ) -> "Self":
         query = self.clone()
-        query.steps.append(Subtract(dq, self.catalog, on=on))
+        query.steps.append(Subtract(dq, self.catalog, on=on, presence=presence))
         return query
 
     @detach

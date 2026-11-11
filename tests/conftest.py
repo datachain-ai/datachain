@@ -11,7 +11,7 @@ import threading
 import uuid
 from collections.abc import Generator
 from datetime import datetime
-from pathlib import PosixPath
+from pathlib import Path, PosixPath
 from time import sleep
 from typing import NamedTuple
 
@@ -153,6 +153,17 @@ def clean_environment(
     Make sure we have a clean environment and won't write to userspace.
     """
     working_dir = str(tmp_path_factory.mktemp("default_working_dir"))
+    # Ancestor repositories outside pytest's temporary tree are not test projects.
+    outer_git_markers = {
+        str(parent / ".git") for parent in tmp_path_factory.getbasetemp().parents
+    }
+    path_exists = os.path.exists
+    monkeypatch_session.setattr(
+        os.path,
+        "exists",
+        lambda path: str(path) not in outer_git_markers and path_exists(path),
+    )
+    (Path(working_dir) / ".git").mkdir()
     monkeypatch_session.chdir(working_dir)
     monkeypatch_session.delenv(DataChainDir.ENV_VAR, raising=False)
     monkeypatch_session.delenv(DataChainDir.ENV_VAR_DATACHAIN_ROOT, raising=False)
@@ -660,12 +671,12 @@ def _moto_lists_after_key_marker(monkeypatch):
     monkeypatch.setattr(S3Backend, "list_object_versions", list_object_versions)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def cloud_server(
-    request, tmp_upath_factory, cloud_type, version_aware, tree, monkeypatch_session
+    request, tmp_upath_factory, cloud_type, version_aware, tree, monkeypatch
 ):
     if cloud_type == "s3":
-        _moto_lists_after_key_marker(monkeypatch_session)
+        _moto_lists_after_key_marker(monkeypatch)
     if cloud_type == "azure" and version_aware:
         if conn_str := request.config.getoption("--azure-connection-string"):
             src_path = tmp_upath_factory.azure(conn_str)
@@ -696,17 +707,15 @@ def datachain_job_id(test_session, monkeypatch):
     yield _create_job(test_session.catalog.metastore)
 
 
-@pytest.fixture(scope="session")
-def cloud_server_credentials(cloud_server, monkeypatch_session):
+@pytest.fixture
+def cloud_server_credentials(cloud_server, monkeypatch):
     if cloud_server.kind == "s3":
         cfg = cloud_server.src.fs.client_kwargs
-        monkeypatch_session.delenv("AWS_PROFILE", raising=False)
-        monkeypatch_session.setenv("AWS_ACCESS_KEY_ID", cfg["aws_access_key_id"])
-        monkeypatch_session.setenv(
-            "AWS_SECRET_ACCESS_KEY", cfg["aws_secret_access_key"]
-        )
-        monkeypatch_session.setenv("AWS_SESSION_TOKEN", cfg["aws_session_token"])
-        monkeypatch_session.setenv("AWS_DEFAULT_REGION", cfg["region_name"])
+        monkeypatch.delenv("AWS_PROFILE", raising=False)
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", cfg["aws_access_key_id"])
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", cfg["aws_secret_access_key"])
+        monkeypatch.setenv("AWS_SESSION_TOKEN", cfg["aws_session_token"])
+        monkeypatch.setenv("AWS_DEFAULT_REGION", cfg["region_name"])
 
 
 def get_cloud_test_catalog(cloud_server, tmp_path, metastore, warehouse):
@@ -751,15 +760,18 @@ def cloud_test_catalog_upload(cloud_test_catalog):
     src = cloud_test_catalog.src_uri
     client = Client.get_implementation(src)
     fsspec_fs = client.create_fs(**cloud_test_catalog.client_config)
-    original_paths = set(fsspec_fs.ls(src))
+    local = cloud_test_catalog.server.kind == "file"
+    original_paths = set(fsspec_fs.find(src, withdirs=local))
 
     yield cloud_test_catalog
 
-    # Cleanup any written files
-    new_paths = set(fsspec_fs.ls(src))
-    cleanup_paths = new_paths - original_paths
-    for p in cleanup_paths:
-        fsspec_fs.rm(p, recursive=True)
+    # Cleanup any written files, children before their directories
+    new_paths = set(fsspec_fs.find(src, withdirs=local, refresh=True))
+    for p in sorted(new_paths - original_paths, reverse=True):
+        if local and fsspec_fs.isdir(p):
+            fsspec_fs.rmdir(p)
+        else:
+            fsspec_fs.rm_file(p)
 
 
 @pytest.fixture
@@ -1465,11 +1477,11 @@ def mock_parquet_data_cloud(compressed_parquet_data, dog_entries, cloud_test_cat
 @pytest.fixture
 def fetched_bytes(monkeypatch):
     from adlfs.spec import AzureBlobFile
-    from gcsfs.core import GCSFile
+    from gcsfs import GCSFileSystem
     from s3fs.core import S3File
 
     fetched = [0, 0]
-    for cls in (S3File, GCSFile, AzureBlobFile):
+    for cls in (S3File, AzureBlobFile):
 
         def fetch_range(self, *args, _orig=cls._fetch_range, **kwargs):
             data = _orig(self, *args, **kwargs)
@@ -1478,10 +1490,28 @@ def fetched_bytes(monkeypatch):
             return data
 
         monkeypatch.setattr(cls, "_fetch_range", fetch_range)
+    # GCS full reads can bypass GCSFile._fetch_range.
+    original_call = GCSFileSystem._call
+
+    async def call(self, method, *args, **kwargs):
+        response = await original_call(self, method, *args, **kwargs)
+        if method == "GET" and not kwargs.get("json_out"):
+            fetched[0] += len(response[1])
+            fetched[1] += 1
+        return response
+
+    monkeypatch.setattr(GCSFileSystem, "_call", call)
     return fetched
 
 
 class _QuietHandler(http.server.SimpleHTTPRequestHandler):
+    def end_headers(self):
+        path = Path(self.translate_path(self.path))
+        if path.is_file():
+            stat = path.stat()
+            self.send_header("ETag", f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"')
+        super().end_headers()
+
     def log_message(self, format, *args):
         pass
 

@@ -324,6 +324,11 @@ def _tag_col(prefix: str) -> str:
     return f"{prefix}{DEFAULT_DELIMITER}{TYPE_TAG_FIELD}"
 
 
+# Whether a key node holds a value: its ``(tag, arm)`` discriminator is set (arm
+# None) or names ``arm``; None when the node always holds one.
+KeyPresence = tuple[str, str | None] | None
+
+
 def _model_reader(build_model: Callable[[type[BaseModel], dict], Any]) -> ModelReader:
     """Reader that turns a model's flat columns into an instance."""
 
@@ -919,9 +924,16 @@ class SignalSchema:
                     continue
 
                 if param_origin is not list:
-                    raise SignalResolvingError(param.split("."), "is not a list")
+                    raise SignalResolvingError(
+                        param.split("."), "is not a list; annotate it as list[T]"
+                    )
 
                 param_type = get_args(param_type)[0]
+                if param_type is Any:
+                    schema[param] = schema_type
+                    continue
+                if schema_opt:
+                    param_type = unwrap_optional(param_type)[0]
 
             if param_type == schema_type or (
                 isclass(param_type)
@@ -1349,6 +1361,39 @@ class SignalSchema:
         db_col = ColumnMeta.to_db_name(col)
         slots = [p for p, layout in self._tagged_ancestors(db_col) if layout.use_slots]
         return ".".join(slots[-1].split(DEFAULT_DELIMITER)) if slots else None
+
+    def key_columns(self, name: str) -> tuple[dict[str, str], set[str]]:
+        """DB columns of key ``name`` by their path below it, and the paths of its
+        ``Optional[DataModel]`` nodes. Such a node's tag names its model class, so it is
+        not a column: keys compare whether the node holds a value (``key_presence``).
+        A multi-arm union keeps its tag, which names the active arm."""
+        root = self.to_db_col(name)
+        columns: list[str] = self.resolve(name).db_signals()  # type: ignore[assignment]
+        optional = {
+            _tag_col(prefix): prefix
+            for prefix, layout in self._tagged_db_cols.items()
+            if not layout.use_slots
+        }
+        return (
+            {col.removeprefix(root): col for col in columns if col not in optional},
+            {optional[col].removeprefix(root) for col in columns if col in optional},
+        )
+
+    def key_presence(self, name: str, path: str) -> KeyPresence:
+        """Whether the node at ``path`` below key ``name`` holds a value, told by its
+        innermost tagged node within the key: ``(tag, None)`` when that tag is set,
+        ``(tag, arm)`` when it names the union arm holding the node. None when it
+        always does: a model under an absent parent still reads as a model."""
+        root = self.to_db_col(name)
+        node = root + path
+        for prefix, layout in self._tagged_ancestors(node):
+            if len(prefix) < len(root):
+                break
+            if layout.use_slots and prefix != node:
+                arm = node[len(prefix) + len(DEFAULT_DELIMITER) :]
+                return _tag_col(prefix), arm.split(DEFAULT_DELIMITER)[0]
+            return _tag_col(prefix), None
+        return None
 
     def reject_union_keys(self, method: str, *paths: str) -> None:
         """Raise when a diff key touches a multi-arm union: the comparison runs over

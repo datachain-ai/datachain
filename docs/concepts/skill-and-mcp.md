@@ -4,18 +4,18 @@ title: Skill and MCP
 
 # Skill and MCP
 
-Skill and MCP are the two ways an agent reaches DataChain. The **Skill** ships with `pip install datachain`, lives on the developer's machine, and uses local files for reads and a single machine for compute. **MCP** is the Studio surface: a hosted endpoint backed by a centralized registry and attached BYOC clusters that scale compute across thousands of machines. Same chain code on either side; the difference is reach.
+The **skill** ships with `pip install datachain` and teaches agents to inspect saved results, process files and save new datasets. It guides local SDK workflows and, when connected, shared team workflows through **Studio MCP**. Local use needs no Studio account. Studio is optional and currently invite-only.
 
-## Skill vs MCP
+## Local SDK and Studio MCP
 
-| | Skill (OSS) | MCP (Studio) |
+| | Local SDK (OSS) | MCP (Studio) |
 |---|---|---|
 | Ships with | `pip install datachain` | Studio |
-| Reads | Local `dc-knowledge/` + `.datachain/db` (SQLite) | Centralized data warehouse + shared Knowledge Base |
-| Compute | Local machine, parallel threads | Attached BYOC clusters: dozens to thousands of CPU/GPU machines |
+| Reads | Local `.datachain/db` (SQLite) | Centralized data warehouse + shared Knowledge Base |
+| Compute | Local machine, parallel threads | Jobs with or without a cluster; clusters scale across dozens or hundreds of CPU/GPU machines |
 | Scale | One project's SQLite registry | Billions of typed records (LAION-scale corpora) |
 | Access control | Filesystem only | Teams, namespaces, per-team ACLs |
-| Audience | Solo dev; small teams syncing via Git | Teams; large datasets; headless agent services |
+| Audience | Local data processing and saved results | Teams; large datasets; headless agent services |
 
 ## The Skill (OSS)
 
@@ -24,24 +24,21 @@ pip install datachain
 datachain skill install --target claude     # also: cursor, codex
 ```
 
-The Skill is the agent-side instruction package. Installing it places files into the agent harness's directory (for Claude Code: `~/.claude/skills/datachain/`). The Skill teaches the agent where the Knowledge Base is, how to introspect the Dataset DB, when to materialize a new dataset, and how to write idiomatic chains.
+The Skill is the agent-side instruction package. Installing it places files into the agent harness's directory (for Claude Code: `~/.claude/skills/datachain/`). The default skill teaches the agent to inspect the Dataset DB, process data files, save expensive results and query them later.
 
-Reads target two local sources:
-
-- **`dc-knowledge/`** holds compiled markdown pages: schema, lineage, previews, links. The agent reads this first.
-- **`.datachain/db`** is the SQLite dataset registry: every named, versioned dataset and its provenance. The agent queries this when the Knowledge Base summary is not enough.
+Agents inspect saved datasets with `dc.datasets()`, `dc.describe()` and `dc.read_dataset()`. The skill does not maintain local markdown summaries.
 
 Compute runs locally. `map()`, `gen()`, and `agg()` execute on the developer's machine through the in-process [Compute Engine](compute-engine.md) with parallel threads and async prefetch. Single-machine reach.
 
-A small team can extend the Skill beyond solo work by **synchronizing both folders** (`dc-knowledge/` and `.datachain/db`) through Git or any shared filesystem. That gives the team a shared read surface without standing up a service. The Skill is enough until the registry stops fitting in SQLite, the team needs row-level access control, or compute outgrows one machine.
+Local datasets remain available across sessions. For a shared team catalog, see Studio MCP below.
 
 ## MCP (Studio)
 
-When the team outgrows file sync, the Dataset DB moves into Studio and the agent reaches it through MCP, the open Model Context Protocol with native client support in Claude Code, Cursor, and Codex. The Skill and MCP work side by side. The Skill is instructions: check the Knowledge Base first, how to name and save datasets, caching, SDK rules. MCP is tools that act on shared Studio state: search the Knowledge Base, read datasets and storages, run jobs. The agent uses both; the Skill itself never calls MCP. See [MCP Server](../studio/user-guide/agents/mcp.md) for how to connect a client.
+Studio provides shared datasets and jobs through MCP, the Model Context Protocol supported by Claude Code, Cursor and Codex. The skill guides the agent to inspect shared results and relevant jobs before computing, then choose an available execution option. Shared results and job tracking work without a cluster; clusters are available for larger workloads. Generated knowledge descriptions help discover existing work; inspect dataset versions and producing code to verify it. See [MCP Server](../studio/user-guide/agents/mcp.md) for connection instructions for users with Studio access.
 
 Studio adds four capabilities the OSS path does not have:
 
-- **Distributed compute.** `map()` / `gen()` / `agg()` dispatch to attached BYOC clusters: dozens to thousands of CPU and GPU machines. Same chain code; the fleet runs the work.
+- **Distributed compute.** Optional BYOC clusters run data processing across dozens or hundreds of CPU and GPU machines using the same DataChain code.
 - **Billion-record registry.** A full-scale data warehouse replaces SQLite. Filter, join, group_by, and similarity search run at warehouse speed over billions of typed records (LAION-scale corpora).
 - **Teams and access control.** Users belong to teams; datasets sit in namespaces; per-team ACLs determine who reads and writes what. The MCP surface enforces the same model as the Studio UI.
 - **BYOC.** Compute clusters and storage stay in your cloud account. Studio orchestrates without holding the data.
@@ -51,7 +48,6 @@ Studio adds four capabilities the OSS path does not have:
 | Scenario | Install |
 |---|---|
 | Solo developer | Skill |
-| Small team syncing `dc-knowledge/` + `.datachain/db` via Git | Skill |
 | Team needing access control across users and projects | Skill + MCP |
 | Billion-row datasets or distributed compute across many machines | Skill + MCP |
 | Headless production agent service | MCP |

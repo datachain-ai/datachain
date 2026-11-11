@@ -1,5 +1,6 @@
 import hashlib
 from collections.abc import Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from itertools import islice
 from typing import TYPE_CHECKING, Any, TypeGuard
 
@@ -19,6 +20,7 @@ from datachain.lib.data_model import (
     arm_selector,
     dict_to_data_model,
     union_layout,
+    unwrap_optional,
 )
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.model_store import ModelStore
@@ -26,6 +28,8 @@ from datachain.lib.signal_schema import SignalSchema, SignalSchemaError
 from datachain.lib.udf import Generator
 from datachain.lib.utils import normalize_col_names
 from datachain.progress import tqdm
+
+SCHEMA_READ_THREADS = 32
 
 if TYPE_CHECKING:
     from datasets.features.features import Features
@@ -119,6 +123,7 @@ class _PartialReadHandler(FSSpecHandler):
 def pyarrow_fs(file: File, format):
     client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
     if isinstance(client.fs, LocalFileSystem):
+        client.check_unchanged(file)
         return client.fs
     block_size = 0 if is_parquet(format) else None
     return PyFileSystem(_PartialReadHandler(client, file, block_size=block_size))
@@ -180,11 +185,6 @@ class ArrowGenerator(Generator):
             fs_path = file.path
             fs = ReferenceFileSystem({fs_path: [cache_path]})
         else:
-            client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
-            # The File may come from a reused listing or a saved dataset, so the
-            # object may have changed since. A download into the cache checks
-            # this; a read that skips the cache checks it here.
-            client.check_unchanged(file)
             fs = pyarrow_fs(file, self.kwargs.get("format"))
             fs_path = file.get_fs_path()
 
@@ -233,7 +233,8 @@ class ArrowGenerator(Generator):
 
         def iter_records():
             for record_batch in ds.to_batches(**kw):
-                yield from record_batch.to_pylist()
+                # Maps are read as dicts. Duplicate keys raise an error.
+                yield from record_batch.to_pylist(maps_as_pydicts="strict")
 
         it = islice(iter_records(), self.nrows)
         with tqdm(
@@ -283,15 +284,7 @@ class ArrowGenerator(Generator):
                 # A copy, so the files read after this one keep their CSV options.
                 kwargs = {**kwargs, "format": "csv", "csv": csv}
             arrow_file = ArrowRow(file=file, index=index, kwargs=kwargs)
-
-            if self.output_schema and hasattr(vals[0], "source"):
-                # if we are reading parquet file written by datachain it might have
-                # source inside of it already, so we should not duplicate it, instead
-                # we are re-creating it of the self.source flag
-                vals[0].source = arrow_file  # type: ignore[attr-defined]
-
-                return vals
-            return [arrow_file, *vals]
+            vals = [arrow_file, *vals]
 
         if self.output is not None and len(self.output.values) == 1:
             # A single output signal takes its value itself, not a list of values.
@@ -324,21 +317,33 @@ class ArrowGenerator(Generator):
         return [self.output_schema(**values)]
 
 
-def _file_datasets(chain: "DataChain", **kwargs) -> Iterator[Dataset]:
+def _dataset_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    kwargs = dict(kwargs)
     parse_options = kwargs.pop("parse_options", None)
     if format := kwargs.get("format"):
         kwargs["format"] = fix_pyarrow_format(format, parse_options)
+    return kwargs
+
+
+def _file_dataset(file: File, kwargs: dict[str, Any]) -> Dataset:
+    fs = pyarrow_fs(file, kwargs.get("format"))
+    return dataset(file.get_fs_path(), filesystem=fs, **kwargs)  # type: ignore[union-attr]
+
+
+def _file_datasets(chain: "DataChain", **kwargs) -> Iterator[Dataset]:
+    kwargs = _dataset_kwargs(kwargs)
     for (file,) in chain.to_iter("file"):
-        fs = pyarrow_fs(file, kwargs.get("format"))  # type: ignore[arg-type]
-        yield dataset(file.get_fs_path(), filesystem=fs, **kwargs)  # type: ignore[union-attr]
+        yield _file_dataset(file, kwargs)  # type: ignore[arg-type]
 
 
 def file_schemas(chain: "DataChain", **kwargs) -> list[pa.Schema]:
     """Return the schema of each file in the chain, by path, so the first file
     gives the saved DataChain schema, as in `read_columns`."""
-    schemas = [
-        ds.schema for ds in _file_datasets(chain.order_by("file.path"), **kwargs)
-    ]
+    kwargs = _dataset_kwargs(kwargs)
+    files = chain.order_by("file.path").to_values("file")
+    # one remote footer read per file
+    with ThreadPoolExecutor(max(1, min(SCHEMA_READ_THREADS, len(files)))) as pool:
+        schemas = list(pool.map(lambda f: _file_dataset(f, kwargs).schema, files))
     if not schemas:
         raise ValueError(
             "Cannot infer schema (no files to process or can't access them)"
@@ -350,7 +355,7 @@ def infer_output(
     schemas: list[pa.Schema],
     col_names: Sequence[str] | None,
     columns: Sequence[str] | None,
-    source: bool,
+    replace_source: bool,
 ) -> tuple[pa.Schema, dict[str, type], list[str] | None]:
     """Return the schema to read the files with, the output types, and, for files
     written by DataChain, the signal each output field reads (None when the fields
@@ -367,7 +372,7 @@ def infer_output(
         schema, names = merge_schemas(schemas, columns)
         return schema, schema_to_output(schema, col_names or names)[0], None
 
-    signals = _signal_paths(signal_schema, columns, source)
+    signals = _signal_paths(signal_schema, columns, replace_source)
     if columns is None:
         schema = pa.unify_schemas(schemas)
     else:
@@ -385,7 +390,7 @@ def infer_output(
         names = list(normalize_col_names(col_names))
         return schema, dict(zip(names, signals.values(), strict=True)), list(signals)
     if columns is None:
-        return schema, signal_schema.values, None
+        return schema, signals, None
     # Picked signals keep their names, as select() returns them.
     output = signal_schema.to_partial(*columns).values
     return schema, output, list(output)
@@ -395,7 +400,7 @@ def read_columns(
     chain: "DataChain",
     columns: Sequence[str] | None,
     model: type["BaseModel"],
-    source: bool,
+    replace_source: bool,
     **kwargs,
 ) -> tuple[list[str], bool]:
     """Return the columns the output fields read, in order, and whether they are
@@ -409,7 +414,7 @@ def read_columns(
     schema = ds.schema
     fields = len(model.model_fields)
     if signal_schema := _get_datachain_schema(schema):
-        signals = _signal_paths(signal_schema, columns, source)
+        signals = _signal_paths(signal_schema, columns, replace_source)
         _check_fields_fit(fields, len(signals))
         for (field, info), (path, stored) in zip(
             model.model_fields.items(), signals.items(), strict=True
@@ -477,24 +482,23 @@ def _check_columns(columns: Sequence[str] | None) -> None:
 
 
 def _signal_paths(
-    signal_schema: SignalSchema, columns: Sequence[str] | None, source: bool
+    signal_schema: SignalSchema, columns: Sequence[str] | None, replace_source: bool
 ) -> dict[str, "DataType"]:
     """Return the signals read from files written by DataChain, with the types they
     read as.
 
-    They are `columns`, or else the top-level signals. With `source`, the reader
-    adds its own `source`, so a stored one is left out and can't be picked. A
-    signal inside an optional model or a union is None where that parent doesn't
-    hold it, so it reads as optional.
+    They are `columns`, or else the top-level signals. With `replace_source`, a
+    stored `source` from an earlier read is left out, as the reader adds its own.
+    A signal inside an optional model or a union is None where that parent
+    doesn't hold it, so it reads as optional.
     """
     _check_columns(columns)
     if columns is None:
-        paths = [s for s in signal_schema.values if not (source and s == "source")]
-    elif source and any(_in_signals(c, ["source"]) for c in columns):
-        raise ValueError(
-            "columns can't pick source with source=True, the reader adds its own. "
-            "Pass source=False to read the stored one."
-        )
+        paths = [
+            name
+            for name, anno in signal_schema.values.items()
+            if not (replace_source and _is_read_source(name, anno))
+        ]
     elif len(set(columns)) < len(columns):
         raise ValueError(f"Columns {list(columns)} name a column more than once")
     else:
@@ -508,6 +512,11 @@ def _signal_paths(
         path: anno | None if signal_schema.tagged_parent(path) else anno  # type: ignore[misc]
         for path, anno in signals.items()
     }
+
+
+def _is_read_source(name: str, anno: Any) -> bool:
+    """Whether a stored signal is the `source` an earlier tabular read added."""
+    return name == "source" and unwrap_optional(anno)[0] is ArrowRow
 
 
 def _check_output_shape(field: str, anno: Any, path: str, stored: Any) -> None:
@@ -660,6 +669,11 @@ def arrow_type_mapper(col_type: pa.DataType, column: str = "") -> type:  # noqa:
             type_dict[field.name] = _arrow_field_type_mapper(field, field.name)
         return dict_to_data_model(f"ArrowDataModel_{column}", type_dict)
     if pa.types.is_map(col_type):
+        # JSON storage keeps these values, and the dict type restores the keys.
+        if _is_scalar_type(col_type.key_type) and _is_scalar_type(col_type.item_type):
+            key_type = arrow_type_mapper(col_type.key_type, column)
+            item_type = _arrow_field_type_mapper(col_type.item_field, column)
+            return dict[key_type, item_type]  # type: ignore[return-value, valid-type]
         return dict
     if isinstance(col_type, pa.lib.DictionaryType):
         return arrow_type_mapper(col_type.value_type)  # type: ignore[return-value]
@@ -680,6 +694,16 @@ def _arrow_field_type_mapper(
     if ModelStore.is_pydantic(dtype):
         return dtype
     return dtype | None  # type: ignore[return-value]
+
+
+def _is_scalar_type(col_type: pa.DataType) -> bool:
+    return (
+        pa.types.is_integer(col_type)
+        or pa.types.is_floating(col_type)
+        or pa.types.is_boolean(col_type)
+        or pa.types.is_string(col_type)
+        or pa.types.is_large_string(col_type)
+    )
 
 
 def _get_hf_schema(

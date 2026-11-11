@@ -1,4 +1,5 @@
-from datetime import datetime
+import os
+from datetime import UTC, datetime
 from typing import get_args
 
 import pandas as pd
@@ -6,6 +7,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from datasets import Dataset
+from pyarrow import feather
 from pyarrow.dataset import CsvFileFormat, JsonFileFormat, ParquetFileFormat
 
 import datachain as dc
@@ -19,6 +21,34 @@ from datachain.lib.arrow import (
 from datachain.lib.data_model import dict_to_data_model
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.hf import HFClassLabel
+
+
+@pytest.mark.parametrize("source", ["local", "http"])
+@pytest.mark.parametrize("format", ["parquet", "csv", "json"])
+def test_arrow_rejects_overwritten_uncached_source(
+    tmp_path, catalog, http_server, source, format
+):
+    path = tmp_path / f"table.{format}"
+
+    def write(value):
+        frame = pd.DataFrame({"value": [value]})
+        if format == "parquet":
+            frame.to_parquet(path, index=False)
+        elif format == "csv":
+            frame.to_csv(path, index=False)
+        else:
+            frame.to_json(path, orient="records", lines=True)
+
+    write(1)
+    uri = tmp_path.as_uri() if source == "local" else http_server
+    file = catalog.get_client(uri).get_file_info(path.name)
+    assert file.etag
+    file._set_stream(catalog, caching_enabled=False)
+    mtime = path.stat().st_mtime + 1
+    write(2)
+    os.utime(path, (mtime, mtime))
+    with pytest.raises(FileNotFoundError, match="changed on the source"):
+        list(ArrowGenerator(format=format).process(file))
 
 
 @pytest.mark.parametrize("cache", [True, False])
@@ -156,7 +186,10 @@ def test_arrow_generator_partitioned(tmp_path, catalog, cache):
         (pa.date32(), datetime),
         (pa.string(), str),
         (pa.large_string(), str),
-        (pa.map_(pa.string(), pa.int32()), dict),
+        (pa.map_(pa.string(), pa.int32()), dict[str, int | None]),
+        (pa.map_(pa.string(), pa.struct([("x", pa.int64())])), dict),
+        (pa.map_(pa.string(), pa.list_(pa.int64(), 2)), dict),
+        (pa.map_(pa.decimal128(5, 2), pa.int64()), dict),
         (pa.dictionary(pa.int64(), pa.string()), str),
         (pa.list_(pa.string()), list[str | None]),
         (pa.list_(pa.field("item", pa.string(), nullable=False)), list[str]),
@@ -209,6 +242,165 @@ def test_read_parquet_multiple_struct_list_columns_roundtrip(test_session, tmp_p
     (orders,) = back.to_values("orders")
     assert [user.name for user in users] == ["alice", "bob"]
     assert [order.amount for order in orders] == [5]
+
+
+def test_read_parquet_map_columns_as_dicts(test_session, tmp_path):
+    counts = pa.map_(pa.string(), pa.int64())
+    table = pa.table(
+        {
+            "counts": pa.array([[("a", 1), ("b", 2)]], counts),
+            "event": pa.array([{"tags": [("k", 3)]}], pa.struct([("tags", counts)])),
+            "history": pa.array([[[("c", 4)]]], pa.list_(counts)),
+            "nested": pa.array([[("d", [("e", 5)])]], pa.map_(pa.string(), counts)),
+        }
+    )
+    path = tmp_path / "maps.parquet"
+    pq.write_table(table, path)
+
+    chain = dc.read_parquet(path.as_posix(), source=True, session=test_session)
+
+    ((counts, tags, history, nested, source),) = chain.to_list(
+        "counts", "event.tags", "history", "nested", "source"
+    )
+    assert (counts, tags, history) == ({"a": 1, "b": 2}, {"k": 3}, [{"c": 4}])
+    assert nested == {"d": {"e": 5}}
+    assert source.read() == {
+        "counts": {"a": 1, "b": 2},
+        "event": {"tags": {"k": 3}},
+        "history": [{"c": 4}],
+        "nested": {"d": {"e": 5}},
+    }
+
+
+@pytest.mark.parametrize(
+    "values,col_type",
+    [
+        ([[("a", 1), ("a", 2)]], pa.map_(pa.string(), pa.int64())),
+        (
+            [[("d", [("e", 1), ("e", 2)])]],
+            pa.map_(pa.string(), pa.map_(pa.string(), pa.int64())),
+        ),
+    ],
+)
+def test_read_parquet_maps_with_duplicate_keys_raise(
+    test_session, tmp_path, values, col_type
+):
+    path = tmp_path / "maps.parquet"
+    pq.write_table(pa.table({"m": pa.array(values, col_type)}), path)
+
+    with pytest.raises(KeyError, match="duplicate keys"):
+        dc.read_parquet(path.as_posix(), session=test_session).exec()
+    with pytest.raises(KeyError, match="duplicate keys"):
+        ArrowRow(file=File.at(path.as_posix()), index=0, kwargs={}).read()
+
+
+def test_read_parquet_maps_of_structs(test_session, tmp_path):
+    amounts = pa.map_(pa.string(), pa.struct([("amount", pa.int64())]))
+    table = pa.table(
+        {
+            "orders": pa.array([[("a", {"amount": 1}), ("b", None)]], amounts),
+            "history": pa.array([[[("c", {"amount": 2})]]], pa.list_(amounts)),
+        }
+    )
+    path = tmp_path / "maps.parquet"
+    pq.write_table(table, path)
+
+    chain = dc.read_parquet(path.as_posix(), session=test_session)
+
+    assert chain.to_list("orders", "history") == [
+        ({"a": {"amount": 1}, "b": None}, [{"c": {"amount": 2}}])
+    ]
+
+
+def test_read_parquet_map_keys_keep_their_type(test_session, tmp_path):
+    table = pa.table(
+        {
+            "ints": pa.array([[(1, 10)]], pa.map_(pa.int64(), pa.int64())),
+            "flags": pa.array([[(True, 3)]], pa.map_(pa.bool_(), pa.int64())),
+        }
+    )
+    path = tmp_path / "maps.parquet"
+    pq.write_table(table, path)
+
+    chain = dc.read_parquet(path.as_posix(), session=test_session)
+
+    assert chain.to_list("ints", "flags") == [({1: 10}, {True: 3})]
+
+
+def test_read_parquet_maps_of_fixed_and_large_lists(test_session, tmp_path):
+    fixed = pa.map_(pa.string(), pa.list_(pa.int64(), 2))
+    large = pa.map_(pa.string(), pa.large_list(pa.int64()))
+    table = pa.table(
+        {
+            "fixed": pa.array([[("k", [1, 2])]], fixed),
+            "large": pa.array([[("k", [3])]], large),
+        }
+    )
+    path = tmp_path / "maps.parquet"
+    pq.write_table(table, path)
+
+    chain = dc.read_parquet(path.as_posix(), session=test_session)
+
+    assert chain.to_list("fixed", "large") == [({"k": [1, 2]}, {"k": [3]})]
+
+
+# The 1969 value floors to a whole second because the ClickHouse driver stores
+# pre-1970 timestamps that have microseconds one second late.
+NANOSECONDS_1969 = pd.Timestamp("1969-12-31 23:59:59.0000005")
+FLOORED_1969 = datetime(1969, 12, 31, 23, 59, 59, tzinfo=UTC)
+
+
+def test_read_parquet_nanosecond_timestamps_floored_to_microseconds(
+    test_session, tmp_path
+):
+    timestamps = pa.array(
+        [NANOSECONDS_1969, pd.Timestamp("2024-01-01 00:00:00.123456789")],
+        type=pa.timestamp("ns"),
+    )
+    table = pa.table(
+        {
+            "ts": timestamps,
+            "utc": timestamps.cast(pa.timestamp("ns", tz="UTC")),
+            "event": pa.StructArray.from_arrays([timestamps], ["ts"]),
+            "history": pa.ListArray.from_arrays([0, 1, 2], timestamps),
+        }
+    )
+    path = tmp_path / "data.parquet"
+    pq.write_table(table, path)
+
+    chain = dc.read_parquet(path.as_posix(), session=test_session).order_by("ts")
+
+    expected = [FLOORED_1969, datetime(2024, 1, 1, 0, 0, 0, 123456, tzinfo=UTC)]
+    assert chain.to_values("ts") == expected
+    assert chain.to_values("utc") == expected
+    assert [e.ts for e in chain.to_values("event")] == expected
+    assert [h[0] for h in chain.to_values("history")] == expected
+
+
+def test_parse_tabular_nanosecond_timestamp_dictionary_floored_to_microseconds(
+    test_session, tmp_path
+):
+    timestamps = pa.array([NANOSECONDS_1969], type=pa.timestamp("ns"))
+    path = tmp_path / "data.arrow"
+    feather.write_feather(pa.table({"ts": timestamps.dictionary_encode()}), path)
+
+    chain = dc.read_storage(path.as_posix(), session=test_session).parse_tabular(
+        format="ipc"
+    )
+
+    assert chain.to_values("ts") == [FLOORED_1969]
+
+
+def test_read_csv_fractional_timestamps_floored_to_microseconds(test_session, tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("ts\n2024-01-01 00:00:00.5\n2024-01-01 00:00:00.123456789\n")
+
+    chain = dc.read_csv(path.as_posix(), session=test_session)
+
+    assert chain.order_by("ts").to_values("ts") == [
+        datetime(2024, 1, 1, 0, 0, 0, 123456, tzinfo=UTC),
+        datetime(2024, 1, 1, 0, 0, 0, 500000, tzinfo=UTC),
+    ]
 
 
 def test_arrow_type_error():

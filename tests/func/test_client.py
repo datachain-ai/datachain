@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 from fsspec.asyn import sync
 from fsspec.callbacks import DEFAULT_CALLBACK
-from hypothesis import HealthCheck, given, settings
+from hypothesis import given, settings
 from hypothesis import strategies as st
 from tqdm import tqdm
 
@@ -494,9 +494,8 @@ def test_parse_url_file(tmp_path, rel_suffix, expected_uri_suffix, expected_rel)
     assert rel_part == expected_rel
 
 
-@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
-def test_parse_url_cloud(cloud_test_catalog):
-    base_uri = cloud_test_catalog.src_uri
+@pytest.mark.parametrize("base_uri", ["s3://bucket", "gs://bucket", "az://bucket"])
+def test_parse_url_cloud(base_uri):
     cases = [
         # (rel_suffix, expected_rel)
         ("animals", "animals"),
@@ -511,19 +510,18 @@ def test_parse_url_cloud(cloud_test_catalog):
         assert rel_part == expected_rel, f"rel mismatch for {rel_suffix!r}"
 
 
-@settings(suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=None)
+@pytest.mark.parametrize("scheme", ["file", "s3", "gs", "az"])
+@settings(deadline=None)
 @given(rel_path=_non_null_text)
-def test_get_client(cloud_test_catalog, rel_path, cloud_type):
-    catalog = cloud_test_catalog.catalog
-    bucket_uri = cloud_test_catalog.src_uri
-    url = f"{bucket_uri}/{rel_path}"
-    client = Client.get_client(url, catalog.cache)
+def test_get_client(scheme, rel_path):
+    base_uri = Path.cwd().as_uri() if scheme == "file" else f"{scheme}://bucket"
+    url = f"{base_uri}/{rel_path}"
+    client = Client.get_client(url, None)
     assert client
     assert client.uri
 
 
-@pytest.mark.parametrize("cloud_type", ["file"], indirect=True)
-def test_parse_file_absolute_path_without_protocol(cloud_test_catalog):
+def test_parse_file_absolute_path_without_protocol():
     working_dir = Path().absolute()
     uri, rel_part = Client.parse_url(str(working_dir / Path("animals")))
     assert uri == working_dir.as_uri()
@@ -531,7 +529,6 @@ def test_parse_file_absolute_path_without_protocol(cloud_test_catalog):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX root-path behavior")
-@pytest.mark.parametrize("cloud_type", ["file"], indirect=True)
 @pytest.mark.parametrize(
     "url,expected_uri,expected_rel",
     [
@@ -551,32 +548,27 @@ def test_parse_file_absolute_path_without_protocol(cloud_test_catalog):
         "uri-trailing-slash",
     ],
 )
-def test_parse_file_absolute_posix_root_paths(
-    cloud_test_catalog, url, expected_uri, expected_rel
-):
+def test_parse_file_absolute_posix_root_paths(url, expected_uri, expected_rel):
     uri, rel_part = Client.parse_url(url)
 
     assert uri == expected_uri
     assert rel_part == expected_rel
 
 
-@pytest.mark.parametrize("cloud_type", ["file"], indirect=True)
-def test_parse_file_relative_path_multiple_dirs_back(cloud_test_catalog):
+def test_parse_file_relative_path_multiple_dirs_back():
     uri, rel_part = Client.parse_url("../../animals".replace("/", os.sep))
     assert uri == Path().absolute().parents[1].as_uri()
     assert rel_part == "animals"
 
 
-@pytest.mark.parametrize("cloud_type", ["file"], indirect=True)
 @pytest.mark.parametrize("url", ["./animals".replace("/", os.sep), "animals"])
-def test_parse_file_relative_path_working_dir(cloud_test_catalog, url):
+def test_parse_file_relative_path_working_dir(url):
     uri, rel_part = Client.parse_url(url)
     assert uri == Path().absolute().as_uri()
     assert rel_part == "animals"
 
 
-@pytest.mark.parametrize("cloud_type", ["file"], indirect=True)
-def test_parse_file_relative_path_home_dir(cloud_test_catalog):
+def test_parse_file_relative_path_home_dir():
     if sys.platform == "win32":
         # home dir shortcut is not available on windows
         pytest.skip()
@@ -585,11 +577,10 @@ def test_parse_file_relative_path_home_dir(cloud_test_catalog):
     assert rel_part == "animals"
 
 
-@pytest.mark.parametrize("cloud_type", ["s3", "azure", "gs"], indirect=True)
-def test_parse_cloud_path_ends_with_slash(cloud_test_catalog):
-    uri = f"{cloud_test_catalog.src_uri}/animals/"
-    uri, rel_part = Client.parse_url(uri)
-    assert uri == cloud_test_catalog.src_uri
+@pytest.mark.parametrize("base_uri", ["s3://bucket", "gs://bucket", "az://bucket"])
+def test_parse_cloud_path_ends_with_slash(base_uri):
+    uri, rel_part = Client.parse_url(f"{base_uri}/animals/")
+    assert uri == base_uri
     assert rel_part == "animals/"
 
 
@@ -1099,3 +1090,55 @@ def test_get_file_versioned_special_char_in_key(
     )
     assert dst1.read_bytes() == b"v1"
     assert dst2.read_bytes() == b"version-2"
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("tree", [{"changed": "woof"}], indirect=True)
+def test_open_object_rejects_changed_unversioned_object(client):
+    file = client.get_file_info("changed")
+    file.version = ""
+    client.fs.pipe_file(file.get_fs_path(), b"WOOF")
+    with pytest.raises(FileNotFoundError, match="changed on the source"):
+        with client.open_object(file, use_cache=False, block_size=2) as stream:
+            stream.read()
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+@pytest.mark.parametrize(
+    "unknown", [{"etag": "", "version": ""}, {"size": 0, "version": ""}, {"size": -1}]
+)
+def test_open_object_reads_without_listing_metadata(client, unknown):
+    file = client.get_file_info("dogs/dog1")
+    for name, value in unknown.items():
+        setattr(file, name, value)
+    with client.open_object(file, use_cache=False) as stream:
+        assert stream.read() == b"woof"
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+@pytest.mark.parametrize("size", [0, 7])
+def test_open_object_rejects_inconsistent_pinned_size(client, mocker, size):
+    file = client.get_file_info("dogs/dog1")
+    file.size = size
+    opened = mocker.spy(client.fs, "open")
+    with pytest.raises(FileNotFoundError, match=f"size was {size}, now 4"):
+        client.open_object(file, use_cache=False)
+    assert opened.spy_return.closed
+
+
+@pytest.mark.parametrize(
+    "cloud_type,metadata_calls",
+    [("s3", 1), ("gs", 1), ("azure", 2)],
+    indirect=["cloud_type"],
+)
+@pytest.mark.parametrize("version_aware", [False, True], indirect=True)
+def test_open_object_reuses_backend_metadata_for_validation(
+    client, mocker, metadata_calls
+):
+    file = client.get_file_info("dogs/dog1")
+    info = mocker.spy(client.fs, "info")
+    async_info = mocker.spy(client.fs, "_info")
+    with client.open_object(file, use_cache=False, block_size=2) as stream:
+        assert stream.read() == b"woof"
+    assert info.call_count + async_info.call_count == metadata_calls

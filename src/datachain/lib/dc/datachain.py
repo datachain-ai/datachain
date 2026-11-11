@@ -27,9 +27,10 @@ import sqlalchemy
 from pydantic import BaseModel
 
 from datachain import json, semver
+from datachain.checkpoint import CheckpointStatus
 from datachain.checkpoint_event import CheckpointEventType, CheckpointStepType
 from datachain.dataset import DatasetRecord, create_dataset_full_name
-from datachain.delta import delta_disabled
+from datachain.delta import delta_disabled, delta_key_changed_error
 from datachain.error import (
     JobAncestryDepthExceededError,
     ProjectCreateNotAllowedError,
@@ -58,12 +59,14 @@ from datachain.lib.file import ExportPlacement as FileExportPlacement
 from datachain.lib.model_store import ModelStore
 from datachain.lib.settings import Settings
 from datachain.lib.signal_schema import (
+    KeyPresence,
     SignalResolvingError,
     SignalResolvingTypeError,
     SignalSchema,
 )
 from datachain.lib.udf import (
     Aggregator,
+    BatchMapper,
     BindContext,
     BoundSpec,
     Generator,
@@ -71,11 +74,16 @@ from datachain.lib.udf import (
     UDFBase,
     _MultiSignalMapper,
 )
-from datachain.lib.udf_signature import UdfSignature
+from datachain.lib.udf_signature import (
+    UdfSignature,
+    _param_column_types,
+    _resolve_annotation,
+)
 from datachain.lib.utils import (
     DataChainColumnError,
     DataChainParamsError,
     assert_unique_export_columns,
+    unique_name,
 )
 from datachain.progress import tqdm
 from datachain.project import Project
@@ -130,6 +138,7 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session as OrmSession
     from typing_extensions import ParamSpec
 
+    from datachain.checkpoint import Checkpoint
     from datachain.lib.settings import LLMParams
 
     P = ParamSpec("P")
@@ -205,16 +214,73 @@ class DataChainSchema(dict[str, DataType]):
         return file.getvalue().removesuffix("\n")
 
 
-def _paired_key_columns(left: list, right: list) -> list[tuple]:
-    """Pair the key columns of both sides. A Union is several columns, so pairing
-    differently shaped sides by position would compare the wrong ones.
+def _paired_key(
+    left: SignalSchema, left_key: str, right: SignalSchema, right_key: str
+) -> tuple[list[tuple[str, str]], list[tuple[KeyPresence, KeyPresence]]] | None:
+    """Pair a key's fields by name and its Optional-model presence.
+
+    Presence distinguishes None from a model with all-null fields. Return None
+    when the key fields differ.
     """
-    if len(left) != len(right):
-        raise DataChainParamsError(
-            f"'on' resolves to {len(left)} columns and 'right_on' to {len(right)}; "
-            "the key must have the same shape on both sides"
-        )
-    return list(zip(left, right, strict=True))
+    left_columns, left_nodes = left.key_columns(left_key)
+    right_columns, right_nodes = right.key_columns(right_key)
+    if left_columns.keys() != right_columns.keys():
+        return None
+    pairs = [(column, right_columns[path]) for path, column in left_columns.items()]
+    presence = [
+        (left.key_presence(left_key, path), right.key_presence(right_key, path))
+        for path in sorted(left_nodes | right_nodes)
+    ]
+    return pairs, presence
+
+
+def _paired_key_columns(
+    left: SignalSchema,
+    on: Sequence[str],
+    right: SignalSchema,
+    right_on: Sequence[str],
+) -> tuple[list[tuple[str, str]], list[tuple[KeyPresence, KeyPresence]]]:
+    """Pair the key columns of both sides by their path below each key, so model
+    fields match by name rather than by position, and pair the presence of each
+    ``Optional`` model node either side has, so None differs from a model whose
+    fields are all None.
+    """
+    pairs: list[tuple[str, str]] = []
+    presence: list[tuple[KeyPresence, KeyPresence]] = []
+    for left_key, right_key in zip(on, right_on, strict=True):
+        paired = _paired_key(left, left_key, right, right_key)
+        if paired is None:
+            raise DataChainParamsError(
+                f"'on' key {left_key!r} and 'right_on' key {right_key!r} have different"
+                " fields; the key must have the same shape on both sides"
+            )
+        pairs.extend(paired[0])
+        presence.extend(paired[1])
+    return pairs, presence
+
+
+def _common_key_columns(
+    left_schema: SignalSchema, right_schema: SignalSchema
+) -> tuple[list[tuple[str, str]], list[tuple[KeyPresence, KeyPresence]]]:
+    presence: list[tuple[KeyPresence, KeyPresence]] = []
+    other_columns = set(cast("list[str]", right_schema.db_signals()))
+    common_signals = [
+        c for c in cast("list[str]", left_schema.db_signals()) if c in other_columns
+    ]
+    if not common_signals:
+        raise DataChainParamsError("subtract(): no common columns")
+    signals = list(zip(common_signals, common_signals, strict=False))
+    for name in sorted(left_schema.values.keys() & right_schema.values.keys()):
+        paired = _paired_key(left_schema, name, right_schema, name)
+        if paired is None or not paired[1]:
+            continue
+        columns = {
+            *left_schema.resolve(name).db_signals(),
+            *right_schema.resolve(name).db_signals(),
+        }
+        signals = [(a, b) for a, b in signals if a not in columns] + paired[0]
+        presence.extend(paired[1])
+    return signals, presence
 
 
 class DataChain:
@@ -511,18 +577,21 @@ class DataChain:
             cache: Enable files caching to speed up subsequent accesses to the same
                 files from the same or different chains. Defaults to False.
             prefetch: Number of files to download in full ahead of the UDF, per
-                process on each worker. Defaults to 2. Set to 0 or False for UDFs
-                that read only part of a file, such as `get_info()`.
+                process on each worker; batches in `batch_map()`. Defaults to 2.
+                Set to 0 or False for UDFs that read only part of a file, such as
+                `get_info()`.
             parallel: Number of processes to use for processing user-defined functions
-                (UDFs) in parallel. If an integer is provided, it specifies the number
-                of CPUs to use. If True, all available CPUs are used. Defaults to 1.
+                (UDFs) in parallel. Each process has its own UDF and setup resources.
+                If an integer is provided, it specifies the number of CPUs to use.
+                If True, all available CPUs are used. Defaults to 1.
             namespace: Namespace to use for the chain by default.
             project: Project to use for the chain by default.
             min_task_size: Minimum number of rows per worker/process for parallel
                 processing by UDFs. Defaults to 1.
             batch_size: Number of rows per insert by UDF to fine tune and balance speed
                 and memory usage. This might be useful when processing large rows
-                or when running into memory issues. Defaults to 10,000.
+                or when running into memory issues. Defaults to 10,000. It does not
+                set the number of rows per `batch_map()` call.
             ephemeral: If True, no persistent objects are created in the metastore
                 (no jobs, checkpoints, or datasets). UDF execution still uses
                 temporary tables. Calling .save() in ephemeral mode will raise
@@ -649,6 +718,14 @@ class DataChain:
         every time.
         It returns the chain itself.
         """
+        return self._persist()
+
+    def _persist(self, *, preserve_hash: bool = False, hash_salt: str = "") -> "Self":
+        content_hash = self._query.hash() if preserve_hash else None
+        if content_hash is not None and hash_salt:
+            content_hash = hashlib.sha256(
+                (content_hash + hash_salt).encode()
+            ).hexdigest()
         schema = self.signals_schema.clone_without_sys_signals().serialize()
         project = self.session.catalog.metastore.get_project(
             self.project_name,
@@ -656,7 +733,11 @@ class DataChain:
             create=True,
         )
         return self._evolve(
-            query=self._query.save(project=project, feature_schema=schema),
+            query=self._query.save(
+                project=project,
+                feature_schema=schema,
+                content_hash=content_hash,
+            ),
             signal_schema=self.signals_schema | SignalSchema({"sys": Sys}),
         )
 
@@ -716,6 +797,7 @@ class DataChain:
             name_salt += f"/{version}"
         _hash = hashlib.sha256((base_hash + name_salt).encode("utf-8")).hexdigest()
 
+        retry_attempt = None
         result = self._resolve_checkpoint(name, project, _hash, kwargs)
         if bool(result):
             print(
@@ -728,6 +810,9 @@ class DataChain:
 
         # Handle retry and delta functionality
         if not result:
+            retry_attempt = self._start_delta_retry_attempt(
+                f"{namespace_name}/{project_name}/{name}"
+            )
             result = self._handle_delta(
                 name=name,
                 version=version,
@@ -737,6 +822,9 @@ class DataChain:
                 attrs=attrs,
                 update_version=update_version,
                 kwargs=kwargs,
+                retry_salt=retry_attempt.created_at.isoformat()
+                if retry_attempt
+                else "",
             )
 
         if not result:
@@ -770,6 +858,10 @@ class DataChain:
 
         if self._checkpoints_enabled:
             catalog.metastore.get_or_create_checkpoint(self.job.id, _hash)
+        if retry_attempt is not None:
+            catalog.metastore.update_checkpoints(
+                [retry_attempt.id], status=CheckpointStatus.DELETED
+            )
         return result
 
     def _validate_version(self, version: str | None) -> None:
@@ -937,6 +1029,21 @@ class DataChain:
 
         return None
 
+    def _start_delta_retry_attempt(self, name: str) -> "Checkpoint | None":
+        if not self._checkpoints_enabled or not any(
+            source.delta_spec is not None and source.delta_spec.delta_retry
+            for source in self._query.delta_sources()
+        ):
+            return None
+        # Failed attempts keep this marker across reruns. Successful saves
+        # retire it, even when an empty retry reuses the result version.
+        attempt_hash = hashlib.sha256(f"delta_retry:{name}".encode()).hexdigest()
+        metastore = self.session.catalog.metastore
+        job_id = self.job.run_group_id or self.job.id
+        return metastore.find_checkpoint(
+            job_id, attempt_hash
+        ) or metastore.get_or_create_checkpoint(job_id, attempt_hash)
+
     def _handle_delta(
         self,
         name: str,
@@ -947,6 +1054,7 @@ class DataChain:
         attrs: list[str] | None,
         update_version: str | None,
         kwargs: dict,
+        retry_salt: str = "",
     ) -> "DataChain | None":
         """Try to save as a delta dataset.
 
@@ -966,6 +1074,7 @@ class DataChain:
             project.namespace.name,
             project.name,
             name,
+            retry_salt=retry_salt,
         )
 
         # Case 1: delta produced a new dataset
@@ -1040,7 +1149,8 @@ class DataChain:
         """Apply a function to each row to create new signals. The function should
         return a new object for each row. It returns a chain itself with new signals.
 
-        Input-output relationship: 1:1
+        Input-output relationship: 1:1. For lists of rows per call, use
+        `batch_map()`.
 
         Parameters:
             func: Function applied to each row.
@@ -1077,17 +1187,111 @@ class DataChain:
             chain.save("new_dataset")
             ```
         """
+        return self._map(func, params, output, signal_map)
+
+    def batch_map(
+        self,
+        func: Callable | None = None,
+        params: str | Sequence[str] | None = None,
+        output: OutputType = None,
+        *,
+        batch: int,
+        **signal_map: Any,
+    ) -> "Self":
+        """Apply a function to batches of rows to create new signals, with one
+        result per input row. Use it for vectorized calls, such as model inference
+        on many inputs at once. Existing columns are kept, as in `map()`.
+
+        Input-output relationship: N:N
+
+        Each column parameter receives a list of up to `batch` values, even with
+        `batch=1`; the last batch can be shorter. Resources from `setup()` are
+        passed unchanged. The function returns `list[T]` or `Iterator[T]` with one
+        result per input row, in input order; any other number of results raises
+        `UdfError`.
+
+        Delta updates and checkpoint recovery can group rows differently, so each
+        row's result must not depend on the other rows in its batch. Under this
+        rule, a rerun with a different `batch` reuses completed results.
+
+        With `settings(prefetch=N)`, up to N batches download at a time, the files
+        of each batch one after another, and up to 2N+1 batches can be on local
+        disk per process. `settings(batch_size=...)` sets database insert
+        buffering, not the call size.
+
+        Parameters:
+            func: Function or `BatchMapper` applied to each batch.
+            params: Input column names. Default is taken from function signature.
+            output: Output types of one row. Default is `T` from a `list[T]` or
+                    `Iterator[T]` return annotation, so an embedding function
+                    returning `list[list[float]]` creates a `list[float]` column.
+            batch: Maximum number of rows per call. Required.
+            **signal_map: Functions keyed by output signal name, as in `map()`.
+
+        Example:
+            ```py
+            def double(value: list[int]) -> list[int]:
+                return [v * 2 for v in value]
+
+            chain = chain.batch_map(doubled=double, batch=32)
+            ```
+        """
+        if isinstance(batch, bool) or not isinstance(batch, int) or batch < 1:
+            raise DataChainParamsError("batch_map() batch must be a positive integer")
+        return self._map(func, params, output, signal_map, batch=batch)
+
+    def _map(
+        self,
+        func: Callable | None,
+        params: str | Sequence[str] | None,
+        output: OutputType,
+        signal_map: dict[str, Any],
+        batch: int | None = None,
+    ) -> "Self":
+        target_class = BatchMapper if batch is not None else Mapper
+        method = "batch_map" if batch is not None else "map"
+        for name, fn in signal_map.items():
+            if callable(fn) or isinstance(fn, (UDFBase, BoundSpec)):
+                continue
+            if name == "batch" and batch is None:
+                hint = "Use batch_map(..., batch=N) for batched calls."
+            elif name == "batch_size":
+                hint = (
+                    "Use batch_map(..., batch=N) for UDF batching; "
+                    "settings(batch_size=N) controls database insert buffering."
+                )
+            elif name in {"parallel", "prefetch", "cache", "workers"}:
+                hint = f"Use settings({name}=...) before {method}()."
+            else:
+                hint = "Named outputs must be functions or UDF instances."
+            raise DataChainParamsError(
+                f"{method}() entry {name!r} is not callable. {hint}"
+            )
+        for fn in (func, *signal_map.values()):
+            if (
+                isinstance(fn, Mapper) and fn.is_input_batched != (batch is not None)
+            ) or (
+                batch is not None
+                and isinstance(fn, UDFBase)
+                and not isinstance(fn, BatchMapper)
+            ):
+                raise DataChainParamsError(
+                    f"{method}() requires a {target_class.__name__} instance; "
+                    "use map() with Mapper or batch_map() with BatchMapper"
+                )
         if len(signal_map) > 1:
-            udf_obj = self._build_multi_signal_mapper(func, params, output, signal_map)
+            udf_obj = self._build_multi_signal_mapper(
+                func, params, output, signal_map, batch=batch
+            )
         else:
-            udf_obj = self._udf_to_obj(Mapper, func, params, output, signal_map)
+            udf_obj = self._udf_to_obj(target_class, func, params, output, signal_map)
         if (prefetch := self._settings.prefetch) is not None:
             udf_obj.prefetch = prefetch
 
         sys_schema = SignalSchema({"sys": Sys})
         return self._evolve(
             query=self._query.add_signals(
-                udf_obj.to_udf_wrapper(self._settings.batch_size),
+                udf_obj.to_udf_wrapper(self._settings.batch_size, batch=batch),
                 **self._settings.to_dict(),
             ),
             signal_schema=sys_schema | self.signals_schema | udf_obj.output,
@@ -1099,20 +1303,22 @@ class DataChain:
         params: str | Sequence[str] | None,
         output: OutputType,
         signal_map: dict[str, Callable | BoundSpec | UDFBase],
+        batch: int | None = None,
     ) -> "Mapper":
         """Build a single Mapper that runs all functions in `signal_map` per row."""
+        method = "batch_map" if batch is not None else "map"
         if func is not None:
             raise DataChainParamsError(
-                "map() can't combine 'func' with multiple signal kwargs"
+                f"{method}() can't combine 'func' with multiple signal kwargs"
             )
         if output is not None:
             raise DataChainParamsError(
-                "map() can't combine 'output' with multiple signal kwargs; "
+                f"{method}() can't combine 'output' with multiple signal kwargs; "
                 "use function return-type annotations instead"
             )
         if params is not None:
             raise DataChainParamsError(
-                "map() can't combine 'params' with multiple signal kwargs; "
+                f"{method}() can't combine 'params' with multiple signal kwargs; "
                 "each function's parameter names are matched to chain columns "
                 "individually. For nested columns (e.g. 'file.path'), extract "
                 "to a top-level column with a single .map() first."
@@ -1121,19 +1327,21 @@ class DataChain:
         for k, v in signal_map.items():
             if isinstance(v, BoundSpec) and v.output_count != 1:
                 raise DataChainParamsError(
-                    f"map() entry {k!r} produces {v.output_count} outputs; "
-                    "multi-signal .map() only supports one output per entry. "
-                    "Use a single .map(...) with output={...} to name all "
+                    f"{method}() entry {k!r} produces {v.output_count} outputs; "
+                    f"multi-signal .{method}() only supports one output per entry. "
+                    f"Use a single .{method}(...) with output={{...}} to name all "
                     "columns"
                 )
             if not isinstance(v, BoundSpec):
                 sig_target = v.process if isinstance(v, UDFBase) else v
-                anno = inspect.signature(sig_target).return_annotation
+                anno = _resolve_annotation(
+                    inspect.signature(sig_target).return_annotation, sig_target
+                )
                 if anno is not inspect.Signature.empty and get_origin(anno) is tuple:
                     raise DataChainParamsError(
-                        f"map() entry {k!r} returns a tuple of "
-                        f"{len(get_args(anno))} values; multi-signal .map() only "
-                        "supports one output per entry. Use a single .map(...) "
+                        f"{method}() entry {k!r} returns a tuple of "
+                        f"{len(get_args(anno))} values; multi-signal .{method}() only "
+                        f"supports one output per entry. Use a single .{method}(...) "
                         "with output={...} to name all columns"
                     )
 
@@ -1142,18 +1350,40 @@ class DataChain:
             if isinstance(v, BoundSpec):
                 bound_columns[k] = v.input_columns()
         bound_signal_map: dict[str, Callable | UDFBase] = {
-            k: self._bind_udf_settings(v, Mapper) for k, v in signal_map.items()
+            k: self._bind_udf_settings(v, BatchMapper if batch is not None else Mapper)
+            for k, v in signal_map.items()
         }
-        multi_mapper = _MultiSignalMapper(bound_signal_map, bound_columns=bound_columns)
+        multi_mapper = _MultiSignalMapper(
+            bound_signal_map, bound_columns=bound_columns, batched=batch is not None
+        )
         output_dict: dict[str, Any] = {}
+        batch_params: dict[str, dict[str, Any]] = {}
         for name, fn in bound_signal_map.items():
             sig_target = fn.process if isinstance(fn, UDFBase) else fn
-            anno = inspect.signature(sig_target).return_annotation
+            anno = _resolve_annotation(
+                inspect.signature(sig_target).return_annotation, sig_target
+            )
+            if batch is not None:
+                input_types, types, _, annotated = UdfSignature._func_signature(
+                    self.name or "", fn, is_batch_map=True
+                )
+                batch_params[name] = (
+                    _param_column_types(bound_columns[name], input_types, True)
+                    if name in bound_columns
+                    else input_types
+                )
+                if isinstance(types, tuple):
+                    raise DataChainParamsError(
+                        f"{method}() entry {name!r} must produce one output per row"
+                    )
+                anno = types[0] if annotated else inspect.Signature.empty
             output_dict[name] = (
                 anno
                 if anno is not inspect.Signature.empty
                 else UdfSignature.DEFAULT_RETURN_TYPE
             )
+        if batch is not None:
+            self._validate_batch_map_params(output_dict, batch_params)
         return self._udf_to_obj(
             Mapper,
             multi_mapper,
@@ -1161,6 +1391,18 @@ class DataChain:
             output=output_dict,
             signal_map={},
         )
+
+    def _validate_batch_map_params(self, output, params):
+        input_schema = self.signals_schema | SignalSchema(output)
+        for input_types in params.values():
+            input_schema.slice(
+                {
+                    param: Any if anno is inspect.Parameter.empty else anno
+                    for param, anno in input_types.items()
+                },
+                self._setup,
+                is_batch=True,
+            )
 
     def gen(
         self,
@@ -1192,6 +1434,9 @@ class DataChain:
         udf_obj = self._udf_to_obj(Generator, func, params, output, signal_map)
         if (prefetch := self._settings.prefetch) is not None:
             udf_obj.prefetch = prefetch
+        udf_obj.delta_key, udf_obj.delta_key_presence = self._delta_key_columns(
+            udf_obj.output
+        )
         return self._evolve(
             query=self._query.generate(
                 udf_obj.to_udf_wrapper(self._settings.batch_size),
@@ -1199,6 +1444,40 @@ class DataChain:
             ),
             signal_schema=SignalSchema({"sys": Sys}) | udf_obj.output,
         )
+
+    def _delta_key_specs(self) -> list[tuple[list[str], list[str]]]:
+        """Source and result key fields of each delta source, unless unsafe."""
+        if self.delta_unsafe:
+            return []
+        specs = []
+        for source in self._query.delta_sources():
+            spec = source.delta_spec
+            assert spec is not None
+            on = [spec.on] if isinstance(spec.on, str) else list(spec.on)
+            result_on = spec.right_on or spec.on
+            specs.append(
+                (on, [result_on] if isinstance(result_on, str) else list(result_on))
+            )
+        return specs
+
+    def _delta_key_columns(
+        self, output: SignalSchema
+    ) -> tuple[list[tuple[str, str]], list[tuple[KeyPresence, KeyPresence]]]:
+        """Input/output key columns and optional-model presence a `gen` must keep."""
+        pairs: list[tuple[str, str]] = []
+        presence: list[tuple[KeyPresence, KeyPresence]] = []
+        for on, result_on in self._delta_key_specs():
+            for key in (on, result_on):  # the key may already be renamed
+                try:
+                    columns, present = _paired_key_columns(
+                        self.signals_schema, key, output, result_on
+                    )
+                    pairs.extend(columns)
+                    presence.extend(present)
+                    break
+                except (SignalResolvingError, DataChainParamsError):
+                    continue
+        return list(dict.fromkeys(pairs)), list(dict.fromkeys(presence))
 
     @delta_disabled
     def agg(
@@ -1215,6 +1494,9 @@ class DataChain:
         group of the new rows. It returns a chain itself with new signals.
 
         Input-output relationship: N:M
+
+        For fixed-size inference batches preserving input rows and columns,
+        use batch_map() instead.
 
         This method bears similarity to `gen()` and `map()`, employing a comparable set
         of parameters, yet differs in two crucial aspects:
@@ -1357,7 +1639,15 @@ class DataChain:
             k: self._bind_udf_settings(v, target_class) for k, v in signal_map.items()
         }
 
-        sign = UdfSignature.parse(name, signal_map, func, params, output, is_generator)
+        sign = UdfSignature.parse(
+            name,
+            signal_map,
+            func,
+            params,
+            output,
+            is_generator,
+            is_batch_map=issubclass(target_class, BatchMapper),
+        )
         DataModel.register(list(sign.output_schema.values.values()))
 
         params_schema = self.signals_schema.slice(
@@ -1370,9 +1660,12 @@ class DataChain:
         """Resolve a `BoundSpec` (e.g. a `datachain.llm` operation) into a concrete
         callable, handing it the chain settings and target verb via a `BindContext`
         so it can pick up `settings(llm=...)` and choose its shape from the verb.
+        A UDF instance is copied, so each chain configures its own instance.
         """
         if isinstance(func, BoundSpec):
             return func.bind(BindContext(settings=self._settings, target=target_class))
+        if isinstance(func, UDFBase):
+            return copy.copy(func)
         return func
 
     @staticmethod
@@ -1776,8 +2069,34 @@ class DataChain:
                 resolved_kwargs[col_name] = Column(ColumnMeta.to_db_name(resolved))
         return resolved_kwargs
 
+    def _check_delta_key_mutation(self, method: str, kwargs: dict[str, Any]) -> None:
+        protected: dict[str, set[str]] = {}
+        for on, result_on in self._delta_key_specs():
+            for key, result_key in zip(on, result_on, strict=True):
+                path = ColumnMeta.to_db_name(result_key)
+                protected.setdefault(path, {path}).add(ColumnMeta.to_db_name(key))
+        for name, value in kwargs.items():
+            target = ColumnMeta.to_db_name(name)
+            for key, sources in protected.items():
+                if key == target or key.startswith(target + DEFAULT_DELIMITER):
+                    suffix = key[len(target) :]
+                    unchanged = (
+                        isinstance(value, Column) and value.name + suffix in sources
+                    )
+                elif target.startswith(key + DEFAULT_DELIMITER):
+                    suffix = target[len(key) :]
+                    unchanged = isinstance(value, Column) and any(
+                        value.name == source + suffix for source in sources
+                    )
+                else:
+                    continue
+                if not unchanged:
+                    raise delta_key_changed_error(name, method)
+
     def _mutate(self, method: str, **kwargs) -> "Self":
         from sqlalchemy.sql.sqltypes import NullType
+
+        self._check_delta_key_mutation(method, kwargs)
 
         primitives = (bool, str, int, float)
 
@@ -2310,32 +2629,27 @@ class DataChain:
             if not on:
                 raise DataChainParamsError("'on' cannot be an empty string")
             on = [on]
-        elif isinstance(on, Sequence):
-            if not on or any(not col for col in on):
-                raise DataChainParamsError("'on' cannot contain empty strings")
+        elif isinstance(on, Sequence) and (not on or any(not col for col in on)):
+            raise DataChainParamsError("'on' cannot contain empty strings")
 
         if isinstance(right_on, str):
             if not right_on:
                 raise DataChainParamsError("'right_on' cannot be an empty string")
             right_on = [right_on]
-        elif isinstance(right_on, Sequence):
-            if not right_on or any(not col for col in right_on):
-                raise DataChainParamsError("'right_on' cannot contain empty strings")
+        elif isinstance(right_on, Sequence) and (
+            not right_on or any(not col for col in right_on)
+        ):
+            raise DataChainParamsError("'right_on' cannot contain empty strings")
 
+        presence: list[tuple[KeyPresence, KeyPresence]] = []
         if on is None and right_on is None:
-            other_columns = set(other._effective_signals_schema.db_signals())
-            common_signals = [
-                c
-                for c in self._effective_signals_schema.db_signals()
-                if c in other_columns
-            ]
-            if not common_signals:
-                raise DataChainParamsError("subtract(): no common columns")
-            signals = list(zip(common_signals, common_signals, strict=False))
+            signals, presence = _common_key_columns(
+                self._effective_signals_schema, other._effective_signals_schema
+            )
         elif on is not None and right_on is None:
-            right_on = on
-            resolved_signals = list(self.signals_schema.resolve(*on).db_signals())
-            signals = list(zip(resolved_signals, resolved_signals, strict=False))  # type: ignore[arg-type]
+            signals, presence = _paired_key_columns(
+                self.signals_schema, on, other.signals_schema, on
+            )
         elif on is None and right_on is not None:
             raise DataChainParamsError(
                 "'on' must be specified when 'right_on' is provided"
@@ -2349,11 +2663,12 @@ class DataChain:
                 raise DataChainParamsError(
                     "'on' and 'right_on' must have the same length"
                 )
-            signals = _paired_key_columns(
-                list(self.signals_schema.resolve(*on).db_signals()),
-                list(other.signals_schema.resolve(*right_on).db_signals()),
+            signals, presence = _paired_key_columns(
+                self.signals_schema, on, other.signals_schema, right_on
             )
-        return self._evolve(query=self._query.subtract(other._query, signals))  # type: ignore[arg-type]
+        return self._evolve(
+            query=self._query.subtract(other._query, signals, presence)  # type: ignore[arg-type]
+        )
 
     @delta_disabled
     def diff(
@@ -2614,7 +2929,8 @@ class DataChain:
                 signal, or one top-level signal without `columns`.
             column: Generated column name.
             model_name: Generated model name.
-            source: Whether to include info about the source file.
+            source: Whether to include info about the source file. It is named
+                "source", or the first free "cN_source" if that name is taken.
             nrows: Optional row limit per file.
             columns: Input columns to read, in order; all if omitted. Accepts original
                 or normalized names, e.g. "ZIP Code" or "zip_code". For Parquet exported
@@ -2677,7 +2993,11 @@ class DataChain:
         try:
             if infer:
                 schemas = file_schemas(self, **kwargs, parse_options=parse_options)
-                schema, output, read = infer_output(schemas, col_names, columns, source)
+                # A source a file written by DataChain stores is replaced by
+                # this read's, unless the read goes under its own column.
+                schema, output, read = infer_output(
+                    schemas, col_names, columns, source and not column
+                )
 
             if isinstance(output, dict):
                 model = dict_to_data_model(model_name or column or "", output)
@@ -2686,7 +3006,12 @@ class DataChain:
 
             if not infer:
                 read, written_by_datachain = read_columns(
-                    self, columns, model, source, **kwargs, parse_options=parse_options
+                    self,
+                    columns,
+                    model,
+                    source and not column,
+                    **kwargs,
+                    parse_options=parse_options,
                 )
         except (ValueError, pa.ArrowTypeError) as e:
             raise DatasetPrepareError(self.name, e) from e
@@ -2700,7 +3025,9 @@ class DataChain:
             }
 
         if source:
-            output = {"source": ArrowRow} | output  # type: ignore[assignment,operator]
+            # The data keeps its names, so on a clash the source signal is renamed.
+            name = unique_name("source", output)  # type: ignore[arg-type]
+            output = {name: ArrowRow} | output  # type: ignore[assignment,operator]
 
         # Prefetch downloads whole files, so a partial read prefetches only small ones.
         partial = nrows or (columns is not None and is_parquet(format))
@@ -3106,7 +3433,7 @@ class DataChain:
     def setup(self, **kwargs) -> "Self":
         """Setup variables to pass to UDF functions.
 
-        Use before running map/gen/agg to save an object and pass it as an
+        Use before running map/batch_map/gen/agg to save an object and pass it as an
         argument to the UDF.
 
         The value must be a callable (a `lambda: <value>` syntax can be used to quickly
