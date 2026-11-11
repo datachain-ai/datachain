@@ -3,35 +3,61 @@ import os
 import sys
 import traceback
 from multiprocessing import freeze_support
+from typing import TYPE_CHECKING
 
 from datachain.cli.utils import get_logging_level
-from datachain.studio import process_pipeline_args
+from datachain.lazy import lazy_exports
 
-from .commands import (
-    bucket_status_cmd,
-    clear_cache,
-    completion,
-    describe_dataset_cmd,
-    du,
-    edit_dataset,
-    garbage_collect,
-    index,
-    install_skills,
-    list_datasets,
-    list_skills,
-    ls,
-    rm_dataset,
-    show,
-    uninstall_skills,
-)
 from .parser import get_parser
+
+if TYPE_CHECKING:
+    from .commands.bucket import bucket_status_cmd  # noqa: F401
+    from .commands.datasets import (  # noqa: F401
+        describe_dataset_cmd,
+        edit_dataset,
+        list_datasets,
+        rm_dataset,
+    )
+    from .commands.du import du  # noqa: F401
+    from .commands.index import index  # noqa: F401
+    from .commands.ls import ls  # noqa: F401
+    from .commands.misc import clear_cache, completion, garbage_collect  # noqa: F401
+    from .commands.show import show  # noqa: F401
+    from .commands.skill import (  # noqa: F401
+        install_skills,
+        list_skills,
+        uninstall_skills,
+    )
+
+_LAZY = {
+    "bucket_status_cmd": "datachain.cli.commands.bucket:bucket_status_cmd",
+    "clear_cache": "datachain.cli.commands.misc:clear_cache",
+    "completion": "datachain.cli.commands.misc:completion",
+    "describe_dataset_cmd": "datachain.cli.commands.datasets:describe_dataset_cmd",
+    "du": "datachain.cli.commands.du:du",
+    "edit_dataset": "datachain.cli.commands.datasets:edit_dataset",
+    "garbage_collect": "datachain.cli.commands.misc:garbage_collect",
+    "index": "datachain.cli.commands.index:index",
+    "install_skills": "datachain.cli.commands.skill:install_skills",
+    "list_datasets": "datachain.cli.commands.datasets:list_datasets",
+    "list_skills": "datachain.cli.commands.skill:list_skills",
+    "ls": "datachain.cli.commands.ls:ls",
+    "rm_dataset": "datachain.cli.commands.datasets:rm_dataset",
+    "show": "datachain.cli.commands.show:show",
+    "uninstall_skills": "datachain.cli.commands.skill:uninstall_skills",
+}
+
+if not TYPE_CHECKING:
+    __getattr__, __dir__ = lazy_exports(__name__, globals(), _LAZY)
 
 logger = logging.getLogger("datachain")
 
+COMMANDS_WITHOUT_CATALOG = frozenset(
+    {"auth", "bucket", "completion", "job", "ls", "skill"}
+)
+
 
 def main(argv: list[str] | None = None) -> int:
-    from datachain.catalog import get_catalog
-
     # Required for Windows multiprocessing support
     freeze_support()
 
@@ -67,7 +93,10 @@ def main(argv: list[str] | None = None) -> int:
 
     catalog = None
     try:
-        catalog = get_catalog(client_config=client_config)
+        if args.command not in COMMANDS_WITHOUT_CATALOG:
+            from datachain.catalog import get_catalog
+
+            catalog = get_catalog(client_config=client_config)
         return handle_command(args, catalog, client_config)
     except BrokenPipeError as exc:
         error, return_code = handle_broken_pipe_error(exc)
@@ -88,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def handle_command(args, catalog, client_config) -> int:
     """Handle the different CLI commands."""
-    from datachain.studio import process_auth_cli_args, process_jobs_args
+    from datachain.cli import clear_cache, garbage_collect
 
     command_handlers = {
         "bucket": lambda: handle_bucket_command(args, client_config),
@@ -104,9 +133,9 @@ def handle_command(args, catalog, client_config) -> int:
         "completion": lambda: handle_completion_command(args),
         "clear-cache": lambda: clear_cache(catalog),
         "gc": lambda: garbage_collect(catalog, checkpoint_ttl=args.checkpoint_ttl),
-        "auth": lambda: process_auth_cli_args(args),
-        "job": lambda: process_jobs_args(args),
-        "pipeline": lambda: process_pipeline_args(args, catalog),
+        "auth": lambda: handle_auth_command(args),
+        "job": lambda: handle_job_command(args),
+        "pipeline": lambda: handle_pipeline_command(args, catalog),
         "skill": lambda: handle_skill_command(args),
     }
 
@@ -120,7 +149,27 @@ def handle_command(args, catalog, client_config) -> int:
     return 1
 
 
+def handle_auth_command(args):
+    from datachain.studio import process_auth_cli_args
+
+    return process_auth_cli_args(args)
+
+
+def handle_job_command(args):
+    from datachain.studio import process_jobs_args
+
+    return process_jobs_args(args)
+
+
+def handle_pipeline_command(args, catalog):
+    from datachain.studio import process_pipeline_args
+
+    return process_pipeline_args(args, catalog)
+
+
 def handle_bucket_command(args, client_config) -> int:
+    from datachain.cli import bucket_status_cmd
+
     if args.bucket_cmd is None:
         print(
             f"Use 'datachain {args.command} --help' to see available options",
@@ -159,6 +208,13 @@ def handle_clone_command(args, catalog):
 
 
 def handle_dataset_command(args, catalog):
+    from datachain.cli import (
+        describe_dataset_cmd,
+        edit_dataset,
+        list_datasets,
+        rm_dataset,
+    )
+
     if args.datasets_cmd is None:
         print(
             f"Use 'datachain {args.command} --help' to see available options",
@@ -225,6 +281,8 @@ def handle_dataset_command(args, catalog):
 
 
 def handle_ls_command(args, client_config):
+    from datachain.cli import ls
+
     ls(
         args.sources,
         long=bool(args.long),
@@ -238,6 +296,8 @@ def handle_ls_command(args, client_config):
 
 
 def handle_show_command(args, catalog):
+    from datachain.cli import show
+
     show(
         catalog,
         args.name,
@@ -253,6 +313,8 @@ def handle_show_command(args, catalog):
 
 
 def handle_du_command(args, catalog, client_config):
+    from datachain.cli import du
+
     du(
         catalog,
         args.sources,
@@ -284,6 +346,8 @@ def handle_find_command(args, catalog):
 
 
 def handle_index_command(args, catalog):
+    from datachain.cli import index
+
     index(
         catalog,
         args.sources,
@@ -293,6 +357,12 @@ def handle_index_command(args, catalog):
 
 def handle_skill_command(args):
     import sys
+
+    from datachain.cli import (
+        install_skills,
+        list_skills,
+        uninstall_skills,
+    )
 
     if args.skill_cmd is None:
         print(
@@ -323,6 +393,8 @@ def handle_skill_command(args):
 
 
 def handle_completion_command(args):
+    from datachain.cli import completion
+
     print(completion(args.shell))
 
 

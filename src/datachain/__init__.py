@@ -1,67 +1,142 @@
-from importlib.metadata import version
+from typing import TYPE_CHECKING
 
-from datachain import func, llm  # re-export submodule namespaces
-from datachain.client import BucketStatus, bucket_status
-from datachain.lib.data_model import DataModel, DataType, is_chain_type
-from datachain.lib.dataset_description import DatasetDescription
-from datachain.lib.dc import (
-    C,
-    Column,
-    ColumnExpr,
-    DataChain,
-    DataChainSchema,
-    Listing,
-    Sys,
-    datasets,
-    delete_dataset,
-    describe,
-    is_local,
-    is_studio,
-    list_storage,
-    listings,
-    move_dataset,
-    read_csv,
-    read_database,
-    read_dataset,
-    read_hf,
-    read_json,
-    read_lerobot,
-    read_mcap,
-    read_pandas,
-    read_parquet,
-    read_records,
-    read_storage,
-    read_values,
-    read_webdataset,
-    read_zarr,
-)
-from datachain.lib.file import (
-    ArrowRow,
-    Audio,
-    AudioFile,
-    AudioFragment,
-    File,
-    FileError,
-    FileRow,
-    Image,
-    ImageFile,
-    TarVFile,
-    TextFile,
-    Video,
-    VideoFile,
-    VideoFragment,
-    VideoFrame,
-)
-from datachain.lib.mcap import McapFile, McapSlice
-from datachain.lib.model_store import ModelStore
-from datachain.lib.namespaces import delete_namespace
-from datachain.lib.projects import create as create_project
-from datachain.lib.udf import Aggregator, BatchMapper, Generator, Mapper
-from datachain.lib.utils import AbstractUDF, DataChainError
-from datachain.query import metrics, param
-from datachain.query.session import Session
+from datachain.lazy import lazy_exports
 
-__version__ = version("datachain")
+if TYPE_CHECKING:
+    from datachain import func, llm
+    from datachain.client import BucketStatus, bucket_status
+    from datachain.lib.data_model import DataModel, DataType, is_chain_type
+    from datachain.lib.dataset_description import DatasetDescription
+    from datachain.lib.dc import (
+        C,
+        Column,
+        ColumnExpr,
+        DataChain,
+        DataChainSchema,
+        Listing,
+        Sys,
+        delete_dataset,
+        describe,
+        is_local,
+        is_studio,
+        list_storage,
+        move_dataset,
+        read_csv,
+        read_database,
+        read_dataset,
+        read_hf,
+        read_json,
+        read_lerobot,
+        read_mcap,
+        read_pandas,
+        read_parquet,
+        read_records,
+        read_storage,
+        read_values,
+        read_webdataset,
+        read_zarr,
+    )
+
+    # Also submodule names in `datachain.lib.dc`; mypy binds the module otherwise.
+    from datachain.lib.dc.datasets import datasets
+    from datachain.lib.dc.listings import listings
+    from datachain.lib.file import (
+        ArrowRow,
+        Audio,
+        AudioFile,
+        AudioFragment,
+        File,
+        FileError,
+        FileRow,
+        Image,
+        ImageFile,
+        TarVFile,
+        TextFile,
+        Video,
+        VideoFile,
+        VideoFragment,
+        VideoFrame,
+    )
+    from datachain.lib.mcap import McapFile, McapSlice
+    from datachain.lib.model_store import ModelStore
+    from datachain.lib.namespaces import delete_namespace
+    from datachain.lib.projects import create as create_project
+    from datachain.lib.udf import Aggregator, BatchMapper, Generator, Mapper
+    from datachain.lib.utils import AbstractUDF, DataChainError
+    from datachain.query import metrics, param
+    from datachain.query.session import Session
+
+    __version__: str
+
+_LAZY = {
+    "__version__": "datachain._version:__version__",
+    "AbstractUDF": "datachain.lib.utils:AbstractUDF",
+    "Aggregator": "datachain.lib.udf:Aggregator",
+    "ArrowRow": "datachain.lib.file:ArrowRow",
+    "Audio": "datachain.lib.file:Audio",
+    "AudioFile": "datachain.lib.file:AudioFile",
+    "AudioFragment": "datachain.lib.file:AudioFragment",
+    "BatchMapper": "datachain.lib.udf:BatchMapper",
+    "BucketStatus": "datachain.client:BucketStatus",
+    "C": "datachain.lib.dc:C",
+    "Column": "datachain.lib.dc:Column",
+    "ColumnExpr": "datachain.lib.dc:ColumnExpr",
+    "DataChain": "datachain.lib.dc:DataChain",
+    "DataChainError": "datachain.lib.utils:DataChainError",
+    "DataChainSchema": "datachain.lib.dc:DataChainSchema",
+    "DataModel": "datachain.lib.data_model:DataModel",
+    "DataType": "datachain.lib.data_model:DataType",
+    "DatasetDescription": "datachain.lib.dataset_description:DatasetDescription",
+    "File": "datachain.lib.file:File",
+    "FileError": "datachain.lib.file:FileError",
+    "FileRow": "datachain.lib.file:FileRow",
+    "Generator": "datachain.lib.udf:Generator",
+    "Image": "datachain.lib.file:Image",
+    "ImageFile": "datachain.lib.file:ImageFile",
+    "Listing": "datachain.lib.dc:Listing",
+    "Mapper": "datachain.lib.udf:Mapper",
+    "McapFile": "datachain.lib.mcap:McapFile",
+    "McapSlice": "datachain.lib.mcap:McapSlice",
+    "ModelStore": "datachain.lib.model_store:ModelStore",
+    "Session": "datachain.query.session:Session",
+    "Sys": "datachain.lib.dc:Sys",
+    "TarVFile": "datachain.lib.file:TarVFile",
+    "TextFile": "datachain.lib.file:TextFile",
+    "Video": "datachain.lib.file:Video",
+    "VideoFile": "datachain.lib.file:VideoFile",
+    "VideoFragment": "datachain.lib.file:VideoFragment",
+    "VideoFrame": "datachain.lib.file:VideoFrame",
+    "bucket_status": "datachain.client:bucket_status",
+    "create_project": "datachain.lib.projects:create",
+    "datasets": "datachain.lib.dc:datasets",
+    "delete_dataset": "datachain.lib.dc:delete_dataset",
+    "delete_namespace": "datachain.lib.namespaces:delete_namespace",
+    "describe": "datachain.lib.dc:describe",
+    "func": "datachain.func",
+    "is_chain_type": "datachain.lib.data_model:is_chain_type",
+    "is_local": "datachain.lib.dc:is_local",
+    "is_studio": "datachain.lib.dc:is_studio",
+    "list_storage": "datachain.lib.dc:list_storage",
+    "listings": "datachain.lib.dc:listings",
+    "llm": "datachain.llm",
+    "metrics": "datachain.query.metrics",
+    "move_dataset": "datachain.lib.dc:move_dataset",
+    "param": "datachain.query:param",
+    "read_csv": "datachain.lib.dc:read_csv",
+    "read_database": "datachain.lib.dc:read_database",
+    "read_dataset": "datachain.lib.dc:read_dataset",
+    "read_hf": "datachain.lib.dc:read_hf",
+    "read_json": "datachain.lib.dc:read_json",
+    "read_lerobot": "datachain.lib.dc:read_lerobot",
+    "read_mcap": "datachain.lib.dc:read_mcap",
+    "read_pandas": "datachain.lib.dc:read_pandas",
+    "read_parquet": "datachain.lib.dc:read_parquet",
+    "read_records": "datachain.lib.dc:read_records",
+    "read_storage": "datachain.lib.dc:read_storage",
+    "read_values": "datachain.lib.dc:read_values",
+    "read_webdataset": "datachain.lib.dc:read_webdataset",
+    "read_zarr": "datachain.lib.dc:read_zarr",
+}
 
 __all__ = [
     "AbstractUDF",
@@ -131,3 +206,7 @@ __all__ = [
     "read_webdataset",
     "read_zarr",
 ]
+
+
+if not TYPE_CHECKING:
+    __getattr__, __dir__ = lazy_exports(__name__, globals(), _LAZY)

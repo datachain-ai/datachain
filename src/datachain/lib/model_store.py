@@ -1,7 +1,57 @@
 import inspect
+from importlib import import_module
 from typing import Any, ClassVar
 
 from pydantic import BaseModel
+
+# Models defined in datachain register on import; `get` imports them by name.
+BUILTIN_MODELS = {
+    "ArrowRow": "datachain.lib.file",
+    "Audio": "datachain.lib.file",
+    "AudioFile": "datachain.lib.file",
+    "AudioFragment": "datachain.lib.file",
+    "BBox": "datachain.model.bbox",
+    "DatasetInfo": "datachain.lib.dataset_info",
+    "File": "datachain.lib.file",
+    "HFAudio": "datachain.lib.hf",
+    "HFClassLabel": "datachain.lib.hf",
+    "HFImage": "datachain.lib.hf",
+    "Image": "datachain.lib.file",
+    "ImageFile": "datachain.lib.file",
+    "Laion": "datachain.lib.webdataset_laion",
+    "ListingInfo": "datachain.lib.listing_info",
+    "McapFile": "datachain.lib.mcap",
+    "McapMessage": "datachain.lib.mcap",
+    "McapSlice": "datachain.lib.mcap",
+    "McapSummary": "datachain.lib.mcap",
+    "McapTopic": "datachain.lib.mcap",
+    "OBBox": "datachain.model.bbox",
+    "Pose": "datachain.model.pose",
+    "Pose3D": "datachain.model.pose",
+    "Segment": "datachain.model.segment",
+    "Sys": "datachain.lib.dc.utils",
+    "TextFile": "datachain.lib.file",
+    "Video": "datachain.lib.file",
+    "VideoFile": "datachain.lib.file",
+    "VideoFragment": "datachain.lib.file",
+    "VideoFrame": "datachain.lib.file",
+    "WDSAllFile": "datachain.lib.webdataset",
+    "WDSBasic": "datachain.lib.webdataset",
+    "WDSLaion": "datachain.lib.webdataset_laion",
+    "WDSReadableSubclass": "datachain.lib.webdataset",
+    "YoloBBox": "datachain.model.ultralytics.bbox",
+    "YoloBBoxes": "datachain.model.ultralytics.bbox",
+    "YoloOBBox": "datachain.model.ultralytics.bbox",
+    "YoloOBBoxes": "datachain.model.ultralytics.bbox",
+    "YoloPose": "datachain.model.ultralytics.pose",
+    "YoloPoses": "datachain.model.ultralytics.pose",
+    "YoloSegment": "datachain.model.ultralytics.segment",
+    "YoloSegments": "datachain.model.ultralytics.segment",
+    "ZarrArray": "datachain.lib.zarr",
+    "ZarrInfo": "datachain.lib.zarr",
+    "ZarrSelection": "datachain.lib.zarr",
+    "ZarrStore": "datachain.lib.zarr",
+}
 
 
 class ModelStore:
@@ -57,6 +107,12 @@ class ModelStore:
     @classmethod
     def get(cls, name: str, version: int | None = None) -> type | None:
         class_dict = cls.store.get(name, None)
+        if class_dict is None and (module := BUILTIN_MODELS.get(name)):
+            try:
+                cls.register(getattr(import_module(module), name))
+            except ImportError:  # an optional dependency is not installed
+                return None
+            class_dict = cls.store.get(name, None)
         if class_dict is None:
             return None
         if version is None:

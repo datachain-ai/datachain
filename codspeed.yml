@@ -3,3 +3,5 @@ $schema: https://raw.githubusercontent.com/CodSpeedHQ/codspeed/refs/heads/main/s
 benchmarks:
   - name: import datachain
     exec: python -c "import datachain"
+  - name: import datachain API
+    exec: python -c "import datachain as dc; dc.DataChain"
