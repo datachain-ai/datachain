@@ -23,7 +23,6 @@ from .fsspec import BucketStatus, RangeListedClient
 from .ranges import PROCESS_LIST_WORKERS, Keep, Page
 
 if TYPE_CHECKING:
-    from datachain.cache import Cache
     from datachain.client.writeconfig import WriteConfig
 
 _CREDENTIAL_CHECKS: dict[tuple, tuple[float, bool]] = {}
