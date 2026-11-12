@@ -30,9 +30,8 @@ def isolated_aws(monkeypatch, tmp_path):
     monkeypatch.setenv("BOTO_CONFIG", str(tmp_path / "boto"))
     monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(credentials))
     monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
-    monkeypatch.setattr(s3, "_BUCKET_REGIONS", {})
-    monkeypatch.setattr(s3, "_CREDENTIAL_CHECKS", {})
-    classes = (S3FileSystem, s3._S3FileSystem)
+    monkeypatch.setattr(s3, "_CREDENTIAL_CHECKS", {}, raising=False)
+    classes = {S3FileSystem, ClientS3.FS_CLASS}
     existing = {cls: set(cls._cache) for cls in classes}
     yield
     # Async filesystems are owned by their caller and have no GC finalizer.
@@ -122,85 +121,6 @@ def test_async_filesystem_supports_probe_and_read_storage(
         == 1
     )
     assert any(method == "GET" for method, _ in requests)
-
-
-@pytest.mark.parametrize("profile", [None, "review"])
-@pytest.mark.parametrize("services", [False, True])
-@pytest.mark.parametrize("rewrite", [False, True], ids=["switch-file", "rewrite-file"])
-def test_shared_config_endpoint_does_not_reuse_another_stores_region(
-    endpoints, tmp_path, monkeypatch, profile, services, rewrite
-):
-    first, _ = endpoints("us-west-1")
-    second, requests = endpoints("eu-west-2")
-    section = "default" if profile is None else f"profile {profile}"
-
-    def configure(endpoint, name):
-        path = tmp_path / name
-        if services:
-            body = (
-                f"[{section}]\nservices = local\n"
-                f"[services local]\ns3 =\n  endpoint_url = {endpoint}\n"
-            )
-        else:
-            body = f"[{section}]\nendpoint_url = {endpoint}\n"
-        path.write_text(body)
-        monkeypatch.setenv("AWS_CONFIG_FILE", str(path))
-
-    kwargs = {"skip_instance_cache": True}
-    if profile:
-        kwargs["profile"] = profile
-    configure(first, "first")
-    assert ClientS3.bucket_status("bucket", **kwargs).access == "anonymous"
-    assert not s3._BUCKET_REGIONS
-
-    # A prior AWS probe can have filled this entry before an endpoint was set.
-    s3._BUCKET_REGIONS["bucket", profile, None] = "us-west-1"
-    configure(second, "first" if rewrite else "second")
-    client = ClientS3.from_name(
-        "bucket", None, kwargs | _CREDENTIALS | {"version_aware": False}
-    )
-    assert "region_name" not in client.fs_kwargs
-    page = sync(get_loop(), client._list_page, "", "", None)
-    assert len(page.rows) == 1
-    assert ("GET", True) in requests
-
-
-@pytest.mark.parametrize("services", [False, True])
-@pytest.mark.parametrize("path_style", ["absolute", "environment", "relative"])
-def test_adding_shared_endpoint_stops_reusing_a_cached_aws_region(
-    endpoints, tmp_path, monkeypatch, services, path_style
-):
-    path = tmp_path / "shared-config"
-    path.write_text("[default]\n")
-    if path_style == "environment":
-        monkeypatch.setenv("DATACHAIN_TEST_AWS_CONFIG_DIR", str(tmp_path))
-        config_path = "${DATACHAIN_TEST_AWS_CONFIG_DIR}/shared-config"
-    elif path_style == "relative":
-        monkeypatch.chdir(tmp_path)
-        config_path = "shared-config"
-    else:
-        config_path = str(path)
-    monkeypatch.setenv("AWS_CONFIG_FILE", config_path)
-    s3._BUCKET_REGIONS["bucket", None, None] = "us-west-1"
-    kwargs = _CREDENTIALS | {"version_aware": False, "skip_instance_cache": True}
-    assert (
-        ClientS3.from_name("bucket", None, kwargs).fs_kwargs["region_name"]
-        == "us-west-1"
-    )
-
-    endpoint, requests = endpoints("eu-west-2")
-    if services:
-        body = (
-            "[default]\nservices = local\n[services local]\n"
-            f"s3 =\n  endpoint_url = {endpoint}\n"
-        )
-    else:
-        body = f"[default]\nendpoint_url = {endpoint}\n"
-    path.write_text(body)
-    client = ClientS3.from_name("bucket", None, kwargs)
-    page = sync(get_loop(), client._list_page, "", "", None)
-    assert len(page.rows) == 1
-    assert ("GET", True) in requests
 
 
 @pytest.mark.parametrize("statuses", [(429, 429), (403, 429), (403, 400)])
@@ -363,7 +283,7 @@ def test_supplied_session_preserves_explicit_credentials(source):
     assert fs.s3._request_signer._credentials.access_key == "key"
 
 
-@pytest.mark.parametrize("explicit_anon", [False, True])
+@pytest.mark.parametrize("explicit_anon", [None, False, True])
 def test_refresh_rechecks_supplied_session_credentials(explicit_anon):
     session = AioSession()
     fs = ClientS3.create_fs(
@@ -373,11 +293,11 @@ def test_refresh_rechecks_supplied_session_credentials(explicit_anon):
         skip_instance_cache=True,
     )
     fs.connect()
-    assert fs.anon
+    assert fs.anon is (explicit_anon is not False)
     session.set_credentials("key", "secret")
     fs.connect(refresh=True)
-    assert fs.anon is explicit_anon
-    if not explicit_anon:
+    assert fs.anon is (explicit_anon is True)
+    if explicit_anon is not True:
         assert fs.s3._request_signer._credentials.access_key == "key"
 
 
@@ -390,20 +310,6 @@ def test_refresh_rechecks_default_credentials(monkeypatch):
     fs.connect(refresh=True)
     assert not fs.anon
     assert fs.s3._request_signer._credentials.access_key == "key"
-
-
-@pytest.mark.parametrize("kwargs", [{}, {"session": None}])
-def test_shared_config_region_does_not_reuse_another_partitions_bucket(kwargs):
-    path = Path(os.environ["AWS_CONFIG_FILE"])
-    path.write_text("[default]\nregion = us-west-2\n")
-    key = s3._region_key("bucket", {})
-    assert key is not None
-    s3._BUCKET_REGIONS[key] = "us-west-2"
-    client = ClientS3.from_name("bucket", None, _CREDENTIALS | kwargs)
-    assert client.fs_kwargs["region_name"] == "us-west-2"
-    path.write_text("[default]\nregion = cn-north-1\n")
-    client = ClientS3.from_name("bucket", None, _CREDENTIALS | kwargs)
-    assert client.fs_kwargs.get("region_name") != "us-west-2"
 
 
 @pytest.mark.parametrize(
@@ -424,14 +330,15 @@ def test_filesystem_creation_does_not_send_s3_requests(monkeypatch, credentials)
 
     async def unexpected(*args, **kwargs):
         requests.append((args, kwargs))
+        raise RuntimeError("Unexpected S3 transport request")
 
     monkeypatch.setattr("aiobotocore.endpoint.AioEndpoint.make_request", unexpected)
-    fs = ClientS3.create_fs(
-        cache_regions=False, skip_instance_cache=True, **credentials
-    )
-    fs.connect()
-    assert not fs.anon
-    assert not requests
+    try:
+        fs = ClientS3.create_fs(skip_instance_cache=True, **credentials)
+        fs.connect()
+        assert not fs.anon
+    finally:
+        assert not requests
 
 
 @pytest.mark.parametrize(
@@ -485,3 +392,56 @@ def test_missing_credentials_are_rechecked_after_ttl(monkeypatch, mocker):
     now.return_value = 119.5
     assert not connect().anon
     assert probe.call_count == 2
+
+
+@pytest.mark.parametrize("source", ["config-file", "default-profile"])
+def test_bucket_probes_reload_changed_aws_configuration(endpoints, monkeypatch, source):
+    first, first_requests = endpoints("us-west-1", statuses=(403, 200))
+    second, second_requests = endpoints("eu-west-2", statuses=(403, 200))
+    path = Path(os.environ["AWS_CONFIG_FILE"])
+    if source == "default-profile":
+        path.write_text(
+            f"[profile first]\nendpoint_url = {first}\n"
+            f"[profile second]\nendpoint_url = {second}\n"
+        )
+        monkeypatch.setenv("AWS_DEFAULT_PROFILE", "first")
+    else:
+        path.write_text(f"[default]\nendpoint_url = {first}\n")
+
+    assert ClientS3.bucket_status("bucket", **_CREDENTIALS).access == "authenticated"
+    if source == "default-profile":
+        monkeypatch.setenv("AWS_DEFAULT_PROFILE", "second")
+    else:
+        path.write_text(f"[default]\nendpoint_url = {second}\n")
+
+    assert ClientS3.bucket_status("bucket", **_CREDENTIALS).access == "authenticated"
+    assert first_requests == second_requests == [("HEAD", False), ("HEAD", True)]
+
+
+@pytest.mark.parametrize("peer_refresh", [False, True])
+def test_connected_anonymous_filesystem_skips_provider_fingerprints_until_ttl(
+    mocker, peer_refresh
+):
+    probe = mocker.patch("datachain.client.s3.Session")
+    probe.return_value.get_credentials.return_value = None
+    now = mocker.patch("datachain.client.s3.monotonic", return_value=0.0)
+    fs = ClientS3.create_fs(cache_regions=False, skip_instance_cache=True)
+    fs.connect()
+    fingerprint = mocker.spy(s3, "_credential_key")
+
+    for _ in range(10):
+        fs.connect()
+    fingerprint.assert_not_called()
+    probe.assert_called_once()
+
+    now.return_value = 61.0
+    if peer_refresh:
+        peer = ClientS3.create_fs(cache_regions=False, skip_instance_cache=True)
+        peer.connect()
+    fs.connect()
+    assert fingerprint.call_count > 0
+    assert probe.call_count == 2
+    fingerprint.reset_mock()
+    for _ in range(10):
+        fs.connect()
+    fingerprint.assert_not_called()

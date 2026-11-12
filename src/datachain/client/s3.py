@@ -2,7 +2,6 @@ import asyncio
 import os
 from collections.abc import Callable
 from datetime import datetime
-from functools import lru_cache
 from time import monotonic
 from typing import TYPE_CHECKING, Any, cast
 from xml.etree.ElementTree import Element, ParseError, fromstring
@@ -10,8 +9,7 @@ from xml.etree.ElementTree import Element, ParseError, fromstring
 from aiobotocore.parsers import AioResponseParserFactory, AioRestXMLParser
 from aiobotocore.session import AioSession
 from botocore import handlers
-from botocore.configloader import load_config
-from botocore.exceptions import ClientError, ConfigNotFound, NoCredentialsError
+from botocore.exceptions import ClientError, NoCredentialsError
 from botocore.model import Shape
 from botocore.session import Session
 from botocore.utils import parse_timestamp
@@ -28,65 +26,7 @@ if TYPE_CHECKING:
     from datachain.cache import Cache
     from datachain.client.writeconfig import WriteConfig
 
-_BUCKET_REGIONS: dict[tuple, str] = {}
 _CREDENTIAL_CHECKS: dict[tuple, tuple[float, bool]] = {}
-
-
-@lru_cache(maxsize=16)
-def _shared_config(path: str, _stamp: tuple[int, int, int]) -> dict[str, Any]:
-    """Reuse parsed AWS config until its file changes."""
-    try:
-        return load_config(path)
-    except ConfigNotFound:
-        return {}
-
-
-def _region_key(name: str, kwargs: dict[str, Any]) -> tuple | None:
-    """The cache key of a bucket's region: the same name under another profile,
-    region or endpoint may be another bucket. None for custom endpoints and
-    sessions."""
-    client_kwargs = kwargs.get("client_kwargs") or {}
-    config_kwargs = kwargs.get("config_kwargs") or {}
-    if (
-        kwargs.get("session") is not None
-        or kwargs.get("endpoint_url")
-        or kwargs.get("aws_endpoint_url")
-        or client_kwargs.get("endpoint_url")
-        or os.environ.get("AWS_ENDPOINT_URL")
-        or os.environ.get("AWS_ENDPOINT_URL_S3")
-    ):
-        return None
-    profile = (
-        kwargs.get("profile")
-        or os.environ.get("AWS_DEFAULT_PROFILE")
-        or os.environ.get("AWS_PROFILE")
-    )
-    path = os.path.abspath(
-        os.path.expanduser(
-            os.path.expandvars(os.environ.get("AWS_CONFIG_FILE", "~/.aws/config"))
-        )
-    )
-    try:
-        stat = os.stat(path)
-    except OSError:
-        config = {}
-    else:
-        config = _shared_config(
-            path, (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
-        )
-    scoped = config.get("profiles", {}).get(profile or "default", {})
-    services = config.get("services", {}).get(scoped.get("services"), {})
-    if scoped.get("endpoint_url") or services.get("s3", {}).get("endpoint_url"):
-        return None
-    region = (
-        kwargs.get("region_name")
-        or client_kwargs.get("region_name")
-        or config_kwargs.get("region_name")
-        or os.environ.get("AWS_REGION")
-        or os.environ.get("AWS_DEFAULT_REGION")
-        or scoped.get("region")
-    )
-    return name, profile, region
 
 
 def _has_explicit_credentials(kwargs: dict[str, Any]) -> bool:
@@ -262,17 +202,25 @@ class _S3FileSystem(S3FileSystem):
 
     def __init__(self, *args, credential_token=None, **kwargs):
         # The token partitions fsspec's instance cache when provider inputs change.
+        self._credential_retry_at = 0.0
         super().__init__(*args, **kwargs)
 
     async def set_session(self, refresh=False, kwargs={}):  # noqa: B006
         mine = isinstance(self.session, _ListingSession)
-        auto_anon = not self.storage_options.get("anon")
+        auto_anon = self.storage_options.get("anon") is None
         retry_credentials = False
-        if auto_anon and self._s3 is not None and self.anon and mine:
+        if (
+            auto_anon
+            and self._s3 is not None
+            and self.anon
+            and mine
+            and monotonic() >= self._credential_retry_at
+        ):
             checked, found = _CREDENTIAL_CHECKS.get(
                 _credential_key(self.storage_options), (0.0, False)
             )
-            retry_credentials = found or monotonic() - checked >= 60
+            self._credential_retry_at = checked + 60
+            retry_credentials = found or monotonic() >= self._credential_retry_at
         if (self._s3 is None or refresh or retry_credentials) and auto_anon:
             was_anonymous = self.anon
             if self.session is None or mine:
@@ -281,6 +229,11 @@ class _S3FileSystem(S3FileSystem):
                 self.anon = not await asyncio.to_thread(
                     _has_credentials, self.storage_options
                 )
+                if self.anon:
+                    checked, _ = _CREDENTIAL_CHECKS.get(
+                        _credential_key(self.storage_options), (monotonic(), False)
+                    )
+                    self._credential_retry_at = checked + 60
             elif not _has_explicit_credentials(self.storage_options):
                 self.anon = await self.session.get_credentials() is None
             refresh = refresh or (self._s3 is not None and was_anonymous != self.anon)
@@ -352,7 +305,7 @@ class ClientS3(RangeListedClient):
             # it tries to randomly guess and creates wrong signature
             kwargs.setdefault("cache_regions", True)
 
-        if not kwargs.get("anon") and not _has_explicit_credentials(kwargs):
+        if kwargs.get("anon") is None and not _has_explicit_credentials(kwargs):
             kwargs["credential_token"] = tokenize(_credential_key(kwargs))
 
         return cast("S3FileSystem", super().create_fs(**kwargs))
@@ -361,6 +314,7 @@ class ClientS3(RangeListedClient):
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:
         # HeadBucket returns the region; do not discover it with another probe.
         kwargs["cache_regions"] = False
+        kwargs["skip_instance_cache"] = True
         kwargs.pop("asynchronous", None)
         kwargs.pop("loop", None)
         not_found = BucketStatus(
@@ -372,8 +326,6 @@ class ClientS3(RangeListedClient):
         )
         anon_kwargs["anon"] = True
         status, region = _head_bucket(S3FileSystem(**anon_kwargs), name)
-        if region and (key := _region_key(name, kwargs)):
-            _BUCKET_REGIONS[key] = region
         if status == 200:
             return BucketStatus(exists=True, access="anonymous")
         if status == 404:
@@ -388,9 +340,7 @@ class ClientS3(RangeListedClient):
                 auth_kwargs.get("config_kwargs") or {}
             )
         try:
-            status, auth_region = _head_bucket(S3FileSystem(**auth_kwargs), name)
-            if auth_region and (key := _region_key(name, kwargs)):
-                _BUCKET_REGIONS[key] = auth_region
+            status, _ = _head_bucket(S3FileSystem(**auth_kwargs), name)
         except NoCredentialsError:
             status = 403
         if status == 200:
@@ -403,13 +353,6 @@ class ClientS3(RangeListedClient):
             error=f"Access denied to S3 bucket '{name}'"
             " — check AWS credentials/permissions",
         )
-
-    def __init__(self, name: str, fs_kwargs: dict[str, Any], cache: "Cache") -> None:
-        key = _region_key(name, fs_kwargs)
-        region = _BUCKET_REGIONS.get(key) if key else None
-        if region and "region_name" not in fs_kwargs:
-            fs_kwargs = {**fs_kwargs, "region_name": region}
-        super().__init__(name, fs_kwargs, cache)
 
     @staticmethod
     def _write_kwargs(cfg: "WriteConfig", *, streaming: bool) -> dict[str, Any]:
