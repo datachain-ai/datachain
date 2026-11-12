@@ -502,7 +502,8 @@ class SignalSchema:
                     f"cannot deserialize custom type '{type_name}': {exc}"
                 ) from exc
 
-            if fr := ModelStore.get(model_name, target_version):
+            module = ct.bases[0][1] if ct.bases else None
+            if fr := ModelStore.get(model_name, target_version, module=module):
                 return fr
 
             fields = {
@@ -511,13 +512,14 @@ class SignalSchema:
             }
 
             base_model = None
-            for base in ct.bases:
-                _, _, model_store_name = base
+            for _, base_module, model_store_name in ct.bases[1:]:
                 if model_store_name:
                     base_model_name, base_version = ModelStore.parse_name_version(
                         model_store_name
                     )
-                    base_model = ModelStore.get(base_model_name, base_version)
+                    base_model = ModelStore.get(
+                        base_model_name, base_version, module=base_module
+                    )
                     if base_model:
                         break
 

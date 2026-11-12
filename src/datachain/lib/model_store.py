@@ -105,22 +105,29 @@ class ModelStore:
                 cls.register(anno)
 
     @classmethod
-    def get(cls, name: str, version: int | None = None) -> type | None:
-        class_dict = cls.store.get(name, None)
-        if class_dict is None and (module := BUILTIN_MODELS.get(name)):
+    def get(
+        cls, name: str, version: int | None = None, *, module: str | None = None
+    ) -> type | None:
+        class_dict = cls.store.get(name, {})
+        model = class_dict.get(
+            max(class_dict, default=0) if version is None else version
+        )
+        builtin_module = BUILTIN_MODELS.get(name)
+        if model is not None and (
+            module is None
+            or model.__module__ == module
+            or ("_modelstore_base_name" in model.__dict__ and module != builtin_module)
+        ):
+            return model
+        if builtin_module and (module is None or module == builtin_module):
             try:
-                cls.register(getattr(import_module(module), name))
+                model = getattr(import_module(builtin_module), name)
             except ImportError:  # an optional dependency is not installed
                 return None
-            class_dict = cls.store.get(name, None)
-        if class_dict is None:
-            return None
-        if version is None:
-            max_ver = max(class_dict.keys(), default=None)
-            if max_ver is None:
-                return None
-            return class_dict[max_ver]
-        return class_dict.get(version, None)
+            cls.register(model)
+            if version is None or cls.get_version(model) == version:
+                return model
+        return None
 
     @classmethod
     def parse_name_version(cls, fullname: str) -> tuple[str, int]:

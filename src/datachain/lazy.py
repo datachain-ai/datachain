@@ -1,16 +1,15 @@
-from collections.abc import Callable
 from importlib import import_module
 from typing import Any
 
 
-def lazy_exports(
-    package: str, namespace: dict[str, Any], targets: dict[str, str]
-) -> tuple[Callable[[str], Any], Callable[[], list[str]]]:
-    """Return a package's `__getattr__` and `__dir__` (PEP 562) that import each
+def lazy_exports(namespace: dict[str, Any], targets: dict[str, str]) -> None:
+    """Install a package's `__getattr__` and `__dir__` (PEP 562) that import each
     name in `targets` on first access and cache it in `namespace`.
 
     A target is "module:attribute", or "module" when the name is the module itself.
     """
+
+    package = namespace["__name__"]
 
     def getattr_(name: str) -> Any:
         if (target := targets.get(name)) is None:
@@ -29,4 +28,5 @@ def lazy_exports(
     def dir_() -> list[str]:
         return sorted({*namespace, *targets})
 
-    return getattr_, dir_
+    namespace["__getattr__"] = getattr_
+    namespace["__dir__"] = dir_

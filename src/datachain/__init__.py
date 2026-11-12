@@ -1,3 +1,5 @@
+# ruff: noqa: TC004
+
 from typing import TYPE_CHECKING
 
 from datachain.lazy import lazy_exports
@@ -208,5 +210,4 @@ __all__ = [
 ]
 
 
-if not TYPE_CHECKING:
-    __getattr__, __dir__ = lazy_exports(__name__, globals(), _LAZY)
+lazy_exports(globals(), _LAZY)

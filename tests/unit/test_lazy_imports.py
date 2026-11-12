@@ -11,7 +11,7 @@ import pytest
 
 import datachain
 from datachain.lazy import lazy_exports
-from datachain.lib.model_store import BUILTIN_MODELS
+from datachain.lib.model_store import BUILTIN_MODELS, ModelStore
 
 SRC = Path(datachain.__file__).parent
 
@@ -43,17 +43,23 @@ for name in package._LAZY:
 """
 
 
-def _run(code: str, *args: str) -> subprocess.CompletedProcess:
+def _run(
+    code: str, *args: str, cwd: Path | None = None, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess:
     return subprocess.run(  # noqa: S603
         [sys.executable, "-c", code, *args],
         capture_output=True,
         text=True,
         check=False,
+        cwd=cwd,
+        env={**os.environ, **env} if env is not None else None,
     )
 
 
-def _check(code: str) -> str:
-    proc = _run(code)
+def _check(
+    code: str, *args: str, cwd: Path | None = None, env: dict[str, str] | None = None
+) -> str:
+    proc = _run(code, *args, cwd=cwd, env=env)
     assert proc.returncode == 0, proc.stderr
     return proc.stdout
 
@@ -111,23 +117,6 @@ def test_cli_command_names_are_functions_after_their_module_is_imported():
     )
 
 
-def test_cli_main_after_command_module_is_imported(tmp_path):
-    code = (
-        "import sys, datachain.cli.commands.ls\n"
-        "from datachain.cli import main\n"
-        "sys.exit(main(['ls', sys.argv[1]]))\n"
-    )
-    proc = subprocess.run(  # noqa: S603
-        [sys.executable, "-c", code, str(tmp_path)],
-        capture_output=True,
-        text=True,
-        check=False,
-        cwd=tmp_path,
-        env={**os.environ, "DATACHAIN_ROOT_DIR": str(tmp_path / ".datachain")},
-    )
-    assert proc.returncode == 0, proc.stderr
-
-
 def test_star_import_and_version_in_fresh_process():
     out = _check(
         "from datachain import *\n"
@@ -183,47 +172,6 @@ def test_entry_point_does_not_import(entry, forbidden):
     assert sorted(set(json.loads(out)) & set(forbidden)) == []
 
 
-MODELS_DEFINED_HERE = """
-import json, sys
-from datachain.lib.model_store import ModelStore
-module = sys.argv[1]
-print(json.dumps(sorted(
-    name
-    for name, versions in ModelStore.store.items()
-    for model in versions.values()
-    if model.__module__ == module and model.__name__ == name
-)))
-"""
-
-
-@pytest.mark.parametrize("module", _modules())
-def test_module_imports_first_in_fresh_process(module):
-    proc = _run(f"import {module}\n{MODELS_DEFINED_HERE}", module)
-    if proc.returncode and "ModuleNotFoundError: No module named" in proc.stderr:
-        missing = proc.stderr.rsplit("No module named", 1)[1].split("'")[1]
-        if not missing.startswith("datachain"):
-            pytest.skip(f"optional dependency {missing} is not installed")
-    assert proc.returncode == 0, proc.stderr
-    models = json.loads(proc.stdout.splitlines()[-1])
-    assert {name: BUILTIN_MODELS.get(name) for name in models} == dict.fromkeys(
-        models, module
-    )
-
-
-@pytest.mark.parametrize("module", sorted(set(BUILTIN_MODELS.values())))
-def test_builtin_models_resolve_before_their_module_is_imported(module):
-    names = sorted(name for name, target in BUILTIN_MODELS.items() if target == module)
-    _check(
-        "import importlib, sys\n"
-        "from datachain.lib.model_store import ModelStore\n"
-        f"assert {module!r} not in sys.modules\n"
-        f"models = {{name: ModelStore.get(name) for name in {names!r}}}\n"
-        f"module = importlib.import_module({module!r})\n"
-        "for name, model in models.items():\n"
-        "    assert model is getattr(module, name), (name, model)\n"
-    )
-
-
 def test_model_store_miss_imports_no_builtin_module():
     _check(
         "import sys\n"
@@ -235,45 +183,9 @@ def test_model_store_miss_imports_no_builtin_module():
     )
 
 
-def test_builtin_model_resolves_after_store_is_cleared(monkeypatch):
-    from datachain.lib.mcap import McapFile
-    from datachain.lib.model_store import ModelStore
-
-    monkeypatch.setattr(ModelStore, "store", {})
-    assert ModelStore.get("McapFile", 1) is McapFile
-    assert ModelStore.get("NoSuchModel") is None
-
-
-def test_saved_builtin_model_restores_its_class_in_fresh_process(tmp_path):
-    code = (
-        "import sys\n"
-        "import datachain as dc\n"
-        "if sys.argv[1] == 'save':\n"
-        "    f = dc.McapFile(path='a.mcap', source='file:///tmp')\n"
-        "    dc.read_values(f=[f]).save('mcap_files')\n"
-        "else:\n"
-        "    file_type = dc.read_dataset('mcap_files').signals_schema.values['f']\n"
-        "    from datachain.lib.mcap import McapFile\n"
-        "    assert file_type is McapFile, file_type\n"
-    )
-    env = {"DATACHAIN_ROOT_DIR": str(tmp_path / ".datachain")}
-    for step in ("save", "load"):
-        proc = subprocess.run(  # noqa: S603
-            [sys.executable, "-c", code, step],
-            capture_output=True,
-            text=True,
-            check=False,
-            cwd=tmp_path,
-            env={**os.environ, **env},
-        )
-        assert proc.returncode == 0, proc.stderr
-
-
 def _fake_package(targets: dict[str, str]) -> types.ModuleType:
     module = types.ModuleType("fake_lazy_package")
-    module.__getattr__, module.__dir__ = lazy_exports(  # type: ignore[method-assign]
-        module.__name__, vars(module), targets
-    )
+    lazy_exports(vars(module), targets)
     return module
 
 
@@ -319,43 +231,144 @@ def test_builtin_model_with_missing_dependency_is_a_miss(monkeypatch):
     assert model_store.ModelStore.get("NoSuchModel") is None
 
 
+def test_cli_main_after_command_module_is_imported(tmp_path):
+    _check(
+        "import sys, datachain.cli.commands.ls\n"
+        "from datachain.cli import main\n"
+        "sys.exit(main(['ls', sys.argv[1]]))\n",
+        str(tmp_path),
+        cwd=tmp_path,
+        env={"DATACHAIN_ROOT_DIR": str(tmp_path / ".datachain")},
+    )
+
+
+def test_modules_import_with_a_clean_datachain_cache(record_property):
+    result = json.loads(
+        _check(
+            """
+import importlib, json, sys
+models, skipped = {}, {}
+for name in json.loads(sys.argv[1]):
+    for key in list(sys.modules):
+        if key == "datachain" or key.startswith("datachain."):
+            del sys.modules[key]
+    try:
+        importlib.import_module(name)
+    except ImportError as exc:
+        missing = exc.__cause__ or exc
+        if not isinstance(missing, ModuleNotFoundError):
+            raise
+        if missing.name and missing.name.startswith("datachain"):
+            raise
+        skipped[name] = str(missing)
+        continue
+    from datachain.lib.model_store import ModelStore
+    models[name] = sorted({
+        key for key, versions in ModelStore.store.items()
+        for model in versions.values()
+        if model.__module__ == name and model.__name__ == key
+    })
+print(json.dumps({"models": models, "skipped": skipped}))
+""",
+            json.dumps(_modules()),
+        )
+    )
+    for module, names in result["models"].items():
+        assert {name: BUILTIN_MODELS.get(name) for name in names} == dict.fromkeys(
+            names, module
+        )
+    record_property("missing_optional_dependencies", json.dumps(result["skipped"]))
+
+
+@pytest.mark.usefixtures("empty_model_store")
+@pytest.mark.parametrize("name,module", sorted(BUILTIN_MODELS.items()))
+def test_builtin_models_resolve_from_an_empty_store(name, module):
+    try:
+        expected = getattr(importlib.import_module(module), name)
+    except ImportError as exc:
+        missing = exc.__cause__ or exc
+        if not isinstance(missing, ModuleNotFoundError):
+            raise
+        if missing.name and missing.name.startswith("datachain"):
+            raise
+        pytest.skip(f"optional dependency is not installed: {missing}")
+    ModelStore.store.clear()
+    assert ModelStore.get(name) is expected
+
+
+def test_builtin_model_resolves_before_its_module_is_imported():
+    _check(
+        "import sys\n"
+        "from datachain.lib.model_store import ModelStore\n"
+        "assert 'datachain.lib.mcap' not in sys.modules\n"
+        "model = ModelStore.get('McapFile', 1)\n"
+        "from datachain.lib.mcap import McapFile\n"
+        "assert model is McapFile\n"
+    )
+
+
+def test_saved_models_restore_in_a_fresh_process(tmp_path):
+    env = {"DATACHAIN_ROOT_DIR": str(tmp_path / ".datachain")}
+    _check(
+        "import datachain as dc\n"
+        "class BBox(dc.DataModel):\n"
+        "    score: float\n"
+        "dc.read_values(b=[BBox(score=0.9)]).save('boxes')\n"
+        "dc.read_values(f=[dc.McapFile(path='a.mcap', source='file:///tmp')])"
+        ".save('mcap_files')\n",
+        cwd=tmp_path,
+        env=env,
+    )
+    _check(
+        "import datachain as dc\n"
+        "boxes = dc.read_dataset('boxes')\n"
+        "assert boxes.to_values('b.score') == [0.9]\n"
+        "assert set(boxes.signals_schema.values['b'].model_fields) == {'score'}\n"
+        "files = dc.read_dataset('mcap_files')\n"
+        "from datachain.lib.mcap import McapFile\n"
+        "assert files.signals_schema.values['f'] is McapFile\n"
+        "assert files.to_values('f')[0].path == 'a.mcap'\n",
+        cwd=tmp_path,
+        env=env,
+    )
+
+
 @pytest.mark.parametrize(
-    "handler,function,with_catalog",
+    "argv,name",
     [
-        ("handle_auth_command", "process_auth_cli_args", False),
-        ("handle_job_command", "process_jobs_args", False),
-        ("handle_pipeline_command", "process_pipeline_args", True),
+        (["ls", "s3://bucket"], "ls"),
+        (["show", "ds"], "show"),
+        (["du", "s3://bucket"], "du"),
+        (["index", "s3://bucket"], "index"),
+        (["skill", "list"], "list_skills"),
+        (["completion"], "completion"),
+        (["clear-cache"], "clear_cache"),
+        (["gc"], "garbage_collect"),
+        (["auth", "team"], "process_auth_cli_args"),
+        (["job", "ls"], "process_jobs_args"),
+        (["pipeline", "list"], "process_pipeline_args"),
     ],
 )
-def test_studio_handlers_call_studio(monkeypatch, handler, function, with_catalog):
-    import datachain.cli
-    import datachain.studio
+def test_cli_dispatch_resolves_only_the_selected_command(monkeypatch, argv, name):
+    from datachain import cli, lazy
 
-    calls = []
-    monkeypatch.setattr(datachain.studio, function, lambda *a: calls.append(a) or 7)
-    args = types.SimpleNamespace()
-    handle = getattr(datachain.cli, handler)
-    assert (handle(args, "catalog") if with_catalog else handle(args)) == 7
-    assert calls == [(args, "catalog") if with_catalog else (args,)]
+    args = cli.get_parser().parse_args(argv)
+    target, _, attr = cli._LAZY[name].partition(":")
+    imported, calls = [], []
+    original_import = lazy.import_module
 
+    def command(*args, **kwargs):
+        calls.append((args, kwargs))
+        return 0
 
-@pytest.mark.parametrize(
-    "argv,handler,name,extra",
-    [
-        (["ls", "s3://bucket"], "handle_ls_command", "ls", ({},)),
-        (["show", "ds"], "handle_show_command", "show", ("catalog",)),
-        (["du", "s3://bucket"], "handle_du_command", "du", ("catalog", {})),
-        (["index", "s3://bucket"], "handle_index_command", "index", ("catalog",)),
-        (["skill", "list"], "handle_skill_command", "list_skills", ()),
-        (["completion"], "handle_completion_command", "completion", ()),
-    ],
-)
-def test_cli_handlers_resolve_their_command(monkeypatch, argv, handler, name, extra):
-    import datachain.cli
-    from datachain.cli.parser import get_parser
+    def load(module):
+        imported.append(module)
+        if module == target:
+            return types.SimpleNamespace(**{attr: command})
+        return original_import(module)
 
-    calls = []
-    monkeypatch.setattr(datachain.cli, name, lambda *a, **kw: calls.append(a) or "")
-    args = get_parser().parse_args(argv)
-    getattr(datachain.cli, handler)(args, *extra)
+    monkeypatch.delitem(vars(cli), name, raising=False)
+    monkeypatch.setattr(lazy, "import_module", load)
+    assert cli.handle_command(args, "catalog", {}) == 0
+    assert imported == [target]
     assert len(calls) == 1
