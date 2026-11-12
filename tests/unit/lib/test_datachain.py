@@ -3104,6 +3104,31 @@ def test_read_parquet_columns_read_a_path_a_later_file_lacks_as_its_default(
     assert chain.order_by("id").to_values("value") == [Note(text="a"), default]
 
 
+def test_read_parquet_columns_reject_a_tag_the_file_does_not_declare(
+    tmp_dir, test_session
+):
+    path = tmp_dir / "parts"
+    write_parts(
+        path,
+        test_session,
+        (Note(text="a"), Note | int | None),
+        (PointX(x=1), PointX | int | None),
+    )
+    table = pq.read_table(path / "1.parquet")
+    i = table.column_names.index("u._type_tag")
+    table = table.set_column(i, "u._type_tag", pa.array(["Bogus"]))
+    pq.write_table(table, path / "1.parquet")
+    with pytest.raises(
+        DataChainParamsError, match="'Bogus' is not one of the declared"
+    ):
+        dc.read_parquet(
+            path.as_uri(),
+            columns=["id", "u.Note"],
+            output={"id": int, "value": Note | None},
+            session=test_session,
+        ).to_list()
+
+
 class PointAndNote(DataModel):
     x: int
     note: Note | None = Note(text="default")
