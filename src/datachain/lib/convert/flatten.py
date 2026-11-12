@@ -17,9 +17,7 @@ from datachain.lib.model_store import ModelStore
 from datachain.lib.utils import DataChainParamsError
 
 if TYPE_CHECKING:
-    from collections.abc import Container, Iterable, Sequence
-
-    from pydantic.fields import FieldInfo
+    from collections.abc import Sequence
 
 
 class FieldKind(NamedTuple):
@@ -85,45 +83,6 @@ def iter_field_columns(anno: Any, path: tuple[str, ...]) -> Iterator[tuple[str, 
         yield from iter_flat_columns(fr, path)
     else:
         yield path
-
-
-def missing_column_values(
-    fields: "Iterable[tuple[FieldInfo, tuple[str, ...]]]",
-    present: "Container[tuple[str, ...]]",
-) -> dict[tuple[str, ...], Any]:
-    """Return values for the columns of ``fields`` that ``present`` lacks. A field
-    with none of its columns takes its default, as pydantic fills a field left
-    out, and raises when it has no default."""
-    values: dict[tuple[str, ...], Any] = {}
-    for info, path in fields:
-        columns = list(iter_field_columns(info.annotation, path))
-        if not any(c in present for c in columns):
-            if info.is_required():
-                raise ValueError(f"{'.'.join(path)} has no column and no default")
-            default = info.get_default(call_default_factory=True)
-            flat = flatten_value(default, info.annotation)
-            values.update(zip(columns, flat, strict=True))
-            continue
-        for model, model_path in _field_models(info.annotation, path):
-            # A union arm the data has no columns for is never read.
-            if any(c in present for c in iter_flat_columns(model, model_path)):
-                sub = ((f, (*model_path, n)) for n, f in model.model_fields.items())
-                values |= missing_column_values(sub, present)
-    return values
-
-
-def _field_models(
-    anno: Any, path: tuple[str, ...]
-) -> Iterator[tuple[type[BaseModel], tuple[str, ...]]]:
-    """Yield the models a field holds, each with the path of its columns: the
-    field's own model, or each model arm of a union."""
-    if (layout := union_layout(anno)) is None:
-        if (fr := ModelStore.to_pydantic(unwrap_optional(anno)[0])) is not None:
-            yield fr, path
-        return
-    for arm in layout.arms:
-        if (fr := ModelStore.to_pydantic(arm)) is not None:
-            yield fr, (*path, arm_selector(arm)) if layout.use_slots else path
 
 
 def flatten(obj: BaseModel) -> tuple:

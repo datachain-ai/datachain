@@ -18,7 +18,7 @@ import pyarrow.parquet as pq
 import pytest
 import sqlalchemy
 from datasets import ClassLabel, Dataset, Features, Translation, Value
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 import datachain as dc
 import datachain.query.dataset as query_dataset
@@ -2930,8 +2930,10 @@ def test_read_parquet_columns_read_a_field_missing_from_a_file_as_its_default(
         else {"columns": ["id", "p.x"]}
     )
     chain = dc.read_parquet(uri, source=False, session=test_session, **kwargs)
-    # Without output, a picked field reads into a generated model with no defaults.
-    assert chain.order_by("id").to_values("p.x") == [1, 5 if with_output else None]
+    # Without output, p reads only p.x. A file without p.x then has no p, unless
+    # p's own tag says it holds one.
+    default = 5 if with_output or optional else None
+    assert chain.order_by("id").to_values("p.x") == [1, default]
 
 
 @pytest.mark.parametrize("names", [("1", "2"), ("2", "1")])
@@ -2952,8 +2954,80 @@ def test_read_parquet_output_field_a_file_lacks_with_no_default_raises(
     chain = dc.read_parquet(
         uri, output={"id": int, "p": Point}, source=False, session=test_session
     )
-    with pytest.raises(Exception, match=r"p\.x has no column and no default"):
+    with pytest.raises(ValidationError, match=r"p\.x\n  Field required"):
         chain.to_list()
+
+
+class LabeledX(DataModel):
+    x: int
+    name: str = Field(default_factory=lambda data: f"point-{data['x']}")
+    label: str = "default"
+
+    @field_validator("label")
+    @classmethod
+    def shout(cls, value: str) -> str:
+        return f"{value}!"
+
+
+def test_read_parquet_output_field_a_file_lacks_is_left_out_of_each_row(
+    tmp_dir, test_session
+):
+    path = tmp_dir / "points.parquet"
+    points = [PointX(x=1), PointX(x=2)]
+    dc.read_values(id=[1, 2], p=points, session=test_session).to_parquet(path)
+    chain = dc.read_parquet(
+        path.as_uri(),
+        output={"id": int, "p": LabeledX},
+        source=False,
+        session=test_session,
+    )
+    # The factory runs per row with its data, and the default isn't validated.
+    assert chain.order_by("id").to_list("p.name", "p.label") == [
+        ("point-1", "default"),
+        ("point-2", "default"),
+    ]
+
+
+class XLabel(DataModel):
+    x: int
+    label: str
+
+
+def test_read_parquet_required_field_a_file_lacks_after_rows_without_its_model_reads(
+    tmp_dir, test_session
+):
+    path = tmp_dir / "rows.parquet"
+    output = {"id": int, "p": PointX | None, "u": XLabel | int}
+    dc.read_values(
+        id=[1, 2], p=[None, None], u=[3, 4], output=output, session=test_session
+    ).to_parquet(path)
+    pq.write_table(pq.read_table(path).drop_columns(["u.XLabel.label"]), path)
+    chain = dc.read_parquet(
+        path.as_uri(),
+        output={"id": int, "p": XLabel | None, "u": XLabel | int},
+        source=False,
+        session=test_session,
+    )
+    assert chain.order_by("id").to_list("p", "u") == [(None, 3), (None, 4)]
+
+
+class OnlyDefaultX(DataModel):
+    x: int | None = 5
+
+
+def test_read_parquet_model_its_tag_holds_after_a_file_lacks_its_fields_takes_defaults(
+    tmp_dir, test_session
+):
+    path = tmp_dir / "y.parquet"
+    output = {"p": OnlyY | None}
+    dc.read_values(p=[OnlyY(y=7)], output=output, session=test_session).to_parquet(path)
+    chain = dc.read_parquet(
+        path.as_uri(),
+        output={"p": OnlyDefaultX | None},
+        source=False,
+        session=test_session,
+    )
+    assert chain.to_values("p.x") == [5]
 
 
 @pytest.mark.parametrize("column", ["p.x", "p.DefaultX.x"])

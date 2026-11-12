@@ -13,13 +13,8 @@ from pyarrow.fs import FileInfo, FileType, FSSpecHandler, PyFileSystem
 from datachain import json
 from datachain.data_storage.warehouse import to_json_text
 from datachain.fs.reference import ReferenceFileSystem
-from datachain.lib.convert.flatten import (
-    classify_field,
-    flatten,
-    iter_field_columns,
-    missing_column_values,
-)
-from datachain.lib.convert.unflatten import unflatten_to_json_pos
+from datachain.lib.convert.flatten import classify_field, flatten, iter_field_columns
+from datachain.lib.convert.unflatten import ABSENT, unflatten_to_json_pos
 from datachain.lib.data_model import (
     NULLABLE_SCALARS,
     TYPE_TAG_FIELD,
@@ -229,7 +224,7 @@ class ArrowGenerator(Generator):
             yield from self._flat_rows(self._batches(ds, kw), file, source_kwargs)
             return
         if use_datachain_schema:
-            objs = self._signal_objects(ds, kw, file)
+            objs = self._signal_objects(ds, kw)
         else:
             if self.columns is not None:
                 present = set(schema.names)
@@ -328,12 +323,10 @@ class ArrowGenerator(Generator):
                 for index, values in enumerate(rows, start):
                     yield FlatRow((*file_values, index, stored_options, *values))
 
-    def _signal_objects(
-        self, ds: Dataset, kw: dict[str, Any], file: File
-    ) -> Iterator["BaseModel"]:
+    def _signal_objects(self, ds: Dataset, kw: dict[str, Any]) -> Iterator["BaseModel"]:
         """Read each row of a file written by DataChain into the output model by
         column position, as rows are read from the DB. A field the file has no
-        columns for takes its default."""
+        columns for is left out, so the model takes its default."""
         model, schema = self.output_schema, ds.schema
         paths = self.columns or list(model.model_fields)
         parents: dict[str, ParentTag] = {}
@@ -341,24 +334,10 @@ class ArrowGenerator(Generator):
             signal_schema := _get_datachain_schema(schema)
         ):
             parents = _parent_tags(signal_schema, schema.names, paths)
-        tags = [f"{path}.{TYPE_TAG_FIELD}" for path in parents]
-        fields = list(
-            zip(
-                model.model_fields.values(),
-                (tuple(p.split(".")) for p in paths),
-                strict=True,
-            )
-        )
-        present = {tuple(n.split(".")) for n in [*schema.names, *tags]}
-        try:
-            missing = missing_column_values(fields, present)
-        except ValueError as e:
-            raise ValueError(f"'{file.path}': {e}") from e
-        fill = {".".join(c): v for c, v in missing.items()}
         names = [
-            ".".join(c)
-            for info, path in fields
-            for c in iter_field_columns(info.annotation, path)
+            ".".join(column)
+            for info, path in zip(model.model_fields.values(), paths, strict=True)
+            for column in iter_field_columns(info.annotation, (path,))
         ]
         wanted = {*names, *(tag for tag, _, _ in parents.values())}
         kw["columns"] = [c for c in schema.names if c in wanted]
@@ -374,12 +353,9 @@ class ArrowGenerator(Generator):
                 values[f"{path}.{TYPE_TAG_FIELD}"] = [
                     t if arm_for_tag(layout, t) is arm else None for t in values[tag]
                 ]
-            rows = batch.num_rows
-            columns = [
-                values[n] if n in values else [fill.get(n)] * rows for n in names
-            ]
+            absent = [ABSENT] * batch.num_rows
             # An output with no fields still takes one object per row.
-            columns = columns or [[None] * rows]
+            columns = [values.get(n, absent) for n in names] or [absent]
             for row in zip(*columns, strict=True):
                 yield model(**unflatten_to_json_pos(model, row, 0, _build_model)[0])
 
