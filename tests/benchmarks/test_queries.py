@@ -1,6 +1,8 @@
 import itertools
 import json
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from PIL import Image
 
@@ -11,6 +13,7 @@ from datachain.func import array, path, string
 NUM_FILES = 1000
 NUM_IMAGES = 100
 NUM_JSON_OBJECTS = 2000
+NUM_ROWS = 10_000
 
 pytestmark = pytest.mark.usefixtures("ignore_checkpoints")
 
@@ -75,6 +78,45 @@ def test_metadata_filter_to_pandas(benchmark, files_uri, test_session):
         )
 
     assert len(benchmark(run)) == 500
+
+
+@pytest.fixture
+def parquet_uri(tmp_path):
+    rows = range(NUM_ROWS)
+    table = pa.table(
+        {
+            "id": pa.array(rows),
+            "score": pa.array([i / 3 for i in rows]),
+            "name": pa.array([f"n{i}" for i in rows]),
+            "tag": pa.array([("a", "b")[i % 2] for i in rows]).dictionary_encode(),
+            "emb": pa.array([[float(i), -float(i)] for i in rows]),
+        }
+    )
+    path = tmp_path / "rows.parquet"
+    pq.write_table(table, path)
+    return path.as_uri()
+
+
+@pytest.fixture
+def csv_uri(tmp_path):
+    path = tmp_path / "rows.csv"
+    lines = "".join(f"{i},{i / 3},n{i},\n" for i in range(NUM_ROWS))
+    path.write_text(f"id,score,name,empty\n{lines}")
+    return path.as_uri()
+
+
+def test_read_parquet(benchmark, parquet_uri, test_session):
+    def run():
+        return dc.read_parquet(parquet_uri, session=test_session).count()
+
+    assert benchmark(run) == NUM_ROWS
+
+
+def test_read_csv(benchmark, csv_uri, test_session):
+    def run():
+        return dc.read_csv(csv_uri, session=test_session).count()
+
+    assert benchmark(run) == NUM_ROWS
 
 
 def test_read_json(benchmark, json_uri, test_session):
