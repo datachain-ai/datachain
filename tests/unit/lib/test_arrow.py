@@ -9,6 +9,7 @@ import pytest
 from datasets import Dataset
 from pyarrow import feather
 from pyarrow.dataset import CsvFileFormat, JsonFileFormat, ParquetFileFormat
+from pydantic import field_validator
 
 import datachain as dc
 from datachain.lib.arrow import (
@@ -21,12 +22,13 @@ from datachain.lib.arrow import (
 from datachain.lib.data_model import dict_to_data_model
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.hf import HFClassLabel
+from datachain.lib.udf import UdfError
 
 
 @pytest.mark.parametrize("source", ["local", "http"])
 @pytest.mark.parametrize("format", ["parquet", "csv", "json"])
-def test_arrow_rejects_overwritten_uncached_source(
-    tmp_path, catalog, http_server, source, format
+def test_parse_tabular_rejects_a_file_changed_since_listing(
+    tmp_path, test_session, http_server, source, format
 ):
     path = tmp_path / f"table.{format}"
 
@@ -40,59 +42,28 @@ def test_arrow_rejects_overwritten_uncached_source(
             frame.to_json(path, orient="records", lines=True)
 
     write(1)
-    uri = tmp_path.as_uri() if source == "local" else http_server
-    file = catalog.get_client(uri).get_file_info(path.name)
-    assert file.etag
-    file._set_stream(catalog, caching_enabled=False)
+    base = tmp_path.as_uri() if source == "local" else http_server
+    files = dc.read_storage(f"{base}/{path.name}", session=test_session)
+    files.exec()
     mtime = path.stat().st_mtime + 1
     write(2)
     os.utime(path, (mtime, mtime))
     with pytest.raises(FileNotFoundError, match="changed on the source"):
-        list(ArrowGenerator(format=format).process(file))
+        files.parse_tabular(format=format).exec()
 
 
 @pytest.mark.parametrize("cache", [True, False])
-def test_arrow_generator(tmp_path, catalog, cache):
-    ids = [12345, 67890, 34, 0xF0123]
-    texts = ["28", "22", "we", "hello world"]
-    df = pd.DataFrame({"id": ids, "text": texts})
-
-    name = "111.parquet"
-    pq_path = tmp_path / name
-    df.to_parquet(pq_path)
-    stream = File(path=name, source=f"file://{tmp_path}")
-    stream._set_stream(catalog, caching_enabled=cache)
-
-    func = ArrowGenerator()
-    objs = list(func.process(stream))
-
-    assert len(objs) == len(ids)
-    for o, id, text in zip(objs, ids, texts, strict=False):
-        assert isinstance(o[0], ArrowRow)
-        file_vals = o[0].read()
-        assert file_vals["id"] == id
-        assert file_vals["text"] == text
-        assert o[1] == id
-        assert o[2] == text
-
-
-def test_arrow_generator_no_source(tmp_path, catalog):
-    ids = [12345, 67890, 34, 0xF0123]
-    texts = ["28", "22", "we", "hello world"]
-    df = pd.DataFrame({"id": ids, "text": texts})
-
-    name = "111.parquet"
-    pq_path = tmp_path / name
-    df.to_parquet(pq_path)
-    stream = File(path=name, source=f"file://{tmp_path}")
-    stream._set_stream(catalog, caching_enabled=False)
-
-    func = ArrowGenerator(source=False)
-    objs = list(func.process(stream))
-
-    for o, id, text in zip(objs, ids, texts, strict=False):
-        assert o[0] == id
-        assert o[1] == text
+def test_read_parquet_source_reads_back_its_row(tmp_path, test_session, cache):
+    path = tmp_path / "rows.parquet"
+    pq.write_table(pa.table({"id": [34, 12345], "text": ["we", "28"]}), path)
+    chain = dc.read_parquet(
+        path.as_uri(), settings={"cache": cache}, session=test_session
+    )
+    rows = chain.order_by("id").to_list("source", "id", "text")
+    assert [(s.read(), i, t) for s, i, t in rows] == [
+        ({"id": 34, "text": "we"}, 34, "we"),
+        ({"id": 12345, "text": "28"}, 12345, "28"),
+    ]
 
 
 def test_arrow_generator_output_schema(tmp_path, catalog):
@@ -110,7 +81,7 @@ def test_arrow_generator_output_schema(tmp_path, catalog):
 
     output, original_names = schema_to_output(table.schema)
     output_schema = dict_to_data_model("", output, original_names)
-    func = ArrowGenerator(output_schema=output_schema)
+    func = ArrowGenerator(None, output_schema)
     objs = list(func.process(stream))
 
     assert len(objs) == len(ids)
@@ -135,38 +106,166 @@ def test_arrow_generator_hf(tmp_path, catalog):
     output, original_names = schema_to_output(ds._data.schema, ["col"])
 
     output_schema = dict_to_data_model("", output, original_names)
-    func = ArrowGenerator(output_schema=output_schema)
+    func = ArrowGenerator(None, output_schema)
     for obj in func.process(stream):
         assert isinstance(obj[1].col, HFClassLabel)
 
 
 @pytest.mark.parametrize("cache", [True, False])
-def test_arrow_generator_partitioned(tmp_path, catalog, cache):
-    pq_path = tmp_path / "parquets"
+def test_read_parquet_partitioned(tmp_path, test_session, cache):
     pylist = [
         {"first_name": "Alice", "age": 25, "city": "New York"},
         {"first_name": "Bob", "age": 30, "city": "Los Angeles"},
         {"first_name": "Charlie", "age": 35, "city": "Chicago"},
     ]
+    pq_path = tmp_path / "parquets"
     table = pa.Table.from_pylist(pylist)
     pq.write_to_dataset(table, pq_path, partition_cols=["first_name"])
 
-    output, original_names = schema_to_output(table.schema)
-    output_schema = dict_to_data_model("", output, original_names)
-    func = ArrowGenerator(
-        table.schema, output_schema=output_schema, partitioning="hive"
+    chain = dc.read_parquet(
+        pq_path.as_uri(),
+        partitioning="hive",
+        settings={"cache": cache},
+        session=test_session,
     )
 
-    for path in pq_path.rglob("*.parquet"):
-        stream = File(
-            path=path.relative_to(pq_path).as_posix(),
-            source=f"file://{pq_path}",
-        )
-        stream._set_stream(catalog, caching_enabled=cache)
+    rows = chain.to_list("first_name", "age", "city", "source")
+    assert sorted(row[:3] for row in rows) == sorted(tuple(r.values()) for r in pylist)
+    for name, *_, source in rows:
+        assert f"first_name={name}/" in source.file.path
+        assert source.index == 0
+        assert source.kwargs["partitioning"] == "hive"
 
-        (o,) = list(func.process(stream))
-        assert isinstance(o[0], ArrowRow)
-        assert dict(o[1]) in pylist
+
+class PlainTypes(dc.DataModel):
+    i8: int | None = None
+    u32: int | None = None
+    f32: float | None = None
+    f64: float | None = None
+    b: bool | None = None
+    s: str | None = None
+    ls: str | None = None
+    bin: bytes | None = None
+    ts: datetime | None = None
+    tz: datetime | None = None
+    cat: str | None = None
+    empty: str | None = None
+    fl: list[float | None] | None = None
+    il: list[int | None] | None = None
+    sl: list[str | None] | None = None
+
+
+@pytest.fixture
+def plain_types_parquet(tmp_path):
+    when = datetime(2026, 1, 2, 3, 4, 5, 6)
+    table = pa.table(
+        {
+            "i8": pa.array([-1, 2, 3], pa.int8()),
+            "u32": pa.array([2**32 - 1, 0, None], pa.uint32()),
+            "f32": pa.array([1.5, None, -2.5], pa.float32()),
+            "f64": pa.array([None, 2.25, -0.0], pa.float64()),
+            "b": pa.array([True, False, None]),
+            "s": pa.array(["x", None, ""]),
+            "ls": pa.array([None, "ü", "z"], pa.large_string()),
+            "bin": pa.array([b"\x00", None, b""]),
+            "ts": pa.array([when, None, None]),
+            "tz": pa.array(
+                [None, when.replace(tzinfo=UTC), None], pa.timestamp("ms", tz="UTC")
+            ),
+            "cat": pa.array(["a", None, "a"]).dictionary_encode(),
+            "empty": pa.array([None, None, None]),
+            "fl": pa.array([[1.5, -2.0], None, []]),
+            "il": pa.array([[1], [2, None], None]),
+            "sl": pa.array([None, ["x", None], ["ü"]]),
+        }
+    )
+    path = tmp_path / "plain.parquet"
+    pq.write_table(table, path, row_group_size=1)
+    return path
+
+
+@pytest.mark.parametrize("source", [True, False])
+@pytest.mark.parametrize("column", ["", "p"])
+def test_read_parquet_dict_output_matches_model_output(
+    plain_types_parquet, test_session, column, source
+):
+    output = {name: info.annotation for name, info in PlainTypes.model_fields.items()}
+    prefix = f"{column}." if column else ""
+    signals = [prefix + name for name in PlainTypes.model_fields]
+    if source:
+        signals.append("source")
+    by_types, by_model = (
+        dc.read_parquet(
+            plain_types_parquet.as_uri(),
+            output=out,
+            column=column,
+            source=source,
+            session=test_session,
+        )
+        .order_by(prefix + "i8")
+        .to_list(*signals)
+        for out in (output, PlainTypes)
+    )
+
+    assert by_types == by_model
+    assert [row[:2] for row in by_types] == [(-1, 2**32 - 1), (2, 0), (3, None)]
+    if source:
+        assert [row[-1].index for row in by_types] == [0, 1, 2]
+
+
+def test_read_parquet_dict_output_converts_values_to_its_types(tmp_path, test_session):
+    path = tmp_path / "t.parquet"
+    pq.write_table(pa.table({"i": [0, 1], "s": ["1.5", "2"]}), path)
+    chain = dc.read_parquet(
+        path.as_uri(), output={"i": bool, "s": float}, session=test_session
+    )
+    rows = sorted(chain.to_list("i", "s"))
+    assert [tuple(map(repr, row)) for row in rows] == [
+        ("False", "1.5"),
+        ("True", "2.0"),
+    ]
+
+
+def test_read_parquet_dict_output_after_file_without_column_reads_none(
+    tmp_path, test_session
+):
+    pq.write_table(pa.table({"a": [1], "b": ["x"]}), tmp_path / "1.parquet")
+    pq.write_table(pa.table({"a": [2], "c": ["y"]}), tmp_path / "2.parquet")
+    chain = dc.read_parquet(
+        f"{tmp_path.as_uri()}/",
+        output={"a": int, "b": str},
+        source=False,
+        session=test_session,
+    )
+    assert chain.order_by("a").to_list() == [(1, "x"), (2, None)]
+
+
+def test_read_parquet_after_to_parquet_reads_its_signals(tmp_path, test_session):
+    pq.write_table(pa.table({"text": ["hello", "world"]}), tmp_path / "plain.parquet")
+    path = tmp_path / "exported.parquet"
+    dc.read_parquet(
+        (tmp_path / "plain.parquet").as_uri(), session=test_session
+    ).to_parquet(path)
+    chain = dc.read_parquet(path.as_uri(), session=test_session)
+    assert chain.order_by("text").to_values("text") == ["hello", "world"]
+
+
+class Declared(dc.DataModel):
+    a: int | None = None
+
+
+@pytest.mark.parametrize("base", [Declared, dict_to_data_model("Inferred", {"a": int})])
+def test_read_parquet_output_model_runs_its_validators(tmp_path, test_session, base):
+    class Doubled(base):
+        @field_validator("a")
+        @classmethod
+        def double(cls, value):
+            return value * 2
+
+    path = tmp_path / "a.parquet"
+    pq.write_table(pa.table({"a": [1, 2]}), path)
+    chain = dc.read_parquet(path.as_uri(), output=Doubled, session=test_session)
+    assert sorted(chain.to_values("a")) == [2, 4]
 
 
 @pytest.mark.parametrize(
@@ -223,6 +322,23 @@ def test_arrow_type_mapper_nested_list_only_nullable_scalars():
     nested = pa.list_(pa.list_(pa.string()))
 
     assert arrow_type_mapper(nested) == list[list[str | None]]
+
+
+def test_read_parquet_nested_lists_keep_their_values(tmp_path, test_session):
+    path = tmp_path / "nested.parquet"
+    values = [[[1], [2, None]], [[], [3]]]
+    nested = pa.list_(pa.list_(pa.int64()))
+    pq.write_table(pa.table({"i": [0, 1], "v": pa.array(values, nested)}), path)
+    chain = dc.read_parquet(path.as_uri(), session=test_session)
+    assert chain.order_by("i").to_values("v") == values
+
+
+def test_read_parquet_nested_list_with_null_inner_list_raises(tmp_path, test_session):
+    path = tmp_path / "nested.parquet"
+    nested = pa.list_(pa.list_(pa.int64()))
+    pq.write_table(pa.table({"v": pa.array([[[1], None]], nested)}), path)
+    with pytest.raises(UdfError, match="invalid value for output column 'v'"):
+        dc.read_parquet(path.as_uri(), session=test_session).exec()
 
 
 def test_read_parquet_multiple_struct_list_columns_roundtrip(test_session, tmp_path):
