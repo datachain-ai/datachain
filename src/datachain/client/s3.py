@@ -12,6 +12,7 @@ from botocore.exceptions import ClientError, NoCredentialsError
 from botocore.model import Shape
 from botocore.utils import parse_timestamp
 from fsspec.asyn import get_loop, sync, sync_wrapper
+from fsspec.config import apply_config
 from s3fs import S3FileSystem
 
 from datachain.lib.file import File, FileRow
@@ -137,7 +138,25 @@ class ClientS3(RangeListedClient):
     LISTS_LEVELS = True
     protocol = "s3"
     CREDENTIAL_KEYS = frozenset(
-        {"key", "secret", "token", "aws_key", "aws_secret", "aws_token"}
+        {
+            "key",
+            "secret",
+            "token",
+            "aws_key",
+            "aws_secret",
+            "aws_token",
+            "aws_access_key_id",
+            "aws_secret_access_key",
+            "aws_session_token",
+        }
+    )
+    _KEY_ALIASES = (
+        ("aws_key", "key"),
+        ("aws_secret", "secret"),
+        ("aws_token", "token"),
+        ("aws_access_key_id", "key"),
+        ("aws_secret_access_key", "secret"),
+        ("aws_session_token", "token"),
     )
     # A version id always names the same bytes, except "null". S3 gives that id to
     # objects written while versioning is off or suspended, and another write in
@@ -151,16 +170,16 @@ class ClientS3(RangeListedClient):
             kwargs.setdefault("client_kwargs", {}).setdefault(
                 "endpoint_url", kwargs.pop("aws_endpoint_url")
             )
-        if "aws_key" in kwargs:
-            kwargs.setdefault("key", kwargs.pop("aws_key"))
-        if "aws_secret" in kwargs:
-            kwargs.setdefault("secret", kwargs.pop("aws_secret"))
-        if "aws_token" in kwargs:
-            kwargs.setdefault("token", kwargs.pop("aws_token"))
+        for alias, name in ClientS3._KEY_ALIASES:
+            if alias in kwargs:
+                value = kwargs.pop(alias)
+                if value is not None and kwargs.get(name) is None:
+                    kwargs[name] = value
         return kwargs
 
     @classmethod
     def create_fs(cls, **kwargs) -> S3FileSystem:
+        kwargs = apply_config(cls.FS_CLASS, kwargs)
         kwargs = cls._normalize_s3_kwargs(kwargs)
 
         # We want to use newer v4 signature version since regions added after
@@ -179,7 +198,7 @@ class ClientS3(RangeListedClient):
             # it tries to randomly guess and creates wrong signature
             kwargs.setdefault("cache_regions", True)
 
-        if not kwargs.get("anon"):
+        if kwargs.get("anon") is None:
             try:
                 # Run an inexpensive check to see if credentials are available
                 super().create_fs(**kwargs).sign("s3://bucket/object")
@@ -194,7 +213,8 @@ class ClientS3(RangeListedClient):
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:
         # Step 1: Anonymous probe. cache_regions=True handles PermanentRedirect
         # (bucket-in-wrong-region) transparently so the bucket is found → exists=True.
-        # Preserve endpoint/region settings from caller kwargs; strip credentials.
+        # Preserve endpoint/region settings from caller kwargs (including the
+        # profile's); strip credentials.
         strip = cls.CREDENTIAL_KEYS | {"anon"}
         anon_kwargs = cls._normalize_s3_kwargs(
             {k: v for k, v in kwargs.items() if k not in strip}

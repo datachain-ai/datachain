@@ -86,10 +86,10 @@ class Client(ABC):
 
     @classmethod
     def has_explicit_credentials(cls, client_config: dict | None) -> bool:
-        """True if client_config contains any backend-specific credential key."""
+        """True if client_config supplies credentials for this backend."""
         if not client_config:
             return False
-        return any(k in client_config for k in cls.CREDENTIAL_KEYS)
+        return any(client_config.get(k) is not None for k in cls.CREDENTIAL_KEYS)
 
     def __init__(self, name: str, fs_kwargs: dict[str, Any], cache: Cache) -> None:
         self.name = name

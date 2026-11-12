@@ -1,21 +1,24 @@
 from collections.abc import Sequence
 
+from fsspec.config import apply_config
+
 from datachain.client import Client
 from datachain.lib.dc.storage_pattern import validate_cloud_bucket_name
 from datachain.query.session import Session
 
 
-def _backends_have_credentials(uris, client_config: dict | None) -> bool:
-    """True if any backend behind ``uris`` sees credentials in client_config."""
-    if not client_config:
-        return False
+def _backends_have_auth_config(uris, client_config: dict | None) -> bool:
     seen: set[type[Client]] = set()
     for uri in uris:
         try:
             seen.add(Client.get_implementation(str(uri)))
         except NotImplementedError:
             return True
-    return any(c.has_explicit_credentials(client_config) for c in seen)
+    for client in seen:
+        config = apply_config(client.FS_CLASS, client_config or {})
+        if config.get("anon") is not None or client.has_explicit_credentials(config):
+            return True
+    return False
 
 
 def _all_buckets_anonymous(uris, client_config: dict | None) -> bool:
@@ -64,9 +67,11 @@ def client_configs(
     for single_uri in uris:
         validate_cloud_bucket_name(str(single_uri))
     config = _session_client_config(session, client_config)
+    if anon is None:
+        anon = config.get("anon")
     if (
         anon is None
-        and not _backends_have_credentials(uris, config)
+        and not _backends_have_auth_config(uris, config)
         and _all_buckets_anonymous(uris, config)
     ):
         anon = True

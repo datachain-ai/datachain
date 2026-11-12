@@ -12,8 +12,11 @@ from aiohttp import web
 from dateutil.parser import isoparse
 from fsspec.asyn import sync
 from fsspec.callbacks import DEFAULT_CALLBACK
-from gcsfs.core import GCSFile
-from gcsfs.extended_gcsfs import BucketType
+from gcsfs.core import GCSFile, GCSFileSystem
+from gcsfs.extended_gcsfs import BucketType, ExtendedGcsFileSystem
+from google.auth.credentials import AnonymousCredentials
+from google.auth.exceptions import DefaultCredentialsError
+from google.oauth2.credentials import Credentials
 
 from datachain.asyn import get_loop
 from datachain.cache import Cache
@@ -272,6 +275,204 @@ def test_get_file_qmark_in_key_with_version():
     args, kwargs = client._fs._get_file.call_args
     assert args[0] == f"gs://foo/blob?file.txt#{_VER}"
     assert kwargs.get("generation") is None
+
+
+@pytest.fixture
+def no_gcp_credentials(monkeypatch, mocker, tmp_path):
+    for name in (
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "DATACHAIN_GCP_CREDENTIALS",
+        "GCSFS_TOKEN",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CLOUDSDK_CONFIG", str(tmp_path))
+    monkeypatch.delenv("NO_GCE_CHECK", raising=False)
+    mocker.patch("google.auth.compute_engine._metadata.is_on_gce", return_value=False)
+    monkeypatch.setattr("gcsfs.credentials.GoogleCredentials.tokens", {})
+    monkeypatch.setattr("datachain.client.gcs._ADC_FAILURES", {}, raising=False)
+    mocker.patch(
+        "google.auth.compute_engine.Credentials.refresh",
+        side_effect=AssertionError("Repeated GCE metadata discovery"),
+    )
+
+
+@pytest.mark.usefixtures("no_gcp_credentials")
+@pytest.mark.parametrize("fs_class", [GCSFileSystem, ExtendedGcsFileSystem])
+def test_client_without_credentials_is_anonymous(mocker, fs_class):
+    mocker.patch.object(GCSClient, "FS_CLASS", fs_class)
+    client = GCSClient.from_name("b", MagicMock(), {"skip_instance_cache": True})
+
+    assert client.url("a b.jpg") == "https://storage.googleapis.com/b/a%20b.jpg"
+    if fs_class is ExtendedGcsFileSystem:
+        assert isinstance(client.fs.credential, AnonymousCredentials)
+
+
+@pytest.mark.usefixtures("no_gcp_credentials")
+def test_create_fs_keeps_credentials():
+    token = Credentials("t")
+    fs = GCSClient.create_fs(token=token, skip_instance_cache=True)
+    assert fs.credentials.credentials is token
+
+
+@pytest.mark.usefixtures("no_gcp_credentials")
+def test_create_fs_keeps_fsspec_credentials(monkeypatch):
+    from fsspec.config import conf
+
+    token = Credentials("configured")
+    monkeypatch.setitem(conf, "gs", {"token": token})
+    fs = GCSClient.create_fs(skip_instance_cache=True)
+    assert fs.credentials.credentials is token
+
+
+@pytest.mark.usefixtures("no_gcp_credentials")
+@pytest.mark.parametrize("fs_class", [GCSFileSystem, ExtendedGcsFileSystem])
+@pytest.mark.parametrize("matching", [False, True])
+def test_cached_credentials_require_matching_project(monkeypatch, matching, fs_class):
+    monkeypatch.setattr(GCSClient, "FS_CLASS", fs_class)
+    token = Credentials("cached")
+    monkeypatch.setattr(
+        "gcsfs.credentials.GoogleCredentials.tokens",
+        {("public-project" if matching else "another-project", "full_control"): token},
+    )
+    fs = GCSClient.create_fs(project="public-project", skip_instance_cache=True)
+    if matching:
+        assert fs.credentials.credentials is token
+    else:
+        assert fs.storage_options.get("token") == "anon"
+
+
+@pytest.mark.usefixtures("no_gcp_credentials")
+@pytest.mark.parametrize("fs_class", [GCSFileSystem, ExtendedGcsFileSystem])
+def test_automatic_gcs_credentials_keep_application_defaults(mocker, fs_class):
+    mocker.patch.object(GCSClient, "FS_CLASS", fs_class)
+    token = Credentials("gce")
+    default = mocker.patch("google.auth.default", return_value=(token, "project"))
+    fs = GCSClient.create_fs(skip_instance_cache=True)
+    assert fs.credentials.credentials is token
+    default.assert_called_once()
+
+
+@pytest.mark.usefixtures("no_gcp_credentials")
+@pytest.mark.parametrize("fs_class", [GCSFileSystem, ExtendedGcsFileSystem])
+def test_missing_application_credentials_are_not_retried_per_client(mocker, fs_class):
+    mocker.patch.object(GCSClient, "FS_CLASS", fs_class)
+    default = mocker.patch(
+        "google.auth.default", side_effect=DefaultCredentialsError("Not configured")
+    )
+    for _ in range(2):
+        fs = GCSClient.create_fs(skip_instance_cache=True)
+        assert fs.credentials.token == "anon"  # noqa: S105
+    default.assert_called_once()
+
+
+@pytest.mark.usefixtures("no_gcp_credentials")
+def test_missing_application_credentials_are_retried_after_ttl(mocker):
+    token = Credentials("available")
+    default = mocker.patch(
+        "google.auth.default",
+        side_effect=[DefaultCredentialsError("Not configured"), (token, "project")],
+    )
+    now = mocker.patch("datachain.client.gcs.monotonic", return_value=0.0)
+    assert GCSClient.create_fs(skip_instance_cache=True).credentials.token == "anon"  # noqa: S105
+    now.return_value = 59.0
+    assert GCSClient.create_fs(skip_instance_cache=True).credentials.token == "anon"  # noqa: S105
+    now.return_value = 60.0
+    assert (
+        GCSClient.create_fs(skip_instance_cache=True).credentials.credentials is token
+    )
+    assert default.call_count == 2
+
+
+@pytest.mark.usefixtures("no_gcp_credentials")
+@pytest.mark.parametrize("setting", ["CLOUDSDK_CONFIG", "GCE_METADATA_HOST"])
+def test_application_credentials_rechecked_after_environment_change(
+    mocker, monkeypatch, setting
+):
+    token = Credentials("available")
+    default = mocker.patch(
+        "google.auth.default",
+        side_effect=[DefaultCredentialsError("Not configured"), (token, "project")],
+    )
+    assert GCSClient.create_fs(skip_instance_cache=True).credentials.token == "anon"  # noqa: S105
+    monkeypatch.setenv(setting, "changed")
+    assert (
+        GCSClient.create_fs(skip_instance_cache=True).credentials.credentials is token
+    )
+    assert default.call_count == 2
+
+
+@pytest.mark.usefixtures("no_gcp_credentials")
+@pytest.mark.parametrize("explicit", [{"anon": False}, {"token": "google_default"}])
+def test_explicit_application_credentials_restore_automatic_auth(mocker, explicit):
+    token = Credentials("available")
+    default = mocker.patch(
+        "google.auth.default",
+        side_effect=[
+            DefaultCredentialsError("Not configured"),
+            (token, "project"),
+            (token, "project"),
+        ],
+    )
+    assert GCSClient.create_fs(skip_instance_cache=True).credentials.token == "anon"  # noqa: S105
+    assert (
+        GCSClient.create_fs(
+            skip_instance_cache=True, **explicit
+        ).credentials.credentials
+        is token
+    )
+    automatic = GCSClient.create_fs(skip_instance_cache=True)
+    assert automatic.credentials.credentials is token
+    assert default.call_count == 3
+
+
+@pytest.mark.usefixtures("no_gcp_credentials")
+def test_cached_credentials_remain_available_after_failed_defaults(mocker, monkeypatch):
+    default = mocker.patch(
+        "google.auth.default", side_effect=DefaultCredentialsError("Not configured")
+    )
+    kwargs = {"project": "project", "skip_instance_cache": True}
+    assert GCSClient.create_fs(**kwargs).credentials.token == "anon"  # noqa: S105
+    token = Credentials("cached")
+    monkeypatch.setattr(
+        "gcsfs.credentials.GoogleCredentials.tokens",
+        {("project", "full_control"): token},
+    )
+    assert GCSClient.create_fs(**kwargs).credentials.credentials is token
+    default.assert_called_once()
+
+
+@pytest.mark.usefixtures("no_gcp_credentials")
+def test_empty_application_credentials_allow_anonymous(monkeypatch):
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+    fs = GCSClient.create_fs(skip_instance_cache=True)
+    assert fs.credentials.token == "anon"  # noqa: S105
+
+
+@pytest.mark.usefixtures("no_gcp_credentials")
+def test_explicit_authenticated_mode_requires_credentials():
+    with pytest.raises(DefaultCredentialsError):
+        GCSClient.create_fs(anon=False, skip_instance_cache=True)
+
+
+@pytest.mark.usefixtures("no_gcp_credentials")
+def test_explicit_authenticated_mode_rejects_anonymous_token():
+    with pytest.raises(ValueError, match="anon=False conflicts"):
+        GCSClient.create_fs(anon=False, token="anon")  # noqa: S106
+
+
+@pytest.mark.usefixtures("no_gcp_credentials")
+def test_explicit_cloud_credentials_remain_supported(mocker):
+    refresh = mocker.patch("google.auth.compute_engine.Credentials.refresh")
+    fs = GCSClient.create_fs(token="cloud", skip_instance_cache=True)  # noqa: S106
+    assert fs.credentials.method == "cloud"
+    refresh.assert_called_once()
+
+
+@pytest.mark.usefixtures("no_gcp_credentials")
+def test_broken_explicit_credentials_keep_authentication_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(tmp_path / "missing.json"))
+    with pytest.raises(DefaultCredentialsError, match=r"missing\.json"):
+        GCSClient.create_fs(skip_instance_cache=True)
 
 
 @pytest.mark.parametrize(
