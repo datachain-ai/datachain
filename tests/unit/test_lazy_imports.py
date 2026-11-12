@@ -367,7 +367,8 @@ def test_cli_dispatch_resolves_only_the_selected_command(monkeypatch, argv, name
             return types.SimpleNamespace(**{attr: command})
         return original_import(module)
 
-    monkeypatch.delitem(vars(cli), name, raising=False)
+    monkeypatch.setitem(vars(cli), name, None)
+    monkeypatch.delitem(vars(cli), name)
     monkeypatch.setattr(lazy, "import_module", load)
     assert cli.handle_command(args, "catalog", {}) == 0
     assert imported == [target]
