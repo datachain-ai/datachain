@@ -202,6 +202,8 @@ class ArrowGenerator(Generator):
             # Each file keeps its own types, which other files may differ from. A
             # picked field missing from it reads as null, as in a full read.
             ds = dataset(fs_path, filesystem=fs, **kwargs)
+            # A full read checks each file's tags when it reads the schemas.
+            _check_type_tags(file, ds.schema)
             present = set(ds.schema.names)
             if missing := [f for f in self.input_schema if f.name not in present]:
                 fields = [*ds.schema, *missing]
@@ -215,8 +217,6 @@ class ArrowGenerator(Generator):
             raise ValueError(
                 f"{_MIXED_FILES}, and '{file.path}' {kind} written by DataChain"
             )
-        if use_datachain_schema:
-            _check_type_tags(file, next(ds.get_fragments()).physical_schema)
 
         source_kwargs = self._source_kwargs() if self.source else None
         schema = ds.schema
@@ -231,10 +231,11 @@ class ArrowGenerator(Generator):
         if self.columns is not None and (
             signal_schema := _get_datachain_schema(schema)
         ):
-            signals = _model_signals(self.output_schema, self.columns)
             prepared = _get_datachain_schema(self.input_schema)
             parents = _parent_tags(signal_schema, prepared, schema.names, self.columns)
-            kw["columns"] = [c for c in schema.names if _in_signals(c, signals)]
+            wanted = set(_model_signals(self.output_schema, self.columns))
+            wanted |= {tag for tag, _, _ in parents.values()}
+            kw["columns"] = [c for c in schema.names if c in wanted]
         elif self.columns is not None:
             present = set(schema.names)
             kw["columns"] = [c for c in self.columns if c in present]
@@ -413,9 +414,15 @@ def file_schemas(chain: "DataChain", **kwargs) -> list[pa.Schema]:
     gives the saved DataChain schema, as in `read_columns`."""
     kwargs = _dataset_kwargs(kwargs)
     files = chain.order_by("file.path").to_values("file")
+
+    def file_schema(file: File) -> pa.Schema:
+        schema = _file_dataset(file, kwargs).schema
+        _check_type_tags(file, schema)
+        return schema
+
     # one remote footer read per file
     with ThreadPoolExecutor(max(1, min(SCHEMA_READ_THREADS, len(files)))) as pool:
-        schemas = list(pool.map(lambda f: _file_dataset(f, kwargs).schema, files))
+        schemas = list(pool.map(file_schema, files))
     if not schemas:
         raise ValueError(
             "Cannot infer schema (no files to process or can't access them)"
@@ -788,20 +795,6 @@ def _is_scalar_type(col_type: pa.DataType) -> bool:
     )
 
 
-def _check_type_tags(file: File, schema: pa.Schema) -> None:
-    """Raise for a file written by DataChain before union types: its schema has
-    optional models or unions, but the file has no ``_type_tag`` for them."""
-    if not (signal_schema := _get_datachain_schema(schema)):
-        return
-    names = set(schema.names)
-    for path, *_ in signal_schema.get_flat_tree(include_sentinels=True):
-        if path[-1] == TYPE_TAG_FIELD and (tag := ".".join(path)) not in names:
-            raise ValueError(
-                f"'{file.path}' has no {tag}, as it was written before union "
-                "types. Export it again to read it."
-            )
-
-
 def _is_plain_type(col_type: pa.DataType) -> bool:
     """Whether pyarrow gives the column's values as pydantic and the DB keep them,
     typed as `arrow_type_mapper` types them."""
@@ -855,6 +848,20 @@ def _get_datachain_schema(schema: "pa.Schema | None") -> SignalSchema | None:
         )
         return SignalSchema.deserialize(serialized_signal_schema)
     return None
+
+
+def _check_type_tags(file: File, schema: pa.Schema) -> None:
+    """Raise for a file written by DataChain before union types: its schema has
+    optional models or unions, but the file has no ``_type_tag`` for them."""
+    if not (signal_schema := _get_datachain_schema(schema)):
+        return
+    names = set(schema.names)
+    for path, *_ in signal_schema.get_flat_tree(include_sentinels=True):
+        if path[-1] == TYPE_TAG_FIELD and (tag := ".".join(path)) not in names:
+            raise ValueError(
+                f"'{file.path}' has no {tag}, as it was written before union "
+                "types. Export it again to read it."
+            )
 
 
 def _union_value(

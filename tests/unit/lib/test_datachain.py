@@ -2919,30 +2919,19 @@ def _write_x_then_no_x(path, session, optional=False):
     return path.as_uri()
 
 
+@pytest.mark.parametrize("with_output", [False, True])
 @pytest.mark.parametrize("optional", [False, True])
-def test_read_parquet_output_reads_a_field_missing_from_a_file_as_none(
-    tmp_dir, test_session, optional
+def test_read_parquet_columns_read_a_field_missing_from_a_file_as_none(
+    tmp_dir, test_session, optional, with_output
 ):
     uri = _write_x_then_no_x(tmp_dir / "parts", test_session, optional)
     model = DefaultX | None if optional else DefaultX
-    chain = dc.read_parquet(
-        uri,
-        columns=["id", "p"],
-        output={"id": int, "v": model},
-        source=False,
-        session=test_session,
+    kwargs = (
+        {"columns": ["id", "p"], "output": {"id": int, "p": model}}
+        if with_output
+        else {"columns": ["id", "p.x"]}
     )
-    assert [v.x for v in chain.order_by("id").to_values("v")] == [1, None]
-
-
-@pytest.mark.parametrize("optional", [False, True])
-def test_read_parquet_columns_read_a_field_missing_from_a_file_as_none(
-    tmp_dir, test_session, optional
-):
-    uri = _write_x_then_no_x(tmp_dir / "parts", test_session, optional)
-    chain = dc.read_parquet(
-        uri, columns=["id", "p.x"], source=False, session=test_session
-    )
+    chain = dc.read_parquet(uri, source=False, session=test_session, **kwargs)
     assert chain.order_by("id").to_values("p.x") == [1, None]
 
 
@@ -3140,40 +3129,50 @@ def test_read_parquet_columns_reject_a_union_path_named_twice(
         )
 
 
-class RequiredUnion(DataModel):
-    v: Note | Card
-
-
-def test_read_parquet_output_union_must_be_optional_as_its_signal(
-    nested_parquet, test_session
-):
-    with pytest.raises(DatasetPrepareError, match="v must be optional, as u can be"):
-        dc.read_parquet(
-            nested_parquet.as_uri(),
-            columns=["u"],
-            output=RequiredUnion,
-            session=test_session,
-        )
+def drop_type_tags(path):
+    table = pq.read_table(path)
+    tags = [c for c in table.column_names if c.endswith("._type_tag")]
+    pq.write_table(table.drop_columns(tags), path)
 
 
 @pytest.mark.parametrize("columns", [["id", "c.note"], None])
 def test_read_parquet_rejects_a_file_written_before_union_types(
     nested_parquet, test_session, columns
 ):
-    table = pq.read_table(nested_parquet)
-    tags = [c for c in table.column_names if c.endswith("._type_tag")]
-    pq.write_table(table.drop_columns(tags), nested_parquet)
+    drop_type_tags(nested_parquet)
+    with pytest.raises(DatasetPrepareError, match="written before union types"):
+        dc.read_parquet(nested_parquet.as_uri(), columns=columns, session=test_session)
+
+
+def test_read_parquet_output_reading_rejects_a_file_written_before_union_types(
+    nested_parquet, test_session
+):
+    drop_type_tags(nested_parquet)
+    chain = dc.read_parquet(
+        nested_parquet.as_uri(),
+        columns=["id", "c.note"],
+        output={"id": int, "v": Note | None},
+        session=test_session,
+    )
     with pytest.raises(ValueError, match="written before union types"):
-        dc.read_parquet(
-            nested_parquet.as_uri(), columns=columns, session=test_session
-        ).to_list()
+        chain.to_list()
+
+
+class RequiredUnion(DataModel):
+    v: Note | Card
 
 
 @pytest.mark.parametrize(
-    "column,model", [("u.Note", Note), ("c.note", Note), ("c", Card)]
+    "column,output",
+    [
+        ("u.Note", {"v": Note}),
+        ("c.note", {"v": Note}),
+        ("c", {"v": Card}),
+        ("u", RequiredUnion),
+    ],
 )
-def test_read_parquet_output_model_must_be_optional_as_its_signal(
-    nested_parquet, test_session, column, model
+def test_read_parquet_output_must_be_optional_as_its_signal(
+    nested_parquet, test_session, column, output
 ):
     with pytest.raises(
         DatasetPrepareError, match=f"v must be optional, as {column} can be None"
@@ -3181,7 +3180,7 @@ def test_read_parquet_output_model_must_be_optional_as_its_signal(
         dc.read_parquet(
             nested_parquet.as_uri(),
             columns=[column],
-            output={"v": model},
+            output=output,
             session=test_session,
         )
 
