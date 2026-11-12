@@ -1,5 +1,6 @@
 import base64
 import json
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -9,6 +10,10 @@ import datachain as dc
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SQLiteWarehouse
 from datachain.lib.file import File
+from datachain.lib.signal_schema import SignalSchema
+from datachain.lib.udf import UdfError
+from datachain.query.dataset import process_udf_outputs
+from datachain.sql.types import Int, String
 from tests.utils import skip_if_not_sqlite
 
 
@@ -240,13 +245,6 @@ def test_empty_rows_insert_defaults(sqlite_db):
 
 
 def test_map_tuples_are_validated(sqlite_db):
-    from types import SimpleNamespace
-
-    from datachain.lib.signal_schema import SignalSchema
-    from datachain.lib.udf import UdfError
-    from datachain.query.dataset import process_udf_outputs
-    from datachain.sql.types import Int, String
-
     warehouse = SQLiteWarehouse(sqlite_db)
     table = warehouse.create_udf_table([sa.Column("a", Int), sa.Column("b", String)])
     inner = SimpleNamespace(

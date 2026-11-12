@@ -1,3 +1,4 @@
+import copy
 import functools
 import http.server
 import io
@@ -41,6 +42,7 @@ from datachain.dataset import (
 from datachain.error import DatasetNotFoundError
 from datachain.lib.dc import Sys
 from datachain.lib.file import File
+from datachain.lib.model_store import ModelStore
 from datachain.lib.tar import build_tar_member
 from datachain.namespace import Namespace
 from datachain.project import Project
@@ -65,6 +67,17 @@ DEFAULT_DATACHAIN_BIN = "datachain"
 DEFAULT_DATACHAIN_GIT_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 collect_ignore = ["setup.py"]
+
+
+@pytest.fixture
+def empty_model_store():
+    """Give the test an empty ModelStore and restore the previous one after it."""
+    snapshot = copy.deepcopy(ModelStore.store)
+    ModelStore.store = {}
+    try:
+        yield
+    finally:
+        ModelStore.store = snapshot
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -1477,11 +1490,11 @@ def mock_parquet_data_cloud(compressed_parquet_data, dog_entries, cloud_test_cat
 @pytest.fixture
 def fetched_bytes(monkeypatch):
     from adlfs.spec import AzureBlobFile
-    from gcsfs.core import GCSFile
+    from gcsfs import GCSFileSystem
     from s3fs.core import S3File
 
     fetched = [0, 0]
-    for cls in (S3File, GCSFile, AzureBlobFile):
+    for cls in (S3File, AzureBlobFile):
 
         def fetch_range(self, *args, _orig=cls._fetch_range, **kwargs):
             data = _orig(self, *args, **kwargs)
@@ -1490,10 +1503,28 @@ def fetched_bytes(monkeypatch):
             return data
 
         monkeypatch.setattr(cls, "_fetch_range", fetch_range)
+    # GCS full reads can bypass GCSFile._fetch_range.
+    original_call = GCSFileSystem._call
+
+    async def call(self, method, *args, **kwargs):
+        response = await original_call(self, method, *args, **kwargs)
+        if method == "GET" and not kwargs.get("json_out"):
+            fetched[0] += len(response[1])
+            fetched[1] += 1
+        return response
+
+    monkeypatch.setattr(GCSFileSystem, "_call", call)
     return fetched
 
 
 class _QuietHandler(http.server.SimpleHTTPRequestHandler):
+    def end_headers(self):
+        path = Path(self.translate_path(self.path))
+        if path.is_file():
+            stat = path.stat()
+            self.send_header("ETag", f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"')
+        super().end_headers()
+
     def log_message(self, format, *args):
         pass
 

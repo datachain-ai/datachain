@@ -1,3 +1,4 @@
+import gzip
 import json
 import math
 import os
@@ -22,15 +23,17 @@ from datachain.dataset import DatasetDependencyType
 from datachain.fs.utils import path_to_fsspec_uri
 from datachain.lib.arrow import PARTIAL_READ_PREFETCH_MAX_SIZE
 from datachain.lib.data_model import compute_model_fingerprint
-from datachain.lib.file import File, ImageFile
+from datachain.lib.file import File, FileError, ImageFile
 from datachain.lib.listing import LISTING_TTL, is_listing_dataset, parse_listing_uri
 from datachain.lib.model_store import ModelStore
 from datachain.lib.tar import process_tar
+from datachain.lib.webdataset import process_webdataset
 from datachain.query.dataset import QueryStep, get_download_callback
 from tests.utils import (
     ANY_VALUE,
     TARRED_TREE,
     df_equal,
+    make_tar,
     skip_if_not_sqlite,
     sorted_dicts,
     text_embedding,
@@ -962,6 +965,16 @@ def test_similarity_search(cloud_test_catalog):
         assert math.isclose(e1, e2, abs_tol=1e-5)
 
 
+@pytest.mark.parametrize("process", [process_tar, process_webdataset()])
+def test_tar_rejects_compressed_archive(tmp_dir, test_session, process):
+    shard = make_tar({"0.jpg": "image", "0.txt": "caption"})
+    (tmp_dir / "shard.tar").write_bytes(gzip.compress(shard))
+
+    chain = dc.read_storage(tmp_dir.as_uri(), session=test_session).gen(out=process)
+    with pytest.raises(FileError, match="compressed tars are not supported"):
+        chain.to_list()
+
+
 @pytest.mark.parametrize("tree", [TARRED_TREE], indirect=True)
 def test_process_and_open_tar(cloud_test_catalog, cloud_type):
     ctc = cloud_test_catalog
@@ -1602,6 +1615,56 @@ def test_read_parquet_columns_fetch_only_those_columns(
     assert sorted(values) == sorted(table["c3"].to_pylist())
     assert 0 < fetched_bytes[0] < file.size // 4
     assert sum(cb.value for cb in download_callbacks) > 0
+
+
+class _Wide(DataModel):
+    x: float
+    a: float
+    b: float
+    c: float
+    d: float
+    e: float
+    f: float
+    g: float
+
+
+def _put_wide(ctc, tmp_path, anno):
+    rng = np.random.default_rng(0)
+    rows = rng.random((10_000, 8))
+    points = [_Wide(**dict(zip(_Wide.model_fields, r, strict=True))) for r in rows]
+    local = tmp_path / "wide.parquet"
+    dc.read_values(p=points, output={"p": anno}, session=ctc.session).to_parquet(local)
+    uri = f"{ctc.src_uri}/wide.parquet"
+    file = File.upload(local.read_bytes(), uri, ctc.catalog)
+    return uri, file.size, points
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize(
+    "anno,output,signal",
+    [
+        (_Wide, None, "p.x"),
+        (_Wide | None, None, "p.x"),
+        (_Wide | None, {"x": float | None}, "x"),
+    ],
+)
+def test_read_parquet_columns_fetch_only_picked_signals_written_by_datachain(
+    cloud_test_catalog_upload, fetched_bytes, tmp_path, anno, output, signal
+):
+    ctc = cloud_test_catalog_upload
+    uri, size, points = _put_wide(ctc, tmp_path, anno)
+    chain = dc.read_parquet(
+        uri,
+        columns=["p.x"],
+        output=output,
+        settings={"prefetch": 0},
+        session=ctc.session,
+    )
+    fetched_bytes[:] = [0, 0]
+
+    assert sorted(chain.to_values(signal)) == sorted(p.x for p in points)
+    assert 0 < fetched_bytes[0] < size // 2
 
 
 def test_read_parquet_columns_over_http_without_ranges(

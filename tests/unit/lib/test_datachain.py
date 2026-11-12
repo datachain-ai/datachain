@@ -34,6 +34,7 @@ from datachain.error import (
     ProjectCreateNotAllowedError,
 )
 from datachain.func import string
+from datachain.lib.arrow import ArrowRow
 from datachain.lib.data_model import DataModel
 from datachain.lib.dc import C, DatasetPrepareError, Sys
 from datachain.lib.dc.listings import read_listing_dataset
@@ -181,6 +182,146 @@ def test_pandas_conversion_in_memory():
     assert chain.session.catalog.warehouse.db.db_file == ":memory:"
     chain = chain.select("first_name", "age", "city").to_pandas()
     assert chain.equals(df)
+
+
+@pytest.mark.parametrize("dtype", ["datetime64[ns]", "timestamp[ns][pyarrow]", object])
+def test_pandas_datetimes_floored_to_microseconds_with_missing_as_none(
+    test_session, dtype
+):
+    values = [pd.NaT, pd.Timestamp("2024-01-01 00:00:00.123456789"), pd.NaT]
+    df = pd.DataFrame({"id": [1, 2, 3], "ts": pd.Series(values, dtype=dtype)})
+
+    chain = dc.read_pandas(df, session=test_session).order_by("id")
+
+    assert chain.to_values("ts") == [
+        None,
+        dt.datetime(2024, 1, 1, 0, 0, 0, 123456, tzinfo=dt.UTC),
+        None,
+    ]
+
+
+def test_pandas_nullable_ints_with_na_as_none(test_session):
+    df = pd.DataFrame({"id": [1, 2], "n": pd.Series([1, None], dtype="Int64")})
+
+    chain = dc.read_pandas(df, session=test_session).order_by("id")
+
+    assert chain.to_values("n") == [1, None]
+
+
+@pytest.mark.parametrize("dtype", ["str", "category", object])
+def test_pandas_text_columns_with_nan_as_none(test_session, dtype):
+    df = pd.DataFrame({"id": [1, 2], "s": pd.Series(["a", np.nan], dtype=dtype)})
+
+    chain = dc.read_pandas(df, session=test_session).order_by("id")
+
+    assert chain.schema["s"] == str | None
+    assert chain.to_values("s") == ["a", None]
+
+
+@pytest.mark.parametrize("dtype", ["str", "category", "string[pyarrow]", object])
+def test_pandas_all_missing_text_columns_as_nullable_str(test_session, dtype):
+    df = pd.DataFrame({"id": [1, 2], "s": pd.Series([np.nan, np.nan], dtype=dtype)})
+
+    chain = dc.read_pandas(df, session=test_session)
+
+    assert chain.schema["s"] == str | None
+    assert chain.to_values("s") == [None, None]
+
+
+def test_pandas_lists_of_datetimes_floored_to_microseconds(test_session):
+    ts = [pd.Timestamp("2024-01-01 00:00:00.123456789"), pd.Timestamp("2024-01-02")]
+    df = pd.DataFrame({"user": [1, 1], "ts": ts})
+    lists = df.groupby("user")["ts"].agg(list).reset_index()
+
+    chain = dc.read_pandas(lists, session=test_session)
+
+    assert chain.to_values("ts") == [
+        [
+            dt.datetime(2024, 1, 1, 0, 0, 0, 123456, tzinfo=dt.UTC),
+            dt.datetime(2024, 1, 2, tzinfo=dt.UTC),
+        ]
+    ]
+
+
+@pytest.mark.parametrize(
+    "dtype,expected",
+    [
+        ("datetime64[ns]", dt.datetime | None),
+        ("timestamp[ns][pyarrow]", dt.datetime | None),
+        ("Int64", int | None),
+        ("boolean", bool | None),
+    ],
+)
+def test_pandas_all_missing_columns_keep_dtype_type(test_session, dtype, expected):
+    df = pd.DataFrame({"id": [1, 2], "c": pd.Series([None, None], dtype=dtype)})
+
+    chain = dc.read_pandas(df, session=test_session)
+
+    assert chain.schema["c"] == expected
+    assert chain.to_values("c") == [None, None]
+
+
+@pytest.mark.parametrize("missing_first", [True, False])
+def test_pandas_all_missing_columns_union_with_populated(test_session, missing_first):
+    missing = dc.read_pandas(
+        pd.DataFrame(
+            {
+                "id": [1],
+                "n": pd.Series([None], dtype="Int64"),
+                "ts": pd.Series([None], dtype="datetime64[ns]"),
+            }
+        ),
+        session=test_session,
+    )
+    populated = dc.read_pandas(
+        pd.DataFrame({"id": [2], "n": [5], "ts": [pd.Timestamp("2024-01-01")]}),
+        session=test_session,
+    )
+
+    chain = missing.union(populated) if missing_first else populated.union(missing)
+
+    assert (chain.schema["n"], chain.schema["ts"]) == (int | None, dt.datetime | None)
+    assert chain.order_by("id").to_list("n", "ts") == [
+        (None, None),
+        (5, dt.datetime(2024, 1, 1, tzinfo=dt.UTC)),
+    ]
+
+
+def test_pandas_all_missing_column_carried_through_merge(test_session):
+    ids = dc.read_values(id=[1, 2], session=test_session)
+    missing = dc.read_pandas(
+        pd.DataFrame({"id": [1], "n": pd.Series([None], dtype="Int64")}),
+        session=test_session,
+    )
+
+    chain = ids.merge(missing, on="id", inner=False)
+
+    assert chain.schema["n"] == int | None
+    assert chain.order_by("id").to_values("n") == [None, None]
+
+
+def test_read_records_pandas_timestamps_floored_to_microseconds(test_session):
+    ts = pd.Timestamp("2024-01-01 00:00:00.123456789", tz="Europe/Berlin")
+
+    chain = dc.read_records(
+        [{"ts": ts}], schema={"ts": dt.datetime}, session=test_session
+    )
+
+    assert chain.to_values("ts") == [
+        dt.datetime(2023, 12, 31, 23, 0, 0, 123456, tzinfo=dt.UTC)
+    ]
+
+
+def test_map_returning_pandas_timestamps_floored_to_microseconds(test_session):
+    ts = pd.Timestamp("2024-01-01 00:00:00.123456789", tz="Europe/Berlin")
+
+    chain = dc.read_values(id=[1], session=test_session).map(
+        ts=lambda id: ts, output=dt.datetime
+    )
+
+    assert chain.to_values("ts") == [
+        dt.datetime(2023, 12, 31, 23, 0, 0, 123456, tzinfo=dt.UTC)
+    ]
 
 
 def test_pandas_uppercase_columns(test_session):
@@ -842,8 +983,7 @@ def test_from_features_more_simple_types(test_session):
         dict[str, int],  # from dd2
         list[str],  # from ll1 (starts with empty list)
         list[int],  # from ll
-        str,  # from nn (all None -> defaults to str)
-        str | None,  # from ss (has a None -> inferred Optional)
+        str | None,  # from nn (all None) and ss (has a None)
         dt.datetime,
         float,
     }
@@ -2489,25 +2629,638 @@ def test_read_parquet_columns_with_output_and_mixed_integer_widths(
     assert sorted(chain.to_values("x")) == [1, 2**40]
 
 
-@pytest.mark.parametrize("output", [None, {"y": int}])
-@pytest.mark.parametrize("exported", ["1.parquet", "2.parquet"])
-def test_read_parquet_columns_some_files_written_by_datachain(
-    tmp_dir, test_session, exported, output
-):
+@pytest.fixture(params=["1.parquet", "2.parquet"])
+def some_files_written_by_datachain(tmp_dir, test_session, request):
+    exported = request.param
     plain = "2.parquet" if exported == "1.parquet" else "1.parquet"
     pq.write_table(pa.table({"x": [1], "y": [10]}), tmp_dir / plain)
     dc.read_values(x=[2], y=[20], session=test_session).to_parquet(tmp_dir / exported)
+    return tmp_dir.as_uri()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"columns": ["x"]},
+        {"columns": ["x"], "output": {"v": int}},
+        {"output": {"u": int, "v": int}},
+        {"output": ["u", "v"]},
+    ],
+)
+def test_read_parquet_columns_or_output_some_files_written_by_datachain(
+    some_files_written_by_datachain, test_session, kwargs
+):
     with pytest.raises((DatasetPrepareError, ValueError), match="written by DataChain"):
         dc.read_parquet(
-            tmp_dir.as_uri(), columns=["x"], output=output, session=test_session
+            some_files_written_by_datachain, session=test_session, **kwargs
         ).to_list()
 
 
-def test_read_parquet_columns_written_by_datachain(tmp_dir, test_session):
+def test_read_parquet_output_names_the_file_unlike_the_first(
+    some_files_written_by_datachain, test_session
+):
+    with pytest.raises(ValueError, match=r"'2\.parquet' is"):
+        dc.read_parquet(
+            some_files_written_by_datachain,
+            output={"u": int, "v": int},
+            session=test_session,
+        ).to_list()
+
+
+class Point(DataModel):
+    x: int
+    y: int
+
+
+class PointX(DataModel):
+    x: int
+
+
+@pytest.fixture
+def point_parquet(tmp_dir, test_session):
     path = tmp_dir / "exported.parquet"
-    dc.read_values(x=[1], session=test_session).to_parquet(path)
-    with pytest.raises(DatasetPrepareError, match="written by DataChain"):
-        dc.read_parquet(path.as_uri(), columns=["x"], session=test_session)
+    dc.read_values(
+        a=[1], p=[Point(x=2, y=3)], b=["z"], session=test_session
+    ).to_parquet(path)
+    return path.as_uri()
+
+
+def test_read_parquet_columns_keep_the_requested_signal_order(
+    point_parquet, test_session
+):
+    chain = dc.read_parquet(point_parquet, columns=["p", "a"], session=test_session)
+    assert [s for s in chain.schema if s != "source"] == ["p", "a"]
+    ((p, a),) = chain.to_list("p", "a")
+    assert (p.x, p.y, a) == (2, 3, 1)
+
+
+def test_read_parquet_columns_build_a_partial_model(point_parquet, test_session):
+    chain = dc.read_parquet(point_parquet, columns=["p.x"], session=test_session)
+    assert [p.model_dump() for p in chain.to_values("p")] == [{"x": 2}]
+
+
+def test_read_parquet_columns_reject_an_unknown_signal(point_parquet, test_session):
+    with pytest.raises(DatasetPrepareError, match="'x': is not found"):
+        dc.read_parquet(point_parquet, columns=["x"], session=test_session)
+
+
+@pytest.mark.parametrize("output", [None, {"x": int}])
+@pytest.mark.parametrize("columns", ["p.x", []])
+def test_read_parquet_columns_written_by_datachain_must_be_a_list_of_names(
+    point_parquet, test_session, columns, output
+):
+    with pytest.raises(DatasetPrepareError, match="non-empty list of column names"):
+        dc.read_parquet(
+            point_parquet, columns=columns, output=output, session=test_session
+        )
+
+
+@pytest.mark.parametrize("output", [["n", "q", "s"], {"n": int, "q": Point, "s": str}])
+def test_read_parquet_output_written_by_datachain_takes_signals_by_position(
+    point_parquet, test_session, output
+):
+    chain = dc.read_parquet(point_parquet, output=output, session=test_session)
+    assert chain.to_list("n", "q.y", "s") == [(1, 3, "z")]
+
+
+@pytest.mark.parametrize("output", [["p"], {"p": Point}])
+def test_read_parquet_output_must_fit_signals_written_by_datachain(
+    point_parquet, test_session, output
+):
+    with pytest.raises(DatasetPrepareError, match="1 fields but 3 columns"):
+        dc.read_parquet(point_parquet, output=output, session=test_session)
+
+
+def test_read_parquet_columns_with_list_output_written_by_datachain(
+    point_parquet, test_session
+):
+    chain = dc.read_parquet(
+        point_parquet,
+        columns=["p.x", "a", "p.y"],
+        output=["q", "n", "y"],
+        session=test_session,
+    )
+    assert chain.to_list("q", "n", "y") == [(2, 1, 3)]
+
+
+def test_read_parquet_list_output_renames_repeated_names_written_by_datachain(
+    tmp_dir, test_session
+):
+    path = tmp_dir / "abc.parquet"
+    dc.read_values(a=[1], b=[2], c=[3], session=test_session).to_parquet(path)
+    chain = dc.read_parquet(path.as_uri(), output=["q", "q", "r"], session=test_session)
+    assert chain.to_list("q", "c0_q", "r") == [(1, 2, 3)]
+
+
+@pytest.mark.parametrize(
+    "output,error",
+    [
+        ({"q": int, "n": int}, "q is not a model, unlike p"),
+        ({"q": Point, "n": PointX}, "n is a model, unlike a"),
+        ({"q": Point | None, "n": int}, "q can't be optional, as p is never None"),
+    ],
+)
+def test_read_parquet_output_models_must_fit_signals_written_by_datachain(
+    point_parquet, test_session, output, error
+):
+    with pytest.raises(DatasetPrepareError, match=error):
+        dc.read_parquet(
+            point_parquet, columns=["p", "a"], output=output, session=test_session
+        )
+
+
+@pytest.fixture
+def reexported_parquet(tmp_dir, test_session):
+    pq.write_table(pa.table({"a": [1]}), tmp_dir / "orig.parquet")
+    path = tmp_dir / "re.parquet"
+    chain = dc.read_parquet((tmp_dir / "orig.parquet").as_uri(), session=test_session)
+    chain.to_parquet(path)
+    return path.as_uri()
+
+
+@pytest.mark.parametrize(
+    "kwargs,stored,read",
+    [
+        ({"columns": ["a", "source"]}, "source", "c0_source"),
+        ({"columns": ["a", "source"], "output": ["n", "s"]}, "s", "source"),
+        ({"column": "data"}, "data.source", "source"),
+    ],
+)
+def test_read_parquet_keeps_a_picked_stored_source_and_renames_the_new_one(
+    reexported_parquet, test_session, kwargs, stored, read
+):
+    chain = dc.read_parquet(reexported_parquet, session=test_session, **kwargs)
+    paths = chain.to_list(f"{stored}.file.path", f"{read}.file.path")
+    assert paths == [("orig.parquet", "re.parquet")]
+
+
+def test_read_parquet_keeps_a_stored_source_of_another_type(tmp_dir, test_session):
+    path = tmp_dir / "s.parquet"
+    dc.read_values(source=["x"], n=[1], session=test_session).to_parquet(path)
+    chain = dc.read_parquet(path.as_uri(), session=test_session)
+    assert chain.to_list("source", "c0_source.file.path") == [("x", "s.parquet")]
+
+
+def test_read_parquet_columns_pick_stored_source_without_source(
+    reexported_parquet, test_session
+):
+    chain = dc.read_parquet(
+        reexported_parquet, columns=["a", "source"], source=False, session=test_session
+    )
+    assert chain.to_list("a", "source.file.path") == [(1, "orig.parquet")]
+
+
+@pytest.mark.parametrize("output", [["n"], {"n": int}])
+def test_read_parquet_output_skips_stored_source_with_source(
+    reexported_parquet, test_session, output
+):
+    chain = dc.read_parquet(reexported_parquet, output=output, session=test_session)
+    assert chain.to_list("n", "source.file.path") == [(1, "re.parquet")]
+
+
+def test_read_parquet_columns_with_output_written_by_datachain(
+    point_parquet, test_session
+):
+    output = {"q": PointX, "n": int, "y": int}
+    chain = dc.read_parquet(
+        point_parquet, columns=["p", "a", "p.y"], output=output, session=test_session
+    )
+    ((q, n, y),) = chain.to_list("q", "n", "y")
+    assert (q.model_dump(), n, y) == ({"x": 2}, 1, 3)
+
+
+class NullablePoint(DataModel):
+    x: int | None = None
+    y: int
+
+
+def test_read_parquet_columns_keep_a_present_optional_parent_with_null_fields(
+    tmp_dir, test_session
+):
+    path = tmp_dir / "optional.parquet"
+    points = [NullablePoint(x=None, y=3), None]
+    output = {"id": int, "p": NullablePoint | None}
+    dc.read_values(id=[1, 2], p=points, output=output, session=test_session).to_parquet(
+        path
+    )
+    chain = dc.read_parquet(path.as_uri(), columns=["id", "p.x"], session=test_session)
+    rows = chain.order_by("id").to_list("id", "p")
+    assert [(i, p and p.model_dump()) for i, p in rows] == [(1, {"x": None}), (2, None)]
+
+
+class NullableLabel(DataModel):
+    x: int | None = None
+    y: str
+
+
+@pytest.fixture
+def unpicked_types_differ(tmp_dir, test_session):
+    path = tmp_dir / "parts"
+    path.mkdir()
+    parts = [
+        ("1.parquet", [1], [NullablePoint(x=1, y=3)], NullablePoint),
+        ("2.parquet", [2, 3], [NullableLabel(x=None, y="a"), None], NullableLabel),
+    ]
+    for name, ids, points, model in parts:
+        output = {"id": int, "p": model | None}
+        dc.read_values(
+            id=ids, p=points, output=output, session=test_session
+        ).to_parquet(path / name)
+    return path.as_uri()
+
+
+def test_read_parquet_columns_ignore_unpicked_types_across_files(
+    unpicked_types_differ, test_session
+):
+    chain = dc.read_parquet(
+        unpicked_types_differ, columns=["id", "p.x"], source=False, session=test_session
+    )
+    rows = chain.order_by("id").to_list("id", "p")
+    assert [(i, p and p.model_dump()) for i, p in rows] == [
+        (1, {"x": 1}),
+        (2, {"x": None}),
+        (3, None),
+    ]
+
+
+def test_read_parquet_columns_with_list_output_ignore_unpicked_types_across_files(
+    unpicked_types_differ, test_session
+):
+    chain = dc.read_parquet(
+        unpicked_types_differ,
+        columns=["id", "p.x"],
+        output=["id", "value"],
+        source=False,
+        session=test_session,
+    )
+    assert chain.order_by("id").to_list("id", "value") == [(1, 1), (2, None), (3, None)]
+
+
+class DefaultX(DataModel):
+    x: int | None = 5
+    y: int
+
+
+class OnlyY(DataModel):
+    y: int
+
+
+def _write_x_then_no_x(path, session, optional=False):
+    path.mkdir()
+    for name, i, point in [
+        ("1.parquet", 1, DefaultX(x=1, y=2)),
+        ("2.parquet", 2, OnlyY(y=7)),
+    ]:
+        model = type(point) | None if optional else type(point)
+        output = {"id": int, "p": model}
+        dc.read_values(id=[i], p=[point], output=output, session=session).to_parquet(
+            path / name
+        )
+    return path.as_uri()
+
+
+@pytest.mark.parametrize("with_output", [False, True])
+@pytest.mark.parametrize("optional", [False, True])
+def test_read_parquet_columns_read_a_field_missing_from_a_file_as_none(
+    tmp_dir, test_session, optional, with_output
+):
+    uri = _write_x_then_no_x(tmp_dir / "parts", test_session, optional)
+    model = DefaultX | None if optional else DefaultX
+    kwargs = (
+        {"columns": ["id", "p"], "output": {"id": int, "p": model}}
+        if with_output
+        else {"columns": ["id", "p.x"]}
+    )
+    chain = dc.read_parquet(uri, source=False, session=test_session, **kwargs)
+    assert chain.order_by("id").to_values("p.x") == [1, None]
+
+
+@pytest.mark.parametrize("column", ["p.x", "p.DefaultX.x"])
+def test_read_parquet_columns_read_a_union_field_missing_from_a_file_as_none(
+    tmp_dir, test_session, column
+):
+    path = tmp_dir / "parts"
+    path.mkdir()
+    for i in (1, 2):
+        dc.read_values(
+            id=[i],
+            p=[DefaultX(x=i, y=2)],
+            output={"id": int, "p": DefaultX | int},
+            session=test_session,
+        ).to_parquet(path / f"{i}.parquet")
+    table = pq.read_table(path / "2.parquet")
+    pq.write_table(table.drop_columns(["p.DefaultX.x"]), path / "2.parquet")
+    chain = dc.read_parquet(
+        path.as_uri(), columns=["id", column], source=False, session=test_session
+    )
+    assert [p.x for p in chain.order_by("id").to_values("p")] == [1, None]
+
+
+class Note(DataModel):
+    text: str | None = None
+
+
+class Card(DataModel):
+    note: Note
+
+
+class MaybeCard(DataModel):
+    note: Note | None = None
+
+
+@pytest.fixture
+def nested_parquet(tmp_dir, test_session):
+    path = tmp_dir / "nested.parquet"
+    dc.read_values(
+        id=[0, 1, 2, 3],
+        u=[Note(), Note(text="a"), Card(note=Note(text="b")), None],
+        c=[Card(note=Note()), Card(note=Note(text="a")), None, None],
+        m=[MaybeCard(note=Note()), MaybeCard(note=Note(text="a")), MaybeCard(), None],
+        output={
+            "id": int,
+            "u": Note | Card | None,
+            "c": Card | None,
+            "m": MaybeCard | None,
+        },
+        session=test_session,
+    ).to_parquet(path)
+    return path
+
+
+@pytest.mark.parametrize("column", ["u.Note", "c.note", "m.note"])
+@pytest.mark.parametrize("output", [["id", "v"], {"id": int, "v": Note | None}])
+def test_read_parquet_columns_read_a_model_in_an_optional_or_union_by_its_parent(
+    nested_parquet, test_session, column, output
+):
+    chain = dc.read_parquet(
+        nested_parquet.as_uri(),
+        columns=["id", column],
+        output=output,
+        source=False,
+        session=test_session,
+    )
+    notes = chain.order_by("id").to_values("v")
+    assert [n and n.model_dump() for n in notes] == [
+        {"text": None},
+        {"text": "a"},
+        None,
+        None,
+    ]
+
+
+@pytest.fixture
+def card_in_first_file_only(tmp_dir, test_session):
+    path = tmp_dir / "parts"
+    path.mkdir()
+    dc.read_values(
+        id=[1],
+        c=[Card(note=Note(text="a"))],
+        output={"id": int, "c": Card | None},
+        session=test_session,
+    ).to_parquet(path / "1.parquet")
+    dc.read_values(id=[2], session=test_session).to_parquet(path / "2.parquet")
+    return path.as_uri()
+
+
+class NoteOrFallback(DataModel):
+    id: int
+    value: Note | None = Note(text="fallback")
+
+
+@pytest.mark.parametrize(
+    "kwargs,signal",
+    [
+        ({"columns": ["id", "c.note"]}, "c"),
+        ({"columns": ["id", "c"], "output": {"id": int, "v": Card | None}}, "v"),
+        ({"columns": ["id", "c.note"], "output": ["id", "v"]}, "v"),
+        ({"columns": ["id", "c.note"], "output": NoteOrFallback}, "value"),
+    ],
+)
+def test_read_parquet_columns_read_a_parent_missing_from_a_file_as_none(
+    card_in_first_file_only, test_session, kwargs, signal
+):
+    chain = dc.read_parquet(
+        card_in_first_file_only, source=False, session=test_session, **kwargs
+    )
+    values = chain.order_by("id").to_values(signal)
+    assert [v is None for v in values] == [False, True]
+
+
+def write_parts(path, session, *parts):
+    path.mkdir()
+    for i, (value, anno) in enumerate(parts, 1):
+        chain = dc.read_values(
+            id=[i], u=[value], output={"id": int, "u": anno}, session=session
+        )
+        chain.to_parquet(path / f"{i}.parquet")
+
+
+@pytest.mark.parametrize(
+    "first,second,column",
+    [
+        ((Note(text="a"), Note | int | None), PointX | int | None, "u.Note"),
+        ((Card(note=Note(text="a")), Card | None), PointX | None, "u.note"),
+    ],
+)
+@pytest.mark.parametrize("output", [{"id": int, "value": Note | None}, NoteOrFallback])
+def test_read_parquet_columns_read_a_path_a_later_file_lacks_as_none(
+    tmp_dir, test_session, first, second, column, output
+):
+    write_parts(tmp_dir / "parts", test_session, first, (PointX(x=1), second))
+    chain = dc.read_parquet(
+        (tmp_dir / "parts").as_uri(),
+        columns=["id", column],
+        output=output,
+        source=False,
+        session=test_session,
+    )
+    assert chain.order_by("id").to_values("value") == [Note(text="a"), None]
+
+
+def test_read_parquet_columns_reject_a_tag_a_later_file_does_not_declare(
+    tmp_dir, test_session
+):
+    path = tmp_dir / "parts"
+    write_parts(
+        path,
+        test_session,
+        (Note(text="a"), Note | int | None),
+        (PointX(x=1), PointX | int | None),
+    )
+    table = pq.read_table(path / "2.parquet")
+    i = table.column_names.index("u._type_tag")
+    table = table.set_column(i, "u._type_tag", pa.array(["Bogus"]))
+    pq.write_table(table, path / "2.parquet")
+    with pytest.raises(
+        DataChainParamsError, match="'Bogus' is not one of the declared"
+    ):
+        dc.read_parquet(
+            path.as_uri(),
+            columns=["id", "u.Note"],
+            output={"id": int, "value": Note | None},
+            session=test_session,
+        ).to_list()
+
+
+class PointAndNote(DataModel):
+    x: int
+    note: Note | None = None
+
+
+@pytest.mark.parametrize("columns", [["p"], None])
+def test_read_parquet_output_model_field_not_in_the_file_keeps_its_default(
+    point_parquet, test_session, columns
+):
+    output = {"v": PointAndNote} if columns else {"n": int, "v": PointAndNote, "s": str}
+    chain = dc.read_parquet(
+        point_parquet, columns=columns, output=output, session=test_session
+    )
+    assert [(v.x, v.note) for v in chain.to_values("v")] == [(2, None)]
+
+
+def test_read_parquet_columns_reject_a_union_path_named_twice(
+    nested_parquet, test_session
+):
+    with pytest.raises(DatasetPrepareError, match="name a column more than once"):
+        dc.read_parquet(
+            nested_parquet.as_uri(),
+            columns=["u.text", "u.Note.text"],
+            session=test_session,
+        )
+
+
+def drop_type_tags(path):
+    table = pq.read_table(path)
+    tags = [c for c in table.column_names if c.endswith("._type_tag")]
+    pq.write_table(table.drop_columns(tags), path)
+
+
+@pytest.mark.parametrize("columns", [["id", "c.note"], None])
+def test_read_parquet_rejects_a_file_written_before_union_types(
+    nested_parquet, test_session, columns
+):
+    drop_type_tags(nested_parquet)
+    with pytest.raises(DatasetPrepareError, match="written before union types"):
+        dc.read_parquet(nested_parquet.as_uri(), columns=columns, session=test_session)
+
+
+def test_read_parquet_output_reading_rejects_a_file_written_before_union_types(
+    nested_parquet, test_session
+):
+    drop_type_tags(nested_parquet)
+    chain = dc.read_parquet(
+        nested_parquet.as_uri(),
+        columns=["id", "c.note"],
+        output={"id": int, "v": Note | None},
+        session=test_session,
+    )
+    with pytest.raises(ValueError, match="written before union types"):
+        chain.to_list()
+
+
+class RequiredUnion(DataModel):
+    v: Note | Card
+
+
+@pytest.mark.parametrize(
+    "column,output",
+    [
+        ("u.Note", {"v": Note}),
+        ("c.note", {"v": Note}),
+        ("c", {"v": Card}),
+        ("u", RequiredUnion),
+    ],
+)
+def test_read_parquet_output_must_be_optional_as_its_signal(
+    nested_parquet, test_session, column, output
+):
+    with pytest.raises(
+        DatasetPrepareError, match=f"v must be optional, as {column} can be None"
+    ):
+        dc.read_parquet(
+            nested_parquet.as_uri(),
+            columns=[column],
+            output=output,
+            session=test_session,
+        )
+
+
+@pytest.mark.parametrize(
+    "column,output,error",
+    [
+        ("id", int | str | None, "v is a union of int, str, unlike id"),
+        (
+            "c.note.text",
+            int | str | None,
+            "v is a union of int, str, unlike c.note.text",
+        ),
+        ("u", int, "v is not a union, unlike u"),
+        ("u", Note | int | None, "v is a union of Note, int, unlike u"),
+    ],
+)
+def test_read_parquet_output_must_be_a_union_where_its_signal_is(
+    nested_parquet, test_session, column, output, error
+):
+    with pytest.raises(DatasetPrepareError, match=error):
+        dc.read_parquet(
+            nested_parquet.as_uri(),
+            columns=[column],
+            output={"v": output},
+            session=test_session,
+        )
+
+
+@pytest.mark.parametrize("columns", [["p"], None])
+@pytest.mark.parametrize(
+    "stored,read,error",
+    [
+        (Card(note=Note()), MaybeCard, "q.note can't be optional, as p.note is never"),
+        (MaybeCard(), Card, "q.note must be optional, as p.note can be None"),
+    ],
+)
+def test_read_parquet_output_nested_models_must_be_optional_as_their_signals(
+    tmp_dir, test_session, columns, stored, read, error
+):
+    path = tmp_dir / "card.parquet"
+    dc.read_values(p=[stored], session=test_session).to_parquet(path)
+    with pytest.raises(DatasetPrepareError, match=error):
+        dc.read_parquet(
+            path.as_uri(), columns=columns, output={"q": read}, session=test_session
+        )
+
+
+@pytest.mark.parametrize("output", [None, ["id", "value"]])
+def test_read_parquet_columns_read_a_list_empty_in_one_file(
+    tmp_dir, test_session, output
+):
+    path = tmp_dir / "parts"
+    path.mkdir()
+    for i, value in [(0, []), (1, [1])]:
+        dc.read_values(
+            id=[i],
+            value=[value],
+            output={"id": int, "value": list[int]},
+            session=test_session,
+        ).to_parquet(path / f"{i}.parquet")
+    chain = dc.read_parquet(
+        path.as_uri(),
+        columns=["id", "value"],
+        output=output,
+        source=False,
+        session=test_session,
+    )
+    assert chain.order_by("id").to_values("value") == [[], [1]]
+
+
+def test_parse_tabular_columns_take_signals_from_the_first_file_by_path(
+    tmp_dir, test_session
+):
+    uri = _write_x_then_no_x(tmp_dir / "parts", test_session)
+    files = dc.read_storage(uri, session=test_session).order_by("file.path")
+    chain = dc.read_values(
+        file=files.to_values("file")[::-1], session=test_session
+    ).parse_tabular(columns=["id", "p.x"], source=False)
+    assert chain.order_by("id").to_values("p.x") == [1, None]
 
 
 @pytest.mark.parametrize("columns,read", [(None, 3), (["c", "a"], 2)])
@@ -2667,6 +3420,24 @@ def test_read_parquet_one_column_without_source(
     assert chain.to_values(signal) == [2]
 
 
+@pytest.mark.parametrize("source_type", [ArrowRow, ArrowRow | None])
+def test_read_parquet_exported_with_only_source_reads_new_source(
+    test_session, tmp_dir, source_type
+):
+    csv = tmp_dir / "df.csv"
+    csv.write_text("n\n1\n")
+    old = dc.read_csv(csv.as_uri(), session=test_session).to_values("source")
+    path = tmp_dir / "df.parquet"
+    dc.read_values(
+        source=old, output={"source": source_type}, session=test_session
+    ).to_parquet(path)
+
+    chain = dc.read_parquet(path.as_uri(), session=test_session)
+    assert [(s.file.path, s.index) for s in chain.to_values("source")] == [
+        ("df.parquet", 0)
+    ]
+
+
 def test_read_parquet_exported_with_source(test_session, tmp_dir):
     path = tmp_dir / "df.parquet"
     path2 = tmp_dir / "df2.parquet"
@@ -2681,6 +3452,104 @@ def test_read_parquet_exported_with_source(test_session, tmp_dir):
     )
 
     assert df_equal(df1, df)
+
+
+def test_read_parquet_exported_with_source_into_column_keeps_both_sources(
+    test_session, tmp_dir
+):
+    path = tmp_dir / "df.parquet"
+    exported = tmp_dir / "exported.parquet"
+    pd.DataFrame({"n": [1]}).to_parquet(path)
+    dc.read_parquet(path.as_uri(), session=test_session).to_parquet(exported)
+
+    chain = dc.read_parquet(exported.as_uri(), column="data", session=test_session)
+    ((source, data),) = chain.to_list("source", "data")
+    assert source.file.path == "exported.parquet"
+    assert data.source.file.path == "df.parquet"
+    assert data.n == 1
+
+
+def test_read_parquet_exported_with_optional_source_replaces_it(test_session, tmp_dir):
+    path = tmp_dir / "df.parquet"
+    dc.read_values(
+        source=[None],
+        n=[1],
+        output={"source": ArrowRow | None, "n": int},
+        session=test_session,
+    ).to_parquet(path)
+
+    chain = dc.read_parquet(path.as_uri(), session=test_session)
+    ((source, n),) = chain.to_list("source", "n")
+    assert (source.file.path, n) == ("df.parquet", 1)
+
+
+def test_read_parquet_exported_with_str_source_names_new_source_c0_source(
+    test_session, tmp_dir
+):
+    path = tmp_dir / "df.parquet"
+    dc.read_values(source=["s3"], session=test_session).to_parquet(path)
+
+    chain = dc.read_parquet(path.as_uri(), session=test_session)
+    ((c0_source, source),) = chain.to_list("c0_source", "source")
+    assert (c0_source.file.path, source) == ("df.parquet", "s3")
+
+
+@pytest.mark.parametrize("name", ["source", "Source"])
+@pytest.mark.parametrize("fmt", ["csv", "parquet"])
+def test_read_file_with_source_column_names_new_source_c0_source(
+    tmp_dir, test_session, fmt, name
+):
+    path = tmp_dir / f"df.{fmt}"
+    getattr(pd.DataFrame({name: ["s3"], "n": [1]}), f"to_{fmt}")(path, index=False)
+
+    chain = getattr(dc, f"read_{fmt}")(path.as_uri(), session=test_session)
+    ((c0_source, source, n),) = chain.to_list("c0_source", "source", "n")
+    assert c0_source.read() == {name: "s3", "n": 1}
+    assert (source, n) == ("s3", 1)
+
+
+def test_read_csv_with_source_and_c0_source_columns_names_new_source_c1_source(
+    tmp_dir, test_session
+):
+    path = tmp_dir / "df.csv"
+    path.write_text("source,c0_source\na,b\n")
+
+    chain = dc.read_csv(path.as_uri(), session=test_session)
+    ((c1_source, source, c0_source),) = chain.to_list(
+        "c1_source", "source", "c0_source"
+    )
+    assert c1_source.read() == {"source": "a", "c0_source": "b"}
+    assert (source, c0_source) == ("a", "b")
+
+
+def test_read_csv_with_source_column_into_column_keeps_its_name(tmp_dir, test_session):
+    path = tmp_dir / "df.csv"
+    path.write_text("source,n\ns3,1\n")
+
+    chain = dc.read_csv(path.as_uri(), column="data", session=test_session)
+    ((source, data_source),) = chain.to_list("source", "data.source")
+    assert source.read() == {"source": "s3", "n": 1}
+    assert data_source == "s3"
+
+
+@pytest.mark.parametrize(
+    "kwargs,signal",
+    [
+        ({"output": ["source", "n"]}, "source"),
+        ({"output": {"source": str, "n": int}}, "source"),
+        ({"column": "source"}, "source.a"),
+    ],
+)
+def test_read_csv_with_output_named_source_names_new_source_c0_source(
+    tmp_dir, test_session, kwargs, signal
+):
+    path = tmp_dir / "df.csv"
+    path.write_text("a,n\ns3,1\n")
+
+    chain = dc.read_csv(path.as_uri(), session=test_session, **kwargs)
+    ((c0_source, value),) = chain.to_list("c0_source", signal)
+    assert c0_source.read() == {"a": "s3", "n": 1}
+    assert value == "s3"
 
 
 @skip_if_not_sqlite
@@ -2878,20 +3747,82 @@ def test_extend_features(test_session):
     assert res == sum(range(len(features)))
 
 
-def test_read_storage_column(tmp_dir, test_session):
-    df = pd.DataFrame(DF_DATA)
-    path = tmp_dir / "test.parquet"
-    df.to_parquet(path)
-    chain = dc.read_storage(path.as_uri(), column="custom", session=test_session)
-    assert chain.schema["custom"] == File
-
-
 def test_from_features_column(test_session):
     fib = [1, 1, 2, 3, 5, 8]
     values = ["odd" if num % 2 else "even" for num in fib]
 
     chain = dc.read_values(fib=fib, odds=values, column="custom", session=test_session)
     assert "custom.fib" in chain.to_pandas(flatten=True).columns
+
+
+@pytest.mark.parametrize(
+    "value", [1, MyFr(nnn="n1", count=3), File(source="s3://bucket", path="a.txt")]
+)
+def test_read_values_one_signal_into_column(test_session, value):
+    chain = dc.read_values(v=[value], column="row", session=test_session)
+
+    assert chain.to_values("row.v") == [value]
+
+
+def test_read_values_model_and_scalar_into_column(test_session):
+    fr = MyFr(nnn="n1", count=3)
+
+    chain = dc.read_values(fr=[fr], n=[1], column="row", session=test_session)
+
+    assert chain.to_list("row.fr", "row.n") == [(fr, 1)]
+
+
+def test_read_values_dicts_into_column_kept_as_given(test_session):
+    dicts = [{}, {"a": 1, "b": None}]
+
+    chain = dc.read_values(d=dicts, n=[1, 2], column="row", session=test_session)
+
+    assert chain.order_by("row.n").to_values("row.d") == dicts
+
+
+@pytest.mark.parametrize("name", ["cls", "model_extra", "model_fields_set"])
+def test_read_values_signals_named_like_model_attributes_into_column(
+    test_session, name
+):
+    chain = dc.read_values(**{name: [1], "n": [2]}, column="row", session=test_session)
+
+    assert chain.to_list(f"row.{name}", "row.n") == [(1, 2)]
+
+
+@pytest.mark.parametrize(
+    "typ,value",
+    [
+        (int | str, 1),
+        (int | str, "a"),
+        (int | str | None, "a"),
+        (int | str | None, None),
+    ],
+)
+def test_read_values_union_into_column_read_back_after_save(test_session, typ, value):
+    chain = dc.read_values(
+        u=[value], output={"u": typ}, column="row", session=test_session
+    )
+    chain.save("unions")
+
+    assert chain.to_values("row.u") == [value]
+    assert dc.read_dataset("unions", session=test_session).to_values("row.u") == [value]
+
+
+@pytest.mark.parametrize(
+    "typ,values", [(int | str, [1, "a"]), (int | str | None, [1, "a", None])]
+)
+def test_read_values_union_and_scalar_into_column_read_back_after_save(
+    test_session, typ, values
+):
+    n = list(range(len(values)))
+    chain = dc.read_values(
+        u=values, n=n, output={"u": typ, "n": int}, column="row", session=test_session
+    )
+    chain.save("unions")
+
+    assert chain.order_by("row.n").to_values("row.u") == values
+    saved = dc.read_dataset("unions", session=test_session)
+    assert saved.order_by("row.n").to_values("row.u") == values
 
 
 def test_parse_tabular_column(tmp_dir, test_session):
@@ -4817,6 +5748,18 @@ def test_read_values_nan_inf(test_session):
     assert any(r for r in res if np.isnan(r))
     assert any(r for r in res if np.isposinf(r))
     assert any(r for r in res if np.isneginf(r))
+
+
+def test_read_values_signal_named_ds_name(test_session):
+    chain = dc.read_values(ds_name=[1, 2], session=test_session)
+
+    assert sorted(chain.to_values("ds_name")) == [1, 2]
+
+
+def test_read_pandas_column_named_ds_name(test_session):
+    chain = dc.read_pandas(pd.DataFrame({"ds_name": [1, 2]}), session=test_session)
+
+    assert sorted(chain.to_values("ds_name")) == [1, 2]
 
 
 def test_read_pandas_nan_inf(test_session):

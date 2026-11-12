@@ -12,7 +12,7 @@ When delta processing is enabled:
 
 1. DataChain calculates the difference between the latest version of your source dataset and the version used to create the most recent version of your result dataset
 2. Only the records that are new or modified in the source dataset are processed
-3. These processed records are then merged with the latest version of your result dataset
+3. The result dataset is updated with the processed records, replacing outdated results and removing results for deleted source records
 
 This optimization significantly reduces processing time and resource usage for incremental updates.
 
@@ -27,9 +27,10 @@ import datachain as dc
 chain = (
     dc.read_storage(
         "data/",
+        update=True,  # Refresh the storage index
         delta=True,  # Enable delta processing
         delta_on="file.path",  # Field that uniquely identifies records
-        delta_compare="file.mtime",  # Field to check for changes
+        delta_compare="file.last_modified",  # Field to check for changes
     )
     .map(result=process_function)
     .save(name="processed_data")
@@ -39,8 +40,9 @@ chain = (
 ## Parameters
 
 - **delta**: Boolean flag to enable delta processing
-- **delta_on**: Field(s) that uniquely identify rows in the source dataset
-- **delta_result_on**: Field(s) in the resulting dataset that correspond to `delta_on` fields (if they have different names)
+- **delta_on**: Field(s) that uniquely identify rows in the source dataset. The default is `("file.path", "file.etag", "file.version")`.
+- **delta_result_on**: Field(s) in the resulting dataset that correspond to `delta_on` fields (if they have different names).
+  The chain must keep the key values: changing them through `mutate`, `select` or `gen` raises an error unless `delta_unsafe=True`.
 - **delta_compare**: Field(s) used to check if a record has been modified
 
 ## Example: Processing New Files Only
@@ -63,7 +65,7 @@ chain = (
     dc.read_storage(
         "data/",
         update=True,  # Update the storage index
-        delta=True,  # Process only new files
+        delta=True,  # Process new and changed files; remove deleted files' results
         delta_on="file.path",  # Files are identified by their paths
     )
     .map(result=process_file)
@@ -94,6 +96,7 @@ By default, delta updates cannot be combined with the following methods:
 8. `group_by`
 9. `limit`
 10. `offset`
+11. `mutate`, `select` or `gen` that changes delta-key values
 
 These methods are restricted because they may produce **unexpected results** when used with delta processing. Delta runs the chain only on a subset of rows (new and changed records), while methods like `distinct`, `agg`, or `group_by` are designed to operate on the entire dataset.
 
@@ -107,6 +110,6 @@ If you still need to use these methods together with delta, you can override thi
 delta_unsafe = True
 ```
 
-If more than one delta-enabled source participates in the same composed query, set `delta_unsafe=True` on every participating delta source.
+If more than one delta-enabled source participates in the same composed query, use the same result key and set `delta_unsafe=True` on every participating delta source.
 
 `delta_unsafe=True` is an advanced option. Use it only when you know the participating delta sources are updated in a consistent way and the result of replaying only the changed rows will still match the result of recomputing the full query.

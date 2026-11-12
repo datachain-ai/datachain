@@ -27,9 +27,10 @@ import sqlalchemy
 from pydantic import BaseModel
 
 from datachain import json, semver
+from datachain.checkpoint import CheckpointStatus
 from datachain.checkpoint_event import CheckpointEventType, CheckpointStepType
 from datachain.dataset import DatasetRecord, create_dataset_full_name
-from datachain.delta import delta_disabled
+from datachain.delta import delta_disabled, delta_key_changed_error
 from datachain.error import (
     JobAncestryDepthExceededError,
     ProjectCreateNotAllowedError,
@@ -58,6 +59,7 @@ from datachain.lib.file import ExportPlacement as FileExportPlacement
 from datachain.lib.model_store import ModelStore
 from datachain.lib.settings import Settings
 from datachain.lib.signal_schema import (
+    KeyPresence,
     SignalResolvingError,
     SignalResolvingTypeError,
     SignalSchema,
@@ -81,6 +83,7 @@ from datachain.lib.utils import (
     DataChainColumnError,
     DataChainParamsError,
     assert_unique_export_columns,
+    unique_name,
 )
 from datachain.progress import tqdm
 from datachain.project import Project
@@ -135,6 +138,7 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session as OrmSession
     from typing_extensions import ParamSpec
 
+    from datachain.checkpoint import Checkpoint
     from datachain.lib.settings import LLMParams
 
     P = ParamSpec("P")
@@ -210,16 +214,73 @@ class DataChainSchema(dict[str, DataType]):
         return file.getvalue().removesuffix("\n")
 
 
-def _paired_key_columns(left: list, right: list) -> list[tuple]:
-    """Pair the key columns of both sides. A Union is several columns, so pairing
-    differently shaped sides by position would compare the wrong ones.
+def _paired_key(
+    left: SignalSchema, left_key: str, right: SignalSchema, right_key: str
+) -> tuple[list[tuple[str, str]], list[tuple[KeyPresence, KeyPresence]]] | None:
+    """Pair a key's fields by name and its Optional-model presence.
+
+    Presence distinguishes None from a model with all-null fields. Return None
+    when the key fields differ.
     """
-    if len(left) != len(right):
-        raise DataChainParamsError(
-            f"'on' resolves to {len(left)} columns and 'right_on' to {len(right)}; "
-            "the key must have the same shape on both sides"
-        )
-    return list(zip(left, right, strict=True))
+    left_columns, left_nodes = left.key_columns(left_key)
+    right_columns, right_nodes = right.key_columns(right_key)
+    if left_columns.keys() != right_columns.keys():
+        return None
+    pairs = [(column, right_columns[path]) for path, column in left_columns.items()]
+    presence = [
+        (left.key_presence(left_key, path), right.key_presence(right_key, path))
+        for path in sorted(left_nodes | right_nodes)
+    ]
+    return pairs, presence
+
+
+def _paired_key_columns(
+    left: SignalSchema,
+    on: Sequence[str],
+    right: SignalSchema,
+    right_on: Sequence[str],
+) -> tuple[list[tuple[str, str]], list[tuple[KeyPresence, KeyPresence]]]:
+    """Pair the key columns of both sides by their path below each key, so model
+    fields match by name rather than by position, and pair the presence of each
+    ``Optional`` model node either side has, so None differs from a model whose
+    fields are all None.
+    """
+    pairs: list[tuple[str, str]] = []
+    presence: list[tuple[KeyPresence, KeyPresence]] = []
+    for left_key, right_key in zip(on, right_on, strict=True):
+        paired = _paired_key(left, left_key, right, right_key)
+        if paired is None:
+            raise DataChainParamsError(
+                f"'on' key {left_key!r} and 'right_on' key {right_key!r} have different"
+                " fields; the key must have the same shape on both sides"
+            )
+        pairs.extend(paired[0])
+        presence.extend(paired[1])
+    return pairs, presence
+
+
+def _common_key_columns(
+    left_schema: SignalSchema, right_schema: SignalSchema
+) -> tuple[list[tuple[str, str]], list[tuple[KeyPresence, KeyPresence]]]:
+    presence: list[tuple[KeyPresence, KeyPresence]] = []
+    other_columns = set(cast("list[str]", right_schema.db_signals()))
+    common_signals = [
+        c for c in cast("list[str]", left_schema.db_signals()) if c in other_columns
+    ]
+    if not common_signals:
+        raise DataChainParamsError("subtract(): no common columns")
+    signals = list(zip(common_signals, common_signals, strict=False))
+    for name in sorted(left_schema.values.keys() & right_schema.values.keys()):
+        paired = _paired_key(left_schema, name, right_schema, name)
+        if paired is None or not paired[1]:
+            continue
+        columns = {
+            *left_schema.resolve(name).db_signals(),
+            *right_schema.resolve(name).db_signals(),
+        }
+        signals = [(a, b) for a, b in signals if a not in columns] + paired[0]
+        presence.extend(paired[1])
+    return signals, presence
 
 
 class DataChain:
@@ -659,6 +720,14 @@ class DataChain:
         every time.
         It returns the chain itself.
         """
+        return self._persist()
+
+    def _persist(self, *, preserve_hash: bool = False, hash_salt: str = "") -> "Self":
+        content_hash = self._query.hash() if preserve_hash else None
+        if content_hash is not None and hash_salt:
+            content_hash = hashlib.sha256(
+                (content_hash + hash_salt).encode()
+            ).hexdigest()
         schema = self.signals_schema.clone_without_sys_signals().serialize()
         project = self.session.catalog.metastore.get_project(
             self.project_name,
@@ -666,7 +735,11 @@ class DataChain:
             create=True,
         )
         return self._evolve(
-            query=self._query.save(project=project, feature_schema=schema),
+            query=self._query.save(
+                project=project,
+                feature_schema=schema,
+                content_hash=content_hash,
+            ),
             signal_schema=self.signals_schema | SignalSchema({"sys": Sys}),
         )
 
@@ -726,6 +799,7 @@ class DataChain:
             name_salt += f"/{version}"
         _hash = hashlib.sha256((base_hash + name_salt).encode("utf-8")).hexdigest()
 
+        retry_attempt = None
         result = self._resolve_checkpoint(name, project, _hash, kwargs)
         if bool(result):
             print(
@@ -738,6 +812,9 @@ class DataChain:
 
         # Handle retry and delta functionality
         if not result:
+            retry_attempt = self._start_delta_retry_attempt(
+                f"{namespace_name}/{project_name}/{name}"
+            )
             result = self._handle_delta(
                 name=name,
                 version=version,
@@ -747,6 +824,9 @@ class DataChain:
                 attrs=attrs,
                 update_version=update_version,
                 kwargs=kwargs,
+                retry_salt=retry_attempt.created_at.isoformat()
+                if retry_attempt
+                else "",
             )
 
         if not result:
@@ -780,6 +860,10 @@ class DataChain:
 
         if self._checkpoints_enabled:
             catalog.metastore.get_or_create_checkpoint(self.job.id, _hash)
+        if retry_attempt is not None:
+            catalog.metastore.update_checkpoints(
+                [retry_attempt.id], status=CheckpointStatus.DELETED
+            )
         return result
 
     def _validate_version(self, version: str | None) -> None:
@@ -947,6 +1031,21 @@ class DataChain:
 
         return None
 
+    def _start_delta_retry_attempt(self, name: str) -> "Checkpoint | None":
+        if not self._checkpoints_enabled or not any(
+            source.delta_spec is not None and source.delta_spec.delta_retry
+            for source in self._query.delta_sources()
+        ):
+            return None
+        # Failed attempts keep this marker across reruns. Successful saves
+        # retire it, even when an empty retry reuses the result version.
+        attempt_hash = hashlib.sha256(f"delta_retry:{name}".encode()).hexdigest()
+        metastore = self.session.catalog.metastore
+        job_id = self.job.run_group_id or self.job.id
+        return metastore.find_checkpoint(
+            job_id, attempt_hash
+        ) or metastore.get_or_create_checkpoint(job_id, attempt_hash)
+
     def _handle_delta(
         self,
         name: str,
@@ -957,6 +1056,7 @@ class DataChain:
         attrs: list[str] | None,
         update_version: str | None,
         kwargs: dict,
+        retry_salt: str = "",
     ) -> "DataChain | None":
         """Try to save as a delta dataset.
 
@@ -976,6 +1076,7 @@ class DataChain:
             project.namespace.name,
             project.name,
             name,
+            retry_salt=retry_salt,
         )
 
         # Case 1: delta produced a new dataset
@@ -1335,6 +1436,9 @@ class DataChain:
         udf_obj = self._udf_to_obj(Generator, func, params, output, signal_map)
         if (prefetch := self._settings.prefetch) is not None:
             udf_obj.prefetch = prefetch
+        udf_obj.delta_key, udf_obj.delta_key_presence = self._delta_key_columns(
+            udf_obj.output
+        )
         return self._evolve(
             query=self._query.generate(
                 udf_obj.to_udf_wrapper(self._settings.batch_size),
@@ -1342,6 +1446,40 @@ class DataChain:
             ),
             signal_schema=SignalSchema({"sys": Sys}) | udf_obj.output,
         )
+
+    def _delta_key_specs(self) -> list[tuple[list[str], list[str]]]:
+        """Source and result key fields of each delta source, unless unsafe."""
+        if self.delta_unsafe:
+            return []
+        specs = []
+        for source in self._query.delta_sources():
+            spec = source.delta_spec
+            assert spec is not None
+            on = [spec.on] if isinstance(spec.on, str) else list(spec.on)
+            result_on = spec.right_on or spec.on
+            specs.append(
+                (on, [result_on] if isinstance(result_on, str) else list(result_on))
+            )
+        return specs
+
+    def _delta_key_columns(
+        self, output: SignalSchema
+    ) -> tuple[list[tuple[str, str]], list[tuple[KeyPresence, KeyPresence]]]:
+        """Input/output key columns and optional-model presence a `gen` must keep."""
+        pairs: list[tuple[str, str]] = []
+        presence: list[tuple[KeyPresence, KeyPresence]] = []
+        for on, result_on in self._delta_key_specs():
+            for key in (on, result_on):  # the key may already be renamed
+                try:
+                    columns, present = _paired_key_columns(
+                        self.signals_schema, key, output, result_on
+                    )
+                    pairs.extend(columns)
+                    presence.extend(present)
+                    break
+                except (SignalResolvingError, DataChainParamsError):
+                    continue
+        return list(dict.fromkeys(pairs)), list(dict.fromkeys(presence))
 
     @delta_disabled
     def agg(
@@ -1933,8 +2071,34 @@ class DataChain:
                 resolved_kwargs[col_name] = Column(ColumnMeta.to_db_name(resolved))
         return resolved_kwargs
 
+    def _check_delta_key_mutation(self, method: str, kwargs: dict[str, Any]) -> None:
+        protected: dict[str, set[str]] = {}
+        for on, result_on in self._delta_key_specs():
+            for key, result_key in zip(on, result_on, strict=True):
+                path = ColumnMeta.to_db_name(result_key)
+                protected.setdefault(path, {path}).add(ColumnMeta.to_db_name(key))
+        for name, value in kwargs.items():
+            target = ColumnMeta.to_db_name(name)
+            for key, sources in protected.items():
+                if key == target or key.startswith(target + DEFAULT_DELIMITER):
+                    suffix = key[len(target) :]
+                    unchanged = (
+                        isinstance(value, Column) and value.name + suffix in sources
+                    )
+                elif target.startswith(key + DEFAULT_DELIMITER):
+                    suffix = target[len(key) :]
+                    unchanged = isinstance(value, Column) and any(
+                        value.name == source + suffix for source in sources
+                    )
+                else:
+                    continue
+                if not unchanged:
+                    raise delta_key_changed_error(name, method)
+
     def _mutate(self, method: str, **kwargs) -> "Self":
         from sqlalchemy.sql.sqltypes import NullType
+
+        self._check_delta_key_mutation(method, kwargs)
 
         primitives = (bool, str, int, float)
 
@@ -2467,32 +2631,27 @@ class DataChain:
             if not on:
                 raise DataChainParamsError("'on' cannot be an empty string")
             on = [on]
-        elif isinstance(on, Sequence):
-            if not on or any(not col for col in on):
-                raise DataChainParamsError("'on' cannot contain empty strings")
+        elif isinstance(on, Sequence) and (not on or any(not col for col in on)):
+            raise DataChainParamsError("'on' cannot contain empty strings")
 
         if isinstance(right_on, str):
             if not right_on:
                 raise DataChainParamsError("'right_on' cannot be an empty string")
             right_on = [right_on]
-        elif isinstance(right_on, Sequence):
-            if not right_on or any(not col for col in right_on):
-                raise DataChainParamsError("'right_on' cannot contain empty strings")
+        elif isinstance(right_on, Sequence) and (
+            not right_on or any(not col for col in right_on)
+        ):
+            raise DataChainParamsError("'right_on' cannot contain empty strings")
 
+        presence: list[tuple[KeyPresence, KeyPresence]] = []
         if on is None and right_on is None:
-            other_columns = set(other._effective_signals_schema.db_signals())
-            common_signals = [
-                c
-                for c in self._effective_signals_schema.db_signals()
-                if c in other_columns
-            ]
-            if not common_signals:
-                raise DataChainParamsError("subtract(): no common columns")
-            signals = list(zip(common_signals, common_signals, strict=False))
+            signals, presence = _common_key_columns(
+                self._effective_signals_schema, other._effective_signals_schema
+            )
         elif on is not None and right_on is None:
-            right_on = on
-            resolved_signals = list(self.signals_schema.resolve(*on).db_signals())
-            signals = list(zip(resolved_signals, resolved_signals, strict=False))  # type: ignore[arg-type]
+            signals, presence = _paired_key_columns(
+                self.signals_schema, on, other.signals_schema, on
+            )
         elif on is None and right_on is not None:
             raise DataChainParamsError(
                 "'on' must be specified when 'right_on' is provided"
@@ -2506,11 +2665,12 @@ class DataChain:
                 raise DataChainParamsError(
                     "'on' and 'right_on' must have the same length"
                 )
-            signals = _paired_key_columns(
-                list(self.signals_schema.resolve(*on).db_signals()),
-                list(other.signals_schema.resolve(*right_on).db_signals()),
+            signals, presence = _paired_key_columns(
+                self.signals_schema, on, other.signals_schema, right_on
             )
-        return self._evolve(query=self._query.subtract(other._query, signals))  # type: ignore[arg-type]
+        return self._evolve(
+            query=self._query.subtract(other._query, signals, presence)  # type: ignore[arg-type]
+        )
 
     @delta_disabled
     def diff(
@@ -2767,13 +2927,16 @@ class DataChain:
                 A list of names infers types. Fields map by position, with exactly one
                 field per column read. Use `columns` to select inputs by name.
                 Omit to infer names and types or restore a saved DataChain schema.
+                On Parquet exported by DataChain, each field takes one picked
+                signal, or one top-level signal without `columns`.
             column: Generated column name.
             model_name: Generated model name.
-            source: Whether to include info about the source file.
+            source: Whether to include info about the source file. It is named
+                "source", or the first free "cN_source" if that name is taken.
             nrows: Optional row limit per file.
             columns: Input columns to read, in order; all if omitted. Accepts original
                 or normalized names, e.g. "ZIP Code" or "zip_code". For Parquet exported
-                by DataChain, omit this parameter and use `.select(...)` after parsing.
+                by DataChain, it picks signals as `select()` does, e.g. "p.x".
             kwargs: Parameters to pass to pyarrow.dataset.dataset.
 
         Example:
@@ -2801,10 +2964,9 @@ class DataChain:
             ArrowGenerator,
             file_schemas,
             fix_pyarrow_format,
+            infer_output,
             is_parquet,
-            merge_schemas,
             read_columns,
-            schema_to_output,
         )
 
         parse_options = kwargs.pop("parse_options", None)
@@ -2827,40 +2989,50 @@ class DataChain:
         if "file" not in self.schema or not self.count():
             raise DatasetPrepareError(self.name, "no files to parse.")
 
-        schema, read = None, None
+        schema, read, written_by_datachain = None, None, None
         col_names = output if isinstance(output, Sequence) else None
         infer = bool(col_names) or not output
+        # A model built from types has no validators; one passed as output may.
+        from_types = infer or isinstance(output, dict)
         try:
             if infer:
                 schemas = file_schemas(self, **kwargs, parse_options=parse_options)
-                schema, names = merge_schemas(schemas, columns)
-                output, _ = schema_to_output(schema, col_names or names)
+                # A source a file written by DataChain stores is replaced by
+                # this read's, unless the read goes under its own column.
+                schema, output, read = infer_output(
+                    schemas, col_names, columns, source and not column
+                )
 
             if isinstance(output, dict):
-                model_name = model_name or column or ""
-                model = dict_to_data_model(model_name, output)
-                output = model
+                model = dict_to_data_model(model_name or column or "", output)
             else:
                 model = output  # type: ignore[assignment]
 
             if not infer:
-                fields = len(model.model_fields)
-                read = read_columns(
-                    self, columns, fields, **kwargs, parse_options=parse_options
+                read, schema = read_columns(
+                    self,
+                    columns,
+                    model,
+                    source and not column,
+                    **kwargs,
+                    parse_options=parse_options,
                 )
+                written_by_datachain = schema is not None
         except (ValueError, pa.ArrowTypeError) as e:
             raise DatasetPrepareError(self.name, e) from e
 
         if column:
             output = {column: model}  # type: ignore[dict-item]
-        elif isinstance(output, type(BaseModel)):
+        else:
             output = {
                 name: info.annotation  # type: ignore[misc]
-                for name, info in output.model_fields.items()
+                for name, info in model.model_fields.items()
             }
 
         if source:
-            output = {"source": ArrowRow} | output  # type: ignore[assignment,operator]
+            # The data keeps its names, so on a clash the source signal is renamed.
+            name = unique_name("source", output)  # type: ignore[arg-type]
+            output = {name: ArrowRow} | output  # type: ignore[assignment,operator]
 
         # Prefetch downloads whole files, so a partial read prefetches only small ones.
         partial = nrows or (columns is not None and is_parquet(format))
@@ -2871,6 +3043,8 @@ class DataChain:
                 source,
                 nrows,
                 columns=read,
+                written_by_datachain=written_by_datachain,
+                output_from_types=from_types,
                 parse_options=parse_options,
                 prefetch_max_size=PARTIAL_READ_PREFETCH_MAX_SIZE if partial else None,
                 **kwargs,

@@ -6,6 +6,7 @@ import secrets
 import string
 import subprocess
 import sys
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from copy import copy
@@ -56,7 +57,11 @@ from datachain.hash_utils import hash_column_elements
 from datachain.job import Job
 from datachain.lib.data_model import NULLABLE_SCALARS
 from datachain.lib.listing import ensure_listing, is_listing_dataset
-from datachain.lib.signal_schema import SignalSchema, generate_merge_root_mapping
+from datachain.lib.signal_schema import (
+    KeyPresence,
+    SignalSchema,
+    generate_merge_root_mapping,
+)
 from datachain.lib.udf import JsonSerializationError, UdfError, _get_cache
 from datachain.lib.utils import type_to_str
 from datachain.progress import (
@@ -294,10 +299,9 @@ class Step(ABC):
         """Immediate sub-queries contained in this step."""
         return []
 
-    def replace_source(
+    def replace_sources(
         self,
-        source: "DatasetQuery",
-        replacement: "DatasetQuery",
+        replacements: dict[int, "DatasetQuery"],
     ) -> "Step":
         return self
 
@@ -398,14 +402,13 @@ class DatasetDiffOperation(Step):
     def sub_queries(self) -> list["DatasetQuery"]:
         return [self.dq]
 
-    def replace_source(
+    def replace_sources(
         self,
-        source: "DatasetQuery",
-        replacement: "DatasetQuery",
+        replacements: dict[int, "DatasetQuery"],
     ) -> "Step":
         return attrs.evolve(
             self,
-            dq=self.dq.replace_source(source, replacement),
+            dq=self.dq.replace_sources(replacements),
         )
 
     @abstractmethod
@@ -435,38 +438,29 @@ class DatasetDiffOperation(Step):
             *(c for c in target_full.selected_columns if not c.name.startswith("sys__"))
         )
 
-        # creating temp table that will hold subtract results
-        temp_table_name = self.catalog.warehouse.temp_table_name()
-        temp_tables.append(temp_table_name)
-
-        columns = [
-            c if isinstance(c, Column) else Column(c.name, c.type)
-            for c in source_query.selected_columns
-        ]
-        temp_table = self.catalog.warehouse.create_dataset_rows_table(
-            temp_table_name,
-            columns=columns,
-            if_not_exists=False,
-        )
-
-        diff_q = self.query(source_query, target_query)
-
-        insert_q = temp_table.insert().from_select(
-            source_query.selected_columns,  # type: ignore[arg-type]
-            diff_q,
-        )
-
-        self.catalog.warehouse.db.execute(insert_q)
+        diff_q = cast("SelectBase", self.query(source_query, target_query)).subquery()
 
         def q(*columns):
-            return sqlalchemy.select(*columns)
+            return sqlalchemy.select(*columns).select_from(diff_q)
 
-        return step_result(q, temp_table.c)
+        columns = [diff_q.c[c.name] for c in source_query.selected_columns]
+        return step_result(q, columns, dependencies=self.dq.dependencies)
+
+
+def _key_present(columns: Any, presence: KeyPresence) -> ColumnElement:
+    """Whether a key node holds a value, by ``SignalSchema.key_presence``."""
+    if presence is None:
+        return sa.true()
+    tag, arm = presence
+    is_set = columns[tag].is_not(None)
+    return is_set if arm is None else sa.and_(is_set, columns[tag] == arm)
 
 
 @frozen
 class Subtract(DatasetDiffOperation):
     on: Sequence[str | tuple[str, str]]
+    # Key nodes compared by whether they hold a value on each side.
+    presence: Sequence[tuple[KeyPresence, KeyPresence]] = ()
 
     def _normalize_on(self) -> list[tuple[str, str]]:
         return [(col, col) if isinstance(col, str) else col for col in self.on]
@@ -477,14 +471,41 @@ class Subtract(DatasetDiffOperation):
             f"{a}:{b}".encode()
             for a, b in sorted(normalized, key=lambda t: (t[0], t[1]))
         )
+        on_bytes += "".join(sorted(f"{a}:{b}" for a, b in self.presence)).encode()
 
         return hashlib.sha256(bytes.fromhex(self.dq.hash()) + on_bytes).hexdigest()
 
     def query(self, source_query: Select, target_query: Select) -> sa.Selectable:
+        on = self._normalize_on()
+        if not self.presence:
+            return self.catalog.warehouse.subtract_query(source_query, target_query, on)
+        # Compare presence as extra key columns, dropped again from the result.
+        used = {
+            c.name.casefold()
+            for query in (source_query, target_query)
+            for c in query.selected_columns
+        }
+        names = []
+        for i in range(len(self.presence)):
+            name = f"__dc_present_{i}"
+            while name.casefold() in used:
+                name = "_" + name
+            names.append(name)
+            used.add(name.casefold())
+
+        def with_presence(query: Select, side: int) -> Select:
+            columns = query.selected_columns
+            return query.add_columns(
+                *(
+                    sa.case((_key_present(columns, pair[side]), 1), else_=0).label(name)
+                    for name, pair in zip(names, self.presence, strict=True)
+                ),
+            )
+
         return self.catalog.warehouse.subtract_query(
-            source_query,
-            target_query,
-            self._normalize_on(),
+            with_presence(source_query, 0),
+            with_presence(target_query, 1),
+            [*on, *zip(names, names, strict=True)],
         )
 
 
@@ -494,7 +515,8 @@ class ColType(NamedTuple):
     python_type: type
     type_name: str
     default: Any
-    kept_as_is: bool  # a value of python_type goes in unconverted
+    kept_type: type | None  # a value of this type goes in unconverted
+    item_type: type | None  # a list whose first item has this type goes in unconverted
 
 
 def adjust_outputs(
@@ -518,7 +540,8 @@ def adjust_outputs(
         col_python_type,
         col_type_name,
         default_value,
-        kept_as_is,
+        kept_type,
+        _,
     ) in col_types:
         # Fill missing values with defaults
         if col_name not in row:
@@ -532,7 +555,7 @@ def adjust_outputs(
             row[col_name] = default_value
             continue
 
-        if kept_as_is and type(row_val) is col_python_type:
+        if type(row_val) is kept_type:
             continue
 
         # Validate and convert type if needed and possible
@@ -598,9 +621,20 @@ def get_col_types(
             if getattr(sql_type, "dc_nullable", False)
             else col_type.default_value(dialect)
         )
-        kept_as_is = exact and python_type not in (list, dict) and type_name != "JSON"
+        kept_type: type | None = None
+        item_type: type | None = None
+        if exact and python_type is list:
+            # convert_type checks only the first item, and recurses into a list
+            item = warehouse.python_type(sql_type.item_type)
+            item_type = None if item is list else item
+        elif exact and (python_type is dict or type_name == "JSON"):
+            kept_type = str  # JSON text, which convert_type keeps as it is
+        elif exact:
+            kept_type = python_type
         col_types.append(
-            ColType(name, sql_type, python_type, type_name, default, kept_as_is)
+            ColType(
+                name, sql_type, python_type, type_name, default, kept_type, item_type
+            )
         )
     return col_types
 
@@ -609,10 +643,11 @@ def _tuple_adjuster(col_types: list[ColType]) -> Callable[[tuple], tuple | None]
     """For a gen row of the output columns, then ``sys__input_id``,
     ``sys__partial`` and ``sys__empty``: the row with column defaults in place of
     None, or None when ``adjust_outputs`` must convert it."""
-    kept_types = [
-        frozenset({type(None), c.python_type} if c.kept_as_is else {type(None)})
-        for c in col_types
-    ]
+    kept_types = []
+    for c in col_types:
+        kept = list if c.item_type else c.kept_type
+        kept_types.append(frozenset({type(None), kept} if kept else {type(None)}))
+    lists = [(i, c.item_type) for i, c in enumerate(col_types) if c.item_type]
     defaults = [
         (i, c.default) for i, c in enumerate(col_types) if c.default is not None
     ]
@@ -621,6 +656,9 @@ def _tuple_adjuster(col_types: list[ColType]) -> Callable[[tuple], tuple | None]
         # map stops at the output columns: the sys values are the generator's own
         if not all(map(frozenset.__contains__, kept_types, map(type, row))):
             return None
+        for i, item_type in lists:
+            if (value := row[i]) and not isinstance(value[0], item_type):
+                return None
         if not defaults:
             return row
         values = list(row)
@@ -630,6 +668,9 @@ def _tuple_adjuster(col_types: list[ColType]) -> Callable[[tuple], tuple | None]
         return tuple(values)
 
     return adjust
+
+
+PROGRESS_INTERVAL = 0.1  # seconds
 
 
 def process_udf_outputs(
@@ -660,13 +701,20 @@ def process_udf_outputs(
     adjust_tuple = _tuple_adjuster(udf_col_types)
 
     def _insert_rows():
+        # Progress is reported every PROGRESS_INTERVAL, not per row: a call per
+        # row adds about a sixth to the time to read plain columns.
+        generated = 0
+        report_at = 0.0
         for udf_output in udf_results:
             if not udf_output:
                 continue
 
             with safe_closing(udf_output):
                 for row in udf_output:
-                    cb.relative_update()
+                    generated += 1
+                    if (now := time.monotonic()) >= report_at:
+                        cb.relative_update(generated)
+                        generated, report_at = 0, now + PROGRESS_INTERVAL
                     if type(row) is tuple:
                         if (
                             udf_kind != "map"
@@ -683,6 +731,7 @@ def process_udf_outputs(
                         udf_kind=udf_kind,
                     )
                     yield tuple(map(row.__getitem__, columns))
+        cb.relative_update(generated)
 
     rows = _insert_rows()
     try:
@@ -945,7 +994,17 @@ class UDFStep(Step, ABC):
                     exec_cmd = get_datachain_executable()
                     cmd = [*exec_cmd, "internal-run-udf"]
                     envs = dict(os.environ)
-                    envs["PYTHONPATH"] = os.getcwd()
+                    if "PYTHONSAFEPATH" not in envs:
+                        envs["PYTHONSAFEPATH"] = "1"
+                        envs["_DATACHAIN_UDF_SAFE_PATH"] = "1"
+                    paths = [
+                        sys.path[0] or os.getcwd(),
+                        *os.environ.get("PYTHONPATH", "").split(os.pathsep),
+                        os.getcwd(),
+                    ]
+                    envs["PYTHONPATH"] = os.pathsep.join(
+                        dict.fromkeys(path or os.getcwd() for path in paths)
+                    )
                     process_data = filtered_cloudpickle_dumps(udf_info)
 
                     with subprocess.Popen(  # noqa: S603
@@ -2272,15 +2331,14 @@ class SQLUnion(Step):
     def sub_queries(self) -> list["DatasetQuery"]:
         return [self.query1, self.query2]
 
-    def replace_source(
+    def replace_sources(
         self,
-        source: "DatasetQuery",
-        replacement: "DatasetQuery",
+        replacements: dict[int, "DatasetQuery"],
     ) -> "Step":
         return attrs.evolve(
             self,
-            query1=self.query1.replace_source(source, replacement),
-            query2=self.query2.replace_source(source, replacement),
+            query1=self.query1.replace_sources(replacements),
+            query2=self.query2.replace_sources(replacements),
         )
 
     def apply(
@@ -2382,15 +2440,14 @@ class SQLJoin(Step):
     def sub_queries(self) -> list["DatasetQuery"]:
         return [self.query1, self.query2]
 
-    def replace_source(
+    def replace_sources(
         self,
-        source: "DatasetQuery",
-        replacement: "DatasetQuery",
+        replacements: dict[int, "DatasetQuery"],
     ) -> "Step":
         return attrs.evolve(
             self,
-            query1=self.query1.replace_source(source, replacement),
-            query2=self.query2.replace_source(source, replacement),
+            query1=self.query1.replace_sources(replacements),
+            query2=self.query2.replace_sources(replacements),
         )
 
     def get_query(self, dq: "DatasetQuery", temp_tables: list[str]) -> sa.Subquery:
@@ -2402,20 +2459,16 @@ class SQLJoin(Step):
             return query.subquery(dq.table.name)
 
         warehouse = self.catalog.warehouse
-
         columns = [
             c if isinstance(c, Column) else Column(c.name, c.type)
             for c in query.subquery().columns
         ]
-        temp_table = warehouse.create_dataset_rows_table(
-            warehouse.temp_table_name(),
-            columns=columns,
+        table = warehouse.create_dataset_rows_table(
+            warehouse.temp_table_name(), columns=columns
         )
-        temp_tables.append(temp_table.name)
-
-        warehouse.insert_into(temp_table, query)
-
-        return temp_table.select().subquery(dq.table.name)
+        temp_tables.append(table.name)
+        warehouse.insert_into(table, query)
+        return table.select().subquery(dq.table.name)
 
     def bind_and_validate_expression(self, exp: ColumnElement, q1, q2) -> ColumnElement:
         left_name = self.query1.table.name
@@ -3024,25 +3077,17 @@ class DatasetQuery:
         if self.delta_spec is not None:
             sources.append(self)
 
-        return sources
+        return list({id(source): source for source in sources}.values())
 
-    def replace_source(
-        self,
-        source: "DatasetQuery",
-        replacement: "DatasetQuery",
-    ) -> "Self":
-        if self is source:
-            rewritten = replacement.clone(new_table=False)
-            rewritten.table = self.table
-            rewritten_steps = rewritten.steps.copy()
-        else:
-            rewritten = self.clone(new_table=False)
-            rewritten_steps = []
-
-        rewritten_steps.extend(
-            step.replace_source(source, replacement) for step in self.steps
+    def replace_sources(self, replacements: dict[int, "DatasetQuery"]) -> "Self":
+        replacement = replacements.get(id(self))
+        rewritten = (replacement if replacement is not None else self).clone(
+            new_table=False
         )
-        rewritten.steps = rewritten_steps
+        rewritten.table = self.table
+        steps = rewritten.steps.copy() if replacement is not None else []
+        steps.extend(step.replace_sources(replacements) for step in self.steps)
+        rewritten.steps = steps
         return cast("Self", rewritten)
 
     @detach
@@ -3283,7 +3328,7 @@ class DatasetQuery:
 
         Parallel can optionally be specified as >= 1 for parallel processing with a
         specific number of processes, or set to -1 for the default of
-        the number of CPUs (cores) on the current machine.
+        the CPUs available to the process, respecting affinity and container quotas.
 
         For distributed processing with the appropriate distributed module installed,
         workers can optionally be specified as >= 1 for a specific number of workers,
@@ -3308,9 +3353,14 @@ class DatasetQuery:
         return query
 
     @detach
-    def subtract(self, dq: "DatasetQuery", on: Sequence[tuple[str, str]]) -> "Self":
+    def subtract(
+        self,
+        dq: "DatasetQuery",
+        on: Sequence[tuple[str, str]],
+        presence: Sequence[tuple[KeyPresence, KeyPresence]] = (),
+    ) -> "Self":
         query = self.clone()
-        query.steps.append(Subtract(dq, self.catalog, on=on))
+        query.steps.append(Subtract(dq, self.catalog, on=on, presence=presence))
         return query
 
     @detach
