@@ -337,3 +337,25 @@ def test_studio_handlers_call_studio(monkeypatch, handler, function, with_catalo
     handle = getattr(datachain.cli, handler)
     assert (handle(args, "catalog") if with_catalog else handle(args)) == 7
     assert calls == [(args, "catalog") if with_catalog else (args,)]
+
+
+@pytest.mark.parametrize(
+    "argv,handler,name,extra",
+    [
+        (["ls", "s3://bucket"], "handle_ls_command", "ls", ({},)),
+        (["show", "ds"], "handle_show_command", "show", ("catalog",)),
+        (["du", "s3://bucket"], "handle_du_command", "du", ("catalog", {})),
+        (["index", "s3://bucket"], "handle_index_command", "index", ("catalog",)),
+        (["skill", "list"], "handle_skill_command", "list_skills", ()),
+        (["completion"], "handle_completion_command", "completion", ()),
+    ],
+)
+def test_cli_handlers_resolve_their_command(monkeypatch, argv, handler, name, extra):
+    import datachain.cli
+    from datachain.cli.parser import get_parser
+
+    calls = []
+    monkeypatch.setattr(datachain.cli, name, lambda *a, **kw: calls.append(a) or "")
+    args = get_parser().parse_args(argv)
+    getattr(datachain.cli, handler)(args, *extra)
+    assert len(calls) == 1
