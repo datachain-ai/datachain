@@ -91,6 +91,45 @@ def test_recursive(tmp_dir):
     assert files == {"audio.mp3", "song1.mp3", "track2.mp3"}
 
 
+@pytest.mark.parametrize("reader", ["read_storage", "list_storage"])
+@pytest.mark.parametrize("recursive", [False, True])
+@pytest.mark.parametrize("reuse_listing", [False, True])
+def test_leading_globstar_literal_reads_root_file(
+    tmp_path, test_session, reader, recursive, reuse_listing
+):
+    root = tmp_path / "selected"
+    names = [
+        "report.json",
+        "nested/report.json",
+        "nested/deep/report.json",
+        "notreport.json",
+        "report.json.bak",
+        "nested/notreport.json",
+    ]
+    for name in names:
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}")
+    (tmp_path / "report.json").write_text("{}")
+    if reuse_listing:
+        dc.read_storage(tmp_path, session=test_session).exec()
+    result = getattr(dc, reader)(
+        f"{root}/**/report.json", recursive=recursive, session=test_session
+    )
+    files = result.to_values("file") if reader == "read_storage" else result
+    paths = {
+        (Path(file.source.removeprefix("file://")) / file.path)
+        .relative_to(root)
+        .as_posix()
+        for file in files
+    }
+    expected = {"report.json"}
+    if recursive:
+        expected.update({"nested/report.json", "nested/deep/report.json"})
+
+    assert paths == expected
+
+
 def test_recursive_patterns_ext(tmp_dir):
     result = dc.read_storage(f"{tmp_dir}/deep/level1/**/level4/*")
     files = {f.name for f in result.to_values("file")}
