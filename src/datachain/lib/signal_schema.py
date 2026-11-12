@@ -693,10 +693,8 @@ class SignalSchema:
                     []
                     if name in self.setup_func
                     else [
-                        DEFAULT_DELIMITER.join(
-                            (*col.path, TYPE_TAG_FIELD) if col.is_sentinel else col.path
-                        )
-                        for col in iter_field_columns(anno, tuple(name.split(".")))
+                        DEFAULT_DELIMITER.join(path)
+                        for path in iter_field_columns(anno, tuple(name.split(".")))
                     ]
                 ),
             )

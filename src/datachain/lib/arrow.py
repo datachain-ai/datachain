@@ -688,9 +688,9 @@ def _model_signals(model: type["BaseModel"], paths: Sequence[str]) -> list[str]:
     """Return the stored columns that the model's fields read, each from its
     path."""
     return [
-        ".".join((*col.path, TYPE_TAG_FIELD) if col.is_sentinel else col.path)
+        ".".join(column)
         for info, path in zip(model.model_fields.values(), paths, strict=True)
-        for col in iter_field_columns(info.annotation, (path,))
+        for column in iter_field_columns(info.annotation, (path,))
     ]
 
 
