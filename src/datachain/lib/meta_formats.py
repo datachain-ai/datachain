@@ -2,6 +2,7 @@ import csv
 import sys
 import tempfile
 import uuid
+import warnings
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -11,6 +12,15 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError  # noqa: F401
 from datachain import json
 from datachain.lib.data_model import DataModel  # noqa: F401
 from datachain.lib.file import TextFile
+
+# datamodel-code-generator raises this on every JSON, YAML or CSV input, whether or
+# not its genson extra is installed.
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    message="Genson will become optional",
+    module="datamodel_code_generator",
+)
 
 
 class UserModel(BaseModel):
