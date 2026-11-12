@@ -304,3 +304,36 @@ def test_lazy_exports_missing_attribute_raises_import_error(monkeypatch):
     with pytest.raises(ImportError, match="no_such_name") as exc_info:
         from fake_lazy_package import thing  # noqa: F401
     assert isinstance(exc_info.value.__cause__, AttributeError)
+
+
+def test_version_is_the_installed_distribution_version():
+    from importlib.metadata import version
+
+    assert datachain.__version__ == version("datachain")
+
+
+def test_builtin_model_with_missing_dependency_is_a_miss(monkeypatch):
+    from datachain.lib import model_store
+
+    monkeypatch.setitem(model_store.BUILTIN_MODELS, "NoSuchModel", "no_such_module")
+    assert model_store.ModelStore.get("NoSuchModel") is None
+
+
+@pytest.mark.parametrize(
+    "handler,function,with_catalog",
+    [
+        ("handle_auth_command", "process_auth_cli_args", False),
+        ("handle_job_command", "process_jobs_args", False),
+        ("handle_pipeline_command", "process_pipeline_args", True),
+    ],
+)
+def test_studio_handlers_call_studio(monkeypatch, handler, function, with_catalog):
+    import datachain.cli
+    import datachain.studio
+
+    calls = []
+    monkeypatch.setattr(datachain.studio, function, lambda *a: calls.append(a) or 7)
+    args = types.SimpleNamespace()
+    handle = getattr(datachain.cli, handler)
+    assert (handle(args, "catalog") if with_catalog else handle(args)) == 7
+    assert calls == [(args, "catalog") if with_catalog else (args,)]
