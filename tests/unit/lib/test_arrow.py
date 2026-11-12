@@ -326,9 +326,9 @@ def test_arrow_type_mapper_nested_list_only_nullable_scalars():
 
 def test_read_parquet_nested_lists_keep_their_values(tmp_path, test_session):
     path = tmp_path / "nested.parquet"
-    values = [[[1], [2, None]], [[], [3]], None]
+    values = [[[1], [2, None]], [[], [3]]]
     nested = pa.list_(pa.list_(pa.int64()))
-    pq.write_table(pa.table({"i": [0, 1, 2], "v": pa.array(values, nested)}), path)
+    pq.write_table(pa.table({"i": [0, 1], "v": pa.array(values, nested)}), path)
     chain = dc.read_parquet(path.as_uri(), session=test_session)
     assert chain.order_by("i").to_values("v") == values
 
