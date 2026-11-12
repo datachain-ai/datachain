@@ -2958,6 +2958,24 @@ def test_read_parquet_output_field_a_file_lacks_with_no_default_raises(
         chain.to_list()
 
 
+@pytest.fixture
+def point_then_only_y(tmp_dir, test_session):
+    path = tmp_dir / "parts"
+    path.mkdir()
+    for i, point in enumerate([Point(x=1, y=2), OnlyY(y=7)], 1):
+        chain = dc.read_values(id=[i], p=[point], session=test_session)
+        chain.to_parquet(path / f"{i}.parquet")
+    return path.as_uri()
+
+
+def test_read_parquet_field_a_file_lacks_after_its_model_is_rebuilt_reads_as_none(
+    point_then_only_y, empty_model_store, test_session
+):
+    # Without the model's code, its fields are rebuilt with a default of None.
+    chain = dc.read_parquet(point_then_only_y, source=False, session=test_session)
+    assert chain.order_by("id").to_list("p.x", "p.y") == [(1, 2), (None, 7)]
+
+
 class LabeledX(DataModel):
     x: int
     name: str = Field(default_factory=lambda data: f"point-{data['x']}")
