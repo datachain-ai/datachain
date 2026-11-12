@@ -94,9 +94,13 @@ By default, delta updates cannot be combined with the following methods:
 6. `distinct`
 7. `agg`
 8. `group_by`
-9. `mutate`, `select` or `gen` that changes delta-key values
+9. `limit`
+10. `offset`
+11. `mutate`, `select` or `gen` that changes delta-key values
 
 These methods are restricted because they may produce **unexpected results** when used with delta processing. Delta runs the chain only on a subset of rows (new and changed records), while methods like `distinct`, `agg`, or `group_by` are designed to operate on the entire dataset.
+
+`limit` and `offset` select rows by their positions in the full dataset. Applying them only to changed records can exceed the limit or retain stale rows after an update. The same restriction applies when the requested slice is empty or larger than the dataset.
 
 Similarly, combining delta with methods like `merge`, `union`, `subtract`, `diff`, or `file_diff` may produce inconsistent results because the operation is being applied to replayed delta inputs rather than to the full logical datasets.
 

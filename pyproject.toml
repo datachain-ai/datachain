@@ -47,6 +47,7 @@ dependencies = [
   "pydantic>=2.11",
   "jmespath>=1.0",
   "datamodel-code-generator>=0.28.4",
+  "genson>=1.2.1,<2",
   "Pillow>=13.0.0,<14",
   "msgpack>=1.0.4,<2",
   "psutil",
@@ -189,6 +190,7 @@ filterwarnings = [
   "ignore::DeprecationWarning:botocore.auth",
   "ignore::DeprecationWarning:datasets.utils._dill",
   "ignore::DeprecationWarning:librosa.core.intervals",
+  "ignore:^Genson will become optional[.]:FutureWarning:datamodel_code_generator",
   "ignore::FutureWarning:google.api_core._python_version_support",  # warns a year before a Python version reaches its EOL
   "ignore:Skipping device Apple Paravirtual device:UserWarning",  # torch on macOS CI runners, whose virtual GPU has no Metal 2.0
   # Expected warnings from our code

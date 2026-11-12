@@ -482,7 +482,9 @@ def read_columns(
     these names with its own types. Partition and pandas index columns at the end
     are left out when output has no fields for them.
     """
-    ds = next(_file_datasets(chain.order_by("file.path").limit(1), **kwargs))
+    sample = chain.order_by("file.path")
+    sample = sample._evolve(query=sample._query.limit(1))
+    ds = next(_file_datasets(sample, **kwargs))
     schema = ds.schema
     fields = len(model.model_fields)
     if signal_schema := _get_datachain_schema(schema):
