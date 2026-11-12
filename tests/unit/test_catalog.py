@@ -3,6 +3,43 @@ import pytest
 from datachain.catalog.catalog import DatasetRowsFetcher, _round_robin_batch
 
 
+@pytest.mark.parametrize("depth", [0, 1, 3])
+@pytest.mark.parametrize("as_uri", [False, True])
+@pytest.mark.parametrize("size", [0, 5])
+def test_du_single_file(catalog, tmp_path, depth, as_uri, size):
+    source = tmp_path / "hello.txt"
+    source.write_bytes(b"x" * size)
+    uri = source.as_uri()
+
+    assert list(catalog.du([uri if as_uri else str(source)], depth=depth)) == [
+        (uri, size)
+    ]
+
+
+def test_du_mixed_file_and_directory(catalog, tmp_path):
+    source = tmp_path / "hello.txt"
+    source.write_bytes(b"hello")
+    directory = tmp_path / "nested"
+    directory.mkdir()
+    (directory / "child.txt").write_bytes(b"abc")
+
+    assert set(catalog.du([str(source), f"{directory}/"])) == {
+        (source.as_uri(), 5),
+        (f"{directory.as_uri()}/", 3),
+    }
+
+
+def test_du_single_file_cli(catalog, tmp_path, capsys):
+    from datachain.cli.commands.du import du
+
+    source = tmp_path / "hello.txt"
+    source.write_bytes(b"hello")
+
+    du(catalog, [str(source)], show_bytes=True)
+
+    assert capsys.readouterr().out == f"5 {source.as_uri()}\n"
+
+
 @pytest.mark.parametrize(
     "urls, num_workers, expected",
     [
