@@ -3033,12 +3033,18 @@ def card_in_first_file_only(tmp_dir, test_session):
     return path.as_uri()
 
 
+class NoteOrFallback(DataModel):
+    id: int
+    value: Note | None = Note(text="fallback")
+
+
 @pytest.mark.parametrize(
     "kwargs,signal",
     [
         ({"columns": ["id", "c.note"]}, "c"),
         ({"columns": ["id", "c"], "output": {"id": int, "v": Card | None}}, "v"),
         ({"columns": ["id", "c.note"], "output": ["id", "v"]}, "v"),
+        ({"columns": ["id", "c.note"], "output": NoteOrFallback}, "value"),
     ],
 )
 def test_read_parquet_columns_read_a_parent_missing_from_a_file_as_none(
@@ -3049,6 +3055,62 @@ def test_read_parquet_columns_read_a_parent_missing_from_a_file_as_none(
     )
     values = chain.order_by("id").to_values(signal)
     assert [v is None for v in values] == [False, True]
+
+
+def write_parts(path, session, *parts):
+    path.mkdir()
+    for i, (value, anno) in enumerate(parts, 1):
+        chain = dc.read_values(
+            id=[i], u=[value], output={"id": int, "u": anno}, session=session
+        )
+        chain.to_parquet(path / f"{i}.parquet")
+
+
+@pytest.mark.parametrize(
+    "first,second,column",
+    [
+        ((Note(text="a"), Note | int | None), PointX | int | None, "u.Note"),
+        ((Card(note=Note(text="a")), Card | None), PointX | None, "u.note"),
+    ],
+)
+@pytest.mark.parametrize("output", [{"id": int, "value": Note | None}, NoteOrFallback])
+def test_read_parquet_columns_read_a_path_a_later_file_lacks_as_none(
+    tmp_dir, test_session, first, second, column, output
+):
+    write_parts(tmp_dir / "parts", test_session, first, (PointX(x=1), second))
+    chain = dc.read_parquet(
+        (tmp_dir / "parts").as_uri(),
+        columns=["id", column],
+        output=output,
+        source=False,
+        session=test_session,
+    )
+    assert chain.order_by("id").to_values("value") == [Note(text="a"), None]
+
+
+def test_read_parquet_columns_reject_a_tag_a_later_file_does_not_declare(
+    tmp_dir, test_session
+):
+    path = tmp_dir / "parts"
+    write_parts(
+        path,
+        test_session,
+        (Note(text="a"), Note | int | None),
+        (PointX(x=1), PointX | int | None),
+    )
+    table = pq.read_table(path / "2.parquet")
+    i = table.column_names.index("u._type_tag")
+    table = table.set_column(i, "u._type_tag", pa.array(["Bogus"]))
+    pq.write_table(table, path / "2.parquet")
+    with pytest.raises(
+        DataChainParamsError, match="'Bogus' is not one of the declared"
+    ):
+        dc.read_parquet(
+            path.as_uri(),
+            columns=["id", "u.Note"],
+            output={"id": int, "value": Note | None},
+            session=test_session,
+        ).to_list()
 
 
 class PointAndNote(DataModel):

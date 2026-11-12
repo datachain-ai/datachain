@@ -232,7 +232,8 @@ class ArrowGenerator(Generator):
             signal_schema := _get_datachain_schema(schema)
         ):
             signals = _model_signals(self.output_schema, self.columns)
-            parents = _parent_tags(signal_schema, schema.names, self.columns)
+            prepared = _get_datachain_schema(self.input_schema)
+            parents = _parent_tags(signal_schema, prepared, schema.names, self.columns)
             kw["columns"] = [c for c in schema.names if _in_signals(c, signals)]
         elif self.columns is not None:
             present = set(schema.names)
@@ -650,10 +651,14 @@ def _picked_schema(schemas: list[pa.Schema], signals: Sequence[str]) -> pa.Schem
 
 
 def _parent_tags(
-    signal_schema: SignalSchema, columns: Sequence[str], paths: Sequence[str]
+    signal_schema: SignalSchema,
+    prepared: SignalSchema | None,
+    columns: Sequence[str],
+    paths: Sequence[str],
 ) -> dict[str, "ParentTag"]:
     """Map each path that only its parent's ``_type_tag`` tells is present to that
-    tag column, the parent's layout and the arm holding the path.
+    tag column, the parent's layout and the arm holding the path. The arm is None
+    where this file's parent doesn't hold the path.
 
     A column, or a model with its own tag, is null where its parent is absent.
     """
@@ -662,7 +667,11 @@ def _parent_tags(
     for path in paths:
         if path in names or f"{path}.{TYPE_TAG_FIELD}" in names:
             continue
-        if (found := signal_schema.tagged_parent(path)) is not None:
+        found = signal_schema.tagged_parent(path)
+        if found is None and prepared is not None:
+            # This file lacks the parent, so its padded tag is null.
+            found = prepared.tagged_parent(path)
+        if found is not None:
             parent, layout, arm = found
             parents[path] = (f"{parent}.{TYPE_TAG_FIELD}", layout, arm)
     return parents
@@ -838,7 +847,7 @@ def _written_by_datachain(schema: "pa.Schema | None") -> TypeGuard["pa.Schema"]:
     return DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY in schema.metadata
 
 
-def _get_datachain_schema(schema: "pa.Schema") -> SignalSchema | None:
+def _get_datachain_schema(schema: "pa.Schema | None") -> SignalSchema | None:
     """Return a restored SignalSchema from parquet metadata, if any is found."""
     if _written_by_datachain(schema):
         serialized_signal_schema = json.loads(
@@ -879,7 +888,9 @@ def _nested_model_instantiate(
             cur_path = paths[i]
             if parents and (parent := parents.get(cur_path)):
                 tag, parent_layout, arm = parent
-                if arm_for_tag(parent_layout, column_values[tag]) is not arm:
+                # The stored tag is checked even where this file lacks the arm.
+                active = arm_for_tag(parent_layout, column_values[tag])
+                if arm is None or active is not arm:
                     vals_dict[field] = None
                     continue
                 # Present by its parent's tag, even with all of its fields null.
