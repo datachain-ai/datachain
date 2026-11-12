@@ -7,7 +7,6 @@ round-trips for every union kind (basic/basic, model/model, mixed, nullable).
 ``X | None`` itself is the single-arm case and lives in ``test_optional.py``.
 """
 
-import copy
 from datetime import datetime
 from typing import ClassVar, Generic, Literal, Optional, TypeVar, Union
 
@@ -30,20 +29,11 @@ from datachain.lib.data_model import (
     validate_chain_type,
 )
 from datachain.lib.dc import DatasetPrepareError
-from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema, SignalSchemaWarning
 from datachain.lib.utils import DataChainParamsError
 from datachain.sql.types import Int64, String
 
-
-@pytest.fixture(autouse=True)
-def restore_model_store():
-    snapshot = copy.deepcopy(ModelStore.store)
-    ModelStore.store = {}
-    try:
-        yield
-    finally:
-        ModelStore.store = snapshot
+pytestmark = pytest.mark.usefixtures("empty_model_store")
 
 
 class Foo(DataModel):

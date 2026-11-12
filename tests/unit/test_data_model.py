@@ -1,4 +1,3 @@
-import copy
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Dict, Generic, List, TypedDict, TypeVar  # noqa: UP035
 
@@ -9,17 +8,8 @@ from datachain.lib.data_model import (
     compute_model_fingerprint,
     is_chain_type,
 )
-from datachain.lib.model_store import ModelStore
 
-
-@pytest.fixture(autouse=True)
-def restore_model_store():
-    snapshot = copy.deepcopy(ModelStore.store)
-    ModelStore.store = {}
-    try:
-        yield
-    finally:
-        ModelStore.store = snapshot
+pytestmark = pytest.mark.usefixtures("empty_model_store")
 
 
 def test_compute_model_fingerprint_missing_field():

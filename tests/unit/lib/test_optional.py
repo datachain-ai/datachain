@@ -8,7 +8,6 @@ Extracted from ``test_data_model.py`` and ``test_feature.py`` to keep
 nullable-object coverage in one place.
 """
 
-import copy
 import io
 from typing import Annotated, Optional, Union
 
@@ -25,18 +24,9 @@ from datachain.lib.data_model import (
     is_chain_type,
     unwrap_optional,
 )
-from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
 
-
-@pytest.fixture(autouse=True)
-def restore_model_store():
-    snapshot = copy.deepcopy(ModelStore.store)
-    ModelStore.store = {}
-    try:
-        yield
-    finally:
-        ModelStore.store = snapshot
+pytestmark = pytest.mark.usefixtures("empty_model_store")
 
 
 class _Sample(BaseModel):
