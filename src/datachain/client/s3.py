@@ -1,6 +1,7 @@
 import errno
 import os
 from collections.abc import Callable
+from contextvars import ContextVar
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 from xml.etree.ElementTree import Element, ParseError, fromstring
@@ -21,6 +22,8 @@ from .ranges import PROCESS_LIST_WORKERS, Keep, Page
 
 if TYPE_CHECKING:
     from datachain.client.writeconfig import WriteConfig
+
+_DOWNLOAD_ETAG: ContextVar[str | None] = ContextVar("s3_download_etag", default=None)
 
 
 def _parse_timestamp(value: Any) -> datetime:
@@ -130,6 +133,12 @@ class _S3FileSystem(S3FileSystem):
     _connect = set_session
     connect = sync_wrapper(set_session)
 
+    async def _call_s3(self, method, *akwarglist, **kwargs):
+        # s3fs does not forward _get_file kwargs to its initial or resumed GET.
+        if method == "get_object" and (etag := _DOWNLOAD_ETAG.get()):
+            kwargs["IfMatch"] = etag
+        return await super()._call_s3(method, *akwarglist, **kwargs)
+
 
 class ClientS3(RangeListedClient):
     FS_CLASS = _S3FileSystem
@@ -144,6 +153,21 @@ class ClientS3(RangeListedClient):
     # that state replaces them, so those files are checked by etag.
     PINNED_VERSION_IS_IMMUTABLE = True
     _unversioned = False  # the server can't list versions
+
+    async def _download_stream(self, file: File, lpath: str, callback) -> None:
+        # one sequential stream: flat memory, and a failed read resumes from its offset
+        etag = file.etag if not file.version or file.version == "null" else None
+        token = _DOWNLOAD_ETAG.set(f'"{etag}"' if etag else None)
+        try:
+            await self.fs._get_file(
+                file.get_fs_path(),
+                lpath,
+                callback=callback,
+                max_concurrency=1,
+                **self._version_kwargs(file.version),
+            )
+        finally:
+            _DOWNLOAD_ETAG.reset(token)
 
     @staticmethod
     def _normalize_s3_kwargs(kwargs: dict) -> dict:

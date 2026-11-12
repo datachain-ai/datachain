@@ -59,6 +59,7 @@ ExportPlacement = Literal["filename", "etag", "fullpath", "checksum", "filepath"
 
 FileType = Literal["binary", "text", "image", "video", "audio"]
 EXPORT_FILES_MAX_THREADS = 5
+EXPORT_LOCAL_FILES_MAX_THREADS = 32
 PARTIAL_READ_BLOCK_SIZE = 1024 * 1024
 TAR_READ_BLOCK_SIZE = 5 * 1024 * 1024
 
@@ -72,19 +73,25 @@ class FileExporter(NodesThreadPool):
         placement: ExportPlacement,
         use_cache: bool,
         link_type: Literal["copy", "symlink"],
-        max_threads: int = EXPORT_FILES_MAX_THREADS,
+        max_threads: int | None = None,
         client_config: dict | None = None,
     ):
         from datachain.client.fsspec import Client
         from datachain.client.local import FileClient
 
-        super().__init__(max_threads)
+        self.is_local = Client.get_implementation(output) is FileClient
+        if max_threads is None:
+            max_threads = (
+                EXPORT_LOCAL_FILES_MAX_THREADS
+                if self.is_local and not use_cache
+                else EXPORT_FILES_MAX_THREADS
+            )
+        super().__init__(max_threads or 1)
         self.output = output
         self.placement = placement
         self.use_cache = use_cache
         self.link_type = link_type
         self.client_config = client_config
-        self.is_local = Client.get_implementation(output) is FileClient
 
     def done_task(self, done):
         for task in done:
@@ -795,34 +802,49 @@ class File(DataModel):
             metadata=metadata,
             write_options=write_options,
         )
-        with self.open(mode="rb") as src:
-            backing = (
-                VFileRegistry.parent(self, self.location)  # type: ignore[arg-type]
-                if self.location
-                else self
-            )
-            source = backing.get_local_path()
-            local_destination = (
-                client.fs._strip_protocol(client.get_uri(rel_path))
-                if client.PREFIX == "file://"
-                else None
-            )
-            if local_destination is not None and (
-                (source is not None and self._same_file(source, local_destination))
-                or (
-                    (source is None or self.location)
-                    and backing._is_local_file(local_destination)
+        source_client = self._catalog.get_client(self.source)
+        downloads = (
+            not self.location
+            and client.PREFIX == "file://"
+            and source_client.PREFIX != "file://"
+        )
+        if downloads:
+            client.validate_file_path(rel_path)
+            lpath = client.fs._strip_protocol(client.get_uri(rel_path))
+            os.makedirs(os.path.dirname(lpath), exist_ok=True)
+            if self._caching_enabled:
+                self.ensure_cached()
+            source_client.download_to(self, lpath, callback=self._download_cb)
+            result = client.get_file_info(rel_path)
+        else:
+            with self.open(mode="rb") as src:
+                backing = (
+                    VFileRegistry.parent(self, self.location)  # type: ignore[arg-type]
+                    if self.location
+                    else self
                 )
-            ):
-                if self.location:
-                    raise FileError(
-                        "Cannot overwrite a virtual file's backing file",
-                        self.source,
-                        self.path,
+                source = backing.get_local_path()
+                local_destination = (
+                    client.fs._strip_protocol(client.get_uri(rel_path))
+                    if client.PREFIX == "file://"
+                    else None
+                )
+                if local_destination is not None and (
+                    (source is not None and self._same_file(source, local_destination))
+                    or (
+                        (source is None or self.location)
+                        and backing._is_local_file(local_destination)
                     )
-                result = client.get_file_info(rel_path)
-            else:
-                result = client.upload(src, rel_path, write_config=write_config)
+                ):
+                    if self.location:
+                        raise FileError(
+                            "Cannot overwrite a virtual file's backing file",
+                            self.source,
+                            self.path,
+                        )
+                    result = client.get_file_info(rel_path)
+                else:
+                    result = client.upload(src, rel_path, write_config=write_config)
         result._set_stream(self._catalog)
         return result
 

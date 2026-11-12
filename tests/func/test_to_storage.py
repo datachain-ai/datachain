@@ -1,3 +1,4 @@
+import asyncio
 import os
 import posixpath
 import signal
@@ -24,9 +25,35 @@ from datachain.lib.file import (
 )
 from datachain.lib.tar import process_tar
 from tests.conftest import get_cloud_test_catalog, make_cloud_server
-from tests.utils import images_equal, make_tar, skip_if_not_sqlite, tree_from_path
+from tests.utils import (
+    DEFAULT_TREE,
+    images_equal,
+    make_tar,
+    skip_if_not_sqlite,
+    tree_from_path,
+)
 
 python_exc = sys.executable or "python3"
+
+
+@pytest.mark.parametrize(
+    "cache,threads,expected",
+    [(False, None, 32), (True, None, 5), (True, 9, 9), (False, 0, 1)],
+)
+def test_to_storage_keeps_cached_export_concurrency_bounded(
+    test_session, tmp_path, mocker, cache, threads, expected
+):
+    from datachain.lib.file import FileExporter
+
+    source = tmp_path / "input.txt"
+    source.write_bytes(b"content")
+    chain = dc.read_storage(source, session=test_session).settings(cache=cache)
+    run = mocker.spy(FileExporter, "run")
+
+    chain.to_storage(tmp_path / "output", placement="filename", num_threads=threads)
+
+    assert run.call_args.args[0]._max_threads == expected
+    assert (tmp_path / "output" / "input.txt").read_bytes() == b"content"
 
 
 @pytest.mark.parametrize("same", [False, True])
@@ -601,4 +628,213 @@ def test_to_storage_empty_segments_with_flat_placement(cloud_test_catalog, place
         assert [p.read_bytes() for p in out.iterdir()] == [b"content"]
     finally:
         client.fs.rm(f"{client.name}/{key}")
+        client.fs.invalidate_cache()
+
+
+@pytest.mark.parametrize("use_cache", [False, True])
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+def test_to_storage_from_cloud_writes_exact_bytes_and_overwrites(
+    cloud_test_catalog, tmp_dir, use_cache
+):
+    ctc = cloud_test_catalog
+    out = tmp_dir / "out"
+    chain = dc.read_storage(ctc.src_uri, session=ctc.session)
+    chain.settings(cache=use_cache).to_storage(out, placement="filepath")
+    (out / "cats" / "cat1").write_text("stale contents")
+    chain.settings(cache=False).to_storage(out, placement="filepath")
+
+    assert tree_from_path(out) == DEFAULT_TREE
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+def test_to_storage_after_cached_export_does_not_download_again(
+    cloud_test_catalog, tmp_dir, monkeypatch
+):
+    ctc = cloud_test_catalog
+    chain = dc.read_storage(ctc.src_uri, session=ctc.session).settings(cache=True)
+    chain.to_storage(tmp_dir / "first", placement="filepath")
+
+    async def no_download(*args, **kwargs):
+        raise AssertionError("cached file downloaded again")
+
+    fs = ctc.catalog.get_client(ctc.src_uri).fs
+    monkeypatch.setattr(type(fs), "_get_file", no_download)
+    chain.settings(cache=False).to_storage(tmp_dir / "second", placement="filepath")
+    assert tree_from_path(tmp_dir / "second") == DEFAULT_TREE
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permissions")
+@pytest.mark.parametrize("use_cache", [False, True])
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+def test_to_storage_preserves_existing_permissions_and_new_file_umask(
+    cloud_test_catalog, tmp_dir, existing, use_cache
+):
+    ctc = cloud_test_catalog
+    out = tmp_dir / "out"
+    target = out / "cats" / "cat1"
+    if existing:
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"private old contents")
+        target.chmod(0o600)
+    dc.read_storage(ctc.src_uri, session=ctc.session).settings(
+        cache=use_cache
+    ).to_storage(out, placement="filepath")
+    umask = os.umask(0)
+    os.umask(umask)
+    assert target.stat().st_mode & 0o777 == (0o600 if existing else 0o666 & ~umask)
+    assert target.read_bytes() == b"meow"
+
+
+@pytest.fixture
+def failed_download_chain(cloud_test_catalog, monkeypatch):
+    ctc = cloud_test_catalog
+
+    async def partial_download(self, src, dst, *args, **kwargs):
+        await asyncio.to_thread(Path(dst).write_bytes, b"partial")
+        raise OSError("connection reset")
+
+    fs = ctc.catalog.get_client(ctc.src_uri).fs
+    monkeypatch.setattr(type(fs), "_get_file", partial_download)
+    return dc.read_storage(ctc.src_uri, session=ctc.session).filter(
+        dc.C("file.path").glob("*cat1")
+    )
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("existing", [False, True])
+def test_to_storage_failed_download_cleans_up_and_preserves_destination(
+    failed_download_chain, tmp_dir, existing
+):
+    out = tmp_dir / "out"
+    out.mkdir()
+    target = out / "cat1"
+    if existing:
+        target.write_bytes(b"old bytes")
+
+    with pytest.raises(OSError, match="connection reset"):
+        failed_download_chain.to_storage(out, placement="filename")
+
+    assert list(out.iterdir()) == ([target] if existing else [])
+    if existing:
+        assert target.read_bytes() == b"old bytes"
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_to_storage_cleanup_failure_preserves_download_error(
+    failed_download_chain, tmp_dir, monkeypatch
+):
+    def fail_tmp_remove(path):
+        raise PermissionError("cleanup denied")
+
+    monkeypatch.setattr("datachain.client.fsspec.remove", fail_tmp_remove)
+
+    with pytest.raises(OSError, match="connection reset"):
+        failed_download_chain.to_storage(tmp_dir / "out", placement="filename")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows read-only file semantics")
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_failed_cached_export_removes_readonly_temporary_file(
+    cloud_test_catalog, tmp_dir
+):
+    ctc = cloud_test_catalog
+    (file,) = (
+        dc.read_storage(ctc.src_uri, session=ctc.session)
+        .filter(dc.C("file.path").glob("*cat1"))
+        .to_values("file")
+    )
+    file.ensure_cached()
+    out = tmp_dir / "out"
+    out.mkdir()
+    target = out / "cat1"
+    target.write_bytes(b"old bytes")
+    target.chmod(0o444)
+    try:
+        with pytest.raises(PermissionError):
+            file.save(str(target))
+        assert list(out.iterdir()) == [target]
+        assert target.read_bytes() == b"old bytes"
+    finally:
+        target.chmod(0o666)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_s3_export_rejects_overwrite_after_identity_check(
+    cloud_test_catalog, tmp_dir, monkeypatch
+):
+    ctc = cloud_test_catalog
+    (file,) = (
+        dc.read_storage(ctc.src_uri, session=ctc.session)
+        .filter(dc.C("file.path").glob("*cat1"))
+        .to_values("file")
+    )
+    client = file._catalog.get_client(file.source)
+    file.version = ""
+    check = type(client).check_unchanged
+    overwritten = []
+
+    def overwrite_after_check(self, file):
+        check(self, file)
+        self.fs.pipe(file.get_fs_path(), b"changed bytes")
+        overwritten.append(file.path)
+
+    monkeypatch.setattr(type(client), "check_unchanged", overwrite_after_check)
+    out = tmp_dir / "out"
+    out.mkdir()
+    target = out / "cat1"
+    target.write_bytes(b"old bytes")
+    with pytest.raises(OSError) as error:
+        file.save(str(target))
+    assert overwritten == [file.path], str(error.value)
+    assert list(out.iterdir()) == [target]
+    assert target.read_bytes() == b"old bytes"
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_file_save_from_cloud_to_local_path(cloud_test_catalog, tmp_dir):
+    ctc = cloud_test_catalog
+    chain = dc.read_storage(ctc.src_uri, session=ctc.session)
+    (file,) = chain.filter(dc.C("file.path").glob("*cat1")).to_values("file")
+
+    saved = file.save(str(tmp_dir / "saved" / "cat1"))
+
+    assert (tmp_dir / "saved" / "cat1").read_text() == "meow"
+    assert saved.size == 4
+    assert saved.read_text() == "meow"
+
+
+def test_to_storage_from_http_source(http_server, tmp_path, test_session):
+    (tmp_path / "a.txt").write_text("alpha")
+    out = tmp_path / "out"
+    dc.read_values(
+        file=[File(source=http_server, path="a.txt")], session=test_session
+    ).to_storage(out, placement="filename")
+
+    assert (out / "a.txt").read_text() == "alpha"
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_to_storage_streams_large_s3_objects_sequentially(
+    cloud_test_catalog, tmp_dir, monkeypatch
+):
+    ctc = cloud_test_catalog
+    client = ctc.catalog.get_client(ctc.src_uri)
+    name = "big.bin"
+    data = os.urandom(3 << 20)
+    client.fs.pipe(f"{client.name}/{name}", data)
+    client.fs.invalidate_cache()
+    monkeypatch.setattr(type(client.fs), "default_block_size", 1 << 20)
+
+    async def no_parts(*args, **kwargs):
+        raise AssertionError("downloaded in parallel parts")
+
+    monkeypatch.setattr(type(client.fs), "_download_file_part_concurrent", no_parts)
+    chain = dc.read_storage(f"{ctc.src_uri}/{name}", session=ctc.session)
+    try:
+        chain.to_storage(tmp_dir / "out", placement="filename")
+        assert (tmp_dir / "out" / name).read_bytes() == data
+    finally:
+        client.fs.rm(f"{client.name}/{name}")
         client.fs.invalidate_cache()

@@ -54,7 +54,7 @@ from datachain.lib.data_model import (
     union_layout,
     unwrap_optional,
 )
-from datachain.lib.file import EXPORT_FILES_MAX_THREADS, ArrowRow, File, FileExporter
+from datachain.lib.file import ArrowRow, File, FileExporter
 from datachain.lib.file import ExportPlacement as FileExportPlacement
 from datachain.lib.model_store import ModelStore
 from datachain.lib.settings import Settings
@@ -3484,7 +3484,7 @@ class DataChain:
         signal: str = "file",
         placement: FileExportPlacement = "fullpath",
         link_type: Literal["copy", "symlink"] = "copy",
-        num_threads: int | None = EXPORT_FILES_MAX_THREADS,
+        num_threads: int | None = None,
         anon: bool | None = None,
         client_config: dict | None = None,
     ) -> None:
@@ -3511,7 +3511,7 @@ class DataChain:
             link_type: Method to use for exporting files.
                 Falls back to `'copy'` if symlinking fails.
             num_threads: number of threads to use for exporting files.
-                By default, it uses 5 threads.
+                By default, 32 for an uncached local export and 5 otherwise.
             anon: If True, we will treat cloud bucket as a public one. Default behavior
                 depends on the previous session configuration (e.g. happens in the
                 initial `read_storage`) and particular cloud storage client
@@ -3553,7 +3553,7 @@ class DataChain:
             placement,
             self._settings.cache if self._settings else False,
             link_type,
-            max_threads=num_threads or 1,
+            max_threads=num_threads,
             client_config=client_config,
         )
         with closing(chain.to_iter(signal)) as rows_iter:

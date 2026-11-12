@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import functools
 import io
 import logging
@@ -17,8 +18,10 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
+from uuid import uuid4
 
 from dvc_objects.fs.system import reflink
+from dvc_objects.fs.utils import remove
 from fsspec.asyn import get_loop, sync
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 
@@ -617,6 +620,34 @@ class Client(ABC):
         """
         cfg.reject_write_options()
         return {}
+
+    def download_to(
+        self, file: "File", lpath: str, *, callback: Callback = DEFAULT_CALLBACK
+    ) -> None:
+        """Write a file to a local path atomically, from the cache if it holds it."""
+        tmp = os.path.join(os.path.dirname(lpath), f".{uuid4().hex}.tmp")
+        try:
+            # Establish permissions before writing any contents. New files use
+            # the ordinary umask; replacements retain the destination's mode.
+            with open(tmp, "xb"):
+                pass
+            with contextlib.suppress(FileNotFoundError):
+                shutil.copymode(lpath, tmp)
+            if cached := self.cache.get_path(file):
+                shutil.copyfile(cached, tmp)
+            else:
+                self.check_unchanged(file)
+                sync(get_loop(), self._download_stream, file, tmp, callback)
+            os.replace(tmp, lpath)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                remove(tmp)
+            raise
+
+    async def _download_stream(
+        self, file: "File", lpath: str, callback: Callback
+    ) -> None:
+        await self.get_file(file.get_fs_path(), lpath, callback, file.version)
 
     def download(self, file: "File", *, callback: Callback = DEFAULT_CALLBACK) -> None:
         sync(get_loop(), functools.partial(self._download, file, callback=callback))

@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 import pickle
 import threading
@@ -9,7 +10,10 @@ import pytest
 from botocore.exceptions import ClientError
 from botocore.utils import parse_timestamp
 from fsspec.asyn import get_loop, sync
+from fsspec.callbacks import DEFAULT_CALLBACK
+from s3fs import S3FileSystem
 
+from datachain.cache import Cache
 from datachain.client.s3 import (
     _FIELDS,
     ClientS3,
@@ -18,6 +22,7 @@ from datachain.client.s3 import (
     _parse_timestamp,
 )
 from datachain.client.writeconfig import WriteConfig
+from datachain.lib.file import File
 from datachain.node import DirType, Node
 from datachain.nodes_thread_pool import NodeChunk
 
@@ -46,6 +51,76 @@ def test_write_kwargs_maps_all_fields(streaming):
 
 def test_write_kwargs_empty_config_maps_nothing():
     assert ClientS3._write_kwargs(WriteConfig(), streaming=False) == {}
+
+
+@pytest.mark.parametrize("version", ["", "null"])
+def test_resumed_s3_export_preserves_identity_and_existing_destination(
+    tmp_path, monkeypatch, version
+):
+    client = ClientS3(
+        "bucket", {"anon": True}, Cache(tmp_path / "cache", tmp_path / "tmp")
+    )
+    file = File(source="s3://bucket", path="a", etag="listed", size=6, version=version)
+    body = MagicMock()
+    body.read = AsyncMock(side_effect=[b"old", TimeoutError()])
+    requests = []
+
+    async def request(self, method, *args, **kwargs):
+        assert method == "get_object"
+        requests.append(kwargs)
+        if "Range" in kwargs:
+            raise OSError("PreconditionFailed")
+        return {"Body": body, "ContentLength": 6}
+
+    monkeypatch.setattr(S3FileSystem, "_call_s3", request)
+    monkeypatch.setattr(client, "check_unchanged", lambda file: None)
+    destination = tmp_path / "a"
+    destination.write_bytes(b"existing")
+    with pytest.raises(OSError, match="PreconditionFailed"):
+        client.download_to(file, str(destination))
+    assert [r["IfMatch"] for r in requests] == ['"listed"', '"listed"']
+    assert requests[1]["Range"] == "bytes=3-"
+    assert [r.get("VersionId", "") for r in requests] == [version, version]
+    assert destination.read_bytes() == b"existing"
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_concurrent_s3_exports_keep_separate_read_conditions(tmp_path, monkeypatch):
+    client = ClientS3(
+        "bucket", {"anon": True}, Cache(tmp_path / "cache", tmp_path / "tmp")
+    )
+    requests = {}
+
+    async def request(self, method, *args, **kwargs):
+        await asyncio.sleep(0)
+        key = kwargs["Key"]
+        requests[key] = kwargs.get("IfMatch")
+        body = MagicMock()
+        body.read = AsyncMock(side_effect=[key.encode(), b""])
+        return {"Body": body, "ContentLength": 1}
+
+    async def download():
+        async def outside():
+            await asyncio.sleep(0)
+            await client.fs._call_s3("get_object", Bucket="bucket", Key="outside")
+
+        await asyncio.gather(
+            outside(),
+            *(
+                client._download_stream(
+                    File(source="s3://bucket", path=key, etag=key, version=version),
+                    str(tmp_path / key),
+                    DEFAULT_CALLBACK,
+                )
+                for key, version in [("a", ""), ("b", "null"), ("c", "pinned")]
+            ),
+        )
+
+    monkeypatch.setattr(S3FileSystem, "_call_s3", request)
+    sync(get_loop(), download)
+    assert requests == {"a": '"a"', "b": '"b"', "c": None, "outside": None}
+    for key in "abc":
+        assert (tmp_path / key).read_bytes() == key.encode()
 
 
 @pytest.fixture
