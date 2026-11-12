@@ -341,6 +341,7 @@ def test_saved_models_restore_in_a_fresh_process(tmp_path):
         (["du", "s3://bucket"], "du"),
         (["index", "s3://bucket"], "index"),
         (["skill", "list"], "list_skills"),
+        (["skill", "install"], "install_skills"),
         (["completion"], "completion"),
         (["clear-cache"], "clear_cache"),
         (["gc"], "garbage_collect"),

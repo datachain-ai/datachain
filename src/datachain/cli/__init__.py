@@ -346,7 +346,7 @@ def handle_skill_command(args):
             target=args.target,
             local=args.local,
         ),
-        "list": lambda: _cli.list_skills(),
+        "list": lambda: _cli.list_skills(),  # noqa: PLW0108
     }
 
     handler = skill_commands.get(args.skill_cmd)
