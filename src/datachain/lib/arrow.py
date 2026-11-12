@@ -3,7 +3,6 @@ import math
 from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from itertools import repeat
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
@@ -35,8 +34,6 @@ from datachain.utils import safe_closing
 SCHEMA_READ_THREADS = 32
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
-
     from datasets.features.features import Features
     from pydantic import BaseModel
 
@@ -306,16 +303,12 @@ class ArrowGenerator(Generator):
             source = ArrowRow(file=file, index=0, kwargs=source_kwargs)
             *file_values, _, stored_options = map(_json_text, flatten(source))
         for start, batch in batches:
-            columns: list[Iterable] = [c.to_pylist() for c in batch.columns]
-            if source_kwargs is not None:
-                n = batch.num_rows
-                columns = [
-                    *(repeat(v, n) for v in file_values),
-                    range(start, start + n),
-                    repeat(stored_options, n),
-                    *columns,
-                ]
-            yield from map(FlatRow, zip(*columns, strict=True))
+            rows = zip(*(c.to_pylist() for c in batch.columns), strict=True)
+            if source_kwargs is None:
+                yield from map(FlatRow, rows)
+            else:
+                for index, values in enumerate(rows, start):
+                    yield FlatRow((*file_values, index, stored_options, *values))
 
     def _process_record(
         self,
