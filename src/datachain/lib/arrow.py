@@ -1,7 +1,7 @@
 import hashlib
 from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from itertools import islice
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, TypeGuard
 
 import pyarrow as pa
@@ -11,8 +11,9 @@ from pyarrow.dataset import CsvFileFormat, Dataset, ParquetFileFormat, dataset
 from pyarrow.fs import FileInfo, FileType, FSSpecHandler, PyFileSystem
 
 from datachain import json
+from datachain.data_storage.warehouse import to_json_text
 from datachain.fs.reference import ReferenceFileSystem
-from datachain.lib.convert.flatten import classify_field, iter_field_columns
+from datachain.lib.convert.flatten import classify_field, flatten, iter_field_columns
 from datachain.lib.data_model import (
     NULLABLE_SCALARS,
     TYPE_TAG_FIELD,
@@ -25,9 +26,10 @@ from datachain.lib.data_model import (
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema, SignalSchemaError
-from datachain.lib.udf import Generator
+from datachain.lib.udf import FlatRow, Generator
 from datachain.lib.utils import normalize_col_names
 from datachain.progress import tqdm
+from datachain.utils import safe_closing
 
 SCHEMA_READ_THREADS = 32
 
@@ -134,12 +136,13 @@ class ArrowGenerator(Generator):
 
     def __init__(
         self,
-        input_schema: pa.Schema | None = None,
-        output_schema: type["BaseModel"] | None = None,
+        input_schema: pa.Schema | None,
+        output_schema: type["BaseModel"],
         source: bool = True,
         nrows: int | None = None,
         columns: list[str] | None = None,
         written_by_datachain: bool | None = None,
+        output_from_types: bool = False,
         prefetch_max_size: int | None = None,
         **kwargs,
     ):
@@ -149,13 +152,15 @@ class ArrowGenerator(Generator):
         Parameters:
 
         input_schema : Optional pyarrow schema for validation.
-        output_schema : Optional pydantic model for validation.
+        output_schema : Pydantic model of the output.
         source : Whether to include info about the source file.
         nrows : Optional row limit per file.
         columns : Optional columns to read from each file by name, in output order.
             For files written by DataChain, signal paths such as "p.x".
         written_by_datachain : Whether every file must be written by DataChain, or
             none. Not checked if None.
+        output_from_types : Whether output_schema was built from types alone, with no
+            validators, so rows of plain values can skip it.
         prefetch_max_size : Files larger than this, or of unknown size, aren't
             prefetched.
         kwargs: Parameters to pass to pyarrow.dataset.dataset.
@@ -168,6 +173,7 @@ class ArrowGenerator(Generator):
         self.nrows = nrows
         self.columns = columns
         self.written_by_datachain = written_by_datachain
+        self.output_from_types = output_from_types
         self.parse_options = kwargs.pop("parse_options", None)
         self.kwargs = kwargs
 
@@ -212,15 +218,18 @@ class ArrowGenerator(Generator):
         if use_datachain_schema:
             _check_type_tags(file, next(ds.get_fragments()).physical_schema)
 
+        source_kwargs = self._source_kwargs() if self.source else None
         schema = ds.schema
         kw: dict[str, Any] = {}
         if self.nrows:
             kw = {"batch_size": min(self.DEFAULT_BATCH_SIZE, self.nrows)}
+        if (names := self._flat_columns(schema)) is not None:
+            kw["columns"] = names
+            yield from self._flat_rows(self._batches(ds, kw), file, source_kwargs)
+            return
         parents: dict[str, ParentTag] = {}
-        if (
-            self.columns is not None
-            and self.output_schema
-            and (signal_schema := _get_datachain_schema(schema))
+        if self.columns is not None and (
+            signal_schema := _get_datachain_schema(schema)
         ):
             signals = _model_signals(self.output_schema, self.columns)
             parents = _parent_tags(signal_schema, schema.names, self.columns)
@@ -233,19 +242,100 @@ class ArrowGenerator(Generator):
             schema = pa.schema(fields, metadata=schema.metadata)
         hf_schema = _get_hf_schema(schema)
 
-        def iter_records():
-            for record_batch in ds.to_batches(**kw):
-                # Maps are read as dicts. Duplicate keys raise an error.
-                yield from record_batch.to_pylist(maps_as_pydicts="strict")
-
-        it = islice(iter_records(), self.nrows)
-        with tqdm(
-            it, desc="Parsed by pyarrow", unit="rows", total=self.nrows, leave=False
-        ) as pbar:
-            for index, record in enumerate(pbar):
+        for start, batch in self._batches(ds, kw):
+            # Maps are read as dicts. Duplicate keys raise an error.
+            records = batch.to_pylist(maps_as_pydicts="strict")
+            for index, record in enumerate(records, start):
                 yield self._process_record(
-                    record, file, index, hf_schema, use_datachain_schema, parents
+                    record,
+                    file,
+                    index,
+                    hf_schema,
+                    use_datachain_schema,
+                    source_kwargs,
+                    parents,
                 )
+
+    def _batches(
+        self, ds: Dataset, kw: dict[str, Any]
+    ) -> Iterator[tuple[int, pa.RecordBatch]]:
+        """Yield the file's batches up to nrows rows, each with its first row's
+        index."""
+        start, remaining = 0, self.nrows
+        with (
+            tqdm(
+                desc="Parsed by pyarrow", unit="rows", total=self.nrows, leave=False
+            ) as pbar,
+            safe_closing(ds.to_batches(**kw)) as batches,
+        ):
+            for batch in batches:
+                if remaining is not None:
+                    batch = batch.slice(0, remaining)
+                    remaining -= batch.num_rows
+                yield start, batch
+                start += batch.num_rows
+                pbar.update(batch.num_rows)
+                if remaining == 0:
+                    break
+
+    def _source_kwargs(self) -> dict[str, Any]:
+        """Return the read options that each row's source keeps."""
+        kwargs = self.kwargs
+        # Can't JSON-serialize CsvFileFormat; may lose formatting options.
+        if isinstance(format := kwargs.get("format"), CsvFileFormat):
+            # Keep the options that split the file into the same rows and
+            # columns, so the row can be found again.
+            read = format.default_fragment_scan_options.read_options
+            parse = format.parse_options
+            # The format doesn't return its handler (ARROW-17641).
+            handler = getattr(self.parse_options, "invalid_row_handler", None)
+            csv = {
+                "read_options": {n: getattr(read, n) for n in _CSV_READ_OPTIONS},
+                "parse_options": {n: getattr(parse, n) for n in _CSV_PARSE_OPTIONS},
+                # A read that finished skipped every invalid row, so the
+                # handler can be replaced by skipping them all.
+                "skip_invalid_rows": handler is not None,
+            }
+            # A copy, so the files read after this one keep their CSV options.
+            kwargs = {**kwargs, "format": "csv", "csv": csv}
+        return kwargs
+
+    def _flat_columns(self, schema: pa.Schema) -> list[str] | None:
+        """Return the columns that the output fields take, when each takes its
+        values as pyarrow gives them. Then no model is built per row. Else None."""
+        if not self.output_from_types:
+            return None
+        if _written_by_datachain(schema):
+            # Its columns don't follow the output fields: its own source comes first.
+            return None
+        fields = list(self.output_schema.model_fields.values())
+        names = (self.columns or schema.names)[: len(fields)]
+        for name, field in zip(names, fields, strict=True):
+            i = schema.get_field_index(name)
+            if i < 0 or not _is_plain_type(col_type := schema.field(i).type):
+                return None
+            if classify_field(field.annotation).inner != arrow_type_mapper(col_type):
+                return None
+        return names
+
+    def _flat_rows(
+        self,
+        batches: Iterator[tuple[int, pa.RecordBatch]],
+        file: File,
+        source_kwargs: dict[str, Any] | None,
+    ) -> Iterator[FlatRow]:
+        if source_kwargs is not None:
+            # Every row's source is the same but its index: the file's columns,
+            # the index, then the read options.
+            source = ArrowRow(file=file, index=0, kwargs=source_kwargs)
+            *file_values, _, stored_options = map(_json_text, flatten(source))
+        for start, batch in batches:
+            rows = zip(*(c.to_pylist() for c in batch.columns), strict=True)
+            if source_kwargs is None:
+                yield from map(FlatRow, rows)
+            else:
+                for index, values in enumerate(rows, start):
+                    yield FlatRow((*file_values, index, stored_options, *values))
 
     def _process_record(
         self,
@@ -254,38 +344,20 @@ class ArrowGenerator(Generator):
         index: int,
         hf_schema: tuple["Features", dict[str, "DataType"]] | None,
         use_datachain_schema: bool,
+        source_kwargs: dict[str, Any] | None,
         parents: dict[str, "ParentTag"],
     ):
-        if use_datachain_schema and self.output_schema:
-            model = self.output_schema
+        if use_datachain_schema:
             vals = [
                 _nested_model_instantiate(
-                    record, model, paths=self.columns, parents=parents
+                    record, self.output_schema, paths=self.columns, parents=parents
                 )
             ]
         else:
             vals = self._process_non_datachain_record(record, hf_schema)
 
-        if self.source:
-            kwargs = self.kwargs
-            # Can't JSON-serialize CsvFileFormat; may lose formatting options.
-            if isinstance(format := kwargs.get("format"), CsvFileFormat):
-                # Keep the options that split the file into the same rows and
-                # columns, so the row can be found again.
-                read = format.default_fragment_scan_options.read_options
-                parse = format.parse_options
-                # The format doesn't return its handler (ARROW-17641).
-                handler = getattr(self.parse_options, "invalid_row_handler", None)
-                csv = {
-                    "read_options": {n: getattr(read, n) for n in _CSV_READ_OPTIONS},
-                    "parse_options": {n: getattr(parse, n) for n in _CSV_PARSE_OPTIONS},
-                    # A read that finished skipped every invalid row, so the
-                    # handler can be replaced by skipping them all.
-                    "skip_invalid_rows": handler is not None,
-                }
-                # A copy, so the files read after this one keep their CSV options.
-                kwargs = {**kwargs, "format": "csv", "csv": csv}
-            arrow_file = ArrowRow(file=file, index=index, kwargs=kwargs)
+        if source_kwargs is not None:
+            arrow_file = ArrowRow(file=file, index=index, kwargs=source_kwargs)
             vals = [arrow_file, *vals]
 
         if self.output is not None and len(self.output.values) == 1:
@@ -301,9 +373,6 @@ class ArrowGenerator(Generator):
         hf_schema: tuple["Features", dict[str, "DataType"]] | None,
     ):
         names = self.columns or list(record)
-        if not self.output_schema:
-            return [record.get(name) for name in names]
-
         fields = self.output_schema.model_fields
         values = {}
         for (field, field_info), name in zip(fields.items(), names, strict=False):
@@ -648,8 +717,6 @@ def schema_to_output(
 
 def arrow_type_mapper(col_type: pa.DataType, column: str = "") -> type:  # noqa: PLR0911
     """Convert pyarrow types to basic types."""
-    from datetime import datetime
-
     if pa.types.is_timestamp(col_type):
         return datetime
     if pa.types.is_binary(col_type):
@@ -724,6 +791,34 @@ def _check_type_tags(file: File, schema: pa.Schema) -> None:
                 f"'{file.path}' has no {tag}, as it was written before union "
                 "types. Export it again to read it."
             )
+
+
+def _is_plain_type(col_type: pa.DataType) -> bool:
+    """Whether pyarrow gives the column's values as pydantic and the DB keep them,
+    typed as `arrow_type_mapper` types them."""
+    if pa.types.is_dictionary(col_type) or pa.types.is_list(col_type):
+        return _is_plain_type(col_type.value_type)
+    if pa.types.is_timestamp(col_type):
+        # pyarrow gives nanoseconds as pandas Timestamps.
+        return col_type.unit != "ns"
+    return (
+        pa.types.is_integer(col_type)
+        or pa.types.is_float32(col_type)
+        or pa.types.is_float64(col_type)
+        or pa.types.is_boolean(col_type)
+        or pa.types.is_string(col_type)
+        or pa.types.is_large_string(col_type)
+        or pa.types.is_binary(col_type)
+        or pa.types.is_null(col_type)
+    )
+
+
+def _json_text(value: Any) -> Any:
+    """Return a dict or list as the JSON text the DB stores, other values as they
+    are."""
+    if not isinstance(value, (dict, list)):
+        return value
+    return to_json_text(value)
 
 
 def _get_hf_schema(
