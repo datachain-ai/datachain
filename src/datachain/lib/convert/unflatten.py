@@ -6,12 +6,10 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from datachain.lib.convert.flatten import _leaf_count
+from datachain.lib.convert.flatten import _field_kinds, _leaf_count
 from datachain.lib.data_model import (
     UnionLayout,
     arm_for_tag,
-    union_layout,
-    unwrap_optional,
 )
 from datachain.lib.model_store import ModelStore
 from datachain.query.schema import DEFAULT_DELIMITER
@@ -66,14 +64,11 @@ def unflatten_to_json_pos(
         return (fields if build_model is None else build_model(fr, fields)), p
 
     res: dict[str, Any] = {}
-    for name, f_info in model.model_fields.items():
-        anno = f_info.annotation
-        if (layout := union_layout(anno)) is not None:
+    for name, kind, layout in _field_kinds(model):
+        if layout is not None:
             res[name], pos = read_union(layout, row, pos, read_arm)
-            continue
-        inner, _ = unwrap_optional(anno)
-        if ModelStore.is_pydantic(inner):
-            res[name], pos = unflatten_to_json_pos(inner, row, pos, build_model)
+        elif kind.is_model:
+            res[name], pos = unflatten_to_json_pos(kind.inner, row, pos, build_model)
         else:
             res[name] = row[pos]
             pos += 1

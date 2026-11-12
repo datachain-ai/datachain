@@ -1340,19 +1340,14 @@ class SignalSchema:
     def tagged_parent(self, path: str) -> "tuple[str, UnionLayout, Any] | None":
         """The closest optional model or union holding ``path``, as its dotted name,
         its layout and the arm ``path`` is in; None when there is none. ``path`` is
-        present only when that parent's ``_type_tag`` selects the arm. The arm is
-        None when this schema's parent doesn't hold ``path``."""
+        present only when that parent's ``_type_tag`` selects the arm."""
         db_col = ColumnMeta.to_db_name(path)
-        held = any(
-            c == db_col or c.startswith(f"{db_col}{DEFAULT_DELIMITER}")
-            for c in self.db_signals()
-        )
         for prefix, layout in self._tagged_ancestors(db_col):
             if prefix == db_col:
                 continue
             parent = prefix.split(DEFAULT_DELIMITER)
-            arm = layout.arms[0] if held else None
-            if held and layout.use_slots:
+            arm = layout.arms[0]
+            if layout.use_slots:
                 name = db_col.split(DEFAULT_DELIMITER)[len(parent)]
                 arm = next(a for a in layout.arms if arm_selector(a) == name)
             return ".".join(parent), layout, arm
