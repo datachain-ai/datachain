@@ -1,11 +1,13 @@
 import json
 import os
 from datetime import datetime
+from time import monotonic
 from typing import TYPE_CHECKING, Any, BinaryIO, cast
 from urllib.parse import quote
 
 from fsspec.asyn import get_loop, sync
 from fsspec.config import apply_config
+from fsspec.utils import tokenize
 from gcsfs import GCSFileSystem
 from gcsfs.retry import HttpError
 from google.auth.exceptions import DefaultCredentialsError, GoogleAuthError
@@ -20,6 +22,8 @@ if TYPE_CHECKING:
 
 # Patch gcsfs for consistency with s3fs
 GCSFileSystem.set_session = GCSFileSystem._set_session
+
+_ADC_FAILURES: dict[str, float] = {}
 
 
 class GCSClient(RangeListedClient):
@@ -70,12 +74,34 @@ class GCSClient(RangeListedClient):
         }
 
         if kwargs.get("token") is None:
+            key = tokenize(
+                kwargs.get("project"),
+                kwargs.get("access"),
+                {
+                    name: value
+                    for name, value in os.environ.items()
+                    if name.startswith(("GOOGLE_", "GCE_", "CLOUDSDK_"))
+                    or name in {"HOME", "APPDATA", "NO_GCE_CHECK"}
+                },
+            )
             error: GoogleAuthError | ValueError | None = None
             # ADC already discovers GCE credentials; gcsfs's cloud fallback repeats it.
             for method in ("google_default", "cache"):
+                if (
+                    method == "google_default"
+                    and anon is not False
+                    and monotonic() < _ADC_FAILURES.get(key, 0)
+                ):
+                    continue
                 try:
                     fs = super().create_fs(**kwargs | {"token": method})
                 except (GoogleAuthError, ValueError) as exc:
+                    if method == "google_default" and isinstance(
+                        exc, DefaultCredentialsError
+                    ):
+                        if len(_ADC_FAILURES) >= 16:
+                            _ADC_FAILURES.pop(next(iter(_ADC_FAILURES)), None)
+                        _ADC_FAILURES[key] = monotonic() + 60
                     error = error or exc
                     continue
                 if fs.credentials.credentials is not None:

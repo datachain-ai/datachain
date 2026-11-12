@@ -289,6 +289,7 @@ def no_gcp_credentials(monkeypatch, mocker, tmp_path):
     monkeypatch.delenv("NO_GCE_CHECK", raising=False)
     mocker.patch("google.auth.compute_engine._metadata.is_on_gce", return_value=False)
     monkeypatch.setattr("gcsfs.credentials.GoogleCredentials.tokens", {})
+    monkeypatch.setattr("datachain.client.gcs._ADC_FAILURES", {})
     mocker.patch(
         "google.auth.compute_engine.Credentials.refresh",
         side_effect=AssertionError("Repeated GCE metadata discovery"),
@@ -348,6 +349,82 @@ def test_automatic_gcs_credentials_keep_application_defaults(mocker, fs_class):
     default = mocker.patch("google.auth.default", return_value=(token, "project"))
     fs = GCSClient.create_fs(skip_instance_cache=True)
     assert fs.credentials.credentials is token
+    default.assert_called_once()
+
+
+@pytest.mark.usefixtures("no_gcp_credentials")
+@pytest.mark.parametrize("fs_class", [GCSFileSystem, ExtendedGcsFileSystem])
+def test_missing_application_credentials_are_not_retried_per_client(mocker, fs_class):
+    mocker.patch.object(GCSClient, "FS_CLASS", fs_class)
+    default = mocker.patch(
+        "google.auth.default", side_effect=DefaultCredentialsError("Not configured")
+    )
+    for _ in range(2):
+        fs = GCSClient.create_fs(skip_instance_cache=True)
+        assert fs.credentials.token == "anon"  # noqa: S105
+    default.assert_called_once()
+
+
+@pytest.mark.usefixtures("no_gcp_credentials")
+def test_missing_application_credentials_are_retried_after_ttl(mocker):
+    token = Credentials("available")
+    default = mocker.patch(
+        "google.auth.default",
+        side_effect=[DefaultCredentialsError("Not configured"), (token, "project")],
+    )
+    now = mocker.patch("datachain.client.gcs.monotonic", return_value=0.0)
+    assert GCSClient.create_fs(skip_instance_cache=True).credentials.token == "anon"  # noqa: S105
+    now.return_value = 59.0
+    assert GCSClient.create_fs(skip_instance_cache=True).credentials.token == "anon"  # noqa: S105
+    now.return_value = 60.0
+    assert GCSClient.create_fs(skip_instance_cache=True).credentials.credentials is token
+    assert default.call_count == 2
+
+
+@pytest.mark.usefixtures("no_gcp_credentials")
+@pytest.mark.parametrize("setting", ["CLOUDSDK_CONFIG", "GCE_METADATA_HOST"])
+def test_application_credentials_rechecked_after_environment_change(
+    mocker, monkeypatch, setting
+):
+    token = Credentials("available")
+    default = mocker.patch(
+        "google.auth.default",
+        side_effect=[DefaultCredentialsError("Not configured"), (token, "project")],
+    )
+    assert GCSClient.create_fs(skip_instance_cache=True).credentials.token == "anon"  # noqa: S105
+    monkeypatch.setenv(setting, "changed")
+    assert GCSClient.create_fs(skip_instance_cache=True).credentials.credentials is token
+    assert default.call_count == 2
+
+
+@pytest.mark.usefixtures("no_gcp_credentials")
+@pytest.mark.parametrize("explicit", [{"anon": False}, {"token": "google_default"}])
+def test_explicit_application_credentials_bypass_negative_cache(mocker, explicit):
+    token = Credentials("available")
+    default = mocker.patch(
+        "google.auth.default",
+        side_effect=[DefaultCredentialsError("Not configured"), (token, "project")],
+    )
+    assert GCSClient.create_fs(skip_instance_cache=True).credentials.token == "anon"  # noqa: S105
+    assert (
+        GCSClient.create_fs(skip_instance_cache=True, **explicit).credentials.credentials
+        is token
+    )
+    assert default.call_count == 2
+
+
+@pytest.mark.usefixtures("no_gcp_credentials")
+def test_cached_credentials_remain_available_after_failed_defaults(mocker, monkeypatch):
+    default = mocker.patch(
+        "google.auth.default", side_effect=DefaultCredentialsError("Not configured")
+    )
+    kwargs = {"project": "project", "skip_instance_cache": True}
+    assert GCSClient.create_fs(**kwargs).credentials.token == "anon"  # noqa: S105
+    token = Credentials("cached")
+    monkeypatch.setattr(
+        "gcsfs.credentials.GoogleCredentials.tokens", {("project", "full_control"): token}
+    )
+    assert GCSClient.create_fs(**kwargs).credentials.credentials is token
     default.assert_called_once()
 
 
