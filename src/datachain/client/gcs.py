@@ -73,8 +73,9 @@ class GCSClient(RangeListedClient):
             "headers": headers,
         }
 
-        if kwargs.get("token") is None:
-            key = tokenize(
+        credential = kwargs.get("token")
+        key = (
+            tokenize(
                 kwargs.get("project"),
                 kwargs.get("access"),
                 {
@@ -84,6 +85,10 @@ class GCSClient(RangeListedClient):
                     or name in {"HOME", "APPDATA", "NO_GCE_CHECK"}
                 },
             )
+            if credential is None or credential == "google_default"
+            else ""
+        )
+        if credential is None:
             error: GoogleAuthError | ValueError | None = None
             # ADC already discovers GCE credentials; gcsfs's cloud fallback repeats it.
             for method in ("google_default", "cache"):
@@ -105,11 +110,16 @@ class GCSClient(RangeListedClient):
                     error = error or exc
                     continue
                 if fs.credentials.credentials is not None:
+                    if method == "google_default":
+                        _ADC_FAILURES.pop(key, None)
                     return cast("GCSFileSystem", fs)
             if anon is False:
                 raise error or DefaultCredentialsError("No GCS credentials found")
             kwargs["token"] = "anon"  # noqa: S105
-        return cast("GCSFileSystem", super().create_fs(**kwargs))
+        fs = super().create_fs(**kwargs)
+        if credential == "google_default":
+            _ADC_FAILURES.pop(key, None)
+        return cast("GCSFileSystem", fs)
 
     @classmethod
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:  # noqa: PLR0911

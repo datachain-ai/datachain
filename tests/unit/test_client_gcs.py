@@ -403,11 +403,15 @@ def test_application_credentials_rechecked_after_environment_change(
 
 @pytest.mark.usefixtures("no_gcp_credentials")
 @pytest.mark.parametrize("explicit", [{"anon": False}, {"token": "google_default"}])
-def test_explicit_application_credentials_bypass_negative_cache(mocker, explicit):
+def test_explicit_application_credentials_restore_automatic_auth(mocker, explicit):
     token = Credentials("available")
     default = mocker.patch(
         "google.auth.default",
-        side_effect=[DefaultCredentialsError("Not configured"), (token, "project")],
+        side_effect=[
+            DefaultCredentialsError("Not configured"),
+            (token, "project"),
+            (token, "project"),
+        ],
     )
     assert GCSClient.create_fs(skip_instance_cache=True).credentials.token == "anon"  # noqa: S105
     assert (
@@ -416,7 +420,9 @@ def test_explicit_application_credentials_bypass_negative_cache(mocker, explicit
         ).credentials.credentials
         is token
     )
-    assert default.call_count == 2
+    automatic = GCSClient.create_fs(skip_instance_cache=True)
+    assert automatic.credentials.credentials is token
+    assert default.call_count == 3
 
 
 @pytest.mark.usefixtures("no_gcp_credentials")
