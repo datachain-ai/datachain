@@ -134,7 +134,7 @@ dc.read_parquet("points.parquet", columns=["p", "a"])  # signals p and a
 dc.read_parquet("points.parquet", columns=["p.x"])  # p as a model with only x
 ```
 
-`output=` works by position, as for other files: one field for each picked signal, or for each top-level signal without `columns`. A model field may declare only some of the stored fields:
+As with ordinary Parquet and CSV files above, `output=` gives fields by position: one field for each picked signal, in `columns` order, or for each top-level signal when `columns` is omitted. A model field may declare only some of the stored fields:
 
 ```python
 class PointX(dc.DataModel):
@@ -154,7 +154,7 @@ dc.read_parquet("docs.parquet", columns=["value.Text"], output={"t": Text | None
 # t is None where value holds an Image or is None
 ```
 
-With `columns=` or `output=`, these files can't be read together with other Parquet files. With `source=True`, the default, the reader adds its own `source`, which replaces a `source` stored by an earlier read. A stored `source` you pick with `columns=` is kept instead, and if the name `source` is taken, the reader's is named `c0_source`.
+With `columns=` or `output=`, one read can't mix these files with ordinary Parquet files. With `source=True`, the default, the reader adds its own `source`, which replaces a `source` stored by an earlier read. A stored `source` you pick with `columns=` is kept instead, and if the name `source` is taken, the reader's is named `c0_source`.
 
 ## WebDataset
 
