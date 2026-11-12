@@ -3508,7 +3508,7 @@ class DataChain:
             link_type: Method to use for exporting files.
                 Falls back to `'copy'` if symlinking fails.
             num_threads: number of threads to use for exporting files.
-                By default, 32 for a local output and 5 for a cloud one.
+                By default, 32 for an uncached local export and 5 otherwise.
             anon: If True, we will treat cloud bucket as a public one. Default behavior
                 depends on the previous session configuration (e.g. happens in the
                 initial `read_storage`) and particular cloud storage client

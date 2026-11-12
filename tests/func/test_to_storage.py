@@ -25,9 +25,35 @@ from datachain.lib.file import (
 )
 from datachain.lib.tar import process_tar
 from tests.conftest import get_cloud_test_catalog, make_cloud_server
-from tests.utils import DEFAULT_TREE, images_equal, make_tar, skip_if_not_sqlite, tree_from_path
+from tests.utils import (
+    DEFAULT_TREE,
+    images_equal,
+    make_tar,
+    skip_if_not_sqlite,
+    tree_from_path,
+)
 
 python_exc = sys.executable or "python3"
+
+
+@pytest.mark.parametrize(
+    "cache,threads,expected",
+    [(False, None, 32), (True, None, 5), (True, 9, 9), (False, 0, 1)],
+)
+def test_to_storage_keeps_cached_export_concurrency_bounded(
+    test_session, tmp_path, mocker, cache, threads, expected
+):
+    from datachain.lib.file import FileExporter
+
+    source = tmp_path / "input.txt"
+    source.write_bytes(b"content")
+    chain = dc.read_storage(source, session=test_session).settings(cache=cache)
+    run = mocker.spy(FileExporter, "run")
+
+    chain.to_storage(tmp_path / "output", placement="filename", num_threads=threads)
+
+    assert run.call_args.args[0]._max_threads == expected
+    assert (tmp_path / "output" / "input.txt").read_bytes() == b"content"
 
 
 @pytest.mark.parametrize("same", [False, True])

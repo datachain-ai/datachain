@@ -83,7 +83,7 @@ class FileExporter(NodesThreadPool):
         if max_threads is None:
             max_threads = (
                 EXPORT_LOCAL_FILES_MAX_THREADS
-                if self.is_local
+                if self.is_local and not use_cache
                 else EXPORT_FILES_MAX_THREADS
             )
         super().__init__(max_threads or 1)
@@ -844,7 +844,6 @@ class File(DataModel):
                         )
                     result = client.get_file_info(rel_path)
                 else:
-
                     result = client.upload(src, rel_path, write_config=write_config)
         result._set_stream(self._catalog)
         return result
