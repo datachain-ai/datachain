@@ -289,7 +289,7 @@ def no_gcp_credentials(monkeypatch, mocker, tmp_path):
     monkeypatch.delenv("NO_GCE_CHECK", raising=False)
     mocker.patch("google.auth.compute_engine._metadata.is_on_gce", return_value=False)
     monkeypatch.setattr("gcsfs.credentials.GoogleCredentials.tokens", {})
-    monkeypatch.setattr("datachain.client.gcs._ADC_FAILURES", {})
+    monkeypatch.setattr("datachain.client.gcs._ADC_FAILURES", {}, raising=False)
     mocker.patch(
         "google.auth.compute_engine.Credentials.refresh",
         side_effect=AssertionError("Repeated GCE metadata discovery"),
@@ -377,7 +377,9 @@ def test_missing_application_credentials_are_retried_after_ttl(mocker):
     now.return_value = 59.0
     assert GCSClient.create_fs(skip_instance_cache=True).credentials.token == "anon"  # noqa: S105
     now.return_value = 60.0
-    assert GCSClient.create_fs(skip_instance_cache=True).credentials.credentials is token
+    assert (
+        GCSClient.create_fs(skip_instance_cache=True).credentials.credentials is token
+    )
     assert default.call_count == 2
 
 
@@ -393,7 +395,9 @@ def test_application_credentials_rechecked_after_environment_change(
     )
     assert GCSClient.create_fs(skip_instance_cache=True).credentials.token == "anon"  # noqa: S105
     monkeypatch.setenv(setting, "changed")
-    assert GCSClient.create_fs(skip_instance_cache=True).credentials.credentials is token
+    assert (
+        GCSClient.create_fs(skip_instance_cache=True).credentials.credentials is token
+    )
     assert default.call_count == 2
 
 
@@ -407,7 +411,9 @@ def test_explicit_application_credentials_bypass_negative_cache(mocker, explicit
     )
     assert GCSClient.create_fs(skip_instance_cache=True).credentials.token == "anon"  # noqa: S105
     assert (
-        GCSClient.create_fs(skip_instance_cache=True, **explicit).credentials.credentials
+        GCSClient.create_fs(
+            skip_instance_cache=True, **explicit
+        ).credentials.credentials
         is token
     )
     assert default.call_count == 2
@@ -422,7 +428,8 @@ def test_cached_credentials_remain_available_after_failed_defaults(mocker, monke
     assert GCSClient.create_fs(**kwargs).credentials.token == "anon"  # noqa: S105
     token = Credentials("cached")
     monkeypatch.setattr(
-        "gcsfs.credentials.GoogleCredentials.tokens", {("project", "full_control"): token}
+        "gcsfs.credentials.GoogleCredentials.tokens",
+        {("project", "full_control"): token},
     )
     assert GCSClient.create_fs(**kwargs).credentials.credentials is token
     default.assert_called_once()
