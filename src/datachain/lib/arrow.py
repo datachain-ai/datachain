@@ -3,6 +3,7 @@ import math
 from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from itertools import repeat
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
@@ -34,6 +35,8 @@ from datachain.utils import safe_closing
 SCHEMA_READ_THREADS = 32
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from datasets.features.features import Features
     from pydantic import BaseModel
 
@@ -129,8 +132,8 @@ class ArrowGenerator(Generator):
 
     def __init__(
         self,
-        input_schema: pa.Schema | None = None,
-        output_schema: type["BaseModel"] | None = None,
+        input_schema: pa.Schema | None,
+        output_schema: type["BaseModel"],
         source: bool = True,
         nrows: int | None = None,
         columns: list[str] | None = None,
@@ -144,7 +147,7 @@ class ArrowGenerator(Generator):
         Parameters:
 
         input_schema : Optional pyarrow schema for validation.
-        output_schema : Optional pydantic model for validation.
+        output_schema : Pydantic model of the output.
         source : Whether to include info about the source file.
         nrows : Optional row limit per file.
         columns : Optional columns to read from each file by name, in output order.
@@ -276,19 +279,13 @@ class ArrowGenerator(Generator):
     def _flat_columns(self, schema: pa.Schema) -> list[str] | None:
         """Return the columns that the output fields take, when each takes its
         values as pyarrow gives them. Then no model is built per row. Else None."""
-        model = self.output_schema
-        metadata = schema.metadata or {}
-        if (
-            model is None
-            or not self.output_from_types
-            or DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY in metadata
-            or b"huggingface" in metadata
-        ):
+        if not self.output_from_types:
             return None
-        fields = list(model.model_fields.values())
+        if DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY in (schema.metadata or {}):
+            # Its columns don't follow the output fields: its own source comes first.
+            return None
+        fields = list(self.output_schema.model_fields.values())
         names = (self.columns or schema.names)[: len(fields)]
-        if not fields or len(names) < len(fields):
-            return None
         for name, field in zip(names, fields, strict=True):
             i = schema.get_field_index(name)
             if i < 0 or not _is_plain_type(col_type := schema.field(i).type):
@@ -309,12 +306,16 @@ class ArrowGenerator(Generator):
             source = ArrowRow(file=file, index=0, kwargs=source_kwargs)
             *file_values, _, stored_options = map(_json_text, flatten(source))
         for start, batch in batches:
-            rows = zip(*(c.to_pylist() for c in batch.columns), strict=True)
-            if source_kwargs is None:
-                yield from map(FlatRow, rows)
-            else:
-                for index, values in enumerate(rows, start):
-                    yield FlatRow((*file_values, index, stored_options, *values))
+            columns: list[Iterable] = [c.to_pylist() for c in batch.columns]
+            if source_kwargs is not None:
+                n = batch.num_rows
+                columns = [
+                    *(repeat(v, n) for v in file_values),
+                    range(start, start + n),
+                    repeat(stored_options, n),
+                    *columns,
+                ]
+            yield from map(FlatRow, zip(*columns, strict=True))
 
     def _process_record(
         self,
@@ -325,7 +326,7 @@ class ArrowGenerator(Generator):
         use_datachain_schema: bool,
         source_kwargs: dict[str, Any] | None,
     ):
-        if use_datachain_schema and self.output_schema:
+        if use_datachain_schema:
             vals = [_nested_model_instantiate(record, self.output_schema)]
         else:
             vals = self._process_non_datachain_record(record, hf_schema)
@@ -348,9 +349,6 @@ class ArrowGenerator(Generator):
     ):
         names = self.columns or list(record)
         vals = [record.get(name) for name in names]
-        if not self.output_schema:
-            return vals
-
         fields = self.output_schema.model_fields
         vals_dict = {}
         for (field, field_info), name, val in zip(
@@ -574,11 +572,8 @@ def _is_scalar_type(col_type: pa.DataType) -> bool:
 def _is_plain_type(col_type: pa.DataType) -> bool:
     """Whether pyarrow gives the column's values as pydantic and the DB keep them,
     typed as `arrow_type_mapper` types them."""
-    if pa.types.is_dictionary(col_type):
+    if pa.types.is_dictionary(col_type) or pa.types.is_list(col_type):
         return _is_plain_type(col_type.value_type)
-    if pa.types.is_list(col_type):
-        item = col_type.value_type
-        return not pa.types.is_list(item) and _is_plain_type(item)
     if pa.types.is_timestamp(col_type):
         # pyarrow gives nanoseconds as pandas Timestamps.
         return col_type.unit != "ns"
@@ -599,10 +594,7 @@ def _json_text(value: Any) -> Any:
     are."""
     if not isinstance(value, (dict, list)):
         return value
-    try:
-        return to_json_text(value)
-    except TypeError:
-        return value  # the DB conversion reports it
+    return to_json_text(value)
 
 
 def _get_hf_schema(

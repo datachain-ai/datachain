@@ -731,8 +731,7 @@ def process_udf_outputs(
                         udf_kind=udf_kind,
                     )
                     yield tuple(map(row.__getitem__, columns))
-        if generated:
-            cb.relative_update(generated)
+        cb.relative_update(generated)
 
     rows = _insert_rows()
     try:
