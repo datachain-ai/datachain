@@ -27,7 +27,7 @@ from datachain.lib.data_model import DataModel
 from datachain.lib.utils import DataChainError, rebase_path
 from datachain.nodes_thread_pool import NodesThreadPool
 from datachain.sql.types import JSON, Boolean, DateTime, Int, String
-from datachain.utils import TIME_ZERO
+from datachain.utils import TIME_ZERO, parent_path
 
 if TYPE_CHECKING:
     from typing import BinaryIO, Self
@@ -554,7 +554,7 @@ class File(DataModel):
             file.parent  # 'data/subdir'
             ```
         """
-        return str(PurePosixPath(self.path).parent)
+        return parent_path(self.path) if "/" in self.path else "."
 
     @contextmanager
     def open(
@@ -787,6 +787,20 @@ class File(DataModel):
 
         destination = stringify_path(destination)
         client, rel_path = self._resolve_destination(destination, client_config)
+        # Validate before the local client normalizes object-key separators.
+        raw_path = destination.removeprefix("file://")
+        if os.name == "nt":
+            raw_path = raw_path.replace("\\", "/")
+        if (
+            client.PREFIX == "file://"
+            and "//" in "/" + self.path
+            and (raw_path == self.path or raw_path.endswith("/" + self.path))
+        ):
+            raise FileError(
+                "Local destination must not contain empty segments",
+                self.source,
+                self.path,
+            )
         write_config = WriteConfig(
             content_type=content_type,
             content_disposition=content_disposition,
@@ -1255,7 +1269,7 @@ class FileRow(NamedTuple):
 
     @property
     def parent(self) -> str:
-        return str(PurePosixPath(self.path).parent)
+        return parent_path(self.path) if "/" in self.path else "."
 
     def get_file_suffix(self) -> str:
         return PurePosixPath(self.path).suffix

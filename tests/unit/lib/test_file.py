@@ -211,6 +211,14 @@ def test_export_rejects_empty_segments(create_file, tmp_path):
         file.export(output, placement="filepath", use_cache=False)
 
 
+@pytest.mark.parametrize(
+    "path,parent",
+    [("x.txt", "."), ("a/b.txt", "a"), ("d//e.txt", "d/"), ("a/b//c/d.txt", "a/b//c")],
+)
+def test_parent_keeps_empty_segments(path, parent):
+    assert File(source="s3://bkt", path=path).parent == parent
+
+
 def _uri_via_helper(p: Path) -> str:
     return path_to_fsspec_uri(str(p))
 
@@ -1218,3 +1226,15 @@ def test_subclass_private_attributes_keep_their_values():
 
     assert file._catalog is catalog
     assert file._caching_enabled
+
+
+@pytest.mark.parametrize("uri", [False, True])
+@pytest.mark.parametrize("key", ["dir//file.txt", "/file.txt"])
+def test_save_rejects_empty_local_destination_segments(create_file, tmp_path, uri, key):
+    file = create_file("s3://mybkt", path=key, etag="etag")
+    destination = str(tmp_path / "output") + "/" + key
+    if uri:
+        destination = "file://" + destination
+    with pytest.raises(FileError, match="must not contain empty segments"):
+        file.save(destination)
+    assert not (tmp_path / "output").exists()

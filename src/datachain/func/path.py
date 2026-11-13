@@ -6,6 +6,8 @@ from .func import ColT, Func
 def parent(col: ColT) -> Func:
     """
     Returns the directory component of a posix-style path.
+    Empty segments are preserved: `parent("d//e.txt")` returns `"d/"`.
+    `File.parent` uses the same rule for nested paths.
 
     Args:
         col (str | Column | Func | literal): String to compute the path parent of.
