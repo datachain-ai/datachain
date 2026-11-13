@@ -266,7 +266,6 @@ class ClientS3(RangeListedClient):
     # objects written while versioning is off or suspended, and another write in
     # that state replaces them, so those files are checked by etag.
     PINNED_VERSION_IS_IMMUTABLE = True
-    _unversioned = False  # the server can't list versions
 
     @staticmethod
     def _normalize_s3_kwargs(kwargs: dict) -> dict:
@@ -397,6 +396,26 @@ class ClientS3(RangeListedClient):
         endpoint = s3.meta.endpoint_url if s3 else ""
         return not (self.name.endswith("--x-s3") or "r2.cloudflarestorage" in endpoint)
 
+    def _check_versioning(self, s3) -> None:
+        # A bucket that never had versioning on holds no old versions, and
+        # ListObjectsV2 lists the same rows as ListObjectVersions, for less.
+        # Pages list versions until the check answers.
+        if self._unversioned is not None or self._versioning_check is not None:
+            return
+        if not self._lists_in_key_order():  # R2 or a directory bucket: no versions
+            self._unversioned = True
+            return
+        self._versioning_check = asyncio.ensure_future(self._read_versioning(s3))
+
+    async def _read_versioning(self, s3) -> None:
+        try:
+            versioning = await s3.get_bucket_versioning(Bucket=self.name)
+        except Exception:  # noqa: BLE001  # such as denied: list versions
+            versioning = {"Status": "unknown"}
+        if self._unversioned is None:
+            self._unversioned = "Status" not in versioning  # Enabled or Suspended
+        self._versioning_check = None
+
     async def _list_page(
         self,
         prefix: str,
@@ -406,7 +425,16 @@ class ClientS3(RangeListedClient):
         page_size: int | None = None,
         delimiter: str = "",
     ) -> Page:
-        versions = self._is_version_aware() and not self._unversioned
+        await self.fs.set_session()
+        s3 = await self.fs.get_s3(self.name)
+        if self._is_version_aware():
+            self._check_versioning(s3)
+        # a token from a versions page continues after its key; with a delimiter
+        # that key may be a folder, which StartAfter would list again
+        after_versions = isinstance(token, tuple)
+        versions = self._is_version_aware() and (
+            not self._unversioned or (after_versions and bool(delimiter))
+        )
         kwargs: dict[str, Any] = {"Delimiter": delimiter} if delimiter else {}
         if versions:
             if token is not None:
@@ -415,12 +443,12 @@ class ClientS3(RangeListedClient):
                     kwargs["VersionIdMarker"] = version_marker
             elif start_after:
                 kwargs["KeyMarker"] = start_after
+        elif after_versions:
+            kwargs["StartAfter"] = token[0]
         elif token is not None:
             kwargs["ContinuationToken"] = token
         elif start_after:
             kwargs["StartAfter"] = start_after
-        await self.fs.set_session()
-        s3 = await self.fs.get_s3(self.name)
         list_page = s3.list_object_versions if versions else s3.list_objects_v2
         try:
             page = await list_page(

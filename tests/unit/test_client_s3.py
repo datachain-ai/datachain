@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 import pickle
 import threading
@@ -217,6 +218,7 @@ def test_r2_lists_out_of_key_order(mocker):
 def test_listing_pays_as_requester_when_asked(versions, requester_pays):
     s3 = MagicMock()
     s3.list_objects_v2 = s3.list_object_versions = AsyncMock(return_value={})
+    s3.get_bucket_versioning = AsyncMock(return_value={"Status": "Enabled"})
     client = ClientS3("bucket", {}, None)
     client._fs = MagicMock(
         version_aware=versions,
@@ -399,8 +401,10 @@ def test_listing_parser_hooks_only_the_synchronous_parse():
     assert not inspect.iscoroutinefunction(_ListingParser._do_parse)
 
 
-def _listing_client(versions, s3):
-    client = ClientS3("bucket", {}, None)
+def _listing_client(versions, s3, bucket="bucket"):
+    if not isinstance(s3.get_bucket_versioning, AsyncMock):
+        s3.get_bucket_versioning = AsyncMock(return_value={"Status": "Enabled"})
+    client = ClientS3(bucket, {}, None)
     client._fs = MagicMock(
         version_aware=versions,
         req_kw={},
@@ -451,3 +455,116 @@ def test_list_page_falls_back_to_current_objects_without_version_support():
             ("a", "", True)
         ]
     assert s3.list_object_versions.call_count == 1
+
+
+_DENIED = ClientError({"Error": {"Code": "AccessDenied"}}, "GetBucketVersioning")
+
+
+@pytest.mark.parametrize(
+    "version_aware, versioning, apis",
+    [
+        (True, {}, ["versions", "v2"]),
+        (True, {"Status": "Enabled"}, ["versions", "versions"]),
+        (True, {"Status": "Suspended"}, ["versions", "versions"]),
+        (True, _DENIED, ["versions", "versions"]),
+        (False, {}, ["v2", "v2"]),
+    ],
+    ids=["never-versioned", "enabled", "suspended", "denied", "not-version-aware"],
+)
+def test_pages_after_the_versioning_check_list_versions_only_where_they_may_be(
+    version_aware, versioning, apis
+):
+    used = []
+
+    def listed(api):
+        async def list_page(**kwargs):
+            used.append((api, kwargs))
+            return {
+                "IsTruncated": True,
+                "NextKeyMarker": "k",
+                "NextVersionIdMarker": "v",
+                "NextContinuationToken": "t",
+            }
+
+        return list_page
+
+    s3 = MagicMock(
+        get_bucket_versioning=AsyncMock(
+            side_effect=versioning if isinstance(versioning, Exception) else None,
+            return_value=versioning,
+        ),
+        list_object_versions=listed("versions"),
+        list_objects_v2=listed("v2"),
+    )
+    client = _listing_client(version_aware, s3)
+
+    first = sync(get_loop(), client._list_page, "", "", None)
+    if check := client._versioning_check:
+        sync(get_loop(), asyncio.wait_for, check, 5)
+    sync(get_loop(), client._list_page, "", "", first.token)
+
+    assert [api for api, _ in used] == apis
+    assert s3.get_bucket_versioning.call_count == (1 if version_aware else 0)
+    if apis == ["versions", "v2"]:
+        assert used[1][1]["StartAfter"] == "k"
+
+
+def test_a_versions_token_past_a_folder_keeps_listing_versions():
+    s3 = MagicMock(
+        list_object_versions=AsyncMock(return_value={"IsTruncated": False}),
+        list_objects_v2=AsyncMock(),
+    )
+    client = _listing_client(True, s3)
+    client._unversioned = True
+
+    sync(get_loop(), client._list_page, "", "", ("dir/", ""), delimiter="/")
+
+    assert s3.list_object_versions.call_args.kwargs["KeyMarker"] == "dir/"
+    assert not s3.list_objects_v2.called
+
+
+def test_a_late_versioning_check_keeps_the_fallback_to_current_objects():
+    s3 = MagicMock(
+        get_bucket_versioning=AsyncMock(return_value={"Status": "Enabled"}),
+        list_object_versions=AsyncMock(
+            side_effect=ClientError(
+                {"Error": {"Code": "NotImplemented"}}, "ListObjectVersions"
+            )
+        ),
+        list_objects_v2=AsyncMock(return_value={"IsTruncated": False}),
+    )
+    client = _listing_client(True, s3)
+
+    sync(get_loop(), client._list_page, "", "", None)
+    if check := client._versioning_check:
+        sync(get_loop(), asyncio.wait_for, check, 5)
+
+    assert client._unversioned is True
+    assert s3.get_bucket_versioning.called
+
+
+@pytest.mark.parametrize(
+    "bucket, endpoint",
+    [
+        ("b--usw2-az1--x-s3", "https://s3.amazonaws.com"),
+        ("b", "https://a.r2.cloudflarestorage.com"),
+    ],
+    ids=["directory-bucket", "r2"],
+)
+def test_list_page_lists_current_objects_where_buckets_hold_no_versions(
+    bucket, endpoint
+):
+    s3 = MagicMock(
+        get_bucket_versioning=AsyncMock(),
+        list_object_versions=AsyncMock(),
+        list_objects_v2=AsyncMock(return_value={"IsTruncated": False}),
+    )
+    s3.meta.endpoint_url = endpoint
+    client = _listing_client(True, s3, bucket)
+    client._fs._s3 = s3
+
+    sync(get_loop(), client._list_page, "", "", None)
+
+    assert not s3.get_bucket_versioning.called
+    assert not s3.list_object_versions.called
+    assert s3.list_objects_v2.called
