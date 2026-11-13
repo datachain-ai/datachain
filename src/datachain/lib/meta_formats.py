@@ -15,6 +15,9 @@ from datachain.lib.file import TextFile
 
 # datamodel-code-generator raises this on every JSON, YAML or CSV input, whether or
 # not its genson extra is installed.
+# TODO: remove this filter and its twin in pyproject.toml once
+# https://github.com/datamodel-code-generator/datamodel-code-generator/issues/6784
+# is fixed.
 warnings.filterwarnings(
     "ignore",
     category=FutureWarning,
