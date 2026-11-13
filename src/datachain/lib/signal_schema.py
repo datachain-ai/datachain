@@ -239,10 +239,6 @@ class CustomType(BaseModel):
 
     @classmethod
     def deserialize(cls, data: dict[str, Any], type_name: str) -> "CustomType":
-        if not isinstance(data, dict):
-            raise SignalSchemaError(
-                f"cannot deserialize custom type '{type_name}': expected a dictionary"
-            )
         version = data.get("schema_version", 1)
 
         if version == 1:
@@ -255,12 +251,7 @@ class CustomType(BaseModel):
                 "partial_fingerprint": None,
             }
 
-        try:
-            return cls(**data)
-        except ValidationError as exc:
-            raise SignalSchemaError(
-                f"cannot deserialize custom type '{type_name}': {exc}"
-            ) from exc
+        return cls(**data)
 
 
 def create_feature_model(
@@ -414,12 +405,7 @@ class SignalSchema:
 
     @staticmethod
     def _serialize_custom_model(
-        version_name: str,
-        fr: type[BaseModel],
-        custom_types: dict[str, Any],
-        *,
-        register_pydantic: bool = True,
-        warn: bool = True,
+        version_name: str, fr: type[BaseModel], custom_types: dict[str, Any]
     ) -> str:
         """This serializes any custom type information to the provided custom_types
         dict, and returns the name of the type serialized."""
@@ -432,9 +418,7 @@ class SignalSchema:
             field_type = info.annotation
             # All fields should be typed.
             assert field_type
-            fields[field_name] = SignalSchema._serialize_type(
-                field_type, custom_types, register_pydantic=register_pydantic, warn=warn
-            )
+            fields[field_name] = SignalSchema._serialize_type(field_type, custom_types)
 
         bases = SignalSchema._get_bases(fr)
 
@@ -451,19 +435,11 @@ class SignalSchema:
         return version_name
 
     @staticmethod
-    def _serialize_type(
-        fr: Any,
-        custom_types: dict[str, Any],
-        *,
-        register_pydantic: bool = True,
-        warn: bool = True,
-    ) -> str:
+    def _serialize_type(fr: Any, custom_types: dict[str, Any]) -> str:
         """Serialize a given type to a string, including automatic ModelStore
         registration, and save this type and subtypes to custom_types as well."""
         subtypes: list[Any] = []
-        type_name = SignalSchema._type_to_str(
-            fr, subtypes, register_pydantic=register_pydantic, warn=warn
-        )
+        type_name = SignalSchema._type_to_str(fr, subtypes)
         # Iterate over all subtypes (includes the input type).
         for st in subtypes:
             if st is None or not ModelStore.is_pydantic(st):
@@ -474,13 +450,7 @@ class SignalSchema:
                 # If the main type is Pydantic, then use the ModelStore version name.
                 type_name = st_version_name
             # Save this type to custom_types.
-            SignalSchema._serialize_custom_model(
-                st_version_name,
-                st,
-                custom_types,
-                register_pydantic=register_pydantic,
-                warn=warn,
-            )
+            SignalSchema._serialize_custom_model(st_version_name, st, custom_types)
         return type_name
 
     def serialize(self) -> dict[str, Any]:
@@ -521,75 +491,6 @@ class SignalSchema:
         return subtypes
 
     @staticmethod
-    def _type_key(type_name: str) -> Any:
-        name, bracket, arguments = type_name.strip().partition("[")
-        name = name.strip()
-        name = {"List": "list", "Dict": "dict", "Tuple": "tuple"}.get(name, name)
-        if not bracket:
-            return name
-        if not arguments.endswith("]"):
-            raise ValueError(f"Unclosed square bracket when parsing type: {type_name}")
-        parts = tuple(
-            SignalSchema._type_key(part)
-            for part in SignalSchema._split_subtypes(arguments[:-1])
-        )
-        if name == "Optional":
-            if len(parts) != 1:
-                raise ValueError(f"Optional requires one type: {type_name}")
-            name, parts = "Union", (*parts, "NoneType")
-        if name == "Union":
-            arms = frozenset(
-                arm
-                for part in parts
-                for arm in (
-                    part[1]
-                    if isinstance(part, tuple) and part[0] == "Union"
-                    else (part,)
-                )
-            )
-            return next(iter(arms)) if len(arms) == 1 else (name, arms)
-        return name, parts
-
-    @staticmethod
-    def _model_matches(
-        fr: type[BaseModel],
-        custom_types: dict[str, Any],
-        *,
-        type_name: str | None = None,
-    ) -> bool:
-        type_name = type_name or ModelStore.get_name(fr)
-        if type_name not in custom_types:
-            return False
-        serialized: dict[str, Any] = {}
-        SignalSchema._serialize_custom_model(
-            type_name, fr, serialized, register_pydantic=False, warn=False
-        )
-        try:
-            for name, record in serialized.items():
-                if name not in custom_types:
-                    continue
-                stored = CustomType.deserialize(custom_types[name], name)
-                if {
-                    field: SignalSchema._type_key(annotation)
-                    for field, annotation in record["fields"].items()
-                } != {
-                    field: SignalSchema._type_key(annotation)
-                    for field, annotation in stored.fields.items()
-                }:
-                    return False
-                if stored.schema_version == 2 and (
-                    (record.get("hidden_fields") or []) != (stored.hidden_fields or [])
-                    or record.get("partial_fingerprint") != stored.partial_fingerprint
-                    or (stored.bases and record["bases"][0][1] != stored.bases[0][1])
-                ):
-                    return False
-            return True
-        except ValueError as exc:
-            raise SignalSchemaError(
-                f"cannot compare model '{fr.__name__}': {exc}"
-            ) from exc
-
-    @staticmethod
     def _deserialize_custom_type(
         type_name: str, custom_types: dict[str, Any]
     ) -> type | None:
@@ -599,7 +500,12 @@ class SignalSchema:
         model_name, target_version = ModelStore.parse_name_version(type_name)
 
         if type_name in custom_types:
-            ct = CustomType.deserialize(custom_types[type_name], type_name)
+            try:
+                ct = CustomType.deserialize(custom_types[type_name], type_name)
+            except ValidationError as exc:
+                raise SignalSchemaError(
+                    f"cannot deserialize custom type '{type_name}': {exc}"
+                ) from exc
 
             module = ct.bases[0][1] if ct.bases else None
             if (
@@ -607,14 +513,9 @@ class SignalSchema:
                     model_name, target_version, module=module, autoload=bool(ct.bases)
                 )
             ) and (
-                (
-                    "_modelstore_base_name" not in vars(fr)
-                    and (
-                        ct.bases
-                        or ModelStore.get_module(fr) != BUILTIN_MODELS.get(model_name)
-                    )
-                )
-                or SignalSchema._model_matches(fr, custom_types, type_name=type_name)
+                ct.bases
+                or ModelStore.get_module(fr) != BUILTIN_MODELS.get(model_name)
+                or fr.model_fields.keys() == ct.fields.keys()
             ):
                 return fr
 
@@ -635,7 +536,7 @@ class SignalSchema:
                     if base_model:
                         break
 
-            return create_feature_model(
+            fr = create_feature_model(
                 type_name,
                 fields,
                 base=base_model,
@@ -643,6 +544,7 @@ class SignalSchema:
                 partial_fingerprint=ct.partial_fingerprint,
                 module=module,
             )
+            return fr
 
         return ModelStore.get(model_name, target_version)
 
@@ -716,10 +618,6 @@ class SignalSchema:
 
         signals: dict[str, DataType] = {}
         custom_types: dict[str, Any] = schema.get("_custom_types", {})
-        if not isinstance(custom_types, dict):
-            raise SignalSchemaError(
-                "cannot deserialize custom types: expected a dictionary"
-            )
         for signal, type_name in schema.items():
             if signal == "_custom_types":
                 # This entry is used as a lookup for custom types,
@@ -2023,23 +1921,18 @@ class SignalSchema:
 
     @staticmethod
     def _type_to_str(
-        type_: type | types.EllipsisType | None,
-        subtypes: list | None = None,
-        *,
-        register_pydantic: bool = True,
-        warn: bool = True,
+        type_: type | types.EllipsisType | None, subtypes: list | None = None
     ) -> str:
         """Convert a type to a string-based representation."""
 
         def _warn(msg: str) -> None:
-            if warn:
-                warnings.warn(msg, SignalSchemaWarning, stacklevel=2)
+            warnings.warn(msg, SignalSchemaWarning, stacklevel=2)
 
         return type_to_str(
             type_,
             subtypes,
             warn_with=_warn,
-            register_pydantic=register_pydantic,
+            register_pydantic=True,
         )
 
     # `_type_tag` = the active arm's selector name (``int``, ``Pet``), or NULL for None
