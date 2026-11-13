@@ -224,13 +224,6 @@ def test_version_is_the_installed_distribution_version():
     assert datachain.__version__ == version("datachain")
 
 
-def test_builtin_model_with_missing_dependency_is_a_miss(monkeypatch):
-    from datachain.lib import model_store
-
-    monkeypatch.setitem(model_store.BUILTIN_MODELS, "NoSuchModel", "no_such_module")
-    assert model_store.ModelStore.get("NoSuchModel") is None
-
-
 def test_cli_main_after_command_module_is_imported(tmp_path):
     _check(
         "import sys, datachain.cli.commands.ls\n"
@@ -374,3 +367,15 @@ def test_cli_dispatch_resolves_only_the_selected_command(monkeypatch, argv, name
     assert cli.handle_command(args, "catalog", {}) == 0
     assert imported == [target]
     assert len(calls) == 1
+
+
+def test_offline_cli_main_does_not_load_catalog_or_studio(tmp_path):
+    _check(
+        "import sys\n"
+        "from datachain.cli import main\n"
+        "assert main(['skill', 'list']) == 0\n"
+        "assert 'datachain.catalog' not in sys.modules\n"
+        "assert 'datachain.studio' not in sys.modules\n",
+        cwd=tmp_path,
+        env={"DATACHAIN_ROOT_DIR": str(tmp_path / ".datachain")},
+    )

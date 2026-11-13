@@ -1,4 +1,5 @@
 from importlib import import_module
+from importlib.metadata import PackageNotFoundError
 
 import pytest
 from pydantic import create_model
@@ -89,3 +90,128 @@ def test_saved_user_model_reads_values_with_a_builtin_in_the_store(name, test_se
     ModelStore.register(getattr(import_module(BUILTIN_MODELS[name]), name))
     values = dc.read_dataset("custom", session=test_session).to_values("value")
     assert [value.model_dump() for value in values] == [{"score": 0.9}]
+
+
+@pytest.mark.parametrize("name", ["BBox", "File"])
+def test_legacy_model_without_origin_does_not_import_a_builtin(name, mocker):
+    load = mocker.spy(import_module("datachain.lib.model_store"), "import_module")
+    schema = {
+        "value": f"{name}@v1",
+        "_custom_types": {f"{name}@v1": {"score": "float"}},
+    }
+    restored = SignalSchema.deserialize(schema).values["value"]
+    assert restored(score=0.9).model_dump() == {"score": 0.9}
+    load.assert_not_called()
+
+
+@pytest.mark.parametrize("name", ["BBox", "File", "CustomBox"])
+def test_legacy_model_reuses_the_registered_class(name):
+    registered = create_model(
+        name, __base__=DataModel, __module__="user_models", score=(float, ...)
+    )
+    schema = {
+        "value": f"{name}@v1",
+        "_custom_types": {f"{name}@v1": {"score": "float"}},
+    }
+    assert SignalSchema.deserialize(schema).values["value"] is registered
+
+
+@pytest.mark.parametrize("name", ["BBox", "File", "CustomBox"])
+@pytest.mark.parametrize(
+    "saved_module,live_module",
+    [("__main__", "user_models"), ("user_models", "__main__")],
+)
+def test_registered_user_model_is_reused_across_modules(
+    name, saved_module, live_module
+):
+    saved_model = create_model(
+        name, __base__=DataModel, __module__=saved_module, score=(float, ...)
+    )
+    saved = SignalSchema({"value": saved_model}).serialize()
+    registered = create_model(
+        name, __base__=DataModel, __module__=live_module, score=(float, ...)
+    )
+    assert SignalSchema.deserialize(saved).values["value"] is registered
+
+
+@pytest.mark.parametrize("wrappers", [0, 1, 2])
+@pytest.mark.parametrize("metadata", [False, True])
+def test_builtin_missing_optional_dependency_is_a_miss(mocker, wrappers, metadata):
+    error = (
+        PackageNotFoundError("datasets")
+        if metadata
+        else ModuleNotFoundError("No module named 'datasets'", name="datasets")
+    )
+    for _ in range(wrappers):
+        outer = ImportError("Missing dependencies for Hugging Face")
+        outer.__cause__ = error
+        error = outer
+    mocker.patch("datachain.lib.model_store.import_module", side_effect=error)
+    assert ModelStore.get("HFAudio", 1) is None
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+@pytest.mark.parametrize("model_name", ["McapFile", "HFAudio"])
+@pytest.mark.parametrize(
+    "error",
+    [
+        ImportError(
+            "cannot import name 'broken_internal_symbol'", name="datachain.lib.file"
+        ),
+        ModuleNotFoundError(
+            "No module named 'datachain.lib.missing'", name="datachain.lib.missing"
+        ),
+        ModuleNotFoundError("No module named 'datachain'", name="datachain"),
+        ModuleNotFoundError("Unidentified import failure"),
+        ModuleNotFoundError("No module named 'numpy'", name="numpy"),
+        PackageNotFoundError("datachain"),
+        PackageNotFoundError(),
+    ],
+)
+def test_unexpected_builtin_import_errors_propagate(mocker, wrapped, model_name, error):
+    if wrapped:
+        outer = ImportError("Failed to import builtin")
+        outer.__cause__ = error
+        error = outer
+    mocker.patch("datachain.lib.model_store.import_module", side_effect=error)
+    with pytest.raises(ImportError) as caught:
+        ModelStore.get(model_name, 1)
+    assert caught.value is error
+
+
+@pytest.mark.parametrize("version", [1, 999])
+def test_lazy_builtin_lookup_honors_the_requested_version(version):
+    from datachain.lib.mcap import McapFile
+
+    assert ModelStore.get("McapFile", version) is (McapFile if version == 1 else None)
+
+
+def test_saved_user_model_with_legacy_metadata_reads_values(test_session):
+    import datachain as dc
+
+    user_model = create_model("BBox", __base__=DataModel, score=(float, ...))
+    dc.read_values(value=[user_model(score=0.9)], session=test_session).save("legacy")
+    catalog = test_session.catalog
+    dataset = catalog.get_dataset("legacy", versions=None)
+    catalog.metastore.update_dataset_version(
+        dataset,
+        dataset.latest_version,
+        feature_schema={
+            "value": "BBox@v1",
+            "_custom_types": {"BBox@v1": {"score": "float"}},
+        },
+    )
+    ModelStore.store.clear()
+    values = dc.read_dataset("legacy", session=test_session).to_values("value")
+    assert [value.model_dump() for value in values] == [{"score": 0.9}]
+
+
+@pytest.mark.parametrize("name", ["BBox", "File"])
+def test_legacy_builtin_model_reuses_the_registered_class(name):
+    builtin = getattr(import_module(BUILTIN_MODELS[name]), name)
+    ModelStore.register(builtin)
+    saved = SignalSchema({"value": builtin}).serialize()
+    saved["_custom_types"] = {
+        name: record["fields"] for name, record in saved["_custom_types"].items()
+    }
+    assert SignalSchema.deserialize(saved).values["value"] is builtin

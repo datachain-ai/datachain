@@ -503,7 +503,9 @@ class SignalSchema:
                 ) from exc
 
             module = ct.bases[0][1] if ct.bases else None
-            if fr := ModelStore.get(model_name, target_version, module=module):
+            if fr := ModelStore.get(
+                model_name, target_version, module=module, autoload=bool(ct.bases)
+            ):
                 return fr
 
             fields = {

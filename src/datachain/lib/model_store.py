@@ -54,6 +54,21 @@ BUILTIN_MODELS = {
 }
 
 
+def _missing_optional_dependency(module: str, exc: ImportError) -> bool:
+    # Only Hugging Face models need an optional dependency at module import.
+    if module != "datachain.lib.hf":
+        return False
+
+    from importlib.metadata import PackageNotFoundError
+
+    error: BaseException = exc
+    while error.__cause__ is not None:
+        error = error.__cause__
+    if isinstance(error, PackageNotFoundError):
+        return error.args == ("datasets",)
+    return isinstance(error, ModuleNotFoundError) and error.name == "datasets"
+
+
 class ModelStore:
     store: ClassVar[dict[str, dict[int, type[BaseModel]]]] = {}
 
@@ -106,7 +121,12 @@ class ModelStore:
 
     @classmethod
     def get(
-        cls, name: str, version: int | None = None, *, module: str | None = None
+        cls,
+        name: str,
+        version: int | None = None,
+        *,
+        module: str | None = None,
+        autoload: bool = True,
     ) -> type | None:
         class_dict = cls.store.get(name, {})
         model = class_dict.get(
@@ -115,18 +135,18 @@ class ModelStore:
         builtin_module = BUILTIN_MODELS.get(name)
         if model is not None and (
             module is None
-            or model.__module__ == module
-            or ("_modelstore_base_name" in model.__dict__ and module != builtin_module)
+            or (model.__module__ == builtin_module) == (module == builtin_module)
         ):
             return model
-        if builtin_module and (module is None or module == builtin_module):
+        if autoload and builtin_module and (module is None or module == builtin_module):
             try:
                 model = getattr(import_module(builtin_module), name)
-            except ImportError:  # an optional dependency is not installed
+            except ImportError as exc:
+                if not _missing_optional_dependency(builtin_module, exc):
+                    raise
                 return None
             cls.register(model)
-            if version is None or cls.get_version(model) == version:
-                return model
+            return model if version in (None, cls.get_version(model)) else None
         return None
 
     @classmethod
