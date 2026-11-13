@@ -186,10 +186,14 @@ def test_lazy_builtin_lookup_honors_the_requested_version(version):
     assert ModelStore.get("McapFile", version) is (McapFile if version == 1 else None)
 
 
-def test_saved_user_model_with_legacy_metadata_reads_values(test_session):
+@pytest.mark.parametrize("name", ["BBox", "File"])
+@pytest.mark.parametrize("builtin_cached", [False, True])
+def test_saved_user_model_with_legacy_metadata_reads_values(
+    test_session, name, builtin_cached
+):
     import datachain as dc
 
-    user_model = create_model("BBox", __base__=DataModel, score=(float, ...))
+    user_model = create_model(name, __base__=DataModel, score=(float, ...))
     dc.read_values(value=[user_model(score=0.9)], session=test_session).save("legacy")
     catalog = test_session.catalog
     dataset = catalog.get_dataset("legacy", versions=None)
@@ -197,11 +201,13 @@ def test_saved_user_model_with_legacy_metadata_reads_values(test_session):
         dataset,
         dataset.latest_version,
         feature_schema={
-            "value": "BBox@v1",
-            "_custom_types": {"BBox@v1": {"score": "float"}},
+            "value": f"{name}@v1",
+            "_custom_types": {f"{name}@v1": {"score": "float"}},
         },
     )
     ModelStore.store.clear()
+    if builtin_cached:
+        ModelStore.register(getattr(import_module(BUILTIN_MODELS[name]), name))
     values = dc.read_dataset("legacy", session=test_session).to_values("value")
     assert [value.model_dump() for value in values] == [{"score": 0.9}]
 
@@ -215,3 +221,36 @@ def test_legacy_builtin_model_reuses_the_registered_class(name):
         name: record["fields"] for name, record in saved["_custom_types"].items()
     }
     assert SignalSchema.deserialize(saved).values["value"] is builtin
+
+
+@pytest.mark.parametrize("name", ["DatasetInfo", "HFAudio"])
+def test_reconstructed_builtin_keeps_its_origin_and_class_identity(name, mocker):
+    module = BUILTIN_MODELS[name]
+    previous = create_model(
+        name, __base__=DataModel, __module__=module, score=(float, ...)
+    )
+    saved = SignalSchema({"a": previous, "b": previous}).serialize()
+    ModelStore.store.clear()
+
+    def load(target):
+        if target == "datachain.lib.hf":
+            raise ModuleNotFoundError("No module named 'datasets'", name="datasets")
+        return import_module(target)
+
+    loader = mocker.patch("datachain.lib.model_store.import_module", side_effect=load)
+    schema = SignalSchema.deserialize(saved)
+    restored = schema.values["a"]
+    assert schema.values["b"] is restored
+    assert SignalSchema.deserialize(saved).values["a"] is restored
+    resaved = schema.serialize()
+    assert resaved["_custom_types"][f"{name}@v1"]["bases"][0][1] == module
+    assert SignalSchema.deserialize(resaved).values["a"] is restored
+    assert restored(score=0.9).model_dump() == {"score": 0.9}
+    loader.assert_called_once_with(module)
+
+    child = create_model(
+        name, __base__=restored, __module__="user_models", extra=(int, ...)
+    )
+    assert ModelStore.get_module(child) == "user_models"
+    child_schema = SignalSchema({"value": child}).serialize()
+    assert child_schema["_custom_types"][f"{name}@v1"]["bases"][0][1] == "user_models"

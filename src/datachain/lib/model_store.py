@@ -89,6 +89,10 @@ class ModelStore:
             return 0
         return model._version  # type: ignore[attr-defined]
 
+    @staticmethod
+    def get_module(model: type) -> str:
+        return vars(model).get("_modelstore_module", model.__module__)
+
     @classmethod
     def get_name(cls, model) -> str:
         base_name = cls._base_name(model)
@@ -127,7 +131,7 @@ class ModelStore:
         *,
         module: str | None = None,
         autoload: bool = True,
-    ) -> type | None:
+    ) -> type[BaseModel] | None:
         class_dict = cls.store.get(name, {})
         model = class_dict.get(
             max(class_dict, default=0) if version is None else version
@@ -135,7 +139,7 @@ class ModelStore:
         builtin_module = BUILTIN_MODELS.get(name)
         if model is not None and (
             module is None
-            or (model.__module__ == builtin_module) == (module == builtin_module)
+            or (cls.get_module(model) == builtin_module) == (module == builtin_module)
         ):
             return model
         if autoload and builtin_module and (module is None or module == builtin_module):

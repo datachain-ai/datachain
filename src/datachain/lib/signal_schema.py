@@ -71,7 +71,7 @@ from datachain.lib.data_model import (
     unwrap_optional,
 )
 from datachain.lib.file import File
-from datachain.lib.model_store import ModelStore
+from datachain.lib.model_store import BUILTIN_MODELS, ModelStore
 from datachain.lib.utils import (
     DataChainColumnError,
     DataChainParamsError,
@@ -395,7 +395,7 @@ class SignalSchema:
                 ModelStore.get_name(base) if issubclass(base, DataModel) else None
             )
             base_name = getattr(base, "_modelstore_base_name", base.__name__)
-            bases.append((base_name, base.__module__, model_store_name))
+            bases.append((base_name, ModelStore.get_module(base), model_store_name))
         return bases
 
     @staticmethod
@@ -503,8 +503,14 @@ class SignalSchema:
                 ) from exc
 
             module = ct.bases[0][1] if ct.bases else None
-            if fr := ModelStore.get(
-                model_name, target_version, module=module, autoload=bool(ct.bases)
+            if (
+                fr := ModelStore.get(
+                    model_name, target_version, module=module, autoload=bool(ct.bases)
+                )
+            ) and (
+                ct.bases
+                or ModelStore.get_module(fr) != BUILTIN_MODELS.get(model_name)
+                or fr.model_fields.keys() == ct.fields.keys()
             ):
                 return fr
 
@@ -525,13 +531,16 @@ class SignalSchema:
                     if base_model:
                         break
 
-            return create_feature_model(
+            fr = create_feature_model(
                 type_name,
                 fields,
                 base=base_model,
                 hidden_fields=ct.hidden_fields,
                 partial_fingerprint=ct.partial_fingerprint,
             )
+            if module is not None:
+                fr._modelstore_module = module  # type: ignore[attr-defined]
+            return fr
 
         return ModelStore.get(model_name, target_version)
 
