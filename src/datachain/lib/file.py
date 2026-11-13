@@ -20,6 +20,7 @@ from fsspec.callbacks import DEFAULT_CALLBACK
 from fsspec.utils import stringify_path
 from pydantic import Field, field_validator, model_validator
 
+import datachain.sql  # noqa: F401
 from datachain import json
 from datachain.client import fileslice
 from datachain.client.writeconfig import WriteConfig
