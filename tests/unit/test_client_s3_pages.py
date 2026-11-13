@@ -14,7 +14,9 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from datachain.client import s3
+from datachain.client.ranges import Page
 from datachain.client.s3 import ClientS3, _ListingParser, _rows_page
+from datachain.client.s3_pages import LeanError, LeanS3, LeanSpec
 
 PAGES = Path(__file__).parent / "s3_pages"
 NS = 'xmlns="http://s3.amazonaws.com/doc/2006-03-01/"'
@@ -85,11 +87,45 @@ def _list_page(
     return page, read_fast[0]
 
 
+def _lean_page(body: bytes, versions: bool, start_after="", hi=None) -> Page | None:
+    """The page as a listing child reads it without botocore; None when it
+    leaves the page to botocore."""
+    spec = LeanSpec(
+        uri="s3://bucket",
+        url="http://127.0.0.1/bucket",
+        region=None,
+        credentials=None,
+        headers={},
+        versions=versions,
+        verify=True,
+        in_key_order=True,
+    )
+    try:
+        page = LeanS3(spec)._page(body, start_after, hi)
+    except LeanError:
+        return None
+    return page._replace(rows=[tuple(r) for r in page.rows])
+
+
+def _assert_lean_reads_as_botocore(body, versions, expected, start_after="", hi=None):
+    """A child reads a page as ``_list_page`` does, or leaves it to botocore;
+    a page botocore fails, it fails too."""
+    lean = _lean_page(body, versions, start_after, hi)
+    if lean is not None:
+        assert isinstance(expected, Page)
+        assert lean == expected._replace(rows=[tuple(r) for r in expected.rows])
+    return lean
+
+
 def _assert_lists_as_elementtree(body: bytes, versions=False, fast=True, **kwargs):
     page, read_fast = _list_page(body, versions, True, **kwargs)
     expected, _ = _list_page(body, versions, False, **kwargs)
     assert page == expected
     assert read_fast is fast
+    if kwargs.get("auto_set", True):  # a child asks for URL encoding itself
+        hi = kwargs.get("hi")
+        start = kwargs.get("start_after", "")
+        _assert_lean_reads_as_botocore(body, versions, expected, start, hi)
     return page
 
 
@@ -171,6 +207,17 @@ def _page(
 def test_real_pages_list_as_elementtree_reads_them(name, versions):
     body = (PAGES / f"{name}.xml").read_bytes()
     _assert_lists_as_elementtree(body, versions)
+
+
+@pytest.mark.parametrize(
+    "name,versions",
+    [("truncated", False), ("versions", True), ("owner", False), ("folders", False)],
+)
+def test_children_read_real_pages_without_botocore(name, versions):
+    body = (PAGES / f"{name}.xml").read_bytes()
+    expected, _ = _list_page(body, versions, False)
+
+    assert _assert_lean_reads_as_botocore(body, versions, expected) is not None
 
 
 def test_real_page_rows_hold_every_field():
@@ -693,6 +740,8 @@ def test_generated_pages_list_as_elementtree_reads_them(page, auto_set):
     expected, _ = _list_page(body, versions, False, start_after, hi, auto_set)
     assert fast == expected
     assert read_fast is plain
+    if auto_set:
+        _assert_lean_reads_as_botocore(body, versions, expected, start_after, hi)
 
 
 @pytest.fixture

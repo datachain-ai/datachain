@@ -1,5 +1,6 @@
 import asyncio
 import os
+import pickle
 import signal
 import sys
 import time
@@ -44,7 +45,9 @@ def client(cloud_server, cloud_server_credentials, mocker):
 @pytest.fixture
 def children(client, mocker):
     """Children of the listing; once they are starting, the parent lists no
-    further page until one runs, so every listing past two pages moves to them."""
+    further page until one runs, so every listing past two pages moves to them.
+    The parent reads one range at a time, which it hands over whole."""
+    mocker.patch("datachain.client.ranges.LIST_WORKERS", 1)
     started: list[Pool] = []
     pool_start, list_page = Pool.start, type(client)._list_page
 
@@ -66,14 +69,14 @@ def children(client, mocker):
 @pytest.fixture
 def remote_rows(mocker):
     got: list = []
-    list_page = Pool.list_page
+    take = Pool._take
 
-    async def recorded(self, *args):
-        page = await list_page(self, *args)
-        got.extend(page.rows if page else [])
-        return page
+    async def recorded(self, listing, child, message):
+        if message[0] == "rows":
+            got.extend(pickle.loads(message[1]))  # noqa: S301
+        return await take(self, listing, child, message)
 
-    mocker.patch.object(Pool, "list_page", recorded)
+    mocker.patch.object(Pool, "_take", recorded)
     return got
 
 
@@ -106,7 +109,8 @@ def killing(pools, frames, should_kill):
 
     async def received(stream):
         frame = await receive(stream)
-        if isinstance(frame, tuple) and frame[1] and should_kill(frame[1][0]):
+        rows = frame and frame[0] == "rows" and pickle.loads(frame[1])  # noqa: S301
+        if rows and should_kill(rows):
             procs = [p for pool in pools for p in pool.procs if p.stdout is stream]
             frames.append(frame)
             procs[0].kill()
@@ -349,6 +353,8 @@ print(json.dumps({"Version": 1, "AccessKeyId": sys.argv[2],
 def test_children_take_credentials_from_a_credential_process(
     client, tree, children, remote_rows, tmp_path, monkeypatch
 ):
+    # botocore children: lean ones take the credentials the parent resolved
+    monkeypatch.setenv("DATACHAIN_LEAN_LISTING", "0")
     import os
     import sys
 
@@ -387,16 +393,44 @@ def test_a_stopped_child_does_not_hang_the_listing(
 ):
     mocker.patch.object(listing_worker, "REPLY_TIMEOUT", 2)
     stopped: list = []
-    list_page = Pool.list_page
+    read = listing_worker.Child.read
 
     async def stop_one(self, *args):
-        if not stopped and self.children:
-            stopped.append(proc := next(iter(self.children)))
-            os.kill(proc.pid, signal.SIGSTOP)  # alive, but never answers
-        return await list_page(self, *args)
+        if not stopped:
+            stopped.append(self.proc)
+            os.kill(self.proc.pid, signal.SIGSTOP)  # alive, but never answers
+        return await read(self, *args)
 
-    mocker.patch.object(Pool, "list_page", stop_one)
+    mocker.patch.object(listing_worker.Child, "read", stop_one)
 
     assert listing(client) == listing(client, processes=False)
     assert stopped
     assert stopped[0].returncode == -9
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("tree", [TREE], indirect=True)
+@pytest.mark.parametrize("version_aware", [False, True], indirect=True)
+def test_s3_children_list_without_botocore(client, tree, children, mocker):
+    from datachain.client.s3_pages import LeanS3
+
+    specs: list = []
+    taken: list = []
+    pool_start, take = Pool.start, Pool._take
+
+    def start(self):
+        pool_start(self)
+        specs.append(pickle.loads(self.spec[listing_worker.HEADER.size :])[0])  # noqa: S301
+
+    async def recorded(self, listing, child, message):
+        taken.append(message[0])
+        return await take(self, listing, child, message)
+
+    mocker.patch.object(Pool, "start", start)
+    mocker.patch.object(Pool, "_take", recorded)
+
+    assert listing(client) == listing(client, processes=False)
+    assert specs
+    assert set(specs) == {LeanS3}
+    assert "rows" in taken
+    assert "failed" not in taken

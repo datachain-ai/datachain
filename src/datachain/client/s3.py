@@ -1,12 +1,14 @@
 import asyncio
+import logging
 import os
 import re
+import time
 from collections.abc import Callable, Iterable
 from contextvars import ContextVar
 from datetime import datetime
 from time import monotonic
 from typing import TYPE_CHECKING, Any, cast
-from urllib.parse import unquote_plus
+from urllib.parse import unquote_plus, urlsplit
 from xml.etree.ElementTree import Element, ParseError, fromstring
 
 from aiobotocore.parsers import AioResponseParserFactory, AioRestXMLParser
@@ -24,6 +26,15 @@ from datachain.lib.file import File, FileRow, as_file_row
 
 from .fsspec import BucketStatus, RangeListedClient
 from .ranges import PROCESS_LIST_WORKERS, Keep, Page
+from .s3_pages import (
+    LeanS3,
+    LeanSpec,
+    clean_version,
+    lean_verify,
+    page_of,
+    read_entries,
+    split_page,
+)
 
 if TYPE_CHECKING:
     from datachain.client.writeconfig import WriteConfig
@@ -105,6 +116,9 @@ def _head_bucket(fs: S3FileSystem, name: str) -> tuple[int, str | None]:
     return meta["HTTPStatusCode"], headers.get("x-amz-bucket-region")
 
 
+logger = logging.getLogger("datachain")
+
+
 def _parse_timestamp(value: Any) -> datetime:
     try:
         return datetime.fromisoformat(value)
@@ -159,149 +173,19 @@ def _read(node: Iterable[Element], fields: Fields) -> dict[str, Any]:
 # While ClientS3._list_page waits for a page, the source its rows are listed from
 _ROWS_OF: ContextVar[str | None] = ContextVar("_ROWS_OF", default=None)
 
-# Patterns read a page as S3 writes it; ElementTree reads any other page.
-_DECLARATION = b'<?xml version="1.0" encoding="UTF-8"?>'
-_ROOT = re.compile(r"\s*<List(?:Bucket|Versions)Result[\s>]")
-# what the patterns do not read: comments, CDATA, instructions, carriage
-# returns, and characters XML forbids
-_ODD = ((b"!", b"<!"), (b"?", b"<?"), (b"]", b"]]>"))  # a byte, then the text
-_CONTROL = bytes(set(range(32)) - {9, 10})  # characters XML forbids, and CR
-_NONCHARACTERS = (b"\xef\xbf\xbe", b"\xef\xbf\xbf")  # U+FFFE, U+FFFF
-_ENTITY = re.compile(rb"&(?!(?:amp|lt|gt|quot|apos|#34|#39);)")  # any other
-_TEXT = "([^<]*)"
-_ENTITIES = (
-    ("&lt;", "<"),
-    ("&gt;", ">"),
-    ("&#34;", '"'),
-    ("&apos;", "'"),
-    ("&#39;", "'"),
-    ("&amp;", "&"),  # last: "&amp;lt;" is "&lt;"
-)
-_SUMS = r"(?:<Checksum\w*>[^<&]*</Checksum\w*>)*"
-# the rest of an entry: fields that are not read, and no entry
-_REST = (
-    r"(?:[^<]+|<(?!/?(?:Key|Size|ETag|LastModified|VersionId|IsLatest"
-    r"|Contents|Version|DeleteMarker|CommonPrefixes)[\s/>]))*"
-)
-_OBJECT = (
-    rf"<LastModified>{_TEXT}</LastModified><ETag>{_TEXT}</ETag>{_SUMS}"
-    rf"<Size>(\d+)</Size>{_REST}"
-)
-_FOLDER = rf"<CommonPrefixes><Prefix>{_TEXT}</Prefix></CommonPrefixes>"
-# groups: the entry, then key, modified, etag, size | folder
-_CONTENTS = rf"(<Contents><Key>{_TEXT}</Key>{_OBJECT}</Contents>|{_FOLDER})"
-# groups: the entry, then key, version, latest, modified, etag, size | marker:
-# tag, key, version, modified | folder
-_VERSIONS = (
-    rf"(<Version><Key>{_TEXT}</Key><VersionId>{_TEXT}</VersionId>"
-    rf"<IsLatest>(true|false)</IsLatest>{_OBJECT}</Version>"
-    rf"|(<DeleteMarker>)<Key>{_TEXT}</Key><VersionId>{_TEXT}</VersionId>"
-    rf"<IsLatest>(?:true|false)</IsLatest><LastModified>{_TEXT}</LastModified>"
-    rf"{_REST}</DeleteMarker>|{_FOLDER})"
-)
-_ENTRIES = {False: re.compile(_CONTENTS), True: re.compile(_VERSIONS)}
-_FIRST = re.compile(r"<(?:Contents|Version|DeleteMarker|CommonPrefixes)[\s/>]")
-_ENTRY_TAGS = frozenset(("Contents", "Version", "DeleteMarker", "CommonPrefixes"))
-_MARK = "<_entries/>"  # where the entries were, to check they are the root's
-
-
-def _unescape(text: str) -> str:
-    if "&" in text:
-        text = text.replace("&quot;", '"')  # in every ETag
-        if "&" in text:
-            for entity, char in _ENTITIES:
-                text = text.replace(entity, char)
-    return text
-
-
-def _plain_text(body: bytes) -> str | None:
-    """The page as text, when it holds nothing the patterns do not read."""
-    if body.startswith(b"<?xml"):
-        if body[: len(_DECLARATION)].lower() != _DECLARATION.lower():
-            return None
-        body = body[len(_DECLARATION) :]
-    if (
-        any(byte in body and odd in body for byte, odd in _ODD)
-        or len(body.translate(None, _CONTROL)) != len(body)
-        or (not body.isascii() and any(n in body for n in _NONCHARACTERS))
-        or _ENTITY.search(body)
-    ):
-        return None
-    try:
-        text = body.decode()
-    except UnicodeDecodeError:
-        return None
-    return text if _ROOT.match(text) else None
-
-
-def _split(body: bytes, versions: bool) -> tuple[list[Element], str, list] | None:
-    """The root's children but entries, its namespace, and the fields of every
-    entry, of a page as S3 writes it: all entries one after another, each with
-    its fields in S3's order. ``None`` for any other page."""
-    if (text := _plain_text(body)) is None:
-        return None
-    entries = []
-    if first := _FIRST.search(text):
-        start = first.start()
-        if not (entries := _ENTRIES[versions].findall(text, start)):
-            return None
-        # where the last entry of its kind ends: any entry past it not read
-        # is the root's child, which the check below turns away
-        close = entries[-1][0][entries[-1][0].rindex("</") :]
-        end = text.rfind(close) + len(close)
-        # nothing between entries: they cover all from the first to the last
-        if sum(len(entry[0]) for entry in entries) != end - start:
-            return None
-        text = text[:start] + _MARK + text[end:]
-    try:
-        root = fromstring(text)  # noqa: S314
-    except ParseError:
-        return None
-    ns = root.tag[: root.tag.find("}") + 1]
-    others = [c for c in root if c.tag != f"{ns}_entries"]
-    if (first and len(others) == len(root)) or any(
-        c.tag[len(ns) :] in _ENTRY_TAGS for c in others
-    ):
-        return None  # entries inside another element, or ones not read
-    return others, ns, entries
-
-
-def _read_entries(
-    entries: list, versions: bool, source: str
-) -> tuple[list[FileRow], list[str], list[str]]:
-    """The rows of objects, and the keys of delete markers and folders, of the
-    entries ``_split`` read; a field that does not convert is a ValueError."""
-    rows, markers, folders = [], [], []
-    if versions:
-        for _, key, version, latest, modified, etag, size, *rest in entries:
-            marker, marker_key, _, marker_modified, folder = rest
-            if size:
-                version = ClientS3.clean_s3_version(_unescape(version))
-                rows.append(_row(source, key, size, etag, modified, version, latest))
-            elif marker:  # its date checked, as botocore converts it
-                _parse_timestamp(_unescape(marker_modified))
-                markers.append(_unescape(marker_key))
-            else:
-                folders.append(_unescape(folder))
-    else:
-        for _, key, modified, etag, size, folder in entries:
-            if size:
-                rows.append(_row(source, key, size, etag, modified))
-            else:
-                folders.append(_unescape(folder))
-    return rows, markers, folders
-
 
 def _rows_page(body: bytes, shape: Shape, source: str) -> dict[str, Any] | None:
     """The page as ``_list_page`` reads it, or ``None`` when ElementTree must
     read it. Its objects are ``FileRows`` with keys as written; delete markers
     and folders are dicts of their key alone."""
     versions = shape.name == "ListObjectVersionsOutput"
-    if (split := _split(body, versions)) is None:
+    if (split := split_page(body, versions)) is None:
         return None
     others, ns, entries = split
     try:
-        rows, markers, folders = _read_entries(entries, versions, source)
+        rows, markers, folders = read_entries(
+            entries, versions, source, as_file_row, _parse_timestamp
+        )
     except ValueError:
         return None
     return _read(others, _fields(shape, ns)) | {
@@ -311,19 +195,70 @@ def _rows_page(body: bytes, shape: Shape, source: str) -> dict[str, Any] | None:
     }
 
 
-def _row(source, key, size, etag, modified, version="", latest="true") -> FileRow:
-    return as_file_row(
-        (
-            source,
-            _unescape(key),
-            int(size),
-            version,
-            _unescape(etag).strip('"'),
-            latest == "true",
-            _parse_timestamp(_unescape(modified)),
-            None,
-        )
-    )
+_PASSED_HEADERS = frozenset({"x-amz-request-payer", "x-amz-expected-bucket-owner"})
+_SIGNING_HEADERS = frozenset(
+    {
+        "x-amz-date",
+        "x-amz-content-sha256",
+        "x-amz-security-token",
+        "user-agent",
+        "amz-sdk-invocation-id",
+        "amz-sdk-request",
+    }
+)
+_SCOPE = re.compile(r"AWS4-HMAC-SHA256 Credential=[^/]+/\d{8}/([^/]+)/s3/aws4_request,")
+
+
+def _plain_request(
+    sent: Any, config: dict
+) -> tuple[str, dict[str, str], str | None] | None:
+    """The bucket URL, the headers a lean child sends too, and the signing
+    region (None: unsigned) of the last listing request in ``sent``; None
+    unless it was a plain ``GET``, signed with SigV4 or not at all."""
+    off = os.environ.get("DATACHAIN_LEAN_LISTING", "1") == "0"
+    if not isinstance(sent, list) or not sent or off or config.get("proxies"):
+        return None
+    url, method, headers = sent[-1]
+    # botocore holds header values as bytes
+    headers = {
+        k.lower(): v.decode() if isinstance(v, bytes) else v for k, v in headers.items()
+    }
+    auth = headers.pop("authorization", None)
+    scope = _SCOPE.match(auth) if auth is not None else None
+    parts = urlsplit(url)
+    # a header no lean child sends, such as a directory bucket's session token
+    unknown = headers.keys() - _PASSED_HEADERS - _SIGNING_HEADERS
+    if (
+        method != "GET"
+        or unknown
+        or (auth is not None and not scope)
+        or parts.scheme not in ("http", "https")
+    ):
+        return None
+    passed = {k: v for k, v in headers.items() if k in _PASSED_HEADERS}
+    region = scope[1] if scope else None
+    return f"{parts.scheme}://{parts.netloc}{parts.path}", passed, region
+
+
+# While ClientS3._list_page waits for a page it learns from, the requests sent
+_SENT: ContextVar[list | None] = ContextVar("_SENT", default=None)
+
+
+def _remember(request, **kwargs) -> None:
+    if (sent := _SENT.get()) is not None:
+        sent.append((request.url, request.method, dict(request.headers)))
+
+
+def _remember_requests(s3) -> list:
+    """A list of the listing requests ``s3`` sends in this task from now on, as
+    (url, method, headers): other listings on the same client leave it alone."""
+    if not getattr(s3, "_datachain_remembers", False):
+        for operation in ("ListObjectsV2", "ListObjectVersions"):
+            s3.meta.events.register(f"before-send.s3.{operation}", _remember)
+        s3._datachain_remembers = True
+    sent: list = []
+    _SENT.set(sent)
+    return sent
 
 
 def _decode_rows(parsed, context, **kwargs) -> None:
@@ -446,6 +381,7 @@ class ClientS3(RangeListedClient):
     FS_CLASS = _S3FileSystem
     PREFIX = "s3://"
     LISTS_LEVELS = True
+    NAMES_FOLDERS = True
     protocol = "s3"
     CREDENTIAL_KEYS = frozenset(
         {
@@ -464,6 +400,8 @@ class ClientS3(RangeListedClient):
     # that state replaces them, so those files are checked by etag.
     PINNED_VERSION_IS_IMMUTABLE = True
     _unversioned = False  # the server can't list versions
+    # how listing children list without botocore; False: they can't; None: unknown
+    _lean: "LeanSpec | bool | None" = None
 
     @staticmethod
     def _normalize_s3_kwargs(kwargs: dict) -> dict:
@@ -618,6 +556,8 @@ class ClientS3(RangeListedClient):
             kwargs["StartAfter"] = start_after
         await self.fs.set_session()
         s3 = await self.fs.get_s3(self.name)
+        learn = not delimiter and self._lean is None
+        sent = _remember_requests(s3) if learn else None
         list_page = s3.list_object_versions if versions else s3.list_objects_v2
         rows_of = _ROWS_OF.set(self.uri)
         try:
@@ -635,12 +575,15 @@ class ClientS3(RangeListedClient):
             page = None
         finally:
             _ROWS_OF.reset(rows_of)
+            _SENT.set(None)
         if page is None:
             # stores without version support, such as R2, hold only current objects
             self._unversioned = True
             return await self._list_page(
                 prefix, start_after, None, hi, page_size, delimiter
             )
+        if sent is not None:
+            await self._learn_lean(s3, sent, versions)
         keep = Keep(self, start_after, hi)
         if (rows := page.get("FileRows")) is None:  # ElementTree read the page
             entries = page.get("Versions" if versions else "Contents", [])
@@ -648,25 +591,60 @@ class ClientS3(RangeListedClient):
             rows = [self._file_row(d, versions) for d in entries if keep(d["Key"])]
         else:
             keys = [row[1] for row in rows]
-            rows = [row for row in rows if keep(row[1])]
-        listed = [d["Key"] for d in page.get("DeleteMarkers", [])]
-        # folders past a delimiter: listed past, though they make no rows
-        listed += [p["Prefix"] for p in page.get("CommonPrefixes", [])]
+            rows = keep.take(rows, keys)
+        markers = [d["Key"] for d in page.get("DeleteMarkers", [])]
+        folders = [p["Prefix"] for p in page.get("CommonPrefixes", [])]
         if not page.get("IsTruncated"):
             token = None
         elif versions:
             token = page["NextKeyMarker"], page.get("NextVersionIdMarker")
         else:
             token = page["NextContinuationToken"]
-        return Page(
-            rows,
-            keys[0] if keys else None,
-            max(keys + listed, default=None),
-            token,
-            keep.past_lo,
-            keep.past_hi,
-            keep.in_order,
+        return page_of(rows, keys, markers, folders, token, keep)
+
+    async def _learn_lean(self, s3, sent: list, versions: bool) -> None:
+        try:
+            self._lean = await self._lean_spec(s3, sent, versions)
+        except Exception:
+            logger.debug("Listing children use botocore", exc_info=True)
+            self._lean = False
+
+    async def _lean_spec(self, s3, sent: list, versions: bool) -> LeanSpec | bool:
+        """How a listing child can list as this client just did, or False when
+        the request botocore sent was not a plain one, signed by SigV4 or not
+        signed: a child then lists with botocore."""
+        request = _plain_request(sent, self.fs.config_kwargs or {})
+        if request is None:
+            return False
+        url, headers, region = request
+        credentials = None
+        if region is not None:
+            signer = s3._request_signer._credentials
+            expiry = getattr(signer, "_expiry_time", None)
+            # none, or ones that would expire while children list
+            if signer is None or (expiry and expiry.timestamp() < time.time() + 900):
+                return False
+            frozen = await signer.get_frozen_credentials()
+            credentials = (frozen.access_key, frozen.secret_key, frozen.token)
+        return LeanSpec(
+            uri=self.uri,
+            url=url,
+            region=region,
+            credentials=credentials,
+            headers=headers,
+            versions=versions,
+            verify=lean_verify(self.fs.client_kwargs or {}),
+            in_key_order=self._lists_in_key_order(),
         )
+
+    async def _fetch_prefix(self, start_prefix: str, result_queue) -> None:
+        self._lean = None  # learnt again: credentials and versions may differ
+        await super()._fetch_prefix(start_prefix, result_queue)
+
+    def _child_spec(self) -> tuple[type, tuple] | None:
+        if isinstance(self._lean, LeanSpec):
+            return LeanS3, (self._lean,)
+        return None
 
     def _file_row(self, v, versions: bool) -> tuple:
         return FileRow(
@@ -679,9 +657,7 @@ class ClientS3(RangeListedClient):
             v["LastModified"],
         )
 
-    @staticmethod
-    def clean_s3_version(ver: str | None) -> str:
-        return ver if (ver is not None and ver != "null") else ""
+    clean_s3_version = staticmethod(clean_version)
 
     def info_to_file(self, v: dict[str, Any], path: str) -> File:
         return File(
