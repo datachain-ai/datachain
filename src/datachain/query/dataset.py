@@ -102,7 +102,6 @@ if TYPE_CHECKING:
     P = ParamSpec("P")
 
 
-clone_catalog_with_cache = _catalog.clone_catalog_with_cache
 Function = base.Function
 PartitionByType = str | Function | ColumnExpr | Sequence[str | Function | ColumnExpr]
 JoinPredicateType = str | ColumnExpr
@@ -930,7 +929,7 @@ class UDFStep(Step, ABC):
 
         prefetch = self.udf.prefetch
         with _get_cache(catalog.cache, prefetch, use_cache=self.cache) as _cache:
-            catalog = clone_catalog_with_cache(catalog, _cache)
+            catalog = _catalog.clone_catalog_with_cache(catalog, _cache)
 
             try:
                 if udf_distributor_class and not catalog.in_memory:

@@ -109,11 +109,7 @@ class ModelStore:
         base_name = cls._base_name(model)
         unique_name = model.__name__
         version = ModelStore.get_version(model)
-        builtin_module = BUILTIN_MODELS.get(base_name)
-        is_builtin = (
-            "_modelstore_base_name" not in vars(model)
-            and cls.get_module(model) == builtin_module
-        )
+        is_builtin = model.__module__ == BUILTIN_MODELS.get(base_name)
 
         # Register under both:
         # - `base_name` (logical/original name, from `_modelstore_base_name` when set)
@@ -123,14 +119,10 @@ class ModelStore:
         #   resolve by the runtime class name.
         for name in (base_name, unique_name):
             versions = cls.store.setdefault(name, {})
-            existing = versions.get(version)
             if (
                 is_builtin
-                and existing is not None
-                and (
-                    cls.get_module(existing) != builtin_module
-                    or "_modelstore_base_name" in vars(existing)
-                )
+                and (existing := versions.get(version)) is not None
+                and existing.__module__ != model.__module__
             ):
                 continue
             versions[version] = model

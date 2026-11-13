@@ -6,10 +6,22 @@ from pydantic import create_model
 
 from datachain.lib.data_model import DataModel
 from datachain.lib.model_store import BUILTIN_MODELS, ModelStore
-from datachain.lib.signal_schema import SignalSchema, SignalSchemaWarning
+from datachain.lib.signal_schema import (
+    SignalSchema,
+    SignalSchemaWarning,
+    create_feature_model,
+)
 
 pytestmark = pytest.mark.usefixtures("empty_model_store")
 NAMES = ["BBox", "File", "Image", "Audio", "Video"]
+
+
+def _legacy_schema(model):
+    schema = SignalSchema({"value": model}).serialize()
+    schema["_custom_types"] = {
+        name: record["fields"] for name, record in schema["_custom_types"].items()
+    }
+    return schema
 
 
 @pytest.mark.parametrize("name", NAMES)
@@ -117,6 +129,29 @@ def test_legacy_model_reuses_the_registered_class(name):
     assert SignalSchema.deserialize(schema).values["value"] is registered
 
 
+def test_legacy_read_preserves_compatible_user_class_with_wider_type(test_session):
+    import datachain as dc
+
+    saved_model = create_model("LegacyScore", __base__=DataModel, score=(float, ...))
+    dc.read_values(value=[saved_model(score=0.9)], session=test_session).save("legacy")
+    catalog = test_session.catalog
+    dataset = catalog.get_dataset("legacy", versions=None)
+    catalog.metastore.update_dataset_version(
+        dataset, dataset.latest_version, feature_schema=_legacy_schema(saved_model)
+    )
+
+    class LegacyScore(DataModel):
+        score: float | None
+
+        def label(self):
+            return "user-score"
+
+    value = dc.read_dataset("legacy", session=test_session).to_values("value")[0]
+    assert isinstance(value, LegacyScore)
+    assert value.score == 0.9
+    assert value.label() == "user-score"
+
+
 @pytest.mark.parametrize("name", ["BBox", "File", "CustomBox"])
 @pytest.mark.parametrize(
     "saved_module,live_module",
@@ -201,10 +236,7 @@ def test_saved_user_model_with_legacy_metadata_reads_values(
     catalog.metastore.update_dataset_version(
         dataset,
         dataset.latest_version,
-        feature_schema={
-            "value": f"{name}@v1",
-            "_custom_types": {f"{name}@v1": {"score": "float"}},
-        },
+        feature_schema=_legacy_schema(user_model),
     )
     ModelStore.store.clear()
     if builtin_cached:
@@ -217,10 +249,7 @@ def test_saved_user_model_with_legacy_metadata_reads_values(
 def test_legacy_builtin_model_reuses_the_registered_class(name):
     builtin = getattr(import_module(BUILTIN_MODELS[name]), name)
     ModelStore.register(builtin)
-    saved = SignalSchema({"value": builtin}).serialize()
-    saved["_custom_types"] = {
-        name: record["fields"] for name, record in saved["_custom_types"].items()
-    }
+    saved = _legacy_schema(builtin)
     assert SignalSchema.deserialize(saved).values["value"] is builtin
 
 
@@ -240,10 +269,7 @@ def test_legacy_builtin_with_different_field_types_reads_saved_values(test_sessi
     catalog.metastore.update_dataset_version(
         dataset,
         dataset.latest_version,
-        feature_schema={
-            "value": "BBox@v1",
-            "_custom_types": {"BBox@v1": {"title": "str", "coords": "list[float]"}},
-        },
+        feature_schema=_legacy_schema(model),
     )
     ModelStore.store.clear()
     ModelStore.register(BuiltinBBox)
@@ -252,14 +278,23 @@ def test_legacy_builtin_with_different_field_types_reads_saved_values(test_sessi
     assert value.coords == coords
 
 
+@pytest.mark.parametrize("origin", ["user_models", "datachain.model.bbox"])
+def test_builtin_registration_preserves_reconstructed_model(origin):
+    from datachain.model.bbox import BBox
+
+    restored = create_feature_model("BBox@v1", {"title": str, "coords": list[float]})
+    restored._modelstore_module = origin
+    ModelStore.register(BBox)
+    assert ModelStore.get("BBox", 1, module=origin) is restored
+    assert ModelStore.get("BBox_v1", 1) is restored
+    assert restored(title="box", coords=[1.5]).coords == [1.5]
+
+
 def test_legacy_nested_builtin_with_different_field_type():
     from datachain.lib.file import File
     from datachain.lib.webdataset import WDSBasic
 
-    saved = SignalSchema({"value": WDSBasic}).serialize()
-    saved["_custom_types"] = {
-        name: record["fields"] for name, record in saved["_custom_types"].items()
-    }
+    saved = _legacy_schema(WDSBasic)
     saved["_custom_types"]["File@v1"]["size"] = "float"
     ModelStore.register(WDSBasic)
     restored = SignalSchema.deserialize(saved).values["value"]

@@ -39,7 +39,6 @@ if TYPE_CHECKING:
     from datachain.dataset import RowDict
     from datachain.query.session import Session
 
-FileSlice = fileslice.FileSlice
 sha256 = partial(hashlib.sha256, usedforsecurity=False)
 
 logger = logging.getLogger("datachain")
@@ -176,7 +175,7 @@ class TarVFile(VFile):
         if block_size is None:
             block_size = min(size, TAR_READ_BLOCK_SIZE)
         fd = client.open_object(tar_file, use_cache=True, block_size=block_size)
-        return FileSlice(fd, offset, size, file.name)
+        return fileslice.FileSlice(fd, offset, size, file.name)
 
     @classmethod
     def parent(cls, file: "File", location: list[dict]) -> "File":
