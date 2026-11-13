@@ -14,6 +14,7 @@ from datachain import json
 from datachain.data_storage.warehouse import to_json_text
 from datachain.fs.reference import ReferenceFileSystem
 from datachain.lib.convert.flatten import classify_field, flatten, iter_field_columns
+from datachain.lib.convert.unflatten import ABSENT, unflatten_to_json_pos
 from datachain.lib.data_model import (
     NULLABLE_SCALARS,
     TYPE_TAG_FIELD,
@@ -198,16 +199,11 @@ class ArrowGenerator(Generator):
         if format := kwargs.get("format"):
             kwargs["format"] = fix_pyarrow_format(format, self.parse_options)
 
-        if self.columns is not None and _written_by_datachain(self.input_schema):
-            # Each file keeps its own types, which other files may differ from. A
-            # picked field missing from it reads as null, as in a full read.
+        if _written_by_datachain(self.input_schema):
+            # Each file is read with its own columns and types, which other files
+            # may differ from.
             ds = dataset(fs_path, filesystem=fs, **kwargs)
-            # A full read checks each file's tags when it reads the schemas.
             _check_type_tags(file, ds.schema)
-            present = set(ds.schema.names)
-            if missing := [f for f in self.input_schema if f.name not in present]:
-                fields = [*ds.schema, *missing]
-                ds = ds.replace_schema(pa.schema(fields, metadata=ds.schema.metadata))
         else:
             ds = dataset(fs_path, schema=self.input_schema, filesystem=fs, **kwargs)
 
@@ -227,36 +223,24 @@ class ArrowGenerator(Generator):
             kw["columns"] = names
             yield from self._flat_rows(self._batches(ds, kw), file, source_kwargs)
             return
-        parents: dict[str, ParentTag] = {}
-        if self.columns is not None and (
-            signal_schema := _get_datachain_schema(schema)
-        ):
-            prepared = _get_datachain_schema(self.input_schema)
-            parents = _parent_tags(signal_schema, prepared, schema.names, self.columns)
-            wanted = set(_model_signals(self.output_schema, self.columns))
-            wanted |= {tag for tag, _, _ in parents.values()}
-            kw["columns"] = [c for c in schema.names if c in wanted]
-        elif self.columns is not None:
-            present = set(schema.names)
-            kw["columns"] = [c for c in self.columns if c in present]
-            # Decode Hugging Face features only for the columns being read.
-            fields = [schema.field(c) for c in kw["columns"]]
-            schema = pa.schema(fields, metadata=schema.metadata)
-        hf_schema = _get_hf_schema(schema)
-
-        for start, batch in self._batches(ds, kw):
-            # Maps are read as dicts. Duplicate keys raise an error.
-            records = batch.to_pylist(maps_as_pydicts="strict")
-            for index, record in enumerate(records, start):
-                yield self._process_record(
-                    record,
-                    file,
-                    index,
-                    hf_schema,
-                    use_datachain_schema,
-                    source_kwargs,
-                    parents,
-                )
+        if use_datachain_schema:
+            objs = self._signal_objects(ds, kw)
+        else:
+            if self.columns is not None:
+                present = set(schema.names)
+                kw["columns"] = [c for c in self.columns if c in present]
+                # Decode Hugging Face features only for the columns being read.
+                fields = [schema.field(c) for c in kw["columns"]]
+                schema = pa.schema(fields, metadata=schema.metadata)
+            hf_schema = _get_hf_schema(schema)
+            objs = (
+                self._process_non_datachain_record(record, hf_schema)
+                for _, batch in self._batches(ds, kw)
+                # Maps are read as dicts. Duplicate keys raise an error.
+                for record in batch.to_pylist(maps_as_pydicts="strict")
+            )
+        for index, obj in enumerate(objs):
+            yield self._process_record(obj, file, index, source_kwargs)
 
     def _batches(
         self, ds: Dataset, kw: dict[str, Any]
@@ -339,25 +323,50 @@ class ArrowGenerator(Generator):
                 for index, values in enumerate(rows, start):
                     yield FlatRow((*file_values, index, stored_options, *values))
 
+    def _signal_objects(self, ds: Dataset, kw: dict[str, Any]) -> Iterator["BaseModel"]:
+        """Read each row of a file written by DataChain into the output model by
+        column position, as rows are read from the DB. A column the file lacks
+        leaves its field out, so the field takes its default."""
+        model, schema = self.output_schema, ds.schema
+        paths = self.columns or list(model.model_fields)
+        parents: dict[str, ParentTag] = {}
+        if self.columns is not None and (
+            signal_schema := _get_datachain_schema(schema)
+        ):
+            parents = _parent_tags(signal_schema, schema.names, paths)
+        names = [
+            ".".join(column)
+            for info, path in zip(model.model_fields.values(), paths, strict=True)
+            for column in iter_field_columns(info.annotation, (path,))
+        ]
+        wanted = {*names, *(tag for tag, _, _ in parents.values())}
+        kw["columns"] = [c for c in schema.names if c in wanted]
+        for _, batch in self._batches(ds, kw):
+            # Maps are read as dicts. Duplicate keys raise an error.
+            values = {
+                name: column.to_pylist(maps_as_pydicts="strict")
+                for name, column in zip(batch.schema.names, batch.columns, strict=True)
+            }
+            for path, (tag, layout, arm) in parents.items():
+                # The parent's tag stands in for the path's own, set where it
+                # selects the arm holding the path.
+                values[f"{path}.{TYPE_TAG_FIELD}"] = [
+                    t if arm_for_tag(layout, t) is arm else None for t in values[tag]
+                ]
+            absent = [ABSENT] * batch.num_rows
+            # An output with no fields still takes one object per row.
+            columns = [values.get(n, absent) for n in names] or [absent]
+            for row in zip(*columns, strict=True):
+                yield model(**unflatten_to_json_pos(model, row, 0, _build_model)[0])
+
     def _process_record(
         self,
-        record: dict[str, Any],
+        obj: "BaseModel",
         file: File,
         index: int,
-        hf_schema: tuple["Features", dict[str, "DataType"]] | None,
-        use_datachain_schema: bool,
         source_kwargs: dict[str, Any] | None,
-        parents: dict[str, "ParentTag"],
     ):
-        if use_datachain_schema:
-            vals = [
-                _nested_model_instantiate(
-                    record, self.output_schema, paths=self.columns, parents=parents
-                )
-            ]
-        else:
-            vals = self._process_non_datachain_record(record, hf_schema)
-
+        vals = [obj]
         if source_kwargs is not None:
             arrow_file = ArrowRow(file=file, index=index, kwargs=source_kwargs)
             vals = [arrow_file, *vals]
@@ -387,7 +396,7 @@ class ArrowGenerator(Generator):
             elif value is not None and ModelStore.is_pydantic(anno):
                 value = anno(**value)  # type: ignore[misc]
             values[field] = value
-        return [self.output_schema(**values)]
+        return self.output_schema(**values)
 
 
 def _dataset_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -638,18 +647,13 @@ def _union_arms(layout: "UnionLayout | None") -> str | None:
 
 
 def _in_signals(column: str, signals: Sequence[str]) -> bool:
-    """Whether a stored column belongs to one of the signals, e.g. "p.x" to "p",
-    or is the type tag of a parent of one, e.g. "p._type_tag" to "p.x"."""
-    if column.endswith(f".{TYPE_TAG_FIELD}"):
-        parent = column.removesuffix(TYPE_TAG_FIELD)
-        if any(s.startswith(parent) for s in signals):
-            return True
+    """Whether a stored column belongs to one of the signals, e.g. "p.x" to "p"."""
     return any(column == s or column.startswith(f"{s}.") for s in signals)
 
 
 def _picked_schema(schemas: list[pa.Schema], signals: Sequence[str]) -> pa.Schema:
-    """Unify the files' schemas over the picked signals. Only these need compatible
-    types across files, and a file that lacks one reads it as null."""
+    """Unify the files' schemas over the picked signals, as only these need
+    compatible types across files."""
     picked = [
         pa.schema([f for f in s if _in_signals(f.name, signals)], metadata=s.metadata)
         for s in schemas
@@ -658,14 +662,10 @@ def _picked_schema(schemas: list[pa.Schema], signals: Sequence[str]) -> pa.Schem
 
 
 def _parent_tags(
-    signal_schema: SignalSchema,
-    prepared: SignalSchema | None,
-    columns: Sequence[str],
-    paths: Sequence[str],
+    signal_schema: SignalSchema, columns: Sequence[str], paths: Sequence[str]
 ) -> dict[str, "ParentTag"]:
-    """Map each path that only its parent's ``_type_tag`` tells is present to that
-    tag column, the parent's layout and the arm holding the path. The arm is None
-    where this file's parent doesn't hold the path.
+    """Map each path of the file that only its parent's ``_type_tag`` tells is
+    present to that tag column, the parent's layout and the arm holding the path.
 
     A column, or a model with its own tag, is null where its parent is absent.
     """
@@ -674,24 +674,13 @@ def _parent_tags(
     for path in paths:
         if path in names or f"{path}.{TYPE_TAG_FIELD}" in names:
             continue
-        found = signal_schema.tagged_parent(path)
-        if found is None and prepared is not None:
-            # This file lacks the parent, so its padded tag is null.
-            found = prepared.tagged_parent(path)
-        if found is not None:
+        # A path the file lacks is left out of the row, so no tag decides it.
+        if not any(c.startswith(f"{path}.") for c in names):
+            continue
+        if (found := signal_schema.tagged_parent(path)) is not None:
             parent, layout, arm = found
             parents[path] = (f"{parent}.{TYPE_TAG_FIELD}", layout, arm)
     return parents
-
-
-def _model_signals(model: type["BaseModel"], paths: Sequence[str]) -> list[str]:
-    """Return the stored columns that the model's fields read, each from its
-    path."""
-    return [
-        ".".join(column)
-        for info, path in zip(model.model_fields.values(), paths, strict=True)
-        for column in iter_field_columns(info.annotation, (path,))
-    ]
 
 
 def schema_to_output(
@@ -864,58 +853,5 @@ def _check_type_tags(file: File, schema: pa.Schema) -> None:
             )
 
 
-def _union_value(
-    column_values: dict[str, Any], layout: "UnionLayout", prefix: str
-) -> Any:
-    """Reconstruct a tagged-union value from flat columns, hydrating the active arm."""
-    arm = arm_for_tag(layout, column_values[f"{prefix}.{TYPE_TAG_FIELD}"])
-    if arm is None:
-        return None
-    arm_prefix = f"{prefix}.{arm_selector(arm)}" if layout.use_slots else prefix
-    if (fr := ModelStore.to_pydantic(arm)) is not None:
-        return _nested_model_instantiate(column_values, fr, arm_prefix)
-    return column_values.get(arm_prefix)
-
-
-def _nested_model_instantiate(
-    column_values: dict[str, Any],
-    model: type["BaseModel"],
-    prefix: str = "",
-    paths: Sequence[str] | None = None,
-    parents: dict[str, "ParentTag"] | None = None,
-) -> "BaseModel":
-    """Instantiate the given model and all sub-models/fields based on the provided
-    column values. With `paths`, each field is read from its path, in order,
-    instead of from its own name, and `parents` maps a path to the parent tag
-    that tells it is present."""
-    vals_dict: dict[str, Any] = {}
-    for i, (field, field_info) in enumerate(model.model_fields.items()):
-        anno = field_info.annotation
-        if paths is not None:
-            cur_path = paths[i]
-            if parents and (parent := parents.get(cur_path)):
-                tag, parent_layout, arm = parent
-                # The stored tag is checked even where this file lacks the arm.
-                active = arm_for_tag(parent_layout, column_values[tag])
-                if arm is None or active is not arm:
-                    vals_dict[field] = None
-                    continue
-                # Present by its parent's tag, even with all of its fields null.
-                anno = classify_field(anno).inner
-        else:
-            cur_path = f"{prefix}.{field}" if prefix else field
-        if (layout := union_layout(anno)) is not None:
-            # A field that the file's schema doesn't have keeps its default.
-            if f"{cur_path}.{TYPE_TAG_FIELD}" in column_values:
-                vals_dict[field] = _union_value(column_values, layout, cur_path)
-            continue
-        kind = classify_field(anno)
-        if kind.is_model:
-            vals_dict[field] = _nested_model_instantiate(
-                column_values,
-                kind.inner,
-                prefix=cur_path,
-            )
-        elif cur_path in column_values:
-            vals_dict[field] = column_values[cur_path]
-    return model(**vals_dict)
+def _build_model(model: type["BaseModel"], values: dict[str, Any]) -> "BaseModel":
+    return model(**values)

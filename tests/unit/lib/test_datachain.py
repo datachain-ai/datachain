@@ -18,7 +18,7 @@ import pyarrow.parquet as pq
 import pytest
 import sqlalchemy
 from datasets import ClassLabel, Dataset, Features, Translation, Value
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 import datachain as dc
 import datachain.query.dataset as query_dataset
@@ -42,6 +42,7 @@ from datachain.lib.file import File
 from datachain.lib.hf import HFClassLabel
 from datachain.lib.listing import LISTING_PREFIX, parse_listing_uri
 from datachain.lib.listing_info import ListingInfo
+from datachain.lib.model_store import ModelStore
 from datachain.lib.settings import DEFAULT_PREFETCH
 from datachain.lib.signal_schema import (
     SignalResolvingError,
@@ -2905,23 +2906,21 @@ class OnlyY(DataModel):
     y: int
 
 
-def _write_x_then_no_x(path, session, optional=False):
+def _write_x_then_no_x(path, session, optional=False, names=("1", "2")):
     path.mkdir()
-    for name, i, point in [
-        ("1.parquet", 1, DefaultX(x=1, y=2)),
-        ("2.parquet", 2, OnlyY(y=7)),
-    ]:
+    points = [DefaultX(x=1, y=2), OnlyY(y=7)]
+    for name, i, point in zip(names, [1, 2], points, strict=True):
         model = type(point) | None if optional else type(point)
         output = {"id": int, "p": model}
         dc.read_values(id=[i], p=[point], output=output, session=session).to_parquet(
-            path / name
+            path / f"{name}.parquet"
         )
     return path.as_uri()
 
 
 @pytest.mark.parametrize("with_output", [False, True])
 @pytest.mark.parametrize("optional", [False, True])
-def test_read_parquet_columns_read_a_field_missing_from_a_file_as_none(
+def test_read_parquet_columns_read_a_field_missing_from_a_file_as_its_default(
     tmp_dir, test_session, optional, with_output
 ):
     uri = _write_x_then_no_x(tmp_dir / "parts", test_session, optional)
@@ -2932,11 +2931,126 @@ def test_read_parquet_columns_read_a_field_missing_from_a_file_as_none(
         else {"columns": ["id", "p.x"]}
     )
     chain = dc.read_parquet(uri, source=False, session=test_session, **kwargs)
-    assert chain.order_by("id").to_values("p.x") == [1, None]
+    assert chain.order_by("id").to_values("p.x") == [1, 5]
+
+
+@pytest.mark.parametrize("names", [("1", "2"), ("2", "1")])
+def test_read_parquet_output_field_a_file_lacks_takes_its_default_in_any_file_order(
+    tmp_dir, test_session, names
+):
+    uri = _write_x_then_no_x(tmp_dir / "parts", test_session, names=names)
+    chain = dc.read_parquet(
+        uri, output={"id": int, "p": DefaultX}, source=False, session=test_session
+    )
+    assert chain.order_by("id").to_values("p.x") == [1, 5]
+
+
+@pytest.mark.parametrize("model", [Point, PointX])
+def test_read_parquet_output_field_a_file_lacks_with_no_default_raises(
+    tmp_dir, test_session, model
+):
+    uri = _write_x_then_no_x(tmp_dir / "parts", test_session)
+    chain = dc.read_parquet(
+        uri, output={"id": int, "p": model}, source=False, session=test_session
+    )
+    with pytest.raises(ValidationError, match=r"p\.x\n  Field required"):
+        chain.to_list()
+
+
+def test_read_parquet_field_a_file_lacks_after_its_model_is_rebuilt_reads_the_rest(
+    tmp_dir, empty_model_store, test_session
+):
+    path = tmp_dir / "parts"
+    path.mkdir()
+    for i, point in enumerate([Point(x=1, y=2), OnlyY(y=7)], 1):
+        chain = dc.read_values(id=[i], p=[point], session=test_session)
+        chain.to_parquet(path / f"{i}.parquet")
+    # Without the model's code, x: int is rebuilt with a default of None. Only a DB
+    # with nullable int columns keeps that None, so p.x isn't checked.
+    ModelStore.store.clear()
+    chain = dc.read_parquet(path.as_uri(), source=False, session=test_session)
+    assert chain.order_by("id").to_values("p.y") == [2, 7]
+
+
+class XWithDefaults(DataModel):
+    x: int
+    name: str = Field(default_factory=lambda data: f"point-{data['x']}")
+    label: str = "default"
+
+    @field_validator("label")
+    @classmethod
+    def shout(cls, value: str) -> str:
+        return f"{value}!"
+
+
+def test_read_parquet_output_field_a_file_lacks_takes_its_default_per_row_unvalidated(
+    tmp_dir, test_session
+):
+    path = tmp_dir / "points.parquet"
+    points = [PointX(x=1), PointX(x=2)]
+    dc.read_values(id=[1, 2], p=points, session=test_session).to_parquet(path)
+    chain = dc.read_parquet(
+        path.as_uri(),
+        output={"id": int, "p": XWithDefaults},
+        source=False,
+        session=test_session,
+    )
+    assert chain.order_by("id").to_list("p.name", "p.label") == [
+        ("point-1", "default"),
+        ("point-2", "default"),
+    ]
+
+
+class XWithRequiredLabel(DataModel):
+    x: int
+    label: str
+
+
+def test_read_parquet_after_inactive_arms_lack_a_required_field_reads_the_rows(
+    tmp_dir, test_session
+):
+    path = tmp_dir / "rows.parquet"
+    output = {"id": int, "p": PointX | None, "u": XWithRequiredLabel | int}
+    dc.read_values(
+        id=[1, 2], p=[None, None], u=[3, 4], output=output, session=test_session
+    ).to_parquet(path)
+    pq.write_table(
+        pq.read_table(path).drop_columns(["u.XWithRequiredLabel.label"]), path
+    )
+    chain = dc.read_parquet(
+        path.as_uri(),
+        output={
+            "id": int,
+            "p": XWithRequiredLabel | None,
+            "u": XWithRequiredLabel | int,
+        },
+        source=False,
+        session=test_session,
+    )
+    assert chain.order_by("id").to_list("p", "u") == [(None, 3), (None, 4)]
+
+
+class OnlyDefaultX(DataModel):
+    x: int | None = 5
+
+
+@pytest.mark.parametrize("optional", [False, True])
+def test_read_parquet_after_a_present_model_lacks_its_fields_takes_their_defaults(
+    tmp_dir, test_session, optional
+):
+    path = tmp_dir / "y.parquet"
+    stored = OnlyY | None if optional else OnlyY
+    output = {"p": stored}
+    dc.read_values(p=[OnlyY(y=7)], output=output, session=test_session).to_parquet(path)
+    read = OnlyDefaultX | None if optional else OnlyDefaultX
+    chain = dc.read_parquet(
+        path.as_uri(), output={"p": read}, source=False, session=test_session
+    )
+    assert chain.to_values("p.x") == [5]
 
 
 @pytest.mark.parametrize("column", ["p.x", "p.DefaultX.x"])
-def test_read_parquet_columns_read_a_union_field_missing_from_a_file_as_none(
+def test_read_parquet_columns_read_a_union_field_missing_from_a_file_as_its_default(
     tmp_dir, test_session, column
 ):
     path = tmp_dir / "parts"
@@ -2953,7 +3067,7 @@ def test_read_parquet_columns_read_a_union_field_missing_from_a_file_as_none(
     chain = dc.read_parquet(
         path.as_uri(), columns=["id", column], source=False, session=test_session
     )
-    assert [p.x for p in chain.order_by("id").to_values("p")] == [1, None]
+    assert [p.x for p in chain.order_by("id").to_values("p")] == [1, 5]
 
 
 class Note(DataModel):
@@ -3028,22 +3142,27 @@ class NoteOrFallback(DataModel):
 
 
 @pytest.mark.parametrize(
-    "kwargs,signal",
+    "kwargs,signal,default",
     [
-        ({"columns": ["id", "c.note"]}, "c"),
-        ({"columns": ["id", "c"], "output": {"id": int, "v": Card | None}}, "v"),
-        ({"columns": ["id", "c.note"], "output": ["id", "v"]}, "v"),
-        ({"columns": ["id", "c.note"], "output": NoteOrFallback}, "value"),
+        ({"columns": ["id", "c.note"]}, "c", None),
+        ({"columns": ["id", "c"], "output": {"id": int, "v": Card | None}}, "v", None),
+        ({"columns": ["id", "c.note"], "output": ["id", "v"]}, "v", None),
+        (
+            {"columns": ["id", "c.note"], "output": NoteOrFallback},
+            "value",
+            Note(text="fallback"),
+        ),
     ],
 )
-def test_read_parquet_columns_read_a_parent_missing_from_a_file_as_none(
-    card_in_first_file_only, test_session, kwargs, signal
+def test_read_parquet_columns_read_a_parent_missing_from_a_file_as_its_default(
+    card_in_first_file_only, test_session, kwargs, signal, default
 ):
     chain = dc.read_parquet(
         card_in_first_file_only, source=False, session=test_session, **kwargs
     )
-    values = chain.order_by("id").to_values(signal)
-    assert [v is None for v in values] == [False, True]
+    first, second = chain.order_by("id").to_values(signal)
+    assert first is not None
+    assert second == default
 
 
 def write_parts(path, session, *parts):
@@ -3063,7 +3182,7 @@ def write_parts(path, session, *parts):
     ],
 )
 @pytest.mark.parametrize("output", [{"id": int, "value": Note | None}, NoteOrFallback])
-def test_read_parquet_columns_read_a_path_a_later_file_lacks_as_none(
+def test_read_parquet_columns_read_a_path_a_later_file_lacks_as_its_default(
     tmp_dir, test_session, first, second, column, output
 ):
     write_parts(tmp_dir / "parts", test_session, first, (PointX(x=1), second))
@@ -3074,10 +3193,11 @@ def test_read_parquet_columns_read_a_path_a_later_file_lacks_as_none(
         source=False,
         session=test_session,
     )
-    assert chain.order_by("id").to_values("value") == [Note(text="a"), None]
+    default = Note(text="fallback") if output is NoteOrFallback else None
+    assert chain.order_by("id").to_values("value") == [Note(text="a"), default]
 
 
-def test_read_parquet_columns_reject_a_tag_a_later_file_does_not_declare(
+def test_read_parquet_columns_reject_a_tag_the_file_does_not_declare(
     tmp_dir, test_session
 ):
     path = tmp_dir / "parts"
@@ -3087,10 +3207,10 @@ def test_read_parquet_columns_reject_a_tag_a_later_file_does_not_declare(
         (Note(text="a"), Note | int | None),
         (PointX(x=1), PointX | int | None),
     )
-    table = pq.read_table(path / "2.parquet")
+    table = pq.read_table(path / "1.parquet")
     i = table.column_names.index("u._type_tag")
     table = table.set_column(i, "u._type_tag", pa.array(["Bogus"]))
-    pq.write_table(table, path / "2.parquet")
+    pq.write_table(table, path / "1.parquet")
     with pytest.raises(
         DataChainParamsError, match="'Bogus' is not one of the declared"
     ):
@@ -3104,7 +3224,7 @@ def test_read_parquet_columns_reject_a_tag_a_later_file_does_not_declare(
 
 class PointAndNote(DataModel):
     x: int
-    note: Note | None = None
+    note: Note | None = Note(text="default")
 
 
 @pytest.mark.parametrize("columns", [["p"], None])
@@ -3115,7 +3235,7 @@ def test_read_parquet_output_model_field_not_in_the_file_keeps_its_default(
     chain = dc.read_parquet(
         point_parquet, columns=columns, output=output, session=test_session
     )
-    assert [(v.x, v.note) for v in chain.to_values("v")] == [(2, None)]
+    assert [(v.x, v.note) for v in chain.to_values("v")] == [(2, Note(text="default"))]
 
 
 def test_read_parquet_columns_reject_a_union_path_named_twice(
@@ -3260,7 +3380,7 @@ def test_parse_tabular_columns_take_signals_from_the_first_file_by_path(
     chain = dc.read_values(
         file=files.to_values("file")[::-1], session=test_session
     ).parse_tabular(columns=["id", "p.x"], source=False)
-    assert chain.order_by("id").to_values("p.x") == [1, None]
+    assert chain.order_by("id").to_values("p.x") == [1, 5]
 
 
 @pytest.mark.parametrize("columns,read", [(None, 3), (["c", "a"], 2)])
