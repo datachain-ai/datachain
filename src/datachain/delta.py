@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from datachain.lib.dc import DataChain
     from datachain.lib.signal_schema import SignalSchema
     from datachain.query.dataset import DatasetQuery, DeltaSpec
+    from datachain.query.session import Session
 
     P = ParamSpec("P")
 
@@ -129,7 +130,11 @@ def _safe_union(
 
 
 def _read_source(
-    name: str, project: Project, version: str, current_only: bool
+    session: "Session",
+    name: str,
+    project: Project,
+    version: str,
+    current_only: bool,
 ) -> "DataChain":
     from datachain.lib.dc import C
 
@@ -138,6 +143,7 @@ def _read_source(
         namespace=project.namespace.name,
         project=project.name,
         version=version,
+        session=session,
     )
     if current_only:
         column = chain.signals_schema.get_file_signal()
@@ -301,10 +307,14 @@ def _build_source_replay_input(
     from datachain.lib.dc import C
 
     current_only = source_query.listing_fn is not None
-    source = _read_source(name, project, latest_version, current_only)
+    source = _read_source(
+        source_query.session, name, project, latest_version, current_only
+    )
     changes = replay = None
     if version != latest_version:
-        previous = _read_source(name, project, version, current_only)
+        previous = _read_source(
+            source_query.session, name, project, version, current_only
+        )
         status_col = "dc_delta_status"
         names = {name.casefold() for name in source.signals_schema.values}
         while status_col.casefold() in names:
@@ -389,6 +399,7 @@ def delta_retry_update(
         namespace=namespace_name,
         project=project_name,
         version=latest_version,
+        session=dc.session,
     )
     updated_versions: dict[tuple[str, str, str], str] = {}
     result_key = _get_shared_result_key(delta_sources)

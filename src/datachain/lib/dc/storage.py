@@ -70,6 +70,11 @@ def read_storage(
         recursive: search recursively for the given path.
         update: list the storage again instead of reusing a saved listing.
             Default is False.
+        in_memory: If True, run this chain against a temporary in-memory
+            catalog: the listing and anything saved through the chain
+            disappear with the process. Useful for one-off reads of ephemeral
+            locations (e.g. a job's working directory) that should not leave
+            persistent listings behind. Default is False.
         anon: If True, we will treat cloud bucket as public one.
         versions: The chain holds current files either way: old versions are
             not included. If True, the default, on a versioned bucket each file
