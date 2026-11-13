@@ -175,6 +175,9 @@ class ArrowGenerator(Generator):
         self.columns = columns
         self.written_by_datachain = written_by_datachain
         self.output_from_types = output_from_types
+        # Every file of a read of DataChain files is read by its column names, even
+        # one whose metadata a tool such as Polars dropped when rewriting it.
+        self.datachain_read = _written_by_datachain(input_schema)
         self.parse_options = kwargs.pop("parse_options", None)
         self.kwargs = kwargs
 
@@ -199,10 +202,7 @@ class ArrowGenerator(Generator):
         if format := kwargs.get("format"):
             kwargs["format"] = fix_pyarrow_format(format, self.parse_options)
 
-        # Every file of a read of DataChain files is read by its column names, even
-        # one whose metadata a tool such as Polars dropped when rewriting it.
-        datachain_read = _written_by_datachain(self.input_schema)
-        if datachain_read:
+        if self.datachain_read:
             # Each file is read with its own columns and types, which other files
             # may differ from.
             ds = dataset(fs_path, filesystem=fs, **kwargs)
@@ -226,7 +226,7 @@ class ArrowGenerator(Generator):
             kw["columns"] = names
             yield from self._flat_rows(self._batches(ds, kw), file, source_kwargs)
             return
-        if datachain_read:
+        if self.datachain_read:
             objs = self._signal_objects(ds, kw)
         else:
             if self.columns is not None:
@@ -294,7 +294,7 @@ class ArrowGenerator(Generator):
         values as pyarrow gives them. Then no model is built per row. Else None."""
         if not self.output_from_types:
             return None
-        if _written_by_datachain(self.input_schema):
+        if self.datachain_read:
             # Its columns don't follow the output fields: its own source comes first.
             return None
         fields = list(self.output_schema.model_fields.values())
