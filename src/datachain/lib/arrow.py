@@ -325,8 +325,8 @@ class ArrowGenerator(Generator):
 
     def _signal_objects(self, ds: Dataset, kw: dict[str, Any]) -> Iterator["BaseModel"]:
         """Read each row of a file written by DataChain into the output model by
-        column position, as rows are read from the DB. A field the file has no
-        columns for is left out, so the model takes its default."""
+        column position, as rows are read from the DB. A column the file lacks
+        leaves its field out, so the field takes its default."""
         model, schema = self.output_schema, ds.schema
         paths = self.columns or list(model.model_fields)
         parents: dict[str, ParentTag] = {}
@@ -366,9 +366,10 @@ class ArrowGenerator(Generator):
         index: int,
         source_kwargs: dict[str, Any] | None,
     ):
-        vals: list[Any] = [obj]
+        vals = [obj]
         if source_kwargs is not None:
-            vals.insert(0, ArrowRow(file=file, index=index, kwargs=source_kwargs))
+            arrow_file = ArrowRow(file=file, index=index, kwargs=source_kwargs)
+            vals = [arrow_file, *vals]
 
         if self.output is not None and len(self.output.values) == 1:
             # A single output signal takes its value itself, not a list of values.

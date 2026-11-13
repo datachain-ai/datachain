@@ -2971,7 +2971,7 @@ def test_read_parquet_field_a_file_lacks_after_its_model_is_rebuilt_reads_as_non
     assert chain.order_by("id").to_list("p.x", "p.y") == [(1, 2), (None, 7)]
 
 
-class LabeledX(DataModel):
+class XWithDefaults(DataModel):
     x: int
     name: str = Field(default_factory=lambda data: f"point-{data['x']}")
     label: str = "default"
@@ -2982,7 +2982,7 @@ class LabeledX(DataModel):
         return f"{value}!"
 
 
-def test_read_parquet_output_field_a_file_lacks_is_left_out_of_each_row(
+def test_read_parquet_output_field_a_file_lacks_takes_its_default_per_row_unvalidated(
     tmp_dir, test_session
 ):
     path = tmp_dir / "points.parquet"
@@ -2990,18 +2990,17 @@ def test_read_parquet_output_field_a_file_lacks_is_left_out_of_each_row(
     dc.read_values(id=[1, 2], p=points, session=test_session).to_parquet(path)
     chain = dc.read_parquet(
         path.as_uri(),
-        output={"id": int, "p": LabeledX},
+        output={"id": int, "p": XWithDefaults},
         source=False,
         session=test_session,
     )
-    # The factory runs per row with its data, and the default isn't validated.
     assert chain.order_by("id").to_list("p.name", "p.label") == [
         ("point-1", "default"),
         ("point-2", "default"),
     ]
 
 
-class XLabel(DataModel):
+class XWithRequiredLabel(DataModel):
     x: int
     label: str
 
@@ -3010,14 +3009,20 @@ def test_read_parquet_after_inactive_arms_lack_a_required_field_reads_the_rows(
     tmp_dir, test_session
 ):
     path = tmp_dir / "rows.parquet"
-    output = {"id": int, "p": PointX | None, "u": XLabel | int}
+    output = {"id": int, "p": PointX | None, "u": XWithRequiredLabel | int}
     dc.read_values(
         id=[1, 2], p=[None, None], u=[3, 4], output=output, session=test_session
     ).to_parquet(path)
-    pq.write_table(pq.read_table(path).drop_columns(["u.XLabel.label"]), path)
+    pq.write_table(
+        pq.read_table(path).drop_columns(["u.XWithRequiredLabel.label"]), path
+    )
     chain = dc.read_parquet(
         path.as_uri(),
-        output={"id": int, "p": XLabel | None, "u": XLabel | int},
+        output={
+            "id": int,
+            "p": XWithRequiredLabel | None,
+            "u": XWithRequiredLabel | int,
+        },
         source=False,
         session=test_session,
     )

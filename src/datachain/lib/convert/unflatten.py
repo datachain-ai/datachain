@@ -7,10 +7,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from datachain.lib.convert.flatten import _field_kinds, _leaf_count
-from datachain.lib.data_model import (
-    UnionLayout,
-    arm_for_tag,
-)
+from datachain.lib.data_model import UnionLayout, arm_for_tag
 from datachain.lib.model_store import ModelStore
 from datachain.query.schema import DEFAULT_DELIMITER
 
@@ -39,7 +36,8 @@ def read_union(
     read_model: ModelReader,
 ) -> tuple[Any, int]:
     """Read a tagged-union value: the ``_type_tag`` then every arm's columns,
-    hydrating only the active arm. A NULL ``_type_tag`` reads back as None."""
+    hydrating only the active arm. A NULL ``_type_tag`` reads back as None, and an
+    ABSENT one as ABSENT."""
     if (tag := row[pos]) is ABSENT:
         return ABSENT, pos + 1 + sum(map(_arm_width, layout.arms))
     active = arm_for_tag(layout, tag)
