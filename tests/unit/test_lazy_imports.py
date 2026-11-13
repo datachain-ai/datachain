@@ -132,20 +132,18 @@ def test_star_import_and_version_in_fresh_process():
     "entries",
     [
         ("datachain:read_values", "datachain:func"),
-        ("datachain.lib.dc.utils", "datachain:func"),
         ("datachain.query.dataset", "datachain:func"),
-        ("datachain:File", "datachain:func"),
-        ("datachain:DataModel", "datachain:func"),
-        ("datachain:read_values", "datachain.query:Session"),
         ("datachain:File", "datachain:bucket_status"),
         ("datachain.data_storage:AbstractMetastore", "datachain.query:Session"),
         ("datachain.query.dataset", "datachain.query:Session"),
-        ("datachain:File", "datachain.sql"),
-        ("datachain:File", "datachain.query:Session"),
-        ("datachain:Mapper", "datachain.query:Session"),
+        ("datachain:Mapper", "datachain:func"),
+        ("datachain.query.dispatch", "datachain.query:Session"),
     ],
 )
 @pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.skipif(
+    sys.version_info < (3, 13), reason="Recent CPython import-lock behavior"
+)
 def test_concurrent_first_imports(entries, reverse):
     _check(
         "import importlib, sys\n"

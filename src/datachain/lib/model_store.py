@@ -123,6 +123,10 @@ class ModelStore:
                 is_builtin
                 and (existing := versions.get(version)) is not None
                 and existing.__module__ != model.__module__
+                and (
+                    "_modelstore_base_name" not in vars(existing)
+                    or "_modelstore_module" in vars(existing)
+                )
             ):
                 continue
             versions[version] = model

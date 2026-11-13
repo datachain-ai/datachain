@@ -1,5 +1,6 @@
 from importlib import import_module
 from importlib.metadata import PackageNotFoundError
+from typing import ForwardRef
 
 import pytest
 from pydantic import create_model
@@ -8,6 +9,7 @@ from datachain.lib.data_model import DataModel
 from datachain.lib.model_store import BUILTIN_MODELS, ModelStore
 from datachain.lib.signal_schema import (
     SignalSchema,
+    SignalSchemaError,
     SignalSchemaWarning,
     create_feature_model,
 )
@@ -251,6 +253,172 @@ def test_legacy_builtin_model_reuses_the_registered_class(name):
     ModelStore.register(builtin)
     saved = _legacy_schema(builtin)
     assert SignalSchema.deserialize(saved).values["value"] is builtin
+
+
+@pytest.mark.parametrize(
+    "name,field,legacy_type",
+    [
+        ("Laion", "caption", "Union[str, NoneType]"),
+        ("Laion", "caption", "Union[NoneType, Union[str]]"),
+        ("Laion", "face_bboxes", "Union[List[List[float]], NoneType]"),
+        ("ZarrSelection", "media", "Union[NoneType, Literal]"),
+        ("ZarrSelection", "index", "List[int]"),
+    ],
+)
+def test_legacy_type_aliases_reuse_builtin(name, field, legacy_type):
+    builtin = getattr(import_module(BUILTIN_MODELS[name]), name)
+    saved = _legacy_schema(builtin)
+    saved["_custom_types"][f"{name}@v1"][field] = legacy_type
+    ModelStore.register(builtin)
+    assert SignalSchema.deserialize(saved).values["value"] is builtin
+
+
+@pytest.mark.parametrize("matches", [False, True])
+def test_legacy_comparison_does_not_register_models(matches):
+    class Child(DataModel):
+        score: float
+
+    class Parent(DataModel):
+        child: Child
+
+    saved = _legacy_schema(Parent)
+    if not matches:
+        saved["_custom_types"]["Child@v1"]["score"] = "int"
+    ModelStore.store.clear()
+    assert SignalSchema._model_matches(Parent, saved["_custom_types"]) is matches
+    assert ModelStore.store == {}
+
+
+def test_schema_comparison_does_not_warn_for_unresolved_type(recwarn):
+    candidate = create_model(
+        "Unresolved", __base__=DataModel, value=(ForwardRef("MissingType"), ...)
+    )
+    saved = {"Unresolved@v1": {"value": "str"}}
+    ModelStore.store.clear()
+    assert not SignalSchema._model_matches(candidate, saved)
+    assert ModelStore.store == {}
+    assert not recwarn.list
+
+
+@pytest.mark.parametrize("nested_record", [None, {"schema_version": 2}])
+@pytest.mark.parametrize("direct", [False, True])
+def test_malformed_nested_schema_raises_schema_error(nested_record, direct):
+    from datachain.lib.webdataset_laion import WDSLaion
+
+    saved = _legacy_schema(WDSLaion)
+    saved["_custom_types"]["Laion@v1"] = nested_record
+    ModelStore.register(WDSLaion)
+    with pytest.raises(SignalSchemaError, match="Laion@v1"):
+        if direct:
+            SignalSchema._deserialize_custom_type("WDSLaion@v1", saved["_custom_types"])
+        else:
+            SignalSchema.deserialize(saved)
+
+
+@pytest.mark.parametrize("custom_types", [None, [], "broken"])
+def test_malformed_custom_type_table_raises_schema_error(custom_types):
+    with pytest.raises(SignalSchemaError, match="custom types"):
+        SignalSchema.deserialize({"value": "BBox@v1", "_custom_types": custom_types})
+
+
+def test_builtin_registration_replaces_legacy_placeholder():
+    from datachain.model.bbox import BBox
+
+    legacy = {
+        "value": "BBox@v1",
+        "_custom_types": {"BBox@v1": {"title": "str", "coords": "list[float]"}},
+    }
+    restored = SignalSchema.deserialize(legacy).values["value"]
+    assert restored(title="box", coords=[1.5]).coords == [1.5]
+    ModelStore.register(BBox)
+    assert ModelStore.get("BBox", 1) is BBox
+    assert SignalSchema.deserialize({"value": "BBox@v1"}).values["value"] is BBox
+    assert SignalSchema.deserialize(legacy).values["value"](coords=[1.5]).coords == [
+        1.5
+    ]
+
+
+def test_restored_user_origin_precedes_builtin_registration(mocker):
+    from datachain.model.bbox import BBox
+
+    user_model = create_model(
+        "BBox", __base__=DataModel, __module__="user_models", score=(float, ...)
+    )
+    saved = SignalSchema({"value": user_model}).serialize()
+    ModelStore.store.clear()
+    register = ModelStore.register
+
+    def interleaved_register(model):
+        register(model)
+        if vars(model).get("_modelstore_base_name") == "BBox":
+            register(BBox)
+
+    mocker.patch.object(ModelStore, "register", side_effect=interleaved_register)
+    restored = SignalSchema.deserialize(saved).values["value"]
+    assert ModelStore.get("BBox", 1, module="user_models") is restored
+    assert restored(score=0.9).score == 0.9
+
+
+def test_schema_comparison_requires_the_requested_root():
+    from datachain.model.bbox import BBox
+
+    assert not SignalSchema._model_matches(BBox, {})
+
+
+def test_synthetic_v2_cache_hit_must_match_saved_fields():
+    original = create_model(
+        "CachedUser", __base__=DataModel, __module__="user_models", value=(float, ...)
+    )
+    first_schema = SignalSchema({"value": original}).serialize()
+    ModelStore.store.clear()
+    first = SignalSchema.deserialize(first_schema).values["value"]
+    second_schema = {
+        **first_schema,
+        "_custom_types": {
+            "CachedUser@v1": {
+                **first_schema["_custom_types"]["CachedUser@v1"],
+                "fields": {"value": "str"},
+            }
+        },
+    }
+    second = SignalSchema.deserialize(second_schema).values["value"]
+    assert second is not first
+    assert second(value="word").value == "word"
+
+
+def test_alternating_saved_user_schemas_read_their_own_values(test_session):
+    import datachain as dc
+
+    for name, annotation, value in [("numbers", float, 0.9), ("words", str, "word")]:
+        model = create_model(
+            "CachedUser",
+            __base__=DataModel,
+            __module__="user_models",
+            value=(annotation, ...),
+        )
+        dc.read_values(value=[model(value=value)], session=test_session).save(name)
+    ModelStore.store.clear()
+    for name, expected in [("numbers", 0.9), ("words", "word"), ("numbers", 0.9)]:
+        value = dc.read_dataset(name, session=test_session).to_values("value")[0]
+        assert value.value == expected
+        assert type(value.value) is type(expected)
+
+
+@pytest.mark.parametrize("hidden_fields,fingerprint", [(["value"], None), ([], "new")])
+def test_synthetic_v2_cache_hit_must_match_visibility(hidden_fields, fingerprint):
+    original = create_model(
+        "CachedUser", __base__=DataModel, __module__="user_models", value=(float, ...)
+    )
+    saved = SignalSchema({"value": original}).serialize()
+    ModelStore.store.clear()
+    first = SignalSchema.deserialize(saved).values["value"]
+    saved["_custom_types"]["CachedUser@v1"].update(
+        hidden_fields=hidden_fields, partial_fingerprint=fingerprint
+    )
+    second = SignalSchema.deserialize(saved).values["value"]
+    assert second is not first
+    assert second._hidden_fields == hidden_fields
+    assert getattr(second, "_partial_fingerprint", None) == fingerprint
 
 
 def test_legacy_builtin_with_different_field_types_reads_saved_values(test_session):
