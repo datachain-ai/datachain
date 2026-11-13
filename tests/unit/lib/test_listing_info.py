@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -9,8 +9,8 @@ from datachain.lib.listing_info import ListingInfo
 @pytest.mark.parametrize(
     "date,is_expired",
     [
-        (datetime.now(timezone.utc), False),
-        (datetime.now(timezone.utc) - timedelta(seconds=LISTING_TTL + 1), True),
+        (datetime.now(UTC), False),
+        (datetime.now(UTC) - timedelta(seconds=LISTING_TTL + 1), True),
     ],
 )
 def test_is_listing_expired(date, is_expired):

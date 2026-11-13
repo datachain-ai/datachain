@@ -8,13 +8,13 @@
 
 **A Python library that turns files in S3, GCS, and Azure into versioned, typed datasets, queryable at warehouse speed.**
 
-- **Compute Engine**: parallel and distributed Python over files. Async I/O, checkpoint recovery, incremental updates.
-- **Dataset DB**: Pydantic schemas, versioning, file pointers, automatic lineage. Sub-second filter, join, and similarity search over hundreds of millions of records.
+- **Compute Engine**: parallel Python over files, distributed on Studio. Async I/O, checkpoint recovery, incremental updates.
+- **Dataset DB**: Pydantic schemas, versioning, file pointers, automatic lineage. Sub-second filter, join, and group_by over millions of typed records locally, hundreds of millions on Studio. Vector search over the same rows, no separate store.
 
 Optional, for agent workflows:
 
 - **Knowledge Base**: markdown summaries derived from the Dataset DB and enriched by LLM. Readable by humans and LLMs.
-- **Agent Harness**: skill and MCP server that plug all three into Claude Code, Cursor, Codex, GitHub Copilot, and Pi, so they understand your data.
+- **Agent Harness**: a skill that plugs all three into Claude Code, Cursor, Codex, GitHub Copilot, and Pi, so they understand your data. On Studio, agents reach the same datasets over MCP.
 
 Bytes never leave your storage. Every run deposits a typed dataset the next pipeline (or agent) reads instead of recomputing.
 
@@ -24,7 +24,7 @@ Bytes never leave your storage. Every run deposits a typed dataset the next pipe
 pip install datachain
 ```
 
-To add the agent skill (Knowledge Base + code generation):
+To add the agent skill for data processing and saved-result queries:
 
 ```bash
 datachain skill install --target claude     # also: cursor, codex, copilot, pi
@@ -70,23 +70,7 @@ Result:
 
 The agent decomposed the task into steps - embeddings, breed metadata, mask join, quality filter - and saved each as a named, versioned dataset. Next time you ask a related question, it starts from what's already built.
 
-The datasets are registered in a Knowledge Base optimized for both agents and humans:
-
-```bash
-dc-knowledge
-├── buckets
-│   └── s3
-│       └── dc_readme.md
-├── datasets
-│   ├── oxford_micro_dog_breeds.md
-│   ├── oxford_micro_dog_embeddings.md
-│   └── similar_to_fiona.md
-└── index.md
-```
-
-Browse it as markdown files, navigate with wikilinks, or open in [Obsidian](https://obsidian.md/):
-
-![Visualize data Knowledge Base](docs/assets/readme_obsidian.gif)
+For shared dataset descriptions and search, connect [Studio MCP](https://www.datachain.ai/docs/studio/user-guide/agents/mcp/). Local agents inspect saved datasets directly.
 
 
 ## 3. Data Harness
@@ -99,7 +83,7 @@ Code harnesses (Claude Code, Cursor, Codex, GitHub Copilot, Pi) give agents repo
 
 A **dataset** is the unit of work - a named, versioned result of a pipeline step like `pets_embeddings@1.0.0`. Every `.save()` registers one.
 
-For the data-flow architecture (Compute Engine, Dataset DB, Knowledge Base) and how the components connect, see [Architecture](https://docs.datachain.ai/architecture/).
+For the data-flow architecture (Compute Engine, Dataset DB, Knowledge Base) and how the components connect, see [Architecture](https://www.datachain.ai/docs/architecture).
 
 
 ## 4. Core concepts
@@ -115,20 +99,23 @@ import io
 from pydantic import BaseModel
 import datachain as dc
 
+
 class ImageInfo(BaseModel):
     width: int
     height: int
 
+
 def get_info(file: dc.File) -> ImageInfo:
     img = Image.open(io.BytesIO(file.read()))
     return ImageInfo(width=img.width, height=img.height)
+
 
 ds = (
     dc.read_storage(
         "s3://dc-readme/oxford-pets-micro/images/**/*.jpg",
         anon=True,
         update=True,
-        delta=True,         # re-runs skip unchanged files
+        delta=True,  # re-runs skip unchanged files
     )
     .settings(prefetch=64)
     .map(info=get_info)
@@ -198,8 +185,8 @@ import datachain as dc
 cnt = (
     dc.read_dataset("pets_images")
     .filter(
-        (dc.C("info.width") > 400) &
-        ~dc.C("file.path").ilike("%cocker_spaniel%")   # case-insensitive
+        (dc.C("info.width") > 400)
+        & ~dc.C("file.path").ilike("%cocker_spaniel%")  # case-insensitive
     )
     .count()
 )
@@ -223,19 +210,23 @@ import open_clip, torch, io
 from PIL import Image
 import datachain as dc
 
-model, _, preprocess = open_clip.create_model_and_transforms("ViT-B-32", "laion2b_s34b_b79k")
+model, _, preprocess = open_clip.create_model_and_transforms(
+    "ViT-B-32", "laion2b_s34b_b79k"
+)
 model.eval()
 
 counter = 0
 
+
 def encode(file: dc.File, model, preprocess) -> list[float]:
     global counter
     counter += 1
-    if counter > 236:                                    # ← bug: remove these two lines
-        raise Exception("some bug")                      # ←
+    if counter > 236:  # ← bug: remove these two lines
+        raise Exception("some bug")  # ←
     img = Image.open(io.BytesIO(file.read())).convert("RGB")
     with torch.no_grad():
         return model.encode_image(preprocess(img).unsqueeze(0))[0].tolist()
+
 
 (
     dc.read_dataset("pets_images")
@@ -273,16 +264,18 @@ import open_clip, torch, io
 from PIL import Image
 import datachain as dc
 
-model, _, preprocess = open_clip.create_model_and_transforms("ViT-B-32", "laion2b_s34b_b79k")
+model, _, preprocess = open_clip.create_model_and_transforms(
+    "ViT-B-32", "laion2b_s34b_b79k"
+)
 model.eval()
 
-ref_emb = model.encode_image(
-    preprocess(Image.open("fiona.jpg")).unsqueeze(0)
-)[0].tolist()
+ref_emb = model.encode_image(preprocess(Image.open("fiona.jpg")).unsqueeze(0))[
+    0
+].tolist()
 
 (
     dc.read_dataset("pets_embeddings")
-    .filter(dc.C("info.width") > 500)          # from pets_images - no re-read
+    .filter(dc.C("info.width") > 500)  # from pets_images - no re-read
     .mutate(dist=dc.func.cosine_distance(dc.C("emb"), ref_emb))
     .order_by("dist")
     .limit(3)
@@ -295,7 +288,7 @@ Under a second - everything runs against the Dataset DB.
 
 ### 5.3. Incremental updates
 
-The bucket in this walkthrough is static, so there's nothing new to process. But in production - when new images land in your bucket - re-run the same scripts unchanged. `delta=True` in the original dataset ensures only new files are processed end to end while the whole dataset will be updated to `pets_images@1.0.1`:
+The bucket in this walkthrough is static, so there's nothing new to process. In production, rerun the same scripts when files are added, changed, or deleted. With `delta=True`, new and changed files are processed, results for deleted files are removed, and results for unchanged files are reused:
 
 ```python
 $ python create_dataset.py   # 500 new images arrived
@@ -311,24 +304,14 @@ Saved pets_images@1.0.2  (+500 records)
 
 ## 6. Knowledge Base
 
-DataChain maintains two layers. The **Dataset DB** is the ground truth: schemas, processing state, lineage, the vectors themselves. **The Knowledge Base** is derived from it: structured markdown for humans and agents to read. Because it's derived, it's always accurate. The Knowledge Base is stored in `dc-knowledge/`.
+The **Dataset DB** records schemas, versions, dependencies and processing results. In [Studio](https://www.datachain.ai/docs/studio/user-guide/agents/knowledge-base/), the **Knowledge Base** adds generated descriptions of datasets and storages. Agents search and read those descriptions through MCP; people browse them in Studio.
 
-Ask the agent to build it (from Claude Code, Cursor, Codex, GitHub Copilot, or Pi):
-```bash
-claude
-```
-
-Prompt:
-```prompt
-Build a Knowledge Base for my current datasets
-```
-
-The skill generates `dc-knowledge/` directory from the Dataset DB - one file per dataset and bucket:
+Local agents inspect saved datasets directly with `dc.datasets()`, `dc.describe()` and `dc.read_dataset()`.
 
 
 ## 7. AI-Generated Pipelines
 
-The skill gives the agent data awareness: it reads `dc-knowledge/` to understand what datasets exist, their schemas, which fields can be joined - and the meaning of columns inferred from the code that produced them.
+The skill guides the agent to inspect saved datasets, schemas, dependencies and producing code before building a pipeline.
 
 See section `2. Quickstart: agent-driven pipeline` above. All the steps that were manually created could be just generated.
 
@@ -349,7 +332,7 @@ datachain job run --workers 20 --cluster gpu-pool caption.py
   <img src="docs/assets/studio_architecture.svg" alt="DataChain Studio Architecture" width="600" />
 </p>
 
-Studio adds: shared dataset registry, access control, UI for video/DICOM/NIfTI/point clouds, lineage graphs, reproducible runs.
+Studio adds: shared dataset registry, distributed compute across attached clusters, an MCP endpoint for agents, access control, UI for video/DICOM/NIfTI/point clouds, lineage graphs, reproducible runs.
 
 Bring Your Own Cloud - all data and compute stay in your infrastructure. AWS, GCP, Azure, on-prem Kubernetes.
 
@@ -357,11 +340,11 @@ Bring Your Own Cloud - all data and compute stay in your infrastructure. AWS, GC
 
 ## 9. Contributing
 
-Contributions are very welcome. To learn more, see the [Contributor Guide](https://docs.datachain.ai/contributing).
+Contributions are very welcome. To learn more, see the [Contributor Guide](https://www.datachain.ai/docs/contributing).
 
 ## 10. Community and Support
 
 - [Report an issue](https://github.com/datachain-ai/datachain/issues) if you encounter any problems
-- [Docs](https://docs.datachain.ai/)
+- [Docs](https://www.datachain.ai/docs)
 - [Email](mailto:support@datachain.ai)
 - [Twitter](https://twitter.com/datachain_ai)

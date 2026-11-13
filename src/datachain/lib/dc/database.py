@@ -1,13 +1,15 @@
 import contextlib
+import importlib
 import itertools
 import os
 import sqlite3
 from collections.abc import Iterator, Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import sqlalchemy
 
-from datachain.query.schema import ColumnMeta
+from datachain.lib.utils import assert_unique_export_columns
+from datachain.query.schema import DEFAULT_DELIMITER, ColumnMeta
 from datachain.utils import batched
 
 DEFAULT_DATABASE_BATCH_SIZE = 10_000
@@ -40,7 +42,9 @@ def _connect(
     with contextlib.ExitStack() as stack:
         engine_kwargs = {"echo": bool(os.environ.get("DEBUG_SHOW_SQL_QUERIES"))}
         if isinstance(connection, (str, sqlalchemy.URL)):
-            engine = sqlalchemy.create_engine(connection, **engine_kwargs)
+            engine = sqlalchemy.create_engine(
+                _default_driver(connection), **engine_kwargs
+            )
             stack.callback(engine.dispose)
             yield stack.enter_context(engine.connect())
         elif isinstance(connection, sqlite3.Connection):
@@ -71,6 +75,19 @@ def _connect(
             raise TypeError(f"Unsupported connection type: {type(connection).__name__}")
 
 
+def _default_driver(connection: "str | sqlalchemy.URL") -> sqlalchemy.URL:
+    url = sqlalchemy.make_url(connection)
+    if url.drivername != "postgresql":
+        return url
+    # SQLAlchemy >= 2.1 resolves a bare postgresql:// to psycopg 3, but the `postgres`
+    # extra ships psycopg2; keep psycopg2 unless psycopg 3 actually imports.
+    try:
+        importlib.import_module("psycopg")
+    except ImportError:
+        return url.set(drivername="postgresql+psycopg2")
+    return url
+
+
 def to_database(
     chain: "DataChain",
     table_name: str,
@@ -95,9 +112,16 @@ def to_database(
         )
 
     signals_schema = chain.signals_schema.clone_without_sys_signals()
+    db_cols = cast(
+        "list[Any]",
+        signals_schema.db_signals(as_columns=True, include_sentinels=False),
+    )
+    # readable arm names (value.int), not raw db columns (value__int)
+    display_paths = [c.name.split(DEFAULT_DELIMITER) for c in db_cols]
+    assert_unique_export_columns(display_paths, DEFAULT_DELIMITER)
     all_columns = [
-        sqlalchemy.Column(c.name, c.type)  # type: ignore[union-attr]
-        for c in signals_schema.db_signals(as_columns=True, include_sentinels=False)
+        sqlalchemy.Column(DEFAULT_DELIMITER.join(path), c.type)
+        for c, path in zip(db_cols, display_paths, strict=True)
     ]
 
     column_mapping = column_mapping or {}
@@ -390,5 +414,5 @@ def _infer_schema(
 
     rows = list(itertools.islice(result, infer_schema_length))
     values = {col: [row._mapping[col] for row in rows] for col in to_infer}
-    _, output_schema, _ = values_to_tuples("", **values)
+    _, output_schema, _ = values_to_tuples(**values)
     return rows, output_schema

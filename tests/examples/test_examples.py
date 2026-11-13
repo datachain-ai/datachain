@@ -9,7 +9,18 @@ get_started_examples = sorted(glob.glob("examples/get_started/**/*.py", recursiv
 
 llm_and_nlp_examples = sorted(glob.glob("examples/llm_and_nlp/**/*.py", recursive=True))
 
-multimodal_examples = sorted(glob.glob("examples/multimodal/**/*.py", recursive=True))
+# The heaviest examples (~1 GB downloads, minutes of CPU inference) form their own
+# group, so CI can run them on a separate runner
+heavy_multimodal_examples = {"wds.py", "hf_pipeline.py"}
+multimodal_examples = [
+    pytest.param(
+        example,
+        marks=pytest.mark.multimodal_heavy
+        if os.path.basename(example) in heavy_multimodal_examples
+        else pytest.mark.multimodal,
+    )
+    for example in sorted(glob.glob("examples/multimodal/**/*.py", recursive=True))
+]
 
 incremental_processing_examples = sorted(
     glob.glob("examples/incremental_processing/**/*.py", recursive=True)
@@ -66,7 +77,6 @@ def test_llm_and_nlp_examples(example):
 
 
 @pytest.mark.examples
-@pytest.mark.multimodal
 @pytest.mark.parametrize("example", multimodal_examples)
 def test_multimodal(example):
     smoke_test(

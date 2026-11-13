@@ -1,8 +1,8 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from datachain.lib.file import File
 
-utc = timezone.utc
+utc = UTC
 TIME_ZERO = datetime.fromtimestamp(0, tz=utc)
 
 ENTRIES = [

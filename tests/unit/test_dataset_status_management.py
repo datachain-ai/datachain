@@ -1,6 +1,6 @@
 """Tests for dataset status management and failed version cleanup."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import sqlalchemy as sa
@@ -70,7 +70,6 @@ def test_mark_job_dataset_versions_as_failed(test_session, job, dataset_created)
     assert dataset_version.status == DatasetStatus.CREATED
     assert dataset_version.job_id == job.id
 
-    # Mark dataset versions as failed
     test_session.catalog.metastore.mark_job_dataset_versions_as_failed(job.id)
 
     # Verify status is now FAILED
@@ -89,7 +88,6 @@ def test_mark_job_dataset_versions_as_failed_skips_complete(
     assert dataset_version.status == DatasetStatus.COMPLETE
     assert dataset_version.job_id == job.id
 
-    # Mark dataset versions as failed
     test_session.catalog.metastore.mark_job_dataset_versions_as_failed(job.id)
 
     # Verify COMPLETE status is unchanged
@@ -174,7 +172,6 @@ def test_get_dataset_versions_to_clean(
     # Mark job as failed
     test_session.catalog.metastore.set_job_status(job.id, JobStatus.FAILED)
 
-    # Get failed versions to clean
     to_clean = test_session.catalog.metastore.get_dataset_versions_to_clean()
 
     # Should return CREATED and FAILED datasets, not COMPLETE
@@ -446,7 +443,7 @@ def test_get_dataset_versions_to_clean_finds_no_job_id(test_session):
     test_session.catalog.metastore.db.execute(
         dv.update()
         .where(dv.c.dataset_id == dataset.id)
-        .values(created_at=datetime.now(timezone.utc) - timedelta(hours=2))
+        .values(created_at=datetime.now(UTC) - timedelta(hours=2))
     )
 
     # Now it should be returned
@@ -502,11 +499,9 @@ def test_public_api_read_dataset_rejects_non_complete(test_session, studio_job):
         ds_failed, DatasetStatus.FAILED, version=ds_failed.latest_version
     )
 
-    # Should raise error for CREATED dataset
     with pytest.raises(DatasetNotFoundError):
         read_dataset(ds_created.name, session=test_session)
 
-    # Should raise error for FAILED dataset
     with pytest.raises(DatasetNotFoundError):
         read_dataset(ds_failed.name, session=test_session)
 
@@ -514,11 +509,9 @@ def test_public_api_read_dataset_rejects_non_complete(test_session, studio_job):
 def test_public_api_delete_dataset_rejects_non_complete(
     test_session, dataset_created, dataset_failed
 ):
-    # Should raise error for CREATED dataset
     with pytest.raises(DatasetNotFoundError):
         delete_dataset(dataset_created.name, session=test_session)
 
-    # Should raise error for FAILED dataset
     with pytest.raises(DatasetNotFoundError):
         delete_dataset(dataset_failed.name, session=test_session)
 
@@ -526,11 +519,9 @@ def test_public_api_delete_dataset_rejects_non_complete(
 def test_public_api_move_dataset_rejects_non_complete(
     test_session, dataset_created, dataset_failed
 ):
-    # Should raise error for CREATED dataset
     with pytest.raises(DatasetNotFoundError):
         move_dataset(dataset_created.name, "new_name_created", session=test_session)
 
-    # Should raise error for FAILED dataset
     with pytest.raises(DatasetNotFoundError):
         move_dataset(dataset_failed.name, "new_name_failed", session=test_session)
 
@@ -1122,6 +1113,119 @@ def test_gc_skips_finalized_tombstones(test_session, dataset_complete):
         dataset_complete.name, versions=None, include_incomplete=True
     )
     assert _find_removed(ds, version) is not None
+
+
+def test_gc_collects_tombstone_requeued_for_metadata_drop(
+    test_session, dataset_complete
+):
+    catalog = test_session.catalog
+    version = dataset_complete.latest_version
+    name = dataset_complete.name
+    _force_status(
+        catalog,
+        dataset_complete,
+        version,
+        DatasetStatus.REMOVED,
+        pending_metadata_drop=True,
+    )
+
+    catalog.cleanup_dataset_versions()
+
+    with pytest.raises(DatasetNotFoundError):
+        catalog.get_dataset(name)
+
+
+@pytest.mark.parametrize("status", [DatasetStatus.REMOVING, DatasetStatus.REMOVED])
+def test_pending_metadata_drop_overrides_explicit_keep_metadata(
+    test_session, dataset_complete, status
+):
+    catalog = test_session.catalog
+    name = dataset_complete.name
+    version = dataset_complete.latest_version
+    ds = _force_status(
+        catalog,
+        dataset_complete,
+        version,
+        status,
+        pending_metadata_drop=True,
+    )
+
+    catalog.remove_dataset_versions(
+        version_ids=[ds.get_version(version).id], keep_metadata=True
+    )
+
+    with pytest.raises(DatasetNotFoundError):
+        catalog.get_dataset(name, include_incomplete=True)
+
+
+@pytest.mark.parametrize(
+    "keep_metadata,expected_removed,expected_status",
+    [
+        (True, 1, DatasetStatus.REMOVED),
+        (False, 0, DatasetStatus.REMOVING),
+    ],
+)
+def test_explicit_keep_metadata_decides_interrupted_keep(
+    test_session,
+    dataset_complete,
+    keep_metadata,
+    expected_removed,
+    expected_status,
+):
+    catalog = test_session.catalog
+    version = dataset_complete.latest_version
+    ds = _force_status(
+        catalog,
+        dataset_complete,
+        version,
+        DatasetStatus.REMOVING,
+        pending_metadata_drop=False,
+    )
+
+    num_removed = catalog.remove_dataset_versions(
+        version_ids=[ds.get_version(version).id], keep_metadata=keep_metadata
+    )
+
+    ds = catalog.get_dataset(
+        dataset_complete.name, versions=None, include_incomplete=True
+    )
+    assert num_removed == expected_removed
+    assert ds.get_version(version).status == expected_status
+
+
+def test_metadata_drop_requeue_survives_tombstone_finalize(
+    monkeypatch, test_session, dataset_complete
+):
+    catalog = test_session.catalog
+    version = dataset_complete.latest_version
+    name = dataset_complete.name
+    drop_rows = catalog.warehouse.drop_dataset_rows_table
+
+    def drop_rows_and_requeue(dataset, dataset_version):
+        drop_rows(dataset, dataset_version)
+        updated = catalog.metastore.update_dataset_version(
+            dataset,
+            dataset_version,
+            expected_status=DatasetStatus.REMOVING,
+            pending_metadata_drop=True,
+        )
+        assert updated is not None
+
+    monkeypatch.setattr(
+        catalog.warehouse, "drop_dataset_rows_table", drop_rows_and_requeue
+    )
+
+    catalog.remove_dataset_version(dataset_complete, version, keep_metadata=True)
+
+    ds = catalog.get_dataset(name, versions=None, include_incomplete=True)
+    tombstone = _find_removed(ds, version)
+    assert tombstone.status == DatasetStatus.REMOVED
+    assert tombstone.pending_metadata_drop
+
+    catalog.cleanup_dataset_versions()
+
+    with pytest.raises(DatasetNotFoundError):
+        catalog.get_dataset(name)
 
 
 @pytest.mark.parametrize("drop_rows_first", [False, True])

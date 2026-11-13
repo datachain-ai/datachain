@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -192,8 +192,8 @@ def test_create_dataset_version(metastore):
     )
     assert ds.id is not None
 
-    created_at = datetime.now(timezone.utc) - timedelta(minutes=3)
-    finished_at = datetime.now(timezone.utc)
+    created_at = datetime.now(UTC) - timedelta(minutes=3)
+    finished_at = datetime.now(UTC)
     job_id = str(uuid4())
     uuid = str(uuid4())
 
@@ -251,7 +251,7 @@ def test_create_dataset_version(metastore):
 
 
 def test_create_dataset_version_finished_at(metastore):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     ds = metastore.create_dataset(name="test_dataset")
 
     ds, _ = metastore.create_dataset_version(
@@ -433,7 +433,7 @@ def test_update_dataset_read_only_values(metastore):
     ds2 = metastore.update_dataset(
         ds,
         id=ds.id + 1,
-        created_at=datetime.now(timezone.utc).isoformat(),
+        created_at=datetime.now(UTC).isoformat(),
     )
 
     assert ds2.id == ds.id
@@ -471,7 +471,7 @@ def test_update_dataset_version(metastore):
     )
     dv = ds.versions[0]
 
-    finished_at = datetime.now(timezone.utc)
+    finished_at = datetime.now(UTC)
     job_id = str(uuid4())
     uuid = str(uuid4())
 
@@ -548,7 +548,7 @@ def test_update_dataset_version_read_only_values(metastore):
         ds,
         ds.latest_version,
         id=dv.id + 1,
-        created_at=datetime.now(timezone.utc).isoformat(),
+        created_at=datetime.now(UTC).isoformat(),
     )
 
     assert dv2.id == dv.id
@@ -875,14 +875,12 @@ def test_update_dataset_dependency_source(metastore):
         dataset=tgt, version="1.0.0", status=DatasetStatus.COMPLETE
     )
 
-    # Add dependency: src1@1.0.0 -> tgt@1.0.0
     metastore.add_dataset_dependency(src1, "1.0.0", tgt, "1.0.0")
     deps = metastore.get_direct_dataset_dependencies(src1, "1.0.0")
     assert len(deps) == 1
     assert deps[0].name == "tgt"
     assert deps[0].version == "1.0.0"
 
-    # Update dependency to src2@1.0.0
     metastore.update_dataset_dependency_source(
         src1, "1.0.0", new_source_dataset=src2, new_source_dataset_version="1.0.0"
     )
@@ -909,7 +907,6 @@ def test_update_dataset_dependency_source_default_new_source(metastore):
         dataset=tgt, version="1.0.0", status=DatasetStatus.COMPLETE
     )
 
-    # Add dependency: src@1.0.0 -> tgt@1.0.0
     metastore.add_dataset_dependency(src, "1.0.0", tgt, "1.0.0")
     deps = metastore.get_direct_dataset_dependencies(src, "1.0.0")
     assert len(deps) == 1
@@ -928,6 +925,30 @@ def test_update_dataset_dependency_source_default_new_source(metastore):
     assert len(deps_after) == 1
     assert deps_after[0].name == "tgt"
     assert deps_after[0].version == "1.0.0"
+
+
+def test_get_direct_dataset_dependents(metastore):
+    def dataset(name, *versions):
+        ds = metastore.create_dataset(name=name)
+        for version, status in versions:
+            metastore.create_dataset_version(ds, version, status=status)
+        return metastore.get_dataset(name, versions=None)
+
+    src = dataset(
+        "src", ("1.0.0", DatasetStatus.COMPLETE), ("2.0.0", DatasetStatus.COMPLETE)
+    )
+    done = dataset("done", ("1.0.0", DatasetStatus.COMPLETE))
+    failed = dataset("failed", ("1.0.0", DatasetStatus.FAILED))
+    metastore.add_dataset_dependency(done, "1.0.0", src, "1.0.0")
+    metastore.add_dataset_dependency(failed, "1.0.0", src, "1.0.0")
+
+    [dependent] = metastore.get_direct_dataset_dependents(src, "1.0.0")
+    assert (dependent.name, dependent.version, dependent.removed) == (
+        "done",
+        "1.0.0",
+        False,
+    )
+    assert metastore.get_direct_dataset_dependents(src, "2.0.0") == []
 
 
 def test_list_jobs_by_ids(metastore):
@@ -971,7 +992,7 @@ def test_create_and_get_job(metastore):
         query_type=JobQueryType.PYTHON,
         status=JobStatus.CREATED,
         workers=2,
-        python_version="3.10",
+        python_version="3.11",
         params={"foo": "bar"},
     )
     assert job_id
@@ -983,7 +1004,7 @@ def test_create_and_get_job(metastore):
     assert job.query_type == JobQueryType.PYTHON
     assert job.status == JobStatus.CREATED
     assert job.workers == 2
-    assert job.python_version == "3.10"
+    assert job.python_version == "3.11"
     assert job.params == {"foo": "bar"}
 
 
@@ -1003,7 +1024,7 @@ def test_update_job(metastore):
         status=JobStatus.FAILED,
         error_message="err",
         error_stack="stack",
-        finished_at=datetime.now(timezone.utc),
+        finished_at=datetime.now(UTC),
         metrics={"acc": 0.5, "hist": [1, 2]},
     )
     assert updated.status == JobStatus.FAILED
@@ -1099,7 +1120,7 @@ def test_has_active_checkpoints_in_run_group_with_active(metastore):
     metastore.get_or_create_checkpoint(job_id, "hash123")
 
     # TTL threshold is 4 hours ago, checkpoint is recent
-    ttl_threshold = datetime.now(timezone.utc) - timedelta(hours=4)
+    ttl_threshold = datetime.now(UTC) - timedelta(hours=4)
 
     assert metastore._has_active_checkpoints_in_run_group(
         job.run_group_id, ttl_threshold
@@ -1118,14 +1139,14 @@ def test_has_active_checkpoints_in_run_group_only_outdated(metastore):
     checkpoint = metastore.get_or_create_checkpoint(job_id, "hash123")
 
     # Make checkpoint old (5 hours ago)
-    old_time = datetime.now(timezone.utc) - timedelta(hours=5)
+    old_time = datetime.now(UTC) - timedelta(hours=5)
     metastore.db.execute(
         metastore._checkpoints.update()
         .where(metastore._checkpoints.c.id == checkpoint.id)
         .values(created_at=old_time)
     )
 
-    ttl_threshold = datetime.now(timezone.utc) - timedelta(hours=4)
+    ttl_threshold = datetime.now(UTC) - timedelta(hours=4)
 
     assert not metastore._has_active_checkpoints_in_run_group(
         job.run_group_id, ttl_threshold
@@ -1202,8 +1223,8 @@ def _create_listing(metastore, uri, specs):
 
 
 def test_get_dataset_versions_to_clean_cleans_superseded_unused_listings(metastore):
-    old = datetime.now(timezone.utc) - timedelta(days=10)
-    recent = datetime.now(timezone.utc) - timedelta(hours=1)
+    old = datetime.now(UTC) - timedelta(days=10)
+    recent = datetime.now(UTC) - timedelta(hours=1)
 
     lst = _create_listing(
         metastore, "s3://bkt/", [("1.0.0", old), ("1.0.1", old), ("1.0.2", old)]
@@ -1223,8 +1244,70 @@ def test_get_dataset_versions_to_clean_cleans_superseded_unused_listings(metasto
     assert cleaned == {(lst.name, "1.0.0")}
 
 
+@pytest.mark.parametrize(
+    "referrer_status", [DatasetStatus.REMOVED, DatasetStatus.REMOVING]
+)
+def test_get_dataset_versions_to_clean_ignores_tombstoned_referrers(
+    metastore, referrer_status
+):
+    old = datetime.now(UTC) - timedelta(days=10)
+
+    lst = _create_listing(
+        metastore, "s3://bkt/", [("1.0.0", old), ("1.0.1", old), ("1.0.2", old)]
+    )
+    consumer = metastore.create_dataset("consumer")
+    consumer, _ = metastore.create_dataset_version(
+        consumer, "1.0.0", DatasetStatus.COMPLETE, finished_at=old
+    )
+    consumer = metastore.get_dataset("consumer", versions=None)
+    metastore.add_dataset_dependency(consumer, "1.0.0", lst, "1.0.1")
+
+    dv = metastore._datasets_versions
+    metastore.db.execute(
+        dv.update().where(dv.c.dataset_id == consumer.id).values(status=referrer_status)
+    )
+
+    to_clean = metastore.get_dataset_versions_to_clean()
+
+    cleaned = {(ds.name, v) for ds, v in to_clean if ds.name.startswith("lst__")}
+    assert cleaned == {(lst.name, "1.0.0"), (lst.name, "1.0.1")}
+
+
+def test_get_dataset_versions_to_clean_keeps_listing_with_live_referrer(metastore):
+    old = datetime.now(UTC) - timedelta(days=10)
+
+    lst = _create_listing(
+        metastore, "s3://bkt/", [("1.0.0", old), ("1.0.1", old), ("1.0.2", old)]
+    )
+    live = metastore.create_dataset("live_consumer")
+    live, _ = metastore.create_dataset_version(
+        live, "1.0.0", DatasetStatus.COMPLETE, finished_at=old
+    )
+    live = metastore.get_dataset("live_consumer", versions=None)
+    metastore.add_dataset_dependency(live, "1.0.0", lst, "1.0.1")
+
+    dead = metastore.create_dataset("dead_consumer")
+    dead, _ = metastore.create_dataset_version(
+        dead, "1.0.0", DatasetStatus.COMPLETE, finished_at=old
+    )
+    dead = metastore.get_dataset("dead_consumer", versions=None)
+    metastore.add_dataset_dependency(dead, "1.0.0", lst, "1.0.1")
+
+    dv = metastore._datasets_versions
+    metastore.db.execute(
+        dv.update()
+        .where(dv.c.dataset_id == dead.id)
+        .values(status=DatasetStatus.REMOVED)
+    )
+
+    to_clean = metastore.get_dataset_versions_to_clean()
+
+    cleaned = {(ds.name, v) for ds, v in to_clean if ds.name.startswith("lst__")}
+    assert cleaned == {(lst.name, "1.0.0")}
+
+
 def test_get_dataset_versions_to_clean_keeps_single_version_listing(metastore):
-    old = datetime.now(timezone.utc) - timedelta(days=10)
+    old = datetime.now(UTC) - timedelta(days=10)
     _create_listing(metastore, "s3://only/", [("1.0.0", old)])
 
     to_clean = metastore.get_dataset_versions_to_clean()
@@ -1233,7 +1316,7 @@ def test_get_dataset_versions_to_clean_keeps_single_version_listing(metastore):
 
 
 def test_get_dataset_versions_to_clean_excludes_listings_when_scoped_to_job(metastore):
-    old = datetime.now(timezone.utc) - timedelta(days=10)
+    old = datetime.now(UTC) - timedelta(days=10)
     _create_listing(metastore, "s3://bkt/", [("1.0.0", old), ("1.0.1", old)])
 
     to_clean = metastore.get_dataset_versions_to_clean(job_id=str(uuid4()))
@@ -1245,7 +1328,7 @@ def test_get_dataset_versions_to_clean_excludes_listings_when_scoped_to_job(meta
 def test_keeps_last_complete_listing_when_newer_version_incomplete(
     metastore, newer_status
 ):
-    old = datetime.now(timezone.utc) - timedelta(days=10)
+    old = datetime.now(UTC) - timedelta(days=10)
     project = metastore.listing_project
     ds = metastore.create_dataset(
         "lst__s3://bkt/", project_id=project.id, status=DatasetStatus.COMPLETE
@@ -1261,7 +1344,7 @@ def test_keeps_last_complete_listing_when_newer_version_incomplete(
 
 
 def test_listing_prefix_is_matched_literally(metastore):
-    old = datetime.now(timezone.utc) - timedelta(days=10)
+    old = datetime.now(UTC) - timedelta(days=10)
     project = metastore.listing_project
     # "lstXX" matches LIKE 'lst__%' only if the underscores are wildcards.
     decoy = metastore.create_dataset(

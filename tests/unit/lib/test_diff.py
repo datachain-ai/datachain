@@ -1,4 +1,4 @@
-from datetime import timezone
+from datetime import UTC
 
 import pytest
 from pydantic import BaseModel
@@ -9,8 +9,29 @@ from datachain.lib.file import File
 from tests.utils import sorted_dicts
 
 
+class DiffKey(BaseModel):
+    a: int
+    b: str
+
+
+def test_diff_on_optional_model_key_returns_deleted_key(test_session):
+    def chain(ids):
+        return dc.read_values(
+            key=[DiffKey(a=id, b=str(id)) for id in ids],
+            value=ids,
+            output={"key": DiffKey | None, "value": int},
+            session=test_session,
+        )
+
+    diff = chain([1]).diff(chain([1, 2]), on="key", status_col="status", same=True)
+    assert sorted(diff.to_list("key", "status"), key=repr) == [
+        (DiffKey(a=1, b="1"), CompareStatus.SAME),
+        (DiffKey(a=2, b="2"), CompareStatus.DELETED),
+    ]
+
+
 def _as_utc(d):
-    return d.replace(tzinfo=timezone.utc)
+    return d.replace(tzinfo=UTC)
 
 
 @pytest.fixture

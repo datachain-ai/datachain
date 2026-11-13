@@ -161,9 +161,12 @@ dc.read_storage("gs://datachain-demo/dogs-and-cats/", anon=True).filter(
 def score(file) -> float:
     return file.size
 
+
 # Run 2 - changed logic
 def score(file) -> float:
     return file.size / 1024
+
+
 # → Python operation recomputes from scratch
 ```
 
@@ -176,9 +179,12 @@ def score(file) -> float:
         raise ValueError("bug")
     return file.size
 
+
 # Run 2 - bug fixed, same output type
 def score(file) -> float:
     return file.size
+
+
 # → Python operation continues from where it stopped, already-processed rows are skipped
 ```
 

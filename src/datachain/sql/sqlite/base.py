@@ -1,12 +1,14 @@
 import hashlib
+import importlib.util
 import logging
+import os
 import re
 import sqlite3
-import warnings
+import subprocess
+import sys
 from collections.abc import Callable, Iterable
 from contextlib import closing
-from datetime import MAXYEAR, MINYEAR, date, datetime, timezone
-from functools import cache
+from datetime import MAXYEAR, MINYEAR, UTC, date, datetime
 from types import MappingProxyType
 
 import sqlalchemy as sa
@@ -37,7 +39,6 @@ from datachain.sql.types import (
     DBDefaults,
     TypeDefaults,
     datetime_cast_input_error_message,
-    parse_datetime_text,
     register_backend_types,
     register_db_defaults,
     register_type_defaults,
@@ -290,7 +291,7 @@ def sqlite_datetime_cast(value):
     if not isinstance(value, str):
         raise TypeError(datetime_cast_input_error_message(type(value).__name__))
 
-    parsed = parse_datetime_text(value)
+    parsed = datetime.fromisoformat(value)
     return _serialize_datetime(parsed)
 
 
@@ -299,26 +300,26 @@ def _normalize_datetime_for_storage(value: datetime) -> datetime:
         return value
 
     try:
-        return value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value.astimezone(UTC).replace(tzinfo=None)
     except (OverflowError, ValueError, OSError):
         if value.year == MAXYEAR:
-            return datetime.max.replace(tzinfo=timezone.utc).replace(tzinfo=None)
+            return datetime.max.replace(tzinfo=UTC).replace(tzinfo=None)
         if value.year == MINYEAR:
-            return datetime.min.replace(tzinfo=timezone.utc).replace(tzinfo=None)
+            return datetime.min.replace(tzinfo=UTC).replace(tzinfo=None)
         raise
 
 
 def _normalize_datetime_for_read(value: datetime) -> datetime:
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
+        return value.replace(tzinfo=UTC)
 
     try:
-        return value.astimezone(timezone.utc)
+        return value.astimezone(UTC)
     except (OverflowError, ValueError, OSError):
         if value.year == MAXYEAR:
-            return datetime.max.replace(tzinfo=timezone.utc)
+            return datetime.max.replace(tzinfo=UTC)
         if value.year == MINYEAR:
-            return datetime.min.replace(tzinfo=timezone.utc)
+            return datetime.min.replace(tzinfo=UTC)
         raise
 
 
@@ -441,7 +442,7 @@ def adapt_datetime(val: datetime) -> str:
 
 
 def convert_datetime(val: bytes) -> datetime:
-    parsed = parse_datetime_text(val.decode())
+    parsed = datetime.fromisoformat(val.decode())
     return _normalize_datetime_for_read(parsed)
 
 
@@ -745,24 +746,53 @@ def compile_collect(element, compiler, **kwargs):
     return compiler.process(func.json_group_array(*element.clauses.clauses), **kwargs)
 
 
-@cache
+USEARCH_SQLITE_ENV = "DATACHAIN_USEARCH_SQLITE"
+_USEARCH_SQLITE_PATH_CODE = """
+import sys, warnings
+sys.path[:] = {path!r}
+warnings.simplefilter("ignore")
+import usearch
+print(usearch.sqlite_path())
+"""
+
+
 def usearch_sqlite_path() -> str | None:
-    try:
-        import usearch
-    except ImportError:
+    """Path of usearch's SQLite extension, or None if it is not available.
+
+    Resolved in a subprocess to keep NumKong's RTLD_GLOBAL symbols out of the
+    process running user model libraries. The result is passed to child
+    processes in an env variable.
+    """
+    if (path := os.environ.get(USEARCH_SQLITE_ENV)) is None:
+        path = os.environ[USEARCH_SQLITE_ENV] = _resolve_usearch_sqlite_path() or ""
+    return path or None
+
+
+def _resolve_usearch_sqlite_path() -> str | None:
+    if (
+        not sys.executable
+        or getattr(sys, "frozen", False)
+        or importlib.util.find_spec("usearch") is None
+    ):
         return None
-
-    with warnings.catch_warnings():
-        # usearch binary is not available for Windows, see: https://github.com/unum-cloud/usearch/issues/427.
-        # and, sometimes fail to download the binary in other platforms
-        # triggering UserWarning.
-
-        warnings.filterwarnings("ignore", category=UserWarning, module="usearch")
-
-        try:
-            return usearch.sqlite_path()
-        except (FileNotFoundError, OSError):
-            return None
+    try:
+        result = subprocess.run(  # noqa: S603
+            [
+                sys.executable,
+                "-c",
+                _USEARCH_SQLITE_PATH_CODE.format(
+                    path=[p for p in sys.path if isinstance(p, str)]
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        logger.debug("Failed to locate usearch SQLite extension", exc_info=True)
+        return None
+    lines = result.stdout.strip().splitlines()
+    return lines[-1].strip() if lines else None
 
 
 def load_usearch_extension(conn: sqlite3.Connection) -> bool:
@@ -780,7 +810,8 @@ def load_usearch_extension(conn: sqlite3.Connection) -> bool:
 
     try:
         conn.load_extension(ext_path)
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as exc:
+        logger.debug("Failed to load usearch SQLite extension %s: %s", ext_path, exc)
         return False
     else:
         return True

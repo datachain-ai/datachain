@@ -13,7 +13,6 @@ for sqlite we can use `sqlite.register_converter`
 """
 
 import numbers
-import re
 from copy import copy
 from datetime import date, datetime
 from types import MappingProxyType
@@ -22,9 +21,12 @@ from typing import Any, Union
 import sqlalchemy as sa
 from sqlalchemy import TypeDecorator, types
 from sqlalchemy.exc import CompileError
+from sqlalchemy.sql import operators
 
 from datachain import json as jsonlib
 from datachain.lib.data_model import StandardType
+
+_OperatorClass = getattr(operators, "OperatorClass", None)
 
 _registry: dict[str, "TypeConverter"] = {}
 registry = MappingProxyType(_registry)
@@ -40,22 +42,7 @@ db_defaults_registry = MappingProxyType(_db_defaults_registry)
 
 NullType = types.NullType
 
-_DATETIME_EXTRA_FRACTION_RE = re.compile(r"(\.\d{6})\d+")
 _DATETIME_CAST_INPUT_TYPES = frozenset({str, bytes, date, datetime})
-
-
-def parse_datetime_text(value: str) -> datetime:
-    normalized = value.replace("Z", "+00:00") if value.endswith("Z") else value
-    try:
-        return datetime.fromisoformat(normalized)
-    except ValueError:
-        # Python 3.10 rejects ISO timestamps with more than 6 fractional digits,
-        # while newer versions truncate them to microseconds. Trim and retry so
-        # parsing stays compatible across our supported Python versions.
-        truncated = _DATETIME_EXTRA_FRACTION_RE.sub(r"\1", normalized)
-        if truncated == normalized:
-            raise
-        return datetime.fromisoformat(truncated)
 
 
 def datetime_cast_input_error_message(type_name: str) -> str:
@@ -67,11 +54,11 @@ def datetime_cast_input_error_message(type_name: str) -> str:
 
 def validate_datetime_cast_input_type(type_) -> None:
     try:
-        python_type = type_.python_type
+        python_type = dict if isinstance(type_, types.JSON) else type_.python_type
     except (AttributeError, NotImplementedError):
         return
 
-    if python_type in _DATETIME_CAST_INPUT_TYPES:
+    if python_type is object or python_type in _DATETIME_CAST_INPUT_TYPES:
         return
 
     python_type_name = getattr(python_type, "__name__", repr(python_type))
@@ -160,6 +147,20 @@ class SQLType(TypeDecorator):
 
     # Optional[scalar] marker -> backend emits a nullable column so None round-trips.
     dc_nullable: bool = False
+
+    if _OperatorClass is not None:
+        operator_classes = _OperatorClass.ANY
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        cls.cache_ok = cls.__dict__.get("cache_ok", cls.cache_ok)
+
+    @property
+    def _static_cache_key(self):
+        key = super()._static_cache_key
+        if self.dc_nullable and isinstance(key, tuple):
+            return (*key, ("dc_nullable", True))
+        return key
 
     def load_dialect_impl(self, dialect):
         impl = self._load_dialect_impl(dialect)
@@ -381,6 +382,10 @@ class Float64(Float):
 class Array(SQLType):
     impl = types.ARRAY
 
+    def __init__(self, item_type, *args, **kwargs):
+        self.item_type = item_type() if isinstance(item_type, type) else item_type
+        super().__init__(self.item_type, *args, **kwargs)
+
     @property
     def python_type(self) -> StandardType:
         return list
@@ -578,7 +583,7 @@ class TypeReadConverter:
             return value
 
         if isinstance(value, str):
-            return parse_datetime_text(value)
+            return datetime.fromisoformat(value)
 
         raise TypeError(
             "datetime read converter expected str, datetime, or None; "

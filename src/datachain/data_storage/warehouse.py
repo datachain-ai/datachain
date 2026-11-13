@@ -4,16 +4,12 @@ import logging
 import posixpath
 import secrets
 import string
-import sys
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
-from typing import TYPE_CHECKING, Any, Union, cast
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, Self, Union, cast
 from urllib.parse import urlparse
-
-if sys.version_info >= (3, 11):
-    from typing import Self
-else:
-    from typing_extensions import Self
 
 import attrs
 import sqlalchemy as sa
@@ -31,11 +27,11 @@ from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.udf import JsonSerializationError
 from datachain.node import DirType, DirTypeGroup, Node, NodeWithPath, get_path
-from datachain.query.batch import RowsOutput
+from datachain.query.batch import DEFAULT_BATCH_SIZE, RowsOutput
 from datachain.query.schema import ColumnMeta
 from datachain.sql.functions import path as pathfunc
 from datachain.sql.types import SQLType
-from datachain.utils import safe_closing, sql_escape_like
+from datachain.utils import LIKE_ESCAPE_CHAR, safe_closing, sql_escape_like
 
 if TYPE_CHECKING:
     from sqlalchemy.sql._typing import (
@@ -55,6 +51,34 @@ if TYPE_CHECKING:
 logger = logging.getLogger("datachain")
 
 SELECT_BATCH_SIZE = 100_000  # number of rows to fetch at a time
+
+
+def to_json_text(value: Any) -> str:
+    """Return a value as the JSON text `convert_type` stores in a JSON column."""
+    return json.dumps(_to_jsonable(value), ensure_ascii=False, serialize_numpy=True)
+
+
+def _to_jsonable(obj: Any) -> Any:
+    """Recursively convert Python/Pydantic structures into JSON-serializable
+    objects.
+    """
+
+    if ModelStore.is_pydantic(type(obj)):
+        # Use Pydantic's JSON mode to ensure datetime and other non-JSON
+        # native types are serialized in a compatible way. Numpy is the one
+        # thing it refuses and this project's encoder handles.
+        return obj.model_dump(mode="json", fallback=json.numpy_to_python)
+
+    if isinstance(obj, dict):
+        return {
+            k if isinstance(k, str) else to_json_text(k): _to_jsonable(v)
+            for k, v in obj.items()
+        }
+
+    if isinstance(obj, (list, tuple, set)):
+        return [_to_jsonable(i) for i in obj]
+
+    return obj
 
 
 class AbstractWarehouse(ABC, Serializable):
@@ -86,41 +110,9 @@ class AbstractWarehouse(ABC, Serializable):
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         """Default behavior is to do nothing, as connections may be shared."""
 
-    def cleanup_for_tests(self):
-        """Cleanup for tests."""
-
     def normalize_limit_offset(self, query: GenerativeSelect) -> GenerativeSelect:
         """Return query adjusted for warehouse-specific LIMIT/OFFSET semantics."""
         return query
-
-    def _to_jsonable(self, obj: Any) -> Any:
-        """Recursively convert Python/Pydantic structures into JSON-serializable
-        objects.
-        """
-
-        if ModelStore.is_pydantic(type(obj)):
-            # Use Pydantic's JSON mode to ensure datetime and other non-JSON
-            # native types are serialized in a compatible way.
-            return obj.model_dump(mode="json")
-
-        if isinstance(obj, dict):
-            out: dict[str, Any] = {}
-            for k, v in obj.items():
-                if not isinstance(k, str):
-                    key_str = json.dumps(
-                        self._to_jsonable(k),
-                        ensure_ascii=False,
-                        serialize_numpy=True,
-                    )
-                else:
-                    key_str = k
-                out[key_str] = self._to_jsonable(v)
-            return out
-
-        if isinstance(obj, (list, tuple, set)):
-            return [self._to_jsonable(i) for i in obj]
-
-        return obj
 
     def convert_type(  # noqa: PLR0911
         self,
@@ -172,7 +164,7 @@ class AbstractWarehouse(ABC, Serializable):
         if col_python_type is dict or col_type_name == "JSON":
             if value_type is str:
                 return val
-            json_ready = self._to_jsonable(val)
+            json_ready = _to_jsonable(val)
             try:
                 return json.dumps(json_ready, ensure_ascii=False, serialize_numpy=True)
             except TypeError as e:
@@ -183,6 +175,10 @@ class AbstractWarehouse(ABC, Serializable):
                 ) from e
 
         if isinstance(val, col_python_type):
+            if col_python_type is datetime and value_type is not datetime:
+                # sqlite3 can't bind subclasses such as pandas.Timestamp.
+                # This drops nanoseconds, as the ClickHouse driver does.
+                return datetime.combine(val.date(), val.timetz())
             return val
         if col_python_type is float and isinstance(val, int):
             return float(val)
@@ -447,8 +443,33 @@ class AbstractWarehouse(ABC, Serializable):
         query = query._clone().offset(None).limit(None).order_by(None)
 
         if is_batched:
+            id_index = next(
+                i for i, column in enumerate(query.selected_columns) if column is id_col
+            )
+
+            def fetch(batches):
+                rows_by_id = defaultdict(list)
+                row_ids = itertools.chain.from_iterable(batches)
+                for row in self.dataset_rows_select(query.where(id_col.in_(row_ids))):
+                    rows_by_id[row[id_index]].append(row)
+                for batch in batches:
+                    yield [
+                        row
+                        for row_id in dict.fromkeys(batch)
+                        for row in rows_by_id[row_id]
+                    ]
+
+            batches: list[RowsOutput] = []
+            count = 0
             for batch in ids:
-                yield list(self.dataset_rows_select(query.where(id_col.in_(batch))))
+                if batches and count + len(batch) > DEFAULT_BATCH_SIZE:
+                    yield from fetch(batches)
+                    batches = []
+                    count = 0
+                batches.append(batch)
+                count += len(batch)
+            if batches:
+                yield from fetch(batches)
         else:
             yield from self.dataset_rows_select(query.where(id_col.in_(ids)))
 
@@ -513,24 +534,51 @@ class AbstractWarehouse(ABC, Serializable):
         ((nrows, *rest),) = self.db.execute(query)
         return nrows, rest[0] if rest else 0
 
-    @abstractmethod
-    def prepare_entries(self, entries: "Iterable[File]") -> Iterable[dict[str, Any]]:
-        """Convert File entries so they can be passed on to `insert_rows()`"""
-
     def insert_rows(
         self,
         table: sa.Table,
         rows: Iterable[dict[str, Any]],
         batch_size: int | None = None,
     ) -> None:
-        """Does batch inserts of any kind of rows into table.
+        """Does batch inserts of dict rows into table, with the keys of the first
+        row as the columns.
 
         `insert_rows_done` must be called after this function is used
         (and all rows have been inserted).
         """
+        rows = iter(rows)
+        first = next(rows, None)
+        if first is None:
+            return
+        columns = list(first)
+        self.insert_tuples(
+            table,
+            columns,
+            (tuple(row[c] for c in columns) for row in itertools.chain([first], rows)),
+            batch_size,
+        )
+
+    def insert_tuples(
+        self,
+        table: sa.Table,
+        columns: Sequence[str],
+        rows: Iterable[tuple],
+        batch_size: int | None = None,
+    ) -> None:
+        """Does batch inserts of tuple rows, in the order of `columns`, into table.
+
+        `insert_rows_done` must be called after this function is used
+        (and all rows have been inserted).
+        """
+        buffer = self.buffers.get(table.name)
+        if buffer is not None and buffer.columns != list(columns):
+            self.close_buffer(table)
         buffer_size = batch_size if batch_size is not None else self.INSERT_BATCH_SIZE
         buffer = self.get_buffer(
-            table, buffer_size=buffer_size, flush_interval=self.INSERT_FLUSH_INTERVAL
+            table,
+            columns,
+            buffer_size=buffer_size,
+            flush_interval=self.INSERT_FLUSH_INTERVAL,
         )
         buffer.insert_many(rows)
 
@@ -538,6 +586,7 @@ class AbstractWarehouse(ABC, Serializable):
     def get_buffer(
         self,
         table: sa.Table,
+        columns: Sequence[str],
         buffer_size: int,
         flush_interval: float,
     ) -> "InsertBuffer":
@@ -561,6 +610,20 @@ class AbstractWarehouse(ABC, Serializable):
         Return SQLAlchemy Boolean determining if a target substring is present in
         source string column
         """
+
+    def prefix_match(self, col: sa.ColumnElement, prefix: str) -> sa.ColumnElement:
+        """
+        Return SQLAlchemy Boolean matching rows whose `col` starts with `prefix`,
+        with `prefix` taken literally.
+
+        `%` and `_` are LIKE wildcards, so the prefix is escaped and the escape
+        character declared alongside it -- the standard spelling, and the one
+        SQLite needs, since it has no default escape character of its own.
+
+        Backends whose LIKE cannot take an ESCAPE clause should override this and
+        rely on their own default escape character instead.
+        """
+        return col.startswith(sql_escape_like(prefix), escape=LIKE_ESCAPE_CHAR)
 
     @abstractmethod
     def get_table(self, name: str) -> sa.Table:
@@ -634,9 +697,9 @@ class AbstractWarehouse(ABC, Serializable):
         """
         dr = dataset_rows
         columns = [c.name for c in query.selected_columns]
-        for row in self.db.execute(query):
+        for row in self.dataset_rows_select(query):
             d = dict(zip(columns, row, strict=False))
-            yield Node(**{dr.without_object(k): v for k, v in d.items()})
+            yield Node.from_row(d, file_prefix=dr.column)
 
     def get_dirs_by_parent_path(
         self,
@@ -674,7 +737,7 @@ class AbstractWarehouse(ABC, Serializable):
         return self.get_nodes(
             self.expand_query(de, q, dr)
             .where(
-                (de.c(q, "path").op("GLOB")(path_glob))
+                (de.c(q, "path").op("GLOB", is_comparison=True)(path_glob))
                 & ~self.instr(relpath, "/")
                 & (de.c(q, "path") != dirpath)
             )
@@ -692,19 +755,19 @@ class AbstractWarehouse(ABC, Serializable):
         dr = dataset_rows
         de = dr.dir_expansion()
         q = de.query(
-            dr.select().where(dr.c("is_latest") == true()).subquery(),
-            column=dr.column,
+            dr.select().where(dr.c("is_latest") == true()).subquery()
         ).subquery()
         q = self.expand_query(de, q, dr)
 
-        q = q.where(de.c(q, "path") == get_path(parent, name)).order_by(
-            de.c(q, "source"), de.c(q, "path"), de.c(q, "version")
+        columns = q.selected_columns
+        q = q.where(columns[dr.col_name("path")] == get_path(parent, name)).order_by(
+            *(columns[dr.col_name(field)] for field in ("source", "path", "version"))
         )
-        row = next(self.dataset_rows_select(q), None)
-        if not row:
+        node = next(self.get_nodes(q, dr), None)
+        if node is None:
             path = f"{parent}/{name}"
             raise FileNotFoundError(f"Unable to resolve path {path!r}")
-        return Node(*row)
+        return node
 
     def _populate_nodes_by_path(
         self, dataset_rows: "DataTable", path_list: list[str]
@@ -740,10 +803,16 @@ class AbstractWarehouse(ABC, Serializable):
                 )
                 result.extend(nodes)
         else:
-            result = [
-                self._get_node_by_path_list(dataset_rows, path, curr_name)
-                for path in matched_paths
-            ]
+            result = []
+            for path in matched_paths:
+                try:
+                    node = self._get_node_by_path_list(dataset_rows, path, curr_name)
+                except FileNotFoundError:
+                    continue
+                result.append(node)
+            if not result and matched_paths:
+                pattern = "/".join(path_list)
+                raise FileNotFoundError(f"Unable to resolve path {pattern!r}")
         return result
 
     @staticmethod
@@ -792,7 +861,7 @@ class AbstractWarehouse(ABC, Serializable):
             dr.select()
             .where(
                 dr.c("is_latest") == true(),
-                dr.c("path").startswith(path),
+                self.prefix_match(dr.c("path"), path),
             )
             .exists()
         )
@@ -861,7 +930,7 @@ class AbstractWarehouse(ABC, Serializable):
         q = (
             sa.select(*(field_to_expr(f) for f in fields))
             .where(
-                dr.c("path").like(f"{sql_escape_like(dirpath)}%"),
+                self.prefix_match(dr.c("path"), dirpath),
                 ~self.instr(pathfunc.name(dr.c("path")), "/"),
                 dr.c("is_latest") == true(),
             )
@@ -901,7 +970,8 @@ class AbstractWarehouse(ABC, Serializable):
         results = next(
             self.db.execute(
                 dr.select(*selections).where(
-                    (dr.c("path").op("GLOB")(sub_glob)) & (dr.c("is_latest") == true())
+                    (dr.c("path").op("GLOB", is_comparison=True)(sub_glob))
+                    & (dr.c("is_latest") == true())
                 )
             ),
             (0, 0),
@@ -933,7 +1003,7 @@ class AbstractWarehouse(ABC, Serializable):
 
         if parent_path:
             sub_glob = posixpath.join(parent_path, "*")
-            conds.append(path.op("GLOB")(sub_glob))
+            conds.append(path.op("GLOB", is_comparison=True)(sub_glob))
         else:
             conds.append(path != "")
 
@@ -977,7 +1047,9 @@ class AbstractWarehouse(ABC, Serializable):
         prefix_len = len(node.path)
 
         def make_node_with_path(node: Node) -> NodeWithPath:
-            return NodeWithPath(node, node.path[prefix_len:].lstrip("/").split("/"))
+            return NodeWithPath(
+                node, node.path[prefix_len:].removeprefix("/").split("/")
+            )
 
         return map(make_node_with_path, self.get_nodes(query, dr))
 

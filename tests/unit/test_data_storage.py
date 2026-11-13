@@ -1,5 +1,5 @@
 import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -48,7 +48,7 @@ COMPLEX_TREE: dict[str, Any] = {
         [Float64(), lambda val: math.isnan(val)],  # noqa: PLW0108
         [Array(Int), []],
         [JSON(), {}],
-        [DateTime(), datetime(1970, 1, 1, 0, 0, tzinfo=timezone.utc)],
+        [DateTime(), datetime(1970, 1, 1, 0, 0, tzinfo=UTC)],
         [Binary(), b""],
     ],
 )
@@ -89,7 +89,6 @@ def test_list_tables(catalog):
     tables = db.list_tables()
     assert isinstance(tables, list)
 
-    # Create a test table
     table = catalog.warehouse.create_udf_table([], name="test_list_tables_abc")
     try:
         tables_after = db.list_tables()

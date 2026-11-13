@@ -4,6 +4,7 @@ from unittest.mock import ANY
 
 import pytest
 import sqlalchemy as sa
+from pydantic import create_model
 
 import datachain as dc
 from datachain.data_storage.schema import DataTable
@@ -12,11 +13,51 @@ from datachain.error import (
     DatasetInvalidVersionError,
     DatasetNotFoundError,
 )
+from datachain.lib.data_model import DataModel
+from datachain.lib.dataset_info import DatasetInfo
 from datachain.lib.file import File
 from datachain.lib.listing import parse_listing_uri
+from datachain.lib.listing_info import ListingInfo
+from datachain.lib.model_store import ModelStore
 from datachain.query.dataset import DatasetQuery
 from datachain.sql.types import Float32, Int, Int64
 from tests.utils import assert_row_names, dataset_dependency_asdict, table_row_count
+
+
+@pytest.mark.parametrize("model", [DatasetInfo, ListingInfo])
+@pytest.mark.parametrize("legacy_version", [1, 2])
+def test_saved_dataset_info_older_versions_are_readable(
+    test_session, model, legacy_version
+):
+    excluded = {"dataset_uuid"} | ({"job_id"} if legacy_version == 1 else set())
+    legacy = create_model(
+        model.__name__,
+        __base__=DataModel,
+        **{
+            name: (field.annotation, field)
+            for name, field in model.model_fields.items()
+            if name not in excluded
+        },
+    )
+    ModelStore.remove(legacy)
+    legacy._version = legacy_version
+    ModelStore.register(legacy)
+    value = legacy(
+        name="inventory",
+        namespace="local",
+        project="local",
+        **({"job_id": "recorded-job"} if legacy_version == 2 else {}),
+    )
+    dc.read_values(dataset=[value], session=test_session).save("legacy_info")
+    ModelStore.remove(legacy)
+    ModelStore.register(model)
+
+    row = dc.read_dataset("legacy_info", session=test_session).to_values("dataset")[0]
+
+    assert row.name == "inventory"
+    assert set(type(row).model_fields) == set(legacy.model_fields)
+    if legacy_version == 2:
+        assert row.job_id == "recorded-job"
 
 
 @pytest.fixture
@@ -294,6 +335,30 @@ def test_create_dataset_from_sources_dataset(cloud_test_catalog, dogs_dataset, p
     assert dataset_version.query_script == ""
     assert dataset_version.num_objects
     assert dataset_version.preview
+
+
+@pytest.mark.parametrize("cloud_type", ["file"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize(
+    "config", [None, {}, {"use_symlinks": False}], ids=["inherit", "empty", "replace"]
+)
+def test_create_dataset_from_dataset_client_config(
+    cloud_test_catalog, dogs_dataset, config
+):
+    catalog = cloud_test_catalog.catalog
+    original = {"use_symlinks": True}
+    catalog.client_config = original.copy()
+    chain = catalog.create_dataset_from_sources(
+        "configured_copy", [f"ds://{dogs_dataset.full_name}"], client_config=config
+    )
+    expected = original if config is None else config
+    assert chain.session.catalog.client_config == expected
+    files = chain.to_values("file")
+    assert files
+    for file in files:
+        assert file._catalog.client_config == expected
+        assert file.read_text() == (cloud_test_catalog.src / file.path).read_text()
+    assert catalog.client_config == original
 
 
 def test_create_dataset_from_sources_empty_sources(test_session, project):
@@ -971,3 +1036,28 @@ def test_dataset_storage_dependencies(cloud_test_catalog, cloud_type, indirect):
             "removed": False,
         }
     ]
+
+
+@pytest.mark.parametrize("column", [None, "dataset"])
+def test_datasets_job_id_matches_description(test_session, column):
+    dc.read_values(value=[1, 2], session=test_session).save("with_job")
+    description = dc.describe("with_job", session=test_session)
+    assert description.job is not None
+    chain = dc.datasets(column=column, session=test_session)
+    job_column = f"{column}.job_id" if column else "job_id"
+    assert chain.to_list(job_column) == [(description.job.id,)]
+
+
+def test_saved_dataset_catalog_keeps_dataset_and_version_uuids(test_session):
+    source = dc.read_values(value=[1], session=test_session).save("inventory")
+    record = test_session.catalog.get_dataset("inventory", versions=None)
+    dc.datasets(column="dataset", session=test_session).filter(
+        dc.C("dataset.name") == "inventory"
+    ).save("catalog_snapshot")
+
+    (info,) = dc.read_dataset("catalog_snapshot", session=test_session).to_values(
+        "dataset"
+    )
+
+    assert info.dataset_uuid == record.uuid
+    assert info.uuid == record.get_version(source.version).uuid

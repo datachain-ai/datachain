@@ -28,7 +28,7 @@
 
 **A Python library that turns files in S3, GCS, and Azure into versioned, typed datasets, queryable at warehouse speed.**
 
-Bytes never leave your storage. Two core components: a **Compute Engine** for distributed Python over files and a **Dataset DB** for warehouse-speed queries over Pydantic-typed records. For agent workflows, two more: a **Knowledge Base** of markdown summaries and an **Agent Harness** (skill + MCP) that plugs all of it into Claude Code, Cursor, and Codex, so they understand your data.
+Bytes never leave your storage. Two core components: a **Compute Engine** for parallel Python over files, distributed on Studio, and a **Dataset DB** for sub-second queries over Pydantic-typed records. For agent workflows, two more: a **Knowledge Base** of markdown summaries and an **Agent Harness** (a skill locally, MCP on Studio) that plugs all of it into Claude Code, Cursor, and Codex, so they understand your data.
 
 ## Get started
 

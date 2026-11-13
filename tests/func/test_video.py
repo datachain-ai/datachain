@@ -18,7 +18,13 @@ from numpy import ndarray
 from PIL import Image
 
 from datachain import VideoFragment, VideoFrame
-from datachain.lib.file import File, FileError, ImageFile, VideoFile
+from datachain.lib.file import (
+    PARTIAL_READ_BLOCK_SIZE,
+    File,
+    FileError,
+    ImageFile,
+    VideoFile,
+)
 from datachain.lib.tar import process_tar
 from datachain.lib.video import save_video_fragment, video_frame_np
 
@@ -442,7 +448,7 @@ def test_get_info_uses_base_rate_when_average_rate_is_missing(
 ):
     with av.open(str(nut_video_without_average_rate.path)) as container:
         stream = container.streams.video[0]
-        assert stream.average_rate is None
+        assert not stream.average_rate
         assert stream.base_rate == 5
 
     info = nut_video_without_average_rate.file.get_info()
@@ -497,7 +503,7 @@ def test_get_frame_reuses_metadata(video_file, monkeypatch):
     def fail_open(self, *args, **kwargs):
         raise AssertionError("get_frame should reuse cached video metadata")
 
-    monkeypatch.setattr(VideoFile, "open", fail_open)
+    monkeypatch.setattr(VideoFile, "_open_read", fail_open)
 
     frame = video.get_frame(38)
 
@@ -865,8 +871,16 @@ def test_get_frames_uses_seek_for_large_start(video_file):
     )
 
 
-def test_get_frames_retries_when_seek_lands_after_start(video_file, monkeypatch):
+@pytest.mark.parametrize("small_blocks", [False, True])
+def test_get_frames_retries_when_seek_lands_after_start(
+    video_file, monkeypatch, mocker, small_blocks
+):
     start = 250
+    video = video_file.as_video_file()
+    video.get_info()
+    if not small_blocks:
+        video = video.model_copy(update={"size": 10**12})
+    open_spy = mocker.spy(VideoFile, "open")
     real_av_open = av.open
 
     def open_with_seek_ahead(*args, **kwargs):
@@ -874,8 +888,11 @@ def test_get_frames_retries_when_seek_lands_after_start(video_file, monkeypatch)
 
     monkeypatch.setattr(av, "open", open_with_seek_ahead)
 
-    frames = list(video_file.as_video_file().get_frames(start, start + 3))
+    frames = list(video.get_frames(start, start + 3))
 
+    assert [call.kwargs.get("block_size") for call in open_spy.call_args_list] == (
+        [PARTIAL_READ_BLOCK_SIZE, None] if small_blocks else [None]
+    )
     assert [frame.frame for frame in frames] == [250, 251, 252]
     assert [frame.timestamp for frame in frames] == pytest.approx(
         [250 / 30, 251 / 30, 252 / 30]
@@ -1058,6 +1075,30 @@ def test_save_fragment(tmp_path, video_file):
         "format": "mov,mp4,m4a,3gp,3g2,mj2",
         "codec": "h264",
     }
+
+
+@requires_ffmpeg
+def test_save_fragment_same_stem_in_different_dirs(tmp_path, video_file):
+    data = video_file.read_bytes()
+    videos = [File.upload(data, f"{task}/0.mp4").as_video_file() for task in ("a", "b")]
+    out = tmp_path / "out"
+
+    paths = {video.get_fragment(0, 1).save(str(out)).path for video in videos}
+
+    assert len(paths) == 2
+    assert len(os.listdir(out)) == 2
+
+
+@requires_ffmpeg
+def test_save_fragment_name_is_deterministic(tmp_path, video_file):
+    fragment = video_file.as_video_file().get_fragment(2.5, 5)
+
+    first = fragment.save(str(tmp_path))
+    second = fragment.save(str(tmp_path))
+
+    assert first.path == second.path
+    assert first.name.startswith("Big_Buck_Bunny_360_10s_1MB_")
+    assert first.name.endswith("_002500_005000.mp4")
 
 
 @requires_ffmpeg
@@ -1306,3 +1347,127 @@ def test_save_fragments(tmp_path, video_file):
             "format": "mov,mp4,m4a,3gp,3g2,mj2",
             "codec": "h264",
         }
+
+
+@pytest.mark.parametrize(
+    "start,size,block_size",
+    [
+        (0, None, None),
+        (100, None, PARTIAL_READ_BLOCK_SIZE),
+        (100, 0, None),
+        (100, -1, None),
+        (100, 10**12, None),
+    ],
+)
+def test_get_frames_block_size_by_window(video_file, mocker, start, size, block_size):
+    video = video_file.as_video_file()
+    video.get_info()
+    if size is not None:
+        video = video.model_copy(update={"size": size})
+    open_spy = mocker.spy(VideoFile, "open")
+
+    list(video.get_frames(start, start + 2))
+
+    open_spy.assert_called_once()
+    assert open_spy.call_args.kwargs.get("block_size") == block_size
+
+
+def test_get_frame_from_mid_file_reads_small_blocks(video_file, mocker):
+    video = video_file.as_video_file()
+    open_spy = mocker.spy(VideoFile, "open")
+
+    video.get_frame(100).get_np()
+
+    assert open_spy.call_args.kwargs.get("block_size") == PARTIAL_READ_BLOCK_SIZE
+
+
+def test_get_frames_after_declined_seek_reopens_with_default_blocks(
+    mpegts_video, mocker
+):
+    video = mpegts_video.file
+    video.get_info()
+    open_spy = mocker.spy(VideoFile, "open")
+
+    frames = list(video.get_frames(5, 8))
+
+    assert [frame.frame for frame in frames] == [5, 6, 7]
+    assert [frame.get_np().mean() for frame in frames] == pytest.approx(
+        [100, 120, 140], abs=2
+    )
+    sizes = [call.kwargs.get("block_size") for call in open_spy.call_args_list]
+    assert sizes == [PARTIAL_READ_BLOCK_SIZE, None]
+
+
+def test_get_frame_after_declined_seek_reopens_with_default_blocks(
+    mpegts_video, mocker
+):
+    video = mpegts_video.file
+    video.get_info()
+    open_spy = mocker.spy(VideoFile, "open")
+
+    image = video.get_frame(5).get_np()
+
+    assert image.mean() == pytest.approx(100, abs=2)
+    sizes = [call.kwargs.get("block_size") for call in open_spy.call_args_list]
+    assert sizes == [PARTIAL_READ_BLOCK_SIZE, None]
+
+
+def test_get_frame_reopens_with_default_blocks_when_seek_lands_after_start(
+    video_file, monkeypatch, mocker
+):
+    video = video_file.as_video_file()
+    expected = video.get_frame(250).get_np()
+    real_av_open = av.open
+
+    def open_with_seek_ahead(*args, **kwargs):
+        return SeekAheadContainer(real_av_open(*args, **kwargs), 250)
+
+    monkeypatch.setattr(av, "open", open_with_seek_ahead)
+    open_spy = mocker.spy(VideoFile, "open")
+    image = video.get_frame(250).get_np()
+
+    np.testing.assert_array_equal(image, expected)
+    assert [call.kwargs.get("block_size") for call in open_spy.call_args_list] == [
+        PARTIAL_READ_BLOCK_SIZE,
+        None,
+    ]
+
+
+@pytest.mark.parametrize("metadata_error", [False, True])
+def test_get_frames_uses_default_blocks_without_frame_count(
+    video_file, mocker, metadata_error
+):
+    video = video_file.as_video_file()
+    info = video.get_info()
+    expected = [frame.get_np() for frame in video.get_frames(100, 102)]
+    if metadata_error:
+        mocker.patch.object(
+            VideoFile,
+            "get_info",
+            side_effect=FileError("metadata unavailable", video.source, video.path),
+        )
+    else:
+        mocker.patch.object(
+            VideoFile, "get_info", return_value=info.model_copy(update={"frames": 0})
+        )
+    open_spy = mocker.spy(VideoFile, "open")
+
+    frames = list(video.get_frames(100, 102))
+
+    assert [frame.frame for frame in frames] == [100, 101]
+    for frame, pixels in zip(frames, expected, strict=True):
+        np.testing.assert_array_equal(frame.get_np(), pixels)
+    open_spy.assert_called_once()
+    assert open_spy.call_args.kwargs.get("block_size") is None
+
+
+def test_get_frames_reuses_metadata_when_end_is_omitted(video_file, mocker):
+    from datachain.lib import video as video_module
+
+    video = video_file.as_video_file()
+    info = mocker.spy(video_module, "video_info")
+
+    frames = list(video.get_frames(100))
+
+    assert frames
+    info.assert_called_once()

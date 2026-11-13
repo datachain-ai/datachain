@@ -20,19 +20,27 @@ Runnable notebooks covering end-to-end workflows.
     Caption images from cloud storage using the BLIP Large model, with `setup()` for one-time model initialization:
 
     ```python
-    import datachain as dc # (1)!
+    import datachain as dc  # (1)!
     from transformers import Pipeline, pipeline
     from datachain import File
+
 
     def process(file: File, pipeline: Pipeline) -> str:
         image = file.read().convert("RGB")
         return pipeline(image)[0]["generated_text"]
 
+
     chain = (
-        dc.read_storage("gs://datachain-demo/newyorker_caption_contest/images", type="image", anon=True)
+        dc.read_storage(
+            "gs://datachain-demo/newyorker_caption_contest/images", type="image", anon=True
+        )
         .limit(5)
         .settings(cache=True)
-        .setup(pipeline=lambda: pipeline("image-to-text", model="Salesforce/blip-image-captioning-large"))
+        .setup(
+            pipeline=lambda: pipeline(
+                "image-to-text", model="Salesforce/blip-image-captioning-large"
+            )
+        )
         .map(scene=process)
         .persist()
     )

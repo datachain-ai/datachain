@@ -15,7 +15,7 @@ if parse(fsspec.__version__) < Version("2025.2.0"):
             protocol, _ = split_protocol(uri)
             return self.fss[protocol].open(uri, mode, *args, **kwargs)
 else:
-    from fsspec.implementations.reference import ReferenceFileSystem  # type: ignore[no-redef]  # noqa: I001
+    from fsspec.implementations.reference import ReferenceFileSystem  # type: ignore[no-redef]
 
 
 __all__ = ["ReferenceFileSystem"]

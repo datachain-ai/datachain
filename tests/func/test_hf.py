@@ -44,6 +44,13 @@ def test_read_hf_column(test_session):
     assert df_equal(df["obj"], pd.DataFrame(DF_DATA))
 
 
+@pytest.mark.parametrize("kwargs,signal", [({}, "age"), ({"column": "obj"}, "obj.age")])
+def test_read_hf_one_column(test_session, kwargs, signal):
+    ds = Dataset.from_dict({"age": DF_DATA["age"]})
+    chain = dc.read_hf(ds, session=test_session, **kwargs)
+    assert sorted(chain.to_values(signal)) == DF_DATA["age"]
+
+
 def test_read_hf_invalid(test_session):
     with pytest.raises(FileNotFoundError):
         dc.read_hf("invalid_dataset", session=test_session)
@@ -104,11 +111,12 @@ def test_hf_image(tmp_path):
     img.save(train_dir / "img1.png")
 
     ds = load_dataset("imagefolder", data_dir=tmp_path)
-    hf_schema, norm_names = get_output_schema(ds["train"].features, ["split"])
+    hf_schema, norm_names = get_output_schema(ds["train"].features)
     schema = {"split": str} | hf_schema
     assert schema["image"] is HFImage
 
-    gen = HFGenerator(ds, dict_to_data_model("", schema, list(norm_names.values())))
+    model = dict_to_data_model("", schema, ["split", *norm_names.values()])
+    gen = HFGenerator(ds, model, split_name="split")
     gen.setup()
     row = next(iter(gen.process("train")))
     assert row.image.img == image_to_bytes(img)
@@ -127,10 +135,11 @@ def test_hf_audio(tmp_path):
     write(train_dir / "example.wav", samplerate, data.astype(np.int16))
 
     ds = load_dataset("audiofolder", data_dir=tmp_path)
-    hf_schema, norm_names = get_output_schema(ds["train"].features, ["split"])
+    hf_schema, norm_names = get_output_schema(ds["train"].features)
     schema = {"split": str} | hf_schema
 
-    gen = HFGenerator(ds, dict_to_data_model("", schema, list(norm_names.values())))
+    model = dict_to_data_model("", schema, ["split", *norm_names.values()])
+    gen = HFGenerator(ds, model, split_name="split")
     gen.setup()
     row = next(iter(gen.process("train")))
     assert np.allclose(row.audio.array, data / amplitude, atol=1e-4)

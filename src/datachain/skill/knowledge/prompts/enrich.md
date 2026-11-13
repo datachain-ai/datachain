@@ -8,7 +8,7 @@ JSON fields:
 
 - `name`, `source` (`"local"` / `"studio"`)
 - `description` (optional) — free-form description from `.save(description=...)`. May be `null`.
-- `attrs` (optional) — list of string tags from `.save(attrs=[...])`. The CAST keys: `cast:<layer>`, `scope:<bucket|directory|sample|onetime>`, `source:<slug>`. Empty list `[]` if no tags set.
+- `attrs` (optional) — list of free-form string tags from `.save(attrs=[...])`. Empty list `[]` if no tags set.
 - `versions[]` — ordered oldest-first. Each has:
   - `version`, `uuid`, `records`, `updated`
   - `schema` (latest version has full schema; older may be `{}`)
@@ -30,9 +30,6 @@ updated: {updated}
 records: {records}
 is_local: {true if source == "local" else false}
 known_versions: [{comma-separated version strings}]
-cast_layer: {container | asset | sense | task, or empty}
-cast_scope: {bucket | directory | sample | onetime, or empty}
-cast_source: {bucket slug for L1-L3, task slug for L4, or empty}
 ---
 
 Frontmatter values derive from the dataset and its **latest** version — the last entry in
@@ -55,8 +52,8 @@ If the input JSON has a non-null `description`, prefer it as the lead sentence.}
    preserve it here verbatim. Do not paraphrase or rewrite.
 2. **New dataset created during an agentic session**: 1-3 sentences on WHY this
    dataset was created — the analytical goal, the investigation, the user's
-   motivation. For a CAS layer built during the session, add one line on why
-   the layer is reusable beyond the current task.
+   motivation. For an expensive dataset built during the session, add one
+   line on why it is reusable beyond the current task.
 
 Omit entirely if no existing section AND no meaningful session to describe,
 or if the dataset was recovered from the DB without conversation context,
@@ -157,9 +154,3 @@ One subsection per version, newest first.
 - **Human-readable timestamps:** `YYYY-MM-DD HH:MM:SS` (no `T`, no `Z`).
 - **No functional change?** Write "Data refreshed; no functional changes."
 - **`known_versions` lists the version strings present in `versions[]`**, comma-separated inside brackets. When `warnings` shows the history was truncated, these are only the most recent versions — do not imply the list is complete (the completeness caveat in the body covers the omission).
-- **CAST frontmatter resolution order:**
-  1. If the existing `.md` has `cast_layer` / `cast_scope` / `cast_source` in frontmatter, **preserve verbatim** (same rule as Session Context).
-  2. Otherwise, read `attrs`. `cast:<layer>` → `cast_layer`; `scope:<scope>` → `cast_scope`; `source:<slug>` → `cast_source`.
-  3. If `attrs` has no CAST tags, fall back to the name prefix: `l1_…` → container; `l2_…` → asset; `l3_…` → sense. (Task uses prefix-free names; no name-prefix rule.) Leave other CAST fields empty.
-  4. If neither encodes a CAST layer, leave all fields empty.
-- **Conflict resolution.** If name prefix and `attrs cast:<layer>` disagree, prefer `attrs` silently — `attrs` is authoritative.

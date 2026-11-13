@@ -57,7 +57,6 @@ def test_single_job_for_multiple_saves(tmp_path, catalog_tmpfile):
     jobs = list(catalog_tmpfile.metastore.db.execute(query))
     assert len(jobs) == 1, f"Expected exactly 1 job, but got {len(jobs)}"
 
-    # Get the job for this script
     job = catalog_tmpfile.metastore.get_last_job_by_name(str(script))
     assert job is not None
     assert job.name == str(script)
@@ -135,7 +134,6 @@ def test_job_marked_on_exception(
     jobs = list(catalog_tmpfile.metastore.db.execute(query))
     assert len(jobs) == 1, f"Expected exactly 1 job, but got {len(jobs)}"
 
-    # Get the job for this script
     job = catalog_tmpfile.metastore.get_last_job_by_name(str(script))
     assert job is not None
     assert job.name == str(script)

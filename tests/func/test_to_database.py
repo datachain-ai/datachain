@@ -4,7 +4,7 @@ import sqlite3
 import time
 import uuid
 from contextlib import closing
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 import sqlalchemy
@@ -15,7 +15,8 @@ import datachain as dc
 
 
 def get_postgres_uri():
-    return os.environ.get("TEST_POSTGRES_URI", "postgresql://test:test@localhost:5432")
+    uri = os.environ.get("TEST_POSTGRES_URI", "postgresql://test:test@localhost:5432")
+    return uri.replace("postgresql://", "postgresql+psycopg2://", 1)
 
 
 def is_postgres_available():
@@ -125,7 +126,7 @@ def _parse_datetime_if_needed(connection, value, expected_timezone=None):
     if engine.name == "sqlite" and isinstance(value, str):
         # SQLite stores naive datetime strings that represent UTC time
         parsed = datetime.fromisoformat(value)
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
         if expected_timezone is not None:
             return parsed.astimezone(expected_timezone)
         return parsed
@@ -262,6 +263,26 @@ def test_basic_to_database(tmp_dir, connection):
     assert result[0] == (1, "Alice", 25)
     assert result[1] == (2, "Bob", 30)
     assert result[2] == (3, "Charlie", 35)
+
+
+@pytest.mark.parametrize("as_url", [False, True])
+def test_to_database_bare_postgresql_url(
+    postgres_session_database, postgres_connection, test_session, as_url
+):
+    bare_url = postgres_session_database["engine"].url.set(drivername="postgresql")
+    connection = bare_url if as_url else bare_url.render_as_string(hide_password=False)
+    table = f"bare_url_table_{int(as_url)}"
+    chain = dc.read_values(id=[1, 2], name=["Alice", "Bob"], session=test_session)
+
+    chain.to_database(table, connection)
+
+    assert _fetch_all_rows(postgres_connection, table) == [(1, "Alice"), (2, "Bob")]
+    read_back = dc.read_database(
+        f"SELECT id, name FROM {table} ORDER BY id",  # noqa: S608
+        connection,
+        session=test_session,
+    )
+    assert read_back.order_by("id").to_list("id", "name") == [(1, "Alice"), (2, "Bob")]
 
 
 def test_to_database_with_uri(sqlite_uri, ensure_sqlite_adapter):
@@ -451,7 +472,6 @@ def test_to_database_conflict_columns_normalization(postgres_connection, test_se
 
 
 def test_to_database_table_exists_different_schema(connection, test_session):
-    """Test to_database when table exists but has different schema."""
     engine = _get_engine_from_connection(connection)
     with engine.connect() as conn:
         with conn.begin():
@@ -729,8 +749,6 @@ def test_to_database_column_mapping_defaultdict_with_datachain_format(
 
 
 def test_to_database_column_mapping_complex_nested_names(connection, test_session):
-    """Test column mapping with complex/nested column names."""
-
     class NestedData(dc.DataModel):
         value: str
         metadata: dict

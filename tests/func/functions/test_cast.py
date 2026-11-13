@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy.exc import CompileError
@@ -148,11 +148,11 @@ def test_cast_datetime_in_mutate_and_order_by(test_session):
     assert rows == [
         (
             "2024-01-01 00:00:00",
-            datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC),
         ),
         (
             "2024-01-02 03:04:05",
-            datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 3, 4, 5, tzinfo=UTC),
         ),
     ]
 
@@ -203,19 +203,19 @@ def test_cast_datetime_to_string_and_round_trip(test_session):
 
     assert rows == [
         (
-            datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC),
             "2024-01-01 00:00:00",
-            datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC),
         ),
         (
-            datetime(2024, 1, 2, 3, 4, 5, 123000, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 3, 4, 5, 123000, tzinfo=UTC),
             "2024-01-02 03:04:05.123000",
-            datetime(2024, 1, 2, 3, 4, 5, 123000, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 3, 4, 5, 123000, tzinfo=UTC),
         ),
         (
-            datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=UTC),
             "2024-01-02 03:04:05.123456",
-            datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=UTC),
         ),
     ]
 
@@ -244,7 +244,7 @@ def test_cast_datetime_from_fractional_string(test_session, source, expected):
         .to_values("ts")
     )
 
-    assert rows == [expected.replace(tzinfo=timezone.utc)]
+    assert rows == [expected.replace(tzinfo=UTC)]
 
 
 @pytest.mark.parametrize(
@@ -264,7 +264,7 @@ def test_cast_datetime_from_simple_iso_string(test_session, source, expected):
         .to_values("ts")
     )
 
-    assert rows == [expected.replace(tzinfo=timezone.utc)]
+    assert rows == [expected.replace(tzinfo=UTC)]
 
 
 @pytest.mark.parametrize(
@@ -272,11 +272,11 @@ def test_cast_datetime_from_simple_iso_string(test_session, source, expected):
     [
         (
             "2024-01-02T03:04:05Z",
-            datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 3, 4, 5, tzinfo=UTC),
         ),
         (
             "2024-01-02T03:04:05-05:00",
-            datetime(2024, 1, 2, 8, 4, 5, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 8, 4, 5, tzinfo=UTC),
         ),
     ],
 )

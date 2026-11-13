@@ -5,6 +5,8 @@ import re
 import sys
 import traceback
 from collections.abc import Callable
+from contextlib import ExitStack
+from copy import copy
 from typing import TYPE_CHECKING, ClassVar
 from uuid import uuid4
 from weakref import WeakSet
@@ -107,21 +109,38 @@ class Session:
         session_uuid = uuid4().hex[: self.SESSION_UUID_LEN]
         self.name = f"{name}_{session_uuid}"
         self.is_new_catalog = not catalog
+        self._parent: Session | None = None
         self.catalog = catalog or get_catalog(
             client_config=client_config, in_memory=in_memory
         )
+        self._cleanup_catalogs: list[Catalog] = [self.catalog]
         # Session-local job for in-memory catalogs; see get_or_create_job.
         self._session_job: Job | None = None
-        self._closed = False
         Session._ALL_SESSIONS.add(self)
 
+    def _with_catalog(self, catalog: "Catalog") -> "Session":
+        """Use another catalog without creating a new temporary-dataset scope."""
+        if catalog is self.catalog:
+            return self
+        view = copy(self)
+        view.catalog = catalog
+        # Keep the cleanup owner alive; only owners are in _ALL_SESSIONS.
+        view._parent = self
+        # The owner cleans up temporary datasets created through this view.
+        view._cleanup_catalogs = self._cleanup_catalogs
+        view.is_new_catalog = False
+        return view
+
     def __enter__(self):
+        if self._parent is not None:
+            raise RuntimeError("Enter the parent Session, not its catalog view")
         # Push the current context onto the stack
         Session.SESSION_CONTEXTS.append(self)
 
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        self._close()
         # Each exit removes only *this* session's most recent stack entry:
         # exiting a non-context session, exiting out of order, or re-entrant
         # `with session:` blocks must not corrupt the context stack.
@@ -130,21 +149,11 @@ class Session:
                 del Session.SESSION_CONTEXTS[i]
                 break
 
-        # Resource cleanup is idempotent: a session may be exited by both its
-        # `with` block and a cleanup sweep; a second pass would reconnect the
-        # already-closed database just to query temp datasets, leaking the
-        # new connection.
-        if self._closed:
-            return
-        self._closed = True
-
+    def _close(self) -> None:
+        """Clean up this scope without changing the active session stack."""
         # Don't cleanup created versions on exception
         # Datasets should persist even if the session fails
-        if not getattr(self.catalog.metastore.db, "is_closed", False):
-            # A session over an already-closed database (e.g. a wrapper whose
-            # owner was cleaned up first) has nothing left to clean; querying
-            # would silently reconnect and leak the connection.
-            self._cleanup_temp_datasets()
+        self._cleanup_temp_datasets()
         if self.is_new_catalog:
             self.catalog.metastore.close_on_exit()
             self.catalog.warehouse.close_on_exit()
@@ -309,6 +318,12 @@ class Session:
             Session._JOB_STATUS = JobStatus.FAILED
 
     def generate_temp_dataset_name(self) -> str:
+        if not any(
+            c.metastore is self.catalog.metastore
+            and c.warehouse is self.catalog.warehouse
+            for c in self._cleanup_catalogs
+        ):
+            self._cleanup_catalogs.append(self.catalog)
         return self.get_temp_prefix() + uuid4().hex[: self.TEMP_TABLE_UUID_LEN]
 
     def get_temp_prefix(self) -> str:
@@ -320,19 +335,51 @@ class Session:
 
     def _cleanup_temp_datasets(self) -> None:
         prefix = self.get_temp_prefix()
-        try:
-            for dataset in list(
-                self.catalog.metastore.list_datasets_by_prefix(
-                    prefix, include_incomplete=True
-                )
-            ):
-                # Session datasets are always wiped — never soft-deleted.
-                self.catalog.remove_dataset(
-                    dataset.name, dataset.project, force=True, keep_metadata=False
-                )
-        # suppress error when metastore has been reset during testing
-        except TableMissingError:
-            pass
+        for catalog in self._cleanup_catalogs:
+            db = getattr(catalog.metastore, "db", None)
+            if catalog is self.catalog and getattr(db, "is_closed", False):
+                # A closed database has nothing new to clean (any use would have
+                # reopened it), and querying it would reopen and leak a connection.
+                continue
+            try:
+                with ExitStack() as connections:
+                    if catalog is not self.catalog:
+                        # Borrowed catalogs may already be closed, or belong to
+                        # another thread. Cleanup owns only these new connections.
+                        catalog = catalog.copy()
+                        catalog.metastore = catalog.metastore.clone(
+                            use_new_connection=True
+                        )
+                        connections.callback(catalog.metastore.close_on_exit)
+                        catalog.warehouse = catalog.warehouse.clone(
+                            use_new_connection=True
+                        )
+                        connections.callback(catalog.warehouse.close_on_exit)
+                    for dataset in list(
+                        catalog.metastore.list_datasets_by_prefix(
+                            prefix, include_incomplete=True
+                        )
+                    ):
+                        # Session datasets are always wiped — never soft-deleted.
+                        catalog.remove_dataset(
+                            dataset.name,
+                            dataset.project,
+                            force=True,
+                            keep_metadata=False,
+                        )
+            # suppress error when metastore has been reset during testing
+            except TableMissingError:
+                pass
+        # A retained chain/view must not keep other catalogs alive after cleanup.
+        self._cleanup_catalogs[:] = [self.catalog]
+
+    @classmethod
+    def active(cls) -> "Session | None":
+        """The session ``get()`` returns without arguments, without creating
+        one: None when no session exists yet."""
+        if cls.SESSION_CONTEXTS:
+            return cls.SESSION_CONTEXTS[-1]
+        return cls.GLOBAL_SESSION_CTX
 
     @classmethod
     def get(
@@ -466,6 +513,11 @@ class Session:
 
     @staticmethod
     def except_hook(exc_type, exc_value, exc_traceback):
+        if getattr(sys, "ps1", None):
+            original_hook = Session.ORIGINAL_EXCEPT_HOOK or sys.__excepthook__
+            original_hook(exc_type, exc_value, exc_traceback)
+            return
+
         if Session.GLOBAL_SESSION_CTX:
             # Handle KeyboardInterrupt specially - mark as canceled and exit with
             # signal code

@@ -201,7 +201,7 @@ If automatic configuration fails:
 
 ## Next Steps
 
-- Configure [team collaboration](../team-collaboration.md)
+- Configure [team settings](../teams/settings.md)
 - Set up [automated workflows](../../../guide/processing.md)
 - Explore [webhook integration](../../webhooks.md)
 - Learn about [GitHub integration](github-app.md) as an alternative

@@ -38,10 +38,10 @@ chain = (
         # - String: field name indicating errors when not empty
         # - True: retry missing records from result dataset
         # - False/None: no retry processing
-        delta_retry="error"
+        delta_retry="error",
     )
     .map(result=process_function)  # Your processing function
-    .save(name="processed_data")    # Save results
+    .save(name="processed_data")  # Save results
 )
 ```
 
@@ -50,6 +50,7 @@ chain = (
 ```python
 import datachain as dc
 from datachain import C
+
 
 def process_file(file):
     """Process a file - may occasionally fail with an error."""
@@ -60,23 +61,24 @@ def process_file(file):
         return {
             "content": content,
             "result": result,
-            "error": ""  # No error
+            "error": "",  # No error
         }
     except Exception as e:
         # Log the error and return it in the result
         return {
             "content": "",
             "result": "",
-            "error": str(e)  # Store the error message
+            "error": str(e),  # Store the error message
         }
+
 
 # Process files with with retry functionality
 chain = (
     dc.read_storage(
         "data/",
-        delta=True,                    # Process only new files
-        delta_on="file.path",          # Files are identified by their paths
-        delta_retry="error"            # Retry records with errors in "error" field
+        delta=True,  # Process only new files
+        delta_on="file.path",  # Files are identified by their paths
+        delta_retry="error",  # Retry records with errors in "error" field
     )
     .map(result=process_file)
     .save(name="processed_files")

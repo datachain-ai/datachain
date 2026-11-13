@@ -29,15 +29,19 @@ Every function passed to `map()`, `gen()`, or `agg()` must have a return type an
 def classify(file: dc.File) -> str:
     return "positive"
 
+
 # GOOD -- Pydantic model for multiple outputs
 from pydantic import BaseModel
+
 
 class Result(BaseModel):
     label: str
     confidence: float
 
+
 def classify(file: dc.File) -> Result:
     return Result(label="positive", confidence=0.95)
+
 
 # BAD -- no return type
 def classify(file):
@@ -52,6 +56,7 @@ Rely on function annotations for auto-inference. Use `params=` only for nested c
 # GOOD -- auto-inferred
 def caption(file: dc.ImageFile) -> str:
     return describe(file.read())
+
 
 # GOOD -- params for nested columns
 chain.map(ext=lambda path: path.rsplit(".", 1)[-1], params=["file.path"])
@@ -70,7 +75,9 @@ chain.map(result=expensive_llm_call).save("all_results")
 dc.read_dataset("all_results").filter(dc.C("result.score") > 0.9).save("good_results")
 
 # BAD -- discarded results are lost forever
-chain.map(result=expensive_llm_call).filter(dc.C("result.score") > 0.9).save("good_results")
+chain.map(result=expensive_llm_call).filter(dc.C("result.score") > 0.9).save(
+    "good_results"
+)
 ```
 
 ## Materialize Before Reuse
@@ -116,9 +123,11 @@ For related fields produced together (e.g. by one LLM call), return a Pydantic m
 ```python
 from pydantic import BaseModel
 
+
 class Result(BaseModel):
     label: str
     confidence: float
+
 
 chain.map(result=classify)
 ```
@@ -170,6 +179,7 @@ dc.read_storage("s3://bucket/images/**/*.jpg")
 
 # BAD -- glob in Python, not tracked
 import glob
+
 for f in glob.glob("images/**/*.jpg"):
     ...
 ```
@@ -182,10 +192,14 @@ Use `.setup(x=lambda: init())` instead of class-based `Mapper` when you don't ne
 # GOOD
 chain.setup(model=lambda: load_model()).map(result=predict)
 
+
 # OVERKILL for most cases
 class MyMapper(Mapper):
-    def setup(self): self.model = load_model()
-    def process(self, file): return self.model(file.read())
+    def setup(self):
+        self.model = load_model()
+
+    def process(self, file):
+        return self.model(file.read())
 ```
 
 ## Avoid File Download for Metadata-Only Operations
@@ -227,6 +241,7 @@ dc.File.at("s3://bucket/path/to/file.png")
 
 # BAD
 import os
+
 for root, dirs, files in os.walk("/data"):
     ...
 ```
@@ -278,5 +293,7 @@ Pass `dc.func.*` directly to `on=`, `partition_by=`. Don't `mutate()` throwaway 
 chain.group_by(count=dc.func.count(), partition_by=dc.func.path.file_ext("file.path"))
 
 # BAD -- unnecessary intermediate column
-chain.mutate(ext=dc.func.path.file_ext("file.path")).group_by(count=dc.func.count(), partition_by="ext")
+chain.mutate(ext=dc.func.path.file_ext("file.path")).group_by(
+    count=dc.func.count(), partition_by="ext"
+)
 ```

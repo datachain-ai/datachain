@@ -21,13 +21,13 @@ import datachain as dc
 
 file = dc.File.at("s3://bucket/path/to/file.png")
 
-content = file.read()          # bytes
-text = file.read_text()        # str
+content = file.read()  # bytes
+text = file.read_text()  # str
 
-with file.open("rb") as f:    # stream large files
+with file.open("rb") as f:  # stream large files
     chunk = f.read(4096)
 
-file.ensure_cached()           # cache locally
+file.ensure_cached()  # cache locally
 local = file.get_local_path()  # local path after caching
 
 file.export("/local/output/", placement="filename")
@@ -45,7 +45,7 @@ import datachain as dc
 
 images = dc.read_storage("s3://bucket/images/", type="image")  # ImageFile
 videos = dc.read_storage("s3://bucket/videos/", type="video")  # VideoFile
-audio  = dc.read_storage("s3://bucket/audio/",  type="audio")  # AudioFile
+audio = dc.read_storage("s3://bucket/audio/", type="audio")  # AudioFile
 ```
 
 **ImageFile**: `read()` returns a `PIL.Image.Image`. `get_info()` returns Image metadata (width, height, format). `save()` supports format conversion.
@@ -71,8 +71,10 @@ chain = (
 # Time-based slicing
 from typing import Iterator
 
+
 def split_into_clips(file: dc.VideoFile) -> Iterator[dc.VideoFragment]:
     yield from file.get_fragments(duration=10.0)
+
 
 chain = (
     dc.read_storage("s3://videos/", type="video")
@@ -92,10 +94,10 @@ from datachain import model
 bbox = model.BBox.from_coco([100, 150, 200, 300], title="car")
 bbox = model.BBox.from_yolo([0.5, 0.5, 0.4, 0.6], img_size=(640, 480), title="car")
 
-coco = bbox.to_coco()                    # [x, y, w, h]
-yolo = bbox.to_yolo(img_size=(640, 480)) # normalized [cx, cy, w, h]
+coco = bbox.to_coco()  # [x, y, w, h]
+yolo = bbox.to_yolo(img_size=(640, 480))  # normalized [cx, cy, w, h]
 
-bbox.point_inside(300, 250)   # spatial queries
+bbox.point_inside(300, 250)  # spatial queries
 ```
 
 Annotation types compose naturally into Pydantic models:
@@ -103,6 +105,7 @@ Annotation types compose naturally into Pydantic models:
 ```python
 from pydantic import BaseModel
 from datachain import model
+
 
 class YoloPose(BaseModel):
     bbox: model.BBox
@@ -136,6 +139,78 @@ chain = (
 ```
 
 For external Pydantic models (like Mistral's `ChatCompletionResponse`), register them explicitly: `dc.DataModel.register(MistralResponse)`.
+
+## Union and Optional Fields
+
+A field or a signal can hold one of several types. Each type gets its own columns,
+plus a hidden discriminator naming the type a row carries, so values keep their type
+through saving and reading datasets. `Model | None` (the same as
+`Optional[Model]`) is the single-model case of the same mechanism. Optional scalar
+fields, such as `str | None`, use a nullable column.
+
+```python
+import datachain as dc
+
+
+class Cat(dc.DataModel):
+    name: str
+    lives: int = 9
+
+
+class Dog(dc.DataModel):
+    name: str
+    breed: str = ""
+
+
+class Sighting(dc.DataModel):
+    pet: Cat | Dog  # one of two models
+    weight: int | float  # one of two scalars
+    note: str | None = None  # optional
+
+
+chain = dc.read_values(
+    id=[1, 2],
+    sighting=[
+        Sighting(pet=Cat(name="Tom"), weight=4),
+        Sighting(pet=Dog(name="Rex", breed="lab"), weight=12.5, note="stray"),
+    ],
+    output={"id": int, "sighting": Sighting},
+)
+
+seen = chain.order_by("id").to_values("sighting")
+seen[0].pet  # Cat(name='Tom', lives=9) -- the model type is preserved
+seen[1].weight  # 12.5, a float; seen[0].weight is 4, an int
+```
+
+A union is also a signal type on its own, and a UDF can return one:
+
+```python
+def classify(value: int | str) -> Cat | Dog:
+    return Cat(name=str(value)) if isinstance(value, int) else Dog(name=value)
+
+
+values = dc.read_values(value=[42, "hello"], output={"value": int | str})
+classified = values.map(pet=classify, output={"pet": Cat | Dog})
+```
+
+To reference one of the types, name it in the path; the name can be dropped when a
+single type has that field. Functions read the discriminator rather than a column:
+
+```python
+chain.filter(dc.C("sighting.pet.Cat.name") == "Tom")  # type-qualified path
+chain.filter(dc.C("sighting.pet.breed") == "lab")  # only Dog has `breed`
+chain.filter(dc.func.isnone("sighting.note"))  # rows where the field is None
+```
+
+`select()`, `distinct()` and `group_by()` carry the whole union, so a value is never
+separated from the type it belongs to. A union cannot be a key for `diff()`;
+`subtract()` supports union keys when both sides have matching column layouts.
+
+Inside a `list` or a `dict` there are no per-element columns — the collection is one
+JSON value — so types that JSON stores alike are rejected when the chain is created:
+models whose field names are the same or a subset of one another, `datetime | str`,
+and a union as a dict key. Give such models a `kind: Literal["..."]` field to tell
+them apart. A collection as one of the types (`str | list[str]`) is not supported.
 
 ## Core Classes
 

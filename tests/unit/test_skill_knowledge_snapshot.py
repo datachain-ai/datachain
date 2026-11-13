@@ -1,6 +1,6 @@
 """Tests for the shared dataset knowledge snapshot builder."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from datachain.lib.file import File
@@ -22,8 +22,8 @@ def _version(
         version=version,
         uuid=f"uuid-{version}",
         num_objects=10,
-        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        finished_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        finished_at=datetime(2026, 1, 2, tzinfo=UTC),
         query_script=query_script,
         schema=schema or {},
         feature_schema=feature_schema,
@@ -146,6 +146,14 @@ def test_version_preview_pivots_list_of_dicts():
     assert version_preview(SimpleNamespace(preview=rows)) == {
         "columns": ["a", "b"],
         "rows": [[1, 2], [3, 4]],
+    }
+
+
+def test_version_preview_dots_nested_signal_columns():
+    rows = [{"file__source": "s3", "file__path": "a.jpg", "size": 10}]
+    assert version_preview(SimpleNamespace(preview=rows)) == {
+        "columns": ["file.source", "file.path", "size"],
+        "rows": [["s3", "a.jpg", 10]],
     }
 
 

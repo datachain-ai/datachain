@@ -1,13 +1,19 @@
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, get_origin, get_type_hints
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any, get_origin, get_type_hints
 
 from datachain.dataset import parse_dataset_with_version
 from datachain.error import (
     DatasetNotFoundError,
     DatasetVersionNotFoundError,
+    OutdatedDatasetFormatError,
     ProjectNotFoundError,
 )
+from datachain.lib.dataset_description import DatasetDescription
 from datachain.lib.dataset_info import DatasetInfo
+from datachain.lib.dataset_metadata import (
+    read_dataset_description,
+    read_dataset_metadata,
+)
 from datachain.lib.projects import get as get_project
 from datachain.lib.settings import Settings
 from datachain.lib.signal_schema import SignalSchema
@@ -23,6 +29,21 @@ if TYPE_CHECKING:
     from .datachain import DataChain
 
     P = ParamSpec("P")
+
+
+def _reject_legacy_tags(
+    name: str, schema: "SignalSchema", column_types: Mapping[str, Any]
+) -> None:
+    """Queries read the discriminator as an arm name, so a dataset holding the
+    numeric one answers isnone()/count() wrongly instead of failing.
+    """
+    legacy = schema.legacy_tag_columns(column_types)
+    if legacy:
+        raise OutdatedDatasetFormatError(
+            f"dataset {name!r} stores a numeric Optional[DataModel] discriminator "
+            f"in {', '.join(legacy)}; re-create the dataset with this version to "
+            "read it"
+        )
 
 
 def read_dataset(
@@ -226,6 +247,8 @@ def read_dataset(
     if delta:
         signals_schema = signals_schema.clone_without_sys_signals()
 
+    _reject_legacy_tags(name, signals_schema, query.column_types or {})
+
     chain = DataChain(query, _settings, signals_schema)
 
     if delta:
@@ -240,6 +263,54 @@ def read_dataset(
         )
 
     return chain
+
+
+def describe(
+    name: str,
+    namespace: str | None = None,
+    project: str | None = None,
+    version: str | None = None,
+    session: Session | None = None,
+    *,
+    studio: bool = False,
+) -> DatasetDescription:
+    """Describe a saved dataset using recorded metadata only.
+
+    Args:
+        name: Dataset name, optionally qualified and suffixed with ``@version``.
+        namespace: Namespace for an unqualified name, as in ``read_dataset``.
+        project: Project for an unqualified name, as in ``read_dataset``.
+        version: Exact version to describe; defaults to the latest complete version.
+        session: Optional session; defaults to the current session.
+        studio: Read Studio directly instead of a local copy.
+
+    Returns:
+        DatasetDescription with a typed schema, every available completed version,
+        direct dependencies, direct dependents, the producing job, and the script.
+        Uses the session catalog without reading dataset rows or storage objects.
+        Reads the local catalog first, then Studio for remote namespaces.
+        Metadata unavailable through the Studio API is returned as None.
+
+    Example:
+        ```py
+        import datachain as dc
+
+        info = dc.describe("images")
+        print(info.selected_version.num_objects)
+        print(info.available_versions)
+        info.schema.print_tree()
+        ```
+    """
+    catalog = Session.get(session).catalog
+    metadata = read_dataset_metadata(
+        catalog,
+        name,
+        namespace,
+        project,
+        version,
+        studio=studio,
+    )
+    return read_dataset_description(catalog, metadata)
 
 
 def datasets(
@@ -267,7 +338,8 @@ def datasets(
             attribute without value e.g "NLP", or attribute with value
             e.g "location=US". Attribute with value can also accept "*" to target
             all that have specific name e.g "location=*"
-        include_removed: If True, also lists REMOVED tombstones. Defaults to False.
+        include_removed: If True, also lists REMOVING and REMOVED versions.
+            Defaults to False.
 
     Returns:
         DataChain: A new DataChain instance containing dataset information.

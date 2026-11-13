@@ -27,19 +27,18 @@ def test_map_with_default_batch_size(test_session, warehouse):
 
     with patch.object(
         warehouse,
-        attribute="insert_rows",
-        wraps=warehouse.insert_rows,
-    ) as mock_insert_rows:
+        attribute="insert_tuples",
+        wraps=warehouse.insert_tuples,
+    ) as mock_insert:
         dc.read_values(value=list(range(100)), session=test_session).map(
             result=simple_udf
         ).save("map_default")
 
-        assert mock_insert_rows.call_count >= 1
+        # the last insert is the UDF's
+        assert mock_insert.call_args.kwargs["batch_size"] is None
 
 
 def test_map_with_custom_batch_size(test_session, warehouse):
-    """Test map UDF with custom batch_size."""
-
     def simple_udf(value: int) -> int:
         return value * 2
 
@@ -72,14 +71,15 @@ def test_gen_with_default_batch_size(test_session, warehouse):
 
     with patch.object(
         warehouse,
-        attribute="insert_rows",
-        wraps=warehouse.insert_rows,
-    ) as mock_insert_rows:
+        attribute="insert_tuples",
+        wraps=warehouse.insert_tuples,
+    ) as mock_insert:
         dc.read_values(value=list(range(50)), session=test_session).gen(
             result=gen_udf
         ).save("gen_default")
 
-        assert mock_insert_rows.call_count >= 1
+        # the last insert is the UDF's
+        assert mock_insert.call_args.kwargs["batch_size"] is None
 
 
 def test_gen_with_custom_batch_size(test_session, warehouse):
@@ -183,7 +183,6 @@ def test_negative_batch_size(test_session):
     def simple_udf(value: int) -> int:
         return value
 
-    # This should raise an error
     with pytest.raises(SettingsError):
         (
             dc.read_values(value=list(range(10)), session=test_session)
@@ -200,7 +199,6 @@ def test_zero_batch_size(test_session):
     def simple_udf(value: int) -> int:
         return value
 
-    # This should raise an error
     with pytest.raises(SettingsError):
         (
             dc.read_values(value=list(range(10)), session=test_session)

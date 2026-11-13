@@ -1,28 +1,14 @@
----
-name: datachain-core
-description: Use ONLY for abstract DataChain SDK questions — API usage, method signatures, or code patterns — when no specific dataset or bucket is referenced. If the request mentions creating, saving, listing, exploring datasets or buckets, use datachain-knowledge instead.
----
+# DataChain SDK Rules
 
-You are now loaded with expert-level DataChain SDK context. Apply every rule below when generating DataChain Python code.
-
-## Scope of this skill
-
-This file is SDK mechanics — how to write DataChain code that runs correctly: API usage, UDF signatures, settings, delta semantics, materialization patterns, saving, exporting.
-
-**It does not own methodology.** Decisions about *which* datasets to build, what scope, what shape (Container / Asset / Sense / Task), what fields to save, and when to dialogue with the user about layer choices — those are the CAST methodology, which lives in the **datachain-knowledge** skill at `{knowledge_skill_dir}/CAST.md`.
-
-When knowledge is loaded, it is the orchestrator: it plans the layers (CAST §4), invokes the rules in this file to write the code, then runs the KB pipeline. When knowledge is *not* loaded (raw SDK use, no `dc-knowledge/` directory), this file is self-sufficient — CAST doctrine simply does not apply.
-
-If you find yourself reasoning about "should I build a Sense layer here?" or "should this be scoped to the bucket or the directory?" from inside this file, stop — those questions belong upstream. Ask the user to load the knowledge skill, or fall through to a direct solve.
+Apply every rule below when generating DataChain Python code.
 
 ## Pre-Generation Checklist
 
-- [ ] **Every UDF has a known output type.** Functions passed to `.map()`, `.gen()`, or `.agg()` must have their return type resolved. See §2 Rule 2 — the #1 runtime error.
-- [ ] **No `from __future__ import annotations` in UDF modules.** It stringifies type hints; DataChain's signal-schema resolution then rejects the string-vs-class mismatch.
-- [ ] **Bucket access: anonymous or authenticated?** Check `dc-knowledge/buckets/` for a `.md` file with `anon: true/false` in frontmatter. If none, run `datachain bucket status <uri>` to detect. If `denied` or `not found`, stop and ask the user.
+- [ ] **Every UDF has a known output type.** Functions passed to `.map()`, `.batch_map()`, `.gen()`, or `.agg()` must have their return type resolved. See §2 Rule 2 — the #1 runtime error.
+- [ ] **Use resolvable type annotations.** Postponed annotations resolve in the function's module; define model types at module level. Use explicit `output=` when a batched return type cannot be resolved.
 - [ ] **Heavy-init resources load via `.setup()`**, not module-level lazy globals:
   ```python
-  chain.setup(model=lambda: load_model()).map(result=run_model)
+  chain.setup(model=load_model).map(result=run_model)
   ```
   Lazy globals leak across `parallel=N` workers and hide the dependency from the chain definition. See §2 Rule 20.
 - [ ] **`.settings(parallel=N)` is the right tool only when the workload benefits.** See §2 Rule 6.
@@ -33,9 +19,7 @@ If you find yourself reasoning about "should I build a Sense layer here?" or "sh
 
 **Before writing any pipeline code, check what already exists.**
 
-1. If `dc-knowledge/index.md` exists, read it **first**.
-2. When the user's task overlaps with an existing dataset, read its `.md` under `dc-knowledge/datasets/` for schema, code patterns, and lineage.
-3. **Reuse over rebuild.** Start from an existing dataset (`dc.read_dataset("name")`) whenever it covers the data the user needs — even partially. Filter, merge, or extend it instead of re-reading raw storage.
+**Reuse over rebuild.** Start from an existing dataset (`dc.read_dataset("name")`) whenever it covers the data the user needs — even partially. Filter, merge, or extend it instead of re-reading raw storage.
 
 Only go to raw storage when no existing dataset covers the needed data, or the user explicitly asks to start fresh.
 
@@ -43,7 +27,7 @@ Only go to raw storage when no existing dataset covers the needed data, or the u
 
 Datasets are the unit of reasoning. Chains that transform data through UDFs — or that produce a pipeline's final result — should be saved as named datasets.
 
-**Core rule: always `.save()`, never just `.show()`.** A pipeline's terminal operation is `.save("descriptive_name")`, followed by `.show()` on the saved result for display. Two exceptions: (1) one-off exploratory queries where the user explicitly asks to "show me" or "print"; (2) Task-layer outputs per the CAST methodology — persist by exception, not by default. The always-save rule is absolute for C/A/S substrate layers.
+**Core rule: always `.save()`, never just `.show()`.** A pipeline's terminal operation is `.save("descriptive_name")`, followed by `.show()` on the saved result for display. Two exceptions: (1) one-off exploratory queries where the user explicitly asks to "show me" or "print"; (2) a cheap final query whose result is a one-time answer. A chain that ran an expensive UDF is always saved.
 
 **Critical anti-pattern: bypassing `.save()` by dumping in-memory rows to a file.** Reading the chain via `.to_list()` / `.to_values()` and writing to disk via `open()`, `json.dump`, `pandas.to_csv`, or any Python-side file handle is forbidden for UDF-bearing pipelines. The pipeline result must land as a saved dataset first via `.save()`. Once saved, exporting via `chain.to_csv()`, `chain.to_parquet()`, `chain.to_storage()` is fine.
 
@@ -56,13 +40,13 @@ with open("similar_results.json", "w") as f:
     json.dump(results, f)
 
 # ✓ Save the dataset first, then export from it if needed.
-saved = chain.map(emb=encode_image).save("product_catalog_embeddings", attrs=[...])
+saved = chain.map(emb=encode_image).save("product_catalog_embeddings")
 saved.to_csv("similar_results.csv")
 ```
 
 **What to save — the UDF rule:**
 
-- **Any chain that runs a UDF (`.map()`, `.gen()`, `.agg()`)** must be saved with `.save("name")`. UDFs embody domain logic and produce structured output worth preserving.
+- **Any chain that runs a UDF (`.map()`, `.batch_map()`, `.gen()`, `.agg()`)** must be saved with `.save("name")`. UDFs embody domain logic and produce structured output worth preserving.
 - **Final pipeline results.** Rankings, filtered cohorts, evaluation outputs, aggregations — always `.save("name")`.
 - **Chains with no UDFs** (`read_storage` + `filter`/`mutate`/`select` only) may remain transient — cheap to recompute, easy to read from the code.
 
@@ -81,8 +65,8 @@ A multi-stage pipeline that produces multiple named datasets through expensive s
 **Naming:** each script is named after the dataset it produces.
 
 ```
-build_product_catalog_embeddings.py    →  l3_product_catalog_emb dataset
-build_product_catalog_metadata.py      →  l1_product_catalog_meta dataset
+build_product_catalog_embeddings.py    →  product_catalog_emb dataset
+build_product_catalog_metadata.py      →  product_catalog_meta dataset
 similar_to_query.py                     →  products_similar_to_query (or ad-hoc)
 ```
 
@@ -98,35 +82,34 @@ When a UDF is expensive (ML inference, LLM calls), save the **full, unfiltered**
 # ✗ Pre-filtering with problem-specific criteria — embeddings useless for next question.
 embeddings = (
     dc.read_storage("s3://product-catalog/images/")
-    .filter(dc.C("condition") != "refurbished")     # ← problem-specific
-    .filter(dc.C("width") > 400)                    # ← problem-specific
-    .setup(model=lambda: clip)
+    .filter(dc.C("condition") != "refurbished")  # ← problem-specific
+    .filter(dc.C("width") > 400)  # ← problem-specific
+    .setup(model=load_model)
     .map(emb=encode_image)
-    .save("l3_product_catalog_clip")                # ← USELESS for next question
+    .save("product_catalog_clip")  # ← USELESS for next question
 )
 
-# ✓ Save embeddings over the WHOLE input, filter downstream as a Task.
+# ✓ Save embeddings over the WHOLE input, filter downstream.
 embeddings = (
     dc.read_storage("s3://product-catalog/images/")
-    .setup(model=lambda: clip)
+    .setup(model=load_model)
     .map(emb=encode_image)
     .save(
-        "l3_product_catalog_clip",
-        attrs=["cast:sense", "scope:bucket", "source:product_catalog"],
+        "product_catalog_clip",
         description="CLIP ViT-B-32 embeddings over the full product-catalog bucket.",
     )
 )
 
 ranked = (
-    dc.read_dataset("l3_product_catalog_clip")
-    .merge(dc.read_dataset("l1_product_catalog_meta"), on="file.stem")
-    .filter(dc.C("condition") != "refurbished")     # ← problem-specific, downstream
+    dc.read_dataset("product_catalog_clip")
+    .merge(dc.read_dataset("product_catalog_meta"), on="file.path")
+    .filter(dc.C("condition") != "refurbished")  # ← problem-specific, downstream
     .filter(dc.C("width") > 400)
     .mutate(distance=dc.func.cosine_distance(dc.C("emb"), query_emb))
-    .order_by("distance").limit(5)
+    .order_by("distance")
+    .limit(5)
     .save(
         "products_similar_to_query",
-        attrs=["cast:task", "scope:onetime", "source:products_similar_to_query"],
         description="Top-5 catalog products visually closest to query.jpg under the filter set.",
     )
 )
@@ -137,50 +120,62 @@ ranked = (
 ```python
 embeddings = (
     dc.read_storage("s3://b/")
-    .filter(dc.C("file.size") > 0)                  # ← data-quality, OK
-    .setup(model=lambda: clip)
+    .filter(dc.C("file.size") > 0)  # ← data-quality, OK
+    .setup(model=load_model)
     .map(emb=encode_image)
     .save("clip_embeddings")
 )
 ```
 
-### CAST quick reference
+### Row shape — grain and provenance
 
-CAST is the four-layer pattern owned by the `knowledge` skill at `CAST.md`. The full doctrine (recall economics, layer-ladder walk, calibration, dialogue) lives there. This is just enough to recognize the layer names:
+**Grain: one row per unit the operation emits.** Object detection emits one detection per box → one row per detection; segmentation → one row per segment; LLM extraction → one row per response; header parsing → one row per file. At the operation's own grain every downstream question is one `.filter()` / `.group_by()`. At a coarser grain the answer sits inside `list[list[T]]` at the root, and every query needs a `.gen()` to fan it out first.
 
-- **Container** — typed index of what each file IS without full decode (paths, headers, sidecars).
-- **Asset** — raw extracted or mixed data in workable shape (decoded units, joined mixtures).
-- **Sense** — what a model said about the data (embeddings, classifications, transcriptions).
-- **Task** — task-specific composition on top of C/A/S. Persist by exception.
+Aggregating up from a fine grain costs one `.group_by()`; fanning down from a coarse one costs a `.gen()` per query, forever. The trap is matching the row to the first noun in the question ("find VIDEOS with people" → one row per video) and discovering at query time that the filter target (`label == "person"`) is nested two lists deep.
 
-**Naming convention:**
+```python
+# ✗ per-video rows — no filter reaches `label`.
+class VideoDetections(BaseModel):
+    frames: list[FrameDetections]  # each holds detections: list[Detection]
 
+
+# ✓ per-detection rows — every question is one filter / group_by.
+class Detection(BaseModel):
+    source: dc.VideoFile  # row provenance
+    frame_idx: int
+    timestamp: float
+    label: str
+    confidence: float
+    bbox: list[float]
 ```
-l1_<source>_<descriptor>      # Container — listings, headers, sidecar metadata
-l2_<source>_<descriptor>      # Asset — extracted/reshaped raw data
-l3_<source>_<descriptor>      # Sense — model-derived signals
-<descriptor>                  # Task — no prefix
+
+A coarser grain is right when the operation itself emits one unit per file (one classification per video, one embedding per document), or when the user asks for it.
+
+**Provenance: every emitted row carries its source file, typed.** A UDF that fans one file out into many rows puts the originating file on each emitted row as `dc.File` or a subclass (`dc.VideoFile`, `dc.ImageFile`, `dc.AudioFile`, `dc.TextFile`) — never `source: str`. A bare path loses etag-based change detection and the link back to the listing, loses Studio previews, and loses `.read()` / `.open()` / `.get_info()` on the row. Do not rely on parent-column propagation to carry it implicitly — the saved schema is the contract the next session reads.
+
+```python
+def detect_per_frame(file: dc.VideoFile, model) -> Iterator[Detection]:
+    for frame in file.get_frames(step=...):
+        for box in model(frame.get_np()).boxes:
+            yield Detection(source=file, frame_idx=..., ...)  # pass the source through
 ```
 
-The `l1_` / `l2_` / `l3_` prefix is enough; do NOT add layer-type infixes like `_container_`. Cap at 30 chars; the full doctrine is in `knowledge/CAST.md` §3.
+When the user needs a plain string path, keep the typed file and add the string as a second column.
 
-**Tag every `.save()` with `attrs` and `description`** so the knowledge skill can resolve the layer:
+### Naming and description
+
+Names describe content: `product_catalog_clip`, `cik_text_stats`. Keep them under ~30 characters — longer names are truncated in dataset lists and table headers. Parameters (model id, preset, threshold) belong in the code, never in the name.
+
+Use `description=` for reusable datasets: one line on what the dataset holds and what it is good for.
 
 ```python
 chain.save(
-    "l3_product_catalog_clip",
-    attrs=[
-        "cast:sense",                               # container | asset | sense | task
-        "scope:bucket",                             # bucket | directory | sample | onetime
-        "source:product_catalog",
-    ],
+    "product_catalog_clip",
     description="CLIP ViT-B-32 embeddings over the full product-catalog bucket.",
 )
 ```
 
-Lineage is tracked automatically; do NOT add `parent:` attrs.
-
-Never create or modify files under `dc-knowledge/` — that directory is owned by the `knowledge` skill.
+Lineage is tracked automatically when a chain reads one dataset and saves another — never encode a parent name by hand.
 
 ---
 
@@ -207,11 +202,11 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
     that calls `file.open()` in a new process makes a fresh HeadObject without
     anon → 403. Fix: pass anon into the downstream session via `client_config`:
     ✓ session = dc.Session.get(client_config={"anon": True})
-      (dc.read_dataset("l2_my_bucket_files", session=session)
+      (dc.read_dataset("my_bucket_files", session=session)
          .map(emb=encode_image)
-         .save("l3_my_bucket_emb"))
+         .save("my_bucket_emb"))
 
-2. EVERY UDF MUST HAVE A KNOWN OUTPUT TYPE. A UDF passed to map/gen/agg without
+2. EVERY UDF MUST HAVE A KNOWN OUTPUT TYPE. A UDF passed to map/batch_map/gen/agg without
    a resolved return type defaults to str and crashes at runtime for any non-str
    value. This is the #1 source of production errors — enforce strictly.
 
@@ -240,6 +235,11 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
    columns (e.g., nested fields like "file.path"). Prefer matching function parameter
    names to column names when possible.
 
+   `.gen()` needs an explicit `-> Iterator[T]` — not a bare return, not `Iterator`,
+   not `Iterator[Any]`; a missing annotation collapses the saved schema to str over
+   every row. `T` is a primitive or a Pydantic model declared at module level, never
+   nested inside the function or imported lazily.
+
 3. AVOID FILE OBJECT WHEN CONTENT NOT NEEDED: Passing a File object to a UDF
     downloads the full content, even if the UDF only reads metadata. This applies
     to File and ALL its subclasses.
@@ -250,7 +250,7 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
     ✓ chain.mutate(stem=dc.func.path.file_stem(dc.C("file.path")))   # pure SQL
     ✗ chain.map(category=lambda file: file.path.split("/")[-2])  # downloads entire file
 
-4. COLUMN NAMING: keyword in map/gen/agg = new column name.
+4. COLUMN NAMING: keyword in map/batch_map/gen/agg = new column name.
    chain.map(embedding=fn)  → column is named "embedding"
 
 5. INPUT PARAM: The file column is always named "file" regardless of modality.
@@ -262,18 +262,24 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
    AND the UDF doesn't already saturate cores via internal threading.
    Skip when the model saturates the device (single-GPU), the total wall is <30s
    (bootstrap dominates), or per-worker memory × N would OOM.
-   Rough picks: I/O-bound → parallel=4-8; CPU-bound → parallel=2-4; external API → parallel=8-16.
-   ✓ chain.settings(parallel=4).map(emb=model_fn)
+   Use parallel=True for CPU-bound work, subject to per-worker memory limits.
+   For network-bound work, tune the count to memory and service limits.
+   ✓ chain.settings(parallel=True).map(emb=model_fn)
    ✓ chain.map(label=classify)                       # lightweight → sequential
    `workers=N` is Studio-only distributed processing — guard with dc.is_studio():
-   ✓ chain = chain.settings(parallel=4)
+   ✓ chain = chain.settings(parallel=True)
      if dc.is_studio():
          chain = chain.settings(workers=8)
 
-7. PREFETCH FOR FILE-READING UDFs: Estimate avg file size and compute:
-     prefetch = clamp(4MB / estimated_avg_size, 2, 128)
-   Only add .settings(prefetch=N) if N > 4 (default is 2). Skip for UDFs that
-   don't read file content. Skip if the user explicitly sets prefetch.
+7. PREFETCH FOR FILE-READING UDFs: Prefetch downloads whole files, never
+   attributes such as file.path and file.size. For partial reads (get_info(),
+   read_bytes(n) with n > 0), set prefetch=0. For whole-file scalar UDFs, start
+   with 16 for small files (under about 1 MB), the default 2 otherwise, or 1 for
+   large files; tune to memory and service limits. For batch_map, prefetch counts
+   batches: start with 1 or 2 and budget their combined file sizes. Up to
+   2 × prefetch + 1 batches can be on local disk per process. UDFs receiving only
+   file.path and/or file.size through params= download nothing. Respect explicit
+   settings.
 
 8. CACHE ONLY WHEN NEEDED: Do not add cache=True by default. Use only when the
    same files are read multiple times (multi-stage pipelines), or the user asks.
@@ -306,12 +312,17 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
     - Many files in a directory: dc.read_storage()
     read_storage() is for directory listing — don't use it for a single known file.
 
-13. ONE SIGNAL PER MAP/GEN/AGG: Each call accepts exactly one signal.
-   For multiple columns, chain calls or return a Pydantic BaseModel.
-   ✗ chain.map(a=fn1, b=fn2)              # ERROR: multiple signals
+13. NAMED FUNCTIONS: map() and batch_map() accept multiple named functions.
+    Each produces one output signal and needs a return annotation. A function can
+    read a sibling function's output by matching its parameter name. Do not combine
+    multiple named functions with params= or output=; bind columns by parameter
+    name. gen() and agg() accept one function per call. Prefer a Pydantic model
+    for related fields produced by one function.
+    ✓ chain.map(stem=get_stem, category=classify)
+    ✓ chain.batch_map(embedding=encode_batch, label=classify_batch, batch=32)
 
 14. NO TUPLE RETURNS, NO DICT RETURNS: Always prefer Pydantic BaseModel classes to tuple
-    or dict in map/gen/agg functions until user directly asks for tuple.
+    or dict in map/batch_map/gen/agg functions until user directly asks for tuple.
     ✓ def fn(file: dc.File) -> MyModel: ...   # named fields via BaseModel
     ✓ def fn(file: dc.File) -> int: ...       # single scalar
     ✗ def fn(file: dc.File) -> tuple[int, int]: ...  # → col_0, col_1
@@ -330,7 +341,7 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
     ✗ def get_dims(file: dc.ImageFile) -> tuple[int, int]: ...
       chain.map(dims=get_dims, output={"width": int, "height": int})  # ← anti-pattern
 
-    **Scope.** This rule covers UDFs passed to `.map()`, `.gen()`, `.agg()` — their
+    **Scope.** This rule covers UDFs passed to `.map()`, `.batch_map()`, `.gen()`, `.agg()` — their
     return values become chain signals (columns). Tuple returns force auto-generated
     names (`col_0`, `col_1`) that downstream `.merge()` / `.select_except()` can't
     address. The rule does NOT apply to:
@@ -401,14 +412,19 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
    - Many files: `dc.read_storage()` (vectorised, preserves lineage)
    - Glob: use `dc.read_storage("path/**/*.ext")`, NOT `glob.glob`
 
-   **Scope.** This rule governs DATA file access. Reading a handful of log/metadata files for one-off introspection during debugging is outside the rule.
+   **Scope.** These rules apply when building a DataChain pipeline. A one-off shell command or a few log/metadata reads for debugging do not require a pipeline.
 
-2. **Prefer Data Memory over Compute Engine.** Data Memory ops — `filter()`, `mutate()`, `group_by()`, `order_by()`, `select()`, `merge()`, `union()`, `distinct()`, `limit()` — run as SQL at warehouse speed using `dc.C()` and `dc.func.*`. Compute Engine ops (`map`/`gen`/`agg`) run heavy Python in parallel workers and are expensive. Use Compute Engine ONLY for file content reads, model inference, LLM calls, external APIs.
+2. **Choose SQL or Python for the work.** Data Memory ops — `filter()`, `mutate()`,
+   `group_by()`, `order_by()`, `select()`, `merge()`, `union()`, `distinct()`, `limit()` —
+   run in the warehouse using `dc.C()` and `dc.func.*`. Use them for relational queries.
+   Stream saved rows with `to_iter()` when Python is a better fit. Compute Engine ops
+   (`map`/`gen`/`agg`) run per-row Python, including file reads, models and external APIs.
+   Add parallel workers when the workload benefits.
 
-3. **Extracting results.** Use `to_values()` for one column (returns flat list); `to_list()` for multiple columns (returns tuples). Never use `to_iter()` — it loses parallelism and lineage. For processing, use `map()` / `gen()` rather than extracting and looping.
+3. **Extracting results.** Use `to_values()` for one column (returns flat list); `to_list()` for multiple columns (returns tuples). Use `to_iter()` to stream saved rows without collecting them all in memory. For processing, use `map()` / `gen()` rather than extracting and looping.
    ```python
-   files = chain.to_values("file")           # → [File(...), ...]
-   rows = chain.to_list("file", "label")     # → [(File, "cat"), ...]
+   files = chain.to_values("file")  # → [File(...), ...]
+   rows = chain.to_list("file", "label")  # → [(File, "cat"), ...]
    ```
 
 ---
@@ -434,17 +450,39 @@ from pydantic import BaseModel
 **Entry points.** `read_storage()` creates a cached listing keyed by prefix; subsequent calls with the same prefix reuse the cache.
 
 ```python
-dc.read_storage("s3://bucket/prefix/", type="image")          # File / ImageFile etc.
+dc.read_storage("s3://bucket/prefix/", type="image")  # File / ImageFile etc.
 dc.read_storage("s3://bucket/imgs/**/*.{jpg,png}", type="image")  # glob in path
 dc.read_csv("s3://bucket/data.csv")
 dc.read_json("s3://bucket/ann.json", jmespath="images")
 dc.read_parquet("s3://bucket/data/*.parquet")
-dc.read_hf("dataset-name", split="train")
-dc.read_pandas(df); dc.read_values(scores=[1.2, 3.4]); dc.read_records([{"a": 1}, ...])
+dc.read_hf("dataset-name", split="train")  # requires datachain[hf]
+dc.read_pandas(df)
+dc.read_values(scores=[1.2, 3.4])
+dc.read_records([{"a": 1}], schema={"a": int})
 dc.read_database("SELECT * FROM t", "sqlite:///local.db")
-dc.read_dataset("name")                    # latest version
+dc.read_dataset("name")  # latest version
 dc.read_dataset("name", version="2.0.0")
+
+# Recorded metadata only: typed schema, all versions, direct dependencies and producing jobs
+info = dc.describe("name")
+info.available_versions
+info.selected_version.num_objects
+info.job  # Recorded Job or None
 ```
+
+**CSV and Parquet columns.** Use `columns=[...]` on `read_csv()`, `read_parquet()`, or `parse_tabular()` to select input columns in that order. It accepts original or normalized input names (`"ZIP Code"` or `"zip_code"`); unknown or repeated columns are errors. `output={name: type, ...}` assigns result names and Python types by dictionary insertion order, not by matching input names. It must have one field per column read: the selected columns with `columns=`, or all input columns by default, taken from the first file by path (trailing partition or pandas index columns may be left out). CSV and `parse_tabular()` also accept a model (field order) or a list of names (types inferred). Omit `output` to infer names and types.
+
+```python
+# Ordinary Parquet file with columns a, b, c
+dc.read_parquet("s3://bucket/data.parquet", columns=["c"])
+dc.read_parquet(
+    "s3://bucket/data.parquet",
+    columns=["c", "a"],
+    output={"x": float, "y": float},
+)  # x receives c; y receives a
+```
+
+`output={"c": float}` alone on a three-column file raises an error; use `columns=["c"]` to select c. CSV's `column_types` controls parsing by input name before normalization or output renaming, e.g. `column_types={"ZIP Code": "string"}` preserves leading zeros. It does not select columns. With `header=False`, `columns` uses `f0`, `f1`, etc.; `output` can rename the selection. Without `columns`, a headerless CSV requires `output` naming every column. Parquet exported by DataChain restores its saved schema; there `columns` picks signals as `select()` does (`"p.x"` keeps `p` with only `x`), and `output` takes them by position, one field each, or the top-level signals without `columns`. With `columns` or `output`, don't mix it with other Parquet files.
 
 **Data Memory (SQL, fast).** `C` = `dc.C`, `func` = `dc.func`.
 
@@ -452,28 +490,38 @@ dc.read_dataset("name", version="2.0.0")
 chain.filter(C("file.size") > 1000)
 chain.filter((C("det.label") == "cat") & (C("det.conf") > 0.9))
 chain.filter(C("file.path").glob("*.jpg"))
-chain.filter(C("name").contains("alice"))     # also startswith, endswith, like, ilike, regexp
-chain.filter(C("name").isnot(None))           # also is_(None)
+chain.filter(
+    C("name").contains("alice")
+)  # also startswith, endswith, like, ilike, regexp
+chain.filter(C("name").isnot(None))  # also is_(None)
 chain.filter(C("price").between(10, 25))
 chain.filter(C("name").in_(["alice", "bob"]))
 # Combinators — always parenthesize: & (and), | (or), ~ (not)
 chain.mutate(ext=func.path.file_ext(C("file.path")))
 chain.mutate(dist=func.cosine_distance(C("emb"), reference))
-chain.mutate(total=chain.column("price") * chain.column("qty"))      # column-column
-chain.mutate(discounted=C("price") * 0.9)                            # scalar → C() is fine
-chain.mutate(price_int=chain.column("price").cast(sa.Integer))       # import sqlalchemy as sa
-chain.group_by(cnt=func.count(), total=func.sum(C("file.size")), partition_by="category")
-chain.order_by("dist"); chain.order_by("score", descending=True)
+chain.mutate(total=chain.column("price") * chain.column("qty"))  # column-column
+chain.mutate(discounted=C("price") * 0.9)  # scalar → C() is fine
+chain.mutate(
+    price_int=chain.column("price").cast(sa.Integer)
+)  # import sqlalchemy as sa
+chain.group_by(
+    cnt=func.count(), total=func.sum(C("file.size")), partition_by="category"
+)
+chain.order_by("dist")
+chain.order_by("score", descending=True)
 chain.distinct("response.text")
-chain.distinct(file_ext=func.path.file_ext(C("file.path")))          # expressions need names
+chain.distinct(file_ext=func.path.file_ext(C("file.path")))  # expressions need names
 chain.limit(100)
-chain.select("file", "score"); chain.select("file", score_pct=C("score") * 100)
+chain.select("file", "score")
+chain.select("file", score_pct=C("score") * 100)
 chain.select_except("internal_id")
-chain.merge(other, on="id", right_on="meta.id")                      # left join (default)
-chain.merge(other, on="id", inner=True)                              # inner
-chain.merge(other, on="id", full=True)                               # full outer
-chain.union(other); chain.subtract(other)
-chain.diff(other, on="id", compare=["score"]); chain.file_diff(other)
+chain.merge(other, on="id", right_on="meta.id")  # left join (default)
+chain.merge(other, on="id", inner=True)  # inner
+chain.merge(other, on="id", full=True)  # full outer
+chain.union(other)
+chain.subtract(other)
+chain.diff(other, on="id", compare=["score"])
+chain.file_diff(other)
 ```
 
 `merge()` has NO `how=` parameter. Use `inner=True` or `full=True`.
@@ -481,33 +529,72 @@ chain.diff(other, on="id", compare=["score"]); chain.file_diff(other)
 **Compute Engine (Python workers, expensive):**
 
 ```python
-chain.map(col_name=fn)              # 1 input → 1 output record
-chain.gen(col_name=fn)              # 1 input → N output records
+chain.map(col_name=fn)  # 1 input → 1 output record
+chain.batch_map(col_name=fn, batch=32)  # lists in, one output per input row
+chain.gen(col_name=fn)  # 1 input → N output records
 chain.agg(col_name=fn, partition_by="key")
 ```
+
+### Batched inference: batch_map()
+
+Use `batch_map()` when a model takes many inputs per call; use `map()` for one
+row per call. `agg()` groups rows into N:M outputs; it is not an inference
+batcher.
+
+| Call | Column argument | Embedding return annotation | Explicit `output=` |
+|---|---|---|---|
+| `map(emb=encode_one)` | `dc.ImageFile` | `list[float]` | `list[float]` |
+| `batch_map(emb=encode_batch, batch=32)` | `list[dc.ImageFile]` | `list[list[float]]` | `list[float]` |
+
+```python
+def encode_batch(file: list[dc.ImageFile], model) -> list[list[float]]:
+    return model.encode([f.read() for f in file]).tolist()
+
+
+chain = (
+    dc.read_storage("s3://bucket/images/", type="image")
+    .setup(model=load_model)
+    .batch_map(emb=encode_batch, batch=32)
+    .save("image_embeddings")
+)
+```
+
+- `batch=` is required; pick a size that fits the model and device. `batch=1`
+  still passes lists.
+- Return one result per input row, in input order. `output=` describes ONE ROW.
+  Convert tensors to Python values with `.tolist()`.
+- Setup resources (`model` above) are not lists. For a class, use
+  `dc.BatchMapper`.
+- A row's result must not depend on the other rows in its batch.
+- `.settings(batch_size=N)` is database insert buffering, not the call size.
+  `parallel=` and `prefetch=` also go in `.settings(...)` (see rule 7).
 
 **Setup and settings:**
 
 ```python
-chain.setup(model=lambda: load_model()).map(fn)
-chain.settings(parallel=4, cache=True, prefetch=10)
+chain.setup(model=load_model).map(fn)
+chain.settings(parallel=True)
 if dc.is_studio():
     chain = chain.settings(workers=50)
 ```
 
-**Terminal operations.** `.save()` creates a named, versioned, KB-tracked dataset. `.persist()` materializes anonymously (calibration runs, intermediate materialization not entering KB).
+**Terminal operations.** `.save()` creates a named, versioned dataset listed in `dc.datasets()`. `.persist()` materializes a temporary dataset for reuse within the session.
 
 ```python
-chain.save("dataset_name")                     # versioned, in dc.datasets() and KB
+chain.save("dataset_name")
 chain.save("ns.proj.name", update_version="minor")
-chain.persist()                                # anonymous, NOT named, NOT in KB
+chain.persist()
 chain.show(limit=10)
-chain.to_values("col")                         # → flat list
-chain.to_list("col1", "col2")                  # → list of tuples
-chain.to_pandas(); chain.to_parquet("out.parquet"); chain.to_csv("out.csv")
+chain.to_values("col")  # → flat list
+chain.to_list("col1", "col2")  # → list of tuples
+chain.to_pandas()
+chain.to_parquet("out.parquet")
+chain.to_csv("out.csv")
 chain.to_pytorch(transform=..., tokenizer=...)
 chain.to_storage("s3://output/", signal="file", placement="filepath")
-chain.count(); chain.sum("column"); chain.avg("column")
+chain.count()
+chain.sum("column")
+chain.avg("column")
 ```
 
 **Delta + incremental:**
@@ -515,7 +602,9 @@ chain.count(); chain.sum("column"); chain.avg("column")
 ```python
 dc.read_storage("s3://bucket/", update=True, delta=True)
 # Defaults: delta_on=("file.path", "file.etag", "file.version"); delta_compare=None.
-# Override delta_compare="file.mtime" only when etag is unreliable (e.g. local FS).
+# Override delta_compare="file.last_modified" only when etag is unreliable (e.g. local FS).
+# Build scripts reading storage take this path; plain queries over an existing
+# listing do not — there, re-listing the bucket only costs time.
 ```
 
 ---
@@ -527,6 +616,7 @@ dc.read_storage("s3://bucket/", update=True, delta=True)
 ```python
 from pydantic import BaseModel
 from datachain import model
+
 
 class Detection(BaseModel):
     label: str
@@ -566,10 +656,10 @@ model.Segment(title="road", x=[...], y=[...])               # segmentation polyg
 **Column references:**
 
 ```python
-dc.C("file.size")                  # top-level
-dc.C("det.bbox.x1")                # nested
+dc.C("file.size")  # top-level
+dc.C("det.bbox.x1")  # nested
 dc.C("file.path").glob("*.jpg")
-chain.column("price")              # typed column for column-column arithmetic
+chain.column("price")  # typed column for column-column arithmetic
 ```
 
 ---
@@ -580,24 +670,32 @@ All run inside Data Memory (no Python, no deserialization). `C` = `dc.C`, `func`
 
 ```python
 # Distance (vector search)
-func.cosine_distance(C("emb"), reference); func.euclidean_distance(...); func.l2_distance(...)
+func.cosine_distance(C("emb"), reference)
+func.euclidean_distance(...)
+func.l2_distance(...)
 
 # Aggregate (in group_by)
-func.count(); func.sum(C("file.size")); func.avg(C("score")); func.min/max(C("val"))
-func.collect(C("label")); func.first(C("path"))
+func.count()
+func.sum(C("file.size"))
+func.avg(C("score"))
+func.min(C("val"))
+func.max(C("val"))
+func.collect(C("label"))
+func.first(C("path"))
 
 # Path
-func.path.file_ext(C("file.path"))    # → "jpg"
-func.path.file_stem(C("file.path"))   # → "image01"
-func.path.name(C("file.path"))        # → "image01.jpg"
-func.path.parent(C("file.path"))      # → "folder/subfolder"
+func.path.file_ext(C("file.path"))  # → "jpg"
+func.path.file_stem(C("file.path"))  # → "image01"
+func.path.name(C("file.path"))  # → "image01.jpg"
+func.path.parent(C("file.path"))  # → "folder/subfolder"
 
 # Conditional
 func.case((C("score") > 0.9, "high"), (C("score") > 0.5, "medium"), else_="low")
 func.ifelse(func.isnone(C("result")), "pending", "done")
 
 # String
-func.string.length(C("text")); func.string.split(C("path"), "/")
+func.string.length(C("text"))
+func.string.split(C("path"), "/")
 
 # Window (both partition_by and order_by required)
 w = func.window(partition_by="category", order_by="created_at")
@@ -606,43 +704,45 @@ chain.mutate(rank=func.rank().over(w), row_num=func.row_number().over(w))
 # Ranking (in group_by): func.rank(), func.dense_rank(), func.row_number()
 
 # Hashing / sampling (ClickHouse only — not on local SQLite)
-func.sip_hash_64(C("file.path")); func.int_hash_64(C("file.path"))
+func.sip_hash_64(C("file.path"))
+func.int_hash_64(C("file.path"))
 ```
 
 ---
 
 ## Section 8 — Common Pipeline Templates
 
-**Basic: read → filter → map → save**
+**Heavy-init via `.setup()`:**
 
 ```python
 import datachain as dc
 
-def compute_embedding(file: dc.File) -> list[float]:
-    return model.encode(file.read()).tolist()
 
-(
-    dc.read_storage("s3://bucket/data/")
-    .filter(dc.C("file.size") > 1000)
-    .settings(parallel=4)
-    .map(emb=compute_embedding)
-    .save("embeddings")
-)
-```
+def load_encoder():
+    import open_clip, torch
 
-**Heavy-init via `.setup()`:**
+    torch.set_num_threads(1)
+    model, _, preprocess = open_clip.create_model_and_transforms(
+        "ViT-B-32", pretrained="laion2b_s34b_b79k"
+    )
+    model.eval()
+    return model, preprocess
 
-```python
-def encode(file: dc.ImageFile, model, preprocess) -> list[float]:
-    img = preprocess(file.read()).unsqueeze(0)
-    return model.encode_image(img)[0].tolist()
 
-m, _, p = open_clip.create_model_and_transforms("ViT-B-32", "laion2b_s34b_b79k")
+def encode(file: dc.ImageFile, encoder) -> list[float]:
+    import torch
+
+    model, preprocess = encoder
+    img = preprocess(file.read().convert("RGB")).unsqueeze(0)
+    with torch.inference_mode():
+        vector = model.encode_image(img)
+        return (vector / vector.norm(dim=-1, keepdim=True))[0].tolist()
+
 
 (
     dc.read_storage("s3://bucket/images/", type="image")
-    .settings(parallel=4)
-    .setup(model=lambda: m, preprocess=lambda: p)
+    .settings(parallel=True)
+    .setup(encoder=load_encoder)
     .map(emb=encode)
     .save("image_embeddings")
 )
@@ -655,18 +755,22 @@ m, _, p = open_clip.create_model_and_transforms("ViT-B-32", "laion2b_s34b_b79k")
 dc.read_storage("s3://docs/*.pdf").gen(chunk=split_pdf).save("chunks")
 
 # Stage 2 — build_chunk_embeddings.py
-(dc.read_dataset("chunks")
-   .setup(model=lambda: load_embedding_model())
-   .settings(parallel=4)
-   .map(emb=embed_chunk)
-   .save("chunk_embeddings"))
+(
+    dc.read_dataset("chunks")
+    .setup(model=load_embedding_model)
+    .settings(parallel=4)
+    .map(emb=embed_chunk)
+    .save("chunk_embeddings")
+)
 
 # Stage 3 — classify_chunks.py
-(dc.read_dataset("chunk_embeddings")
-   .setup(client=lambda: create_llm_client())
-   .settings(parallel=8)
-   .map(category=classify)
-   .save("classified_chunks"))
+(
+    dc.read_dataset("chunk_embeddings")
+    .setup(client=create_llm_client)
+    .settings(parallel=8)
+    .map(category=classify)
+    .save("classified_chunks")
+)
 ```
 
 **Generator (1 input → N outputs):**
@@ -674,13 +778,16 @@ dc.read_storage("s3://docs/*.pdf").gen(chunk=split_pdf).save("chunks")
 ```python
 from typing import Iterator
 
+
 class Chunk(BaseModel):
     text: str
     start_offset: int
 
+
 def split_doc(file: dc.File) -> Iterator[Chunk]:
     for offset, text in chunk(file.read_text()):
         yield Chunk(text=text, start_offset=offset)
+
 
 (dc.read_storage("s3://docs/").settings(parallel=4).gen(chunk=split_doc).save("chunks"))
 ```
@@ -697,14 +804,18 @@ annotated = items.merge(meta, on="file.path", right_on="items.file_name")
 
 ```python
 annotations = dc.read_storage("gs://b/**/*.txt", type="text").gen(ann=parse_list)
-xmls = dc.read_storage("gs://b/**/*.xml").settings(prefetch=128).map(xml=parse_xml)
+xmls = dc.read_storage("gs://b/**/*.xml").map(xml=parse_xml)
 images = dc.read_storage("gs://b/**/*.jpg", type="image")
 
 (
-    images
-    .merge(annotations, on=dc.func.path.file_stem(dc.C("file.path")), right_on="ann.name")
-    .merge(xmls, on=dc.func.path.file_stem(dc.C("file.path")),
-                 right_on=dc.func.path.file_stem(dc.C("file.path")))
+    images.merge(
+        annotations, on=dc.func.path.file_stem(dc.C("file.path")), right_on="ann.name"
+    )
+    .merge(
+        xmls,
+        on=dc.func.path.file_stem(dc.C("file.path")),
+        right_on=dc.func.path.file_stem(dc.C("file.path")),
+    )
     .select_except("right_file", "ann.name")
     .save("annotated_items")
 )
@@ -716,7 +827,8 @@ images = dc.read_storage("gs://b/**/*.jpg", type="image")
 (
     dc.read_dataset("embeddings")
     .mutate(dist=dc.func.cosine_distance(dc.C("emb"), query_embedding))
-    .order_by("dist").limit(10)
+    .order_by("dist")
+    .limit(10)
     .show()
 )
 ```
@@ -734,7 +846,7 @@ def analyze(file: dc.File, client) -> Analysis:
     return Analysis.model_validate_json(resp.content[0].text)
 
 (dc.read_storage("s3://docs/")
-   .setup(client=lambda: anthropic.Anthropic())
+   .setup(client=anthropic.Anthropic)
    .settings(parallel=8)
    .map(result=analyze)
    .save("analyzed"))
@@ -769,7 +881,7 @@ def analyze(file: dc.File, client) -> Analysis:
 **In-memory data joined with storage files:**
 
 ```python
-labels = dc.read_records([{"name": "a.jpg", "cls": "cat"}, ...])
+labels = dc.read_values(name=["a.jpg"], cls=["cat"])
 items = dc.read_storage("s3://bucket/data/")
-combined = items.merge(labels, on="file.name", right_on="labels.name")
+combined = items.merge(labels, on=dc.func.path.name("file.path"), right_on="name")
 ```

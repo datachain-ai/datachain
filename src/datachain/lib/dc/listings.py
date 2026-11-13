@@ -33,6 +33,7 @@ class ReadOnlyQueryStep(QueryStep):
         def q(*columns):
             return sa.select(*columns)
 
+        self._record_access()
         table_name = self.catalog.warehouse.dataset_table_name(
             self.dataset, self.dataset_version
         )
@@ -146,6 +147,6 @@ def read_listing_dataset(
     query.set_listing_fn(lambda: True)
 
     chain = DataChain(query, _settings, signal_schema)
-    chain = ls(chain, path, recursive=True, column="file")
+    chain = ls(chain, path, recursive=True)
 
     return chain, dataset.get_version(version)

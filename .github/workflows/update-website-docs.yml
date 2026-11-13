@@ -1,0 +1,36 @@
+name: Update website documentation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'src/datachain/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'requirements*.txt'
+      - 'requirements/**'
+      - '.github/workflows/update-website-docs.yml'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger website deployment
+        env:
+          DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DOCS_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$DEPLOY_HOOK_URL" ]; then
+            echo "::error::VERCEL_DOCS_DEPLOY_HOOK is missing."
+            exit 1
+          fi
+
+          curl --fail --silent --show-error \
+            --max-time 60 --request POST \
+            --output /dev/null "$DEPLOY_HOOK_URL"

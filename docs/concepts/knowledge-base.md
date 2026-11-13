@@ -4,11 +4,11 @@ title: Knowledge Base
 
 # Knowledge Base
 
-The Knowledge Base is the compilation layer that turns persistent typed datasets into agent-readable knowledge. It reads accumulated [datasets](datasets.md) from [Dataset DB](dataset-db.md) and emits typed pages (one per dataset, one per bucket listing) that the next agent session reads as premises before generating its first line of code. Each page carries schema, lineage summary, previews, and links. Humans browse the same pages in Obsidian; the compilation step exists for agents.
+The Knowledge Base is the compilation layer that turns persistent typed datasets into agent-readable knowledge. It reads accumulated [datasets](datasets.md) from [Dataset DB](dataset-db.md) and emits typed pages (one per dataset, one per bucket listing) that the next agent session reads as premises before generating its first line of code. Each page carries schema, lineage summary, previews, and links. People browse the same descriptions in Studio.
 
 ## Skill and MCP Layer
 
-The Knowledge Base reaches agents through the [Skill and MCP](skill-and-mcp.md) layer, architecturally separate from the [Compute Engine](compute-engine.md) and the [Dataset DB](dataset-db.md) that the Python library exposes. Pipelines run through compute and memory; agents read context through Skill and MCP. This separation reflects the two audiences: pipelines need a compute engine, agents need a context surface.
+The Knowledge Base reaches agents through [Studio MCP](../studio/user-guide/agents/mcp.md) (in Studio, see [Knowledge Base](../studio/user-guide/agents/knowledge-base.md) for setup), architecturally separate from the [Compute Engine](compute-engine.md) and the [Dataset DB](dataset-db.md) that the Python library exposes. Pipelines run through compute and memory; agents read generated descriptions through MCP. This separation reflects the two audiences: pipelines need a compute engine, agents need a context surface.
 
 ## Compilation Is What Makes the Store Readable
 

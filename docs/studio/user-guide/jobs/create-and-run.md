@@ -61,9 +61,9 @@ Click the run settings button to configure your job execution parameters.
 ### Python Version
 
 Select the Python version for your job environment:
-- Python 3.12 (recommended)
+- Python 3.13 (default)
+- Python 3.12
 - Python 3.11
-- Python 3.10
 
 ### Workers
 
@@ -162,12 +162,14 @@ from datachain import read_storage
 
 dc = (
     read_storage("s3://images/")
-    .filter(lambda file: file.path.endswith(('.jpg', '.png')))
-    .map(lambda file: {
-        "path": file.path,
-        "size": file.size,
-        "extension": file.path.split('.')[-1]
-    })
+    .filter(lambda file: file.path.endswith((".jpg", ".png")))
+    .map(
+        lambda file: {
+            "path": file.path,
+            "size": file.size,
+            "extension": file.path.split(".")[-1],
+        }
+    )
     .save("image_catalog")
 )
 ```
@@ -231,5 +233,5 @@ for batch in read_storage("s3://large-dataset/").batch(1000):
 ## Next Steps
 
 - Learn how to [monitor running jobs](monitor-jobs.md)
-- Set up [team collaboration](../team-collaboration.md)
+- Set up a [team](../teams/index.md)
 - Explore [DataChain operations](../../../references/datachain.md)

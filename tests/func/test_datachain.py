@@ -1,3 +1,4 @@
+import gzip
 import json
 import math
 import os
@@ -5,28 +6,34 @@ import posixpath
 import re
 import uuid
 from collections.abc import Iterator
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
+from pyarrow.dataset import ParquetFileFormat
 
 import datachain as dc
 from datachain import DataModel, func
 from datachain.dataset import DatasetDependencyType
 from datachain.fs.utils import path_to_fsspec_uri
+from datachain.lib.arrow import PARTIAL_READ_PREFETCH_MAX_SIZE
 from datachain.lib.data_model import compute_model_fingerprint
-from datachain.lib.file import File, ImageFile
+from datachain.lib.file import File, FileError, ImageFile
 from datachain.lib.listing import LISTING_TTL, is_listing_dataset, parse_listing_uri
 from datachain.lib.model_store import ModelStore
 from datachain.lib.tar import process_tar
-from datachain.query.dataset import QueryStep
+from datachain.lib.webdataset import process_webdataset
+from datachain.query.dataset import QueryStep, get_download_callback
 from tests.utils import (
     ANY_VALUE,
     TARRED_TREE,
     df_equal,
+    make_tar,
     skip_if_not_sqlite,
     sorted_dicts,
     text_embedding,
@@ -85,6 +92,12 @@ def test_read_storage_glob(cloud_test_catalog):
     assert chain.count() == 3
 
 
+def test_read_storage_glob_with_dir_component(cloud_test_catalog):
+    ctc = cloud_test_catalog
+    chain = dc.read_storage(f"{ctc.src_uri}/dogs/oth*/*", session=ctc.session)
+    assert chain.count() == 1
+
+
 def test_read_storage_as_image(cloud_test_catalog):
     ctc = cloud_test_catalog
     chain = dc.read_storage(ctc.src_uri, session=ctc.session, type="image")
@@ -119,7 +132,7 @@ def test_read_storage_reindex_expired(tmp_dir, test_session):
     test_session.catalog.metastore.update_dataset_version(
         test_session.catalog.get_dataset(lst_ds_name, versions=["1.0.0"]),
         "1.0.0",
-        finished_at=datetime.now(timezone.utc) - timedelta(seconds=LISTING_TTL + 20),
+        finished_at=datetime.now(UTC) - timedelta(seconds=LISTING_TTL + 20),
     )
 
     # listing was updated because listing dataset was expired
@@ -160,6 +173,67 @@ def test_read_storage_rfc_encoded_uri_targets_literal_path(tmp_dir, test_session
         "file.path"
     )
     assert listed == ["wrong.txt"]
+
+
+@pytest.mark.parametrize(
+    "cloud_type,version_aware",
+    [("s3", True), ("gs", False), ("gs", True), ("azure", False)],
+    indirect=True,
+)
+def test_read_storage_reads_keys_with_double_slash(cloud_test_catalog):
+    ctc = cloud_test_catalog
+    client = ctc.catalog.get_client(ctc.src_uri)
+    prefix = f"double-slash-{uuid.uuid4().hex[:8]}"
+    client.fs.pipe_file(f"{client.name}/{prefix}/d//e.txt", b"inside")
+    client.fs.invalidate_cache()
+    try:
+        chain = dc.read_storage(f"{ctc.src_uri}/{prefix}", session=ctc.session)
+        (file,) = chain.to_values("file")
+        file._set_stream(ctc.catalog)
+        assert file.path == f"{prefix}/d//e.txt"
+        assert file.read() == b"inside"
+    finally:
+        client.fs.rm(f"{client.name}/{prefix}", recursive=True)
+        client.fs.invalidate_cache()
+
+
+@pytest.mark.parametrize(
+    "cloud_type,version_aware",
+    [("s3", True), ("gs", True)],
+    indirect=True,
+)
+def test_read_storage_versions(cloud_test_catalog, cloud_prefix):
+    ctc = cloud_test_catalog
+    session = ctc.session
+    prefix = cloud_prefix
+    (ctc.src / prefix / "kept").write_text("1")
+    (ctc.src / prefix / "kept").write_text("22")  # a second version
+    (ctc.src / prefix / "gone").write_text("x")
+    (ctc.src / prefix / "gone").unlink()  # a deleted object
+    uri = f"{ctc.src_uri}/{prefix}"
+
+    def listing(versions):
+        name = parse_listing_uri(uri, versions=versions)[0]
+        (info,) = [ls for ls in session.catalog.listings() if ls.name == name]
+        return info
+
+    full = dc.read_storage(uri, session=session).to_list("file.path", "file.size")
+    current = dc.read_storage(uri, session=session, versions=False)
+
+    assert full == [(f"{prefix}/kept", 2)]
+    assert current.to_list("file.path", "file.size", "file.version") == [
+        (f"{prefix}/kept", 2, "")
+    ]
+    # the two listings are cached apart and hold different rows
+    assert listing(True).versions
+    assert not listing(False).versions
+    assert listing(True).uri == listing(False).uri == f"{uri}/"
+    assert listing(False).num_objects == 1
+    assert listing(True).num_objects > 1
+    assert {ls.name for ls in session.catalog.listings(prefix=f"{uri}/")} == {
+        listing(True).name,
+        listing(False).name,
+    }
 
 
 @pytest.mark.parametrize(
@@ -307,7 +381,8 @@ def test_read_storage_multiple_uris_cache(cloud_test_catalog):
         dc.read_storage([])  # No URIs provided
 
     with patch(
-        "datachain.lib.dc.storage.get_listing", wraps=dc.lib.listing.get_listing
+        "datachain.lib.listing.get_listing",
+        wraps=dc.lib.listing.get_listing,
     ) as mock_get_listing:
         chain = dc.read_storage(
             [
@@ -369,7 +444,7 @@ def test_show_preserves_none(capsys, test_session):
     chain = dc.read_values(
         score=[1, None],
         ts=[
-            datetime(2020, 1, 1, tzinfo=timezone.utc),
+            datetime(2020, 1, 1, tzinfo=UTC),
             None,
         ],
         session=test_session,
@@ -475,8 +550,11 @@ def test_show_transpose(capsys, test_session):
 def test_show_truncate(capsys, test_session):
     client = ["Alice A", "Bob B", "Charles C"]
     details = [
-        "This is a very long piece of text that would not fit in the default output "
-        "because pandas will truncate the column",
+        (
+            "This is a very long piece of text that would not fit in the default "
+            "output "
+            "because pandas will truncate the column"
+        ),
         "Gives good tips",
         "Not very nice",
     ]
@@ -499,8 +577,11 @@ def test_show_truncate(capsys, test_session):
 def test_show_no_truncate(capsys, test_session):
     client = ["Alice A", "Bob B", "Charles C"]
     details = [
-        "This is a very long piece of text that would not fit in the default output "
-        "because pandas will truncate the column",
+        (
+            "This is a very long piece of text that would not fit in the default "
+            "output "
+            "because pandas will truncate the column"
+        ),
         "Gives good tips",
         "Not very nice",
     ]
@@ -576,7 +657,7 @@ def test_read_storage_check_rows(tmp_dir, test_session):
             version="",
             etag=stat.st_mtime.hex(),
             is_latest=True,
-            last_modified=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
+            last_modified=datetime.fromtimestamp(stat.st_mtime, tz=UTC),
             location=None,
         )
 
@@ -882,6 +963,16 @@ def test_similarity_search(cloud_test_catalog):
         assert p1.endswith(p2)
         assert math.isclose(c1, c2, abs_tol=1e-5)
         assert math.isclose(e1, e2, abs_tol=1e-5)
+
+
+@pytest.mark.parametrize("process", [process_tar, process_webdataset()])
+def test_tar_rejects_compressed_archive(tmp_dir, test_session, process):
+    shard = make_tar({"0.jpg": "image", "0.txt": "caption"})
+    (tmp_dir / "shard.tar").write_bytes(gzip.compress(shard))
+
+    chain = dc.read_storage(tmp_dir.as_uri(), session=test_session).gen(out=process)
+    with pytest.raises(FileError, match="compressed tars are not supported"):
+        chain.to_list()
 
 
 @pytest.mark.parametrize("tree", [TARRED_TREE], indirect=True)
@@ -1477,6 +1568,336 @@ def test_to_read_parquet_partitioned_remote(cloud_test_catalog_upload):
     df1 = dc_from.select("first_name", "age", "city").to_pandas()
     df1 = df1.sort_values("first_name").reset_index(drop=True)
     assert df_equal(df1, df)
+
+
+@pytest.fixture
+def download_callbacks(monkeypatch):
+    callbacks = []
+
+    def download_callback(*args, **kwargs):
+        callbacks.append(get_download_callback(*args, **kwargs))
+        return callbacks[-1]
+
+    monkeypatch.setattr(
+        "datachain.query.dataset.get_download_callback", download_callback
+    )
+    return callbacks
+
+
+@pytest.mark.filterwarnings("ignore:Sending a large body:ResourceWarning")
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize(
+    "read",
+    [
+        lambda uri, session: dc.read_parquet(uri, columns=["c3"], session=session),
+        lambda uri, session: dc.read_storage(uri, session=session).parse_tabular(
+            columns=["c3"]
+        ),
+        lambda uri, session: dc.read_storage(uri, session=session).parse_tabular(
+            format=ParquetFileFormat(), columns=["c3"], source=False
+        ),
+    ],
+    ids=["read_parquet", "parse_tabular_without_format", "parquet_file_format"],
+)
+def test_read_parquet_columns_fetch_only_those_columns(
+    cloud_test_catalog_upload, fetched_bytes, download_callbacks, read
+):
+    ctc = cloud_test_catalog_upload
+    rng = np.random.default_rng(0)
+    table = pa.table({f"c{i}": rng.random(120_000) for i in range(10)})
+    file = _put_parquet(ctc, "wide.parquet", table, row_group_size=10_000)
+    chain = read(f"{ctc.src_uri}/wide.parquet", ctc.session)
+    fetched_bytes[:] = [0, 0]
+
+    values = chain.to_values("c3")
+
+    assert sorted(values) == sorted(table["c3"].to_pylist())
+    assert 0 < fetched_bytes[0] < file.size // 4
+    assert sum(cb.value for cb in download_callbacks) > 0
+
+
+class _Wide(DataModel):
+    x: float
+    a: float
+    b: float
+    c: float
+    d: float
+    e: float
+    f: float
+    g: float
+
+
+def _put_wide(ctc, tmp_path, anno):
+    rng = np.random.default_rng(0)
+    rows = rng.random((10_000, 8))
+    points = [_Wide(**dict(zip(_Wide.model_fields, r, strict=True))) for r in rows]
+    local = tmp_path / "wide.parquet"
+    dc.read_values(p=points, output={"p": anno}, session=ctc.session).to_parquet(local)
+    uri = f"{ctc.src_uri}/wide.parquet"
+    file = File.upload(local.read_bytes(), uri, ctc.catalog)
+    return uri, file.size, points
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize(
+    "anno,output,signal",
+    [
+        (_Wide, None, "p.x"),
+        (_Wide | None, None, "p.x"),
+        (_Wide | None, {"x": float | None}, "x"),
+    ],
+)
+def test_read_parquet_columns_fetch_only_picked_signals_written_by_datachain(
+    cloud_test_catalog_upload, fetched_bytes, tmp_path, anno, output, signal
+):
+    ctc = cloud_test_catalog_upload
+    uri, size, points = _put_wide(ctc, tmp_path, anno)
+    chain = dc.read_parquet(
+        uri,
+        columns=["p.x"],
+        output=output,
+        settings={"prefetch": 0},
+        session=ctc.session,
+    )
+    fetched_bytes[:] = [0, 0]
+
+    assert sorted(chain.to_values(signal)) == sorted(p.x for p in points)
+    assert 0 < fetched_bytes[0] < size // 2
+
+
+def test_read_parquet_columns_over_http_without_ranges(
+    http_server_without_ranges, download_callbacks, tmp_path, test_session
+):
+    table = pa.table({"value": [1, 2, 3], "other": [4, 5, 6]})
+    pq.write_table(table, tmp_path / "x.parquet")
+    uri = f"{http_server_without_ranges}/x.parquet"
+
+    chain = dc.read_parquet(uri, columns=["value"], session=test_session)
+
+    assert sorted(chain.to_values("value")) == [1, 2, 3]
+    assert sum(cb.value for cb in download_callbacks) > 0
+
+
+def _put_csv(ctc, size, name="t.csv"):
+    rows = "".join(f"{i},{i:0100}\n" for i in range(size // 100 + 1))
+    data = f"a,pad\n{rows}".encode()
+    return File.upload(data, f"{ctc.src_uri}/{name}", ctc.catalog)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize(
+    "size,prefetch,read_in_parts",
+    [
+        (1, 2, False),
+        (PARTIAL_READ_PREFETCH_MAX_SIZE, 2, True),
+        (1, 0, True),
+    ],
+    ids=["small", "over_the_limit", "small_without_prefetch"],
+)
+def test_read_csv_nrows_prefetch_only_files_up_to_the_limit(
+    cloud_test_catalog_upload, fetched_bytes, size, prefetch, read_in_parts
+):
+    ctc = cloud_test_catalog_upload
+    _put_csv(ctc, size)
+    chain = dc.read_csv(
+        f"{ctc.src_uri}/t.csv",
+        nrows=1,
+        settings={"prefetch": prefetch},
+        session=ctc.session,
+    )
+    fetched_bytes[:] = [0, 0]
+
+    assert chain.to_values("a") == [0]
+    assert (fetched_bytes[0] > 0) is read_in_parts
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_read_csv_nrows_prefetch_small_files_and_read_a_large_one_in_parts(
+    cloud_test_catalog_upload, fetched_bytes
+):
+    ctc = cloud_test_catalog_upload
+    for i in range(3):
+        _put_csv(ctc, 1, f"parts/small{i}.csv")
+    large = _put_csv(ctc, PARTIAL_READ_PREFETCH_MAX_SIZE, "parts/large.csv")
+    chain = dc.read_csv(f"{ctc.src_uri}/parts/*.csv", nrows=1, session=ctc.session)
+    fetched_bytes[:] = [0, 0]
+
+    assert chain.to_values("a") == [0, 0, 0, 0]
+    assert fetched_bytes[0] == large.size
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_read_csv_nrows_read_files_of_unknown_size_in_parts(
+    cloud_test_catalog_upload, fetched_bytes
+):
+    ctc = cloud_test_catalog_upload
+    uploaded = _put_csv(ctc, 1)
+    file = File(source=uploaded.source, path=uploaded.path)
+    chain = dc.read_values(file=[file], session=ctc.session).parse_tabular(
+        format="csv", nrows=1
+    )
+    fetched_bytes[:] = [0, 0]
+
+    assert chain.to_values("a") == [0]
+    assert fetched_bytes[0] > 0
+
+
+def _put_json(ctc, name, size):
+    rows = [{"a": i, "pad": f"{i:0100}"} for i in range(size // 100 + 1)]
+    if name.endswith(".jsonl"):
+        data = "".join(json.dumps(row) + "\n" for row in rows)
+    else:
+        data = json.dumps(rows)
+    return File.upload(data.encode(), f"{ctc.src_uri}/{name}", ctc.catalog)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize(
+    "name,size,read_in_parts",
+    [
+        ("t.jsonl", 1, False),
+        ("t.jsonl", PARTIAL_READ_PREFETCH_MAX_SIZE, True),
+        ("t.json", PARTIAL_READ_PREFETCH_MAX_SIZE, False),
+    ],
+    ids=["jsonl_small", "jsonl_over_the_limit", "json_over_the_limit"],
+)
+def test_read_json_nrows_prefetch_json_and_jsonl_up_to_the_limit(
+    cloud_test_catalog_upload, fetched_bytes, name, size, read_in_parts
+):
+    ctc = cloud_test_catalog_upload
+    _put_json(ctc, name, size)
+    format = name.rsplit(".", 1)[1]
+    chain = dc.read_json(
+        f"{ctc.src_uri}/{name}",
+        format=format,
+        nrows=1,
+        session=ctc.session,
+    )
+    fetched_bytes[:] = [0, 0]
+
+    assert chain.to_values(f"{format}.a") == [0]
+    assert (fetched_bytes[0] > 0) is read_in_parts
+
+
+def _put_parquet(ctc, name, table, **kwargs):
+    buffer = pa.BufferOutputStream()
+    pq.write_table(table, buffer, **kwargs)
+    data = buffer.getvalue().to_pybytes()
+    return File.upload(data, f"{ctc.src_uri}/{name}", ctc.catalog)
+
+
+def _read_recorded(ctc, file):
+    # Without prefetch, small files are read in parts too.
+    chain = dc.read_values(file=[file], session=ctc.session).settings(prefetch=0)
+    return chain.parse_tabular(format="parquet", columns=["value"])
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_read_parquet_columns_read_the_recorded_version(cloud_test_catalog_upload):
+    ctc = cloud_test_catalog_upload
+    old = _put_parquet(ctc, "v.parquet", pa.table({"value": [1]}))
+    _put_parquet(ctc, "v.parquet", pa.table({"value": [2, 2, 2]}))
+
+    assert _read_recorded(ctc, old).to_values("value") == [1]
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_read_parquet_columns_read_a_recorded_version_deleted_since(
+    cloud_test_catalog_upload,
+):
+    ctc = cloud_test_catalog_upload
+    old = _put_parquet(ctc, "d.parquet", pa.table({"value": [1]}))
+    chain = _read_recorded(ctc, old)
+    ctc.src.fs.rm(str(ctc.src / "d.parquet"))
+    ctc.catalog.get_client(ctc.src_uri).fs.invalidate_cache()
+
+    assert chain.to_values("value") == [1]
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_read_parquet_columns_reject_a_changed_file(cloud_test_catalog_upload):
+    ctc = cloud_test_catalog_upload
+    old = _put_parquet(ctc, "c.parquet", pa.table({"value": [1]}))
+    _put_parquet(ctc, "c.parquet", pa.table({"value": [2, 2, 2]}))
+
+    with pytest.raises(FileNotFoundError):
+        _read_recorded(ctc, old).to_values("value")
+
+
+@pytest.mark.parametrize("cloud_type", ["file"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_read_parquet_columns_reject_a_changed_local_file(cloud_test_catalog_upload):
+    ctc = cloud_test_catalog_upload
+    old = _put_parquet(ctc, "c.parquet", pa.table({"value": [1]}))
+    _put_parquet(ctc, "c.parquet", pa.table({"value": [2, 2, 2]}))
+    path = str(ctc.src / "c.parquet")
+    st = os.stat(path)
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 5 * 10**9))
+
+    with pytest.raises(FileNotFoundError):
+        _read_recorded(ctc, old).to_values("value")
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_read_parquet_columns_pinned_version_ignores_stale_etag(
+    cloud_test_catalog_upload,
+):
+    ctc = cloud_test_catalog_upload
+    old = _put_parquet(ctc, "p.parquet", pa.table({"value": [1]}))
+    _put_parquet(ctc, "p.parquet", pa.table({"value": [2, 2, 2]}))
+    stale = old.model_copy(update={"etag": "stale-etag"})
+
+    assert _read_recorded(ctc, stale).to_values("value") == [1]
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+@pytest.mark.parametrize(
+    "format,first,second",
+    [
+        ("csv", b"old\n1\n", b"new\n2\n"),
+        ("json", b'{"old": 1}\n', b'{"new": 2}\n'),
+    ],
+    ids=["csv", "json"],
+)
+def test_parse_tabular_nrows_reads_the_recorded_version(
+    cloud_test_catalog_upload, format, first, second
+):
+    ctc = cloud_test_catalog_upload
+    old = File.upload(first, f"{ctc.src_uri}/v.{format}", ctc.catalog)
+    File.upload(second, f"{ctc.src_uri}/v.{format}", ctc.catalog)
+
+    chain = dc.read_values(file=[old], session=ctc.session).parse_tabular(
+        format=format, nrows=1
+    )
+
+    assert chain.to_values("old") == [1]
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_parse_tabular_source_row_reads_the_recorded_version(
+    cloud_test_catalog_upload,
+):
+    ctc = cloud_test_catalog_upload
+    old = File.upload(b"old\n1\n", f"{ctc.src_uri}/r.csv", ctc.catalog)
+    chain = dc.read_values(file=[old], session=ctc.session).parse_tabular(
+        format="csv", nrows=1
+    )
+    (row,) = chain.to_values("source")
+    File.upload(b"new\n2\n", f"{ctc.src_uri}/r.csv", ctc.catalog)
+
+    assert row.read() == {"old": 1}
 
 
 # These deprecation warnings occur in the datamodel-code-generator package.

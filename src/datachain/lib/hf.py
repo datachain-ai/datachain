@@ -1,4 +1,14 @@
+from importlib.metadata import version
+
+from packaging.version import Version
+
 try:
+    datasets_version = version("datasets")
+    if Version(datasets_version) < Version("4.0.0"):
+        raise ImportError(
+            f"datachain requires 'datasets>=4.0.0' but version {datasets_version} "
+            "is installed."
+        )
     from datasets import (
         Array2D,
         Array3D,
@@ -20,13 +30,13 @@ try:
 
 except ImportError as exc:
     raise ImportError(
-        "Missing dependencies for huggingface datasets.\n"
+        f"Missing dependencies for huggingface datasets: {exc}\n"
         "To install run:\n\n"
         "  pip install 'datachain[hf]'\n"
     ) from exc
 
 from io import BytesIO
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias, get_args, get_origin
 
 import PIL
 
@@ -73,6 +83,7 @@ class HFGenerator(Generator):
         output_schema: type["BaseModel"],
         limit: int = 0,
         *args,
+        split_name: str = "",
         **kwargs,
     ):
         """
@@ -85,11 +96,13 @@ class HFGenerator(Generator):
             limit : Limit the number of items to read from the HF dataset.
                     Defaults to 0 (no limit).
             output_schema : Pydantic model for validation.
+            split_name : Field of `output_schema` that gets the split name, if any.
         """
         super().__init__()
         self.ds = ds
         self.output_schema = output_schema
         self.limit = limit
+        self.split_name = split_name
         self.args = args
         self.kwargs = kwargs
 
@@ -107,15 +120,21 @@ class HFGenerator(Generator):
         with tqdm(desc=desc, unit=" rows", leave=False) as pbar:
             for row in ds:
                 output_dict = {}
-                if split and "split" in self.output_schema.model_fields:
-                    output_dict["split"] = split
+                if self.split_name:
+                    output_dict[self.split_name] = split
                 for name, feat in ds.features.items():
                     normalized_name, info = model_fields[name]
                     anno = info.annotation
                     output_dict[normalized_name] = convert_feature(
                         row[name], feat, anno
                     )
-                yield self.output_schema(**output_dict)
+                row = self.output_schema(**output_dict)
+                if self.output is not None and len(self.output.values) == 1:
+                    # A single output signal takes its value, not the whole row.
+                    ((name, signal_type),) = self.output.values.items()
+                    if type(row) is not signal_type:
+                        row = getattr(row, name)
+                yield row
                 pbar.update(1)
 
 
@@ -127,25 +146,28 @@ def stream_splits(ds: HFDatasetType, *args, **kwargs):
     return {"": ds}
 
 
-def convert_feature(val: Any, feat: Any, anno: Any) -> Any:
-    if isinstance(feat, (Value, Array2D, Array3D, Array4D, Array5D, List)):
+def convert_feature(val: Any, feat: Any, anno: Any) -> Any:  # noqa: PLR0911
+    if isinstance(feat, (Value, Array2D, Array3D, Array4D, Array5D)):
         return val
+    if isinstance(feat, List):
+        if val is None or isinstance(feat.feature, Value):
+            return val
+        item_anno = _list_item_type(anno)
+        return [convert_feature(v, feat.feature, item_anno) for v in val]
     if isinstance(feat, ClassLabel):
+        if HFClassLabel not in (anno, *get_args(anno)):
+            return val
         return HFClassLabel(string=feat.names[val], integer=val)
     if isinstance(feat, dict):
+        model = _generated_model(anno)
+        if model is None:
+            return val
         sdict = {}
-        model_fields = anno._model_fields_by_aliases()  # type: ignore[attr-defined]
+        model_fields = model._model_fields_by_aliases()
         for sname in val:
-            sfeat = feat[sname]
             norm_name, info = model_fields[sname]
-            sanno = info.annotation
-            if isinstance(val[sname], list):
-                sdict[norm_name] = [
-                    convert_feature(v, sfeat, sanno) for v in val[sname]
-                ]
-            else:
-                sdict[norm_name] = convert_feature(val[sname], sfeat, sanno)
-        return anno(**sdict)
+            sdict[norm_name] = convert_feature(val[sname], feat[sname], info.annotation)
+        return model(**sdict)
     if isinstance(feat, Image):
         if isinstance(val, dict):
             return HFImage(img=val["bytes"])
@@ -154,22 +176,34 @@ def convert_feature(val: Any, feat: Any, anno: Any) -> Any:
         return HFAudio(array=val["array"], sampling_rate=val["sampling_rate"])
 
 
+def _generated_model(anno: Any) -> Any:
+    """Return the model generated for a dict feature, if it is the requested type.
+
+    Other requested types, such as `dict` or a user's model, take the raw dict.
+    """
+    types = (anno, *get_args(anno))
+    return next((t for t in types if hasattr(t, "_model_fields_by_aliases")), None)
+
+
+def _list_item_type(anno: Any) -> Any:
+    """Return X for list[X], also when the list is optional."""
+    return next(
+        get_args(t)[0] for t in (anno, *get_args(anno)) if get_origin(t) is list
+    )
+
+
 def get_output_schema(
-    features: Features, existing_column_names: list[str] | None = None
+    features: Features,
 ) -> tuple[dict[str, DataType], dict[str, str]]:
     """
     Generate UDF output schema from Hugging Face datasets features. It normalizes the
     column names and returns a mapping of normalized names to original names along with
-    the data types. `existing_column_names` is the list of column names that already
-    exist in the dataset (to avoid name collisions due to normalization).
+    the data types.
     """
-    existing_column_names = existing_column_names or []
     fields_dict = {}
-    normalized_names = normalize_col_names(
-        existing_column_names + list(features.keys())
-    )
+    normalized_names = normalize_col_names(list(features.keys()))
     # List of tuple(str, str) for HF dataset feature names, (normalized, original)
-    new_feature_names = list(normalized_names.items())[len(existing_column_names) :]
+    new_feature_names = list(normalized_names.items())
     for idx, feat in enumerate(features.items()):
         name, val = feat
         fields_dict[new_feature_names[idx][0]] = _feature_to_chain_type(name, val)

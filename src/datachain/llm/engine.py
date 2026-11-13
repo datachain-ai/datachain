@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, create_model
 
+from datachain import json
 from datachain.lib.utils import DataChainError
 from datachain.llm.types import Usage
 
@@ -133,6 +134,17 @@ def parse_list(item_type: type, content: str) -> list:
                 return adapter.validate_json(candidate)  # bare top-level array
             except ValidationError as exc:
                 last_error = exc
+
+        # some models double-encode: {"items": "<the array as a JSON string>"}
+        try:
+            items = json.loads(candidate).get("items")
+        except (ValueError, AttributeError):
+            items = None
+        if isinstance(items, str):
+            try:
+                return adapter.validate_json(items)
+            except ValidationError as exc:
+                last_error = exc
     raise LLMError(
         f"model output could not be parsed as list[{item_type.__name__}]; use a "
         "model with structured-output support or simplify the schema"
@@ -191,7 +203,9 @@ def _list_adapter(item_type: type) -> "TypeAdapter[list[Any]]":
 
 @cache
 def _classification_model(categories: tuple[str, ...]) -> type[BaseModel]:
-    return create_model("LLMClassification", category=(Literal[categories], ...))
+    # Built at runtime, so type checkers can't read it as a type expression.
+    category: Any = Literal[categories]
+    return create_model("LLMClassification", category=(category, ...))
 
 
 @cache

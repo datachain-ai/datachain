@@ -1,11 +1,15 @@
+import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 import numpy as np
+import pandas as pd
 import pytest
 import ujson as json
 from pydantic import BaseModel, ConfigDict
 
+from datachain import json as dcjson
 from datachain.sql.types import (
     JSON,
     Array,
@@ -214,3 +218,140 @@ def test_convert_type(test_session):
     # error, float to int in list
     with pytest.raises(ValueError):
         run_convert_type([1.5, 1], Array(Int))
+
+
+class NumpyHolder(BaseModel):
+    name: str
+    payload: dict
+
+
+def test_convert_type_writes_numpy_held_inside_a_model(test_session):
+    warehouse = test_session.catalog.warehouse
+
+    def to_json(value):
+        return json.loads(
+            warehouse.convert_type(
+                value, JSON(), warehouse.python_type(JSON()), "JSON", "test_column"
+            )
+        )
+
+    assert to_json(
+        NumpyHolder(name="a", payload={"v": np.array([1, 2], dtype=np.int64)})
+    ) == {
+        "name": "a",
+        "payload": {"v": [1, 2]},
+    }
+    assert to_json(NumpyHolder(name="b", payload={"v": np.float32(0.5)})) == {
+        "name": "b",
+        "payload": {"v": 0.5},
+    }
+    assert to_json(NumpyHolder(name="c", payload={"k": [np.int64(7)]})) == {
+        "name": "c",
+        "payload": {"k": [7]},
+    }
+    assert to_json([NumpyHolder(name="d", payload={"v": np.array([1.5])})]) == [
+        {"name": "d", "payload": {"v": [1.5]}},
+    ]
+
+
+def test_convert_type_refuses_a_type_no_encoder_can_write(test_session):
+    warehouse = test_session.catalog.warehouse
+
+    class Opaque:
+        pass
+
+    with pytest.raises(TypeError, match="not JSON serializable"):
+        warehouse.convert_type(
+            NumpyHolder(name="a", payload={"v": Opaque()}),
+            JSON(),
+            warehouse.python_type(JSON()),
+            "JSON",
+            "test_column",
+        )
+
+
+REFUSED_BY_THE_ENCODER = [
+    pytest.param(lambda: np.longdouble(3), id="longdouble-scalar"),
+    pytest.param(lambda: np.array([1, 2], dtype=np.longdouble), id="longdouble-array"),
+    pytest.param(lambda: np.clongdouble(1 + 2j), id="clongdouble-scalar"),
+    pytest.param(
+        lambda: np.array([1, 2], dtype=np.clongdouble), id="clongdouble-array"
+    ),
+    pytest.param(lambda: np.complex64(1 + 2j), id="complex"),
+    pytest.param(lambda: np.timedelta64(3, "D"), id="timedelta"),
+    pytest.param(lambda: np.array([b"ab"], dtype=object), id="bytes-in-object-array"),
+    pytest.param(lambda: pd.Series([1, 2]), id="not-numpy-at-all"),
+]
+
+STORED_BY_THE_ENCODER = [
+    pytest.param(lambda: np.datetime64("2024-01-02"), id="datetime"),
+    pytest.param(lambda: np.float16(1.5), id="float16"),
+    pytest.param(lambda: np.array([[1, 2], [3, 4]]), id="int-matrix"),
+    pytest.param(lambda: np.array([1.5, 2.5], dtype=np.float32), id="float32-array"),
+    pytest.param(lambda: np.array(["a", "b"]), id="str-array"),
+    pytest.param(lambda: np.array([1, None], dtype=object), id="object-array"),
+    pytest.param(
+        lambda: np.array([Decimal("1.25")], dtype=object), id="decimal-in-object-array"
+    ),
+    pytest.param(lambda: np.array([{None: 1}], dtype=object), id="none-key"),
+    pytest.param(lambda: np.array([{(1, "a"): 3}], dtype=object), id="tuple-key"),
+    pytest.param(
+        lambda: np.array([{datetime(2024, 1, 2): 1}], dtype=object), id="datetime-key"
+    ),
+    pytest.param(
+        lambda: np.array([{uuid.UUID(int=7): 1}], dtype=object), id="uuid-key"
+    ),
+]
+
+
+def _model_payload(warehouse, value):
+    return json.loads(
+        warehouse.convert_type(
+            NumpyHolder(name="a", payload={"v": value}),
+            JSON(),
+            warehouse.python_type(JSON()),
+            "JSON",
+            "test_column",
+        )
+    )["payload"]
+
+
+@pytest.mark.parametrize("make", REFUSED_BY_THE_ENCODER)
+def test_a_model_refuses_the_numpy_a_plain_value_refuses(test_session, make):
+    warehouse = test_session.catalog.warehouse
+
+    with pytest.raises(TypeError) as plain:
+        dcjson.dumps({"v": make()}, serialize_numpy=True)
+
+    with pytest.raises(TypeError) as wrapped:
+        _model_payload(warehouse, make())
+
+    assert str(wrapped.value) == str(plain.value)
+
+
+@pytest.mark.parametrize("make", STORED_BY_THE_ENCODER)
+def test_a_model_stores_the_numpy_a_plain_value_stores(test_session, make):
+    warehouse = test_session.catalog.warehouse
+
+    plain = json.loads(dcjson.dumps({"v": make()}, serialize_numpy=True))
+
+    assert _model_payload(warehouse, make()) == plain
+
+
+NON_FINITE_NUMPY = [
+    pytest.param(lambda: np.array([1.0, np.nan], dtype=np.float32), id="nan-in-array"),
+    pytest.param(lambda: np.array([np.inf]), id="inf-in-array"),
+    pytest.param(lambda: np.array([-np.inf]), id="negative-inf-in-array"),
+    pytest.param(lambda: np.float32("nan"), id="nan-scalar"),
+    pytest.param(
+        lambda: np.array([{"k": float("inf")}], dtype=object), id="inf-in-object-array"
+    ),
+]
+
+
+@pytest.mark.parametrize("make", NON_FINITE_NUMPY)
+def test_a_model_refuses_numpy_that_would_be_stored_as_null(test_session, make):
+    warehouse = test_session.catalog.warehouse
+
+    with pytest.raises(ValueError, match="writes NaN and infinities as null"):
+        _model_payload(warehouse, make())

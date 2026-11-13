@@ -8,29 +8,25 @@ Extracted from ``test_data_model.py`` and ``test_feature.py`` to keep
 nullable-object coverage in one place.
 """
 
-import copy
 import io
-from typing import Optional, Union
+from typing import Annotated, Optional, Union
 
 import pytest
 from pydantic import BaseModel
 
-from datachain.lib.convert.flatten import flatten
+from datachain.dataset import RowDict
+from datachain.lib.convert.flatten import FieldKind, classify_field, flatten
 from datachain.lib.convert.unflatten import unflatten_to_json
-from datachain.lib.convert.values_to_tuples import _infer_type_from_sequence
-from datachain.lib.data_model import DataModel, is_chain_type, unwrap_optional
-from datachain.lib.model_store import ModelStore
+from datachain.lib.convert.values_to_tuples import infer_type_from_sequence
+from datachain.lib.data_model import (
+    DataModel,
+    arm_selector,
+    is_chain_type,
+    unwrap_optional,
+)
 from datachain.lib.signal_schema import SignalSchema
 
-
-@pytest.fixture(autouse=True)
-def restore_model_store():
-    snapshot = copy.deepcopy(ModelStore.store)
-    ModelStore.store = {}
-    try:
-        yield
-    finally:
-        ModelStore.store = snapshot
+pytestmark = pytest.mark.usefixtures("empty_model_store")
 
 
 class _Sample(BaseModel):
@@ -202,16 +198,17 @@ class _Outer(DataModel):
 
 def test_flatten_optional_datamodel_present():
     out = _Outer(name="Alice", addr=_Addr(city="Berlin", zip="10115"))
-    assert flatten(out) == ("Alice", 0, "Berlin", "10115")
+    assert flatten(out) == ("Alice", arm_selector(_Addr), "Berlin", "10115")
 
 
 def test_flatten_optional_datamodel_absent():
     out = _Outer(name="Bob", addr=None)
-    assert flatten(out) == ("Bob", 1, None, None)
+    # _type_tag is NULL for the absent (None) arm.
+    assert flatten(out) == ("Bob", None, None, None)
 
 
 def test_unflatten_optional_datamodel_present():
-    row = ("Alice", 0, "Berlin", "10115")
+    row = ("Alice", arm_selector(_Addr), "Berlin", "10115")
     j = unflatten_to_json(_Outer, row)
     assert j == {
         "name": "Alice",
@@ -222,15 +219,15 @@ def test_unflatten_optional_datamodel_present():
 
 
 def test_unflatten_optional_datamodel_absent():
-    row = ("Bob", 1, None, None)
+    row = ("Bob", None, None, None)
     j = unflatten_to_json(_Outer, row)
     assert j == {"name": "Bob", "addr": None}
     assert _Outer(**j).addr is None
 
 
 def test_unflatten_ignores_leaf_garbage_when_sentinel_absent():
-    # tag=1 (None arm) hydrates the parent as None even when the leaves hold values.
-    row = ("Bob", 1, "garbage-city", "garbage-zip")
+    # NULL tag (None arm) hydrates the parent as None even when leaves hold values.
+    row = ("Bob", None, "garbage-city", "garbage-zip")
     j = unflatten_to_json(_Outer, row)
     assert j == {"name": "Bob", "addr": None}
 
@@ -326,7 +323,7 @@ def test_create_model_does_not_promote_non_optional_fields():
 
 def test_infer_optional_datamodel_from_nones():
     seq = [_Addr(city="a"), None, _Addr(city="c")]
-    inner, is_optional = unwrap_optional(_infer_type_from_sequence(seq, "item", "ds"))
+    inner, is_optional = unwrap_optional(infer_type_from_sequence(seq, "item"))
     assert is_optional and inner is _Addr
 
 
@@ -339,12 +336,12 @@ def test_infer_optional_datamodel_from_nones():
     ],
 )
 def test_infer_optional_scalar_and_collection_from_nones(seq, expected_inner):
-    inner, is_optional = unwrap_optional(_infer_type_from_sequence(seq, "c", "ds"))
+    inner, is_optional = unwrap_optional(infer_type_from_sequence(seq, "c"))
     assert is_optional and inner == expected_inner
 
 
 def test_infer_non_optional_when_no_none():
-    typ = _infer_type_from_sequence([1, 2, 3], "c", "ds")
+    typ = infer_type_from_sequence([1, 2, 3], "c")
     inner, is_optional = unwrap_optional(typ)
     assert not is_optional and inner is int
 
@@ -358,11 +355,19 @@ def test_optional_datamodel_roundtrip_at_top_level():
     ]
     assert "item._type_tag" in flat
     assert "item.city" in flat
-    # row_to_objs with tag=1 (None arm) returns None for top-level Optional[Model].
-    assert schema.row_to_objs((1, None, None)) == [None]
-    assert schema.row_to_objs((0, "Paris", "75001")) == [
-        _Addr(city="Paris", zip="75001")
-    ]
+    # NULL tag (None arm) returns None for top-level Optional[Model].
+    assert schema.row_to_objs(
+        RowDict(zip(schema.to_udf_spec(), (None, None, None), strict=True))
+    ) == [None]
+    assert schema.row_to_objs(
+        RowDict(
+            zip(
+                schema.to_udf_spec(),
+                (arm_selector(_Addr), "Paris", "75001"),
+                strict=True,
+            )
+        )
+    ) == [_Addr(city="Paris", zip="75001")]
 
 
 def test_nested_optional_datamodel_roundtrip():
@@ -376,18 +381,25 @@ def test_nested_optional_datamodel_roundtrip():
     # Outer present, inner absent
     obj = Top(mid=Mid(addr=None, tag="x"))
     flat = flatten(obj)
-    # tags: mid=0 (present), addr=1 (None); then city=None, zip=None, tag="x"
-    assert flat == (0, 1, None, None, "x")
+    # tags: mid present (Mid selector), addr NULL (None); then city/zip None, tag="x"
+    assert flat == (arm_selector(Mid), None, None, None, "x")
     rec = unflatten_to_json(Top, flat)
     assert rec == {"mid": {"addr": None, "tag": "x"}}
 
     # Both absent
     obj2 = Top(mid=None)
     flat2 = flatten(obj2)
-    # mid tag=1 (None arm), then 4 placeholder values for the absent inner subtree
-    assert flat2[0] == 1
+    # mid tag=NULL (None arm), then 4 placeholder values for the absent inner subtree
+    assert flat2[0] is None
     assert (
         len(flat2) == 5
     )  # sentinel + (inner sentinel + 2 addr leaves + tag) placeholders
     rec2 = unflatten_to_json(Top, flat2)
     assert rec2 == {"mid": None}
+
+
+def test_classify_field_handles_unhashable_annotations():
+    unhashable = Annotated[int, []]
+    assert classify_field(unhashable) == FieldKind(unhashable, False, False)
+    optional = Optional[unhashable]
+    assert classify_field(optional) == FieldKind(unhashable, True, False)

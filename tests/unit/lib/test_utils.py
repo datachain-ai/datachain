@@ -1,4 +1,3 @@
-import copy
 from collections.abc import Iterable
 from typing import (  # noqa: UP035
     Annotated,
@@ -25,6 +24,7 @@ from datachain.lib.utils import (
     type_to_str,
 )
 from datachain.sql.types import (
+    JSON,
     Array,
     String,
 )
@@ -44,6 +44,7 @@ class MyFeature(BaseModel):
         (list[str], Array(String())),
         (Iterable[str], Array(String())),
         (list[list[str]], Array(Array(String()))),
+        (list[str | int], JSON()),
     ),
 )
 def test_convert_type_to_datachain_array(typ, expected):
@@ -54,7 +55,6 @@ def test_convert_type_to_datachain_array(typ, expected):
     "typ",
     (
         str | int,
-        list[str | int],
         MyFeature,
         MyModel,
     ),
@@ -295,8 +295,8 @@ def test_type_to_str_matrix(type_, expected):
 def test_type_to_str_typing_module_vs_builtin_generics():
     """Ensure typing.List/Dict and built-in generics stringify identically.
 
-    Confirms Python 3.10+ behavior where get_origin() normalizes both forms
-    to built-ins, and type_to_str produces the same string.
+    get_origin() normalizes both forms to built-ins, so type_to_str produces the
+    same string.
     """
     from typing import get_origin
 
@@ -336,17 +336,12 @@ def test_type_to_str_empty_generics():
     assert type_to_str(Tuple) == "tuple"  # noqa: UP006
 
 
+@pytest.mark.usefixtures("empty_model_store")
 def test_type_to_str_pydantic_model_uses_model_store():
-    snapshot = copy.deepcopy(ModelStore.store)
-    ModelStore.store = {}
-    try:
+    class Sample(DataModel):
+        a: int
 
-        class Sample(DataModel):
-            a: int
-
-        assert type_to_str(Sample) == ModelStore.get_name(Sample)
-    finally:
-        ModelStore.store = snapshot
+    assert type_to_str(Sample) == ModelStore.get_name(Sample)
 
 
 def test_callable_name_callable_instance():

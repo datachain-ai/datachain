@@ -85,11 +85,11 @@ repository, with each project presenting values from a different sub-directory.
 
 ## Create projects shared across a team
 
-You can [create teams](../team-collaboration.md) with one or
+You can [create teams](../teams/index.md) with one or
 more team members, also called collaborators.
 
 Each team will have its own projects dashboard, and the projects that you create
 in the team's dashboard will be accessible to all members of the team.
 
 To add more than 2 collaborators in your team,
-[upgrade to the **Enterprise** plan](../team-collaboration.md#get-enterprise).
+[upgrade to the **Enterprise** plan](../teams/settings.md#get-enterprise).

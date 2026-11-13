@@ -1,6 +1,6 @@
 import base64
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -11,6 +11,8 @@ from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SCHEMA_VERSION, SQLiteMetastore
 from datachain.dataset import DatasetStatus
 from datachain.error import DatasetStateNotLoadedError, OutdatedDatabaseSchemaError
+from datachain.lib.dc.listings import read_listing_dataset
+from datachain.lib.listing import parse_listing_uri
 from tests.conftest import cleanup_sqlite_db
 
 
@@ -48,6 +50,51 @@ def test_sqlite_metastore(sqlite_db):
         obj2.close_on_exit()
 
 
+def test_record_dataset_version_access_is_noop(sqlite_db):
+    metastore = SQLiteMetastore(db=sqlite_db)
+    dataset = metastore.create_dataset("accessed")
+
+    assert metastore.record_dataset_version_access(dataset, "1.0.0") is None
+
+
+def test_query_records_each_dataset_version_access(test_session, mocker):
+    first = dc.read_values(value=[1], session=test_session).save("first")
+    second = dc.read_values(value=[2], session=test_session).save("second")
+    recorder = mocker.spy(
+        test_session.catalog.metastore,
+        "record_dataset_version_access",
+    )
+
+    first.union(second).to_records()
+
+    assert recorder.call_count == 2
+    assert {(call.args[0].name, call.args[1]) for call in recorder.call_args_list} == {
+        ("first", first.version),
+        ("second", second.version),
+    }
+
+
+def test_read_listing_dataset_records_listing_version_access(
+    test_session, tmp_dir, mocker
+):
+    (tmp_dir / "a.txt").write_text("a")
+    uri = tmp_dir.as_uri()
+    dc.read_storage(uri, session=test_session).exec()
+    ds_name, _, _ = parse_listing_uri(uri)
+    recorder = mocker.spy(
+        test_session.catalog.metastore,
+        "record_dataset_version_access",
+    )
+
+    chain, listing_version = read_listing_dataset(ds_name, session=test_session)
+    chain.to_values("file")
+
+    assert recorder.call_count == 1
+    dataset, version = recorder.call_args.args
+    assert dataset.name == ds_name
+    assert version == listing_version.version
+
+
 def test_outdated_schema_meta_not_present():
     metastore = SQLiteMetastore(db_file=":memory:")
     try:
@@ -83,11 +130,10 @@ def test_outdated_schema():
 def test_expire_checkpoints():
     metastore = SQLiteMetastore(db_file=":memory:")
     try:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         old = now - timedelta(hours=2)
         ttl_threshold = now - timedelta(hours=1)
 
-        # Create two jobs
         job1_id = metastore.create_job(
             "job1", "q", query_type=JobQueryType.PYTHON, status=JobStatus.COMPLETE
         )
@@ -242,13 +288,62 @@ def test_list_datasets_include_removed(metastore):
     assert versions[1].is_removed
 
 
-def test_list_datasets_include_removed_only_tombstones(metastore):
-    """A dataset with only tombstoned versions still appears when
-    include_removed is True."""
+def test_list_datasets_include_removed_includes_removing_excludes_failed(metastore):
+    ds = metastore.create_dataset("list-with-removing")
+    metastore.create_dataset_version(ds, "1.0.0", DatasetStatus.COMPLETE)
+    metastore.create_dataset_version(ds, "1.0.1", DatasetStatus.REMOVING)
+    metastore.create_dataset_version(ds, "1.0.2", DatasetStatus.FAILED)
+
+    default = {d.name: d for d in metastore.list_datasets()}
+    assert [v.version for v in default["list-with-removing"].versions] == ["1.0.0"]
+
+    results = {d.name: d for d in metastore.list_datasets(include_removed=True)}
+    versions = results["list-with-removing"].all_versions
+    assert [v.version for v in versions] == ["1.0.0", "1.0.1"]
+    assert versions[1].status == DatasetStatus.REMOVING
+    assert versions[1].is_removed
+
+
+def test_get_dataset_include_removed_includes_removing(metastore):
+    ds = metastore.create_dataset("get-with-removing")
+    metastore.create_dataset_version(ds, "1.0.0", DatasetStatus.COMPLETE)
+    metastore.create_dataset_version(ds, "1.0.1", DatasetStatus.REMOVING)
+
+    default = metastore.get_dataset(
+        "get-with-removing", versions=None, include_incomplete=False
+    )
+    assert [v.version for v in default.versions] == ["1.0.0"]
+
+    with_tombstones = metastore.get_dataset(
+        "get-with-removing",
+        versions=None,
+        include_incomplete=False,
+        include_removed=True,
+    )
+    versions = with_tombstones.all_versions
+    assert [v.version for v in versions] == ["1.0.0", "1.0.1"]
+    assert versions[1].status == DatasetStatus.REMOVING
+
+
+def test_list_datasets_include_removed_lists_dataset_with_only_removed_versions(
+    metastore,
+):
     ds = metastore.create_dataset("tombstoned-only")
     metastore.create_dataset_version(ds, "1.0.0", DatasetStatus.REMOVED)
 
     assert "tombstoned-only" not in {d.name for d in metastore.list_datasets()}
     assert "tombstoned-only" in {
+        d.name for d in metastore.list_datasets(include_removed=True)
+    }
+
+
+def test_list_datasets_include_removed_lists_dataset_with_only_removing_versions(
+    metastore,
+):
+    ds = metastore.create_dataset("removing-only")
+    metastore.create_dataset_version(ds, "1.0.0", DatasetStatus.REMOVING)
+
+    assert "removing-only" not in {d.name for d in metastore.list_datasets()}
+    assert "removing-only" in {
         d.name for d in metastore.list_datasets(include_removed=True)
     }

@@ -1,13 +1,7 @@
 import re
+import tomllib
 from dataclasses import dataclass
 from typing import Any
-
-try:
-    import tomllib
-except ModuleNotFoundError:
-    # tomllib is in standard library from python 3.11 so for earlier versions
-    # we need tomli
-    import tomli as tomllib  # type: ignore[no-redef]
 
 
 class ScriptConfigParsingError(Exception):

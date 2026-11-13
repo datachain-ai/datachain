@@ -63,8 +63,8 @@ def common_df_asserts(df):
 
 def sort_df_for_tests(df):
     # Sort the dataframe to avoid a PerformanceWarning about unsorted indexing.
-    df.sort_index(axis=0, inplace=True, sort_remaining=True)
-    df.sort_index(axis=1, inplace=True, sort_remaining=True)
+    df = df.sort_index(axis=0, sort_remaining=True)
+    df = df.sort_index(axis=1, sort_remaining=True)
     return df.sort_values(("file", "path")).reset_index(drop=True)
 
 

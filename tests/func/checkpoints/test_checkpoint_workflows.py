@@ -1,4 +1,6 @@
+import importlib
 from collections.abc import Iterator
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -9,6 +11,7 @@ from datachain.error import (
     DatasetNotFoundError,
     JobNotFoundError,
 )
+from datachain.lib.dc.datachain import DataChain
 from tests.utils import reset_session_job_state
 
 
@@ -232,6 +235,115 @@ def test_checkpoints_check_valid_chain_is_returned(
     assert ds.dataset.name == "nums1"
     assert len(ds.dataset.versions) == 1
     assert ds.order_by("num").to_list("num") == [(1,), (2,), (3,), (4,), (5,), (6,)]
+
+
+def test_checkpoint_reuse_records_output_and_direct_input_access(
+    test_session, monkeypatch, nums_dataset
+):
+    catalog = test_session.catalog
+    metastore = catalog.metastore
+    chain = dc.read_dataset("nums", session=test_session)
+
+    reset_session_job_state()
+    chain.save("nums_checkpointed")
+
+    accessed = []
+    monkeypatch.setattr(
+        metastore,
+        "record_dataset_version_access",
+        lambda dataset, version: accessed.append((dataset.name, version)),
+    )
+
+    reset_session_job_state()
+    chain.save("nums_checkpointed")
+
+    assert set(accessed) == {("nums", "1.0.0"), ("nums_checkpointed", "1.0.0")}
+
+
+def test_checkpoint_reuse_records_listing_input_access(
+    test_session, monkeypatch, tmp_dir
+):
+    catalog = test_session.catalog
+    metastore = catalog.metastore
+    (tmp_dir / "input.txt").write_text("data")
+    chain = dc.read_storage(tmp_dir.as_uri(), session=test_session)
+    output_name = "listing_checkpointed"
+
+    reset_session_job_state()
+    chain.save(output_name)
+
+    dependency = catalog.get_dataset_dependencies(output_name, "1.0.0")[0]
+    assert dependency is not None
+    accessed = []
+    monkeypatch.setattr(
+        metastore,
+        "record_dataset_version_access",
+        lambda dataset, version: accessed.append((dataset.name, version)),
+    )
+
+    reset_session_job_state()
+    chain.save(output_name)
+
+    assert (output_name, "1.0.0") in accessed
+    assert (dependency.name, dependency.version) in accessed
+
+
+@pytest.mark.parametrize("dependency_kind", ["missing", "removed"])
+def test_checkpoint_reuse_skips_missing_or_removed_dependencies(
+    monkeypatch, dependency_kind
+):
+    dependency = None if dependency_kind == "missing" else SimpleNamespace(removed=True)
+    accessed = []
+    project = SimpleNamespace(
+        namespace=SimpleNamespace(name="namespace"), name="project"
+    )
+    dataset = SimpleNamespace(name="output", project=project)
+    metastore = SimpleNamespace(
+        record_dataset_version_access=lambda ds, version: accessed.append(
+            (ds.name, version)
+        )
+    )
+    catalog = SimpleNamespace(
+        metastore=metastore,
+        get_dataset_dependencies=lambda *args, **kwargs: [dependency],
+    )
+    instance = SimpleNamespace(session=SimpleNamespace(catalog=catalog))
+
+    DataChain._record_checkpoint_reuse_access(instance, dataset, "1.0.0")
+
+    assert accessed == [(dataset.name, "1.0.0")]
+
+
+def test_checkpoint_reuse_without_starting_step_skips_access_recording(monkeypatch):
+    dataset_version = SimpleNamespace(version="1.0.0", id=1)
+    reused = SimpleNamespace(_query=SimpleNamespace(starting_step=None))
+    project = SimpleNamespace(
+        namespace=SimpleNamespace(name="namespace"), name="project"
+    )
+    accessed = []
+    datasets_module = importlib.import_module("datachain.lib.dc.datasets")
+    monkeypatch.setattr(datasets_module, "read_dataset", lambda *args, **kwargs: reused)
+    metastore = SimpleNamespace(
+        find_checkpoint=lambda *args: True,
+        get_dataset_version_for_job_ancestry=lambda *args: dataset_version,
+        record_dataset_version_access=lambda *args: accessed.append(args),
+        link_dataset_version_to_job=lambda *args, **kwargs: None,
+        log_checkpoint_event=lambda **kwargs: None,
+    )
+    catalog = SimpleNamespace(metastore=metastore)
+    instance = SimpleNamespace(
+        session=SimpleNamespace(catalog=catalog),
+        _checkpoints_enabled=True,
+        _query=SimpleNamespace(delta_sources=list, delta_spec=None),
+        job=SimpleNamespace(id=1, rerun_from_job_id=None, run_group_id="group"),
+    )
+
+    resolved = DataChain._resolve_checkpoint(
+        instance, "output", project, "checkpoint-hash", {}
+    )
+
+    assert resolved is reused
+    assert accessed == []
 
 
 def test_checkpoints_invalid_parent_job_id(test_session, monkeypatch, nums_dataset):
@@ -904,3 +1016,44 @@ def test_retry_loop_generator_accumulates_partial_progress(test_session, nums_da
         (50,),
         (60,),
     ]
+
+
+def test_delta_sibling_saves_reuse_udf(test_session):
+    processed = []
+
+    def record(id) -> int:
+        processed.append(id)
+        return id * 10
+
+    def chain():
+        return dc.read_dataset(
+            "sibling_source", delta=True, delta_on="id", session=test_session
+        ).map(value=record)
+
+    def save():
+        chain().filter(dc.C.value < 50).save("small")
+        chain().filter(dc.C.value >= 50).save("big")
+
+    dc.read_values(id=[1, 2, 3], session=test_session).save("sibling_source")
+    save()
+    dc.read_values(id=list(range(1, 9)), session=test_session).save("sibling_source")
+    processed.clear()
+    save()
+    assert sorted(processed) == [4, 5, 6, 7, 8]
+    assert sorted(dc.read_dataset("small").to_values("id")) == [1, 2, 3, 4]
+    assert sorted(dc.read_dataset("big").to_values("id")) == [5, 6, 7, 8]
+
+
+def test_persist_materializations_do_not_share_udf_results(test_session):
+    processed = []
+
+    def double(value) -> int:
+        processed.append(value)
+        return value * 2
+
+    source = dc.read_values(value=[1, 2], session=test_session).save("persist_source")
+    for _ in range(2):
+        processed.clear()
+        result = source.persist().map(doubled=double).to_values("doubled")
+        assert sorted(result) == [2, 4]
+        assert sorted(processed) == [1, 2]

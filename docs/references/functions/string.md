@@ -15,7 +15,7 @@ dc.mutate(
     parts=string.split("text_column", ","),
     cleaned=string.replace("text_column", "old", "new"),
     regex_cleaned=string.regexp_replace("text_column", r"\d+", "X"),
-    distance=string.byte_hamming_distance("col1", "col2")
+    distance=string.byte_hamming_distance("col1", "col2"),
 )
 ```
 

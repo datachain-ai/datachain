@@ -1,5 +1,5 @@
 from collections.abc import Iterator
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from types import GeneratorType
 from unittest.mock import patch
 
@@ -95,7 +95,7 @@ def test_dataset_insert_batch_size(test_session, warehouse, ignore_checkpoints):
 
 
 def test_warehouse_keeps_utc_datetime_unchanged(test_session):
-    timestamp = datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=timezone.utc)
+    timestamp = datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=UTC)
 
     dc.read_values(ts=[timestamp], session=test_session).save(
         "warehouse_utc_datetime_round_trip"
@@ -124,8 +124,8 @@ def test_warehouse_round_trips_datetime_cast_from_string(test_session):
     )
 
     assert rows == [
-        (1, datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)),
-        (2, datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=timezone.utc)),
+        (1, datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)),
+        (2, datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=UTC)),
     ]
 
 
@@ -166,4 +166,4 @@ def test_sqlite_warehouse_converts_other_timezones_to_utc(test_session):
         "sqlite_warehouse_timezone_to_utc", session=test_session
     ).to_values("ts")
 
-    assert rows == [timestamp.astimezone(timezone.utc)]
+    assert rows == [timestamp.astimezone(UTC)]

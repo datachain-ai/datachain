@@ -171,8 +171,6 @@ def test_mutate_rename_column_no_db_leakage(test_session):
 
 
 def test_mutate_with_window_functions(test_session):
-    """Test mutate with window functions"""
-
     files = _create_test_files(
         [
             ("cats/cat1", 4),

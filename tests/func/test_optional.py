@@ -13,6 +13,7 @@ import json
 from typing import Optional
 
 import pandas as pd
+import pyarrow.parquet as pq
 
 import datachain as dc
 from datachain.lib.data_model import DataModel, unwrap_optional
@@ -623,6 +624,19 @@ def test_select_partial_optional_datamodel_leaf(test_session):
     assert got == {1: 5, 2: None}
 
 
+def test_select_partial_optional_datamodel_hydrates_the_parent(test_session):
+    items = [_Inner(score=5, label="a"), None]
+    chain = dc.read_values(
+        id=[1, 2],
+        item=items,
+        output={"id": int, "item": Optional[_Inner]},
+        session=test_session,
+    )
+    got = dict(chain.select("id", "item.score").order_by("id").to_list("id", "item"))
+    assert got[1].score == 5
+    assert got[2] is None
+
+
 def test_udf_returns_optional_datamodel_mixed_none(test_session):
     def maybe(score: int) -> _Inner | None:
         return _Inner(score=score, label="ok") if score > 0 else None
@@ -948,9 +962,9 @@ def test_flat_export_optional_datamodel_leaf_none(test_session):
     assert pd.isna(label[1])
 
 
-def test_type_tag_excluded_from_exports(test_session, tmp_path):
-    """The `_type_tag` discriminator never appears in exports; absent parents
-    round-trip to None via the all-leaves-None heuristic."""
+def test_type_tag_hidden_from_flat_exports(test_session, tmp_path):
+    """Flat exports hide the `_type_tag` discriminator; parquet carries it so unions
+    round-trip exactly. Absent parents read back as None either way."""
     presents = {1: _Inner(score=10, label="a")}
 
     def pick(id: int) -> _Inner | None:
@@ -974,6 +988,7 @@ def test_type_tag_excluded_from_exports(test_session, tmp_path):
 
     pp = str(tmp_path / "out.parquet")
     chain.to_parquet(pp)
+    assert any("_type_tag" in name for name in pq.read_schema(pp).names)
     got = dict(
         dc.read_parquet(pp, session=test_session).order_by("id").to_list("id", "item")
     )

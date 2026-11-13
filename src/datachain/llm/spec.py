@@ -282,11 +282,16 @@ class LLMSpec(BoundSpec):
     def _validate_target(self, target: Any) -> None:
         """`.map()` always works (a list schema yields a list-valued column).
         `.gen()` needs a fan-out-able op (`complete(schema=list[...])`); `.agg()`
-        is not supported."""
+        and `.batch_map()` are not supported."""
         if target is None:
             return
         out_batched = getattr(target, "is_output_batched", False)
         in_batched = getattr(target, "is_input_batched", False)
+        if in_batched and not out_batched:
+            raise LLMConfigError(
+                f"llm.{self.kind}() processes one row at a time; use .map(), "
+                "not .batch_map(). Configure concurrency with .settings(parallel=N)"
+            )
         if not out_batched:
             return  # .map(): 1:1
         if self._can_fan_out():
@@ -301,12 +306,8 @@ class LLMSpec(BoundSpec):
             )
 
     def _stamp(self, fn: Any, to_many: bool) -> Callable:
-        # Output type is declared as a normal return annotation; inputs flow via
-        # __datachain_params__ because column names may be dotted (e.g. "file.path"),
-        # which can't be function parameters.
         fn.__annotations__["return"] = self.return_annotation(to_many)
         fn.__name__ = fn.__qualname__ = f"llm_{self.kind}"
-        fn.__datachain_params__ = self.input_columns()
         return fn
 
     def bind(self, ctx: BindContext) -> Callable:
@@ -345,3 +346,7 @@ class LLMSpec(BoundSpec):
 
     def input_columns(self) -> list[str]:
         return [self.col, self.context_col] if self.context_col else [self.col]
+
+    @property
+    def output_count(self) -> int:
+        return 2 if self.include_usage else 1

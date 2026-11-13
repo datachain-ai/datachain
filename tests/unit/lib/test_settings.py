@@ -130,7 +130,6 @@ def test_settings_to_dict():
 
 
 def test_settings_immutability():
-    # Create original settings
     original = Settings(batch_size=1000, cache=True)
 
     # Create a copy

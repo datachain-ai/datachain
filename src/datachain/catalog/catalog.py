@@ -9,15 +9,10 @@ from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from copy import copy
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from functools import cached_property, reduce
-from typing import TYPE_CHECKING, Any
+from datetime import UTC, datetime, timedelta
+from functools import reduce
+from typing import TYPE_CHECKING, Any, Self
 from uuid import uuid4
-
-if sys.version_info >= (3, 11):
-    from typing import Self
-else:
-    from typing_extensions import Self
 
 import sqlalchemy as sa
 from sqlalchemy import Column
@@ -59,7 +54,7 @@ from datachain.sql.types import DateTime, SQLType
 from datachain.utils import DataChainDir, DatasetIdentifier, interprocess_file_lock
 
 from .datasource import DataSource
-from .dependency import build_dependency_hierarchy, populate_nested_dependencies
+from .dependency import build_dependency_hierarchy
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -69,7 +64,7 @@ if TYPE_CHECKING:
     from datachain.job import Job
     from datachain.lib.dc.datachain import DataChain
     from datachain.lib.listing_info import ListingInfo
-    from datachain.listing import Listing
+    from datachain.listing import SavedListing
     from datachain.remote.studio import StudioClient
 
 logger = logging.getLogger("datachain")
@@ -263,7 +258,7 @@ class DatasetRowsFetcher(NodesThreadPool):
 class NodeGroup:
     """Class for a group of nodes from the same source"""
 
-    listing: "Listing | None"
+    listing: "SavedListing | None"
     client: Client
     sources: list[DataSource]
 
@@ -282,7 +277,8 @@ class NodeGroup:
         for src in self.sources:
             if recursive and src.is_container():
                 for nwp in src.find():
-                    yield nwp.n
+                    if not nwp.has_empty_segments:
+                        yield nwp.n
             else:
                 yield src.node
 
@@ -358,7 +354,7 @@ def collect_nodes_for_cp(
 
     # Collect all sources to process
     for node_group in node_groups:
-        listing: Listing | None = node_group.listing
+        listing: SavedListing | None = node_group.listing
         valid_sources: list[DataSource] = []
         for dsrc in node_group.sources:
             if dsrc.is_single_object():
@@ -430,7 +426,7 @@ def instantiate_node_groups(
     for node_group in node_groups:
         if not node_group.sources:
             continue
-        listing: Listing | None = node_group.listing
+        listing: SavedListing | None = node_group.listing
         source_path: str = node_group.source_path
 
         copy_dir_contents = always_copy_dir_contents or source_path.endswith("/")
@@ -529,11 +525,11 @@ class Catalog:
         self.in_memory = in_memory
         self._owns_connections = True  # False for copies, prevents double-close
 
-    @cached_property
+    @property
     def session(self):
         from datachain.query.session import Session
 
-        return Session.get(catalog=self)
+        return Session.get(catalog=self)._with_catalog(self)
 
     def get_init_params(self) -> dict[str, Any]:
         return {
@@ -575,11 +571,15 @@ class Catalog:
     def generate_query_dataset_name(cls) -> str:
         return f"{QUERY_DATASET_PREFIX}_{uuid4().hex}"
 
-    def get_client(self, uri: str, **config: Any) -> Client:
+    def get_client(
+        self, uri: str, *, client_config: dict | None = None, **config: Any
+    ) -> Client:
         """
         Return the client corresponding to the given source `uri`.
         """
-        config = config or self.client_config
+        config = (
+            client_config if client_config is not None else config or self.client_config
+        )
         cls = Client.get_implementation(uri)
         return cls.from_source(StorageURI(uri), self.cache, **config)
 
@@ -588,27 +588,63 @@ class Catalog:
         source: str,
         update=False,
         client_config=None,
-        column="file",
         skip_indexing=False,
-    ) -> tuple["Listing | None", Client, str]:
-        from datachain import read_storage
-        from datachain.listing import Listing
-
-        read_storage(source, session=self.session, update=update, column=column).exec()
-
-        list_ds_name, list_uri, list_path, _ = get_listing(
-            source, self.session, update=update
+        *,
+        _prepared_listings: set[str] | None = None,
+    ) -> tuple["SavedListing | None", Client, str]:
+        from datachain.client.local import FileClient
+        from datachain.lib.dc.storage_pattern import (
+            normalize_storage_uri,
+            split_uri_pattern,
         )
+        from datachain.lib.listing import (
+            ensure_listing,
+            listing_uri_from_name,
+            write_listing,
+        )
+        from datachain.lib.storage_config import client_configs, session_for
+        from datachain.listing import SavedListing
+
+        source = normalize_storage_uri(source)
+        is_local = issubclass(Client.get_implementation(source), FileClient)
+        client_config = self.client_config if client_config is None else client_config
+        session_config, config = client_configs(
+            [source], None, anon=None, client_config=client_config, versions=True
+        )
+        session = session_for(self.session, session_config, in_memory=False)
+        source_uri, pattern = split_uri_pattern(source)
+        prepared = set() if _prepared_listings is None else _prepared_listings
+        list_ds_name, list_uri, list_path, _ = get_listing(
+            source_uri, session, update=update
+        )
+        if list_ds_name is not None:
+            ensure_listing(
+                list_ds_name,
+                session.catalog,
+                lambda: write_listing(
+                    listing_uri_from_name(list_ds_name),
+                    list_ds_name,
+                    session,
+                    config,
+                ),
+                update=update and list_ds_name not in prepared,
+            )
+            prepared.add(list_ds_name)
+        if pattern is not None:
+            if is_local:
+                list_path = posixpath.join(list_path, pattern)
+            else:
+                _, list_path = Client.parse_url(source)
+
         lst = None
-        client = Client.get_client(list_uri, self.cache, **self.client_config)
+        client = Client.get_client(list_uri, self.cache, **config)
 
         if list_ds_name:
-            lst = Listing(
+            lst = SavedListing(
                 self.metastore.clone(),
                 self.warehouse.clone(),
                 client,
                 dataset_name=list_ds_name,
-                column=column,
             )
 
         return lst, client, list_path
@@ -621,15 +657,19 @@ class Catalog:
         skip_indexing=False,
         client_config=None,
         only_index=False,
+        *,
+        _prepared_listings: set[str] | None = None,
     ) -> Iterator[list["DataSource"] | None]:
-        enlisted_sources: list[tuple[Listing | None, Client, str]] = []
+        enlisted_sources: list[tuple[SavedListing | None, Client, str]] = []
+        _prepared_listings = set() if _prepared_listings is None else _prepared_listings
         try:
             for src in sources:  # Opt: parallel
                 listing, client, file_path = self.enlist_source(
                     src,
                     update,
-                    client_config=client_config or self.client_config,
+                    client_config=client_config,
                     skip_indexing=skip_indexing,
+                    _prepared_listings=_prepared_listings,
                 )
                 enlisted_sources.append((listing, client, file_path))
 
@@ -664,7 +704,8 @@ class Catalog:
         no_glob: bool = False,
         client_config=None,
     ) -> list[NodeGroup]:
-        from datachain.listing import Listing
+        from datachain.lib.storage_config import session_for
+        from datachain.listing import SavedListing
         from datachain.query.dataset import DatasetQuery
 
         def _row_to_node(d: dict[str, Any]) -> Node:
@@ -672,9 +713,11 @@ class Catalog:
             return Node.from_row(d)
 
         enlisted_sources: list[tuple[bool, bool, Any]] = []
-        client_config = client_config or self.client_config
+        _prepared_listings: set[str] = set()
+        client_config = self.client_config if client_config is None else client_config
+        session = session_for(self.session, client_config, in_memory=False)
         for src in sources:  # Opt: parallel
-            listing: Listing | None
+            listing: SavedListing | None
             if src.startswith("ds://"):
                 (ds_namespace, ds_project, ds_name, ds_version) = parse_dataset_uri(src)
                 dataset = self.get_dataset(
@@ -692,11 +735,11 @@ class Catalog:
                 )
                 indexed_sources = []
                 for source in dataset_sources:
-                    client = self.get_client(source, **client_config)
+                    client = self.get_client(source, client_config=client_config)
                     uri = client.uri
-                    dataset_name, _, _, _ = get_listing(uri, self.session)
+                    dataset_name, _, _, _ = get_listing(uri, session)
                     assert dataset_name
-                    listing = Listing(
+                    listing = SavedListing(
                         self.metastore.clone(),
                         self.warehouse.clone(),
                         client,
@@ -723,7 +766,10 @@ class Catalog:
                 enlisted_sources.append((False, True, indexed_sources))
             else:
                 listing, client, source_path = self.enlist_source(
-                    src, update, client_config=client_config
+                    src,
+                    update,
+                    client_config=client_config,
+                    _prepared_listings=_prepared_listings,
                 )
                 enlisted_sources.append((False, False, (listing, client, source_path)))
 
@@ -1198,7 +1244,8 @@ class Catalog:
         table. Dropping the rows table can be safely retried.
 
         With ``keep_metadata=True`` the status is then flipped to REMOVED
-        so the version row stays as a tombstone and GC ignores it.
+        so the version row stays as a tombstone, which GC leaves alone for
+        as long as ``pending_metadata_drop`` stays False.
 
         With ``keep_metadata=False`` the version row is deleted. This
         path also works when the version is already REMOVED: the guarded
@@ -1215,7 +1262,7 @@ class Catalog:
             version,
             expected_status=expected_status,
             status=DatasetStatus.REMOVING,
-            removed_at=v.removed_at or datetime.now(timezone.utc),
+            removed_at=v.removed_at or datetime.now(UTC),
             pending_metadata_drop=not keep_metadata,
         )
         if claimed is None:
@@ -1248,12 +1295,14 @@ class Catalog:
         """Bulk remove versions (GC, session cleanup, CLI cleanup, job cleanup,
         user-facing bulk delete).
 
-        When ``keep_metadata`` is None, infers per version:
-        - REMOVING + ``pending_metadata_drop=True``: finish the interrupted
-          wipe (retries rows-table drop, then deletes the version row).
-        - REMOVING + ``pending_metadata_drop=False``: finish the interrupted
-          keep-metadata remove (retries rows-table drop, flips status to
-          REMOVED).
+        A tombstone carrying ``pending_metadata_drop=True`` is wiped whatever
+        the caller asked for, because the flag already promised its version
+        row: REMOVING is an interrupted wipe, REMOVED is a tombstone re-queued
+        for one. Both retry the rows-table drop, then delete the version row.
+
+        Otherwise, when ``keep_metadata`` is None, infers per version:
+        - REMOVING: finish the interrupted keep-metadata remove (retries
+          rows-table drop, flips status to REMOVED).
         - REMOVED: finalized tombstone, nothing to do.
         - Anything else: wipe (incomplete/failed/stale versions to clean).
 
@@ -1266,13 +1315,15 @@ class Catalog:
         for dataset, version in pairs:
             try:
                 v = dataset.get_version(version)
-                if v.status == DatasetStatus.REMOVED:
+                if v.pending_metadata_drop and v.status in (
+                    DatasetStatus.REMOVING,
+                    DatasetStatus.REMOVED,
+                ):
+                    keep = False
+                elif v.status == DatasetStatus.REMOVED:
                     continue
-                if v.status == DatasetStatus.REMOVING:
-                    if v.pending_metadata_drop:
-                        keep = False
-                    elif keep_metadata is None:
-                        # Tombstone-in-progress: finish the tombstone.
+                elif v.status == DatasetStatus.REMOVING:
+                    if keep_metadata is None:
                         keep = True
                     else:
                         keep = keep_metadata
@@ -1336,6 +1387,8 @@ class Catalog:
         - Have status REMOVING with ``pending_metadata_drop=False``
           (interrupted keep-metadata remove: GC drops the rows table and
           flips status to REMOVED)
+        - Have status REMOVED with ``pending_metadata_drop=True``
+          (re-queued tombstone: GC deletes the row)
         - Are session_* datasets from finished jobs (orphaned intermediates)
 
         Returns:
@@ -1356,19 +1409,22 @@ class Catalog:
             raise ValueError("Sources needs to be non empty list")
 
         from datachain import read_dataset, read_storage
+        from datachain.lib.storage_config import session_for
 
+        client_config = self.client_config if client_config is None else client_config
+        session = session_for(self.session, client_config, in_memory=False)
         project = project or self.metastore.default_project
 
         chains = []
         for source in sources:
             if source.startswith(DATASET_PREFIX):
-                dc = read_dataset(source[len(DATASET_PREFIX) :], session=self.session)
+                dc = read_dataset(source[len(DATASET_PREFIX) :], session=session)
             else:
                 dc = read_storage(
                     source,
-                    session=self.session,
+                    session=session,
                     recursive=recursive,
-                    client_config=client_config or self.client_config,
+                    client_config=client_config,
                 )
 
             chains.append(dc)
@@ -1565,23 +1621,16 @@ class Catalog:
         if not dependency_nodes:
             return []
 
-        dependency_map, children_map = build_dependency_hierarchy(dependency_nodes)
+        dependency_map, children_map = build_dependency_hierarchy(
+            dependency_nodes, indirect=indirect
+        )
 
         root_key = (dataset_id, version_id)
         if root_key not in children_map:
             return []
 
         root_dependency_ids = children_map[root_key]
-        root_dependencies = [dependency_map[dep_id] for dep_id in root_dependency_ids]
-
-        if indirect:
-            for dependency in root_dependencies:
-                if dependency is not None:
-                    populate_nested_dependencies(
-                        dependency, dependency_nodes, dependency_map, children_map
-                    )
-
-        return root_dependencies
+        return [dependency_map[dep_id] for dep_id in root_dependency_ids]
 
     def get_dataset_dependencies(
         self,
@@ -1696,22 +1745,22 @@ class Catalog:
         Returns list of ListingInfo objects which are representing specific
         storage listing datasets
         """
-        from datachain.lib.listing import LISTING_PREFIX
+        from datachain.lib.listing import listing_name_prefixes
         from datachain.lib.listing_info import ListingInfo
 
-        if prefix and not prefix.startswith(LISTING_PREFIX):
-            prefix = LISTING_PREFIX + prefix
-
-        listing_datasets_versions = self.list_datasets_versions(
-            prefix=prefix,
-            include_listing=True,
-            with_job=False,
-            project=self.metastore.listing_project,
-        )
+        prefixes: list[str | None] = [None]
+        if prefix:
+            prefixes = list(listing_name_prefixes(prefix))
 
         return [
             ListingInfo.from_models(d, v, j)
-            for d, v, j in listing_datasets_versions
+            for name_prefix in prefixes
+            for d, v, j in self.list_datasets_versions(
+                prefix=name_prefix,
+                include_listing=True,
+                with_job=False,
+                project=self.metastore.listing_project,
+            )
             if is_listing_dataset(d.name)
         ]
 
@@ -1747,10 +1796,10 @@ class Catalog:
         content_disposition: str | None = None,
         **kwargs,
     ) -> str:
-        client_config = client_config or self.client_config
+        client_config = self.client_config if client_config is None else client_config
         if client_config.get("anon"):
             content_disposition = None
-        client = Client.get_client(source, self.cache, **client_config)
+        client = self.get_client(source, client_config=client_config)
         return client.url(
             path,
             version_id=version_id,
@@ -1874,12 +1923,14 @@ class Catalog:
         skip_indexing=False,
         *,
         client_config=None,
+        _prepared_listings: set[str] | None = None,
     ) -> Iterator[tuple[DataSource, Iterable[tuple]]]:
         with self.enlist_sources(
             sources,
             update,
             skip_indexing=skip_indexing,
-            client_config=client_config or self.client_config,
+            client_config=client_config,
+            _prepared_listings=_prepared_listings,
         ) as data_sources:
             if data_sources is None:
                 return
@@ -2231,7 +2282,7 @@ class Catalog:
             with self.enlist_sources(
                 sources,
                 update,
-                client_config=client_config or self.client_config,
+                client_config=client_config,
             ):
                 pass
 
@@ -2259,7 +2310,6 @@ class Catalog:
         This function copies files from cloud sources to local destination directory
         If cloud source is not indexed, or has expired index, it runs indexing
         """
-        client_config = client_config or self.client_config
         node_groups = self.enlist_sources_grouped(
             sources,
             update,
@@ -2314,7 +2364,7 @@ class Catalog:
         with self.enlist_sources(
             sources,
             update,
-            client_config=client_config or self.client_config,
+            client_config=client_config,
         ) as matched_sources:
             if matched_sources is None:
                 return
@@ -2349,7 +2399,7 @@ class Catalog:
         with self.enlist_sources(
             sources,
             update,
-            client_config=client_config or self.client_config,
+            client_config=client_config,
         ) as matched_sources:
             if matched_sources is None:
                 return
@@ -2393,7 +2443,7 @@ class Catalog:
         with self.enlist_sources(
             sources,
             update,
-            client_config=client_config or self.client_config,
+            client_config=client_config,
             only_index=True,
         ):
             pass
@@ -2413,7 +2463,7 @@ class Catalog:
         if ttl_seconds is None:
             ttl_seconds = CHECKPOINTS_TTL
 
-        ttl_threshold = datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds)
+        ttl_threshold = datetime.now(UTC) - timedelta(seconds=ttl_seconds)
 
         # Expire + collect everything in one metastore call
         checkpoints, inactive_group_ids = self.metastore.expire_checkpoints(

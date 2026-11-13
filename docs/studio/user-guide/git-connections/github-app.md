@@ -9,7 +9,7 @@ The DataChain Studio GitHub App provides secure, fine-grained access to your Git
 - **Repository Access**: Connect public and private repositories
 - **Webhook Integration**: Automatic job triggering on code changes
 - **Security**: OAuth-based authentication with granular permissions
-- **Team Collaboration**: Shared access across team members
+- **Team access**: Shared access across team members
 
 ## Installation
 
@@ -124,6 +124,6 @@ Regularly audit GitHub App permissions:
 ## Next Steps
 
 - Learn about [custom GitLab server](custom-gitlab-server.md) integration
-- Explore [team collaboration](../team-collaboration.md) features
+- Explore [teams](../teams/index.md) features
 - Set up [automated workflows](../../../guide/processing.md)
 - Configure [webhooks](../../webhooks.md) for notifications

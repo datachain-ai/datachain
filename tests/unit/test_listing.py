@@ -1,23 +1,39 @@
 import posixpath
+import random
+import sqlite3
+from contextlib import closing
+from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import true
 
 import datachain as dc
 from datachain.catalog.catalog import DataSource
 from datachain.client import Client
 from datachain.fs.utils import path_to_fsspec_uri
+from datachain.lib.dc.storage_pattern import (
+    convert_globstar_to_glob,
+    path_filter,
+    should_use_recursion,
+    split_uri_pattern,
+)
 from datachain.lib.file import File
 from datachain.lib.listing import (
     LISTING_PREFIX,
+    PathFilter,
     _desanitize_ds_name,
     _sanitize_ds_name,
     get_listing,
+    glob_match,
     is_listing_dataset,
     listing_uri_from_name,
     parse_listing_uri,
+    select_paths,
 )
-from datachain.listing import Listing
-from datachain.node import DirType
+from datachain.listing import SavedListing
+from datachain.node import DirType, Node
+from datachain.sql.functions import path as pathfunc
+from datachain.utils import uses_glob
 from tests.utils import skip_if_not_sqlite
 
 TREE = {
@@ -25,7 +41,13 @@ TREE = {
         "d2": {None: ["file1.csv", "file2.csv"]},
         None: ["dataset.csv"],
     },
-    "dir2": {None: ["diagram.png"]},
+    "dir2": {
+        "spécial": {
+            "dir_%1": {None: ["a.csv", "b.csv"]},
+            "dirXX2": {None: ["d.csv"]},
+        },
+        None: ["diagram.png"],
+    },
     None: ["users.csv"],
 }
 
@@ -53,12 +75,11 @@ def listing(test_session):
         .save(dataset_name, listing=True)
     )
 
-    with Listing(
+    with SavedListing(
         catalog.metastore.clone(),
         catalog.warehouse.clone(),
         Client.get_client(fake_uri, catalog.cache, **catalog.client_config),
         dataset_name=dataset_name,
-        column="file",
     ) as listing_obj:
         yield listing_obj
 
@@ -95,6 +116,62 @@ def test_get_listing_returns_exact_math_on_update(test_session):
     assert dataset_name_dir1 == f"{LISTING_PREFIX}{fake_uri}/dir1/"
     # On update it is always false (there was no reason to complicate it for now)
     assert not exists
+
+
+@pytest.mark.parametrize(
+    "subdir,expected_list_path",
+    [
+        ("plain", "plain/"),
+        # sanitized in the dataset name as "some_x2edir"; must come back decoded
+        ("some.dir", "some.dir/"),
+        ("nested/some.dir", "nested/some.dir/"),
+        # a dir literally named like an encoding token: pre-escaped to
+        # "v_x_x2e0" in the name, so decoding must not turn it into "v.0"
+        ("v_x2e0", "v_x2e0/"),
+    ],
+)
+def test_get_listing_reuse_returns_decoded_subpath(
+    test_session, subdir, expected_list_path
+):
+    catalog = test_session.catalog
+    fake_uri = path_to_fsspec_uri("/reuse")
+    broad_name, _, _, _ = get_listing(fake_uri, test_session)
+    (
+        dc.read_values(file=[File(path=f"{subdir}/a.csv")])
+        .settings(
+            namespace=catalog.metastore.system_namespace_name,
+            project=catalog.metastore.listing_project_name,
+        )
+        .save(broad_name, listing=True)
+    )
+
+    name, _, list_path, reused = get_listing(f"{fake_uri}/{subdir}", test_session)
+
+    assert reused
+    assert name == broad_name
+    assert list_path == expected_list_path
+
+
+def test_get_listing_reuses_broader_listing_for_glob_base(test_session):
+    catalog = test_session.catalog
+    fake_uri = path_to_fsspec_uri("/globbase")
+    broad_name, _, _, _ = get_listing(fake_uri, test_session)
+    (
+        dc.read_values(file=[File(path="media/music/song.mp3")])
+        .settings(
+            namespace=catalog.metastore.system_namespace_name,
+            project=catalog.metastore.listing_project_name,
+        )
+        .save(broad_name, listing=True)
+    )
+
+    base, pattern = split_uri_pattern(f"{fake_uri}/media/mus*/*.mp3")
+    name, _, list_path, reused = get_listing(base, test_session)
+
+    assert pattern == "mus*/*.mp3"
+    assert reused
+    assert name == broad_name
+    assert list_path == "media/"
 
 
 def test_resolve_path_in_root(listing):
@@ -177,6 +254,16 @@ def test_list_dir(listing):
     assert {n[0] for n in names} == {"dir1/d2", "dir1/dataset.csv"}
 
 
+def test_resolve_path_with_wildcard_chars_is_literal(listing):
+    node = listing.resolve_path("dir2/spécial/dir_%1")
+    assert node.dir_type == DirType.DIR
+
+    # must not resolve via the dirXX2/ sibling, which `dir_%2` matches as a
+    # LIKE pattern
+    with pytest.raises(FileNotFoundError):
+        listing.resolve_path("dir2/spécial/dir_%2")
+
+
 def test_list_file(listing):
     file = listing.resolve_path("dir1/dataset.csv")
     src = DataSource(listing, listing.client, file)
@@ -197,6 +284,87 @@ def test_subtree(listing):
 def test_subdirs(listing):
     dirs = list(listing.get_dirs_by_parent_path(""))
     _match_filenames(dirs, ["dir1", "dir2"])
+
+
+@pytest.mark.parametrize("column", ["file", "document"])
+@pytest.mark.parametrize(
+    "location",
+    [None, {}, [], {"vtype": "tar", "offset": 128}, [{"vtype": "tar", "offset": 128}]],
+)
+def test_saved_nodes_preserve_file_metadata(test_session, column, location):
+    file = File(
+        source="s3://bucket",
+        path="folder/a.txt",
+        size=123,
+        version="version-1",
+        etag="etag-1",
+        last_modified=datetime(2026, 10, 23, 1, 2, 3, tzinfo=UTC),
+        location=location,
+    )
+    chain = dc.read_values(session=test_session, **{column: [file]}).save("nodes")
+    catalog = test_session.catalog
+    dataset = chain.dataset
+    rows = catalog.warehouse.dataset_rows(
+        dataset, dataset.latest_version, column=column
+    )
+    expected_identity = chain.settings(sys=True).to_list("sys.id", "sys.rand")[0]
+    nodes = [
+        catalog.warehouse.get_node_by_path(rows, file.path),
+        *catalog.warehouse.expand_path(rows, "folder/*.txt"),
+        *catalog.warehouse.expand_path(rows, "*/a.txt"),
+        *(n.n for n in catalog.warehouse.get_subtree_files(rows, Node.root())),
+    ]
+
+    assert len(nodes) == 4
+    for node in nodes:
+        assert node.to_file() == file
+        assert node.location == location
+        assert (node.sys__id, node.sys__rand) == expected_identity
+        assert node.dir_type == DirType.FILE
+
+
+@pytest.mark.parametrize(
+    "pattern,path,dir_type",
+    [
+        ("dir*/d2", "dir1/d2", DirType.DIR),
+        ("dir*/d2/", "dir1/d2", DirType.DIR),
+        ("dir*/d2/file1.csv", "dir1/d2/file1.csv", DirType.FILE),
+        ("dir*/diagram.png", "dir2/diagram.png", DirType.FILE),
+    ],
+)
+def test_exact_path_after_glob(listing, pattern, path, dir_type):
+    nodes = listing.expand_path(pattern)
+
+    assert len(nodes) == 1
+    assert nodes[0].path == path
+    assert nodes[0].dir_type == dir_type
+    assert nodes[0].is_dir == (dir_type == DirType.DIR)
+
+
+@pytest.mark.parametrize(
+    "pattern", ["dir*/missing.txt", "dir*/missing/a.txt", "missing.txt"]
+)
+def test_missing_exact_path(listing, pattern):
+    with pytest.raises(FileNotFoundError, match="Unable to resolve path"):
+        listing.warehouse.expand_path(listing.dataset_rows, pattern)
+
+
+def test_exact_path_after_glob_matches_multiple_directories(test_session):
+    chain = dc.read_values(
+        session=test_session,
+        file=[File(path=path) for path in ("one/a.txt", "two/a.txt", "other/b.txt")],
+    ).save("nodes")
+    dataset = chain.dataset
+    warehouse = test_session.catalog.warehouse
+    rows = warehouse.dataset_rows(dataset, dataset.latest_version)
+
+    nodes = warehouse.expand_path(rows, "*/a.txt")
+
+    assert {node.path for node in nodes} == {"one/a.txt", "two/a.txt"}
+
+
+def test_exact_path_after_glob_with_no_parent_matches(listing):
+    assert listing.expand_path("missing*/a.txt") == []
 
 
 @pytest.mark.parametrize(
@@ -223,6 +391,19 @@ def test_listing_uri_from_name():
     )
     with pytest.raises(ValueError):
         listing_uri_from_name("s3://my-bucket")
+
+
+def test_listing_of_current_objects_has_its_own_name():
+    full, lst_uri, path = parse_listing_uri("s3://bucket/v1.0/dir")
+    current, cur_uri, cur_path = parse_listing_uri("s3://bucket/v1.0/dir", False)
+
+    assert current == "lst__current__s3://bucket/v1_x2e0/dir/"
+    assert (cur_uri, cur_path) == (lst_uri, path)
+    assert is_listing_dataset(current)
+    assert listing_uri_from_name(current) == listing_uri_from_name(full)
+    # neither listing is a prefix of the other, so one is never reused for the other
+    assert not current.startswith(full)
+    assert not full.startswith(current)
 
 
 def _ds_name(uri: str) -> str:
@@ -319,3 +500,153 @@ def test_desanitize_old_xhh_still_works():
     # Simulate an old stored name: s3://my.bucket/ -> lst__s3://my_x2ebucket/
     old_encoded = "lst__s3://my_x2ebucket/"
     assert _desanitize_ds_name(old_encoded) == "lst__s3://my.bucket/"
+
+
+_GLOB_PATTERNS = [
+    "*",
+    "a*",
+    "*b",
+    "a?c",
+    "?",
+    "[abc]",
+    "[^abc]",
+    "[a-c]x",
+    "[]a]",
+    "[^]a]",
+    "[a-]",
+    "[-a]",
+    "a/*",
+    "*/b",
+    "a.b",
+    "a\\b",
+    "[",
+    "a[b",
+    "[!a]",
+    "**",
+    "a*b*c",
+    "[z-a]",
+    "[a-c-e]",
+    "[]-a]",
+    "[^a-]",
+    "*.[ch]",
+    "x?y*",
+    "a+b",
+    "(a)",
+    "a$",
+    "^a",
+]
+_GLOB_PATHS = [
+    "",
+    "a",
+    "b",
+    "abc",
+    "ab",
+    "a/b",
+    "a/b/c",
+    "x/a.b",
+    "]",
+    "-",
+    "!",
+    "a-",
+    "a\\b",
+    "aXc",
+    "ac",
+    "a[b",
+    "c",
+    "z",
+    "a.c",
+    "a.h",
+    "xyz",
+    "a+b",
+    "(a)",
+    "a$",
+    "^a",
+    "\n",
+    "a\nb",
+]
+
+
+@pytest.mark.parametrize("pattern", _GLOB_PATTERNS)
+def test_glob_match_is_sqlite_glob(pattern):
+    with closing(sqlite3.connect(":memory:")) as conn:
+        for path in _GLOB_PATHS:
+            (expected,) = conn.execute("SELECT ? GLOB ?", (path, pattern)).fetchone()
+            assert glob_match(path, pattern) == bool(expected), (path, pattern)
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [
+        PathFilter(),
+        PathFilter.ls("dir/", True),
+        PathFilter.ls("dir/", False),
+        PathFilter.ls("", False),
+        PathFilter.ls("d*/x", True),
+        PathFilter.ls("dir/", True).glob("dir/*.txt"),
+        PathFilter.ls("", False).glob("a?"),
+    ],
+)
+def test_path_filter_python_matches_sql(test_session, paths):
+    names = ["a", "ab", "x.txt", "dir", "dir/x.txt", "dir/a/x.txt", "dirx/x", "d/x"]
+    chain = dc.read_values(path=names, session=test_session)
+    for condition in paths.sql(dc.C("path")):
+        chain = chain.filter(condition)
+
+    assert sorted(chain.to_values("path")) == sorted(filter(paths.matcher(), names))
+
+
+def test_glob_match_is_sqlite_glob_on_random_patterns():
+    rng = random.Random(0)  # noqa: S311
+    with closing(sqlite3.connect(":memory:")) as conn:
+        for _ in range(3000):
+            pattern = "".join(rng.choices("ab-]^[*?/!", k=rng.randint(0, 9)))
+            path = "".join(rng.choices("ab-]^[/!", k=rng.randint(0, 9)))
+            (expected,) = conn.execute("SELECT ? GLOB ?", (path, pattern)).fetchone()
+            assert glob_match(path, pattern) == bool(expected), (path, pattern)
+
+
+def test_glob_match_is_linear_in_stars():
+    path = "a" * 1000 + ".txt"
+
+    assert not glob_match(path, "*a" * 30 + "b.txt")
+    assert glob_match(path, "*a" * 30 + "*.txt")
+
+
+@pytest.mark.parametrize(
+    "list_path,pattern,recursive",
+    [
+        ("dir/", None, True),
+        ("dir/", None, False),
+        ("", None, True),
+        ("d*/x", None, True),
+        ("dir/", "*.txt", True),
+        ("dir/", "**/*.txt", True),
+        ("", "a?", False),
+    ],
+)
+def test_select_paths_keeps_filter_steps(test_session, list_path, pattern, recursive):
+    chain = dc.read_values(file=[File(path="dir/x.txt")], session=test_session)
+    path = dc.C("file.path")
+    rec = should_use_recursion(pattern, recursive) if pattern else recursive
+    expected = chain.filter(dc.C("file.is_latest") == true())
+    if not rec:
+        expected = expected.filter(
+            pathfunc.parent(path) == list_path.lstrip("/").rstrip("/*")
+        )
+    elif list_path and list_path != "/":
+        expected = expected.filter(
+            path.glob(list_path)
+            if uses_glob(list_path)
+            else (path == list_path) | path.glob(list_path.rstrip("/") + "/*")
+        )
+    if pattern:
+        glob = convert_globstar_to_glob(pattern)
+        if subpath := list_path.strip("/"):
+            glob = f"{subpath}/{glob}"
+        expected = expected.filter(path.glob(glob))
+
+    actual = select_paths(chain, path_filter(list_path, pattern, recursive))
+
+    assert [s.hash() for s in actual._query.steps] == [
+        s.hash() for s in expected._query.steps
+    ]

@@ -7,7 +7,12 @@ from typing import Annotated, Literal, Union, get_args, get_origin
 from pydantic import BaseModel
 from typing_extensions import Literal as LiteralEx
 
-from datachain.lib.data_model import NULLABLE_SCALARS, unwrap_optional
+from datachain.lib.data_model import (
+    NULLABLE_SCALARS,
+    is_mapping_annotation,
+    is_sequence_annotation,
+    unwrap_optional,
+)
 from datachain.lib.model_store import ModelStore
 from datachain.sql.types import (
     JSON,
@@ -53,14 +58,14 @@ def python_to_sql(typ):  # noqa: PLR0911
         return String
 
     args = get_args(typ)
-    if inspect.isclass(orig) and (issubclass(list, orig) or issubclass(tuple, orig)):
+    if is_sequence_annotation(typ):
         return _list_to_array(typ, args)
 
     if orig is Annotated:
         # Ignoring annotations
         return python_to_sql(args[0])
 
-    if inspect.isclass(orig) and issubclass(dict, orig):
+    if is_mapping_annotation(typ):
         return JSON
 
     if orig in (Union, UnionType):
@@ -83,6 +88,13 @@ def _list_to_array(typ, args):
     args0 = args[0]
     if ModelStore.is_pydantic(args0):
         return Array(JSON())
+
+    # a multi-arm Union element has no uniform Array element type -> store as JSON
+    # (Optional[scalar], one non-None arm, stays a nullable Array)
+    if get_origin(args0) in (Union, UnionType) and (
+        len([a for a in get_args(args0) if a is not type(None)]) > 1
+    ):
+        return JSON()
 
     list_type = list_of_args_to_type(args)
     # Optional[scalar] elements map to a nullable Array element so None survives

@@ -27,17 +27,27 @@ DataChain provides several categories of functions for different types of operat
 ## Usage
 
 ```python
-from datachain.func import aggregate, array, conditional, numeric, path, random, string, window
+from datachain.func import (
+    aggregate,
+    array,
+    conditional,
+    numeric,
+    path,
+    random,
+    string,
+    window,
+)
 
 # Access functions through their module namespaces
 dc.mutate(
     text_length=string.length("text_column"),
     contains_item=array.contains("array_column", "value"),
-    file_extension=path.file_ext("file_path")
+    file_extension=path.file_ext("file_path"),
 )
 
 # Some commonly used functions are also available directly
 from datachain.func import sum, count, length, ifelse, cast
+
 dc.mutate(total=sum("amount"))
 
 # Cast expressions use normal Python types
