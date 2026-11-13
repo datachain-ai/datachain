@@ -3011,7 +3011,7 @@ class XLabel(DataModel):
     label: str
 
 
-def test_read_parquet_required_field_a_file_lacks_after_rows_without_its_model_reads(
+def test_read_parquet_after_inactive_arms_lack_a_required_field_reads_the_rows(
     tmp_dir, test_session
 ):
     path = tmp_dir / "rows.parquet"
@@ -3033,7 +3033,7 @@ class OnlyDefaultX(DataModel):
     x: int | None = 5
 
 
-def test_read_parquet_model_its_tag_holds_after_a_file_lacks_its_fields_takes_defaults(
+def test_read_parquet_after_a_present_model_lacks_its_fields_takes_their_defaults(
     tmp_dir, test_session
 ):
     path = tmp_dir / "y.parquet"

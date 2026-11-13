@@ -656,8 +656,8 @@ def _in_signals(column: str, signals: Sequence[str]) -> bool:
 
 
 def _picked_schema(schemas: list[pa.Schema], signals: Sequence[str]) -> pa.Schema:
-    """Unify the files' schemas over the picked signals. Only these need compatible
-    types across files, and a file that lacks one reads it as null."""
+    """Unify the files' schemas over the picked signals, as only these need
+    compatible types across files."""
     picked = [
         pa.schema([f for f in s if _in_signals(f.name, signals)], metadata=s.metadata)
         for s in schemas
@@ -673,10 +673,13 @@ def _parent_tags(
 
     A column, or a model with its own tag, is null where its parent is absent.
     """
+    names = set(columns)
     parents = {}
     for path in paths:
-        own = {c for c in columns if c == path or c.startswith(f"{path}.")}
-        if not own or path in own or f"{path}.{TYPE_TAG_FIELD}" in own:
+        if path in names or f"{path}.{TYPE_TAG_FIELD}" in names:
+            continue
+        # A path the file lacks is left out of the row, so no tag decides it.
+        if not any(c.startswith(f"{path}.") for c in names):
             continue
         if (found := signal_schema.tagged_parent(path)) is not None:
             parent, layout, arm = found
