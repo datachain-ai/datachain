@@ -75,9 +75,6 @@ def unflatten_to_json_pos(
             value, pos = read_union(layout, row, pos, read_arm)
         elif kind.is_model:
             value, pos = unflatten_to_json_pos(kind.inner, row, pos, build_model)
-            # A model with none of its columns in the data is left out too.
-            if not value and kind.inner.model_fields:
-                value = ABSENT
         else:
             value, pos = row[pos], pos + 1
         if value is not ABSENT:

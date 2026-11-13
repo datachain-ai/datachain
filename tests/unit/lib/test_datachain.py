@@ -42,6 +42,7 @@ from datachain.lib.file import File
 from datachain.lib.hf import HFClassLabel
 from datachain.lib.listing import LISTING_PREFIX, parse_listing_uri
 from datachain.lib.listing_info import ListingInfo
+from datachain.lib.model_store import ModelStore
 from datachain.lib.settings import DEFAULT_PREFETCH
 from datachain.lib.signal_schema import (
     SignalResolvingError,
@@ -2930,10 +2931,7 @@ def test_read_parquet_columns_read_a_field_missing_from_a_file_as_its_default(
         else {"columns": ["id", "p.x"]}
     )
     chain = dc.read_parquet(uri, source=False, session=test_session, **kwargs)
-    # Without output, p reads only p.x. A file without p.x then has no p, unless
-    # p's own tag says it holds one.
-    default = 5 if with_output or optional else None
-    assert chain.order_by("id").to_values("p.x") == [1, default]
+    assert chain.order_by("id").to_values("p.x") == [1, 5]
 
 
 @pytest.mark.parametrize("names", [("1", "2"), ("2", "1")])
@@ -2947,32 +2945,29 @@ def test_read_parquet_output_field_a_file_lacks_takes_its_default_in_any_file_or
     assert chain.order_by("id").to_values("p.x") == [1, 5]
 
 
+@pytest.mark.parametrize("model", [Point, PointX])
 def test_read_parquet_output_field_a_file_lacks_with_no_default_raises(
-    tmp_dir, test_session
+    tmp_dir, test_session, model
 ):
     uri = _write_x_then_no_x(tmp_dir / "parts", test_session)
     chain = dc.read_parquet(
-        uri, output={"id": int, "p": Point}, source=False, session=test_session
+        uri, output={"id": int, "p": model}, source=False, session=test_session
     )
     with pytest.raises(ValidationError, match=r"p\.x\n  Field required"):
         chain.to_list()
 
 
-@pytest.fixture
-def point_then_only_y(tmp_dir, test_session):
+def test_read_parquet_field_a_file_lacks_after_its_model_is_rebuilt_reads_as_none(
+    tmp_dir, empty_model_store, test_session
+):
     path = tmp_dir / "parts"
     path.mkdir()
     for i, point in enumerate([Point(x=1, y=2), OnlyY(y=7)], 1):
         chain = dc.read_values(id=[i], p=[point], session=test_session)
         chain.to_parquet(path / f"{i}.parquet")
-    return path.as_uri()
-
-
-def test_read_parquet_field_a_file_lacks_after_its_model_is_rebuilt_reads_as_none(
-    point_then_only_y, empty_model_store, test_session
-):
     # Without the model's code, its fields are rebuilt with a default of None.
-    chain = dc.read_parquet(point_then_only_y, source=False, session=test_session)
+    ModelStore.store.clear()
+    chain = dc.read_parquet(path.as_uri(), source=False, session=test_session)
     assert chain.order_by("id").to_list("p.x", "p.y") == [(1, 2), (None, 7)]
 
 
@@ -3033,17 +3028,17 @@ class OnlyDefaultX(DataModel):
     x: int | None = 5
 
 
+@pytest.mark.parametrize("optional", [False, True])
 def test_read_parquet_after_a_present_model_lacks_its_fields_takes_their_defaults(
-    tmp_dir, test_session
+    tmp_dir, test_session, optional
 ):
     path = tmp_dir / "y.parquet"
-    output = {"p": OnlyY | None}
+    stored = OnlyY | None if optional else OnlyY
+    output = {"p": stored}
     dc.read_values(p=[OnlyY(y=7)], output=output, session=test_session).to_parquet(path)
+    read = OnlyDefaultX | None if optional else OnlyDefaultX
     chain = dc.read_parquet(
-        path.as_uri(),
-        output={"p": OnlyDefaultX | None},
-        source=False,
-        session=test_session,
+        path.as_uri(), output={"p": read}, source=False, session=test_session
     )
     assert chain.to_values("p.x") == [5]
 
@@ -3379,7 +3374,7 @@ def test_parse_tabular_columns_take_signals_from_the_first_file_by_path(
     chain = dc.read_values(
         file=files.to_values("file")[::-1], session=test_session
     ).parse_tabular(columns=["id", "p.x"], source=False)
-    assert chain.order_by("id").to_values("p.x") == [1, None]
+    assert chain.order_by("id").to_values("p.x") == [1, 5]
 
 
 @pytest.mark.parametrize("columns,read", [(None, 3), (["c", "a"], 2)])

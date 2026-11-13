@@ -646,12 +646,7 @@ def _union_arms(layout: "UnionLayout | None") -> str | None:
 
 
 def _in_signals(column: str, signals: Sequence[str]) -> bool:
-    """Whether a stored column belongs to one of the signals, e.g. "p.x" to "p",
-    or is the type tag of a parent of one, e.g. "p._type_tag" to "p.x"."""
-    if column.endswith(f".{TYPE_TAG_FIELD}"):
-        parent = column.removesuffix(TYPE_TAG_FIELD)
-        if any(s.startswith(parent) for s in signals):
-            return True
+    """Whether a stored column belongs to one of the signals, e.g. "p.x" to "p"."""
     return any(column == s or column.startswith(f"{s}.") for s in signals)
 
 
