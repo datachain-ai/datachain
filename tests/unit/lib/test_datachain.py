@@ -2657,6 +2657,19 @@ def test_read_parquet_columns_or_output_some_files_written_by_datachain(
         ).to_list()
 
 
+def test_read_parquet_after_a_part_loses_its_metadata_reads_it_by_column_names(
+    tmp_dir, test_session
+):
+    path = tmp_dir / "parts"
+    path.mkdir()
+    chain = dc.read_values(id=[1], p=[PointX(x=1)], session=test_session)
+    chain.to_parquet(path / "1.parquet")
+    table = pq.read_table(path / "1.parquet").replace_schema_metadata(None)
+    pq.write_table(table, path / "2.parquet")
+    chain = dc.read_parquet(path.as_uri(), source=False, session=test_session)
+    assert chain.to_list("id", "p.x") == [(1, 1), (1, 1)]
+
+
 def test_read_parquet_output_names_the_file_unlike_the_first(
     some_files_written_by_datachain, test_session
 ):
