@@ -73,7 +73,7 @@ class ModelStore:
     store: ClassVar[dict[str, dict[int, type[BaseModel]]]] = {}
 
     @staticmethod
-    def _base_name(model: type[BaseModel]) -> str:
+    def _base_name(model: type) -> str:
         # Some models are generated/restored with a versioned Python class name
         # (e.g. `MyType_v1`) so that multiple versions can coexist in-process without
         # `__name__` collisions.
@@ -81,7 +81,7 @@ class ModelStore:
         # `_modelstore_base_name` preserves the original/logical name (e.g. `MyType`)
         # after we alter the class name, so `ModelStore.get_name(model)` still
         # returns `"MyType@v{model._version}"` and schema serialization stays stable.
-        return getattr(model, "_modelstore_base_name", model.__name__)
+        return vars(model).get("_modelstore_base_name", model.__name__)
 
     @classmethod
     def get_version(cls, model: type[BaseModel]) -> int:

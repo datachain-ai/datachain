@@ -248,9 +248,16 @@ def test_reconstructed_builtin_keeps_its_origin_and_class_identity(name, mocker)
     assert restored(score=0.9).model_dump() == {"score": 0.9}
     loader.assert_called_once_with(module)
 
+    child_name = f"Custom{name}"
     child = create_model(
-        name, __base__=restored, __module__="user_models", extra=(int, ...)
+        child_name, __base__=restored, __module__="user_models", extra=(int, ...)
     )
+    assert ModelStore.get_name(child) == f"{child_name}@v1"
     assert ModelStore.get_module(child) == "user_models"
     child_schema = SignalSchema({"value": child}).serialize()
-    assert child_schema["_custom_types"][f"{name}@v1"]["bases"][0][1] == "user_models"
+    assert child_schema["value"] == f"{child_name}@v1"
+    assert (
+        child_schema["_custom_types"][f"{child_name}@v1"]["bases"][0][1]
+        == "user_models"
+    )
+    assert ModelStore.get(name, 1, module=module) is restored

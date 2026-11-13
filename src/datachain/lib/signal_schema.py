@@ -394,7 +394,7 @@ class SignalSchema:
             model_store_name = (
                 ModelStore.get_name(base) if issubclass(base, DataModel) else None
             )
-            base_name = getattr(base, "_modelstore_base_name", base.__name__)
+            base_name = ModelStore._base_name(base)
             bases.append((base_name, ModelStore.get_module(base), model_store_name))
         return bases
 

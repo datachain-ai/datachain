@@ -379,3 +379,37 @@ def test_offline_cli_main_does_not_load_catalog_or_studio(tmp_path):
         cwd=tmp_path,
         env={"DATACHAIN_ROOT_DIR": str(tmp_path / ".datachain")},
     )
+
+
+@pytest.mark.usefixtures("empty_model_store")
+def test_reconstructed_builtin_survives_pickling_in_a_fresh_process(tmp_path):
+    import cloudpickle
+    from pydantic import create_model
+
+    from datachain.lib.data_model import DataModel
+    from datachain.lib.signal_schema import SignalSchema
+
+    previous = create_model(
+        "DatasetInfo",
+        __base__=DataModel,
+        __module__="datachain.lib.dataset_info",
+        score=(float, ...),
+    )
+    saved = SignalSchema({"value": previous}).serialize()
+    ModelStore.store.clear()
+    restored = SignalSchema.deserialize(saved).values["value"]
+    payload = tmp_path / "model.pkl"
+    payload.write_bytes(cloudpickle.dumps((restored, saved)))
+    _check(
+        "import cloudpickle, sys\n"
+        "from datachain.lib.model_store import ModelStore\n"
+        "from datachain.lib.signal_schema import SignalSchema\n"
+        "with open(sys.argv[1], 'rb') as fd:\n"
+        "    model, saved = cloudpickle.load(fd)\n"
+        "ModelStore.store.clear()\n"
+        "ModelStore.register(model)\n"
+        "assert SignalSchema.deserialize(saved).values['value'] is model\n"
+        "assert model(score=0.9).model_dump() == {'score': 0.9}\n",
+        str(payload),
+        cwd=tmp_path,
+    )
