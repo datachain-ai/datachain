@@ -47,7 +47,7 @@ saved.to_csv("similar_results.csv")
 **What to save — the UDF rule:**
 
 - **Any chain that runs a UDF (`.map()`, `.batch_map()`, `.gen()`, `.agg()`)** must be saved with `.save("name")`. UDFs embody domain logic and produce structured output worth preserving.
-- **Final pipeline results.** Rankings, filtered cohorts, evaluation outputs, aggregations — always `.save("name")`.
+- **Final pipeline results.** Rankings, filtered cohorts, evaluation outputs, aggregations that later steps read — always `.save("name")`.
 - **Chains with no UDFs** (`read_storage` + `filter`/`mutate`/`select` only) may remain transient — cheap to recompute, easy to read from the code.
 
 **Prompt-trigger keywords for `.save()`.** When the user's task description contains "make available for downstream queries", "compute per-X aggregates", "build / extract / produce X", "store / persist / materialize / save", "process and save" — call `.save("name")` and print a short summary (name + row count or a few stats), not the full result set.
