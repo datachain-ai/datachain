@@ -6,7 +6,7 @@ from pydantic import create_model
 
 from datachain.lib.data_model import DataModel
 from datachain.lib.model_store import BUILTIN_MODELS, ModelStore
-from datachain.lib.signal_schema import SignalSchema
+from datachain.lib.signal_schema import SignalSchema, SignalSchemaWarning
 
 pytestmark = pytest.mark.usefixtures("empty_model_store")
 NAMES = ["BBox", "File", "Image", "Audio", "Video"]
@@ -38,8 +38,9 @@ def test_builtin_model_restores_after_a_colliding_user_model(name, restored_user
     user_saved = SignalSchema({"value": user_model}).serialize()
     if restored_user:
         ModelStore.store.clear()
-        SignalSchema.deserialize(user_saved)
+        user_model = SignalSchema.deserialize(user_saved).values["value"]
     assert SignalSchema.deserialize(saved).values["value"] is builtin
+    assert SignalSchema.deserialize(user_saved).values["value"] is user_model
 
 
 def test_reconstructed_user_model_is_reused():
@@ -212,7 +213,7 @@ def test_saved_user_model_with_legacy_metadata_reads_values(
     assert [value.model_dump() for value in values] == [{"score": 0.9}]
 
 
-@pytest.mark.parametrize("name", ["BBox", "File"])
+@pytest.mark.parametrize("name", ["BBox", "File", "WDSBasic", "ZarrSelection"])
 def test_legacy_builtin_model_reuses_the_registered_class(name):
     builtin = getattr(import_module(BUILTIN_MODELS[name]), name)
     ModelStore.register(builtin)
@@ -221,6 +222,81 @@ def test_legacy_builtin_model_reuses_the_registered_class(name):
         name: record["fields"] for name, record in saved["_custom_types"].items()
     }
     assert SignalSchema.deserialize(saved).values["value"] is builtin
+
+
+def test_legacy_builtin_with_different_field_types_reads_saved_values(test_session):
+    import datachain as dc
+    from datachain.model.bbox import BBox as BuiltinBBox
+
+    model = create_model(
+        "BBox", __base__=DataModel, title=(str, ...), coords=(list[float], ...)
+    )
+    coords = [1.5, 2.5, 3.5, 4.5]
+    dc.read_values(
+        value=[model(title="box", coords=coords)], session=test_session
+    ).save("legacy")
+    catalog = test_session.catalog
+    dataset = catalog.get_dataset("legacy", versions=None)
+    catalog.metastore.update_dataset_version(
+        dataset,
+        dataset.latest_version,
+        feature_schema={
+            "value": "BBox@v1",
+            "_custom_types": {"BBox@v1": {"title": "str", "coords": "list[float]"}},
+        },
+    )
+    ModelStore.store.clear()
+    ModelStore.register(BuiltinBBox)
+    value = dc.read_dataset("legacy", session=test_session).to_values("value")[0]
+    assert value.title == "box"
+    assert value.coords == coords
+
+
+def test_legacy_nested_builtin_with_different_field_type():
+    from datachain.lib.file import File
+    from datachain.lib.webdataset import WDSBasic
+
+    saved = SignalSchema({"value": WDSBasic}).serialize()
+    saved["_custom_types"] = {
+        name: record["fields"] for name, record in saved["_custom_types"].items()
+    }
+    saved["_custom_types"]["File@v1"]["size"] = "float"
+    ModelStore.register(WDSBasic)
+    restored = SignalSchema.deserialize(saved).values["value"]
+    value = restored(file={**File(path="image.jpg").model_dump(), "size": 1.5})
+    assert restored is not WDSBasic
+    assert value.file.size == 1.5
+
+
+def test_legacy_model_with_unavailable_field_type_warns_once():
+    from datachain.model.bbox import BBox
+
+    ModelStore.register(BBox)
+    saved = {
+        "value": "BBox@v1",
+        "_custom_types": {"BBox@v1": {"score": "MissingCustomType"}},
+    }
+    with pytest.warns(SignalSchemaWarning, match="Could not resolve type") as warnings:
+        restored = SignalSchema.deserialize(saved).values["value"]
+    assert len(warnings) == 1
+    assert restored(score=0.9).score == 0.9
+
+
+def test_alternating_legacy_models_preserve_their_field_types():
+    from datachain.model.bbox import BBox
+
+    ModelStore.register(BBox)
+    for field_type, values in [("float", [1.5, 2.5]), ("int", [1, 2])]:
+        saved = {
+            "value": "BBox@v1",
+            "_custom_types": {
+                "BBox@v1": {"title": "str", "coords": f"list[{field_type}]"}
+            },
+        }
+        restored = SignalSchema.deserialize(saved).values["value"]
+        value = restored(title="box", coords=values)
+        assert value.coords == values
+        assert [type(item) for item in value.coords] == [type(item) for item in values]
 
 
 @pytest.mark.parametrize("name", ["DatasetInfo", "HFAudio"])

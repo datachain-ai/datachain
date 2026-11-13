@@ -51,6 +51,7 @@ def _run(
         capture_output=True,
         text=True,
         check=False,
+        timeout=60,
         cwd=cwd,
         env={**os.environ, **env} if env is not None else None,
     )
@@ -125,6 +126,91 @@ def test_star_import_and_version_in_fresh_process():
         "print(datachain.__version__)\n"
     )
     assert out.strip()
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [
+        ("datachain:read_values", "datachain:func"),
+        ("datachain.lib.dc.utils", "datachain:func"),
+        ("datachain.query.dataset", "datachain:func"),
+        ("datachain:File", "datachain:func"),
+        ("datachain:DataModel", "datachain:func"),
+        ("datachain:read_values", "datachain.query:Session"),
+        ("datachain:File", "datachain:bucket_status"),
+        ("datachain.data_storage:AbstractMetastore", "datachain.query:Session"),
+        ("datachain.query.dataset", "datachain.query:Session"),
+        ("datachain:File", "datachain.sql"),
+    ],
+)
+def test_concurrent_first_imports(entries):
+    _check(
+        "import importlib, sys\n"
+        "import datachain\n"
+        "from concurrent.futures import ThreadPoolExecutor\n"
+        "from threading import Barrier\n"
+        "gate = Barrier(2)\n"
+        "def first_use(target):\n"
+        "    gate.wait(timeout=10)\n"
+        "    module_name, _, name = target.partition(':')\n"
+        "    module = importlib.import_module(module_name)\n"
+        "    return getattr(module, name) if name else module\n"
+        "with ThreadPoolExecutor(2) as pool:\n"
+        "    list(pool.map(first_use, sys.argv[1:]))\n",
+        *entries,
+    )
+
+
+@pytest.mark.parametrize(
+    "package_name,target,name",
+    [
+        ("datachain", "datachain.lib.file", "File"),
+        ("datachain.query", "datachain.query.params", "param"),
+        ("datachain.cli", "datachain.cli.commands.du", "du"),
+        ("datachain.data_storage", "datachain.data_storage.job", "JobStatus"),
+    ],
+)
+def test_reloaded_package_refreshes_cached_exports(package_name, target, name):
+    _check(
+        "import importlib, sys\n"
+        "package_name, target, name = sys.argv[1:]\n"
+        "package = importlib.import_module(package_name)\n"
+        "previous = getattr(package, name)\n"
+        "implementation = importlib.import_module(target)\n"
+        "importlib.reload(implementation)\n"
+        "importlib.reload(package)\n"
+        "assert getattr(package, name) is getattr(implementation, name)\n"
+        "assert getattr(package, name) is not previous\n",
+        package_name,
+        target,
+        name,
+    )
+
+
+@pytest.mark.parametrize("name", ["Image", "File", "BBox"])
+def test_cold_read_preserves_registered_user_class(tmp_path, name):
+    model = (
+        "import datachain as dc\n"
+        f"class {name}(dc.DataModel):\n"
+        "    score: float\n"
+        "    def label(self):\n"
+        "        return 'user-model'\n"
+    )
+    env = {"DATACHAIN_ROOT_DIR": str(tmp_path / ".datachain")}
+    _check(
+        model + f"dc.read_values(value=[{name}(score=0.9)]).save('custom')\n",
+        cwd=tmp_path,
+        env=env,
+    )
+    _check(
+        model
+        + "value = dc.read_dataset('custom').to_values('value')[0]\n"
+        + f"assert isinstance(value, {name})\n"
+        + "assert value.score == 0.9\n"
+        + "assert value.label() == 'user-model'\n",
+        cwd=tmp_path,
+        env=env,
+    )
 
 
 def test_import_datachain_loads_only_stdlib():

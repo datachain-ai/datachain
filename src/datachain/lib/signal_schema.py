@@ -486,6 +486,19 @@ class SignalSchema:
         return subtypes
 
     @staticmethod
+    def _legacy_model_matches(
+        fr: type[BaseModel], custom_types: dict[str, Any]
+    ) -> bool:
+        serialized: dict[str, Any] = {}
+        SignalSchema._serialize_type(fr, serialized)
+        return all(
+            name not in custom_types
+            or record["fields"]
+            == CustomType.deserialize(custom_types[name], name).fields
+            for name, record in serialized.items()
+        )
+
+    @staticmethod
     def _deserialize_custom_type(
         type_name: str, custom_types: dict[str, Any]
     ) -> type | None:
@@ -509,8 +522,11 @@ class SignalSchema:
                 )
             ) and (
                 ct.bases
-                or ModelStore.get_module(fr) != BUILTIN_MODELS.get(model_name)
-                or fr.model_fields.keys() == ct.fields.keys()
+                or (
+                    "_modelstore_base_name" not in vars(fr)
+                    and ModelStore.get_module(fr) != BUILTIN_MODELS.get(model_name)
+                )
+                or SignalSchema._legacy_model_matches(fr, custom_types)
             ):
                 return fr
 

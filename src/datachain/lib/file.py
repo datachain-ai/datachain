@@ -20,7 +20,7 @@ from fsspec.utils import stringify_path
 from pydantic import Field, field_validator, model_validator
 
 from datachain import json
-from datachain.client.fileslice import FileSlice
+from datachain.client import fileslice
 from datachain.client.writeconfig import WriteConfig
 from datachain.fs.utils import path_to_fsspec_uri
 from datachain.lib.data_model import DataModel
@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from datachain.dataset import RowDict
     from datachain.query.session import Session
 
+FileSlice = fileslice.FileSlice
 sha256 = partial(hashlib.sha256, usedforsecurity=False)
 
 logger = logging.getLogger("datachain")
