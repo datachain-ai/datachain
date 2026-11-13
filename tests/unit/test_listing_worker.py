@@ -815,11 +815,11 @@ def test_children_die_when_the_parent_exits_with_the_listing_open(clients):
     assert not _alive_after(pids, 20)
 
 
-def test_children_list_in_the_mode_the_parents_check_set(clients):
+def test_children_list_in_the_mode_the_parents_first_page_set(clients):
     async def check():
         client = clients.ModeClient("bucket", {}, None)
         pool = Pool(client, "", 1)
-        client._unversioned = True
+        client._unversioned = True  # the first page fell back to current objects
         pool.start()
         try:
             while not pool.children:  # noqa: ASYNC110

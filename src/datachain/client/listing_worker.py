@@ -150,7 +150,7 @@ class Pool:
             self.procs.append(proc := await _spawn())
             assert proc.stdin
             assert proc.stdout
-            # a child that starts before the parent's check ends checks itself
+            # children start after the parent's first page settled the mode
             proc.stdin.write(dump((*self.spec, self.client._unversioned)))
             if error := await _receive(proc.stdout):
                 logger.debug("Listing process cannot list:\n%s", error)

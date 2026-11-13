@@ -677,7 +677,6 @@ class RangeListedClient(Client):
     # lists current objects only, as the storage holds no old versions; None
     # until a listing checks
     _unversioned: bool | None = None
-    _versioning_check: "asyncio.Future[None] | None" = None
 
     def _open_remote(self, file: "File", block_size: int | None = None) -> BinaryIO:
         return self._open_checked(

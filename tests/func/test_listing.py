@@ -453,14 +453,13 @@ def test_s3_read_storage_lists_versions_only_on_a_versioned_bucket(
     assert len(listed) == len(ENTRIES)
     assert all(versions) is version_aware
     assert calls["get_bucket_versioning"] == 1
-    assert calls["list_object_versions"]
-    if version_aware:
-        assert not calls["list_objects_v2"]
+    assert bool(calls["list_object_versions"]) is version_aware
+    assert bool(calls["list_objects_v2"]) is not version_aware
 
-    def lists_versions(self, s3):
+    async def lists_versions(self):
         self._unversioned = False
 
-    monkeypatch.setattr(ClientS3, "_check_versioning", lists_versions)
+    monkeypatch.setattr(ClientS3, "_prepare_listing", lists_versions)
     assert files(update=True) == listed
     assert [ls.name for ls in ctc.catalog.listings()] == [
         parse_listing_uri(ctc.src_uri)[0]

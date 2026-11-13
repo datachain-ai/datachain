@@ -1,4 +1,3 @@
-import asyncio
 import inspect
 import pickle
 import threading
@@ -461,86 +460,36 @@ _DENIED = ClientError({"Error": {"Code": "AccessDenied"}}, "GetBucketVersioning"
 
 
 @pytest.mark.parametrize(
-    "version_aware, versioning, apis",
+    "version_aware, versioning, lists_versions",
     [
-        (True, {}, ["versions", "v2"]),
-        (True, {"Status": "Enabled"}, ["versions", "versions"]),
-        (True, {"Status": "Suspended"}, ["versions", "versions"]),
-        (True, _DENIED, ["versions", "versions"]),
-        (False, {}, ["v2", "v2"]),
+        (True, {}, False),
+        (True, {"Status": "Enabled"}, True),
+        (True, {"Status": "Suspended"}, True),
+        (True, _DENIED, True),
+        (False, {}, False),
     ],
     ids=["never-versioned", "enabled", "suspended", "denied", "not-version-aware"],
 )
-def test_pages_after_the_versioning_check_list_versions_only_where_they_may_be(
-    version_aware, versioning, apis
+def test_list_page_lists_versions_only_where_the_bucket_may_hold_them(
+    version_aware, versioning, lists_versions
 ):
-    used = []
-
-    def listed(api):
-        async def list_page(**kwargs):
-            used.append((api, kwargs))
-            return {
-                "IsTruncated": True,
-                "NextKeyMarker": "k",
-                "NextVersionIdMarker": "v",
-                "NextContinuationToken": "t",
-            }
-
-        return list_page
-
+    page = {"IsTruncated": False}
     s3 = MagicMock(
         get_bucket_versioning=AsyncMock(
             side_effect=versioning if isinstance(versioning, Exception) else None,
             return_value=versioning,
         ),
-        list_object_versions=listed("versions"),
-        list_objects_v2=listed("v2"),
+        list_object_versions=AsyncMock(return_value=page),
+        list_objects_v2=AsyncMock(return_value=page),
     )
     client = _listing_client(version_aware, s3)
 
-    first = sync(get_loop(), client._list_page, "", "", None)
-    if check := client._versioning_check:
-        sync(get_loop(), asyncio.wait_for, check, 5)
-    sync(get_loop(), client._list_page, "", "", first.token)
+    for _ in range(2):
+        sync(get_loop(), client._list_page, "", "", None)
 
-    assert [api for api, _ in used] == apis
     assert s3.get_bucket_versioning.call_count == (1 if version_aware else 0)
-    if apis == ["versions", "v2"]:
-        assert used[1][1]["StartAfter"] == "k"
-
-
-def test_a_versions_token_past_a_folder_keeps_listing_versions():
-    s3 = MagicMock(
-        list_object_versions=AsyncMock(return_value={"IsTruncated": False}),
-        list_objects_v2=AsyncMock(),
-    )
-    client = _listing_client(True, s3)
-    client._unversioned = True
-
-    sync(get_loop(), client._list_page, "", "", ("dir/", ""), delimiter="/")
-
-    assert s3.list_object_versions.call_args.kwargs["KeyMarker"] == "dir/"
-    assert not s3.list_objects_v2.called
-
-
-def test_a_late_versioning_check_keeps_the_fallback_to_current_objects():
-    s3 = MagicMock(
-        get_bucket_versioning=AsyncMock(return_value={"Status": "Enabled"}),
-        list_object_versions=AsyncMock(
-            side_effect=ClientError(
-                {"Error": {"Code": "NotImplemented"}}, "ListObjectVersions"
-            )
-        ),
-        list_objects_v2=AsyncMock(return_value={"IsTruncated": False}),
-    )
-    client = _listing_client(True, s3)
-
-    sync(get_loop(), client._list_page, "", "", None)
-    if check := client._versioning_check:
-        sync(get_loop(), asyncio.wait_for, check, 5)
-
-    assert client._unversioned is True
-    assert s3.get_bucket_versioning.called
+    assert s3.list_object_versions.call_count == (2 if lists_versions else 0)
+    assert s3.list_objects_v2.call_count == (0 if lists_versions else 2)
 
 
 @pytest.mark.parametrize(
