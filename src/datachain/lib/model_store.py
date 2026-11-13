@@ -1,14 +1,79 @@
 import inspect
+from importlib import import_module
 from typing import Any, ClassVar
 
 from pydantic import BaseModel
+
+# Models defined in datachain register on import; `get` imports them by name.
+BUILTIN_MODELS = {
+    "ArrowRow": "datachain.lib.file",
+    "Audio": "datachain.lib.file",
+    "AudioFile": "datachain.lib.file",
+    "AudioFragment": "datachain.lib.file",
+    "BBox": "datachain.model.bbox",
+    "DatasetInfo": "datachain.lib.dataset_info",
+    "File": "datachain.lib.file",
+    "HFAudio": "datachain.lib.hf",
+    "HFClassLabel": "datachain.lib.hf",
+    "HFImage": "datachain.lib.hf",
+    "Image": "datachain.lib.file",
+    "ImageFile": "datachain.lib.file",
+    "Laion": "datachain.lib.webdataset_laion",
+    "ListingInfo": "datachain.lib.listing_info",
+    "McapFile": "datachain.lib.mcap",
+    "McapMessage": "datachain.lib.mcap",
+    "McapSlice": "datachain.lib.mcap",
+    "McapSummary": "datachain.lib.mcap",
+    "McapTopic": "datachain.lib.mcap",
+    "OBBox": "datachain.model.bbox",
+    "Pose": "datachain.model.pose",
+    "Pose3D": "datachain.model.pose",
+    "Segment": "datachain.model.segment",
+    "Sys": "datachain.lib.dc.utils",
+    "TextFile": "datachain.lib.file",
+    "Video": "datachain.lib.file",
+    "VideoFile": "datachain.lib.file",
+    "VideoFragment": "datachain.lib.file",
+    "VideoFrame": "datachain.lib.file",
+    "WDSAllFile": "datachain.lib.webdataset",
+    "WDSBasic": "datachain.lib.webdataset",
+    "WDSLaion": "datachain.lib.webdataset_laion",
+    "WDSReadableSubclass": "datachain.lib.webdataset",
+    "YoloBBox": "datachain.model.ultralytics.bbox",
+    "YoloBBoxes": "datachain.model.ultralytics.bbox",
+    "YoloOBBox": "datachain.model.ultralytics.bbox",
+    "YoloOBBoxes": "datachain.model.ultralytics.bbox",
+    "YoloPose": "datachain.model.ultralytics.pose",
+    "YoloPoses": "datachain.model.ultralytics.pose",
+    "YoloSegment": "datachain.model.ultralytics.segment",
+    "YoloSegments": "datachain.model.ultralytics.segment",
+    "ZarrArray": "datachain.lib.zarr",
+    "ZarrInfo": "datachain.lib.zarr",
+    "ZarrSelection": "datachain.lib.zarr",
+    "ZarrStore": "datachain.lib.zarr",
+}
+
+
+def _missing_optional_dependency(module: str, exc: ImportError) -> bool:
+    # Only Hugging Face models need an optional dependency at module import.
+    if module != "datachain.lib.hf":
+        return False
+
+    from importlib.metadata import PackageNotFoundError
+
+    error: BaseException = exc
+    while error.__cause__ is not None:
+        error = error.__cause__
+    if isinstance(error, PackageNotFoundError):
+        return error.args == ("datasets",)
+    return isinstance(error, ModuleNotFoundError) and error.name == "datasets"
 
 
 class ModelStore:
     store: ClassVar[dict[str, dict[int, type[BaseModel]]]] = {}
 
     @staticmethod
-    def _base_name(model: type[BaseModel]) -> str:
+    def _base_name(model: type) -> str:
         # Some models are generated/restored with a versioned Python class name
         # (e.g. `MyType_v1`) so that multiple versions can coexist in-process without
         # `__name__` collisions.
@@ -16,13 +81,17 @@ class ModelStore:
         # `_modelstore_base_name` preserves the original/logical name (e.g. `MyType`)
         # after we alter the class name, so `ModelStore.get_name(model)` still
         # returns `"MyType@v{model._version}"` and schema serialization stays stable.
-        return getattr(model, "_modelstore_base_name", model.__name__)
+        return vars(model).get("_modelstore_base_name", model.__name__)
 
     @classmethod
     def get_version(cls, model: type[BaseModel]) -> int:
         if not hasattr(model, "_version"):
             return 0
         return model._version  # type: ignore[attr-defined]
+
+    @staticmethod
+    def get_module(model: type) -> str:
+        return vars(model).get("_modelstore_module", model.__module__)
 
     @classmethod
     def get_name(cls, model) -> str:
@@ -55,16 +124,34 @@ class ModelStore:
                 cls.register(anno)
 
     @classmethod
-    def get(cls, name: str, version: int | None = None) -> type | None:
-        class_dict = cls.store.get(name, None)
-        if class_dict is None:
-            return None
-        if version is None:
-            max_ver = max(class_dict.keys(), default=None)
-            if max_ver is None:
+    def get(
+        cls,
+        name: str,
+        version: int | None = None,
+        *,
+        module: str | None = None,
+        autoload: bool = True,
+    ) -> type[BaseModel] | None:
+        class_dict = cls.store.get(name, {})
+        model = class_dict.get(
+            max(class_dict, default=0) if version is None else version
+        )
+        builtin_module = BUILTIN_MODELS.get(name)
+        if model is not None and (
+            module is None
+            or (cls.get_module(model) == builtin_module) == (module == builtin_module)
+        ):
+            return model
+        if autoload and builtin_module and (module is None or module == builtin_module):
+            try:
+                model = getattr(import_module(builtin_module), name)
+            except ImportError as exc:
+                if not _missing_optional_dependency(builtin_module, exc):
+                    raise
                 return None
-            return class_dict[max_ver]
-        return class_dict.get(version, None)
+            cls.register(model)
+            return model if version in (None, cls.get_version(model)) else None
+        return None
 
     @classmethod
     def parse_name_version(cls, fullname: str) -> tuple[str, int]:

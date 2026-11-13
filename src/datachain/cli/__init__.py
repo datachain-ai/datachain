@@ -3,35 +3,70 @@ import os
 import sys
 import traceback
 from multiprocessing import freeze_support
+from typing import TYPE_CHECKING
 
 from datachain.cli.utils import get_logging_level
-from datachain.studio import process_pipeline_args
+from datachain.lazy import lazy_exports
 
-from .commands import (
-    bucket_status_cmd,
-    clear_cache,
-    completion,
-    describe_dataset_cmd,
-    du,
-    edit_dataset,
-    garbage_collect,
-    index,
-    install_skills,
-    list_datasets,
-    list_skills,
-    ls,
-    rm_dataset,
-    show,
-    uninstall_skills,
-)
 from .parser import get_parser
+
+if TYPE_CHECKING:
+    from datachain.studio import (  # noqa: F401
+        process_auth_cli_args,
+        process_jobs_args,
+        process_pipeline_args,
+    )
+
+    from .commands.bucket import bucket_status_cmd  # noqa: F401
+    from .commands.datasets import (  # noqa: F401
+        describe_dataset_cmd,
+        edit_dataset,
+        list_datasets,
+        rm_dataset,
+    )
+    from .commands.du import du  # noqa: F401
+    from .commands.index import index  # noqa: F401
+    from .commands.ls import ls  # noqa: F401
+    from .commands.misc import clear_cache, completion, garbage_collect  # noqa: F401
+    from .commands.show import show  # noqa: F401
+    from .commands.skill import (  # noqa: F401
+        install_skills,
+        list_skills,
+        uninstall_skills,
+    )
+
+_LAZY = {
+    "bucket_status_cmd": "datachain.cli.commands.bucket:bucket_status_cmd",
+    "clear_cache": "datachain.cli.commands.misc:clear_cache",
+    "completion": "datachain.cli.commands.misc:completion",
+    "describe_dataset_cmd": "datachain.cli.commands.datasets:describe_dataset_cmd",
+    "du": "datachain.cli.commands.du:du",
+    "edit_dataset": "datachain.cli.commands.datasets:edit_dataset",
+    "garbage_collect": "datachain.cli.commands.misc:garbage_collect",
+    "index": "datachain.cli.commands.index:index",
+    "install_skills": "datachain.cli.commands.skill:install_skills",
+    "list_datasets": "datachain.cli.commands.datasets:list_datasets",
+    "list_skills": "datachain.cli.commands.skill:list_skills",
+    "ls": "datachain.cli.commands.ls:ls",
+    "process_auth_cli_args": "datachain.studio:process_auth_cli_args",
+    "process_jobs_args": "datachain.studio:process_jobs_args",
+    "process_pipeline_args": "datachain.studio:process_pipeline_args",
+    "rm_dataset": "datachain.cli.commands.datasets:rm_dataset",
+    "show": "datachain.cli.commands.show:show",
+    "uninstall_skills": "datachain.cli.commands.skill:uninstall_skills",
+}
+
+lazy_exports(globals(), _LAZY)
+_cli = sys.modules[__name__]
 
 logger = logging.getLogger("datachain")
 
+COMMANDS_WITHOUT_CATALOG = frozenset(
+    {"auth", "bucket", "completion", "job", "ls", "skill"}
+)
+
 
 def main(argv: list[str] | None = None) -> int:
-    from datachain.catalog import get_catalog
-
     # Required for Windows multiprocessing support
     freeze_support()
 
@@ -67,7 +102,10 @@ def main(argv: list[str] | None = None) -> int:
 
     catalog = None
     try:
-        catalog = get_catalog(client_config=client_config)
+        if args.command not in COMMANDS_WITHOUT_CATALOG:
+            from datachain.catalog import get_catalog
+
+            catalog = get_catalog(client_config=client_config)
         return handle_command(args, catalog, client_config)
     except BrokenPipeError as exc:
         error, return_code = handle_broken_pipe_error(exc)
@@ -88,8 +126,6 @@ def main(argv: list[str] | None = None) -> int:
 
 def handle_command(args, catalog, client_config) -> int:
     """Handle the different CLI commands."""
-    from datachain.studio import process_auth_cli_args, process_jobs_args
-
     command_handlers = {
         "bucket": lambda: handle_bucket_command(args, client_config),
         "cp": lambda: handle_cp_command(args, catalog),
@@ -102,11 +138,11 @@ def handle_command(args, catalog, client_config) -> int:
         "find": lambda: handle_find_command(args, catalog),
         "index": lambda: handle_index_command(args, catalog),
         "completion": lambda: handle_completion_command(args),
-        "clear-cache": lambda: clear_cache(catalog),
-        "gc": lambda: garbage_collect(catalog, checkpoint_ttl=args.checkpoint_ttl),
-        "auth": lambda: process_auth_cli_args(args),
-        "job": lambda: process_jobs_args(args),
-        "pipeline": lambda: process_pipeline_args(args, catalog),
+        "clear-cache": lambda: _cli.clear_cache(catalog),
+        "gc": lambda: _cli.garbage_collect(catalog, checkpoint_ttl=args.checkpoint_ttl),
+        "auth": lambda: _cli.process_auth_cli_args(args),
+        "job": lambda: _cli.process_jobs_args(args),
+        "pipeline": lambda: _cli.process_pipeline_args(args, catalog),
         "skill": lambda: handle_skill_command(args),
     }
 
@@ -131,7 +167,7 @@ def handle_bucket_command(args, client_config) -> int:
         cfg = dict(client_config)
         if getattr(args, "account_name", None):
             cfg["account_name"] = args.account_name
-        return bucket_status_cmd(args.uri, client_config=cfg)
+        return _cli.bucket_status_cmd(args.uri, client_config=cfg)
     raise NotImplementedError(f"Unexpected bucket subcommand: {args.bucket_cmd}")
 
 
@@ -167,7 +203,7 @@ def handle_dataset_command(args, catalog):
         return 1
 
     dataset_commands = {
-        "describe": lambda: describe_dataset_cmd(
+        "describe": lambda: _cli.describe_dataset_cmd(
             catalog,
             args.name,
             json_output=args.json_output,
@@ -181,7 +217,7 @@ def handle_dataset_command(args, catalog):
             cp=args.cp,
             force=bool(args.force),
         ),
-        "edit": lambda: edit_dataset(
+        "edit": lambda: _cli.edit_dataset(
             catalog,
             args.name,
             new_name=args.new_name,
@@ -189,7 +225,7 @@ def handle_dataset_command(args, catalog):
             attrs=args.attrs,
             team=args.team,
         ),
-        "ls": lambda: list_datasets(
+        "ls": lambda: _cli.list_datasets(
             catalog=catalog,
             studio=args.studio,
             local=args.local,
@@ -199,7 +235,7 @@ def handle_dataset_command(args, catalog):
             name=args.name,
             include_removed=args.include_removed,
         ),
-        "rm": lambda: rm_dataset(
+        "rm": lambda: _cli.rm_dataset(
             catalog,
             args.name,
             version=args.version,
@@ -207,7 +243,7 @@ def handle_dataset_command(args, catalog):
             studio=args.studio,
             team=args.team,
         ),
-        "remove": lambda: rm_dataset(
+        "remove": lambda: _cli.rm_dataset(
             catalog,
             args.name,
             version=args.version,
@@ -225,7 +261,7 @@ def handle_dataset_command(args, catalog):
 
 
 def handle_ls_command(args, client_config):
-    ls(
+    _cli.ls(
         args.sources,
         long=bool(args.long),
         studio=args.studio,
@@ -238,7 +274,7 @@ def handle_ls_command(args, client_config):
 
 
 def handle_show_command(args, catalog):
-    show(
+    _cli.show(
         catalog,
         args.name,
         args.version,
@@ -253,7 +289,7 @@ def handle_show_command(args, catalog):
 
 
 def handle_du_command(args, catalog, client_config):
-    du(
+    _cli.du(
         catalog,
         args.sources,
         show_bytes=args.bytes,
@@ -284,7 +320,7 @@ def handle_find_command(args, catalog):
 
 
 def handle_index_command(args, catalog):
-    index(
+    _cli.index(
         catalog,
         args.sources,
         update=bool(args.update),
@@ -292,8 +328,6 @@ def handle_index_command(args, catalog):
 
 
 def handle_skill_command(args):
-    import sys
-
     if args.skill_cmd is None:
         print(
             f"Use 'datachain {args.command} --help' to see available options",
@@ -302,17 +336,17 @@ def handle_skill_command(args):
         return 1
 
     skill_commands = {
-        "install": lambda: install_skills(
+        "install": lambda: _cli.install_skills(
             skills=args.skills,
             target=args.target,
             local=args.local,
         ),
-        "uninstall": lambda: uninstall_skills(
+        "uninstall": lambda: _cli.uninstall_skills(
             skills=args.skills,
             target=args.target,
             local=args.local,
         ),
-        "list": list_skills,
+        "list": lambda: _cli.list_skills(),  # noqa: PLW0108
     }
 
     handler = skill_commands.get(args.skill_cmd)
@@ -323,7 +357,7 @@ def handle_skill_command(args):
 
 
 def handle_completion_command(args):
-    print(completion(args.shell))
+    print(_cli.completion(args.shell))
 
 
 def handle_broken_pipe_error(exc):
