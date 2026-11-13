@@ -217,10 +217,10 @@ def test_url_encoded_keys_are_decoded_once(key, path):
         ("a+b %41", "a+b %41", True),
         ("spaces  and\ttab\nline", "spaces  and\ttab\nline", True),
         ("ünï cødé/日本/😀", "ünï cødé/日本/😀", True),
-        ("a&amp;b", "a&b", False),
-        ("&lt;&gt;", "<>", False),
+        ("a&amp;b", "a&b", True),
+        ("&lt;&gt;", "<>", True),
+        ("&amp;quot;", "&quot;", True),
         ("&#233;", "é", False),
-        ("&amp;quot;", "&quot;", False),
     ],
 )
 def test_keys_without_url_encoding_read_as_xml_has_them(key, path, fast):
@@ -237,7 +237,8 @@ def test_empty_page(versions):
 
 @pytest.mark.parametrize("versions", [False, True])
 def test_truncated_page_resumes_at_its_token(versions):
-    body = _page([("Contents", _object("a"))], versions=versions, truncated=True)
+    entry = _version("a") if versions else _object("a")
+    body = _page([("Contents", entry)], versions=versions, truncated=True)
     page = _assert_lists_as_elementtree(body, versions)
     assert page.token == (("z", "zv") if versions else "t&n")
 
@@ -268,15 +269,18 @@ def test_delete_markers_only():
 def test_version_fields_left_out():
     fields = [f for f in _version("a") if f[0] not in ("VersionId", "IsLatest", "ETag")]
     page = _assert_lists_as_elementtree(
-        _page([("Contents", fields)], versions=True), versions=True
+        _page([("Contents", fields)], versions=True), versions=True, fast=False
     )
     assert [(r.version, r.is_latest, r.etag) for r in page.rows] == [("", True, "")]
 
 
-@pytest.mark.parametrize("latest", ["", "false", "TRUE", "1", " true"])
-def test_is_latest_is_true_only_when_written_true(latest):
+@pytest.mark.parametrize(
+    "latest, fast",
+    [("false", True), ("", False), ("TRUE", False), ("1", False), (" true", False)],
+)
+def test_is_latest_is_true_only_when_written_true(latest, fast):
     body = _page([("Contents", _version("a", latest=latest))], versions=True)
-    page = _assert_lists_as_elementtree(body, versions=True)
+    page = _assert_lists_as_elementtree(body, versions=True, fast=fast)
     assert page.rows[0].is_latest is False
 
 
@@ -285,7 +289,7 @@ def test_is_latest_is_true_only_when_written_true(latest):
     [
         (["a%2Fb%2B%2F/", "c+d/"], True, True),
         (["a&quot;b/", "c d/"], False, True),
-        (["a&amp;b/", "c d/"], False, False),
+        (["a&amp;b/", "c d/"], False, True),
     ],
 )
 def test_folders_only(prefixes, url, fast):
@@ -332,13 +336,17 @@ def test_self_closing_top_level_field():
     [
         {"RestoreStatus": [("IsRestoreInProgress", "true")]},
         {"Owner": [("ID", [("Deeper", "x")])]},
+        {"Unknown": "x"},
+        {"Owner": [("ID", "o"), ("Other", "x")]},
+        {"StorageClass": "&amp;"},
     ],
-    ids=["restore-status", "nested-owner"],
+    ids=["restore-status", "nested-owner", "unknown", "unknown-in-owner", "entity"],
 )
-def test_structures_with_more_than_text_go_to_elementtree(more):
-    _assert_lists_as_elementtree(
-        _page([("Contents", _object("a", **more))]), fast=False
-    )
+def test_fields_not_read_may_hold_anything(more):
+    entries = [("Contents", _object(k)) for k in "0z"]
+    entries.insert(1, ("Contents", _object("a", **more)))
+    page = _assert_lists_as_elementtree(_page(entries))
+    assert [r.path for r in page.rows] == ["0", "a", "z"]
 
 
 def test_repeated_checksum_algorithms():
@@ -350,10 +358,10 @@ def test_repeated_checksum_algorithms():
     _assert_lists_as_elementtree(_page([("Contents", fields)]))
 
 
-def test_fields_in_any_order():
+def test_fields_in_another_order_go_to_elementtree():
     fields = _object("a", StorageClass="STANDARD", ChecksumAlgorithm="CRC32")
     entries = [("Contents", fields[::-1]), ("Contents", _object("b"))]
-    page = _assert_lists_as_elementtree(_page(entries))
+    page = _assert_lists_as_elementtree(_page(entries), fast=False)
     assert [r.path for r in page.rows] == ["a", "b"]
 
 
@@ -379,10 +387,18 @@ def test_an_unread_field_written_twice():
     _assert_lists_as_elementtree(_page([("Contents", fields)]))
 
 
-@pytest.mark.parametrize("etag", [None, "&#x22;e&#x22;", "&#X22;e"])
-def test_etags_elementtree_reads(etag):
+@pytest.mark.parametrize(
+    "etag, fast",
+    [
+        (None, False),
+        ("&#x22;e&#x22;", False),
+        ("&#X22;e", False),
+        ("&amp;quot;e", True),
+    ],
+)
+def test_etags(etag, fast):
     _assert_lists_as_elementtree(
-        _page([("Contents", _object("a", etag=etag))]), fast=False
+        _page([("Contents", _object("a", etag=etag))]), fast=fast
     )
 
 
@@ -395,7 +411,8 @@ def test_delete_marker_dates_are_checked():
 
 @pytest.mark.parametrize("versions", [False, True])
 def test_keys_stay_encoded_when_the_request_asked_for_url_encoding(versions):
-    entries = [("Contents", _object("a%2Bb+c")), ("DeleteMarker", _marker("d%25"))]
+    entry = _version("a%2Bb+c") if versions else _object("a%2Bb+c")
+    entries = [("Contents", entry), ("DeleteMarker", _marker("d%25"))]
     body = _page(
         entries[: 2 if versions else 1],
         versions=versions,
@@ -408,32 +425,21 @@ def test_keys_stay_encoded_when_the_request_asked_for_url_encoding(versions):
     assert page.last == "e%2B/"
 
 
-def test_pretty_printed_page():
+def test_pretty_printed_page_goes_to_elementtree():
     entries = [
         ("Contents", _object("a", Owner=[("ID", "o")])),
         ("Contents", _object("b")),
     ]
-    _assert_lists_as_elementtree(_page(entries, prefixes=["c/"], space="\n  \t"))
+    body = _page(entries, prefixes=["c/"], space="\n  \t")
+    _assert_lists_as_elementtree(body, fast=False)
 
 
 @pytest.mark.parametrize(
-    "entries",
-    [
-        [("Contents", [*_object("a"), ("Unknown", "x")])],
-        [("Contents", [*_object("a"), ("Owner", [("ID", "o"), ("Other", "x")])])],
-        [("Contents", [*_object("a"), ("Owner", [("ID", [("Deep", "x")])])])],
-        [("Contents", _object("a", StorageClass="&amp;"))],
-    ],
-    ids=["unknown-field", "unknown-owner-field", "nested-deeper", "unread-entity"],
+    "declaration", ["", '<?xml version="1.0" encoding="utf-8"?>\n']
 )
-def test_entries_the_patterns_miss_leave_the_page_to_elementtree(entries):
-    entries = [("Contents", _object("0")), *entries, ("Contents", _object("z"))]
-    page = _assert_lists_as_elementtree(_page(entries), fast=False)
-    assert [r.path for r in page.rows] == ["0", "a", "z"]
-
-
-def test_page_without_declaration():
-    _assert_lists_as_elementtree(_page([("Contents", _object("café"))], declaration=""))
+def test_page_without_declaration_or_in_lower_case(declaration):
+    body = _page([("Contents", _object("café"))], declaration=declaration)
+    _assert_lists_as_elementtree(body)
 
 
 @pytest.mark.parametrize(
@@ -457,7 +463,6 @@ def test_page_without_declaration():
         ),
         _page([("Contents", _object("a", modified="&#50;026-09-30T23:00:00Z"))]),
         _page([("Contents", _object("a", size="&#49;"))]),
-        _page([("Contents", _object("a", etag="&amp;quot;e"))]),
     ],
     ids=[
         "crlf",
@@ -470,7 +475,6 @@ def test_page_without_declaration():
         "latin-1",
         "entity-in-date",
         "entity-in-size",
-        "amp-in-etag",
     ],
 )
 def test_pages_elementtree_reads(body):
@@ -593,7 +597,7 @@ _KEY_CHARS = st.characters(
     "\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f\r\ufffe\uffff",
 )
 _TEXT = st.text(_KEY_CHARS, max_size=8)
-_ENTITIES = re.compile("&(?:quot|#34|apos|#39);")
+_ENTITIES = re.compile("&(?:amp|lt|gt|quot|#34|apos|#39);")
 _QUOTES = st.sampled_from(['"', "&quot;", "&#34;", "&#x22;"])
 _OPTIONAL = {
     "StorageClass": st.sampled_from(["STANDARD", "GLACIER", None]),
@@ -610,6 +614,22 @@ _OPTIONAL = {
 _SECOND_READS = st.sampled_from(
     [("Size", "7"), ("Size", "x"), ("Key", "&bad;"), ("LastModified", "never")]
 )
+
+
+def _in_s3_order(fields, versions) -> bool:
+    """Whether fields are in the order S3 writes them: the read ones first,
+    checksums before the size, the rest after it."""
+    names = [n for n, _ in fields]
+    reads = ["Key", "VersionId", "IsLatest"][: 3 if versions else 1]
+    reads += ["LastModified", "ETag"]
+    if names[: len(reads)] != reads or "Size" not in names:
+        return False
+    size = names.index("Size")
+    between = names[len(reads) : size]
+    return all(n.startswith("Checksum") for n in between) and not (
+        {"Key", "VersionId", "IsLatest", "LastModified", "ETag", "Size"}
+        & set(names[size + 1 :])
+    )
 
 
 @st.composite
@@ -646,17 +666,22 @@ def _pages(draw):
             fields = [draw(_SECOND_READS), *fields]
             plain = False
         if draw(st.booleans()):
-            fields = draw(st.permutations(fields))
+            shuffled = draw(st.permutations(fields))
+            plain = plain and _in_s3_order(shuffled, versions)
+            fields = shuffled
         entries.append(("Contents", fields))
     prefixes = [written(p) + "/" for p in draw(st.lists(_TEXT, max_size=3))]
+    space = draw(st.sampled_from(["", "\n", "\n  "]))
     body = _page(
         entries,
         versions=versions,
         url=url,
         prefixes=prefixes,
         truncated=draw(st.booleans()),
-        space=draw(st.sampled_from(["", "\n", "\n  "])),
+        space=space,
     )
+    # space inside or between entries; the root's other children may have it
+    plain = plain and not (space and (entries or len(prefixes) > 1))
     return body, versions, plain, draw(_TEXT), draw(st.none() | _TEXT)
 
 

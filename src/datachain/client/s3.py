@@ -1,8 +1,7 @@
 import errno
 import os
 import re
-from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextvars import ContextVar
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
@@ -66,7 +65,7 @@ def _reader(shape: Shape, ns: str) -> Callable[[Element], Any]:
     return lambda node: convert(node.text or "")
 
 
-def _read(node: Element, fields: Fields) -> dict[str, Any]:
+def _read(node: Iterable[Element], fields: Fields) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for child in node:
         if field := fields.get(child.tag):
@@ -80,191 +79,172 @@ def _read(node: Element, fields: Fields) -> dict[str, Any]:
 
 # While ClientS3._list_page waits for a page, the source its rows are listed from
 _ROWS_OF: ContextVar[str | None] = ContextVar("_ROWS_OF", default=None)
-_DECLARATION = re.compile(r"""<\?xml(?:[^>]*?\sencoding=["']([^"']*)["'])?[^>]*\?>""")
-_ROOT = re.compile(r"[ \t\n]*<([A-Za-z]\w*)(?:[ \t\n][^<>]*)?>")
-_FORBIDDEN = bytes(set(range(32)) - {9, 10, 13})  # control characters XML forbids
-_QUOTES = {"&#34;": '"', "&apos;": "'", "&#39;": "'"}
-_SPACE = "[ \t\n]*"
-_GUARD = re.compile(r"\(\?\(@(\w+)@\)\(\?!\)\)")  # (?(@group@)(?!)), see _entry
-# the fields _list_page reads or ElementTree would convert, per list of entries
-_READS = {
-    "Contents": ("Key", "Size", "ETag", "LastModified"),
-    "Versions": ("Key", "Size", "ETag", "LastModified", "VersionId", "IsLatest"),
-    "DeleteMarkers": ("Key", "LastModified"),
-    "CommonPrefixes": ("Prefix",),
-}
-_ORDER = ("Key", "VersionId", "IsLatest", "LastModified", "ETag", "Size", "Owner")
-_CHILDREN: dict[str, tuple[re.Pattern, dict[str, list[str]]]] = {}
+
+# Patterns read a page as S3 writes it; ElementTree reads any other page.
+_DECLARATION = b'<?xml version="1.0" encoding="UTF-8"?>'
+_ROOT = re.compile(r"\s*<List(?:Bucket|Versions)Result[\s>]")
+# what the patterns do not read: comments, CDATA, instructions, carriage
+# returns, and characters XML forbids
+_ODD = ((b"!", b"<!"), (b"?", b"<?"), (b"]", b"]]>"))  # a byte, then the text
+_CONTROL = bytes(set(range(32)) - {9, 10})  # characters XML forbids, and CR
+_NONCHARACTERS = (b"\xef\xbf\xbe", b"\xef\xbf\xbf")  # U+FFFE, U+FFFF
+_ENTITY = re.compile(rb"&(?!(?:amp|lt|gt|quot|apos|#34|#39);)")  # any other
+_TEXT = "([^<]*)"
+_ENTITIES = (
+    ("&lt;", "<"),
+    ("&gt;", ">"),
+    ("&#34;", '"'),
+    ("&apos;", "'"),
+    ("&#39;", "'"),
+    ("&amp;", "&"),  # last: "&amp;lt;" is "&lt;"
+)
+_SUMS = r"(?:<Checksum\w*>[^<&]*</Checksum\w*>)*"
+# the rest of an entry: fields that are not read, and no entry
+_REST = (
+    r"(?:[^<]+|<(?!/?(?:Key|Size|ETag|LastModified|VersionId|IsLatest"
+    r"|Contents|Version|DeleteMarker|CommonPrefixes)[\s/>]))*"
+)
+_OBJECT = (
+    rf"<LastModified>{_TEXT}</LastModified><ETag>{_TEXT}</ETag>{_SUMS}"
+    rf"<Size>(\d+)</Size>{_REST}"
+)
+_FOLDER = rf"<CommonPrefixes><Prefix>{_TEXT}</Prefix></CommonPrefixes>"
+# groups: the entry, then key, modified, etag, size | folder
+_CONTENTS = rf"(<Contents><Key>{_TEXT}</Key>{_OBJECT}</Contents>|{_FOLDER})"
+# groups: the entry, then key, version, latest, modified, etag, size | marker:
+# tag, key, version, modified | folder
+_VERSIONS = (
+    rf"(<Version><Key>{_TEXT}</Key><VersionId>{_TEXT}</VersionId>"
+    rf"<IsLatest>(true|false)</IsLatest>{_OBJECT}</Version>"
+    rf"|(<DeleteMarker>)<Key>{_TEXT}</Key><VersionId>{_TEXT}</VersionId>"
+    rf"<IsLatest>(?:true|false)</IsLatest><LastModified>{_TEXT}</LastModified>"
+    rf"{_REST}</DeleteMarker>|{_FOLDER})"
+)
+_ENTRIES = {False: re.compile(_CONTENTS), True: re.compile(_VERSIONS)}
+_FIRST = re.compile(r"<(?:Contents|Version|DeleteMarker|CommonPrefixes)[\s/>]")
+_ENTRY_TAGS = frozenset(("Contents", "Version", "DeleteMarker", "CommonPrefixes"))
+_MARK = "<_entries/>"  # where the entries were, to check they are the root's
 
 
 def _unescape(text: str) -> str:
-    """Text with its quote entities replaced; any other entity is a ValueError."""
-    if "&" not in text:
-        return text
-    text = text.replace("&quot;", '"')
     if "&" in text:
-        for escaped, char in _QUOTES.items():
-            text = text.replace(escaped, char)
+        text = text.replace("&quot;", '"')  # in every ETag
         if "&" in text:
-            raise ValueError(f"an entity in {text!r}")
+            for entity, char in _ENTITIES:
+                text = text.replace(entity, char)
     return text
 
 
-def _children(shape: Shape) -> tuple[re.Pattern, dict[str, list[str]]]:
-    """A pattern of one child of a listing's root element, with any space before
-    it, and the groups of each list's fields. An entry is a group named for its
-    list, with a group for each field of ``_READS``; any other child must hold
-    text only."""
-    if shape.name not in _CHILDREN:
-        lists = {n: m for n, m in shape.members.items() if n in _READS}
-        entries = [
-            _entry(name, member.serialization.get("name", name), member.member)
-            for name, member in lists.items()
-        ]
-        other = r"(?P<other><(?P<tag>[A-Za-z]\w*)(?:>[^<]*</(?P=tag)>|/>))"
-        source = rf"{_SPACE}(?:{'|'.join(entries)}|{other})"
-        # re takes a group defined later in a condition by number only
-        numbers = re.compile(_GUARD.sub("", source)).groupindex
-        pattern = re.compile(_GUARD.sub(lambda g: f"(?({numbers[g[1]]})(?!))", source))
-        groups = {name: [f"{name}_{f}" for f in _READS[name]] for name in lists}
-        _CHILDREN[shape.name] = pattern, groups
-    return _CHILDREN[shape.name]
-
-
-def _entry(name: str, tag: str, entry: Shape) -> str:
-    fields = {}
-    for field, member in entry.members.items():
-        child = member.serialization.get("name", field)
-        if field in _READS[name]:
-            group = f"{name}_{field}"
-            # a field read twice is left to ElementTree, which checks both
-            fields[field] = f"<{child}>(?(@{group}@)(?!))(?P<{group}>[^<]*)</{child}>"
-        elif member.type_name in ("string", "boolean") or (
-            member.type_name == "list" and member.member.type_name == "string"
-        ):
-            fields[field] = _unread(child)
-        elif member.type_name == "structure" and all(
-            m.type_name == "string" for m in member.members.values()
-        ):
-            inner = "|".join(
-                _unread(m.serialization.get("name", n))
-                for n, m in member.members.items()
-            )
-            fields[field] = (
-                rf"<{child}(?:/>|>(?:{_SPACE}(?:{inner}))*{_SPACE}</{child}>)"
-            )
-    # tried in the order S3 writes them, as each miss costs a try
-    order = sorted(fields, key=lambda f: _ORDER.index(f) if f in _ORDER else 99)
-    alternatives = "|".join(fields[f] for f in order)
-    return rf"(?P<{name}><{tag}>(?:{_SPACE}(?:{alternatives}))*{_SPACE}</{tag}>)"
-
-
-def _unread(tag: str) -> str:
-    # no entity: one ElementTree rejects would go unseen
-    return f"<{tag}(?:/>|>[^<&]*</{tag}>)"
-
-
-def _row(
-    source: str,
-    key: str | None,
-    size: str | None,
-    etag: str | None,
-    modified: str | None,
-    version: str | None = None,
-    latest: str | None = None,
-) -> FileRow:
-    if key is None or size is None or modified is None:
-        raise ValueError("an entry without a key, size or modification time")
-    return as_file_row(
-        (
-            source,
-            _unescape(key),
-            int(size),
-            "" if version is None else ClientS3.clean_s3_version(_unescape(version)),
-            "" if etag is None else _unescape(etag).strip('"'),
-            True if latest is None else _unescape(latest) == "true",
-            _parse_timestamp(_unescape(modified)),
-            None,
-        )
-    )
-
-
 def _plain_text(body: bytes) -> str | None:
-    """The page as text, when all its text reads as it is written, but for
-    entities: XML rewrites carriage returns and forbids control characters,
-    U+FFFE, U+FFFF and "]]>"."""
+    """The page as text, when it holds nothing the patterns do not read."""
+    if body.startswith(b"<?xml"):
+        if body[: len(_DECLARATION)].lower() != _DECLARATION.lower():
+            return None
+        body = body[len(_DECLARATION) :]
+    if (
+        any(byte in body and odd in body for byte, odd in _ODD)
+        or len(body.translate(None, _CONTROL)) != len(body)
+        or (not body.isascii() and any(n in body for n in _NONCHARACTERS))
+        or _ENTITY.search(body)
+    ):
+        return None
     try:
         text = body.decode()
     except UnicodeDecodeError:
         return None
-    declaration = _DECLARATION.match(text)
-    if declaration and (declaration[1] or "utf-8").lower() != "utf-8":
+    return text if _ROOT.match(text) else None
+
+
+def _split(body: bytes, versions: bool) -> tuple[list[Element], str, list] | None:
+    """The root's children but entries, its namespace, and the fields of every
+    entry, of a page as S3 writes it: all entries one after another, each with
+    its fields in S3's order. ``None`` for any other page."""
+    if (text := _plain_text(body)) is None:
         return None
-    if (
-        b"\r" in body
-        or (b"]" in body and b"]]>" in body)
-        or len(body.translate(None, _FORBIDDEN)) != len(body)
-        or (not body.isascii() and (b"\xef\xbf\xbe" in body or b"\xef\xbf\xbf" in body))
+    entries = []
+    if first := _FIRST.search(text):
+        start = first.start()
+        if not (entries := _ENTRIES[versions].findall(text, start)):
+            return None
+        # where the last entry of its kind ends: any entry past it not read
+        # is the root's child, which the check below turns away
+        close = entries[-1][0][entries[-1][0].rindex("</") :]
+        end = text.rfind(close) + len(close)
+        # nothing between entries: they cover all from the first to the last
+        if sum(len(entry[0]) for entry in entries) != end - start:
+            return None
+        text = text[:start] + _MARK + text[end:]
+    try:
+        root = fromstring(text)  # noqa: S314
+    except ParseError:
+        return None
+    ns = root.tag[: root.tag.find("}") + 1]
+    others = [c for c in root if c.tag != f"{ns}_entries"]
+    if (first and len(others) == len(root)) or any(
+        c.tag[len(ns) :] in _ENTRY_TAGS for c in others
     ):
-        return None
-    return text[declaration.end() :] if declaration else text
+        return None  # entries inside another element, or ones not read
+    return others, ns, entries
 
 
-def _split(text: str, shape: Shape) -> tuple[str, dict[str, list]] | None:
-    """The root element without its entries, and the fields read of each list
-    of entries, when patterns read every child of the root."""
-    if not (root := _ROOT.match(text)):
-        return None
-    (pattern, groups), end = _children(shape), root.end()
-    found: dict[str, list] = defaultdict(list)
-    others = []
-    for child in pattern.finditer(text, end):
-        if child.start() != end:
-            return None  # something no pattern reads, such as a comment
-        end = child.end()
-        if (name := child.lastgroup or "") == "other":
-            others.append(child[0])
-        else:
-            found[name].append(child.group(*groups[name]))
-    close = f"</{root[1]}>"
-    if text[end:].strip(" \t\n") != close:
-        return None
-    return root[0] + "".join(others) + close, found
+def _read_entries(
+    entries: list, versions: bool, source: str
+) -> tuple[list[FileRow], list[str], list[str]]:
+    """The rows of objects, and the keys of delete markers and folders, of the
+    entries ``_split`` read; a field that does not convert is a ValueError."""
+    rows, markers, folders = [], [], []
+    if versions:
+        for _, key, version, latest, modified, etag, size, *rest in entries:
+            marker, marker_key, _, marker_modified, folder = rest
+            if size:
+                version = ClientS3.clean_s3_version(_unescape(version))
+                rows.append(_row(source, key, size, etag, modified, version, latest))
+            elif marker:  # its date checked, as botocore converts it
+                _parse_timestamp(_unescape(marker_modified))
+                markers.append(_unescape(marker_key))
+            else:
+                folders.append(_unescape(folder))
+    else:
+        for _, key, modified, etag, size, folder in entries:
+            if size:
+                rows.append(_row(source, key, size, etag, modified))
+            else:
+                folders.append(_unescape(folder))
+    return rows, markers, folders
 
 
 def _rows_page(body: bytes, shape: Shape, source: str) -> dict[str, Any] | None:
     """The page as ``_list_page`` reads it, or ``None`` when ElementTree must
     read it. Its objects are ``FileRows`` with keys as written; delete markers
-    and folders are dicts of their key alone. Patterns read the root's children
-    one after another, and ElementTree reads the root with its entries left out."""
-    if (text := _plain_text(body)) is None or (split := _split(text, shape)) is None:
+    and folders are dicts of their key alone."""
+    versions = shape.name == "ListObjectVersionsOutput"
+    if (split := _split(body, versions)) is None:
         return None
+    others, ns, entries = split
     try:
-        root = fromstring(split[0])  # noqa: S314
-    except ParseError:
-        return None
-    ns = root.tag[: root.tag.find("}") + 1]
-    if root.tag == f"{ns}Error":
-        return None
-    page = _read(root, _fields(shape, ns))
-    if page.keys() & _READS.keys():
-        return None  # an entry the patterns did not match
-    found = split[1]
-    try:
-        page["FileRows"] = [
-            _row(source, *e) for e in found["Contents"] + found["Versions"]
-        ]
-        page["DeleteMarkers"] = []
-        for key, modified in found["DeleteMarkers"]:
-            if modified is not None:  # ElementTree converts it, so it must be valid
-                _parse_timestamp(_unescape(modified))
-            page["DeleteMarkers"].append({"Key": _unescape(key)})
-        page["CommonPrefixes"] = [
-            {"Prefix": _unescape(p)} for p in found["CommonPrefixes"]
-        ]
+        rows, markers, folders = _read_entries(entries, versions, source)
     except ValueError:
         return None
-    return page
+    return _read(others, _fields(shape, ns)) | {
+        "FileRows": rows,
+        "DeleteMarkers": [{"Key": key} for key in markers],
+        "CommonPrefixes": [{"Prefix": prefix} for prefix in folders],
+    }
+
+
+def _row(source, key, size, etag, modified, version="", latest="true") -> FileRow:
+    return as_file_row(
+        (
+            source,
+            _unescape(key),
+            int(size),
+            version,
+            _unescape(etag).strip('"'),
+            latest == "true",
+            _parse_timestamp(_unescape(modified)),
+            None,
+        )
+    )
 
 
 def _decode_rows(parsed, context, **kwargs) -> None:
