@@ -1,8 +1,12 @@
 import errno
 import os
+import re
+from collections import defaultdict
 from collections.abc import Callable
+from contextvars import ContextVar
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import unquote_plus
 from xml.etree.ElementTree import Element, ParseError, fromstring
 
 from aiobotocore.parsers import AioResponseParserFactory, AioRestXMLParser
@@ -14,7 +18,7 @@ from botocore.utils import parse_timestamp
 from fsspec.asyn import get_loop, sync, sync_wrapper
 from s3fs import S3FileSystem
 
-from datachain.lib.file import File, FileRow
+from datachain.lib.file import File, FileRow, as_file_row
 
 from .fsspec import BucketStatus, RangeListedClient
 from .ranges import PROCESS_LIST_WORKERS, Keep, Page
@@ -74,24 +78,235 @@ def _read(node: Element, fields: Fields) -> dict[str, Any]:
     return out
 
 
+# While ClientS3._list_page waits for a page, the source its rows are listed from
+_ROWS_OF: ContextVar[str | None] = ContextVar("_ROWS_OF", default=None)
+_DECLARATION = re.compile(r"""<\?xml(?:[^>]*?\sencoding=["']([^"']*)["'])?[^>]*\?>""")
+_ROOT = re.compile(r"[ \t\n]*<([A-Za-z]\w*)(?:[ \t\n][^<>]*)?>")
+_FORBIDDEN = bytes(set(range(32)) - {9, 10, 13})  # control characters XML forbids
+_QUOTES = {"&#34;": '"', "&apos;": "'", "&#39;": "'"}
+_SPACE = "[ \t\n]*"
+_GUARD = re.compile(r"\(\?\(@(\w+)@\)\(\?!\)\)")  # (?(@group@)(?!)), see _entry
+# the fields _list_page reads or ElementTree would convert, per list of entries
+_READS = {
+    "Contents": ("Key", "Size", "ETag", "LastModified"),
+    "Versions": ("Key", "Size", "ETag", "LastModified", "VersionId", "IsLatest"),
+    "DeleteMarkers": ("Key", "LastModified"),
+    "CommonPrefixes": ("Prefix",),
+}
+_ORDER = ("Key", "VersionId", "IsLatest", "LastModified", "ETag", "Size", "Owner")
+_CHILDREN: dict[str, tuple[re.Pattern, dict[str, list[str]]]] = {}
+
+
+def _unescape(text: str) -> str:
+    """Text with its quote entities replaced; any other entity is a ValueError."""
+    if "&" not in text:
+        return text
+    text = text.replace("&quot;", '"')
+    if "&" in text:
+        for escaped, char in _QUOTES.items():
+            text = text.replace(escaped, char)
+        if "&" in text:
+            raise ValueError(f"an entity in {text!r}")
+    return text
+
+
+def _children(shape: Shape) -> tuple[re.Pattern, dict[str, list[str]]]:
+    """A pattern of one child of a listing's root element, with any space before
+    it, and the groups of each list's fields. An entry is a group named for its
+    list, with a group for each field of ``_READS``; any other child must hold
+    text only."""
+    if shape.name not in _CHILDREN:
+        lists = {n: m for n, m in shape.members.items() if n in _READS}
+        entries = [
+            _entry(name, member.serialization.get("name", name), member.member)
+            for name, member in lists.items()
+        ]
+        other = r"(?P<other><(?P<tag>[A-Za-z]\w*)(?:>[^<]*</(?P=tag)>|/>))"
+        source = rf"{_SPACE}(?:{'|'.join(entries)}|{other})"
+        # re takes a group defined later in a condition by number only
+        numbers = re.compile(_GUARD.sub("", source)).groupindex
+        pattern = re.compile(_GUARD.sub(lambda g: f"(?({numbers[g[1]]})(?!))", source))
+        groups = {name: [f"{name}_{f}" for f in _READS[name]] for name in lists}
+        _CHILDREN[shape.name] = pattern, groups
+    return _CHILDREN[shape.name]
+
+
+def _entry(name: str, tag: str, entry: Shape) -> str:
+    fields = {}
+    for field, member in entry.members.items():
+        child = member.serialization.get("name", field)
+        if field in _READS[name]:
+            group = f"{name}_{field}"
+            # a field read twice is left to ElementTree, which checks both
+            fields[field] = f"<{child}>(?(@{group}@)(?!))(?P<{group}>[^<]*)</{child}>"
+        elif member.type_name in ("string", "boolean") or (
+            member.type_name == "list" and member.member.type_name == "string"
+        ):
+            fields[field] = _unread(child)
+        elif member.type_name == "structure" and all(
+            m.type_name == "string" for m in member.members.values()
+        ):
+            inner = "|".join(
+                _unread(m.serialization.get("name", n))
+                for n, m in member.members.items()
+            )
+            fields[field] = (
+                rf"<{child}(?:/>|>(?:{_SPACE}(?:{inner}))*{_SPACE}</{child}>)"
+            )
+    # tried in the order S3 writes them, as each miss costs a try
+    order = sorted(fields, key=lambda f: _ORDER.index(f) if f in _ORDER else 99)
+    alternatives = "|".join(fields[f] for f in order)
+    return rf"(?P<{name}><{tag}>(?:{_SPACE}(?:{alternatives}))*{_SPACE}</{tag}>)"
+
+
+def _unread(tag: str) -> str:
+    # no entity: one ElementTree rejects would go unseen
+    return f"<{tag}(?:/>|>[^<&]*</{tag}>)"
+
+
+def _row(
+    source: str,
+    key: str | None,
+    size: str | None,
+    etag: str | None,
+    modified: str | None,
+    version: str | None = None,
+    latest: str | None = None,
+) -> FileRow:
+    if key is None or size is None or modified is None:
+        raise ValueError("an entry without a key, size or modification time")
+    return as_file_row(
+        (
+            source,
+            _unescape(key),
+            int(size),
+            "" if version is None else ClientS3.clean_s3_version(_unescape(version)),
+            "" if etag is None else _unescape(etag).strip('"'),
+            True if latest is None else _unescape(latest) == "true",
+            _parse_timestamp(_unescape(modified)),
+            None,
+        )
+    )
+
+
+def _plain_text(body: bytes) -> str | None:
+    """The page as text, when all its text reads as it is written, but for
+    entities: XML rewrites carriage returns and forbids control characters,
+    U+FFFE, U+FFFF and "]]>"."""
+    try:
+        text = body.decode()
+    except UnicodeDecodeError:
+        return None
+    declaration = _DECLARATION.match(text)
+    if declaration and (declaration[1] or "utf-8").lower() != "utf-8":
+        return None
+    if (
+        b"\r" in body
+        or (b"]" in body and b"]]>" in body)
+        or len(body.translate(None, _FORBIDDEN)) != len(body)
+        or (not body.isascii() and (b"\xef\xbf\xbe" in body or b"\xef\xbf\xbf" in body))
+    ):
+        return None
+    return text[declaration.end() :] if declaration else text
+
+
+def _split(text: str, shape: Shape) -> tuple[str, dict[str, list]] | None:
+    """The root element without its entries, and the fields read of each list
+    of entries, when patterns read every child of the root."""
+    if not (root := _ROOT.match(text)):
+        return None
+    (pattern, groups), end = _children(shape), root.end()
+    found: dict[str, list] = defaultdict(list)
+    others = []
+    for child in pattern.finditer(text, end):
+        if child.start() != end:
+            return None  # something no pattern reads, such as a comment
+        end = child.end()
+        if (name := child.lastgroup or "") == "other":
+            others.append(child[0])
+        else:
+            found[name].append(child.group(*groups[name]))
+    close = f"</{root[1]}>"
+    if text[end:].strip(" \t\n") != close:
+        return None
+    return root[0] + "".join(others) + close, found
+
+
+def _rows_page(body: bytes, shape: Shape, source: str) -> dict[str, Any] | None:
+    """The page as ``_list_page`` reads it, or ``None`` when ElementTree must
+    read it. Its objects are ``FileRows`` with keys as written; delete markers
+    and folders are dicts of their key alone. Patterns read the root's children
+    one after another, and ElementTree reads the root with its entries left out."""
+    if (text := _plain_text(body)) is None or (split := _split(text, shape)) is None:
+        return None
+    try:
+        root = fromstring(split[0])  # noqa: S314
+    except ParseError:
+        return None
+    ns = root.tag[: root.tag.find("}") + 1]
+    if root.tag == f"{ns}Error":
+        return None
+    page = _read(root, _fields(shape, ns))
+    if page.keys() & _READS.keys():
+        return None  # an entry the patterns did not match
+    found = split[1]
+    try:
+        page["FileRows"] = [
+            _row(source, *e) for e in found["Contents"] + found["Versions"]
+        ]
+        page["DeleteMarkers"] = []
+        for key, modified in found["DeleteMarkers"]:
+            if modified is not None:  # ElementTree converts it, so it must be valid
+                _parse_timestamp(_unescape(modified))
+            page["DeleteMarkers"].append({"Key": _unescape(key)})
+        page["CommonPrefixes"] = [
+            {"Prefix": _unescape(p)} for p in found["CommonPrefixes"]
+        ]
+    except ValueError:
+        return None
+    return page
+
+
+def _decode_rows(parsed, context, **kwargs) -> None:
+    """URL-decodes the keys of ``FileRows`` when botocore decodes the others:
+    when it asked for URL encoding itself, and the page is URL encoded."""
+    rows = parsed.get("FileRows")
+    if (
+        rows
+        and parsed.get("EncodingType") == "url"
+        and context.get("encoding_type_auto_set")
+    ):
+        parsed["FileRows"] = [
+            row._replace(path=unquote_plus(row.path))
+            if "%" in row.path or "+" in row.path
+            else row
+            for row in rows
+        ]
+
+
 class _ListingParser(AioRestXMLParser):
-    """Reads listing pages straight from the XML, without botocore's model walk.
+    """Reads listing pages straight from the XML, without botocore's model walk,
+    and for ``ClientS3._list_page`` with patterns when it can (``_rows_page``).
     A page that does not parse, or holds an error, is a 500 that botocore retries."""
 
     def _do_parse(self, response, shape):
         if getattr(shape, "name", "") not in _LISTINGS or not response["body"]:
             return super()._do_parse(response, shape)
-        try:
-            root = fromstring(response["body"])  # noqa: S314
-            ns = root.tag[: root.tag.find("}") + 1]  # the page's namespace, or ""
-        except ParseError:
-            root, ns = None, ""
-        if root is None or root.tag == f"{ns}Error":
-            response["status_code"] = 500
-            return self._do_error_parse(response, shape)
+        source = _ROWS_OF.get()
+        page = _rows_page(response["body"], shape, source) if source else None
+        if page is None:
+            try:
+                root = fromstring(response["body"])  # noqa: S314
+                ns = root.tag[: root.tag.find("}") + 1]  # the page's namespace, or ""
+            except ParseError:
+                root, ns = None, ""
+            if root is None or root.tag == f"{ns}Error":
+                response["status_code"] = 500
+                return self._do_error_parse(response, shape)
+            page = _read(root, _fields(shape, ns))
         parsed = {"ResponseMetadata": self._populate_response_metadata(response)}
         self._parse_non_payload_attrs(response, shape, shape.members, parsed)
-        return parsed | _read(root, _fields(shape, ns))
+        return parsed | page
 
 
 class _ParserFactory(AioResponseParserFactory):
@@ -115,6 +330,8 @@ class _ListingSession(AioSession):
         self.register_component("response_parser_factory", factory)
         self.unregister("before-parse.s3.*", handlers._handle_200_error)
         self.register("before-parse.s3.*", _handle_200_error)
+        self.register("after-call.s3.ListObjectsV2", _decode_rows)
+        self.register("after-call.s3.ListObjectVersions", _decode_rows)
 
 
 class _S3FileSystem(S3FileSystem):
@@ -308,6 +525,7 @@ class ClientS3(RangeListedClient):
         await self.fs.set_session()
         s3 = await self.fs.get_s3(self.name)
         list_page = s3.list_object_versions if versions else s3.list_objects_v2
+        rows_of = _ROWS_OF.set(self.uri)
         try:
             page = await list_page(
                 Bucket=self.name,
@@ -320,26 +538,36 @@ class ClientS3(RangeListedClient):
             code = e.response.get("Error", {}).get("Code")
             if not versions or token is not None or code != "NotImplemented":
                 raise
+            page = None
+        finally:
+            _ROWS_OF.reset(rows_of)
+        if page is None:
             # stores without version support, such as R2, hold only current objects
             self._unversioned = True
             return await self._list_page(
                 prefix, start_after, None, hi, page_size, delimiter
             )
-        entries = page.get("Versions" if versions else "Contents", [])
-        keys = [d["Key"] for d in entries + page.get("DeleteMarkers", [])]
+        keep = Keep(self, start_after, hi)
+        if (rows := page.get("FileRows")) is None:  # ElementTree read the page
+            entries = page.get("Versions" if versions else "Contents", [])
+            keys = [d["Key"] for d in entries]
+            rows = [self._file_row(d, versions) for d in entries if keep(d["Key"])]
+        else:
+            keys = [row[1] for row in rows]
+            rows = [row for row in rows if keep(row[1])]
+        listed = [d["Key"] for d in page.get("DeleteMarkers", [])]
         # folders past a delimiter: listed past, though they make no rows
-        keys += [p["Prefix"] for p in page.get("CommonPrefixes", [])]
+        listed += [p["Prefix"] for p in page.get("CommonPrefixes", [])]
         if not page.get("IsTruncated"):
             token = None
         elif versions:
             token = page["NextKeyMarker"], page.get("NextVersionIdMarker")
         else:
             token = page["NextContinuationToken"]
-        keep = Keep(self, start_after, hi)
         return Page(
-            [self._file_row(d, versions) for d in entries if keep(d["Key"])],
-            entries[0]["Key"] if entries else None,
-            max(keys, default=None),
+            rows,
+            keys[0] if keys else None,
+            max(keys + listed, default=None),
             token,
             keep.past_lo,
             keep.past_hi,
