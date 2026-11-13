@@ -2772,9 +2772,7 @@ class DatasetQuery:
         self.checkpoints_enabled = checkpoints_enabled
 
         self.list_ds_name: str | None = None
-        # Shared with clones, so a chain and the chains derived from it resolve the
-        # listing once and keep that snapshot.
-        self._listing_ds: list[DatasetRecord] = []
+        self._listing_ds: list[DatasetRecord] = []  # shared with clones
         self.dialect = self.catalog.warehouse.db.dialect
 
         if name is None:
