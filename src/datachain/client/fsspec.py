@@ -20,8 +20,9 @@ from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
 
 from dvc_objects.fs.system import reflink
+from fsspec import Callback
 from fsspec.asyn import get_loop, sync
-from fsspec.callbacks import DEFAULT_CALLBACK, Callback
+from fsspec.callbacks import DEFAULT_CALLBACK
 
 from datachain.cache import Cache
 from datachain.client.fileslice import FileWrapper

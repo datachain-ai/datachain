@@ -141,9 +141,12 @@ def test_star_import_and_version_in_fresh_process():
         ("datachain.data_storage:AbstractMetastore", "datachain.query:Session"),
         ("datachain.query.dataset", "datachain.query:Session"),
         ("datachain:File", "datachain.sql"),
+        ("datachain:File", "datachain.query:Session"),
+        ("datachain:Mapper", "datachain.query:Session"),
     ],
 )
-def test_concurrent_first_imports(entries):
+@pytest.mark.parametrize("reverse", [False, True])
+def test_concurrent_first_imports(entries, reverse):
     _check(
         "import importlib, sys\n"
         "import datachain\n"
@@ -157,7 +160,7 @@ def test_concurrent_first_imports(entries):
         "    return getattr(module, name) if name else module\n"
         "with ThreadPoolExecutor(2) as pool:\n"
         "    list(pool.map(first_use, sys.argv[1:]))\n",
-        *entries,
+        *(reversed(entries) if reverse else entries),
     )
 
 

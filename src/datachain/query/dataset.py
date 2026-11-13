@@ -20,7 +20,8 @@ import attrs
 import sqlalchemy
 import sqlalchemy as sa
 from attrs import frozen
-from fsspec.callbacks import DEFAULT_CALLBACK, Callback, TqdmCallback
+from fsspec import Callback
+from fsspec.callbacks import DEFAULT_CALLBACK, TqdmCallback
 from sqlalchemy import Column
 from sqlalchemy.sql import func as f
 from sqlalchemy.sql.elements import ColumnClause, ColumnElement, Label

@@ -28,7 +28,8 @@ from typing import (
     get_origin,
 )
 
-from fsspec.callbacks import DEFAULT_CALLBACK, Callback
+from fsspec import Callback
+from fsspec.callbacks import DEFAULT_CALLBACK
 from pydantic import BaseModel, Field, ValidationError, create_model
 from sqlalchemy import and_, asc, cast, desc, nulls_last, or_
 from sqlalchemy.sql import operators as sa_operators

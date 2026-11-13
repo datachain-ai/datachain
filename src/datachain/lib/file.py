@@ -15,7 +15,8 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
 
-from fsspec.callbacks import DEFAULT_CALLBACK, Callback
+from fsspec import Callback
+from fsspec.callbacks import DEFAULT_CALLBACK
 from fsspec.utils import stringify_path
 from pydantic import Field, field_validator, model_validator
 
