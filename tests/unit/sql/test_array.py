@@ -5,7 +5,15 @@ from numpy.testing import assert_array_almost_equal
 
 from datachain import func
 from datachain.sql import select
+from datachain.sql.sqlite import vector
 from datachain.sql.types import Float, Int, String
+
+
+def test_sqlite_vector_fallback_preserves_json_arrays():
+    assert vector.cosine_distance("[1, 0]", "[0, 1]") == 1.0
+    assert vector.euclidean_distance("[1, 0]", "[0, 1]") == pytest.approx(math.sqrt(2))
+    assert vector.euclidean_distance("[]", "[]") == 0.0
+    assert math.isnan(vector.euclidean_distance("[1, null]", "[1, 2]"))
 
 
 def test_cosine_distance(warehouse):

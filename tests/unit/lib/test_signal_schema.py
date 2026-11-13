@@ -1080,13 +1080,30 @@ def test_row_to_features_sets_stream_in_model_collection(test_session):
     assert collection.files[0]._catalog is test_session.catalog
 
 
-def test_row_to_objs_preserves_plain_collection():
-    values = [1.0, 2.0]
-    schema = SignalSchema({"values": list[float]})
+@pytest.fixture(params=["row_to_objs", "row_to_features"])
+def read_signal(request, test_session):
+    def read(spec, value):
+        schema = SignalSchema({"v": spec})
+        if request.param == "row_to_objs":
+            return schema.row_to_objs(_row(schema, (value,)))[0]
+        return schema.row_to_features((value,), test_session.catalog)[0]
 
-    (converted,) = schema.row_to_objs(_row(schema, (values,)))
+    return read
 
-    assert converted is values
+
+@pytest.mark.parametrize(
+    "spec,value",
+    [
+        (list[float], [1.0, 2.0]),
+        (list[float | None], [1.0, None]),
+        (list[list[float]], [[1.0], [2.0]]),
+        (dict[str, list[float]], {"a": [1.0]}),
+    ],
+)
+def test_row_readers_preserve_collections_that_need_no_conversion(
+    read_signal, spec, value
+):
+    assert read_signal(spec, value) is value
 
 
 @pytest.mark.parametrize(
@@ -1917,3 +1934,23 @@ def test_enrich_expr_types_unknown_column():
     schema = SignalSchema({"a": int})
     result = schema.enrich_expr_types(Column("nope"))
     assert isinstance(result.type, NullType)
+
+
+@pytest.mark.parametrize(
+    "spec,value,expected",
+    [
+        (list[float], [0.5, None, 2], [0.5, None, 2]),
+        (list[int], [1, None, 3], [1, None, 3]),
+        (list[str], ["a", "b"], ["a", "b"]),
+        (list[tuple[int, str]], [[1, "a"]], [(1, "a")]),
+        (list[dict[int, str]], [{"1": "a"}], [{1: "a"}]),
+        (tuple[float, ...], [0.5, 1.5], (0.5, 1.5)),
+        (tuple[int, str], [1, "a"], (1, "a")),
+        (list[list[float]], [[0.5], [1.5, None]], [[0.5], [1.5, None]]),
+        (list[MyType1], [{"aa": 1, "bb": "x"}], [MyType1(aa=1, bb="x")]),
+    ],
+)
+def test_row_readers_convert_sequences(read_signal, spec, value, expected):
+    features = read_signal(spec, value)
+    assert features == expected
+    assert type(features) is type(expected)

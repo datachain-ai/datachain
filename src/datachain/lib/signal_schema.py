@@ -982,8 +982,14 @@ class SignalSchema:
         read_model = _model_reader(build_model)
         res = []
         pos = 0
-        for reader in self._signal_plan.values():
-            value, pos = self._read_signal(reader, row, pos, read_model, convert_scalar)
+        for name, reader in self._signal_plan.items():
+            value, pos = self._read_signal(
+                reader,
+                row,
+                pos,
+                read_model,
+                convert_scalar if self._row_conversion_required[name] else None,
+            )
             res.append(value)
         return res
 
@@ -1025,17 +1031,21 @@ class SignalSchema:
             if parts and isinstance(value, (list, tuple)):
                 # `tuple[A, B]` is positional; every other collection is uniform
                 positional = is_tuple_annotation(annotation) and len(parts) > 1
-                converted = [
-                    self._convert_feature_value(
-                        parts[i] if positional and i < len(parts) else parts[0],
-                        item,
-                        catalog,
-                        cache,
-                    )
-                    if item is not None
-                    else None
-                    for i, item in enumerate(value)
-                ]
+                converted = (
+                    list(value)
+                    if not positional and not self._requires_row_conversion(parts[0])
+                    else [
+                        self._convert_feature_value(
+                            parts[i] if positional and i < len(parts) else parts[0],
+                            item,
+                            catalog,
+                            cache,
+                        )
+                        if item is not None
+                        else None
+                        for i, item in enumerate(value)
+                    ]
+                )
                 # the DB hands back a list; a declared tuple must arrive as one
                 result = (
                     tuple(converted) if is_tuple_annotation(annotation) else converted
