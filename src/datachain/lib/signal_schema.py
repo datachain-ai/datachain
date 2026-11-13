@@ -536,7 +536,7 @@ class SignalSchema:
                     if base_model:
                         break
 
-            fr = create_feature_model(
+            return create_feature_model(
                 type_name,
                 fields,
                 base=base_model,
@@ -544,8 +544,6 @@ class SignalSchema:
                 partial_fingerprint=ct.partial_fingerprint,
                 module=module,
             )
-            return fr
-
         return ModelStore.get(model_name, target_version)
 
     @staticmethod
