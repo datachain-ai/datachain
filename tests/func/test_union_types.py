@@ -21,7 +21,6 @@ import pytest
 import datachain as dc
 from datachain import C, func
 from datachain.lib.data_model import DataModel
-from datachain.lib.signal_schema import SignalResolvingError
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 
 
@@ -564,7 +563,10 @@ def test_merge_widens_union_on_the_padded_side(test_session):
     assert merged.signals_schema.values["value"] == int | str | None
 
 
-def test_to_storage_takes_a_type_qualified_signal(tmp_path, test_session):
+@pytest.mark.parametrize("signal", ["f", "f.TextFile"])
+def test_to_storage_takes_union_root_or_type_qualified_signal(
+    tmp_path, test_session, signal
+):
     from datachain.lib.file import ImageFile, TextFile
 
     src = tmp_path / "a.txt"
@@ -575,10 +577,7 @@ def test_to_storage_takes_a_type_qualified_signal(tmp_path, test_session):
         session=test_session,
     )
     out = tmp_path / "out"
-    with pytest.raises(SignalResolvingError, match=r"ambiguous|not found"):
-        chain.to_storage(out.as_posix(), signal="f", placement="filename")
-
-    chain.to_storage(out.as_posix(), signal="f.TextFile", placement="filename")
+    chain.to_storage(out.as_posix(), signal=signal, placement="filename")
     assert (out / "a.txt").read_text() == "hi"
 
 

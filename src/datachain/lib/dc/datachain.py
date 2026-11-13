@@ -51,6 +51,7 @@ from datachain.lib.data_model import (
     StandardType,
     arm_selector,
     dict_to_data_model,
+    union_arms,
     union_layout,
     unwrap_optional,
 )
@@ -3478,6 +3479,29 @@ class DataChain:
         self._setup = self._setup | kwargs
         return self
 
+    def _validate_file_signal(self, signal: str) -> None:
+        schema = self.signals_schema
+        arms, _ = union_arms(schema.get_column_type(signal, with_subtree=True))
+        if not any(inspect.isclass(a) and issubclass(a, File) for a in arms):
+            name = " | ".join(getattr(a, "__name__", str(a)) for a in arms)
+            msg = f"to_storage(): '{signal}' is {name}, not a file"
+            prefix = f"{signal}."
+            inner: list[str] = []
+            for path, type_, _, _ in schema.get_flat_tree():
+                candidate = ".".join(path)
+                if not candidate.startswith(prefix) or any(
+                    candidate.startswith(f"{s}.") for s in inner
+                ):
+                    continue
+                nested_arms, _ = union_arms(type_)
+                if any(inspect.isclass(a) and issubclass(a, File) for a in nested_arms):
+                    inner.append(candidate)
+            if inner:
+                msg += "; use " + " or ".join(f"signal='{s}'" for s in inner)
+                if any(hasattr(a, "save") for a in arms):
+                    msg += f", or {signal}.save(output) in map()"
+            raise DataChainParamsError(msg)
+
     def to_storage(
         self,
         output: str | os.PathLike[str],
@@ -3528,13 +3552,29 @@ class DataChain:
             ds.to_storage("gs://mybucket", placement="filename")
             ```
         """
+        signal = signal.replace(DEFAULT_DELIMITER, ".")
+        signal = self.signals_schema.resolve_arm_path(signal) or signal
+        self._validate_file_signal(signal)
+
         chain = self.persist()
         count = chain.count()
 
         if placement == "filename":
-            path_col = chain.signals_schema.to_db_col(f"{signal}.path")
-            named = chain._query.filter(C(path_col).isnot(None))
-            if named.distinct(pathfunc.name(C(path_col))).count() != named.count():
+            schema = chain.signals_schema
+            layout = union_layout(schema.get_column_type(signal, with_subtree=True))
+            signals = (
+                [
+                    f"{signal}.{arm_selector(arm)}"
+                    for arm in layout.arms
+                    if inspect.isclass(arm) and issubclass(arm, File)
+                ]
+                if layout and layout.use_slots
+                else [signal]
+            )
+            paths = [C(schema.to_db_col(f"{s}.path")) for s in signals]
+            path_col = sqlalchemy.func.coalesce(*paths) if len(paths) > 1 else paths[0]
+            named = chain._query.filter(path_col.isnot(None))
+            if named.distinct(pathfunc.name(path_col)).count() != named.count():
                 raise ValueError("Files with the same name found")
 
         if anon is not None:
@@ -3557,10 +3597,20 @@ class DataChain:
             client_config=client_config,
         )
         with closing(chain.to_iter(signal)) as rows_iter:
-            file_exporter.run(
-                (rows[0] for rows in rows_iter),
-                progress_bar,
-            )
+
+            def files():
+                has_file = False
+                has_value = False
+                for (value,) in rows_iter:
+                    has_file |= isinstance(value, File)
+                    has_value |= value is not None
+                    yield value
+                if has_value and not has_file:
+                    raise DataChainParamsError(
+                        f"to_storage(): '{signal}' contains no files"
+                    )
+
+            file_exporter.run(files(), progress_bar)
 
     def shuffle(self) -> "Self":
         """Shuffle rows with a best-effort deterministic ordering.
