@@ -169,7 +169,8 @@ class Session:
         only see their session-local job (see get_or_create_job).
         """
         if self.catalog.in_memory:
-            return self._session_job
+            # A catalog view shares the job of the session that owns it.
+            return (self._parent or self)._session_job
 
         if Session._CURRENT_JOB:
             return Session._CURRENT_JOB
@@ -195,9 +196,10 @@ class Session:
         shared through the process-wide cache in either direction.
         """
         if self.catalog.in_memory:
-            if self._session_job is None:
-                self._session_job = self._create_job()
-            return self._session_job
+            owner = self._parent or self
+            if owner._session_job is None:
+                owner._session_job = self._create_job()
+            return owner._session_job
 
         if Session._CURRENT_JOB:
             return Session._CURRENT_JOB

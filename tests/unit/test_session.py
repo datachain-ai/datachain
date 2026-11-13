@@ -374,6 +374,22 @@ def test_in_memory_session_job_isolated_from_env(catalog, monkeypatch):
     assert Session._CURRENT_JOB is None
 
 
+def test_read_storage_in_memory_with_client_config_uses_in_memory_session_job(
+    catalog, tmp_path
+):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "a.txt").write_text("a")
+    Session.get(catalog=catalog)
+
+    chain = dc.read_storage(
+        data_dir.as_uri(), in_memory=True, client_config={"use_listings_cache": False}
+    )
+
+    job = chain.session.get_or_create_job()
+    assert Session.get(in_memory=True).get_job() is job
+
+
 def test_read_storage_in_memory_keeps_listing_out_of_catalog(
     catalog_tmpfile, tmp_path, monkeypatch
 ):
