@@ -2957,7 +2957,7 @@ def test_read_parquet_output_field_a_file_lacks_with_no_default_raises(
         chain.to_list()
 
 
-def test_read_parquet_field_a_file_lacks_after_its_model_is_rebuilt_reads_as_none(
+def test_read_parquet_field_a_file_lacks_after_its_model_is_rebuilt_reads_the_rest(
     tmp_dir, empty_model_store, test_session
 ):
     path = tmp_dir / "parts"
@@ -2965,10 +2965,11 @@ def test_read_parquet_field_a_file_lacks_after_its_model_is_rebuilt_reads_as_non
     for i, point in enumerate([Point(x=1, y=2), OnlyY(y=7)], 1):
         chain = dc.read_values(id=[i], p=[point], session=test_session)
         chain.to_parquet(path / f"{i}.parquet")
-    # Without the model's code, its fields are rebuilt with a default of None.
+    # Without the model's code, x: int is rebuilt with a default of None. Only a DB
+    # with nullable int columns keeps that None, so p.x isn't checked.
     ModelStore.store.clear()
     chain = dc.read_parquet(path.as_uri(), source=False, session=test_session)
-    assert chain.order_by("id").to_list("p.x", "p.y") == [(1, 2), (None, 7)]
+    assert chain.order_by("id").to_values("p.y") == [2, 7]
 
 
 class XWithDefaults(DataModel):
