@@ -2775,6 +2775,7 @@ class DatasetQuery:
         self.checkpoints_enabled = checkpoints_enabled
 
         self.list_ds_name: str | None = None
+        self.listing_ds: list[DatasetRecord] = []  # shared with clones
         self.dialect = self.catalog.warehouse.db.dialect
 
         if name is None:
@@ -2905,12 +2906,18 @@ class DatasetQuery:
     def resolve_listing(self) -> None:
         """Runs listing pre-step if needed"""
         if self.list_ds_name and not self.starting_step:
-            listing_ds = ensure_listing(
-                self.list_ds_name, self.catalog, self.listing_fn, update=self.update
-            )
+            if not self.listing_ds:
+                self.listing_ds.append(
+                    ensure_listing(
+                        self.list_ds_name,
+                        self.catalog,
+                        self.listing_fn,
+                        update=self.update,
+                    )
+                )
 
             # at this point we know what is our starting listing dataset name
-            self._set_starting_step(listing_ds)  # type: ignore [arg-type]
+            self._set_starting_step(self.listing_ds[0])
 
     def resolve_all_listings(self) -> None:
         """Recursively resolve listings for this query and all sub-queries."""
