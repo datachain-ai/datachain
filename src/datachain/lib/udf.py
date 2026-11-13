@@ -1,6 +1,7 @@
 import hashlib
 import inspect
 import logging
+import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from collections.abc import Set as AbstractSet
@@ -25,6 +26,7 @@ from datachain.lib.convert.flatten import (
     union_value_match,
 )
 from datachain.lib.file import File, FileError, FileRow
+from datachain.lib.settings import DEFAULT_PREFETCH
 from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.utils import AbstractUDF, DataChainParamsError
 from datachain.query.batch import (
@@ -286,6 +288,7 @@ class UDFBase(AbstractUDF):
     is_input_batched = False
     is_output_batched = False
     prefetch: int = 0
+    prefetch_bytes: int | None = None
     # Class-level default so subclasses that skip super().__init__() still
     # have this attribute; _MultiSignalMapper sets params/output per entry
     # but doesn't call _init(), so _func would otherwise be missing.
@@ -503,6 +506,48 @@ def _row_files(row: Iterable, batch_columns: set[int] | None) -> Iterator[File]:
             yield from (item for item in obj if isinstance(item, File))
 
 
+def _files_to_prefetch(
+    row: Iterable, batch_columns: set[int] | None, max_size: int | None
+) -> Iterator[File]:
+    for obj in _row_files(row, batch_columns):
+        if obj.path and (max_size is None or 0 < obj.size <= max_size):
+            yield obj
+
+
+class _PrefetchBudget:
+    """Limits rows downloaded ahead and not yet processed to `max_rows` and
+    `max_bytes`, but always allows `min_rows` of them."""
+
+    def __init__(self, max_rows: int, max_bytes: int, min_rows: int) -> None:
+        self.max_rows, self.max_bytes, self.min_rows = max_rows, max_bytes, min_rows
+        self.rows = self.bytes = 0
+        self.changed = threading.Condition()
+
+    def size(self, files: list[File]) -> int:
+        # Unknown sizes and files in archives (the whole archive downloads)
+        # count as the full limit.
+        if any(file.location or file.size <= 0 for file in files):
+            return self.max_bytes
+        return min(sum(file.size for file in files), self.max_bytes)
+
+    def take(self, size: int, stop: threading.Event) -> None:
+        with self.changed:
+            while (
+                self.rows >= self.min_rows
+                and not stop.is_set()
+                and (self.rows >= self.max_rows or self.bytes + size > self.max_bytes)
+            ):
+                self.changed.wait(0.1)  # `stop` doesn't notify
+            self.rows += 1
+            self.bytes += size
+
+    def give_back(self, size: int) -> None:
+        with self.changed:
+            self.rows -= 1
+            self.bytes -= size
+            self.changed.notify()
+
+
 async def _prefetch_input(
     row: T,
     download_cb: Callback | None = None,
@@ -510,9 +555,7 @@ async def _prefetch_input(
     batch_columns: set[int] | None = None,
     max_size: int | None = None,
 ) -> T:
-    for obj in _row_files(row, batch_columns):  # type: ignore[arg-type]
-        if not obj.path or (max_size is not None and not 0 < obj.size <= max_size):
-            continue
+    for obj in _files_to_prefetch(row, batch_columns, max_size):
         try:
             if await obj._prefetch(download_cb):
                 after_prefetch()
@@ -539,6 +582,7 @@ def _prefetch_inputs(
     remove_prefetched: bool = False,
     batch_columns: set[int] | None = None,
     max_size: int | None = None,
+    max_bytes: int | None = None,
 ) -> "abc.Generator[T, None, None]":
     if not prefetch:
         yield from prepared_inputs
@@ -557,7 +601,25 @@ def _prefetch_inputs(
         batch_columns=batch_columns,
         max_size=max_size,
     )
-    mapper = AsyncMapper(f, prepared_inputs, workers=prefetch)
+    budget = None
+    if max_bytes is not None:
+        # prefetch=N holds N rows downloading, N downloaded and one in the UDF.
+        budget = _PrefetchBudget(2 * prefetch + 1, max_bytes, 2 * DEFAULT_PREFETCH + 1)
+
+    def row_size(row: T) -> int:
+        files = list(_files_to_prefetch(row, batch_columns, max_size))
+        return budget.size(files) if budget and files else 0
+
+    def admitted() -> Iterator[T]:
+        # Waiting here, before the read-ahead takes a row, leaves the rest of
+        # the input to `parallel` peers.
+        with safe_closing(prepared_inputs):
+            for row in prepared_inputs:
+                if budget and (size := row_size(row)):
+                    budget.take(size, mapper._shutdown_producer)
+                yield row
+
+    mapper = AsyncMapper(f, admitted(), workers=prefetch)
     with closing(mapper.iterate()) as row_iter:
         for row in row_iter:
             try:
@@ -565,6 +627,8 @@ def _prefetch_inputs(
             finally:
                 if remove_prefetched:
                     _remove_prefetched(row, batch_columns)
+                if budget and (size := row_size(row)):
+                    budget.give_back(size)
 
 
 def _get_cache(
@@ -659,6 +723,7 @@ class Mapper(UDFBase):
             download_cb=download_cb,
             remove_prefetched=bool(self.prefetch) and not cache,
             batch_columns=batch_columns,
+            max_bytes=self.prefetch_bytes,
         )
 
         with self._teardown_on_exit(), closing(prepared_inputs):
@@ -1010,6 +1075,7 @@ class Generator(UDFBase):
             download_cb=download_cb,
             remove_prefetched=bool(self.prefetch) and not cache,
             max_size=self.prefetch_max_size,
+            max_bytes=self.prefetch_bytes,
         )
 
         with self._teardown_on_exit(), closing(prepared_inputs):

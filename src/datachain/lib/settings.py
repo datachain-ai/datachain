@@ -5,6 +5,9 @@ from datachain.lib.utils import DataChainParamsError
 
 DEFAULT_CACHE = False
 DEFAULT_PREFETCH = 2
+# Unless set, map() and gen() download up to 16 files ahead, up to 512 MiB.
+AUTO_PREFETCH = 16
+AUTO_PREFETCH_BYTES = 512 * 1024 * 1024
 
 LLMParams = dict[str, Any] | Callable[[], dict[str, Any]]
 
@@ -19,6 +22,7 @@ class Settings:
 
     _cache: bool | None
     _prefetch: int | None
+    _prefetch_bytes: int | None
     _parallel: bool | int | None
     _workers: int | None
     _namespace: str | None
@@ -33,6 +37,7 @@ class Settings:
         self,
         cache: bool | None = None,
         prefetch: bool | int | None = None,
+        prefetch_bytes: int | None = None,
         parallel: bool | int | None = None,
         workers: int | None = None,
         namespace: str | None = None,
@@ -69,6 +74,14 @@ class Settings:
                     f", {prefetch} was given"
                 )
             self._prefetch = prefetch
+
+        if prefetch_bytes is not None and (
+            type(prefetch_bytes) is not int or prefetch_bytes <= 0
+        ):
+            raise SettingsError(
+                f"'prefetch_bytes' must be positive int: {prefetch_bytes!r}"
+            )
+        self._prefetch_bytes = prefetch_bytes
 
         if parallel is None or parallel is False:
             self._parallel = None
@@ -193,6 +206,14 @@ class Settings:
         return self._prefetch if self._prefetch is not None else DEFAULT_PREFETCH
 
     @property
+    def prefetch_auto(self) -> bool:
+        return self._prefetch is None
+
+    @property
+    def prefetch_bytes(self) -> int | None:
+        return self._prefetch_bytes
+
+    @property
     def parallel(self) -> bool | int | None:
         return self._parallel if self._parallel is not None else None
 
@@ -249,7 +270,7 @@ class Settings:
         if self._ephemeral is not None:
             res["ephemeral"] = self.ephemeral
         # `llm`/`llm_params` are intentionally omitted: they are read at bind time
-        # (LLMSpec.bind), not round-tripped through this dict.
+        # (LLMSpec.bind), not round-tripped through this dict. So is `prefetch_bytes`.
         return res
 
     def add(self, settings: "Settings") -> None:
@@ -257,6 +278,8 @@ class Settings:
             self._cache = settings._cache
         if settings._prefetch is not None:
             self._prefetch = settings._prefetch
+        if settings._prefetch_bytes is not None:
+            self._prefetch_bytes = settings._prefetch_bytes
         if settings._parallel is not None:
             self._parallel = settings._parallel
         if settings._workers is not None:
