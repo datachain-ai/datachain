@@ -85,9 +85,7 @@ def session_for(
     session = Session.get(session, in_memory=in_memory)
     if client_config is None or session.catalog.client_config == client_config:
         return session
-    catalog = session.catalog.copy()
-    catalog.client_config = client_config
-    return session._with_catalog(catalog)
+    return session._with_catalog(session.catalog.with_client_config(client_config))
 
 
 def _session_client_config(session: Session | None, client_config: dict | None) -> dict:

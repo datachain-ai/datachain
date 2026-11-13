@@ -155,6 +155,16 @@ def test_cleanup_temp_datasets_all_states(catalog, project):
             catalog.get_dataset(temp_name, include_incomplete=True)
 
 
+def test_get_with_client_config_after_session_exists_keeps_active_session(catalog):
+    default = Session.get(catalog=catalog)
+
+    configured = Session.get(client_config={"anon": True})
+
+    assert configured.catalog.client_config == {"anon": True}
+    assert Session.get() is default
+    assert default.catalog.client_config == {}
+
+
 def test_get_job_returns_none_without_env_or_cached_job(catalog, monkeypatch):
     monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
     with Session("testjob", catalog=catalog) as session:

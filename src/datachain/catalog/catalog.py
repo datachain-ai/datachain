@@ -510,6 +510,7 @@ class Catalog:
         cache_dir=None,
         tmp_dir=None,
         client_config: dict[str, Any] | None = None,
+        source_client_configs: dict[str, dict[str, Any]] | None = None,
         in_memory: bool = False,
     ):
         datachain_dir = DataChainDir(cache=cache_dir, tmp=tmp_dir)
@@ -518,6 +519,10 @@ class Catalog:
         self.warehouse = warehouse
         self.cache = Cache(datachain_dir.cache, datachain_dir.tmp)
         self.client_config = client_config if client_config is not None else {}
+        # Client configs of storage sources (File.source) listed with their own.
+        self.source_client_configs = dict(source_client_configs or {})
+        # Copies share this one, so later reads without a config find them.
+        self._source_registry = self.source_client_configs
         self._init_params = {
             "cache_dir": cache_dir,
             "tmp_dir": tmp_dir,
@@ -535,6 +540,7 @@ class Catalog:
         return {
             **self._init_params,
             "client_config": self.client_config,
+            "source_client_configs": self.source_client_configs,
         }
 
     def copy(self, cache=True, db=True):
@@ -550,6 +556,25 @@ class Catalog:
             result.metastore = None
             result.warehouse = None
         return result
+
+    def with_client_config(self, client_config: dict[str, Any]) -> "Catalog":
+        """A copy that reads every source with `client_config`."""
+        result = self.copy()
+        result.client_config = client_config
+        result.source_client_configs = {}
+        return result
+
+    def client_config_for(self, source: str) -> dict[str, Any]:
+        """The client config to read files of `source` (a `File.source`) with."""
+        return self.source_client_configs.get(source, self.client_config)
+
+    def register_source_config(
+        self, source: str, client_config: dict[str, Any]
+    ) -> None:
+        """Read files of `source` with `client_config`, here and in later reads
+        that have no client config of their own."""
+        self.source_client_configs[source] = client_config
+        self._source_registry[source] = client_config
 
     def close(self) -> None:
         if not self._owns_connections:
@@ -578,7 +603,9 @@ class Catalog:
         Return the client corresponding to the given source `uri`.
         """
         config = (
-            client_config if client_config is not None else config or self.client_config
+            client_config
+            if client_config is not None
+            else config or self.client_config_for(uri)
         )
         cls = Client.get_implementation(uri)
         return cls.from_source(StorageURI(uri), self.cache, **config)
