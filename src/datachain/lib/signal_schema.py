@@ -2143,6 +2143,8 @@ class SignalSchema:
             base_name, _ = ModelStore.parse_name_version(ModelStore.get_name(model))
             base_partial_name = f"{base_name}Partial_{fingerprint[:10]}"
             base_hidden_fields = getattr(model, "_hidden_fields", [])
+            # A hidden field the caller selected by name is kept visible.
+            selected_leaves = {name for name, sub in selection.items() if sub is None}
 
             version = 1
 
@@ -2154,7 +2156,9 @@ class SignalSchema:
                     base=DataModel,
                     partial_fingerprint=fingerprint,
                     hidden_fields=[
-                        fname for fname in base_hidden_fields if fname in field_types
+                        fname
+                        for fname in base_hidden_fields
+                        if fname in field_types and fname not in selected_leaves
                     ],
                 )
             elif getattr(existing, "_partial_fingerprint", None) == fingerprint:
