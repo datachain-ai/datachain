@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from functools import cached_property, partial
 from graphlib import CycleError, TopologicalSorter
 from itertools import islice
+from operator import itemgetter
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import attrs
@@ -480,6 +481,29 @@ class UDFBase(AbstractUDF):
         self.params.set_file_streams(obj_row, catalog, cache, download_cb)
         return obj_row
 
+    @property
+    def _effective_prefetch(self) -> int:
+        assert self.params is not None
+        if not self.params._file_stream_params:
+            return 0
+        return self.prefetch
+
+    def _get_row_preparer(self, udf_fields, catalog, cache, download_cb):
+        assert self.params is not None
+        columns = self.params._plain_columns()
+        if columns is not None:
+            positions = {name: i for i, name in enumerate(udf_fields)}
+            getter = itemgetter(*(positions[c] for c in ["sys__id", *columns]))
+            return getter if columns else lambda row: (getter(row),)
+        return partial(
+            self._prepare_row,
+            udf_fields=udf_fields,
+            catalog=catalog,
+            cache=cache,
+            download_cb=download_cb,
+            include_id=True,
+        )
+
     def _prepare_row(
         self, row, udf_fields, catalog, cache, download_cb, include_id=False
     ):
@@ -636,28 +660,30 @@ class Mapper(UDFBase):
             f"batch_map() function {(self.verbose_name if self._func else self.name)!r}"
         )
 
-        def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
-            def prepare(row):
-                return self._prepare_row(
-                    row, udf_fields, catalog, cache, download_cb, include_id=True
-                )
+        prefetch = self._effective_prefetch
 
+        def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
+            prepare_row = self._get_row_preparer(
+                udf_fields, catalog, cache, download_cb
+            )
             with safe_closing(udf_inputs):
                 for row in udf_inputs:
                     if batch_columns is None:
-                        yield prepare(row)
+                        yield prepare_row(row)
                         continue
                     yield [
                         list(col) if i in batch_columns else col[0]
-                        for i, col in enumerate(zip(*map(prepare, row), strict=True))
+                        for i, col in enumerate(
+                            zip(*map(prepare_row, row), strict=True)
+                        )
                     ]
 
         prepared_inputs = _prepare_rows(udf_inputs)
         prepared_inputs = _prefetch_inputs(
             prepared_inputs,
-            self.prefetch,
+            prefetch,
             download_cb=download_cb,
-            remove_prefetched=bool(self.prefetch) and not cache,
+            remove_prefetched=bool(prefetch) and not cache,
             batch_columns=batch_columns,
         )
 
@@ -948,12 +974,15 @@ class Generator(UDFBase):
         ]
         input_keys: dict[Any, tuple] = {}
 
+        prefetch = self._effective_prefetch
+
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
+            prepare_row = self._get_row_preparer(
+                udf_fields, catalog, cache, download_cb
+            )
             with safe_closing(udf_inputs):
                 for row in udf_inputs:
-                    prepared = self._prepare_row(
-                        row, udf_fields, catalog, cache, download_cb, include_id=True
-                    )
+                    prepared = prepare_row(row)
                     if key_columns:
                         input_keys[prepared[0]] = tuple(
                             row[i] for i in key_inputs
@@ -1006,9 +1035,9 @@ class Generator(UDFBase):
         prepared_inputs = _prepare_rows(udf_inputs)
         prepared_inputs = _prefetch_inputs(
             prepared_inputs,
-            self.prefetch,
+            prefetch,
             download_cb=download_cb,
-            remove_prefetched=bool(self.prefetch) and not cache,
+            remove_prefetched=bool(prefetch) and not cache,
             max_size=self.prefetch_max_size,
         )
 
