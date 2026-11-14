@@ -1,4 +1,5 @@
 import os
+import subprocess
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -6,11 +7,18 @@ from xml.etree.ElementTree import fromstring
 
 import pytest
 from adlfs import AzureBlobFileSystem
+from azure.core.exceptions import ClientAuthenticationError
+from azure.identity import (
+    AzureCliCredential,
+    ChainedTokenCredential,
+    CredentialUnavailableError,
+)
 from fsspec.asyn import sync
 from fsspec.callbacks import DEFAULT_CALLBACK
+from fsspec.config import conf
 
 from datachain.asyn import get_loop
-from datachain.client.azure import AzureClient
+from datachain.client.azure import AzureClient, _cannot_authenticate
 from datachain.lib.file import File, FileRow
 
 _FAKE_SAS = "https://account.blob.core.windows.net/mycontainer/blob.txt?sv=x&sig=y"
@@ -353,6 +361,304 @@ def _listed(blobs: str, version_aware: bool = False) -> tuple[AzureClient, Any, 
     return client, container, sync(get_loop(), list_all)
 
 
+@pytest.fixture
+def no_azure_env(monkeypatch):
+    for var in list(os.environ):
+        if var.startswith("AZURE_"):
+            monkeypatch.delenv(var)
+    monkeypatch.setattr("datachain.client.azure._CREDENTIAL_CHECKS", {})
+    AzureClient.FS_CLASS.clear_instance_cache()
+    yield
+    AzureClient.FS_CLASS.clear_instance_cache()
+
+
+class _Credential:
+    def __init__(self, error=None):
+        self.error = error
+
+    def get_token(self, *scopes, **kwargs):
+        if self.error:
+            raise self.error
+        return "token"
+
+
+def _chain(*credentials):
+    return ChainedTokenCredential(*credentials)
+
+
+@pytest.mark.parametrize(
+    "credentials, found",
+    [
+        (
+            [
+                CredentialUnavailableError("no env"),
+                CredentialUnavailableError("no cli"),
+            ],
+            False,
+        ),
+        ([CredentialUnavailableError("no env"), None], True),
+        ([ClientAuthenticationError("bad secret"), None], False),
+    ],
+    ids=["nothing-configured", "identity", "failing-identity"],
+)
+def test_default_credentials_unavailable_after_authentication_failure(
+    credentials, found
+):
+    chain = _chain(*map(_Credential, credentials))
+    assert _cannot_authenticate(chain) is not found
+
+
+def test_cli_timeout_allows_automatic_anonymous_access(mocker):
+    mocker.patch(
+        "azure.identity._credentials.azure_cli.shutil.which", return_value="az"
+    )
+    mocker.patch(
+        "azure.identity._credentials.azure_cli.subprocess.check_output",
+        side_effect=subprocess.TimeoutExpired("az", 1),
+    )
+    assert _cannot_authenticate(AzureCliCredential())
+
+
+@pytest.mark.parametrize("anon", [None, False])
+def test_failed_environment_credentials_respect_anonymous_mode(
+    no_azure_env, monkeypatch, mocker, anon
+):
+    for name, value in {
+        "AZURE_CLIENT_ID": "client",
+        "AZURE_TENANT_ID": "tenant",
+        "AZURE_CLIENT_SECRET": "secret",
+    }.items():
+        monkeypatch.setenv(name, value)
+    mocker.patch(
+        "azure.identity.ClientSecretCredential.get_token",
+        side_effect=ClientAuthenticationError("bad secret"),
+    )
+    fs = AzureClient.create_fs(account_name="failed", anon=anon)
+    assert fs.anon is (anon is None)
+    if anon is False:
+        with pytest.raises(ClientAuthenticationError, match="bad secret"):
+            fs.sync_credential.get_token("https://storage.azure.com/.default")
+
+
+@pytest.mark.parametrize("found", [True, False])
+def test_create_fs_anon_when_credentials_unavailable(no_azure_env, found):
+    with patch(
+        "datachain.client.azure._cannot_authenticate", return_value=not found
+    ) as probe:
+        fs = AzureClient.create_fs(account_name=f"acc{found}")
+        AzureClient.create_fs(account_name=f"acc{found}")
+    assert fs.anon is not found
+    probe.assert_called_once()
+
+
+def test_create_fs_asks_again_after_credentials_unavailable(no_azure_env, mocker):
+    probe = mocker.patch(
+        "datachain.client.azure._cannot_authenticate", side_effect=[True, False]
+    )
+    now = mocker.patch("datachain.client.azure.time.monotonic", return_value=0.0)
+    assert AzureClient.create_fs(account_name="later").anon
+
+    now.return_value = 61.0  # then az login
+    assert not AzureClient.create_fs(account_name="later").anon
+    assert probe.call_count == 2
+
+
+def test_identity_probe_rechecks_authenticated_identity_after_ttl(no_azure_env, mocker):
+    probe = mocker.patch(
+        "datachain.client.azure._cannot_authenticate", side_effect=[False, True]
+    )
+    now = mocker.patch("datachain.client.azure.time.monotonic", return_value=0.0)
+    assert not AzureClient.create_fs(account_name="first").anon
+    now.return_value = 61.0
+    assert AzureClient.create_fs(account_name="second").anon
+    assert probe.call_count == 2
+
+
+def test_identity_probe_does_not_share_different_credential_selections(
+    no_azure_env, mocker
+):
+    probe = mocker.patch(
+        "datachain.client.azure._cannot_authenticate", side_effect=[True, False]
+    )
+    assert AzureClient.create_fs(
+        account_name="first", exclude_environment_credential=True
+    ).anon
+    assert not AzureClient.create_fs(account_name="second").anon
+    assert AzureClient.create_fs(
+        account_name="first", exclude_environment_credential=True
+    ).anon
+    assert not AzureClient.create_fs(account_name="second").anon
+    assert probe.call_count == 2
+
+
+@pytest.mark.parametrize("absent", [False, True])
+def test_identity_probe_is_shared_across_accounts_and_listing_modes(
+    no_azure_env, mocker, absent
+):
+    probe = mocker.patch(
+        "datachain.client.azure._cannot_authenticate", return_value=absent
+    )
+    for account, version_aware in [
+        ("first", False),
+        ("first", True),
+        ("second", False),
+    ]:
+        assert (
+            AzureClient.create_fs(
+                account_name=account, version_aware=version_aware
+            ).anon
+            is absent
+        )
+    probe.assert_called_once()
+
+
+def test_identity_probe_rechecks_after_configuration_changes(
+    no_azure_env, mocker, monkeypatch
+):
+    probe = mocker.patch(
+        "datachain.client.azure._cannot_authenticate", side_effect=[True, False]
+    )
+    assert AzureClient.create_fs(account_name="first").anon
+    monkeypatch.setenv("AZURE_CLIENT_ID", "configured-client")
+    assert not AzureClient.create_fs(account_name="second").anon
+    assert probe.call_count == 2
+
+
+@pytest.mark.parametrize("env", [{}, {"AZURE_STORAGE_ANON": "false"}])
+def test_create_fs_keeps_explicit_authenticated_mode(no_azure_env, monkeypatch, env):
+    for var, value in env.items():
+        monkeypatch.setenv(var, value)
+    kwargs = {} if env else {"anon": False}
+    with patch(
+        "datachain.client.azure._cannot_authenticate", return_value=True
+    ) as probe:
+        fs = AzureClient.create_fs(account_name=f"explicit{len(env)}", **kwargs)
+    probe.assert_not_called()
+    assert not fs.anon
+
+
+@pytest.mark.parametrize("anon", [False, True])
+def test_create_fs_keeps_fsspec_anonymous_setting(no_azure_env, monkeypatch, anon):
+    monkeypatch.setitem(conf, "abfs", {"anon": anon})
+    with patch(
+        "datachain.client.azure._cannot_authenticate", return_value=True
+    ) as probe:
+        fs = AzureClient.create_fs(account_name="configured")
+    assert fs.anon is anon
+    probe.assert_not_called()
+
+
+def test_create_fs_reloads_environment_credentials_for_same_account(
+    no_azure_env, monkeypatch, mocker
+):
+    from azure.core.credentials import AccessToken
+
+    options = {
+        "account_name": "same",
+        "exclude_managed_identity_credential": True,
+        "exclude_workload_identity_credential": True,
+        "exclude_shared_token_cache_credential": True,
+        "exclude_visual_studio_code_credential": True,
+        "exclude_cli_credential": True,
+        "exclude_powershell_credential": True,
+        "exclude_developer_cli_credential": True,
+        "exclude_interactive_browser_credential": True,
+        "exclude_broker_credential": True,
+    }
+    mocker.patch(
+        "azure.identity.ClientSecretCredential.get_token",
+        return_value=AccessToken("token", 2**31),
+    )
+    assert AzureClient.create_fs(**options).anon
+    for name, value in {
+        "AZURE_CLIENT_ID": "client",
+        "AZURE_TENANT_ID": "tenant",
+        "AZURE_CLIENT_SECRET": "secret",
+    }.items():
+        monkeypatch.setenv(name, value)
+
+    first = AzureClient.create_fs(**options)
+    assert not first.anon
+    assert first.sync_credential.credentials[0]._credential is not None
+    assert AzureClient.create_fs(**options) is first
+
+    monkeypatch.setenv("AZURE_CLIENT_SECRET", "new-secret")
+    second = AzureClient.create_fs(**options)
+    assert not second.anon
+    assert second is not first
+
+    monkeypatch.setenv("AZURE_STORAGE_ACCOUNT_KEY", "a2V5")
+    keyed = AzureClient.create_fs(**options)
+    assert not keyed.anon
+    assert keyed.account_key == "a2V5"
+    assert keyed is not second
+
+
+@pytest.mark.parametrize("anonymous_default", [False, True])
+def test_bucket_status_refreshes_authenticated_environment(
+    no_azure_env, monkeypatch, mocker, anonymous_default
+):
+    if anonymous_default:
+        monkeypatch.setenv("AZURE_STORAGE_ANON", "true")
+    service = mocker.patch("datachain.client.azure.BlobServiceClient")
+    container = service.return_value.get_container_client.return_value
+    container.get_container_properties.side_effect = ClientAuthenticationError(
+        "private container"
+    )
+    filesystems = []
+
+    async def info(fs, name):
+        assert not fs.anon
+        filesystems.append(fs)
+        if not fs.account_key:
+            raise ClientAuthenticationError("no credentials")
+        return {}
+
+    mocker.patch.object(AzureClient.FS_CLASS, "_info", new=info)
+    mocker.patch(
+        "datachain.client.azure._cannot_authenticate",
+        side_effect=AssertionError("Authenticated probes must not fall back"),
+    )
+    assert AzureClient.bucket_status("private", account_name="same").access == "denied"
+    monkeypatch.setenv("AZURE_STORAGE_ACCOUNT_KEY", "a2V5")
+    assert (
+        AzureClient.bucket_status("private", account_name="same").access
+        == "authenticated"
+    )
+    assert filesystems[0] is not filesystems[1]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"anon": False, "credential": "c"},
+        {"account_key": "k"},
+        {"sas_token": "s"},
+        {
+            "connection_string": "DefaultEndpointsProtocol=https;AccountName=acc;"
+            "AccountKey=a2V5;EndpointSuffix=core.windows.net"
+        },
+    ],
+)
+def test_create_fs_explicit_config_skips_credential_check(no_azure_env, kwargs):
+    with patch("datachain.client.azure._cannot_authenticate") as probe:
+        fs = AzureClient.create_fs(account_name="acc", **kwargs)
+    probe.assert_not_called()
+    assert not fs.anon
+
+
+@pytest.mark.parametrize(
+    "var,value", [("AZURE_STORAGE_ACCOUNT_KEY", "a2V5"), ("AZURE_STORAGE_ANON", "1")]
+)
+def test_create_fs_env_config_skips_credential_check(
+    no_azure_env, monkeypatch, var, value
+):
+    monkeypatch.setenv(var, value)
+    with patch("datachain.client.azure._cannot_authenticate") as probe:
+        AzureClient.create_fs(account_name="acc")
+    probe.assert_not_called()
+
+
 @pytest.mark.parametrize("resource_type", ["", "<ResourceType>file</ResourceType>"])
 def test_hierarchical_namespace_lists_out_of_key_order(resource_type):
     client, _, _ = _listed(_blob("a", resource_type))
@@ -386,3 +692,19 @@ def test_hadoop_folder_markers_are_not_files():
     _, _, paths = _listed("".join(blobs))
 
     assert paths == ["year=2008/month=1/part-0.parquet"]
+
+
+def test_identity_probe_cache_evicts_old_configurations(no_azure_env, mocker):
+    probe = mocker.patch(
+        "datachain.client.azure._cannot_authenticate", return_value=True
+    )
+    for timeout in range(1, 18):
+        assert AzureClient.create_fs(
+            account_name="account", process_timeout=timeout
+        ).anon
+    assert probe.call_count == 17
+
+    assert AzureClient.create_fs(account_name="account", process_timeout=1).anon
+    assert probe.call_count == 18
+    assert AzureClient.create_fs(account_name="account", process_timeout=17).anon
+    assert probe.call_count == 18
