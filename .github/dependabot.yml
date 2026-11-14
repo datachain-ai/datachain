@@ -5,6 +5,10 @@ updates:
     package-ecosystem: "pip"
     schedule:
       interval: "weekly"
+    # Supply-chain cooldown: skip releases younger than 14 days. Security
+    # updates are not delayed.
+    cooldown:
+      default-days: 14
     labels:
       - "maintenance"
 
@@ -15,6 +19,8 @@ updates:
     package-ecosystem: "github-actions"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 14
     labels:
       - "maintenance"
     # One weekly PR for every action bump across both directories, so bumps
