@@ -71,7 +71,7 @@ from datachain.lib.data_model import (
     unwrap_optional,
 )
 from datachain.lib.file import File
-from datachain.lib.model_store import ModelStore
+from datachain.lib.model_store import BUILTIN_MODELS, ModelStore
 from datachain.lib.utils import (
     DataChainColumnError,
     DataChainParamsError,
@@ -394,8 +394,8 @@ class SignalSchema:
             model_store_name = (
                 ModelStore.get_name(base) if issubclass(base, DataModel) else None
             )
-            base_name = getattr(base, "_modelstore_base_name", base.__name__)
-            bases.append((base_name, base.__module__, model_store_name))
+            base_name = ModelStore._base_name(base)
+            bases.append((base_name, ModelStore.get_module(base), model_store_name))
         return bases
 
     @staticmethod
@@ -502,7 +502,16 @@ class SignalSchema:
                     f"cannot deserialize custom type '{type_name}': {exc}"
                 ) from exc
 
-            if fr := ModelStore.get(model_name, target_version):
+            module = ct.bases[0][1] if ct.bases else None
+            if (
+                fr := ModelStore.get(
+                    model_name, target_version, module=module, autoload=bool(ct.bases)
+                )
+            ) and (
+                ct.bases
+                or ModelStore.get_module(fr) != BUILTIN_MODELS.get(model_name)
+                or fr.model_fields.keys() == ct.fields.keys()
+            ):
                 return fr
 
             fields = {
@@ -511,23 +520,27 @@ class SignalSchema:
             }
 
             base_model = None
-            for base in ct.bases:
-                _, _, model_store_name = base
+            for _, base_module, model_store_name in ct.bases[1:]:
                 if model_store_name:
                     base_model_name, base_version = ModelStore.parse_name_version(
                         model_store_name
                     )
-                    base_model = ModelStore.get(base_model_name, base_version)
+                    base_model = ModelStore.get(
+                        base_model_name, base_version, module=base_module
+                    )
                     if base_model:
                         break
 
-            return create_feature_model(
+            fr = create_feature_model(
                 type_name,
                 fields,
                 base=base_model,
                 hidden_fields=ct.hidden_fields,
                 partial_fingerprint=ct.partial_fingerprint,
             )
+            if module is not None:
+                fr._modelstore_module = module  # type: ignore[attr-defined]
+            return fr
 
         return ModelStore.get(model_name, target_version)
 
@@ -1340,19 +1353,14 @@ class SignalSchema:
     def tagged_parent(self, path: str) -> "tuple[str, UnionLayout, Any] | None":
         """The closest optional model or union holding ``path``, as its dotted name,
         its layout and the arm ``path`` is in; None when there is none. ``path`` is
-        present only when that parent's ``_type_tag`` selects the arm. The arm is
-        None when this schema's parent doesn't hold ``path``."""
+        present only when that parent's ``_type_tag`` selects the arm."""
         db_col = ColumnMeta.to_db_name(path)
-        held = any(
-            c == db_col or c.startswith(f"{db_col}{DEFAULT_DELIMITER}")
-            for c in self.db_signals()
-        )
         for prefix, layout in self._tagged_ancestors(db_col):
             if prefix == db_col:
                 continue
             parent = prefix.split(DEFAULT_DELIMITER)
-            arm = layout.arms[0] if held else None
-            if held and layout.use_slots:
+            arm = layout.arms[0]
+            if layout.use_slots:
                 name = db_col.split(DEFAULT_DELIMITER)[len(parent)]
                 arm = next(a for a in layout.arms if arm_selector(a) == name)
             return ".".join(parent), layout, arm

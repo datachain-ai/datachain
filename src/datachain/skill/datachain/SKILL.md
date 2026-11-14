@@ -19,7 +19,7 @@ datachain dataset describe <name>    # schema, versions, direct dependencies and
 datachain show <name> --limit 5       # peek at rows and columns
 ```
 
-If a saved dataset answers the question, query it with `dc.read_dataset(name, version=...)` instead of recomputing. Inspect recorded dependencies and code with `describe`; refresh with `read_storage(..., update=True)` when current freshness is part of the question.
+If a saved dataset answers the question, query it with `dc.read_dataset(name, version=...)` instead of recomputing. Inspect recorded dependencies and code with `describe`. `read_storage` reuses listings under 4 hours old; pass `update=True` only when the bucket changed since (e.g. this script wrote to it) or the user asks to refresh.
 
 In Python, `dc.describe(name)` returns recorded metadata. Run named Python scripts from the project directory so saved datasets record their code.
 
@@ -33,6 +33,8 @@ For new processing, follow the server's DataChain guide, choose an available exe
 
 Adapt these examples to the task and use the same model/preprocessing for saved and query embeddings.
 The update recipe reuses `load_encoder` and `embed_images` from the inference example.
+`read_storage("s3://bucket/prefix")` lists `prefix/`, not `prefix2/`; no trailing `/` needed. In UDFs, use `parallel=True`
+(one process per CPU), not a larger number, and let errors raise: `except: return 0` turns a failed read into a wrong answer.
 
 ### Bucket inventory (metadata only, nothing downloaded)
 
@@ -58,12 +60,11 @@ project, and every query after that runs in SQL on the saved copy, no new listin
 
 ```python
 import datachain as dc
-from datachain import func
 
 # List once, then reuse the saved listing.
 files = dc.read_storage("s3://bucket/prefix/", versions=False)
-by_ext = files.mutate(ext=func.path.file_ext("file.path")).group_by(
-    n=func.count(), bytes=func.sum("file.size"), partition_by="ext"
+by_ext = files.mutate(ext=dc.func.path.file_ext("file.path")).group_by(
+    n=dc.func.count(), bytes=dc.func.sum("file.size"), partition_by="ext"
 )
 print(by_ext.to_list("ext", "n", "bytes"))
 ```
@@ -71,9 +72,13 @@ print(by_ext.to_list("ext", "n", "bytes"))
 `func.path`: `parent`, `name`, `file_stem`, `file_ext`. `func.string`: `split(col, sep, limit)`, `length`,
 `replace`, `regexp_replace`. Aggregate in SQL or stream with `to_iter()`; don't `to_list()` millions of rows.
 
+- Totals: the same `group_by` without `partition_by` is one query and one row; `count()` then `sum()` runs two.
+- Path parts in SQL, not a UDF (a UDF taking `file` downloads it). `file.path` has no bucket prefix, so for
+  `ABI-L1b-RadC/2017/059/x.nc`: `mutate(year=dc.func.array.get_element(dc.func.string.split("file.path", "/"), 1))`.
+
 ### Per-file media metadata
 
-Metadata reads depend on the format; some formats require the entire file. Use `prefetch=0` for metadata-only UDFs.
+Metadata reads depend on the format; some formats require the entire file. Use `prefetch=0` for metadata-only UDFs; UDFs that read whole files, small ones especially, keep the default.
 
 ```python
 import datachain as dc
@@ -84,7 +89,6 @@ def info(file: dc.VideoFile) -> dc.Video:
     return file.get_info()
 
 
-# prefetch=0 avoids downloading entire files ahead of the UDF.
 meta = (
     dc.read_storage("s3://bucket/videos/", anon=True, type="video")
     .settings(parallel=True, prefetch=0)
@@ -254,7 +258,6 @@ Small side files (labels, manifests, `list.txt`): read them with pandas, then jo
 
 ```python
 import datachain as dc, pandas as pd
-from datachain import func
 
 (f,) = dc.read_storage("s3://bucket/annotations/list.txt", anon=True).to_values("file")
 with f.open() as fh:
@@ -270,11 +273,28 @@ labels = dc.read_pandas(labels)
 images = dc.read_storage("s3://bucket/images/*.jpg", anon=True, type="image")
 # Right-side columns keep their names.
 joined = images.merge(
-    labels, on=func.path.file_stem("file.path"), right_on="stem", inner=True
+    labels, on=dc.func.path.file_stem("file.path"), right_on="stem", inner=True
 )
 ```
 
 Large tabular sources: `dc.read_parquet(uri)` / `dc.read_csv(uri)` / `dc.read_json(uri, format="jsonl")`.
+
+### What changed since the last run
+
+The saved listing is the state. Pin the previous one, list once and save, then diff:
+
+```python
+import datachain as dc
+
+names = dc.datasets(column="ds").to_values("ds.name")
+prev = dc.read_dataset("bucket_index") if "bucket_index" in names else None
+now = dc.read_storage("s3://bucket/prefix/", versions=False, update=True).save(
+    "bucket_index"
+)
+if prev is not None:
+    changes = now.file_diff(prev, deleted=True, status_col="status")
+    print(changes.to_list("status", "file.path"))  # A added, M modified, D deleted
+```
 
 ### Keep results up to date when files are added, changed or deleted
 

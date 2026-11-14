@@ -6,18 +6,17 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from datachain.lib.convert.flatten import _leaf_count
-from datachain.lib.data_model import (
-    UnionLayout,
-    arm_for_tag,
-    union_layout,
-    unwrap_optional,
-)
+from datachain.lib.convert.flatten import _field_kinds, _leaf_count
+from datachain.lib.data_model import UnionLayout, arm_for_tag
 from datachain.lib.model_store import ModelStore
 from datachain.query.schema import DEFAULT_DELIMITER
 
 # Hydrates one model arm of a union: (arm_model, row, pos) -> (value, next_pos).
 ModelReader = Callable[[type[BaseModel], Sequence[Any], int], tuple[Any, int]]
+
+# The value of a column the data lacks. Its field is left out of the model's
+# arguments, so the model takes the field's default as pydantic gives it.
+ABSENT: Any = object()
 
 
 def unflatten_to_json(model: type[BaseModel], row: Sequence[Any], pos: int = 0) -> dict:
@@ -37,8 +36,11 @@ def read_union(
     read_model: ModelReader,
 ) -> tuple[Any, int]:
     """Read a tagged-union value: the ``_type_tag`` then every arm's columns,
-    hydrating only the active arm. A NULL ``_type_tag`` reads back as None."""
-    active = arm_for_tag(layout, row[pos])
+    hydrating only the active arm. A NULL ``_type_tag`` reads back as None, and an
+    ABSENT one as ABSENT."""
+    if (tag := row[pos]) is ABSENT:
+        return ABSENT, pos + 1 + sum(map(_arm_width, layout.arms))
+    active = arm_for_tag(layout, tag)
     pos += 1
     result: Any = None
     for arm in layout.arms:
@@ -66,17 +68,15 @@ def unflatten_to_json_pos(
         return (fields if build_model is None else build_model(fr, fields)), p
 
     res: dict[str, Any] = {}
-    for name, f_info in model.model_fields.items():
-        anno = f_info.annotation
-        if (layout := union_layout(anno)) is not None:
-            res[name], pos = read_union(layout, row, pos, read_arm)
-            continue
-        inner, _ = unwrap_optional(anno)
-        if ModelStore.is_pydantic(inner):
-            res[name], pos = unflatten_to_json_pos(inner, row, pos, build_model)
+    for name, kind, layout in _field_kinds(model):
+        if layout is not None:
+            value, pos = read_union(layout, row, pos, read_arm)
+        elif kind.is_model:
+            value, pos = unflatten_to_json_pos(kind.inner, row, pos, build_model)
         else:
-            res[name] = row[pos]
-            pos += 1
+            value, pos = row[pos], pos + 1
+        if value is not ABSENT:
+            res[name] = value
     return res, pos
 
 
