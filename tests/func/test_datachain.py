@@ -118,6 +118,34 @@ def test_read_storage_reindex(tmp_dir, test_session):
     assert dc.read_storage(path, session=test_session, update=True).count() == 2
 
 
+def test_read_storage_update_lists_once_per_chain(tmp_dir, test_session):
+    (tmp_dir / "a.txt").write_text("a")
+    (tmp_dir / "bb.txt").write_text("bb")
+    uri = tmp_dir.as_uri()
+    dc.read_storage(uri, session=test_session).exec()
+
+    with patch(
+        "datachain.lib.listing.write_listing",
+        wraps=dc.lib.listing.write_listing,
+    ) as write_listing:
+        chain = dc.read_storage(uri, session=test_session, update=True)
+        large = chain.filter(dc.C("file.size") > 1)
+        assert chain.count() == 2
+        assert chain.sum("file.size") == 3
+        assert large.count() == 1
+        assert chain.union(large).count() == 3
+        assert write_listing.call_count == 1
+
+        (tmp_dir / "ccc.txt").write_text("ccc")
+        updated = dc.read_storage(uri, session=test_session, update=True)
+        assert updated.count() == 3
+        assert updated.sum("file.size") == 6
+        assert write_listing.call_count == 2
+
+        assert chain.count() == 2
+        assert large.count() == 1
+
+
 def test_read_storage_reindex_expired(tmp_dir, test_session):
     tmp_dir = tmp_dir / "parquets"
     os.mkdir(tmp_dir)
