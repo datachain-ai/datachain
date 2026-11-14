@@ -1,9 +1,14 @@
 import asyncio
+import logging
 import os
-from collections.abc import Callable
+import re
+import time
+from collections.abc import Callable, Iterable
+from contextvars import ContextVar
 from datetime import datetime
 from time import monotonic
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import unquote_plus, urlsplit
 from xml.etree.ElementTree import Element, ParseError, fromstring
 
 from aiobotocore.parsers import AioResponseParserFactory, AioRestXMLParser
@@ -17,10 +22,19 @@ from fsspec.asyn import sync_wrapper
 from fsspec.utils import tokenize
 from s3fs import S3FileSystem
 
-from datachain.lib.file import File, FileRow
+from datachain.lib.file import File, FileRow, as_file_row
 
 from .fsspec import BucketStatus, RangeListedClient
 from .ranges import PROCESS_LIST_WORKERS, Keep, Page
+from .s3_pages import (
+    LeanS3,
+    LeanSpec,
+    clean_version,
+    lean_verify,
+    page_of,
+    read_entries,
+    split_page,
+)
 
 if TYPE_CHECKING:
     from datachain.client.writeconfig import WriteConfig
@@ -102,6 +116,9 @@ def _head_bucket(fs: S3FileSystem, name: str) -> tuple[int, str | None]:
     return meta["HTTPStatusCode"], headers.get("x-amz-bucket-region")
 
 
+logger = logging.getLogger("datachain")
+
+
 def _parse_timestamp(value: Any) -> datetime:
     try:
         return datetime.fromisoformat(value)
@@ -141,7 +158,7 @@ def _reader(shape: Shape, ns: str) -> Callable[[Element], Any]:
     return lambda node: convert(node.text or "")
 
 
-def _read(node: Element, fields: Fields) -> dict[str, Any]:
+def _read(node: Iterable[Element], fields: Fields) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for child in node:
         if field := fields.get(child.tag):
@@ -153,24 +170,137 @@ def _read(node: Element, fields: Fields) -> dict[str, Any]:
     return out
 
 
+# While ClientS3._list_page waits for a page, the source its rows are listed from
+_ROWS_OF: ContextVar[str | None] = ContextVar("_ROWS_OF", default=None)
+
+
+def _rows_page(body: bytes, shape: Shape, source: str) -> dict[str, Any] | None:
+    """The page as ``_list_page`` reads it, or ``None`` when ElementTree must
+    read it. Its objects are ``FileRows`` with keys as written; delete markers
+    and folders are dicts of their key alone."""
+    versions = shape.name == "ListObjectVersionsOutput"
+    if (split := split_page(body, versions)) is None:
+        return None
+    others, ns, entries = split
+    try:
+        rows, markers, folders = read_entries(
+            entries, versions, source, as_file_row, _parse_timestamp
+        )
+    except ValueError:
+        return None
+    return _read(others, _fields(shape, ns)) | {
+        "FileRows": rows,
+        "DeleteMarkers": [{"Key": key} for key in markers],
+        "CommonPrefixes": [{"Prefix": prefix} for prefix in folders],
+    }
+
+
+_PASSED_HEADERS = frozenset({"x-amz-request-payer", "x-amz-expected-bucket-owner"})
+_SIGNING_HEADERS = frozenset(
+    {
+        "x-amz-date",
+        "x-amz-content-sha256",
+        "x-amz-security-token",
+        "user-agent",
+        "amz-sdk-invocation-id",
+        "amz-sdk-request",
+    }
+)
+_SCOPE = re.compile(r"AWS4-HMAC-SHA256 Credential=[^/]+/\d{8}/([^/]+)/s3/aws4_request,")
+
+
+def _plain_request(
+    sent: Any, config: dict
+) -> tuple[str, dict[str, str], str | None] | None:
+    """The bucket URL, the headers a lean child sends too, and the signing
+    region (None: unsigned) of the last listing request in ``sent``; None
+    unless it was a plain ``GET``, signed with SigV4 or not at all."""
+    off = os.environ.get("DATACHAIN_LEAN_LISTING", "1") == "0"
+    if not isinstance(sent, list) or not sent or off or config.get("proxies"):
+        return None
+    url, method, headers = sent[-1]
+    # botocore holds header values as bytes
+    headers = {
+        k.lower(): v.decode() if isinstance(v, bytes) else v for k, v in headers.items()
+    }
+    auth = headers.pop("authorization", None)
+    scope = _SCOPE.match(auth) if auth is not None else None
+    parts = urlsplit(url)
+    # a header no lean child sends, such as a directory bucket's session token
+    unknown = headers.keys() - _PASSED_HEADERS - _SIGNING_HEADERS
+    if (
+        method != "GET"
+        or unknown
+        or (auth is not None and not scope)
+        or parts.scheme not in ("http", "https")
+    ):
+        return None
+    passed = {k: v for k, v in headers.items() if k in _PASSED_HEADERS}
+    region = scope[1] if scope else None
+    return f"{parts.scheme}://{parts.netloc}{parts.path}", passed, region
+
+
+# While ClientS3._list_page waits for a page it learns from, the requests sent
+_SENT: ContextVar[list | None] = ContextVar("_SENT", default=None)
+
+
+def _remember(request, **kwargs) -> None:
+    if (sent := _SENT.get()) is not None:
+        sent.append((request.url, request.method, dict(request.headers)))
+
+
+def _remember_requests(s3) -> list:
+    """A list of the listing requests ``s3`` sends in this task from now on, as
+    (url, method, headers): other listings on the same client leave it alone."""
+    if not getattr(s3, "_datachain_remembers", False):
+        for operation in ("ListObjectsV2", "ListObjectVersions"):
+            s3.meta.events.register(f"before-send.s3.{operation}", _remember)
+        s3._datachain_remembers = True
+    sent: list = []
+    _SENT.set(sent)
+    return sent
+
+
+def _decode_rows(parsed, context, **kwargs) -> None:
+    """URL-decodes the keys of ``FileRows`` when botocore decodes the others:
+    when it asked for URL encoding itself, and the page is URL encoded."""
+    rows = parsed.get("FileRows")
+    if (
+        rows
+        and parsed.get("EncodingType") == "url"
+        and context.get("encoding_type_auto_set")
+    ):
+        parsed["FileRows"] = [
+            row._replace(path=unquote_plus(row.path))
+            if "%" in row.path or "+" in row.path
+            else row
+            for row in rows
+        ]
+
+
 class _ListingParser(AioRestXMLParser):
-    """Reads listing pages straight from the XML, without botocore's model walk.
+    """Reads listing pages straight from the XML, without botocore's model walk,
+    and for ``ClientS3._list_page`` with patterns when it can (``_rows_page``).
     A page that does not parse, or holds an error, is a 500 that botocore retries."""
 
     def _do_parse(self, response, shape):
         if getattr(shape, "name", "") not in _LISTINGS or not response["body"]:
             return super()._do_parse(response, shape)
-        try:
-            root = fromstring(response["body"])  # noqa: S314
-            ns = root.tag[: root.tag.find("}") + 1]  # the page's namespace, or ""
-        except ParseError:
-            root, ns = None, ""
-        if root is None or root.tag == f"{ns}Error":
-            response["status_code"] = 500
-            return self._do_error_parse(response, shape)
+        source = _ROWS_OF.get()
+        page = _rows_page(response["body"], shape, source) if source else None
+        if page is None:
+            try:
+                root = fromstring(response["body"])  # noqa: S314
+                ns = root.tag[: root.tag.find("}") + 1]  # the page's namespace, or ""
+            except ParseError:
+                root, ns = None, ""
+            if root is None or root.tag == f"{ns}Error":
+                response["status_code"] = 500
+                return self._do_error_parse(response, shape)
+            page = _read(root, _fields(shape, ns))
         parsed = {"ResponseMetadata": self._populate_response_metadata(response)}
         self._parse_non_payload_attrs(response, shape, shape.members, parsed)
-        return parsed | _read(root, _fields(shape, ns))
+        return parsed | page
 
 
 class _ParserFactory(AioResponseParserFactory):
@@ -194,6 +324,8 @@ class _ListingSession(AioSession):
         self.register_component("response_parser_factory", factory)
         self.unregister("before-parse.s3.*", handlers._handle_200_error)
         self.register("before-parse.s3.*", _handle_200_error)
+        self.register("after-call.s3.ListObjectsV2", _decode_rows)
+        self.register("after-call.s3.ListObjectVersions", _decode_rows)
 
 
 class _S3FileSystem(S3FileSystem):
@@ -249,6 +381,7 @@ class ClientS3(RangeListedClient):
     FS_CLASS = _S3FileSystem
     PREFIX = "s3://"
     LISTS_LEVELS = True
+    NAMES_FOLDERS = True
     protocol = "s3"
     CREDENTIAL_KEYS = frozenset(
         {
@@ -267,6 +400,8 @@ class ClientS3(RangeListedClient):
     # that state replaces them, so those files are checked by etag.
     PINNED_VERSION_IS_IMMUTABLE = True
     _unversioned = False  # the server can't list versions
+    # how listing children list without botocore; False: they can't; None: unknown
+    _lean: "LeanSpec | bool | None" = None
 
     @staticmethod
     def _normalize_s3_kwargs(kwargs: dict) -> dict:
@@ -421,7 +556,10 @@ class ClientS3(RangeListedClient):
             kwargs["StartAfter"] = start_after
         await self.fs.set_session()
         s3 = await self.fs.get_s3(self.name)
+        learn = not delimiter and self._lean is None
+        sent = _remember_requests(s3) if learn else None
         list_page = s3.list_object_versions if versions else s3.list_objects_v2
+        rows_of = _ROWS_OF.set(self.uri)
         try:
             page = await list_page(
                 Bucket=self.name,
@@ -434,31 +572,79 @@ class ClientS3(RangeListedClient):
             code = e.response.get("Error", {}).get("Code")
             if not versions or token is not None or code != "NotImplemented":
                 raise
+            page = None
+        finally:
+            _ROWS_OF.reset(rows_of)
+            _SENT.set(None)
+        if page is None:
             # stores without version support, such as R2, hold only current objects
             self._unversioned = True
             return await self._list_page(
                 prefix, start_after, None, hi, page_size, delimiter
             )
-        entries = page.get("Versions" if versions else "Contents", [])
-        keys = [d["Key"] for d in entries + page.get("DeleteMarkers", [])]
-        # folders past a delimiter: listed past, though they make no rows
-        keys += [p["Prefix"] for p in page.get("CommonPrefixes", [])]
+        if sent is not None:
+            await self._learn_lean(s3, sent, versions)
+        keep = Keep(self, start_after, hi)
+        if (rows := page.get("FileRows")) is None:  # ElementTree read the page
+            entries = page.get("Versions" if versions else "Contents", [])
+            keys = [d["Key"] for d in entries]
+            rows = [self._file_row(d, versions) for d in entries if keep(d["Key"])]
+        else:
+            keys = [row[1] for row in rows]
+            rows = keep.take(rows, keys)
+        markers = [d["Key"] for d in page.get("DeleteMarkers", [])]
+        folders = [p["Prefix"] for p in page.get("CommonPrefixes", [])]
         if not page.get("IsTruncated"):
             token = None
         elif versions:
             token = page["NextKeyMarker"], page.get("NextVersionIdMarker")
         else:
             token = page["NextContinuationToken"]
-        keep = Keep(self, start_after, hi)
-        return Page(
-            [self._file_row(d, versions) for d in entries if keep(d["Key"])],
-            entries[0]["Key"] if entries else None,
-            max(keys, default=None),
-            token,
-            keep.past_lo,
-            keep.past_hi,
-            keep.in_order,
+        return page_of(rows, keys, markers, folders, token, keep)
+
+    async def _learn_lean(self, s3, sent: list, versions: bool) -> None:
+        try:
+            self._lean = await self._lean_spec(s3, sent, versions)
+        except Exception:
+            logger.debug("Listing children use botocore", exc_info=True)
+            self._lean = False
+
+    async def _lean_spec(self, s3, sent: list, versions: bool) -> LeanSpec | bool:
+        """How a listing child can list as this client just did, or False when
+        the request botocore sent was not a plain one, signed by SigV4 or not
+        signed: a child then lists with botocore."""
+        request = _plain_request(sent, self.fs.config_kwargs or {})
+        if request is None:
+            return False
+        url, headers, region = request
+        credentials = None
+        if region is not None:
+            signer = s3._request_signer._credentials
+            expiry = getattr(signer, "_expiry_time", None)
+            # none, or ones that would expire while children list
+            if signer is None or (expiry and expiry.timestamp() < time.time() + 900):
+                return False
+            frozen = await signer.get_frozen_credentials()
+            credentials = (frozen.access_key, frozen.secret_key, frozen.token)
+        return LeanSpec(
+            uri=self.uri,
+            url=url,
+            region=region,
+            credentials=credentials,
+            headers=headers,
+            versions=versions,
+            verify=lean_verify(self.fs.client_kwargs or {}),
+            in_key_order=self._lists_in_key_order(),
         )
+
+    async def _fetch_prefix(self, start_prefix: str, result_queue) -> None:
+        self._lean = None  # learnt again: credentials and versions may differ
+        await super()._fetch_prefix(start_prefix, result_queue)
+
+    def _child_spec(self) -> tuple[type, tuple] | None:
+        if isinstance(self._lean, LeanSpec):
+            return LeanS3, (self._lean,)
+        return None
 
     def _file_row(self, v, versions: bool) -> tuple:
         return FileRow(
@@ -471,9 +657,7 @@ class ClientS3(RangeListedClient):
             v["LastModified"],
         )
 
-    @staticmethod
-    def clean_s3_version(ver: str | None) -> str:
-        return ver if (ver is not None and ver != "null") else ""
+    clean_s3_version = staticmethod(clean_version)
 
     def info_to_file(self, v: dict[str, Any], path: str) -> File:
         return File(

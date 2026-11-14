@@ -20,6 +20,7 @@ import datachain
 from datachain.client import listing_worker
 from datachain.client.fsspec import Client, RangeListedClient
 from datachain.client.listing_worker import (
+    Child,
     Pool,
     _command,
     _receive,
@@ -27,13 +28,16 @@ from datachain.client.listing_worker import (
     dump,
     load,
 )
-from datachain.client.ranges import Keep, Page, RangeListing
+from datachain.client.ranges import Keep, KeyRange, Page, RangeListing, code_points
 from datachain.lib.file import FileRow
 
 ROOT = os.path.dirname(os.path.dirname(datachain.__file__))
 
 
 class FakeClient:
+    uri = "fake://bucket"
+    key_order = staticmethod(str)
+
     def __init__(self, out, fail=False):
         self.out, self.fail, self.probed_before_ready = out, fail, None
         self.probed = None
@@ -68,29 +72,41 @@ def test_child_warms_up_before_it_reports_ready():
 
 
 def test_frames_round_trip():
-    assert load(io.BytesIO(dump((1, ([("s3://b", "k")], "k", "k"))))) == (
-        1,
-        ([("s3://b", "k")], "k", "k"),
-    )
+    message = ("rows", 1, [("s3://b", "k")], "k", None, 1, True)
+    assert load(io.BytesIO(dump(message))) == message
 
 
-def test_a_child_replies_none_to_a_page_it_fails():
+def test_a_child_reports_a_range_it_fails_and_the_parent_reads_on():
     out = io.BytesIO()
 
-    assert serve(FakeClient(out), out, (7, "", None, None)) == [None, (7, None)]
+    ready, failed = serve(FakeClient(out), out, ("range", 7, "", None, 0, None, None))
+
+    assert ready is None
+    assert failed[:2] == ("failed", 7)
+    assert "PermissionError: no list access" in failed[2]
 
 
 class UnpicklableClient(FakeClient):
     async def _list_page(self, prefix, start_after, token, hi=None, page_size=None):
         if page_size is None:  # a page whose rows don't pickle
-            return Page([(lambda: None,)], "a", "a", None)  # type: ignore[list-item]
+            return Page(
+                [FileRow("s3://b", "a", 1, "", "", True, lambda: None, None)],
+                "a",
+                "a",
+                None,
+            )
 
 
-def test_a_child_replies_none_to_a_page_that_does_not_pickle():
+@pytest.mark.parametrize("batch_rows", [1, 5000])
+def test_a_child_fails_a_range_whose_rows_do_not_pickle(mocker, batch_rows):
+    mocker.patch("datachain.client.listing_child.BATCH_ROWS", batch_rows)
     out = io.BytesIO()
     client = UnpicklableClient(out)
 
-    assert serve(client, out, (7, "", None, None)) == [None, (7, None)]
+    _, failed = serve(client, out, ("range", 7, "", None, 0, None, None))
+
+    assert failed[:2] == ("failed", 7)
+    assert "pickle" in failed[2]
 
 
 def test_a_child_ends_on_a_request_it_cannot_read():
@@ -291,98 +307,260 @@ class Proc:
         return self.returncode
 
 
-def test_a_child_with_a_broken_pipe_takes_no_more_pages():
+def test_a_child_with_a_broken_pipe_gives_its_range_back():
     async def check():
-        pool = Pool(versions_client(1), "", 1)
-        proc = Proc(closing=True)
-        pool.children = {proc: {}}
+        child = Child(Proc(closing=True))  # type: ignore[arg-type]
+        key_range = KeyRange("a", "m", code_points, 2, "c", 5)
 
-        assert await pool.list_page("", None, None) is None
-        assert not pool.children[proc]
+        outcome, rest = await child.read(key_range)
+
+        assert outcome == "gone"
+        assert (rest.lo, rest.hi, rest.age, rest.last, rest.token) == (
+            "a", "m", 2, "c", 5,
+        )  # fmt: skip
+        assert not child.ranges
 
     asyncio.run(check())
 
 
-def test_a_child_that_dies_fails_its_pending_pages(mocker):
+def test_a_gone_childs_ranges_come_back_with_what_is_left():
     async def check():
-        proc = Proc()
-        proc.stdout.feed_data(dump(None))  # ready
+        child = Child(Proc())  # type: ignore[arg-type]
+        read = KeyRange("a", "m", code_points, 0)
+        unread = KeyRange("m", None, code_points, 0)
+        done = KeyRange("x", None, code_points, 0)
+        tasks = [asyncio.create_task(child.read(r)) for r in (read, unread, done)]
+        await asyncio.sleep(0)
+        read.last, read.token = "c", 5  # as the child's pages said
+        done.last, done.token, done.ended = "z", None, True
 
+        child.end("gone")
+
+        (o1, r1), (o2, r2), (o3, r3) = await asyncio.gather(*tasks)
+        assert (o1, r1.lo, r1.last, r1.token) == ("gone", "a", "c", 5)
+        assert (o2, r2.lo, r2.last, r2.token) == ("gone", "m", None, None)
+        assert (o3, r3) == ("gone", None)
+
+    asyncio.run(check())
+
+
+class ThreadProc:
+    """A child process run as threads of this one: ``_serve`` on real pipes with
+    the test's client, so the listing runs the real protocol."""
+
+    def __init__(self, client, prefix: str, loop) -> None:
+        self.pid = next(Proc.pids)  # see fake_groups
+        Proc.fakes[self.pid] = self
+        self.returncode: int | None = None
+        self.closed = False
+        self.loop = loop
+        to_child, self.to_child = os.pipe()
+        self.from_child, from_child = os.pipe()
+        self.stdin = mock.Mock(write=self._write, is_closing=lambda: self.closed)
+        self.stdout = asyncio.StreamReader()
+        inp, out = os.fdopen(to_child, "rb"), os.fdopen(from_child, "wb")
+
+        def run() -> None:
+            with inp, out:
+                if load(inp) is not None:  # the spec
+                    asyncio.run(_serve(client, prefix, inp, out))
+
+        threading.Thread(target=run, name="listing-child", daemon=True).start()
+        threading.Thread(target=self._feed, daemon=True).start()
+
+    def _write(self, data: bytes) -> None:
+        if not self.closed:
+            os.write(self.to_child, data)
+
+    def _feed(self) -> None:
+        """The child's frames to the parent; after a kill they are dropped, but
+        still read, so that the child's writes never fail."""
+        with os.fdopen(self.from_child, "rb", buffering=0) as frames:
+            while chunk := frames.read(1 << 16):
+                self.loop.call_soon_threadsafe(self._deliver, chunk)
+        self.loop.call_soon_threadsafe(self._deliver, b"")
+
+    def _deliver(self, chunk: bytes) -> None:
+        if self.returncode is None and not self.stdout.at_eof():
+            if chunk:
+                self.stdout.feed_data(chunk)
+            else:
+                self.stdout.feed_eof()
+
+    def kill(self) -> None:
+        if self.returncode is None:
+            self.returncode = -9
+            self.closed = True
+            os.close(self.to_child)  # the child sees the parent go
+            self.stdout.feed_eof()
+
+    async def wait(self):
+        return self.returncode
+
+
+@pytest.fixture
+def thread_children(mocker):
+    """Children as threads of this process, which read with the listing's client."""
+    procs: list[ThreadProc] = []
+
+    def use(client, kill_after=None):
         async def spawn():
+            procs.append(proc := ThreadProc(client, "", asyncio.get_running_loop()))
             return proc
 
         mocker.patch.object(listing_worker, "_spawn", spawn)
-        pool = Pool(versions_client(1), "", 1)
-        pool.start()
-        while not pool.children:  # noqa: ASYNC110
-            await asyncio.sleep(0)
-        pending = asyncio.create_task(pool.list_page("", None, None))
-        await asyncio.sleep(0)
-        proc.stdout.feed_eof()
+        mocker.patch("datachain.client.ranges.POOL_ROWS", 0)
+        mocker.patch("datachain.client.ranges.CHILD_WORKERS", 4)
+        mocker.patch("datachain.client.listing_worker.CHILD_WORKERS", 4)
+        if kill_after is not None:
+            receive = listing_worker._receive
 
-        assert await pending is None
-        assert not pool.children
-        assert proc.returncode == -9
+            async def received(stream):
+                message = await receive(stream)
+                if message and message[0] == "rows" and kill_after():
+                    next(p for p in procs if p.stdout is stream).kill()
+                return message
 
-    asyncio.run(check())
+            mocker.patch.object(listing_worker, "_receive", received)
+        return procs
+
+    return use
 
 
-def test_a_stuck_child_is_killed_and_the_parent_lists_its_page(mocker, caplog):
+def _rows_from_children(mocker) -> list:
+    got: list = []
+    take = Pool._take
+
+    async def recorded(self, listing, child, message):
+        if message[0] == "rows":
+            got.extend(pickle.loads(message[1]))  # noqa: S301
+        return await take(self, listing, child, message)
+
+    mocker.patch.object(Pool, "_take", recorded)
+    return got
+
+
+@pytest.mark.parametrize("seed", range(30))
+@pytest.mark.parametrize("deaths", [False, True])
+def test_ranges_read_by_children_are_exact(seed, deaths, thread_children, mocker):
+    mocker.patch("datachain.client.ranges.LIST_WORKERS", 4)
+    mocker.patch("datachain.client.ranges.YOUNG_PAGES", 1)
+    client = slow_client(seed)
+    rng = random.Random(seed)  # noqa: S311
+    procs = thread_children(client, (lambda: rng.random() < 0.05) if deaths else None)
+    from_children = _rows_from_children(mocker)
+    ready = asyncio.Event()
+    serve, list_page = Pool._serve, RangeListing._list_page
+
+    async def serving(self, child):
+        ready.set()
+        await serve(self, child)
+
+    async def listing(self, *args):
+        if self.pool.tasks:
+            await asyncio.wait_for(ready.wait(), timeout=10)
+        return await list_page(self, *args)
+
+    mocker.patch.object(Pool, "_serve", serving)
+    mocker.patch.object(RangeListing, "_list_page", listing)
+
+    pages = _listed(client)
+
+    expected = [k for k in client.keys if client._is_valid_key(k[0])]
+    assert sorted((r.path, r.version) for p in pages for r in p) == expected
+    assert procs
+    if not deaths:
+        assert from_children
+
+
+class ChildFailingClient(KeysClient):
+    """Fails pages a listing child reads; with ``everywhere``, every page."""
+
+    def __init__(self, keys, everywhere=False):
+        super().__init__(keys)
+        self.everywhere = everywhere
+
+    async def _list_page(
+        self, prefix, start_after, token, hi=None, page_size=None, delimiter=""
+    ) -> Page:
+        in_child = threading.current_thread().name == "listing-child"
+        if page_size is None and (self.everywhere or in_child) and self.requests > 6:
+            raise PermissionError("no list access")
+        return await super()._list_page(prefix, start_after, token, hi, page_size)
+
+
+def test_the_parent_reads_on_where_a_child_failed(thread_children):
+    client = ChildFailingClient([(f"k{i:03}", "v") for i in range(200)])
+    procs = thread_children(client)
+
+    assert sorted(r.path for p in _listed(client) for r in p) == [
+        k for k, _ in client.keys
+    ]
+    assert procs
+    assert all(p.returncode == -9 for p in procs)
+
+
+def test_a_page_that_fails_everywhere_fails_the_listing_as_raised(thread_children):
+    client = ChildFailingClient([(f"k{i:03}", "v") for i in range(200)], True)
+    thread_children(client)
+
+    with pytest.raises(PermissionError, match="no list access"):
+        _listed(client)
+
+
+class SilentProc(Proc):
+    """A child that is ready, then says nothing: stopped or stuck."""
+
+    def __init__(self):
+        super().__init__()
+        self.stdout.feed_data(dump(None))
+
+
+def test_a_stuck_child_is_killed_and_the_parent_reads_its_ranges(mocker, caplog):
     mocker.patch.object(listing_worker, "REPLY_TIMEOUT", 0.1)
+    mocker.patch("datachain.client.ranges.POOL_ROWS", 0)
+    procs: list = []
 
-    async def check():
-        pool = Pool(versions_client(1), "", 1)
-        proc = Proc()  # never answers
-        pool.children = {proc: {}}
+    async def spawn():
+        procs.append(proc := SilentProc())
+        return proc
 
-        assert await pool.list_page("", None, None) is None
-        assert proc.returncode == -9
+    mocker.patch.object(listing_worker, "_spawn", spawn)
+    client = KeysClient([(f"k{i:03}", "v") for i in range(200)])
 
     with caplog.at_level("WARNING", logger="datachain"):
-        asyncio.run(check())
+        assert sorted(r.path for p in _listed(client) for r in p) == [
+            k for k, _ in client.keys
+        ]
+
+    assert procs
+    assert all(p.returncode == -9 for p in procs)
     assert "is stuck: listing without it" in caplog.text
 
 
-def test_a_stuck_child_takes_no_more_pages_and_fails_its_others_at_once(mocker, caplog):
+def test_a_paused_parent_reads_a_message_that_came_meanwhile(mocker):
     mocker.patch.object(listing_worker, "REPLY_TIMEOUT", 0.1)
 
     async def check():
-        pool = Pool(versions_client(1), "", 1)
-        proc = Proc()  # never answers
-        pool.children = {proc: {}}
-        first = asyncio.create_task(pool.list_page("", None, None))
-        await asyncio.sleep(0.5)  # within the first page's grace
-        mocker.patch.object(listing_worker, "REPLY_TIMEOUT", 60)
-        second = asyncio.create_task(pool.list_page("", None, None))
-
-        assert await first is None
-        # back with the first page's drop, long before a timeout of its own
-        await asyncio.wait([second], timeout=30)
-        assert second.done()
-        assert second.result() is None
-        assert not pool.children
-        assert await pool.list_page("", None, None) is None
-
-    with caplog.at_level("WARNING", logger="datachain"):
-        asyncio.run(check())
-    assert caplog.text.count("is stuck") == 1
-
-
-def test_a_paused_parent_reads_a_reply_that_came_meanwhile(mocker):
-    mocker.patch.object(listing_worker, "REPLY_TIMEOUT", 0.1)
-
-    async def check():
-        pool = Pool(versions_client(1), "", 1)
-        replies: dict = {}
+        client = versions_client(1)
+        pool = Pool(client, "", 1)
+        listing = RangeListing(client, "", asyncio.Queue(), pool)
         proc = Proc()
-        pool.children = {proc: replies}
-        pending = asyncio.create_task(pool.list_page("", None, None))
+        child = Child(proc)  # type: ignore[arg-type]
+        serving = asyncio.create_task(pool._serve(child))
+        while not child.ranges:  # noqa: ASYNC110
+            await asyncio.sleep(0)
         await asyncio.sleep(0.3)  # past the timeout: the parent was paused
-        next(iter(replies.values())).set_result(([], None, None, None))
+        (rid,) = child.ranges
+        proc.stdout.feed_data(dump(("done", rid)))
+        while child.ranges:  # noqa: ASYNC110
+            await asyncio.sleep(0)
 
-        assert await pending == Page([], None, None, None)
-        assert proc.returncode is None
-        assert proc in pool.children
+        assert not serving.done()
+        assert child in pool.children
+        for task in [serving, *listing.tasks]:
+            task.cancel()
+        await asyncio.gather(serving, *listing.tasks, return_exceptions=True)
 
     asyncio.run(check())
 
@@ -398,25 +576,6 @@ def test_a_child_whose_group_refuses_the_signal_is_killed_without_a_poll(mocker)
 
     kill.assert_called_once_with(12345, signal.SIGKILL)
     proc.kill.assert_not_called()  # its poll() would reap the child
-
-
-def test_a_page_request_keeps_a_cancel_that_comes_with_its_reply():
-    async def check():
-        pool = Pool(versions_client(1), "", 1)
-        replies: dict = {}
-        pool.children = {Proc(): replies}
-        pending = asyncio.create_task(pool.list_page("", None, None))
-        while not replies:  # noqa: ASYNC110
-            await asyncio.sleep(0)
-        # the pool closes: the child's pending pages come back None as the
-        # listing's workers are cancelled
-        next(iter(replies.values())).set_result(None)
-        pending.cancel()
-
-        with pytest.raises(asyncio.CancelledError):
-            await pending
-
-    asyncio.run(check())
 
 
 # a module of its own: another process imports it by name, which a test module
@@ -469,9 +628,12 @@ PARENT = """
 import asyncio, os, signal, sys
 import listing_test_clients
 from datachain.client.listing_worker import Pool
+from datachain.client.ranges import RangeListing
 
 async def main(client, stop):
-    pool = Pool(getattr(listing_test_clients, client)("bucket", {}, None), "", 2)
+    lister = getattr(listing_test_clients, client)("bucket", {}, None)
+    pool = Pool(lister, "", 2)
+    RangeListing(lister, "", asyncio.Queue(), pool)
     pool.start()
     if client == "IdleClient":
         while len(pool.children) < 2:
@@ -567,7 +729,9 @@ def test_a_closed_pool_waits_for_its_children_to_exit(clients):
             await asyncio.sleep(0.05)
 
     async def check():
-        pool = Pool(clients.IdleClient("bucket", {}, None), "", 2)
+        lister = clients.IdleClient("bucket", {}, None)
+        pool = Pool(lister, "", 2)
+        RangeListing(lister, "", asyncio.Queue(), pool)
         pool.start()
         await asyncio.wait_for(ready(pool), 60)
         pool.close()
@@ -714,6 +878,11 @@ def test_a_probe_that_gets_its_token_back_fails():
         sync(get_loop(), client._probe, "", "a")
 
 
+@pytest.mark.parametrize("cpus,processes", [(1, 0), (2, 2), (4, 4), (8, 8), (32, 8)])
+def test_one_child_per_cpu_up_to_eight(cpus, processes):
+    assert listing_worker.list_processes(cpus) == processes
+
+
 def test_a_frozen_app_lists_in_one_process():
     code = (
         "import sys; sys.frozen = True; "
@@ -736,14 +905,14 @@ def test_a_ctypes_module_in_the_cwd_does_not_run_in_a_child(tmp_path, clients):
     cwd = tmp_path / "cwd"
     cwd.mkdir()
     (cwd / "ctypes.py").write_text("raise SystemExit(3)")
-    out = child(dump((clients.IdleClient, "bucket", {}, None, 4, "")), cwd=cwd)
+    out = child(dump((clients.IdleClient, ("bucket", {}, None), 4, "")), cwd=cwd)
 
     assert out.returncode == 0
     assert load(io.BytesIO(out.stdout)) is None  # ready
 
 
 def test_child_reports_why_it_cannot_build_its_client():
-    out = child(dump((int, "bucket", {}, None, 4, "")))  # int() takes no 3 args
+    out = child(dump((int, ("bucket", {}, None), 4, "")))  # int() takes no 3 args
 
     assert out.returncode == 0
     assert "TypeError" in load(io.BytesIO(out.stdout))
@@ -751,7 +920,7 @@ def test_child_reports_why_it_cannot_build_its_client():
 
 
 def test_child_ends_when_the_parent_goes_while_a_thread_is_stuck(clients):
-    spec = (clients.ThreadIdleClient, "bucket", {}, None, 4, "")
+    spec = (clients.ThreadIdleClient, ("bucket", {}, None), 4, "")
     proc = subprocess.Popen(  # noqa: S603
         _command(),
         stdin=subprocess.PIPE,
@@ -774,9 +943,12 @@ import asyncio, os, signal
 from fsspec.asyn import get_loop, sync
 import listing_test_clients
 from datachain.client.listing_worker import Pool
+from datachain.client.ranges import RangeListing
 
 async def start():
-    pool = Pool(listing_test_clients.IdleClient("bucket", {}, None), "", 2)
+    lister = listing_test_clients.IdleClient("bucket", {}, None)
+    pool = Pool(lister, "", 2)
+    RangeListing(lister, "", asyncio.Queue(), pool)
     pool.start()
     while len(pool.children) < 2:
         await asyncio.sleep(0.05)
@@ -806,3 +978,27 @@ def test_children_die_when_the_parent_exits_with_the_listing_open(clients):
 
     assert len(pids) == 2
     assert not _alive_after(pids, 20)
+
+
+def test_children_report_keys_out_of_order_after_a_split(thread_children, mocker):
+    from tests.unit.test_client import _ReorderingClient
+
+    mocker.patch("datachain.client.ranges.LIST_WORKERS", 4)
+    client = _ReorderingClient(reversed_from="020")
+    thread_children(client)
+
+    with pytest.raises(RuntimeError, match="out of order"):
+        _listed(client)
+
+
+def test_children_report_keys_skipped_past_a_start_key(thread_children, mocker):
+    from tests.unit.test_client import _OverSeekingClient
+
+    mocker.patch("datachain.client.ranges.LIST_WORKERS", 4)
+    mocker.patch("datachain.client.ranges.YOUNG_PAGES", 1)
+    client = _OverSeekingClient()
+    procs = thread_children(client)
+
+    with pytest.raises(RuntimeError, match="skipped keys"):
+        _listed(client)
+    assert procs

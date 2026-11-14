@@ -11,6 +11,7 @@ import shutil
 from abc import ABC, abstractmethod
 from collections.abc import (
     AsyncIterator,
+    Callable,
     Iterator,
     Sequence,
 )
@@ -30,7 +31,7 @@ from datachain.nodes_fetcher import NodesFetcher
 from datachain.nodes_thread_pool import NodeChunk
 from datachain.progress import tqdm
 
-from .ranges import LIST_WORKERS, Page, RangeListing
+from .ranges import LIST_WORKERS, Page, RangeListing, code_points, valid_key
 
 if TYPE_CHECKING:
     from fsspec.spec import AbstractFileSystem
@@ -388,15 +389,7 @@ class Client(ABC):
         pbar.update(found_count)
         return subdirs
 
-    @staticmethod
-    def _is_valid_key(key: str) -> bool:
-        """
-        Check if the key should be indexed.
-
-        Folder markers (``a/``) and keys with a leading ``/`` are skipped
-        (see #2040); keys with ``//`` inside (``a//b``) are kept.
-        """
-        return not (key.startswith("/") or key.endswith("/"))
+    _is_valid_key = staticmethod(valid_key)  # whether a key is indexed
 
     def _is_version_aware(self) -> bool:
         return getattr(self.fs, "version_aware", False)
@@ -674,6 +667,8 @@ class RangeListedClient(Client):
     """A client that lists in parallel key ranges (``RangeListing``)."""
 
     LISTS_LEVELS: ClassVar[bool] = False  # whether _list_page takes a delimiter
+    # whether a page listed with a delimiter names its folders (``Page.folders``)
+    NAMES_FOLDERS: ClassVar[bool] = False
 
     def _open_remote(self, file: "File", block_size: int | None = None) -> BinaryIO:
         return self._open_checked(
@@ -683,10 +678,8 @@ class RangeListedClient(Client):
             **self._version_kwargs(file.version),
         )
 
-    @staticmethod
-    def key_order(key: str) -> Any:
-        """The sort key of the order the server lists keys in."""
-        return key
+    # the sort key of the order the server lists keys in
+    key_order: Callable[[str], Any] = staticmethod(code_points)
 
     async def _fetch_ranges(self, start_prefix: str, result_queue: ResultQueue) -> None:
         prefix = start_prefix.lstrip(DELIMITER) + DELIMITER if start_prefix else ""
@@ -715,6 +708,11 @@ class RangeListedClient(Client):
 
     def _lists_in_key_order(self) -> bool:
         return True
+
+    def _child_spec(self) -> tuple[type, tuple] | None:
+        """A lighter client for listing child processes, as its class and
+        arguments, once the listing has shown one can stand in; None if not."""
+        return None
 
     async def _list_page(
         self,
