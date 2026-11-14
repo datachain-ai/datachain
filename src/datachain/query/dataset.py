@@ -20,7 +20,8 @@ import attrs
 import sqlalchemy
 import sqlalchemy as sa
 from attrs import frozen
-from fsspec.callbacks import DEFAULT_CALLBACK, Callback, TqdmCallback
+from fsspec import Callback
+from fsspec.callbacks import DEFAULT_CALLBACK, TqdmCallback
 from sqlalchemy import Column
 from sqlalchemy.sql import func as f
 from sqlalchemy.sql.elements import ColumnClause, ColumnElement, Label
@@ -33,7 +34,8 @@ from sqlalchemy.sql.selectable import (
 )
 from sqlalchemy.sql.visitors import replacement_traverse
 
-from datachain.catalog.catalog import clone_catalog_with_cache
+# Resolve parent packages before their children to keep import-lock ordering consistent.
+from datachain.catalog import catalog as _catalog
 from datachain.checkpoint import Checkpoint, CheckpointStatus
 from datachain.checkpoint_event import (
     CheckpointEventType,
@@ -52,7 +54,7 @@ from datachain.error import (
     QueryScriptCancelError,
     TableMissingError,
 )
-from datachain.func.base import Function
+from datachain.func import base
 from datachain.hash_utils import hash_column_elements
 from datachain.job import Job
 from datachain.lib.data_model import NULLABLE_SCALARS
@@ -101,6 +103,7 @@ if TYPE_CHECKING:
     P = ParamSpec("P")
 
 
+Function = base.Function
 PartitionByType = str | Function | ColumnExpr | Sequence[str | Function | ColumnExpr]
 JoinPredicateType = str | ColumnExpr
 DatasetDependencyType = tuple["DatasetRecord", str]
@@ -927,7 +930,7 @@ class UDFStep(Step, ABC):
 
         prefetch = self.udf.prefetch
         with _get_cache(catalog.cache, prefetch, use_cache=self.cache) as _cache:
-            catalog = clone_catalog_with_cache(catalog, _cache)
+            catalog = _catalog.clone_catalog_with_cache(catalog, _cache)
 
             try:
                 if udf_distributor_class and not catalog.in_memory:

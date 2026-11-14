@@ -28,7 +28,8 @@ from typing import (
     get_origin,
 )
 
-from fsspec.callbacks import DEFAULT_CALLBACK, Callback
+from fsspec import Callback
+from fsspec.callbacks import DEFAULT_CALLBACK
 from pydantic import BaseModel, Field, ValidationError, create_model
 from sqlalchemy import and_, asc, cast, desc, nulls_last, or_
 from sqlalchemy.sql import operators as sa_operators
@@ -260,6 +261,7 @@ def create_feature_model(
     *,
     partial_fingerprint: str | None = None,
     hidden_fields: list[str] | None = None,
+    module: str | None = None,
 ) -> type[BaseModel]:
     """
     Build and register a dynamic feature model so it can be resolved later by name.
@@ -275,6 +277,7 @@ def create_feature_model(
         base: Base class for the generated model (defaults to ``DataModel``).
         partial_fingerprint: If set, store ``_partial_fingerprint`` metadata.
         hidden_fields: If set, store ``_hidden_fields`` metadata.
+        module: Original model module recorded in the saved schema.
 
     Notes:
         - The generated Python class name is versioned (e.g. ``MyType_v1``) to avoid
@@ -303,6 +306,8 @@ def create_feature_model(
         model._partial_fingerprint = partial_fingerprint  # type: ignore[attr-defined]
     if hidden_fields is not None:
         model._hidden_fields = hidden_fields  # type: ignore[attr-defined]
+    if module is not None:
+        model._modelstore_module = module  # type: ignore[attr-defined]
 
     ModelStore.register(model)
 
@@ -531,17 +536,14 @@ class SignalSchema:
                     if base_model:
                         break
 
-            fr = create_feature_model(
+            return create_feature_model(
                 type_name,
                 fields,
                 base=base_model,
                 hidden_fields=ct.hidden_fields,
                 partial_fingerprint=ct.partial_fingerprint,
+                module=module,
             )
-            if module is not None:
-                fr._modelstore_module = module  # type: ignore[attr-defined]
-            return fr
-
         return ModelStore.get(model_name, target_version)
 
     @staticmethod
