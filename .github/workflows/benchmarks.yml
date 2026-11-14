@@ -18,14 +18,14 @@ jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - name: Set up Python 3.13
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v6.3.0
         with:
           python-version: '3.13'
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v7.6.0
         with:
           enable-cache: true
           cache-suffix: benchmarks

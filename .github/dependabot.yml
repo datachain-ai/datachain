@@ -8,9 +8,26 @@ updates:
     labels:
       - "maintenance"
 
-  - directory: "/"
+  - directories:
+      - "/"
+      # Composite actions; actions.lock covers them through `uses: $/...`.
+      - "/.github/actions/*"
     package-ecosystem: "github-actions"
     schedule:
       interval: "weekly"
     labels:
       - "maintenance"
+    # Each group is one PR across both directories, so bumps don't conflict
+    # in actions.lock and a composite action moves with the workflows.
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+      github-actions-major:
+        patterns:
+          - "*"
+        update-types:
+          - "major"
