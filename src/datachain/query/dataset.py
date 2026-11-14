@@ -3263,11 +3263,22 @@ class DatasetQuery:
         query.steps.append(SQLGroupBy(cols, group_by))
         return query
 
+    def _session_reading(self, other: "DatasetQuery") -> Session:
+        """This query's session, reading files of `other`'s storage sources
+        with the client configs they were listed with."""
+        ours = self.catalog.source_client_configs
+        theirs = other.catalog.source_client_configs
+        if theirs.keys() <= ours.keys():
+            return self.session
+        catalog = self.catalog.copy()
+        catalog.source_client_configs = theirs | ours
+        return self.session._with_catalog(catalog)
+
     def union(self, dataset_query: "DatasetQuery") -> "DatasetQuery":
         left = self.clone()
         right = dataset_query.clone()
         return DatasetQuery(
-            session=self.session,
+            session=self._session_reading(dataset_query),
             steps=[SQLUnion(left, right)],
             checkpoints_enabled=self.checkpoints_enabled,
         )
@@ -3293,7 +3304,7 @@ class DatasetQuery:
             else tuple(predicates)
         )
         return DatasetQuery(
-            session=self.session,
+            session=self._session_reading(dataset_query),
             steps=[SQLJoin(self.catalog, left, right, predicates, inner, full, rname)],
             checkpoints_enabled=self.checkpoints_enabled,
         )
