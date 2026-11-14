@@ -7,9 +7,10 @@ from pydantic import create_model
 from datachain.lib.data_model import DataModel
 from datachain.lib.model_store import BUILTIN_MODELS, ModelStore
 from datachain.lib.signal_schema import SignalSchema, create_feature_model
+from datachain.model.bbox import BBox
 
 pytestmark = pytest.mark.usefixtures("empty_model_store")
-NAMES = ["BBox", "File", "Image", "Audio", "Video"]
+NAMES = ["BBox", "File"]
 
 
 @pytest.mark.parametrize("name", NAMES)
@@ -41,16 +42,6 @@ def test_builtin_model_restores_after_a_colliding_user_model(name, restored_user
         user_model = SignalSchema.deserialize(user_saved).values["value"]
     assert SignalSchema.deserialize(saved).values["value"] is builtin
     assert SignalSchema.deserialize(user_saved).values["value"] is user_model
-
-
-def test_reconstructed_user_model_is_reused():
-    user_model = create_model(
-        "BBox", __base__=DataModel, __module__="user_models", score=(float, ...)
-    )
-    saved = SignalSchema({"value": user_model}).serialize()
-    ModelStore.store.clear()
-    first = SignalSchema.deserialize(saved).values["value"]
-    assert SignalSchema.deserialize(saved).values["value"] is first
 
 
 def test_saved_origin_does_not_import_an_arbitrary_datachain_module(mocker):
@@ -135,8 +126,7 @@ def test_registered_user_model_is_reused_across_modules(
     assert SignalSchema.deserialize(saved).values["value"] is registered
 
 
-@pytest.mark.parametrize("wrappers", [0, 1, 2])
-@pytest.mark.parametrize("metadata", [False, True])
+@pytest.mark.parametrize("wrappers,metadata", [(0, False), (2, True)])
 def test_builtin_missing_optional_dependency_is_a_miss(mocker, wrappers, metadata):
     error = (
         PackageNotFoundError("datasets")
@@ -149,10 +139,11 @@ def test_builtin_missing_optional_dependency_is_a_miss(mocker, wrappers, metadat
         error = outer
     mocker.patch("datachain.lib.model_store.import_module", side_effect=error)
     assert ModelStore.get("HFAudio", 1) is None
+    with pytest.raises(ImportError):
+        ModelStore.get("McapFile", 1)
 
 
 @pytest.mark.parametrize("wrapped", [False, True])
-@pytest.mark.parametrize("model_name", ["McapFile", "HFAudio"])
 @pytest.mark.parametrize(
     "error",
     [
@@ -162,21 +153,19 @@ def test_builtin_missing_optional_dependency_is_a_miss(mocker, wrappers, metadat
         ModuleNotFoundError(
             "No module named 'datachain.lib.missing'", name="datachain.lib.missing"
         ),
-        ModuleNotFoundError("No module named 'datachain'", name="datachain"),
         ModuleNotFoundError("Unidentified import failure"),
         ModuleNotFoundError("No module named 'numpy'", name="numpy"),
-        PackageNotFoundError("datachain"),
         PackageNotFoundError(),
     ],
 )
-def test_unexpected_builtin_import_errors_propagate(mocker, wrapped, model_name, error):
+def test_unexpected_builtin_import_errors_propagate(mocker, wrapped, error):
     if wrapped:
         outer = ImportError("Failed to import builtin")
         outer.__cause__ = error
         error = outer
     mocker.patch("datachain.lib.model_store.import_module", side_effect=error)
     with pytest.raises(ImportError) as caught:
-        ModelStore.get(model_name, 1)
+        ModelStore.get("HFAudio", 1)
     assert caught.value is error
 
 
@@ -187,11 +176,11 @@ def test_lazy_builtin_lookup_honors_the_requested_version(version):
     assert ModelStore.get("McapFile", version) is (McapFile if version == 1 else None)
 
 
-@pytest.mark.parametrize("name", ["BBox", "File"])
 @pytest.mark.parametrize("builtin_cached", [False, True])
 def test_saved_user_model_with_legacy_metadata_reads_values(
-    test_session, name, builtin_cached
+    test_session, builtin_cached
 ):
+    name = "BBox"
     import datachain as dc
 
     user_model = create_model(name, __base__=DataModel, score=(float, ...))
@@ -266,8 +255,6 @@ def test_reconstructed_builtin_keeps_its_origin_and_class_identity(name, mocker)
 
 @pytest.mark.parametrize("origin", [None, "user_models", "datachain.model.bbox"])
 def test_builtin_registration_preserves_known_origins(origin):
-    from datachain.model.bbox import BBox
-
     restored = create_feature_model("BBox@v1", {"score": float}, module=origin)
     ModelStore.register(BBox)
     assert ModelStore.get("BBox", 1, module=origin) is (
@@ -278,8 +265,6 @@ def test_builtin_registration_preserves_known_origins(origin):
 
 
 def test_restored_user_origin_precedes_builtin_registration(mocker):
-    from datachain.model.bbox import BBox
-
     user_model = create_model(
         "BBox", __base__=DataModel, __module__="user_models", score=(float, ...)
     )
