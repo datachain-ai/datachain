@@ -18,7 +18,7 @@ from datachain.error import (
 )
 from datachain.lib.dataset_description import DatasetDescription
 from datachain.lib.dataset_info import DatasetInfo
-from datachain.lib.dc.datasets import describe
+from datachain.lib.dc import describe
 from datachain.lib.listing_info import ListingInfo
 from datachain.studio import list_datasets as list_datasets_studio
 from datachain.utils import DatasetIdentifier

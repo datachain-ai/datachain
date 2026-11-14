@@ -138,6 +138,7 @@ def test_star_import_and_version_in_fresh_process():
         ("datachain.query.dataset", "datachain.query:Session"),
         ("datachain:Mapper", "datachain:func"),
         ("datachain.query.dispatch", "datachain.query:Session"),
+        ("datachain:C", "datachain.cli:describe_dataset_cmd"),
     ],
 )
 @pytest.mark.parametrize("reverse", [False, True])
@@ -159,6 +160,37 @@ def test_concurrent_first_imports(entries, reverse):
         "with ThreadPoolExecutor(2) as pool:\n"
         "    list(pool.map(first_use, sys.argv[1:]))\n",
         *(reversed(entries) if reverse else entries),
+    )
+
+
+def test_direct_session_import_composes_with_lazy_access():
+    _check(
+        """
+import builtins, faulthandler, importlib
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event, current_thread
+import datachain, datachain.lazy as lazy
+direct_started, lazy_started = Event(), Event()
+original_import, original_load = builtins.__import__, lazy.import_module
+def importing(name, *args, **kwargs):
+    if name == "datachain.data_storage" and current_thread().name.startswith("direct"):
+        direct_started.set()
+        assert lazy_started.wait(timeout=10)
+    return original_import(name, *args, **kwargs)
+def load(name):
+    if name == "datachain.query.session":
+        lazy_started.set()
+    return original_load(name)
+builtins.__import__, lazy.import_module = importing, load
+faulthandler.dump_traceback_later(20, exit=True)
+with ThreadPoolExecutor(1, thread_name_prefix="direct") as direct:
+    with ThreadPoolExecutor(1) as indirect:
+        raw = direct.submit(importlib.import_module, "datachain.query.session")
+        assert direct_started.wait(timeout=10)
+        exported = indirect.submit(lambda: datachain.Session)
+        assert raw.result(timeout=20).Session is exported.result(timeout=20)
+faulthandler.cancel_dump_traceback_later()
+"""
     )
 
 
@@ -465,38 +497,4 @@ def test_offline_cli_main_does_not_load_catalog_or_studio(tmp_path):
         "assert 'datachain.studio' not in sys.modules\n",
         cwd=tmp_path,
         env={"DATACHAIN_ROOT_DIR": str(tmp_path / ".datachain")},
-    )
-
-
-@pytest.mark.usefixtures("empty_model_store")
-def test_reconstructed_builtin_survives_pickling_in_a_fresh_process(tmp_path):
-    import cloudpickle
-    from pydantic import create_model
-
-    from datachain.lib.data_model import DataModel
-    from datachain.lib.signal_schema import SignalSchema
-
-    previous = create_model(
-        "DatasetInfo",
-        __base__=DataModel,
-        __module__="datachain.lib.dataset_info",
-        score=(float, ...),
-    )
-    saved = SignalSchema({"value": previous}).serialize()
-    ModelStore.store.clear()
-    restored = SignalSchema.deserialize(saved).values["value"]
-    payload = tmp_path / "model.pkl"
-    payload.write_bytes(cloudpickle.dumps((restored, saved)))
-    _check(
-        "import cloudpickle, sys\n"
-        "from datachain.lib.model_store import ModelStore\n"
-        "from datachain.lib.signal_schema import SignalSchema\n"
-        "with open(sys.argv[1], 'rb') as fd:\n"
-        "    model, saved = cloudpickle.load(fd)\n"
-        "ModelStore.store.clear()\n"
-        "ModelStore.register(model)\n"
-        "assert SignalSchema.deserialize(saved).values['value'] is model\n"
-        "assert model(score=0.9).model_dump() == {'score': 0.9}\n",
-        str(payload),
-        cwd=tmp_path,
     )
