@@ -168,3 +168,81 @@ def test_open_object_huggingface_block_size_zero_reads_only_asked_bytes(
     assert [(start, end) for _, start, end in requests] == [
         (len(raw) - 10, len(raw) - 5)
     ]
+
+
+SHA = "0123456789abcdef0123456789abcdef01234567"
+
+
+@pytest.fixture
+def repo_client():
+    client = HfClient("datasets", {}, Mock(spec=Cache))
+    client._fs = Mock()
+    fs = client._fs.sync_fs
+    fs.endpoint = "https://huggingface.co"
+    fs.resolve_path = lambda path: SimpleNamespace(
+        repo_id="org/repo",
+        repo_type="dataset",
+        revision=path.split("@")[1].split("/")[0],
+        path_in_repo="data/a.json",
+    )
+    client._fs._get_file = AsyncMock()
+    return client
+
+
+class FakeStream:
+    def __init__(self, fs, path):
+        self.data = [b"ab", b"c"]
+
+    def read(self, size):
+        assert self.url() == (
+            f"https://huggingface.co/datasets/org/repo/resolve/{SHA}/data/a.json"
+        )
+        return self.data.pop(0) if self.data else b""
+
+    def url(self):
+        raise AssertionError("lists the folder")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        pass
+
+
+def test_get_file_is_one_get_of_the_resolve_url(repo_client, monkeypatch, tmp_path):
+    monkeypatch.setattr(hf_file_system, "HfFileSystemStreamFile", FakeStream)
+    callback = Mock()
+
+    sync(
+        get_loop(),
+        repo_client.get_file,
+        f"hf://datasets/org/repo@{SHA}/data/a.json",
+        str(tmp_path / "a"),
+        callback,
+    )
+
+    assert (tmp_path / "a").read_bytes() == b"abc"
+    assert [c.args for c in callback.relative_update.call_args_list] == [(2,), (1,)]
+    repo_client._fs._get_file.assert_not_awaited()
+
+
+def test_get_file_from_a_bucket_uses_the_filesystem(repo_client, monkeypatch):
+    monkeypatch.setattr(hf_file_system, "HfFileSystemStreamFile", None)
+    repo_client._fs.sync_fs.resolve_path = lambda path: SimpleNamespace(path="a")
+
+    sync(get_loop(), repo_client.get_file, "hf://buckets/org/b/a", "local", Mock())
+
+    repo_client._fs._get_file.assert_awaited_once()
+
+
+@pytest.mark.parametrize("revision,checked", [(SHA, False), ("main", True)])
+def test_files_at_a_commit_are_not_checked_for_changes(repo_client, revision, checked):
+    commit = SimpleNamespace(oid="c", date=datetime(2024, 10, 12, tzinfo=UTC))
+    repo_client._fs._info = AsyncMock(
+        return_value={"size": 4, "blob_id": "e", "last_commit": commit}
+    )
+    file = File(source="hf://datasets", path=f"org/repo@{revision}/a", etag="e")
+
+    repo_client.check_unchanged(file)
+
+    assert repo_client._fs._info.await_count == checked

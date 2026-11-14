@@ -1,10 +1,15 @@
+import asyncio
 import functools
 import posixpath
+import re
 from typing import Any
 
 from datachain.lib.file import File
 
 from .fsspec import Client
+
+CHUNK_SIZE = 8 * 1024 * 1024
+COMMIT = re.compile("[0-9a-f]{40}")
 
 
 class classproperty:  # noqa: N801
@@ -98,6 +103,41 @@ class HfClient(Client):
             version=last_commit.oid,
             last_modified=last_commit.date,
         )
+
+    async def get_file(self, lpath, rpath, callback, version_id: str | None = None):
+        fs = self.fs.sync_fs
+        p = await asyncio.to_thread(fs.resolve_path, lpath)
+        if not getattr(p, "repo_id", None):  # a bucket
+            return await super().get_file(lpath, rpath, callback, version_id)
+        await asyncio.to_thread(self._stream, lpath, p, rpath, callback)
+
+    def _stream(self, path: str, p, dst: str, callback) -> None:
+        """One GET of the file's URL. HfFileSystem's own download, and its
+        ``url()``, first list the folder: an API request, rate limited."""
+        from huggingface_hub import hf_hub_url
+        from huggingface_hub.hf_file_system import HfFileSystemStreamFile
+
+        fs = self.fs.sync_fs
+        url = hf_hub_url(
+            p.repo_id,
+            p.path_in_repo,
+            repo_type=p.repo_type,
+            revision=p.revision,
+            endpoint=fs.endpoint,
+        )
+        src = HfFileSystemStreamFile(fs, path)
+        src.url = lambda: url  # type: ignore[method-assign]
+        with src, open(dst, "wb") as out:
+            while chunk := src.read(CHUNK_SIZE):
+                out.write(chunk)
+                callback.relative_update(len(chunk))
+
+    async def _check_unchanged(
+        self, file: "File", *, info: dict[str, Any] | None = None
+    ) -> None:
+        p = await asyncio.to_thread(self.fs.sync_fs.resolve_path, file.get_fs_path())
+        if not COMMIT.fullmatch(getattr(p, "revision", None) or ""):
+            await super()._check_unchanged(file, info=info)  # a commit never changes
 
     def rel_path(self, path):
         return posixpath.relpath(path, self.name)
