@@ -18,18 +18,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.ref }}
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v6.3.0
         with:
           python-version: '3.11'
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v7.6.0
         with:
           enable-cache: true
           cache-suffix: lint
@@ -42,19 +42,38 @@ jobs:
         run: uv pip install nox --system
 
       - name: Cache mypy
-        uses: actions/cache@v6
+        uses: actions/cache@v6.1.0
         with:
           path: .mypy_cache
           key: mypy-${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('pyproject.toml') }}
 
       - name: Cache pre-commit hooks
-        uses: actions/cache@v6
+        uses: actions/cache@v6.1.0
         with:
           path: ~/.cache/pre-commit
           key: pre-commit-3|${{ env.pythonLocation }}|${{ hashFiles('.pre-commit-config.yaml') }}
 
       - name: Lint code
         run: nox -s lint
+
+  # Fails when .github/workflows/actions.lock is out of sync with the
+  # workflows or a locked pin no longer verifies upstream. After changing
+  # a `uses:` or adding a workflow, run `gh actions-lock` and commit the result.
+  lockfile:
+    runs-on: ubuntu-slim
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install gh-actions-lock
+        run: gh extension install github/gh-actions-lock --pin v0.4.1
+
+      - name: Verify the actions lockfile
+        run: gh actions-lock --verify
 
   datachain:
     timeout-minutes: 40
@@ -78,14 +97,14 @@ jobs:
 
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.ref }}
 
       - name: Setup PostgreSQL
         if: runner.os != 'Windows'
-        uses: ikalnytskyi/action-setup-postgres@325155bfd7807b2a21ac9c2c7bb9b9a6eacc44df # v9
+        uses: ikalnytskyi/action-setup-postgres@v9
         with:
           username: test
           password: test
@@ -102,12 +121,12 @@ jobs:
         shell: bash
 
       - name: Set up Python ${{ matrix.pyv }}
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v6.3.0
         with:
           python-version: ${{ matrix.pyv }}
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v7.6.0
         with:
           enable-cache: true
           cache-suffix: tests-${{ matrix.pyv }}
@@ -137,7 +156,7 @@ jobs:
       - name: Install FFmpeg on Ubuntu
         if: runner.os == 'Linux'
         timeout-minutes: 10
-        uses: ./.github/actions/install-ffmpeg
+        uses: $/.github/actions/install-ffmpeg
 
       - name: Install nox
         run: uv pip install nox --system
@@ -159,7 +178,7 @@ jobs:
         shell: bash
 
       - name: Upload coverage report
-        uses: codecov/codecov-action@v7
+        uses: codecov/codecov-action@v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml
@@ -187,7 +206,7 @@ jobs:
           - {os: ubuntu-latest, pyv: "3.14", group: llm_and_nlp}
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.ref }}
 
@@ -196,12 +215,12 @@ jobs:
         run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet
 
       - name: Set up Python ${{ matrix.pyv }}
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v6.3.0
         with:
           python-version: ${{ matrix.pyv }}
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v7.6.0
         with:
           enable-cache: true
           cache-suffix: examples-${{ matrix.pyv }}
@@ -229,7 +248,7 @@ jobs:
       - name: Install FFmpeg on Ubuntu
         if: runner.os == 'Linux'
         timeout-minutes: 10
-        uses: ./.github/actions/install-ffmpeg
+        uses: $/.github/actions/install-ffmpeg
 
       - name: Run examples
         env:
@@ -243,10 +262,10 @@ jobs:
 
   check:
     if: always()
-    needs: [lint, datachain, examples]
+    needs: [lint, lockfile, datachain, examples]
     runs-on: ubuntu-latest
     steps:
-      - uses: re-actors/alls-green@release/v1
+      - uses: re-actors/alls-green@v1.3.0
         with:
           allowed-failures: examples
           jobs: ${{ toJSON(needs) }}
