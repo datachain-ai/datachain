@@ -424,6 +424,87 @@ def test_listing_asks_for_every_field_it_reads(version_aware):
     assert item.read <= set(fields.removeprefix("items(").split(")")[0].split(","))
 
 
+def test_versioned_listing_drops_overwritten_latest_across_pages(test_session, mocker):
+    import datachain as dc
+
+    pages = [
+        {
+            "items": [
+                {
+                    "name": "a.txt",
+                    "size": "1",
+                    "generation": "10",
+                    "etag": "ea1",
+                    "updated": "2026-10-01T00:00:00Z",
+                },
+                {
+                    "name": "b.txt",
+                    "size": "10",
+                    "generation": "20",
+                    "etag": "eb1",
+                    "updated": "2026-10-01T00:00:01Z",
+                },
+            ],
+            "nextPageToken": "tok1",
+        },
+        {
+            "items": [
+                {
+                    "name": "b.txt",
+                    "size": "20",
+                    "generation": "21",
+                    "etag": "eb2",
+                    "updated": "2026-10-01T00:00:02Z",
+                },
+                {
+                    "name": "c.txt",
+                    "size": "3",
+                    "generation": "30",
+                    "etag": "ec1",
+                    "updated": "2026-10-01T00:00:03Z",
+                },
+            ],
+        },
+    ]
+    client = _make_client()
+    client._fs.version_aware = True
+    client._fs._call = AsyncMock(side_effect=list(pages))
+    mocker.patch("datachain.client.listing_worker.LIST_PROCESSES", 0)
+    mocker.patch("datachain.client.Client.get_client", return_value=client)
+
+    listed = dc.list_storage("gs://foo/", session=test_session, versions=True)
+    assert [(r.path, r.version, r.size, r.is_latest) for r in listed] == [
+        ("a.txt", "10", 1, True),
+        ("b.txt", "21", 20, True),
+        ("c.txt", "30", 3, True),
+    ]
+
+    client._fs._call = AsyncMock(side_effect=list(pages))
+    chain = dc.read_storage("gs://foo/", session=test_session, versions=True)
+    assert chain.order_by("file.path").to_list(
+        "file.path", "file.version", "file.size", "file.is_latest"
+    ) == [
+        ("a.txt", "10", 1, True),
+        ("b.txt", "21", 20, True),
+        ("c.txt", "30", 3, True),
+    ]
+
+    (listing_info,) = test_session.catalog.listings()
+    snapshot = dc.read_dataset(
+        listing_info.name,
+        namespace=listing_info.namespace,
+        project=listing_info.project,
+        version=listing_info.version,
+        session=test_session,
+    )
+    assert sorted(snapshot.to_list("file.path", "file.version", "file.is_latest")) == [
+        ("a.txt", "10", True),
+        ("b.txt", "20", False),
+        ("b.txt", "21", True),
+        ("c.txt", "30", True),
+    ]
+
+
 @pytest.mark.parametrize("cloud_type", ["gs"], indirect=True)
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
 def test_gcs_small_reads_share_one_block_request(
