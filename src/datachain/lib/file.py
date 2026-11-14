@@ -1277,6 +1277,9 @@ class FileRow(NamedTuple):
         return File(**self._asdict()).rebase(*args, **kwargs)
 
 
+as_file_row = partial(tuple.__new__, FileRow)  # skips FileRow's argument handling
+
+
 class TextFile(File):
     """`DataModel` for reading text files."""
 

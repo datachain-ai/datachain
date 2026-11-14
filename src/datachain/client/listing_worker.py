@@ -12,10 +12,9 @@ import sys
 import threading
 import traceback
 from contextlib import suppress
-from functools import partial
 from typing import TYPE_CHECKING, Any, BinaryIO
 
-from datachain.lib.file import FileRow
+from datachain.lib.file import as_file_row
 from datachain.utils import usable_cpu_count
 
 from .ranges import Page
@@ -33,7 +32,6 @@ HEADER = struct.Struct("<Q")  # the size of the pickle that follows
 # a child that doesn't answer a page in time is stuck (stopped, deadlocked): the
 # parent kills it and lists the page itself; a page normally takes under a second
 REPLY_TIMEOUT = float(os.environ.get("DATACHAIN_LISTING_REPLY_TIMEOUT", "300"))
-_as_file_row = partial(tuple.__new__, FileRow)  # skips FileRow's argument handling
 
 
 def dump(message: Any) -> bytes:
@@ -202,7 +200,7 @@ class Pool:
         if (page := reply.result()) is None:
             return None
         rows, *rest = page
-        return Page(list(map(_as_file_row, rows)), *rest)
+        return Page(list(map(as_file_row, rows)), *rest)
 
     def _drop(self, proc: asyncio.subprocess.Process, replies: dict) -> None:
         """Kills a stuck child; its pending pages come back None now, as the kill
