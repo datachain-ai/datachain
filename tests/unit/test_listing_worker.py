@@ -426,6 +426,7 @@ import asyncio
 
 from datachain.client.fsspec import RangeListedClient
 from datachain.client.ranges import Page
+from datachain.lib.file import FileRow
 
 
 class IdleClient(RangeListedClient):
@@ -439,6 +440,12 @@ class IdleClient(RangeListedClient):
 
     async def _list_page(self, prefix, start_after, token, hi=None, page_size=None):
         return Page([], None, None, None)
+
+
+class ModeClient(IdleClient):
+    async def _list_page(self, prefix, start_after, token, hi=None, page_size=None):
+        version = str(self._unversioned)
+        return Page([FileRow("fake://bucket", "k", 1, version)], "k", "k", None)
 
 
 class WarmingIdleClient(IdleClient):
@@ -648,7 +655,7 @@ def test_s3_connections_cover_the_listing_requests_in_flight():
 def test_child_reports_its_warm_up_error_to_the_parent(tmp_path):
     from datachain.client.local import FileClient
 
-    out = child(dump((FileClient, str(tmp_path), {}, None, 4, "")))
+    out = child(dump((FileClient, str(tmp_path), {}, None, 4, "", None)))
 
     assert out.returncode == 0
     assert "Traceback" in load(io.BytesIO(out.stdout))
@@ -736,14 +743,14 @@ def test_a_ctypes_module_in_the_cwd_does_not_run_in_a_child(tmp_path, clients):
     cwd = tmp_path / "cwd"
     cwd.mkdir()
     (cwd / "ctypes.py").write_text("raise SystemExit(3)")
-    out = child(dump((clients.IdleClient, "bucket", {}, None, 4, "")), cwd=cwd)
+    out = child(dump((clients.IdleClient, "bucket", {}, None, 4, "", None)), cwd=cwd)
 
     assert out.returncode == 0
     assert load(io.BytesIO(out.stdout)) is None  # ready
 
 
 def test_child_reports_why_it_cannot_build_its_client():
-    out = child(dump((int, "bucket", {}, None, 4, "")))  # int() takes no 3 args
+    out = child(dump((int, "bucket", {}, None, 4, "", None)))  # int() takes no 3 args
 
     assert out.returncode == 0
     assert "TypeError" in load(io.BytesIO(out.stdout))
@@ -751,7 +758,7 @@ def test_child_reports_why_it_cannot_build_its_client():
 
 
 def test_child_ends_when_the_parent_goes_while_a_thread_is_stuck(clients):
-    spec = (clients.ThreadIdleClient, "bucket", {}, None, 4, "")
+    spec = (clients.ThreadIdleClient, "bucket", {}, None, 4, "", None)
     proc = subprocess.Popen(  # noqa: S603
         _command(),
         stdin=subprocess.PIPE,
@@ -806,3 +813,41 @@ def test_children_die_when_the_parent_exits_with_the_listing_open(clients):
 
     assert len(pids) == 2
     assert not _alive_after(pids, 20)
+
+
+def test_children_list_in_the_mode_the_parents_first_page_set(clients):
+    async def check():
+        client = clients.ModeClient("bucket", {}, None)
+        pool = Pool(client, "", 1)
+        client._unversioned = True  # the first page fell back to current objects
+        pool.start()
+        try:
+            while not pool.children:  # noqa: ASYNC110
+                await asyncio.sleep(0.05)
+            return await pool.list_page("", None, None)
+        finally:
+            pool.close()
+            await pool.wait_closed()
+
+    page = sync(get_loop(), lambda: asyncio.wait_for(check(), 60))
+
+    assert [r.version for r in page.rows] == ["True"]
+
+
+@pytest.mark.parametrize("unversioned", [None, False, True])
+def test_child_entry_restores_listing_mode(clients, mocker, unversioned):
+    inp, out = io.BytesIO(), io.BytesIO()
+    spec = (clients.ModeClient, "bucket", {}, None, 4, "", unversioned)
+    inp.write(dump(spec))
+    inp.seek(0)
+    mocker.patch.object(listing_worker.os, "fdopen", side_effect=[out, inp])
+    mocker.patch.object(listing_worker.os, "dup", return_value=10)
+    mocker.patch.object(listing_worker.os, "dup2")
+    mocker.patch.object(listing_worker.os, "_exit")
+    run = mocker.patch("fsspec.asyn.sync")
+
+    listing_worker.main(11)
+
+    _, _, client, prefix, _, _ = run.call_args.args
+    page = sync(get_loop(), client._list_page, prefix, "", None)
+    assert [row.version for row in page.rows] == [str(unversioned)]

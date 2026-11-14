@@ -9,7 +9,7 @@ from xml.etree.ElementTree import Element, ParseError, fromstring
 from aiobotocore.parsers import AioResponseParserFactory, AioRestXMLParser
 from aiobotocore.session import AioSession
 from botocore import handlers
-from botocore.exceptions import ClientError, NoCredentialsError
+from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
 from botocore.model import Shape
 from botocore.session import Session
 from botocore.utils import parse_timestamp
@@ -266,7 +266,6 @@ class ClientS3(RangeListedClient):
     # objects written while versioning is off or suspended, and another write in
     # that state replaces them, so those files are checked by etag.
     PINNED_VERSION_IS_IMMUTABLE = True
-    _unversioned = False  # the server can't list versions
 
     @staticmethod
     def _normalize_s3_kwargs(kwargs: dict) -> dict:
@@ -397,6 +396,23 @@ class ClientS3(RangeListedClient):
         endpoint = s3.meta.endpoint_url if s3 else ""
         return not (self.name.endswith("--x-s3") or "r2.cloudflarestorage" in endpoint)
 
+    async def _prepare_listing(self) -> None:
+        # A bucket that never had versioning on holds no old versions, and
+        # ListObjectsV2 lists the same rows as ListObjectVersions, for less.
+        if self._unversioned is not None or not self._is_version_aware():
+            return
+        await self.fs.set_session()
+        s3 = await self.fs.get_s3(self.name)
+        if not self._lists_in_key_order():  # R2 or a directory bucket: no versions
+            self._unversioned = True
+            return
+        try:
+            versioning = await s3.get_bucket_versioning(Bucket=self.name)
+        except (ClientError, BotoCoreError):  # such as denied: list versions
+            self._unversioned = False
+        else:
+            self._unversioned = "Status" not in versioning  # Enabled or Suspended
+
     async def _list_page(
         self,
         prefix: str,
@@ -406,6 +422,7 @@ class ClientS3(RangeListedClient):
         page_size: int | None = None,
         delimiter: str = "",
     ) -> Page:
+        await self._prepare_listing()
         versions = self._is_version_aware() and not self._unversioned
         kwargs: dict[str, Any] = {"Delimiter": delimiter} if delimiter else {}
         if versions:

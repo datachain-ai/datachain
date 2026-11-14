@@ -45,6 +45,8 @@ On a bucket with versioning enabled (S3, GCS, Azure), `list_storage()` and `read
 - `versions=True`, the default: each file has its `version` id. The listing asks the storage for versions, so it is slower, and `save()` keeps old versions in the saved listing too.
 - `versions=False`: no version ids; a faster listing.
 
+An S3 bucket that never had versioning enabled holds no old versions, so both settings list it the same way, as fast as `versions=False`.
+
 ```python
 total = sum(
     f.size for f in dc.list_storage("s3://versioned-bucket/data/", versions=False)
