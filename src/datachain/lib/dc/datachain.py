@@ -1107,9 +1107,15 @@ class DataChain:
             )
             starting_step = result._query.starting_step
             if starting_step is not None:
-                self.session.catalog.metastore.record_dataset_version_access(
+                metastore = self.session.catalog.metastore
+                metastore.record_dataset_version_access(
                     starting_step.dataset,
                     starting_step.dataset_version,
+                )
+                metastore.link_dataset_version_to_job(
+                    starting_step.dataset.get_version(starting_step.dataset_version).id,
+                    self.job.id,
+                    is_creator=False,
                 )
             return result
 
