@@ -1,4 +1,3 @@
-from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -9,105 +8,151 @@ from huggingface_hub.hf_file_system import HfFileSystemFile
 
 from datachain.asyn import get_loop
 from datachain.cache import Cache
+from datachain.client import hf
 from datachain.client.hf import HfClient
 from datachain.lib.file import File
 
 
-def test_info_to_file_uses_last_commit_metadata_when_present():
-    cache = Mock(spec=Cache)
-    client = HfClient("datasets/org/repo", {}, cache)
-    commit_date = datetime(2024, 10, 12, 7, 28, tzinfo=UTC)
+def test_get_file_info_and_upload_give_no_version_and_the_blob_id():
+    client = HfClient("datasets", {}, Mock(spec=Cache))
+    client._fs = Mock()
+    info = {"size": 4, "blob_id": "abc123", "type": "file"}
+    client._fs._info = AsyncMock(return_value=info)
+    client._fs.info.return_value = info
 
-    file = client.info_to_file(
-        {
-            "size": 1024,
-            "blob_id": "abc123",
-            "last_commit": SimpleNamespace(oid="commit123", date=commit_date),
-        },
-        "path/to/file.parquet",
-    )
+    listed = client.get_file_info("org/repo/a.txt")
+    uploaded = client.upload(b"data", "org/repo/a.txt")
 
-    assert file.path == "path/to/file.parquet"
-    assert file.size == 1024
-    assert file.etag == "abc123"
-    assert file.version == "commit123"
-    assert file.last_modified == commit_date
-
-
-def test_info_to_file_requires_last_commit_metadata():
-    cache = Mock(spec=Cache)
-    client = HfClient("datasets/org/repo", {}, cache)
-
-    with pytest.raises(RuntimeError, match="without last_commit"):
-        client.info_to_file(
-            {
-                "size": 1024,
-                "blob_id": "abc123",
-                "last_commit": None,
-            },
-            "path/to/file.parquet",
+    client._fs._info.assert_awaited_once_with("hf://datasets/org/repo/a.txt")
+    client._fs.info.assert_called_once_with("hf://datasets/org/repo/a.txt")
+    for file in (listed, uploaded):
+        assert (file.path, file.size, file.etag, file.version) == (
+            "org/repo/a.txt",
+            4,
+            "abc123",
+            "",
         )
 
 
-def test_ls_dir_requests_expanded_info():
-    cache = Mock(spec=Cache)
-    client = HfClient("datasets/org/repo", {}, cache)
-    client._fs = Mock()
-    client._fs._ls = AsyncMock(return_value=[])
+def _listing(client, prefix):
+    async def run():
+        return [
+            (f.path, f.size, f.etag)
+            async for page in client.scandir(prefix)
+            for f in page
+        ]
 
-    sync(get_loop(), client.ls_dir, "datasets/org/repo/path")
+    return sync(get_loop(), run)
 
-    client._fs._ls.assert_awaited_once_with(
-        "datasets/org/repo/path", detail=True, expand_info=True
+
+def _repo_path(path):
+    """A resolved repository path, as old huggingface_hub versions give it:
+    ``unresolve()`` drops ``@main``."""
+    sub = path.partition("@main")[2].strip("/")
+    return SimpleNamespace(
+        repo_id="org/repo",
+        repo_type="dataset",
+        revision="main",
+        path_in_repo=sub,
+        unresolve=lambda: f"datasets/org/repo/{sub}".rstrip("/"),
     )
 
 
-def test_get_file_info_requests_expanded_info():
-    cache = Mock(spec=Cache)
-    client = HfClient("datasets/org/repo", {}, cache)
-    commit_date = datetime(2024, 10, 12, 7, 28, tzinfo=UTC)
+@pytest.fixture
+def client():
+    client = HfClient("datasets", {}, Mock(spec=Cache))
     client._fs = Mock()
-    client._fs._info = AsyncMock(
-        return_value={
-            "size": 1024,
-            "blob_id": "abc123",
-            "last_commit": SimpleNamespace(oid="commit123", date=commit_date),
-        }
+    fs = client._fs.sync_fs
+    fs.resolve_path = _repo_path
+    fs._api.repo_info.return_value = SimpleNamespace(
+        siblings=[
+            SimpleNamespace(rfilename=name, size=size, blob_id=f"b{size}")
+            for name, size in [
+                ("README.md", 1),
+                ("data/a.json", 2),
+                ("data/x/b.json", 3),
+            ]
+        ]
     )
+    fs.find.return_value = {
+        "datasets/org/repo/README.md": {"size": 1, "blob_id": "b1"},
+        "datasets/org/repo/data/a.json": {"size": 2, "blob_id": "b2"},
+        "datasets/org/repo/data/x/b.json": {"size": 3, "blob_id": "b3"},
+    }
+    return client
 
-    file = client.get_file_info("path/to/file.parquet")
 
-    client._fs._info.assert_awaited_once_with(
-        "hf://datasets/org/repo/path/to/file.parquet", expand_info=True
+DATA = [
+    ("org/repo@main/data/a.json", 2, "b2"),
+    ("org/repo@main/data/x/b.json", 3, "b3"),
+]
+
+
+def test_listing_takes_the_files_from_the_repository_info(client):
+    assert _listing(client, "org/repo@main/data") == DATA
+    client._fs.sync_fs._api.repo_info.assert_called_once_with(
+        "org/repo", repo_type="dataset", revision="main", files_metadata=True
     )
-    assert file.version == "commit123"
-    assert file.last_modified == commit_date
+    client._fs.sync_fs.find.assert_not_called()
 
 
-def test_upload_requests_expanded_info_for_returned_file():
-    cache = Mock(spec=Cache)
-    client = HfClient("datasets/org/repo", {}, cache)
-    commit_date = datetime(2024, 10, 12, 7, 28, tzinfo=UTC)
-    client._fs = Mock()
-    client._fs.info.return_value = {
-        "size": 4,
-        "blob_id": "abc123",
-        "last_commit": SimpleNamespace(oid="commit123", date=commit_date),
+def test_listing_walks_the_tree_when_the_repository_info_is_capped(client, monkeypatch):
+    monkeypatch.setattr(hf, "SIBLINGS_LIMIT", 3)
+    client._fs.sync_fs.find.return_value = {
+        k: v for k, v in client._fs.sync_fs.find.return_value.items() if "/data/" in k
     }
 
-    file = client.upload(b"data", "path/to/file.parquet")
+    assert _listing(client, "org/repo@main/data") == DATA
+    client._fs.sync_fs.find.assert_called_once_with(
+        "datasets/org/repo@main/data", detail=True
+    )
 
-    client._fs.makedirs.assert_called_once_with(
-        "hf://datasets/org/repo/path/to", exist_ok=True
+
+def test_listing_the_repository_root_returns_every_file(client):
+    assert len(_listing(client, "org/repo@main")) == 3
+
+
+@pytest.mark.parametrize("limit", [hf.SIBLINGS_LIMIT, 0])
+@pytest.mark.parametrize("prefix", ["org/repo@main/nope", "org/repo@main/README.md"])
+def test_listing_a_missing_folder_raises(client, monkeypatch, limit, prefix):
+    monkeypatch.setattr(hf, "SIBLINGS_LIMIT", limit)
+    if prefix.endswith("README.md"):  # find gives a file itself without metadata
+        client._fs.sync_fs.find.return_value = {"datasets/org/repo/README.md": {}}
+    else:
+        client._fs.sync_fs.find.return_value = {}
+
+    with pytest.raises(FileNotFoundError, match=prefix):
+        _listing(client, prefix)
+
+
+def test_listing_an_empty_repository_is_empty(client):
+    client._fs.sync_fs._api.repo_info.return_value = SimpleNamespace(siblings=None)
+
+    assert _listing(client, "org/repo@main") == []
+
+
+@pytest.mark.parametrize(
+    "found,expected",
+    [
+        ({"buckets/org/b/data/a.json": {"size": 2}}, [("org/b/data/a.json", 2, "")]),
+        ({}, FileNotFoundError),
+    ],
+)
+def test_listing_a_bucket_walks_the_tree(found, expected):
+    client = HfClient("buckets", {}, Mock(spec=Cache))
+    client._fs = Mock()
+    fs = client._fs.sync_fs
+    fs.resolve_path = lambda path: SimpleNamespace(
+        bucket_id="org/b", path="data", unresolve=lambda: "buckets/org/b/data"
     )
-    client._fs.pipe_file.assert_called_once_with(
-        "hf://datasets/org/repo/path/to/file.parquet", b"data"
-    )
-    client._fs.info.assert_called_once_with(
-        "hf://datasets/org/repo/path/to/file.parquet", expand_info=True
-    )
-    assert file.version == "commit123"
-    assert file.last_modified == commit_date
+    fs.find.return_value = found
+
+    if expected is FileNotFoundError:
+        with pytest.raises(FileNotFoundError):
+            _listing(client, "org/b/data")
+    else:
+        assert _listing(client, "org/b/data") == expected
+    fs._api.repo_info.assert_not_called()
 
 
 @pytest.fixture

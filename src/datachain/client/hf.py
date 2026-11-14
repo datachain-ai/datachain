@@ -1,10 +1,13 @@
+import asyncio
 import functools
 import posixpath
 from typing import Any
 
-from datachain.lib.file import File
+from datachain.lib.file import File, FileRow
 
-from .fsspec import Client
+from .fsspec import Client, ResultQueue
+
+SIBLINGS_LIMIT = 100_000  # the most files the Hub returns with a repository's info
 
 
 class classproperty:  # noqa: N801
@@ -73,30 +76,51 @@ class HfClient(Client):
     def FS_CLASS(cls):  # noqa: N802, N805
         return get_hf_filesystem_cls()
 
-    def _file_info_kwargs(self, version_id: str | None = None) -> dict[str, Any]:
-        return {
-            **self._version_kwargs(version_id),
-            "expand_info": True,
-        }
+    async def _fetch_default(
+        self, start_prefix: str, result_queue: ResultQueue
+    ) -> None:
+        await result_queue.put(await asyncio.to_thread(self._list, start_prefix))
 
-    def _ls_dir_kwargs(self) -> dict[str, Any]:
-        return {"expand_info": True}
+    def _list(self, prefix: str) -> list[FileRow]:
+        """Files under ``prefix``: from the repository info, one request, unless
+        the Hub caps its file list; else from a recursive listing, which the Hub
+        pages through a whole tree at a time."""
+        prefix = prefix.strip("/")
+        path = f"{self.name}/{prefix}".rstrip("/")
+        fs = self.fs.sync_fs
+        p = fs.resolve_path(path)
+        subpath = getattr(p, "path_in_repo", None) or getattr(p, "path", "")
+        siblings = None
+        if getattr(p, "repo_id", None):  # a repository, not a bucket
+            info = fs._api.repo_info(
+                p.repo_id,
+                repo_type=p.repo_type,
+                revision=p.revision,
+                files_metadata=True,
+            )
+            siblings = getattr(info, "siblings", None) or []
+        if siblings is not None and len(siblings) < SIBLINGS_LIMIT:
+            under = f"{subpath}/" if subpath else ""
+            entries = [(s.rfilename, s.size, s.blob_id) for s in siblings]
+        else:
+            under = f"{p.unresolve()}/"
+            found = fs.find(path, detail=True)
+            entries = [(k, v.get("size"), v.get("blob_id")) for k, v in found.items()]
+        base = f"{prefix}/" if prefix else ""
+        rows = [
+            FileRow(self.uri, base + name[len(under) :], size or 0, etag=etag or "")
+            for name, size, etag in entries
+            if name.startswith(under)
+        ]
+        if not rows and subpath:
+            raise FileNotFoundError(path)
+        return rows
 
     def info_to_file(self, v: dict[str, Any], path: str) -> File:
-        last_commit = v.get("last_commit")
-        if last_commit is None:
-            raise RuntimeError(
-                "huggingface_hub returned file metadata without last_commit; "
-                "expected expanded HF metadata for file version tracking"
-            )
-
+        """No version or date: for those the Hub finds each file's last commit,
+        which makes listing slow. The etag, the git blob id, follows the content."""
         return File(
-            source=self.uri,
-            path=path,
-            size=v["size"],
-            etag=v.get("blob_id", ""),
-            version=last_commit.oid,
-            last_modified=last_commit.date,
+            source=self.uri, path=path, size=v["size"], etag=v.get("blob_id") or ""
         )
 
     def rel_path(self, path):
