@@ -237,6 +237,23 @@ def test_checkpoints_check_valid_chain_is_returned(
     assert ds.order_by("num").to_list("num") == [(1,), (2,), (3,), (4,), (5,), (6,)]
 
 
+def test_checkpoint_reuse_reports_reused_dataset_version(
+    test_session, capsys, nums_dataset
+):
+    chain = dc.read_dataset("nums", session=test_session)
+
+    reset_session_job_state()
+    chain.save("nums_reused")
+    assert "Reusing dataset" not in capsys.readouterr().err
+
+    reset_session_job_state()
+    chain.save("nums_reused")
+    assert (
+        "Reusing dataset 'nums_reused@1.0.0' (skipping recompute)"
+        in capsys.readouterr().err
+    )
+
+
 def test_checkpoint_reuse_records_output_and_direct_input_access(
     test_session, monkeypatch, nums_dataset
 ):
