@@ -386,10 +386,15 @@ def test_real_pages_read_with_patterns(name, versions):
     assert split[2]
 
 
-def test_a_200_error_is_retried(monkeypatch):
+@pytest.mark.parametrize("signed", [False, True])
+@pytest.mark.parametrize("proxy", [False, True])
+def test_requests_retry_and_ignore_origin_netrc_credentials(
+    monkeypatch, tmp_path, signed, proxy
+):
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+    authorizations = []
     bodies = [
         b"<?xml version='1.0'?><Error><Code>InternalError</Code></Error>",
         b"<ok/>",
@@ -397,6 +402,7 @@ def test_a_200_error_is_retried(monkeypatch):
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
+            authorizations.append(self.headers.get("Authorization"))
             body = bodies.pop(0)
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
@@ -409,10 +415,26 @@ def test_a_200_error_is_retried(monkeypatch):
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     monkeypatch.setattr(s3_pages.random, "random", lambda: 0)
-    lean = LeanS3(_spec(url=f"http://127.0.0.1:{server.server_port}/b", region=None))
+    endpoint = f"http://127.0.0.1:{server.server_port}"
+    url = "http://storage.invalid/b" if proxy else f"{endpoint}/b"
+    netrc = tmp_path / "netrc"
+    netrc.write_text(
+        "machine 127.0.0.1 login private password secret\n"
+        "machine storage.invalid login private password secret\n"
+    )
+    monkeypatch.setenv("NETRC", str(netrc))
+    monkeypatch.setenv("http_proxy", endpoint)
+    monkeypatch.setenv("no_proxy", "" if proxy else "127.0.0.1")
+    lean = LeanS3(_spec(url=url, credentials=_spec().credentials if signed else None))
     try:
         assert sync(get_loop(), lean._get, {"prefix": ""}) == b"<ok/>"
     finally:
         sync(get_loop(), lean.session.close)
         server.shutdown()
         server.server_close()
+
+    assert len(authorizations) == 2
+    if signed:
+        assert all(value.startswith("AWS4-HMAC-SHA256 ") for value in authorizations)
+    else:
+        assert authorizations == [None, None]

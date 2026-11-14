@@ -392,7 +392,7 @@ def test_self_closing_top_level_field():
 def test_fields_not_read_may_hold_anything(more):
     entries = [("Contents", _object(k)) for k in "0z"]
     entries.insert(1, ("Contents", _object("a", **more)))
-    page = _assert_lists_as_elementtree(_page(entries))
+    page = _assert_lists_as_elementtree(_page(entries), fast=False)
     assert [r.path for r in page.rows] == ["0", "a", "z"]
 
 
@@ -806,3 +806,26 @@ def test_other_listings_read_full_entries(s3_endpoint):
 
     assert page["Contents"][0]["StorageClass"] == "GLACIER"
     assert "FileRows" not in page
+
+
+@pytest.mark.parametrize("versions", [False, True])
+@pytest.mark.parametrize(
+    "tail",
+    [
+        b"<StorageClass>STANDARD</Wrong>",
+        b"<Owner><ID>x</Owner>",
+        b'<StorageClass attr="unterminated>STANDARD</StorageClass>',
+        b"<ChecksumAlgorithm>CRC32</ChecksumType>",
+    ],
+)
+def test_malformed_tail_falls_back_in_parent_and_child(versions, tail):
+    tag, fields = ("Version", _version("a")) if versions else ("Contents", _object("a"))
+    body = _page([(tag, fields)], versions=versions)
+    closing = f"</{tag}>".encode()
+    body = body.replace(closing, tail + closing)
+    assert _rows_page(body, _shape(versions), "s3://bucket") is None
+    assert (
+        _parse(body, versions, "s3://bucket")["ResponseMetadata"]["HTTPStatusCode"]
+        == 500
+    )
+    assert _lean_page(body, versions) is None

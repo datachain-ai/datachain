@@ -89,16 +89,24 @@ def test_a_child_reports_a_range_it_fails_and_the_parent_reads_on():
 class UnpicklableClient(FakeClient):
     async def _list_page(self, prefix, start_after, token, hi=None, page_size=None):
         if page_size is None:  # a page whose rows don't pickle
-            return Page([(lambda: None,)], "a", "a", None)  # type: ignore[list-item]
+            return Page(
+                [FileRow("s3://b", "a", 1, "", "", True, lambda: None, None)],
+                "a",
+                "a",
+                None,
+            )
 
 
-def test_a_child_fails_a_range_whose_rows_do_not_pickle():
+@pytest.mark.parametrize("batch_rows", [1, 5000])
+def test_a_child_fails_a_range_whose_rows_do_not_pickle(mocker, batch_rows):
+    mocker.patch("datachain.client.listing_child.BATCH_ROWS", batch_rows)
     out = io.BytesIO()
     client = UnpicklableClient(out)
 
     _, failed = serve(client, out, ("range", 7, "", None, 0, None, None))
 
     assert failed[:2] == ("failed", 7)
+    assert "pickle" in failed[2]
 
 
 def test_a_child_ends_on_a_request_it_cannot_read():
@@ -441,6 +449,20 @@ def test_ranges_read_by_children_are_exact(seed, deaths, thread_children, mocker
     rng = random.Random(seed)  # noqa: S311
     procs = thread_children(client, (lambda: rng.random() < 0.05) if deaths else None)
     from_children = _rows_from_children(mocker)
+    ready = asyncio.Event()
+    serve, list_page = Pool._serve, RangeListing._list_page
+
+    async def serving(self, child):
+        ready.set()
+        await serve(self, child)
+
+    async def listing(self, *args):
+        if self.pool.tasks:
+            await asyncio.wait_for(ready.wait(), timeout=10)
+        return await list_page(self, *args)
+
+    mocker.patch.object(Pool, "_serve", serving)
+    mocker.patch.object(RangeListing, "_list_page", listing)
 
     pages = _listed(client)
 

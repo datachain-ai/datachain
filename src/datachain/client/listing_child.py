@@ -73,12 +73,13 @@ class ChildReader(RangeReader):
         self.rids[id(key_range)] = rid
         try:
             await self._read(key_range)
+            self.write(("done", rid))
         except Exception as e:  # noqa: BLE001
-            self.write(("failed", rid, "".join(traceback.format_exception(e))))
+            self.rows, self.pages = [], []
+            self.send(("failed", rid, "".join(traceback.format_exception(e))))
             return
         finally:
             del self.rids[id(key_range)]
-        self.write(("done", rid))
 
     async def _accept(self, key_range: KeyRange, rows: list[Any], page: Page) -> None:
         r = key_range

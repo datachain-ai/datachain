@@ -16,6 +16,7 @@ from datetime import datetime
 from functools import partial
 from typing import Any, NamedTuple
 from urllib.parse import quote, unquote_plus, urlsplit
+from urllib.request import getproxies, proxy_bypass
 from xml.etree.ElementTree import Element, ParseError, fromstring
 
 from .ranges import Keep, Page, valid_key
@@ -38,11 +39,18 @@ _ENTITIES = (
     ("&amp;", "&"),  # last: "&amp;lt;" is "&lt;"
 )
 _TEXT = "([^<]*)"
-_SUMS = r"(?:<Checksum\w*>[^<&]*</Checksum\w*>)*"
-# the rest of an entry: fields that are not read, and no entry
+
+
+def _tag(name: str, content: str = "[^<&]*") -> str:
+    return rf"(?:<{name}>{content}</{name}>|<{name}\s*/>)"
+
+
+_SUMS = rf"(?:{_tag('ChecksumAlgorithm')}|{_tag('ChecksumType')})*+"
+_OWNER_FIELDS = rf"(?:{_tag('ID')}|{_tag('DisplayName')})*+"
+_OWNER = _tag("Owner", _OWNER_FIELDS)
 _REST = (
-    r"(?:[^<]+|<(?!/?(?:Key|Size|ETag|LastModified|VersionId|IsLatest"
-    r"|Contents|Version|DeleteMarker|CommonPrefixes)[\s/>]))*"
+    rf"(?:{_tag('StorageClass')}|{_tag('ChecksumAlgorithm')}"
+    rf"|{_tag('ChecksumType')}|{_OWNER})*+"
 )
 _OBJECT = (
     rf"<LastModified>{_TEXT}</LastModified><ETag>{_TEXT}</ETag>{_SUMS}"
@@ -305,6 +313,11 @@ class LeanS3:
         port = parts.port
         self.host = host if port in (None, default) else f"{host}:{port}"
         self.path = parts.path or "/"  # encoded already, as botocore signs it
+        self.proxy = (
+            getproxies().get(parts.scheme)
+            if not proxy_bypass(parts.hostname or "")
+            else None
+        )
         self.session: Any = None
         self.keys: dict[str, bytes] = {}  # signing keys by date
 
@@ -350,7 +363,6 @@ class LeanS3:
             self.session = aiohttp.ClientSession(
                 connector=aiohttp.TCPConnector(limit=0, ssl=context),
                 timeout=aiohttp.ClientTimeout(sock_connect=60, sock_read=60),
-                trust_env=True,  # proxies from the environment, as botocore
             )
         canonical = "&".join(
             f"{_quote(k)}={_quote(v)}" for k, v in sorted(query.items())
@@ -361,7 +373,9 @@ class LeanS3:
             try:
                 # encoded: aiohttp must send the query as signed
                 target = URL(url, encoded=True)
-                async with self.session.get(target, headers=headers) as response:
+                async with self.session.get(
+                    target, headers=headers, proxy=self.proxy
+                ) as response:
                     body = await response.read()
                     status = response.status
             except (TimeoutError, aiohttp.ClientError):
