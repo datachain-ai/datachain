@@ -4,7 +4,6 @@ from itertools import chain
 from typing import TYPE_CHECKING
 
 from datachain.cli.utils import determine_flavors
-from datachain.config import Config
 from datachain.query.session import Session
 
 if TYPE_CHECKING:
@@ -20,8 +19,9 @@ def ls(
     team: str | None = None,
     **kwargs,
 ):
-    token = Config().read().get("studio", {}).get("token")
-    all, local, studio = determine_flavors(studio, local, all, token)
+    from datachain.remote.studio import is_token_set
+
+    all, local, studio = determine_flavors(studio, local, all, is_token_set())
 
     show_local = all or local
     show_studio = all or studio

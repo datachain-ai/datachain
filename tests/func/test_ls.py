@@ -12,14 +12,13 @@ import pytest
 import datachain as dc
 import datachain.lib.listing as listing_lib
 from datachain.cli import ls
-from datachain.config import Config, ConfigLevel
 from datachain.lib.listing import LISTING_PREFIX, _sanitize_ds_name
+from tests.utils import studio_login
 
 
 @pytest.fixture
 def studio_config(global_config_dir):
-    with Config(ConfigLevel.GLOBAL).edit() as conf:
-        conf["studio"] = {"token": "isat_access_token", "team": "team_name"}
+    studio_login()
 
 
 def same_lines(lines1, lines2):

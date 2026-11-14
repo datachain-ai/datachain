@@ -71,7 +71,7 @@ def get_logging_level(args: Namespace) -> int:
     return logging.INFO
 
 
-def determine_flavors(studio: bool, local: bool, all: bool, token: str | None):
+def determine_flavors(studio: bool, local: bool, all: bool, token: bool | str | None):
     if studio and not token:
         raise DataChainError(
             "Not logged in to Studio. Log in with 'datachain auth login'."

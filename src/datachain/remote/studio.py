@@ -74,11 +74,16 @@ def _is_server_error(status_code: int) -> bool:
     return str(status_code).startswith("5")
 
 
+def get_studio_team(config: dict | None = None) -> str | None:
+    if config is None:
+        config = Config().read().get("studio", {}) or {}
+    return get_studio_env_variable("TEAM") or config.get("team")
+
+
 def is_token_set() -> bool:
-    return (
-        bool(get_studio_env_variable("TOKEN"))
-        or Config().read().get("studio", {}).get("token") is not None
-    )
+    from datachain.remote.credentials import has_login
+
+    return has_login(get_studio_url())
 
 
 def _parse_dates(obj: dict, date_fields: list[str]):
@@ -113,12 +118,18 @@ class StudioClient:
 
     @property
     def token(self) -> str:
-        token = get_studio_env_variable("TOKEN") or self.config.get("token")
+        from datachain.remote.credentials import resolve_token
+
+        url = get_studio_url(self.config)
+        team = self._team or get_studio_team(self.config)
+        token = resolve_token(url, team)
 
         if not token:
+            for_team = f" for team '{team}'" if team else ""
             raise DataChainError(
-                "Studio token is not set. Use `datachain auth login` "
-                "or environment variable `DATACHAIN_STUDIO_TOKEN` to set it."
+                f"Not logged in to Studio at {url}{for_team}. Use "
+                "`datachain auth login` or environment variable "
+                "`DATACHAIN_STUDIO_TOKEN` to set a token."
             )
 
         return token
@@ -140,7 +151,7 @@ class StudioClient:
         return self._team
 
     def _get_team(self) -> str:
-        team = get_studio_env_variable("TEAM") or self.config.get("team")
+        team = get_studio_team(self.config)
 
         if not team:
             raise DataChainError(

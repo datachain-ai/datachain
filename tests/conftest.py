@@ -26,7 +26,6 @@ import datachain as dc
 from datachain.catalog import Catalog
 from datachain.catalog.loader import get_metastore, get_warehouse
 from datachain.cli.utils import CommaSeparatedArgs
-from datachain.config import Config, ConfigLevel
 from datachain.data_storage import AbstractMetastore, JobQueryType, JobStatus
 from datachain.data_storage.sqlite import (
     SQLiteDatabaseEngine,
@@ -55,7 +54,13 @@ from datachain.utils import (
     DataChainDir,
 )
 
-from .utils import DEFAULT_TREE, instantiate_tree, make_tar, reset_session_job_state
+from .utils import (
+    DEFAULT_TREE,
+    instantiate_tree,
+    make_tar,
+    reset_session_job_state,
+    studio_login,
+)
 
 # gcsfs 2026.3+ turns on HNS/zonal support by default, so every gs op probes the
 # Storage Control API over gRPC. The mock gcs server can't answer that, so the
@@ -1058,8 +1063,7 @@ def dataset_rows():
 
 @pytest.fixture
 def studio_token():
-    with Config(ConfigLevel.GLOBAL).edit() as conf:
-        conf["studio"] = {"token": "isat_access_token", "team": "team_name"}
+    studio_login()
 
 
 @pytest.fixture

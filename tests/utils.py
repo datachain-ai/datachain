@@ -19,9 +19,12 @@ from upath.implementations.cloud import CloudPath
 
 import datachain as dc
 from datachain.catalog.catalog import Catalog
+from datachain.config import Config, ConfigLevel
 from datachain.dataset import DatasetDependency, DatasetRecord
 from datachain.lib.tar import process_tar
 from datachain.query import C
+from datachain.remote.credentials import Login, add_login
+from datachain.utils import STUDIO_URL
 
 DEFAULT_TREE: dict[str, Any] = {
     "description": "Cats and Dogs",
@@ -374,3 +377,19 @@ def reset_session_job_state():
     # Clear DATACHAIN_JOB_ID env var to allow new job creation on next run
     # This is important for studio/SaaS mode where job_id comes from env var
     os.environ.pop("DATACHAIN_JOB_ID", None)
+
+
+def studio_login(
+    token: str = "isat_access_token",  # noqa: S107
+    team: str | None = "team_name",
+    url: str | None = None,
+    teams: list[str] | None = None,
+    level: ConfigLevel = ConfigLevel.GLOBAL,
+) -> None:
+    """Save a Studio login and, if given, the default team at the same level."""
+    add_login(Login(url=url or STUDIO_URL, token=token, teams=teams, level=level))
+    if team:
+        with Config(level).edit() as conf:
+            studio = conf.get("studio", {})
+            studio["team"] = team
+            conf["studio"] = studio
