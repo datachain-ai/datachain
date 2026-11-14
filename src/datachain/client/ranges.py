@@ -155,6 +155,42 @@ def split_points(
     return points
 
 
+def _hold_last_key(
+    rows: list[Any], last: str | None, token: Any, held: list[Any], page_size: int
+) -> tuple[list[Any], list[Any]]:
+    """Holds rows of a page's last key while it may continue on the next page,
+    dropping ``is_latest`` if a later page lists the key as latest again."""
+    if held:
+        key = held[0].path
+        if any(r.path == key and getattr(r, "is_latest", False) for r in rows):
+            held = [
+                r._replace(is_latest=False) if getattr(r, "is_latest", False) else r
+                for r in held
+            ]
+        rows = [*held, *rows]
+        held = []
+    if token is not None and rows:
+        last_key = rows[-1].path if last is None else last
+        split = len(rows)
+        while split > 0 and rows[split - 1].path == last_key:
+            split -= 1
+        tail = rows[split:]
+        if any(getattr(r, "is_latest", False) for r in tail):
+            rows = rows[:split]
+            if len(tail) > page_size:
+                overflow = len(tail) - page_size
+                kept = []
+                for r in tail:
+                    if overflow and not getattr(r, "is_latest", False):
+                        rows.append(r)
+                        overflow -= 1
+                    else:
+                        kept.append(r)
+                tail = kept
+            held = tail
+    return rows, held
+
+
 class RangeListing:
     """One listing of a prefix as key ranges ``(lo, hi]`` read in parallel.
 
@@ -262,15 +298,19 @@ class RangeListing:
         this one waits for room in the result queue."""
         page = await self._fetch(key_range, None)
         next_page: asyncio.Task | None = None
+        held: list[Any] = []
+        page_size = self.client.LIST_PAGE_SIZE
         try:
             while True:
                 rows, token = self._advance(key_range, page)
                 if token is not None:
                     next_page = asyncio.create_task(self._fetch(key_range, token))
-                if rows:
-                    await self.result_queue.put(rows)
-                    self.pbar.update(len(rows))
-                    self.rows += len(rows)
+                rows, held = _hold_last_key(rows, page.last, token, held, page_size)
+                for start in range(0, len(rows), page_size):
+                    chunk = rows[start : start + page_size]
+                    await self.result_queue.put(chunk)
+                    self.pbar.update(len(chunk))
+                    self.rows += len(chunk)
                 if next_page is None:
                     return
                 page, next_page = await next_page, None

@@ -451,3 +451,90 @@ def test_list_page_falls_back_to_current_objects_without_version_support():
             ("a", "", True)
         ]
     assert s3.list_object_versions.call_count == 1
+
+
+def test_versioned_listing_drops_deleted_latest_across_pages(test_session, mocker):
+    import datachain as dc
+
+    pages = [
+        {
+            "Versions": [
+                {
+                    "Key": "a.txt",
+                    "VersionId": "va1",
+                    "IsLatest": True,
+                    "Size": 1,
+                    "ETag": '"ea1"',
+                    "LastModified": parse_timestamp("2026-09-30T23:00:00Z"),
+                },
+                {
+                    "Key": "b.txt",
+                    "VersionId": "vb2",
+                    "IsLatest": True,
+                    "Size": 20,
+                    "ETag": '"eb2"',
+                    "LastModified": parse_timestamp("2026-09-30T23:00:02Z"),
+                },
+            ],
+            "IsTruncated": True,
+            "NextKeyMarker": "b.txt",
+            "NextVersionIdMarker": "vb2",
+        },
+        {
+            "Versions": [
+                {
+                    "Key": "b.txt",
+                    "VersionId": "vb1",
+                    "IsLatest": True,
+                    "Size": 10,
+                    "ETag": '"eb1"',
+                    "LastModified": parse_timestamp("2026-09-30T23:00:01Z"),
+                },
+                {
+                    "Key": "c.txt",
+                    "VersionId": "vc1",
+                    "IsLatest": True,
+                    "Size": 3,
+                    "ETag": '"ec1"',
+                    "LastModified": parse_timestamp("2026-09-30T23:00:03Z"),
+                },
+            ],
+            "IsTruncated": False,
+        },
+    ]
+    s3 = MagicMock(list_object_versions=AsyncMock(side_effect=list(pages)))
+    client = _listing_client(True, s3)
+    mocker.patch("datachain.client.listing_worker.LIST_PROCESSES", 0)
+    mocker.patch("datachain.client.Client.get_client", return_value=client)
+
+    listed = dc.list_storage("s3://bucket/", session=test_session, versions=True)
+    assert [(r.path, r.version, r.size, r.is_latest) for r in listed] == [
+        ("a.txt", "va1", 1, True),
+        ("b.txt", "vb1", 10, True),
+        ("c.txt", "vc1", 3, True),
+    ]
+
+    s3.list_object_versions = AsyncMock(side_effect=list(pages))
+    chain = dc.read_storage("s3://bucket/", session=test_session, versions=True)
+    assert chain.order_by("file.path").to_list(
+        "file.path", "file.version", "file.size", "file.is_latest"
+    ) == [
+        ("a.txt", "va1", 1, True),
+        ("b.txt", "vb1", 10, True),
+        ("c.txt", "vc1", 3, True),
+    ]
+
+    (listing_info,) = test_session.catalog.listings()
+    snapshot = dc.read_dataset(
+        listing_info.name,
+        namespace=listing_info.namespace,
+        project=listing_info.project,
+        version=listing_info.version,
+        session=test_session,
+    )
+    assert sorted(snapshot.to_list("file.path", "file.version", "file.is_latest")) == [
+        ("a.txt", "va1", True),
+        ("b.txt", "vb1", True),
+        ("b.txt", "vb2", False),
+        ("c.txt", "vc1", True),
+    ]

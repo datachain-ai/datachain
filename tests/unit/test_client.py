@@ -23,6 +23,7 @@ from datachain.client.ranges import (
     split_points,
 )
 from datachain.client.writeconfig import WriteConfig
+from datachain.lib.file import FileRow
 
 
 def test_bad_protocol():
@@ -367,3 +368,184 @@ def test_keys_written_during_the_listing_do_not_fail_it(mocker):
     assert len(listed) == len(set(listed))
     assert len(client.starts) > 1
     assert {k for k in stable if k in client.keys} <= set(listed)
+
+
+class _PagedClient(RangeListedClient):
+    """Serves pre-built ``Page`` replies in a single range."""
+
+    PREFIX = "fake://"
+    protocol = "fake"
+    LIST_PAGE_SIZE = 4
+
+    def __init__(self, pages: list[Page]) -> None:
+        super().__init__("bucket", {}, None)  # type: ignore[arg-type]
+        self.pages = list(pages)
+
+    def _lists_in_key_order(self) -> bool:
+        return False
+
+    def info_to_file(self, v, path):
+        raise NotImplementedError
+
+    async def _list_page(
+        self, prefix, start_after, token, hi=None, page_size=None, delimiter=""
+    ) -> Page:
+        return self.pages[0 if token is None else token]
+
+
+def _row(key: str, version: str, is_latest: bool, size: int = 1) -> FileRow:
+    return FileRow("fake://bucket", key, size, version, is_latest=is_latest)
+
+
+def _listed_pages(client: Client) -> list[list[FileRow]]:
+    async def pages():
+        return [page async for page in client.scandir("")]
+
+    return sync(get_loop(), pages)
+
+
+def _listed_versions(client: Client) -> list[tuple[str, str, bool]]:
+    return [
+        (r.path, r.version, r.is_latest) for page in _listed_pages(client) for r in page
+    ]
+
+
+def test_page_boundary_drops_stale_is_latest_on_overwrite():
+    client = _PagedClient(
+        [
+            Page(
+                [
+                    _row("a", "v1", False, size=10),
+                    _row("a", "v2", True, size=20),
+                    _row("b", "v1", True, size=30),
+                ],
+                "a",
+                "b",
+                1,
+            ),
+            Page(
+                [
+                    _row("b", "v2", True, size=40),
+                    _row("c", "v1", True, size=50),
+                ],
+                "b",
+                "c",
+                None,
+            ),
+        ]
+    )
+
+    rows = [r for page in _listed_pages(client) for r in page]
+    assert [(r.path, r.version, r.is_latest, r.size) for r in rows] == [
+        ("a", "v1", False, 10),
+        ("a", "v2", True, 20),
+        ("b", "v1", False, 30),
+        ("b", "v2", True, 40),
+        ("c", "v1", True, 50),
+    ]
+
+
+def test_page_boundary_drops_stale_is_latest_on_s3_delete_and_multi_page():
+    client = _PagedClient(
+        [
+            Page([_row("a", "v3", True), _row("a", "v2", False)], "a", "a", 1),
+            Page([_row("a", "v1", True), _row("b", "v1", True)], "a", "b", 2),
+            Page([_row("b", "v2", True)], "b", "b", 3),
+            Page([_row("b", "v3", True)], "b", "b", None),
+        ]
+    )
+
+    assert _listed_versions(client) == [
+        ("a", "v3", False),
+        ("a", "v2", False),
+        ("a", "v1", True),
+        ("b", "v1", False),
+        ("b", "v2", False),
+        ("b", "v3", True),
+    ]
+
+
+def test_page_boundary_preserves_unchanged_split_versions():
+    client = _PagedClient(
+        [
+            Page([_row("a", "v3", True), _row("a", "v2", False)], "a", "a", 1),
+            Page(
+                [
+                    _row("a", "v1", False),
+                    _row("b", "v1", False),
+                    _row("b", "v2", False),
+                ],
+                "a",
+                "b",
+                2,
+            ),
+            Page([_row("b", "v3", True)], "b", "b", None),
+        ]
+    )
+
+    assert _listed_versions(client) == [
+        ("a", "v3", True),
+        ("a", "v2", False),
+        ("a", "v1", False),
+        ("b", "v1", False),
+        ("b", "v2", False),
+        ("b", "v3", True),
+    ]
+
+
+def test_page_boundary_holds_across_empty_pages_and_delete_markers():
+    client = _PagedClient(
+        [
+            Page([_row("a", "v2", True)], "a", "a", 1),
+            Page([], None, "a", 2),  # only delete markers of "a"
+            Page([], None, None, 3),  # empty page with no last key
+            Page(
+                [_row("a", "v1", True), _row("b", "v1", True)],
+                "a",
+                "c",  # trailing delete marker "c" past "b"
+                4,
+            ),
+            Page([_row("d", "v1", True)], "d", "d", 5),
+            Page([], None, None, None),  # trailing empty final page
+        ]
+    )
+
+    assert _listed_versions(client) == [
+        ("a", "v2", False),
+        ("a", "v1", True),
+        ("b", "v1", True),
+        ("d", "v1", True),
+    ]
+
+
+def test_page_boundary_many_versions_stay_bounded_per_page():
+    client = _PagedClient(
+        [
+            Page(
+                [
+                    _row("a", "v6", True),
+                    _row("a", "v5", False),
+                    _row("a", "v4", False),
+                    _row("a", "v3", False),
+                ],
+                "a",
+                "a",
+                1,
+            ),
+            Page([_row("a", "v2", False), _row("a", "v1", False)], "a", "a", 2),
+            Page([_row("a", "v0", True)], "a", "a", None),
+        ]
+    )
+
+    pages = _listed_pages(client)
+    assert max(len(p) for p in pages) <= _PagedClient.LIST_PAGE_SIZE
+    rows = [(r.path, r.version, r.is_latest) for page in pages for r in page]
+    assert sorted(rows) == [
+        ("a", "v0", True),
+        ("a", "v1", False),
+        ("a", "v2", False),
+        ("a", "v3", False),
+        ("a", "v4", False),
+        ("a", "v5", False),
+        ("a", "v6", False),
+    ]
