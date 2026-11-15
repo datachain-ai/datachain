@@ -1488,7 +1488,7 @@ class AbstractDBMetastore(AbstractMetastore):
             .values(created_at=datetime.now(UTC))
         )
 
-    def update_dataset_version(  # noqa: PLR0912
+    def update_dataset_version(  # noqa: C901, PLR0912
         self,
         dataset: DatasetRecord,
         version: str,

@@ -648,7 +648,7 @@ def test_s3_connections_cover_the_listing_requests_in_flight():
 def test_child_reports_its_warm_up_error_to_the_parent(tmp_path):
     from datachain.client.local import FileClient
 
-    out = child(dump((FileClient, str(tmp_path), {}, None, 4, "")))
+    out = child(dump((FileClient, str(tmp_path), {}, None, 4, "", None)))
 
     assert out.returncode == 0
     assert "Traceback" in load(io.BytesIO(out.stdout))
@@ -736,7 +736,7 @@ def test_a_ctypes_module_in_the_cwd_does_not_run_in_a_child(tmp_path, clients):
     cwd = tmp_path / "cwd"
     cwd.mkdir()
     (cwd / "ctypes.py").write_text("raise SystemExit(3)")
-    out = child(dump((clients.IdleClient, "bucket", {}, None, 4, "")), cwd=cwd)
+    out = child(dump((clients.IdleClient, "bucket", {}, None, 4, "", None)), cwd=cwd)
 
     assert out.returncode == 0
     assert load(io.BytesIO(out.stdout)) is None  # ready
@@ -751,7 +751,7 @@ def test_child_reports_why_it_cannot_build_its_client():
 
 
 def test_child_ends_when_the_parent_goes_while_a_thread_is_stuck(clients):
-    spec = (clients.ThreadIdleClient, "bucket", {}, None, 4, "")
+    spec = (clients.ThreadIdleClient, "bucket", {}, None, 4, "", None)
     proc = subprocess.Popen(  # noqa: S603
         _command(),
         stdin=subprocess.PIPE,

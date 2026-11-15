@@ -1,13 +1,12 @@
 import functools
 import glob
-import itertools
 import logging
 import os
 import posixpath
 import re
 import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import blake2b
@@ -549,13 +548,12 @@ class PageEncoder:
 def write_listing(
     uri: str, ds_name: str, session: "Session", client_config: dict
 ) -> None:
-    """Store the listing of the prefix ``uri``, whole, as a new version of the
-    listing dataset ``ds_name``: the snapshot ``read_storage`` reads and reuses.
+    """Store a listing snapshot under a reservation made before enumeration.
 
-    The version's ``content_hash`` is the listing's digest. A listing with the
-    digest of the version that was the latest when it started is dropped, and
-    that version's TTL starts again, unless a newer version came meanwhile.
+    Only a newer reservation may supersede it. An unchanged snapshot reuses
+    the latest COMPLETE version unless an older reservation needs fencing.
     """
+    from datachain.dataset import DatasetStatus
     from datachain.lib.signal_schema import SignalSchema
 
     catalog = session.catalog
@@ -569,70 +567,112 @@ def write_listing(
         for c in schema.db_signals(as_columns=True)
     ]
     names = [c.name for c in columns]
-    previous = _latest_version(catalog, ds_name, project)
     with_etag = not Client.get_implementation(uri).PINNED_VERSION_IS_IMMUTABLE
     encode = PageEncoder(warehouse.row_codec(columns), with_etag)
+    job = session.get_job()
+    job_id = job.id if job else None
     pages = iter(list_pages(uri, catalog.cache, client_config, encode))
-    # the first page before the version: a missing prefix fails without one
-    first = list(itertools.islice(pages, 1))
-    job = session.get_job()  # internal: a job if one runs, but not a new one
-    dataset = catalog.create_dataset(
-        ds_name,
-        project,
-        columns=columns,
-        feature_schema=schema.serialize(),
-        listing=True,
-        update_version="major",
-        job_id=job.id if job else None,
-        query_script=job.query if job else "",
-    )
-    version = dataset.versions[0].version
-    table_name = warehouse.dataset_table_name(dataset, version)
-    table = warehouse.create_dataset_rows_table(table_name, columns=columns)
-    count = total = 0
-
-    def rows() -> Iterator[tuple]:
-        nonlocal count, total
-        touched = time.monotonic()
-        for page in itertools.chain(first, pages):
-            count += len(page)
-            total += page.digest
-            yield from page.rows
-            if time.monotonic() - touched > RESERVATION_TOUCH_INTERVAL:
-                # gc removes a jobless CREATED version by its age
-                metastore.touch_reservation(dataset, version)
-                touched = time.monotonic()
-
+    dataset = None
+    version = None
     try:
+        dataset = catalog.create_dataset(
+            ds_name,
+            project,
+            columns=columns,
+            feature_schema=schema.serialize(),
+            listing=True,
+            update_version="major",
+            job_id=job_id,
+            query_script=job.query if job else "",
+        )
+        version = dataset.versions[0].version
+        reservation = dataset.get_version(version)
+        table = warehouse.create_dataset_rows_table(
+            warehouse.dataset_table_name(dataset, version), columns=columns
+        )
+        count = total = 0
+
+        def rows() -> Iterator[tuple]:
+            nonlocal count, total
+            touched = time.monotonic()
+            for page in pages:
+                if time.monotonic() - touched > RESERVATION_TOUCH_INTERVAL:
+                    metastore.touch_reservation(dataset, version)
+                    touched = time.monotonic()
+                count += len(page)
+                total += page.digest
+                yield from page.rows
+                if time.monotonic() - touched > RESERVATION_TOUCH_INTERVAL:
+                    metastore.touch_reservation(dataset, version)
+                    touched = time.monotonic()
+
         warehouse.insert_stored_rows(table, names, rows(), LISTING_BATCH_SIZE)
+        content_hash = f"{LISTING_DIGEST}:{count}:{total % (1 << 128):032x}"
+        latest = _latest_version(catalog, ds_name, project)
+        if latest:
+            previous, previous_version = latest
+            own_active = any(
+                v.id == reservation.id and v.status == DatasetStatus.CREATED
+                for v in previous.all_versions
+            )
+            older_pending = any(
+                previous_version.id < v.id < reservation.id
+                and v.status == DatasetStatus.CREATED
+                for v in previous.all_versions
+            )
+            if (
+                own_active
+                and previous_version.id < reservation.id
+                and previous_version.content_hash == content_hash
+                and not older_pending
+                and warehouse.db.has_table(
+                    warehouse.dataset_table_name(previous, previous_version.version)
+                )
+            ):
+                reused = metastore.update_dataset_version(
+                    previous,
+                    previous_version.version,
+                    expected_status=DatasetStatus.COMPLETE,
+                    expected_latest_complete=previous_version.id,
+                    finished_at=datetime.now(UTC),
+                )
+                if reused is not None and catalog.release_reservation(
+                    dataset, version, job_id
+                ):
+                    return
+        try:
+            catalog.complete_dataset_version(
+                dataset,
+                version,
+                content_hash=content_hash,
+                expected_job_id=job_id,
+                expected_latest_complete=reservation.id,
+            )
+        except ConcurrentDatasetModificationError:
+            latest = _latest_version(catalog, ds_name, project)
+            if (
+                latest is None
+                or latest[1].id <= reservation.id
+                or not warehouse.db.has_table(
+                    warehouse.dataset_table_name(latest[0], latest[1].version)
+                )
+            ):
+                raise
+            catalog.release_reservation(dataset, version, job_id)
+            return
+        if job:
+            metastore.link_dataset_version_to_job(
+                reservation.id, job.id, is_creator=True
+            )
     except BaseException:
-        catalog.remove_dataset_version(dataset, version, keep_metadata=False)
+        if dataset is not None and version is not None:
+            with suppress(Exception):
+                catalog.release_reservation(dataset, version, job_id)
         raise
-    content_hash = f"{LISTING_DIGEST}:{count}:{total % (1 << 128):032x}"
-    # publish only while the version that was the latest when this listing
-    # started still is: one published meanwhile is newer. The metastore checks
-    # it in the same statement that writes.
-    base = previous[1].id if previous else 0
-    if previous and previous[1].content_hash == content_hash:
-        catalog.remove_dataset_version(dataset, version, keep_metadata=False)
-        metastore.update_dataset_version(  # unchanged: the base's TTL restarts
-            previous[0],
-            previous[1].version,
-            expected_latest_complete=base,
-            finished_at=datetime.now(UTC),
-        )
-        return
-    try:
-        catalog.complete_dataset_version(
-            dataset, version, content_hash=content_hash, expected_latest_complete=base
-        )
-    except ConcurrentDatasetModificationError:
-        catalog.remove_dataset_version(dataset, version, keep_metadata=False)
-        return
-    if job:
-        metastore.link_dataset_version_to_job(
-            dataset.get_version(version).id, job.id, is_creator=True
-        )
+    finally:
+        with suppress(Exception):
+            if close := getattr(pages, "close", None):
+                close()
 
 
 def _latest_version(
