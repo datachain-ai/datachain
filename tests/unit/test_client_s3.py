@@ -485,8 +485,11 @@ def test_patterns_read_a_page_as_s3_writes_it():
         PAGE.replace(b"<Name>", b"<!-- c --><Name>"),
         PAGE.replace(b"<Size>1</Size>", b"<Size>1</Size><Extra/>"),
         PAGE.replace(b"</Key>", b"&#13;</Key>"),
+        PAGE.replace(b"</Key>", b"\r</Key>"),
+        PAGE.replace(b"</Key>", b"\x0b</Key>"),
+        PAGE.replace(b"</Key>", "\ufffe".encode() + b"</Key>"),
     ],
-    ids=["comment", "unknown-field", "char-reference"],
+    ids=["comment", "unknown-field", "char-reference", "cr", "control", "nonchar"],
 )
 def test_elementtree_reads_a_page_the_patterns_do_not(body):
     assert _page(body) is None

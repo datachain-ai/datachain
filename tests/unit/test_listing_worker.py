@@ -716,6 +716,26 @@ def test_a_probe_that_gets_its_token_back_fails():
         sync(get_loop(), client._probe, "", "a")
 
 
+class ForbiddenDelimiterClient(KeysClient):
+    NAMES_FOLDERS = True
+
+    async def _list_page(
+        self, prefix, start_after, token, hi=None, page_size=None, delimiter=""
+    ):
+        if delimiter:
+            raise PermissionError("delimiter=/ is forbidden by bucket policy")
+        return await super()._list_page(
+            prefix, start_after, token, hi=hi, page_size=page_size
+        )
+
+
+def test_folder_cut_falls_back_to_flat_listing_when_delimiter_is_rejected():
+    keys = [(f"dir{i:02d}/file.txt", "v1") for i in range(10)]
+    client = ForbiddenDelimiterClient(keys)
+    pages = _listed(client, processes=False)
+    assert sorted((r.path, r.version) for p in pages for r in p) == keys
+
+
 def test_a_frozen_app_lists_in_one_process():
     code = (
         "import sys; sys.frozen = True; "

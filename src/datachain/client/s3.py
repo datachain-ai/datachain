@@ -163,6 +163,7 @@ _DECLARATION = b'<?xml version="1.0" encoding="UTF-8"?>'
 _ROOT = re.compile(r"\s*<List(?:Bucket|Versions)Result[\s>]")
 _ODD = ((b"!", b"<!"), (b"?", b"<?"), (b"]", b"]]>"))  # comment, instruction, CDATA
 _ENTITY = re.compile(rb"&(?!(?:amp|lt|gt|quot|apos|#34|#39);)")  # any other
+_INVALID_XML_TEXT = re.compile(r"[\x00-\x08\x0b-\x1f\ufffe\uffff]")
 # "&amp;" last: "&amp;lt;" is "&lt;"
 _ENTITIES = {"&lt;": "<", "&gt;": ">", "&#34;": '"', "&apos;": "'", "&#39;": "'"}
 _ENTITIES["&amp;"] = "&"
@@ -219,6 +220,8 @@ def _plain_text(body: bytes) -> str | None:
     try:
         text = body.decode()
     except UnicodeDecodeError:
+        return None
+    if _INVALID_XML_TEXT.search(text):
         return None
     return text if _ROOT.match(text) else None
 

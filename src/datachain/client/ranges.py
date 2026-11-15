@@ -270,10 +270,13 @@ class RangeListing:
         starts spread over its keys instead of splitting its way out of one."""
         if self.delimiter or not self.client.NAMES_FOLDERS or page.last is None:
             return
-        async with self.own_requests:
-            level = await self.client._list_page(
-                self.prefix, page.last, None, delimiter="/"
-            )
+        try:
+            async with self.own_requests:
+                level = await self.client._list_page(
+                    self.prefix, page.last, None, delimiter="/"
+                )
+        except Exception:  # noqa: BLE001
+            return
         read_to = self.order(page.last)
         folders = sorted(f for f in level.folders if self.order(f) > read_to)
         folders = folders[:: -(-len(folders) // CUT_RANGES) or 1]
