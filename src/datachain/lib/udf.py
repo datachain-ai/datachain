@@ -32,7 +32,7 @@ from datachain.query.batch import (
     RowsOutputBatch,
 )
 from datachain.query.schema import DEFAULT_DELIMITER
-from datachain.utils import safe_closing, with_last_flag
+from datachain.utils import safe_closing
 
 logger = logging.getLogger("datachain")
 
@@ -179,6 +179,8 @@ UDFOutputSpec = Mapping[str, ColumnType]
 # Result type when calling the UDF wrapper around the actual Python function / class
 # implementing it: the output values in their stored form, then the sys values.
 UDFResult = tuple[Any, ...]
+# A gen or agg result: the rows of one part (an input row, a partition) and its key
+UDFPart = tuple[Any, Iterable[UDFResult]]
 
 PROGRESS_INTERVAL = 0.1  # seconds
 
@@ -328,7 +330,7 @@ class UDFAdapter:
         cache: bool,
         download_cb: Callback = DEFAULT_CALLBACK,
         processed_cb: Callback = DEFAULT_CALLBACK,
-    ) -> Iterator[Iterable[UDFResult]]:
+    ) -> Iterator[Iterable[UDFResult] | UDFPart]:
         yield from self.inner.run(
             udf_fields,
             udf_inputs,
@@ -394,7 +396,6 @@ class UDFBase(AbstractUDF):
     is_input_batched = False
     is_output_batched = False
     udf_kind = "map"  # named in output errors: map, gen or agg
-    sys_columns: tuple[str, ...] = ("sys__id",)  # after the outputs in each row
     prefetch: int = 0
     # Class-level default so subclasses that skip super().__init__() still
     # have this attribute; _MultiSignalMapper sets params/output per entry
@@ -535,7 +536,7 @@ class UDFBase(AbstractUDF):
         cache: bool,
         download_cb: Callback = DEFAULT_CALLBACK,
         processed_cb: Callback = DEFAULT_CALLBACK,
-    ) -> Iterator[Iterable[UDFResult]]:
+    ) -> Iterator[Iterable[UDFResult] | UDFPart]:
         raise NotImplementedError
 
     @property
@@ -994,7 +995,6 @@ class Generator(UDFBase):
 
     is_output_batched = True
     udf_kind = "gen"
-    sys_columns = ("sys__input_id", "sys__partial", "sys__empty")
     prefetch: int = 2
     prefetch_max_size: int | None = None
     # (input, output) columns of a delta key each output row must keep
@@ -1009,7 +1009,7 @@ class Generator(UDFBase):
         cache: bool,
         download_cb: Callback = DEFAULT_CALLBACK,
         processed_cb: Callback = DEFAULT_CALLBACK,
-    ) -> Iterator[Iterable[UDFResult]]:
+    ) -> Iterator[UDFPart]:
         self.setup()
         signal_names = list(self.signal_names)
         key_inputs = [udf_fields.index(column) for column, _ in self.delta_key]
@@ -1031,7 +1031,6 @@ class Generator(UDFBase):
         input_keys: dict[Any, tuple] = {}
         prefetch = self._effective_prefetch
         output_rows = OutputRows(self, catalog.warehouse)
-        empty = output_rows.encode(())
 
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
             prepare = self._input_reader(udf_fields, catalog, cache, download_cb)
@@ -1071,21 +1070,13 @@ class Generator(UDFBase):
                     _check_delta_key(key, values)
                 yield output_rows.encode(values)
 
-        def _process_row(row):
-            row_id, *row = row
+        def _process_row(row_id, row):
             key = input_keys.pop(row_id) if key_columns else None
-            has_output = False
             result = self.process(*row)
             if result is None:
                 result = iter(())
             with safe_closing(result) as result_objs:
-                stored = _stored_rows(result_objs, key)
-                for values, is_last in with_last_flag(stored):
-                    has_output = True
-                    yield (*values, row_id, not is_last, None)
-            if not has_output:
-                # Marker: records that this input was processed but yielded nothing.
-                yield (*empty, row_id, False, True)
+                yield from _stored_rows(result_objs, key)
 
         prepared_inputs = _prepare_rows(udf_inputs)
         prepared_inputs = _prefetch_inputs(
@@ -1101,8 +1092,8 @@ class Generator(UDFBase):
             closing(prepared_inputs),
             _Progress(processed_cb) as progress,
         ):
-            for row in prepared_inputs:
-                yield _process_row(row)
+            for row_id, *row in prepared_inputs:
+                yield row_id, _process_row(row_id, row)
                 progress.add(1)
 
 
@@ -1112,7 +1103,6 @@ class Aggregator(UDFBase):
     is_input_batched = True
     is_output_batched = True
     udf_kind = "agg"
-    sys_columns = ("sys__input_id", "sys__partial", "sys__empty")
 
     def run(
         self,
@@ -1122,12 +1112,11 @@ class Aggregator(UDFBase):
         cache: bool,
         download_cb: Callback = DEFAULT_CALLBACK,
         processed_cb: Callback = DEFAULT_CALLBACK,
-    ) -> Iterator[Iterable[UDFResult]]:
+    ) -> Iterator[UDFPart]:
         from datachain.data_storage.schema import PARTITION_COLUMN_ID
 
         self.setup()
         output_row = OutputRows(self, catalog.warehouse)
-        empty = output_row.encode(())
         prepare = self._input_reader(
             udf_fields, catalog, cache, download_cb, include_id=False
         )
@@ -1156,16 +1145,6 @@ class Aggregator(UDFBase):
                 result_objs = self.process(*udf_args)
                 if result_objs is None:
                     result_objs = iter(())
-                udf_outputs = map(output_row, result_objs)
-
-                def _process_partition(udf_outputs, input_id):
-                    has_output = False
-                    for row, is_last in with_last_flag(udf_outputs):
-                        has_output = True
-                        yield (*row, input_id, not is_last, None)
-                    if not has_output:
-                        yield (*empty, input_id, False, True)
-
-                output = _process_partition(udf_outputs, input_id)
+                output = map(output_row, result_objs)
                 processed_cb.relative_update(len(batch))
-                yield output
+                yield input_id, output

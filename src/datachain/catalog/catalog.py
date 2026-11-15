@@ -19,6 +19,7 @@ from sqlalchemy import Column
 from datachain.cache import Cache
 from datachain.checkpoint import Checkpoint, CheckpointStatus
 from datachain.client import Client
+from datachain.data_storage.writer import parts_table_name
 from datachain.dataset import (
     DATASET_PREFIX,
     DEFAULT_DATASET_VERSION,
@@ -2475,6 +2476,9 @@ class Catalog:
 
         # Remove output/partial tables using exact names from checkpoints
         output_tables = [ch.table_name for ch in checkpoints]
+        output_tables += [
+            parts_table_name(ch.table_name) for ch in checkpoints if ch.partial
+        ]
         if output_tables:
             logger.info(
                 "Removing %d UDF output tables: %s", len(output_tables), output_tables

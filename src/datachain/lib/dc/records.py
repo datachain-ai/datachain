@@ -139,10 +139,9 @@ def create_records_dataset(
     codec = warehouse.row_codec(columns)
     rows = (tuple(record.get(name) for name in names) for record in flat_records)
     try:
-        warehouse.insert_tuples(table, names, map(codec.encode, rows))
+        warehouse.insert_stored_rows(table, names, map(codec.encode, rows))
     except RowEncodeError as e:
         raise output_value_error(e, names, signal_schema) from e.__cause__
-    warehouse.insert_rows_done(table)
 
     # Finalize warehouse-derived metadata before marking the version COMPLETE.
     catalog.complete_dataset_version(dsr, dataset_version)

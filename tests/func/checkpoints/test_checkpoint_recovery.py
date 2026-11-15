@@ -1,6 +1,7 @@
 from collections.abc import Iterator
 
 import pytest
+import sqlalchemy as sa
 
 import datachain as dc
 from datachain import func
@@ -1278,3 +1279,107 @@ def test_delta_update_with_no_retry_rows_reuses_udf_between_sibling_saves(test_s
         == sorted(b.to_list("id", "value"))
         == [(1, 2), (2, 4), (3, 6)]
     )
+
+
+@pytest.mark.parametrize("same_job", [True, False])
+def test_generator_mid_input_multi_flush_crash_trims_tail(test_session, same_job):
+    """An input whose rows span several flushes crashes mid-stream: resume keeps
+    the inputs committed in the same flushes and drops the crashed input's
+    flushed rows, which the ledger does not cover."""
+    processed = []
+    failing = True
+    counts = {1: 2, 2: 10, 3: 3}
+
+    def gen(num: int) -> Iterator[int]:
+        processed.append(num)
+        for i in range(counts[num]):
+            if failing and num == 2 and i == 7:
+                raise RuntimeError("mid-input crash after multiple flushes")
+            yield num * 100 + i
+
+    dc.read_values(num=[1, 2, 3], session=test_session).save("multi_flush_nums")
+
+    def run():
+        return (
+            dc.read_dataset("multi_flush_nums", session=test_session)
+            .order_by("num")
+            .settings(batch_size=4)
+            .gen(val=gen, output=int)
+            .save("multi_flush_out")
+        )
+
+    reset_session_job_state()
+    with pytest.raises(RuntimeError, match="mid-input crash"):
+        run()
+    assert processed == [1, 2]
+
+    if not same_job:
+        reset_session_job_state()
+    failing = False
+    processed.clear()
+    vals = run().order_by("val").to_list("val")
+    assert processed == [2, 3]
+    assert vals == [(n * 100 + i,) for n in (1, 2, 3) for i in range(counts[n])]
+
+
+def test_cross_job_resume_while_the_source_still_commits(test_session, monkeypatch):
+    """A resume in another job copies the source's partial table and ledger while
+    the source job may still be committing parts. A part committed between the
+    two copies must neither be lost nor duplicated."""
+    failing = True
+
+    def gen(num: int) -> Iterator[int]:
+        if failing and num == 3:
+            raise RuntimeError("crash at 3")
+        for i in range(3):
+            yield num * 100 + i
+
+    dc.read_values(num=[1, 2, 3, 4, 5], session=test_session).save("live_nums")
+
+    def run():
+        return (
+            dc.read_dataset("live_nums", session=test_session)
+            .order_by("num")
+            .gen(val=gen, output=int)
+            .save("live_out")
+        )
+
+    reset_session_job_state()
+    with pytest.raises(RuntimeError, match="crash at 3"):
+        run()
+
+    warehouse = test_session.catalog.warehouse
+    (source_name,) = warehouse.db.list_tables(pattern="udf_%_output_partial")
+    source = warehouse.get_table(source_name)
+    source_parts = warehouse.get_table(f"{source_name}_parts")
+    (inputs,) = [
+        table
+        for name in warehouse.db.list_tables(pattern="udf_%_input")
+        if "num" in (table := warehouse.get_table(name)).c
+    ]
+    (input_id,) = next(
+        warehouse.db.execute(sa.select(inputs.c.sys__id).where(inputs.c.num == 4))
+    )
+
+    copy = warehouse.create_table_from_query
+    copied = []
+
+    def copy_while_source_commits(name, *args, **kwargs):
+        table = copy(name, *args, **kwargs)
+        if "_output_partial" not in name:
+            return table
+        if not copied:
+            # the source job commits input 4 between the two copies
+            writer_no = warehouse.claim_writer_no(source_parts)
+            with warehouse.writer(source, ["val"], writer_no, source_parts) as w:
+                w.extend([(400,), (401,), (402,)])
+                w.commit(input_id)
+        copied.append(name)
+        return table
+
+    monkeypatch.setattr(warehouse, "create_table_from_query", copy_while_source_commits)
+    reset_session_job_state()
+    failing = False
+    vals = run().order_by("val").to_values("val")
+    assert len(copied) == 2
+    assert vals == [n * 100 + i for n in (1, 2, 3, 4, 5) for i in range(3)]

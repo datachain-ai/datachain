@@ -27,7 +27,6 @@ from datachain.utils import (
     suffix_to_number,
     usable_cpu_count,
     uses_glob,
-    with_last_flag,
 )
 
 DATACHAIN_TEST_PATHS = ["/file1", "file2", "/dir/file3", "dir/file4"]
@@ -417,35 +416,6 @@ def test_interprocess_file_lock_no_dir_in_path(tmp_path, monkeypatch):
     bare = "bare_test.lock"
     with interprocess_file_lock(bare, timeout=0):
         assert (tmp_path / bare).exists()
-
-
-def gen3():
-    yield from range(3)
-
-
-@pytest.mark.parametrize(
-    "input_data, expected",
-    [
-        (
-            [10, 20, 30],
-            [(10, False), (20, False), (30, True)],
-        ),
-        (
-            [42],
-            [(42, True)],
-        ),
-        (
-            [],
-            [],
-        ),
-        (
-            gen3(),  # generator input
-            [(0, False), (1, False), (2, True)],
-        ),
-    ],
-)
-def test_with_last_flag(input_data, expected):
-    assert list(with_last_flag(input_data)) == expected
 
 
 def test_checkpoints_enabled_default():

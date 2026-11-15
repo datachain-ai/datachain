@@ -241,8 +241,7 @@ def test_empty_rows_insert_defaults(sqlite_db):
     warehouse = SQLiteWarehouse(sqlite_db)
     table = warehouse.create_udf_table([sa.Column("value", sa.Integer)])
 
-    warehouse.insert_rows(table, [{}, {}])
-    warehouse.insert_rows_done(table)
+    warehouse.insert_stored_rows(table, [], [(), ()])
 
     query = sa.select(table.c.value)
     assert list(warehouse.dataset_rows_select(query)) == [(None,), (None,)]
@@ -267,8 +266,7 @@ def test_insert_into_reads_all_ids_before_inserting_batches(
     src, dst, unrelated = (
         warehouse.create_udf_table([sa.Column("value", sa.Integer)]) for _ in range(3)
     )
-    warehouse.insert_rows(src, [{"value": i} for i in range(10)])
-    warehouse.insert_rows_done(src)
+    warehouse.insert_stored_rows(src, ["value"], [(i,) for i in range(10)])
 
     # Another connection commits after each batch. With the id cursor still open,
     # the next batch fails with "database is locked".

@@ -17,6 +17,7 @@ from sqlalchemy.sql.selectable import GenerativeSelect
 from datachain.client import Client
 from datachain.data_storage.codec import RowCodec, TypeCodec, value_codec
 from datachain.data_storage.serializer import Serializable
+from datachain.data_storage.writer import Writer
 from datachain.dataset import DatasetRecord, StorageURI
 from datachain.error import TableRenameError
 from datachain.lib.file import File
@@ -26,7 +27,7 @@ from datachain.query.batch import DEFAULT_BATCH_SIZE, RowsOutput
 from datachain.query.schema import ColumnMeta
 from datachain.sql.functions import path as pathfunc
 from datachain.sql.types import SQLType
-from datachain.utils import LIKE_ESCAPE_CHAR, safe_closing, sql_escape_like
+from datachain.utils import LIKE_ESCAPE_CHAR, batched, safe_closing, sql_escape_like
 
 if TYPE_CHECKING:
     from sqlalchemy.sql._typing import (
@@ -37,7 +38,6 @@ if TYPE_CHECKING:
     from sqlalchemy.sql.selectable import FromClause
 
     from datachain.data_storage import schema
-    from datachain.data_storage.buffer import InsertBuffer
     from datachain.data_storage.db_engine import DatabaseEngine
     from datachain.data_storage.schema import DataTable
 
@@ -64,11 +64,10 @@ class AbstractWarehouse(ABC, Serializable):
     UDF_TABLE_NAME_PREFIX = "udf_"
     TMP_TABLE_NAME_PREFIX = "tmp_"
     INSERT_BATCH_SIZE: int = 10_000
-    INSERT_FLUSH_INTERVAL: float = 60.0
+    INSERT_FLUSH_INTERVAL: float = 2.0
 
     schema: "schema.Schema"
     db: "DatabaseEngine"
-    buffers: dict[str, "InsertBuffer"]
 
     def __enter__(self) -> Self:
         return self
@@ -439,75 +438,60 @@ class AbstractWarehouse(ABC, Serializable):
         ((nrows, *rest),) = self.db.execute(query)
         return nrows, rest[0] if rest else 0
 
-    def insert_rows(
-        self,
-        table: sa.Table,
-        rows: Iterable[dict[str, Any]],
-        batch_size: int | None = None,
-    ) -> None:
-        """Does batch inserts of dict rows into table, with the keys of the first
-        row as the columns.
-
-        `insert_rows_done` must be called after this function is used
-        (and all rows have been inserted).
-        """
-        rows = iter(rows)
-        first = next(rows, None)
-        if first is None:
-            return
-        columns = list(first)
-        self.insert_tuples(
-            table,
-            columns,
-            (tuple(row[c] for c in columns) for row in itertools.chain([first], rows)),
-            batch_size,
-        )
-
-    def insert_tuples(
+    def insert_stored_rows(
         self,
         table: sa.Table,
         columns: Sequence[str],
         rows: Iterable[tuple],
         batch_size: int | None = None,
     ) -> None:
-        """Does batch inserts of tuple rows, in the order of `columns`, into table.
+        """Insert rows already in stored form (``RowCodec.encode``), in the order
+        of ``columns``, in blocks of ``batch_size``."""
+        for block in batched(rows, batch_size or self.INSERT_BATCH_SIZE):
+            self.insert_block(table, columns, list(block))
 
-        `insert_rows_done` must be called after this function is used
-        (and all rows have been inserted).
-        """
-        buffer = self.buffers.get(table.name)
-        if buffer is not None and buffer.columns != list(columns):
-            self.close_buffer(table)
-        buffer_size = batch_size if batch_size is not None else self.INSERT_BATCH_SIZE
-        buffer = self.get_buffer(
-            table,
-            columns,
-            buffer_size=buffer_size,
-            flush_interval=self.INSERT_FLUSH_INTERVAL,
-        )
-        buffer.insert_many(rows)
-
-    @abstractmethod
-    def get_buffer(
+    def writer(
         self,
         table: sa.Table,
         columns: Sequence[str],
-        buffer_size: int,
-        flush_interval: float,
-    ) -> "InsertBuffer":
-        """Get or create an InsertBuffer for the given table."""
+        writer_no: int = 0,
+        parts: sa.Table | None = None,
+        batch_size: int | None = None,
+    ) -> Writer:
+        """A writer of rows into table, with ids and a ledger: see ``Writer``."""
+        return Writer(self, table, columns, writer_no, parts, batch_size)
 
-    def close_buffer(self, table: sa.Table) -> None:
-        """Flush and close the buffer for the given table."""
-        if table.name not in self.buffers:
-            return
-        self.buffers[table.name].flush()
-        self.buffers[table.name].close()
-        del self.buffers[table.name]
+    @abstractmethod
+    def insert_block(
+        self,
+        table: sa.Table,
+        columns: Sequence[str],
+        rows: Sequence[tuple],
+        parts: sa.Table | None = None,
+        ledger: Sequence[tuple] = (),
+    ) -> None:
+        """Insert rows, which carry their sys__id, then the ledger rows of the
+        parts they finish. A ledger row must not become visible before the rows
+        it covers: insert both in one transaction, or the rows first. Both are
+        lists, so an insert retried after a lock error sees every row again."""
 
-    def insert_rows_done(self, table: sa.Table) -> None:
-        """Signal that row inserts are complete by flushing and closing the buffer."""
-        self.close_buffer(table)
+    @abstractmethod
+    def claim_writer_no(self, parts: sa.Table) -> int:
+        """Claim the next writer_no of the table whose ledger is parts, atomically
+        and durably: a claim row ``(NULL, writer_no, lo, hi)`` with the empty
+        range ``lo = writer_no << ID_BITS | 1``, ``hi = lo - 1``. Numbers are
+        never reused, so a restart cannot collide with an earlier attempt."""
+
+    def delete_id_ranges(
+        self, table: sa.Table, ranges: Sequence[tuple[int, int]]
+    ) -> None:
+        """Delete the rows whose sys__id lies in any inclusive (lo, hi) range,
+        a hundred ranges per statement: an OR of thousands is too deep for SQL
+        parsers (SQLite stops at a depth of 1000)."""
+        id_col = table.c.sys__id
+        for batch in batched(ranges, 100):
+            terms = (id_col.between(lo, hi) for lo, hi in batch)
+            self.db.execute(table.delete().where(sa.or_(*terms)))
 
     @abstractmethod
     def instr(self, source, target) -> sa.ColumnElement:
