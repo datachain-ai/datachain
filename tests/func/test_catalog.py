@@ -127,6 +127,44 @@ def test_find_names_columns(cloud_test_catalog, cloud_type):
     }
 
 
+def test_find_file_with_matching_filters_prints_its_columns(cloud_test_catalog):
+    src_uri = cloud_test_catalog.src_uri
+    catalog = cloud_test_catalog.catalog
+    uri = f"{src_uri}/dogs/dog1"
+
+    assert list(
+        catalog.find(
+            [uri],
+            names=["dog*"],
+            inames=["DOG1"],
+            paths=["*dog1"],
+            ipaths=["*DOG1"],
+            size="4",
+            typ="f",
+            columns=["du", "name", "path", "size", "type"],
+        )
+    ) == [f"4\tdog1\t{uri}\t4\tf"]
+
+
+@pytest.mark.parametrize(
+    "filters",
+    [
+        {"names": ["DOG1"]},
+        {"inames": ["cat*"]},
+        {"paths": ["*cat*"]},
+        {"ipaths": ["*CAT*"]},
+        {"size": "5"},
+        {"size": "-3"},
+        {"typ": "d"},
+    ],
+)
+def test_find_file_with_failing_filter_prints_nothing(cloud_test_catalog, filters):
+    src_uri = cloud_test_catalog.src_uri
+    catalog = cloud_test_catalog.catalog
+
+    assert list(catalog.find([f"{src_uri}/dogs/dog1"], **filters)) == []
+
+
 @pytest.mark.parametrize(
     "recursive,star,dir_exists",
     (
