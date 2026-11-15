@@ -83,12 +83,12 @@ jobs:
           fetch-depth: 1
 
       - name: Set up Python ${{ matrix.pyv }}
-        uses: actions/setup-python@v6.3.0
+        uses: actions/setup-python@v7.1.0
         with:
           python-version: ${{ matrix.pyv }}
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v7.6.0
+        uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true
           cache-suffix: studio

@@ -24,12 +24,12 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.ref }}
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v6.3.0
+        uses: actions/setup-python@v7.1.0
         with:
           python-version: '3.11'
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v7.6.0
+        uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true
           cache-suffix: lint
@@ -121,12 +121,12 @@ jobs:
         shell: bash
 
       - name: Set up Python ${{ matrix.pyv }}
-        uses: actions/setup-python@v6.3.0
+        uses: actions/setup-python@v7.1.0
         with:
           python-version: ${{ matrix.pyv }}
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v7.6.0
+        uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true
           cache-suffix: tests-${{ matrix.pyv }}
@@ -215,12 +215,12 @@ jobs:
         run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet
 
       - name: Set up Python ${{ matrix.pyv }}
-        uses: actions/setup-python@v6.3.0
+        uses: actions/setup-python@v7.1.0
         with:
           python-version: ${{ matrix.pyv }}
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v7.6.0
+        uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true
           cache-suffix: examples-${{ matrix.pyv }}

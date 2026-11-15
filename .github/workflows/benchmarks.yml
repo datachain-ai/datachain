@@ -20,12 +20,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Set up Python 3.13
-        uses: actions/setup-python@v6.3.0
+        uses: actions/setup-python@v7.1.0
         with:
           python-version: '3.13'
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v7.6.0
+        uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true
           cache-suffix: benchmarks
