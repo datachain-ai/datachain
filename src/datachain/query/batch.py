@@ -1,11 +1,13 @@
 import contextlib
-import math
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator, Sequence
+from itertools import groupby, islice
+from operator import itemgetter
 
 import sqlalchemy as sa
 
 from datachain.data_storage.schema import PARTITION_COLUMN_ID
+from datachain.utils import safe_closing
 
 DEFAULT_BATCH_SIZE = 10_000
 
@@ -42,13 +44,10 @@ class NoBatching(BatchingStrategy):
         query: sa.Select,
         id_col: sa.ColumnElement | None = None,
     ) -> Generator[Sequence, None, None]:
-        ids_only = False
         if id_col is not None:
             query = query.with_only_columns(id_col)
-            ids_only = True
-
-        rows = execute(query)
-        yield from (r[0] for r in rows) if ids_only else rows
+        with safe_closing(execute(query)) as rows:
+            yield from (r[0] for r in rows) if id_col is not None else rows
 
 
 class Batch(BatchingStrategy):
@@ -68,35 +67,15 @@ class Batch(BatchingStrategy):
         query: sa.Select,
         id_col: sa.ColumnElement | None = None,
     ) -> Generator[RowsOutput, None, None]:
-        from datachain.data_storage.warehouse import SELECT_BATCH_SIZE
-
-        ids_only = False
-        if id_col is not None:
-            query = query.with_only_columns(id_col)
-            ids_only = True
-
-        # choose page size that is a multiple of the batch size
-        page_size = math.ceil(SELECT_BATCH_SIZE / self.count) * self.count
-
-        # select rows in batches
-        results = []
-
-        with contextlib.closing(execute(query, page_size=page_size)) as rows:
-            for row in rows:
-                results.append(row)
-                if len(results) >= self.count:
-                    batch, results = results[: self.count], results[self.count :]
-                    yield [r[0] for r in batch] if ids_only else batch
-
-            if len(results) > 0:
-                yield [r[0] for r in results] if ids_only else results
+        with contextlib.closing(NoBatching()(execute, query, id_col)) as rows:
+            yield from iter(lambda: list(islice(rows, self.count)), [])
 
 
 class Partition(BatchingStrategy):
     """
     Partition implements UDF call batching, where each execution of a UDF
     is run on a list of dataset rows grouped by the specified column.
-    Dataset rows need to be sorted by the grouping column.
+    `execute` must return the rows sorted by the partition id.
     """
 
     is_batching = True
@@ -109,33 +88,13 @@ class Partition(BatchingStrategy):
     ) -> Generator[RowsOutput, None, None]:
         if (partition_col := query.selected_columns.get(PARTITION_COLUMN_ID)) is None:
             raise RuntimeError("partition column not found in query")
-
-        ids_only = False
         if id_col is not None:
             query = query.with_only_columns(id_col, partition_col)
-            ids_only = True
-
-        current_partition: int | None = None
-        batch: list = []
-
-        query_fields = [str(c.name) for c in query.selected_columns]
-        id_column_idx = query_fields.index("sys__id")
-        partition_column_idx = query_fields.index(PARTITION_COLUMN_ID)
-
-        ordered_query = query.order_by(None).order_by(
-            partition_col,
-            *query._order_by_clauses,
-        )
-
-        with contextlib.closing(execute(ordered_query)) as rows:
-            for row in rows:
-                partition = row[partition_column_idx]
-                if current_partition != partition:
-                    current_partition = partition
-                    if len(batch) > 0:
-                        yield batch
-                        batch = []
-                batch.append(row[id_column_idx] if ids_only else row)
-
-            if len(batch) > 0:
-                yield batch
+        names = list(query.selected_columns.keys())
+        partition_of = itemgetter(names.index(PARTITION_COLUMN_ID))
+        id_at = names.index("sys__id")
+        # execute pages rows in partition order (dataset_select_paginated)
+        with contextlib.closing(execute(query)) as rows:
+            for _, group in groupby(rows, partition_of):
+                batch = list(group)
+                yield [r[id_at] for r in batch] if id_col is not None else batch

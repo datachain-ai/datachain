@@ -649,6 +649,11 @@ class UDFStep(Step, ABC):
         parts: "Table | None" = None,
     ) -> None:
         catalog = self.session.catalog
+        # read only the columns the UDF reads: a wide input costs nothing extra
+        read = {"sys__id", PARTITION_COLUMN_ID, *self.udf.input_columns()}
+        query = query.with_only_columns(
+            *(c for c in query.selected_columns if c.name in read)
+        )
         rows_to_process = catalog.warehouse.query_count(query)
         if rows_to_process == 0:
             logger.debug(
@@ -1076,10 +1081,19 @@ class UDFStep(Step, ABC):
             partition_tbl = self.create_partitions_table(query)
             temp_tables.append(partition_tbl.name)
 
-        result_query = query.outerjoin(
-            partition_tbl,
-            partition_tbl.c.sys__id == query.selected_columns.sys__id,
-        ).add_columns(*partition_columns())
+        # Rows come from the partition table's (partition_id, sys__id) index, so
+        # each page of the input seeks to its first row instead of sorting. An
+        # alias: a reflected table's columns may belong to another Table object.
+        part = partition_tbl.alias()
+        result_query = query.join(
+            part, part.c.sys__id == query.selected_columns.sys__id
+        ).with_only_columns(
+            *(
+                part.c.sys__id.label("sys__id") if c.name == "sys__id" else c
+                for c in query.selected_columns
+            ),
+            part.c[PARTITION_COLUMN_ID],
+        )
         return result_query, _continue
 
     def apply(

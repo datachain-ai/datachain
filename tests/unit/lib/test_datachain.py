@@ -1034,6 +1034,36 @@ def test_gen(test_session):
         assert x.my_name == test_fr.my_name
 
 
+@pytest.mark.parametrize(
+    "apply,expected",
+    [
+        (lambda c: c.map(b=lambda a: a * 2, output=int), [2, 4, 6]),
+        (lambda c: c.gen(b=lambda a: [a, a], output=int), [1, 1, 2, 2, 3, 3]),
+        (
+            lambda c: c.agg(b=lambda a: [sum(a)], partition_by="tag", output=int),
+            [1, 5],
+        ),
+    ],
+)
+def test_udf_reads_only_param_columns(test_session, apply, expected):
+    chain = dc.read_values(
+        a=[1, 2, 3], tag=["x", "y", "y"], unused=["u", "v", "w"], session=test_session
+    )
+    read = []
+    select = AbstractWarehouse.dataset_rows_select
+
+    def spy(self, query, **kwargs):
+        read.append({c.name for c in query.selected_columns})
+        return select(self, query, **kwargs)
+
+    with patch.object(AbstractWarehouse, "dataset_rows_select", spy):
+        result = apply(chain).save("pruned")
+    inputs = [names - {"partition_id"} for names in read if "b" not in names]
+    assert {"sys__id", "a"} in inputs  # reads after the UDF (the preview) hold b
+    assert not any({"tag", "unused"} & names for names in inputs)
+    assert sorted(result.to_values("b")) == expected
+
+
 def test_map(test_session):
     class _TestFr(BaseModel):
         sqrt: float

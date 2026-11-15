@@ -282,7 +282,7 @@ partition_col_names = [PARTITION_COLUMN_ID]
 
 def partition_columns() -> Sequence[sa.Column]:
     return [
-        sa.Column(PARTITION_COLUMN_ID, sa.Integer),
+        sa.Column(PARTITION_COLUMN_ID, sa.Integer, index=True),
     ]
 
 

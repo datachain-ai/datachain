@@ -344,6 +344,9 @@ class UDFAdapter:
     def prefetch(self) -> int:
         return self.inner.prefetch
 
+    def input_columns(self) -> list[str]:
+        return self.inner.input_columns()
+
 
 class UDFBase(AbstractUDF):
     """Base class for stateful user-defined functions.
@@ -545,6 +548,11 @@ class UDFBase(AbstractUDF):
         assert self.params is not None
         return self.prefetch if self.params._file_stream_params else 0
 
+    def input_columns(self) -> list[str]:
+        """The input columns `run()` reads, besides sys__id and the partition id."""
+        assert self.params is not None
+        return self.params.read_columns()
+
     def _input_reader(
         self,
         udf_fields: "Sequence[str]",
@@ -745,24 +753,27 @@ class Mapper(UDFBase):
             batch_columns=batch_columns,
         )
 
-        with (
-            self._teardown_on_exit(),
-            closing(prepared_inputs),
-            _Progress(processed_cb) as progress,
-        ):
+        def _results(progress) -> Iterator[tuple]:
             for id_, *udf_args in prepared_inputs:
                 if batch_columns is None:
+                    row = (*output_row(self.process(*udf_args)), id_)
                     progress.add(1)
-                    yield [(*output_row(self.process(*udf_args)), id_)]
+                    yield row
                     continue
                 self._batch_length = len(id_)
                 results = _batch_results(self.process(*udf_args), len(id_), label)
                 progress.add(len(results))
                 # lazy: rows encoded before an invalid one are still written
-                yield (
-                    (*output_row(result), row_id)
-                    for row_id, result in zip(id_, results, strict=True)
-                )
+                for row_id, result in zip(id_, results, strict=True):
+                    yield (*output_row(result), row_id)
+
+        with (
+            self._teardown_on_exit(),
+            closing(prepared_inputs),
+            _Progress(processed_cb) as progress,
+        ):
+            # one lazy result for all rows: no per-row hand-off to the writer
+            yield _results(progress)
 
 
 class BatchMapper(Mapper):
@@ -1000,6 +1011,10 @@ class Generator(UDFBase):
     # (input, output) columns of a delta key each output row must keep
     delta_key: "Sequence[tuple[str, str]]" = ()
     delta_key_presence: "Sequence[tuple[KeyPresence, KeyPresence]]" = ()
+
+    def input_columns(self) -> list[str]:
+        keys = [spec[0] for spec, _ in self.delta_key_presence if spec is not None]
+        return [*super().input_columns(), *(c for c, _ in self.delta_key), *keys]
 
     def run(  # noqa: C901
         self,

@@ -11,6 +11,7 @@ import sqlalchemy as sa
 
 import datachain as dc
 from datachain.data_storage.codec import check_value
+from datachain.data_storage.schema import partition_columns
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SQLiteWarehouse
 from datachain.lib.file import File
@@ -109,6 +110,39 @@ def test_dataset_select_paginated_with_limit(limit, numbers_table, warehouse):
     ids, nums = zip(*rows, strict=False)
     assert len(set(ids)) == limit
     assert list(nums) == list(range(1, limit + 1))
+
+
+def test_dataset_select_paginated_keyset(numbers_table, warehouse):
+    # pages by (partition_id, sys__id) after the last key, never by offset
+    t = numbers_table.c
+    partition = sa.case((t.primality == "prime", 1), else_=2).label("partition_id")
+    query = sa.select(t.sys__id, partition).order_by(t.number.desc())
+    with patch.object(
+        type(warehouse),
+        attribute="dataset_rows_select",
+        wraps=warehouse.dataset_rows_select,
+    ) as mock_dataset_rows_select:
+        rows = list(warehouse.dataset_select_paginated(query, page_size=5))
+    pages = [str(call.args[0]) for call in mock_dataset_rows_select.call_args_list]
+    assert len(pages) == 15  # 5 * 14 + 3
+    assert not any("OFFSET" in page for page in pages)
+    assert rows == sorted(rows, key=lambda row: (row[1], row[0]))
+    assert len({row[0] for row in rows}) == 73
+
+
+def test_dataset_select_paginated_needs_sys_id(numbers_table, warehouse):
+    query = sa.select(numbers_table.c.number)
+    with pytest.raises(ValueError, match="sys__id"):
+        list(warehouse.dataset_select_paginated(query))
+
+
+def test_partition_table_is_indexed(warehouse):
+    # agg pages seek on (partition_id, sys__id) instead of sorting the input
+    if not isinstance(warehouse, SQLiteWarehouse):
+        pytest.skip("SQLite builds the index; ClickHouse sorts the table instead")
+    table = warehouse.create_udf_table(partition_columns())
+    sql = f"PRAGMA index_info('ix_{table.name}_partition_id')"
+    assert [row[2] for row in warehouse.db.execute_str(sql)] == ["partition_id"]
 
 
 def test_dataset_rows_select(numbers_table, warehouse):
