@@ -75,19 +75,21 @@ class DatabaseEngine(ABC, Serializable):
             return (result.string,)
         return result.string, params
 
-    def to_args(self, statement: "ClauseElement") -> tuple[str] | tuple[str, dict]:
+    def to_args(
+        self, statement: "ClauseElement"
+    ) -> tuple[str] | tuple[str, dict[str, Any]]:
         """`compile_to_args`, compiling each shape once if `compiled_cache` is
         set. An IN list renders into the text, so it compiles every time."""
         cache = self.compiled_cache
-        key = cache is not None and statement._generate_cache_key()
-        if not key:
+        if cache is None or not (key := statement._generate_cache_key()):
             return self.compile_to_args(statement)
         if (compiled := cache.get(key.key)) is None:
             compiled = self.compile(statement, cache_key=key)
-            if compiled.post_compile_params:
-                return compiled.string, compiled.params
+            if getattr(compiled, "post_compile_params", None):
+                return compiled.string, compiled.params or {}
             cache[key.key] = compiled
-        return compiled.string, compiled.construct_params(extracted_parameters=key[1])
+        params: Any = compiled.construct_params(extracted_parameters=key[1])
+        return compiled.string, params or {}
 
     @abstractmethod
     def execute(self, query) -> Iterator[tuple[Any, ...]]: ...
@@ -99,7 +101,7 @@ class DatabaseEngine(ABC, Serializable):
             return table
         try:
             columns = [
-                sa.Column(c["name"], c["type"], primary_key=bool(c["primary_key"]))
+                sa.Column(c["name"], c["type"], primary_key=bool(c.get("primary_key")))
                 for c in sa.inspect(self.engine).get_columns(name)
             ]
         except sa.exc.NoSuchTableError as e:

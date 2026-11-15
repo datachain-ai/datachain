@@ -444,3 +444,34 @@ def test_check_value_converts_array_items(value, col_type, expected):
 def test_check_value_does_not_re_encode_dict_array_items():
     value = [{"a": 1}, {"b": 2}]
     assert check_value(Array(JSON()))(value) == value
+
+
+def test_get_table_evicts_stale_cached_table_when_dropped_out_of_band(warehouse):
+    from datachain.error import TableMissingError
+    from datachain.sql.types import Int64
+
+    table = warehouse.create_udf_table([sa.Column("x", Int64)], name="udf_cached_check")
+    first = warehouse.get_table("udf_cached_check")
+    assert warehouse.get_table("udf_cached_check") is first
+
+    warehouse.db.execute_str(f"DROP TABLE {table.name}")
+    with pytest.raises(TableMissingError):
+        warehouse.get_table("udf_cached_check")
+    assert "udf_cached_check" not in warehouse.db.metadata.tables
+
+
+def test_get_table_supports_temp_views_mixed_case_and_add_column(warehouse):
+    from datachain.sql.types import Int64
+
+    warehouse.db.execute_str("CREATE TEMP TABLE tmp_rel (x INTEGER)")
+    assert "x" in warehouse.get_table("tmp_rel").c
+
+    warehouse.db.execute_str("CREATE VIEW view_rel AS SELECT 1 AS x")
+    assert "x" in warehouse.get_table("view_rel").c
+
+    warehouse.db.execute_str("CREATE TABLE MixedCaseRel (x INTEGER)")
+    assert "x" in warehouse.get_table("mixedcaserel").c
+
+    warehouse.db.add_column("MixedCaseRel", sa.Column("y", Int64))
+    refreshed = warehouse.get_table("MixedCaseRel")
+    assert "y" in refreshed.c
