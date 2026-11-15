@@ -54,6 +54,7 @@ from datachain.data_storage.writer import (
 )
 from datachain.dataset import DatasetDependency
 from datachain.error import (
+    DatasetInvalidVersionError,
     DatasetNotFoundError,
     QueryScriptAbortError,
     QueryScriptCancelError,
@@ -1359,31 +1360,16 @@ class UDFStep(Step, ABC):
         )
 
         if checkpoints_enabled and job:
-            # Promote partial checkpoint to final and log event
-            if partial_checkpoint:
-                self.metastore.update_checkpoints(
-                    [partial_checkpoint.id], status=CheckpointStatus.DELETED
-                )
-            self.metastore.get_or_create_checkpoint(job.id, hash_output)
-            logger.debug(
-                "UDF(%s) [job=%s run_group=%s]: Promoted partial to final, hash=%s",
-                self._udf_name,
-                self._job_id_short(job),
-                self._run_group_id_short(job),
-                hash_output[:8],
-            )
-
             rows_input = self.warehouse.table_rows_count(input_table)
-            rows_generated = self.warehouse.table_rows_count(output_table)
-            self._log_event(
+            self._finish_checkpoint(
                 job,
+                partial_checkpoint,
+                output_table,
                 CheckpointEventType.UDF_FROM_SCRATCH,
-                checkpoint_hash=hash_output,
                 hash_input=hash_input,
                 hash_output=hash_output,
                 rows_input=rows_input,
                 rows_processed=rows_input,
-                rows_output=rows_generated,
                 rows_input_reused=0,
                 rows_output_reused=0,
             )
@@ -1518,9 +1504,39 @@ class UDFStep(Step, ABC):
             partial_table, parts, Checkpoint.output_table_name(job.id, hash_output)
         )
 
-        self.metastore.update_checkpoints(
-            [partial_checkpoint.id], status=CheckpointStatus.DELETED
+        self._finish_checkpoint(
+            job,
+            partial_checkpoint,
+            output_table,
+            CheckpointEventType.UDF_CONTINUED,
+            hash_partial=checkpoint.hash,
+            hash_input=hash_input,
+            hash_output=hash_output,
+            rerun_from_job_id=checkpoint.job_id,
+            rows_input=rows_input,
+            rows_processed=rows_to_process,
+            rows_input_reused=rows_reused,
+            rows_output_reused=output_rows_reused,
         )
+
+        return output_table, input_table
+
+    def _finish_checkpoint(
+        self,
+        job: Job,
+        partial_checkpoint: Checkpoint | None,
+        output_table: "Table",
+        event_type: CheckpointEventType,
+        *,
+        hash_output: str,
+        rows_output_reused: int,
+        **event,
+    ) -> None:
+        """Promote the step's partial checkpoint to final and log its event."""
+        if partial_checkpoint:
+            self.metastore.update_checkpoints(
+                [partial_checkpoint.id], status=CheckpointStatus.DELETED
+            )
         self.metastore.get_or_create_checkpoint(job.id, hash_output)
         logger.debug(
             "UDF(%s) [job=%s run_group=%s]: Promoted partial to final, hash=%s",
@@ -1529,26 +1545,16 @@ class UDFStep(Step, ABC):
             self._run_group_id_short(job),
             hash_output[:8],
         )
-
-        # Log checkpoint event with row counts
-        total_output = self.warehouse.table_rows_count(output_table)
-        rows_generated = total_output - output_rows_reused
+        rows_output = self.warehouse.table_rows_count(output_table)
         self._log_event(
             job,
-            CheckpointEventType.UDF_CONTINUED,
+            event_type,
             checkpoint_hash=hash_output,
-            hash_partial=checkpoint.hash,
-            hash_input=hash_input,
             hash_output=hash_output,
-            rerun_from_job_id=checkpoint.job_id,
-            rows_input=rows_input,
-            rows_processed=rows_to_process,
-            rows_output=rows_generated,
-            rows_input_reused=rows_reused,
-            rows_output_reused=output_rows_reused,
+            rows_output=rows_output - rows_output_reused,
+            rows_output_reused=rows_output_reused,
+            **event,
         )
-
-        return output_table, input_table
 
     @contextlib.contextmanager
     def _snapshot_processed_input_ids(self, processed: Select):
@@ -3121,7 +3127,14 @@ class DatasetQuery:
         query_script: str | None = None,
         **kwargs,
     ) -> "Self":
-        """Save the query as a dataset."""
+        """Save the query as a dataset.
+
+        A taken explicit version fails before any work, without writing. The
+        steps run, then the version is reserved (status CREATED, owned by the
+        current job) right before one ``insert_into`` fills its own rows
+        table, and it is completed. A kill can leave a CREATED version only
+        during that copy; a rerun of the same script reclaims it.
+        """
         if kwargs.get("listing"):
             # Listing saves are internal — use existing job if present,
             # but don't create one (e.g. Studio backend `datachain ls`).
@@ -3133,33 +3146,15 @@ class DatasetQuery:
             query_script = job.query if job else ""
 
         project = project or self.catalog.metastore.default_project
-        try:
-            if name and version:
-                existing = self.catalog.get_dataset(
-                    name,
-                    namespace_name=project.namespace.name,
-                    project_name=project.name,
-                    versions=[version],
-                    include_incomplete=True,
-                )
-                if existing.has_version(version):
-                    if existing.get_version(version).is_removed:
-                        raise RuntimeError(
-                            f"Version {version} of dataset {name} was "
-                            "removed. Pick a different version."
-                        )
-                    raise RuntimeError(f"Dataset {name} already has version {version}")
-        except DatasetNotFoundError:
-            pass
         if not name and version:
             raise RuntimeError("Cannot set version for temporary datasets")
-
+        if name and version:
+            self._check_explicit_version(name, version, project, job_id)
         if not name:
             name = self.session.generate_temp_dataset_name()
 
         try:
             query = self.apply_steps()
-
             columns = [
                 c if isinstance(c, Column) else Column(c.name, c.type)
                 for c in query.columns
@@ -3169,19 +3164,6 @@ class DatasetQuery:
                     "No columns to save in the query. "
                     "Ensure at least one column (other than 'id') is selected."
                 )
-
-            # Phase 1: Create a temp staging table and populate it.
-            # If the process dies here, only an orphaned tmp_ table remains,
-            # cleaned up by 'datachain gc'.
-            temp_table_name: str = self.catalog.warehouse.temp_table_name()
-            self.catalog.warehouse.create_dataset_rows_table(
-                temp_table_name, columns=columns
-            )
-            self.temp_table_names.append(temp_table_name)
-            temp_table = self.catalog.warehouse.get_table(temp_table_name)
-            self.catalog.warehouse.insert_into(temp_table, query.select())
-
-            # Phase 2: Claim the version (metadata only).
             dataset = self.catalog.create_dataset(
                 name,
                 project,
@@ -3195,54 +3177,39 @@ class DatasetQuery:
                 query_script=query_script,
                 **kwargs,
             )
-
-            assert len(dataset.versions) == 1
-            dataset_version = (
-                dataset.get_version(version) if version else dataset.versions[0]
-            )
-            version = dataset_version.version
-
-            # Phase 3: Rename staging table to the final dataset table name.
-            final_table_name = self.catalog.warehouse.dataset_table_name(
-                dataset, version
-            )
-            self.catalog.warehouse.rename_table(temp_table, final_table_name)
-            self.temp_table_names.remove(temp_table_name)
-
-            # Link this dataset version to the job that created it
-            if job_id:
-                self.catalog.metastore.link_dataset_version_to_job(
-                    dataset.get_version(version).id, job_id, is_creator=True
+            version = dataset.versions[0].version
+            try:
+                warehouse = self.catalog.warehouse
+                table = warehouse.create_dataset_rows_table(
+                    warehouse.dataset_table_name(dataset, version), columns=columns
                 )
+                warehouse.insert_into(table, query.select())
 
-            if dependencies:
-                # overriding dependencies
-                self.dependencies = set()
-                for dep in dependencies:
-                    self.dependencies.add(
-                        (
-                            self.catalog.get_dataset(
-                                dep.name,
-                                namespace_name=dep.namespace,
-                                project_name=dep.project,
-                                versions=[dep.version],
-                                include_incomplete=False,
-                            ),
-                            dep.version,
-                        )
+                # Link this dataset version to the job that created it
+                if job_id:
+                    self.catalog.metastore.link_dataset_version_to_job(
+                        dataset.get_version(version).id, job_id, is_creator=True
                     )
+                if dependencies:
+                    self._set_dependencies(dependencies)
+                self._add_dependencies(dataset, version)  # type: ignore [arg-type]
 
-            self._add_dependencies(dataset, version)  # type: ignore [arg-type]
+                if kwargs.get("listing"):
+                    reused = self._reuse_listing_if_unchanged(
+                        dataset, version, name, project
+                    )
+                    if reused is not None:
+                        return reused
 
-            if kwargs.get("listing"):
-                reused = self._reuse_listing_if_unchanged(
-                    dataset, version, name, project
-                )
-                if reused is not None:
-                    return reused
-
-            # Mark as COMPLETE only after all operations succeed.
-            self.catalog.complete_dataset_version(dataset, version)
+                # Mark as COMPLETE only after all operations succeed.
+                self.catalog.complete_dataset_version(dataset, version)
+            except BaseException:
+                # Give back the reservation, as if it was never made. It is
+                # removed only while still CREATED and ours: an interrupt right
+                # after completion must not remove a published version.
+                with contextlib.suppress(Exception):
+                    self.catalog.release_reservation(dataset, version, job_id)
+                raise
         finally:
             self.cleanup()
         return self.__class__(
@@ -3252,6 +3219,50 @@ class DatasetQuery:
             version=version,
             session=self.session,
         )
+
+    def _check_explicit_version(
+        self, name: str, version: str, project: Project, job_id: str | None
+    ) -> None:
+        """Fail before any work if an explicit version is taken, unless this
+        job may reclaim it (see ``Catalog.can_reclaim_version``). Read only."""
+        try:
+            existing = self.catalog.get_dataset(
+                name,
+                namespace_name=project.namespace.name,
+                project_name=project.name,
+                versions=[version],
+                include_incomplete=True,
+            )
+        except DatasetNotFoundError:
+            return
+        if not existing.has_version(version):
+            return
+        v = existing.get_version(version)
+        if v.is_removed:
+            raise RuntimeError(
+                f"Version {version} of dataset {name} was "
+                "removed. Pick a different version."
+            )
+        if not self.catalog.can_reclaim_version(v, job_id):
+            raise DatasetInvalidVersionError(
+                f"Dataset {name} already has version {version}"
+            )
+
+    def _set_dependencies(self, dependencies: list[DatasetDependency]) -> None:
+        """Override the dependencies collected from the steps."""
+        self.dependencies = {
+            (
+                self.catalog.get_dataset(
+                    dep.name,
+                    namespace_name=dep.namespace,
+                    project_name=dep.project,
+                    versions=[dep.version],
+                    include_incomplete=False,
+                ),
+                dep.version,
+            )
+            for dep in dependencies
+        }
 
     def _reuse_listing_if_unchanged(
         self,

@@ -28,6 +28,7 @@ from datachain.dataset import (
     DatasetListRecord,
     DatasetRecord,
     DatasetStatus,
+    DatasetVersion,
     StorageURI,
     create_dataset_uri,
     parse_dataset_name,
@@ -496,6 +497,11 @@ def find_column_to_str(  # noqa: PLR0911
     return ""
 
 
+def columns_schema(columns: Iterable[Column]) -> dict[str, Any]:
+    """The stored form of a rows table's columns: name to serialized SQL type."""
+    return {c.name: c.type.to_dict() for c in columns if isinstance(c.type, SQLType)}
+
+
 def clone_catalog_with_cache(catalog: "Catalog", cache: "Cache") -> "Catalog":
     clone = catalog.copy()
     clone.cache = cache
@@ -938,6 +944,18 @@ class Catalog:
         auto-computed from the dataset and retried up to
         ``_MAX_VERSION_CLAIM_RETRIES`` times on conflict.
         """
+        if job_id and (
+            reclaimed := self._reclaim_version(
+                dataset,
+                version,
+                job_id,
+                feature_schema=feature_schema,
+                query_script=query_script,
+                schema=columns_schema(columns),
+            )
+        ):
+            return reclaimed
+
         max_retries = 0 if version else _MAX_VERSION_CLAIM_RETRIES
         target_version = version or self._next_auto_version(dataset, update_version)
 
@@ -949,7 +967,7 @@ class Catalog:
                         "removed. Pick a different version."
                     )
                 raise DatasetInvalidVersionError(
-                    f"Version {target_version} already exists in dataset {name}"
+                    f"Dataset {name} already has version {target_version}"
                 )
 
             if validate_version and not dataset.is_valid_next_version(target_version):
@@ -1005,6 +1023,56 @@ class Catalog:
             f" {1 + max_retries} attempts due to concurrent writers"
         )
 
+    def can_reclaim_version(self, v: DatasetVersion, job_id: str | None) -> bool:
+        """Whether a save of ``job_id`` may take over version ``v``: a save
+        of an earlier job in its rerun chain reserved it and never published
+        it, because it was killed during its copy or failed."""
+        return bool(
+            job_id
+            and v.job_id
+            and v.job_id != job_id
+            and v.status in (DatasetStatus.CREATED, DatasetStatus.FAILED)
+            and v.job_id in self.metastore.get_ancestor_job_ids(job_id)
+        )
+
+    def _reclaim_version(
+        self, dataset: DatasetRecord, version: str | None, job_id: str, **fields
+    ) -> DatasetRecord | None:
+        """Take over the explicit ``version``, or else the highest version,
+        if ``can_reclaim_version`` allows it. A compare-and-set on its status
+        and owner makes one taker win; what the dead save left (its rows and
+        its dependencies) is dropped."""
+        if version:
+            v = dataset.get_version(version) if dataset.has_version(version) else None
+        else:
+            v = max(dataset.all_versions, default=None)
+        if v is None or not self.can_reclaim_version(v, job_id):
+            return None
+        claimed = self.metastore.update_dataset_version(
+            dataset,
+            v.version,
+            expected_status=v.status,
+            expected_job_id=v.job_id,
+            status=DatasetStatus.CREATED,
+            job_id=job_id,
+            finished_at=None,
+            error_message="",
+            error_stack="",
+            num_objects=None,
+            size=None,
+            **fields,
+        )
+        if claimed is None:
+            return None
+        self.metastore.remove_dataset_dependencies(dataset, v.version)
+        self.warehouse.drop_dataset_rows_table(dataset, v.version)
+        return self.get_dataset(
+            dataset.name,
+            namespace_name=dataset.project.namespace.name,
+            project_name=dataset.project.name,
+            versions=[v.version],
+        )
+
     def create_dataset_version(
         self,
         dataset: DatasetRecord,
@@ -1056,8 +1124,6 @@ class Catalog:
     def update_dataset_version_with_warehouse_info(
         self, dataset: DatasetRecord, version: str, **kwargs
     ) -> None:
-        from datachain.query.dataset import DatasetQuery
-
         dataset_version = dataset.get_version(version)
         if dataset_version._preview_loaded:
             raise RuntimeError(
@@ -1078,18 +1144,11 @@ class Catalog:
             if size != dataset_version.size:
                 values["size"] = size
 
-        preview = (
-            DatasetQuery(
-                name=dataset.name,
-                namespace_name=dataset.project.namespace.name,
-                project_name=dataset.project.name,
-                version=version,
-                catalog=self,
-                include_incomplete=True,  # Allow reading CREATED version
-            )
-            .limit(20)
-            .to_db_records()
-        )
+        table = self.warehouse.dataset_rows(dataset, version).get_table()
+        preview = [
+            dict(zip(table.c.keys(), row, strict=True))
+            for row in self.warehouse.dataset_rows_select(table.select().limit(20))
+        ]
         preview_rows = len(preview)
         values["preview"] = preview
 
@@ -1227,6 +1286,20 @@ class Catalog:
             dataset, version, expected_status=v.status, keep_metadata=keep_metadata
         )
 
+    def release_reservation(
+        self, dataset: DatasetRecord, version: str, job_id: str | None
+    ) -> bool:
+        """Remove a version that a save of ``job_id`` reserved and never
+        published. One guarded UPDATE requires status CREATED and that owner,
+        so a published (COMPLETE) version is never touched."""
+        return self._claim_and_remove(
+            dataset,
+            version,
+            expected_status=DatasetStatus.CREATED,
+            expected_job_id=job_id,
+            keep_metadata=False,
+        )
+
     def _claim_and_remove(
         self,
         dataset: DatasetRecord,
@@ -1234,6 +1307,7 @@ class Catalog:
         *,
         expected_status: int,
         keep_metadata: bool,
+        expected_job_id: str | None = None,
     ) -> bool:
         """Flip the version status to REMOVING (guarded UPDATE) with the
         appropriate ``pending_metadata_drop`` flag, then drop the rows
@@ -1257,6 +1331,7 @@ class Catalog:
             dataset,
             version,
             expected_status=expected_status,
+            expected_job_id=expected_job_id,
             status=DatasetStatus.REMOVING,
             removed_at=v.removed_at or datetime.now(UTC),
             pending_metadata_drop=not keep_metadata,

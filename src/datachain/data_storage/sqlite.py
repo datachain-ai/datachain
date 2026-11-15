@@ -462,6 +462,8 @@ class SQLiteMetastore(AbstractDBMetastore):
         db: SQLiteDatabaseEngine | None = None,
         db_file: str | None = None,
         in_memory: bool = False,
+        *,
+        _initialize: bool = True,
     ):
         self.schema: DefaultSchema = DefaultSchema()
 
@@ -472,6 +474,10 @@ class SQLiteMetastore(AbstractDBMetastore):
         db_file = get_db_file_in_memory(db_file, in_memory)
 
         self.db = db or SQLiteDatabaseEngine.from_db_file(db_file)
+
+        if not _initialize:
+            self.default_table_names = [table.name for table in self._metastore_tables]
+            return
 
         with self._init_guard():
             self._init_meta_table()
@@ -485,7 +491,9 @@ class SQLiteMetastore(AbstractDBMetastore):
         self.close()
 
     def clone(self, use_new_connection: bool = False) -> "SQLiteMetastore":
-        return SQLiteMetastore(db=self.db.clone())
+        # This database was initialized by the original; a new connection does
+        # not need to rerun migrations, backfills, and namespace creation.
+        return SQLiteMetastore(db=self.db.clone(), _initialize=False)
 
     def clone_params(self) -> tuple[Callable[..., Any], list[Any], dict[str, Any]]:
         """

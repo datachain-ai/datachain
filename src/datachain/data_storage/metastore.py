@@ -320,11 +320,12 @@ class AbstractMetastore(ABC, Serializable):
         version: str,
         *,
         expected_status: int | None = None,
+        expected_job_id: str | None = None,
         **kwargs,
     ) -> DatasetVersion | None:
-        """Updates dataset version fields. When ``expected_status`` is given
-        the UPDATE only applies if the row's current status equals that value;
-        returns None if no row matched."""
+        """Updates dataset version fields. When ``expected_status`` or
+        ``expected_job_id`` is given the UPDATE only applies if the row's
+        current status and job_id equal them; returns None if no row matched."""
 
     def record_dataset_version_access(
         self,
@@ -1471,6 +1472,7 @@ class AbstractDBMetastore(AbstractMetastore):
         version: str,
         *,
         expected_status: int | None = None,
+        expected_job_id: str | None = None,
         **kwargs,
     ) -> DatasetVersion | None:
         """Updates dataset version fields."""
@@ -1552,8 +1554,11 @@ class AbstractDBMetastore(AbstractMetastore):
         )
         if expected_status is not None:
             update_stmt = update_stmt.where(dv.c.status == expected_status)
+        if expected_job_id is not None:
+            update_stmt = update_stmt.where(dv.c.job_id == expected_job_id)
         result = self.db.execute(update_stmt.values(values))  # type: ignore [attr-defined]
-        if expected_status is not None and result.rowcount == 0:  # type: ignore [attr-defined]
+        guarded = expected_status is not None or expected_job_id is not None
+        if guarded and result.rowcount == 0:  # type: ignore [attr-defined]
             return None
 
         version_obj.update(**version_values)
@@ -2839,36 +2844,25 @@ class AbstractDBMetastore(AbstractMetastore):
         _hash: str,
         partial: bool = False,
     ) -> Checkpoint:
-        with self.db.transaction():
-            query = self._checkpoints_insert().values(
-                id=str(uuid4()),
-                job_id=job_id,
-                hash=_hash,
-                partial=partial,
-                created_at=datetime.now(UTC),
-                status=CheckpointStatus.ACTIVE,
-            )
-
-            # Use upsert to handle re-activation of deleted checkpoints
-            # (e.g. same hash in same job after previous run)
-            query = query.on_conflict_do_update(  # type: ignore[attr-defined]
-                index_elements=["job_id", "hash"],
-                set_={
-                    "status": CheckpointStatus.ACTIVE,
-                    "created_at": datetime.now(UTC),
-                },
-            )
-
-            self.db.execute(query)
-
-            checkpoint = self.find_checkpoint(job_id, _hash)
-            if checkpoint is None:
-                raise RuntimeError(
-                    f"Checkpoint should exist after get_or_create for job_id={job_id}, "
-                    f"hash={_hash}, partial={partial}"
-                )
-
-            return checkpoint
+        now = datetime.now(UTC)
+        query = self._checkpoints_insert().values(
+            id=str(uuid4()),
+            job_id=job_id,
+            hash=_hash,
+            partial=partial,
+            created_at=now,
+            status=CheckpointStatus.ACTIVE,
+        )
+        # One atomic statement both reactivates a checkpoint and returns its
+        # actual ID, including when another caller already created it.
+        query = query.on_conflict_do_update(  # type: ignore[attr-defined]
+            index_elements=["job_id", "hash"],
+            set_={
+                "status": CheckpointStatus.ACTIVE,
+                "created_at": now,
+            },
+        ).returning(*(self._checkpoints.c[f] for f in self._checkpoints_fields))
+        return self.checkpoint_class.parse(*next(iter(self.db.execute(query))))
 
     def list_checkpoints(
         self,

@@ -1452,3 +1452,82 @@ def test_complete_dataset_version_raises_friendly_when_removed_concurrently(
 
     assert isinstance(exc_info.value.__cause__, ConcurrentDatasetModificationError)
     assert "Could not update status" in str(exc_info.value.__cause__)
+
+
+def test_save_reserves_version_after_steps_run(test_session, job):
+    seen = []
+
+    def peek(value: str) -> str:
+        try:
+            test_session.catalog.get_dataset("reserved", versions=None)
+            seen.append("found")
+        except DatasetNotFoundError:
+            seen.append("absent")
+        return value
+
+    dc.read_values(value=["a"], session=test_session).map(peek=peek, output=str).save(
+        "reserved"
+    )
+
+    assert seen == ["absent"]  # a kill while the UDF runs leaves no version
+    ds = test_session.catalog.get_dataset("reserved", versions=None)
+    assert ds.get_version("1.0.0").status == DatasetStatus.COMPLETE
+
+
+def test_failed_save_gives_version_back(test_session, job):
+    def fail(value: str) -> str:
+        raise RuntimeError("udf failed")
+
+    chain = dc.read_values(value=["a"], session=test_session)
+    with pytest.raises(RuntimeError, match="udf failed"):
+        chain.map(res=fail, output=str).save("given_back", version="1.0.0")
+    with pytest.raises(DatasetNotFoundError):
+        test_session.catalog.get_dataset("given_back")
+
+    saved = chain.save("given_back", version="1.0.0")
+    assert saved.dataset.latest_version == "1.0.0"
+
+
+def test_explicit_version_conflict_fails_before_steps_run(test_session, job):
+    calls = []
+
+    def count(value: str) -> str:
+        calls.append(value)
+        return value
+
+    chain = dc.read_values(value=["a"], session=test_session)
+    chain.save("taken", version="1.0.0")
+    with pytest.raises(RuntimeError, match=r"already has version 1\.0\.0"):
+        chain.map(res=count, output=str).save("taken", version="1.0.0")
+    assert calls == []
+
+
+def test_saved_schema_is_the_produced_one(test_session):
+    from datachain.sql.types import Float32
+
+    dc.read_values(a=[1.5], session=test_session).mutate(
+        typed=sa.type_coerce(dc.C("a"), Float32())
+    ).save("produced")
+
+    ds = test_session.catalog.get_dataset("produced", versions=None)
+    assert ds.get_version("1.0.0").schema["typed"] == Float32
+    assert ds.schema["typed"] == Float32
+
+
+def test_interrupt_after_publication_keeps_the_dataset(test_session, monkeypatch):
+    catalog = test_session.catalog
+    complete = catalog.complete_dataset_version
+
+    def complete_then_interrupt(dataset, *args, **kwargs):
+        complete(dataset, *args, **kwargs)
+        if dataset.name == "published":
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(catalog, "complete_dataset_version", complete_then_interrupt)
+    chain = dc.read_values(name=["a"], session=test_session)
+    with pytest.raises(KeyboardInterrupt):
+        chain.save("published")
+
+    ds = catalog.get_dataset("published", versions=None)
+    assert ds.get_version("1.0.0").status == DatasetStatus.COMPLETE
+    assert dc.read_dataset("published", session=test_session).to_values("name") == ["a"]
