@@ -519,12 +519,8 @@ class AbstractWarehouse(ABC, Serializable):
         """
         return col.startswith(sql_escape_like(prefix), escape=LIKE_ESCAPE_CHAR)
 
-    @abstractmethod
     def get_table(self, name: str) -> sa.Table:
-        """
-        Returns a SQLAlchemy Table object by name. If table doesn't exist, it should
-        create it
-        """
+        return self.db.get_table(name)
 
     def rename_table(self, old_table: sa.Table, new_name: str) -> sa.Table:
         """Rename table and return new Table object with same schema."""

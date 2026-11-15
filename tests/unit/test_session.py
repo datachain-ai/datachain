@@ -1,4 +1,5 @@
 import gc
+import os
 import re
 from weakref import ref
 
@@ -280,3 +281,26 @@ def test_cleanup_removes_temporary_data_from_closed_separate_database(
     catalog, catalog_tmpfile
 ):
     _check_closed_catalog_cleanup(catalog, catalog_tmpfile)
+
+
+def test_in_memory_session_exit_keeps_sqlite_error_type(tmp_path):
+    # A job finalized at exit after its in-memory metastore closed must not
+    # surface as TableMissingError (a missing table is a plain SQLite error).
+    import subprocess
+    import sys
+
+    script = (
+        "import datachain as dc\n"
+        "from datachain.query.session import Session\n"
+        "with Session('t', in_memory=True) as s:\n"
+        "    dc.read_values(x=[1], session=s).save('a')\n"
+    )
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={**os.environ, "DATACHAIN_ROOT_DIR": str(tmp_path)},
+        check=False,
+    )
+    assert "TableMissingError" not in result.stderr

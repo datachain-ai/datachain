@@ -15,8 +15,8 @@ from sqlalchemy import (
     MetaData,
     Table,
     UniqueConstraint,
-    exists,
     select,
+    text,
     update,
 )
 from sqlalchemy.dialects import sqlite
@@ -42,7 +42,6 @@ from datachain.dataset import DatasetRecord, StorageURI
 from datachain.error import (
     DataChainError,
     OutdatedDatabaseSchemaError,
-    TableMissingError,
 )
 from datachain.namespace import Namespace
 from datachain.progress import tqdm
@@ -270,7 +269,7 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         if self.is_closed:
             # Reconnect in case of being closed previously.
             self._reconnect()
-        return self.db.execute(*self.compile_to_args(query))
+        return self.db.execute(*self.to_args(query))
 
     @retry_sqlite_locks
     def executemany(self, sql: str, params) -> None:
@@ -388,25 +387,10 @@ class SQLiteDatabaseEngine(DatabaseEngine):
             yield db
 
     def has_table(self, name: str) -> bool:
-        """
-        Return True if a table exists with the given name
-
-        We cannot simply use `inspect(engine).has_table(name)` like the
-        parent class does because that will return False for a table
-        created during a pending transaction. Instead, we check the
-        sqlite_master table.
-        """
-        query = select(
-            exists(
-                select(1)
-                .select_from(sqlalchemy.table("sqlite_master"))
-                .where(
-                    (sqlalchemy.column("type") == "table")
-                    & (sqlalchemy.column("name") == name)
-                )
-            )
-        )
-        return bool(next(self.execute(query))[0])
+        """Whether table `name` exists, from sqlite_master: the inspector the
+        parent uses misses a table created in a pending transaction."""
+        sql = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = :name"
+        return self.execute(text(sql).bindparams(name=name)).fetchone() is not None
 
     @property
     def table_names(self) -> list[str]:
@@ -474,6 +458,7 @@ class SQLiteMetastore(AbstractDBMetastore):
         db_file = get_db_file_in_memory(db_file, in_memory)
 
         self.db = db or SQLiteDatabaseEngine.from_db_file(db_file)
+        self.db.compiled_cache = {}
 
         if not _initialize:
             self.default_table_names = [table.name for table in self._metastore_tables]
@@ -882,17 +867,6 @@ class SQLiteWarehouse(AbstractWarehouse):
 
     def instr(self, source, target) -> "ColumnElement":
         return cast(func.instr(source, target), sqlalchemy.Boolean)
-
-    def get_table(self, name: str) -> sqlalchemy.Table:
-        try:
-            return Table(
-                name,
-                self.db.metadata,
-                autoload_with=self.db.engine,
-                extend_existing=True,
-            )
-        except sqlalchemy.exc.NoSuchTableError:
-            raise TableMissingError(f"Table '{name}' not found") from None
 
     def type_codec(self, sql_type: Any) -> TypeCodec:
         """Datetimes are stored as UTC text, arrays as JSON text."""

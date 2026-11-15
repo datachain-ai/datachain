@@ -85,6 +85,13 @@ if TYPE_CHECKING:
 
 DatasetDependencyNode = dependency.DatasetDependencyNode
 logger = logging.getLogger("datachain")
+
+
+def _is_in(column, values: Sequence) -> "ColumnElement":
+    """`column IN values`, as `=` for one value: an IN list compiles per call."""
+    return column == values[0] if len(values) == 1 else column.in_(values)
+
+
 DEPTH_LIMIT_DEFAULT = 100
 JOB_ANCESTRY_MAX_DEPTH = 100
 
@@ -1684,12 +1691,6 @@ class AbstractDBMetastore(AbstractMetastore):
         versions: Sequence[str] | None = None,
         include_removed: bool = False,
     ) -> "Select":
-        if not (
-            self.db.has_table(self._datasets.name)
-            and self.db.has_table(self._datasets_versions.name)
-        ):
-            raise TableMissingError
-
         n = self._namespaces
         p = self._projects
         d = self._datasets
@@ -1712,7 +1713,7 @@ class AbstractDBMetastore(AbstractMetastore):
                     .where(
                         and_(
                             dv.c.dataset_id == d.c.id,
-                            dv.c.status.in_(allowed),
+                            _is_in(dv.c.status, allowed),
                         )
                     )
                     .exists()
@@ -1740,7 +1741,7 @@ class AbstractDBMetastore(AbstractMetastore):
             allowed = [DatasetStatus.COMPLETE]
             if include_removed:
                 allowed.extend((DatasetStatus.REMOVING, DatasetStatus.REMOVED))
-            join_condition = and_(join_condition, dv.c.status.in_(allowed))
+            join_condition = and_(join_condition, _is_in(dv.c.status, allowed))
 
         j = (
             n.join(p, n.c.id == p.c.namespace_id)
@@ -1750,7 +1751,7 @@ class AbstractDBMetastore(AbstractMetastore):
         query = query.select_from(j)
 
         if versions is not None:
-            query = query.where(dv.c.version.in_(versions))
+            query = query.where(_is_in(dv.c.version, versions))
 
         return query
 
@@ -1780,6 +1781,8 @@ class AbstractDBMetastore(AbstractMetastore):
     def _base_list_datasets_query(
         self, include_incomplete: bool = True, include_removed: bool = False
     ) -> "Select":
+        if not self.db.has_table(self._datasets_versions.name):
+            raise TableMissingError  # session cleanup, after tests drop tables
         return self._get_dataset_query(
             self._namespaces_fields,
             self._projects_fields,
@@ -3291,6 +3294,6 @@ class AbstractDBMetastore(AbstractMetastore):
             return
         self.db.execute(
             self._checkpoints.update()
-            .where(self._checkpoints.c.id.in_(checkpoint_ids))
+            .where(_is_in(self._checkpoints.c.id, checkpoint_ids))
             .values(**values),
         )

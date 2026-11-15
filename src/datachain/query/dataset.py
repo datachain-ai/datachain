@@ -1250,14 +1250,14 @@ class UDFStep(Step, ABC):
         }
         return coerce_table_types(self.warehouse.get_table(name), known_types)
 
-    def _resumable_in_parts(self, input_table: "Table") -> bool:
+    def _resumable_in_parts(self, rows_input: int) -> bool:
         """Whether the output gets a ledger: gen over more than one input row,
         or agg with partition_by. A map output row is keyed by its input row,
         so the table is its own record; an agg without partition_by is one part
         and reruns whole."""
         if not self.is_generator or self.is_single_partition_aggregator:
             return False
-        return self.is_aggregator or self.warehouse.table_rows_count(input_table) > 1
+        return self.is_aggregator or rows_input > 1
 
     def _promote_partial(
         self, partial_table: "Table", parts: "Table | None", final_name: str
@@ -1311,8 +1311,11 @@ class UDFStep(Step, ABC):
         for name in (partial_table_name, parts_name):
             self.warehouse.db.drop_table(sa.Table(name, sa.MetaData()), if_exists=True)
         partial_output_table = self.create_output_table(partial_table_name)
+        rows_input = (
+            self.warehouse.table_rows_count(input_table) if partial_checkpoint else 0
+        )
         parts = None
-        if partial_checkpoint and self._resumable_in_parts(input_table):
+        if partial_checkpoint and self._resumable_in_parts(rows_input):
             parts = self.warehouse.create_udf_table(parts_columns(), name=parts_name)
 
         if self.partition_by is not None:
@@ -1329,7 +1332,6 @@ class UDFStep(Step, ABC):
         )
 
         if checkpoints_enabled and job:
-            rows_input = self.warehouse.table_rows_count(input_table)
             self._finish_checkpoint(
                 job,
                 partial_checkpoint,
