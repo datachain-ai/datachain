@@ -144,12 +144,25 @@ class SQLType(TypeDecorator):
             return converter(dialect).nullable(impl)
         return impl
 
+    # each type's method name on TypeConverter, TypeDefaults and DBDefaults,
+    # and its Python type
+    _kind: str
+    _python: StandardType
+
     def _load_dialect_impl(self, dialect):
-        return super().load_dialect_impl(dialect)
+        return getattr(converter(dialect), self._kind)()
 
     @property
     def python_type(self) -> StandardType:
-        raise NotImplementedError
+        return self._python
+
+    @classmethod
+    def default_value(cls, dialect):
+        return getattr(type_defaults(dialect), cls._kind)()
+
+    @classmethod
+    def db_default_value(cls, dialect):
+        return getattr(db_defaults(dialect), cls._kind)()
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"type": self.__class__.__name__}
@@ -173,178 +186,60 @@ class SQLType(TypeDecorator):
 
 class String(SQLType):
     impl = types.String
-
-    @property
-    def python_type(self) -> StandardType:
-        return str
-
-    def _load_dialect_impl(self, dialect):
-        return converter(dialect).string()
-
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).string()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).string()
-
+    _kind = "string"
+    _python = str
 
 
 class Boolean(SQLType):
     impl = types.Boolean
-
-    @property
-    def python_type(self) -> StandardType:
-        return bool
-
-    def _load_dialect_impl(self, dialect):
-        return converter(dialect).boolean()
-
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).boolean()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).boolean()
-
+    _kind = "boolean"
+    _python = bool
 
 
 class Int(SQLType):
     impl = types.INTEGER
-
-    @property
-    def python_type(self) -> StandardType:
-        return int
-
-    def _load_dialect_impl(self, dialect):
-        return converter(dialect).int()
-
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).int()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).int()
-
+    _kind = "int"
+    _python = int
 
 
 class Int32(Int):
-    def _load_dialect_impl(self, dialect):
-        return converter(dialect).int32()
-
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).int32()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).int32()
-
+    _kind = "int32"
 
 
 class UInt32(Int):
-    def _load_dialect_impl(self, dialect):
-        return converter(dialect).uint32()
-
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).uint32()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).uint32()
-
+    _kind = "uint32"
 
 
 class Int64(Int):
-    def _load_dialect_impl(self, dialect):
-        return converter(dialect).int64()
-
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).int64()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).int64()
-
+    _kind = "int64"
 
 
 class UInt64(Int):
-    def _load_dialect_impl(self, dialect):
-        return converter(dialect).uint64()
-
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).uint64()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).uint64()
-
+    _kind = "uint64"
 
 
 class Float(SQLType):
     impl = types.FLOAT
-
-    @property
-    def python_type(self) -> StandardType:
-        return float
-
-    def _load_dialect_impl(self, dialect):
-        return converter(dialect).float()
-
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).float()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).float()
-
+    _kind = "float"
+    _python = float
 
 
 class Float32(Float):
-    def _load_dialect_impl(self, dialect):
-        return converter(dialect).float32()
-
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).float32()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).float32()
-
+    _kind = "float32"
 
 
 class Float64(Float):
-    def _load_dialect_impl(self, dialect):
-        return converter(dialect).float64()
-
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).float64()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).float64()
-
+    _kind = "float64"
 
 
 class Array(SQLType):
     impl = types.ARRAY
+    _kind = "array"
+    _python = list
 
     def __init__(self, item_type, *args, **kwargs):
         self.item_type = item_type() if isinstance(item_type, type) else item_type
         super().__init__(self.item_type, *args, **kwargs)
-
-    @property
-    def python_type(self) -> StandardType:
-        return list
 
     def _load_dialect_impl(self, dialect):
         return converter(dialect).array(self.item_type)
@@ -391,74 +286,23 @@ class Array(SQLType):
             inst.dc_nullable = True
         return inst
 
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).array()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).array()
-
-
 
 class JSON(SQLType):
     impl = types.JSON
-
-    @property
-    def python_type(self) -> StandardType:
-        return dict
-
-    def _load_dialect_impl(self, dialect):
-        return converter(dialect).json()
-
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).json()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).json()
-
+    _kind = "json"
+    _python = dict
 
 
 class DateTime(SQLType):
     impl = types.DATETIME
-
-    @property
-    def python_type(self) -> StandardType:
-        return datetime
-
-    def _load_dialect_impl(self, dialect):
-        return converter(dialect).datetime()
-
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).datetime()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).datetime()
-
+    _kind = "datetime"
+    _python = datetime
 
 
 class Binary(SQLType):
     impl = types.BINARY
-
-    @property
-    def python_type(self) -> StandardType:
-        return bytes
-
-    def _load_dialect_impl(self, dialect):
-        return converter(dialect).binary()
-
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).binary()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).binary()
-
+    _kind = "binary"
+    _python = bytes
 
 
 class TypeConverter:

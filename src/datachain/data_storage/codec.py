@@ -1,11 +1,6 @@
-"""One conversion boundary between Python values and a warehouse's stored values.
-
-A warehouse supplies a `TypeCodec` per SQL type (`AbstractWarehouse.type_codec`), and a
-`RowCodec` compiles them once for a list of columns. Writes encode flat leaf tuples into
-stored tuples; reads decode stored tuples back into leaf values. Nothing else converts
-values on the data path. Codecs hold module functions, partials and type tags only, so
-they pickle.
-"""
+"""The one conversion between Python values and a warehouse's stored values: a
+`TypeCodec` per SQL type (`AbstractWarehouse.type_codec`), compiled per row of
+columns into a `RowCodec`. Codecs hold functions and partials only, so they pickle."""
 
 import sys
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -19,19 +14,13 @@ from datachain import json
 if TYPE_CHECKING:
     import pyarrow as pa
 
-# Rows decoded per batch: big enough to amortize the per-column work, small enough
-# to keep rows with large values from piling up.
 DECODE_BATCH_SIZE = 1_000
 
 
 class TypeCodec(NamedTuple):
-    """How one SQL type's values are stored and read back.
-
-    A value of a `kept` type is stored as it is; `encode` converts any other value
-    that is not None, and raises on a value the type cannot take. None is stored as
-    `default`, and NULL reads back as `default`. `decode` reads any other stored
-    value, None meaning as it is. `encode_column` optionally encodes a whole Arrow
-    column into Python values at once."""
+    """`kept` value types are stored as they are, `encode` converts (or rejects)
+    any other non-None value, None is stored and NULL read as `default`, `decode`
+    reads a stored value (None: as it is); `encode_column` encodes an Arrow column."""
 
     kept: frozenset[type]
     encode: Callable[[Any], Any]
@@ -151,12 +140,6 @@ class RowCodec:
             yield from zip(*self.decode_columns(columns), strict=True)
 
 
-#
-# Conversions every warehouse shares; `type_codec` implementations combine them with
-# their stored forms.
-#
-
-
 def _numpy_to_python(value: Any) -> Any:
     np = sys.modules.get("numpy")
     if np is not None and isinstance(value, (np.ndarray, np.generic)):
@@ -246,12 +229,6 @@ def decode_json(value: Any) -> Any:
     return value
 
 
-def decode_json_item(value: Any) -> Any:
-    """A JSON value held in an array: JSON text inside the array's JSON."""
-    value = decode_json(value)
-    return json.loads(value) if isinstance(value, str) else value
-
-
 def decode_bool(value: Any) -> Any:
     if isinstance(value, bool):
         return value
@@ -296,25 +273,19 @@ def decode_list(item: Callable[[Any], Any] | None, null: Any, value: Any) -> Any
 
 
 def compose(outer: Callable, inner: Callable, value: Any) -> Any:
-    """`outer(inner(value))`, for codecs to bind with partial."""
     return outer(inner(value))
 
 
 def base_decode(
     sql_type: Any, decode_of: Callable[[Any], Callable[[Any], Any] | None]
 ) -> Callable[[Any], Any] | None:
-    """How a warehouse that hands back Python values reads `sql_type`; `decode_of`
-    gives the decode of an array's items."""
+    """How `sql_type` reads back; `decode_of` decodes an array's items."""
     from datachain.sql.types import JSON, Array, Binary, Boolean, DateTime, Float
 
     if isinstance(sql_type, Array):
         item_type = sql_type.item_type
-        if isinstance(item_type, JSON):
-            item = decode_json_item
-        else:
-            item = decode_of(item_type)
         null = float("nan") if isinstance(item_type, Float) else None
-        return partial(decode_list, item, null)
+        return partial(decode_list, decode_of(item_type), null)
     for type_, decode in (
         (JSON, decode_json),
         (Boolean, decode_bool),
@@ -347,8 +318,7 @@ def value_codec(
     default: Any,
     decode_of: Callable[[Any], Callable[[Any], Any] | None] = default_decode,
 ) -> TypeCodec:
-    """The codec of `sql_type` for a warehouse that stores Python values as they
-    are: values are checked and normalized, not changed in form."""
+    """`sql_type`'s codec for a warehouse that stores Python values as they are."""
     from datachain.sql.types import SQLType
 
     if not isinstance(sql_type, SQLType):

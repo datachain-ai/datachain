@@ -290,11 +290,6 @@ class OutputRows:
             raise output_value_error(e, self.names, self.schema) from e.__cause__
 
 
-def is_arrow_batch(obj: Any) -> bool:
-    pa = sys.modules.get("pyarrow")
-    return pa is not None and isinstance(obj, pa.RecordBatch)
-
-
 @attrs.define(slots=False)
 class UDFAdapter:
     inner: "UDFBase"
@@ -1055,8 +1050,9 @@ class Generator(UDFBase):
                     )
 
         def _stored_rows(result_objs, key) -> Iterator[tuple]:
+            pa = sys.modules.get("pyarrow")  # batches come only from arrow readers
             for result_obj in result_objs:
-                if is_arrow_batch(result_obj):
+                if pa is not None and isinstance(result_obj, pa.RecordBatch):
                     if key is not None:
                         columns = (c.to_pylist() for c in result_obj.columns)
                         for values in zip(*columns, strict=True):
