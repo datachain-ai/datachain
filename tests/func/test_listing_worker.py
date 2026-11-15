@@ -1,5 +1,6 @@
 import asyncio
 import os
+import pickle
 import signal
 import sys
 import time
@@ -116,7 +117,10 @@ def killing(pools, frames, should_kill):
 
     async def received(stream):
         frame = await receive(stream)
-        if isinstance(frame, tuple) and frame[1] and should_kill(frame[1][0]):
+        rows = frame[1][0] if isinstance(frame, tuple) and frame[1] else None
+        if isinstance(rows, tuple) and isinstance(rows[0], bytes):
+            rows = pickle.loads(rows[0])  # noqa: S301  # list_storage's pickled rows
+        if rows is not None and should_kill(rows):
             procs = [p for pool in pools for p in pool.procs if p.stdout is stream]
             frames.append(frame)
             procs[0].kill()

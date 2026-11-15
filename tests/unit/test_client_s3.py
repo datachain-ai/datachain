@@ -16,6 +16,7 @@ from datachain.client.s3 import (
     _fields,
     _handle_200_error,
     _parse_timestamp,
+    _rows_page,
 )
 from datachain.client.writeconfig import WriteConfig
 from datachain.node import DirType, Node
@@ -451,3 +452,41 @@ def test_list_page_falls_back_to_current_objects_without_version_support():
             ("a", "", True)
         ]
     assert s3.list_object_versions.call_count == 1
+
+
+WHEN = _parse_timestamp("2026-09-30T23:00:00.000Z")
+FOLDER = b"<CommonPrefixes><Prefix>z/</Prefix></CommonPrefixes>"
+
+
+def _page(body: bytes):
+    model = botocore.session.get_session().get_service_model("s3")
+    shape = model.operation_model("ListObjectsV2").output_shape
+    return _rows_page(body, shape, "s3://b")
+
+
+ENCODED = PAGE.replace(b"<Key>a</Key>", b"<Key>p/a+b%26c</Key>").replace(
+    b"<IsTruncated>", b"<EncodingType>url</EncodingType><IsTruncated>"
+)
+
+
+def test_patterns_read_a_page_as_s3_writes_it():
+    page = _page(ENCODED.replace(b"</Contents>", b"</Contents>" + FOLDER))
+
+    assert [tuple(r) for r in page["FileRows"]] == [
+        ("s3://b", "p/a b&c", 1, "", "e", True, WHEN, None)
+    ]
+    assert page["CommonPrefixes"] == [{"Prefix": "z/"}]
+    assert page["IsTruncated"] is False
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        PAGE.replace(b"<Name>", b"<!-- c --><Name>"),
+        PAGE.replace(b"<Size>1</Size>", b"<Size>1</Size><Extra/>"),
+        PAGE.replace(b"</Key>", b"&#13;</Key>"),
+    ],
+    ids=["comment", "unknown-field", "char-reference"],
+)
+def test_elementtree_reads_a_page_the_patterns_do_not(body):
+    assert _page(body) is None

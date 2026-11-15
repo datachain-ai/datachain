@@ -11,6 +11,7 @@ import struct
 import sys
 import threading
 import traceback
+from collections.abc import Sequence
 from contextlib import suppress
 from functools import partial
 from typing import TYPE_CHECKING, Any, BinaryIO
@@ -115,6 +116,28 @@ def _kill_children() -> None:
         _kill(proc)
 
 
+class Rows(Sequence):
+    """Rows a child sent, unpickled by whoever reads them, not the event loop."""
+
+    def __init__(self, pickled: bytes, size: int) -> None:
+        self.pickled, self.size = pickled, size
+        self.rows: list | None = None
+
+    def _load(self) -> list:
+        if self.rows is None:
+            self.rows = list(map(_as_file_row, pickle.loads(self.pickled)))  # noqa: S301
+        return self.rows
+
+    def __len__(self) -> int:
+        return self.size
+
+    def __getitem__(self, index):  # type: ignore[override]
+        return self._load()[index]
+
+    def __iter__(self):
+        return iter(self._load())
+
+
 class Pool:
     """Child processes fetching pages for one ``RangeListing``. The parent fetches
     any page a child fails or loses, so errors reach the user as raised."""
@@ -203,7 +226,7 @@ class Pool:
         if (page := reply.result()) is None:
             return None
         rows, *rest = page
-        return Page(rows if self.encode else list(map(_as_file_row, rows)), *rest)
+        return Page(rows if self.encode else Rows(*rows), *rest)
 
     def _drop(self, proc: asyncio.subprocess.Process, replies: dict) -> None:
         """Kills a stuck child; its pending pages come back None now, as the kill
@@ -295,8 +318,11 @@ async def _serve(
         with suppress(Exception):
             page = await client._list_page(prefix, start_after, token, hi)
             encode = client.encode_page
-            # plain tuples: a row type would unpickle per row in Python
-            rows = encode(page.rows) if encode else [tuple(r) for r in page.rows]
+            if encode:
+                rows = encode(page.rows)
+            else:  # plain tuples: a row type would unpickle per row in Python
+                plain = [tuple(r) for r in page.rows]
+                rows = pickle.dumps(plain, protocol=5), len(plain)
             answer = dump((rid, (rows, *page[1:])))
         write_frame(answer or dump((rid, None)))
 

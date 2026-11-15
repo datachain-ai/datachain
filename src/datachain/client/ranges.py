@@ -3,9 +3,6 @@ import unicodedata
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from datachain.progress import tqdm
-from datachain.utils import getenv_bool
-
 if TYPE_CHECKING:
     from .fsspec import RangeListedClient, ResultQueue
     from .listing_worker import Pool
@@ -17,6 +14,7 @@ PROCESS_LIST_WORKERS = 64  # once child processes fetch pages: they parse in par
 # only cost CPU and memory. Past it the parent, which also inserts the rows,
 # cannot parse pages fast enough.
 POOL_ROWS = 10_000
+CUT_RANGES = 64  # the most ranges a listing starts at the folders it names
 SPLIT_PAGES = 4  # a young range splits at most this many pages ahead
 YOUNG_PAGES = 4  # a range is young until it and its parents read this many pages
 
@@ -31,6 +29,7 @@ class Page(NamedTuple):
     past_lo: str | None = None  # the first key listed past the start key
     past_hi: str | None = None  # the first key listed past ``hi``
     in_order: bool = True  # the keys came in the server's order
+    folders: tuple[str, ...] = ()  # with a delimiter, the folders past it
 
 
 class Keep:
@@ -178,6 +177,10 @@ class RangeListing:
         pool: "Pool | None",
         delimiter: str = "",
     ) -> None:
+        # here, not at the top: a listing child imports this module, and not these
+        from datachain.progress import tqdm
+        from datachain.utils import getenv_bool
+
         self.client = client
         self.prefix = prefix
         self.delimiter = delimiter  # with it, keys past a delimiter are skipped
@@ -185,7 +188,8 @@ class RangeListing:
         self.pool = pool
         self.order = client.key_order
         self.ranges: asyncio.Queue[KeyRange] = asyncio.Queue()
-        self.ranges.put_nowait(KeyRange("", None, self.order, 0))
+        self.first = KeyRange("", None, self.order, 0)
+        self.ranges.put_nowait(self.first)
         self.open_ranges = 1  # queued or being read
         self.max_ranges = PROCESS_LIST_WORKERS if pool and pool.size else LIST_WORKERS
         self.alphabet: set[str] = set()
@@ -260,6 +264,28 @@ class RangeListing:
             await self._seam(lo, 1, page.past_lo or "")
         return page
 
+    async def _cut(self, first: KeyRange, page: Page) -> None:
+        """After the first page, starts ranges at the folders past it that one
+        request with a delimiter names, and the child processes: a large listing
+        starts spread over its keys instead of splitting its way out of one."""
+        if self.delimiter or not self.client.NAMES_FOLDERS or page.last is None:
+            return
+        async with self.own_requests:
+            level = await self.client._list_page(
+                self.prefix, page.last, None, delimiter="/"
+            )
+        read_to = self.order(page.last)
+        folders = sorted(f for f in level.folders if self.order(f) > read_to)
+        folders = folders[:: -(-len(folders) // CUT_RANGES) or 1]
+        for lo, hi in zip(folders, [*folders[1:], None], strict=False):
+            self.open_ranges += 1
+            self.ranges.put_nowait(KeyRange(lo, hi, self.order, 0))
+        if folders:
+            self.has_split = True
+            first.hi = folders[0]  # its next page is not asked for yet
+        if self.pool and len(folders) > 1:
+            self.pool.start()
+
     async def _read(self, key_range: KeyRange) -> None:
         """Reads the range a page at a time; the next page is on its way while
         this one waits for room in the result queue."""
@@ -268,6 +294,9 @@ class RangeListing:
         try:
             while True:
                 rows, token = self._advance(key_range, page)
+                first = key_range is self.first and key_range.age == 1
+                if first and token is not None and self._may_split():
+                    await self._cut(key_range, page)
                 if token is not None:
                     next_page = asyncio.create_task(self._fetch(key_range, token))
                 if rows:

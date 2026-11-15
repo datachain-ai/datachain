@@ -378,9 +378,11 @@ def test_a_paused_parent_reads_a_reply_that_came_meanwhile(mocker):
         pool.children = {proc: replies}
         pending = asyncio.create_task(pool.list_page("", None, None))
         await asyncio.sleep(0.3)  # past the timeout: the parent was paused
-        next(iter(replies.values())).set_result(([], None, None, None))
+        reply = ((pickle.dumps([]), 0), None, None, None)  # no rows
+        next(iter(replies.values())).set_result(reply)
 
-        assert await pending == Page([], None, None, None)
+        page = await pending
+        assert (list(page.rows), *page[1:]) == ([], *Page([], None, None, None)[1:])
         assert proc.returncode is None
         assert proc in pool.children
 
