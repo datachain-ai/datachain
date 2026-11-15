@@ -462,11 +462,12 @@ class AbstractMetastore(ABC, Serializable):
         error_stack="",
         script_output="",
         expected_status: int | None = None,
+        expected_job_id: str | None = None,
     ) -> DatasetRecord:
         """Updates dataset status and appropriate fields related to status.
-        When ``expected_status`` is given the version-level UPDATE is
-        guarded by ``status = :expected``; if no version row matches, raises
-        :class:`DataChainError` before touching the dataset-level row."""
+        When ``expected_status`` or ``expected_job_id`` is given the
+        version-level UPDATE is guarded accordingly; if no version row matches,
+        raises :class:`DataChainError` before touching the dataset-level row."""
 
     @abstractmethod
     def mark_job_dataset_versions_as_failed(self, job_id: str) -> None:
@@ -1466,7 +1467,7 @@ class AbstractDBMetastore(AbstractMetastore):
         result_ds.update(**dataset_values)
         return result_ds
 
-    def update_dataset_version(
+    def update_dataset_version(  # noqa: PLR0912
         self,
         dataset: DatasetRecord,
         version: str,
@@ -1560,6 +1561,18 @@ class AbstractDBMetastore(AbstractMetastore):
         guarded = expected_status is not None or expected_job_id is not None
         if guarded and result.rowcount == 0:  # type: ignore [attr-defined]
             return None
+
+        if (
+            expected_job_id is not None
+            and "job_id" in values
+            and values["job_id"] != expected_job_id
+        ):
+            self.db.execute(
+                self._dataset_version_jobs_delete().where(
+                    self._dataset_version_jobs.c.dataset_version_id == version_obj.id,
+                    self._dataset_version_jobs.c.job_id == expected_job_id,
+                )
+            )
 
         version_obj.update(**version_values)
         logger.debug(
@@ -2110,6 +2123,7 @@ class AbstractDBMetastore(AbstractMetastore):
         error_stack="",
         script_output="",
         expected_status: int | None = None,
+        expected_job_id: str | None = None,
     ) -> DatasetRecord:
         """
         Updates dataset status and appropriate fields related to status
@@ -2129,15 +2143,18 @@ class AbstractDBMetastore(AbstractMetastore):
         with self.db.transaction():
             if version:
                 # Two-step write: first the version row (with the optional
-                # status guard), then the parent dataset row below. If the
-                # guard fails, abort before the second step.
+                # status/owner guard), then the parent dataset row below. If
+                # the guard fails, abort before the second step.
                 updated = self.update_dataset_version(
                     dataset,
                     version,
                     expected_status=expected_status,
+                    expected_job_id=expected_job_id,
                     **update_data,
                 )
-                if expected_status is not None and updated is None:
+                if (
+                    expected_status is not None or expected_job_id is not None
+                ) and updated is None:
                     raise ConcurrentDatasetModificationError(
                         f"Could not update status of {dataset.name}@{version}: "
                         f"current status is not {expected_status}"
@@ -3120,6 +3137,11 @@ class AbstractDBMetastore(AbstractMetastore):
                 self._projects.c.name == project_name,
                 self._dataset_version_jobs.c.job_id.in_(job_ancestry),
                 self._dataset_version_jobs.c.is_creator.is_(True),
+                or_(
+                    self._datasets_versions.c.job_id.is_(None),
+                    self._datasets_versions.c.job_id
+                    == self._dataset_version_jobs.c.job_id,
+                ),
                 self._datasets_versions.c.status == DatasetStatus.COMPLETE,
             )
             .order_by(desc(self._dataset_version_jobs.c.created_at))

@@ -50,7 +50,6 @@ from datachain.data_storage.writer import (
     committed_part_keys,
     parts_columns,
     parts_table_name,
-    trim_to_ledger,
 )
 from datachain.dataset import DatasetDependency
 from datachain.error import (
@@ -1437,7 +1436,7 @@ class UDFStep(Step, ABC):
             )
 
         if parts is not None:
-            trim_to_ledger(self.warehouse, partial_table, parts)
+            self.warehouse.trim_to_ledger(partial_table, parts)
             processed = committed_part_keys(parts)
         else:
             processed = sa.select(partial_table.c.sys__id)
@@ -3173,7 +3172,9 @@ class DatasetQuery:
                         return reused
 
                 # Mark as COMPLETE only after all operations succeed.
-                self.catalog.complete_dataset_version(dataset, version)
+                self.catalog.complete_dataset_version(
+                    dataset, version, expected_job_id=job_id
+                )
             except BaseException:
                 # Give back the reservation, as if it was never made. It is
                 # removed only while still CREATED and ours: an interrupt right

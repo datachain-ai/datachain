@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import datachain as dc
+from datachain.data_storage import JobStatus
 from datachain.dataset import DatasetStatus
 from datachain.error import DatasetNotFoundError
 from tests.utils import (
@@ -33,6 +34,9 @@ def _run(catalog, kill_at: str, version: str, parent: str | None = None) -> str:
     rc, _, stderr = wait_for_test_subprocess(proc, 90)
     expected = -signal.SIGKILL if kill_at != "none" else 0
     assert rc == expected, stderr
+    if rc == -signal.SIGKILL:
+        # The supervisor observed process death; a running owner cannot be adopted.
+        metastore.set_job_status(job_id, JobStatus.FAILED)
     return job_id
 
 

@@ -1531,3 +1531,132 @@ def test_interrupt_after_publication_keeps_the_dataset(test_session, monkeypatch
     ds = catalog.get_dataset("published", versions=None)
     assert ds.get_version("1.0.0").status == DatasetStatus.COMPLETE
     assert dc.read_dataset("published", session=test_session).to_values("name") == ["a"]
+
+
+def test_running_ancestor_version_is_not_reclaimed_and_completion_is_owner_fenced(
+    test_session,
+):
+    from datachain.data_storage.job import JobQueryType, JobStatus
+    from datachain.sql.types import Int64
+
+    catalog = test_session.catalog
+    metastore = catalog.metastore
+
+    job1 = metastore.create_job(
+        "save-1", "print(1)", query_type=JobQueryType.PYTHON, status=JobStatus.RUNNING
+    )
+    job2 = metastore.create_job(
+        "save-2",
+        "print(1)",
+        query_type=JobQueryType.PYTHON,
+        status=JobStatus.RUNNING,
+        rerun_from_job_id=job1,
+    )
+
+    # Job 1 reserves 1.0.0 while still RUNNING
+    ds1 = catalog.create_dataset(
+        "concurrent_save",
+        columns=[sa.Column("v", Int64)],
+        job_id=job1,
+    )
+    assert ds1.versions[0].version == "1.0.0"
+
+    # Job 2 starts while job 1 is still RUNNING -> must NOT reclaim 1.0.0, gets 1.0.1
+    ds2 = catalog.create_dataset(
+        "concurrent_save",
+        columns=[sa.Column("v", Int64)],
+        job_id=job2,
+    )
+    assert ds2.versions[0].version == "1.0.1"
+
+    # If job 1's version was somehow taken over by another owner before completion,
+    # complete_dataset_version with expected_job_id=job1 must fail with
+    # ConcurrentDatasetModificationError.
+    table1 = catalog.warehouse.create_dataset_rows_table(
+        catalog.warehouse.dataset_table_name(ds1, "1.0.0"),
+        columns=[sa.Column("v", Int64)],
+    )
+    catalog.warehouse.insert_stored_rows(table1, ["v"], [(1,)])
+    metastore.update_dataset_version(ds1, "1.0.0", job_id=job2)
+
+    with pytest.raises(ConcurrentDatasetModificationError):
+        catalog.complete_dataset_version(ds1, "1.0.0", expected_job_id=job1)
+
+
+def test_reclaim_guards_against_stale_gc_and_stale_job_links(test_session):
+    from datachain.data_storage.job import JobQueryType, JobStatus
+    from datachain.sql.types import Int64
+
+    catalog = test_session.catalog
+    metastore = catalog.metastore
+
+    job_a = metastore.create_job(
+        "job-a", "print(1)", query_type=JobQueryType.PYTHON, status=JobStatus.RUNNING
+    )
+    ds_base = catalog.create_dataset(
+        "reclaim_gc_links",
+        version="1.0.0",
+        columns=[sa.Column("v", Int64)],
+        job_id=job_a,
+    )
+    metastore.link_dataset_version_to_job(
+        ds_base.get_version("1.0.0").id, job_a, is_creator=True
+    )
+    metastore.update_dataset_status(ds_base, DatasetStatus.COMPLETE, version="1.0.0")
+
+    ds_unfin = catalog.create_dataset(
+        "reclaim_gc_links",
+        version="1.0.1",
+        columns=[sa.Column("v", Int64)],
+        job_id=job_a,
+    )
+    metastore.link_dataset_version_to_job(
+        ds_unfin.get_version("1.0.1").id, job_a, is_creator=True
+    )
+    metastore.set_job_status(job_a, JobStatus.FAILED)
+
+    # GC snapshots the dead 1.0.1 reservation before job_b reclaims it.
+    to_clean = metastore.get_dataset_versions_to_clean()
+    assert ("reclaim_gc_links", "1.0.1") in {(d.name, v) for d, v in to_clean}
+
+    run_group_id = metastore.get_job(job_a).run_group_id
+    job_b = metastore.create_job(
+        "job-b",
+        "print(1)",
+        query_type=JobQueryType.PYTHON,
+        status=JobStatus.RUNNING,
+        rerun_from_job_id=job_a,
+        run_group_id=run_group_id,
+    )
+    reclaimed = catalog.create_dataset(
+        "reclaim_gc_links",
+        columns=[sa.Column("v", Int64)],
+        job_id=job_b,
+    )
+    assert reclaimed.versions[0].version == "1.0.1"
+
+    # Stale GC snapshot must NOT remove job_b's reclaimed CREATED reservation.
+    assert catalog._remove_versions(to_clean) == 0
+
+    metastore.link_dataset_version_to_job(
+        reclaimed.get_version("1.0.1").id, job_b, is_creator=True
+    )
+    metastore.update_dataset_status(reclaimed, DatasetStatus.COMPLETE, version="1.0.1")
+
+    # Independent rerun job_c of job_a must see job_a's 1.0.0, not job_b's 1.0.1.
+    job_c = metastore.create_job(
+        "job-c",
+        "print(1)",
+        query_type=JobQueryType.PYTHON,
+        status=JobStatus.RUNNING,
+        rerun_from_job_id=job_a,
+        run_group_id=run_group_id,
+    )
+    ancestry_ver = metastore.get_dataset_version_for_job_ancestry(
+        "reclaim_gc_links",
+        reclaimed.project.namespace.name,
+        reclaimed.project.name,
+        job_c,
+    )
+    assert ancestry_ver is not None
+    assert ancestry_ver.version == "1.0.0"

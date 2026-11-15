@@ -493,6 +493,11 @@ class AbstractWarehouse(ABC, Serializable):
             terms = (id_col.between(lo, hi) for lo, hi in batch)
             self.db.execute(table.delete().where(sa.or_(*terms)))
 
+    def trim_to_ledger(self, table: sa.Table, parts: sa.Table) -> None:
+        from datachain.data_storage.writer import trim_to_ledger
+
+        trim_to_ledger(self, table, parts)
+
     @abstractmethod
     def instr(self, source, target) -> sa.ColumnElement:
         """
