@@ -83,6 +83,12 @@ class RowCodec:
         except Exception as e:
             raise RowEncodeError(i, value) from e
 
+    def stores_as_is(self, row: tuple) -> bool:
+        """True if ``row`` holds one value per column, each stored as it is."""
+        return len(row) == len(self.codecs) and all(
+            type(row[i]) in kept for i, _, kept in self._encoded
+        )
+
     def encode(self, row: Sequence[Any]) -> tuple:
         """One row of leaf values, one per column, as stored values."""
         values = None

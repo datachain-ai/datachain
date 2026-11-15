@@ -260,9 +260,16 @@ class OutputRows:
         self.udf_kind = udf.udf_kind
         self.flatten = udf.output.row_flattener()
         self.codec: RowCodec = warehouse.row_codec(spec.values())
+        self.plain = udf.output.plain_output()
 
     def __call__(self, result: Any) -> tuple:
-        """One UDF result as a stored row."""
+        """One UDF result as a stored row. A plain result whose values are all
+        stored as they are takes one type check, not the flattener's and then
+        the codec's."""
+        if self.plain:
+            row = result if type(result) is tuple else (result,)
+            if self.codec.stores_as_is(row):
+                return row
         return self.encode(self.flatten(result))
 
     def encode(self, values: Sequence[Any]) -> tuple:

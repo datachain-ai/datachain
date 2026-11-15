@@ -799,6 +799,14 @@ class SignalSchema:
             return None
         return [c for reader in self._signal_plan.values() for c in reader.columns]
 
+    def plain_output(self) -> bool:
+        """True if no signal is a model or a union: a UDF result is then its
+        flat leaf values as they are."""
+        return not any(
+            union_layout(a) is not None or classify_field(a).is_model
+            for a in self.values.values()
+        )
+
     def row_flattener(self) -> Callable[[Any], tuple]:
         """A function turning one result of a UDF with this output schema (a
         value, a tuple of values, or a model) into its flat leaf values in db
@@ -807,9 +815,7 @@ class SignalSchema:
         annos = list(self.values.values())
         names = list(self.values)
         size = len(annos)
-        plain = not any(
-            union_layout(a) is not None or classify_field(a).is_model for a in annos
-        )
+        plain = self.plain_output()
         is_plain = _PLAIN_VALUE_TYPES.__contains__
 
         def obj_values(obj: Any) -> Sequence[Any]:
