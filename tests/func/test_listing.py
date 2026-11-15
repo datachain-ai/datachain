@@ -245,13 +245,14 @@ def _save_listing(session, uri: str, file: File):
 
 def _etags(session, name: str, version: str) -> list:
     metastore = session.catalog.metastore
-    return dc.read_dataset(
+    chain = dc.read_dataset(
         name,
         namespace=metastore.system_namespace_name,
         project=metastore.listing_project_name,
         version=version,
         session=session,
-    ).to_values("file.etag")
+    )
+    return sorted(chain.to_values("file.etag"))
 
 
 @pytest.mark.parametrize(
@@ -336,11 +337,15 @@ def test_listing_creates_no_job(test_session, tmp_dir):
     (tmp_dir / "a.txt").write_text("a")
     metastore = test_session.catalog.metastore
 
+    def jobs() -> int:
+        count = sa.select(sa.func.count()).select_from(metastore._jobs)
+        return next(iter(metastore.db.execute(count)))[0]
+
+    before = jobs()  # a test session may run inside a job already
     for update in (False, True):
         dc.read_storage(tmp_dir.as_uri(), session=test_session, update=update).exec()
 
-    jobs = metastore.db.execute(sa.select(sa.func.count()).select_from(metastore._jobs))
-    assert next(iter(jobs))[0] == 0
+    assert jobs() == before
 
 
 @pytest.mark.parametrize("base", [True, False], ids=["refresh", "first"])
