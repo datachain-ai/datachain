@@ -24,7 +24,7 @@ Bytes never leave your storage. Every run deposits a typed dataset the next pipe
 pip install datachain
 ```
 
-To add the agent skill (Knowledge Base + code generation):
+To add the agent skill for data processing and saved-result queries:
 
 ```bash
 datachain skill install --target claude     # also: cursor, codex, copilot, pi
@@ -70,23 +70,7 @@ Result:
 
 The agent decomposed the task into steps - embeddings, breed metadata, mask join, quality filter - and saved each as a named, versioned dataset. Next time you ask a related question, it starts from what's already built.
 
-The datasets are registered in a Knowledge Base optimized for both agents and humans:
-
-```bash
-dc-knowledge
-├── buckets
-│   └── s3
-│       └── dc_readme.md
-├── datasets
-│   ├── oxford_micro_dog_breeds.md
-│   ├── oxford_micro_dog_embeddings.md
-│   └── similar_to_fiona.md
-└── index.md
-```
-
-Browse it as markdown files, navigate with wikilinks, or open in [Obsidian](https://obsidian.md/):
-
-![Visualize data Knowledge Base](docs/assets/readme_obsidian.gif)
+For shared dataset descriptions and search, connect [Studio MCP](https://www.datachain.ai/docs/studio/user-guide/agents/mcp/). Local agents inspect saved datasets directly.
 
 
 ## 3. Data Harness
@@ -304,7 +288,7 @@ Under a second - everything runs against the Dataset DB.
 
 ### 5.3. Incremental updates
 
-The bucket in this walkthrough is static, so there's nothing new to process. But in production - when new images land in your bucket - re-run the same scripts unchanged. `delta=True` in the original dataset ensures only new files are processed end to end while the whole dataset will be updated to `pets_images@1.0.1`:
+The bucket in this walkthrough is static, so there's nothing new to process. In production, rerun the same scripts when files are added, changed, or deleted. With `delta=True`, new and changed files are processed, results for deleted files are removed, and results for unchanged files are reused:
 
 ```python
 $ python create_dataset.py   # 500 new images arrived
@@ -320,24 +304,14 @@ Saved pets_images@1.0.2  (+500 records)
 
 ## 6. Knowledge Base
 
-DataChain maintains two layers. The **Dataset DB** is the ground truth: schemas, processing state, lineage, the vectors themselves. **The Knowledge Base** is derived from it: structured markdown for humans and agents to read. Because it's derived, it describes what actually ran rather than what someone wrote down. Rebuild it after a pass to bring it current. The Knowledge Base is stored in `dc-knowledge/`.
+The **Dataset DB** records schemas, versions, dependencies and processing results. In [Studio](https://www.datachain.ai/docs/studio/user-guide/agents/knowledge-base/), the **Knowledge Base** adds generated descriptions of datasets and storages. Agents search and read those descriptions through MCP; people browse them in Studio.
 
-Ask the agent to build it (from Claude Code, Cursor, Codex, GitHub Copilot, or Pi):
-```bash
-claude
-```
-
-Prompt:
-```prompt
-Build a Knowledge Base for my current datasets
-```
-
-The skill generates `dc-knowledge/` directory from the Dataset DB - one file per dataset and bucket:
+Local agents inspect saved datasets directly with `dc.datasets()`, `dc.describe()` and `dc.read_dataset()`.
 
 
 ## 7. AI-Generated Pipelines
 
-The skill gives the agent data awareness: it reads `dc-knowledge/` to understand what datasets exist, their schemas, which fields can be joined - and the meaning of columns inferred from the code that produced them.
+The skill guides the agent to inspect saved datasets, schemas, dependencies and producing code before building a pipeline.
 
 See section `2. Quickstart: agent-driven pipeline` above. All the steps that were manually created could be just generated.
 

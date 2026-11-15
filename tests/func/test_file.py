@@ -953,6 +953,27 @@ def test_video_info_http_server_without_range_support(
     assert info.duration == pytest.approx(1.0, abs=0.1)
 
 
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("cached", [False, True])
+def test_open_gives_the_same_buffered_stream_with_and_without_cache(
+    cloud_test_catalog, cached
+):
+    ctc = cloud_test_catalog
+    chain = dc.read_storage(ctc.src_uri, session=ctc.session)
+    (file,) = chain.filter(dc.C("file.path").glob("*cat1")).to_values("file")
+    if cached:
+        file.ensure_cached()
+
+    with file.open() as f:
+        assert isinstance(f, io.BufferedIOBase)
+        assert (f.read(2), f.read1(), f.read()) == (b"me", b"ow", b"")
+
+    buf = bytearray(8)
+    with file.open() as f:
+        assert (f.readinto(buf), f.readinto(buf)) == (4, 0)
+    assert buf[:4] == b"meow"
+
+
 @pytest.mark.parametrize("length", [-1, 4])
 def test_read_bytes_preserves_full_read_cache_policy(test_session, tmp_path, length):
     path = tmp_path / "content.bin"

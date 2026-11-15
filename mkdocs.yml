@@ -127,6 +127,7 @@ nav:
               - TarVFile: references/data-types/tarvfile.md
               - ArrowRow: references/data-types/arrowrow.md
               - ZarrStore: references/data-types/zarrstore.md
+              - McapFile: references/data-types/mcapfile.md
               - BBox: references/data-types/bbox.md
               - Pose: references/data-types/pose.md
               - Segment: references/data-types/segment.md
@@ -148,6 +149,8 @@ nav:
           - Overview: commands/index.md
           - Commands:
               - gc: commands/gc.md
+              - dataset:
+                  - describe: commands/dataset/describe.md
               - auth:
                   - login: commands/auth/login.md
                   - logout: commands/auth/logout.md

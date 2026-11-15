@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING, Literal
 
 import multiprocess
 from cloudpickle import load, loads
-from fsspec.callbacks import DEFAULT_CALLBACK, Callback
+from fsspec import Callback
+from fsspec.callbacks import DEFAULT_CALLBACK
 from multiprocess.context import Process
 from multiprocess.queues import Queue as MultiprocessQueue
 
