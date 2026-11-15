@@ -730,10 +730,10 @@ def _decode_array(item: Callable[[Any], Any], value: Any) -> Any:
 
 def decode_sqlite(sql_type: Any) -> Callable[[Any], Any] | None:
     """How SQLite reads `sql_type`: datetimes as UTC, arrays from JSON text."""
-    if isinstance(sql_type, DateTime):
+    if isinstance(sql_type, DateTime) or getattr(sql_type, "_kind", None) == "datetime":
         return decode_sqlite_datetime
     decode = base_decode(sql_type, decode_sqlite)
-    if isinstance(sql_type, Array):
+    if isinstance(sql_type, Array) or getattr(sql_type, "_kind", None) == "array":
         assert decode is not None  # base_decode always reads an array
         return partial(_decode_array, decode)
     return decode
@@ -893,13 +893,16 @@ class SQLiteWarehouse(AbstractWarehouse):
     def type_codec(self, sql_type: Any) -> TypeCodec:
         """Datetimes are stored as UTC text, arrays as JSON text."""
         codec = value_codec(sql_type, self.column_default(sql_type), decode_sqlite)
-        if isinstance(sql_type, DateTime):
+        if (
+            isinstance(sql_type, DateTime)
+            or getattr(sql_type, "_kind", None) == "datetime"
+        ):
             return codec._replace(
                 kept=frozenset(),
                 encode=partial(compose, adapt_datetime, codec.encode),
                 encode_column=_encode_datetime_column,
             )
-        if isinstance(sql_type, Array):
+        if isinstance(sql_type, Array) or getattr(sql_type, "_kind", None) == "array":
             return codec._replace(encode=partial(compose, adapt_array, codec.encode))
         return codec
 

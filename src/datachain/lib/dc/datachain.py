@@ -2212,7 +2212,11 @@ class DataChain:
 
         def column_chunks() -> Iterator[list[list[Any]]]:
             for chunk in batched(results_iter, chunk_size):
-                yield [list(col) for col in zip(*chunk, strict=True)]
+                yield (
+                    [list(col) for col in zip(*chunk, strict=True)]
+                    if column_names
+                    else []
+                )
 
         return column_names, column_chunks()
 
@@ -2301,8 +2305,10 @@ class DataChain:
                 # plain scalars only: the db row already is the result
                 yield from map(tuple, rows)
                 return
-            read = signals_schema.row_reader(cast("list[str]", db_signals))
             catalog, cache = self.session.catalog, self._settings.cache
+            read = signals_schema.row_reader(
+                cast("list[str]", db_signals), catalog=catalog, cache=cache
+            )
             for row in rows:
                 objs = read(row)
                 signals_schema.set_file_streams(objs, catalog, cache)

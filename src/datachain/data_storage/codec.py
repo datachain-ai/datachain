@@ -2,8 +2,10 @@
 `TypeCodec` per SQL type (`AbstractWarehouse.type_codec`), compiled per row of
 columns into a `RowCodec`. Codecs hold functions and partials only, so they pickle."""
 
+import math
 import sys
 from collections.abc import Callable, Iterable, Iterator, Sequence
+from copy import deepcopy
 from datetime import datetime
 from functools import partial
 from itertools import islice
@@ -15,6 +17,9 @@ if TYPE_CHECKING:
     import pyarrow as pa
 
 DECODE_BATCH_SIZE = 1_000
+_IMMUTABLE_DEFAULT_TYPES = frozenset(
+    {type(None), str, bytes, bool, int, float, datetime}
+)
 
 
 class TypeCodec(NamedTuple):
@@ -49,6 +54,13 @@ def _identity(value: Any) -> Any:
 PASSTHROUGH = TypeCodec(kept=frozenset(), encode=_identity)
 
 
+def _fresh_default(default: Any) -> Any:
+    # deepcopy treats float as atomic; NaN identity affects container equality.
+    if type(default) is float and math.isnan(default):
+        return float("nan")
+    return deepcopy(default)
+
+
 class RowCodec:
     """Encodes and decodes rows of a fixed list of columns, one `TypeCodec` each."""
 
@@ -67,7 +79,13 @@ class RowCodec:
             if kept is not None
         ]
         self._decoded = [
-            (i, c.decode or _identity, c.default)
+            (
+                i,
+                c.decode or _identity,
+                c.default,
+                type(c.default) not in _IMMUTABLE_DEFAULT_TYPES
+                or (type(c.default) is float and math.isnan(c.default)),
+            )
             for i, c in enumerate(self.codecs)
             if c.decode is not None or c.default is not None
         ]
@@ -128,8 +146,14 @@ class RowCodec:
     def decode_columns(self, columns: list[Sequence[Any]]) -> list[Sequence[Any]]:
         """Stored columns, each a sequence of values, as Python values. A column
         that reads back as it is stays the same object."""
-        for i, decode, default in self._decoded:
-            columns[i] = [default if v is None else decode(v) for v in columns[i]]
+        for i, decode, default, copy_default in self._decoded:
+            if copy_default:
+                columns[i] = [
+                    _fresh_default(default) if v is None else decode(v)
+                    for v in columns[i]
+                ]
+            else:
+                columns[i] = [default if v is None else decode(v) for v in columns[i]]
         return columns
 
     def decode_rows(
@@ -170,7 +194,13 @@ def check_scalar(python_type: type, type_name: str, value: Any) -> Any:
     )
 
 
-def check_list(item_type: type, item: Callable[[Any], Any], value: Any) -> list:
+def check_list(
+    item_type: type,
+    item: Callable[[Any], Any],
+    value: Any,
+    *,
+    json_array_text: bool = False,
+) -> list:
     """A list, tuple, set or array as a list. Every item is checked by `item`,
     unless all already are `item_type`; a None item stays None. JSON items are
     made JSON-ready one by one."""
@@ -181,8 +211,17 @@ def check_list(item_type: type, item: Callable[[Any], Any], value: Any) -> list:
             "column type Array"
         )
     if item_type is dict:
-        return [None if v is None else to_jsonable(v) for v in value]
+        first = next(iter(value), None)
+        first_type = str if json_array_text else dict
+        if value and not isinstance(first, first_type):
+            # Array(JSON) stores each item as JSON text in this legacy shape;
+            # "null" decodes to None, preserving the nullable-array contract.
+            return [encode_json(v) for v in value]
+        key_converter = None if json_array_text else array_json_key
+        return [None if v is None else to_jsonable(v, key_converter) for v in value]
     value = list(value)
+    first = next((v for v in value if v is not None), None)
+    keep_compatible = item_type is not list and isinstance(first, item_type)
     if item_type is not list:
         # the types of every item, not of the first: one item cannot answer
         # for the rest
@@ -190,17 +229,97 @@ def check_list(item_type: type, item: Callable[[Any], Any], value: Any) -> list:
         if kinds <= {item_type}:
             return value
         if item_type is float and kinds <= {int, float}:
-            return [v if v is None else float(v) for v in value]
-    return [None if v is None else item(v) for v in value]
+            return (
+                value
+                if keep_compatible
+                else [v if v is None else float(v) for v in value]
+            )
+    checked = [None if v is None else item(v) for v in value]
+    return value if keep_compatible else checked
 
 
-def to_jsonable(obj: Any) -> Any:
+def array_json_key(key: Any) -> str:
+    if isinstance(key, str):
+        return str.__str__(key)
+    if key is None:
+        return "null"
+    if isinstance(key, bool):
+        return "true" if key else "false"
+    if isinstance(key, bytes):
+        return bytes.decode(key)
+    return str(key)
+
+
+def _check_model_dict_keys(obj: Any) -> None:  # noqa: C901
+    from pydantic import BaseModel
+    from pydantic_core import to_jsonable_python
+
+    obj = _numpy_to_python(obj)
+    if isinstance(obj, BaseModel):
+        decorators = getattr(type(obj), "__pydantic_decorators__", None)
+        if decorators is not None and decorators.model_serializers:
+            return
+        serialized_fields: set[str] = set()
+        if decorators is not None:
+            for fs in decorators.field_serializers.values():
+                info = getattr(fs, "info", None)
+                if info is None or info.when_used in (
+                    "always",
+                    "unless-none",
+                    "json",
+                    "json-unless-none",
+                ):
+                    serialized_fields.update(getattr(info, "fields", ()))
+        if "*" in serialized_fields:
+            return
+        for name, field_info in type(obj).model_fields.items():
+            if (
+                not getattr(field_info, "exclude", False)
+                and name not in serialized_fields
+            ):
+                _check_model_dict_keys(getattr(obj, name))
+        if decorators is not None:
+            for name, comp_dec in decorators.computed_fields.items():
+                comp_info = getattr(comp_dec, "info", None)
+                if (
+                    not getattr(comp_info, "exclude", False)
+                    and name not in serialized_fields
+                ):
+                    _check_model_dict_keys(getattr(obj, name))
+    elif isinstance(obj, dict):
+        keys: set[str] = set()
+        for k, v in obj.items():
+            key = (
+                str.__str__(k)
+                if isinstance(k, str)
+                else next(
+                    iter(to_jsonable_python({k: None}, fallback=json.numpy_to_python))
+                )
+            )
+            if key in keys:
+                from datachain.lib.udf import JsonSerializationError
+
+                raise JsonSerializationError(
+                    f"Two keys serialize to the JSON key {key!r}, so one of "
+                    "their values would be lost.",
+                    column_name="",
+                    value_repr=repr(obj),
+                )
+            keys.add(key)
+            _check_model_dict_keys(v)
+    elif isinstance(obj, (list, tuple, set)):
+        for item in obj:
+            _check_model_dict_keys(item)
+
+
+def to_jsonable(obj: Any, key_converter: Callable[[Any], str] | None = None) -> Any:
     """Python and pydantic structures as JSON-serializable objects. Raises
     JsonSerializationError when two keys of a dict become one JSON key."""
     from datachain.lib.model_store import ModelStore
 
     obj = _numpy_to_python(obj)  # an object array can hold dicts
     if ModelStore.is_pydantic(type(obj)):
+        _check_model_dict_keys(obj)
         # Use Pydantic's JSON mode to ensure datetime and other non-JSON
         # native types are serialized in a compatible way. Numpy is the one
         # thing it refuses and this project's encoder handles.
@@ -208,9 +327,16 @@ def to_jsonable(obj: Any) -> Any:
 
     if isinstance(obj, dict):
         out: dict[str, Any] = {}
-        for k, v in obj.items():
+        items = dict.items(obj) if key_converter is array_json_key else obj.items()
+        for k, v in items:
             # str.__str__: the key json writes for a str subclass (an enum)
-            key = str.__str__(k) if isinstance(k, str) else to_json_text(k)
+            key = (
+                key_converter(k)
+                if key_converter is not None
+                else str.__str__(k)
+                if isinstance(k, str)
+                else to_json_text(k)
+            )
             if key in out:
                 from datachain.lib.udf import JsonSerializationError
 
@@ -220,11 +346,11 @@ def to_jsonable(obj: Any) -> Any:
                     column_name="",
                     value_repr=repr(obj),
                 )
-            out[key] = to_jsonable(v)
+            out[key] = to_jsonable(v, key_converter)
         return out
 
     if isinstance(obj, (list, tuple, set)):
-        return [to_jsonable(i) for i in obj]
+        return [to_jsonable(i, key_converter) for i in obj]
 
     return obj
 
@@ -239,9 +365,8 @@ def encode_json(value: Any) -> str:
 
     if type(value) is str:
         return value
-    json_ready = to_jsonable(value)
     try:
-        return json.dumps(json_ready, ensure_ascii=False, serialize_numpy=True)
+        return json.dumps(to_jsonable(value), ensure_ascii=False, serialize_numpy=True)
     except TypeError as e:
         raise JsonSerializationError(
             f"JSON serialization error: {e}", column_name="", value_repr=repr(value)
@@ -290,6 +415,9 @@ def decode_binary(value: Any) -> Any:
 
 def decode_list(item: Callable[[Any], Any] | None, value: Any) -> Any:
     """A list with each item decoded by `item`; a None item stays None."""
+    np = sys.modules.get("numpy")
+    if np is not None and isinstance(value, np.ndarray):
+        value = list(value)
     if not isinstance(value, (list, tuple)):
         return value
     if item is None or (item is decode_float and set(map(type, value)) <= {float, int}):
@@ -318,19 +446,36 @@ def base_decode(
     ):
         if isinstance(sql_type, type_):
             return decode
-    return None
+    kind = getattr(sql_type, "_kind", None)
+    if kind == "array":
+        return partial(decode_list, decode_of(sql_type.item_type))
+    decoders: dict[str | None, Callable[[Any], Any]] = {
+        "json": decode_json,
+        "boolean": decode_bool,
+        "float": decode_float,
+        "float32": decode_float,
+        "float64": decode_float,
+        "datetime": decode_datetime,
+        "binary": decode_binary,
+    }
+    return decoders.get(kind)
 
 
 def default_decode(sql_type: Any) -> Callable[[Any], Any] | None:
     return base_decode(sql_type, default_decode)
 
 
-def check_value(sql_type: Any) -> Callable:
+def check_value(sql_type: Any, *, json_array_text: bool = False) -> Callable:
     """The check and normalization of a Python value for `sql_type`."""
     py_type = sql_type.python_type
     if py_type is list:
         item_type = sql_type.item_type
-        return partial(check_list, item_type.python_type, check_value(item_type))
+        return partial(
+            check_list,
+            item_type.python_type,
+            check_value(item_type, json_array_text=json_array_text),
+            json_array_text=json_array_text,
+        )
     if py_type is dict or type(sql_type).__name__ == "JSON":
         return encode_json
     return partial(check_scalar, py_type, type(sql_type).__name__)
@@ -340,6 +485,8 @@ def value_codec(
     sql_type: Any,
     default: Any,
     decode_of: Callable[[Any], Callable[[Any], Any] | None] = default_decode,
+    *,
+    json_array_text: bool = False,
 ) -> TypeCodec:
     """`sql_type`'s codec for a warehouse that stores Python values as they are."""
     from datachain.sql.types import SQLType
@@ -347,7 +494,7 @@ def value_codec(
     if not isinstance(sql_type, SQLType):
         return PASSTHROUGH
     py_type = sql_type.python_type
-    encode = check_value(sql_type)
+    encode = check_value(sql_type, json_array_text=json_array_text)
     if py_type is list:
         kept: frozenset[type] = frozenset()
     elif encode is encode_json:

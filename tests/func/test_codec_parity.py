@@ -126,3 +126,130 @@ def test_read_values_single_signal_preserves_collection_as_one_value(
 
     reloaded = _save_and_reload(chain, test_session, "codec_single_signal")
     assert reloaded.to_values("value") == [value]
+
+
+class _DatedModel(dc.DataModel):
+    when: datetime
+
+
+class _DictModel(dc.DataModel):
+    d: dict
+
+
+class _EmptyMarker(dc.DataModel):
+    pass
+
+
+def test_mixed_numeric_array_and_dict_keys_in_array(test_session):
+    chain = _save_and_reload(
+        dc.read_records(
+            [{"v": [1.5, 2], "d": [{b"a": "bytes", (1, "x"): "tuple"}]}],
+            schema={"v": list[float], "d": list[dict]},
+            session=test_session,
+        ),
+        test_session,
+        "codec_mixed_array",
+    )
+    assert chain.filter(dc.C("v") == [1.5, 2]).count() == 1
+    assert chain.to_values("d") == [[{"a": "bytes", "(1, 'x')": "tuple"}]]
+
+
+def test_leading_none_model_list_round_trip_and_key_collision(test_session):
+    from datachain.lib.udf import UdfError
+
+    values = [None, _DatedModel(when=DT_0)]
+    chain = _save_and_reload(
+        dc.read_values(
+            v=[values], output={"v": list[_DatedModel]}, session=test_session
+        ),
+        test_session,
+        "codec_leading_none_model",
+    )
+    assert chain.to_values("v") == [values]
+
+    with pytest.raises(UdfError, match="would be lost"):
+        dc.read_records(
+            [{"v": [None, _DictModel(d={"1": "first", 1: "second"})]}],
+            schema={"v": list[_DictModel]},
+            session=test_session,
+        ).save("codec_leading_none_collision")
+
+
+def test_mutable_and_nan_defaults_do_not_alias_across_rows():
+    import math
+
+    import numpy as np
+    import sqlalchemy as sa
+
+    from datachain.data_storage.codec import RowCodec, TypeCodec, decode_list
+    from datachain.sql.types import JSON, Array, Float
+
+    rc = RowCodec(
+        [
+            TypeCodec(frozenset(), lambda x: x, []),
+            TypeCodec(frozenset(), lambda x: x, {}),
+            TypeCodec(frozenset(), lambda x: x, float("nan")),
+        ]
+    )
+    r1, r2 = rc.decode_rows([(None, None, None), (None, None, None)])
+    r1[0].append(1)
+    r1[1]["k"] = 2
+    assert r2[0] == []
+    assert r2[1] == {}
+    assert math.isnan(r1[2]) and math.isnan(r2[2])
+
+    cols = rc.decode_columns([[None, None], [None, None], [None, None]])
+    cols[0][0].append(1)
+    cols[1][0]["k"] = 2
+    assert cols[0][1] == []
+    assert cols[1][1] == {}
+    assert math.isnan(cols[2][0]) and math.isnan(cols[2][1])
+
+    assert decode_list(float, np.array([1, 2])) == [1.0, 2.0]
+    for t in (JSON(), Float(), Array(Float())):
+        assert isinstance(t.impl, sa.types.TypeEngine)
+
+
+def test_empty_marker_columnar_chunks_keep_shape(test_session):
+    chain = dc.read_records(
+        [{"v": _EmptyMarker()}],
+        schema={"v": _EmptyMarker | None},
+        session=test_session,
+    )
+    names, chunks = chain.to_columnar_data_with_names(1, include_sentinels=False)
+    assert names == []
+    assert list(chunks) == [[]]
+
+
+def test_model_dict_key_check_edge_cases():
+    import numpy as np
+    from pydantic import BaseModel, Field, RootModel, field_serializer
+
+    from datachain.data_storage.codec import decode_json, encode_json
+
+    assert decode_json(encode_json(RootModel[str]("hello"))) == "hello"
+    assert decode_json(encode_json(RootModel[str]("123"))) == "123"
+
+    class WithExcluded(BaseModel):
+        visible: int = 1
+        hidden: dict = Field(default_factory=lambda: {1: "a", "1": "b"}, exclude=True)
+
+    assert decode_json(encode_json(WithExcluded())) == {"visible": 1}
+
+    class WithUnlessNone(BaseModel):
+        value: dict
+
+        @field_serializer("value", when_used="unless-none")
+        def ser(self, v):
+            return list(v.values())
+
+    assert decode_json(encode_json(WithUnlessNone(value={1: "a", "1": "b"}))) == {
+        "value": ["a", "b"]
+    }
+
+    class WithNumpyKey(BaseModel):
+        value: dict
+
+    assert decode_json(encode_json(WithNumpyKey(value={np.int64(2): "a"}))) == {
+        "value": {"2": "a"}
+    }

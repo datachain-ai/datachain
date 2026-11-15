@@ -226,10 +226,13 @@ def _flatten_list_field(value: list) -> list:
     """Models in a list as their dumps, and nested lists likewise, when every
     item that is not None has that shape (from #1978): the first item cannot
     answer for the rest. A list of mixed shapes is left as it is, and the
-    warehouse codec makes each item JSON-ready."""
+    warehouse codec makes each item JSON-ready. A leading None leaves models
+    intact for the codec's JSON-mode serialization."""
     assert isinstance(value, list)
     first = next((val for val in value if val is not None), None)
     if ModelStore.is_pydantic(type(first)):
+        if value[0] is None:
+            return value
         if all(val is None or ModelStore.is_pydantic(type(val)) for val in value):
             return [None if val is None else val.model_dump() for val in value]
         return value

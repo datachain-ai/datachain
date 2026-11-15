@@ -151,7 +151,10 @@ class SQLType(TypeDecorator):
     _python: StandardType
 
     def _load_dialect_impl(self, dialect):
-        return getattr(converter(dialect), self._kind)()
+        kind = getattr(self, "_kind", None)
+        if kind is None:
+            return super().load_dialect_impl(dialect)
+        return getattr(converter(dialect), kind)()
 
     @property
     def python_type(self) -> StandardType:
