@@ -10,6 +10,8 @@ def lazy_exports(namespace: dict[str, Any], targets: dict[str, str]) -> None:
     """
 
     package = namespace["__name__"]
+    for name in targets:
+        namespace.pop(name, None)
 
     def getattr_(name: str) -> Any:
         if (target := targets.get(name)) is None:

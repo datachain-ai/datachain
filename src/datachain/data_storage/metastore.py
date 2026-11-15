@@ -33,7 +33,7 @@ from sqlalchemy.sql import func as f
 from sqlalchemy.sql.selectable import Join
 
 from datachain import json
-from datachain.catalog.dependency import DatasetDependencyNode
+from datachain.catalog import dependency
 from datachain.checkpoint import Checkpoint, CheckpointStatus
 from datachain.checkpoint_event import (
     CheckpointEvent,
@@ -82,6 +82,7 @@ if TYPE_CHECKING:
     from datachain.data_storage import schema
     from datachain.data_storage.db_engine import DatabaseEngine
 
+DatasetDependencyNode = dependency.DatasetDependencyNode
 logger = logging.getLogger("datachain")
 DEPTH_LIMIT_DEFAULT = 100
 JOB_ANCESTRY_MAX_DEPTH = 100
