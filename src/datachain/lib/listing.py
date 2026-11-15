@@ -5,6 +5,7 @@ import logging
 import os
 import posixpath
 import re
+import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -40,6 +41,8 @@ if TYPE_CHECKING:
 LISTING_TTL = 4 * 60 * 60  # cached listing lasts 4 hours
 LISTING_PREFIX = "lst__"  # listing datasets start with this name
 LISTING_BATCH_SIZE = 50_000  # rows per insert: listing rows are small
+# seconds between restarts of the reserved version's age, which gc reads
+RESERVATION_TOUCH_INTERVAL = 300
 # a listing version's content_hash: this prefix, its row count and rows_digest sum
 LISTING_DIGEST = "listing-v1"
 # listing of current objects only, read_storage(versions=False)
@@ -586,10 +589,15 @@ def write_listing(
 
     def rows() -> Iterator[tuple]:
         nonlocal count, total
+        touched = time.monotonic()
         for page in itertools.chain(first, pages):
             count += len(page)
             total += page.digest
             yield from page.rows
+            if time.monotonic() - touched > RESERVATION_TOUCH_INTERVAL:
+                # gc removes a jobless CREATED version by its age
+                metastore.touch_reservation(dataset, version)
+                touched = time.monotonic()
 
     try:
         warehouse.insert_stored_rows(table, names, rows(), LISTING_BATCH_SIZE)

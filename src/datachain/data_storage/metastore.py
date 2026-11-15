@@ -334,6 +334,10 @@ class AbstractMetastore(ABC, Serializable):
     ) -> None:
         """Record that a dataset version was accessed."""
 
+    def touch_reservation(self, dataset: DatasetRecord, version: str) -> None:
+        """Restart the age of a CREATED version, so that gc, which removes a
+        jobless CREATED version by its age, leaves a long write alone."""
+
     @abstractmethod
     def remove_dataset_version(
         self, dataset: DatasetRecord, version: str
@@ -1466,6 +1470,17 @@ class AbstractDBMetastore(AbstractMetastore):
         result_ds = copy.deepcopy(dataset)
         result_ds.update(**dataset_values)
         return result_ds
+
+    def touch_reservation(self, dataset: DatasetRecord, version: str) -> None:
+        dv = self._datasets_versions
+        self.db.execute(
+            self._datasets_versions_update()
+            .where(
+                dv.c.id == dataset.get_version(version).id,
+                dv.c.status == DatasetStatus.CREATED,
+            )
+            .values(created_at=datetime.now(UTC))
+        )
 
     def update_dataset_version(  # noqa: PLR0912
         self,

@@ -1,6 +1,7 @@
 import os
 import sys
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -299,6 +300,36 @@ def test_listing_without_digest_is_not_reused(test_session):
     ds = _save_listing(test_session, uri, file)
 
     assert [v.version for v in ds.versions] == ["1.0.0", "2.0.0"]
+
+
+def test_long_listing_keeps_its_reservation_young(test_session):
+    # gc removes a jobless CREATED version older than an hour: a listing that
+    # runs longer restarts its version's age as it goes
+    uri = "s3://bucket/data/"
+    name, _, _ = parse_listing_uri(uri)
+    metastore = test_session.catalog.metastore
+    clock = [0.0]
+    hours_ago = datetime.now(UTC) - timedelta(hours=2)
+
+    def pages(uri, cache, client_config, encode):
+        yield encode([listing.file_row(File(path="a.jpg", etag="e1"))])
+        ds = test_session.catalog.get_dataset(name, versions=None)
+        dv = metastore._datasets_versions
+        metastore.db.execute(  # two hours pass
+            dv.update().where(dv.c.id == ds.versions[0].id).values(created_at=hours_ago)
+        )
+        clock[0] += 2 * 3600
+        yield encode([listing.file_row(File(path="b.jpg", etag="e2"))])
+
+    with (
+        patch.object(listing, "list_pages", side_effect=pages),
+        patch.object(listing.time, "monotonic", side_effect=lambda: clock[0]),
+    ):
+        listing.write_listing(uri, name, test_session, {})
+
+    version = test_session.catalog.get_dataset(name, versions=None).versions[0]
+    assert version.created_at > hours_ago + timedelta(hours=1)
+    assert _etags(test_session, name, version.version) == ["e1", "e2"]
 
 
 def test_listing_creates_no_job(test_session, tmp_dir):
