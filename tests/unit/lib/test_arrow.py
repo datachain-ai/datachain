@@ -22,7 +22,6 @@ from datachain.lib.arrow import (
 from datachain.lib.data_model import dict_to_data_model
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.hf import HFClassLabel
-from datachain.lib.udf import UdfError
 
 
 @pytest.mark.parametrize("source", ["local", "http"])
@@ -333,12 +332,12 @@ def test_read_parquet_nested_lists_keep_their_values(tmp_path, test_session):
     assert chain.order_by("i").to_values("v") == values
 
 
-def test_read_parquet_nested_list_with_null_inner_list_raises(tmp_path, test_session):
+def test_read_parquet_nested_list_keeps_a_null_inner_list(tmp_path, test_session):
     path = tmp_path / "nested.parquet"
     nested = pa.list_(pa.list_(pa.int64()))
     pq.write_table(pa.table({"v": pa.array([[[1], None]], nested)}), path)
-    with pytest.raises(UdfError, match="invalid value for output column 'v'"):
-        dc.read_parquet(path.as_uri(), session=test_session).exec()
+    chain = dc.read_parquet(path.as_uri(), session=test_session)
+    assert chain.to_values("v") == [[[1], None]]
 
 
 def test_read_parquet_multiple_struct_list_columns_roundtrip(test_session, tmp_path):

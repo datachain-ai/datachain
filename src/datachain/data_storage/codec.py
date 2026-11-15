@@ -171,27 +171,35 @@ def check_scalar(python_type: type, type_name: str, value: Any) -> Any:
 
 
 def check_list(item_type: type, item: Callable[[Any], Any], value: Any) -> list:
-    """A list, tuple, set or array as a list. Items are checked by `item`, unless
-    the first one already is an `item_type`."""
+    """A list, tuple, set or array as a list. Every item is checked by `item`,
+    unless all already are `item_type`; a None item stays None. JSON items are
+    made JSON-ready one by one."""
     value = _numpy_to_python(value)
     if not isinstance(value, (list, tuple, set)):
         raise ValueError(  # noqa: TRY004
             f"Value {value!r} with type {type(value)} incompatible for "
             "column type Array"
         )
+    if item_type is dict:
+        return [None if v is None else to_jsonable(v) for v in value]
     value = list(value)
-    if value and item_type is not list:
-        if isinstance(value[0], item_type):
+    if item_type is not list:
+        # the types of every item, not of the first: one item cannot answer
+        # for the rest
+        kinds = set(map(type, value)) - {type(None)}
+        if kinds <= {item_type}:
             return value
-        if item_type is float and isinstance(value[0], int):
-            return [float(i) for i in value]
-    return [item(v) for v in value]
+        if item_type is float and kinds <= {int, float}:
+            return [v if v is None else float(v) for v in value]
+    return [None if v is None else item(v) for v in value]
 
 
 def to_jsonable(obj: Any) -> Any:
-    """Python and pydantic structures as JSON-serializable objects."""
+    """Python and pydantic structures as JSON-serializable objects. Raises
+    JsonSerializationError when two keys of a dict become one JSON key."""
     from datachain.lib.model_store import ModelStore
 
+    obj = _numpy_to_python(obj)  # an object array can hold dicts
     if ModelStore.is_pydantic(type(obj)):
         # Use Pydantic's JSON mode to ensure datetime and other non-JSON
         # native types are serialized in a compatible way. Numpy is the one
@@ -199,10 +207,21 @@ def to_jsonable(obj: Any) -> Any:
         return obj.model_dump(mode="json", fallback=json.numpy_to_python)
 
     if isinstance(obj, dict):
-        return {
-            k if isinstance(k, str) else to_json_text(k): to_jsonable(v)
-            for k, v in obj.items()
-        }
+        out: dict[str, Any] = {}
+        for k, v in obj.items():
+            # str.__str__: the key json writes for a str subclass (an enum)
+            key = str.__str__(k) if isinstance(k, str) else to_json_text(k)
+            if key in out:
+                from datachain.lib.udf import JsonSerializationError
+
+                raise JsonSerializationError(
+                    f"Two keys serialize to the JSON key {key!r}, so one of "
+                    "their values would be lost.",
+                    column_name="",
+                    value_repr=repr(obj),
+                )
+            out[key] = to_jsonable(v)
+        return out
 
     if isinstance(obj, (list, tuple, set)):
         return [to_jsonable(i) for i in obj]
@@ -269,13 +288,13 @@ def decode_binary(value: Any) -> Any:
     return value.encode() if isinstance(value, str) else value
 
 
-def decode_list(item: Callable[[Any], Any] | None, null: Any, value: Any) -> Any:
-    """A list with each item decoded by `item`; a None item reads as `null`."""
+def decode_list(item: Callable[[Any], Any] | None, value: Any) -> Any:
+    """A list with each item decoded by `item`; a None item stays None."""
     if not isinstance(value, (list, tuple)):
         return value
     if item is None or (item is decode_float and set(map(type, value)) <= {float, int}):
         return list(value)  # items read back as they are
-    return [null if v is None else item(v) for v in value]
+    return [None if v is None else item(v) for v in value]
 
 
 def compose(outer: Callable, inner: Callable, value: Any) -> Any:
@@ -289,9 +308,7 @@ def base_decode(
     from datachain.sql.types import JSON, Array, Binary, Boolean, DateTime, Float
 
     if isinstance(sql_type, Array):
-        item_type = sql_type.item_type
-        null = float("nan") if isinstance(item_type, Float) else None
-        return partial(decode_list, decode_of(item_type), null)
+        return partial(decode_list, decode_of(sql_type.item_type))
     for type_, decode in (
         (JSON, decode_json),
         (Boolean, decode_bool),

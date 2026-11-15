@@ -20,6 +20,8 @@ from datachain.sql.types import (
     Float32,
     Float64,
     Int,
+    Int64,
+    SQLType,
     String,
 )
 from tests.utils import (
@@ -328,3 +330,49 @@ def test_a_model_refuses_numpy_that_would_be_stored_as_null(test_session, make):
 
     with pytest.raises(ValueError, match="writes NaN and infinities as null"):
         _model_payload(warehouse, make())
+
+
+class NestedItem(BaseModel):
+    n: int
+
+
+@pytest.mark.parametrize(
+    "value,item_type,expected",
+    [
+        pytest.param((1, None), Int64, [1, None], id="int-none-last"),
+        pytest.param((None, 2), Int64, [None, 2], id="int-none-first"),
+        pytest.param((None, None), Int64, [None, None], id="int-all-none"),
+        pytest.param([1, None], Float, [1.0, None], id="float-none-last"),
+        pytest.param([None, 2], Float, [None, 2.0], id="float-none-first"),
+        pytest.param(["a", None], String, ["a", None], id="str-none-last"),
+        pytest.param([None, "b"], String, [None, "b"], id="str-none-first"),
+    ],
+)
+def test_check_value_keeps_none_wherever_it_sits_in_an_array(
+    value, item_type, expected
+):
+    # from #1978: the first item does not decide for the rest
+    assert check_value(Array(SQLType.as_nullable(item_type)))(value) == expected
+
+
+def test_check_value_checks_every_array_item_not_the_first():
+    with pytest.raises(ValueError, match="incompatible"):
+        check_value(Array(Int()))([1, "x"])
+
+
+def test_check_value_stores_a_json_array_the_same_wherever_none_sits():
+    to_db = check_value(Array(JSON()))
+    # what an item becomes does not depend on its neighbours (#1978)
+    assert to_db([{"k": 1}, None]) == list(reversed(to_db([None, {"k": 1}])))
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param((None, {"a": NestedItem(n=2)}), id="none-first"),
+        pytest.param(({"a": NestedItem(n=2)}, None), id="none-last"),
+    ],
+)
+def test_check_value_leaves_no_model_in_a_json_array_holding_none(value):
+    # from #1978: nothing unserializable may survive, wherever None sits
+    json.dumps(check_value(Array(JSON()))(value))

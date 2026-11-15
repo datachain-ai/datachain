@@ -1,20 +1,23 @@
 import base64
 import json
 from datetime import UTC, datetime, timedelta, timezone
+from enum import StrEnum
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import numpy as np
 import pytest
 import sqlalchemy as sa
 
 import datachain as dc
+from datachain.data_storage.codec import check_value
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SQLiteWarehouse
 from datachain.lib.file import File
 from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.udf import OutputRows, UdfError
+from datachain.lib.udf import JsonSerializationError, OutputRows, UdfError
 from datachain.sql.sqlite.base import adapt_datetime
-from datachain.sql.types import DateTime
+from datachain.sql.types import JSON, Array, DateTime, Float, String
 from tests.utils import skip_if_not_sqlite
 
 
@@ -355,3 +358,91 @@ def test_codec_stores_datetimes_as_the_adapter_text(sqlite_db, value):
     assert codec.encode_arrow(
         pa.record_batch([pa.array([value, None])], names=["t"])
     ) == [(adapt_datetime(value),), (None,)]
+
+
+class _StrEnum(StrEnum):
+    A = "a"
+    B = "b"
+    ONE = "1"
+
+
+class _Mangled(str):
+    """A str subclass whose __str__ disagrees with the key json emits."""
+
+    __slots__ = ()
+
+    def __str__(self):
+        return "MANGLED"
+
+
+class _OpaqueStr(str):
+    """A str subclass whose equality cannot spot a duplicate key."""
+
+    __slots__ = ()
+    __eq__ = object.__eq__
+    __hash__ = object.__hash__
+
+
+# Ported from #1943 (#1914): keys that collide as JSON raise instead of losing a
+# value; the codec's JSON encoder is the one place a dict becomes JSON.
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"1": "a", 1: "b"},
+        {None: "a", "null": "b"},
+        {True: "a", "true": "b"},
+        {(1, 2): "a", "[1,2]": "b"},
+        {"1": "a", _OpaqueStr("1"): "b"},
+        {_StrEnum.ONE: "a", 1: "b"},
+        {"payload": np.array([{"1": "first", 1: "second"}], dtype=object)},
+    ],
+    ids=[
+        "int-and-str",
+        "none-and-null",
+        "bool-and-str",
+        "tuple-and-str",
+        "subclass",
+        "enum-value-and-int",
+        "inside-a-numpy-object-array",
+    ],
+)
+def test_json_encoding_refuses_colliding_dict_keys(value):
+    with pytest.raises(JsonSerializationError, match="would be lost"):
+        check_value(JSON())(value)
+
+
+def test_json_array_items_refuse_colliding_dict_keys():
+    with pytest.raises(JsonSerializationError, match="would be lost"):
+        check_value(Array(JSON()))([{"1": "first", 1: "second"}])
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ({"x": "a", 2: "b"}, {"x": "a", "2": "b"}),
+        ({1: "a", 2: "b"}, {"1": "a", "2": "b"}),
+        ({_StrEnum.A: "x", _StrEnum.B: "y"}, {"a": "x", "b": "y"}),
+        ({_StrEnum.A: "x", "_StrEnum.A": "y"}, {"a": "x", "_StrEnum.A": "y"}),
+        ({_Mangled("a"): "x"}, {"a": "x"}),
+    ],
+    ids=["mixed", "all-int", "enum", "enum-and-its-label", "custom-str"],
+)
+def test_json_encoding_keeps_dict_keys_that_do_not_collide(value, expected):
+    assert json.loads(check_value(JSON())(value)) == expected
+
+
+@pytest.mark.parametrize(
+    "value,col_type,expected",
+    [
+        ([1, 2], Array(Float()), [1.0, 2.0]),
+        (("x", "y"), Array(String()), ["x", "y"]),
+    ],
+    ids=["float-from-int", "tuple-to-list"],
+)
+def test_check_value_converts_array_items(value, col_type, expected):
+    assert check_value(col_type)(value) == expected
+
+
+def test_check_value_does_not_re_encode_dict_array_items():
+    value = [{"a": 1}, {"b": 2}]
+    assert check_value(Array(JSON()))(value) == value
