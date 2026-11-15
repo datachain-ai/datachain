@@ -2,7 +2,6 @@ import functools
 import glob
 import logging
 import os
-import posixpath
 import re
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
@@ -397,11 +396,7 @@ def parse_listing_uri(uri: str, versions: bool = True) -> tuple[str, str, str]:
         lst_uri_path = path
 
     lst_uri = f"{storage_uri}/{lst_uri_path.lstrip('/')}"
-    ds_name = (
-        f"{LISTING_PREFIX}{storage_uri}/{posixpath.join(lst_uri_path, '').lstrip('/')}"
-    )
-
-    ds_name = _sanitize_ds_name(ds_name)
+    ds_name = _sanitize_ds_name(f"{LISTING_PREFIX}{lst_uri}")
     if not versions:
         ds_name = CURRENT_LISTING_PREFIX + ds_name.removeprefix(LISTING_PREFIX)
 

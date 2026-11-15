@@ -349,8 +349,6 @@ def test_cp_skips_keys_with_double_slash(cloud_test_catalog, caplog, src, expect
 
 
 @pytest.mark.parametrize("cloud_type,tree", [("s3", {})], indirect=True)
-# a versioned bucket keeps the keys' old versions after rm, for other tests to list
-@pytest.mark.parametrize("version_aware", [False], indirect=True)
 def test_cp_bucket_root_skips_empty_segments_in_existing_directory(cloud_test_catalog):
     ctc = cloud_test_catalog
     client = ctc.catalog.get_client(ctc.src_uri)
@@ -359,11 +357,7 @@ def test_cp_bucket_root_skips_empty_segments_in_existing_directory(cloud_test_ca
     client.fs.invalidate_cache()
     dest = ctc.working_dir / "out"
     dest.mkdir()
-    try:
-        ctc.catalog.cp([ctc.src_uri], str(dest), recursive=True)
-    finally:
-        client.fs.rm(f"{client.name}/d", recursive=True)
-        client.fs.invalidate_cache()
+    ctc.catalog.cp([ctc.src_uri], str(dest), recursive=True)
     assert tree_from_path(dest) == {"d": {"e.txt": "real"}}
 
 
@@ -424,6 +418,7 @@ def test_cp_and_du_empty_named_folder_from_parent_listing(
     sizes = dict(ctc.catalog.du([f"{uri}/d//"]))
     assert tree_from_path(dest) == {"e.txt": "bb"}
     assert sizes == {f"{uri}/d//": 5}
+    assert dict(ctc.catalog.du([f"{uri}/d*//"])) == {f"{uri}/d//": 5}
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)

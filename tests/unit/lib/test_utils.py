@@ -424,7 +424,14 @@ def test_callable_name_non_callable(obj, expected):
 
 
 @pytest.mark.parametrize("base", [".", "./", "", "/", "file:///", "./out"])
-@pytest.mark.parametrize("old_base", ["s3://src", "s3://src/d"])
-def test_rebase_rejects_empty_key_segments_for_local_destinations(base, old_base):
+@pytest.mark.parametrize(
+    "src,old_base",
+    [
+        ("s3://src/d//e.txt", "s3://src"),
+        ("s3://src/d//e.txt", "s3://src/d"),
+        ("s3://src/d/", "s3://src"),
+    ],
+)
+def test_rebase_rejects_empty_key_segments_for_local_destinations(base, src, old_base):
     with pytest.raises(ValueError, match="must not contain empty segments"):
-        rebase_path("s3://src/d//e.txt", old_base, base)
+        rebase_path(src, old_base, base)

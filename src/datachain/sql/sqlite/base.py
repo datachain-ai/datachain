@@ -219,10 +219,6 @@ def missing_vector_function(name, exc):
     return unavailable_func
 
 
-def sqlite_path_parent(path: str | None) -> str | None:
-    return None if path is None else parent_path(path)
-
-
 def sqlite_string_split(string: str, sep: str, maxsplit: int = -1) -> str:
     return json.dumps(string.split(sep, maxsplit), ensure_ascii=False)
 
@@ -384,9 +380,7 @@ def register_user_defined_sql_functions() -> None:
     def create_string_functions(conn):
         _create_function(conn, "split", 2, sqlite_string_split, deterministic=True)
         _create_function(conn, "split", 3, sqlite_string_split, deterministic=True)
-        _create_function(
-            conn, "dc_path_parent", 1, sqlite_path_parent, deterministic=True
-        )
+        _create_function(conn, "dc_path_parent", 1, parent_path, deterministic=True)
         _create_function(
             conn, "regexp_replace", 3, sqlite_regexp_replace, deterministic=True
         )

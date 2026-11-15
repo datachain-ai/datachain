@@ -31,7 +31,7 @@ from datachain.lib.listing import (
     select_paths,
 )
 from datachain.listing import SavedListing
-from datachain.node import DirType, Node
+from datachain.node import DirType, Node, NodeWithPath
 from datachain.sql.functions import path as pathfunc
 from datachain.utils import uses_glob
 from tests.utils import skip_if_not_sqlite
@@ -664,3 +664,19 @@ def test_select_paths_keeps_filter_steps(test_session, list_path, pattern, recur
     assert [s.hash() for s in actual._query.steps] == [
         s.hash() for s in expected._query.steps
     ]
+
+
+@pytest.mark.parametrize(
+    "parts,expected",
+    [
+        (["d", "e.txt"], False),
+        (["d/e.txt"], False),
+        (["d", "", "e.txt"], True),
+        (["d//e.txt"], True),
+        (["/e.txt"], True),
+        (["d/"], True),
+    ],
+)
+def test_node_with_path_has_empty_segments(parts, expected):
+    nwp = NodeWithPath(Node(path="/".join(parts)), path=parts)
+    assert nwp.has_empty_segments is expected

@@ -874,7 +874,7 @@ class AbstractWarehouse(ABC, Serializable):
 
     def expand_path(self, dataset_rows: "DataTable", path: str) -> list[Node]:
         """Simulates Unix-like shell expansion"""
-        clean_path = path.strip("/")
+        clean_path = path.lstrip("/").removesuffix("/")
         path_list = clean_path.split("/") if clean_path != "" else []
         res = self._populate_nodes_by_path(dataset_rows, path_list)
         if path.endswith("/"):
