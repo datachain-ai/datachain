@@ -1079,6 +1079,3 @@ class DatasetListRecord:
         }
         return cls(**kwargs, _versions=versions, project=project)
 
-
-class RowDict(dict):
-    pass

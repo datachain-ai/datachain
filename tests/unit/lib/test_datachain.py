@@ -7884,21 +7884,26 @@ def test_save_keeps_order_across_batches(test_session, monkeypatch, build, size)
     assert saved.to_values("k") == sorted(k)[:size]
 
 
-def test_adjust_outputs_calls_an_overridden_convert_type(test_session, mocker):
-    from datachain.query.dataset import adjust_outputs, get_col_types
+def test_udf_outputs_are_encoded_by_the_warehouse_type_codec(test_session, mocker):
     from datachain.sql.types import DateTime
 
-    def normalizing(self, val, *args):
-        return val.astimezone(dt.UTC).replace(tzinfo=None)
-
     warehouse = test_session.catalog.warehouse
-    mocker.patch.object(type(warehouse), "convert_type", normalizing)
-    when = dt.datetime(2026, 1, 1, 12, tzinfo=dt.timezone(dt.timedelta(hours=2)))
-    col_types = get_col_types(warehouse, {"x": DateTime})
+    type_codec = type(warehouse).type_codec
 
-    row = adjust_outputs(warehouse, {"x": when}, col_types, None)  # type: ignore[arg-type]
+    def normalizing(self, sql_type):
+        codec = type_codec(self, sql_type)
+        if not isinstance(sql_type, DateTime):
+            return codec
+        return codec._replace(encode=lambda v: codec.encode(v.replace(hour=0)))
 
-    assert row["x"] == dt.datetime(2026, 1, 1, 10)
+    mocker.patch.object(type(warehouse), "type_codec", normalizing)
+    when = dt.datetime(2026, 1, 1, 12, tzinfo=dt.UTC)
+
+    chain = dc.read_values(n=[1], session=test_session).map(
+        x=lambda n: when, output=dt.datetime
+    )
+
+    assert chain.to_values("x") == [dt.datetime(2026, 1, 1, tzinfo=dt.UTC)]
 
 
 def test_multi_signal_map_resolves_string_annotations(test_session):

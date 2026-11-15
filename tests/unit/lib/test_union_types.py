@@ -15,7 +15,6 @@ import pyarrow.parquet as pq
 import pytest
 
 import datachain as dc
-from datachain.dataset import RowDict
 from datachain.error import OutdatedDatasetFormatError
 from datachain.lib.convert.flatten import flatten, flatten_value
 from datachain.lib.convert.unflatten import unflatten_to_json_pos
@@ -354,7 +353,7 @@ def test_nested_union_reads_the_tagged_arm():
 
     row = flatten(Holder(pet=Dog(name="fido")))
     schema = SignalSchema({"h": Holder})
-    (holder,) = schema.row_to_objs(RowDict(zip(schema.to_udf_spec(), row, strict=True)))
+    (holder,) = schema.row_reader()(dict(zip(schema.to_udf_spec(), row, strict=True)))
     assert holder.pet == Dog(name="fido")
 
 
@@ -489,18 +488,18 @@ def test_legacy_tag_dataset_rejected():
 def test_binary_tag_reads_as_its_name():
     # parquet written by Spark holds string columns as binary
     schema = SignalSchema({"v": int | str})
-    row = RowDict(zip(schema.to_udf_spec(), (b"str", None, "a"), strict=True))
-    assert schema.row_to_objs(row) == ["a"]
+    row = dict(zip(schema.to_udf_spec(), (b"str", None, "a"), strict=True))
+    assert schema.row_reader()(row) == ["a"]
 
 
 def test_multi_arm_unknown_tag_errors():
     schema = SignalSchema({"v": int | str})
     with pytest.raises(DataChainParamsError, match="not one of the declared Union"):
-        schema.row_to_objs(
-            RowDict(zip(schema.to_udf_spec(), ("Gone", 42, None), strict=True))
+        schema.row_reader()(
+            dict(zip(schema.to_udf_spec(), ("Gone", 42, None), strict=True))
         )
-    assert schema.row_to_objs(
-        RowDict(zip(schema.to_udf_spec(), (None, None, None), strict=True))
+    assert schema.row_reader()(
+        dict(zip(schema.to_udf_spec(), (None, None, None), strict=True))
     ) == [None]
 
 
@@ -514,12 +513,12 @@ def unwarned_index_tag():
 def test_index_tag_reads_optional_model(unwarned_index_tag):
     schema = SignalSchema({"m": Foo | None})
     with pytest.warns(FutureWarning, match="numeric Optional"):
-        assert schema.row_to_objs(
-            RowDict(zip(schema.to_udf_spec(), (0, 7, "z"), strict=True))
+        assert schema.row_reader()(
+            dict(zip(schema.to_udf_spec(), (0, 7, "z"), strict=True))
         ) == [Foo(a=7, b="z")]
     # any other index is the absent arm
-    assert schema.row_to_objs(
-        RowDict(zip(schema.to_udf_spec(), (1, 7, "z"), strict=True))
+    assert schema.row_reader()(
+        dict(zip(schema.to_udf_spec(), (1, 7, "z"), strict=True))
     ) == [None]
 
 
@@ -527,9 +526,7 @@ def test_index_tag_rejected_multi_arm(unwarned_index_tag):
     # only the single-arm layout is ever stored with an index
     schema = SignalSchema({"value": int | str})
     with pytest.raises(OutdatedDatasetFormatError, match="unknown _type_tag 0"):
-        schema.row_to_objs(
-            RowDict(zip(schema.to_udf_spec(), (0, 42, None), strict=True))
-        )
+        schema.row_reader()(dict(zip(schema.to_udf_spec(), (0, 42, None), strict=True)))
 
 
 def test_order_by_column_none_for_unknown_signal():

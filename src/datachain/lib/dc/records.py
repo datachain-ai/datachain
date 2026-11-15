@@ -93,8 +93,8 @@ def create_records_dataset(
     only (used by ``read_values`` and the listing chain to opt out of
     content-derived hashing).
     """
-    from datachain.query.dataset import adjust_outputs, get_col_types
-    from datachain.sql.types import SQLType
+    from datachain.data_storage.codec import RowEncodeError
+    from datachain.lib.udf import output_value_error
 
     from .datasets import read_dataset
 
@@ -135,17 +135,13 @@ def create_records_dataset(
     dr = warehouse.dataset_rows(dsr)
     table = dr.get_table()
 
-    # Optimization: Compute row types once, rather than for every row.
-    col_types = get_col_types(
-        warehouse,
-        {c.name: c.type for c in columns if isinstance(c.type, SQLType)},
-    )
-
-    records = (
-        adjust_outputs(warehouse, record, col_types, signal_schema)
-        for record in flat_records
-    )
-    warehouse.insert_rows(table, records)
+    names = [c.name for c in columns]
+    codec = warehouse.row_codec(columns)
+    rows = (tuple(record.get(name) for name in names) for record in flat_records)
+    try:
+        warehouse.insert_tuples(table, names, map(codec.encode, rows))
+    except RowEncodeError as e:
+        raise output_value_error(e, names, signal_schema) from e.__cause__
     warehouse.insert_rows_done(table)
 
     # Finalize warehouse-derived metadata before marking the version COMPLETE.

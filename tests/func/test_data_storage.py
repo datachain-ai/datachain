@@ -10,6 +10,7 @@ import ujson as json
 from pydantic import BaseModel, ConfigDict
 
 from datachain import json as dcjson
+from datachain.data_storage.codec import check_value
 from datachain.sql.types import (
     JSON,
     Array,
@@ -100,19 +101,11 @@ def test_dir_expansion(cloud_test_catalog, version_aware, cloud_type):
     assert to_compare == expected
 
 
-def test_convert_type(test_session):
-    catalog = test_session.catalog
-    warehouse = catalog.warehouse
+def test_check_value():
     now = datetime.now()
 
     def run_convert_type(value, sql_type):
-        return warehouse.convert_type(
-            value,
-            sql_type,
-            warehouse.python_type(sql_type),
-            type(sql_type).__name__,
-            "test_column",
-        )
+        return check_value(sql_type)(value)
 
     # convert int to float
     for f in [Float, Float32, Float64]:
@@ -225,15 +218,9 @@ class NumpyHolder(BaseModel):
     payload: dict
 
 
-def test_convert_type_writes_numpy_held_inside_a_model(test_session):
-    warehouse = test_session.catalog.warehouse
-
+def test_check_value_writes_numpy_held_inside_a_model(test_session):
     def to_json(value):
-        return json.loads(
-            warehouse.convert_type(
-                value, JSON(), warehouse.python_type(JSON()), "JSON", "test_column"
-            )
-        )
+        return json.loads(check_value(JSON())(value))
 
     assert to_json(
         NumpyHolder(name="a", payload={"v": np.array([1, 2], dtype=np.int64)})
@@ -254,20 +241,12 @@ def test_convert_type_writes_numpy_held_inside_a_model(test_session):
     ]
 
 
-def test_convert_type_refuses_a_type_no_encoder_can_write(test_session):
-    warehouse = test_session.catalog.warehouse
-
+def test_check_value_refuses_a_type_no_encoder_can_write(test_session):
     class Opaque:
         pass
 
     with pytest.raises(TypeError, match="not JSON serializable"):
-        warehouse.convert_type(
-            NumpyHolder(name="a", payload={"v": Opaque()}),
-            JSON(),
-            warehouse.python_type(JSON()),
-            "JSON",
-            "test_column",
-        )
+        check_value(JSON())(NumpyHolder(name="a", payload={"v": Opaque()}))
 
 
 REFUSED_BY_THE_ENCODER = [
@@ -305,15 +284,9 @@ STORED_BY_THE_ENCODER = [
 
 
 def _model_payload(warehouse, value):
-    return json.loads(
-        warehouse.convert_type(
-            NumpyHolder(name="a", payload={"v": value}),
-            JSON(),
-            warehouse.python_type(JSON()),
-            "JSON",
-            "test_column",
-        )
-    )["payload"]
+    return json.loads(check_value(JSON())(NumpyHolder(name="a", payload={"v": value})))[
+        "payload"
+    ]
 
 
 @pytest.mark.parametrize("make", REFUSED_BY_THE_ENCODER)

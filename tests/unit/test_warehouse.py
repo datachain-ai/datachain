@@ -1,5 +1,6 @@
 import base64
 import json
+from datetime import UTC, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -11,9 +12,9 @@ from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SQLiteWarehouse
 from datachain.lib.file import File
 from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.udf import UdfError
-from datachain.query.dataset import process_udf_outputs
-from datachain.sql.types import Int, String
+from datachain.lib.udf import OutputRows, UdfError
+from datachain.sql.sqlite.base import adapt_datetime
+from datachain.sql.types import DateTime
 from tests.utils import skip_if_not_sqlite
 
 
@@ -244,18 +245,14 @@ def test_empty_rows_insert_defaults(sqlite_db):
     assert list(warehouse.dataset_rows_select(query)) == [(None,), (None,)]
 
 
-def test_map_tuples_are_validated(sqlite_db):
+def test_output_rows_validate_tuples(sqlite_db):
     warehouse = SQLiteWarehouse(sqlite_db)
-    table = warehouse.create_udf_table([sa.Column("a", Int), sa.Column("b", String)])
-    inner = SimpleNamespace(
-        output=SignalSchema({"a": int, "b": str}),
-        is_input_batched=False,
-        is_output_batched=False,
-    )
-    udf = SimpleNamespace(output={"a": Int, "b": String}, inner=inner)
+    udf = SimpleNamespace(output=SignalSchema({"a": int, "b": str}), udf_kind="map")
+    output_rows = OutputRows(udf, warehouse)  # type: ignore[arg-type]
 
-    with pytest.raises(UdfError):
-        process_udf_outputs(warehouse, table, iter([[(1, "x", None)]]), udf)
+    assert output_rows((1, "x")) == (1, "x")
+    with pytest.raises(UdfError, match="output column 'a'"):
+        output_rows(("x", "y"))
 
 
 @skip_if_not_sqlite
@@ -336,3 +333,25 @@ def test_batched_id_fetch_preserves_join_fanout(numbers_table, warehouse):
         [],
         [2, 3],
     ]
+
+
+DATETIMES = [
+    datetime(2024, 1, 2, 3, 4, 5),
+    datetime(2024, 1, 2, 3, 4, 5, 120),
+    datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone(timedelta(hours=-5))),
+    datetime(1969, 12, 31, 23, 59, 59, 999999, tzinfo=UTC),
+    datetime(9, 1, 1),
+]
+
+
+@pytest.mark.parametrize("value", DATETIMES)
+def test_codec_stores_datetimes_as_the_adapter_text(sqlite_db, value):
+    # Filter parameters still go through adapt_datetime: stored text must match it.
+    import pyarrow as pa
+
+    codec = SQLiteWarehouse(sqlite_db).row_codec([DateTime()])
+
+    assert codec.encode((value,)) == (adapt_datetime(value),)
+    assert codec.encode_arrow(
+        pa.record_batch([pa.array([value, None])], names=["t"])
+    ) == [(adapt_datetime(value),), (None,)]

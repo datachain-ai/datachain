@@ -31,7 +31,6 @@ from datachain.sql.functions import path as sql_path
 from datachain.sql.selectable import Values, base_values_compiler
 from datachain.sql.sqlite.types import (
     SQLiteTypeConverter,
-    SQLiteTypeReadConverter,
     register_type_converters,
 )
 from datachain.sql.types import DateTime as DCDateTime
@@ -42,7 +41,6 @@ from datachain.sql.types import (
     register_backend_types,
     register_db_defaults,
     register_type_defaults,
-    register_type_read_converters,
     validate_datetime_cast_input_type,
 )
 
@@ -84,7 +82,6 @@ def setup():
 
     register_type_converters()
     register_backend_types("sqlite", SQLiteTypeConverter())
-    register_type_read_converters("sqlite", SQLiteTypeReadConverter())
     register_type_defaults("sqlite", TypeDefaults())
     register_db_defaults("sqlite", DBDefaults())
 

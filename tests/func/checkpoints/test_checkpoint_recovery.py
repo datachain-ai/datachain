@@ -1040,19 +1040,24 @@ def test_batch_map_checkpoint_recovery(
         return [n * 10 for n in num]
 
     warehouse = session.catalog.warehouse
-    original_convert = type(warehouse).convert_type
+    type_codec = type(warehouse).type_codec
     converted = 0
 
-    def interrupt_conversion(self, value, col_type, python_type, type_name, col_name):
-        nonlocal converted
-        if col_name == "result":
+    def interrupt_conversion(self, sql_type):
+        codec = type_codec(self, sql_type)
+
+        def encode(value):
+            nonlocal converted
             converted += 1
             if failing and fail_during_insert and converted == 5:
                 raise RuntimeError("batch insertion interrupted")
-        return original_convert(self, value, col_type, python_type, type_name, col_name)
+            return codec.encode(value)
 
-    # on the class: the UDF write path calls convert_type only when it is overridden
-    monkeypatch.setattr(type(warehouse), "convert_type", interrupt_conversion)
+        # every value goes through encode: the UDF writes only the "result" column
+        return codec._replace(kept=frozenset(), encode=encode)
+
+    # on the class: UDF outputs are encoded by the warehouse's type codecs
+    monkeypatch.setattr(type(warehouse), "type_codec", interrupt_conversion)
 
     def run(batch):
         return (

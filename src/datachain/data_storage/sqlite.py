@@ -4,9 +4,9 @@ import sqlite3
 from array import array
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
-from functools import cached_property, wraps
+from functools import cached_property, partial, wraps
 from time import sleep
-from typing import TYPE_CHECKING, Any, ClassVar, Union
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import sqlalchemy
@@ -30,6 +30,13 @@ from sqlalchemy.sql.selectable import Select
 import datachain.sql.sqlite
 from datachain.data_storage import AbstractDBMetastore, AbstractWarehouse
 from datachain.data_storage.buffer import InsertBuffer
+from datachain.data_storage.codec import (
+    TypeCodec,
+    base_decode,
+    compose,
+    decode_datetime,
+    value_codec,
+)
 from datachain.data_storage.db_engine import DatabaseEngine
 from datachain.data_storage.schema import DefaultSchema
 from datachain.dataset import DatasetRecord, StorageURI
@@ -42,8 +49,13 @@ from datachain.namespace import Namespace
 from datachain.progress import tqdm
 from datachain.project import Project
 from datachain.sql.sqlite import create_user_defined_sql_functions, sqlite_dialect
-from datachain.sql.sqlite.base import load_usearch_extension
-from datachain.sql.types import SQLType
+from datachain.sql.sqlite.base import (
+    _normalize_datetime_for_read,
+    adapt_datetime,
+    load_usearch_extension,
+)
+from datachain.sql.sqlite.types import adapt_array
+from datachain.sql.types import Array, DateTime
 from datachain.utils import DataChainDir, batched_it
 
 if TYPE_CHECKING:
@@ -53,7 +65,6 @@ if TYPE_CHECKING:
     from sqlalchemy.schema import SchemaItem
     from sqlalchemy.sql._typing import _FromClauseArgument, _OnClauseArgument
     from sqlalchemy.sql.elements import ColumnElement
-    from sqlalchemy.types import TypeEngine
 
 
 logger = logging.getLogger("datachain")
@@ -706,6 +717,44 @@ class SQLiteMetastore(AbstractDBMetastore):
         return Project.default()
 
 
+def decode_sqlite_datetime(value: Any) -> Any:
+    value = decode_datetime(value)
+    return None if value is None else _normalize_datetime_for_read(value)
+
+
+def _decode_array(item: Callable[[Any], Any], value: Any) -> Any:
+    from datachain import json
+
+    return item(json.loads(value) if isinstance(value, str) else value)
+
+
+def decode_sqlite(sql_type: Any) -> Callable[[Any], Any] | None:
+    """How SQLite reads `sql_type`: datetimes as UTC, arrays from JSON text."""
+    if isinstance(sql_type, DateTime):
+        return decode_sqlite_datetime
+    decode = base_decode(sql_type, decode_sqlite)
+    if isinstance(sql_type, Array):
+        assert decode is not None  # base_decode always reads an array
+        return partial(_decode_array, decode)
+    return decode
+
+
+def _encode_datetime_column(column: Any) -> list[Any] | None:
+    """An Arrow timestamp column as the text `adapt_datetime` stores; None for
+    any other column."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    if not pa.types.is_timestamp(column.type):
+        return None
+    # Arrow holds aware timestamps as UTC instants: without the timezone they give
+    # the naive UTC text adapt_datetime stores.
+    text = column.cast(pa.timestamp("us")).cast(pa.string())
+    return pc.replace_substring_regex(
+        text, pattern=r"\.000000$", replacement=""
+    ).to_pylist()
+
+
 class SQLiteWarehouse(AbstractWarehouse):
     """
     SQLite Warehouse uses SQLite3 for storing indexed data locally.
@@ -715,7 +764,6 @@ class SQLiteWarehouse(AbstractWarehouse):
     db: SQLiteDatabaseEngine
 
     # Cache for our defined column types to dialect specific TypeEngine relations
-    _col_python_type: ClassVar[dict[type, "TypeEngine"]] = {}
 
     def __init__(
         self,
@@ -842,18 +890,18 @@ class SQLiteWarehouse(AbstractWarehouse):
         except sqlalchemy.exc.NoSuchTableError:
             raise TableMissingError(f"Table '{name}' not found") from None
 
-    def python_type(self, col_type: Union["TypeEngine", "SQLType"]) -> Any:
-        if not isinstance(col_type, SQLType):
-            return col_type.python_type
-
-        # converting our defined column types to dialect specific TypeEngine
-        col_type_cls = type(col_type)
-        if col_type_cls not in self._col_python_type:
-            self._col_python_type[col_type_cls] = col_type.type_engine(sqlite_dialect)
-        python_type = self._col_python_type[col_type_cls].python_type
-        if python_type is object:
-            return col_type.python_type
-        return python_type
+    def type_codec(self, sql_type: Any) -> TypeCodec:
+        """Datetimes are stored as UTC text, arrays as JSON text."""
+        codec = value_codec(sql_type, self.column_default(sql_type), decode_sqlite)
+        if isinstance(sql_type, DateTime):
+            return codec._replace(
+                kept=frozenset(),
+                encode=partial(compose, adapt_datetime, codec.encode),
+                encode_column=_encode_datetime_column,
+            )
+        if isinstance(sql_type, Array):
+            return codec._replace(encode=partial(compose, adapt_array, codec.encode))
+        return codec
 
     def export_dataset_table(
         self,

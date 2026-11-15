@@ -7,10 +7,10 @@ import sqlalchemy as sa
 from pydantic import ValidationError
 
 import datachain as dc
+from datachain.lib import signal_schema
 from datachain.lib.convert.flatten import iter_flat_columns
 from datachain.lib.file import File, FileRow
 from datachain.lib.udf import UdfError
-from datachain.query import dataset
 
 
 def test_file_row_fields_are_the_flat_columns_of_file():
@@ -57,15 +57,15 @@ def test_gen_file_rows_are_stored_as_files(test_session, file_type):
     assert {type(f) for f in rows.to_values("file")} == {file_type}
 
 
-def test_gen_file_rows_skip_conversion(test_session, mocker):
-    spy = mocker.spy(dataset, "adjust_outputs")
+def test_gen_file_rows_skip_flattening(test_session, mocker):
+    spy = mocker.spy(signal_schema, "flatten_value")
 
     dc.read_values(n=[3], session=test_session).gen(
         file=lambda n: _files(n, True), output=dc.File
     ).save("files")
 
-    files = [c for c in spy.call_args_list if "file__path" in c.args[1]]
-    assert len(files) == 1  # the File object among the rows
+    assert spy.call_count == 1  # the File object among the rows
+    assert isinstance(spy.call_args.args[0], File)
 
 
 def test_file_row_is_no_optional_file(test_session):
