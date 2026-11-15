@@ -709,7 +709,8 @@ class UDFStep(Step, ABC):
                         continued=continued,
                         rows_reused=rows_reused,
                         output_rows_reused=output_rows_reused,
-                        parts=parts,
+                        # only with a ledger: a distributor without it still runs
+                        **({"parts": parts} if parts is not None else {}),
                     )
                     udf_distributor()
                     return
