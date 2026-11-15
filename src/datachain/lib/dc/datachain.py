@@ -799,7 +799,7 @@ class DataChain:
 
         retry_attempt = None
         result = self._resolve_checkpoint(name, project, _hash, kwargs)
-        if bool(result):
+        if result:
             print(
                 f"Reusing dataset '{result.name}@{result.version}' "
                 "(skipping recompute)",
