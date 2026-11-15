@@ -2806,10 +2806,6 @@ class AbstractDBMetastore(AbstractMetastore):
         ]
 
     @cached_property
-    def _dataset_version_jobs_fields(self) -> list[str]:
-        return [c.name for c in self._dataset_version_jobs_columns() if c.name]  # type: ignore[attr-defined]
-
-    @cached_property
     def _dataset_version_jobs(self) -> "Table":
         return Table(
             self.DATASET_VERSION_JOBS_TABLE,

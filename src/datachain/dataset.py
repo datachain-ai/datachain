@@ -381,14 +381,6 @@ class DatasetVersion:
     def __hash__(self):
         return hash(f"{self.dataset_id}_{self.version}")
 
-    def is_final_status(self) -> bool:
-        return self.status in [
-            DatasetStatus.FAILED,
-            DatasetStatus.COMPLETE,
-            DatasetStatus.STALE,
-            DatasetStatus.REMOVED,
-        ]
-
     @property
     def is_removed(self) -> bool:
         return self.status in (DatasetStatus.REMOVING, DatasetStatus.REMOVED)
@@ -1078,4 +1070,3 @@ class DatasetListRecord:
             if f.name in d and f.name not in {"project", "versions", "_versions"}
         }
         return cls(**kwargs, _versions=versions, project=project)
-

@@ -8,7 +8,6 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from typing import TYPE_CHECKING, Any, Self, cast
-from urllib.parse import urlparse
 
 import attrs
 import sqlalchemy as sa
@@ -261,12 +260,6 @@ class AbstractWarehouse(ABC, Serializable):
     #
     # Table Name Internal Functions
     #
-
-    @staticmethod
-    def uri_to_storage_info(uri: str) -> tuple[str, str]:
-        parsed = urlparse(uri)
-        name = parsed.path if parsed.scheme == "file" else parsed.netloc
-        return parsed.scheme, name
 
     def dataset_table_name(self, dataset: DatasetRecord, version: str) -> str:
         return self._construct_dataset_table_name(
@@ -985,10 +978,6 @@ class AbstractWarehouse(ABC, Serializable):
             order_by=order_by,
         )
         return self.db.execute(query)
-
-    def update_node(self, node_id: int, values: dict[str, Any]) -> None:
-        # TODO used only in formats which will be deleted
-        """Update entry of a specific node in the database."""
 
     def create_udf_table(
         self,
