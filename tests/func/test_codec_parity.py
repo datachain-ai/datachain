@@ -240,7 +240,7 @@ def test_model_dict_key_check_edge_cases():
         value: dict
 
         @field_serializer("value", when_used="unless-none")
-        def ser(self, v):
+        def serialize_value(self, v):
             return list(v.values())
 
     assert decode_json(encode_json(WithUnlessNone(value={1: "a", "1": "b"}))) == {
