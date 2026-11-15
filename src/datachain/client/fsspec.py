@@ -11,6 +11,7 @@ import shutil
 from abc import ABC, abstractmethod
 from collections.abc import (
     AsyncIterator,
+    Callable,
     Iterator,
     Sequence,
 )
@@ -91,6 +92,9 @@ class Client(ABC):
     # True when the bytes at a version id are never replaced, only appended to.
     # Then a changed size means the file changed, and a changed etag alone doesn't.
     PINNED_VERSION_IS_IMMUTABLE: ClassVar[bool] = False
+    # Set by a listing writer: what a listing child makes of a page's rows before
+    # sending them, a picklable function. The parent's own pages stay rows.
+    encode_page: Callable[[list], Any] | None = None
 
     @classmethod
     def has_explicit_credentials(cls, client_config: dict | None) -> bool:

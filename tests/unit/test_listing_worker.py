@@ -743,7 +743,7 @@ def test_a_ctypes_module_in_the_cwd_does_not_run_in_a_child(tmp_path, clients):
 
 
 def test_child_reports_why_it_cannot_build_its_client():
-    out = child(dump((int, "bucket", {}, None, 4, "")))  # int() takes no 3 args
+    out = child(dump((int, "bucket", {}, None, 4, "", None)))  # int() takes no 3 args
 
     assert out.returncode == 0
     assert "TypeError" in load(io.BytesIO(out.stdout))

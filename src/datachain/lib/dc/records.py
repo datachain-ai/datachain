@@ -90,8 +90,7 @@ def create_records_dataset(
 ) -> "DataChain":
     """Create a temp dataset from pre-flattened records with caller-supplied
     ``content_hash``. Pass ``content_hash=None`` to anchor identity on UUID
-    only (used by ``read_values`` and the listing chain to opt out of
-    content-derived hashing).
+    only (used by ``read_values`` to opt out of content-derived hashing).
     """
     from datachain.data_storage.codec import RowEncodeError
     from datachain.lib.udf import output_value_error

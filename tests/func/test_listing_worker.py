@@ -15,7 +15,7 @@ from datachain.client import Client, listing_worker
 from datachain.client.listing_worker import Pool
 from datachain.lib.convert.flatten import flatten
 from datachain.lib.file import File, FileRow
-from datachain.lib.listing import list_bucket
+from datachain.lib.listing import list_pages
 
 TREE = {
     "a": "1",
@@ -23,6 +23,16 @@ TREE = {
     "flat": {f"{i * 7919 % 4096:03x}": "x" for i in range(30)},
     "z": "1",
 }
+
+
+def list_bucket(uri, cache, client_config=None):
+    """A gen function of the rows of ``list_pages``."""
+
+    def list_func():
+        for page in list_pages(uri, cache, client_config):
+            yield from page
+
+    return list_func
 
 
 @pytest.fixture(autouse=True)
@@ -239,11 +249,9 @@ def test_config_that_does_not_pickle_lists_in_process(client, tree, remote_rows)
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 @pytest.mark.parametrize("tree", [TREE], indirect=True)
-def test_read_storage_rows_from_children(client, tree, children):
+def test_read_storage_rows_from_children(client, tree, children, test_session):
     uri = f"{client.uri}/"
-    chain = dc.read_values(seed=[0]).gen(
-        file=list_bucket(uri, None, client_config=client.fs_kwargs)
-    )
+    chain = dc.read_storage(uri, client_config=client.fs_kwargs, session=test_session)
 
     files = chain.order_by("file.path", "file.version").to_values("file")
 

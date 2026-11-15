@@ -1,15 +1,18 @@
 import functools
 import glob
+import itertools
 import logging
 import os
 import posixpath
 import re
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, TypeVar, cast
+from hashlib import blake2b
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
+import sqlalchemy as sa
 from fsspec.asyn import get_loop, sync
 from sqlalchemy import or_, true
 
@@ -19,7 +22,7 @@ from datachain.client import Client
 from datachain.error import ClientError, DatasetNotFoundError
 from datachain.lib.convert.flatten import flatten
 from datachain.lib.file import File, FileRow
-from datachain.query.schema import C, Column
+from datachain.query.schema import Column
 from datachain.sql.functions import path as pathfunc
 from datachain.utils import uses_glob
 
@@ -28,13 +31,17 @@ if TYPE_CHECKING:
 
     from datachain.catalog import Catalog
     from datachain.client.fsspec import RangeListedClient
-    from datachain.dataset import DatasetRecord
+    from datachain.data_storage.codec import RowCodec
+    from datachain.dataset import DatasetRecord, DatasetVersion
     from datachain.lib.dc import DataChain
+    from datachain.project import Project
     from datachain.query.session import Session
 
 LISTING_TTL = 4 * 60 * 60  # cached listing lasts 4 hours
 LISTING_PREFIX = "lst__"  # listing datasets start with this name
 LISTING_BATCH_SIZE = 50_000  # rows per insert: listing rows are small
+# a listing version's content_hash: this prefix, its row count and rows_digest sum
+LISTING_DIGEST = "listing-v1"
 # listing of current objects only, read_storage(versions=False)
 CURRENT_LISTING_PREFIX = f"{LISTING_PREFIX}current__"
 
@@ -43,49 +50,6 @@ D = TypeVar("D", bound="DataChain")
 # Disable warnings for remote errors in clients
 logging.getLogger("aiobotocore.credentials").setLevel(logging.CRITICAL)
 logging.getLogger("gcsfs").setLevel(logging.CRITICAL)
-
-
-def calc_fingerprint(session: "Session", dataset: "DatasetRecord", version: str) -> int:
-    """Return an order-independent fingerprint of a listing version.
-
-    Each file adds its path, its version id (or etag if it has none), its size and
-    whether it is the latest version. The etag is added too, unless the storage
-    never replaces the bytes at a version id.
-    """
-    # Inline imports: lib.listing sits below lib.dc / query.dataset / func in the
-    # import graph (catalog.catalog imports this module during init), so hoisting
-    # any of these triggers a circular import.
-    from datachain.func.aggregate import xor_agg
-    from datachain.func.conditional import case
-    from datachain.func.string import string_hash
-    from datachain.lib.dc.datachain import DataChain
-    from datachain.lib.dc.utils import Sys
-    from datachain.lib.settings import Settings
-    from datachain.lib.signal_schema import SignalSchema
-    from datachain.query.dataset import DatasetQuery
-
-    query = DatasetQuery(
-        name=dataset.name,
-        version=version,
-        session=session,
-        include_incomplete=True,
-    )
-    signal_schema = SignalSchema({"sys": Sys, "file": File})
-    chain = DataChain(query, Settings(), signal_schema)
-
-    identifier = case(
-        (C("file.version") != "", C("file.version")),
-        else_=C("file.etag"),
-    )
-    client_cls = Client.get_implementation(listing_uri_from_name(dataset.name))
-    etag = () if client_cls.PINNED_VERSION_IS_IMMUTABLE else (C("file.etag"),)
-    return chain.group_by(  # type: ignore[return-value]
-        fp=xor_agg(
-            string_hash(
-                C("file.path"), identifier, C("file.size"), C("file.is_latest"), *etag
-            )
-        ),
-    ).to_values("fp")[0]
 
 
 def listing_dataset_expired(lst_ds) -> bool:
@@ -98,14 +62,24 @@ def listing_dataset_expired(lst_ds) -> bool:
     return datetime.now(UTC) > expires
 
 
-def list_pages(uri: str, cache, client_config=None) -> Iterator[Sequence[tuple]]:
-    """Pages of ``FileRow`` rows of every object under the ``uri`` prefix."""
+def list_pages(
+    uri: str, cache, client_config=None, encode: "PageEncoder | None" = None
+) -> Iterator:
+    """Pages of ``FileRow`` rows of every object under the ``uri`` prefix, or
+    with ``encode``, ``StoredPage``s: listing children encode the pages they
+    parse, and this process the rest."""
     config = client_config or {}
     client = Client.get_client(uri, cache, **config)  # type: ignore[arg-type]
+    client.encode_page = encode
     _, path = Client.parse_url(uri)
-    pages = client.scandir(path.rstrip("/"))
-    for page in iter_over_async(pages, get_loop()):
-        yield [*map(file_row, page)] if page and isinstance(page[0], File) else page
+    # a child's pages are StoredPages already
+    pages: Iterator[Any] = iter_over_async(client.scandir(path.rstrip("/")), get_loop())
+    for page in pages:
+        if isinstance(page, StoredPage):
+            yield page
+            continue
+        rows = [*map(file_row, page)] if page and isinstance(page[0], File) else page
+        yield encode(rows) if encode else rows
 
 
 def list_scope_pages(
@@ -148,18 +122,6 @@ class ListScope:
 
 def file_row(file: File) -> FileRow:
     return FileRow(*flatten(file))
-
-
-def list_bucket(uri: str, cache, client_config=None) -> Callable:
-    """A generator function, for ``gen()``, of the rows of ``list_pages``."""
-
-    def list_func() -> Iterator[File]:  # FileRow rows
-        for page in list_pages(uri, cache, client_config):
-            yield from page  # type: ignore[misc]
-
-    list_func.__name__ = "read_storage"
-
-    return list_func
 
 
 def get_file_info(uri: str, cache, client_config=None) -> File:
@@ -539,52 +501,137 @@ def ensure_listing(
     return dataset
 
 
+def rows_digest(rows: Iterable[tuple], with_etag: bool) -> int:
+    """The sum of a 128-bit hash of each ``FileRow`` row's identity: its source,
+    path, version id (or etag if it has none), size, whether it is the latest
+    version, and its etag when ``with_etag``. A sum, not XOR, so that a file
+    listed twice counts twice; the order of rows does not matter."""
+    total = 0
+    for source, path, size, version, etag, is_latest, *_ in rows:
+        key = f"{source}\0{path}\0{version or etag}\0{size}\0{is_latest:d}"
+        if with_etag:
+            key += f"\0{etag}"
+        digest = blake2b(key.encode(errors="surrogatepass"), digest_size=16)
+        total += int.from_bytes(digest.digest())
+    return total
+
+
+class StoredPage:
+    """A page of listing rows in the warehouse's stored form, and their
+    ``rows_digest``: made where the page was parsed, inserted as it is."""
+
+    def __init__(self, rows: list[tuple], digest: int) -> None:
+        self.rows, self.digest = rows, digest
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+
+@dataclass(frozen=True)
+class PageEncoder:
+    """``FileRow`` rows to a ``StoredPage``; listing children run it."""
+
+    codec: "RowCodec"
+    with_etag: bool
+
+    def __call__(self, rows: Sequence[tuple]) -> StoredPage:
+        stored = list(map(self.codec.encode, rows))
+        return StoredPage(stored, rows_digest(rows, self.with_etag))
+
+
 def write_listing(
-    uri: str,
-    ds_name: str,
-    session: "Session",
-    client_config: dict,
-    *,
-    file_type: type[File] = File,
-    settings: dict | None = None,
-    in_memory: bool = False,
+    uri: str, ds_name: str, session: "Session", client_config: dict
 ) -> None:
-    """Store the listing of the prefix ``uri``, whole, as the listing dataset
-    ``ds_name``: the snapshot ``read_storage`` reads and reuses.
+    """Store the listing of the prefix ``uri``, whole, as a new version of the
+    listing dataset ``ds_name``: the snapshot ``read_storage`` reads and reuses.
+
+    The version's ``content_hash`` is the listing's digest. A listing with the
+    digest of the version that was the latest when it started is dropped, and
+    that version's TTL starts again, unless a newer version came meanwhile.
     """
-    from datachain.query.session import Session
+    from datachain.lib.signal_schema import SignalSchema
 
-    from .dc.records import create_records_dataset
+    catalog = session.catalog
+    metastore, warehouse = catalog.metastore, catalog.warehouse
+    project = metastore.get_project(
+        metastore.listing_project_name, metastore.system_namespace_name, create=True
+    )
+    schema = SignalSchema({"file": File})
+    columns = [
+        sa.Column(c.name, c.type)  # type: ignore[union-attr]
+        for c in schema.db_signals(as_columns=True)
+    ]
+    names = [c.name for c in columns]
+    previous = _latest_version(catalog, ds_name, project)
+    with_etag = not Client.get_implementation(uri).PINNED_VERSION_IS_IMMUTABLE
+    encode = PageEncoder(warehouse.row_codec(columns), with_etag)
+    pages = iter(list_pages(uri, catalog.cache, client_config, encode))
+    # the first page before the version: a missing prefix fails without one
+    first = list(itertools.islice(pages, 1))
+    job = session.get_job()  # internal: a job if one runs, but not a new one
+    dataset = catalog.create_dataset(
+        ds_name,
+        project,
+        columns=columns,
+        feature_schema=schema.serialize(),
+        listing=True,
+        update_version="major",
+        job_id=job.id if job else None,
+        query_script=job.query if job else "",
+    )
+    version = dataset.versions[0].version
+    table_name = warehouse.dataset_table_name(dataset, version)
+    table = warehouse.create_dataset_rows_table(table_name, columns=columns)
+    count = total = 0
 
-    namespace = session.catalog.metastore.system_namespace_name
-    project = session.catalog.metastore.listing_project_name
-    list_func = list_bucket(uri, session.catalog.cache, client_config=client_config)
-    # content_hash=None because hash_callable doesn't capture list_func's
-    # closure (which holds the URI and the client config) -- auto-hashing
-    # the seed would let the UDF checkpoint cache return a stale listing
-    # across URIs/runs.
-    # The seed is needed only while writing this snapshot. Clean it up now rather
-    # than keeping its catalog alive until the caller's (possibly global) exit.
-    writer = Session("listing", catalog=session.catalog)
+    def rows() -> Iterator[tuple]:
+        nonlocal count, total
+        for page in itertools.chain(first, pages):
+            count += len(page)
+            total += page.digest
+            yield from page.rows
+
     try:
-        (
-            create_records_dataset(
-                [{"seed": 0}],
-                schema={"seed": int},
-                content_hash=None,
-                session=writer,
-                settings=settings,
-                in_memory=in_memory,
-            )
-            .settings(
-                prefetch=0,
-                batch_size=LISTING_BATCH_SIZE,
-                namespace=namespace,
-                project=project,
-            )
-            .gen(list_func, output={"file": file_type})
-            # for internal listing datasets, we always bump major version
-            .save(ds_name, listing=True, update_version="major")
+        warehouse.insert_stored_rows(table, names, rows(), LISTING_BATCH_SIZE)
+    except BaseException:
+        catalog.remove_dataset_version(dataset, version, keep_metadata=False)
+        raise
+    content_hash = f"{LISTING_DIGEST}:{count}:{total % (1 << 128):032x}"
+    if previous and previous[1].content_hash == content_hash:
+        catalog.remove_dataset_version(dataset, version, keep_metadata=False)
+        _restart_ttl(catalog, *previous)
+        return
+    if job:
+        metastore.link_dataset_version_to_job(
+            dataset.get_version(version).id, job.id, is_creator=True
         )
-    finally:
-        writer._close()
+    catalog.complete_dataset_version(dataset, version, content_hash=content_hash)
+
+
+def _latest_version(
+    catalog: "Catalog", name: str, project: "Project"
+) -> "tuple[DatasetRecord, DatasetVersion] | None":
+    """The listing ``name`` and its latest complete version, if it has one."""
+    try:
+        dataset = catalog.get_dataset(
+            name,
+            namespace_name=project.namespace.name,
+            project_name=project.name,
+            versions=None,
+        )
+    except DatasetNotFoundError:
+        return None
+    version = dataset.latest_complete_version
+    return (dataset, dataset.get_version(version)) if version else None
+
+
+def _restart_ttl(
+    catalog: "Catalog", dataset: "DatasetRecord", version: "DatasetVersion"
+) -> None:
+    """Restart the TTL of ``version`` if it is still the latest complete version
+    of ``dataset``: a newer version is never touched."""
+    latest = _latest_version(catalog, dataset.name, dataset.project)
+    if latest and latest[1].id == version.id:
+        catalog.metastore.update_dataset_version(
+            dataset, version.version, finished_at=datetime.now(UTC)
+        )
