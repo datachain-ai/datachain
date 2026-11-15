@@ -507,6 +507,16 @@ def test_du(cloud_test_catalog, cloud_type):
     assert set(results) == set(expected_results)
 
 
+def test_du_file_and_dir_reports_each_size(cloud_test_catalog):
+    src_uri = cloud_test_catalog.src_uri
+    catalog = cloud_test_catalog.catalog
+
+    assert set(catalog.du([f"{src_uri}/dogs/dog1", f"{src_uri}/cats/"], depth=1)) == {
+        (f"{src_uri}/dogs/dog1", 4),
+        (f"{src_uri}/cats/", 8),
+    }
+
+
 def test_ls_glob(cloud_test_catalog):
     src_uri = cloud_test_catalog.src_uri
     catalog = cloud_test_catalog.catalog
