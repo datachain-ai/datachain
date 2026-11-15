@@ -343,6 +343,57 @@ def test_listing_creates_no_job(test_session, tmp_dir):
     assert next(iter(jobs))[0] == 0
 
 
+@pytest.mark.parametrize("base", [True, False], ids=["refresh", "first"])
+def test_delayed_listing_does_not_publish_over_a_newer_one(test_session, base):
+    # A starts over 1.0.0 (or over nothing) and lists `older`; B publishes
+    # `newer` before A ends. A's version is dropped: B's stays the latest.
+    uri = "s3://bucket/data/"
+    name, _, _ = parse_listing_uri(uri)
+    older, newer = File(path="old.jpg", etag="e1"), File(path="new.jpg", etag="e2")
+    if base:
+        _save_listing(test_session, uri, File(path="base.jpg", etag="e0"))
+
+    def delayed(uri, cache, client_config, encode):
+        yield encode([listing.file_row(older)])
+        _save_listing(test_session, uri, newer)
+
+    with patch.object(listing, "list_pages", side_effect=delayed):
+        listing.write_listing(uri, name, test_session, {})
+
+    ds = test_session.catalog.get_dataset(name, versions=None)
+    latest = ds.latest_complete_version
+    assert len(ds.versions) == (2 if base else 1)  # A's version is gone
+    assert _etags(test_session, name, latest) == ["e2"]
+
+
+@pytest.mark.parametrize("base", [True, False], ids=["refresh", "first"])
+def test_listing_publish_races_a_newer_one(test_session, base):
+    # B publishes `newer` after A has listed `older` and decided to publish,
+    # right before A's status UPDATE runs: A's guarded UPDATE must not apply.
+    uri = "s3://bucket/data/"
+    name, _, _ = parse_listing_uri(uri)
+    older, newer = File(path="old.jpg", etag="e1"), File(path="new.jpg", etag="e2")
+    if base:
+        _save_listing(test_session, uri, File(path="base.jpg", etag="e0"))
+    metastore = test_session.catalog.metastore
+    publish = metastore.update_dataset_status
+    raced = []
+
+    def racing_publish(*args, **kwargs):
+        if not raced:
+            raced.append(True)
+            _save_listing(test_session, uri, newer)  # B, between check and publish
+        return publish(*args, **kwargs)
+
+    with patch.object(metastore, "update_dataset_status", racing_publish):
+        _save_listing(test_session, uri, older)  # A
+
+    ds = test_session.catalog.get_dataset(name, versions=None)
+    assert raced
+    assert len(ds.versions) == (2 if base else 1)  # A's version is gone
+    assert _etags(test_session, name, ds.latest_complete_version) == ["e2"]
+
+
 def test_unchanged_refresh_leaves_a_version_saved_meanwhile(test_session):
     # A starts with 1.0.0 as the latest; B saves 2.0.0 before A ends. A equals
     # 1.0.0: it is dropped, and neither version is touched.

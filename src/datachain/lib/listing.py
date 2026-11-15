@@ -20,7 +20,11 @@ from sqlalchemy import or_, true
 import datachain.fs.utils as fsutils
 from datachain.asyn import iter_over_async
 from datachain.client import Client
-from datachain.error import ClientError, DatasetNotFoundError
+from datachain.error import (
+    ClientError,
+    ConcurrentDatasetModificationError,
+    DatasetNotFoundError,
+)
 from datachain.lib.convert.flatten import flatten
 from datachain.lib.file import File, FileRow
 from datachain.query.schema import Column
@@ -605,15 +609,30 @@ def write_listing(
         catalog.remove_dataset_version(dataset, version, keep_metadata=False)
         raise
     content_hash = f"{LISTING_DIGEST}:{count}:{total % (1 << 128):032x}"
+    # publish only while the version that was the latest when this listing
+    # started still is: one published meanwhile is newer. The metastore checks
+    # it in the same statement that writes.
+    base = previous[1].id if previous else 0
     if previous and previous[1].content_hash == content_hash:
         catalog.remove_dataset_version(dataset, version, keep_metadata=False)
-        _restart_ttl(catalog, *previous)
+        metastore.update_dataset_version(  # unchanged: the base's TTL restarts
+            previous[0],
+            previous[1].version,
+            expected_latest_complete=base,
+            finished_at=datetime.now(UTC),
+        )
+        return
+    try:
+        catalog.complete_dataset_version(
+            dataset, version, content_hash=content_hash, expected_latest_complete=base
+        )
+    except ConcurrentDatasetModificationError:
+        catalog.remove_dataset_version(dataset, version, keep_metadata=False)
         return
     if job:
         metastore.link_dataset_version_to_job(
             dataset.get_version(version).id, job.id, is_creator=True
         )
-    catalog.complete_dataset_version(dataset, version, content_hash=content_hash)
 
 
 def _latest_version(
@@ -631,15 +650,3 @@ def _latest_version(
         return None
     version = dataset.latest_complete_version
     return (dataset, dataset.get_version(version)) if version else None
-
-
-def _restart_ttl(
-    catalog: "Catalog", dataset: "DatasetRecord", version: "DatasetVersion"
-) -> None:
-    """Restart the TTL of ``version`` if it is still the latest complete version
-    of ``dataset``: a newer version is never touched."""
-    latest = _latest_version(catalog, dataset.name, dataset.project)
-    if latest and latest[1].id == version.id:
-        catalog.metastore.update_dataset_version(
-            dataset, version.version, finished_at=datetime.now(UTC)
-        )

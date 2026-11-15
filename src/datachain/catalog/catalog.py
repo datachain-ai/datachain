@@ -1214,12 +1214,14 @@ class Catalog:
         error_stack: str = "",
         script_output: str = "",
         expected_job_id: str | None = None,
+        expected_latest_complete: int | None = None,
         **kwargs,
     ) -> None:
         """Finalize a dataset version after its rows table has been populated.
 
         This refreshes warehouse-derived metadata first, then marks the version
-        as COMPLETE.
+        as COMPLETE; with ``expected_latest_complete``, only while no COMPLETE
+        version newer than that one exists (the metastore's guard).
         """
         # Guard against a concurrent remove_dataset_version (usually GC, but
         # also explicit `dataset rm` or session cleanup). Two narrow signals
@@ -1241,6 +1243,7 @@ class Catalog:
                 error_stack=error_stack,
                 script_output=script_output,
                 expected_status=DatasetStatus.CREATED,
+                expected_latest_complete=expected_latest_complete,
                 **(
                     {"expected_job_id": expected_job_id}
                     if expected_job_id is not None
