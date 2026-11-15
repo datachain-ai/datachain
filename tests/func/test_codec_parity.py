@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 
 import datachain as dc
+from tests.utils import skip_if_not_sqlite
 
 DT_0 = datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=UTC)
 DT_1 = datetime(2024, 2, 3, 4, 5, 6, 654321, tzinfo=UTC)
@@ -65,6 +66,7 @@ def _save_and_reload(chain, test_session, prefix: str):
         ),
     ],
 )
+@skip_if_not_sqlite  # ClickHouse arrays hold no NULL
 @pytest.mark.parametrize("writer", WRITERS)
 def test_nullable_numeric_array_write_path_parity(
     test_session, writer, annotation, values
@@ -76,6 +78,7 @@ def test_nullable_numeric_array_write_path_parity(
     assert reloaded.order_by("row_id").to_values("value") == values
 
 
+@skip_if_not_sqlite  # ClickHouse arrays hold no NULL
 @pytest.mark.parametrize("writer", WRITERS)
 def test_nested_nullable_datetime_round_trip(writer, test_session):
     """A nullable nested annotation must not turn datetimes into strings; the
@@ -95,6 +98,7 @@ def test_nested_nullable_datetime_round_trip(writer, test_session):
     assert isinstance(actual[1][1][0], datetime)
 
 
+@skip_if_not_sqlite  # ClickHouse arrays hold no NULL
 @pytest.mark.parametrize("writer", WRITERS)
 def test_optional_collection_distinguishes_none_from_empty(writer, test_session):
     values = [None, [], [1, 2]]
@@ -112,6 +116,7 @@ def test_optional_collection_distinguishes_none_from_empty(writer, test_session)
             list[list[datetime] | None],
             [None, [DT_0, DT_1], None],
             id="nested-datetime",
+            marks=skip_if_not_sqlite,  # ClickHouse arrays hold no NULL
         ),
     ],
 )

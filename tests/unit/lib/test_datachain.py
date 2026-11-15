@@ -7895,7 +7895,11 @@ def test_udf_outputs_are_encoded_by_the_warehouse_type_codec(test_session, mocke
         codec = type_codec(self, sql_type)
         if not isinstance(sql_type, DateTime):
             return codec
-        return codec._replace(encode=lambda v: codec.encode(v.replace(hour=0)))
+        # every value through encode, also where a warehouse keeps datetimes as is
+        encode = codec.encode
+        return codec._replace(
+            kept=frozenset(), encode=lambda v: encode(v.replace(hour=0))
+        )
 
     mocker.patch.object(type(warehouse), "type_codec", normalizing)
     when = dt.datetime(2026, 1, 1, 12, tzinfo=dt.UTC)
@@ -7976,6 +7980,7 @@ class DictItemHolder(BaseModel):
     vals: list[dict[str, DictItem] | None]
 
 
+@skip_if_not_sqlite  # ClickHouse arrays hold no NULL
 @pytest.mark.parametrize(
     "vals",
     [

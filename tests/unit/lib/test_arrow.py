@@ -22,6 +22,7 @@ from datachain.lib.arrow import (
 from datachain.lib.data_model import dict_to_data_model
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.hf import HFClassLabel
+from tests.utils import skip_if_not_sqlite
 
 
 @pytest.mark.parametrize("source", ["local", "http"])
@@ -332,6 +333,7 @@ def test_read_parquet_nested_lists_keep_their_values(tmp_path, test_session):
     assert chain.order_by("i").to_values("v") == values
 
 
+@skip_if_not_sqlite  # ClickHouse arrays hold no NULL
 def test_read_parquet_nested_list_keeps_a_null_inner_list(tmp_path, test_session):
     path = tmp_path / "nested.parquet"
     nested = pa.list_(pa.list_(pa.int64()))
