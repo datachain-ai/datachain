@@ -378,56 +378,42 @@ class QueryStep:
         return hashlib.sha256(anchor.encode()).hexdigest()
 
 
+def _key_present(columns: Any, presence: KeyPresence) -> ColumnElement:
+    """Whether a key node holds a value, by ``SignalSchema.key_presence``."""
+    if presence is None:
+        return sa.true()
+    tag, arm = presence
+    is_set = columns[tag].is_not(None)
+    return is_set if arm is None else sa.and_(is_set, columns[tag] == arm)
+
+
 @frozen
-class DatasetDiffOperation(Step):
-    """
-    Abstract class for operations that are calculation some kind of diff between
-    datasets queries like subtract etc.
-    """
+class Subtract(Step):
+    """Rows of the query whose keys ``on`` are not in ``dq``."""
 
     dq: "DatasetQuery"
     catalog: "Catalog"
+    on: Sequence[str | tuple[str, str]]
+    # Key nodes compared by whether they hold a value on each side.
+    presence: Sequence[tuple[KeyPresence, KeyPresence]] = ()
 
     def clone(self) -> "Self":
-        return self.__class__(self.dq, self.catalog)
+        return attrs.evolve(self)
 
-    def collect_delta_sources(
-        self,
-    ) -> list["DatasetQuery"]:
+    def collect_delta_sources(self) -> list["DatasetQuery"]:
         return self.dq.delta_sources()
 
     @property
     def sub_queries(self) -> list["DatasetQuery"]:
         return [self.dq]
 
-    def replace_sources(
-        self,
-        replacements: dict[int, "DatasetQuery"],
-    ) -> "Step":
-        return attrs.evolve(
-            self,
-            dq=self.dq.replace_sources(replacements),
-        )
-
-    @abstractmethod
-    def query(
-        self,
-        source_query: Select,
-        target_query: Select,
-    ) -> sa.Selectable:
-        """
-        Should return select query that calculates desired diff between dataset queries
-        """
+    def replace_sources(self, replacements: dict[int, "DatasetQuery"]) -> "Step":
+        return attrs.evolve(self, dq=self.dq.replace_sources(replacements))
 
     def apply(
-        self,
-        query_generator,
-        temp_tables: list[str],
-        state: "QueryState",
-        **kwargs,
+        self, query_generator, temp_tables: list[str], state: "QueryState", **kwargs
     ) -> "StepResult":
         source_query = query_generator.select()
-
         right_before = len(self.dq.temp_table_names)
         target_full = self.dq.apply_steps().select()
         temp_tables.extend(self.dq.temp_table_names[right_before:])
@@ -443,22 +429,6 @@ class DatasetDiffOperation(Step):
 
         columns = [diff_q.c[c.name] for c in source_query.selected_columns]
         return step_result(q, columns, dependencies=self.dq.dependencies)
-
-
-def _key_present(columns: Any, presence: KeyPresence) -> ColumnElement:
-    """Whether a key node holds a value, by ``SignalSchema.key_presence``."""
-    if presence is None:
-        return sa.true()
-    tag, arm = presence
-    is_set = columns[tag].is_not(None)
-    return is_set if arm is None else sa.and_(is_set, columns[tag] == arm)
-
-
-@frozen
-class Subtract(DatasetDiffOperation):
-    on: Sequence[str | tuple[str, str]]
-    # Key nodes compared by whether they hold a value on each side.
-    presence: Sequence[tuple[KeyPresence, KeyPresence]] = ()
 
     def _normalize_on(self) -> list[tuple[str, str]]:
         return [(col, col) if isinstance(col, str) else col for col in self.on]
