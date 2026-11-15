@@ -347,3 +347,43 @@ def test_list_datasets_include_removed_lists_dataset_with_only_removing_versions
     assert "removing-only" in {
         d.name for d in metastore.list_datasets(include_removed=True)
     }
+
+
+def test_sqlite_metastore_migrates_missing_indexed_columns(tmp_path):
+    import contextlib
+    import sqlite3
+
+    db_path = str(tmp_path / "legacy_metastore.db")
+    with contextlib.closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.execute(
+            "CREATE TABLE meta (id INTEGER PRIMARY KEY, "
+            f"schema_version INTEGER DEFAULT {SCHEMA_VERSION})"
+        )
+        conn.execute(
+            "INSERT INTO meta (id, schema_version) VALUES (1, ?)", (SCHEMA_VERSION,)
+        )
+        conn.execute(
+            "CREATE TABLE jobs (id TEXT PRIMARY KEY, name TEXT, status INTEGER, "
+            "created_at DATETIME, query TEXT, query_type INTEGER, workers INTEGER, "
+            "python_version TEXT, error_message TEXT, error_stack TEXT, "
+            "metrics TEXT, params TEXT)"
+        )
+
+    metastore = SQLiteMetastore(db_file=db_path)
+    try:
+        cols = {
+            row[1]
+            for row in metastore.db.execute_str("PRAGMA table_info(jobs)").fetchall()
+        }
+        assert {"parent_job_id", "rerun_from_job_id", "run_group_id"} <= cols
+        indexes = {
+            row[1]
+            for row in metastore.db.execute_str("PRAGMA index_list(jobs)").fetchall()
+        }
+        assert {
+            "idx_jobs_parent_job_id",
+            "idx_jobs_rerun_from_job_id",
+            "idx_jobs_run_group_id",
+        } <= indexes
+    finally:
+        metastore.close_on_exit()

@@ -638,7 +638,7 @@ class UDFStep(Step, ABC):
         to select
         """
 
-    def populate_udf_output_table(  # noqa: PLR0915
+    def populate_udf_output_table(  # noqa: C901, PLR0912, PLR0915
         self,
         udf_table: "Table",
         query: Select,
@@ -650,10 +650,12 @@ class UDFStep(Step, ABC):
     ) -> None:
         catalog = self.session.catalog
         # read only the columns the UDF reads: a wide input costs nothing extra
-        read = {"sys__id", PARTITION_COLUMN_ID, *self.udf.input_columns()}
+        read = {"sys__id", *self.udf.input_columns()}
+        if self.partition_by is not None:
+            read.add(PARTITION_COLUMN_ID)
         query = query.with_only_columns(
             *(c for c in query.selected_columns if c.name in read)
-        )
+        ).execution_options(_datachain_partitioned=self.partition_by is not None)
         rows_to_process = catalog.warehouse.query_count(query)
         if rows_to_process == 0:
             logger.debug(

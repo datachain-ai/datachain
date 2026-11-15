@@ -168,7 +168,12 @@ class AbstractWarehouse(ABC, Serializable):
         columns = query.selected_columns
         if "sys__id" not in columns:
             raise ValueError("paginated query must select sys__id")
-        names = [n for n in (PARTITION_COLUMN_ID, "sys__id") if n in columns]
+        partitioned = query.get_execution_options().get("_datachain_partitioned", True)
+        names = [
+            n
+            for n in ((PARTITION_COLUMN_ID, "sys__id") if partitioned else ("sys__id",))
+            if n in columns
+        ]
         keys = [columns[n] for n in names]
         key_at = [list(columns.keys()).index(n) for n in names]
         limit = query._limit

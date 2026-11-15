@@ -478,3 +478,57 @@ def test_check_value_converts_array_items(value, col_type, expected):
 def test_check_value_does_not_re_encode_dict_array_items():
     value = [{"a": 1}, {"b": 2}]
     assert check_value(Array(JSON()))(value) == value
+
+
+def test_user_partition_id_column_survives_unpartitioned_udf_pagination(
+    test_session, monkeypatch
+):
+    orig = test_session.catalog.warehouse.dataset_select_paginated
+
+    def small_pages(self, query, page_size=2):
+        return orig.__func__(self, query, page_size=2)
+
+    monkeypatch.setattr(
+        type(test_session.catalog.warehouse),
+        "dataset_select_paginated",
+        small_pages,
+    )
+
+    chain = dc.read_values(
+        key=["a", "b", "c", "d", "e"],
+        partition_id=[10, None, 5, None, 1],
+        session=test_session,
+    )
+    mapped = chain.map(tag=lambda key: f"{key}!").order_by("key").to_list("key", "tag")
+    assert mapped == [("a", "a!"), ("b", "b!"), ("c", "c!"), ("d", "d!"), ("e", "e!")]
+
+    mapped_reading_col = (
+        chain.map(
+            label=lambda key, partition_id: f"{key}:{partition_id}",
+        )
+        .order_by("key")
+        .to_list("label")
+    )
+    assert mapped_reading_col == [
+        ("a:10",),
+        ("b:None",),
+        ("c:5",),
+        ("d:None",),
+        ("e:1",),
+    ]
+
+    batched_res = (
+        chain.batch_map(
+            tag=lambda key: [f"{k}#" for k in key],
+            batch=2,
+        )
+        .order_by("key")
+        .to_list("key", "tag")
+    )
+    assert batched_res == [
+        ("a", "a#"),
+        ("b", "b#"),
+        ("c", "c#"),
+        ("d", "d#"),
+        ("e", "e#"),
+    ]

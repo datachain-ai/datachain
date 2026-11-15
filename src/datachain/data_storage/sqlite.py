@@ -574,7 +574,7 @@ class SQLiteMetastore(AbstractDBMetastore):
     def _init_tables(self) -> None:
         """Initialize tables with automatic schema migration."""
         for table in self._metastore_tables:
-            self.db.create_table(table, if_not_exists=True)
+            self.db.execute(CreateTable(table, if_not_exists=True))
             self.default_table_names.append(table.name)
 
         # Auto-migrate: add missing columns based on schema definitions

@@ -44,6 +44,7 @@ class NoBatching(BatchingStrategy):
         query: sa.Select,
         id_col: sa.ColumnElement | None = None,
     ) -> Generator[Sequence, None, None]:
+        query = query.execution_options(_datachain_partitioned=False)
         if id_col is not None:
             query = query.with_only_columns(id_col)
         with safe_closing(execute(query)) as rows:
@@ -88,6 +89,7 @@ class Partition(BatchingStrategy):
     ) -> Generator[RowsOutput, None, None]:
         if (partition_col := query.selected_columns.get(PARTITION_COLUMN_ID)) is None:
             raise RuntimeError("partition column not found in query")
+        query = query.execution_options(_datachain_partitioned=True)
         if id_col is not None:
             query = query.with_only_columns(id_col, partition_col)
         names = list(query.selected_columns.keys())
