@@ -272,7 +272,7 @@ def _unwrap_annotation(annotation: Any) -> Any:
     return annotation
 
 
-def _declared_model_cls(obj: Any, annotation: Any, base_model: type) -> type:
+def _declared_model_cls(obj: Any, annotation: Any, base_model: type) -> Any:
     from typing import get_args
 
     annotation = _unwrap_annotation(annotation)
