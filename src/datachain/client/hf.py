@@ -7,8 +7,6 @@ from datachain.lib.file import File, FileRow
 
 from .fsspec import Client, ResultQueue
 
-SIBLINGS_LIMIT = 100_000  # the most files the Hub returns with a repository's info
-
 
 class classproperty:  # noqa: N801
     def __init__(self, func):
@@ -60,21 +58,51 @@ def get_hf_filesystem_cls():
             f"{fsspec_version} is installed."
         )
 
-    from huggingface_hub import HfFileSystem
+    from .hf_file_system import PinnedHfFileSystem
 
-    fs_cls = _wrap_class(HfFileSystem)
-    # AsyncFileSystemWrapper does not set class properties, so we need to set them back.
-    fs_cls.protocol = HfFileSystem.protocol
+    fs_cls = _wrap_class(PinnedHfFileSystem)
+    # AsyncFileSystemWrapper does not set class properties, so we set them back.
+    fs_cls.protocol = PinnedHfFileSystem.protocol
     return fs_cls
 
 
 class HfClient(Client):
     PREFIX = "hf://"
     protocol = "hf"
+    PINNED_VERSION_IS_IMMUTABLE = True
 
     @classproperty
     def FS_CLASS(cls):  # noqa: N802, N805
         return get_hf_filesystem_cls()
+
+    def _version_kwargs(self, version_id: str | None) -> dict[str, Any]:
+        return {"revision": version_id} if version_id else {}
+
+    def _file_info_kwargs(self, version_id: str | None = None) -> dict[str, Any]:
+        return {
+            **self._version_kwargs(version_id),
+            "expand_info": True,
+        }
+
+    def _ls_dir_kwargs(self) -> dict[str, Any]:
+        return {"expand_info": True}
+
+    def info_to_file(self, v: dict[str, Any], path: str) -> File:
+        last_commit = v.get("last_commit")
+        if last_commit is None:
+            raise RuntimeError(
+                "huggingface_hub returned file metadata without last_commit; "
+                "expected expanded HF metadata for file version tracking"
+            )
+
+        return File(
+            source=self.uri,
+            path=path,
+            size=v["size"],
+            etag=v.get("blob_id", ""),
+            version=last_commit.oid,
+            last_modified=last_commit.date,
+        )
 
     async def _fetch_default(
         self, start_prefix: str, result_queue: ResultQueue
@@ -82,46 +110,48 @@ class HfClient(Client):
         await result_queue.put(await asyncio.to_thread(self._list, start_prefix))
 
     def _list(self, prefix: str) -> list[FileRow]:
-        """Files under ``prefix``: from the repository info, one request, unless
-        the Hub caps its file list; else from a recursive listing, which the Hub
-        pages through a whole tree at a time."""
         prefix = prefix.strip("/")
         path = f"{self.name}/{prefix}".rstrip("/")
         fs = self.fs.sync_fs
-        p = fs.resolve_path(path)
-        subpath = getattr(p, "path_in_repo", None) or getattr(p, "path", "")
-        siblings = None
-        if getattr(p, "repo_id", None):  # a repository, not a bucket
-            info = fs._api.repo_info(
-                p.repo_id,
-                repo_type=p.repo_type,
-                revision=p.revision,
-                files_metadata=True,
-            )
-            siblings = getattr(info, "siblings", None) or []
-        if siblings is not None and len(siblings) < SIBLINGS_LIMIT:
-            under = f"{subpath}/" if subpath else ""
-            entries = [(s.rfilename, s.size, s.blob_id) for s in siblings]
-        else:
-            under = f"{p.unresolve()}/"
-            found = fs.find(path, detail=True)
-            entries = [(k, v.get("size"), v.get("blob_id")) for k, v in found.items()]
+        resolved = fs.resolve_path(path)
+        repository = bool(getattr(resolved, "repo_id", None))
+        if repository:
+            resolved = fs.resolve_path(path, revision=resolved.revision)
+        path = resolved.unresolve()
+        under = f"{path}/"
         base = f"{prefix}/" if prefix else ""
-        rows = [
-            FileRow(self.uri, base + name[len(under) :], size or 0, etag=etag or "")
-            for name, size, etag in entries
-            if name.startswith(under)
-        ]
-        if not rows and subpath:
-            raise FileNotFoundError(path)
-        return rows
-
-    def info_to_file(self, v: dict[str, Any], path: str) -> File:
-        """No version or date: for those the Hub finds each file's last commit,
-        which makes listing slow. The etag, the git blob id, follows the content."""
-        return File(
-            source=self.uri, path=path, size=v["size"], etag=v.get("blob_id") or ""
+        found = fs.find(
+            path, detail=True, **({"expand_info": True} if repository else {})
         )
+        rows = []
+        for name, info in found.items():
+            if name == path:
+                info = fs.info(name, **({"expand_info": True} if repository else {}))
+                relative = prefix
+            elif name.startswith(under):
+                relative = base + name[len(under) :]
+            else:
+                continue
+            commit = info.get("last_commit")
+            if repository and commit is None:
+                raise RuntimeError(
+                    "huggingface_hub returned file metadata without last_commit"
+                )
+            metadata = (
+                {"version": commit.oid, "last_modified": commit.date} if commit else {}
+            )
+            rows.append(
+                FileRow(
+                    self.uri,
+                    relative,
+                    info.get("size") or 0,
+                    etag=info.get("blob_id") or "",
+                    **metadata,
+                )
+            )
+        if not rows:
+            fs.info(path, **({"expand_info": True} if repository else {}))
+        return rows
 
     def rel_path(self, path):
         return posixpath.relpath(path, self.name)
