@@ -61,7 +61,7 @@ def test_checkpoint_resume_after_sigkill(tmp_path, catalog_tmpfile, parallel, ki
             time.sleep(0.05)
         killed_at = time.monotonic()
     finally:
-        with suppress(ProcessLookupError):
+        with suppress(ProcessLookupError, PermissionError):
             os.killpg(proc.pid, signal.SIGKILL)
         proc.wait(timeout=10)
     assert proc.returncode == -signal.SIGKILL
@@ -73,14 +73,17 @@ def test_checkpoint_resume_after_sigkill(tmp_path, catalog_tmpfile, parallel, ki
     for path in tmp_path.glob("calls-*.jsonl"):
         path.unlink()
     env["DATACHAIN_JOB_ID"] = metastore.create_job(
-        "checkpoint-kill", "", rerun_from_job_id=first_job
+        "checkpoint-kill",
+        "",
+        rerun_from_job_id=first_job,
+        run_group_id=first_job,
     )
     proc = run_test_subprocess(cmd, env)
     try:
         rc, _, stderr = wait_for_test_subprocess(proc, 90)
         assert rc == 0, stderr
     finally:
-        with suppress(ProcessLookupError):
+        with suppress(ProcessLookupError, PermissionError):
             os.killpg(proc.pid, signal.SIGKILL)
         proc.wait(timeout=10)
     recomputed = {num for num, _ in read_calls(tmp_path, "start")}
