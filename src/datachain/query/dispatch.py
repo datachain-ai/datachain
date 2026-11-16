@@ -128,7 +128,7 @@ class UDFDispatcher:
         self.processes = udf_info["processes"]
         self.rows_total = udf_info["rows_total"]
         self.batch_size = udf_info["batch_size"]
-        self.parts = udf_info["parts"]
+        self.parts = udf_info.get("parts")
         self.buffer_size = buffer_size
         self.task_queue = None
         self.done_queue = None

@@ -225,6 +225,46 @@ def test_read_storage_reads_keys_with_double_slash(cloud_test_catalog):
         client.fs.invalidate_cache()
 
 
+@pytest.mark.parametrize("cloud_type,version_aware", [("s3", False)], indirect=True)
+@pytest.mark.parametrize("reuse_parent", [False, True])
+@pytest.mark.parametrize(
+    "suffix,recursive,expected",
+    [
+        ("d/", False, ["d/e.txt"]),
+        ("d//*.txt", True, ["d//e.txt"]),
+        ("d//", True, ["d//e.txt", "d///f.txt"]),
+    ],
+)
+def test_read_storage_preserves_empty_folder_segments(
+    cloud_test_catalog, cloud_prefix, reuse_parent, suffix, recursive, expected
+):
+    ctc = cloud_test_catalog
+    client = ctc.catalog.get_client(ctc.src_uri)
+    for key in ["d/e.txt", "d//e.txt", "d///f.txt"]:
+        client.fs.pipe_file(f"{client.name}/{cloud_prefix}/{key}", key.encode())
+    client.fs.invalidate_cache()
+    if reuse_parent:
+        dc.read_storage(f"{ctc.src_uri}/{cloud_prefix}/", session=ctc.session).exec()
+    uri = f"{ctc.src_uri}/{cloud_prefix}/{suffix}"
+    expected_paths = [f"{cloud_prefix}/{k}" for k in sorted(expected)]
+
+    assert (
+        sorted(
+            dc.read_storage(uri, session=ctc.session, recursive=recursive).to_values(
+                "file.path"
+            )
+        )
+        == expected_paths
+    )
+    assert (
+        sorted(
+            f.path
+            for f in dc.list_storage(uri, session=ctc.session, recursive=recursive)
+        )
+        == expected_paths
+    )
+
+
 @pytest.mark.parametrize(
     "cloud_type,version_aware",
     [("s3", True), ("gs", True)],

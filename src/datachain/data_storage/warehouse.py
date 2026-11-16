@@ -1,7 +1,6 @@
 import glob
 import itertools
 import logging
-import posixpath
 import secrets
 import string
 from abc import ABC, abstractmethod
@@ -447,6 +446,10 @@ class AbstractWarehouse(ABC, Serializable):
     ) -> None:
         """Insert rows already in stored form (``RowCodec.encode``), in the order
         of ``columns``, in blocks of ``batch_size``."""
+        if "sys__id" not in columns and "sys__id" in table.c:
+            with self.writer(table, columns, batch_size=batch_size) as w:
+                w.extend(rows)
+            return
         for block in batched(rows, batch_size or self.INSERT_BATCH_SIZE):
             self.insert_block(table, columns, list(block))
 
@@ -763,7 +766,7 @@ class AbstractWarehouse(ABC, Serializable):
 
     def expand_path(self, dataset_rows: "DataTable", path: str) -> list[Node]:
         """Simulates Unix-like shell expansion"""
-        clean_path = path.strip("/")
+        clean_path = path.lstrip("/").removesuffix("/")
         path_list = clean_path.split("/") if clean_path != "" else []
         res = self._populate_nodes_by_path(dataset_rows, path_list)
         if path.endswith("/"):
@@ -850,7 +853,8 @@ class AbstractWarehouse(ABC, Serializable):
             # Return node size if this is not a directory
             return node_size, 1
 
-        sub_glob = posixpath.join(path, "*")
+        # "d/" is the folder named "" in "d": its files match "d//*"
+        sub_glob = f"{path}/*" if path else "*"
         dr = dataset_rows
         selections: list[sa.ColumnElement] = [
             sa.func.sum(dr.c("size")),
@@ -892,7 +896,7 @@ class AbstractWarehouse(ABC, Serializable):
         path = de.c(q, "path")
 
         if parent_path:
-            sub_glob = posixpath.join(parent_path, "*")
+            sub_glob = f"{parent_path}/*"
             conds.append(path.op("GLOB", is_comparison=True)(sub_glob))
         else:
             conds.append(path != "")
