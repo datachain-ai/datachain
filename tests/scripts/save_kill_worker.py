@@ -6,7 +6,7 @@ import signal
 import sys
 
 import datachain as dc
-from datachain.data_storage.sqlite import SQLiteWarehouse
+from datachain.query.session import Session
 
 kill_at, version = sys.argv[1], sys.argv[2]
 
@@ -18,14 +18,15 @@ def double(num: int) -> int:
 
 
 if kill_at == "copy":
-    insert_into = SQLiteWarehouse.insert_into
+    warehouse_class = type(Session.get().catalog.warehouse)
+    insert_into = warehouse_class.insert_into
 
     def insert_then_die(self, table, *args, **kwargs):
         insert_into(self, table, *args, **kwargs)
         if table.name.startswith("ds_") and "_result_" in table.name:
             os.kill(os.getpid(), signal.SIGKILL)
 
-    SQLiteWarehouse.insert_into = insert_then_die  # type: ignore[method-assign]
+    warehouse_class.insert_into = insert_then_die  # type: ignore[method-assign]
 
 chain = dc.read_values(num=[1, 2, 3, 4, 5]).map(doubled=double)
 chain.save("result", version=None if version == "auto" else version)

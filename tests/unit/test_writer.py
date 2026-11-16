@@ -11,6 +11,7 @@ from datachain.data_storage.writer import (
     trim_to_ledger,
 )
 from datachain.sql.types import Int
+from tests.utils import skip_if_not_sqlite
 
 
 @pytest.fixture
@@ -31,7 +32,8 @@ def rows(warehouse, table):
 
 def ledger(warehouse, parts):
     columns = [parts.c[c] for c in ("part_key", "writer_no", "lo", "hi")]
-    return list(warehouse.db.execute(sa.select(*columns).order_by(parts.c.lo)))
+    query = sa.select(*columns).order_by(parts.c.lo, parts.c.hi)
+    return list(warehouse.db.execute(query))
 
 
 def test_writer_zero_writes_ids_from_one(warehouse, tables):
@@ -149,6 +151,7 @@ class _BusyOnce:
         return self._db.__exit__(*exc)
 
 
+@skip_if_not_sqlite  # retries SQLite's "database is locked"
 def test_lock_retry_writes_every_row(warehouse, tables, monkeypatch):
     table, parts = tables
     monkeypatch.setattr(warehouse.db, "db", _BusyOnce(warehouse.db.db))
