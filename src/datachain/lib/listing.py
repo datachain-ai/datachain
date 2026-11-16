@@ -575,7 +575,7 @@ def write_listing(
     encode = PageEncoder(warehouse.row_codec(columns), with_etag)
     job = session.get_job()
     job_id = job.id if job else None
-    pages = None
+    pages: Iterator = iter(())
     dataset = version = None
     try:
         dataset = catalog.create_dataset(
