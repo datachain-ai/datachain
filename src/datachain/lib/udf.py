@@ -1121,6 +1121,12 @@ class Aggregator(UDFBase):
             udf_fields, catalog, cache, download_cb, include_id=False
         )
 
+        def _output(result_objs: Any) -> Iterator[tuple]:
+            if result_objs is None:
+                return
+            with safe_closing(result_objs):
+                yield from map(output_row, result_objs)
+
         # Check if partition_id is available (when partition_by is used)
         partition_id_idx = None
         if PARTITION_COLUMN_ID in udf_fields:
@@ -1142,9 +1148,6 @@ class Aggregator(UDFBase):
                 udf_args = [
                     list(arg) if isinstance(arg, tuple) else arg for arg in batched_args
                 ]
-                result_objs = self.process(*udf_args)
-                if result_objs is None:
-                    result_objs = iter(())
-                output = map(output_row, result_objs)
+                output = _output(self.process(*udf_args))
                 processed_cb.relative_update(len(batch))
                 yield input_id, output
