@@ -3100,10 +3100,9 @@ class DatasetQuery:
         """Save the query as a dataset.
 
         A taken explicit version fails before any work, without writing. The
-        steps run, then the version is reserved (status CREATED, owned by the
-        current job) right before one ``insert_into`` fills its own rows
-        table, and it is completed. A kill can leave a CREATED version only
-        during that copy; a rerun of the same script reclaims it.
+        steps and final table materialization run into a temporary table first,
+        then the version is created, the table is renamed into place, and the
+        version is completed.
         """
         if kwargs.get("listing"):
             # Listing saves are internal — use existing job if present,
@@ -3119,7 +3118,7 @@ class DatasetQuery:
         if not name and version:
             raise RuntimeError("Cannot set version for temporary datasets")
         if name and version:
-            self._check_explicit_version(name, version, project, job_id)
+            self._check_explicit_version(name, version, project)
         if not name:
             name = self.session.generate_temp_dataset_name()
 
@@ -3134,6 +3133,15 @@ class DatasetQuery:
                     "No columns to save in the query. "
                     "Ensure at least one column (other than 'id') is selected."
                 )
+
+            warehouse = self.catalog.warehouse
+            temp_table_name = warehouse.temp_table_name()
+            temp_table = warehouse.create_dataset_rows_table(
+                temp_table_name, columns=columns
+            )
+            self.temp_table_names.append(temp_table_name)
+            warehouse.insert_into(temp_table, query.select())
+
             dataset = self.catalog.create_dataset(
                 name,
                 project,
@@ -3149,11 +3157,10 @@ class DatasetQuery:
             )
             version = dataset.versions[0].version
             try:
-                warehouse = self.catalog.warehouse
-                table = warehouse.create_dataset_rows_table(
-                    warehouse.dataset_table_name(dataset, version), columns=columns
+                warehouse.rename_table(
+                    temp_table, warehouse.dataset_table_name(dataset, version)
                 )
-                warehouse.insert_into(table, query.select())
+                self.temp_table_names.remove(temp_table_name)
 
                 # Link this dataset version to the job that created it
                 if job_id:
@@ -3193,10 +3200,9 @@ class DatasetQuery:
         )
 
     def _check_explicit_version(
-        self, name: str, version: str, project: Project, job_id: str | None
+        self, name: str, version: str, project: Project
     ) -> None:
-        """Fail before any work if an explicit version is taken, unless this
-        job may reclaim it (see ``Catalog.can_reclaim_version``). Read only."""
+        """Fail before any work if an explicit version is taken or removed."""
         try:
             existing = self.catalog.get_dataset(
                 name,
@@ -3209,16 +3215,14 @@ class DatasetQuery:
             return
         if not existing.has_version(version):
             return
-        v = existing.get_version(version)
-        if v.is_removed:
-            raise RuntimeError(
+        if existing.get_version(version).is_removed:
+            raise DatasetInvalidVersionError(
                 f"Version {version} of dataset {name} was "
                 "removed. Pick a different version."
             )
-        if not self.catalog.can_reclaim_version(v, job_id):
-            raise DatasetInvalidVersionError(
-                f"Dataset {name} already has version {version}"
-            )
+        raise DatasetInvalidVersionError(
+            f"Dataset {name} already has version {version}"
+        )
 
     def _set_dependencies(self, dependencies: list[DatasetDependency]) -> None:
         """Override the dependencies collected from the steps."""

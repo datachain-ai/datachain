@@ -165,8 +165,14 @@ def test_lock_retry_writes_every_row(warehouse, tables, monkeypatch):
 
 def test_trim_after_many_claims(warehouse, tables):
     table, parts = tables
-    for _ in range(1000):
-        last = warehouse.claim_writer_no(parts)
+    warehouse.insert_block(
+        table,
+        [],
+        [],
+        parts=parts,
+        ledger=[(None, w, (w << ID_BITS) + 1, w << ID_BITS) for w in range(999)],
+    )
+    last = warehouse.claim_writer_no(parts)
     with warehouse.writer(table, ["x"], last, parts) as w:
         w.extend([(1,), (2,)])
         w.commit(7)

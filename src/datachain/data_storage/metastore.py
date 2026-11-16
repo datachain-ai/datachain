@@ -1467,7 +1467,7 @@ class AbstractDBMetastore(AbstractMetastore):
         result_ds.update(**dataset_values)
         return result_ds
 
-    def update_dataset_version(  # noqa: PLR0912
+    def update_dataset_version(
         self,
         dataset: DatasetRecord,
         version: str,
@@ -1561,18 +1561,6 @@ class AbstractDBMetastore(AbstractMetastore):
         guarded = expected_status is not None or expected_job_id is not None
         if guarded and result.rowcount == 0:  # type: ignore [attr-defined]
             return None
-
-        if (
-            expected_job_id is not None
-            and "job_id" in values
-            and values["job_id"] != expected_job_id
-        ):
-            self.db.execute(
-                self._dataset_version_jobs_delete().where(
-                    self._dataset_version_jobs.c.dataset_version_id == version_obj.id,
-                    self._dataset_version_jobs.c.job_id == expected_job_id,
-                )
-            )
 
         version_obj.update(**version_values)
         logger.debug(
@@ -3137,11 +3125,6 @@ class AbstractDBMetastore(AbstractMetastore):
                 self._projects.c.name == project_name,
                 self._dataset_version_jobs.c.job_id.in_(job_ancestry),
                 self._dataset_version_jobs.c.is_creator.is_(True),
-                or_(
-                    self._datasets_versions.c.job_id.is_(None),
-                    self._datasets_versions.c.job_id
-                    == self._dataset_version_jobs.c.job_id,
-                ),
                 self._datasets_versions.c.status == DatasetStatus.COMPLETE,
             )
             .order_by(desc(self._dataset_version_jobs.c.created_at))
