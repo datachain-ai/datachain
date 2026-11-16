@@ -166,3 +166,40 @@ def test_udf_entrypoint_restores_only_injected_safe_path(monkeypatch, mocker, in
         udf_entrypoint()
     assert ("PYTHONSAFEPATH" in os.environ) is not injected
     assert "_DATACHAIN_UDF_SAFE_PATH" not in os.environ
+
+
+def test_single_dispatcher_uses_temporary_cache_with_persistent_fallback(
+    catalog, monkeypatch, mocker
+):
+    from datachain.lib.file import File
+    from datachain.query.dispatch import UDFDispatcher
+
+    original = File(source="s3://bucket", path="warm", size=3)
+    new = File(source="s3://bucket", path="new", size=3)
+    catalog.cache.store_data(original, b"old")
+    dispatcher = object.__new__(UDFDispatcher)
+    dispatcher._catalog = catalog
+    dispatcher.udf_data = b""
+    dispatcher.is_batching = False
+    dispatcher.cache = False
+    dispatcher.udf_fields = []
+    dispatcher.table = mocker.sentinel.table
+    dispatcher.batch_size = None
+    udf = mocker.Mock(prefetch=1)
+    paths = []
+
+    def run(fields, inputs, udf_catalog, cache, **kwargs):
+        assert udf_catalog.cache is not catalog.cache
+        assert udf_catalog.cache.contains(original)
+        udf_catalog.cache.remove(original)
+        udf_catalog.cache.store_data(new, b"new")
+        paths.append(udf_catalog.cache.cache_dir)
+        return iter([])
+
+    udf.run.side_effect = run
+    monkeypatch.setattr("datachain.query.dispatch.loads", lambda value: udf)
+    mocker.patch("datachain.query.dispatch.process_udf_outputs")
+    dispatcher.run_udf_single([])
+    assert catalog.cache.contains(original)
+    assert not catalog.cache.contains(new)
+    assert paths and not os.path.exists(paths[0])

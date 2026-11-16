@@ -521,7 +521,8 @@ class _PrefetchBudget:
     """Listed-byte read-ahead target, allowing the legacy minimum row count."""
 
     def __init__(self, max_rows: int, max_bytes: int, min_rows: int) -> None:
-        self.max_rows, self.max_bytes, self.min_rows = max_rows, max_bytes, min_rows
+        self.max_rows, self.max_bytes = max_rows, max_bytes
+        self.min_rows = min(min_rows, max_rows)
         self.rows = self.bytes = 0
         self.changed = threading.Condition()
 
@@ -535,10 +536,9 @@ class _PrefetchBudget:
 
     def take(self, size: int, stop: threading.Event) -> None:
         with self.changed:
-            while (
-                self.rows >= self.min_rows
-                and not stop.is_set()
-                and (self.rows >= self.max_rows or self.bytes + size > self.max_bytes)
+            while not stop.is_set() and (
+                self.rows >= self.max_rows
+                or (self.rows >= self.min_rows and self.bytes + size > self.max_bytes)
             ):
                 self.changed.wait(0.1)  # `stop` doesn't notify
             self.rows += 1
@@ -556,6 +556,14 @@ class _PrefetchedRow:
     value: Any
     size: int
     leases: list[tuple["Cache", str]]
+
+    def retain(self, batch_columns: set[int] | None) -> None:
+        for obj in _row_files(self.value, batch_columns):
+            if obj.path:
+                cache = obj._catalog.cache
+                self.leases.append(
+                    (cache, cache._retain_prefetched(obj._prefetch_target()))
+                )
 
     def release(self, budget: _PrefetchBudget | None) -> None:
         for cache, oid in self.leases:
@@ -662,11 +670,7 @@ def _prefetch_inputs(
                 item = _PrefetchedRow(row, size, [])
                 pending[id(item)] = item
                 if remove_prefetched:
-                    for obj in _row_files(row, batch_columns):
-                        cache = obj._catalog.cache
-                        item.leases.append(
-                            (cache, cache._retain_prefetched(obj._prefetch_target()))
-                        )
+                    item.retain(batch_columns)
                 yield item
 
     async def prefetch_row(item):
