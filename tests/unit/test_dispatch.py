@@ -21,6 +21,7 @@ from datachain.query.dispatch import (
     guided_tasks,
     put_into_queue,
     udf_entrypoint,
+    udf_worker_entrypoint,
 )
 from datachain.query.udf import UdfInfo
 
@@ -295,6 +296,28 @@ def test_overlapping_in_process_dispatch_does_not_change_thread_limits(
         futures = [pool.submit(dispatcher.run_udf, []) for _ in range(2)]
         for future in futures:
             future.result(timeout=3)
+
+
+def test_studio_entrypoint_budgets_single_worker(dispatcher, monkeypatch, mocker):
+    dispatcher.processes = False
+    monkeypatch.setattr("datachain.utils.usable_cpu_count", lambda: 8)
+    monkeypatch.setenv("OMP_NUM_THREADS", "1000")
+    monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
+    before = dict(os.environ)
+
+    def run(*_args):
+        assert os.environ["OMP_NUM_THREADS"] == "8"
+        assert os.environ["DATACHAIN_WORKER_THREADS"] == "8"
+
+    execute = mocker.patch.object(dispatcher, "run_udf_single", side_effect=run)
+    distributor = mocker.Mock()
+    distributor.run_udf.side_effect = lambda: dispatcher.run_udf([]) or 0
+    mocker.patch(
+        "datachain.query.dispatch.get_udf_distributor_class", return_value=distributor
+    )
+    assert udf_worker_entrypoint() == 0
+    execute.assert_called_once()
+    assert dict(os.environ) == before
 
 
 def test_worker_start_failure_cleans_up_and_restores_environment(

@@ -143,6 +143,7 @@ def udf_entrypoint() -> int:
     return 0
 
 
+@worker_thread_limits(1)
 def udf_worker_entrypoint() -> int:
     if not (udf_distributor_class := get_udf_distributor_class()):
         raise RuntimeError(
