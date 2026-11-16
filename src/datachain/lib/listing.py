@@ -6,7 +6,7 @@ import posixpath
 import re
 import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from contextlib import closing, contextmanager, suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import blake2b
@@ -28,7 +28,7 @@ from datachain.lib.convert.flatten import flatten
 from datachain.lib.file import File, FileRow
 from datachain.query.schema import Column
 from datachain.sql.functions import path as pathfunc
-from datachain.utils import uses_glob
+from datachain.utils import safe_closing, uses_glob
 
 if TYPE_CHECKING:
     from sqlalchemy import ColumnElement
@@ -79,7 +79,7 @@ def list_pages(
     client.encode_page = encode
     _, path = Client.parse_url(uri)
     # a child's pages are StoredPages already
-    with closing(
+    with safe_closing(
         iter_over_async(client.scandir(path.removesuffix("/")), get_loop())
     ) as pages:
         for page in pages:
