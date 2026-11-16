@@ -1827,6 +1827,51 @@ def test_read_dataset_name_version(test_session):
     assert chain.version
 
 
+@pytest.mark.parametrize(
+    ("version", "expected"), [("1.0.0", 1), (1, 2), (">=1.0.0,<2.0.0", 2)]
+)
+def test_read_dataset_resolves_selected_version_once(
+    test_session, mocker, version, expected
+):
+    dc.read_values(num=[1], session=test_session).save("selected", version="1.0.0")
+    dc.read_values(num=[2], session=test_session).save("selected", version="1.10.0")
+    dc.read_values(num=[3], session=test_session).save("selected", version="2.0.0")
+    resolve = mocker.spy(test_session.catalog, "get_dataset_with_remote_fallback")
+
+    chain = dc.read_dataset("selected", version=version, session=test_session)
+
+    assert chain.to_values("num") == [expected]
+    assert resolve.call_count == 1
+
+
+def test_read_dataset_missing_version_retains_fallback(test_session, mocker):
+    dc.read_values(num=[1], session=test_session).save("selected", version="1.0.0")
+    resolve = mocker.spy(test_session.catalog, "get_dataset_with_remote_fallback")
+
+    with pytest.raises(DatasetNotFoundError, match="9.0.0"):
+        dc.read_dataset("selected", version="9.0.0", session=test_session)
+
+    assert resolve.call_count == 2
+
+
+def test_read_dataset_remote_metadata_still_pulls_selected_version(
+    test_session, mocker
+):
+    source = dc.read_values(num=[1], session=test_session).save("selected")
+    mocker.patch("datachain.lib.dc.datasets.is_studio", return_value=False)
+    resolve = mocker.patch.object(
+        test_session.catalog,
+        "get_dataset_with_remote_fallback",
+        return_value=source._query.starting_step.dataset,
+    )
+
+    dc.read_dataset("dev.project.selected", version="1.0.0", session=test_session)
+
+    assert resolve.call_count == 2
+    assert resolve.call_args.kwargs["pull_dataset"] is True
+    assert resolve.call_args.kwargs["version"] == "1.0.0"
+
+
 def test_chain_of_maps(test_session):
     chain = (
         dc.read_values(my_n=features_nested, session=test_session)
