@@ -12,7 +12,8 @@ from itertools import islice
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import attrs
-from fsspec.callbacks import DEFAULT_CALLBACK, Callback
+from fsspec import Callback
+from fsspec.callbacks import DEFAULT_CALLBACK
 from pydantic import BaseModel
 
 from datachain.asyn import AsyncMapper
