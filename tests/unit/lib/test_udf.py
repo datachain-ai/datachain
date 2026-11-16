@@ -681,3 +681,48 @@ def test_prefetch_budget_counts_real_download_targets():
     members = _files(1, 2, location=[{"vtype": "tar", "parent": parent.model_dump()}])
     assert budget.size(members) == 4096
     assert budget.size(_files(0)) == 512
+
+
+@pytest.mark.parametrize("file_type", [File | None, File | str])
+@pytest.mark.parametrize(
+    "settings,expected",
+    [
+        ({}, (AUTO_PREFETCH, AUTO_PREFETCH_BYTES)),
+        ({"prefetch": 4, "prefetch_bytes": 1000}, (4, 1000)),
+    ],
+)
+def test_union_file_parameters_keep_prefetch_settings(
+    test_session, file_type, settings, expected
+):
+    chain = dc.read_values(
+        file=[File(source="s3://bucket", path="a")],
+        output={"file": file_type},
+        session=test_session,
+    ).settings(**settings)
+    mapped = chain.map(y=lambda file: 0, params="file", output=int)
+    udf = mapped._query.steps[-1].udf.inner
+    assert (udf.prefetch, udf.prefetch_bytes) == expected
+
+
+def test_prefetch_budget_keeps_row_bound_with_a_smaller_explicit_count():
+    from datachain.lib.udf import _PrefetchBudget
+
+    budget = _PrefetchBudget(3, 1000, 5)
+    stop, reserved = threading.Event(), threading.Event()
+    for _ in range(3):
+        budget.take(1, stop)
+
+    def reserve():
+        budget.take(1, stop)
+        reserved.set()
+
+    thread = threading.Thread(target=reserve, daemon=True)
+    thread.start()
+    try:
+        assert not reserved.wait(0.05)
+        budget.give_back(1)
+        assert reserved.wait(1)
+    finally:
+        stop.set()
+        thread.join(1)
+    assert not thread.is_alive()

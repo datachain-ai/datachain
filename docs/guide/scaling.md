@@ -42,7 +42,7 @@ DataChain's storage-native architecture means files live in cloud storage and ar
 
 ## Async Prefetch
 
-Scalar UDFs prefetch up to 16 rows per process, using 512 MiB of listed file sizes as a read-ahead target. Five rows are always allowed for compatibility, so this is not a hard memory or disk limit. Set `prefetch=N` to control concurrency, `prefetch_bytes` to change the target, or `prefetch=0` to disable it.
+Scalar UDFs use 16 concurrent prefetch workers per process, using 512 MiB of listed file sizes as a read-ahead target. The default keeps a five-row minimum for compatibility, so this is not a hard memory or disk limit. Set `prefetch=N` to control concurrency, `prefetch_bytes` to change the target, or `prefetch=0` to disable it.
 
 In `batch_map()`, `prefetch` counts batches; see [Batched Inference](batch-inference.md#prefetch).
 

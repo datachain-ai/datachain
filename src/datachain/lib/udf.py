@@ -519,7 +519,8 @@ class _PrefetchBudget:
     """Listed-byte read-ahead target, allowing the legacy minimum row count."""
 
     def __init__(self, max_rows: int, max_bytes: int, min_rows: int) -> None:
-        self.max_rows, self.max_bytes, self.min_rows = max_rows, max_bytes, min_rows
+        self.max_rows, self.max_bytes = max_rows, max_bytes
+        self.min_rows = min(min_rows, max_rows)
         self.rows = self.bytes = 0
         self.changed = threading.Condition()
 
@@ -533,10 +534,9 @@ class _PrefetchBudget:
 
     def take(self, size: int, stop: threading.Event) -> None:
         with self.changed:
-            while (
-                self.rows >= self.min_rows
-                and not stop.is_set()
-                and (self.rows >= self.max_rows or self.bytes + size > self.max_bytes)
+            while not stop.is_set() and (
+                self.rows >= self.max_rows
+                or (self.rows >= self.min_rows and self.bytes + size > self.max_bytes)
             ):
                 self.changed.wait(0.1)  # `stop` doesn't notify
             self.rows += 1

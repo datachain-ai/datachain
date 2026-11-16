@@ -5,7 +5,7 @@ from datachain.lib.utils import DataChainParamsError
 
 DEFAULT_CACHE = False
 DEFAULT_PREFETCH = 2
-# Automatic scalar read-ahead targets 16 rows and 512 MiB of listed sizes.
+# Automatic scalar prefetch: 16 workers, 512 MiB listed-byte target.
 AUTO_PREFETCH = 16
 AUTO_PREFETCH_BYTES = 512 * 1024 * 1024
 

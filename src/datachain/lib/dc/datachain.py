@@ -51,6 +51,7 @@ from datachain.lib.data_model import (
     StandardType,
     arm_selector,
     dict_to_data_model,
+    union_arms,
     union_layout,
     unwrap_optional,
 )
@@ -577,11 +578,11 @@ class DataChain:
         Parameters:
             cache: Enable files caching to speed up subsequent accesses to the same
                 files from the same or different chains. Defaults to False.
-            prefetch: Number of files to download ahead of the UDF, per process;
-                batches in `batch_map()`. Defaults to up to 16 files, or 2 batches.
+            prefetch: Concurrent row downloads per process; inference batches in
+                `batch_map()`. Defaults to 16 for scalar files, or 2 batches.
                 Set to 0 for UDFs that read only part of a file, such as `get_info()`.
             prefetch_bytes: Listed-byte read-ahead target per process, default
-                512 MiB. The legacy minimum of five rows can exceed this target.
+                512 MiB. A minimum row count can exceed this target.
                 Unset with explicit `prefetch=N`.
             parallel: Number of processes to use for processing user-defined functions
                 (UDFs) in parallel. Each process has its own UDF and setup resources.
@@ -1665,7 +1666,12 @@ class DataChain:
         udf_obj.prefetch_bytes = None
         # Batches keep the plain count; rows without files have nothing to fetch.
         if udf_obj.is_input_batched or not (
-            udf_obj.params and udf_obj.params.get_file_signal()
+            udf_obj.params
+            and any(
+                inspect.isclass(arm) and issubclass(arm, File)
+                for param_type in udf_obj.params.values.values()
+                for arm in union_arms(param_type)[0]
+            )
         ):
             return
         udf_obj.prefetch_bytes = settings.prefetch_bytes
