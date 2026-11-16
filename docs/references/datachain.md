@@ -26,6 +26,8 @@ for examples of how to create a chain.
 
 ::: datachain.lib.dc.lerobot.read_lerobot
 
+::: datachain.lib.dc.mcap.read_mcap
+
 ::: datachain.lib.dc.pandas.read_pandas
 
 ::: datachain.lib.dc.parquet.read_parquet
@@ -41,6 +43,12 @@ for examples of how to create a chain.
 ::: datachain.lib.dc.webdataset.read_webdataset
 
 ::: datachain.lib.dc.database.read_database
+
+::: datachain.lib.dc.datasets.describe
+
+::: datachain.lib.dataset_description.DatasetDescription
+
+::: datachain.lib.dataset_description.DatasetDependencyInfo
 
 ::: datachain.lib.dc.datasets.datasets
 

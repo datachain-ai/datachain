@@ -53,6 +53,34 @@ logger = logging.getLogger("datachain")
 SELECT_BATCH_SIZE = 100_000  # number of rows to fetch at a time
 
 
+def to_json_text(value: Any) -> str:
+    """Return a value as the JSON text `convert_type` stores in a JSON column."""
+    return json.dumps(_to_jsonable(value), ensure_ascii=False, serialize_numpy=True)
+
+
+def _to_jsonable(obj: Any) -> Any:
+    """Recursively convert Python/Pydantic structures into JSON-serializable
+    objects.
+    """
+
+    if ModelStore.is_pydantic(type(obj)):
+        # Use Pydantic's JSON mode to ensure datetime and other non-JSON
+        # native types are serialized in a compatible way. Numpy is the one
+        # thing it refuses and this project's encoder handles.
+        return obj.model_dump(mode="json", fallback=json.numpy_to_python)
+
+    if isinstance(obj, dict):
+        return {
+            k if isinstance(k, str) else to_json_text(k): _to_jsonable(v)
+            for k, v in obj.items()
+        }
+
+    if isinstance(obj, (list, tuple, set)):
+        return [_to_jsonable(i) for i in obj]
+
+    return obj
+
+
 class AbstractWarehouse(ABC, Serializable):
     """
     Abstract Warehouse class, to be implemented by any Database Adapters
@@ -85,36 +113,6 @@ class AbstractWarehouse(ABC, Serializable):
     def normalize_limit_offset(self, query: GenerativeSelect) -> GenerativeSelect:
         """Return query adjusted for warehouse-specific LIMIT/OFFSET semantics."""
         return query
-
-    def _to_jsonable(self, obj: Any) -> Any:
-        """Recursively convert Python/Pydantic structures into JSON-serializable
-        objects.
-        """
-
-        if ModelStore.is_pydantic(type(obj)):
-            # Use Pydantic's JSON mode to ensure datetime and other non-JSON
-            # native types are serialized in a compatible way. Numpy is the one
-            # thing it refuses and this project's encoder handles.
-            return obj.model_dump(mode="json", fallback=json.numpy_to_python)
-
-        if isinstance(obj, dict):
-            out: dict[str, Any] = {}
-            for k, v in obj.items():
-                if not isinstance(k, str):
-                    key_str = json.dumps(
-                        self._to_jsonable(k),
-                        ensure_ascii=False,
-                        serialize_numpy=True,
-                    )
-                else:
-                    key_str = k
-                out[key_str] = self._to_jsonable(v)
-            return out
-
-        if isinstance(obj, (list, tuple, set)):
-            return [self._to_jsonable(i) for i in obj]
-
-        return obj
 
     def convert_type(  # noqa: PLR0911
         self,
@@ -166,7 +164,7 @@ class AbstractWarehouse(ABC, Serializable):
         if col_python_type is dict or col_type_name == "JSON":
             if value_type is str:
                 return val
-            json_ready = self._to_jsonable(val)
+            json_ready = _to_jsonable(val)
             try:
                 return json.dumps(json_ready, ensure_ascii=False, serialize_numpy=True)
             except TypeError as e:

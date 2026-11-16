@@ -1,4 +1,3 @@
-import copy
 from collections.abc import Iterable
 from typing import (  # noqa: UP035
     Annotated,
@@ -337,17 +336,12 @@ def test_type_to_str_empty_generics():
     assert type_to_str(Tuple) == "tuple"  # noqa: UP006
 
 
+@pytest.mark.usefixtures("empty_model_store")
 def test_type_to_str_pydantic_model_uses_model_store():
-    snapshot = copy.deepcopy(ModelStore.store)
-    ModelStore.store = {}
-    try:
+    class Sample(DataModel):
+        a: int
 
-        class Sample(DataModel):
-            a: int
-
-        assert type_to_str(Sample) == ModelStore.get_name(Sample)
-    finally:
-        ModelStore.store = snapshot
+    assert type_to_str(Sample) == ModelStore.get_name(Sample)
 
 
 def test_callable_name_callable_instance():

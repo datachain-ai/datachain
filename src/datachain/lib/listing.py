@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, TypeVar, cast
 
 from fsspec.asyn import get_loop, sync
-from sqlalchemy.sql.expression import or_, true
+from sqlalchemy import or_, true
 
 import datachain.fs.utils as fsutils
 from datachain.asyn import iter_over_async
