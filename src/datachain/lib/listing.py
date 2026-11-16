@@ -44,7 +44,6 @@ if TYPE_CHECKING:
 LISTING_TTL = 4 * 60 * 60  # cached listing lasts 4 hours
 LISTING_PREFIX = "lst__"  # listing datasets start with this name
 LISTING_BATCH_SIZE = 50_000  # rows per insert: listing rows are small
-# seconds between restarts of the reserved version's age, which gc reads
 RESERVATION_TOUCH_INTERVAL = 300
 # a listing version's content_hash: this prefix, its row count and rows_digest sum
 LISTING_DIGEST = "listing-v1"
@@ -500,14 +499,17 @@ def ensure_listing(
     name: str, catalog: "Catalog", write: Callable | None, *, update: bool = False
 ) -> "DatasetRecord":
     """Create or refresh the selected snapshot only when needed."""
-    try:
-        dataset = catalog.get_dataset(name, versions=None, include_incomplete=False)
-    except DatasetNotFoundError:
-        dataset = None
-    if dataset is None or update or listing_dataset_expired(dataset):
+    dataset = None
+    if not update:
+        try:
+            dataset = catalog.get_dataset(name, versions=None, include_incomplete=False)
+        except DatasetNotFoundError:
+            pass
+    if dataset is None or listing_dataset_expired(dataset):
         assert write is not None
-        write()
-        dataset = catalog.get_dataset(name, versions=None, include_incomplete=False)
+        dataset = write() or catalog.get_dataset(
+            name, versions=None, include_incomplete=False
+        )
     return dataset
 
 
@@ -551,7 +553,7 @@ class PageEncoder:
 
 def write_listing(
     uri: str, ds_name: str, session: "Session", client_config: dict
-) -> None:
+) -> "DatasetRecord | None":
     """Store a listing snapshot under a reservation made before enumeration.
 
     Only a newer reservation may supersede it. An unchanged snapshot reuses
@@ -604,9 +606,6 @@ def write_listing(
             nonlocal count, total
             touched = time.monotonic()
             for page in pages:
-                if time.monotonic() - touched > RESERVATION_TOUCH_INTERVAL:
-                    metastore.touch_reservation(dataset, version)
-                    touched = time.monotonic()
                 start = count + 1
                 count += len(page)
                 total += page.digest
@@ -616,7 +615,12 @@ def write_listing(
                     zip(range(start, count + 1), strict=False),
                 )
                 if time.monotonic() - touched > RESERVATION_TOUCH_INTERVAL:
-                    metastore.touch_reservation(dataset, version)
+                    metastore.update_dataset_version(
+                        dataset,
+                        version,
+                        expected_status=DatasetStatus.CREATED,
+                        created_at=datetime.now(UTC),
+                    )
                     touched = time.monotonic()
 
         warehouse.insert_stored_rows(
@@ -656,31 +660,29 @@ def write_listing(
                     expected_latest_complete=previous_version.id,
                     finished_at=datetime.now(UTC),
                 )
-                return
-        try:
-            catalog.complete_dataset_version(
-                dataset,
-                version,
-                content_hash=content_hash,
-                expected_job_id=job_id,
-                expected_latest_complete=reservation.id,
-            )
-        except ConcurrentDatasetModificationError:
-            latest = _latest_version(catalog, ds_name, project)
-            if (
-                latest is None
-                or latest[1].id <= reservation.id
-                or not warehouse.db.has_table(
-                    warehouse.dataset_table_name(latest[0], latest[1].version)
-                )
-            ):
-                raise
-            catalog.release_reservation(dataset, version, job_id)
-            return
-    except BaseException:
+                return None
+        completed = catalog.complete_dataset_version(
+            dataset,
+            version,
+            content_hash=content_hash,
+            expected_job_id=job_id,
+            expected_latest_complete=reservation.id,
+        )
+        return completed if version == DEFAULT_DATASET_VERSION else None
+    except BaseException as exc:
         if dataset is not None and version is not None:
             with suppress(Exception):
                 catalog.release_reservation(dataset, version, job_id)
+        if isinstance(exc, ConcurrentDatasetModificationError) and dataset is not None:
+            latest = _latest_version(catalog, ds_name, project)
+            if (
+                latest is not None
+                and latest[1].id > reservation.id
+                and warehouse.db.has_table(
+                    warehouse.dataset_table_name(latest[0], latest[1].version)
+                )
+            ):
+                return None
         raise
     finally:
         with suppress(Exception):

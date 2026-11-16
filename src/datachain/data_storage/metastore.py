@@ -339,16 +339,6 @@ class AbstractMetastore(ABC, Serializable):
     ) -> None:
         """Record that a dataset version was accessed."""
 
-    def touch_reservation(self, dataset: DatasetRecord, version: str) -> None:
-        """Restart the age of a CREATED version, so that gc, which removes a
-        jobless CREATED version by its age, leaves a long write alone."""
-        self.update_dataset_version(
-            dataset,
-            version,
-            expected_status=DatasetStatus.CREATED,
-            created_at=datetime.now(UTC),
-        )
-
     @abstractmethod
     def remove_dataset_version(
         self, dataset: DatasetRecord, version: str
