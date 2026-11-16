@@ -1,5 +1,3 @@
-import copy
-
 import pytest
 from pydantic import Field
 
@@ -24,14 +22,7 @@ def _reset_model_store():
     ModelStore.store = {}
 
 
-@pytest.fixture(autouse=True)
-def _autoreset_model_store():
-    snapshot = copy.deepcopy(ModelStore.store)
-    try:
-        ModelStore.store = {}
-        yield
-    finally:
-        ModelStore.store = snapshot
+pytestmark = pytest.mark.usefixtures("empty_model_store")
 
 
 def test_partial_same_selection_reuses_name():

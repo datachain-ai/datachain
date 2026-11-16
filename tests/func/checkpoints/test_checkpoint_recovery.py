@@ -1182,3 +1182,94 @@ def test_checkpoint_resume_across_input_pages(
     )
     assert result == expected
     assert sorted(processed) == sorted(set(range(12)) - completed)
+
+
+@pytest.mark.parametrize("retry", [False, True])
+@pytest.mark.parametrize("failures", [1, 2])
+def test_delta_update_after_interrupted_udf_resumes_remaining_rows(
+    test_session, monkeypatch, retry, failures
+):
+    metastore = test_session.catalog.metastore
+    state = {"fail": False, "calls": 0}
+
+    def record(id) -> int:
+        state["calls"] += 1
+        if state["fail"] and state["calls"] > 3:
+            raise RuntimeError("interrupted delta")
+        return id * 2
+
+    def save():
+        chain = (
+            dc.read_dataset(
+                "resume_source",
+                delta=True,
+                delta_on="id",
+                delta_retry=retry,
+                session=test_session,
+            )
+            .settings(batch_size=1)
+            .map(value=record)
+        )
+        if retry:
+            chain = chain.filter(dc.C.id != 3)
+        return chain.save("resume_result")
+
+    def new_job(**kwargs):
+        reset_session_job_state()
+        if parent_id := kwargs.get("rerun_from_job_id"):
+            kwargs["run_group_id"] = metastore.get_job(parent_id).run_group_id
+        job_id = metastore.create_job("delta", "", **kwargs)
+        monkeypatch.setenv("DATACHAIN_JOB_ID", job_id)
+        return job_id
+
+    dc.read_values(id=[1, 2, 3], session=test_session).save("resume_source")
+    previous_job = new_job()
+    save()
+    dc.read_values(id=list(range(1, 14)), session=test_session).save("resume_source")
+    for _ in range(failures):
+        previous_job = new_job(rerun_from_job_id=previous_job)
+        state.update(fail=True, calls=0)
+        with pytest.raises(RuntimeError, match="interrupted delta"):
+            save()
+    new_job(rerun_from_job_id=previous_job)
+    state.update(fail=False, calls=0)
+    result = save()
+    assert state["calls"] == 10 + int(retry) - 3 * failures
+    assert sorted(result.to_iter("id", "value")) == [
+        (id, id * 2) for id in range(1, 14) if not (retry and id == 3)
+    ]
+
+
+def test_delta_update_with_no_retry_rows_reuses_udf_between_sibling_saves(test_session):
+    processed = []
+
+    def record(id):
+        processed.append(id)
+        return id * 2, ""
+
+    def save(name):
+        return (
+            dc.read_dataset(
+                "sibling_source",
+                delta=True,
+                delta_on="id",
+                delta_retry="error",
+                session=test_session,
+            )
+            .map(record, output={"value": int, "error": str})
+            .save(name)
+        )
+
+    dc.read_values(id=[1, 2], session=test_session).save("sibling_source")
+    save("sibling_a")
+    save("sibling_b")
+    assert sorted(processed) == [1, 2]
+    dc.read_values(id=[1, 2, 3], session=test_session).save("sibling_source")
+    processed.clear()
+    a, b = save("sibling_a"), save("sibling_b")
+    assert processed == [3]
+    assert (
+        sorted(a.to_list("id", "value"))
+        == sorted(b.to_list("id", "value"))
+        == [(1, 2), (2, 4), (3, 6)]
+    )

@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from typing import TypeAlias, TypeVar
 from uuid import uuid4
 
-from sqlalchemy.sql.elements import ClauseElement, ColumnElement
+from sqlalchemy import ClauseElement, ColumnElement
 
 from datachain import json
 

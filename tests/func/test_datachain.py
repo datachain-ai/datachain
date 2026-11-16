@@ -118,6 +118,34 @@ def test_read_storage_reindex(tmp_dir, test_session):
     assert dc.read_storage(path, session=test_session, update=True).count() == 2
 
 
+def test_read_storage_update_lists_once_per_chain(tmp_dir, test_session):
+    (tmp_dir / "a.txt").write_text("a")
+    (tmp_dir / "bb.txt").write_text("bb")
+    uri = tmp_dir.as_uri()
+    dc.read_storage(uri, session=test_session).exec()
+
+    with patch(
+        "datachain.lib.listing.write_listing",
+        wraps=dc.lib.listing.write_listing,
+    ) as write_listing:
+        chain = dc.read_storage(uri, session=test_session, update=True)
+        large = chain.filter(dc.C("file.size") > 1)
+        assert chain.count() == 2
+        assert chain.sum("file.size") == 3
+        assert large.count() == 1
+        assert chain.union(large).count() == 3
+        assert write_listing.call_count == 1
+
+        (tmp_dir / "ccc.txt").write_text("ccc")
+        updated = dc.read_storage(uri, session=test_session, update=True)
+        assert updated.count() == 3
+        assert updated.sum("file.size") == 6
+        assert write_listing.call_count == 2
+
+        assert chain.count() == 2
+        assert large.count() == 1
+
+
 def test_read_storage_reindex_expired(tmp_dir, test_session):
     tmp_dir = tmp_dir / "parquets"
     os.mkdir(tmp_dir)
@@ -195,6 +223,46 @@ def test_read_storage_reads_keys_with_double_slash(cloud_test_catalog):
     finally:
         client.fs.rm(f"{client.name}/{prefix}", recursive=True)
         client.fs.invalidate_cache()
+
+
+@pytest.mark.parametrize("cloud_type,version_aware", [("s3", False)], indirect=True)
+@pytest.mark.parametrize("reuse_parent", [False, True])
+@pytest.mark.parametrize(
+    "suffix,recursive,expected",
+    [
+        ("d/", False, ["d/e.txt"]),
+        ("d//*.txt", True, ["d//e.txt"]),
+        ("d//", True, ["d//e.txt", "d///f.txt"]),
+    ],
+)
+def test_read_storage_preserves_empty_folder_segments(
+    cloud_test_catalog, cloud_prefix, reuse_parent, suffix, recursive, expected
+):
+    ctc = cloud_test_catalog
+    client = ctc.catalog.get_client(ctc.src_uri)
+    for key in ["d/e.txt", "d//e.txt", "d///f.txt"]:
+        client.fs.pipe_file(f"{client.name}/{cloud_prefix}/{key}", key.encode())
+    client.fs.invalidate_cache()
+    if reuse_parent:
+        dc.read_storage(f"{ctc.src_uri}/{cloud_prefix}/", session=ctc.session).exec()
+    uri = f"{ctc.src_uri}/{cloud_prefix}/{suffix}"
+    expected_paths = [f"{cloud_prefix}/{k}" for k in sorted(expected)]
+
+    assert (
+        sorted(
+            dc.read_storage(uri, session=ctc.session, recursive=recursive).to_values(
+                "file.path"
+            )
+        )
+        == expected_paths
+    )
+    assert (
+        sorted(
+            f.path
+            for f in dc.list_storage(uri, session=ctc.session, recursive=recursive)
+        )
+        == expected_paths
+    )
 
 
 @pytest.mark.parametrize(
@@ -1615,6 +1683,56 @@ def test_read_parquet_columns_fetch_only_those_columns(
     assert sorted(values) == sorted(table["c3"].to_pylist())
     assert 0 < fetched_bytes[0] < file.size // 4
     assert sum(cb.value for cb in download_callbacks) > 0
+
+
+class _Wide(DataModel):
+    x: float
+    a: float
+    b: float
+    c: float
+    d: float
+    e: float
+    f: float
+    g: float
+
+
+def _put_wide(ctc, tmp_path, anno):
+    rng = np.random.default_rng(0)
+    rows = rng.random((10_000, 8))
+    points = [_Wide(**dict(zip(_Wide.model_fields, r, strict=True))) for r in rows]
+    local = tmp_path / "wide.parquet"
+    dc.read_values(p=points, output={"p": anno}, session=ctc.session).to_parquet(local)
+    uri = f"{ctc.src_uri}/wide.parquet"
+    file = File.upload(local.read_bytes(), uri, ctc.catalog)
+    return uri, file.size, points
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize(
+    "anno,output,signal",
+    [
+        (_Wide, None, "p.x"),
+        (_Wide | None, None, "p.x"),
+        (_Wide | None, {"x": float | None}, "x"),
+    ],
+)
+def test_read_parquet_columns_fetch_only_picked_signals_written_by_datachain(
+    cloud_test_catalog_upload, fetched_bytes, tmp_path, anno, output, signal
+):
+    ctc = cloud_test_catalog_upload
+    uri, size, points = _put_wide(ctc, tmp_path, anno)
+    chain = dc.read_parquet(
+        uri,
+        columns=["p.x"],
+        output=output,
+        settings={"prefetch": 0},
+        session=ctc.session,
+    )
+    fetched_bytes[:] = [0, 0]
+
+    assert sorted(chain.to_values(signal)) == sorted(p.x for p in points)
+    assert 0 < fetched_bytes[0] < size // 2
 
 
 def test_read_parquet_columns_over_http_without_ranges(

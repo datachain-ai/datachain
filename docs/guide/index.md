@@ -28,7 +28,7 @@ In-depth coverage of DataChain capabilities. Start with **Get Data In** and **Tr
 
 ## Knowledge Base
 
-- [Knowledge Base](knowledge-base.md): skill installation, `dc-knowledge/` generation, agent workflow, browsing
+- [Knowledge Base](knowledge-base.md): shared descriptions and local dataset inspection
 
 ## Scale and Recover
 

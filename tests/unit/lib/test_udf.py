@@ -7,7 +7,7 @@ from contextlib import closing
 
 import pytest
 from cloudpickle import dumps, loads
-from fsspec.callbacks import DEFAULT_CALLBACK
+from fsspec.callbacks import DEFAULT_CALLBACK, TqdmCallback
 from pydantic import BaseModel
 
 import datachain as dc
@@ -17,6 +17,7 @@ from datachain.lib.file import File, FileError
 from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.udf import (
     PREFETCH_FILE_WORKERS,
+    FlatRow,
     JsonSerializationError,
     UDFBase,
     UdfError,
@@ -25,6 +26,7 @@ from datachain.lib.udf import (
     _prefetch_inputs,
 )
 from datachain.lib.utils import DataChainError
+from datachain.query import dataset
 
 from .test_udf_signature import get_sign
 
@@ -136,13 +138,13 @@ def test_udf_verbose_name_func():
 
 
 def test_udf_verbose_name_lambda():
-    sign = get_sign(lambda key: len(key), output="res")  # noqa: PLW0108
+    sign = get_sign(lambda key: len(key), output="res")
     udf = UDFBase._create(sign, sign.output_schema)
     assert udf.verbose_name == "<lambda>"
 
 
 def test_udf_verbose_name_unknown():
-    sign = get_sign(lambda key: len(key), output="res")  # noqa: PLW0108
+    sign = get_sign(lambda key: len(key), output="res")
     udf = UDFBase._create(sign, sign.output_schema)
     udf._func = None
     assert udf.verbose_name == "<unknown>"
@@ -701,3 +703,40 @@ def test_closing_prefetch_waits_for_download_cleanup(monkeypatch):
         assert next(it)[0].path == "ready"
         assert started.wait(5)
     assert stopped.is_set()
+
+
+@pytest.mark.parametrize(
+    "output,value,stored",
+    [(list[float], [1, 2.5], "[1.0, 2.5]"), (list[list[float]], [[1]], "[[1.0]]")],
+)
+def test_gen_flat_rows_convert_list_items_to_the_column_type(
+    test_session, output, value, stored
+):
+    def rows(n: int) -> Iterator[list]:
+        yield FlatRow((value,))  # type: ignore[misc]
+
+    chain = dc.read_values(n=[1], session=test_session).gen(v=rows, output=output)
+
+    assert repr(chain.to_values("v")[0]) == stored
+
+
+def test_gen_reports_generated_rows_once_per_interval(
+    test_session, mocker, monkeypatch
+):
+    now = 0.0
+    monkeypatch.setattr(time, "monotonic", lambda: now)
+    callbacks = mocker.spy(dataset, "get_generated_callback")
+    updates = mocker.spy(TqdmCallback, "relative_update")
+
+    def rows(n: int) -> Iterator[int]:
+        nonlocal now
+        for i, seconds in enumerate([0, 0, 1, 1, 1, 2, 2]):
+            now = seconds
+            yield i
+
+    chain = dc.read_values(n=[1], session=test_session).gen(v=rows, output=int)
+
+    assert chain.count() == 7
+    generated = callbacks.spy_return
+    reported = [c.args[1] for c in updates.call_args_list if c.args[0] is generated]
+    assert (len(reported), sum(reported)) == (4, 7)
