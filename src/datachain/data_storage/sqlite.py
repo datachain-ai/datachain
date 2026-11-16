@@ -1,7 +1,7 @@
 import logging
 import os
 import sqlite3
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from contextlib import contextmanager
 from functools import cached_property, partial, wraps
 from time import sleep
@@ -865,6 +865,21 @@ class SQLiteWarehouse(AbstractWarehouse):
         dr = self.dataset_rows(dataset, version)
         query = dr.select(dr.c("source", column="file")).distinct()
         return [StorageURI(row[0]) for row in self.db.execute(query)]
+
+    def insert_stored_rows(
+        self,
+        table: Table,
+        columns: Sequence[str],
+        rows: Iterable[tuple],
+        batch_size: int | None = None,
+    ) -> None:
+        if not columns:
+            super().insert_stored_rows(table, columns, rows, batch_size)
+            return
+        from itertools import batched
+
+        for block in batched(rows, batch_size or self.INSERT_BATCH_SIZE):
+            self.insert_block(table, columns, list(block))
 
     def insert_block(
         self,

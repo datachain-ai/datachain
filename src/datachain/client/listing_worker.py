@@ -16,10 +16,9 @@ from contextlib import suppress
 from functools import partial
 from typing import TYPE_CHECKING, Any, BinaryIO
 
-from datachain.lib.file import FileRow
 from datachain.utils import usable_cpu_count
 
-from .ranges import Page
+from .ranges import FileRow, Page
 
 if TYPE_CHECKING:
     from datachain.client.fsspec import RangeListedClient
@@ -263,6 +262,8 @@ def main(out_fd: int) -> None:
     try:
         if (spec := load(inp)) is not None:
             cls, name, fs_kwargs, cache, page_size, prefix, encode = spec
+            if s3 := sys.modules.get("datachain.client.s3"):
+                s3._as_row = lambda r: r  # type: ignore[attr-defined]
             client = cls(name, fs_kwargs, cache)
             client.LIST_PAGE_SIZE = page_size
             client.encode_page = encode
@@ -321,7 +322,11 @@ async def _serve(
             if encode:
                 rows = encode(page.rows)
             else:  # plain tuples: a row type would unpickle per row in Python
-                plain = [tuple(r) for r in page.rows]
+                plain = (
+                    page.rows
+                    if not page.rows or type(page.rows[0]) is tuple
+                    else [tuple(r) for r in page.rows]
+                )
                 rows = pickle.dumps(plain, protocol=5), len(plain)
             answer = dump((rid, (rows, *page[1:])))
         write_frame(answer or dump((rid, None)))

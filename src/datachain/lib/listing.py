@@ -2,6 +2,7 @@ import functools
 import glob
 import logging
 import os
+import pickle
 import re
 import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -11,22 +12,17 @@ from datetime import UTC, datetime, timedelta
 from hashlib import blake2b
 from typing import TYPE_CHECKING, TypeVar, cast
 
-import sqlalchemy as sa
 from fsspec.asyn import get_loop, sync
-from sqlalchemy import or_, true
 
 import datachain.fs.utils as fsutils
 from datachain.asyn import iter_over_async
 from datachain.client import Client
+from datachain.client.ranges import FileRow
 from datachain.error import (
     ClientError,
     ConcurrentDatasetModificationError,
     DatasetNotFoundError,
 )
-from datachain.lib.convert.flatten import flatten
-from datachain.lib.file import File, FileRow
-from datachain.query.schema import Column
-from datachain.sql.functions import path as pathfunc
 from datachain.utils import parent_path, safe_closing, uses_glob
 
 if TYPE_CHECKING:
@@ -37,7 +33,9 @@ if TYPE_CHECKING:
     from datachain.data_storage.codec import RowCodec
     from datachain.dataset import DatasetRecord, DatasetVersion
     from datachain.lib.dc import DataChain
+    from datachain.lib.file import File
     from datachain.project import Project
+    from datachain.query.schema import Column
     from datachain.query.session import Session
 
 LISTING_TTL = 4 * 60 * 60  # cached listing lasts 4 hours
@@ -85,7 +83,9 @@ def list_pages(
                 yield page
                 continue
             rows = (
-                [*map(file_row, page)] if page and isinstance(page[0], File) else page
+                page
+                if not page or isinstance(page[0], tuple)
+                else [*map(file_row, page)]
             )
             yield encode(rows) if encode else rows
 
@@ -128,11 +128,13 @@ class ListScope:
     one_level: bool
 
 
-def file_row(file: File) -> FileRow:
+def file_row(file: "File") -> FileRow:
+    from datachain.lib.convert.flatten import flatten
+
     return FileRow(*flatten(file))
 
 
-def get_file_info(uri: str, cache, client_config=None) -> File:
+def get_file_info(uri: str, cache, client_config=None) -> "File":
     """
     Wrapper to return File object by its URI
     """
@@ -157,6 +159,10 @@ def ls(
 
 def select_paths(dc: D, paths: "PathFilter") -> D:
     """The latest files of a listing chain whose paths ``paths`` selects."""
+    from sqlalchemy import true
+
+    from datachain.query.schema import Column
+
     dc = dc.filter(Column("file.is_latest") == true())
     for condition in paths.sql(Column("file.path")):
         dc = dc.filter(condition)
@@ -189,9 +195,12 @@ class PathFilter:
     def glob(self, pattern: str) -> "PathFilter":
         return PathFilter(self.any_of, (*self.all_of, ("glob", pattern)))
 
-    def sql(self, path: Column) -> "list[ColumnElement]":
+    def sql(self, path: "Column") -> "list[ColumnElement]":
         """One condition per filter step: ``any_of`` combined, then each of
         ``all_of``. The steps feed chain hashes, so their split is kept."""
+        from sqlalchemy import or_
+
+        from datachain.sql.functions import path as pathfunc
 
         def cond(op: str, value: str) -> "ColumnElement":
             if op == "eq":
@@ -528,11 +537,21 @@ class StoredPage:
     """A page of listing rows in the warehouse's stored form, and their
     ``rows_digest``: made where the page was parsed, inserted as it is."""
 
-    def __init__(self, rows: list[tuple], digest: int) -> None:
-        self.rows, self.digest = rows, digest
+    def __init__(
+        self, rows: list[tuple] | bytes, digest: int, size: int | None = None
+    ) -> None:
+        self._rows = rows
+        self.digest = digest
+        self.size = len(rows) if size is None else size
+
+    @property
+    def rows(self) -> list[tuple]:
+        if isinstance(self._rows, bytes):
+            self._rows = pickle.loads(self._rows)  # noqa: S301
+        return self._rows
 
     def __len__(self) -> int:
-        return len(self.rows)
+        return self.size
 
 
 @dataclass(frozen=True)
@@ -544,7 +563,11 @@ class PageEncoder:
 
     def __call__(self, rows: Sequence[tuple]) -> StoredPage:
         stored = list(map(self.codec.encode, rows))
-        return StoredPage(stored, rows_digest(rows, self.with_etag))
+        return StoredPage(
+            pickle.dumps(stored, protocol=5),
+            rows_digest(rows, self.with_etag),
+            len(stored),
+        )
 
 
 def write_listing(
@@ -555,7 +578,10 @@ def write_listing(
     Only a newer reservation may supersede it. An unchanged snapshot reuses
     the latest COMPLETE version unless an older reservation needs fencing.
     """
+    import sqlalchemy as sa
+
     from datachain.dataset import DEFAULT_DATASET_VERSION, DatasetStatus
+    from datachain.lib.file import File
     from datachain.lib.signal_schema import SignalSchema
 
     catalog = session.catalog
@@ -602,14 +628,9 @@ def write_listing(
             nonlocal count, total
             touched = time.monotonic()
             for page in pages:
-                start = count + 1
                 count += len(page)
                 total += page.digest
-                yield from map(
-                    tuple.__add__,
-                    page.rows,
-                    zip(range(start, count + 1), strict=False),
-                )
+                yield from page.rows
                 if time.monotonic() - touched > RESERVATION_TOUCH_INTERVAL:
                     metastore.update_dataset_version(
                         dataset,
@@ -619,9 +640,7 @@ def write_listing(
                     )
                     touched = time.monotonic()
 
-        warehouse.insert_stored_rows(
-            table, [*names, "sys__id"], rows(), LISTING_BATCH_SIZE
-        )
+        warehouse.insert_stored_rows(table, names, rows(), LISTING_BATCH_SIZE)
         content_hash = f"{LISTING_DIGEST}:{count}:{total % (1 << 128):032x}"
         latest = (
             _latest_version(catalog, ds_name, project)

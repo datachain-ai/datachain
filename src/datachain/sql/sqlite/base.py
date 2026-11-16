@@ -296,6 +296,8 @@ def sqlite_datetime_cast(value):
 def _normalize_datetime_for_storage(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value
+    if value.tzinfo is UTC:
+        return value.replace(tzinfo=None)
 
     try:
         return value.astimezone(UTC).replace(tzinfo=None)
