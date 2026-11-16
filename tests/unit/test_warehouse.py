@@ -369,6 +369,89 @@ def test_computed_join_keys_scale_linearly(
         assert calls <= 10
 
 
+@pytest.fixture
+def computed_join_inputs(test_session):
+    calls = Counter()
+    warehouse = test_session.catalog.warehouse
+
+    def key(side):
+        def value(number):
+            calls[side] += 1
+            return number
+
+        return value
+
+    for side in ("left", "right"):
+        warehouse.db.db.create_function(
+            f"test_{side}_key", 1, key(side), deterministic=True
+        )
+    left = dc.read_values(x=[0, 1, 2], session=test_session).mutate(
+        key=sa.func.test_left_key(dc.C.x, type_=sa.Integer())
+    )
+    right = dc.read_values(y=list(range(12)), session=test_session).mutate(
+        key=sa.func.test_right_key(dc.C.y, type_=sa.Integer())
+    )
+    return left, right, calls, warehouse
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize("preview", ["limit", "filter_limit", "union_limit", "show"])
+def test_computed_join_preview_does_not_scan_all_right_keys(
+    computed_join_inputs, preview, capsys
+):
+    left, right, calls, _ = computed_join_inputs
+    joined = left.merge(right, on="key", inner=False).select("x", "y")
+    if preview == "show":
+        joined.show(limit=1)
+        assert "0" in capsys.readouterr().out
+    else:
+        if preview == "filter_limit":
+            joined = joined.filter(dc.C.x >= 0)
+        elif preview == "union_limit":
+            joined = joined.union(joined)
+        assert joined.limit(1).to_list() == [(0, 0)]
+    assert calls["right"] == 1
+
+
+@skip_if_not_sqlite
+def test_computed_join_full_read_and_pagination_keep_linear_key_work(
+    computed_join_inputs, monkeypatch
+):
+    left, right, calls, warehouse = computed_join_inputs
+    joined = left.merge(right, on="key", inner=False).select("x", "y")
+    expected = [(0, 0), (1, 1), (2, 2)]
+    assert joined.to_list() == expected
+    assert calls["right"] == 12
+    calls.clear()
+    clone = warehouse.clone
+
+    def clone_with_test_keys(*args, **kwargs):
+        wh = clone(*args, **kwargs)
+        for side in ("left", "right"):
+
+            def key(number, side=side):
+                calls[side] += 1
+                return number
+
+            wh.db.db.create_function(f"test_{side}_key", 1, key, deterministic=True)
+        return wh
+
+    monkeypatch.setattr(warehouse, "clone", clone_with_test_keys)
+    query = joined._query.apply_steps().select()
+    try:
+        assert list(warehouse.dataset_select_paginated(query, page_size=2)) == expected
+        # Both pages retain the build-side fence, despite their internal LIMIT.
+        assert calls["right"] == 24
+    finally:
+        joined._query.cleanup()
+
+
+@skip_if_not_sqlite
+def test_computed_subtract_with_limit_keeps_results(computed_join_inputs):
+    left, right, _, _ = computed_join_inputs
+    assert right.subtract(left, on="key").select("y").limit(1).to_list() == [(3,)]
+
+
 @skip_if_not_sqlite
 @pytest.mark.parametrize("kind", ["inner", "left", "full", "subtract"])
 @pytest.mark.parametrize("computed", ["left", "right", "both"])

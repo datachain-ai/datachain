@@ -31,7 +31,7 @@ from sqlalchemy.sql.elements import (
     TypeCoerce,
 )
 from sqlalchemy.sql.expression import cast
-from sqlalchemy.sql.selectable import Join, Select
+from sqlalchemy.sql.selectable import Join, Select, SelectBase
 from sqlalchemy.sql.visitors import iterate, replacement_traverse
 
 import datachain.sql.sqlite
@@ -172,11 +172,16 @@ def _probe_computed_keys(
     # the original comparisons preserve SQLite's runtime comparison semantics.
     assert join.onclause is not None
     # Materialized keys must not erase SQLite's collation precedence. Keep the
-    # original query for collated joins; ordinary keys retain the indexed path.
+    # original query for collated joins and explicit limits/previews. The outer
+    # LIMIT is not built yet here; its hint travels with the input SELECT.
     if any(
         isinstance(node, (ColumnClause, Label, BinaryExpression))
         and getattr(node.type, "collation", None)
         for node in iterate(join.onclause)
+    ) or any(
+        isinstance(query := getattr(side, "element", None), SelectBase)
+        and query.get_execution_options().get("datachain_bounded_query")
+        for side in (join.left, join.right)
     ):
         return join, {}
     keys: dict[FromClause, dict] = {join.left: {}, join.right: {}}
