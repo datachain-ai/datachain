@@ -3,6 +3,7 @@
 columns into a `RowCodec`. Codecs hold functions and partials only, so they pickle."""
 
 import math
+import numbers
 import sys
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from copy import deepcopy
@@ -125,6 +126,8 @@ class RowCodec:
         """An Arrow batch of leaf columns as stored tuples; missing trailing
         columns are None."""
         n, columns = batch.num_rows, []
+        if not self.codecs:
+            return [()] * n
         for i, codec in enumerate(self.codecs):
             if i >= batch.num_columns:
                 columns.append([codec.default] * n)
@@ -212,13 +215,11 @@ def check_list(
         )
     if item_type is dict:
         first = next((v for v in value if v is not None), None)
-        first_type = str if json_array_text else dict
-        if first is not None and not isinstance(first, first_type):
-            # Array(JSON) stores each item as JSON text in this legacy shape;
-            # "null" decodes to None, preserving the nullable-array contract.
-            return [encode_json(v) for v in value]
-        key_converter = None if json_array_text else array_json_key
-        return [None if v is None else to_jsonable(v, key_converter) for v in value]
+        if json_array_text or (first is not None and not isinstance(first, dict)):
+            # Array(JSON) stores each item as JSON text when json_array_text=True
+            # or in the legacy non-dict shape; "null" decodes to None.
+            return [encode_json(v, array_json_key) for v in value]
+        return [None if v is None else to_jsonable(v, array_json_key) for v in value]
     value = list(value)
     first = next((v for v in value if v is not None), None)
     keep_compatible = item_type is not list and isinstance(first, item_type)
@@ -250,42 +251,57 @@ def array_json_key(key: Any) -> str:
     return str(key)
 
 
-def _check_model_dict_keys(obj: Any) -> None:  # noqa: C901
+def _serialized_fields(decorators: Any) -> set[str]:
+    if decorators is None:
+        return set()
+    used = {"always", "unless-none", "json", "json-unless-none"}
+    return {
+        f
+        for fs in decorators.field_serializers.values()
+        if (info := getattr(fs, "info", None)) is None or info.when_used in used
+        for f in getattr(info, "fields", ())
+    }
+
+
+def _check_model_dict_keys(obj: Any, model_cls: type | None = None) -> None:
     from pydantic import BaseModel
     from pydantic_core import to_jsonable_python
 
     obj = _numpy_to_python(obj)
     if isinstance(obj, BaseModel):
-        decorators = getattr(type(obj), "__pydantic_decorators__", None)
+        cls = (
+            model_cls
+            if model_cls is not None and isinstance(obj, model_cls)
+            else type(obj)
+        )
+        decorators = getattr(cls, "__pydantic_decorators__", None)
         if decorators is not None and decorators.model_serializers:
             return
-        serialized_fields: set[str] = set()
-        if decorators is not None:
-            for fs in decorators.field_serializers.values():
-                info = getattr(fs, "info", None)
-                if info is None or info.when_used in (
-                    "always",
-                    "unless-none",
-                    "json",
-                    "json-unless-none",
-                ):
-                    serialized_fields.update(getattr(info, "fields", ()))
+        serialized_fields = _serialized_fields(decorators)
         if "*" in serialized_fields:
             return
-        for name, field_info in type(obj).model_fields.items():
+        for name, field_info in cls.model_fields.items():
             if (
                 not getattr(field_info, "exclude", False)
                 and name not in serialized_fields
             ):
+                anno = field_info.annotation
+                declared = (
+                    anno
+                    if isinstance(anno, type)
+                    and issubclass(anno, BaseModel)
+                    and not getattr(field_info, "serialize_as_any", False)
+                    else None
+                )
+                _check_model_dict_keys(getattr(obj, name), declared)
+        if cls is type(obj) and (extra := getattr(obj, "__pydantic_extra__", None)):
+            _check_model_dict_keys(extra)
+        for name, comp_dec in decorators.computed_fields.items() if decorators else ():
+            if (
+                not getattr(getattr(comp_dec, "info", None), "exclude", False)
+                and name not in serialized_fields
+            ):
                 _check_model_dict_keys(getattr(obj, name))
-        if decorators is not None:
-            for name, comp_dec in decorators.computed_fields.items():
-                comp_info = getattr(comp_dec, "info", None)
-                if (
-                    not getattr(comp_info, "exclude", False)
-                    and name not in serialized_fields
-                ):
-                    _check_model_dict_keys(getattr(obj, name))
     elif isinstance(obj, dict):
         keys: set[str] = set()
         for k, v in obj.items():
@@ -360,12 +376,12 @@ def to_json_text(value: Any) -> str:
     return json.dumps(to_jsonable(value), ensure_ascii=False, serialize_numpy=True)
 
 
-def encode_json(value: Any) -> str:
+def encode_json(value: Any, key_converter: Callable[[Any], str] | None = None) -> str:
     from datachain.lib.udf import JsonSerializationError
 
     if type(value) is str:
         return value
-    json_ready = to_jsonable(value)
+    json_ready = to_jsonable(value, key_converter)
     try:
         return json.dumps(json_ready, ensure_ascii=False, serialize_numpy=True)
     except TypeError as e:
@@ -383,7 +399,7 @@ def decode_json(value: Any) -> Any:
 def decode_bool(value: Any) -> Any:
     if isinstance(value, bool):
         return value
-    if isinstance(value, int):
+    if isinstance(value, (int, numbers.Integral)):
         return bool(value)
     if isinstance(value, str):
         normalized = value.strip().lower()
@@ -459,7 +475,9 @@ def base_decode(
         "datetime": decode_datetime,
         "binary": decode_binary,
     }
-    return decoders.get(kind)
+    if kind in decoders:
+        return decoders[kind]
+    return getattr(sql_type, "on_read_convert", None)
 
 
 def default_decode(sql_type: Any) -> Callable[[Any], Any] | None:
