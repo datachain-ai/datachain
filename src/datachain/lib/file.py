@@ -789,23 +789,6 @@ class File(DataModel):
 
         destination = stringify_path(destination)
         client, rel_path = self._resolve_destination(destination, client_config)
-        # Validate before the local client normalizes object-key separators.
-        raw_path, key_path = destination.removeprefix("file://"), self.path
-        if os.name == "nt":
-            raw_path, key_path = (
-                raw_path.replace("\\", "/"),
-                key_path.replace("\\", "/"),
-            )
-        if (
-            client.PREFIX == "file://"
-            and "//" in f"/{key_path}/"
-            and (raw_path == key_path or raw_path.endswith(f"/{key_path}"))
-        ):
-            raise FileError(
-                "Local destination must not contain empty segments",
-                self.source,
-                self.path,
-            )
         write_config = WriteConfig(
             content_type=content_type,
             content_disposition=content_disposition,

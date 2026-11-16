@@ -4,7 +4,6 @@ import os
 import posixpath
 import tarfile
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -18,7 +17,6 @@ from datachain.lib.file import (
     AudioFile,
     File,
     FileError,
-    FileRow,
     ImageFile,
     TextFile,
     VFileError,
@@ -219,7 +217,6 @@ def test_export_rejects_empty_segments(create_file, tmp_path):
 )
 def test_parent_keeps_empty_segments(path, parent):
     assert File(source="s3://bkt", path=path).parent == parent
-    assert FileRow("s3://bkt", path).parent == parent
 
 
 def _uri_via_helper(p: Path) -> str:
@@ -1229,24 +1226,3 @@ def test_subclass_private_attributes_keep_their_values():
 
     assert file._catalog is catalog
     assert file._caching_enabled
-
-
-@pytest.mark.parametrize("uri", [False, True])
-@pytest.mark.parametrize("key", ["dir//file.txt", "/file.txt", "dir/"])
-def test_save_rejects_empty_local_destination_segments(create_file, tmp_path, uri, key):
-    file = create_file("s3://mybkt", path=key, etag="etag")
-    destination = str(tmp_path / "output") + "/" + key
-    if uri:
-        destination = "file://" + destination
-    with pytest.raises(FileError, match="must not contain empty segments"):
-        file.save(destination)
-    assert not (tmp_path / "output").exists()
-
-
-def test_save_rejects_empty_segments_with_windows_separators(
-    create_file, tmp_path, monkeypatch
-):
-    monkeypatch.setattr("datachain.lib.file.os", SimpleNamespace(name="nt"))
-    file = create_file("s3://mybkt", path=r"dir\sub//file.txt", etag="etag")
-    with pytest.raises(FileError, match="must not contain empty segments"):
-        file.save(str(tmp_path / "output") + r"\dir\sub//file.txt")

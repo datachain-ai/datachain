@@ -680,3 +680,19 @@ def test_select_paths_keeps_filter_steps(test_session, list_path, pattern, recur
 def test_node_with_path_has_empty_segments(parts, expected):
     nwp = NodeWithPath(Node(path="/".join(parts)), path=parts)
     assert nwp.has_empty_segments is expected
+
+
+@skip_if_not_sqlite
+def test_warehouse_empty_segment_folder_expansion_and_size(test_session):
+    files = [
+        File(path="d/e.txt", size=1),
+        File(path="d//e.txt", size=2),
+        File(path="d///f.txt", size=3),
+    ]
+    dataset = dc.read_values(file=files, session=test_session).save("empty_seg").dataset
+    wh = test_session.catalog.warehouse
+    rows = wh.dataset_rows(dataset, dataset.latest_version)
+
+    (node,) = wh.expand_path(rows, "d*//")
+    assert node.path == "d/"
+    assert wh.size(rows, node) == (5, 0)
