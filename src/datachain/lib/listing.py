@@ -603,14 +603,21 @@ def write_listing(
                 if time.monotonic() - touched > RESERVATION_TOUCH_INTERVAL:
                     metastore.touch_reservation(dataset, version)
                     touched = time.monotonic()
+                start = count + 1
                 count += len(page)
                 total += page.digest
-                yield from page.rows
+                yield from map(
+                    tuple.__add__,
+                    page.rows,
+                    zip(range(start, count + 1), strict=False),
+                )
                 if time.monotonic() - touched > RESERVATION_TOUCH_INTERVAL:
                     metastore.touch_reservation(dataset, version)
                     touched = time.monotonic()
 
-        warehouse.insert_stored_rows(table, names, rows(), LISTING_BATCH_SIZE)
+        warehouse.insert_stored_rows(
+            table, [*names, "sys__id"], rows(), LISTING_BATCH_SIZE
+        )
         content_hash = f"{LISTING_DIGEST}:{count}:{total % (1 << 128):032x}"
         latest = (
             _latest_version(catalog, ds_name, project)
@@ -646,6 +653,10 @@ def write_listing(
                     finished_at=datetime.now(UTC),
                 )
                 return
+        if job:
+            metastore.link_dataset_version_to_job(
+                reservation.id, job.id, is_creator=True
+            )
         try:
             catalog.complete_dataset_version(
                 dataset,
@@ -666,10 +677,6 @@ def write_listing(
                 raise
             catalog.release_reservation(dataset, version, job_id)
             return
-        if job:
-            metastore.link_dataset_version_to_job(
-                reservation.id, job.id, is_creator=True
-            )
     except BaseException:
         if dataset is not None and version is not None:
             with suppress(Exception):

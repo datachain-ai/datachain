@@ -776,7 +776,9 @@ def _encode_datetime_column(column: Any) -> list[Any] | None:
         bounds["max"] is not None and bounds["max"] > _MAX_DATETIME_US
     ):
         i64 = pc.max_element_wise(
-            pc.min_element_wise(i64, _MAX_DATETIME_US), _MIN_DATETIME_US
+            pc.min_element_wise(i64, _MAX_DATETIME_US, skip_nulls=False),
+            _MIN_DATETIME_US,
+            skip_nulls=False,
         )
         usts = i64.view(pa.timestamp("us"))
     text = usts.cast(pa.string())

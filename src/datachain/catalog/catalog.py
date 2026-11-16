@@ -1156,12 +1156,8 @@ class Catalog:
                 error_stack=error_stack,
                 script_output=script_output,
                 expected_status=DatasetStatus.CREATED,
+                expected_job_id=expected_job_id,
                 expected_latest_complete=expected_latest_complete,
-                **(
-                    {"expected_job_id": expected_job_id}
-                    if expected_job_id is not None
-                    else {}
-                ),
             )
         except (TableMissingError, ConcurrentDatasetModificationError) as e:
             raise ConcurrentDatasetModificationError(

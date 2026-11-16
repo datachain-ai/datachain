@@ -371,7 +371,10 @@ class QueryStep:
     def hash(self) -> str:
         version = self.dataset.get_version(self.dataset_version)
         anchor = (
-            version.content_hash if version.content_hash is not None else version.uuid
+            version.content_hash
+            if version.content_hash is not None
+            and not is_listing_dataset(self.dataset.name)
+            else version.uuid
         )
         return hashlib.sha256(anchor.encode()).hexdigest()
 
