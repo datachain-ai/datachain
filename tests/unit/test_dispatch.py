@@ -1,6 +1,8 @@
 import os
 import queue as queue_mod
+from concurrent.futures import ThreadPoolExecutor
 from queue import Empty, Full
+from threading import Barrier
 from unittest.mock import MagicMock
 
 import pytest
@@ -198,20 +200,20 @@ def dispatcher(mocker):
 
 
 @pytest.mark.parametrize(
-    "requested,rows,workers,share",
+    "requested,rows,workers",
     [
-        (True, 8, 8, 1),
-        (True, 2, 2, 4),
-        (8, 2, 2, 4),
-        (8, 1, 1, 8),
-        (8, 0, 1, 8),
-        (False, 8, 1, 8),
-        (16, 32, 16, 1),
+        (True, 8, 8),
+        (True, 2, 2),
+        (8, 2, 2),
+        (8, 1, 1),
+        (8, 0, 1),
+        (False, 8, 1),
+        (16, 32, 16),
     ],
 )
 @pytest.mark.parametrize("fail", [False, True])
-def test_dispatch_workers_apply_and_restore_cpu_share(
-    dispatcher, monkeypatch, mocker, requested, rows, workers, share, fail
+def test_dispatch_preserves_parent_environment(
+    dispatcher, monkeypatch, mocker, requested, rows, workers, fail
 ):
     dispatcher.processes = requested
     dispatcher.rows_total = rows
@@ -219,10 +221,10 @@ def test_dispatch_workers_apply_and_restore_cpu_share(
     monkeypatch.setattr("datachain.utils.usable_cpu_count", lambda: 8)
     monkeypatch.setenv("OMP_NUM_THREADS", "1000")
     monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
+    before = dict(os.environ)
 
     def run(*args):
-        assert os.environ["DATACHAIN_WORKER_THREADS"] == str(share)
-        assert os.environ["OMP_NUM_THREADS"] == str(share)
+        assert dict(os.environ) == before
         if workers > 1:
             assert args[0] == workers
         if fail:
@@ -232,7 +234,6 @@ def test_dispatch_workers_apply_and_restore_cpu_share(
     other = "run_udf_parallel" if workers == 1 else "run_udf_single"
     execution = mocker.patch.object(dispatcher, selected, side_effect=run)
     mocker.patch.object(dispatcher, other, side_effect=AssertionError)
-    before = dict(os.environ)
 
     if fail:
         with pytest.raises(RuntimeError, match="UDF failed"):
@@ -242,6 +243,58 @@ def test_dispatch_workers_apply_and_restore_cpu_share(
 
     execution.assert_called_once()
     assert dict(os.environ) == before
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_worker_sets_cpu_share_before_loading_udf(
+    dispatcher, monkeypatch, mocker, fail
+):
+    monkeypatch.setattr("datachain.utils.usable_cpu_count", lambda: 8)
+    monkeypatch.setenv("OMP_NUM_THREADS", "1000")
+    monkeypatch.setenv("MKL_NUM_THREADS", "1")
+    monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
+    before = dict(os.environ)
+    worker = mocker.Mock()
+
+    def create():
+        assert os.environ["DATACHAIN_WORKER_THREADS"] == "2"
+        assert os.environ["OMP_NUM_THREADS"] == "2"
+        assert os.environ["MKL_NUM_THREADS"] == "1"
+        if fail:
+            raise RuntimeError("UDF failed to load")
+        return worker
+
+    mocker.patch.object(dispatcher, "_create_worker", side_effect=create)
+    if fail:
+        with pytest.raises(RuntimeError, match="UDF failed to load"):
+            dispatcher._run_worker(4)
+    else:
+        dispatcher._run_worker(4)
+        worker.run.assert_called_once()
+    assert dict(os.environ) == before
+
+
+def test_overlapping_in_process_dispatch_does_not_change_thread_limits(
+    dispatcher, monkeypatch, mocker
+):
+    dispatcher.processes = False
+    monkeypatch.setenv("OMP_NUM_THREADS", "7")
+    monkeypatch.delenv("DATACHAIN_WORKER_THREADS", raising=False)
+    barrier = Barrier(2)
+
+    def run(*_args):
+        barrier.wait(timeout=2)
+        assert os.environ["OMP_NUM_THREADS"] == "7"
+        assert "DATACHAIN_WORKER_THREADS" not in os.environ
+
+    mocker.patch.object(dispatcher, "run_udf_single", side_effect=run)
+    mocker.patch(
+        "datachain.query.dispatch.worker_thread_limits", side_effect=AssertionError
+    )
+    with ThreadPoolExecutor(2) as pool:
+        futures = [pool.submit(dispatcher.run_udf, []) for _ in range(2)]
+        for future in futures:
+            future.result(timeout=3)
 
 
 def test_worker_start_failure_cleans_up_and_restores_environment(
@@ -256,7 +309,7 @@ def test_worker_start_failure_cleans_up_and_restores_environment(
     second.is_alive.return_value = False
 
     def start():
-        assert os.environ["OMP_NUM_THREADS"] == "1"
+        assert dict(os.environ) == before
 
     first.start.side_effect = start
     second.start.side_effect = OSError("worker could not start")
@@ -289,7 +342,7 @@ def test_batched_workers_share_cpus_between_actual_work_units(
             assert args[0] == workers
         inputs = args[1] if workers > 1 else args[0]
         assert list(inputs) == batches
-        assert os.environ["DATACHAIN_WORKER_THREADS"] == str(8 // workers)
+        assert "DATACHAIN_WORKER_THREADS" not in os.environ
 
     selected = "run_udf_single" if workers == 1 else "run_udf_parallel"
     other = "run_udf_parallel" if workers == 1 else "run_udf_single"

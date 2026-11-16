@@ -99,8 +99,9 @@ def guided_tasks(
         yield task
 
 
+@worker_thread_limits(1)
 def udf_entrypoint() -> int:
-    """Parallel processing (faster for more CPU-heavy UDFs)."""
+    """Run a UDF in its dedicated process, owning native limits even with one worker."""
     if os.environ.pop("_DATACHAIN_UDF_SAFE_PATH", None):
         os.environ.pop("PYTHONSAFEPATH", None)
     # Load UDF info from stdin
@@ -204,10 +205,13 @@ class UDFDispatcher:
             self.udf_fields,
         )
 
-    def _run_worker(self) -> None:
+    def _run_worker(self, n_workers: int) -> None:
         try:
-            worker = self._create_worker()
-            worker.run()
+            # This process owns its native pools. Set limits before loading the UDF;
+            # the dispatcher must not change the calling process's global state.
+            with worker_thread_limits(n_workers):
+                worker = self._create_worker()
+                worker.run()
         except (Exception, KeyboardInterrupt) as e:
             if self.done_queue:
                 # We put the exception into the done queue so the main process
@@ -247,19 +251,18 @@ class UDFDispatcher:
         else:
             n_workers = max(1, min(n_workers, self.rows_total))
 
-        with worker_thread_limits(n_workers):
-            if n_workers == 1:
-                self.run_udf_single(input_rows, download_cb, processed_cb, generated_cb)
-            else:
-                if self.buffer_size < n_workers:
-                    raise RuntimeError(
-                        "Parallel run error: buffer size is smaller than "
-                        f"number of workers: {self.buffer_size} < {n_workers}"
-                    )
-
-                self.run_udf_parallel(
-                    n_workers, input_rows, download_cb, processed_cb, generated_cb
+        if n_workers == 1:
+            self.run_udf_single(input_rows, download_cb, processed_cb, generated_cb)
+        else:
+            if self.buffer_size < n_workers:
+                raise RuntimeError(
+                    "Parallel run error: buffer size is smaller than "
+                    f"number of workers: {self.buffer_size} < {n_workers}"
                 )
+
+            self.run_udf_parallel(
+                n_workers, input_rows, download_cb, processed_cb, generated_cb
+            )
 
     def run_udf_single(
         self,
@@ -319,7 +322,9 @@ class UDFDispatcher:
         self.done_queue = self.ctx.Queue()
 
         pool = [
-            self.ctx.Process(name=f"Worker-UDF-{i}", target=self._run_worker)
+            self.ctx.Process(
+                name=f"Worker-UDF-{i}", target=self._run_worker, args=(n_workers,)
+            )
             for i in range(n_workers)
         ]
         try:
