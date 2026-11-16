@@ -546,9 +546,9 @@ class StoredPage:
 
     @property
     def rows(self) -> list[tuple]:
-        if isinstance(self._rows, bytes):
-            self._rows = pickle.loads(self._rows)  # noqa: S301
-        return self._rows
+        if isinstance(rows := self._rows, bytes):
+            self._rows = rows = pickle.loads(rows)  # noqa: S301
+        return rows
 
     def __len__(self) -> int:
         return self.size

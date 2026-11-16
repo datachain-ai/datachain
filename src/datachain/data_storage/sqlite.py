@@ -55,7 +55,7 @@ from datachain.sql.sqlite.base import (
 )
 from datachain.sql.sqlite.types import adapt_array
 from datachain.sql.types import Array, DateTime
-from datachain.utils import DataChainDir
+from datachain.utils import DataChainDir, batched
 
 if TYPE_CHECKING:
     from sqlalchemy import CTE, Subquery
@@ -876,8 +876,6 @@ class SQLiteWarehouse(AbstractWarehouse):
         if not columns:
             super().insert_stored_rows(table, columns, rows, batch_size)
             return
-        from itertools import batched
-
         for block in batched(rows, batch_size or self.INSERT_BATCH_SIZE):
             self.insert_block(table, columns, list(block))
 
