@@ -56,7 +56,7 @@ jobs:
       - name: Studio branch name
         env:
           BRANCH: ${{ env.BRANCH }}
-          STUDIO_READ_ACCESS_TOKEN: ${{ secrets.ITERATIVE_STUDIO_READ_ACCESS_TOKEN }}
+          STUDIO_READ_ACCESS_TOKEN: ${{ secrets.STUDIO_READ_ACCESS_TOKEN }}
         run: |
           echo "DataChain branch: $BRANCH"
           if git ls-remote --heads https://x-access-token:"$STUDIO_READ_ACCESS_TOKEN"@github.com/datachain-ai/studio.git "$BRANCH" | grep -F "$BRANCH" 2>&1>/dev/null
@@ -74,7 +74,7 @@ jobs:
           fetch-depth: 1
           repository: datachain-ai/studio
           ref: ${{ env.STUDIO_BRANCH }}
-          token: ${{ secrets.ITERATIVE_STUDIO_READ_ACCESS_TOKEN }}
+          token: ${{ secrets.STUDIO_READ_ACCESS_TOKEN }}
 
       - name: Check out DataChain
         uses: actions/checkout@v7.0.1
