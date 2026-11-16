@@ -437,7 +437,8 @@ class DatasetDiffOperation(Step):
             source_query = source_query.execution_options(datachain_bounded_query=True)
 
         right_before = len(self.dq.temp_table_names)
-        target_full = self.dq.apply_steps(bounded=bounded).select()
+        # Matching can require every target key even when the source is limited.
+        target_full = self.dq.apply_steps().select()
         temp_tables.extend(self.dq.temp_table_names[right_before:])
         # Exclude sys columns from target - only key columns are used for matching
         target_query = target_full.with_only_columns(
@@ -2460,11 +2461,12 @@ class SQLJoin(Step):
     def get_query(
         self, dq: "DatasetQuery", temp_tables: list[str], *, bounded: bool = False
     ) -> sa.Subquery:
+        materialize = any(isinstance(step, (SQLJoin, SQLUnion)) for step in dq.steps)
         temp_tables_before = len(dq.temp_table_names)
-        query = dq.apply_steps(bounded=bounded).select()
+        query = dq.apply_steps(bounded=bounded and not materialize).select()
         temp_tables.extend(dq.temp_table_names[temp_tables_before:])
 
-        if any(isinstance(step, (SQLJoin, SQLUnion)) for step in dq.steps):
+        if materialize:
             warehouse = self.catalog.warehouse
             columns = [
                 c if isinstance(c, Column) else Column(c.name, c.type)
@@ -2964,9 +2966,36 @@ class DatasetQuery:
             query = query.filter(C.sys__rand % total == index)
             query.steps = query.steps[-1:] + query.steps[:-1]
 
-        # Explicit limits can stop a join early; backend pagination cannot. Pass
-        # this hint before building joins, since SQLLimit is applied afterward.
-        bounded = bounded or any(isinstance(step, SQLLimit) for step in query.steps)
+        # A limit can stop streaming steps early, but sorting, UDFs and other
+        # blocking steps still consume their complete input. Look backward before
+        # building joins, since SQLLimit itself is applied afterward. Backend
+        # pagination does not appear here and must not disable key materialization.
+        bounded_steps = []
+        for step in reversed(query.steps):
+            if isinstance(step, SQLLimit):
+                bounded = True
+            elif isinstance(step, SQLJoin) and step.full:
+                # SQLite emulates a full join with a duplicate-removing UNION.
+                bounded = False
+            elif not (
+                isinstance(
+                    step,
+                    (
+                        SQLFilter,
+                        SQLSelectExcept,
+                        SQLOffset,
+                        SQLJoin,
+                        SQLUnion,
+                        Subtract,
+                    ),
+                )
+                or (
+                    isinstance(step, SQLSelect)
+                    and all(isinstance(arg, (str, ColumnClause)) for arg in step.args)
+                )
+            ):
+                bounded = False
+            bounded_steps.append(bounded)
 
         if query.starting_step is not None:
             result = query.starting_step.apply()
@@ -2984,7 +3013,9 @@ class DatasetQuery:
         # Stage flags reset at the start of every apply_steps run; they only
         # describe the in-flight query under construction here.
         state = QueryState(self.catalog.warehouse)
-        for step in query.steps:
+        for step, step_bounded in zip(
+            query.steps, reversed(bounded_steps), strict=True
+        ):
             hash_input = _hash
             hasher.update(step.hash().encode("utf-8"))
             _hash = hasher.hexdigest()
@@ -2997,7 +3028,7 @@ class DatasetQuery:
                 hash_input=hash_input,
                 hash_output=hash_output,
                 checkpoints_enabled=self.checkpoints_enabled,
-                bounded=bounded,
+                bounded=step_bounded,
             )  # a chain of steps linked by results
             self.dependencies.update(result.dependencies)
             # Most non-SQLClause steps materialize a fresh relation, so any

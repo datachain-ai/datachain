@@ -395,7 +395,9 @@ def computed_join_inputs(test_session):
 
 
 @skip_if_not_sqlite
-@pytest.mark.parametrize("preview", ["limit", "filter_limit", "union_limit", "show"])
+@pytest.mark.parametrize(
+    "preview", ["limit", "filter_limit", "union_limit", "limit_before_order", "show"]
+)
 def test_computed_join_preview_does_not_scan_all_right_keys(
     computed_join_inputs, preview, capsys
 ):
@@ -409,8 +411,47 @@ def test_computed_join_preview_does_not_scan_all_right_keys(
             joined = joined.filter(dc.C.x >= 0)
         elif preview == "union_limit":
             joined = joined.union(joined)
+        elif preview == "limit_before_order":
+            joined = joined.limit(1).order_by("x", descending=True)
         assert joined.limit(1).to_list() == [(0, 0)]
     assert calls["right"] == 1
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize(
+    "barrier", ["order", "group", "distinct", "map", "join_input", "full_join"]
+)
+def test_computed_join_limit_keeps_fence_before_blocking_steps(
+    computed_join_inputs, barrier
+):
+    left, right, calls, _ = computed_join_inputs
+    joined = left.merge(right, on="key", inner=False).select("x", "y")
+    if barrier == "order":
+        result = joined.order_by("x", descending=True)
+        expected = [(2, 2)]
+    elif barrier == "group":
+        result = joined.group_by(partition_by="x", total=dc.func.sum("y"))
+        expected = [(0, 0)]
+    elif barrier == "distinct":
+        result = joined.distinct("x")
+        expected = [(0, 0)]
+    elif barrier == "map":
+        result = joined.map(z=lambda x: x + 1, output=int)
+        expected = [(0, 0, 1)]
+    elif barrier == "join_input":
+        result = joined.merge(left.select("x"), on="x").select("x", "y")
+        expected = [(0, 0)]
+    else:
+        result = left.merge(right, on="key", full=True).select("x", "y")
+        # Full joins include unmatched rows; without ordering any first row is valid.
+        rows = result.limit(1).to_list()
+        assert len(rows) == 1
+        assert calls["left"] <= 6
+        assert calls["right"] <= 24
+        return
+    assert result.limit(1).to_list() == expected
+    assert calls["left"] == 3
+    assert calls["right"] == 12
 
 
 @skip_if_not_sqlite
