@@ -739,6 +739,10 @@ def decode_sqlite(sql_type: Any) -> Callable[[Any], Any] | None:
     return decode
 
 
+_MIN_DATETIME_US = -62_135_596_800_000_000  # 0001-01-01 00:00:00
+_MAX_DATETIME_US = 253_402_300_799_999_999  # 9999-12-31 23:59:59.999999
+
+
 def _encode_datetime_column(column: Any) -> list[Any] | None:
     """An Arrow timestamp column as the text `adapt_datetime` stores; None for
     any other column."""
@@ -749,7 +753,19 @@ def _encode_datetime_column(column: Any) -> list[Any] | None:
         return None
     # Arrow holds aware timestamps as UTC instants: without the timezone they give
     # the naive UTC text adapt_datetime stores.
-    text = column.cast(pa.timestamp("us")).cast(pa.string())
+    usts = column.cast(pa.timestamp("us"))
+    i64 = usts.view("int64")
+    bounds = pc.min_max(i64).as_py()
+    if (bounds["min"] is not None and bounds["min"] < _MIN_DATETIME_US) or (
+        bounds["max"] is not None and bounds["max"] > _MAX_DATETIME_US
+    ):
+        i64 = pc.max_element_wise(
+            pc.min_element_wise(i64, _MAX_DATETIME_US, skip_nulls=False),
+            _MIN_DATETIME_US,
+            skip_nulls=False,
+        )
+        usts = i64.view(pa.timestamp("us"))
+    text = usts.cast(pa.string())
     return pc.replace_substring_regex(
         text, pattern=r"\.000000$", replacement=""
     ).to_pylist()
