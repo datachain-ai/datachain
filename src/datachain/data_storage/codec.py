@@ -211,9 +211,9 @@ def check_list(
             "column type Array"
         )
     if item_type is dict:
-        first = next(iter(value), None)
+        first = next((v for v in value if v is not None), None)
         first_type = str if json_array_text else dict
-        if value and not isinstance(first, first_type):
+        if first is not None and not isinstance(first, first_type):
             # Array(JSON) stores each item as JSON text in this legacy shape;
             # "null" decodes to None, preserving the nullable-array contract.
             return [encode_json(v) for v in value]
@@ -365,8 +365,9 @@ def encode_json(value: Any) -> str:
 
     if type(value) is str:
         return value
+    json_ready = to_jsonable(value)
     try:
-        return json.dumps(to_jsonable(value), ensure_ascii=False, serialize_numpy=True)
+        return json.dumps(json_ready, ensure_ascii=False, serialize_numpy=True)
     except TypeError as e:
         raise JsonSerializationError(
             f"JSON serialization error: {e}", column_name="", value_repr=repr(value)
