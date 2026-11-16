@@ -580,8 +580,9 @@ class DataChain:
             prefetch: Number of files to download ahead of the UDF, per process;
                 batches in `batch_map()`. Defaults to up to 16 files, or 2 batches.
                 Set to 0 for UDFs that read only part of a file, such as `get_info()`.
-            prefetch_bytes: Size limit for files downloaded ahead, per process.
-                Defaults to 512 MiB, or none with `prefetch=N`.
+            prefetch_bytes: Listed-byte read-ahead target per process, default
+                512 MiB. The legacy minimum of five rows can exceed this target.
+                Unset with explicit `prefetch=N`.
             parallel: Number of processes to use for processing user-defined functions
                 (UDFs) in parallel. Each process has its own UDF and setup resources.
                 If an integer is provided, it specifies the number of CPUs to use.

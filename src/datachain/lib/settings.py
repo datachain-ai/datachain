@@ -5,7 +5,7 @@ from datachain.lib.utils import DataChainParamsError
 
 DEFAULT_CACHE = False
 DEFAULT_PREFETCH = 2
-# Unless set, map() and gen() download up to 16 files ahead, up to 512 MiB.
+# Automatic scalar read-ahead targets 16 rows and 512 MiB of listed sizes.
 AUTO_PREFETCH = 16
 AUTO_PREFETCH_BYTES = 512 * 1024 * 1024
 

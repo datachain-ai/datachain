@@ -274,7 +274,7 @@ Lineage is tracked automatically when a chain reads one dataset and saves anothe
 7. PREFETCH FOR FILE-READING UDFs: Prefetch downloads whole files, never
    attributes such as file.path and file.size. For partial reads (get_info(),
    read_bytes(n) with n > 0), set prefetch=0. For whole-file scalar UDFs, keep
-   the default (up to 16 files, 512 MiB); set 1 for very large files. For
+   the default (16 rows, 512 MiB read-ahead target); set 1 for very large files. For
    batch_map, prefetch counts
    batches: start with 1 or 2 and budget their combined file sizes. Up to
    2 × prefetch + 1 batches can be on local disk per process. UDFs receiving only
