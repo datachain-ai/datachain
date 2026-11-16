@@ -1,3 +1,4 @@
+import copy
 import functools
 import http.server
 import io
@@ -41,6 +42,7 @@ from datachain.dataset import (
 from datachain.error import DatasetNotFoundError
 from datachain.lib.dc import Sys
 from datachain.lib.file import File
+from datachain.lib.model_store import ModelStore
 from datachain.lib.tar import build_tar_member
 from datachain.namespace import Namespace
 from datachain.project import Project
@@ -65,6 +67,17 @@ DEFAULT_DATACHAIN_BIN = "datachain"
 DEFAULT_DATACHAIN_GIT_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 collect_ignore = ["setup.py"]
+
+
+@pytest.fixture
+def empty_model_store():
+    """Give the test an empty ModelStore and restore the previous one after it."""
+    snapshot = copy.deepcopy(ModelStore.store)
+    ModelStore.store = {}
+    try:
+        yield
+    finally:
+        ModelStore.store = snapshot
 
 
 @pytest.fixture(scope="session", autouse=True)

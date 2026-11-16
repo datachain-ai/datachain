@@ -15,19 +15,21 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
 
-from fsspec.callbacks import DEFAULT_CALLBACK, Callback
+from fsspec import Callback
+from fsspec.callbacks import DEFAULT_CALLBACK
 from fsspec.utils import stringify_path
 from pydantic import Field, field_validator, model_validator
 
+import datachain.sql  # noqa: F401
 from datachain import json
-from datachain.client.fileslice import FileSlice
+from datachain.client import fileslice
 from datachain.client.writeconfig import WriteConfig
 from datachain.fs.utils import path_to_fsspec_uri
 from datachain.lib.data_model import DataModel
 from datachain.lib.utils import DataChainError, rebase_path
 from datachain.nodes_thread_pool import NodesThreadPool
 from datachain.sql.types import JSON, Boolean, DateTime, Int, String
-from datachain.utils import TIME_ZERO
+from datachain.utils import TIME_ZERO, parent_path
 
 if TYPE_CHECKING:
     from typing import BinaryIO, Self
@@ -175,7 +177,7 @@ class TarVFile(VFile):
         if block_size is None:
             block_size = min(size, TAR_READ_BLOCK_SIZE)
         fd = client.open_object(tar_file, use_cache=True, block_size=block_size)
-        return FileSlice(fd, offset, size, file.name)
+        return fileslice.FileSlice(fd, offset, size, file.name)
 
     @classmethod
     def parent(cls, file: "File", location: list[dict]) -> "File":
@@ -554,7 +556,7 @@ class File(DataModel):
             file.parent  # 'data/subdir'
             ```
         """
-        return str(PurePosixPath(self.path).parent)
+        return parent_path(self.path) if "/" in self.path else "."
 
     @contextmanager
     def open(
@@ -1255,7 +1257,7 @@ class FileRow(NamedTuple):
 
     @property
     def parent(self) -> str:
-        return str(PurePosixPath(self.path).parent)
+        return parent_path(self.path) if "/" in self.path else "."
 
     def get_file_suffix(self) -> str:
         return PurePosixPath(self.path).suffix

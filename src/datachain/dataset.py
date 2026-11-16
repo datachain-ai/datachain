@@ -12,6 +12,7 @@ from uuid import uuid4
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
+import datachain.sql  # noqa: F401
 from datachain import json, semver
 from datachain.error import (
     DatasetStateNotLoadedError,

@@ -1,7 +1,8 @@
 import io
 from typing import IO
 
-from fsspec.callbacks import DEFAULT_CALLBACK, Callback
+from fsspec import Callback
+from fsspec.callbacks import DEFAULT_CALLBACK
 
 
 class FileWrapper(io.BufferedIOBase):
