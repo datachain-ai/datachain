@@ -571,9 +571,10 @@ def write_listing(
     encode = PageEncoder(warehouse.row_codec(columns), with_etag)
     job = session.get_job()
     job_id = job.id if job else None
+    before = _latest_version(catalog, ds_name, project)
     pages = iter(list_pages(uri, catalog.cache, client_config, encode))
-    dataset = None
-    version = None
+    after = _latest_version(catalog, ds_name, project)
+    dataset = version = None
     try:
         dataset = catalog.create_dataset(
             ds_name,
@@ -585,8 +586,15 @@ def write_listing(
             job_id=job_id,
             query_script=job.query if job else "",
         )
-        version = dataset.versions[0].version
-        reservation = dataset.get_version(version)
+        reservation = dataset.versions[0]
+        version, fenced_id = (
+            reservation.version,
+            (
+                (before[1].id if before else 0)
+                if after and (not before or after[1].id > before[1].id)
+                else reservation.id
+            ),
+        )
         table = warehouse.create_dataset_rows_table(
             warehouse.dataset_table_name(dataset, version), columns=columns
         )
@@ -622,7 +630,7 @@ def write_listing(
             )
             if (
                 own_active
-                and previous_version.id < reservation.id
+                and previous_version.id <= fenced_id
                 and previous_version.content_hash == content_hash
                 and not older_pending
                 and warehouse.db.has_table(
@@ -646,13 +654,13 @@ def write_listing(
                 version,
                 content_hash=content_hash,
                 expected_job_id=job_id,
-                expected_latest_complete=reservation.id,
+                expected_latest_complete=fenced_id,
             )
         except ConcurrentDatasetModificationError:
             latest = _latest_version(catalog, ds_name, project)
             if (
                 latest is None
-                or latest[1].id <= reservation.id
+                or latest[1].id <= fenced_id
                 or not warehouse.db.has_table(
                     warehouse.dataset_table_name(latest[0], latest[1].version)
                 )
