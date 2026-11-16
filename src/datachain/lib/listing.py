@@ -590,6 +590,10 @@ def write_listing(
         )
         reservation = dataset.versions[0]
         version = reservation.version
+        if job:
+            metastore.link_dataset_version_to_job(
+                reservation.id, job.id, is_creator=True
+            )
         table = warehouse.create_dataset_rows_table(
             warehouse.dataset_table_name(dataset, version), columns=columns
         )
@@ -653,10 +657,6 @@ def write_listing(
                     finished_at=datetime.now(UTC),
                 )
                 return
-        if job:
-            metastore.link_dataset_version_to_job(
-                reservation.id, job.id, is_creator=True
-            )
         try:
             catalog.complete_dataset_version(
                 dataset,
