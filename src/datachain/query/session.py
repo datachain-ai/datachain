@@ -95,9 +95,7 @@ class Session:
         if catalog is None:
             from datachain.catalog import get_catalog
 
-            catalog = get_catalog(
-                client_config=client_config, in_memory=in_memory
-            )
+            catalog = get_catalog(client_config=client_config, in_memory=in_memory)
         self.catalog = catalog
         self._cleanup_catalogs: list[Catalog] = [self.catalog]
         Session._ALL_SESSIONS.add(self)
