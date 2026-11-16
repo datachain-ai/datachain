@@ -246,7 +246,7 @@ def test_read_storage_preserves_empty_folder_segments(
     if reuse_parent:
         dc.read_storage(f"{ctc.src_uri}/{cloud_prefix}/", session=ctc.session).exec()
     uri = f"{ctc.src_uri}/{cloud_prefix}/{suffix}"
-    expected_paths = [f"{cloud_prefix}/{k}" for k in expected]
+    expected_paths = [f"{cloud_prefix}/{k}" for k in sorted(expected)]
 
     assert (
         sorted(
