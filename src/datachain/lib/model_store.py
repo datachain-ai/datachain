@@ -109,6 +109,7 @@ class ModelStore:
         base_name = cls._base_name(model)
         unique_name = model.__name__
         version = ModelStore.get_version(model)
+        is_builtin = model.__module__ == BUILTIN_MODELS.get(base_name)
 
         # Register under both:
         # - `base_name` (logical/original name, from `_modelstore_base_name` when set)
@@ -117,7 +118,18 @@ class ModelStore:
         # - `unique_name` (Python class `__name__`, e.g. `Foo_v1`) so callers can also
         #   resolve by the runtime class name.
         for name in (base_name, unique_name):
-            cls.store.setdefault(name, {})[version] = model
+            versions = cls.store.setdefault(name, {})
+            if (
+                is_builtin
+                and (existing := versions.get(version)) is not None
+                and existing.__module__ != model.__module__
+                and (
+                    "_modelstore_base_name" not in vars(existing)
+                    or "_modelstore_module" in vars(existing)
+                )
+            ):
+                continue
+            versions[version] = model
 
         for f_info in model.model_fields.values():
             if (anno := ModelStore.to_pydantic(f_info.annotation)) is not None:

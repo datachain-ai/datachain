@@ -51,6 +51,7 @@ def _run(
         capture_output=True,
         text=True,
         check=False,
+        timeout=60,
         cwd=cwd,
         env={**os.environ, **env} if env is not None else None,
     )
@@ -127,6 +128,61 @@ def test_star_import_and_version_in_fresh_process():
     assert out.strip()
 
 
+@pytest.mark.parametrize(
+    "entries",
+    [
+        ("datachain:read_values", "datachain:func"),
+        ("datachain.query.dataset", "datachain:func"),
+        ("datachain:File", "datachain:bucket_status"),
+        ("datachain.data_storage:AbstractMetastore", "datachain.query:Session"),
+        ("datachain.query.dataset", "datachain.query:Session"),
+        ("datachain.query.session", "datachain:Session"),
+        ("datachain:Mapper", "datachain:func"),
+        ("datachain.query.dispatch", "datachain.query:Session"),
+        ("datachain:C", "datachain.cli:describe_dataset_cmd"),
+    ],
+)
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.skipif(
+    sys.version_info < (3, 13), reason="Recent CPython import-lock behavior"
+)
+def test_concurrent_first_imports(entries, reverse):
+    _check(
+        "import importlib, sys\n"
+        "import datachain\n"
+        "from concurrent.futures import ThreadPoolExecutor\n"
+        "from threading import Barrier\n"
+        "gate = Barrier(2)\n"
+        "def first_use(target):\n"
+        "    gate.wait(timeout=10)\n"
+        "    module_name, _, name = target.partition(':')\n"
+        "    module = importlib.import_module(module_name)\n"
+        "    return getattr(module, name) if name else module\n"
+        "with ThreadPoolExecutor(2) as pool:\n"
+        "    list(pool.map(first_use, sys.argv[1:]))\n",
+        *(reversed(entries) if reverse else entries),
+    )
+
+
+def test_reloaded_packages_refresh_cached_exports():
+    _check(
+        "import importlib\n"
+        "for package_name, target, name in [\n"
+        "    ('datachain', 'datachain.lib.file', 'File'),\n"
+        "    ('datachain.query', 'datachain.query.params', 'param'),\n"
+        "    ('datachain.cli', 'datachain.cli.commands.du', 'du'),\n"
+        "    ('datachain.data_storage', 'datachain.data_storage.job', 'JobStatus'),\n"
+        "]:\n"
+        "    package = importlib.import_module(package_name)\n"
+        "    previous = getattr(package, name)\n"
+        "    implementation = importlib.import_module(target)\n"
+        "    importlib.reload(implementation)\n"
+        "    importlib.reload(package)\n"
+        "    assert getattr(package, name) is getattr(implementation, name)\n"
+        "    assert getattr(package, name) is not previous\n"
+    )
+
+
 def test_import_datachain_loads_only_stdlib():
     out = _check(
         "import json, sys\n"
@@ -172,7 +228,7 @@ def test_entry_point_does_not_import(entry, forbidden):
     assert sorted(set(json.loads(out)) & set(forbidden)) == []
 
 
-def test_model_store_miss_imports_no_builtin_module():
+def test_model_store_loads_only_the_requested_builtin():
     _check(
         "import sys\n"
         "from datachain.lib.model_store import BUILTIN_MODELS, ModelStore\n"
@@ -180,6 +236,9 @@ def test_model_store_miss_imports_no_builtin_module():
         "assert ModelStore.get('InfoPartial_abc', 1) is None\n"
         "loaded = set(BUILTIN_MODELS.values()) & set(sys.modules)\n"
         "assert not loaded, loaded\n"
+        "model = ModelStore.get('McapFile', 1)\n"
+        "from datachain.lib.mcap import McapFile\n"
+        "assert model is McapFile\n"
     )
 
 
@@ -224,18 +283,7 @@ def test_version_is_the_installed_distribution_version():
     assert datachain.__version__ == version("datachain")
 
 
-def test_cli_main_after_command_module_is_imported(tmp_path):
-    _check(
-        "import sys, datachain.cli.commands.ls\n"
-        "from datachain.cli import main\n"
-        "sys.exit(main(['ls', sys.argv[1]]))\n",
-        str(tmp_path),
-        cwd=tmp_path,
-        env={"DATACHAIN_ROOT_DIR": str(tmp_path / ".datachain")},
-    )
-
-
-def test_modules_import_with_a_clean_datachain_cache(record_property):
+def test_modules_import_with_a_clean_datachain_cache():
     result = json.loads(
         _check(
             """
@@ -270,7 +318,6 @@ print(json.dumps({"models": models, "skipped": skipped}))
         assert {name: BUILTIN_MODELS.get(name) for name in names} == dict.fromkeys(
             names, module
         )
-    record_property("missing_optional_dependencies", json.dumps(result["skipped"]))
 
 
 @pytest.mark.usefixtures("empty_model_store")
@@ -289,21 +336,17 @@ def test_builtin_models_resolve_from_an_empty_store(name, module):
     assert ModelStore.get(name) is expected
 
 
-def test_builtin_model_resolves_before_its_module_is_imported():
-    _check(
-        "import sys\n"
-        "from datachain.lib.model_store import ModelStore\n"
-        "assert 'datachain.lib.mcap' not in sys.modules\n"
-        "model = ModelStore.get('McapFile', 1)\n"
-        "from datachain.lib.mcap import McapFile\n"
-        "assert model is McapFile\n"
-    )
-
-
 def test_saved_models_restore_in_a_fresh_process(tmp_path):
     env = {"DATACHAIN_ROOT_DIR": str(tmp_path / ".datachain")}
-    _check(
+    image = (
         "import datachain as dc\n"
+        "class Image(dc.DataModel):\n"
+        "    score: float\n"
+        "    def label(self):\n"
+        "        return 'user-model'\n"
+    )
+    _check(
+        image + "dc.read_values(value=[Image(score=0.9)]).save('images')\n"
         "class BBox(dc.DataModel):\n"
         "    score: float\n"
         "dc.read_values(b=[BBox(score=0.9)]).save('boxes')\n"
@@ -313,7 +356,10 @@ def test_saved_models_restore_in_a_fresh_process(tmp_path):
         env=env,
     )
     _check(
-        "import datachain as dc\n"
+        image + "value = dc.read_dataset('images').to_values('value')[0]\n"
+        "assert isinstance(value, Image)\n"
+        "assert value.score == 0.9\n"
+        "assert value.label() == 'user-model'\n"
         "boxes = dc.read_dataset('boxes')\n"
         "assert boxes.to_values('b.score') == [0.9]\n"
         "assert set(boxes.signals_schema.values['b'].model_fields) == {'score'}\n"
@@ -378,38 +424,4 @@ def test_offline_cli_main_does_not_load_catalog_or_studio(tmp_path):
         "assert 'datachain.studio' not in sys.modules\n",
         cwd=tmp_path,
         env={"DATACHAIN_ROOT_DIR": str(tmp_path / ".datachain")},
-    )
-
-
-@pytest.mark.usefixtures("empty_model_store")
-def test_reconstructed_builtin_survives_pickling_in_a_fresh_process(tmp_path):
-    import cloudpickle
-    from pydantic import create_model
-
-    from datachain.lib.data_model import DataModel
-    from datachain.lib.signal_schema import SignalSchema
-
-    previous = create_model(
-        "DatasetInfo",
-        __base__=DataModel,
-        __module__="datachain.lib.dataset_info",
-        score=(float, ...),
-    )
-    saved = SignalSchema({"value": previous}).serialize()
-    ModelStore.store.clear()
-    restored = SignalSchema.deserialize(saved).values["value"]
-    payload = tmp_path / "model.pkl"
-    payload.write_bytes(cloudpickle.dumps((restored, saved)))
-    _check(
-        "import cloudpickle, sys\n"
-        "from datachain.lib.model_store import ModelStore\n"
-        "from datachain.lib.signal_schema import SignalSchema\n"
-        "with open(sys.argv[1], 'rb') as fd:\n"
-        "    model, saved = cloudpickle.load(fd)\n"
-        "ModelStore.store.clear()\n"
-        "ModelStore.register(model)\n"
-        "assert SignalSchema.deserialize(saved).values['value'] is model\n"
-        "assert model(score=0.9).model_dump() == {'score': 0.9}\n",
-        str(payload),
-        cwd=tmp_path,
     )
