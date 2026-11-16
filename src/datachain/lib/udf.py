@@ -516,8 +516,7 @@ def _files_to_prefetch(
 
 
 class _PrefetchBudget:
-    """Limits rows downloaded ahead and not yet processed to `max_rows` and
-    `max_bytes`, but always allows `min_rows` of them."""
+    """Listed-byte read-ahead target, allowing the legacy minimum row count."""
 
     def __init__(self, max_rows: int, max_bytes: int, min_rows: int) -> None:
         self.max_rows, self.max_bytes, self.min_rows = max_rows, max_bytes, min_rows
@@ -525,11 +524,12 @@ class _PrefetchBudget:
         self.changed = threading.Condition()
 
     def size(self, files: list[File]) -> int:
-        # Unknown sizes and files in archives (the whole archive downloads)
-        # count as the full limit.
-        if any(file.location or file.size <= 0 for file in files):
-            return self.max_bytes
-        return min(sum(file.size for file in files), self.max_bytes)
+        targets = (file._prefetch_target() for file in files)
+        unique = {target.get_hash(): target for target in targets}
+        return sum(
+            target.size if target.size > 0 else self.max_bytes
+            for target in unique.values()
+        )
 
     def take(self, size: int, stop: threading.Event) -> None:
         with self.changed:

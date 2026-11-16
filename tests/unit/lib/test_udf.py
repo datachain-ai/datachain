@@ -572,7 +572,23 @@ def _read_ahead(monkeypatch, files, fail_path=None):
         (_files(*[AUTO_PREFETCH_BYTES // 8] * 60), 2, 8),
         (_files(*[BIG] * 40), 2, MIN_HELD),
         (_files(*[0] * 40), 2, MIN_HELD),
-        (_files(*[2048] * 40, location=[{"vtype": "tar"}]), 2, MIN_HELD),
+        (
+            _files(
+                *[2048] * 40,
+                location=[
+                    {
+                        "vtype": "tar",
+                        "parent": {
+                            "source": "s3://bucket",
+                            "path": "archive.tar",
+                            "size": BIG,
+                        },
+                    }
+                ],
+            ),
+            2,
+            MIN_HELD,
+        ),
     ],
     ids=["small", "medium", "big", "unsized", "in-archive"],
 )
@@ -654,3 +670,14 @@ def test_default_prefetch_without_files(test_session):
     )
     udf = chain._query.steps[-1].udf.inner
     assert (udf.prefetch, udf.prefetch_bytes) == (DEFAULT_PREFETCH, None)
+
+
+def test_prefetch_budget_counts_real_download_targets():
+    from datachain.lib.udf import _PrefetchBudget
+
+    budget = _PrefetchBudget(33, 512, 5)
+    assert budget.size(_files(2048)) == 2048
+    parent = File(source="s3://bucket", path="archive.tar", size=4096)
+    members = _files(1, 2, location=[{"vtype": "tar", "parent": parent.model_dump()}])
+    assert budget.size(members) == 4096
+    assert budget.size(_files(0)) == 512
