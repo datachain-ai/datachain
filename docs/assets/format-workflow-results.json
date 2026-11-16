@@ -1,0 +1,54 @@
+{
+  "status": "development_individual_runs",
+  "date": "2026-11-06",
+  "setup": {
+    "cpu": 8,
+    "compute_region": "AWS us-east-1",
+    "s3_data_region": "AWS us-east-2",
+    "times": "seconds",
+    "rx_mb": "decimal MB received by the sandbox, including request overhead"
+  },
+  "scope": "Selection, persisted handoff and full decoding/reading of selected contents; no model training or optimizer steps.",
+  "builds": "Combined development builds with format readers, video/range-read changes and local fixes. The MCAP DC rows include the experimental parallel-chunk branch; WebDataset settings distinguish two DC configurations. These are not measurements of one published release.",
+  "limitations": [
+    "Individual development runs; some configurations were rerun, but no uncertainty estimate is established.",
+    "DataChain and hand-written LeRobot arms read the S3 copy; the LeRobot library arms read the Hub.",
+    "lr_map cluster returns a different frame count/digest and is excluded from speedup claims.",
+    "The harness, complete version ledger and prepared MCAP/WebDataset mirrors are not published here.",
+    "The first hand WebDataset row predates the shared-client fix; the later row supersedes it."
+  ],
+  "runs": {
+    "lerobot": [
+      {"task":"s2_lerobot","arm":"lr_map","case":"cluster","s":344.67,"create_s":4.11,"create_rx_mb":4.1,"download_s":20.21,"download_rx_mb":3761.8,"epoch_s":320.34,"epoch_rx_mb":0.0,"frames":252117,"digest":"3a5a4be38c","subset_bytes":33000},
+      {"task":"s2_lerobot","arm":"hand","case":"cluster","s":33.71,"create_s":1.59,"create_rx_mb":13.1,"epoch_s":32.12,"epoch_rx_mb":2803.7,"frames":260493,"digest":"7086f66b7d","subset_bytes":32730},
+      {"task":"s2_lerobot","arm":"dc","case":"cluster","s":60.96,"create_s":20.81,"create_rx_mb":1198.0,"epoch_s":40.15,"epoch_rx_mb":2936.4,"frames":260493,"digest":"7086f66b7d","episodes":300},
+      {"task":"s2_lerobot","arm":"dc","case":"cluster","s":48.16,"create_s":8.15,"create_rx_mb":19.3,"epoch_s":40.01,"epoch_rx_mb":2938.8,"frames":260493,"digest":"7086f66b7d","episodes":300},
+      {"task":"s2_lerobot","arm":"dc","case":"scatter","s":79.48,"create_s":12.69,"create_rx_mb":52.1,"epoch_s":66.79,"epoch_rx_mb":4000.4,"frames":312555,"digest":"2232735397","episodes":437},
+      {"task":"s2_lerobot","arm":"hand","case":"cluster","s":33.48,"create_s":1.53,"create_rx_mb":13.0,"epoch_s":31.95,"epoch_rx_mb":2802.7,"frames":260493,"digest":"7086f66b7d","subset_bytes":32730},
+      {"task":"s2_lerobot","arm":"hand","case":"scatter","s":51.76,"create_s":1.15,"create_rx_mb":4.1,"epoch_s":50.61,"epoch_rx_mb":3865.9,"frames":312555,"digest":"2232735397","subset_bytes":48662},
+      {"task":"s2_lerobot","arm":"dc","case":"windows","s":128.72,"create_s":13.78,"create_rx_mb":50.9,"epoch_s":114.94,"epoch_rx_mb":9902.8,"frames":129981,"digest":"d1d8cfdc95","episodes":1030},
+      {"task":"s2_lerobot","arm":"hand","case":"windows","s":96.74,"create_s":1.39,"create_rx_mb":5.9,"epoch_s":95.35,"epoch_rx_mb":9764.1,"frames":129981,"digest":"d1d8cfdc95","subset_bytes":118997},
+      {"task":"s2_lerobot","arm":"lr_stream","case":"cluster","s":393.13,"create_s":5.64,"create_rx_mb":13.1,"epoch_s":387.48,"epoch_rx_mb":29144.1,"frames":260493,"digest":"7086f66b7d","subset_bytes":32730},
+      {"task":"s2_lerobot","arm":"dc","case":"cluster","s":48.8,"create_s":8.35,"create_rx_mb":19.3,"epoch_s":40.45,"epoch_rx_mb":2953.8,"frames":260493,"digest":"7086f66b7d","episodes":300},
+      {"task":"s2_lerobot","arm":"dc","case":"scatter","s":78.7,"create_s":13.98,"create_rx_mb":51.9,"epoch_s":64.72,"epoch_rx_mb":4078.3,"frames":312555,"digest":"2232735397","episodes":437},
+      {"task":"s2_lerobot","arm":"dc","case":"windows","s":124.0,"create_s":13.23,"create_rx_mb":52.0,"epoch_s":110.77,"epoch_rx_mb":9972.5,"frames":129981,"digest":"d1d8cfdc95","episodes":1030},
+      {"task":"s2_lerobot","arm":"lr_stream","case":"scatter","s":437.7,"create_s":3.05,"create_rx_mb":4.0,"epoch_s":434.65,"epoch_rx_mb":41947.6,"frames":312555,"digest":"fcd313050e","subset_bytes":48662}
+    ],
+    "mcap": [
+      {"task":"s2_mcap","arm":"dc","s":132.37,"create_s":78.11,"create_rx_mb":14917.8,"epoch_s":54.26,"epoch_rx_mb":3378.4,"messages":16133,"digest":"8f62b2d930","clips":207},
+      {"task":"s2_mcap","arm":"dc","s":115.3,"create_s":62.8,"create_rx_mb":9106.0,"epoch_s":52.5,"epoch_rx_mb":3006.0,"messages":16133,"digest":"8f62b2d930","clips":207},
+      {"task":"s2_mcap","arm":"dc","s":116.68,"create_s":63.21,"create_rx_mb":9108.8,"epoch_s":53.47,"epoch_rx_mb":3006.2,"messages":16133,"digest":"8f62b2d930","clips":207},
+      {"task":"s2_mcap","arm":"cli","s":281.11,"create_s":277.85,"create_rx_mb":49448.2,"epoch_s":3.26,"epoch_rx_mb":199.7,"messages":16133,"digest":"8f62b2d930","clips":207,"subset_bytes":192019108},
+      {"task":"s2_mcap","arm":"dc","s":107.16,"create_s":54.83,"create_rx_mb":9118.6,"epoch_s":52.33,"epoch_rx_mb":3003.4,"messages":16133,"digest":"8f62b2d930","clips":207}
+    ],
+    "webdataset": [
+      {"task":"s2_wds","arm":"hand","s":70.04,"index_s":35.34,"index_rx_mb":7132.0,"create_v1_s":0.1,"create_v1_rx_mb":0.0,"epoch_v1_s":5.55,"epoch_v1_rx_mb":11.3,"create_v2_s":0.1,"create_v2_rx_mb":0.0,"epoch_v2_s":28.95,"epoch_v2_rx_mb":63.9,"answers":{"v1":{"images":182,"digest":"c3606c22da"},"v2":{"images":1008,"digest":"e7cb1f27ee"}}},
+      {"task":"s2_wds","arm":"stream","s":113.2,"create_v1_s":7.69,"create_v1_rx_mb":232.9,"epoch_v1_s":51.83,"epoch_v1_rx_mb":7142.7,"create_v2_s":0.0,"create_v2_rx_mb":0.0,"epoch_v2_s":53.67,"epoch_v2_rx_mb":7143.4,"answers":{"v1":{"images":182,"digest":"c3606c22da"},"v2":{"images":1008,"digest":"e7cb1f27ee"}}},
+      {"task":"s2_wds","arm":"reshard","s":179.23,"create_v1_s":90.64,"create_v1_rx_mb":7379.5,"epoch_v1_s":0.68,"epoch_v1_rx_mb":11.3,"create_v2_s":85.39,"create_v2_rx_mb":7146.8,"epoch_v2_s":2.37,"epoch_v2_rx_mb":64.2,"answers":{"v1":{"images":182,"digest":"c3606c22da"},"v2":{"images":1008,"digest":"e7cb1f27ee"}}},
+      {"task":"s2_wds","arm":"hand","s":38.82,"index_s":34.14,"index_rx_mb":7139.7,"create_v1_s":0.1,"create_v1_rx_mb":0.0,"epoch_v1_s":1.48,"epoch_v1_rx_mb":10.4,"create_v2_s":0.11,"create_v2_rx_mb":0.0,"epoch_v2_s":2.99,"epoch_v2_rx_mb":58.1,"answers":{"v1":{"images":182,"digest":"c3606c22da"},"v2":{"images":1008,"digest":"e7cb1f27ee"}}},
+      {"task":"s2_wds","arm":"dc","s":235.32,"index_s":58.25,"index_rx_mb":7163.3,"create_v1_s":0.23,"create_v1_rx_mb":0.0,"epoch_v1_s":85.09,"epoch_v1_rx_mb":21859.8,"create_v2_s":0.4,"create_v2_rx_mb":0.0,"epoch_v2_s":91.35,"epoch_v2_rx_mb":24346.0,"answers":{"v1":{"images":182,"digest":"c3606c22da"},"v2":{"images":1008,"digest":"e7cb1f27ee"}},"settings":{"parallel":8}},
+      {"task":"s2_wds","arm":"dc","s":165.38,"index_s":137.49,"index_rx_mb":30052.8,"create_v1_s":0.25,"create_v1_rx_mb":0.0,"epoch_v1_s":7.49,"epoch_v1_rx_mb":20.5,"create_v2_s":0.37,"create_v2_rx_mb":0.0,"epoch_v2_s":19.78,"epoch_v2_rx_mb":116.2,"answers":{"v1":{"images":182,"digest":"c3606c22da"},"v2":{"images":1008,"digest":"e7cb1f27ee"}},"settings":{"parallel":8,"prefetch":0}},
+      {"task":"s2_wds","arm":"dc","s":82.49,"index_s":55.03,"index_rx_mb":7174.2,"create_v1_s":0.23,"create_v1_rx_mb":0.0,"epoch_v1_s":7.4,"epoch_v1_rx_mb":20.5,"create_v2_s":0.36,"create_v2_rx_mb":0.0,"epoch_v2_s":19.47,"epoch_v2_rx_mb":116.0,"answers":{"v1":{"images":182,"digest":"c3606c22da"},"v2":{"images":1008,"digest":"e7cb1f27ee"}},"settings":{"parallel":8}}
+    ]
+  }
+}

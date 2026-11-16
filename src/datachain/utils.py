@@ -45,6 +45,10 @@ STUDIO_URL = "https://studio.datachain.ai"
 T = TypeVar("T")
 
 
+def parent_path(path: str) -> str:
+    return path.rpartition("/")[0]
+
+
 class DataChainDir:
     DEFAULT = ".datachain"
     CACHE = "cache"

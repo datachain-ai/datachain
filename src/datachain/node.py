@@ -181,7 +181,7 @@ class NodeWithPath:
 
     @property
     def has_empty_segments(self) -> bool:
-        return any(not part or "//" in part for part in self.path)
+        return any("//" in f"/{part}/" for part in self.path)
 
     def instantiate(
         self, client: "Client", output: str, progress_bar, *, force: bool = False
