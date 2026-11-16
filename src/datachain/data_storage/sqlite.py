@@ -30,8 +30,8 @@ from sqlalchemy.sql.elements import (
     Label,
     TypeCoerce,
 )
-from sqlalchemy.sql.expression import cast
-from sqlalchemy.sql.selectable import Join, Select, SelectBase
+from sqlalchemy.sql.expression import Executable, cast
+from sqlalchemy.sql.selectable import Join, Select
 from sqlalchemy.sql.visitors import iterate, replacement_traverse
 
 import datachain.sql.sqlite
@@ -179,7 +179,7 @@ def _probe_computed_keys(
         and getattr(node.type, "collation", None)
         for node in iterate(join.onclause)
     ) or any(
-        isinstance(query := getattr(side, "element", None), SelectBase)
+        isinstance(query := getattr(side, "element", None), Executable)
         and query.get_execution_options().get("datachain_bounded_query")
         for side in (join.left, join.right)
     ):
