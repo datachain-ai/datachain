@@ -29,7 +29,7 @@ from datachain.lib.data_model import DataModel
 from datachain.lib.utils import DataChainError, rebase_path
 from datachain.nodes_thread_pool import NodesThreadPool
 from datachain.sql.types import JSON, Boolean, DateTime, Int, String
-from datachain.utils import TIME_ZERO
+from datachain.utils import TIME_ZERO, parent_path
 
 if TYPE_CHECKING:
     from typing import BinaryIO, Self
@@ -556,7 +556,7 @@ class File(DataModel):
             file.parent  # 'data/subdir'
             ```
         """
-        return str(PurePosixPath(self.path).parent)
+        return parent_path(self.path) if "/" in self.path else "."
 
     @contextmanager
     def open(
@@ -1257,7 +1257,7 @@ class FileRow(NamedTuple):
 
     @property
     def parent(self) -> str:
-        return str(PurePosixPath(self.path).parent)
+        return parent_path(self.path) if "/" in self.path else "."
 
     def get_file_suffix(self) -> str:
         return PurePosixPath(self.path).suffix
