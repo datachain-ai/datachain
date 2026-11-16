@@ -216,6 +216,10 @@ def test_mutable_and_nan_defaults_do_not_alias_across_rows():
 
 
 def test_empty_marker_columnar_chunks_keep_shape(test_session):
+    import pyarrow as pa
+
+    from datachain.data_storage.codec import RowCodec
+
     chain = dc.read_records(
         [{"v": _EmptyMarker()}],
         schema={"v": _EmptyMarker | None},
@@ -224,16 +228,31 @@ def test_empty_marker_columnar_chunks_keep_shape(test_session):
     names, chunks = chain.to_columnar_data_with_names(1, include_sentinels=False)
     assert names == []
     assert list(chunks) == [[]]
+    batch0 = pa.record_batch({"x": [1, 2]}).select([])
+    assert RowCodec([]).encode_arrow(batch0) == [(), ()]
 
 
 def test_model_dict_key_check_edge_cases():
-    import numpy as np
-    from pydantic import BaseModel, Field, RootModel, field_serializer
+    from datetime import timedelta, timezone
 
-    from datachain.data_storage.codec import decode_json, encode_json
+    import numpy as np
+    import pyarrow as pa
+    from pydantic import BaseModel, ConfigDict, Field, RootModel, field_serializer
+
+    from datachain.data_storage.codec import (
+        decode_bool,
+        decode_json,
+        encode_json,
+        value_codec,
+    )
+    from datachain.data_storage.sqlite import SQLiteWarehouse
+    from datachain.lib.udf import JsonSerializationError
+    from datachain.sql.types import JSON, Array, DateTime, SQLType
 
     assert decode_json(encode_json(RootModel[str]("hello"))) == "hello"
     assert decode_json(encode_json(RootModel[str]("123"))) == "123"
+    assert decode_bool(np.int64(0)) is False
+    assert decode_bool(np.int64(1)) is True
 
     class WithExcluded(BaseModel):
         visible: int = 1
@@ -258,3 +277,39 @@ def test_model_dict_key_check_edge_cases():
     assert decode_json(encode_json(WithNumpyKey(value={np.int64(2): "a"}))) == {
         "value": {"2": "a"}
     }
+
+    class Parent(BaseModel):
+        x: int = 1
+
+    class Child(Parent):
+        bad: dict = Field(default_factory=lambda: {1: "a", "1": "b"})
+
+    class Holder(BaseModel):
+        p: Parent
+
+    assert decode_json(encode_json(Holder(p=Child()))) == {"p": {"x": 1}}
+
+    class WithExtra(BaseModel):
+        model_config = ConfigDict(extra="allow")
+
+    with pytest.raises(JsonSerializationError, match="would be lost"):
+        encode_json(WithExtra(d={1: "a", "1": "b"}))
+
+    ch_json_array = value_codec(Array(JSON()), [], json_array_text=True)
+    assert ch_json_array.encode([{b"a": "bytes", (1, "x"): "tuple"}]) == [
+        '{"a":"bytes","(1, \'x\')":"tuple"}'
+    ]
+
+    class CustomStr(SQLType):
+        _python = str
+
+        def on_read_convert(self, value):
+            return f"custom:{value}"
+
+    assert value_codec(CustomStr(), None).decode("v") == "custom:v"
+
+    with SQLiteWarehouse(in_memory=True) as wh:
+        rc = wh.row_codec([DateTime()])
+        early = datetime(1, 1, 1, 0, 0, tzinfo=timezone(timedelta(hours=1)))
+        batch = pa.record_batch({"dt": [early]})
+        assert rc.encode_arrow(batch) == [rc.encode((early,))]

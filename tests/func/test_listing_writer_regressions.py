@@ -18,7 +18,6 @@ def _interleaved_refresh(session, folder, scenario):
     original_pages = listing.list_pages
     complete = catalog.complete_dataset_version
     stored = warehouse.insert_stored_rows
-    inserted = warehouse.insert_into
     roles = []
     returned = {}
     pending = None
@@ -73,11 +72,6 @@ def _interleaved_refresh(session, folder, scenario):
         after_data(args[0])
         return result
 
-    def insert(*args, **kwargs):
-        result = inserted(*args, **kwargs)
-        after_data(args[0])
-        return result
-
     def finalize(dataset, version, *args, **kwargs):
         nonlocal pending, scheduled
         if (
@@ -97,7 +91,6 @@ def _interleaved_refresh(session, folder, scenario):
         patch.object(listing, "list_pages", pages),
         patch.object(catalog, "complete_dataset_version", finalize),
         patch.object(warehouse, "insert_stored_rows", store),
-        patch.object(warehouse, "insert_into", insert),
     ):
         invoke("base")
         invoke("A")

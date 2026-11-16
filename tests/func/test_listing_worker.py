@@ -344,9 +344,10 @@ def test_children_import_datachain_whatever_the_cwd_holds(
 
 
 CREDENTIAL_PROCESS = """
-import json, os, stat, sys
-with open(sys.argv[1], "a") as log:
-    log.write(f"{os.getppid()} {stat.S_ISFIFO(os.fstat(0).st_mode)}\\n")
+import json, os, pathlib, stat, sys
+(pathlib.Path(sys.argv[1]) / f"{os.getpid()}").write_text(
+    f"{os.getppid()} {stat.S_ISFIFO(os.fstat(0).st_mode)}"
+)
 print(json.dumps({"Version": 1, "AccessKeyId": sys.argv[2],
                   "SecretAccessKey": sys.argv[3], "SessionToken": sys.argv[4]}))
 """
@@ -360,7 +361,8 @@ def test_children_take_credentials_from_a_credential_process(
     import os
     import sys
 
-    script, log = tmp_path / "creds.py", tmp_path / "creds.log"
+    script, log = tmp_path / "creds.py", tmp_path / "creds"
+    log.mkdir()
     script.write_text(CREDENTIAL_PROCESS)
     kwargs = dict(client.fs_kwargs)
     keys = [kwargs.pop(k) for k in ("aws_key", "aws_secret", "aws_token")]
@@ -377,7 +379,7 @@ def test_children_take_credentials_from_a_credential_process(
 
     assert len(listing(client)) == len(listing(client, processes=False))
     assert remote_rows
-    calls = [line.split() for line in log.read_text().splitlines()]
+    calls = [p.read_text().split() for p in log.iterdir()]
     in_children = [fifo for ppid, fifo in calls if int(ppid) != os.getpid()]
     assert in_children
     assert set(in_children) == {"False"}  # the frame pipe is not their stdin

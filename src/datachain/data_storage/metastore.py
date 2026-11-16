@@ -342,6 +342,12 @@ class AbstractMetastore(ABC, Serializable):
     def touch_reservation(self, dataset: DatasetRecord, version: str) -> None:
         """Restart the age of a CREATED version, so that gc, which removes a
         jobless CREATED version by its age, leaves a long write alone."""
+        self.update_dataset_version(
+            dataset,
+            version,
+            expected_status=DatasetStatus.CREATED,
+            created_at=datetime.now(UTC),
+        )
 
     @abstractmethod
     def remove_dataset_version(
@@ -1477,18 +1483,7 @@ class AbstractDBMetastore(AbstractMetastore):
         result_ds.update(**dataset_values)
         return result_ds
 
-    def touch_reservation(self, dataset: DatasetRecord, version: str) -> None:
-        dv = self._datasets_versions
-        self.db.execute(
-            self._datasets_versions_update()
-            .where(
-                dv.c.id == dataset.get_version(version).id,
-                dv.c.status == DatasetStatus.CREATED,
-            )
-            .values(created_at=datetime.now(UTC))
-        )
-
-    def update_dataset_version(  # noqa: C901, PLR0912
+    def update_dataset_version(  # noqa: PLR0912
         self,
         dataset: DatasetRecord,
         version: str,
@@ -1514,14 +1509,12 @@ class AbstractDBMetastore(AbstractMetastore):
         values: dict[str, Any] = {}
         version_values: dict[str, Any] = {}
         for field, value in kwargs.items():
-            if (
-                field in ("id", "created_at")
-                or field not in self._dataset_version_fields
-            ):
+            if field == "id" or field not in self._dataset_version_fields:
                 continue  # these fields are read-only or not applicable
 
             if value is None and field in (
                 "status",
+                "created_at",
                 "sources",
                 "query_script",
                 "error_message",
@@ -1596,18 +1589,6 @@ class AbstractDBMetastore(AbstractMetastore):
         )
         if guarded and result.rowcount == 0:  # type: ignore [attr-defined]
             return None
-
-        if (
-            expected_job_id is not None
-            and "job_id" in values
-            and values["job_id"] != expected_job_id
-        ):
-            self.db.execute(
-                self._dataset_version_jobs_delete().where(
-                    self._dataset_version_jobs.c.dataset_version_id == version_obj.id,
-                    self._dataset_version_jobs.c.job_id == expected_job_id,
-                )
-            )
 
         version_obj.update(**version_values)
         logger.debug(
@@ -3176,11 +3157,6 @@ class AbstractDBMetastore(AbstractMetastore):
                 self._projects.c.name == project_name,
                 self._dataset_version_jobs.c.job_id.in_(job_ancestry),
                 self._dataset_version_jobs.c.is_creator.is_(True),
-                or_(
-                    self._datasets_versions.c.job_id.is_(None),
-                    self._datasets_versions.c.job_id
-                    == self._dataset_version_jobs.c.job_id,
-                ),
                 self._datasets_versions.c.status == DatasetStatus.COMPLETE,
             )
             .order_by(desc(self._dataset_version_jobs.c.created_at))

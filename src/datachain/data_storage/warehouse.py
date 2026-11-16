@@ -447,6 +447,10 @@ class AbstractWarehouse(ABC, Serializable):
     ) -> None:
         """Insert rows already in stored form (``RowCodec.encode``), in the order
         of ``columns``, in blocks of ``batch_size``."""
+        if "sys__id" not in columns and "sys__id" in table.c:
+            with self.writer(table, columns, batch_size=batch_size) as w:
+                w.extend(rows)
+            return
         for block in batched(rows, batch_size or self.INSERT_BATCH_SIZE):
             self.insert_block(table, columns, list(block))
 

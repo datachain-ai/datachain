@@ -6,11 +6,11 @@ import posixpath
 import re
 import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from contextlib import contextmanager, suppress
+from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import blake2b
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, TypeVar, cast
 
 import sqlalchemy as sa
 from fsspec.asyn import get_loop, sync
@@ -79,13 +79,17 @@ def list_pages(
     client.encode_page = encode
     _, path = Client.parse_url(uri)
     # a child's pages are StoredPages already
-    pages: Iterator[Any] = iter_over_async(client.scandir(path.rstrip("/")), get_loop())
-    for page in pages:
-        if isinstance(page, StoredPage):
-            yield page
-            continue
-        rows = [*map(file_row, page)] if page and isinstance(page[0], File) else page
-        yield encode(rows) if encode else rows
+    with closing(
+        iter_over_async(client.scandir(path.removesuffix("/")), get_loop())
+    ) as pages:
+        for page in pages:
+            if isinstance(page, StoredPage):
+                yield page
+                continue
+            rows = (
+                [*map(file_row, page)] if page and isinstance(page[0], File) else page
+            )
+            yield encode(rows) if encode else rows
 
 
 def list_scope_pages(
@@ -553,7 +557,7 @@ def write_listing(
     Only a newer reservation may supersede it. An unchanged snapshot reuses
     the latest COMPLETE version unless an older reservation needs fencing.
     """
-    from datachain.dataset import DatasetStatus
+    from datachain.dataset import DEFAULT_DATASET_VERSION, DatasetStatus
     from datachain.lib.signal_schema import SignalSchema
 
     catalog = session.catalog
@@ -571,9 +575,7 @@ def write_listing(
     encode = PageEncoder(warehouse.row_codec(columns), with_etag)
     job = session.get_job()
     job_id = job.id if job else None
-    before = _latest_version(catalog, ds_name, project)
-    pages = iter(list_pages(uri, catalog.cache, client_config, encode))
-    after = _latest_version(catalog, ds_name, project)
+    pages = None
     dataset = version = None
     try:
         dataset = catalog.create_dataset(
@@ -587,17 +589,11 @@ def write_listing(
             query_script=job.query if job else "",
         )
         reservation = dataset.versions[0]
-        version, fenced_id = (
-            reservation.version,
-            (
-                (before[1].id if before else 0)
-                if after and (not before or after[1].id > before[1].id)
-                else reservation.id
-            ),
-        )
+        version = reservation.version
         table = warehouse.create_dataset_rows_table(
             warehouse.dataset_table_name(dataset, version), columns=columns
         )
+        pages = iter(list_pages(uri, catalog.cache, client_config, encode))
         count = total = 0
 
         def rows() -> Iterator[tuple]:
@@ -616,7 +612,11 @@ def write_listing(
 
         warehouse.insert_stored_rows(table, names, rows(), LISTING_BATCH_SIZE)
         content_hash = f"{LISTING_DIGEST}:{count}:{total % (1 << 128):032x}"
-        latest = _latest_version(catalog, ds_name, project)
+        latest = (
+            _latest_version(catalog, ds_name, project)
+            if version != DEFAULT_DATASET_VERSION
+            else None
+        )
         if latest:
             previous, previous_version = latest
             own_active = any(
@@ -630,37 +630,35 @@ def write_listing(
             )
             if (
                 own_active
-                and previous_version.id <= fenced_id
+                and previous_version.id < reservation.id
                 and previous_version.content_hash == content_hash
                 and not older_pending
                 and warehouse.db.has_table(
                     warehouse.dataset_table_name(previous, previous_version.version)
                 )
+                and catalog.release_reservation(dataset, version, job_id)
             ):
-                reused = metastore.update_dataset_version(
+                metastore.update_dataset_version(
                     previous,
                     previous_version.version,
                     expected_status=DatasetStatus.COMPLETE,
                     expected_latest_complete=previous_version.id,
                     finished_at=datetime.now(UTC),
                 )
-                if reused is not None and catalog.release_reservation(
-                    dataset, version, job_id
-                ):
-                    return
+                return
         try:
             catalog.complete_dataset_version(
                 dataset,
                 version,
                 content_hash=content_hash,
                 expected_job_id=job_id,
-                expected_latest_complete=fenced_id,
+                expected_latest_complete=reservation.id,
             )
         except ConcurrentDatasetModificationError:
             latest = _latest_version(catalog, ds_name, project)
             if (
                 latest is None
-                or latest[1].id <= fenced_id
+                or latest[1].id <= reservation.id
                 or not warehouse.db.has_table(
                     warehouse.dataset_table_name(latest[0], latest[1].version)
                 )

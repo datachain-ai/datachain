@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import reduce
 from typing import TYPE_CHECKING, Any, Self
-from uuid import uuid4
 
 import sqlalchemy as sa
 from sqlalchemy import Column
@@ -20,7 +19,6 @@ from sqlalchemy import Column
 from datachain.cache import Cache
 from datachain.checkpoint import Checkpoint, CheckpointStatus
 from datachain.client import Client
-from datachain.data_storage.job import JobStatus
 from datachain.data_storage.writer import parts_table_name
 from datachain.dataset import (
     DATASET_PREFIX,
@@ -30,7 +28,6 @@ from datachain.dataset import (
     DatasetListRecord,
     DatasetRecord,
     DatasetStatus,
-    DatasetVersion,
     StorageURI,
     create_dataset_uri,
     parse_dataset_name,
@@ -499,11 +496,6 @@ def find_column_to_str(  # noqa: PLR0911
     return ""
 
 
-def columns_schema(columns: Iterable[Column]) -> dict[str, Any]:
-    """The stored form of a rows table's columns: name to serialized SQL type."""
-    return {c.name: c.type.to_dict() for c in columns if isinstance(c.type, SQLType)}
-
-
 def clone_catalog_with_cache(catalog: "Catalog", cache: "Cache") -> "Catalog":
     clone = catalog.copy()
     clone.cache = cache
@@ -946,29 +938,6 @@ class Catalog:
         auto-computed from the dataset and retried up to
         ``_MAX_VERSION_CLAIM_RETRIES`` times on conflict.
         """
-        reclaim_version = version
-        if version is None and dataset.all_versions:
-            latest = max(dataset.all_versions)
-            previous = copy(dataset)
-            previous.remove_version(latest.version)
-            if latest.version == self._next_auto_version(previous, update_version):
-                reclaim_version = latest.version
-        if (
-            job_id
-            and reclaim_version
-            and (
-                reclaimed := self._reclaim_version(
-                    dataset,
-                    reclaim_version,
-                    job_id,
-                    feature_schema=feature_schema,
-                    query_script=query_script,
-                    schema=columns_schema(columns),
-                )
-            )
-        ):
-            return reclaimed
-
         max_retries = 0 if version else _MAX_VERSION_CLAIM_RETRIES
         target_version = version or self._next_auto_version(dataset, update_version)
 
@@ -1034,62 +1003,6 @@ class Catalog:
         raise DatasetInvalidVersionError(
             f"Failed to claim a version for dataset {name} after"
             f" {1 + max_retries} attempts due to concurrent writers"
-        )
-
-    def can_reclaim_version(self, v: DatasetVersion, job_id: str | None) -> bool:
-        """Whether a save of ``job_id`` may take over version ``v``: a save
-        of an earlier finished job in its rerun chain reserved it and never
-        published it, because it was killed during its copy or failed."""
-        if (
-            not job_id
-            or not v.job_id
-            or v.status not in (DatasetStatus.CREATED, DatasetStatus.FAILED)
-        ):
-            return False
-        if v.job_id == job_id:
-            return v.status == DatasetStatus.FAILED
-        ancestor = (
-            v.job_id != job_id
-            and v.job_id in self.metastore.get_ancestor_job_ids(job_id)
-        )
-        if not ancestor:
-            return False
-        owner = self.metastore.get_job(v.job_id)
-        return owner is not None and owner.status in JobStatus.finished()
-
-    def _reclaim_version(
-        self, dataset: DatasetRecord, version: str, job_id: str, **fields
-    ) -> DatasetRecord | None:
-        """Take over ``version`` if ``can_reclaim_version`` allows it. A
-        compare-and-set on its status and owner makes one taker win; what the
-        dead save left (its rows and its dependencies) is dropped."""
-        v = dataset.get_version(version) if dataset.has_version(version) else None
-        if v is None or not self.can_reclaim_version(v, job_id):
-            return None
-        fields["uuid"] = str(uuid4())
-        claimed = self.metastore.update_dataset_version(
-            dataset,
-            v.version,
-            expected_status=v.status,
-            expected_job_id=v.job_id,
-            status=DatasetStatus.CREATED,
-            job_id=job_id,
-            finished_at=None,
-            error_message="",
-            error_stack="",
-            num_objects=None,
-            size=None,
-            **fields,
-        )
-        if claimed is None:
-            return None
-        self.metastore.remove_dataset_dependencies(dataset, v.version)
-        self.warehouse.drop_dataset_rows_table(dataset, v.version)
-        return self.get_dataset(
-            dataset.name,
-            namespace_name=dataset.project.namespace.name,
-            project_name=dataset.project.name,
-            versions=[v.version],
         )
 
     def create_dataset_version(
@@ -1216,7 +1129,7 @@ class Catalog:
         expected_job_id: str | None = None,
         expected_latest_complete: int | None = None,
         **kwargs,
-    ) -> None:
+    ) -> DatasetRecord:
         """Finalize a dataset version after its rows table has been populated.
 
         This refreshes warehouse-derived metadata first, then marks the version
@@ -1235,7 +1148,7 @@ class Catalog:
                 expected_job_id=expected_job_id,
                 **kwargs,
             )
-            self.metastore.update_dataset_status(
+            return self.metastore.update_dataset_status(
                 dataset,
                 DatasetStatus.COMPLETE,
                 version=version,
@@ -1622,7 +1535,6 @@ class Catalog:
         include_removed: bool = False,
         include_preview: bool = False,
     ) -> DatasetRecord:
-
         namespace_name = namespace_name or self.metastore.default_namespace_name
         project_name = project_name or self.metastore.default_project_name
 

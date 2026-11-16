@@ -400,24 +400,25 @@ def test_listing_publish_races_a_newer_one(test_session, base):
 
 
 def test_unchanged_refresh_leaves_a_version_saved_meanwhile(test_session):
-    # A starts with 1.0.0 as the latest; B saves 2.0.0 before A ends. A equals
-    # 1.0.0: it is dropped, and neither version is touched.
+    # A starts with 1.0.0 as the latest; B saves a newer version before A ends.
+    # A equals 1.0.0: it is dropped, and neither version is touched.
     uri = "s3://bucket/data/"
     name, _, _ = parse_listing_uri(uri)
     old, new = File(path="x.jpg", etag="e1"), File(path="y.jpg", etag="e2")
     first = _save_listing(test_session, uri, old).get_version("1.0.0")
 
     def racing(uri, cache, client_config, encode):
+        yield encode([listing.file_row(old)])
         _save_listing(test_session, uri, new)
-        return iter([encode([listing.file_row(old)])])
 
     with patch.object(listing, "list_pages", side_effect=racing):
         listing.write_listing(uri, name, test_session, {})
 
     ds = test_session.catalog.get_dataset(name, versions=None)
-    assert [v.version for v in ds.versions] == ["1.0.0", "2.0.0"]
+    latest = ds.latest_complete_version
+    assert len(ds.versions) == 2
     assert ds.get_version("1.0.0").finished_at == first.finished_at
-    assert _etags(test_session, name, "2.0.0") == ["e2"]
+    assert _etags(test_session, name, latest) == ["e2"]
 
 
 @pytest.mark.parametrize(
