@@ -5,13 +5,16 @@ from types import SimpleNamespace
 
 import pytest
 
+from datachain import semver
 from datachain.dataset import DatasetDependencyType, DatasetStatus
 from datachain.skill.knowledge.collect import collect_dataset_snapshot
+from datachain.skill.knowledge.scripts.utils import parse_semver
 
 
 def _version(version, *, query_script="", status=DatasetStatus.COMPLETE):
     return SimpleNamespace(
         version=version,
+        version_value=semver.value(".".join(map(str, parse_semver(version)))),
         status=status,
         uuid=f"uuid-{version}",
         num_objects=10,
@@ -46,12 +49,14 @@ class _StubMetastore:
         self._record = record
         self._deps = deps_by_version or {}
         self.get_dataset_calls = []
+        self.get_dependencies_calls = []
 
     def get_dataset(self, name, namespace=None, project=None, **kwargs):
         self.get_dataset_calls.append((name, namespace, project, kwargs))
         return self._record
 
     def get_direct_dataset_dependencies(self, dataset, version):
+        self.get_dependencies_calls.append(version)
         return self._deps.get(version, [])
 
 
@@ -152,6 +157,7 @@ def test_collect_dataset_snapshot_keeps_the_target_when_history_is_capped():
 
     assert snap["versions"][-1]["version"] == "25.0.0"
     assert len(snap["versions"]) == 20
+    assert len(ms.get_dependencies_calls) == 21
     assert any("truncated" in w for w in snap["warnings"])
 
 
@@ -169,3 +175,44 @@ def test_collect_dataset_snapshot_excludes_incomplete_versions_from_history():
     snap = collect_dataset_snapshot(ms, "pet_images", "ns", "proj", version="3.0.0")
 
     assert [v["version"] for v in snap["versions"]] == ["1.0.0", "3.0.0"]
+
+
+@pytest.mark.parametrize("unavailable", [{"1.0.0"}, {"2.0.0"}, {"1.0.0", "2.0.0"}])
+def test_collect_dataset_snapshot_skips_unknown_dependency_changes(unavailable):
+    versions = [
+        _version("1.0.0", query_script="old"),
+        _version("2.0.0", query_script="new"),
+        _version("3.0.0", query_script="third"),
+        _version("4.0.0", query_script="fourth"),
+    ]
+    deps = {
+        v.version: None
+        if v.version in unavailable
+        else [_dep(DatasetDependencyType.DATASET, "upstream", v.version)]
+        for v in versions
+    }
+    deps["4.0.0"] = []
+    ms = _StubMetastore(_record(versions), deps)
+
+    snapshot = collect_dataset_snapshot(ms, "pet_images", version="4.0.0")
+
+    compared = snapshot["versions"][1]
+    assert compared["query_script"] == "new"
+    assert compared["changes"]["script_changed"] is True
+    assert compared["changes"]["previous_version"] == "1.0.0"
+    for key in ("deps_added", "deps_removed", "deps_updated"):
+        assert compared["changes"][key] == []
+    third = snapshot["versions"][2]["changes"]
+    assert third["deps_added"] == third["deps_removed"] == []
+    assert third["deps_updated"] == (
+        []
+        if "2.0.0" in unavailable
+        else [
+            {"name": "ns.proj.upstream", "version_from": "2.0.0", "version_to": "3.0.0"}
+        ]
+    )
+    assert snapshot["versions"][-1]["changes"]["deps_removed"] == [
+        {"name": "ns.proj.upstream", "version": "3.0.0"}
+    ]
+    assert any("Dependencies are unavailable" in w for w in snapshot["warnings"])
+    assert ms.get_dependencies_calls == [v.version for v in versions]

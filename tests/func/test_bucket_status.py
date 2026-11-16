@@ -2,6 +2,8 @@ import pytest
 
 from datachain.client import BucketStatus, bucket_status
 
+pytestmark = pytest.mark.parametrize("tree", [{}], indirect=True)
+
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 def test_bucket_status_exists(cloud_server, cloud_server_credentials):

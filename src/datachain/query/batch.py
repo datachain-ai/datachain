@@ -7,6 +7,8 @@ import sqlalchemy as sa
 
 from datachain.data_storage.schema import PARTITION_COLUMN_ID
 
+DEFAULT_BATCH_SIZE = 10_000
+
 RowsOutputBatch = Sequence[Sequence]
 RowsOutput = Sequence | RowsOutputBatch
 

@@ -1,4 +1,5 @@
 import io
+import os
 import tarfile
 from pathlib import Path
 
@@ -251,7 +252,8 @@ def test_open_write_binary(cloud_test_catalog):
     catalog.get_client(src_uri).fs.rm(file_path)
 
 
-def test_open_write_text(cloud_test_catalog):
+@pytest.mark.parametrize("mode", ["w", "wt"])
+def test_open_write_text(cloud_test_catalog, mode):
     ctc = cloud_test_catalog
     catalog = ctc.catalog
     src_uri = ctc.src_uri
@@ -260,7 +262,7 @@ def test_open_write_text(cloud_test_catalog):
     content = "Привет Мир\nSecond line"
 
     file = File.at(file_path, ctc.session)
-    with file.open("w", encoding="utf-16-le") as f:
+    with file.open(mode, encoding="utf-16-le") as f:
         written_chars = f.write(content)
 
     assert written_chars == len(content)
@@ -949,3 +951,71 @@ def test_video_info_http_server_without_range_support(
     info = file.get_info()
 
     assert info.duration == pytest.approx(1.0, abs=0.1)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("cached", [False, True])
+def test_open_gives_the_same_buffered_stream_with_and_without_cache(
+    cloud_test_catalog, cached
+):
+    ctc = cloud_test_catalog
+    chain = dc.read_storage(ctc.src_uri, session=ctc.session)
+    (file,) = chain.filter(dc.C("file.path").glob("*cat1")).to_values("file")
+    if cached:
+        file.ensure_cached()
+
+    with file.open() as f:
+        assert isinstance(f, io.BufferedIOBase)
+        assert (f.read(2), f.read1(), f.read()) == (b"me", b"ow", b"")
+
+    buf = bytearray(8)
+    with file.open() as f:
+        assert (f.readinto(buf), f.readinto(buf)) == (4, 0)
+    assert buf[:4] == b"meow"
+
+
+@pytest.mark.parametrize("length", [-1, 4])
+def test_read_bytes_preserves_full_read_cache_policy(test_session, tmp_path, length):
+    path = tmp_path / "content.bin"
+    path.write_bytes(b"hello world")
+
+    def read(file: dc.File) -> bytes:
+        value = file.read_bytes(length)
+        assert (file.get_local_path() is not None) == (length < 0)
+        return value
+
+    result = (
+        dc.read_storage(path, session=test_session)
+        .settings(cache=True, prefetch=0)
+        .map(value=read)
+        .to_values("value")
+    )
+    assert result == [b"hello world" if length < 0 else b"hello world"[:length]]
+
+
+@pytest.fixture
+def changed_local_image(test_session, tmp_path):
+    from PIL import Image
+
+    path = tmp_path / "image.png"
+    Image.new("RGB", (2, 2)).save(path)
+    file = dc.read_storage(path, session=test_session).to_values("file")[0]
+    file._set_stream(test_session.catalog, caching_enabled=True)
+    mtime = path.stat().st_mtime + 1
+    Image.new("RGB", (3, 3)).save(path)
+    os.utime(path, (mtime, mtime))
+    return file
+
+
+def test_read_bytes_prefix_after_local_overwrite_raises(changed_local_image):
+    with pytest.raises(FileNotFoundError, match="changed on the source"):
+        changed_local_image.read_bytes(3)
+    assert changed_local_image.get_local_path() is None
+
+
+def test_image_info_after_local_overwrite_raises(changed_local_image):
+    with pytest.raises(FileError) as error:
+        changed_local_image.as_image_file().get_info()
+    assert isinstance(error.value.__cause__, FileNotFoundError)
+    assert "changed on the source" in str(error.value.__cause__)
+    assert changed_local_image.get_local_path() is None

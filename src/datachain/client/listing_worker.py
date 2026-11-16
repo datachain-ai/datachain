@@ -16,6 +16,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Any, BinaryIO
 
 from datachain.lib.file import FileRow
+from datachain.utils import usable_cpu_count
 
 from .ranges import Page
 
@@ -25,52 +26,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger("datachain")
 
 
-def _cpu_quotas(
-    root: str = "/sys/fs/cgroup", membership: str = "/proc/self/cgroup"
-) -> list[tuple[int, int]]:
-    """``(quota, period)`` of each cgroup this process is in, and their parents."""
-    quotas = []
-    with suppress(OSError):
-        for line in _read_text(membership).splitlines():
-            _, controllers, path = line.split(":", 2)
-            if not controllers:  # v2
-                base, files = root, ["cpu.max"]
-            elif "cpu" in controllers.split(","):  # v1
-                base = os.path.join(root, controllers)
-                files = ["cpu.cfs_quota_us", "cpu.cfs_period_us"]
-            else:
-                continue
-            parts = [p for p in path.split("/") if p]
-            for depth in range(len(parts) + 1):
-                folder = os.path.join(base, *parts[:depth])
-                with suppress(OSError, ValueError):
-                    quota, period = " ".join(
-                        _read_text(os.path.join(folder, name)) for name in files
-                    ).split()
-                    if quota not in ("max", "-1"):
-                        quotas.append((int(quota), int(period)))
-    return quotas
-
-
-def _read_text(path: str) -> str:
-    with open(path) as f:
-        return f.read()
-
-
-def usable_cpus() -> int:
-    """The CPUs this process may run on, within its cgroups' CPU quotas."""
-    if hasattr(os, "process_cpu_count"):
-        cpus = os.process_cpu_count() or 1
-    elif hasattr(os, "sched_getaffinity"):
-        cpus = len(os.sched_getaffinity(0))
-    else:
-        cpus = os.cpu_count() or 1
-    return max(min([cpus, *(quota // period for quota, period in _cpu_quotas())]), 1)
-
-
 # a frozen app's executable starts the app, not Python's "-c"
 _SPAWNS = bool(sys.executable) and not getattr(sys, "frozen", False)
-LIST_PROCESSES = min(4, cpus) if _SPAWNS and (cpus := usable_cpus()) > 1 else 0
+LIST_PROCESSES = min(4, cpus) if _SPAWNS and (cpus := usable_cpu_count()) > 1 else 0
 HEADER = struct.Struct("<Q")  # the size of the pickle that follows
 # a child that doesn't answer a page in time is stuck (stopped, deadlocked): the
 # parent kills it and lists the page itself; a page normally takes under a second

@@ -1,11 +1,12 @@
 import glob
 import itertools
 import logging
-import posixpath
 import secrets
 import string
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Self, Union, cast
 from urllib.parse import urlparse
 
@@ -25,7 +26,7 @@ from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.udf import JsonSerializationError
 from datachain.node import DirType, DirTypeGroup, Node, NodeWithPath, get_path
-from datachain.query.batch import RowsOutput
+from datachain.query.batch import DEFAULT_BATCH_SIZE, RowsOutput
 from datachain.query.schema import ColumnMeta
 from datachain.sql.functions import path as pathfunc
 from datachain.sql.types import SQLType
@@ -49,6 +50,34 @@ if TYPE_CHECKING:
 logger = logging.getLogger("datachain")
 
 SELECT_BATCH_SIZE = 100_000  # number of rows to fetch at a time
+
+
+def to_json_text(value: Any) -> str:
+    """Return a value as the JSON text `convert_type` stores in a JSON column."""
+    return json.dumps(_to_jsonable(value), ensure_ascii=False, serialize_numpy=True)
+
+
+def _to_jsonable(obj: Any) -> Any:
+    """Recursively convert Python/Pydantic structures into JSON-serializable
+    objects.
+    """
+
+    if ModelStore.is_pydantic(type(obj)):
+        # Use Pydantic's JSON mode to ensure datetime and other non-JSON
+        # native types are serialized in a compatible way. Numpy is the one
+        # thing it refuses and this project's encoder handles.
+        return obj.model_dump(mode="json", fallback=json.numpy_to_python)
+
+    if isinstance(obj, dict):
+        return {
+            k if isinstance(k, str) else to_json_text(k): _to_jsonable(v)
+            for k, v in obj.items()
+        }
+
+    if isinstance(obj, (list, tuple, set)):
+        return [_to_jsonable(i) for i in obj]
+
+    return obj
 
 
 class AbstractWarehouse(ABC, Serializable):
@@ -83,36 +112,6 @@ class AbstractWarehouse(ABC, Serializable):
     def normalize_limit_offset(self, query: GenerativeSelect) -> GenerativeSelect:
         """Return query adjusted for warehouse-specific LIMIT/OFFSET semantics."""
         return query
-
-    def _to_jsonable(self, obj: Any) -> Any:
-        """Recursively convert Python/Pydantic structures into JSON-serializable
-        objects.
-        """
-
-        if ModelStore.is_pydantic(type(obj)):
-            # Use Pydantic's JSON mode to ensure datetime and other non-JSON
-            # native types are serialized in a compatible way. Numpy is the one
-            # thing it refuses and this project's encoder handles.
-            return obj.model_dump(mode="json", fallback=json.numpy_to_python)
-
-        if isinstance(obj, dict):
-            out: dict[str, Any] = {}
-            for k, v in obj.items():
-                if not isinstance(k, str):
-                    key_str = json.dumps(
-                        self._to_jsonable(k),
-                        ensure_ascii=False,
-                        serialize_numpy=True,
-                    )
-                else:
-                    key_str = k
-                out[key_str] = self._to_jsonable(v)
-            return out
-
-        if isinstance(obj, (list, tuple, set)):
-            return [self._to_jsonable(i) for i in obj]
-
-        return obj
 
     def convert_type(  # noqa: PLR0911
         self,
@@ -164,7 +163,7 @@ class AbstractWarehouse(ABC, Serializable):
         if col_python_type is dict or col_type_name == "JSON":
             if value_type is str:
                 return val
-            json_ready = self._to_jsonable(val)
+            json_ready = _to_jsonable(val)
             try:
                 return json.dumps(json_ready, ensure_ascii=False, serialize_numpy=True)
             except TypeError as e:
@@ -175,6 +174,10 @@ class AbstractWarehouse(ABC, Serializable):
                 ) from e
 
         if isinstance(val, col_python_type):
+            if col_python_type is datetime and value_type is not datetime:
+                # sqlite3 can't bind subclasses such as pandas.Timestamp.
+                # This drops nanoseconds, as the ClickHouse driver does.
+                return datetime.combine(val.date(), val.timetz())
             return val
         if col_python_type is float and isinstance(val, int):
             return float(val)
@@ -439,8 +442,33 @@ class AbstractWarehouse(ABC, Serializable):
         query = query._clone().offset(None).limit(None).order_by(None)
 
         if is_batched:
+            id_index = next(
+                i for i, column in enumerate(query.selected_columns) if column is id_col
+            )
+
+            def fetch(batches):
+                rows_by_id = defaultdict(list)
+                row_ids = itertools.chain.from_iterable(batches)
+                for row in self.dataset_rows_select(query.where(id_col.in_(row_ids))):
+                    rows_by_id[row[id_index]].append(row)
+                for batch in batches:
+                    yield [
+                        row
+                        for row_id in dict.fromkeys(batch)
+                        for row in rows_by_id[row_id]
+                    ]
+
+            batches: list[RowsOutput] = []
+            count = 0
             for batch in ids:
-                yield list(self.dataset_rows_select(query.where(id_col.in_(batch))))
+                if batches and count + len(batch) > DEFAULT_BATCH_SIZE:
+                    yield from fetch(batches)
+                    batches = []
+                    count = 0
+                batches.append(batch)
+                count += len(batch)
+            if batches:
+                yield from fetch(batches)
         else:
             yield from self.dataset_rows_select(query.where(id_col.in_(ids)))
 
@@ -844,7 +872,7 @@ class AbstractWarehouse(ABC, Serializable):
 
     def expand_path(self, dataset_rows: "DataTable", path: str) -> list[Node]:
         """Simulates Unix-like shell expansion"""
-        clean_path = path.strip("/")
+        clean_path = path.lstrip("/").removesuffix("/")
         path_list = clean_path.split("/") if clean_path != "" else []
         res = self._populate_nodes_by_path(dataset_rows, path_list)
         if path.endswith("/"):
@@ -931,7 +959,8 @@ class AbstractWarehouse(ABC, Serializable):
             # Return node size if this is not a directory
             return node_size, 1
 
-        sub_glob = posixpath.join(path, "*")
+        # "d/" is the folder named "" in "d": its files match "d//*"
+        sub_glob = f"{path}/*" if path else "*"
         dr = dataset_rows
         selections: list[sa.ColumnElement] = [
             sa.func.sum(dr.c("size")),
@@ -973,7 +1002,7 @@ class AbstractWarehouse(ABC, Serializable):
         path = de.c(q, "path")
 
         if parent_path:
-            sub_glob = posixpath.join(parent_path, "*")
+            sub_glob = f"{parent_path}/*"
             conds.append(path.op("GLOB", is_comparison=True)(sub_glob))
         else:
             conds.append(path != "")

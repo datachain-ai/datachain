@@ -18,7 +18,7 @@ The data harness pairs with the code harness on every dimension. Its working uni
 |---|---|
 | Working unit: typed file in a repo | Working unit: typed dataset in the Dataset DB |
 | Raw inputs: source files, libraries | Raw inputs: files in object storage, tables in databases |
-| Persistent context: git history, `~/.claude/`, `CLAUDE.md` | Persistent context: Dataset DB + Knowledge Base (`dc-knowledge/`) |
+| Persistent context: git history, `~/.claude/`, `CLAUDE.md` | Persistent context: Dataset DB + Studio Knowledge Base |
 | Tools: Read, Edit, Bash | Tools: DataChain operations (`read_storage`, `map`, `save`) |
 | Output: new commit on the same repo | Output: new dataset version in `.datachain/db` |
 

@@ -28,7 +28,8 @@ from typing import (
     get_origin,
 )
 
-from fsspec.callbacks import DEFAULT_CALLBACK, Callback
+from fsspec import Callback
+from fsspec.callbacks import DEFAULT_CALLBACK
 from pydantic import BaseModel, Field, ValidationError, create_model
 from sqlalchemy import and_, asc, cast, desc, nulls_last, or_
 from sqlalchemy.sql import operators as sa_operators
@@ -71,7 +72,7 @@ from datachain.lib.data_model import (
     unwrap_optional,
 )
 from datachain.lib.file import File
-from datachain.lib.model_store import ModelStore
+from datachain.lib.model_store import BUILTIN_MODELS, ModelStore
 from datachain.lib.utils import (
     DataChainColumnError,
     DataChainParamsError,
@@ -260,6 +261,7 @@ def create_feature_model(
     *,
     partial_fingerprint: str | None = None,
     hidden_fields: list[str] | None = None,
+    module: str | None = None,
 ) -> type[BaseModel]:
     """
     Build and register a dynamic feature model so it can be resolved later by name.
@@ -275,6 +277,7 @@ def create_feature_model(
         base: Base class for the generated model (defaults to ``DataModel``).
         partial_fingerprint: If set, store ``_partial_fingerprint`` metadata.
         hidden_fields: If set, store ``_hidden_fields`` metadata.
+        module: Original model module recorded in the saved schema.
 
     Notes:
         - The generated Python class name is versioned (e.g. ``MyType_v1``) to avoid
@@ -303,6 +306,8 @@ def create_feature_model(
         model._partial_fingerprint = partial_fingerprint  # type: ignore[attr-defined]
     if hidden_fields is not None:
         model._hidden_fields = hidden_fields  # type: ignore[attr-defined]
+    if module is not None:
+        model._modelstore_module = module  # type: ignore[attr-defined]
 
     ModelStore.register(model)
 
@@ -322,6 +327,11 @@ class SignalReader(NamedTuple):
 def _tag_col(prefix: str) -> str:
     """DB name of the ``_type_tag`` discriminator under ``prefix``."""
     return f"{prefix}{DEFAULT_DELIMITER}{TYPE_TAG_FIELD}"
+
+
+# Whether a key node holds a value: its ``(tag, arm)`` discriminator is set (arm
+# None) or names ``arm``; None when the node always holds one.
+KeyPresence = tuple[str, str | None] | None
 
 
 def _model_reader(build_model: Callable[[type[BaseModel], dict], Any]) -> ModelReader:
@@ -389,8 +399,8 @@ class SignalSchema:
             model_store_name = (
                 ModelStore.get_name(base) if issubclass(base, DataModel) else None
             )
-            base_name = getattr(base, "_modelstore_base_name", base.__name__)
-            bases.append((base_name, base.__module__, model_store_name))
+            base_name = ModelStore._base_name(base)
+            bases.append((base_name, ModelStore.get_module(base), model_store_name))
         return bases
 
     @staticmethod
@@ -497,7 +507,16 @@ class SignalSchema:
                     f"cannot deserialize custom type '{type_name}': {exc}"
                 ) from exc
 
-            if fr := ModelStore.get(model_name, target_version):
+            module = ct.bases[0][1] if ct.bases else None
+            if (
+                fr := ModelStore.get(
+                    model_name, target_version, module=module, autoload=bool(ct.bases)
+                )
+            ) and (
+                ct.bases
+                or ModelStore.get_module(fr) != BUILTIN_MODELS.get(model_name)
+                or fr.model_fields.keys() == ct.fields.keys()
+            ):
                 return fr
 
             fields = {
@@ -506,13 +525,14 @@ class SignalSchema:
             }
 
             base_model = None
-            for base in ct.bases:
-                _, _, model_store_name = base
+            for _, base_module, model_store_name in ct.bases[1:]:
                 if model_store_name:
                     base_model_name, base_version = ModelStore.parse_name_version(
                         model_store_name
                     )
-                    base_model = ModelStore.get(base_model_name, base_version)
+                    base_model = ModelStore.get(
+                        base_model_name, base_version, module=base_module
+                    )
                     if base_model:
                         break
 
@@ -522,8 +542,8 @@ class SignalSchema:
                 base=base_model,
                 hidden_fields=ct.hidden_fields,
                 partial_fingerprint=ct.partial_fingerprint,
+                module=module,
             )
-
         return ModelStore.get(model_name, target_version)
 
     @staticmethod
@@ -686,10 +706,8 @@ class SignalSchema:
                     []
                     if name in self.setup_func
                     else [
-                        DEFAULT_DELIMITER.join(
-                            (*col.path, TYPE_TAG_FIELD) if col.is_sentinel else col.path
-                        )
-                        for col in iter_field_columns(anno, tuple(name.split(".")))
+                        DEFAULT_DELIMITER.join(path)
+                        for path in iter_field_columns(anno, tuple(name.split(".")))
                     ]
                 ),
             )
@@ -919,9 +937,16 @@ class SignalSchema:
                     continue
 
                 if param_origin is not list:
-                    raise SignalResolvingError(param.split("."), "is not a list")
+                    raise SignalResolvingError(
+                        param.split("."), "is not a list; annotate it as list[T]"
+                    )
 
                 param_type = get_args(param_type)[0]
+                if param_type is Any:
+                    schema[param] = schema_type
+                    continue
+                if schema_opt:
+                    param_type = unwrap_optional(param_type)[0]
 
             if param_type == schema_type or (
                 isclass(param_type)
@@ -1327,12 +1352,61 @@ class SignalSchema:
             return None if sentinel == db_col else sentinel
         return None
 
+    def tagged_parent(self, path: str) -> "tuple[str, UnionLayout, Any] | None":
+        """The closest optional model or union holding ``path``, as its dotted name,
+        its layout and the arm ``path`` is in; None when there is none. ``path`` is
+        present only when that parent's ``_type_tag`` selects the arm."""
+        db_col = ColumnMeta.to_db_name(path)
+        for prefix, layout in self._tagged_ancestors(db_col):
+            if prefix == db_col:
+                continue
+            parent = prefix.split(DEFAULT_DELIMITER)
+            arm = layout.arms[0]
+            if layout.use_slots:
+                name = db_col.split(DEFAULT_DELIMITER)[len(parent)]
+                arm = next(a for a in layout.arms if arm_selector(a) == name)
+            return ".".join(parent), layout, arm
+        return None
+
     def multiarm_union_root(self, col: str) -> str | None:
         """Dotted name of the outermost multi-arm union enclosing ``col``, else None. A
         union is atomic, so group_by/select must carry all its columns, not one arm."""
         db_col = ColumnMeta.to_db_name(col)
         slots = [p for p, layout in self._tagged_ancestors(db_col) if layout.use_slots]
         return ".".join(slots[-1].split(DEFAULT_DELIMITER)) if slots else None
+
+    def key_columns(self, name: str) -> tuple[dict[str, str], set[str]]:
+        """DB columns of key ``name`` by their path below it, and the paths of its
+        ``Optional[DataModel]`` nodes. Such a node's tag names its model class, so it is
+        not a column: keys compare whether the node holds a value (``key_presence``).
+        A multi-arm union keeps its tag, which names the active arm."""
+        root = self.to_db_col(name)
+        columns: list[str] = self.resolve(name).db_signals()  # type: ignore[assignment]
+        optional = {
+            _tag_col(prefix): prefix
+            for prefix, layout in self._tagged_db_cols.items()
+            if not layout.use_slots
+        }
+        return (
+            {col.removeprefix(root): col for col in columns if col not in optional},
+            {optional[col].removeprefix(root) for col in columns if col in optional},
+        )
+
+    def key_presence(self, name: str, path: str) -> KeyPresence:
+        """Whether the node at ``path`` below key ``name`` holds a value, told by its
+        innermost tagged node within the key: ``(tag, None)`` when that tag is set,
+        ``(tag, arm)`` when it names the union arm holding the node. None when it
+        always does: a model under an absent parent still reads as a model."""
+        root = self.to_db_col(name)
+        node = root + path
+        for prefix, layout in self._tagged_ancestors(node):
+            if len(prefix) < len(root):
+                break
+            if layout.use_slots and prefix != node:
+                arm = node[len(prefix) + len(DEFAULT_DELIMITER) :]
+                return _tag_col(prefix), arm.split(DEFAULT_DELIMITER)[0]
+            return _tag_col(prefix), None
+        return None
 
     def reject_union_keys(self, method: str, *paths: str) -> None:
         """Raise when a diff key touches a multi-arm union: the comparison runs over

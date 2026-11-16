@@ -60,7 +60,7 @@ from datachain.utils import (
 )
 
 from .datasource import DataSource
-from .dependency import build_dependency_hierarchy, populate_nested_dependencies
+from .dependency import build_dependency_hierarchy
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -612,7 +612,6 @@ class Catalog:
         source: str,
         update=False,
         client_config=None,
-        column="file",
         skip_indexing=False,
         *,
         _prepared_listings: set[str] | None = None,
@@ -651,7 +650,6 @@ class Catalog:
                     list_ds_name,
                     session,
                     config,
-                    column=column,
                 ),
                 update=update and list_ds_name not in prepared,
             )
@@ -671,7 +669,6 @@ class Catalog:
                 self.warehouse.clone(),
                 client,
                 dataset_name=list_ds_name,
-                column=column,
             )
 
         return lst, client, list_path
@@ -1648,23 +1645,16 @@ class Catalog:
         if not dependency_nodes:
             return []
 
-        dependency_map, children_map = build_dependency_hierarchy(dependency_nodes)
+        dependency_map, children_map = build_dependency_hierarchy(
+            dependency_nodes, indirect=indirect
+        )
 
         root_key = (dataset_id, version_id)
         if root_key not in children_map:
             return []
 
         root_dependency_ids = children_map[root_key]
-        root_dependencies = [dependency_map[dep_id] for dep_id in root_dependency_ids]
-
-        if indirect:
-            for dependency in root_dependencies:
-                if dependency is not None:
-                    populate_nested_dependencies(
-                        dependency, dependency_nodes, dependency_map, children_map
-                    )
-
-        return root_dependencies
+        return [dependency_map[dep_id] for dep_id in root_dependency_ids]
 
     def get_dataset_dependencies(
         self,

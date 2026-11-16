@@ -8,7 +8,7 @@ DataChain has a layered optimization architecture. Each layer eliminates a sourc
 
 ## Parallel Execution
 
-`settings(parallel=N)` runs N threads, each with its own model instance. `parallel=-1` auto-detects CPU cores.
+`settings(parallel=N)` runs N processes, each with its own model instance. `parallel=True` uses the CPUs available to the job, respecting container CPU limits. Fractional limits round up: a 1.5-CPU limit gives two processes.
 
 ```python
 import datachain as dc
@@ -23,7 +23,7 @@ chain = (
 
 ## Distributed Execution
 
-`settings(workers=K)` spreads work across K machines via Studio's BYOC model (10-300 machine Kubernetes clusters). Threads and workers compose: `parallel=8, workers=50` means 8 threads on each of 50 machines.
+`settings(workers=K)` spreads work across K machines via Studio's BYOC model (10-300 machine Kubernetes clusters). Processes and workers compose: `parallel=8, workers=50` means 8 processes on each of 50 machines.
 
 ```python
 import datachain as dc
@@ -44,9 +44,11 @@ DataChain's storage-native architecture means files live in cloud storage and ar
 
 Prefetch downloads file content ahead of the UDF that reads it. `prefetch=N` downloads the next N files in full while the current one is processed. Default is 2; `prefetch=0` disables it. Tune by file size: ~10-16 for small files, 1 for large files.
 
+In `batch_map()`, `prefetch` counts batches; see [Batched Inference](batch-inference.md#prefetch).
+
 Prefetch runs only when a UDF receives a `File` object. Attributes such as `file.path` and `file.size` come from the listing, so a UDF that receives only them through `params=` downloads nothing.
 
-For partial reads (`get_info()` or `read_bytes(n)` with `n > 0`), use `.settings(prefetch=0, cache=False)`. Transfer size depends on the format and read-ahead; `cache=True` downloads whole files on cache misses.
+For metadata-only UDFs using `file.get_info()` or `file.read_bytes(n)` with `n > 0`, set `.settings(prefetch=0)`. These reads reuse cached files without populating the cache. The amount read depends on the format; some formats require the entire file.
 
 ## File Cache
 
@@ -96,7 +98,7 @@ chain = (
         update=True,
         delta=True,
         delta_on="file.path",
-        delta_compare="file.mtime",
+        delta_compare="file.last_modified",
     )
     .map(result=process_file)
     .save("processed_data")

@@ -414,5 +414,5 @@ def _infer_schema(
 
     rows = list(itertools.islice(result, infer_schema_length))
     values = {col: [row._mapping[col] for row in rows] for col in to_infer}
-    _, output_schema, _ = values_to_tuples("", **values)
+    _, output_schema, _ = values_to_tuples(**values)
     return rows, output_schema

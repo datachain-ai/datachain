@@ -7,9 +7,11 @@ import sqlalchemy as sa
 from filelock import FileLock, Timeout
 from sqlalchemy.engine import make_url
 
+from datachain import utils
 from datachain.fs.utils import is_subpath, path_to_fsspec_uri
 from datachain.testing import drop_all_tables
 from datachain.utils import (
+    _cpu_quotas,
     batched,
     batched_it,
     checkpoints_enabled,
@@ -23,6 +25,7 @@ from datachain.utils import (
     sizeof_fmt,
     sql_escape_like,
     suffix_to_number,
+    usable_cpu_count,
     uses_glob,
     with_last_flag,
 )
@@ -676,3 +679,85 @@ def test_drop_all_tables_drops_fk_linked_tables(tmp_path):
 
     assert sa.inspect(engine).get_table_names() == []
     engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "membership,files,expected",
+    [
+        ("0::/user.slice\n", {"cpu.max": "max 100000"}, []),
+        ("0::/user.slice\n", {"cpu.max": "150000 100000"}, [(150000, 100000)]),
+        (
+            "0::/user.slice\n",
+            {"cpu.max": "max 100000", "user.slice/cpu.max": "200000 100000"},
+            [(200000, 100000)],
+        ),
+        *[
+            (
+                "5:memory:/docker\n4:cpu,cpuacct:/docker\n",
+                {
+                    f"{mount}/docker/cpu.cfs_quota_us": "100000\n",
+                    f"{mount}/docker/cpu.cfs_period_us": "100000\n",
+                },
+                [(100000, 100000)],
+            )
+            for mount in ("cpu,cpuacct", "cpu")
+        ],
+        ("invalid\n0::/\n", {"cpu.max": "800000 100000"}, [(800000, 100000)]),
+        ("0::/\n", {"cpu.max": "garbage\n"}, []),
+        (None, {}, []),
+        (b"0::/\xff\n", {}, []),
+    ],
+)
+def test_cpu_quotas_of_the_cgroup_and_its_parents(
+    membership, files, expected, tmp_path
+):
+    for name, text in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    if membership is not None:
+        (tmp_path / "cgroup").write_bytes(
+            membership if isinstance(membership, bytes) else membership.encode()
+        )
+    assert _cpu_quotas(str(tmp_path), str(tmp_path / "cgroup")) == expected
+
+
+@pytest.mark.parametrize(
+    "api,affinity,host,quotas,expected",
+    [
+        ("process_cpu_count", 24, 32, [], 24),
+        ("process_cpu_count", None, 24, [], 24),
+        ("process_cpu_count", "unavailable", 24, [], 24),
+        ("sched_getaffinity", 3, 32, [(800000, 100000)], 3),
+        ("sched_getaffinity", None, 24, [], 24),
+        ("sched_getaffinity", None, None, [], 1),
+        *[
+            ("process_cpu_count", 24, 32, quotas, expected)
+            for quotas, expected in [
+                ([(800000, 100000)], 8),
+                ([(150000, 100000)], 2),
+                ([(50000, 100000)], 1),
+                ([(800000, 100000), (400000, 100000)], 4),
+                ([(4800000, 100000)], 24),
+                ([(100000, 0)], 24),
+            ]
+        ],
+    ],
+)
+def test_usable_cpu_count_is_the_affinity_capped_by_quotas(
+    monkeypatch, api, affinity, host, quotas, expected
+):
+    def read_affinity(*args):
+        if affinity == "unavailable":
+            raise OSError("affinity unavailable")
+        if api == "sched_getaffinity":
+            if affinity is None:
+                raise OSError("affinity unavailable")
+            return set(range(affinity))
+        return affinity
+
+    monkeypatch.delattr(os, "process_cpu_count", raising=False)
+    monkeypatch.setattr(os, api, read_affinity, raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: host)
+    monkeypatch.setattr(utils, "_cpu_quotas", lambda: quotas)
+    assert usable_cpu_count() == expected
