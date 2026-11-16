@@ -469,3 +469,17 @@ def test_settings_batch_size_parameter():
     # to_dict method
     d = Settings(batch_size=500).to_dict()
     assert d["batch_size"] == 500
+
+
+@pytest.mark.parametrize("value", [0, 1.5, True, "512MB"])
+def test_settings_prefetch_bytes_must_be_positive_int(value):
+    with pytest.raises(SettingsError):
+        Settings(prefetch_bytes=value)
+
+
+def test_settings_add_keeps_prefetch_unset():
+    settings = Settings(prefetch_bytes=1000)
+    settings.add(Settings(parallel=2))
+    assert (settings.prefetch_auto, settings.prefetch_bytes) == (True, 1000)
+    settings.add(Settings(prefetch=4))
+    assert (settings.prefetch_auto, settings.prefetch) == (False, 4)

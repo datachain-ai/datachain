@@ -57,7 +57,7 @@ from datachain.lib.data_model import (
 from datachain.lib.file import EXPORT_FILES_MAX_THREADS, ArrowRow, File, FileExporter
 from datachain.lib.file import ExportPlacement as FileExportPlacement
 from datachain.lib.model_store import ModelStore
-from datachain.lib.settings import Settings
+from datachain.lib.settings import AUTO_PREFETCH, AUTO_PREFETCH_BYTES, Settings
 from datachain.lib.signal_schema import (
     KeyPresence,
     SignalResolvingError,
@@ -558,6 +558,7 @@ class DataChain:
         self,
         cache: bool | None = None,
         prefetch: bool | int | None = None,
+        prefetch_bytes: int | None = None,
         parallel: bool | int | None = None,
         workers: int | None = None,
         namespace: str | None = None,
@@ -576,10 +577,12 @@ class DataChain:
         Parameters:
             cache: Enable files caching to speed up subsequent accesses to the same
                 files from the same or different chains. Defaults to False.
-            prefetch: Number of files to download in full ahead of the UDF, per
-                process on each worker; batches in `batch_map()`. Defaults to 2.
-                Set to 0 or False for UDFs that read only part of a file, such as
-                `get_info()`.
+            prefetch: Number of files to download ahead of the UDF, per process;
+                batches in `batch_map()`. Defaults to up to 16 files, or 2 batches.
+                Set to 0 for UDFs that read only part of a file, such as `get_info()`.
+            prefetch_bytes: Listed-byte read-ahead target per process, default
+                512 MiB. The legacy minimum of five rows can exceed this target.
+                Unset with explicit `prefetch=N`.
             parallel: Number of processes to use for processing user-defined functions
                 (UDFs) in parallel. Each process has its own UDF and setup resources.
                 If an integer is provided, it specifies the number of CPUs to use.
@@ -620,6 +623,7 @@ class DataChain:
             Settings(
                 cache=cache,
                 prefetch=prefetch,
+                prefetch_bytes=prefetch_bytes,
                 parallel=parallel,
                 workers=workers,
                 namespace=namespace,
@@ -1286,8 +1290,7 @@ class DataChain:
             )
         else:
             udf_obj = self._udf_to_obj(target_class, func, params, output, signal_map)
-        if (prefetch := self._settings.prefetch) is not None:
-            udf_obj.prefetch = prefetch
+        self._apply_prefetch(udf_obj)
 
         sys_schema = SignalSchema({"sys": Sys})
         return self._evolve(
@@ -1433,8 +1436,7 @@ class DataChain:
             ```
         """
         udf_obj = self._udf_to_obj(Generator, func, params, output, signal_map)
-        if (prefetch := self._settings.prefetch) is not None:
-            udf_obj.prefetch = prefetch
+        self._apply_prefetch(udf_obj)
         udf_obj.delta_key, udf_obj.delta_key_presence = self._delta_key_columns(
             udf_obj.output
         )
@@ -1656,6 +1658,20 @@ class DataChain:
         )
 
         return target_class._create(sign, params_schema)
+
+    def _apply_prefetch(self, udf_obj: UDFBase) -> None:
+        settings = self._settings
+        udf_obj.prefetch = settings.prefetch or 0
+        udf_obj.prefetch_bytes = None
+        # Batches keep the plain count; rows without files have nothing to fetch.
+        if udf_obj.is_input_batched or not (
+            udf_obj.params and udf_obj.params.get_file_signal()
+        ):
+            return
+        udf_obj.prefetch_bytes = settings.prefetch_bytes
+        if settings.prefetch_auto:
+            udf_obj.prefetch = AUTO_PREFETCH
+            udf_obj.prefetch_bytes = settings.prefetch_bytes or AUTO_PREFETCH_BYTES
 
     def _bind_udf_settings(self, func, target_class):
         """Resolve a `BoundSpec` (e.g. a `datachain.llm` operation) into a concrete

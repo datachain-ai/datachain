@@ -156,3 +156,170 @@ def test_download_cleans_temp_and_protects_cache(cache, error, monkeypatch, mock
     assert cache.contains(file) is (error is None)
     if error is None:
         assert cache.odb.is_protected(cache.get_path(file))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("same_configuration", [True, False])
+async def test_concurrent_downloads_share_only_the_same_client_configuration(
+    cache, same_configuration
+):
+    from types import SimpleNamespace
+
+    from datachain.client.fsspec import Client
+
+    file = File(source="s3://bucket", path="shared", size=4)
+    started, release = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def put(file, **kwargs):
+        calls.append(file.path)
+        started.set()
+        await release.wait()
+        cache.store_data(file, b"data")
+
+    fs = object()
+    first = SimpleNamespace(cache=cache, fs=fs, _put_in_cache=put)
+    second = SimpleNamespace(
+        cache=cache, fs=fs if same_configuration else object(), _put_in_cache=put
+    )
+    tasks = [asyncio.create_task(Client._download(c, file)) for c in (first, second)]
+    await started.wait()
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.gather(*tasks)
+    assert len(calls) == (1 if same_configuration else 2)
+    assert not cache._download_locks
+
+
+@pytest.mark.asyncio
+async def test_cancelled_download_waiter_does_not_cancel_the_transfer(cache):
+    from types import SimpleNamespace
+
+    from datachain.client.fsspec import Client
+
+    file = File(source="s3://bucket", path="shared", size=4)
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def put(file, **kwargs):
+        started.set()
+        await release.wait()
+        cache.store_data(file, b"data")
+
+    client = SimpleNamespace(cache=cache, fs=object(), _put_in_cache=put)
+    owner = asyncio.create_task(Client._download(client, file))
+    await started.wait()
+    waiter = asyncio.create_task(Client._download(client, file))
+    await asyncio.sleep(0)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert not owner.done()
+    release.set()
+    await owner
+    assert cache.contains(file)
+    assert not cache._download_locks
+
+
+@pytest.mark.asyncio
+async def test_failed_shared_download_can_be_retried(cache):
+    from types import SimpleNamespace
+
+    from datachain.client.fsspec import Client
+
+    file = File(source="s3://bucket", path="shared", size=4)
+    calls = []
+
+    async def put(file, **kwargs):
+        calls.append(1)
+        await asyncio.sleep(0)
+        if len(calls) == 1:
+            raise OSError("transfer failed")
+        cache.store_data(file, b"data")
+
+    client = SimpleNamespace(cache=cache, fs=object(), _put_in_cache=put)
+    results = await asyncio.gather(
+        Client._download(client, file),
+        Client._download(client, file),
+        return_exceptions=True,
+    )
+    assert isinstance(results[0], OSError)
+    assert results[1] is None
+    assert cache.contains(file)
+    assert not cache._download_locks
+
+
+def test_cache_pickle_does_not_copy_runtime_owners(cache):
+    import pickle
+
+    file = File(source="s3://bucket", path="shared", size=4)
+    cache.store_data(file, b"data")
+    oid = cache._retain_prefetched(file)
+    restored = pickle.loads(pickle.dumps(cache))  # noqa: S301
+    assert restored.contains(file)
+    assert not restored._prefetch_refs
+    cache._release_prefetched(oid)
+
+
+def test_prefetch_keeps_shared_archive_until_last_consumer_finishes(
+    cache, catalog, monkeypatch
+):
+    from contextlib import closing
+
+    from datachain.lib.udf import _prefetch_inputs
+
+    parent = File(source="s3://bucket", path="archive.tar", size=4)
+    members = [
+        File(
+            source="s3://bucket",
+            path=f"member{i}",
+            size=1,
+            location=[{"vtype": "tar", "parent": parent.model_dump()}],
+        )
+        for i in range(2)
+    ]
+    catalog.cache = cache
+    for member in members:
+        member._set_stream(catalog)
+
+    async def prefetch(file, download_cb=None):
+        target = file._prefetch_target()
+        if not cache.contains(target):
+            cache.store_data(target, b"data")
+        return True
+
+    monkeypatch.setattr(File, "_prefetch", prefetch)
+    with closing(
+        _prefetch_inputs([[f] for f in members], prefetch=2, remove_prefetched=True)
+    ) as rows:
+        next(rows)
+        assert cache.contains(parent)
+        next(rows)
+        assert cache.contains(parent)
+    assert not cache.contains(parent)
+    assert not cache._prefetch_refs
+
+
+def test_prefetch_close_releases_unconsumed_rows_and_original_identity(
+    cache, catalog, monkeypatch
+):
+    from contextlib import closing
+
+    from datachain.lib.udf import _prefetch_inputs
+
+    catalog.cache = cache
+    file = File(source="s3://bucket", path="original", size=4)
+    original = file.model_copy()
+    file._set_stream(catalog)
+
+    async def prefetch(file, download_cb=None):
+        cache.store_data(file, b"data")
+        return True
+
+    monkeypatch.setattr(File, "_prefetch", prefetch)
+    with closing(
+        _prefetch_inputs([[file]], prefetch=1, remove_prefetched=True)
+    ) as rows:
+        next(rows)
+        file.path = "changed-by-udf"
+    assert not cache.contains(original)
+    assert not cache._prefetch_refs
