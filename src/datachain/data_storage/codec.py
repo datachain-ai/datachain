@@ -254,26 +254,50 @@ def array_json_key(key: Any) -> str:
 def _serialized_fields(decorators: Any) -> set[str]:
     if decorators is None:
         return set()
-    used = {"always", "unless-none", "json", "json-unless-none"}
     return {
         f
         for fs in decorators.field_serializers.values()
-        if (info := getattr(fs, "info", None)) is None or info.when_used in used
-        for f in getattr(info, "fields", ())
+        for f in getattr(getattr(fs, "info", None), "fields", ())
     }
 
 
-def _check_model_dict_keys(obj: Any, model_cls: type | None = None) -> None:
+def _unwrap_annotation(annotation: Any) -> Any:
+    import types
+    from typing import Union, get_args, get_origin
+
+    if get_origin(annotation) in (Union, types.UnionType):
+        non_none = [a for a in get_args(annotation) if a is not type(None)]
+        if len(non_none) == 1:
+            return non_none[0]
+    return annotation
+
+
+def _declared_model_cls(obj: Any, annotation: Any, base_model: type) -> type:
+    from typing import get_args
+
+    annotation = _unwrap_annotation(annotation)
+    if isinstance(annotation, type) and issubclass(annotation, base_model):
+        return annotation if isinstance(obj, annotation) else type(obj)
+    for arg in get_args(annotation):
+        if (
+            isinstance(arg, type)
+            and issubclass(arg, base_model)
+            and isinstance(obj, arg)
+        ):
+            return arg
+    return type(obj)
+
+
+def _check_model_dict_keys(obj: Any, annotation: Any = None) -> None:
+    from typing import get_args
+
     from pydantic import BaseModel
     from pydantic_core import to_jsonable_python
 
     obj = _numpy_to_python(obj)
+    annotation = _unwrap_annotation(annotation)
     if isinstance(obj, BaseModel):
-        cls = (
-            model_cls
-            if model_cls is not None and isinstance(obj, model_cls)
-            else type(obj)
-        )
+        cls = _declared_model_cls(obj, annotation, BaseModel)
         decorators = getattr(cls, "__pydantic_decorators__", None)
         if decorators is not None and decorators.model_serializers:
             return
@@ -285,13 +309,10 @@ def _check_model_dict_keys(obj: Any, model_cls: type | None = None) -> None:
                 not getattr(field_info, "exclude", False)
                 and name not in serialized_fields
             ):
-                anno = field_info.annotation
                 declared = (
-                    anno
-                    if isinstance(anno, type)
-                    and issubclass(anno, BaseModel)
-                    and not getattr(field_info, "serialize_as_any", False)
-                    else None
+                    None
+                    if getattr(field_info, "serialize_as_any", False)
+                    else field_info.annotation
                 )
                 _check_model_dict_keys(getattr(obj, name), declared)
         if cls is type(obj) and (extra := getattr(obj, "__pydantic_extra__", None)):
@@ -303,6 +324,7 @@ def _check_model_dict_keys(obj: Any, model_cls: type | None = None) -> None:
             ):
                 _check_model_dict_keys(getattr(obj, name))
     elif isinstance(obj, dict):
+        val_anno = args[1] if len(args := get_args(annotation)) == 2 else None
         keys: set[str] = set()
         for k, v in obj.items():
             key = (
@@ -322,10 +344,11 @@ def _check_model_dict_keys(obj: Any, model_cls: type | None = None) -> None:
                     value_repr=repr(obj),
                 )
             keys.add(key)
-            _check_model_dict_keys(v)
+            _check_model_dict_keys(v, val_anno)
     elif isinstance(obj, (list, tuple, set)):
+        item_anno = args[0] if (args := get_args(annotation)) else None
         for item in obj:
-            _check_model_dict_keys(item)
+            _check_model_dict_keys(item, item_anno)
 
 
 def to_jsonable(obj: Any, key_converter: Callable[[Any], str] | None = None) -> Any:

@@ -286,8 +286,12 @@ def test_model_dict_key_check_edge_cases():
 
     class Holder(BaseModel):
         p: Parent
+        opt: Parent | None = None
+        items: list[Parent] = []
 
-    assert decode_json(encode_json(Holder(p=Child()))) == {"p": {"x": 1}}
+    assert decode_json(
+        encode_json(Holder(p=Child(), opt=Child(), items=[Child()]))
+    ) == {"p": {"x": 1}, "opt": {"x": 1}, "items": [{"x": 1}]}
 
     class WithExtra(BaseModel):
         model_config = ConfigDict(extra="allow")
@@ -309,7 +313,7 @@ def test_model_dict_key_check_edge_cases():
     assert value_codec(CustomStr(), None).decode("v") == "custom:v"
 
     with SQLiteWarehouse(in_memory=True) as wh:
-        rc = wh.row_codec([DateTime()])
+        rc = wh.row_codec([SQLType.as_nullable(DateTime())])
         early = datetime(1, 1, 1, 0, 0, tzinfo=timezone(timedelta(hours=1)))
-        batch = pa.record_batch({"dt": [early]})
-        assert rc.encode_arrow(batch) == [rc.encode((early,))]
+        batch = pa.record_batch({"dt": [early, None]})
+        assert rc.encode_arrow(batch) == [rc.encode((early,)), (None,)]
