@@ -927,6 +927,30 @@ def test_update_dataset_dependency_source_default_new_source(metastore):
     assert deps_after[0].version == "1.0.0"
 
 
+def test_get_direct_dataset_dependents(metastore):
+    def dataset(name, *versions):
+        ds = metastore.create_dataset(name=name)
+        for version, status in versions:
+            metastore.create_dataset_version(ds, version, status=status)
+        return metastore.get_dataset(name, versions=None)
+
+    src = dataset(
+        "src", ("1.0.0", DatasetStatus.COMPLETE), ("2.0.0", DatasetStatus.COMPLETE)
+    )
+    done = dataset("done", ("1.0.0", DatasetStatus.COMPLETE))
+    failed = dataset("failed", ("1.0.0", DatasetStatus.FAILED))
+    metastore.add_dataset_dependency(done, "1.0.0", src, "1.0.0")
+    metastore.add_dataset_dependency(failed, "1.0.0", src, "1.0.0")
+
+    [dependent] = metastore.get_direct_dataset_dependents(src, "1.0.0")
+    assert (dependent.name, dependent.version, dependent.removed) == (
+        "done",
+        "1.0.0",
+        False,
+    )
+    assert metastore.get_direct_dataset_dependents(src, "2.0.0") == []
+
+
 def test_list_jobs_by_ids(metastore):
     job_id1 = metastore.create_job(
         name="job1",

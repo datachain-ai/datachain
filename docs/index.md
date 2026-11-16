@@ -1,6 +1,6 @@
 # <a class="main-header-link" href="/" ><img style="display: inline-block;" src="/assets/datachain.svg" alt="DataChain"> <span style="display: inline-block;"> DataChain</span></a>
 
-<p align="center" class="subtitle">The Context Layer for unstructured data</p>
+<p align="center" class="subtitle">Curate training data and explore large media collections</p>
 
 <style>
 .md-content .md-typeset h1 { font-weight: bold; display: flex; align-items: center; justify-content: center; gap: 5px; }
@@ -24,18 +24,23 @@
   </a>
 </p>
 
-<p align="center" style="font-style: italic; font-size: 1.05em; margin: 1.5em 0;">The Model Floor Is the Same for Everyone. The Context Ceiling Is Yours.</p>
+**Curate training data and explore large media collections.**
 
-**A Python library that turns files in S3, GCS, and Azure into versioned, typed datasets, queryable at warehouse speed.**
+Prepare training and evaluation datasets for Physical AI, robotics and multimodal models from images,
+video, audio and sensor recordings in S3, GCS, Azure or local storage. Write Python or give your coding
+agent a task; DataChain handles parallel workers, download overlap and checkpoints, and saves typed,
+versioned results for the next question.
 
-Bytes never leave your storage. Two core components: a **Compute Engine** for parallel Python over files, distributed on Studio, and a **Dataset DB** for sub-second queries over Pydantic-typed records. For agent workflows, two more: a **Knowledge Base** of markdown summaries and an **Agent Harness** (a skill locally, MCP on Studio) that plugs all of it into Claude Code, Cursor, and Codex, so they understand your data.
+Use metadata and model outputs to curate selections, investigate failures and find gaps in data coverage.
+Inventory millions or billions of objects using storage metadata before reading file contents.
+Optional Studio adds shared datasets and job tracking, with or without a compute cluster.
 
 ## Get started
 
-- **[🤖 Agents](getting-started/agents.md)** - knowledge base for Claude Code, Codex, and Cursor
+- **[🤖 Agents](getting-started/agents.md)** - task-oriented recipes for Claude Code, Codex, and Cursor
 - **[🐍 Python](getting-started/python.md)** - full control over data processing
-- **[💡 Concepts](concepts/index.md)** - the Dataset DB, the Compute Engine, and the Knowledge Base
-- **[🧩 Use Cases](use-cases/index.md)** - patterns where the harness changes the work
+- **[💡 Concepts](concepts/index.md)** - saved datasets, typed schemas and the Compute Engine
+- **[🧩 Use Cases](use-cases/index.md)** - file-processing and saved-result workflows
 
 <div style="max-width: 680px; margin: 2em auto 0;">
   <img src="assets/architecture.svg" alt="DataChain architecture: AI agents and humans, the Dataset DB at the centre, and object storage">

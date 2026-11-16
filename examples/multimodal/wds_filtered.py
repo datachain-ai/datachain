@@ -1,33 +1,25 @@
-"""
-Example demonstrates working with WebDataset format in DataChain.
-It is a TAR archive, DataChain can read files inside w/o extracting them.
+"""Read samples from WebDataset tar shards without extracting files.
 
-`process_webdataset` is a utility function that processes tar files,
-it accepts a `spec` argument that defines the structure of the dataset.
-(in this example we use `WDSLaion` spec that was created to parse LAION
-dataset), but it can be WDSBasic or any other subclass of it.
+`spec` accepts WDSBasic or a subclass. This example uses WDSLaion for
+image files, JSON metadata, and text captions.
 """
 
 import datachain as dc
 import datachain.error
-from datachain import C, func
-from datachain.lib.webdataset import process_webdataset
+from datachain import func
 from datachain.lib.webdataset_laion import WDSLaion
 
-# In LAION webdataset, there are JSON and text files with metadata.
-# and actual images. `process_webdataset(spec=WDSLaion)` below extracts
-# metadata from JSON files and text from text files, and creates a dataset.
 name = "wds"
 try:
     wds = dc.read_dataset(name)
 except datachain.error.DatasetNotFoundError:
-    wds = (
-        dc.read_storage("gs://datachain-demo/datacomp-small/shards", anon=True)
-        .filter(C("file.path").glob("*/00000000.tar"))
-        .settings(cache=True)
-        .gen(laion=process_webdataset(spec=WDSLaion))
-        .save(name)
-    )
+    wds = dc.read_webdataset(
+        "gs://datachain-demo/datacomp-small/shards/00000000.tar",
+        spec=WDSLaion,
+        column="laion",
+        settings={"cache": True},
+        anon=True,
+    ).save(name)
 
 print(wds.schema)
 

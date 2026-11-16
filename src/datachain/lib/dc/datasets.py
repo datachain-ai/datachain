@@ -8,7 +8,12 @@ from datachain.error import (
     OutdatedDatasetFormatError,
     ProjectNotFoundError,
 )
+from datachain.lib.dataset_description import DatasetDescription
 from datachain.lib.dataset_info import DatasetInfo
+from datachain.lib.dataset_metadata import (
+    read_dataset_description,
+    read_dataset_metadata,
+)
 from datachain.lib.projects import get as get_project
 from datachain.lib.settings import Settings
 from datachain.lib.signal_schema import SignalSchema
@@ -254,6 +259,54 @@ def read_dataset(
         )
 
     return chain
+
+
+def describe(
+    name: str,
+    namespace: str | None = None,
+    project: str | None = None,
+    version: str | None = None,
+    session: Session | None = None,
+    *,
+    studio: bool = False,
+) -> DatasetDescription:
+    """Describe a saved dataset using recorded metadata only.
+
+    Args:
+        name: Dataset name, optionally qualified and suffixed with ``@version``.
+        namespace: Namespace for an unqualified name, as in ``read_dataset``.
+        project: Project for an unqualified name, as in ``read_dataset``.
+        version: Exact version to describe; defaults to the latest complete version.
+        session: Optional session; defaults to the current session.
+        studio: Read Studio directly instead of a local copy.
+
+    Returns:
+        DatasetDescription with a typed schema, every available completed version,
+        direct dependencies, direct dependents, the producing job, and the script.
+        Uses the session catalog without reading dataset rows or storage objects.
+        Reads the local catalog first, then Studio for remote namespaces.
+        Metadata unavailable through the Studio API is returned as None.
+
+    Example:
+        ```py
+        import datachain as dc
+
+        info = dc.describe("images")
+        print(info.selected_version.num_objects)
+        print(info.available_versions)
+        info.schema.print_tree()
+        ```
+    """
+    catalog = Session.get(session).catalog
+    metadata = read_dataset_metadata(
+        catalog,
+        name,
+        namespace,
+        project,
+        version,
+        studio=studio,
+    )
+    return read_dataset_description(catalog, metadata)
 
 
 def datasets(
