@@ -70,6 +70,7 @@ class DatasetDependencyNode:
 
 def build_dependency_hierarchy(
     dependency_nodes: list[DatasetDependencyNode | None],
+    indirect: bool = False,
 ) -> tuple[
     dict[int, DatasetDependency | None], dict[tuple[int, int | None], list[int]]
 ]:
@@ -88,9 +89,8 @@ def build_dependency_hierarchy(
     dependency_map: dict[int, DatasetDependency | None] = {}
     children_map: dict[tuple[int, int | None], list[int]] = {}
 
-    for node in dependency_nodes:
-        if node is None:
-            continue
+    nodes = {node.id: node for node in dependency_nodes if node is not None}
+    for node in nodes.values():
         dependency = node.to_dependency()
         parent_key = (node.source_dataset_id, node.source_dataset_version_id)
 
@@ -102,67 +102,19 @@ def build_dependency_hierarchy(
             dependency_map[node.id] = None
             children_map.setdefault(parent_key, []).append(node.id)
 
+    if indirect:
+        for node in nodes.values():
+            dependency = dependency_map[node.id]
+            if (
+                dependency is not None
+                and node.dataset_id is not None
+                and node.dataset_version_id is not None
+            ):
+                dependency.dependencies = [
+                    dependency_map[child_id]
+                    for child_id in children_map.get(
+                        (node.dataset_id, node.dataset_version_id), []
+                    )
+                ]
+
     return dependency_map, children_map
-
-
-def populate_nested_dependencies(
-    dependency: DatasetDependency,
-    dependency_nodes: list[DatasetDependencyNode | None],
-    dependency_map: dict[int, DatasetDependency | None],
-    children_map: dict[tuple[int, int | None], list[int]],
-) -> None:
-    """
-    Recursively populate nested dependencies for a given dependency.
-
-    Args:
-        dependency: The dependency to populate nested dependencies for
-        dependency_nodes: All dependency nodes from the database
-        dependency_map: Maps dependency_id -> DatasetDependency
-        children_map: Maps (source_dataset_id, source_version_id) ->
-        list of dependency_ids
-    """
-    # Find the target dataset and version for this dependency
-    target_dataset_id, target_version_id = find_target_dataset_version(
-        dependency, dependency_nodes
-    )
-
-    if target_dataset_id is None or target_version_id is None:
-        return
-
-    # Get children for this target
-    target_key = (target_dataset_id, target_version_id)
-    if target_key not in children_map:
-        dependency.dependencies = []
-        return
-
-    child_dependency_ids = children_map[target_key]
-    child_dependencies = [dependency_map[child_id] for child_id in child_dependency_ids]
-
-    dependency.dependencies = child_dependencies
-
-    # Recursively populate children
-    for child_dependency in child_dependencies:
-        if child_dependency is not None:
-            populate_nested_dependencies(
-                child_dependency, dependency_nodes, dependency_map, children_map
-            )
-
-
-def find_target_dataset_version(
-    dependency: DatasetDependency,
-    dependency_nodes: list[DatasetDependencyNode | None],
-) -> tuple[int | None, int | None]:
-    """
-    Find the target dataset ID and version ID for a given dependency.
-
-    Args:
-        dependency: The dependency to find target for
-        dependency_nodes: All dependency nodes from the database
-
-    Returns:
-        Tuple of (target_dataset_id, target_version_id) or (None, None) if not found
-    """
-    for node in dependency_nodes:
-        if node is not None and node.id == dependency.id:
-            return node.dataset_id, node.dataset_version_id
-    return None, None

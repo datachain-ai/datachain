@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import importlib
 import io
 import logging
 import multiprocessing
@@ -19,8 +20,9 @@ from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
 
 from dvc_objects.fs.system import reflink
+from fsspec import Callback
 from fsspec.asyn import get_loop, sync
-from fsspec.callbacks import DEFAULT_CALLBACK, Callback
+from fsspec.callbacks import DEFAULT_CALLBACK
 
 from datachain.cache import Cache
 from datachain.client.fileslice import FileWrapper
@@ -72,6 +74,17 @@ class BucketStatus(NamedTuple):
     error: str | None = None
 
 
+_CLIENTS = {
+    "s3": (".s3", "ClientS3"),
+    "gs": (".gcs", "GCSClient"),
+    "az": (".azure", "AzureClient"),
+    "file": (".local", "FileClient"),
+    "hf": (".hf", "HfClient"),
+    "http": (".http", "HTTPClient"),
+    "https": (".http", "HTTPSClient"),
+}
+
+
 class Client(ABC):
     MAX_THREADS = multiprocessing.cpu_count()
     FS_CLASS: ClassVar[type["AbstractFileSystem"]]
@@ -108,34 +121,16 @@ class Client(ABC):
         return str(etag)
 
     @staticmethod
-    def get_implementation(url: str | os.PathLike[str]) -> type["Client"]:  # noqa: PLR0911
-        from .azure import AzureClient
-        from .gcs import GCSClient
-        from .hf import HfClient
-        from .http import HTTPClient, HTTPSClient
-        from .local import FileClient
-        from .s3 import ClientS3
-
-        protocol = urlparse(os.fspath(url)).scheme
-
-        if not protocol or is_win_local_path(os.fspath(url)):
-            return FileClient
-        if protocol == ClientS3.protocol:
-            return ClientS3
-        if protocol == GCSClient.protocol:
-            return GCSClient
-        if protocol == AzureClient.protocol:
-            return AzureClient
-        if protocol == FileClient.protocol:
-            return FileClient
-        if protocol == HfClient.protocol:
-            return HfClient
-        if protocol == HTTPClient.protocol:
-            return HTTPClient
-        if protocol == HTTPSClient.protocol:
-            return HTTPSClient
-
-        raise NotImplementedError(f"Unsupported protocol: {protocol}")
+    def get_implementation(url: str | os.PathLike[str]) -> type["Client"]:
+        url = os.fspath(url)
+        protocol = urlparse(url).scheme
+        if not protocol or is_win_local_path(url):
+            protocol = "file"
+        try:
+            module, name = _CLIENTS[protocol]
+        except KeyError:
+            raise NotImplementedError(f"Unsupported protocol: {protocol}") from None
+        return getattr(importlib.import_module(module, __package__), name)
 
     @staticmethod
     def is_data_source_uri(name: str) -> bool:
@@ -491,13 +486,24 @@ class Client(ABC):
         if use_cache and (cache_path := self.cache.get_path(file)):
             return open(cache_path, mode="rb")
         assert not file.location
-        kwargs = self._version_kwargs(file.version)
-        kwargs |= self._block_size_kwargs(block_size)
-        full_path = file.get_fs_path()
-        return FileWrapper(
-            self.fs.open(full_path, **kwargs),
-            cb,
-        )  # type: ignore[return-value]
+        return FileWrapper(self._open_remote(file, block_size), cb)  # type: ignore[return-value]
+
+    def _open_remote(self, file: "File", block_size: int | None = None) -> BinaryIO:
+        self.check_unchanged(file)
+        return self.fs.open(
+            file.get_fs_path(),
+            **self._block_size_kwargs(block_size),
+            **self._version_kwargs(file.version),
+        )
+
+    def _open_checked(self, file: "File", fs_path: str, **open_kwargs: Any) -> BinaryIO:
+        stream = self.fs.open(fs_path, **open_kwargs)
+        try:
+            self.check_unchanged(file, info=stream.details)
+        except BaseException:
+            stream.close()
+            raise
+        return stream
 
     def upload(
         self,
@@ -624,11 +630,15 @@ class Client(ABC):
         await self._check_unchanged(file)
         await self.cache.download(file, self, callback=callback)
 
-    def check_unchanged(self, file: "File") -> None:
+    def check_unchanged(
+        self, file: "File", *, info: dict[str, Any] | None = None
+    ) -> None:
         """Fail if the file changed on the source since the catalog listed it."""
-        sync(get_loop(), self._check_unchanged, file)
+        sync(get_loop(), self._check_unchanged, file, info=info)
 
-    async def _check_unchanged(self, file: "File") -> None:
+    async def _check_unchanged(
+        self, file: "File", *, info: dict[str, Any] | None = None
+    ) -> None:
         # Metadata updates can change a pinned file's etag without changing its
         # bytes, so compare its size instead, which still catches appends. A negative
         # size means it's unknown, so nothing is compared.
@@ -638,11 +648,15 @@ class Client(ABC):
 
         change = ""
         if pinned and file.size >= 0:
-            size = await self.get_size(file)
+            size = int(info["size"]) if info is not None else await self.get_size(file)
             if size != file.size:
                 change = f"size was {file.size}, now {size}"
         elif not pinned and file.etag:
-            etag = await self.get_current_etag(file)
+            etag = (
+                self.info_to_file(info, file.path).etag
+                if info is not None
+                else await self.get_current_etag(file)
+            )
             if etag != file.etag:
                 change = (
                     f"etag was {self.format_etag(file.etag)}, "
@@ -651,9 +665,9 @@ class Client(ABC):
 
         if change:
             raise FileNotFoundError(
-                f"{file.source}/{file.path} changed on the source since the catalog "
-                f"was created ({change}). Re-run the original dc.read_storage(...) "
-                "call with update=True to refresh the catalog."
+                f"{file.source}/{file.path} changed on the source since it was listed "
+                f"({change}). Re-run the original dc.read_storage(...) call "
+                "with update=True to refresh the listing."
             )
 
 
@@ -661,6 +675,14 @@ class RangeListedClient(Client):
     """A client that lists in parallel key ranges (``RangeListing``)."""
 
     LISTS_LEVELS: ClassVar[bool] = False  # whether _list_page takes a delimiter
+
+    def _open_remote(self, file: "File", block_size: int | None = None) -> BinaryIO:
+        return self._open_checked(
+            file,
+            file.get_fs_path(),
+            **self._block_size_kwargs(block_size),
+            **self._version_kwargs(file.version),
+        )
 
     @staticmethod
     def key_order(key: str) -> Any:

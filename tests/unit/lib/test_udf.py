@@ -1,9 +1,10 @@
 import pickle
+import time
 from collections.abc import Iterator
 
 import pytest
 from cloudpickle import dumps, loads
-from fsspec.callbacks import DEFAULT_CALLBACK
+from fsspec.callbacks import DEFAULT_CALLBACK, TqdmCallback
 from pydantic import BaseModel
 
 import datachain as dc
@@ -11,8 +12,15 @@ from datachain import Mapper
 from datachain.dataset import RowDict
 from datachain.lib.file import File
 from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.udf import JsonSerializationError, UDFBase, UdfError, UdfRunError
+from datachain.lib.udf import (
+    FlatRow,
+    JsonSerializationError,
+    UDFBase,
+    UdfError,
+    UdfRunError,
+)
 from datachain.lib.utils import DataChainError
+from datachain.query import dataset
 
 from .test_udf_signature import get_sign
 
@@ -475,3 +483,40 @@ def test_udf_instance_shared_by_chains(test_session, verb):
     assert sorted(first.to_values("first")) == [2, 4, 6]
     assert sorted(second.to_values("second")) == [2, 4, 6]
     assert udf.params is None
+
+
+@pytest.mark.parametrize(
+    "output,value,stored",
+    [(list[float], [1, 2.5], "[1.0, 2.5]"), (list[list[float]], [[1]], "[[1.0]]")],
+)
+def test_gen_flat_rows_convert_list_items_to_the_column_type(
+    test_session, output, value, stored
+):
+    def rows(n: int) -> Iterator[list]:
+        yield FlatRow((value,))  # type: ignore[misc]
+
+    chain = dc.read_values(n=[1], session=test_session).gen(v=rows, output=output)
+
+    assert repr(chain.to_values("v")[0]) == stored
+
+
+def test_gen_reports_generated_rows_once_per_interval(
+    test_session, mocker, monkeypatch
+):
+    now = 0.0
+    monkeypatch.setattr(time, "monotonic", lambda: now)
+    callbacks = mocker.spy(dataset, "get_generated_callback")
+    updates = mocker.spy(TqdmCallback, "relative_update")
+
+    def rows(n: int) -> Iterator[int]:
+        nonlocal now
+        for i, seconds in enumerate([0, 0, 1, 1, 1, 2, 2]):
+            now = seconds
+            yield i
+
+    chain = dc.read_values(n=[1], session=test_session).gen(v=rows, output=int)
+
+    assert chain.count() == 7
+    generated = callbacks.spy_return
+    reported = [c.args[1] for c in updates.call_args_list if c.args[0] is generated]
+    assert (len(reported), sum(reported)) == (4, 7)

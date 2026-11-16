@@ -7,6 +7,7 @@ from sqlalchemy import or_ as sql_or
 from sqlalchemy import true as sql_true
 
 from datachain.lib.convert.python_to_sql import python_to_sql
+from datachain.lib.data_model import NULLABLE_SCALARS, unwrap_optional
 from datachain.lib.utils import DataChainParamsError
 from datachain.query.schema import Column, ColumnExpr
 from datachain.sql.functions import conditional
@@ -47,7 +48,7 @@ class _IsNoneFunc(_TagAwareFunc):
 
 
 class _CaseFunc(Func):
-    """``case`` with no ``else_`` is nullable (unmatched rows are NULL)."""
+    """``case`` preserves nullable return values and unmatched rows."""
 
     def is_nullable_result(
         self,
@@ -56,7 +57,18 @@ class _CaseFunc(Func):
     ) -> bool:
         if self.kwargs.get("else_") is None:
             return True
-        return super().is_nullable_result(signals_schema, col_type)
+        if signals_schema is None:
+            return False
+        inner, _ = unwrap_optional(col_type or self.get_result_type(signals_schema))
+        values = [
+            self.kwargs["else_"],
+            *(b[1] for b in self.cols if isinstance(b, tuple)),
+        ]
+        return inner in NULLABLE_SCALARS and any(
+            isinstance(value, (ColumnExpr, Func))
+            and _source_is_nullable(value, signals_schema)
+            for value in values
+        )
 
 
 class _LogicalFunc(Func):

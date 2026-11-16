@@ -13,14 +13,16 @@ if TYPE_CHECKING:
 
 
 def compute_dep_changes(
-    curr_deps: "Sequence[DependencyEntry]",
-    prev_deps: "Sequence[DependencyEntry]",
+    curr_deps: "Sequence[DependencyEntry] | None",
+    prev_deps: "Sequence[DependencyEntry] | None",
 ) -> "DepChanges":
     """Compute added/removed/updated dependencies between two versions.
 
     curr_deps and prev_deps are lists of dicts with 'name' and 'version' keys
-    (as returned by dep_entry).
+    (as returned by dep_entry). None on either side suppresses dependency diffs.
     """
+    if curr_deps is None or prev_deps is None:
+        return {"deps_added": [], "deps_removed": [], "deps_updated": []}
     curr_dep_map = {name: d["version"] for d in curr_deps if (name := d["name"])}
     prev_dep_map = {name: d["version"] for d in prev_deps if (name := d["name"])}
     curr_names = set(curr_dep_map)
@@ -49,8 +51,8 @@ def build_changes(
     query_script,
     prev_version_str: str,
     prev_script,
-    curr_deps: "Sequence[DependencyEntry]",
-    prev_deps: "Sequence[DependencyEntry]",
+    curr_deps: "Sequence[DependencyEntry] | None",
+    prev_deps: "Sequence[DependencyEntry] | None",
 ) -> "ChangesEntry":
     """Build the full changes dict for a version.
 

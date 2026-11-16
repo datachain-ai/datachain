@@ -1,6 +1,8 @@
 import itertools
 import json
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from PIL import Image
 
@@ -11,6 +13,7 @@ from datachain.func import array, path, string
 NUM_FILES = 1000
 NUM_IMAGES = 100
 NUM_JSON_OBJECTS = 2000
+NUM_ROWS = 10_000
 
 pytestmark = pytest.mark.usefixtures("ignore_checkpoints")
 
@@ -75,6 +78,45 @@ def test_metadata_filter_to_pandas(benchmark, files_uri, test_session):
         )
 
     assert len(benchmark(run)) == 500
+
+
+@pytest.fixture
+def parquet_uri(tmp_path):
+    rows = range(NUM_ROWS)
+    table = pa.table(
+        {
+            "id": pa.array(rows),
+            "score": pa.array([i / 3 for i in rows]),
+            "name": pa.array([f"n{i}" for i in rows]),
+            "tag": pa.array([("a", "b")[i % 2] for i in rows]).dictionary_encode(),
+            "emb": pa.array([[float(i), -float(i)] for i in rows]),
+        }
+    )
+    path = tmp_path / "rows.parquet"
+    pq.write_table(table, path)
+    return path.as_uri()
+
+
+@pytest.fixture
+def csv_uri(tmp_path):
+    path = tmp_path / "rows.csv"
+    lines = "".join(f"{i},{i / 3},n{i},\n" for i in range(NUM_ROWS))
+    path.write_text(f"id,score,name,empty\n{lines}")
+    return path.as_uri()
+
+
+def test_read_parquet(benchmark, parquet_uri, test_session):
+    def run():
+        return dc.read_parquet(parquet_uri, session=test_session).count()
+
+    assert benchmark(run) == NUM_ROWS
+
+
+def test_read_csv(benchmark, csv_uri, test_session):
+    def run():
+        return dc.read_csv(csv_uri, session=test_session).count()
+
+    assert benchmark(run) == NUM_ROWS
 
 
 def test_read_json(benchmark, json_uri, test_session):
@@ -159,3 +201,99 @@ def test_delta_warm(benchmark, files_uri, test_session):
 
     run()
     assert benchmark(run) == NUM_FILES
+
+
+@pytest.mark.parametrize("reuse", [False, True])
+def test_delta_reused_source_materializations(benchmark, test_session, reuse):
+    def build(delta):
+        source = dc.read_dataset(
+            "bench_reused_source",
+            delta=delta,
+            delta_on="id",
+            delta_unsafe=True,
+            session=test_session,
+        )
+        chain = source.subtract(source.filter(C.blocked == 1), on="id")
+        return (
+            chain.filter(C.id < 500).union(chain.filter(C.id >= 500))
+            if reuse
+            else chain
+        )
+
+    def temporary_datasets():
+        return len(
+            list(
+                test_session.catalog.metastore.list_datasets_by_prefix(
+                    test_session.get_temp_prefix()
+                )
+            )
+        )
+
+    before = 0
+
+    def setup():
+        nonlocal before
+        dc.read_values(
+            id=list(range(NUM_FILES)), blocked=[0] * NUM_FILES, session=test_session
+        ).save("bench_reused_source")
+        build(False).save("bench_reused_result")
+        dc.read_values(
+            id=list(range(NUM_FILES + 10)),
+            blocked=[0] * (NUM_FILES + 10),
+            session=test_session,
+        ).save("bench_reused_source")
+        before = temporary_datasets()
+
+    result = benchmark.pedantic(
+        lambda: build(True).save("bench_reused_result"), setup=setup
+    )
+    assert result.count() == NUM_FILES + 10
+    # One materialized source diff and one materialized replay, regardless of
+    # how many filtered branches refer to that source.
+    assert temporary_datasets() - before == 2
+
+
+@pytest.mark.parametrize("retry", [False, True, "error"])
+def test_delta_changed(benchmark, test_session, retry):
+    processed = []
+
+    def generate(id, value):
+        processed.append(id)
+        if retry is True and id == 2:
+            return
+        yield id, value * 2, "retry" if retry == "error" and id == 2 else ""
+
+    def build(delta):
+        return dc.read_dataset(
+            "bench_delta_source",
+            delta=delta,
+            delta_on="id",
+            delta_retry=retry,
+            session=test_session,
+        ).gen(generate, output={"id": int, "score": int, "error": str})
+
+    def setup():
+        dc.read_values(
+            id=list(range(NUM_FILES)),
+            value=list(range(NUM_FILES)),
+            session=test_session,
+        ).save("bench_delta_source")
+        build(False).save("bench_delta_changed")
+        dc.read_values(
+            id=list(range(1, NUM_FILES + 10)),
+            value=[-1, *range(2, NUM_FILES + 10)],
+            session=test_session,
+        ).save("bench_delta_source")
+        processed.clear()
+
+    result = benchmark.pedantic(
+        lambda: build(True).save("bench_delta_changed"),
+        setup=setup,
+    )
+    expected_ids = [1, *range(NUM_FILES, NUM_FILES + 10)] + ([2] if retry else [])
+    assert sorted(processed) == sorted(expected_ids)
+    assert sorted(result.to_list("id", "score", "error")) == [
+        (id, -2 if id == 1 else id * 2, "retry" if retry == "error" and id == 2 else "")
+        for id in range(1, NUM_FILES + 10)
+        if not (retry is True and id == 2)
+    ]

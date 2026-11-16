@@ -14,9 +14,7 @@ from datachain.query import dataset
 
 
 def test_file_row_fields_are_the_flat_columns_of_file():
-    assert FileRow._fields == tuple(
-        "__".join(c.path) for c in iter_flat_columns(dc.File)
-    )
+    assert FileRow._fields == tuple("__".join(c) for c in iter_flat_columns(dc.File))
     assert (
         FileRow("s3://bucket", "a.txt")[2:]
         == tuple(dc.File(source="s3://bucket", path="a.txt").model_dump().values())[2:]
