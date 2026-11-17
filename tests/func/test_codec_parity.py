@@ -353,7 +353,18 @@ def test_model_dict_key_check_edge_cases():
 
 
 def test_read_records_rejects_unknown_keys(test_session):
+    from pydantic import BaseModel
+
+    from datachain.lib.udf import UdfError
     from datachain.lib.utils import DataChainParamsError
 
     with pytest.raises(DataChainParamsError, match="Unexpected keys in record: typo"):
         dc.read_records([{"x": 1, "typo": 2}], schema={"x": int}, session=test_session)
+
+    class Pt(BaseModel):
+        x: int
+
+    with pytest.raises(UdfError, match="pt__x"):
+        dc.read_values(k=[1], session=test_session).map(
+            pt=lambda k: {"x": k}, output=Pt
+        ).to_list()
