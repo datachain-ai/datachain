@@ -613,22 +613,33 @@ def write_listing(
         with safe_closing(
             list_pages(uri, catalog.cache, client_config, encode)
         ) as pages:
-            warehouse.insert_stored_rows(
-                table, [c.name for c in columns], rows(pages), LISTING_BATCH_SIZE
-            )
+            try:
+                warehouse.insert_stored_rows(
+                    table, [c.name for c in columns], rows(pages), LISTING_BATCH_SIZE
+                )
+            except Exception as e:
+                if not warehouse.db.has_table(table.name):
+                    raise ConcurrentDatasetModificationError(
+                        f"Listing {dataset.name}@{version} was removed while running"
+                    ) from e
+                raise
         content_hash = f"{LISTING_DIGEST}:{count}:{total % (1 << 128):032x}"
         latest = _latest_version(catalog, ds_name, project)
         if (
             latest
-            and latest[1].content_hash == content_hash
+            and (
+                latest[1].content_hash == content_hash
+                or latest[1].version_value > dataset.versions[0].version_value
+            )
             and catalog.release_reservation(dataset, version, job_id)
         ):
-            metastore.update_dataset_version(
-                latest[0],
-                latest[1].version,
-                expected_status=DatasetStatus.COMPLETE,
-                finished_at=datetime.now(UTC),
-            )
+            if latest[1].content_hash == content_hash:
+                metastore.update_dataset_version(
+                    latest[0],
+                    latest[1].version,
+                    expected_status=DatasetStatus.COMPLETE,
+                    finished_at=datetime.now(UTC),
+                )
             return None
         if (
             metastore.update_dataset_version(
