@@ -16,7 +16,7 @@ from sqlalchemy.sql.selectable import GenerativeSelect
 from datachain.client import Client
 from datachain.data_storage.codec import RowCodec, TypeCodec, value_codec
 from datachain.data_storage.serializer import Serializable
-from datachain.data_storage.writer import Writer
+from datachain.data_storage.writer import ID_BITS, MAX_ID, Writer, parts_columns
 from datachain.dataset import DatasetRecord, StorageURI
 from datachain.error import TableRenameError
 from datachain.lib.file import File
@@ -460,6 +460,10 @@ class AbstractWarehouse(ABC, Serializable):
         """A writer of rows into table, with ids and a ledger: see ``Writer``."""
         return Writer(self, table, columns, writer_no, parts, batch_size)
 
+    def create_parts_table(self, name: str) -> sa.Table:
+        """Create an empty ledger: see ``Writer``."""
+        return self.create_udf_table(parts_columns(), name=name)
+
     @abstractmethod
     def insert_block(
         self,
@@ -493,9 +497,20 @@ class AbstractWarehouse(ABC, Serializable):
             self.db.execute(table.delete().where(sa.or_(*terms)))
 
     def trim_to_ledger(self, table: sa.Table, parts: sa.Table) -> None:
-        from datachain.data_storage.writer import trim_to_ledger
-
-        trim_to_ledger(self, table, parts)
+        """Delete the rows outside the ledger's committed ranges: one range per
+        writer, from the end of its committed prefix to the next writer's first id."""
+        committed = self.db.execute(
+            sa.select(parts.c.writer_no, sa.func.max(parts.c.hi))
+            .group_by(parts.c.writer_no)
+            .order_by(parts.c.writer_no)
+        )
+        gaps, lo = [], 0
+        for writer_no, hi in committed:
+            if (first := (writer_no << ID_BITS) + 1) > lo:
+                gaps.append((lo, first - 1))
+            lo = max(lo, hi + 1)
+        gaps.append((lo, MAX_ID))
+        self.delete_id_ranges(table, gaps)
 
     @abstractmethod
     def instr(self, source, target) -> sa.ColumnElement:

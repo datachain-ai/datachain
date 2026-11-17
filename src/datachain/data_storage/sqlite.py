@@ -883,17 +883,20 @@ class SQLiteWarehouse(AbstractWarehouse):
                 sql = _insert_sql(quote, parts.name, LEDGER_COLUMNS)
                 self.db.executemany(sql, ledger)
 
+    @retry_sqlite_locks
     def claim_writer_no(self, parts: Table) -> int:
-        # one statement: SQLite's write lock makes the read of max() atomic
+        # one transaction: SQLite's write lock makes the read of max() atomic
         q = quote(parts.name)
         sql = (
             f"INSERT INTO {q} (part_key, writer_no, lo, hi) "  # noqa: S608
             f"SELECT NULL, w, (w << {ID_BITS}) + 1, w << {ID_BITS} FROM "
-            f"(SELECT coalesce(max(writer_no), -1) + 1 AS w FROM {q}) "
-            "RETURNING writer_no"
+            f"(SELECT coalesce(max(writer_no), -1) + 1 AS w FROM {q})"
         )
         with self.db.transaction() as db:
-            (writer_no,) = db.execute(sql).fetchone()
+            db.execute(sql)
+            (writer_no,) = db.execute(
+                f"SELECT max(writer_no) FROM {q}"  # noqa: S608
+            ).fetchone()
         return writer_no
 
     def instr(self, source, target) -> "ColumnElement":

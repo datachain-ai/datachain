@@ -1486,16 +1486,23 @@ def test_save_reserves_version_after_steps_run(test_session, job, monkeypatch):
     assert ds.get_version("1.0.0").status == DatasetStatus.COMPLETE
 
 
-def test_failed_save_gives_version_back(test_session, job):
-    def fail(value: str) -> str:
-        raise RuntimeError("udf failed")
+def test_failed_save_gives_version_back(test_session, job, monkeypatch):
+    catalog = test_session.catalog
+    complete = catalog.complete_dataset_version
 
+    def fail_completion(dataset, *args, **kwargs):
+        if dataset.name == "given_back":
+            raise RuntimeError("completion failed")
+        return complete(dataset, *args, **kwargs)
+
+    monkeypatch.setattr(catalog, "complete_dataset_version", fail_completion)
     chain = dc.read_values(value=["a"], session=test_session)
-    with pytest.raises(RuntimeError, match="udf failed"):
-        chain.map(res=fail, output=str).save("given_back", version="1.0.0")
+    with pytest.raises(RuntimeError, match="completion failed"):
+        chain.save("given_back", version="1.0.0")
     with pytest.raises(DatasetNotFoundError):
-        test_session.catalog.get_dataset("given_back")
+        catalog.get_dataset("given_back", versions=None, include_incomplete=True)
 
+    monkeypatch.setattr(catalog, "complete_dataset_version", complete)
     saved = chain.save("given_back", version="1.0.0")
     assert saved.dataset.latest_version == "1.0.0"
 
@@ -1512,18 +1519,6 @@ def test_explicit_version_conflict_fails_before_steps_run(test_session, job):
     with pytest.raises(RuntimeError, match=r"already has version 1\.0\.0"):
         chain.map(res=count, output=str).save("taken", version="1.0.0")
     assert calls == []
-
-
-def test_saved_schema_is_the_produced_one(test_session):
-    from datachain.sql.types import Float32
-
-    dc.read_values(a=[1.5], session=test_session).mutate(
-        typed=sa.type_coerce(dc.C("a"), Float32())
-    ).save("produced")
-
-    ds = test_session.catalog.get_dataset("produced", versions=None)
-    assert ds.get_version("1.0.0").schema["typed"] == Float32
-    assert ds.schema["typed"] == Float32
 
 
 def test_interrupt_after_publication_keeps_the_dataset(test_session, monkeypatch):

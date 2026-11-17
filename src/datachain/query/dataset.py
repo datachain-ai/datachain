@@ -46,11 +46,7 @@ from datachain.data_storage.schema import (
     partition_col_names,
     partition_columns,
 )
-from datachain.data_storage.writer import (
-    committed_part_keys,
-    parts_columns,
-    parts_table_name,
-)
+from datachain.data_storage.writer import committed_part_keys, parts_table_name
 from datachain.dataset import DatasetDependency
 from datachain.error import (
     DatasetInvalidVersionError,
@@ -1251,14 +1247,11 @@ class UDFStep(Step, ABC):
         }
         return coerce_table_types(self.warehouse.get_table(name), known_types)
 
-    def _resumable_in_parts(self, input_table: "Table") -> bool:
-        """Whether the output gets a ledger: gen over more than one input row,
-        or agg with partition_by. A map output row is keyed by its input row,
-        so the table is its own record; an agg without partition_by is one part
-        and reruns whole."""
-        if not self.is_generator or self.is_single_partition_aggregator:
-            return False
-        return self.is_aggregator or self.warehouse.table_rows_count(input_table) > 1
+    def _resumable_in_parts(self) -> bool:
+        """Whether the output gets a ledger: gen or agg with partition_by.
+        A map output row is keyed by its input row, so the table is its own
+        record; an agg without partition_by is one part and reruns whole."""
+        return self.is_generator and not self.is_single_partition_aggregator
 
     def _promote_partial(
         self, partial_table: "Table", parts: "Table | None", final_name: str
@@ -1313,8 +1306,8 @@ class UDFStep(Step, ABC):
             self.warehouse.db.drop_table(sa.Table(name, sa.MetaData()), if_exists=True)
         partial_output_table = self.create_output_table(partial_table_name)
         parts = None
-        if partial_checkpoint and self._resumable_in_parts(input_table):
-            parts = self.warehouse.create_udf_table(parts_columns(), name=parts_name)
+        if partial_checkpoint and self._resumable_in_parts():
+            parts = self.warehouse.create_parts_table(parts_name)
 
         if self.partition_by is not None:
             input_query = query
@@ -1423,9 +1416,7 @@ class UDFStep(Step, ABC):
                 parts = self.warehouse.create_table_from_query(
                     parts_table_name(partial_name),
                     sa.select(source_parts),
-                    create_fn=lambda name: self.warehouse.create_udf_table(
-                        parts_columns(), name=name
-                    ),
+                    create_fn=self.warehouse.create_parts_table,
                     preserve_sys_ids=True,
                 )
             partial_table = self.warehouse.create_table_from_query(
