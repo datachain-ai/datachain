@@ -1845,6 +1845,7 @@ def test_read_dataset_resolves_selected_version_once(
     assert resolve.call_count == 1
 
 
+@skip_if_not_sqlite
 def test_read_dataset_missing_version_retains_fallback(test_session, mocker):
     dc.read_values(num=[1], session=test_session).save("selected", version="1.0.0")
     resolve = mocker.spy(test_session.catalog, "get_dataset_with_remote_fallback")
