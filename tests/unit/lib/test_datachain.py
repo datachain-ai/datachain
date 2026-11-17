@@ -1848,7 +1848,7 @@ def test_read_dataset_missing_version_retains_fallback(test_session, mocker):
     dc.read_values(num=[1], session=test_session).save("selected", version="1.0.0")
     resolve = mocker.spy(test_session.catalog, "get_dataset_with_remote_fallback")
 
-    with pytest.raises(DatasetNotFoundError, match="9.0.0"):
+    with pytest.raises(DatasetNotFoundError, match=r"9\.0\.0"):
         dc.read_dataset("selected", version="9.0.0", session=test_session)
 
     assert resolve.call_count == 2
