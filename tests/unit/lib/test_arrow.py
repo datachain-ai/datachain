@@ -1,4 +1,5 @@
 import os
+import weakref
 from datetime import UTC, datetime
 from typing import get_args
 
@@ -12,8 +13,11 @@ from pyarrow.dataset import CsvFileFormat, JsonFileFormat, ParquetFileFormat
 from pydantic import field_validator
 
 import datachain as dc
+from datachain.lib import arrow as arrow_mod
 from datachain.lib.arrow import (
     ArrowGenerator,
+    _column_ranges,
+    _ParquetBufferedFile,
     arrow_type_mapper,
     file_schemas,
     is_parquet,
@@ -697,3 +701,88 @@ def test_read_parquet_with_parallel_keeps_every_row(tmp_path, test_session_tmpfi
     assert result.order_by("n").to_values("n") == list(range(1600))
     db = test_session_tmpfile.catalog.warehouse.db
     assert db.execute_str("PRAGMA integrity_check").fetchall() == [("ok",)]
+
+
+def test_parquet_column_ranges():
+    table = pa.table(
+        {
+            "cat": pa.array(["a", "b", "a", "b"]).dictionary_encode(),
+            "pad1": [b"x" * 40_000] * 4,
+            "nested": pa.array(
+                [
+                    [{"x": 1, "y": "p"}],
+                    [{"x": 2, "y": "q"}],
+                    [{"x": 3, "y": "r"}],
+                    [{"x": 4, "y": "s"}],
+                ]
+            ),
+            "pad2": [b"y" * 40_000] * 4,
+        }
+    )
+    buf = pa.BufferOutputStream()
+    pq.write_table(
+        table, buf, row_group_size=2, compression="NONE", use_dictionary=["cat"]
+    )
+    meta = pq.read_metadata(pa.BufferReader(buf.getvalue()))
+
+    expected = []
+    for r in range(meta.num_row_groups):
+        group = meta.row_group(r)
+        cat = group.column(0)
+        assert cat.has_dictionary_page
+        assert cat.dictionary_page_offset < cat.data_page_offset
+        expected.append(
+            (
+                cat.dictionary_page_offset,
+                cat.dictionary_page_offset + cat.total_compressed_size,
+            )
+        )
+        nx, ny = group.column(2), group.column(3)
+        expected.append(
+            (
+                nx.dictionary_page_offset or nx.data_page_offset,
+                (ny.dictionary_page_offset or ny.data_page_offset)
+                + ny.total_compressed_size,
+            )
+        )
+
+    assert _column_ranges(meta, ["cat", "nested"]) == expected
+    assert _column_ranges(meta, ["cat", "nested"], gap=200_000) == [
+        (expected[0][0], expected[-1][1])
+    ]
+
+
+def test_read_parquet_parts_falls_back_when_over_bound(
+    tmp_path, test_session, http_server, monkeypatch, mocker
+):
+    path = tmp_path / "over.parquet"
+    table = pa.table({"a": list(range(1000)), "pad": [b"z" * 100] * 1000})
+    pq.write_table(table, path, row_group_size=500, compression="NONE")
+    raw = path.read_bytes()
+    monkeypatch.setattr(arrow_mod, "PARTIAL_READ_PREFETCH_MAX_SIZE", 1)
+    monkeypatch.setattr(arrow_mod, "PARQUET_FOOTER_SAMPLE_SIZE", 4096)
+    monkeypatch.setattr(arrow_mod, "PARQUET_RANGE_MAX_BYTES", 1)
+    spy = mocker.spy(arrow_mod, "_read_parquet_parts")
+
+    values = dc.read_parquet(
+        f"{http_server}/over.parquet", columns=["a"], session=test_session
+    ).to_values("a")
+
+    assert spy.spy_return == (len(raw), [(len(raw) - 4096, raw[-4096:])])
+    assert sorted(values) == list(range(1000))
+
+
+def test_parquet_buffered_file_freed_by_refcount(catalog):
+    class Parts(list):
+        pass
+
+    file = File(path="table.parquet", source="file:///tmp")
+    client = catalog.get_client(file.source)
+    parts = Parts([(0, b"PAR1")])
+    parts_ref = weakref.ref(parts)
+    f = _ParquetBufferedFile(client, file, 4, parts)
+    file_ref = weakref.ref(f)
+    assert f.read() == b"PAR1"
+    del f, parts
+    assert file_ref() is None
+    assert parts_ref() is None

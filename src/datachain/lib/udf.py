@@ -592,13 +592,15 @@ async def _prefetch_input(
     download_cb: Callback | None = None,
     after_prefetch: "Callable[[], None]" = noop,
     batch_columns: set[int] | None = None,
-    max_size: int | None = None,
+    prefetch_file: "Callable[[File, Callback | None], abc.Awaitable[bool]]" = (
+        File._prefetch
+    ),
 ) -> T:
     for obj in _row_files(row, batch_columns):  # type: ignore[arg-type]
-        if not obj.path or (max_size is not None and not 0 < obj.size <= max_size):
+        if not obj.path:
             continue
         try:
-            if await obj._prefetch(download_cb):
+            if await prefetch_file(obj, download_cb):
                 after_prefetch()
         except FileError as e:
             logger.warning("Skipping prefetch for '%s/%s': %s", obj.source, obj.path, e)
@@ -622,7 +624,9 @@ def _prefetch_inputs(
     after_prefetch: Callable[[], None] | None = None,
     remove_prefetched: bool = False,
     batch_columns: set[int] | None = None,
-    max_size: int | None = None,
+    prefetch_file: "Callable[[File, Callback | None], abc.Awaitable[bool]]" = (
+        File._prefetch
+    ),
 ) -> "abc.Generator[T, None, None]":
     if not prefetch:
         yield from prepared_inputs
@@ -639,7 +643,7 @@ def _prefetch_inputs(
         download_cb=download_cb,
         after_prefetch=after_prefetch,
         batch_columns=batch_columns,
-        max_size=max_size,
+        prefetch_file=prefetch_file,
     )
     mapper = AsyncMapper(f, prepared_inputs, workers=prefetch)
     with closing(mapper.iterate()) as row_iter:
@@ -1005,6 +1009,15 @@ class Generator(UDFBase):
         keys = [spec[0] for spec, _ in self.delta_key_presence if spec is not None]
         return [*super().read_columns(), *(c for c, _ in self.delta_key), *keys]
 
+    async def _prefetch_file(
+        self, file: File, download_cb: Callback | None = None
+    ) -> bool:
+        if self.prefetch_max_size is not None and not (
+            0 < file.size <= self.prefetch_max_size
+        ):
+            return False
+        return await file._prefetch(download_cb)
+
     def run(  # noqa: C901
         self,
         udf_fields: "Sequence[str]",
@@ -1092,7 +1105,7 @@ class Generator(UDFBase):
             prefetch,
             download_cb=download_cb,
             remove_prefetched=bool(prefetch) and not cache,
-            max_size=self.prefetch_max_size,
+            prefetch_file=self._prefetch_file,
         )
 
         with (
