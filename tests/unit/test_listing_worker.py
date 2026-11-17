@@ -139,6 +139,7 @@ class KeysClient(RangeListedClient):
     PREFIX = "fake://"
     protocol = "fake"
     LIST_PAGE_SIZE = 4
+    ignores_start = False
 
     def __init__(self, keys: list[tuple[str, str]], delay=None) -> None:
         super().__init__("bucket", {}, None)  # type: ignore[arg-type]
@@ -153,9 +154,23 @@ class KeysClient(RangeListedClient):
         self.requests += 1
         if self.delay:
             await asyncio.sleep(self.delay())
+        after = "" if self.ignores_start else start_after
+        if delimiter:
+            folders = sorted(
+                {
+                    k[: k.find(delimiter, len(prefix)) + len(delimiter)]
+                    for k, _ in self.keys
+                    if k.startswith(prefix)
+                    and delimiter in k[len(prefix) :]
+                    and k > after
+                }
+            )
+            return Page(
+                [], None, max(folders, default=None), None, folders=tuple(folders)
+            )
         if token is None:
             token = next(
-                (i for i, (k, _) in enumerate(self.keys) if k > start_after),
+                (i for i, (k, _) in enumerate(self.keys) if k > after),
                 len(self.keys),
             )
         chunk = self.keys[token : token + (page_size or self.LIST_PAGE_SIZE)]
@@ -193,6 +208,7 @@ def test_ranges_that_split_while_pages_are_in_flight_are_exact(seed, mocker):
     mocker.patch("datachain.client.ranges.LIST_WORKERS", 8)
     mocker.patch("datachain.client.ranges.YOUNG_PAGES", 1)
     client = slow_client(seed)
+    client.NAMES_FOLDERS = bool(seed % 2)
 
     pages = _listed(client, processes=False)
 
@@ -734,6 +750,23 @@ def test_folder_cut_falls_back_to_flat_listing_when_delimiter_is_rejected():
     client = ForbiddenDelimiterClient(keys)
     pages = _listed(client, processes=False)
     assert sorted((r.path, r.version) for p in pages for r in p) == keys
+
+
+def test_folder_cut_skips_servers_that_ignore_start_after_and_small_pools(mocker):
+    start = mocker.spy(Pool, "start")
+    keys = [(f"dir{i:02d}/file.txt", "v1") for i in range(10)]
+    client = KeysClient(keys)
+    client.NAMES_FOLDERS = True
+    assert sorted((r.path, r.version) for p in _listed(client) for r in p) == keys
+    assert not start.call_count
+
+    ignoring = KeysClient(keys)
+    ignoring.NAMES_FOLDERS = True
+    ignoring.ignores_start = True
+    assert (
+        sorted((r.path, r.version) for p in _listed(ignoring, False) for r in p) == keys
+    )
+    assert ignoring.requests <= 8
 
 
 def test_a_frozen_app_lists_in_one_process():
