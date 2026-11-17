@@ -283,6 +283,7 @@ def test_cleanup_removes_temporary_data_from_closed_separate_database(
     _check_closed_catalog_cleanup(catalog, catalog_tmpfile)
 
 
+@skip_if_not_sqlite
 def test_in_memory_session_exit_finalizes_job_cleanly(tmp_path):
     import subprocess
     import sys
@@ -305,6 +306,7 @@ def test_in_memory_session_exit_finalizes_job_cleanly(tmp_path):
     assert "Traceback" not in result.stderr
 
 
+@skip_if_not_sqlite
 def test_session_cleanup_tolerates_dropped_metastore_tables(catalog):
     metastore = catalog.metastore
     session = Session("dropped", catalog=catalog)

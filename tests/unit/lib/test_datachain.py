@@ -1827,6 +1827,7 @@ def test_read_dataset_name_version(test_session):
     assert chain.version
 
 
+@skip_if_not_sqlite
 @pytest.mark.parametrize(
     ("version", "expected"), [("1.0.0", 1), (1, 2), (">=1.0.0,<2.0.0", 2)]
 )
