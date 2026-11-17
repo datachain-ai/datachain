@@ -7,7 +7,6 @@ import sqlalchemy as sa
 from pydantic import ValidationError
 
 import datachain as dc
-from datachain.lib import signal_schema
 from datachain.lib.convert.flatten import iter_flat_columns
 from datachain.lib.file import File, FileRow
 from datachain.lib.udf import UdfError
@@ -57,17 +56,6 @@ def test_gen_file_rows_are_stored_as_files(test_session, file_type):
     assert {type(f) for f in rows.to_values("file")} == {file_type}
 
 
-def test_gen_file_rows_skip_flattening(test_session, mocker):
-    spy = mocker.spy(signal_schema, "flatten_value")
-
-    dc.read_values(n=[3], session=test_session).gen(
-        file=lambda n: _files(n, True), output=dc.File
-    ).save("files")
-
-    assert spy.call_count == 1  # the File object among the rows
-    assert isinstance(spy.call_args.args[0], File)
-
-
 def test_file_row_is_no_optional_file(test_session):
     def rows(n: int) -> Iterator[dc.File | None]:
         yield FileRow("s3://bucket", f"{n}")  # type: ignore[misc]
@@ -91,6 +79,8 @@ def test_file_rows_take_file_attributes():
     row = FileRow("s3://bucket", "dir/a.txt", 3)
 
     assert row.get_fs_path() == "s3://bucket/dir/a.txt"
+    assert row.get_hash()
+    assert row.rebase("dir", "/out") == "/out/a.txt"
     assert row.name == "a.txt"
     assert row.get_file_ext() == "txt"
     with pytest.raises(AttributeError):

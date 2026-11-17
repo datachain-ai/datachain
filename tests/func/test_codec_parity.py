@@ -216,6 +216,10 @@ def test_mutable_and_nan_defaults_do_not_alias_across_rows():
 
 
 def test_empty_marker_columnar_chunks_keep_shape(test_session):
+    import pyarrow as pa
+
+    from datachain.data_storage.codec import RowCodec
+
     chain = dc.read_records(
         [{"v": _EmptyMarker()}],
         schema={"v": _EmptyMarker | None},
@@ -224,20 +228,46 @@ def test_empty_marker_columnar_chunks_keep_shape(test_session):
     names, chunks = chain.to_columnar_data_with_names(1, include_sentinels=False)
     assert names == []
     assert list(chunks) == [[]]
+    batch0 = pa.record_batch({"x": [1, 2]}).select([])
+    assert RowCodec([]).encode_arrow(batch0) == [(), ()]
 
 
 def test_model_dict_key_check_edge_cases():
-    import numpy as np
-    from pydantic import BaseModel, Field, RootModel, field_serializer
+    from datetime import timedelta, timezone
 
-    from datachain.data_storage.codec import decode_json, encode_json
+    import numpy as np
+    import pyarrow as pa
+    from pydantic import (
+        BaseModel,
+        ConfigDict,
+        Field,
+        RootModel,
+        SerializeAsAny,
+        field_serializer,
+    )
+
+    from datachain.data_storage.codec import (
+        decode_bool,
+        decode_json,
+        encode_json,
+        value_codec,
+    )
+    from datachain.data_storage.sqlite import SQLiteWarehouse
+    from datachain.lib.udf import JsonSerializationError
+    from datachain.sql.types import JSON, Array, DateTime, SQLType
 
     assert decode_json(encode_json(RootModel[str]("hello"))) == "hello"
     assert decode_json(encode_json(RootModel[str]("123"))) == "123"
+    assert decode_json(encode_json(np.str_('{"a": 1}'))) == {"a": 1}
+    assert decode_bool(np.int64(0)) is False
+    assert decode_bool(np.int64(1)) is True
 
     class WithExcluded(BaseModel):
         visible: int = 1
         hidden: dict = Field(default_factory=lambda: {1: "a", "1": "b"}, exclude=True)
+        cond_hidden: dict = Field(
+            default_factory=lambda: {1: "a", "1": "b"}, exclude_if=lambda _: True
+        )
 
     assert decode_json(encode_json(WithExcluded())) == {"visible": 1}
 
@@ -258,3 +288,72 @@ def test_model_dict_key_check_edge_cases():
     assert decode_json(encode_json(WithNumpyKey(value={np.int64(2): "a"}))) == {
         "value": {"2": "a"}
     }
+
+    class Parent(BaseModel):
+        x: int = 1
+
+    class Child(Parent):
+        bad: dict = Field(default_factory=lambda: {1: "a", "1": "b"})
+
+    class Holder(BaseModel):
+        p: Parent
+        opt: Parent | None = None
+        items: list[Parent] = []
+        pair: tuple[Child, Parent] | None = None
+
+    assert decode_json(
+        encode_json(
+            Holder(
+                p=Child(),
+                opt=Child(),
+                items=[Child()],
+                pair=(Child(bad={}), Child()),
+            )
+        )
+    ) == {
+        "p": {"x": 1},
+        "opt": {"x": 1},
+        "items": [{"x": 1}],
+        "pair": [{"x": 1, "bad": {}}, {"x": 1}],
+    }
+
+    class AnyHolder(BaseModel):
+        p: SerializeAsAny[Parent]
+
+    with pytest.raises(JsonSerializationError, match="would be lost"):
+        encode_json(AnyHolder(p=Child()))
+
+    class WithExtra(BaseModel):
+        model_config = ConfigDict(extra="allow")
+
+    with pytest.raises(JsonSerializationError, match="would be lost"):
+        encode_json(WithExtra(d={1: "a", "1": "b"}))
+
+    class WithJsonFilter(BaseModel):
+        value: dict
+
+        @field_serializer("value", when_used="json")
+        def drop_none(self, v):
+            return {k: val for k, val in v.items() if val is not None}
+
+    assert decode_json(encode_json(WithJsonFilter(value={"a": 1, "b": None}))) == {
+        "value": {"a": 1}
+    }
+
+    ch_json_array = value_codec(Array(JSON()), [], json_array_text=True)
+    assert ch_json_array.encode([{b"a": "bytes", (1, "x"): "tuple"}]) == [
+        '{"a":"bytes","(1, \'x\')":"tuple"}'
+    ]
+
+    with SQLiteWarehouse(in_memory=True) as wh:
+        rc = wh.row_codec([SQLType.as_nullable(DateTime())])
+        early = datetime(1, 1, 1, 0, 0, tzinfo=timezone(timedelta(hours=1)))
+        batch = pa.record_batch({"dt": [early, None]})
+        assert rc.encode_arrow(batch) == [rc.encode((early,)), (None,)]
+
+
+def test_read_records_rejects_unknown_keys(test_session):
+    from datachain.lib.utils import DataChainParamsError
+
+    with pytest.raises(DataChainParamsError, match="Unexpected keys in record: typo"):
+        dc.read_records([{"x": 1, "typo": 2}], schema={"x": int}, session=test_session)

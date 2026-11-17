@@ -749,13 +749,17 @@ def _decode_array(item: Callable[[Any], Any], value: Any) -> Any:
 
 def decode_sqlite(sql_type: Any) -> Callable[[Any], Any] | None:
     """How SQLite reads `sql_type`: datetimes as UTC, arrays from JSON text."""
-    if isinstance(sql_type, DateTime) or getattr(sql_type, "_kind", None) == "datetime":
+    if isinstance(sql_type, DateTime):
         return decode_sqlite_datetime
     decode = base_decode(sql_type, decode_sqlite)
-    if isinstance(sql_type, Array) or getattr(sql_type, "_kind", None) == "array":
+    if isinstance(sql_type, Array):
         assert decode is not None  # base_decode always reads an array
         return partial(_decode_array, decode)
     return decode
+
+
+_MIN_DATETIME_US = -62_135_596_800_000_000  # 0001-01-01 00:00:00
+_MAX_DATETIME_US = 253_402_300_799_999_999  # 9999-12-31 23:59:59.999999
 
 
 def _encode_datetime_column(column: Any) -> list[Any] | None:
@@ -768,7 +772,21 @@ def _encode_datetime_column(column: Any) -> list[Any] | None:
         return None
     # Arrow holds aware timestamps as UTC instants: without the timezone they give
     # the naive UTC text adapt_datetime stores.
-    text = column.cast(pa.timestamp("us")).cast(pa.string())
+    usts = column.cast(pa.timestamp("us"))
+    i64 = usts.view("int64")
+    bounds = pc.min_max(i64).as_py()
+    if (bounds["min"] is not None and bounds["min"] < _MIN_DATETIME_US) or (
+        bounds["max"] is not None and bounds["max"] > _MAX_DATETIME_US
+    ):
+        if not column.type.tz:
+            return None
+        i64 = pc.max_element_wise(
+            pc.min_element_wise(i64, _MAX_DATETIME_US, skip_nulls=False),
+            _MIN_DATETIME_US,
+            skip_nulls=False,
+        )
+        usts = i64.view(pa.timestamp("us"))
+    text = usts.cast(pa.string())
     return pc.replace_substring_regex(
         text, pattern=r"\.000000$", replacement=""
     ).to_pylist()
@@ -781,8 +799,6 @@ class SQLiteWarehouse(AbstractWarehouse):
     """
 
     db: SQLiteDatabaseEngine
-
-    # Cache for our defined column types to dialect specific TypeEngine relations
 
     def __init__(
         self,
@@ -870,17 +886,20 @@ class SQLiteWarehouse(AbstractWarehouse):
                 sql = _insert_sql(quote, parts.name, LEDGER_COLUMNS)
                 self.db.executemany(sql, ledger)
 
+    @retry_sqlite_locks
     def claim_writer_no(self, parts: Table) -> int:
-        # one statement: SQLite's write lock makes the read of max() atomic
+        # one transaction: SQLite's write lock makes the read of max() atomic
         q = quote(parts.name)
         sql = (
             f"INSERT INTO {q} (part_key, writer_no, lo, hi) "  # noqa: S608
             f"SELECT NULL, w, (w << {ID_BITS}) + 1, w << {ID_BITS} FROM "
-            f"(SELECT coalesce(max(writer_no), -1) + 1 AS w FROM {q}) "
-            "RETURNING writer_no"
+            f"(SELECT coalesce(max(writer_no), -1) + 1 AS w FROM {q})"
         )
         with self.db.transaction() as db:
-            (writer_no,) = db.execute(sql).fetchone()
+            db.execute(sql)
+            (writer_no,) = db.execute(
+                f"SELECT max(writer_no) FROM {q}"  # noqa: S608
+            ).fetchone()
         return writer_no
 
     def instr(self, source, target) -> "ColumnElement":
@@ -900,16 +919,13 @@ class SQLiteWarehouse(AbstractWarehouse):
     def type_codec(self, sql_type: Any) -> TypeCodec:
         """Datetimes are stored as UTC text, arrays as JSON text."""
         codec = value_codec(sql_type, self.column_default(sql_type), decode_sqlite)
-        if (
-            isinstance(sql_type, DateTime)
-            or getattr(sql_type, "_kind", None) == "datetime"
-        ):
+        if isinstance(sql_type, DateTime):
             return codec._replace(
                 kept=frozenset(),
                 encode=partial(compose, adapt_datetime, codec.encode),
                 encode_column=_encode_datetime_column,
             )
-        if isinstance(sql_type, Array) or getattr(sql_type, "_kind", None) == "array":
+        if isinstance(sql_type, Array):
             return codec._replace(encode=partial(compose, adapt_array, codec.encode))
         return codec
 

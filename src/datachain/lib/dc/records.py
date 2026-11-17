@@ -4,9 +4,11 @@ from typing import TYPE_CHECKING, Any, cast
 
 import sqlalchemy
 
+from datachain.data_storage.codec import RowEncodeError
 from datachain.lib.convert.flatten import classify_field, flatten_value, union_layout
 from datachain.lib.data_model import DataType, is_chain_type, validate_chain_type
 from datachain.lib.signal_schema import SignalSchema
+from datachain.lib.udf import output_value_error
 from datachain.lib.utils import (
     DataChainParamsError,
     assert_unique_export_columns,
@@ -92,9 +94,6 @@ def create_records_dataset(
     ``content_hash``. Pass ``content_hash=None`` to anchor identity on UUID
     only (used by ``read_values`` to opt out of content-derived hashing).
     """
-    from datachain.data_storage.codec import RowEncodeError
-    from datachain.lib.udf import output_value_error
-
     from .datasets import read_dataset
 
     session = Session.get(session, in_memory=in_memory)
@@ -135,10 +134,20 @@ def create_records_dataset(
     table = dr.get_table()
 
     names = [c.name for c in columns]
+    known = set(names) | {c.name for c in warehouse.dataset_row_cls.sys_columns()}
+
+    def _row(record: dict) -> tuple:
+        if extra := record.keys() - known:
+            raise DataChainParamsError(
+                f"Unexpected keys in record: {', '.join(sorted(extra))}"
+            )
+        return tuple(record.get(name) for name in names)
+
     codec = warehouse.row_codec(columns)
-    rows = (tuple(record.get(name) for name in names) for record in flat_records)
     try:
-        warehouse.insert_stored_rows(table, names, map(codec.encode, rows))
+        warehouse.insert_stored_rows(
+            table, names, map(codec.encode, map(_row, flat_records))
+        )
     except RowEncodeError as e:
         raise output_value_error(e, names, signal_schema) from e.__cause__
 

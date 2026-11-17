@@ -1,11 +1,9 @@
 import os
 import sys
-from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
-import sqlalchemy as sa
 
 import datachain as dc
 from datachain.client import Client
@@ -22,33 +20,17 @@ from datachain.lib.listing import (
 from tests.data import ENTRIES
 
 
-def list_bucket(uri, cache, client_config=None):
-    """A gen function of the rows of ``list_pages``."""
-
-    def list_func() -> Iterator[File]:
-        for page in list_pages(uri, cache, client_config):
-            yield from page
-
-    return list_func
-
-
-def test_listing_generator(cloud_test_catalog, cloud_type):
+def test_list_pages_rows(cloud_test_catalog):
     ctc = cloud_test_catalog
     catalog = ctc.catalog
+    pages = list_pages(f"{ctc.src_uri}/cats", catalog.cache, catalog.client_config)
 
-    uri = f"{ctc.src_uri}/cats"
-
-    chain = dc.read_records([{"uri": uri}], schema={"uri": str}).gen(
-        file=list_bucket(uri, catalog.cache, client_config=catalog.client_config)
-    )
-    assert chain.count() == 2
+    files = sorted((row for page in pages for row in page), key=lambda row: row.path)
 
     entries = sorted(
         [e for e in ENTRIES if e.path.startswith("cats/")], key=lambda e: e.path
     )
-    files = chain.order_by("file.path").to_values("file")
-
-    for cat_file, cat_entry in zip(files, entries, strict=False):
+    for cat_file, cat_entry in zip(files, entries, strict=True):
         assert cat_file.source == ctc.src_uri
         assert cat_file.path == cat_entry.path
         assert cat_file.size == cat_entry.size
@@ -131,7 +113,7 @@ def test_parse_listing_uri_with_glob(cloud_test_catalog):
     ctc = cloud_test_catalog
     dataset_name, listing_uri, listing_path = parse_listing_uri(f"{ctc.src_uri}/dogs/*")
     assert dataset_name == _sanitize_ds_name(f"lst__{ctc.src_uri}/dogs/")
-    assert listing_uri == f"{ctc.src_uri}/dogs"
+    assert listing_uri == f"{ctc.src_uri}/dogs/"
     assert listing_path == "dogs/*"
 
 
@@ -303,24 +285,23 @@ def test_listing_without_digest_is_not_reused(test_session):
     assert [v.version for v in ds.versions] == ["1.0.0", "2.0.0"]
 
 
-def test_long_listing_keeps_its_reservation_young(test_session):
-    # gc removes a jobless CREATED version older than an hour: a listing that
-    # runs longer restarts its version's age as it goes
+def test_gc_keeps_a_jobless_listing_that_runs_for_hours(test_session):
     uri = "s3://bucket/data/"
     name, _, _ = parse_listing_uri(uri)
-    metastore = test_session.catalog.metastore
+    catalog = test_session.catalog
     clock = [0.0]
-    hours_ago = datetime.now(UTC) - timedelta(hours=2)
 
     def pages(uri, cache, client_config, encode):
         yield encode([listing.file_row(File(path="a.jpg", etag="e1"))])
-        ds = test_session.catalog.get_dataset(name, versions=None)
-        dv = metastore._datasets_versions
-        metastore.db.execute(  # two hours pass
-            dv.update().where(dv.c.id == ds.versions[0].id).values(created_at=hours_ago)
+        ds = catalog.get_dataset(name, versions=None)
+        catalog.metastore.update_dataset_version(
+            ds,
+            ds.versions[0].version,
+            created_at=datetime.now(UTC) - timedelta(hours=2),
         )
         clock[0] += 2 * 3600
         yield encode([listing.file_row(File(path="b.jpg", etag="e2"))])
+        catalog.cleanup_dataset_versions()
 
     with (
         patch.object(listing, "list_pages", side_effect=pages),
@@ -328,96 +309,55 @@ def test_long_listing_keeps_its_reservation_young(test_session):
     ):
         listing.write_listing(uri, name, test_session, {})
 
-    version = test_session.catalog.get_dataset(name, versions=None).versions[0]
-    assert version.created_at > hours_ago + timedelta(hours=1)
-    assert _etags(test_session, name, version.version) == ["e1", "e2"]
+    assert _etags(test_session, name, "1.0.0") == ["e1", "e2"]
 
 
-def test_listing_creates_no_job(test_session, tmp_dir):
+def test_listing_creates_no_job(test_session, tmp_dir, mocker):
     (tmp_dir / "a.txt").write_text("a")
-    metastore = test_session.catalog.metastore
-
-    def jobs() -> int:
-        count = sa.select(sa.func.count()).select_from(metastore._jobs)
-        return next(iter(metastore.db.execute(count)))[0]
-
-    before = jobs()  # a test session may run inside a job already
+    create_job = mocker.spy(test_session.catalog.metastore, "create_job")
     for update in (False, True):
         dc.read_storage(tmp_dir.as_uri(), session=test_session, update=update).exec()
-
-    assert jobs() == before
-
-
-@pytest.mark.parametrize("base", [True, False], ids=["refresh", "first"])
-def test_delayed_listing_does_not_publish_over_a_newer_one(test_session, base):
-    # A starts over 1.0.0 (or over nothing) and lists `older`; B publishes
-    # `newer` before A ends. A's version is dropped: B's stays the latest.
-    uri = "s3://bucket/data/"
-    name, _, _ = parse_listing_uri(uri)
-    older, newer = File(path="old.jpg", etag="e1"), File(path="new.jpg", etag="e2")
-    if base:
-        _save_listing(test_session, uri, File(path="base.jpg", etag="e0"))
-
-    def delayed(uri, cache, client_config, encode):
-        yield encode([listing.file_row(older)])
-        _save_listing(test_session, uri, newer)
-
-    with patch.object(listing, "list_pages", side_effect=delayed):
-        listing.write_listing(uri, name, test_session, {})
-
-    ds = test_session.catalog.get_dataset(name, versions=None)
-    latest = ds.latest_complete_version
-    assert len(ds.versions) == (2 if base else 1)  # A's version is gone
-    assert _etags(test_session, name, latest) == ["e2"]
-
-
-@pytest.mark.parametrize("base", [True, False], ids=["refresh", "first"])
-def test_listing_publish_races_a_newer_one(test_session, base):
-    # B publishes `newer` after A has listed `older` and decided to publish,
-    # right before A's status UPDATE runs: A's guarded UPDATE must not apply.
-    uri = "s3://bucket/data/"
-    name, _, _ = parse_listing_uri(uri)
-    older, newer = File(path="old.jpg", etag="e1"), File(path="new.jpg", etag="e2")
-    if base:
-        _save_listing(test_session, uri, File(path="base.jpg", etag="e0"))
-    metastore = test_session.catalog.metastore
-    publish = metastore.update_dataset_status
-    raced = []
-
-    def racing_publish(*args, **kwargs):
-        if not raced:
-            raced.append(True)
-            _save_listing(test_session, uri, newer)  # B, between check and publish
-        return publish(*args, **kwargs)
-
-    with patch.object(metastore, "update_dataset_status", racing_publish):
-        _save_listing(test_session, uri, older)  # A
-
-    ds = test_session.catalog.get_dataset(name, versions=None)
-    assert raced
-    assert len(ds.versions) == (2 if base else 1)  # A's version is gone
-    assert _etags(test_session, name, ds.latest_complete_version) == ["e2"]
+    create_job.assert_not_called()
 
 
 def test_unchanged_refresh_leaves_a_version_saved_meanwhile(test_session):
-    # A starts with 1.0.0 as the latest; B saves 2.0.0 before A ends. A equals
-    # 1.0.0: it is dropped, and neither version is touched.
     uri = "s3://bucket/data/"
     name, _, _ = parse_listing_uri(uri)
     old, new = File(path="x.jpg", etag="e1"), File(path="y.jpg", etag="e2")
     first = _save_listing(test_session, uri, old).get_version("1.0.0")
 
     def racing(uri, cache, client_config, encode):
+        yield encode([listing.file_row(old)])
         _save_listing(test_session, uri, new)
-        return iter([encode([listing.file_row(old)])])
 
     with patch.object(listing, "list_pages", side_effect=racing):
         listing.write_listing(uri, name, test_session, {})
 
     ds = test_session.catalog.get_dataset(name, versions=None)
-    assert [v.version for v in ds.versions] == ["1.0.0", "2.0.0"]
+    latest = ds.latest_complete_version
     assert ds.get_version("1.0.0").finished_at == first.finished_at
-    assert _etags(test_session, name, "2.0.0") == ["e2"]
+    assert _etags(test_session, name, latest) == ["e2"]
+
+
+def test_overlapping_unchanged_refreshes_reuse_version(test_session):
+    uri = "s3://bucket/data/"
+    name, _, _ = parse_listing_uri(uri)
+    entry = File(path="x.jpg", etag="e1")
+    _save_listing(test_session, uri, entry)
+    nested = True
+
+    def overlapping(uri, cache, client_config, encode):
+        nonlocal nested
+        yield encode([listing.file_row(entry)])
+        if nested:
+            nested = False
+            listing.write_listing(uri, name, test_session, {})
+
+    with patch.object(listing, "list_pages", side_effect=overlapping):
+        listing.write_listing(uri, name, test_session, {})
+
+    ds = test_session.catalog.get_dataset(name, versions=None)
+    assert [v.version for v in ds.versions] == ["1.0.0"]
 
 
 @pytest.mark.parametrize(

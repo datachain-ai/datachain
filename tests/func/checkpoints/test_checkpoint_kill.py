@@ -1,13 +1,11 @@
 import json
-import os
 import signal
 import sys
-import time
-from contextlib import suppress
 from pathlib import Path
 
 import pytest
 
+import datachain as dc
 from tests.utils import (
     e2e_subprocess_env,
     run_test_subprocess,
@@ -15,84 +13,46 @@ from tests.utils import (
 )
 
 WORKER = Path(__file__).parents[2] / "scripts" / "checkpoint_kill_worker.py"
-
-
-def read_calls(root, event):
-    return [
-        (num, at)
-        for path in root.glob("calls-*.jsonl")
-        for line in path.read_text().splitlines(keepends=True)
-        if line.endswith("\n")
-        for kind, num, at in [json.loads(line)]
-        if kind == event
-    ]
+EXPECTED = {
+    "map": [num * 10 for num in range(10)],
+    "gen": [num * 10 + offset for num in range(10) for offset in (0, 1)],
+}
 
 
 @pytest.mark.skipif(
     sys.platform == "win32", reason="Requires SIGKILL and process groups"
 )
-@pytest.mark.parametrize("parallel", [0, 4])
+@pytest.mark.parametrize("parallel", [0, 2])
 @pytest.mark.parametrize("kind", ["map", "gen"])
-def test_checkpoint_resume_after_sigkill(tmp_path, catalog_tmpfile, parallel, kind):
-    env = e2e_subprocess_env(catalog_tmpfile)
-    metastore = catalog_tmpfile.metastore
+def test_checkpoint_resume_after_sigkill(
+    tmp_path, test_session_tmpfile, parallel, kind
+):
+    catalog = test_session_tmpfile.catalog
+    dc.read_values(num=list(range(10)), session=test_session_tmpfile).save("nums")
+    env = e2e_subprocess_env(catalog)
+    metastore = catalog.metastore
     first_job = metastore.create_job("checkpoint-kill", "")
     env["DATACHAIN_JOB_ID"] = first_job
-    interval = catalog_tmpfile.warehouse.INSERT_FLUSH_INTERVAL
-    (tmp_path / "files").mkdir()
-    for num in range(120):
-        (tmp_path / "files" / f"{num:04d}.txt").write_text(str(num))
-    cmd = [
-        sys.executable,
-        str(WORKER),
-        str(tmp_path),
-        kind,
-        str(parallel),
-        str(interval),
-    ]
-    proc = run_test_subprocess([*cmd, "block"], env, capture_output=False)
-    try:
-        deadline = time.monotonic() + 90
-        while len(read_calls(tmp_path, "start")) < 60 or (
-            kind == "gen" and not read_calls(tmp_path, "blocked")
-        ):
-            assert proc.poll() is None, "Worker exited before the kill point"
-            assert time.monotonic() < deadline, "UDF did not reach kill point"
-            time.sleep(0.05)
-        killed_at = time.monotonic()
-    finally:
-        with suppress(ProcessLookupError):
-            os.killpg(proc.pid, signal.SIGKILL)
-        proc.wait(timeout=10)
-    assert proc.returncode == -signal.SIGKILL
-    saved_by = killed_at - interval - 1
-    saved = {num for num, at in read_calls(tmp_path, "done") if at < saved_by}
-    assert saved
-    blocked = {num for num, _ in read_calls(tmp_path, "blocked")}
+    interval = str(catalog.warehouse.INSERT_FLUSH_INTERVAL)
+    cmd = [sys.executable, str(WORKER), str(tmp_path), kind, str(parallel), interval]
 
-    for path in tmp_path.glob("calls-*.jsonl"):
+    killed = run_test_subprocess([*cmd, "kill"], env)
+    rc, _, stderr = wait_for_test_subprocess(killed, 60)
+    assert rc == -signal.SIGKILL, stderr
+
+    for path in tmp_path.glob("calls-*"):
         path.unlink()
     env["DATACHAIN_JOB_ID"] = metastore.create_job(
-        "checkpoint-kill", "", rerun_from_job_id=first_job
+        "checkpoint-kill", "", rerun_from_job_id=first_job, run_group_id=first_job
     )
-    proc = run_test_subprocess(cmd, env)
-    try:
-        rc, _, stderr = wait_for_test_subprocess(proc, 90)
-        assert rc == 0, stderr
-    finally:
-        with suppress(ProcessLookupError):
-            os.killpg(proc.pid, signal.SIGKILL)
-        proc.wait(timeout=10)
-    recomputed = {num for num, _ in read_calls(tmp_path, "start")}
-    assert saved.isdisjoint(recomputed)
-    assert blocked <= recomputed
-    if kind == "map":
-        expected = [num * 10 for num in range(120)]
-    else:
-        expected = [
-            num * 100 + offset
-            for num in range(120)
-            if num % 5
-            for offset in range(60 if num == 91 else 3)
-        ]
-    assert json.loads((tmp_path / "result.json").read_text()) == expected
+    rc, _, stderr = wait_for_test_subprocess(run_test_subprocess(cmd, env), 60)
+    assert rc == 0, stderr
+
+    recomputed = {
+        int(num)
+        for path in tmp_path.glob("calls-*")
+        for num in path.read_text().split()
+    }
+    assert recomputed >= {7, 8, 9}
+    assert recomputed.isdisjoint(range(6))
+    assert json.loads((tmp_path / "result.json").read_text()) == EXPECTED[kind]

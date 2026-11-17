@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, ClassVar
 from uuid import uuid4
 from weakref import WeakSet
 
-from datachain.catalog import get_catalog
 from datachain.data_storage import JobQueryType, JobStatus
 from datachain.dataset import SESSION_DATASET_PREFIX
 from datachain.error import DataChainError, JobNotFoundError, TableMissingError
@@ -91,11 +90,13 @@ class Session:
 
         session_uuid = uuid4().hex[: self.SESSION_UUID_LEN]
         self.name = f"{name}_{session_uuid}"
-        self.is_new_catalog = not catalog
+        self.is_new_catalog = catalog is None
         self._parent: Session | None = None
-        self.catalog = catalog or get_catalog(
-            client_config=client_config, in_memory=in_memory
-        )
+        if catalog is None:
+            from datachain.catalog import get_catalog
+
+            catalog = get_catalog(client_config=client_config, in_memory=in_memory)
+        self.catalog = catalog
         self._cleanup_catalogs: list[Catalog] = [self.catalog]
         Session._ALL_SESSIONS.add(self)
 

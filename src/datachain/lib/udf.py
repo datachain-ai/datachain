@@ -20,6 +20,7 @@ from fsspec.callbacks import DEFAULT_CALLBACK
 
 from datachain.asyn import AsyncMapper
 from datachain.cache import temporary_cache
+from datachain.data_storage.codec import RowEncodeError
 from datachain.hash_utils import hash_callable
 from datachain.lib.file import File, FileError
 from datachain.lib.signal_schema import SignalSchema
@@ -44,7 +45,7 @@ if TYPE_CHECKING:
     from datachain.cache import Cache
     from datachain.catalog import Catalog
     from datachain.data_storage import AbstractWarehouse
-    from datachain.data_storage.codec import RowCodec, RowEncodeError
+    from datachain.data_storage.codec import RowCodec
     from datachain.lib.settings import Settings
     from datachain.lib.signal_schema import KeyPresence
     from datachain.lib.udf_signature import UdfSignature
@@ -211,7 +212,7 @@ class _Progress:
 
 
 def output_value_error(
-    error: "RowEncodeError",
+    error: RowEncodeError,
     names: Sequence[str],
     schema: SignalSchema,
     udf_kind: str | None = None,
@@ -262,23 +263,14 @@ class OutputRows:
         self.udf_kind = udf.udf_kind
         self.flatten = udf.output.row_flattener()
         self.codec: RowCodec = warehouse.row_codec(spec.values())
-        self.plain = udf.output.plain_output()
 
     def __call__(self, result: Any) -> tuple:
-        """One UDF result as a stored row. A plain result whose values are all
-        stored as they are takes one type check, not the flattener's and then
-        the codec's."""
-        if self.plain:
-            row = result if type(result) is tuple else (result,)
-            if self.codec.stores_as_is(row):
-                return row
+        """One UDF result as a stored row."""
         return self.encode(self.flatten(result))
 
     def encode(self, values: Sequence[Any]) -> tuple:
         """Leaf values as a stored row: missing trailing values are filled in,
         extra ones dropped."""
-        from datachain.data_storage.codec import RowEncodeError
-
         num_values = len(values)
         if num_values != self.width:
             values = (*values[: self.width], *(None,) * (self.width - num_values))
@@ -291,8 +283,6 @@ class OutputRows:
 
     def encode_batch(self, batch: Any) -> list[tuple]:
         """An Arrow batch of leaf columns as stored rows."""
-        from datachain.data_storage.codec import RowEncodeError
-
         try:
             return self.codec.encode_arrow(batch)
         except RowEncodeError as e:
@@ -1136,6 +1126,12 @@ class Aggregator(UDFBase):
             udf_fields, catalog, cache, download_cb, include_id=False
         )
 
+        def _output(result_objs: Any) -> Iterator[tuple]:
+            if result_objs is None:
+                return
+            with safe_closing(result_objs):
+                yield from map(output_row, result_objs)
+
         # Check if partition_id is available (when partition_by is used)
         partition_id_idx = None
         if PARTITION_COLUMN_ID in udf_fields:
@@ -1157,9 +1153,6 @@ class Aggregator(UDFBase):
                 udf_args = [
                     list(arg) if isinstance(arg, tuple) else arg for arg in batched_args
                 ]
-                result_objs = self.process(*udf_args)
-                if result_objs is None:
-                    result_objs = iter(())
-                output = map(output_row, result_objs)
+                output = _output(self.process(*udf_args))
                 processed_cb.relative_update(len(batch))
                 yield input_id, output

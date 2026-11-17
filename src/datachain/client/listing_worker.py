@@ -16,10 +16,9 @@ from contextlib import suppress
 from functools import partial
 from typing import TYPE_CHECKING, Any, BinaryIO
 
-from datachain.lib.file import FileRow
 from datachain.utils import usable_cpu_count
 
-from .ranges import Page
+from .ranges import FileRow, Page
 
 if TYPE_CHECKING:
     from datachain.client.fsspec import RangeListedClient
@@ -320,6 +319,8 @@ async def _serve(
             encode = client.encode_page
             if encode:
                 rows = encode(page.rows)
+                if hasattr(rows, "_rows"):
+                    rows._rows = pickle.dumps(rows._rows, protocol=5)
             else:  # plain tuples: a row type would unpickle per row in Python
                 plain = [tuple(r) for r in page.rows]
                 rows = pickle.dumps(plain, protocol=5), len(plain)

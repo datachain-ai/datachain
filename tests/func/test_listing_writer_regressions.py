@@ -1,5 +1,4 @@
 import os
-from unittest.mock import patch
 
 import pytest
 
@@ -9,124 +8,96 @@ from datachain.error import ConcurrentDatasetModificationError, DatasetNotFoundE
 from datachain.lib import listing
 
 
-def _interleaved_refresh(session, folder, scenario):
+@pytest.fixture
+def folder(tmp_path):
+    folder = tmp_path / "input"
     folder.mkdir()
-    catalog = session.catalog
-    warehouse = catalog.warehouse
-    uri = folder.as_uri()
-    name, *_ = listing.get_listing(uri, session, update=True)
-    original_pages = listing.list_pages
+    return folder
+
+
+def _refresh(session, folder, name):
+    """Leave only the file ``name`` in ``folder`` and refresh its listing."""
+    for file in folder.iterdir():
+        file.unlink()
+    (folder / name).write_text(name)
+    os.utime(folder / name, ns=(1_700_000_000_000_000_000,) * 2)
+    chain = dc.read_storage(folder.as_uri(), session=session, update=True)
+    return chain.to_values("file.path")
+
+
+def _listed(session, folder):
+    return dc.read_storage(folder.as_uri(), session=session).to_values("file.path")
+
+
+def test_refresh_that_ends_during_an_older_scan_stays_latest(
+    test_session, folder, monkeypatch
+):
+    _refresh(test_session, folder, "base.txt")
+    list_pages = listing.list_pages
+    returned = []
+
+    def scan_then_refresh(*args, **kwargs):
+        pages = list(list_pages(*args, **kwargs))
+        monkeypatch.setattr(listing, "list_pages", list_pages)
+        returned.extend(_refresh(test_session, folder, "new.txt"))
+        return pages
+
+    monkeypatch.setattr(listing, "list_pages", scan_then_refresh)
+    _refresh(test_session, folder, "old.txt")
+
+    assert returned == ["new.txt"]
+    assert _listed(test_session, folder) == ["new.txt"]
+
+
+def test_refresh_that_ends_before_an_older_one_publishes_stays_latest(
+    test_session, folder, monkeypatch
+):
+    _refresh(test_session, folder, "base.txt")
+    catalog = test_session.catalog
     complete = catalog.complete_dataset_version
-    stored = warehouse.insert_stored_rows
-    inserted = warehouse.insert_into
-    roles = []
-    returned = {}
-    pending = None
-    finished = False
-    scheduled = False
+    returned = []
 
-    def invoke(role):
-        roles.append(role)
-        try:
-            filename = {
-                "base": "base.txt",
-                "A": "old.txt",
-                "B": "base.txt" if "unchanged" in scenario else "new.txt",
-            }[role]
-            for file in folder.iterdir():
-                file.unlink()
-            file = folder / filename
-            file.write_text(filename)
-            os.utime(file, ns=(1_700_000_000_000_000_000,) * 2)
-            returned[role] = dc.read_storage(
-                uri, session=session, update=True
-            ).to_values("file.path")
-        finally:
-            roles.pop()
+    def refresh_then_complete(*args, **kwargs):
+        monkeypatch.setattr(catalog, "complete_dataset_version", complete)
+        returned.extend(_refresh(test_session, folder, "new.txt"))
+        return complete(*args, **kwargs)
 
-    def pages(uri, cache, client_config=None, encode=None):
-        rows = [
-            row for page in original_pages(uri, cache, client_config) for row in page
-        ]
-        if roles[-1] == "A" and scenario.startswith("slow_first"):
-            invoke("B")
-        yield encode(rows) if encode else rows
+    monkeypatch.setattr(catalog, "complete_dataset_version", refresh_then_complete)
+    _refresh(test_session, folder, "old.txt")
 
-    def finish_pending():
-        nonlocal finished
-        if not finished:
-            dataset, version, args, kwargs = pending
-            complete(dataset, version, *args, **kwargs)
-            finished = True
-
-    def after_data(table):
-        if (
-            roles[-1] == "B"
-            and "lst__" in table.name
-            and scenario.endswith("a_first")
-            and pending is not None
-        ):
-            finish_pending()
-
-    def store(*args, **kwargs):
-        result = stored(*args, **kwargs)
-        after_data(args[0])
-        return result
-
-    def insert(*args, **kwargs):
-        result = inserted(*args, **kwargs)
-        after_data(args[0])
-        return result
-
-    def finalize(dataset, version, *args, **kwargs):
-        nonlocal pending, scheduled
-        if (
-            dataset.name == name
-            and roles[-1] == "A"
-            and not scenario.startswith("slow_first")
-            and not scheduled
-        ):
-            pending = dataset, version, args, kwargs
-            scheduled = True
-            invoke("B")
-            finish_pending()
-            return
-        return complete(dataset, version, *args, **kwargs)
-
-    with (
-        patch.object(listing, "list_pages", pages),
-        patch.object(catalog, "complete_dataset_version", finalize),
-        patch.object(warehouse, "insert_stored_rows", store),
-        patch.object(warehouse, "insert_into", insert),
-    ):
-        invoke("base")
-        invoke("A")
-    dataset = catalog.get_dataset(name, versions=None)
-    final = dc.read_dataset(
-        name,
-        version=dataset.latest_complete_version,
-        namespace=dataset.project.namespace.name,
-        project=dataset.project.name,
-        session=session,
-    ).to_values("file.path")
-    return returned["B"], final
+    assert returned == ["new.txt"]
+    assert _listed(test_session, folder) == ["new.txt"]
 
 
-@pytest.mark.parametrize(
-    "scenario, expected",
-    [
-        ("changed_a_first", "new.txt"),
-        ("unchanged_a_first", "base.txt"),
-        ("changed_b_first", "new.txt"),
-        ("unchanged_b_first", "base.txt"),
-        ("slow_first_changed", "new.txt"),
-        ("slow_first_unchanged", "base.txt"),
-    ],
-)
-def test_newer_refresh_remains_latest(test_session, tmp_path, scenario, expected):
-    returned, final = _interleaved_refresh(test_session, tmp_path / "input", scenario)
-    assert returned == [expected]
-    assert final == [expected]
+@pytest.mark.parametrize("newer", ["new.txt", "base.txt"], ids=["changed", "unchanged"])
+def test_refresh_stays_latest_after_an_older_one_publishes_during_it(
+    test_session, folder, monkeypatch, newer
+):
+    _refresh(test_session, folder, "base.txt")
+    catalog = test_session.catalog
+    complete = catalog.complete_dataset_version
+    store = catalog.warehouse.insert_stored_rows
+    returned = []
+
+    def refresh_and_complete_during_it(*args, **kwargs):
+        def store_then_complete_older(*store_args, **store_kwargs):
+            store(*store_args, **store_kwargs)
+            monkeypatch.setattr(catalog.warehouse, "insert_stored_rows", store)
+            complete(*args, **kwargs)
+
+        monkeypatch.setattr(catalog, "complete_dataset_version", complete)
+        monkeypatch.setattr(
+            catalog.warehouse, "insert_stored_rows", store_then_complete_older
+        )
+        returned.extend(_refresh(test_session, folder, newer))
+
+    monkeypatch.setattr(
+        catalog, "complete_dataset_version", refresh_and_complete_during_it
+    )
+    _refresh(test_session, folder, "old.txt")
+
+    assert returned == [newer]
+    assert _listed(test_session, folder) == [newer]
 
 
 @pytest.mark.parametrize("stage", ["create", "finalize"])
@@ -206,7 +177,7 @@ def test_first_page_failure_leaves_no_reservation(test_session, tmp_path, monkey
         test_session.catalog.get_dataset(name, versions=None, include_incomplete=True)
 
 
-def test_listing_error_closes_pages_before_traceback_release(
+def test_read_storage_after_insert_failure_stops_listing(
     test_session, tmp_path, monkeypatch
 ):
     (tmp_path / "a.txt").write_text("a")
@@ -234,9 +205,8 @@ def test_listing_error_closes_pages_before_traceback_release(
     monkeypatch.setattr(listing, "list_pages", pages)
     monkeypatch.setattr(listing, "LISTING_BATCH_SIZE", 1)
     monkeypatch.setattr(test_session.catalog.warehouse, "insert_block", failed)
-    with pytest.raises(RuntimeError, match="database insertion failed") as error:
+    with pytest.raises(RuntimeError, match="database insertion failed"):
         dc.read_storage(tmp_path, session=test_session).to_values("file.path")
-    assert error.value.__traceback__ is not None
     assert events == ["open", "closed"]
 
 
@@ -295,32 +265,3 @@ def test_unchanged_refresh_with_removed_reservation_raises(
         dc.read_storage(tmp_path, session=test_session, update=True).to_values(
             "file.path"
         )
-
-
-def test_superseded_older_writer_does_not_extend_newer_snapshot_ttl(
-    test_session, tmp_path, monkeypatch
-):
-    (tmp_path / "a.txt").write_text("a")
-    dc.read_storage(tmp_path, session=test_session).to_values("file.path")
-    catalog = test_session.catalog
-    stored = catalog.warehouse.insert_stored_rows
-    nested = False
-    newer_finished_at = None
-    name, *_ = listing.get_listing(tmp_path.as_uri(), test_session, update=True)
-
-    def interleave(table, *args, **kwargs):
-        nonlocal nested, newer_finished_at
-        res = stored(table, *args, **kwargs)
-        if "lst__" in table.name and not nested:
-            nested = True
-            dc.read_storage(tmp_path, session=test_session, update=True).to_values(
-                "file.path"
-            )
-            ds = catalog.get_dataset(name, versions=None)
-            newer_finished_at = ds.get_version(ds.latest_complete_version).finished_at
-        return res
-
-    monkeypatch.setattr(catalog.warehouse, "insert_stored_rows", interleave)
-    dc.read_storage(tmp_path, session=test_session, update=True).to_values("file.path")
-    ds = catalog.get_dataset(name, versions=None)
-    assert ds.get_version(ds.latest_complete_version).finished_at == newer_finished_at

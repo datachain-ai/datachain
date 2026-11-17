@@ -14,7 +14,7 @@ from collections.abc import (
 )
 from dataclasses import dataclass
 from datetime import datetime
-from functools import cached_property, partial
+from functools import cached_property
 from inspect import isclass
 from operator import itemgetter
 from typing import (
@@ -742,27 +742,14 @@ class SignalSchema:
             value = convert_scalar(reader.anno, value)
         return value, pos + 1
 
-    def row_reader(
-        self,
-        columns: Sequence[str] | None = None,
-        *,
-        catalog: "Catalog | None" = None,
-        cache: bool = False,
-        download_cb: Callback = DEFAULT_CALLBACK,
-    ) -> Callable[[Any], list[Any]]:
-        """A function reading the signals' values from a db row, compiled once.
-
-        With `columns`, a row is a sequence in their order; without, a mapping by
-        column name. Setup signals take their setup values. With a catalog,
-        model arms receive their File streams before enclosing validation."""
-        positions = {name: i for i, name in enumerate(columns or ())}
+    def row_reader(self, columns: Sequence[str]) -> Callable[[Any], list[Any]]:
+        """A function reading the signals' values from a db row of `columns`,
+        compiled once. Setup signals take their setup values."""
+        positions = {name: i for i, name in enumerate(columns)}
 
         def build_model(fr: type[BaseModel], j: dict) -> Any:
             try:
-                obj = fr(**j)
-                if catalog is not None:
-                    self._set_file_stream(obj, catalog, cache, download_cb)
-                return obj
+                return fr(**j)
             except ValidationError as e:
                 if self._all_values_none(j):
                     logger.debug("Failed to create input for %s: %s", fr, e)
@@ -770,15 +757,10 @@ class SignalSchema:
                 raise
 
         read_model = _model_reader(build_model)
-        convert = partial(
-            self._convert_feature_value,
-            catalog=catalog,
-            cache=cache,
-            download_cb=download_cb,
-        )
+        convert = self._convert_feature_value
         plan = []
         for name, reader in self._signal_plan.items():
-            keys = [positions[c] if columns is not None else c for c in reader.columns]
+            keys = [positions[c] for c in reader.columns]
             getter = itemgetter(*keys) if keys else None
             needs_convert = self._row_conversion_required[name]
             plan.append((name, reader, getter, len(keys), needs_convert))
@@ -1076,9 +1058,6 @@ class SignalSchema:
         self,
         annotation: DataType,
         value: Any,
-        catalog: "Catalog | None" = None,
-        cache: bool = False,
-        download_cb: Callback = DEFAULT_CALLBACK,
     ) -> Any:
         """Convert raw DB value into declared annotation if needed."""
         if value is None:
@@ -1102,8 +1081,6 @@ class SignalSchema:
                 obj = annotation(**value)
             else:
                 return result
-            if catalog is not None:
-                self._set_file_stream(obj, catalog, cache, download_cb)
             result = obj
         elif is_sequence_annotation(annotation):
             parts = annotation_parts(annotation)
@@ -1117,9 +1094,6 @@ class SignalSchema:
                         self._convert_feature_value(
                             parts[i] if positional and i < len(parts) else parts[0],
                             item,
-                            catalog,
-                            cache,
-                            download_cb,
                         )
                         if item is not None
                         else None
@@ -1141,16 +1115,14 @@ class SignalSchema:
                     if decode_keys:
                         try:
                             converted_key = self._convert_feature_value(
-                                key_type, json.loads(key), catalog, cache, download_cb
+                                key_type, json.loads(key)
                             )
                         except ValueError:
                             # Declared type and stored key disagree; keep the raw key
                             # rather than failing the whole row.
                             converted_key = key
                     converted_val = (
-                        self._convert_feature_value(
-                            val_type, val, catalog, cache, download_cb
-                        )
+                        self._convert_feature_value(val_type, val)
                         if val_type is not Any
                         else val
                     )

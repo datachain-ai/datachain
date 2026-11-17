@@ -12,7 +12,6 @@ for sqlite we can use `sqlite.register_converter`
 ( https://docs.python.org/3/library/sqlite3.html#sqlite3.register_converter )
 """
 
-import warnings
 from copy import copy
 from datetime import date, datetime
 from types import MappingProxyType
@@ -151,10 +150,7 @@ class SQLType(TypeDecorator):
     _python: StandardType
 
     def _load_dialect_impl(self, dialect):
-        kind = getattr(self, "_kind", None)
-        if kind is None:
-            return super().load_dialect_impl(dialect)
-        return getattr(converter(dialect), kind)()
+        return getattr(converter(dialect), self._kind)()
 
     @property
     def python_type(self) -> StandardType:
@@ -462,18 +458,3 @@ TYPES = [
 ]
 
 NAME_TYPES_MAPPING = {t.__name__: t for t in TYPES}
-
-
-class TypeReadConverter:
-    """Deprecated: a warehouse reads values back through its ``type_codec``.
-    Kept, doing nothing, so that code written against older releases imports."""
-
-
-def register_type_read_converters(dialect_name: str, trc: TypeReadConverter) -> None:
-    """Deprecated no-op, see ``TypeReadConverter``."""
-    warnings.warn(
-        "register_type_read_converters() does nothing; override"
-        " AbstractWarehouse.type_codec instead",
-        DeprecationWarning,
-        stacklevel=2,
-    )

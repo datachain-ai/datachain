@@ -45,6 +45,10 @@ STUDIO_URL = "https://studio.datachain.ai"
 T = TypeVar("T")
 
 
+def parent_path(path: str) -> str:
+    return path.rpartition("/")[0]
+
+
 class DataChainDir:
     DEFAULT = ".datachain"
     CACHE = "cache"
@@ -355,16 +359,6 @@ def batched(iterable: Iterable[_T_co], batch_size: int) -> Iterator[tuple[_T_co,
     The last batch may be shorter.
     """
     yield from (tuple(batch) for batch in _dynamic_batched_core(iterable, batch_size))
-
-
-def batched_it(
-    iterable: Iterable[_T_co],
-    batch_size: int = DEFAULT_BATCH_SIZE,
-) -> Iterator[Iterator[_T_co]]:
-    """
-    Batch data into iterators with dynamic sizing based on row count and memory usage.
-    """
-    yield from (iter(batch) for batch in _dynamic_batched_core(iterable, batch_size))
 
 
 def flatten(items):

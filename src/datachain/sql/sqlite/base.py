@@ -43,6 +43,7 @@ from datachain.sql.types import (
     register_type_defaults,
     validate_datetime_cast_input_type,
 )
+from datachain.utils import parent_path
 
 logger = logging.getLogger("datachain")
 
@@ -295,6 +296,8 @@ def sqlite_datetime_cast(value):
 def _normalize_datetime_for_storage(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value
+    if value.tzinfo is UTC:
+        return value.replace(tzinfo=None)
 
     try:
         return value.astimezone(UTC).replace(tzinfo=None)
@@ -376,6 +379,7 @@ def register_user_defined_sql_functions() -> None:
     def create_string_functions(conn):
         _create_function(conn, "split", 2, sqlite_string_split, deterministic=True)
         _create_function(conn, "split", 3, sqlite_string_split, deterministic=True)
+        _create_function(conn, "dc_path_parent", 1, parent_path, deterministic=True)
         _create_function(
             conn, "regexp_replace", 3, sqlite_regexp_replace, deterministic=True
         )
@@ -444,7 +448,7 @@ def convert_datetime(val: bytes) -> datetime:
 
 
 def path_parent(path):
-    return func.rtrim(func.rtrim(path, func.replace(path, slash, empty_str)), slash)
+    return func.dc_path_parent(path)
 
 
 def path_name(path):

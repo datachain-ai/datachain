@@ -1,11 +1,64 @@
 import asyncio
 import unicodedata
 from collections.abc import Callable, Iterable
+from datetime import datetime
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, NamedTuple
+
+from datachain.utils import TIME_ZERO, parent_path
 
 if TYPE_CHECKING:
     from .fsspec import RangeListedClient, ResultQueue
     from .listing_worker import Pool
+
+
+class FileRow(NamedTuple):
+    """A ``File`` as its flat columns, in DB order. Range listings yield these and
+    they go to the DB as they are, so ``File``'s validators don't run on them: the
+    listing clients make valid rows (a scheme in ``source``, no ``location``)."""
+
+    source: str
+    path: str
+    size: int = 0
+    version: str = ""
+    etag: str = ""
+    is_latest: bool = True
+    last_modified: datetime = TIME_ZERO
+    location: dict | list[dict] | None = None
+
+    # File's path helpers, which read only ``path``: no File is built
+    @property
+    def name(self) -> str:
+        return PurePosixPath(self.path).name
+
+    @property
+    def parent(self) -> str:
+        return parent_path(self.path) if "/" in self.path else "."
+
+    def get_file_suffix(self) -> str:
+        return PurePosixPath(self.path).suffix
+
+    def get_file_ext(self) -> str:
+        return PurePosixPath(self.path).suffix.lstrip(".")
+
+    def get_file_stem(self) -> str:
+        return PurePosixPath(self.path).stem
+
+    # File's helpers that need a File: one is built from the row
+    def _file(self):
+        from datachain.lib.file import File
+
+        return File(**self._asdict())
+
+    def get_fs_path(self) -> str:
+        return self._file().get_fs_path()
+
+    def get_hash(self) -> str:
+        return self._file().get_hash()
+
+    def rebase(self, *args, **kwargs) -> str:
+        return self._file().rebase(*args, **kwargs)
+
 
 # A range has one request in flight, so these cap both open ranges and requests.
 LIST_WORKERS = 16  # while this process fetches every page
@@ -278,7 +331,9 @@ class RangeListing:
         except Exception:  # noqa: BLE001
             return
         read_to = self.order(page.last)
-        folders = sorted(f for f in level.folders if self.order(f) > read_to)
+        folders = sorted(
+            (f for f in level.folders if self.order(f) > read_to), key=self.order
+        )
         folders = folders[:: -(-len(folders) // CUT_RANGES) or 1]
         for lo, hi in zip(folders, [*folders[1:], None], strict=False):
             self.open_ranges += 1
