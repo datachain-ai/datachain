@@ -17,7 +17,11 @@ from sqlalchemy import or_, true
 import datachain.fs.utils as fsutils
 from datachain.asyn import iter_over_async
 from datachain.client import Client
-from datachain.error import ClientError, DatasetNotFoundError
+from datachain.error import (
+    ClientError,
+    ConcurrentDatasetModificationError,
+    DatasetNotFoundError,
+)
 from datachain.lib.convert.flatten import flatten
 from datachain.lib.file import File, FileRow
 from datachain.query.schema import Column
@@ -581,22 +585,29 @@ def write_listing(
             total += page.digest
             yield from page.rows
             if time.monotonic() - touched > RESERVATION_TOUCH_INTERVAL:
-                metastore.update_dataset_version(
-                    dataset,
-                    version,
-                    expected_status=DatasetStatus.CREATED,
-                    created_at=datetime.now(UTC),
-                )
+                if (
+                    metastore.update_dataset_version(
+                        dataset,
+                        version,
+                        expected_status=DatasetStatus.CREATED,
+                        expected_job_id=job_id,
+                        created_at=datetime.now(UTC),
+                    )
+                    is None
+                ):
+                    raise ConcurrentDatasetModificationError(
+                        f"Listing {dataset.name}@{version} was removed while running"
+                    )
                 touched = time.monotonic()
 
+    table = warehouse.create_dataset_rows_table(
+        warehouse.temp_table_name(), columns=columns
+    )
     try:
         if job:
             metastore.link_dataset_version_to_job(
                 dataset.versions[0].id, job.id, is_creator=True
             )
-        table = warehouse.create_dataset_rows_table(
-            warehouse.dataset_table_name(dataset, version), columns=columns
-        )
         with safe_closing(
             list_pages(uri, catalog.cache, client_config, encode)
         ) as pages:
@@ -604,11 +615,7 @@ def write_listing(
                 table, [c.name for c in columns], rows(pages), LISTING_BATCH_SIZE
             )
         content_hash = f"{LISTING_DIGEST}:{count}:{total % (1 << 128):032x}"
-        latest = (
-            _latest_version(catalog, ds_name, project)
-            if version != DEFAULT_DATASET_VERSION
-            else None
-        )
+        latest = _latest_version(catalog, ds_name, project)
         if (
             latest
             and latest[1].content_hash == content_hash
@@ -621,14 +628,31 @@ def write_listing(
                 finished_at=datetime.now(UTC),
             )
             return None
+        if (
+            metastore.update_dataset_version(
+                dataset,
+                version,
+                expected_status=DatasetStatus.CREATED,
+                expected_job_id=job_id,
+                content_hash=content_hash,
+            )
+            is None
+        ):
+            raise ConcurrentDatasetModificationError(
+                f"Could not save {dataset.name}@{version}: "
+                "the version was removed or modified before save completed."
+            )
+        warehouse.rename_table(table, warehouse.dataset_table_name(dataset, version))
         completed = catalog.complete_dataset_version(
-            dataset, version, content_hash=content_hash, expected_job_id=job_id
+            dataset, version, expected_job_id=job_id
         )
         return completed if version == DEFAULT_DATASET_VERSION else None
     except BaseException:
         with suppress(Exception):
             catalog.release_reservation(dataset, version, job_id)
         raise
+    finally:
+        warehouse.db.drop_table(table, if_exists=True)
 
 
 def _latest_version(
