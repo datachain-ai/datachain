@@ -135,10 +135,20 @@ def create_records_dataset(
     table = dr.get_table()
 
     names = [c.name for c in columns]
+    known = set(names) | {c.name for c in warehouse.dataset_row_cls.sys_columns()}
+
+    def _row(record: dict) -> tuple:
+        if extra := record.keys() - known:
+            raise DataChainParamsError(
+                f"Unexpected keys in record: {', '.join(sorted(extra))}"
+            )
+        return tuple(record.get(name) for name in names)
+
     codec = warehouse.row_codec(columns)
-    rows = (tuple(record.get(name) for name in names) for record in flat_records)
     try:
-        warehouse.insert_tuples(table, names, map(codec.encode, rows))
+        warehouse.insert_tuples(
+            table, names, map(codec.encode, map(_row, flat_records))
+        )
     except RowEncodeError as e:
         raise output_value_error(e, names, signal_schema) from e.__cause__
     warehouse.insert_rows_done(table)

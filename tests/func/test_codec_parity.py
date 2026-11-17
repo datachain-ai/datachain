@@ -339,3 +339,10 @@ def test_model_dict_key_check_edge_cases():
         early = datetime(1, 1, 1, 0, 0, tzinfo=timezone(timedelta(hours=1)))
         batch = pa.record_batch({"dt": [early, None]})
         assert rc.encode_arrow(batch) == [rc.encode((early,)), (None,)]
+
+
+def test_read_records_rejects_unknown_keys(test_session):
+    from datachain.lib.utils import DataChainParamsError
+
+    with pytest.raises(DataChainParamsError, match="Unexpected keys in record: typo"):
+        dc.read_records([{"x": 1, "typo": 2}], schema={"x": int}, session=test_session)
