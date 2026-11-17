@@ -21,13 +21,12 @@ from fsspec.asyn import sync_wrapper
 from fsspec.utils import tokenize
 from s3fs import S3FileSystem
 
-from datachain.lib.file import File, FileRow
-
 from .fsspec import BucketStatus, RangeListedClient
-from .ranges import PROCESS_LIST_WORKERS, Keep, Page
+from .ranges import PROCESS_LIST_WORKERS, FileRow, Keep, Page
 
 if TYPE_CHECKING:
     from datachain.client.writeconfig import WriteConfig
+    from datachain.lib.file import File
 
 _CREDENTIAL_CHECKS: dict[tuple, tuple[float, bool]] = {}
 
@@ -214,14 +213,14 @@ def _plain_text(body: bytes) -> str | None:
     if body.startswith(b"<?xml"):
         if body[: len(_DECLARATION)].lower() != _DECLARATION.lower():
             return None
-        body = body[len(_DECLARATION) :]
+        body = body[len(_DECLARATION) :].removeprefix(b"\n")
     if any(b in body and odd in body for b, odd in _ODD) or _ENTITY.search(body):
         return None
     try:
         text = body.decode()
     except UnicodeDecodeError:
         return None
-    if _INVALID_XML_TEXT.search(text):
+    if not text.isprintable() and _INVALID_XML_TEXT.search(text):
         return None
     return text if _ROOT.match(text) else None
 
@@ -263,6 +262,10 @@ _as_row = partial(tuple.__new__, FileRow)  # skips FileRow's argument handling
 _ROWS_OF: ContextVar[str | None] = ContextVar("_ROWS_OF", default=None)
 
 
+def _decode_url(text: str) -> str:
+    return unquote_plus(text) if ("%" in text or "+" in text) else text
+
+
 def _rows_page(body: bytes, shape: Shape, source: str) -> dict[str, Any] | None:
     """A page read by the patterns, its objects as ``FileRows``; None when
     ElementTree must read it, also when a field does not convert."""
@@ -271,7 +274,7 @@ def _rows_page(body: bytes, shape: Shape, source: str) -> dict[str, Any] | None:
         return None
     others, ns, entries = split
     page = _read(others, _fields(shape, ns))
-    decode = unquote_plus if page.get("EncodingType") == "url" else str
+    decode = _decode_url if page.get("EncodingType") == "url" else str
     rows, markers, folders = [], [], []
     try:
         for entry in entries:
@@ -282,7 +285,9 @@ def _rows_page(body: bytes, shape: Shape, source: str) -> dict[str, Any] | None:
                 _, key, modified, etag, size, folder = entry
                 version, latest, marker = "", "true", ""
             if size:
-                version = ClientS3.clean_s3_version(_unescape(version))
+                version = (
+                    ClientS3.clean_s3_version(_unescape(version)) if version else ""
+                )
                 when = _parse_timestamp(_unescape(modified))
                 etag = _unescape(etag).strip('"')
                 key = decode(_unescape(key))
@@ -642,7 +647,9 @@ class ClientS3(RangeListedClient):
     def clean_s3_version(ver: str | None) -> str:
         return ver if (ver is not None and ver != "null") else ""
 
-    def info_to_file(self, v: dict[str, Any], path: str) -> File:
+    def info_to_file(self, v: dict[str, Any], path: str) -> "File":
+        from datachain.lib.file import File
+
         return File(
             source=self.uri,
             path=path,

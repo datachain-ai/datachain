@@ -1,7 +1,6 @@
 import glob
 import itertools
 import logging
-import posixpath
 import secrets
 import string
 from abc import ABC, abstractmethod
@@ -17,7 +16,7 @@ from sqlalchemy.sql.selectable import GenerativeSelect
 from datachain.client import Client
 from datachain.data_storage.codec import RowCodec, TypeCodec, value_codec
 from datachain.data_storage.serializer import Serializable
-from datachain.data_storage.writer import Writer
+from datachain.data_storage.writer import ID_BITS, MAX_ID, Writer, parts_columns
 from datachain.dataset import DatasetRecord, StorageURI
 from datachain.error import TableRenameError
 from datachain.lib.file import File
@@ -447,6 +446,10 @@ class AbstractWarehouse(ABC, Serializable):
     ) -> None:
         """Insert rows already in stored form (``RowCodec.encode``), in the order
         of ``columns``, in blocks of ``batch_size``."""
+        if "sys__id" not in columns and "sys__id" in table.c:
+            with self.writer(table, columns, batch_size=batch_size) as w:
+                w.extend(rows)
+            return
         for block in batched(rows, batch_size or self.INSERT_BATCH_SIZE):
             self.insert_block(table, columns, list(block))
 
@@ -460,6 +463,10 @@ class AbstractWarehouse(ABC, Serializable):
     ) -> Writer:
         """A writer of rows into table, with ids and a ledger: see ``Writer``."""
         return Writer(self, table, columns, writer_no, parts, batch_size)
+
+    def create_parts_table(self, name: str) -> sa.Table:
+        """Create an empty ledger: see ``Writer``."""
+        return self.create_udf_table(parts_columns(), name=name)
 
     @abstractmethod
     def insert_block(
@@ -494,9 +501,20 @@ class AbstractWarehouse(ABC, Serializable):
             self.db.execute(table.delete().where(sa.or_(*terms)))
 
     def trim_to_ledger(self, table: sa.Table, parts: sa.Table) -> None:
-        from datachain.data_storage.writer import trim_to_ledger
-
-        trim_to_ledger(self, table, parts)
+        """Delete the rows outside the ledger's committed ranges: one range per
+        writer, from the end of its committed prefix to the next writer's first id."""
+        committed = self.db.execute(
+            sa.select(parts.c.writer_no, sa.func.max(parts.c.hi))
+            .group_by(parts.c.writer_no)
+            .order_by(parts.c.writer_no)
+        )
+        gaps, lo = [], 0
+        for writer_no, hi in committed:
+            if (first := (writer_no << ID_BITS) + 1) > lo:
+                gaps.append((lo, first - 1))
+            lo = max(lo, hi + 1)
+        gaps.append((lo, MAX_ID))
+        self.delete_id_ranges(table, gaps)
 
     @abstractmethod
     def instr(self, source, target) -> sa.ColumnElement:
@@ -759,7 +777,7 @@ class AbstractWarehouse(ABC, Serializable):
 
     def expand_path(self, dataset_rows: "DataTable", path: str) -> list[Node]:
         """Simulates Unix-like shell expansion"""
-        clean_path = path.strip("/")
+        clean_path = path.lstrip("/").removesuffix("/")
         path_list = clean_path.split("/") if clean_path != "" else []
         res = self._populate_nodes_by_path(dataset_rows, path_list)
         if path.endswith("/"):
@@ -846,7 +864,8 @@ class AbstractWarehouse(ABC, Serializable):
             # Return node size if this is not a directory
             return node_size, 1
 
-        sub_glob = posixpath.join(path, "*")
+        # "d/" is the folder named "" in "d": its files match "d//*"
+        sub_glob = f"{path}/*" if path else "*"
         dr = dataset_rows
         selections: list[sa.ColumnElement] = [
             sa.func.sum(dr.c("size")),
@@ -888,7 +907,7 @@ class AbstractWarehouse(ABC, Serializable):
         path = de.c(q, "path")
 
         if parent_path:
-            sub_glob = posixpath.join(parent_path, "*")
+            sub_glob = f"{parent_path}/*"
             conds.append(path.op("GLOB", is_comparison=True)(sub_glob))
         else:
             conds.append(path != "")

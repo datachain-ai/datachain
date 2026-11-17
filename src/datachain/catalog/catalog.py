@@ -10,9 +10,9 @@ from contextlib import contextmanager, suppress
 from copy import copy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from fnmatch import fnmatchcase
 from functools import reduce
 from typing import TYPE_CHECKING, Any, Self
-from uuid import uuid4
 
 import sqlalchemy as sa
 from sqlalchemy import Column
@@ -20,7 +20,6 @@ from sqlalchemy import Column
 from datachain.cache import Cache
 from datachain.checkpoint import Checkpoint, CheckpointStatus
 from datachain.client import Client
-from datachain.data_storage.job import JobStatus
 from datachain.data_storage.writer import parts_table_name
 from datachain.dataset import (
     DATASET_PREFIX,
@@ -30,7 +29,6 @@ from datachain.dataset import (
     DatasetListRecord,
     DatasetRecord,
     DatasetStatus,
-    DatasetVersion,
     StorageURI,
     create_dataset_uri,
     parse_dataset_name,
@@ -54,7 +52,12 @@ from datachain.nodes_thread_pool import NodesThreadPool
 from datachain.progress import tqdm
 from datachain.project import Project
 from datachain.sql.types import DateTime, SQLType
-from datachain.utils import DataChainDir, DatasetIdentifier, interprocess_file_lock
+from datachain.utils import (
+    DataChainDir,
+    DatasetIdentifier,
+    interprocess_file_lock,
+    suffix_to_number,
+)
 
 from .datasource import DataSource
 from .dependency import build_dependency_hierarchy
@@ -465,10 +468,27 @@ def instantiate_node_groups(
         instantiate_progress_bar.close()
 
 
+def matches_find_filters(node: Node, names, inames, paths, ipaths, size, typ) -> bool:
+    """True if a file without a listing passes the same filters as Listing.find."""
+    if size is not None:
+        limit = suffix_to_number(size)
+        if (limit >= 0 and node.size < limit) or (limit < 0 and node.size > -limit):
+            return False
+    return (
+        (typ is None or typ in {"f", "file", "files"})
+        and all(fnmatchcase(node.name, p) for p in names or ())
+        and all(fnmatchcase(node.name.lower(), p.lower()) for p in inames or ())
+        and all(fnmatchcase(node.path, p) for p in paths or ())
+        and all(fnmatchcase(node.path.lower(), p.lower()) for p in ipaths or ())
+    )
+
+
 def find_column_to_str(  # noqa: PLR0911
     row: tuple[Any, ...], field_lookup: dict[str, int], src: DataSource, column: str
 ) -> str:
     if column == "du":
+        if src.listing is None:
+            return str(row[field_lookup["size"]])
         return str(
             src.listing.du(
                 {f: row[field_lookup[f]] for f in ["dir_type", "size", "path"]}
@@ -497,11 +517,6 @@ def find_column_to_str(  # noqa: PLR0911
         # Unknown - this only happens if a type was added elsewhere but not here
         return "u"
     return ""
-
-
-def columns_schema(columns: Iterable[Column]) -> dict[str, Any]:
-    """The stored form of a rows table's columns: name to serialized SQL type."""
-    return {c.name: c.type.to_dict() for c in columns if isinstance(c.type, SQLType)}
 
 
 def clone_catalog_with_cache(catalog: "Catalog", cache: "Cache") -> "Catalog":
@@ -946,29 +961,6 @@ class Catalog:
         auto-computed from the dataset and retried up to
         ``_MAX_VERSION_CLAIM_RETRIES`` times on conflict.
         """
-        reclaim_version = version
-        if version is None and dataset.all_versions:
-            latest = max(dataset.all_versions)
-            previous = copy(dataset)
-            previous.remove_version(latest.version)
-            if latest.version == self._next_auto_version(previous, update_version):
-                reclaim_version = latest.version
-        if (
-            job_id
-            and reclaim_version
-            and (
-                reclaimed := self._reclaim_version(
-                    dataset,
-                    reclaim_version,
-                    job_id,
-                    feature_schema=feature_schema,
-                    query_script=query_script,
-                    schema=columns_schema(columns),
-                )
-            )
-        ):
-            return reclaimed
-
         max_retries = 0 if version else _MAX_VERSION_CLAIM_RETRIES
         target_version = version or self._next_auto_version(dataset, update_version)
 
@@ -1034,62 +1026,6 @@ class Catalog:
         raise DatasetInvalidVersionError(
             f"Failed to claim a version for dataset {name} after"
             f" {1 + max_retries} attempts due to concurrent writers"
-        )
-
-    def can_reclaim_version(self, v: DatasetVersion, job_id: str | None) -> bool:
-        """Whether a save of ``job_id`` may take over version ``v``: a save
-        of an earlier finished job in its rerun chain reserved it and never
-        published it, because it was killed during its copy or failed."""
-        if (
-            not job_id
-            or not v.job_id
-            or v.status not in (DatasetStatus.CREATED, DatasetStatus.FAILED)
-        ):
-            return False
-        if v.job_id == job_id:
-            return v.status == DatasetStatus.FAILED
-        ancestor = (
-            v.job_id != job_id
-            and v.job_id in self.metastore.get_ancestor_job_ids(job_id)
-        )
-        if not ancestor:
-            return False
-        owner = self.metastore.get_job(v.job_id)
-        return owner is not None and owner.status in JobStatus.finished()
-
-    def _reclaim_version(
-        self, dataset: DatasetRecord, version: str, job_id: str, **fields
-    ) -> DatasetRecord | None:
-        """Take over ``version`` if ``can_reclaim_version`` allows it. A
-        compare-and-set on its status and owner makes one taker win; what the
-        dead save left (its rows and its dependencies) is dropped."""
-        v = dataset.get_version(version) if dataset.has_version(version) else None
-        if v is None or not self.can_reclaim_version(v, job_id):
-            return None
-        fields["uuid"] = str(uuid4())
-        claimed = self.metastore.update_dataset_version(
-            dataset,
-            v.version,
-            expected_status=v.status,
-            expected_job_id=v.job_id,
-            status=DatasetStatus.CREATED,
-            job_id=job_id,
-            finished_at=None,
-            error_message="",
-            error_stack="",
-            num_objects=None,
-            size=None,
-            **fields,
-        )
-        if claimed is None:
-            return None
-        self.metastore.remove_dataset_dependencies(dataset, v.version)
-        self.warehouse.drop_dataset_rows_table(dataset, v.version)
-        return self.get_dataset(
-            dataset.name,
-            namespace_name=dataset.project.namespace.name,
-            project_name=dataset.project.name,
-            versions=[v.version],
         )
 
     def create_dataset_version(
@@ -1214,14 +1150,12 @@ class Catalog:
         error_stack: str = "",
         script_output: str = "",
         expected_job_id: str | None = None,
-        expected_latest_complete: int | None = None,
         **kwargs,
-    ) -> None:
+    ) -> DatasetRecord:
         """Finalize a dataset version after its rows table has been populated.
 
         This refreshes warehouse-derived metadata first, then marks the version
-        as COMPLETE; with ``expected_latest_complete``, only while no COMPLETE
-        version newer than that one exists (the metastore's guard).
+        as COMPLETE.
         """
         # Guard against a concurrent remove_dataset_version (usually GC, but
         # also explicit `dataset rm` or session cleanup). Two narrow signals
@@ -1235,7 +1169,7 @@ class Catalog:
                 expected_job_id=expected_job_id,
                 **kwargs,
             )
-            self.metastore.update_dataset_status(
+            return self.metastore.update_dataset_status(
                 dataset,
                 DatasetStatus.COMPLETE,
                 version=version,
@@ -1243,12 +1177,7 @@ class Catalog:
                 error_stack=error_stack,
                 script_output=script_output,
                 expected_status=DatasetStatus.CREATED,
-                expected_latest_complete=expected_latest_complete,
-                **(
-                    {"expected_job_id": expected_job_id}
-                    if expected_job_id is not None
-                    else {}
-                ),
+                expected_job_id=expected_job_id,
             )
         except (TableMissingError, ConcurrentDatasetModificationError) as e:
             raise ConcurrentDatasetModificationError(
@@ -1622,7 +1551,6 @@ class Catalog:
         include_removed: bool = False,
         include_preview: bool = False,
     ) -> DatasetRecord:
-
         namespace_name = namespace_name or self.metastore.default_namespace_name
         project_name = project_name or self.metastore.default_project_name
 
@@ -2499,7 +2427,10 @@ class Catalog:
                 )
 
             for src in matched_sources:
-                yield from du_dirs(src, src.node, depth)
+                if src.listing is None:
+                    yield src.get_node_uri(src.node), src.node.size
+                else:
+                    yield from du_dirs(src, src.node, depth)
 
     def find(
         self,
@@ -2543,9 +2474,16 @@ class Catalog:
             fields = list(field_set)
             field_lookup = {f: i for i, f in enumerate(fields)}
             for src in matched_sources:
-                results = src.listing.find(
-                    src.node, fields, names, inames, paths, ipaths, size, typ
-                )
+                if src.listing is not None:
+                    results = src.listing.find(
+                        src.node, fields, names, inames, paths, ipaths, size, typ
+                    )
+                elif matches_find_filters(
+                    src.node, names, inames, paths, ipaths, size, typ
+                ):
+                    results = [tuple(getattr(src.node, f) for f in fields)]
+                else:
+                    results = []
                 for row in results:
                     yield "\t".join(
                         find_column_to_str(row, field_lookup, src, column)

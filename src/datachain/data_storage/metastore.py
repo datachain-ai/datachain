@@ -25,7 +25,6 @@ from sqlalchemy import (
     and_,
     cast,
     desc,
-    exists,
     literal,
     or_,
     select,
@@ -329,15 +328,11 @@ class AbstractMetastore(ABC, Serializable):
         *,
         expected_status: int | None = None,
         expected_job_id: str | None = None,
-        expected_latest_complete: int | None = None,
         **kwargs,
     ) -> DatasetVersion | None:
         """Updates dataset version fields. When ``expected_status`` or
         ``expected_job_id`` is given the UPDATE only applies if the row's
-        current status and job_id equal them; returns None if no row matched.
-        ``expected_latest_complete`` is the id of the latest COMPLETE version of
-        the dataset the caller saw, 0 for none: the UPDATE only applies while no
-        COMPLETE version has a higher id, checked in the same statement."""
+        current status and job_id equal them; returns None if no row matched."""
 
     def record_dataset_version_access(
         self,
@@ -345,10 +340,6 @@ class AbstractMetastore(ABC, Serializable):
         version: str,
     ) -> None:
         """Record that a dataset version was accessed."""
-
-    def touch_reservation(self, dataset: DatasetRecord, version: str) -> None:
-        """Restart the age of a CREATED version, so that gc, which removes a
-        jobless CREATED version by its age, leaves a long write alone."""
 
     @abstractmethod
     def remove_dataset_version(
@@ -479,7 +470,6 @@ class AbstractMetastore(ABC, Serializable):
         script_output="",
         expected_status: int | None = None,
         expected_job_id: str | None = None,
-        expected_latest_complete: int | None = None,
     ) -> DatasetRecord:
         """Updates dataset status and appropriate fields related to status.
         When ``expected_status`` or ``expected_job_id`` is given the
@@ -1484,25 +1474,13 @@ class AbstractDBMetastore(AbstractMetastore):
         result_ds.update(**dataset_values)
         return result_ds
 
-    def touch_reservation(self, dataset: DatasetRecord, version: str) -> None:
-        dv = self._datasets_versions
-        self.db.execute(
-            self._datasets_versions_update()
-            .where(
-                dv.c.id == dataset.get_version(version).id,
-                dv.c.status == DatasetStatus.CREATED,
-            )
-            .values(created_at=datetime.now(UTC))
-        )
-
-    def update_dataset_version(  # noqa: C901, PLR0912
+    def update_dataset_version(
         self,
         dataset: DatasetRecord,
         version: str,
         *,
         expected_status: int | None = None,
         expected_job_id: str | None = None,
-        expected_latest_complete: int | None = None,
         **kwargs,
     ) -> DatasetVersion | None:
         """Updates dataset version fields."""
@@ -1521,14 +1499,12 @@ class AbstractDBMetastore(AbstractMetastore):
         values: dict[str, Any] = {}
         version_values: dict[str, Any] = {}
         for field, value in kwargs.items():
-            if (
-                field in ("id", "created_at")
-                or field not in self._dataset_version_fields
-            ):
+            if field == "id" or field not in self._dataset_version_fields:
                 continue  # these fields are read-only or not applicable
 
             if value is None and field in (
                 "status",
+                "created_at",
                 "sources",
                 "query_script",
                 "error_message",
@@ -1586,35 +1562,10 @@ class AbstractDBMetastore(AbstractMetastore):
             update_stmt = update_stmt.where(dv.c.status == expected_status)
         if expected_job_id is not None:
             update_stmt = update_stmt.where(dv.c.job_id == expected_job_id)
-        if expected_latest_complete is not None:
-            newer = dv.alias("newer")
-            update_stmt = update_stmt.where(
-                ~exists().where(
-                    newer.c.dataset_id == dataset.id,
-                    newer.c.status == DatasetStatus.COMPLETE,
-                    newer.c.id > expected_latest_complete,
-                )
-            )
         result = self.db.execute(update_stmt.values(values))  # type: ignore [attr-defined]
-        guarded = (
-            expected_status is not None
-            or expected_job_id is not None
-            or expected_latest_complete is not None
-        )
+        guarded = expected_status is not None or expected_job_id is not None
         if guarded and result.rowcount == 0:  # type: ignore [attr-defined]
             return None
-
-        if (
-            expected_job_id is not None
-            and "job_id" in values
-            and values["job_id"] != expected_job_id
-        ):
-            self.db.execute(
-                self._dataset_version_jobs_delete().where(
-                    self._dataset_version_jobs.c.dataset_version_id == version_obj.id,
-                    self._dataset_version_jobs.c.job_id == expected_job_id,
-                )
-            )
 
         version_obj.update(**version_values)
         logger.debug(
@@ -2162,7 +2113,6 @@ class AbstractDBMetastore(AbstractMetastore):
         script_output="",
         expected_status: int | None = None,
         expected_job_id: str | None = None,
-        expected_latest_complete: int | None = None,
     ) -> DatasetRecord:
         """
         Updates dataset status and appropriate fields related to status
@@ -2189,13 +2139,10 @@ class AbstractDBMetastore(AbstractMetastore):
                     version,
                     expected_status=expected_status,
                     expected_job_id=expected_job_id,
-                    expected_latest_complete=expected_latest_complete,
                     **update_data,
                 )
                 if (
-                    expected_status is not None
-                    or expected_job_id is not None
-                    or expected_latest_complete is not None
+                    expected_status is not None or expected_job_id is not None
                 ) and updated is None:
                     raise ConcurrentDatasetModificationError(
                         f"Could not update status of {dataset.name}@{version}: "
@@ -2912,16 +2859,18 @@ class AbstractDBMetastore(AbstractMetastore):
             created_at=now,
             status=CheckpointStatus.ACTIVE,
         )
-        # One atomic statement both reactivates a checkpoint and returns its
-        # actual ID, including when another caller already created it.
         query = query.on_conflict_do_update(  # type: ignore[attr-defined]
             index_elements=["job_id", "hash"],
             set_={
                 "status": CheckpointStatus.ACTIVE,
                 "created_at": now,
             },
-        ).returning(*(self._checkpoints.c[f] for f in self._checkpoints_fields))
-        return self.checkpoint_class.parse(*next(iter(self.db.execute(query))))
+        )
+        with self.db.transaction():
+            self.db.execute(query)
+            checkpoint = self.find_checkpoint(job_id, _hash)
+        assert checkpoint is not None
+        return checkpoint
 
     def list_checkpoints(
         self,
@@ -3179,11 +3128,6 @@ class AbstractDBMetastore(AbstractMetastore):
                 self._projects.c.name == project_name,
                 self._dataset_version_jobs.c.job_id.in_(job_ancestry),
                 self._dataset_version_jobs.c.is_creator.is_(True),
-                or_(
-                    self._datasets_versions.c.job_id.is_(None),
-                    self._datasets_versions.c.job_id
-                    == self._dataset_version_jobs.c.job_id,
-                ),
                 self._datasets_versions.c.status == DatasetStatus.COMPLETE,
             )
             .order_by(desc(self._dataset_version_jobs.c.created_at))

@@ -2250,7 +2250,9 @@ class DataChain:
         rows = self._leaf_values(include_hidden=include_hidden)
         if row_factory is None:
             return list(rows)
-        names = self._effective_signals_schema.db_signals(include_hidden=include_hidden)
+        names = self._effective_signals_schema.db_signals(
+            include_hidden=include_hidden, include_sentinels=False
+        )
         return [row_factory(names, row) for row in rows]
 
     def to_records(self) -> list[dict[str, Any]]:
@@ -2312,9 +2314,7 @@ class DataChain:
                 yield from map(tuple, rows)
                 return
             catalog, cache = self.session.catalog, self._settings.cache
-            read = signals_schema.row_reader(
-                cast("list[str]", db_signals), catalog=catalog, cache=cache
-            )
+            read = signals_schema.row_reader(cast("list[str]", db_signals))
             for row in rows:
                 objs = read(row)
                 signals_schema.set_file_streams(objs, catalog, cache)

@@ -95,7 +95,7 @@ def _flatten_model(model: type[BaseModel], obj: BaseModel, out: list) -> list:
         if layout is not None:
             out.extend(_flatten_union(value, layout))
         elif not kind.is_model:
-            out.append(_flatten_scalar(value))
+            out.append(value)
         elif value is None:
             out.extend(_emit_absent(kind.inner))
         else:
@@ -121,8 +121,6 @@ def flatten_value(value, anno) -> tuple:
     ``_type_tag`` then every arm's columns, only the active arm populated."""
     if (layout := union_layout(anno)) is not None:
         return tuple(_flatten_union(value, layout))
-    if isinstance(value, (list, dict)):
-        return (_flatten_scalar(value),)
     kind = classify_field(anno)
     if kind.is_model:
         if value is None:  # outer-merge pad
@@ -147,7 +145,7 @@ def _flatten_arm(value, arm) -> Generator:
             # flatten by the declared fields, not the (maybe subclass) instance's
             yield from _flatten_model(fr, value, [])
     else:
-        yield _flatten_scalar(value)
+        yield value
 
 
 # arms that take a value of another type, as the same column type would
@@ -204,43 +202,11 @@ def _arm_matches(value, arm) -> bool:
     return isinstance(value, arm)
 
 
-def _flatten_scalar(value):
-    if isinstance(value, list):
-        return _flatten_list_field(value)
-    if isinstance(value, dict):
-        return {
-            key: val.model_dump() if ModelStore.is_pydantic(type(val)) else val
-            for key, val in value.items()
-        }
-    return value
-
-
 def flatten_list(obj_list: list[BaseModel]) -> tuple:
     out: list = []
     for obj in obj_list:
         _flatten_model(type(obj), obj, out)
     return tuple(out)
-
-
-def _flatten_list_field(value: list) -> list:
-    """Models in a list as their dumps, and nested lists likewise, when every
-    item that is not None has that shape (from #1978): the first item cannot
-    answer for the rest. A list of mixed shapes is left as it is, and the
-    warehouse codec makes each item JSON-ready. A leading None leaves models
-    intact for the codec's JSON-mode serialization."""
-    assert isinstance(value, list)
-    first = next((val for val in value if val is not None), None)
-    if ModelStore.is_pydantic(type(first)):
-        if value[0] is None:
-            return value
-        if all(val is None or ModelStore.is_pydantic(type(val)) for val in value):
-            return [None if val is None else val.model_dump() for val in value]
-        return value
-    if isinstance(first, list) and all(
-        val is None or isinstance(val, list) for val in value
-    ):
-        return [None if val is None else _flatten_list_field(val) for val in value]
-    return value
 
 
 @lru_cache(maxsize=4096)

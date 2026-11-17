@@ -45,11 +45,7 @@ from datachain.data_storage.schema import (
     partition_col_names,
     partition_columns,
 )
-from datachain.data_storage.writer import (
-    committed_part_keys,
-    parts_columns,
-    parts_table_name,
-)
+from datachain.data_storage.writer import committed_part_keys, parts_table_name
 from datachain.dataset import DatasetDependency
 from datachain.error import (
     DatasetInvalidVersionError,
@@ -371,7 +367,10 @@ class QueryStep:
     def hash(self) -> str:
         version = self.dataset.get_version(self.dataset_version)
         anchor = (
-            version.content_hash if version.content_hash is not None else version.uuid
+            version.content_hash
+            if version.content_hash is not None
+            and not is_listing_dataset(self.dataset.name)
+            else version.uuid
         )
         return hashlib.sha256(anchor.encode()).hexdigest()
 
@@ -1250,14 +1249,11 @@ class UDFStep(Step, ABC):
         }
         return coerce_table_types(self.warehouse.get_table(name), known_types)
 
-    def _resumable_in_parts(self, rows_input: int) -> bool:
-        """Whether the output gets a ledger: gen over more than one input row,
-        or agg with partition_by. A map output row is keyed by its input row,
-        so the table is its own record; an agg without partition_by is one part
-        and reruns whole."""
-        if not self.is_generator or self.is_single_partition_aggregator:
-            return False
-        return self.is_aggregator or rows_input > 1
+    def _resumable_in_parts(self) -> bool:
+        """Whether the output gets a ledger: gen or agg with partition_by.
+        A map output row is keyed by its input row, so the table is its own
+        record; an agg without partition_by is one part and reruns whole."""
+        return self.is_generator and not self.is_single_partition_aggregator
 
     def _promote_partial(
         self, partial_table: "Table", parts: "Table | None", final_name: str
@@ -1311,12 +1307,9 @@ class UDFStep(Step, ABC):
         for name in (partial_table_name, parts_name):
             self.warehouse.db.drop_table(sa.Table(name, sa.MetaData()), if_exists=True)
         partial_output_table = self.create_output_table(partial_table_name)
-        rows_input = (
-            self.warehouse.table_rows_count(input_table) if partial_checkpoint else 0
-        )
         parts = None
-        if partial_checkpoint and self._resumable_in_parts(rows_input):
-            parts = self.warehouse.create_udf_table(parts_columns(), name=parts_name)
+        if partial_checkpoint and self._resumable_in_parts():
+            parts = self.warehouse.create_parts_table(parts_name)
 
         if self.partition_by is not None:
             input_query = query
@@ -1332,6 +1325,7 @@ class UDFStep(Step, ABC):
         )
 
         if checkpoints_enabled and job:
+            rows_input = self.warehouse.table_rows_count(input_table)
             self._finish_checkpoint(
                 job,
                 partial_checkpoint,
@@ -1424,9 +1418,7 @@ class UDFStep(Step, ABC):
                 parts = self.warehouse.create_table_from_query(
                     parts_table_name(partial_name),
                     sa.select(source_parts),
-                    create_fn=lambda name: self.warehouse.create_udf_table(
-                        parts_columns(), name=name
-                    ),
+                    create_fn=self.warehouse.create_parts_table,
                     preserve_sys_ids=True,
                 )
             partial_table = self.warehouse.create_table_from_query(
@@ -3106,10 +3098,9 @@ class DatasetQuery:
         """Save the query as a dataset.
 
         A taken explicit version fails before any work, without writing. The
-        steps run, then the version is reserved (status CREATED, owned by the
-        current job) right before one ``insert_into`` fills its own rows
-        table, and it is completed. A kill can leave a CREATED version only
-        during that copy; a rerun of the same script reclaims it.
+        steps and final table materialization run into a temporary table first,
+        then the version is created, the table is renamed into place, and the
+        version is completed.
         """
         job = self.session.get_or_create_job()
         job_id = job.id if job else None
@@ -3120,7 +3111,7 @@ class DatasetQuery:
         if not name and version:
             raise RuntimeError("Cannot set version for temporary datasets")
         if name and version:
-            self._check_explicit_version(name, version, project, job_id)
+            self._check_explicit_version(name, version, project)
         if not name:
             name = self.session.generate_temp_dataset_name()
 
@@ -3135,6 +3126,15 @@ class DatasetQuery:
                     "No columns to save in the query. "
                     "Ensure at least one column (other than 'id') is selected."
                 )
+
+            warehouse = self.catalog.warehouse
+            temp_table_name = warehouse.temp_table_name()
+            temp_table = warehouse.create_dataset_rows_table(
+                temp_table_name, columns=columns
+            )
+            self.temp_table_names.append(temp_table_name)
+            warehouse.insert_into(temp_table, query.select())
+
             dataset = self.catalog.create_dataset(
                 name,
                 project,
@@ -3150,11 +3150,10 @@ class DatasetQuery:
             )
             version = dataset.versions[0].version
             try:
-                warehouse = self.catalog.warehouse
-                table = warehouse.create_dataset_rows_table(
-                    warehouse.dataset_table_name(dataset, version), columns=columns
+                warehouse.rename_table(
+                    temp_table, warehouse.dataset_table_name(dataset, version)
                 )
-                warehouse.insert_into(table, query.select())
+                self.temp_table_names.remove(temp_table_name)
 
                 # Link this dataset version to the job that created it
                 if job_id:
@@ -3187,10 +3186,9 @@ class DatasetQuery:
         )
 
     def _check_explicit_version(
-        self, name: str, version: str, project: Project, job_id: str | None
+        self, name: str, version: str, project: Project
     ) -> None:
-        """Fail before any work if an explicit version is taken, unless this
-        job may reclaim it (see ``Catalog.can_reclaim_version``). Read only."""
+        """Fail before any work if an explicit version is taken or removed."""
         try:
             existing = self.catalog.get_dataset(
                 name,
@@ -3203,16 +3201,14 @@ class DatasetQuery:
             return
         if not existing.has_version(version):
             return
-        v = existing.get_version(version)
-        if v.is_removed:
-            raise RuntimeError(
+        if existing.get_version(version).is_removed:
+            raise DatasetInvalidVersionError(
                 f"Version {version} of dataset {name} was "
                 "removed. Pick a different version."
             )
-        if not self.catalog.can_reclaim_version(v, job_id):
-            raise DatasetInvalidVersionError(
-                f"Dataset {name} already has version {version}"
-            )
+        raise DatasetInvalidVersionError(
+            f"Dataset {name} already has version {version}"
+        )
 
     def _set_dependencies(self, dependencies: list[DatasetDependency]) -> None:
         """Override the dependencies collected from the steps."""

@@ -68,13 +68,13 @@ class Writer:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
-        if exc_type is None:
-            self.close()
-            return
         try:
-            self.close(abort=True)
-        except Exception:  # the error in flight says more than this one
-            logger.exception("Could not flush committed rows into %s", self.table)
+            self.flush()
+        except Exception:
+            if exc_type is None:
+                raise
+            # the error in flight says more than this one
+            logger.exception("Could not flush rows into %s", self.table)
 
     def extend(self, rows: Iterable[tuple]) -> None:
         buf, size = self.rows, self.batch_size
@@ -109,30 +109,6 @@ class Writer:
         rows.clear()
         self.ledger = []
         self.flush_at = time.monotonic() + self.flush_interval
-
-    def close(self, abort: bool = False) -> None:
-        """Flush what is buffered. On abort, rows of the unfinished part are
-        dropped: they have no ledger row, so they would be garbage."""
-        if abort and self.assign_ids:
-            del self.rows[max(0, self.part_lo - self.next_id) :]
-        self.flush()
-
-
-def trim_to_ledger(warehouse: "AbstractWarehouse", table: sa.Table, parts: sa.Table):
-    """Delete the rows outside the ledger's committed ranges: one range per
-    writer, from the end of its committed prefix to the next writer's first id."""
-    committed = warehouse.db.execute(
-        sa.select(parts.c.writer_no, sa.func.max(parts.c.hi))
-        .group_by(parts.c.writer_no)
-        .order_by(parts.c.writer_no)
-    )
-    gaps, lo = [], 0
-    for writer_no, hi in committed:
-        if (first := (writer_no << ID_BITS) + 1) > lo:
-            gaps.append((lo, first - 1))
-        lo = max(lo, hi + 1)
-    gaps.append((lo, MAX_ID))
-    warehouse.delete_id_ranges(table, gaps)
 
 
 def committed_part_keys(parts: sa.Table) -> sa.Select:

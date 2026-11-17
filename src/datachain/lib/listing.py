@@ -2,7 +2,7 @@ import functools
 import glob
 import logging
 import os
-import posixpath
+import pickle
 import re
 import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -10,25 +10,20 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import blake2b
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, TypeVar, cast
 
-import sqlalchemy as sa
 from fsspec.asyn import get_loop, sync
 from sqlalchemy import or_, true
 
 import datachain.fs.utils as fsutils
 from datachain.asyn import iter_over_async
 from datachain.client import Client
-from datachain.error import (
-    ClientError,
-    ConcurrentDatasetModificationError,
-    DatasetNotFoundError,
-)
+from datachain.error import ClientError, DatasetNotFoundError
 from datachain.lib.convert.flatten import flatten
 from datachain.lib.file import File, FileRow
 from datachain.query.schema import Column
 from datachain.sql.functions import path as pathfunc
-from datachain.utils import uses_glob
+from datachain.utils import parent_path, safe_closing, uses_glob
 
 if TYPE_CHECKING:
     from sqlalchemy import ColumnElement
@@ -44,7 +39,6 @@ if TYPE_CHECKING:
 LISTING_TTL = 4 * 60 * 60  # cached listing lasts 4 hours
 LISTING_PREFIX = "lst__"  # listing datasets start with this name
 LISTING_BATCH_SIZE = 50_000  # rows per insert: listing rows are small
-# seconds between restarts of the reserved version's age, which gc reads
 RESERVATION_TOUCH_INTERVAL = 300
 # a listing version's content_hash: this prefix, its row count and rows_digest sum
 LISTING_DIGEST = "listing-v1"
@@ -79,13 +73,17 @@ def list_pages(
     client.encode_page = encode
     _, path = Client.parse_url(uri)
     # a child's pages are StoredPages already
-    pages: Iterator[Any] = iter_over_async(client.scandir(path.rstrip("/")), get_loop())
-    for page in pages:
-        if isinstance(page, StoredPage):
-            yield page
-            continue
-        rows = [*map(file_row, page)] if page and isinstance(page[0], File) else page
-        yield encode(rows) if encode else rows
+    with safe_closing(
+        iter_over_async(client.scandir(path.removesuffix("/")), get_loop())
+    ) as pages:
+        for page in pages:
+            if isinstance(page, StoredPage):
+                yield page
+                continue
+            rows = (
+                [*map(file_row, page)] if page and isinstance(page[0], File) else page
+            )
+            yield encode(rows) if encode else rows
 
 
 def list_scope_pages(
@@ -102,7 +100,8 @@ def list_scope_pages(
 def _scope_pages(client, scope: "ListScope", method: str) -> Iterator[Sequence[tuple]]:
     pages = client.scandir(scope.prefix, method=method)
     try:
-        yield from iter_over_async(pages, get_loop())
+        with safe_closing(iter_over_async(pages, get_loop())) as rows:
+            yield from rows
     except FileNotFoundError:  # nothing under the prefix: fine in a folder
         _check_folder(client, scope.folder)
 
@@ -161,6 +160,10 @@ def select_paths(dc: D, paths: "PathFilter") -> D:
     return dc
 
 
+def list_folder(path: str) -> str:
+    return path.lstrip("/").removesuffix("/")
+
+
 @dataclass(frozen=True)
 class PathFilter:
     """The paths of a listing that a URI selects: any of ``any_of`` and all of
@@ -173,12 +176,12 @@ class PathFilter:
     @classmethod
     def ls(cls, path: str, recursive: bool | None) -> "PathFilter":
         if not recursive:
-            return cls(any_of=(("parent", path.lstrip("/").rstrip("/*")),))
+            return cls(any_of=(("parent", list_folder(path)),))
         if not path or path == "/":
             return cls()
         if uses_glob(path):
             return cls(any_of=(("glob", path),))
-        return cls(any_of=(("eq", path), ("glob", path.rstrip("/") + "/*")))
+        return cls(any_of=(("eq", path), ("glob", path.removesuffix("/") + "/*")))
 
     def glob(self, pattern: str) -> "PathFilter":
         return PathFilter(self.any_of, (*self.all_of, ("glob", pattern)))
@@ -206,7 +209,7 @@ class PathFilter:
             if op == "glob":
                 regex = _glob_regex(value)
                 return lambda path: regex is not None and bool(regex.fullmatch(path))
-            return lambda path: _parent(path) == value
+            return lambda path: parent_path(path) == value
 
         any_of = [check(*c) for c in self.any_of]
         all_of = [check(*c) for c in self.all_of]
@@ -214,12 +217,6 @@ class PathFilter:
             (not any_of or any(c(path) for c in any_of))
             and all(c(path) for c in all_of)
         )
-
-
-def _parent(path: str) -> str:
-    """SQLite's ``path_parent``: the path without its name and the slashes
-    before it."""
-    return path.rstrip(path.replace("/", "")).rstrip("/")
 
 
 @functools.lru_cache(maxsize=256)
@@ -357,18 +354,17 @@ def parse_listing_uri(uri: str, versions: bool = True) -> tuple[str, str, str]:
     """
     storage_uri, path = Client.parse_url(uri)
     if uses_glob(path):
-        lst_uri_path = posixpath.dirname(path)
+        # up to the last "/": "d//*.txt" is listed under "d//"
+        lst_uri_path = path[: path.rfind("/") + 1]
     else:
         if path:
-            storage_uri, path = Client.parse_url(f"{uri.rstrip('/')}/")
+            storage_uri, path = Client.parse_url(
+                uri if uri.endswith("/") else f"{uri}/"
+            )
         lst_uri_path = path
 
     lst_uri = f"{storage_uri}/{lst_uri_path.lstrip('/')}"
-    ds_name = (
-        f"{LISTING_PREFIX}{storage_uri}/{posixpath.join(lst_uri_path, '').lstrip('/')}"
-    )
-
-    ds_name = _sanitize_ds_name(ds_name)
+    ds_name = _sanitize_ds_name(f"{LISTING_PREFIX}{lst_uri}")
     if not versions:
         ds_name = CURRENT_LISTING_PREFIX + ds_name.removeprefix(LISTING_PREFIX)
 
@@ -496,14 +492,17 @@ def ensure_listing(
     name: str, catalog: "Catalog", write: Callable | None, *, update: bool = False
 ) -> "DatasetRecord":
     """Create or refresh the selected snapshot only when needed."""
-    try:
-        dataset = catalog.get_dataset(name, versions=None, include_incomplete=False)
-    except DatasetNotFoundError:
-        dataset = None
-    if dataset is None or update or listing_dataset_expired(dataset):
+    dataset = None
+    if not update:
+        try:
+            dataset = catalog.get_dataset(name, versions=None, include_incomplete=False)
+        except DatasetNotFoundError:
+            pass
+    if dataset is None or listing_dataset_expired(dataset):
         assert write is not None
-        write()
-        dataset = catalog.get_dataset(name, versions=None, include_incomplete=False)
+        dataset = write() or catalog.get_dataset(
+            name, versions=None, include_incomplete=False
+        )
     return dataset
 
 
@@ -527,10 +526,18 @@ class StoredPage:
     ``rows_digest``: made where the page was parsed, inserted as it is."""
 
     def __init__(self, rows: list[tuple], digest: int) -> None:
-        self.rows, self.digest = rows, digest
+        self._rows: list[tuple] | bytes = rows
+        self.digest = digest
+        self.size = len(rows)
+
+    @property
+    def rows(self) -> list[tuple]:
+        if isinstance(rows := self._rows, bytes):
+            self._rows = rows = pickle.loads(rows)  # noqa: S301
+        return rows
 
     def __len__(self) -> int:
-        return len(self.rows)
+        return self.size
 
 
 @dataclass(frozen=True)
@@ -547,13 +554,10 @@ class PageEncoder:
 
 def write_listing(
     uri: str, ds_name: str, session: "Session", client_config: dict
-) -> None:
-    """Store a listing snapshot under a reservation made before enumeration.
-
-    Only a newer reservation may supersede it. An unchanged snapshot reuses
-    the latest COMPLETE version unless an older reservation needs fencing.
-    """
-    from datachain.dataset import DatasetStatus
+) -> "DatasetRecord | None":
+    """Store the listing of the prefix ``uri`` as the next version of ``ds_name``.
+    An unchanged listing drops that version and restarts the latest one's TTL."""
+    from datachain.dataset import DEFAULT_DATASET_VERSION, DatasetStatus
     from datachain.lib.signal_schema import SignalSchema
 
     catalog = session.catalog
@@ -561,126 +565,80 @@ def write_listing(
     project = metastore.get_project(
         metastore.listing_project_name, metastore.system_namespace_name, create=True
     )
-    schema = SignalSchema({"file": File})
-    columns = [
-        sa.Column(c.name, c.type)  # type: ignore[union-attr]
-        for c in schema.db_signals(as_columns=True)
-    ]
-    names = [c.name for c in columns]
+    columns = warehouse.dataset_row_cls.listing_columns()
     with_etag = not Client.get_implementation(uri).PINNED_VERSION_IS_IMMUTABLE
     encode = PageEncoder(warehouse.row_codec(columns), with_etag)
     job = session.get_job()
     job_id = job.id if job else None
-    before = _latest_version(catalog, ds_name, project)
-    pages = iter(list_pages(uri, catalog.cache, client_config, encode))
-    after = _latest_version(catalog, ds_name, project)
-    dataset = version = None
+    dataset = catalog.create_dataset(
+        ds_name,
+        project,
+        columns=columns,
+        feature_schema=SignalSchema({"file": File}).serialize(),
+        listing=True,
+        update_version="major",
+        job_id=job_id,
+        query_script=job.query if job else "",
+    )
+    version = dataset.versions[0].version
+    count = total = 0
+
+    def rows(pages: Iterator[StoredPage]) -> Iterator[tuple]:
+        nonlocal count, total
+        touched = time.monotonic()
+        for page in pages:
+            count += len(page)
+            total += page.digest
+            yield from page.rows
+            if time.monotonic() - touched > RESERVATION_TOUCH_INTERVAL:
+                metastore.update_dataset_version(
+                    dataset,
+                    version,
+                    expected_status=DatasetStatus.CREATED,
+                    created_at=datetime.now(UTC),
+                )
+                touched = time.monotonic()
+
     try:
-        dataset = catalog.create_dataset(
-            ds_name,
-            project,
-            columns=columns,
-            feature_schema=schema.serialize(),
-            listing=True,
-            update_version="major",
-            job_id=job_id,
-            query_script=job.query if job else "",
-        )
-        reservation = dataset.versions[0]
-        version, fenced_id = (
-            reservation.version,
-            (
-                (before[1].id if before else 0)
-                if after and (not before or after[1].id > before[1].id)
-                else reservation.id
-            ),
-        )
+        if job:
+            metastore.link_dataset_version_to_job(
+                dataset.versions[0].id, job.id, is_creator=True
+            )
         table = warehouse.create_dataset_rows_table(
             warehouse.dataset_table_name(dataset, version), columns=columns
         )
-        count = total = 0
-
-        def rows() -> Iterator[tuple]:
-            nonlocal count, total
-            touched = time.monotonic()
-            for page in pages:
-                if time.monotonic() - touched > RESERVATION_TOUCH_INTERVAL:
-                    metastore.touch_reservation(dataset, version)
-                    touched = time.monotonic()
-                count += len(page)
-                total += page.digest
-                yield from page.rows
-                if time.monotonic() - touched > RESERVATION_TOUCH_INTERVAL:
-                    metastore.touch_reservation(dataset, version)
-                    touched = time.monotonic()
-
-        warehouse.insert_stored_rows(table, names, rows(), LISTING_BATCH_SIZE)
+        with safe_closing(
+            list_pages(uri, catalog.cache, client_config, encode)
+        ) as pages:
+            warehouse.insert_stored_rows(
+                table, [c.name for c in columns], rows(pages), LISTING_BATCH_SIZE
+            )
         content_hash = f"{LISTING_DIGEST}:{count}:{total % (1 << 128):032x}"
-        latest = _latest_version(catalog, ds_name, project)
-        if latest:
-            previous, previous_version = latest
-            own_active = any(
-                v.id == reservation.id and v.status == DatasetStatus.CREATED
-                for v in previous.all_versions
+        latest = (
+            _latest_version(catalog, ds_name, project)
+            if version != DEFAULT_DATASET_VERSION
+            else None
+        )
+        if (
+            latest
+            and latest[1].content_hash == content_hash
+            and catalog.release_reservation(dataset, version, job_id)
+        ):
+            metastore.update_dataset_version(
+                latest[0],
+                latest[1].version,
+                expected_status=DatasetStatus.COMPLETE,
+                finished_at=datetime.now(UTC),
             )
-            older_pending = any(
-                previous_version.id < v.id < reservation.id
-                and v.status == DatasetStatus.CREATED
-                for v in previous.all_versions
-            )
-            if (
-                own_active
-                and previous_version.id <= fenced_id
-                and previous_version.content_hash == content_hash
-                and not older_pending
-                and warehouse.db.has_table(
-                    warehouse.dataset_table_name(previous, previous_version.version)
-                )
-            ):
-                reused = metastore.update_dataset_version(
-                    previous,
-                    previous_version.version,
-                    expected_status=DatasetStatus.COMPLETE,
-                    expected_latest_complete=previous_version.id,
-                    finished_at=datetime.now(UTC),
-                )
-                if reused is not None and catalog.release_reservation(
-                    dataset, version, job_id
-                ):
-                    return
-        try:
-            catalog.complete_dataset_version(
-                dataset,
-                version,
-                content_hash=content_hash,
-                expected_job_id=job_id,
-                expected_latest_complete=fenced_id,
-            )
-        except ConcurrentDatasetModificationError:
-            latest = _latest_version(catalog, ds_name, project)
-            if (
-                latest is None
-                or latest[1].id <= fenced_id
-                or not warehouse.db.has_table(
-                    warehouse.dataset_table_name(latest[0], latest[1].version)
-                )
-            ):
-                raise
-            catalog.release_reservation(dataset, version, job_id)
-            return
-        if job:
-            metastore.link_dataset_version_to_job(
-                reservation.id, job.id, is_creator=True
-            )
+            return None
+        completed = catalog.complete_dataset_version(
+            dataset, version, content_hash=content_hash, expected_job_id=job_id
+        )
+        return completed if version == DEFAULT_DATASET_VERSION else None
     except BaseException:
-        if dataset is not None and version is not None:
-            with suppress(Exception):
-                catalog.release_reservation(dataset, version, job_id)
-        raise
-    finally:
         with suppress(Exception):
-            if close := getattr(pages, "close", None):
-                close()
+            catalog.release_reservation(dataset, version, job_id)
+        raise
 
 
 def _latest_version(

@@ -16,6 +16,7 @@ from datachain.client.s3 import (
     _fields,
     _handle_200_error,
     _parse_timestamp,
+    _plain_text,
     _rows_page,
 )
 from datachain.client.writeconfig import WriteConfig
@@ -458,25 +459,44 @@ WHEN = _parse_timestamp("2026-09-30T23:00:00.000Z")
 FOLDER = b"<CommonPrefixes><Prefix>z/</Prefix></CommonPrefixes>"
 
 
-def _page(body: bytes):
+def _page(body: bytes, op: str = "ListObjectsV2"):
     model = botocore.session.get_session().get_service_model("s3")
-    shape = model.operation_model("ListObjectsV2").output_shape
+    shape = model.operation_model(op).output_shape
     return _rows_page(body, shape, "s3://b")
 
 
 ENCODED = PAGE.replace(b"<Key>a</Key>", b"<Key>p/a+b%26c</Key>").replace(
     b"<IsTruncated>", b"<EncodingType>url</EncodingType><IsTruncated>"
 )
+VERSIONS = (
+    b'<?xml version="1.0" encoding="UTF-8"?>\n<ListVersionsResult '
+    b'xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Name>b</Name>'
+    b"<MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>"
+    b"<Version><Key>a</Key><VersionId>v1</VersionId><IsLatest>true</IsLatest>"
+    b"<LastModified>2026-09-30T23:00:00.000Z</LastModified>"
+    b"<ETag>&quot;e&quot;</ETag><Size>1</Size></Version>"
+    b"<DeleteMarker><Key>d</Key><VersionId>v2</VersionId><IsLatest>true</IsLatest>"
+    b"<LastModified>2026-09-30T23:00:00.000Z</LastModified></DeleteMarker>"
+    + FOLDER
+    + b"</ListVersionsResult>"
+)
 
 
 def test_patterns_read_a_page_as_s3_writes_it():
     page = _page(ENCODED.replace(b"</Contents>", b"</Contents>" + FOLDER))
+    versions = _page(VERSIONS, "ListObjectVersions")
 
+    assert _plain_text(PAGE).isprintable()
     assert [tuple(r) for r in page["FileRows"]] == [
         ("s3://b", "p/a b&c", 1, "", "e", True, WHEN, None)
     ]
     assert page["CommonPrefixes"] == [{"Prefix": "z/"}]
     assert page["IsTruncated"] is False
+    assert [tuple(r) for r in versions["FileRows"]] == [
+        ("s3://b", "a", 1, "v1", "e", True, WHEN, None)
+    ]
+    assert versions["DeleteMarkers"] == [{"Key": "d"}]
+    assert versions["CommonPrefixes"] == [{"Prefix": "z/"}]
 
 
 @pytest.mark.parametrize(
