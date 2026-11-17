@@ -166,3 +166,45 @@ def test_udf_entrypoint_restores_only_injected_safe_path(monkeypatch, mocker, in
         udf_entrypoint()
     assert ("PYTHONSAFEPATH" in os.environ) is not injected
     assert "_DATACHAIN_UDF_SAFE_PATH" not in os.environ
+
+
+def test_run_udf_single_uses_temporary_prefetch_cache(monkeypatch):
+    from contextlib import nullcontext
+
+    from datachain.query.dispatch import UDFDispatcher
+
+    catalog = MagicMock()
+    dispatcher = UDFDispatcher.__new__(UDFDispatcher)
+    dispatcher.udf_data = b""
+    dispatcher._catalog = catalog
+    dispatcher.cache = False
+    dispatcher.is_batching = False
+    dispatcher.udf_fields = []
+    dispatcher.table = MagicMock()
+    dispatcher.batch_size = None
+    dispatcher.rows_total = 1
+    dispatcher.batching = None
+    dispatcher.query = MagicMock()
+
+    temp_cache = MagicMock()
+    passed_catalogs = []
+    udf = MagicMock(prefetch=16)
+
+    def run(udf_fields, inputs, cat, cache, **kwargs):
+        passed_catalogs.append(cat)
+        return iter([])
+
+    udf.run.side_effect = run
+    monkeypatch.setattr("datachain.query.dispatch.loads", lambda _: udf)
+    monkeypatch.setattr(
+        "datachain.query.dispatch._get_cache",
+        lambda *a, **kw: nullcontext(temp_cache),
+    )
+    monkeypatch.setattr(
+        "datachain.query.dispatch.process_udf_outputs", lambda *a, **kw: None
+    )
+
+    dispatcher.run_udf_single([])
+    assert len(passed_catalogs) == 1
+    assert passed_catalogs[0] is catalog.copy.return_value
+    assert passed_catalogs[0].cache is temp_cache
