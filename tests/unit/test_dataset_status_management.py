@@ -1690,7 +1690,9 @@ def test_removing_claim_recovers_after_error_or_dead_owner(test_session, monkeyp
         "recover_err", versions=["1.0.0"], include_incomplete=True
     )
     assert ds_retry.get_version("1.0.0").status == DatasetStatus.REMOVING
-    assert catalog.remove_dataset_version(ds_retry, "1.0.0", keep_metadata=False) is True
+    assert (
+        catalog.remove_dataset_version(ds_retry, "1.0.0", keep_metadata=False) is True
+    )
 
     # Simulate a process that died after persisting its REMOVING claim
     dc.read_values(v=[2], session=test_session).save("recover_dead", version="1.0.0")
