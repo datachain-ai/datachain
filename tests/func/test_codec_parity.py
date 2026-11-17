@@ -237,7 +237,14 @@ def test_model_dict_key_check_edge_cases():
 
     import numpy as np
     import pyarrow as pa
-    from pydantic import BaseModel, ConfigDict, Field, RootModel, field_serializer
+    from pydantic import (
+        BaseModel,
+        ConfigDict,
+        Field,
+        RootModel,
+        SerializeAsAny,
+        field_serializer,
+    )
 
     from datachain.data_storage.codec import (
         decode_bool,
@@ -251,12 +258,16 @@ def test_model_dict_key_check_edge_cases():
 
     assert decode_json(encode_json(RootModel[str]("hello"))) == "hello"
     assert decode_json(encode_json(RootModel[str]("123"))) == "123"
+    assert decode_json(encode_json(np.str_('{"a": 1}'))) == {"a": 1}
     assert decode_bool(np.int64(0)) is False
     assert decode_bool(np.int64(1)) is True
 
     class WithExcluded(BaseModel):
         visible: int = 1
         hidden: dict = Field(default_factory=lambda: {1: "a", "1": "b"}, exclude=True)
+        cond_hidden: dict = Field(
+            default_factory=lambda: {1: "a", "1": "b"}, exclude_if=lambda _: True
+        )
 
     assert decode_json(encode_json(WithExcluded())) == {"visible": 1}
 
@@ -288,10 +299,29 @@ def test_model_dict_key_check_edge_cases():
         p: Parent
         opt: Parent | None = None
         items: list[Parent] = []
+        pair: tuple[Child, Parent] | None = None
 
     assert decode_json(
-        encode_json(Holder(p=Child(), opt=Child(), items=[Child()]))
-    ) == {"p": {"x": 1}, "opt": {"x": 1}, "items": [{"x": 1}]}
+        encode_json(
+            Holder(
+                p=Child(),
+                opt=Child(),
+                items=[Child()],
+                pair=(Child(bad={}), Child()),
+            )
+        )
+    ) == {
+        "p": {"x": 1},
+        "opt": {"x": 1},
+        "items": [{"x": 1}],
+        "pair": [{"x": 1, "bad": {}}, {"x": 1}],
+    }
+
+    class AnyHolder(BaseModel):
+        p: SerializeAsAny[Parent]
+
+    with pytest.raises(JsonSerializationError, match="would be lost"):
+        encode_json(AnyHolder(p=Child()))
 
     class WithExtra(BaseModel):
         model_config = ConfigDict(extra="allow")
@@ -299,21 +329,31 @@ def test_model_dict_key_check_edge_cases():
     with pytest.raises(JsonSerializationError, match="would be lost"):
         encode_json(WithExtra(d={1: "a", "1": "b"}))
 
+    class WithJsonFilter(BaseModel):
+        value: dict
+
+        @field_serializer("value", when_used="json")
+        def drop_none(self, v):
+            return {k: val for k, val in v.items() if val is not None}
+
+    assert decode_json(encode_json(WithJsonFilter(value={"a": 1, "b": None}))) == {
+        "value": {"a": 1}
+    }
+
     ch_json_array = value_codec(Array(JSON()), [], json_array_text=True)
     assert ch_json_array.encode([{b"a": "bytes", (1, "x"): "tuple"}]) == [
         '{"a":"bytes","(1, \'x\')":"tuple"}'
     ]
-
-    class CustomStr(SQLType):
-        _python = str
-
-        def on_read_convert(self, value):
-            return f"custom:{value}"
-
-    assert value_codec(CustomStr(), None).decode("v") == "custom:v"
 
     with SQLiteWarehouse(in_memory=True) as wh:
         rc = wh.row_codec([SQLType.as_nullable(DateTime())])
         early = datetime(1, 1, 1, 0, 0, tzinfo=timezone(timedelta(hours=1)))
         batch = pa.record_batch({"dt": [early, None]})
         assert rc.encode_arrow(batch) == [rc.encode((early,)), (None,)]
+
+
+def test_read_records_rejects_unknown_keys(test_session):
+    from datachain.lib.utils import DataChainParamsError
+
+    with pytest.raises(DataChainParamsError, match="Unexpected keys in record: typo"):
+        dc.read_records([{"x": 1, "typo": 2}], schema={"x": int}, session=test_session)

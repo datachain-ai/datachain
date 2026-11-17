@@ -12,18 +12,13 @@ from datetime import UTC, datetime, timedelta
 from hashlib import blake2b
 from typing import TYPE_CHECKING, TypeVar, cast
 
-import sqlalchemy as sa
 from fsspec.asyn import get_loop, sync
 from sqlalchemy import or_, true
 
 import datachain.fs.utils as fsutils
 from datachain.asyn import iter_over_async
 from datachain.client import Client
-from datachain.error import (
-    ClientError,
-    ConcurrentDatasetModificationError,
-    DatasetNotFoundError,
-)
+from datachain.error import ClientError, DatasetNotFoundError
 from datachain.lib.convert.flatten import flatten
 from datachain.lib.file import File, FileRow
 from datachain.query.schema import Column
@@ -530,8 +525,8 @@ class StoredPage:
     """A page of listing rows in the warehouse's stored form, and their
     ``rows_digest``: made where the page was parsed, inserted as it is."""
 
-    def __init__(self, rows: list[tuple] | bytes, digest: int) -> None:
-        self._rows = rows
+    def __init__(self, rows: list[tuple], digest: int) -> None:
+        self._rows: list[tuple] | bytes = rows
         self.digest = digest
         self.size = len(rows)
 
@@ -560,11 +555,8 @@ class PageEncoder:
 def write_listing(
     uri: str, ds_name: str, session: "Session", client_config: dict
 ) -> "DatasetRecord | None":
-    """Store a listing snapshot under a reservation made before enumeration.
-
-    Only a newer reservation may supersede it. An unchanged snapshot reuses
-    the latest COMPLETE version unless an older reservation needs fencing.
-    """
+    """Store the listing of the prefix ``uri`` as the next version of ``ds_name``.
+    An unchanged listing drops that version and restarts the latest one's TTL."""
     from datachain.dataset import DEFAULT_DATASET_VERSION, DatasetStatus
     from datachain.lib.signal_schema import SignalSchema
 
@@ -573,127 +565,80 @@ def write_listing(
     project = metastore.get_project(
         metastore.listing_project_name, metastore.system_namespace_name, create=True
     )
-    schema = SignalSchema({"file": File})
-    columns = [
-        sa.Column(c.name, c.type)  # type: ignore[union-attr]
-        for c in schema.db_signals(as_columns=True)
-    ]
-    names = [c.name for c in columns]
+    columns = warehouse.dataset_row_cls.listing_columns()
     with_etag = not Client.get_implementation(uri).PINNED_VERSION_IS_IMMUTABLE
     encode = PageEncoder(warehouse.row_codec(columns), with_etag)
     job = session.get_job()
     job_id = job.id if job else None
-    pages: Iterator = iter(())
-    dataset = version = None
+    dataset = catalog.create_dataset(
+        ds_name,
+        project,
+        columns=columns,
+        feature_schema=SignalSchema({"file": File}).serialize(),
+        listing=True,
+        update_version="major",
+        job_id=job_id,
+        query_script=job.query if job else "",
+    )
+    version = dataset.versions[0].version
+    count = total = 0
+
+    def rows(pages: Iterator[StoredPage]) -> Iterator[tuple]:
+        nonlocal count, total
+        touched = time.monotonic()
+        for page in pages:
+            count += len(page)
+            total += page.digest
+            yield from page.rows
+            if time.monotonic() - touched > RESERVATION_TOUCH_INTERVAL:
+                metastore.update_dataset_version(
+                    dataset,
+                    version,
+                    expected_status=DatasetStatus.CREATED,
+                    created_at=datetime.now(UTC),
+                )
+                touched = time.monotonic()
+
     try:
-        dataset = catalog.create_dataset(
-            ds_name,
-            project,
-            columns=columns,
-            feature_schema=schema.serialize(),
-            listing=True,
-            update_version="major",
-            job_id=job_id,
-            query_script=job.query if job else "",
-        )
-        reservation = dataset.versions[0]
-        version = reservation.version
         if job:
             metastore.link_dataset_version_to_job(
-                reservation.id, job.id, is_creator=True
+                dataset.versions[0].id, job.id, is_creator=True
             )
         table = warehouse.create_dataset_rows_table(
             warehouse.dataset_table_name(dataset, version), columns=columns
         )
-        pages = iter(list_pages(uri, catalog.cache, client_config, encode))
-        count = total = 0
-
-        def rows() -> Iterator[tuple]:
-            nonlocal count, total
-            touched = time.monotonic()
-            for page in pages:
-                start = count + 1
-                count += len(page)
-                total += page.digest
-                yield from map(
-                    tuple.__add__,
-                    page.rows,
-                    zip(range(start, count + 1), strict=False),
-                )
-                if time.monotonic() - touched > RESERVATION_TOUCH_INTERVAL:
-                    metastore.update_dataset_version(
-                        dataset,
-                        version,
-                        expected_status=DatasetStatus.CREATED,
-                        created_at=datetime.now(UTC),
-                    )
-                    touched = time.monotonic()
-
-        warehouse.insert_stored_rows(
-            table, [*names, "sys__id"], rows(), LISTING_BATCH_SIZE
-        )
+        with safe_closing(
+            list_pages(uri, catalog.cache, client_config, encode)
+        ) as pages:
+            warehouse.insert_stored_rows(
+                table, [c.name for c in columns], rows(pages), LISTING_BATCH_SIZE
+            )
         content_hash = f"{LISTING_DIGEST}:{count}:{total % (1 << 128):032x}"
         latest = (
             _latest_version(catalog, ds_name, project)
             if version != DEFAULT_DATASET_VERSION
             else None
         )
-        if latest:
-            previous, previous_version = latest
-            own_active = any(
-                v.id == reservation.id and v.status == DatasetStatus.CREATED
-                for v in previous.all_versions
+        if (
+            latest
+            and latest[1].content_hash == content_hash
+            and catalog.release_reservation(dataset, version, job_id)
+        ):
+            metastore.update_dataset_version(
+                latest[0],
+                latest[1].version,
+                expected_status=DatasetStatus.COMPLETE,
+                finished_at=datetime.now(UTC),
             )
-            older_pending = any(
-                previous_version.id < v.id < reservation.id
-                and v.status == DatasetStatus.CREATED
-                for v in previous.all_versions
-            )
-            if (
-                own_active
-                and previous_version.id < reservation.id
-                and previous_version.content_hash == content_hash
-                and not older_pending
-                and warehouse.db.has_table(
-                    warehouse.dataset_table_name(previous, previous_version.version)
-                )
-                and catalog.release_reservation(dataset, version, job_id)
-            ):
-                metastore.update_dataset_version(
-                    previous,
-                    previous_version.version,
-                    expected_status=DatasetStatus.COMPLETE,
-                    expected_latest_complete=previous_version.id,
-                    finished_at=datetime.now(UTC),
-                )
-                return None
+            return None
         completed = catalog.complete_dataset_version(
-            dataset,
-            version,
-            content_hash=content_hash,
-            expected_job_id=job_id,
-            expected_latest_complete=reservation.id,
+            dataset, version, content_hash=content_hash, expected_job_id=job_id
         )
         return completed if version == DEFAULT_DATASET_VERSION else None
-    except BaseException as exc:
-        if dataset is not None and version is not None:
-            with suppress(Exception):
-                catalog.release_reservation(dataset, version, job_id)
-        if isinstance(exc, ConcurrentDatasetModificationError) and dataset is not None:
-            latest = _latest_version(catalog, ds_name, project)
-            if (
-                latest is not None
-                and latest[1].id > reservation.id
-                and warehouse.db.has_table(
-                    warehouse.dataset_table_name(latest[0], latest[1].version)
-                )
-            ):
-                return None
-        raise
-    finally:
+    except BaseException:
         with suppress(Exception):
-            if close := getattr(pages, "close", None):
-                close()
+            catalog.release_reservation(dataset, version, job_id)
+        raise
 
 
 def _latest_version(

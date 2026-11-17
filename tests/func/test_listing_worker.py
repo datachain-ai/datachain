@@ -16,7 +16,6 @@ from datachain.client import Client, listing_worker
 from datachain.client.listing_worker import Pool
 from datachain.lib.convert.flatten import flatten
 from datachain.lib.file import File, FileRow
-from datachain.lib.listing import list_pages
 
 TREE = {
     "a": "1",
@@ -24,16 +23,6 @@ TREE = {
     "flat": {f"{i * 7919 % 4096:03x}": "x" for i in range(30)},
     "z": "1",
 }
-
-
-def list_bucket(uri, cache, client_config=None):
-    """A gen function of the rows of ``list_pages``."""
-
-    def list_func():
-        for page in list_pages(uri, cache, client_config):
-            yield from page
-
-    return list_func
 
 
 @pytest.fixture(autouse=True)
@@ -81,7 +70,8 @@ def remote_rows(mocker):
 
     async def recorded(self, *args):
         page = await list_page(self, *args)
-        got.extend(page.rows if page else [])
+        if page and len(page.rows):
+            got.append(page.rows)
         return page
 
     mocker.patch.object(Pool, "list_page", recorded)
@@ -253,13 +243,30 @@ def test_config_that_does_not_pickle_lists_in_process(client, tree, remote_rows)
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 @pytest.mark.parametrize("tree", [TREE], indirect=True)
-def test_read_storage_rows_from_children(client, tree, children, test_session):
-    uri = f"{client.uri}/"
-    chain = dc.read_storage(uri, client_config=client.fs_kwargs, session=test_session)
+@pytest.mark.parametrize(
+    "file_type, file_cls",
+    [
+        ("binary", File),
+        ("image", dc.ImageFile),
+        ("text", dc.TextFile),
+        ("video", dc.VideoFile),
+        ("audio", dc.AudioFile),
+    ],
+)
+def test_read_storage_rows_from_children(
+    client, tree, children, remote_rows, test_session, file_type, file_cls
+):
+    chain = dc.read_storage(
+        f"{client.uri}/",
+        type=file_type,
+        client_config=client.fs_kwargs,
+        session=test_session,
+    )
 
-    files = chain.order_by("file.path", "file.version").to_values("file")
+    files = chain.to_values("file")
 
-    assert children
+    assert remote_rows
+    assert {type(f) for f in files} == {file_cls}
     assert sorted(flatten(f) for f in files) == listing(client, processes=False)
 
 
@@ -271,28 +278,6 @@ def test_listing_rows_are_normalized_files(client, tree):
     assert rows
     assert all(type(r) is FileRow for r in rows)
     assert [flatten(File(**r._asdict())) for r in rows] == [tuple(r) for r in rows]
-
-
-@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
-@pytest.mark.parametrize("tree", [TREE], indirect=True)
-@pytest.mark.parametrize(
-    "file_type", [dc.ImageFile, dc.TextFile, dc.VideoFile, dc.AudioFile]
-)
-def test_file_types_from_children(
-    client, tree, children, remote_rows, test_session, file_type
-):
-    files = (
-        dc.read_values(seed=[0], session=test_session)
-        .gen(
-            file=list_bucket(f"{client.uri}/", None, client_config=client.fs_kwargs),
-            output={"file": file_type},
-        )
-        .to_values("file")
-    )
-
-    assert remote_rows
-    assert {type(f) for f in files} == {file_type}
-    assert sorted(flatten(f) for f in files) == listing(client, processes=False)
 
 
 @pytest.fixture

@@ -7,8 +7,6 @@ from datachain.data_storage.writer import (
     ID_BITS,
     MAX_WRITER_NO,
     committed_part_keys,
-    parts_columns,
-    trim_to_ledger,
 )
 from datachain.sql.types import Int
 from tests.utils import skip_if_not_sqlite
@@ -19,7 +17,7 @@ def tables(warehouse):
     table = warehouse.create_dataset_rows_table(
         "out", columns=[sa.Column("x", Int)], if_not_exists=False
     )
-    parts = warehouse.create_udf_table(parts_columns(), name="out_parts")
+    parts = warehouse.create_parts_table("out_parts")
     yield table, parts
     warehouse.db.drop_table(table, if_exists=True)
     warehouse.db.drop_table(parts, if_exists=True)
@@ -64,20 +62,6 @@ def test_rows_with_ids_are_their_own_record(warehouse, tables):
     assert rows(warehouse, table) == [(5, 50), (9, 90)]
 
 
-def test_abort_drops_the_unfinished_part(warehouse, tables):
-    table, parts = tables
-    with (
-        pytest.raises(RuntimeError),
-        warehouse.writer(table, ["x"], parts=parts, batch_size=100) as w,
-    ):
-        w.extend([(1,), (2,)])
-        w.commit(1)
-        w.extend([(3,)])
-        raise RuntimeError
-    assert rows(warehouse, table) == [(1, 1), (2, 2)]
-    assert ledger(warehouse, parts) == [(1, 0, 1, 2)]
-
-
 def test_claims_are_unique_and_durable(warehouse, tables):
     _, parts = tables
     assert [warehouse.claim_writer_no(parts) for _ in range(3)] == [0, 1, 2]
@@ -113,7 +97,7 @@ def test_trim_after_a_crash(warehouse, tables):
         w2.extend([(200,)])
         w2.commit(5)
 
-    trim_to_ledger(warehouse, table, parts)
+    warehouse.trim_to_ledger(table, parts)
     assert rows(warehouse, table) == [
         (1, 1),
         (2, 2),
@@ -177,6 +161,6 @@ def test_trim_after_many_claims(warehouse, tables):
         w.extend([(1,), (2,)])
         w.commit(7)
         w.extend([(3,)])  # unfinished part
-    trim_to_ledger(warehouse, table, parts)
+    warehouse.trim_to_ledger(table, parts)
     base = last << ID_BITS
     assert rows(warehouse, table) == [(base + 1, 1), (base + 2, 2)]

@@ -10,6 +10,7 @@ from contextlib import contextmanager, suppress
 from copy import copy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from fnmatch import fnmatchcase
 from functools import reduce
 from typing import TYPE_CHECKING, Any, Self
 
@@ -51,7 +52,12 @@ from datachain.nodes_thread_pool import NodesThreadPool
 from datachain.progress import tqdm
 from datachain.project import Project
 from datachain.sql.types import DateTime, SQLType
-from datachain.utils import DataChainDir, DatasetIdentifier, interprocess_file_lock
+from datachain.utils import (
+    DataChainDir,
+    DatasetIdentifier,
+    interprocess_file_lock,
+    suffix_to_number,
+)
 
 from .datasource import DataSource
 from .dependency import build_dependency_hierarchy
@@ -462,10 +468,27 @@ def instantiate_node_groups(
         instantiate_progress_bar.close()
 
 
+def matches_find_filters(node: Node, names, inames, paths, ipaths, size, typ) -> bool:
+    """True if a file without a listing passes the same filters as Listing.find."""
+    if size is not None:
+        limit = suffix_to_number(size)
+        if (limit >= 0 and node.size < limit) or (limit < 0 and node.size > -limit):
+            return False
+    return (
+        (typ is None or typ in {"f", "file", "files"})
+        and all(fnmatchcase(node.name, p) for p in names or ())
+        and all(fnmatchcase(node.name.lower(), p.lower()) for p in inames or ())
+        and all(fnmatchcase(node.path, p) for p in paths or ())
+        and all(fnmatchcase(node.path.lower(), p.lower()) for p in ipaths or ())
+    )
+
+
 def find_column_to_str(  # noqa: PLR0911
     row: tuple[Any, ...], field_lookup: dict[str, int], src: DataSource, column: str
 ) -> str:
     if column == "du":
+        if src.listing is None:
+            return str(row[field_lookup["size"]])
         return str(
             src.listing.du(
                 {f: row[field_lookup[f]] for f in ["dir_type", "size", "path"]}
@@ -1127,14 +1150,12 @@ class Catalog:
         error_stack: str = "",
         script_output: str = "",
         expected_job_id: str | None = None,
-        expected_latest_complete: int | None = None,
         **kwargs,
     ) -> DatasetRecord:
         """Finalize a dataset version after its rows table has been populated.
 
         This refreshes warehouse-derived metadata first, then marks the version
-        as COMPLETE; with ``expected_latest_complete``, only while no COMPLETE
-        version newer than that one exists (the metastore's guard).
+        as COMPLETE.
         """
         # Guard against a concurrent remove_dataset_version (usually GC, but
         # also explicit `dataset rm` or session cleanup). Two narrow signals
@@ -1157,7 +1178,6 @@ class Catalog:
                 script_output=script_output,
                 expected_status=DatasetStatus.CREATED,
                 expected_job_id=expected_job_id,
-                expected_latest_complete=expected_latest_complete,
             )
         except (TableMissingError, ConcurrentDatasetModificationError) as e:
             raise ConcurrentDatasetModificationError(
@@ -2407,7 +2427,10 @@ class Catalog:
                 )
 
             for src in matched_sources:
-                yield from du_dirs(src, src.node, depth)
+                if src.listing is None:
+                    yield src.get_node_uri(src.node), src.node.size
+                else:
+                    yield from du_dirs(src, src.node, depth)
 
     def find(
         self,
@@ -2451,9 +2474,16 @@ class Catalog:
             fields = list(field_set)
             field_lookup = {f: i for i, f in enumerate(fields)}
             for src in matched_sources:
-                results = src.listing.find(
-                    src.node, fields, names, inames, paths, ipaths, size, typ
-                )
+                if src.listing is not None:
+                    results = src.listing.find(
+                        src.node, fields, names, inames, paths, ipaths, size, typ
+                    )
+                elif matches_find_filters(
+                    src.node, names, inames, paths, ipaths, size, typ
+                ):
+                    results = [tuple(getattr(src.node, f) for f in fields)]
+                else:
+                    results = []
                 for row in results:
                     yield "\t".join(
                         find_column_to_str(row, field_lookup, src, column)

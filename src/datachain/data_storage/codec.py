@@ -12,12 +12,15 @@ from functools import partial
 from itertools import islice
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from pydantic import BaseModel, RootModel
+
 from datachain import json
+from datachain.lib.model_store import ModelStore
 
 if TYPE_CHECKING:
     import pyarrow as pa
 
-DECODE_BATCH_SIZE = 1_000
+DECODE_BATCH_SIZE = 16
 _IMMUTABLE_DEFAULT_TYPES = frozenset(
     {type(None), str, bytes, bool, int, float, datetime}
 )
@@ -101,12 +104,6 @@ class RowCodec:
             return codec.encode(value)
         except Exception as e:
             raise RowEncodeError(i, value) from e
-
-    def stores_as_is(self, row: tuple) -> bool:
-        """True if ``row`` holds one value per column, each stored as it is."""
-        return len(row) == len(self.codecs) and all(
-            type(row[i]) in kept for i, _, kept in self._encoded
-        )
 
     def encode(self, row: Sequence[Any]) -> tuple:
         """One row of leaf values, one per column, as stored values."""
@@ -251,118 +248,56 @@ def array_json_key(key: Any) -> str:
     return str(key)
 
 
-def _serialized_fields(decorators: Any) -> set[str]:
-    if decorators is None:
-        return set()
-    return {
-        f
-        for fs in decorators.field_serializers.values()
-        for f in getattr(getattr(fs, "info", None), "fields", ())
-    }
+def _python_dump(obj: BaseModel) -> Any:
+    try:
+        return obj.model_dump()
+    except TypeError:
+        if isinstance(obj, RootModel):
+            return obj.root
+        return {
+            **(obj.__pydantic_extra__ or {}),
+            **{k: getattr(obj, k) for k in type(obj).model_fields},
+        }
 
 
-def _unwrap_annotation(annotation: Any) -> Any:
-    import types
-    from typing import Union, get_args, get_origin
-
-    if get_origin(annotation) in (Union, types.UnionType):
-        non_none = [a for a in get_args(annotation) if a is not type(None)]
-        if len(non_none) == 1:
-            return non_none[0]
-    return annotation
-
-
-def _declared_model_cls(obj: Any, annotation: Any, base_model: type) -> Any:
-    from typing import get_args
-
-    annotation = _unwrap_annotation(annotation)
-    if isinstance(annotation, type) and issubclass(annotation, base_model):
-        return annotation if isinstance(obj, annotation) else type(obj)
-    for arg in get_args(annotation):
-        if (
-            isinstance(arg, type)
-            and issubclass(arg, base_model)
-            and isinstance(obj, arg)
-        ):
-            return arg
-    return type(obj)
-
-
-def _check_model_dict_keys(obj: Any, annotation: Any = None) -> None:
-    from typing import get_args
-
-    from pydantic import BaseModel
-    from pydantic_core import to_jsonable_python
-
+def _check_merged_keys(obj: Any, dumped: Any) -> None:
+    """Raises when the JSON dump of a model merged two keys of one of its dicts."""
     obj = _numpy_to_python(obj)
-    annotation = _unwrap_annotation(annotation)
     if isinstance(obj, BaseModel):
-        cls = _declared_model_cls(obj, annotation, BaseModel)
-        decorators = getattr(cls, "__pydantic_decorators__", None)
-        if decorators is not None and decorators.model_serializers:
-            return
-        serialized_fields = _serialized_fields(decorators)
-        if "*" in serialized_fields:
-            return
-        for name, field_info in cls.model_fields.items():
-            if (
-                not getattr(field_info, "exclude", False)
-                and name not in serialized_fields
-            ):
-                declared = (
-                    None
-                    if getattr(field_info, "serialize_as_any", False)
-                    else field_info.annotation
-                )
-                _check_model_dict_keys(getattr(obj, name), declared)
-        if cls is type(obj) and (extra := getattr(obj, "__pydantic_extra__", None)):
-            _check_model_dict_keys(extra)
-        for name, comp_dec in decorators.computed_fields.items() if decorators else ():
-            if (
-                not getattr(getattr(comp_dec, "info", None), "exclude", False)
-                and name not in serialized_fields
-            ):
-                _check_model_dict_keys(getattr(obj, name))
-    elif isinstance(obj, dict):
-        val_anno = args[1] if len(args := get_args(annotation)) == 2 else None
-        keys: set[str] = set()
-        for k, v in obj.items():
-            key = (
-                str.__str__(k)
-                if isinstance(k, str)
-                else next(
-                    iter(to_jsonable_python({k: None}, fallback=json.numpy_to_python))
-                )
-            )
-            if key in keys:
-                from datachain.lib.udf import JsonSerializationError
+        obj = _python_dump(obj)
+    if isinstance(obj, dict) and isinstance(dumped, dict):
+        if len(dumped) < len(obj) and any(type(k) is not str for k in obj):
+            from datachain.lib.udf import JsonSerializationError
 
-                raise JsonSerializationError(
-                    f"Two keys serialize to the JSON key {key!r}, so one of "
-                    "their values would be lost.",
-                    column_name="",
-                    value_repr=repr(obj),
-                )
-            keys.add(key)
-            _check_model_dict_keys(v, val_anno)
-    elif isinstance(obj, (list, tuple, set)):
-        item_anno = args[0] if (args := get_args(annotation)) else None
-        for item in obj:
-            _check_model_dict_keys(item, item_anno)
+            raise JsonSerializationError(
+                "Two keys serialize to the same JSON key, so one of their values "
+                "would be lost.",
+                column_name="",
+                value_repr=repr(obj),
+            )
+        if len(obj) == len(dumped):
+            for value, dumped_value in zip(obj.values(), dumped.values(), strict=True):
+                _check_merged_keys(value, dumped_value)
+    elif (
+        isinstance(obj, (list, tuple, set))
+        and isinstance(dumped, list)
+        and len(obj) == len(dumped)
+    ):
+        for value, dumped_value in zip(obj, dumped, strict=True):
+            _check_merged_keys(value, dumped_value)
 
 
 def to_jsonable(obj: Any, key_converter: Callable[[Any], str] | None = None) -> Any:
     """Python and pydantic structures as JSON-serializable objects. Raises
     JsonSerializationError when two keys of a dict become one JSON key."""
-    from datachain.lib.model_store import ModelStore
-
     obj = _numpy_to_python(obj)  # an object array can hold dicts
     if ModelStore.is_pydantic(type(obj)):
-        _check_model_dict_keys(obj)
         # Use Pydantic's JSON mode to ensure datetime and other non-JSON
         # native types are serialized in a compatible way. Numpy is the one
         # thing it refuses and this project's encoder handles.
-        return obj.model_dump(mode="json", fallback=json.numpy_to_python)
+        dumped = obj.model_dump(mode="json", fallback=json.numpy_to_python)
+        _check_merged_keys(_python_dump(obj), dumped)
+        return dumped
 
     if isinstance(obj, dict):
         out: dict[str, Any] = {}
@@ -402,6 +337,7 @@ def to_json_text(value: Any) -> str:
 def encode_json(value: Any, key_converter: Callable[[Any], str] | None = None) -> str:
     from datachain.lib.udf import JsonSerializationError
 
+    value = _numpy_to_python(value)
     if type(value) is str:
         return value
     json_ready = to_jsonable(value, key_converter)
@@ -486,21 +422,7 @@ def base_decode(
     ):
         if isinstance(sql_type, type_):
             return decode
-    kind = getattr(sql_type, "_kind", None)
-    if kind == "array":
-        return partial(decode_list, decode_of(sql_type.item_type))
-    decoders: dict[str | None, Callable[[Any], Any]] = {
-        "json": decode_json,
-        "boolean": decode_bool,
-        "float": decode_float,
-        "float32": decode_float,
-        "float64": decode_float,
-        "datetime": decode_datetime,
-        "binary": decode_binary,
-    }
-    if kind in decoders:
-        return decoders[kind]
-    return getattr(sql_type, "on_read_convert", None)
+    return None
 
 
 def default_decode(sql_type: Any) -> Callable[[Any], Any] | None:
@@ -518,7 +440,7 @@ def check_value(sql_type: Any, *, json_array_text: bool = False) -> Callable:
             check_value(item_type, json_array_text=json_array_text),
             json_array_text=json_array_text,
         )
-    if py_type is dict or type(sql_type).__name__ == "JSON":
+    if py_type is dict:
         return encode_json
     return partial(check_scalar, py_type, type(sql_type).__name__)
 
