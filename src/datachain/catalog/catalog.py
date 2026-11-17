@@ -1387,7 +1387,10 @@ class Catalog:
             )
             return False
 
-        claim = f"removing:{socket.gethostname()}:{os.getpid()}:{int(time.time())}:{uuid4().hex[:8]}"
+        claim = (
+            f"removing:{socket.gethostname()}:{os.getpid()}"
+            f":{int(time.time())}:{uuid4().hex[:8]}"
+        )
         _ACTIVE_REMOVALS.add(v.uuid)
         try:
             claimed = self.metastore.update_dataset_version(

@@ -1371,7 +1371,6 @@ def test_cross_job_resume_while_the_source_still_commits(
         w1 = warehouse.claim_writer_no(source_parts)
         with warehouse.writer(source, ["val"], w0, source_parts) as writer0:
             writer0.extend([(400,), (401,), (402,)])
-            w0_lo, w0_hi = writer0.part_lo, writer0.next_id - 1
         with warehouse.writer(source, ["val"], w1, source_parts) as writer1:
             w1_lo = writer1.part_lo
             writer1.extend([(400,), (401,), (402,)])
@@ -1396,7 +1395,7 @@ def test_cross_job_resume_while_the_source_still_commits(
                 run()
                 Session._CURRENT_JOB = resuming_job
             elif mode == "arbitrate":
-                # Source arbitrates duplicate: deletes w1's rows/commit, leaving w0 uncommitted
+                # Source arbitrates duplicate: deletes w1's rows/commit
                 warehouse.delete_id_ranges(source, [(w1_lo, w1_hi)])
                 warehouse.db.execute(
                     source_parts.delete().where(
