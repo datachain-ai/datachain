@@ -239,12 +239,21 @@ def test_open_reads_listed_commit_with_revision_in_uri(
 ):
     client = HfClient(repo_type, {"token": False}, catalog.cache)
     _, raw = small_tar_member_data
+    commit = "a" * 40
     monkeypatch.setattr(client.fs, "_info", AsyncMock(return_value={"size": len(raw)}))
-    monkeypatch.setattr(client.fs.sync_fs, "info", lambda *a, **kw: {"size": len(raw)})
+    monkeypatch.setattr(
+        client.fs.sync_fs,
+        "info",
+        Mock(
+            side_effect=AssertionError(
+                "open_object must not call fs.info when size is known"
+            )
+        ),
+    )
     tar_member_range_requests(HfFileSystemFile)
-    file = File(source=client.uri, path=path, size=len(raw), version="commit123")
+    file = File(source=client.uri, path=path, size=len(raw), version=commit)
     with client.open_object(file, use_cache=False, block_size=block_size) as stream:
-        assert stream.fileobj.resolved_path.revision == "commit123"
+        assert stream.fileobj.resolved_path.revision == commit
         assert stream.read(5) == raw[:5]
     assert file.path == path
 
@@ -396,24 +405,26 @@ def test_pinned_commit_does_not_require_uri_branch(catalog, monkeypatch):
 
 
 def test_pinned_unchanged_check_uses_size_without_expanded_metadata():
+    commit = "a" * 40
     client = HfClient("datasets", {}, Mock(spec=Cache))
     client._fs = Mock()
     client._fs._info = AsyncMock(return_value={"size": 4})
     file = File(
-        source=client.uri, path="org/repo/a.txt", version="c1", etag="blob", size=4
+        source=client.uri, path="org/repo/a.txt", version=commit, etag="blob", size=4
     )
     client.check_unchanged(file)
-    client._fs._info.assert_awaited_once_with(file.get_fs_path(), revision="c1")
+    client._fs._info.assert_awaited_once_with(file.get_fs_path(), revision=commit)
 
 
 def test_pinned_unchanged_check_reuses_sdk_directory_cache(
     catalog, monkeypatch, hf_repositories
 ):
+    commit = "a" * 40
     client = HfClient("datasets", {"token": False}, catalog.cache)
     fs = client.fs.sync_fs
-    fs.dircache["datasets/org/repo@c1"] = [
+    fs.dircache[f"datasets/org/repo@{commit}"] = [
         {
-            "name": "datasets/org/repo@c1/a.txt",
+            "name": f"datasets/org/repo@{commit}/a.txt",
             "size": 4,
             "type": "file",
             "last_commit": None,
@@ -424,10 +435,88 @@ def test_pinned_unchanged_check_reuses_sdk_directory_cache(
     )
     monkeypatch.setattr(fs._api, "get_paths_info", fetch)
     file = File(
-        source=client.uri, path="org/repo@main/a.txt", version="c1", etag="blob", size=4
+        source=client.uri,
+        path="org/repo@main/a.txt",
+        version=commit,
+        etag="blob",
+        size=4,
     )
     client.check_unchanged(file)
     fetch.assert_not_called()
+
+
+def test_mutable_branch_version_checks_etag_on_unchanged():
+    client = HfClient("datasets", {}, Mock(spec=Cache))
+    client._fs = Mock()
+    client._fs._info = AsyncMock(return_value={"size": 4, "blob_id": "new-blob"})
+    file = File(
+        source=client.uri,
+        path="org/repo/a.txt",
+        version="main",
+        etag="old-blob",
+        size=4,
+    )
+    with pytest.raises(FileNotFoundError, match="etag was old-blob, now new-blob"):
+        client.check_unchanged(file)
+
+
+def test_bucket_metadata_and_resolve_path_with_revision(catalog, monkeypatch):
+    cache = Mock(spec=Cache)
+    client = HfClient("buckets", {}, cache)
+    date = datetime(2025, 1, 2, tzinfo=UTC)
+    file = client.info_to_file(
+        {"size": 12, "xet_hash": "xet-123", "uploaded_at": date},
+        "org/bucket/file.bin",
+    )
+    assert (file.path, file.size, file.etag, file.version, file.last_modified) == (
+        "org/bucket/file.bin",
+        12,
+        "xet-123",
+        "",
+        date,
+    )
+
+    fs = HfClient("buckets", {"token": False}, catalog.cache).fs.sync_fs
+    monkeypatch.setattr(
+        hf_file_system.HfFileSystem, "_bucket_exists", lambda self, bid: (True, None)
+    )
+    resolved = fs.resolve_path("buckets/org/bucket/file.bin", revision="main")
+    assert getattr(resolved, "bucket_id", None) == "org/bucket"
+
+
+def test_anon_translates_to_token_false_and_credentials_detected():
+    assert HfClient.has_explicit_credentials({"token": "hf_secret"})
+    assert not HfClient.has_explicit_credentials({"anon": True})
+    fs = HfClient.create_fs(anon=True)
+    assert fs.sync_fs.token is False
+
+
+def test_stream_file_close_releases_exit_stack(catalog, monkeypatch, hf_repositories):
+    fs = HfClient("datasets", {"token": False}, catalog.cache).fs.sync_fs
+    stream = fs.open("datasets/org/repo@main/a.txt", "rb", block_size=0)
+    closed = Mock()
+    stream._exit_stack.callback(closed)
+    stream.close()
+    closed.assert_called_once()
+
+
+def test_auth_http_error_is_also_permission_error(catalog, monkeypatch):
+    import httpx
+    from huggingface_hub.errors import HfHubHTTPError
+
+    fs = HfClient("datasets", {"token": False}, catalog.cache).fs.sync_fs
+    resp = httpx.Response(
+        401,
+        request=httpx.Request("GET", "https://huggingface.co/api/datasets/org/repo"),
+    )
+
+    def fail(*args, **kwargs):
+        raise HfHubHTTPError("401 Unauthorized", response=resp)
+
+    monkeypatch.setattr(hf_file_system.HfFileSystem, "resolve_path", fail)
+    with pytest.raises(PermissionError) as exc_info:
+        fs.resolve_path("datasets/org/repo/a.txt")
+    assert isinstance(exc_info.value, HfHubHTTPError)
 
 
 def test_hf_filesystem_is_pickleable(catalog):
