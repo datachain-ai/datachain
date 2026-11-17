@@ -508,35 +508,13 @@ def noop(*args, **kwargs):
     pass
 
 
-def _iter_files(obj: Any) -> Iterator[File]:
-    if isinstance(obj, File):
-        yield obj
-    if isinstance(obj, BaseModel):
-        for field in SignalSchema._file_bearing_fields(type(obj)):
-            yield from _iter_files(getattr(obj, field))
-    elif isinstance(obj, (list, tuple, set)):
-        for item in obj:
-            yield from _iter_files(item)
-    elif isinstance(obj, Mapping):
-        for key, value in obj.items():
-            yield from _iter_files(key)
-            yield from _iter_files(value)
-
-
 def _row_files(row: Iterable, batch_columns: set[int] | None) -> Iterator[File]:
     """Files in scalar arguments and batched data columns."""
     for i, obj in enumerate(row):
-        if isinstance(obj, BaseModel):
-            yield from _iter_files(obj)
-        elif batch_columns is None and isinstance(obj, (list, tuple)):
-            yield from (
-                item
-                for item in obj
-                if isinstance(item, File) and item._catalog is not None
-            )
+        if isinstance(obj, File):
+            yield obj
         elif batch_columns is not None and i in batch_columns and isinstance(obj, list):
-            for item in obj:
-                yield from _iter_files(item)
+            yield from (item for item in obj if isinstance(item, File))
 
 
 def _prefetch_targets(
@@ -629,17 +607,7 @@ class _PrefetchedRow:
     leases: list[tuple["Cache", str]]
     pairs: list[tuple[File, File]] | None = None
 
-    def retain(
-        self,
-        batch_columns: set[int] | None = None,
-        max_size: int | None = None,
-        targets: Iterable[File] | None = None,
-    ) -> None:
-        if targets is None:
-            targets = (
-                target
-                for _, target in _prefetch_targets(self.value, batch_columns, max_size)
-            )
+    def retain(self, targets: Iterable[File]) -> None:
         for target in targets:
             if target._catalog is not None:
                 cache = target._catalog.cache
