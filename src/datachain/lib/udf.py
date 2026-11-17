@@ -506,36 +506,13 @@ def noop(*args, **kwargs):
     pass
 
 
-def _iter_files(obj: Any) -> Iterator[File]:
-    if isinstance(obj, File):
-        yield obj
-    if isinstance(obj, BaseModel):
-        for field in SignalSchema._file_bearing_fields(type(obj)):
-            yield from _iter_files(getattr(obj, field))
-    elif isinstance(obj, (list, tuple, set)):
-        for item in obj:
-            yield from _iter_files(item)
-    elif isinstance(obj, Mapping):
-        for key, value in obj.items():
-            yield from _iter_files(key)
-            yield from _iter_files(value)
-
-
 def _row_files(row: Iterable, batch_columns: set[int] | None) -> Iterator[File]:
     """Files in scalar arguments and batched data columns."""
     for i, obj in enumerate(row):
-        if batch_columns is None:
-            if isinstance(obj, BaseModel):
-                yield from _iter_files(obj)
-            elif isinstance(obj, (list, tuple)):
-                yield from (
-                    item
-                    for item in obj
-                    if isinstance(item, File) and item._catalog is not None
-                )
-        elif i in batch_columns and isinstance(obj, list):
-            for item in obj:
-                yield from _iter_files(item)
+        if isinstance(obj, File):
+            yield obj
+        elif batch_columns is not None and i in batch_columns and isinstance(obj, list):
+            yield from (item for item in obj if isinstance(item, File))
 
 
 def _files_to_prefetch(

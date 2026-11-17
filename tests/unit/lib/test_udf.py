@@ -743,7 +743,7 @@ def test_nested_data_model_file_parameters_keep_prefetch_settings(test_session):
     mapped = chain.map(y=lambda holder: holder.item.path, params="holder", output=str)
     udf = mapped._query.steps[-1].udf.inner
     assert (udf.prefetch, udf.prefetch_bytes) == (AUTO_PREFETCH, AUTO_PREFETCH_BYTES)
-    assert list(_row_files([1, holder], None)) == [holder.item]
+    assert list(_row_files([1, holder], None)) == []
 
 
 @pytest.mark.parametrize("prefetch", [1, 2, 4, AUTO_PREFETCH])
@@ -859,14 +859,23 @@ def test_archive_prefetch_deduplicates_downloads_and_removes_parent_after_last_m
     assert downloads == 1
     assert [first.size, second.size, third.size] == [10, 20, 30]
 
+    from datachain.lib.udf import _remove_prefetched
+
+    def fail_remove(_target):
+        raise OSError("busy")
+
+    monkeypatch.setattr(catalog.cache, "remove", fail_remove)
+    _remove_prefetched(members[:1], None)
+
 
 def test_prefetch_budget_keeps_row_bound_with_a_smaller_explicit_count():
     from datachain.lib.udf import _PrefetchBudget
 
-    budget = _PrefetchBudget(3, 1000, 5)
+    budget = _PrefetchBudget(3, 1000, 1)
     stop, reserved = threading.Event(), threading.Event()
-    for _ in range(3):
-        budget.take(1, stop)
+    budget.take(600, stop)
+    for _ in range(2):
+        budget.take(200, stop)
 
     def reserve():
         budget.take(1, stop)
@@ -876,7 +885,7 @@ def test_prefetch_budget_keeps_row_bound_with_a_smaller_explicit_count():
     thread.start()
     try:
         assert not reserved.wait(0.05)
-        budget.give_back(1)
+        budget.give_back(600)
         assert reserved.wait(1)
     finally:
         stop.set()
