@@ -90,7 +90,8 @@ def guided_tasks(
             task = tuple(islice(it, size))
             used = len(task)
         else:
-            chunk, used = [], 0
+            chunk: list[Any] = []
+            used = 0
             for item in chain(pending, it):
                 pending.clear()
                 w = weight(item)
@@ -219,8 +220,7 @@ class UDFDispatcher:
     def _run_worker(
         self, worker_index_or_n_workers: int, n_workers: int | None = None
     ) -> None:
-        if n_workers is None:
-            n_workers = worker_index_or_n_workers
+        n_workers = worker_index_or_n_workers if n_workers is None else n_workers
         try:
             # This process owns its native pools. Set limits before loading the UDF;
             # the dispatcher must not change the calling process's global state.

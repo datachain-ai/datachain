@@ -477,3 +477,34 @@ def test_parallel_dispatch_buffers_without_draining_entire_input_iterator(
     dispatcher.run_udf_parallel(4, pages(), None, None, None)
 
     assert pulled < 10
+
+
+def test_run_udf_batched_sequence_caps_workers_and_computes_rows_total(
+    dispatcher, mocker
+):
+    dispatcher.is_batching = True
+    dispatcher.processes = 4
+    run_parallel = mocker.patch.object(dispatcher, "run_udf_parallel")
+    batches = [[1, 2, 3], [4, 5]]
+    dispatcher.run_udf(batches)
+    assert dispatcher.rows_total == 5
+    run_parallel.assert_called_once()
+    assert run_parallel.call_args.args[0] == 2
+
+
+def test_run_udf_parallel_rescales_batch_count_rows_total(dispatcher, mocker):
+    dispatcher.is_batching = True
+    dispatcher.rows_total = 10  # batch count rather than total rows
+    batches = [list(range(i, i + 5)) for i in range(0, 50, 5)]
+    task_queue, done_queue = mocker.Mock(), mocker.Mock()
+    done_queue.get_nowait.side_effect = [{"status": FINISHED_STATUS}] * 4
+    mocker.patch.object(dispatcher.ctx, "Queue", side_effect=[task_queue, done_queue])
+    mocker.patch.object(dispatcher.ctx, "Process")
+    mocker.patch.object(dispatcher, "_shutdown_workers")
+    dispatcher.run_udf_parallel(4, iter(batches), None, None, None)
+    queued = [
+        call.args[0]
+        for call in task_queue.put_nowait.call_args_list
+        if call.args[0] != STOP_SIGNAL
+    ]
+    assert [batch for task in queued for batch in task] == batches

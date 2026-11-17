@@ -866,6 +866,8 @@ def test_worker_thread_limits_handle_unknown_and_duplicate_native_pools(monkeypa
     controller.limit.return_value = nullcontext()
     monkeypatch.setattr(threadpoolctl, "ThreadpoolController", lambda: controller)
     monkeypatch.setattr(utils, "usable_cpu_count", lambda: 8)
+    for name in utils._THREAD_ENVS:
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("MKL_NUM_THREADS", "2")
     with utils.worker_thread_limits(2):
         assert utils.worker_threads() is not None
