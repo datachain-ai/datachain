@@ -333,7 +333,9 @@ class RangeListing:
         except Exception:  # noqa: BLE001
             return
         read_to = self.order(page.last)
-        folders = sorted(f for f in level.folders if self.order(f) > read_to)
+        folders = sorted(
+            (f for f in level.folders if self.order(f) > read_to), key=self.order
+        )
         folders = folders[:: -(-len(folders) // CUT_RANGES) or 1]
         for lo, hi in zip(folders, [*folders[1:], None], strict=False):
             self.open_ranges += 1

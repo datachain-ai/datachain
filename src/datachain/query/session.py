@@ -90,7 +90,7 @@ class Session:
 
         session_uuid = uuid4().hex[: self.SESSION_UUID_LEN]
         self.name = f"{name}_{session_uuid}"
-        self.is_new_catalog = not catalog
+        self.is_new_catalog = catalog is None
         self._parent: Session | None = None
         if catalog is None:
             from datachain.catalog import get_catalog

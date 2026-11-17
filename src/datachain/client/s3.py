@@ -213,7 +213,7 @@ def _plain_text(body: bytes) -> str | None:
     if body.startswith(b"<?xml"):
         if body[: len(_DECLARATION)].lower() != _DECLARATION.lower():
             return None
-        body = body[len(_DECLARATION) :]
+        body = body[len(_DECLARATION) :].removeprefix(b"\n")
     if any(b in body and odd in body for b, odd in _ODD) or _ENTITY.search(body):
         return None
     try:

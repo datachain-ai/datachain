@@ -16,6 +16,7 @@ from datachain.client.s3 import (
     _fields,
     _handle_200_error,
     _parse_timestamp,
+    _plain_text,
     _rows_page,
 )
 from datachain.client.writeconfig import WriteConfig
@@ -472,6 +473,7 @@ ENCODED = PAGE.replace(b"<Key>a</Key>", b"<Key>p/a+b%26c</Key>").replace(
 def test_patterns_read_a_page_as_s3_writes_it():
     page = _page(ENCODED.replace(b"</Contents>", b"</Contents>" + FOLDER))
 
+    assert _plain_text(PAGE).isprintable()
     assert [tuple(r) for r in page["FileRows"]] == [
         ("s3://b", "p/a b&c", 1, "", "e", True, WHEN, None)
     ]

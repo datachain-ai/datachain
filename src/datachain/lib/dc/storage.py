@@ -8,12 +8,12 @@ from typing import TYPE_CHECKING
 
 import datachain.lib.listing as listing_lib
 from datachain.client import Client
-from datachain.client.ranges import FileRow
 from datachain.lib.dc.storage_pattern import (
     list_scope,
     path_filter,
     storage_sources,
 )
+from datachain.lib.file import File, FileRow, FileType, get_file_type
 from datachain.lib.storage_config import client_configs, session_for
 from datachain.query import Session
 
@@ -22,7 +22,6 @@ if TYPE_CHECKING:
     import pyarrow as pa
 
     from datachain.catalog import Catalog
-    from datachain.lib.file import File, FileType
     from datachain.lib.listing import ListScope
 
     from .datachain import DataChain
@@ -31,7 +30,7 @@ if TYPE_CHECKING:
 def read_storage(
     uri: str | os.PathLike[str] | list[str] | list[os.PathLike[str]],
     *,
-    type: "FileType" = "binary",
+    type: FileType = "binary",
     session: Session | None = None,
     settings: dict | None = None,
     in_memory: bool = False,
@@ -177,7 +176,7 @@ def _read_storage(
     session: Session,
     client_config: dict,
     *,
-    type: "FileType" = "binary",
+    type: FileType = "binary",
     settings: dict | None = None,
     in_memory: bool = False,
     recursive: bool | None = True,
@@ -190,8 +189,6 @@ def _read_storage(
     delta_retry: bool | str | None = None,
     delta_unsafe: bool = False,
 ) -> "DataChain":
-    from datachain.lib.file import get_file_type
-
     from .records import read_records
 
     file_type = get_file_type(type)
@@ -456,7 +453,7 @@ class Listing:
         """List the storage into a list of `dc.FileRow` rows."""
         return list(self)
 
-    def to_objects(self, type: "FileType" = "binary") -> "list[File]":
+    def to_objects(self, type: FileType = "binary") -> list[File]:
         """List the storage into `File` objects that read files with this
         listing's client config.
 
@@ -464,8 +461,6 @@ class Listing:
             type: "binary", "text", "image", "video" or "audio", as in
                 `read_storage`, for `File`, `TextFile`, `ImageFile`, ...
         """
-        from datachain.lib.file import get_file_type
-
         file_type = get_file_type(type)
         catalog = self._file_catalog()
         files = []
@@ -564,7 +559,7 @@ def _prepare_listing(
     client_config: dict,
     prepared: set[str],
     *,
-    file_type: "type[File]",
+    file_type: type[File] = File,
     update: bool = False,
     versions: bool = True,
     settings: dict | None = None,

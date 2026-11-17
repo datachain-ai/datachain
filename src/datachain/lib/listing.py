@@ -12,17 +12,22 @@ from datetime import UTC, datetime, timedelta
 from hashlib import blake2b
 from typing import TYPE_CHECKING, TypeVar, cast
 
+import sqlalchemy as sa
 from fsspec.asyn import get_loop, sync
+from sqlalchemy import or_, true
 
 import datachain.fs.utils as fsutils
 from datachain.asyn import iter_over_async
 from datachain.client import Client
-from datachain.client.ranges import FileRow
 from datachain.error import (
     ClientError,
     ConcurrentDatasetModificationError,
     DatasetNotFoundError,
 )
+from datachain.lib.convert.flatten import flatten
+from datachain.lib.file import File, FileRow
+from datachain.query.schema import Column
+from datachain.sql.functions import path as pathfunc
 from datachain.utils import parent_path, safe_closing, uses_glob
 
 if TYPE_CHECKING:
@@ -33,9 +38,7 @@ if TYPE_CHECKING:
     from datachain.data_storage.codec import RowCodec
     from datachain.dataset import DatasetRecord, DatasetVersion
     from datachain.lib.dc import DataChain
-    from datachain.lib.file import File
     from datachain.project import Project
-    from datachain.query.schema import Column
     from datachain.query.session import Session
 
 LISTING_TTL = 4 * 60 * 60  # cached listing lasts 4 hours
@@ -83,9 +86,7 @@ def list_pages(
                 yield page
                 continue
             rows = (
-                page
-                if not page or isinstance(page[0], tuple)
-                else [*map(file_row, page)]
+                [*map(file_row, page)] if page and isinstance(page[0], File) else page
             )
             yield encode(rows) if encode else rows
 
@@ -104,7 +105,8 @@ def list_scope_pages(
 def _scope_pages(client, scope: "ListScope", method: str) -> Iterator[Sequence[tuple]]:
     pages = client.scandir(scope.prefix, method=method)
     try:
-        yield from iter_over_async(pages, get_loop())
+        with safe_closing(iter_over_async(pages, get_loop())) as rows:
+            yield from rows
     except FileNotFoundError:  # nothing under the prefix: fine in a folder
         _check_folder(client, scope.folder)
 
@@ -128,13 +130,11 @@ class ListScope:
     one_level: bool
 
 
-def file_row(file: "File") -> FileRow:
-    from datachain.lib.convert.flatten import flatten
-
+def file_row(file: File) -> FileRow:
     return FileRow(*flatten(file))
 
 
-def get_file_info(uri: str, cache, client_config=None) -> "File":
+def get_file_info(uri: str, cache, client_config=None) -> File:
     """
     Wrapper to return File object by its URI
     """
@@ -159,10 +159,6 @@ def ls(
 
 def select_paths(dc: D, paths: "PathFilter") -> D:
     """The latest files of a listing chain whose paths ``paths`` selects."""
-    from sqlalchemy import true
-
-    from datachain.query.schema import Column
-
     dc = dc.filter(Column("file.is_latest") == true())
     for condition in paths.sql(Column("file.path")):
         dc = dc.filter(condition)
@@ -195,12 +191,9 @@ class PathFilter:
     def glob(self, pattern: str) -> "PathFilter":
         return PathFilter(self.any_of, (*self.all_of, ("glob", pattern)))
 
-    def sql(self, path: "Column") -> "list[ColumnElement]":
+    def sql(self, path: Column) -> "list[ColumnElement]":
         """One condition per filter step: ``any_of`` combined, then each of
         ``all_of``. The steps feed chain hashes, so their split is kept."""
-        from sqlalchemy import or_
-
-        from datachain.sql.functions import path as pathfunc
 
         def cond(op: str, value: str) -> "ColumnElement":
             if op == "eq":
@@ -578,10 +571,7 @@ def write_listing(
     Only a newer reservation may supersede it. An unchanged snapshot reuses
     the latest COMPLETE version unless an older reservation needs fencing.
     """
-    import sqlalchemy as sa
-
     from datachain.dataset import DEFAULT_DATASET_VERSION, DatasetStatus
-    from datachain.lib.file import File
     from datachain.lib.signal_schema import SignalSchema
 
     catalog = session.catalog
