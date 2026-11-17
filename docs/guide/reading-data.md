@@ -118,7 +118,43 @@ data = dc.read_csv(
 
 With `header=False` and no `columns`, `output` is required and supplies names for every input column.
 
-Parquet exported by DataChain restores its saved schema and does not support `columns=`. Read it without `columns` and use `.select(...)` on the chain. With `columns` or `output`, read it separately from other Parquet files.
+#### Parquet written by DataChain
+
+A Parquet file written by `to_parquet()` keeps its DataChain schema, so it reads back with the same signals and models. There, `columns=` picks signals as `select()` does:
+
+```python
+class Point(dc.DataModel):
+    x: int
+    y: int
+
+
+dc.read_values(a=[1], p=[Point(x=2, y=3)]).to_parquet("points.parquet")
+
+dc.read_parquet("points.parquet", columns=["p", "a"])  # signals p and a
+dc.read_parquet("points.parquet", columns=["p.x"])  # p as a model with only x
+```
+
+As with ordinary Parquet and CSV files above, `output=` gives fields by position: one field for each picked signal, in `columns` order, or for each top-level signal when `columns` is omitted. A model field may declare only some of the stored fields:
+
+```python
+class PointX(dc.DataModel):
+    x: int
+
+
+dc.read_parquet("points.parquet", columns=["p", "a"], output={"q": PointX, "n": int})
+# q = PointX(x=2), n = 1
+```
+
+Each field must have the shape of the signal it reads: a model for a model, optional where the signal can be None, and a union of the same types for a union. A mismatch raises an error before anything is read.
+
+A signal inside an optional model or a union is None wherever that parent doesn't hold it, so it reads into an optional field. For `value: Text | Image | None`:
+
+```python
+dc.read_parquet("docs.parquet", columns=["value.Text"], output={"t": Text | None})
+# t is None where value holds an Image or is None
+```
+
+With `columns=` or `output=`, one read can't mix these files with ordinary Parquet files. With `source=True`, the default, the reader adds its own `source`, which replaces a `source` stored by an earlier read. A stored `source` you pick with `columns=` is kept instead, and if the name `source` is taken, the reader's is named `c0_source`.
 
 ## WebDataset
 
