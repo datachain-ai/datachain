@@ -323,8 +323,6 @@ class RangeListing:
         starts spread over its keys instead of splitting its way out of one."""
         if self.delimiter or not self.client.NAMES_FOLDERS or page.last is None:
             return
-        if self.pool and len(page.rows) >= self.client.LIST_PAGE_SIZE:
-            self.pool.start()
         try:
             async with self.own_requests:
                 level = await self.client._list_page(

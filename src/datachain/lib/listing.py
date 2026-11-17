@@ -530,12 +530,10 @@ class StoredPage:
     """A page of listing rows in the warehouse's stored form, and their
     ``rows_digest``: made where the page was parsed, inserted as it is."""
 
-    def __init__(
-        self, rows: list[tuple] | bytes, digest: int, size: int | None = None
-    ) -> None:
+    def __init__(self, rows: list[tuple] | bytes, digest: int) -> None:
         self._rows = rows
         self.digest = digest
-        self.size = len(rows) if size is None else size
+        self.size = len(rows)
 
     @property
     def rows(self) -> list[tuple]:
@@ -556,11 +554,7 @@ class PageEncoder:
 
     def __call__(self, rows: Sequence[tuple]) -> StoredPage:
         stored = list(map(self.codec.encode, rows))
-        return StoredPage(
-            pickle.dumps(stored, protocol=5),
-            rows_digest(rows, self.with_etag),
-            len(stored),
-        )
+        return StoredPage(stored, rows_digest(rows, self.with_etag))
 
 
 def write_listing(
@@ -618,9 +612,14 @@ def write_listing(
             nonlocal count, total
             touched = time.monotonic()
             for page in pages:
+                start = count + 1
                 count += len(page)
                 total += page.digest
-                yield from page.rows
+                yield from map(
+                    tuple.__add__,
+                    page.rows,
+                    zip(range(start, count + 1), strict=False),
+                )
                 if time.monotonic() - touched > RESERVATION_TOUCH_INTERVAL:
                     metastore.update_dataset_version(
                         dataset,
@@ -630,7 +629,9 @@ def write_listing(
                     )
                     touched = time.monotonic()
 
-        warehouse.insert_stored_rows(table, names, rows(), LISTING_BATCH_SIZE)
+        warehouse.insert_stored_rows(
+            table, [*names, "sys__id"], rows(), LISTING_BATCH_SIZE
+        )
         content_hash = f"{LISTING_DIGEST}:{count}:{total % (1 << 128):032x}"
         latest = (
             _latest_version(catalog, ds_name, project)

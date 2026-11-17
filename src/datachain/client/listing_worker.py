@@ -262,8 +262,6 @@ def main(out_fd: int) -> None:
     try:
         if (spec := load(inp)) is not None:
             cls, name, fs_kwargs, cache, page_size, prefix, encode = spec
-            if s3 := sys.modules.get("datachain.client.s3"):
-                s3._as_row = lambda r: r  # type: ignore[attr-defined]
             client = cls(name, fs_kwargs, cache)
             client.LIST_PAGE_SIZE = page_size
             client.encode_page = encode
@@ -321,12 +319,10 @@ async def _serve(
             encode = client.encode_page
             if encode:
                 rows = encode(page.rows)
+                if hasattr(rows, "_rows"):
+                    rows._rows = pickle.dumps(rows._rows, protocol=5)
             else:  # plain tuples: a row type would unpickle per row in Python
-                plain = (
-                    page.rows
-                    if not page.rows or type(page.rows[0]) is tuple
-                    else [tuple(r) for r in page.rows]
-                )
+                plain = [tuple(r) for r in page.rows]
                 rows = pickle.dumps(plain, protocol=5), len(plain)
             answer = dump((rid, (rows, *page[1:])))
         write_frame(answer or dump((rid, None)))
