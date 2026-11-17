@@ -721,6 +721,50 @@ def test_to_storage_filename_handles_file_subclass_union(
         }
 
 
+def test_to_storage_filename_ignores_inactive_file_arm(test_session, tmp_path):
+    (tmp_path / "a.bin").write_bytes(b"first")
+    (tmp_path / "b.bin").write_bytes(b"second")
+    chain = dc.read_values(
+        value=[
+            VideoFile(source=tmp_path.as_uri(), path="a.bin"),
+            VideoFile(source=tmp_path.as_uri(), path="b.bin"),
+        ],
+        output={"value": ImageFile | VideoFile},
+        session=test_session,
+    ).mutate(value__ImageFile__path="ignored.bin")
+    assert [file.path for file in chain.to_values("value")] == ["a.bin", "b.bin"]
+
+    chain.to_storage(tmp_path / "out", signal="value", placement="filename")
+
+    assert {p.name: p.read_bytes() for p in (tmp_path / "out").iterdir()} == {
+        "a.bin": b"first",
+        "b.bin": b"second",
+    }
+
+
+def test_to_storage_filename_ignores_absent_file_path(test_session, tmp_path):
+    chain = dc.read_values(
+        value=[None, None], output={"value": File | None}, session=test_session
+    ).mutate(value__path="ignored.bin")
+    assert chain.to_values("value") == [None, None]
+
+    chain.to_storage(tmp_path / "out", signal="value", placement="filename")
+
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("placement", ["filename", "filepath"])
+def test_to_storage_preserves_literal_signal_name(test_session, tmp_path, placement):
+    (tmp_path / "a.txt").write_text("content")
+    chain = dc.read_values(
+        my__f=[File(source=tmp_path.as_uri(), path="a.txt")], session=test_session
+    )
+
+    chain.to_storage(tmp_path / "out", signal="my__f", placement=placement)
+
+    assert (tmp_path / "out" / "a.txt").read_text() == "content"
+
+
 def test_to_storage_hint_includes_all_fragment_union_arms(test_session, tmp_path):
     chain = dc.read_values(
         frag=[VideoFragment(video=VideoFile(path="video.mp4"), start=0, end=1)],
@@ -729,8 +773,10 @@ def test_to_storage_hint_includes_all_fragment_union_arms(test_session, tmp_path
     )
     with pytest.raises(DataChainParamsError) as error:
         chain.to_storage(tmp_path / "out", signal="frag")
-    assert "signal='frag.VideoFragment.video'" in str(error.value)
-    assert "signal='frag.AudioFragment.audio'" in str(error.value)
+    assert (
+        "signal='frag.AudioFragment.audio' and signal='frag.VideoFragment.video'"
+        in str(error.value)
+    )
 
 
 @pytest.mark.parametrize("signal", ["pair.file", "pair__file"])

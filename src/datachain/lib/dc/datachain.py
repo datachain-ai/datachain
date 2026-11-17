@@ -3498,7 +3498,7 @@ class DataChain:
                 if any(inspect.isclass(a) and issubclass(a, File) for a in nested_arms):
                     inner.append(candidate)
             if inner:
-                msg += "; use " + " or ".join(f"signal='{s}'" for s in inner)
+                msg += "; use " + " and ".join(f"signal='{s}'" for s in inner)
                 if any(hasattr(a, "save") for a in arms):
                     msg += f", or {signal}.save(output) in map()"
             raise DataChainParamsError(msg)
@@ -3553,7 +3553,8 @@ class DataChain:
             ds.to_storage("gs://mybucket", placement="filename")
             ```
         """
-        signal = signal.replace(DEFAULT_DELIMITER, ".")
+        if signal not in self.signals_schema.values:
+            signal = signal.replace(DEFAULT_DELIMITER, ".")
         signal = self.signals_schema.resolve_arm_path(signal) or signal
         self._validate_file_signal(signal)
 
@@ -3572,7 +3573,20 @@ class DataChain:
                 if layout and layout.use_slots
                 else [signal]
             )
-            paths = [C(schema.to_db_col(f"{s}.path")) for s in signals]
+            paths: list[ColumnExpr] = []
+            for s in signals:
+                parent = f"{s}.path"
+                path_col: ColumnExpr = C(schema.to_db_col(parent))
+                while (tagged := schema.tagged_parent(parent)) is not None:
+                    parent, _, arm = tagged
+                    path_col = sqlalchemy.case(
+                        (
+                            C(schema.to_db_col(f"{parent}.{TYPE_TAG_FIELD}"))
+                            == arm_selector(arm),
+                            path_col,
+                        )
+                    )
+                paths.append(path_col)
             path_col = sqlalchemy.func.coalesce(*paths) if len(paths) > 1 else paths[0]
             named = chain._query.filter(path_col.isnot(None))
             if named.distinct(pathfunc.name(path_col)).count() != named.count():
@@ -3603,9 +3617,10 @@ class DataChain:
                 has_file = False
                 has_value = False
                 for (value,) in rows_iter:
-                    has_file |= isinstance(value, File)
                     has_value |= value is not None
-                    yield value
+                    if isinstance(value, File):
+                        has_file = True
+                        yield value
                 if has_value and not has_file:
                     raise DataChainParamsError(
                         f"to_storage(): '{signal}' contains no files"
