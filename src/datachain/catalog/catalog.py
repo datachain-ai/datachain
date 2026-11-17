@@ -3,6 +3,7 @@ import logging
 import os
 import os.path
 import posixpath
+import sqlite3
 import sys
 import time
 from collections.abc import Iterable, Iterator, Sequence
@@ -1016,7 +1017,11 @@ class Catalog:
                     job_id=job_id,
                     content_hash=content_hash,
                 )
-            except (DatasetNotFoundError, sa.exc.IntegrityError):
+            except (
+                DatasetNotFoundError,
+                sa.exc.IntegrityError,
+                sqlite3.IntegrityError,
+            ):
                 dataset = self._recreate_dataset(
                     dataset, name, project, columns, feature_schema, query_script
                 )
@@ -1359,27 +1364,17 @@ class Catalog:
             )
             return False
 
-        try:
-            self.warehouse.drop_dataset_rows_table(dataset, version)
+        self.warehouse.drop_dataset_rows_table(dataset, version)
 
-            if keep_metadata:
-                self.metastore.update_dataset_version(
-                    dataset,
-                    version,
-                    expected_status=DatasetStatus.REMOVING,
-                    status=DatasetStatus.REMOVED,
-                )
-            else:
-                self.metastore.remove_dataset_version(dataset, version)
-        except BaseException:
-            with suppress(Exception):
-                self.metastore.update_dataset_version(
-                    dataset,
-                    version,
-                    expected_status=DatasetStatus.REMOVING,
-                    removed_at=None,
-                )
-            raise
+        if keep_metadata:
+            self.metastore.update_dataset_version(
+                dataset,
+                version,
+                expected_status=DatasetStatus.REMOVING,
+                status=DatasetStatus.REMOVED,
+            )
+        else:
+            self.metastore.remove_dataset_version(dataset, version)
         return True
 
     def _remove_versions(
