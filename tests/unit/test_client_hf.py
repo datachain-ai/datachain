@@ -79,6 +79,133 @@ def test_ls_dir_requests_expanded_info():
     )
 
 
+def test_recursive_listing_preserves_versions_without_walking_directories():
+    client = HfClient("datasets", {}, Mock(spec=Cache))
+    client._fs = Mock()
+    fs = client._fs.sync_fs
+    fs.resolve_path.return_value = SimpleNamespace(
+        repo_id="org/repo",
+        revision="main",
+        path_in_repo="data",
+        unresolve=lambda: "datasets/org/repo/data",
+    )
+    date = datetime(2024, 10, 12, tzinfo=UTC)
+    fs.find.return_value = {
+        "datasets/org/repo/data/a.json": {
+            "size": 3,
+            "blob_id": "blob-a",
+            "last_commit": SimpleNamespace(oid="old-commit", date=date),
+        },
+        "datasets/org/repo/data/nested/b.json": {
+            "size": 4,
+            "blob_id": "blob-b",
+            "last_commit": SimpleNamespace(oid="other-commit", date=date),
+        },
+    }
+    rows = sync(get_loop(), lambda: _collect_hf_listing(client, "org/repo@main/data"))
+    assert [(r.path, r.size, r.etag, r.version, r.last_modified) for r in rows] == [
+        ("org/repo@main/data/a.json", 3, "blob-a", "old-commit", date),
+        ("org/repo@main/data/nested/b.json", 4, "blob-b", "other-commit", date),
+    ]
+    fs.find.assert_called_once_with(
+        "datasets/org/repo/data", detail=True, expand_info=True
+    )
+    client._fs._ls.assert_not_called()
+
+
+async def _collect_hf_listing(client, prefix):
+    return [file async for page in client.scandir(prefix) for file in page]
+
+
+def test_recursive_listing_accepts_single_files_and_empty_directories():
+    client = HfClient("datasets", {}, Mock(spec=Cache))
+    client._fs = Mock()
+    fs = client._fs.sync_fs
+    fs.resolve_path.return_value = SimpleNamespace(
+        repo_id="org/repo",
+        revision="main",
+        path_in_repo="file",
+        unresolve=lambda: "datasets/org/repo@main/file",
+    )
+    fs.find.return_value = {"datasets/org/repo@main/file": {}}
+    fs.info.return_value = {
+        "size": 4,
+        "blob_id": "blob",
+        "last_commit": SimpleNamespace(
+            oid="c1", date=datetime(2024, 10, 12, tzinfo=UTC)
+        ),
+    }
+    rows = sync(get_loop(), lambda: _collect_hf_listing(client, "org/repo@main/file"))
+    assert [(r.path, r.version) for r in rows] == [("org/repo@main/file", "c1")]
+    fs.find.return_value = {}
+    fs.info.return_value = {"type": "directory"}
+    assert (
+        sync(get_loop(), lambda: _collect_hf_listing(client, "org/repo@main/file"))
+        == []
+    )
+    fs.info.side_effect = FileNotFoundError("missing")
+    with pytest.raises(FileNotFoundError):
+        sync(get_loop(), lambda: _collect_hf_listing(client, "org/repo@main/file"))
+
+
+def test_recursive_listing_uses_sdk_pagination(catalog, monkeypatch, hf_repositories):
+    from huggingface_hub.hf_api import RepoFile, RepoFolder
+
+    client = HfClient("datasets", {"token": False}, catalog.cache)
+    fs = client.fs.sync_fs
+    calls = []
+
+    def tree(repo_id, path_in_repo=None, **kwargs):
+        calls.append((repo_id, kwargs))
+        yield RepoFolder(path="data", oid="tree")
+        for path, commit in [("data/a.txt", "c1"), ("data/deep/b.txt", "c2")]:
+            yield RepoFile(
+                path=path,
+                size=4,
+                oid="blob-" + commit,
+                lastCommit={
+                    "id": commit,
+                    "title": "test",
+                    "date": "2024-10-12T00:00:00.000Z",
+                },
+            )
+
+    monkeypatch.setattr(fs._api, "list_repo_tree", tree)
+    rows = sync(get_loop(), lambda: _collect_hf_listing(client, "org/repo@main"))
+    assert {r.path for r in rows} == {
+        "org/repo@main/data/a.txt",
+        "org/repo@main/data/deep/b.txt",
+    }
+    assert {r.version for r in rows} == {"c1", "c2"}
+    assert len(calls) == 1
+    assert calls[0][1]["recursive"] is True
+    assert calls[0][1]["expand"] is True
+
+
+def test_recursive_listing_bucket_preserves_xet_hash_and_mtime():
+    client = HfClient("buckets", {}, Mock(spec=Cache))
+    client._fs = Mock()
+    fs = client._fs.sync_fs
+    fs.resolve_path.return_value = SimpleNamespace(
+        bucket_id="org/bucket",
+        path="dir",
+        unresolve=lambda: "buckets/org/bucket/dir",
+    )
+    date = datetime(2025, 2, 3, tzinfo=UTC)
+    fs.find.return_value = {
+        "buckets/org/bucket/dir/a.parquet": {
+            "size": 100,
+            "xet_hash": "xet-abc",
+            "uploaded_at": date,
+        }
+    }
+    rows = sync(get_loop(), lambda: _collect_hf_listing(client, "org/bucket/dir"))
+    assert [(r.path, r.size, r.etag, r.version, r.last_modified) for r in rows] == [
+        ("org/bucket/dir/a.parquet", 100, "xet-abc", "", date)
+    ]
+    fs.find.assert_called_once_with("buckets/org/bucket/dir", detail=True)
+
+
 def test_get_file_info_requests_expanded_info():
     cache = Mock(spec=Cache)
     client = HfClient("datasets/org/repo", {}, cache)
@@ -239,12 +366,21 @@ def test_open_reads_listed_commit_with_revision_in_uri(
 ):
     client = HfClient(repo_type, {"token": False}, catalog.cache)
     _, raw = small_tar_member_data
+    commit = "a" * 40
     monkeypatch.setattr(client.fs, "_info", AsyncMock(return_value={"size": len(raw)}))
-    monkeypatch.setattr(client.fs.sync_fs, "info", lambda *a, **kw: {"size": len(raw)})
+    monkeypatch.setattr(
+        client.fs.sync_fs,
+        "info",
+        Mock(
+            side_effect=AssertionError(
+                "open_object must not call fs.info when size is known"
+            )
+        ),
+    )
     tar_member_range_requests(HfFileSystemFile)
-    file = File(source=client.uri, path=path, size=len(raw), version="commit123")
+    file = File(source=client.uri, path=path, size=len(raw), version=commit)
     with client.open_object(file, use_cache=False, block_size=block_size) as stream:
-        assert stream.fileobj.resolved_path.revision == "commit123"
+        assert stream.fileobj.resolved_path.revision == commit
         assert stream.read(5) == raw[:5]
     assert file.path == path
 
@@ -396,24 +532,26 @@ def test_pinned_commit_does_not_require_uri_branch(catalog, monkeypatch):
 
 
 def test_pinned_unchanged_check_uses_size_without_expanded_metadata():
+    commit = "a" * 40
     client = HfClient("datasets", {}, Mock(spec=Cache))
     client._fs = Mock()
     client._fs._info = AsyncMock(return_value={"size": 4})
     file = File(
-        source=client.uri, path="org/repo/a.txt", version="c1", etag="blob", size=4
+        source=client.uri, path="org/repo/a.txt", version=commit, etag="blob", size=4
     )
     client.check_unchanged(file)
-    client._fs._info.assert_awaited_once_with(file.get_fs_path(), revision="c1")
+    client._fs._info.assert_awaited_once_with(file.get_fs_path(), revision=commit)
 
 
 def test_pinned_unchanged_check_reuses_sdk_directory_cache(
     catalog, monkeypatch, hf_repositories
 ):
+    commit = "a" * 40
     client = HfClient("datasets", {"token": False}, catalog.cache)
     fs = client.fs.sync_fs
-    fs.dircache["datasets/org/repo@c1"] = [
+    fs.dircache[f"datasets/org/repo@{commit}"] = [
         {
-            "name": "datasets/org/repo@c1/a.txt",
+            "name": f"datasets/org/repo@{commit}/a.txt",
             "size": 4,
             "type": "file",
             "last_commit": None,
@@ -424,10 +562,88 @@ def test_pinned_unchanged_check_reuses_sdk_directory_cache(
     )
     monkeypatch.setattr(fs._api, "get_paths_info", fetch)
     file = File(
-        source=client.uri, path="org/repo@main/a.txt", version="c1", etag="blob", size=4
+        source=client.uri,
+        path="org/repo@main/a.txt",
+        version=commit,
+        etag="blob",
+        size=4,
     )
     client.check_unchanged(file)
     fetch.assert_not_called()
+
+
+def test_mutable_branch_version_checks_etag_on_unchanged():
+    client = HfClient("datasets", {}, Mock(spec=Cache))
+    client._fs = Mock()
+    client._fs._info = AsyncMock(return_value={"size": 4, "blob_id": "new-blob"})
+    file = File(
+        source=client.uri,
+        path="org/repo/a.txt",
+        version="main",
+        etag="old-blob",
+        size=4,
+    )
+    with pytest.raises(FileNotFoundError, match="etag was old-blob, now new-blob"):
+        client.check_unchanged(file)
+
+
+def test_bucket_metadata_and_resolve_path_with_revision(catalog, monkeypatch):
+    cache = Mock(spec=Cache)
+    client = HfClient("buckets", {}, cache)
+    date = datetime(2025, 1, 2, tzinfo=UTC)
+    file = client.info_to_file(
+        {"size": 12, "xet_hash": "xet-123", "uploaded_at": date},
+        "org/bucket/file.bin",
+    )
+    assert (file.path, file.size, file.etag, file.version, file.last_modified) == (
+        "org/bucket/file.bin",
+        12,
+        "xet-123",
+        "",
+        date,
+    )
+
+    fs = HfClient("buckets", {"token": False}, catalog.cache).fs.sync_fs
+    monkeypatch.setattr(
+        hf_file_system.HfFileSystem, "_bucket_exists", lambda self, bid: (True, None)
+    )
+    resolved = fs.resolve_path("buckets/org/bucket/file.bin", revision="main")
+    assert getattr(resolved, "bucket_id", None) == "org/bucket"
+
+
+def test_anon_translates_to_token_false_and_credentials_detected():
+    assert HfClient.has_explicit_credentials({"token": "hf_secret"})
+    assert not HfClient.has_explicit_credentials({"anon": True})
+    fs = HfClient.create_fs(anon=True)
+    assert fs.sync_fs.token is False
+
+
+def test_stream_file_close_releases_exit_stack(catalog, monkeypatch, hf_repositories):
+    fs = HfClient("datasets", {"token": False}, catalog.cache).fs.sync_fs
+    stream = fs.open("datasets/org/repo@main/a.txt", "rb", block_size=0)
+    closed = Mock()
+    stream._exit_stack.callback(closed)
+    stream.close()
+    closed.assert_called_once()
+
+
+def test_auth_http_error_is_also_permission_error(catalog, monkeypatch):
+    import httpx
+    from huggingface_hub.errors import HfHubHTTPError
+
+    fs = HfClient("datasets", {"token": False}, catalog.cache).fs.sync_fs
+    resp = httpx.Response(
+        401,
+        request=httpx.Request("GET", "https://huggingface.co/api/datasets/org/repo"),
+    )
+
+    def fail(*args, **kwargs):
+        raise HfHubHTTPError("401 Unauthorized", response=resp)
+
+    monkeypatch.setattr(hf_file_system.HfFileSystem, "resolve_path", fail)
+    with pytest.raises(PermissionError) as exc_info:
+        fs.resolve_path("datasets/org/repo/a.txt")
+    assert isinstance(exc_info.value, HfHubHTTPError)
 
 
 def test_hf_filesystem_is_pickleable(catalog):
@@ -435,106 +651,3 @@ def test_hf_filesystem_is_pickleable(catalog):
     restored = pickle.loads(pickle.dumps(fs))  # noqa: S301
     assert type(restored) is type(fs)
     assert restored.storage_options == fs.storage_options
-
-
-def test_recursive_listing_preserves_versions_without_walking_directories():
-    client = HfClient("datasets", {}, Mock(spec=Cache))
-    client._fs = Mock()
-    fs = client._fs.sync_fs
-    fs.resolve_path.return_value = SimpleNamespace(
-        repo_id="org/repo",
-        revision="main",
-        path_in_repo="data",
-        unresolve=lambda: "datasets/org/repo/data",
-    )
-    date = datetime(2024, 10, 12, tzinfo=UTC)
-    fs.find.return_value = {
-        "datasets/org/repo/data/a.json": {
-            "size": 3,
-            "blob_id": "blob-a",
-            "last_commit": SimpleNamespace(oid="old-commit", date=date),
-        },
-        "datasets/org/repo/data/nested/b.json": {
-            "size": 4,
-            "blob_id": "blob-b",
-            "last_commit": SimpleNamespace(oid="other-commit", date=date),
-        },
-    }
-    rows = sync(get_loop(), lambda: _collect_hf_listing(client, "org/repo@main/data"))
-    assert [(r.path, r.size, r.etag, r.version, r.last_modified) for r in rows] == [
-        ("org/repo@main/data/a.json", 3, "blob-a", "old-commit", date),
-        ("org/repo@main/data/nested/b.json", 4, "blob-b", "other-commit", date),
-    ]
-    fs.find.assert_called_once_with(
-        "datasets/org/repo/data", detail=True, expand_info=True
-    )
-    client._fs._ls.assert_not_called()
-
-
-async def _collect_hf_listing(client, prefix):
-    return [file async for page in client.scandir(prefix) for file in page]
-
-
-def test_recursive_listing_accepts_single_files_and_empty_directories():
-    client = HfClient("datasets", {}, Mock(spec=Cache))
-    client._fs = Mock()
-    fs = client._fs.sync_fs
-    fs.resolve_path.return_value = SimpleNamespace(
-        repo_id="org/repo",
-        revision="main",
-        path_in_repo="file",
-        unresolve=lambda: "datasets/org/repo@main/file",
-    )
-    fs.find.return_value = {"datasets/org/repo@main/file": {}}
-    fs.info.return_value = {
-        "size": 4,
-        "blob_id": "blob",
-        "last_commit": SimpleNamespace(
-            oid="c1", date=datetime(2024, 10, 12, tzinfo=UTC)
-        ),
-    }
-    rows = sync(get_loop(), lambda: _collect_hf_listing(client, "org/repo@main/file"))
-    assert [(r.path, r.version) for r in rows] == [("org/repo@main/file", "c1")]
-    fs.find.return_value = {}
-    fs.info.return_value = {"type": "directory"}
-    assert (
-        sync(get_loop(), lambda: _collect_hf_listing(client, "org/repo@main/file"))
-        == []
-    )
-    fs.info.side_effect = FileNotFoundError("missing")
-    with pytest.raises(FileNotFoundError):
-        sync(get_loop(), lambda: _collect_hf_listing(client, "org/repo@main/file"))
-
-
-def test_recursive_listing_uses_sdk_pagination(catalog, monkeypatch, hf_repositories):
-    from huggingface_hub.hf_api import RepoFile, RepoFolder
-
-    client = HfClient("datasets", {"token": False}, catalog.cache)
-    fs = client.fs.sync_fs
-    calls = []
-
-    def tree(repo_id, path_in_repo=None, **kwargs):
-        calls.append((repo_id, kwargs))
-        yield RepoFolder(path="data", oid="tree")
-        for path, commit in [("data/a.txt", "c1"), ("data/deep/b.txt", "c2")]:
-            yield RepoFile(
-                path=path,
-                size=4,
-                oid="blob-" + commit,
-                lastCommit={
-                    "id": commit,
-                    "title": "test",
-                    "date": "2024-10-12T00:00:00.000Z",
-                },
-            )
-
-    monkeypatch.setattr(fs._api, "list_repo_tree", tree)
-    rows = sync(get_loop(), lambda: _collect_hf_listing(client, "org/repo@main"))
-    assert {r.path for r in rows} == {
-        "org/repo@main/data/a.txt",
-        "org/repo@main/data/deep/b.txt",
-    }
-    assert {r.version for r in rows} == {"c1", "c2"}
-    assert len(calls) == 1
-    assert calls[0][1]["recursive"] is True
-    assert calls[0][1]["expand"] is True
