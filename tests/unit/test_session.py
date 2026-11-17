@@ -1,5 +1,4 @@
 import gc
-import os
 import re
 from weakref import ref
 
@@ -7,10 +6,11 @@ import pytest
 
 import datachain as dc
 from datachain.catalog import Catalog
+from datachain.data_storage import JobStatus
 from datachain.dataset import SESSION_DATASET_PREFIX, DatasetStatus
-from datachain.error import DataChainError, DatasetNotFoundError
+from datachain.error import DataChainError, DatasetNotFoundError, TableMissingError
 from datachain.query.session import Session
-from tests.utils import skip_if_not_sqlite
+from tests.utils import reset_session_job_state, skip_if_not_sqlite
 
 
 @pytest.fixture
@@ -284,26 +284,17 @@ def test_cleanup_removes_temporary_data_from_closed_separate_database(
 
 
 @skip_if_not_sqlite
-def test_in_memory_session_exit_finalizes_job_cleanly(tmp_path):
-    import subprocess
-    import sys
-
-    script = (
-        "import datachain as dc\n"
-        "from datachain.query.session import Session\n"
-        "with Session('t', in_memory=True) as s:\n"
-        "    dc.read_values(x=[1], session=s).save('a')\n"
-    )
-    result = subprocess.run(  # noqa: S603
-        [sys.executable, "-c", script],
-        capture_output=True,
-        text=True,
-        cwd=tmp_path,
-        env={**os.environ, "DATACHAIN_ROOT_DIR": str(tmp_path)},
-        check=False,
-    )
-    assert result.returncode == 0
-    assert "Traceback" not in result.stderr
+def test_in_memory_session_exit_finalizes_job_cleanly(monkeypatch):
+    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
+    reset_session_job_state()
+    try:
+        with Session("t", in_memory=True) as s:
+            dc.read_values(x=[1], session=s).save("a")
+            assert Session._JOB_STATUS == JobStatus.RUNNING
+        assert Session._JOB_STATUS == JobStatus.COMPLETE
+        s._finalize_job_success()
+    finally:
+        reset_session_job_state()
 
 
 @skip_if_not_sqlite
@@ -313,4 +304,6 @@ def test_session_cleanup_tolerates_dropped_metastore_tables(catalog):
     metastore.db.drop_table(metastore._datasets_dependencies, if_exists=True)
     metastore.db.drop_table(metastore._dataset_version_jobs, if_exists=True)
     metastore.db.drop_table(metastore._datasets_versions)
+    with pytest.raises(TableMissingError):
+        list(metastore.list_datasets_by_prefix("session_"))
     session._cleanup_temp_datasets()

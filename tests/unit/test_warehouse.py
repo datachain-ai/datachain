@@ -475,6 +475,7 @@ def test_get_table_supports_temp_views_mixed_case_and_add_column(warehouse):
     assert "x" in warehouse.get_table("mixedcaserel").c
 
     warehouse.db.add_column("MixedCaseRel", sa.Column("y", Int64))
+    warehouse.db.close()
     refreshed = warehouse.get_table("MixedCaseRel")
     assert "y" in refreshed.c
 
