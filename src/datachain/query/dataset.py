@@ -6,6 +6,7 @@ import secrets
 import string
 import subprocess
 import sys
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from copy import copy
@@ -19,7 +20,8 @@ import attrs
 import sqlalchemy
 import sqlalchemy as sa
 from attrs import frozen
-from fsspec.callbacks import DEFAULT_CALLBACK, Callback, TqdmCallback
+from fsspec import Callback
+from fsspec.callbacks import DEFAULT_CALLBACK, TqdmCallback
 from sqlalchemy import Column
 from sqlalchemy.sql import func as f
 from sqlalchemy.sql.elements import ColumnClause, ColumnElement, Label
@@ -32,7 +34,8 @@ from sqlalchemy.sql.selectable import (
 )
 from sqlalchemy.sql.visitors import replacement_traverse
 
-from datachain.catalog.catalog import clone_catalog_with_cache
+# Resolve parent packages before their children to keep import-lock ordering consistent.
+from datachain.catalog import catalog as _catalog
 from datachain.checkpoint import Checkpoint, CheckpointStatus
 from datachain.checkpoint_event import (
     CheckpointEventType,
@@ -51,7 +54,7 @@ from datachain.error import (
     QueryScriptCancelError,
     TableMissingError,
 )
-from datachain.func.base import Function
+from datachain.func import base
 from datachain.hash_utils import hash_column_elements
 from datachain.job import Job
 from datachain.lib.data_model import NULLABLE_SCALARS
@@ -100,6 +103,7 @@ if TYPE_CHECKING:
     P = ParamSpec("P")
 
 
+Function = base.Function
 PartitionByType = str | Function | ColumnExpr | Sequence[str | Function | ColumnExpr]
 JoinPredicateType = str | ColumnExpr
 DatasetDependencyType = tuple["DatasetRecord", str]
@@ -514,7 +518,8 @@ class ColType(NamedTuple):
     python_type: type
     type_name: str
     default: Any
-    kept_as_is: bool  # a value of python_type goes in unconverted
+    kept_type: type | None  # a value of this type goes in unconverted
+    item_type: type | None  # a list whose first item has this type goes in unconverted
 
 
 def adjust_outputs(
@@ -538,7 +543,8 @@ def adjust_outputs(
         col_python_type,
         col_type_name,
         default_value,
-        kept_as_is,
+        kept_type,
+        _,
     ) in col_types:
         # Fill missing values with defaults
         if col_name not in row:
@@ -552,7 +558,7 @@ def adjust_outputs(
             row[col_name] = default_value
             continue
 
-        if kept_as_is and type(row_val) is col_python_type:
+        if type(row_val) is kept_type:
             continue
 
         # Validate and convert type if needed and possible
@@ -618,9 +624,20 @@ def get_col_types(
             if getattr(sql_type, "dc_nullable", False)
             else col_type.default_value(dialect)
         )
-        kept_as_is = exact and python_type not in (list, dict) and type_name != "JSON"
+        kept_type: type | None = None
+        item_type: type | None = None
+        if exact and python_type is list:
+            # convert_type checks only the first item, and recurses into a list
+            item = warehouse.python_type(sql_type.item_type)
+            item_type = None if item is list else item
+        elif exact and (python_type is dict or type_name == "JSON"):
+            kept_type = str  # JSON text, which convert_type keeps as it is
+        elif exact:
+            kept_type = python_type
         col_types.append(
-            ColType(name, sql_type, python_type, type_name, default, kept_as_is)
+            ColType(
+                name, sql_type, python_type, type_name, default, kept_type, item_type
+            )
         )
     return col_types
 
@@ -629,10 +646,11 @@ def _tuple_adjuster(col_types: list[ColType]) -> Callable[[tuple], tuple | None]
     """For a gen row of the output columns, then ``sys__input_id``,
     ``sys__partial`` and ``sys__empty``: the row with column defaults in place of
     None, or None when ``adjust_outputs`` must convert it."""
-    kept_types = [
-        frozenset({type(None), c.python_type} if c.kept_as_is else {type(None)})
-        for c in col_types
-    ]
+    kept_types = []
+    for c in col_types:
+        kept = list if c.item_type else c.kept_type
+        kept_types.append(frozenset({type(None), kept} if kept else {type(None)}))
+    lists = [(i, c.item_type) for i, c in enumerate(col_types) if c.item_type]
     defaults = [
         (i, c.default) for i, c in enumerate(col_types) if c.default is not None
     ]
@@ -641,6 +659,9 @@ def _tuple_adjuster(col_types: list[ColType]) -> Callable[[tuple], tuple | None]
         # map stops at the output columns: the sys values are the generator's own
         if not all(map(frozenset.__contains__, kept_types, map(type, row))):
             return None
+        for i, item_type in lists:
+            if (value := row[i]) and not isinstance(value[0], item_type):
+                return None
         if not defaults:
             return row
         values = list(row)
@@ -650,6 +671,9 @@ def _tuple_adjuster(col_types: list[ColType]) -> Callable[[tuple], tuple | None]
         return tuple(values)
 
     return adjust
+
+
+PROGRESS_INTERVAL = 0.1  # seconds
 
 
 def process_udf_outputs(
@@ -680,13 +704,20 @@ def process_udf_outputs(
     adjust_tuple = _tuple_adjuster(udf_col_types)
 
     def _insert_rows():
+        # Progress is reported every PROGRESS_INTERVAL, not per row: a call per
+        # row adds about a sixth to the time to read plain columns.
+        generated = 0
+        report_at = 0.0
         for udf_output in udf_results:
             if not udf_output:
                 continue
 
             with safe_closing(udf_output):
                 for row in udf_output:
-                    cb.relative_update()
+                    generated += 1
+                    if (now := time.monotonic()) >= report_at:
+                        cb.relative_update(generated)
+                        generated, report_at = 0, now + PROGRESS_INTERVAL
                     if type(row) is tuple:
                         if (
                             udf_kind != "map"
@@ -703,6 +734,7 @@ def process_udf_outputs(
                         udf_kind=udf_kind,
                     )
                     yield tuple(map(row.__getitem__, columns))
+        cb.relative_update(generated)
 
     rows = _insert_rows()
     try:
@@ -898,7 +930,7 @@ class UDFStep(Step, ABC):
 
         prefetch = self.udf.prefetch
         with _get_cache(catalog.cache, prefetch, use_cache=self.cache) as _cache:
-            catalog = clone_catalog_with_cache(catalog, _cache)
+            catalog = _catalog.clone_catalog_with_cache(catalog, _cache)
 
             try:
                 if udf_distributor_class and not catalog.in_memory:
@@ -2743,6 +2775,7 @@ class DatasetQuery:
         self.checkpoints_enabled = checkpoints_enabled
 
         self.list_ds_name: str | None = None
+        self.listing_ds: list[DatasetRecord] = []  # shared with clones
         self.dialect = self.catalog.warehouse.db.dialect
 
         if name is None:
@@ -2873,12 +2906,18 @@ class DatasetQuery:
     def resolve_listing(self) -> None:
         """Runs listing pre-step if needed"""
         if self.list_ds_name and not self.starting_step:
-            listing_ds = ensure_listing(
-                self.list_ds_name, self.catalog, self.listing_fn, update=self.update
-            )
+            if not self.listing_ds:
+                self.listing_ds.append(
+                    ensure_listing(
+                        self.list_ds_name,
+                        self.catalog,
+                        self.listing_fn,
+                        update=self.update,
+                    )
+                )
 
             # at this point we know what is our starting listing dataset name
-            self._set_starting_step(listing_ds)  # type: ignore [arg-type]
+            self._set_starting_step(self.listing_ds[0])
 
     def resolve_all_listings(self) -> None:
         """Recursively resolve listings for this query and all sub-queries."""

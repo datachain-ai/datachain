@@ -47,7 +47,7 @@ saved.to_csv("similar_results.csv")
 **What to save — the UDF rule:**
 
 - **Any chain that runs a UDF (`.map()`, `.batch_map()`, `.gen()`, `.agg()`)** must be saved with `.save("name")`. UDFs embody domain logic and produce structured output worth preserving.
-- **Final pipeline results.** Rankings, filtered cohorts, evaluation outputs, aggregations — always `.save("name")`.
+- **Final pipeline results.** Rankings, filtered cohorts, evaluation outputs, aggregations that later steps read — always `.save("name")`.
 - **Chains with no UDFs** (`read_storage` + `filter`/`mutate`/`select` only) may remain transient — cheap to recompute, easy to read from the code.
 
 **Prompt-trigger keywords for `.save()`.** When the user's task description contains "make available for downstream queries", "compute per-X aggregates", "build / extract / produce X", "store / persist / materialize / save", "process and save" — call `.save("name")` and print a short summary (name + row count or a few stats), not the full result set.
@@ -482,7 +482,7 @@ dc.read_parquet(
 )  # x receives c; y receives a
 ```
 
-`output={"c": float}` alone on a three-column file raises an error; use `columns=["c"]` to select c. CSV's `column_types` controls parsing by input name before normalization or output renaming, e.g. `column_types={"ZIP Code": "string"}` preserves leading zeros. It does not select columns. With `header=False`, `columns` uses `f0`, `f1`, etc.; `output` can rename the selection. Without `columns`, a headerless CSV requires `output` naming every column. Parquet exported by DataChain restores its saved schema and rejects `columns`; read it on its own and use `.select(...)`.
+`output={"c": float}` alone on a three-column file raises an error; use `columns=["c"]` to select c. CSV's `column_types` controls parsing by input name before normalization or output renaming, e.g. `column_types={"ZIP Code": "string"}` preserves leading zeros. It does not select columns. With `header=False`, `columns` uses `f0`, `f1`, etc.; `output` can rename the selection. Without `columns`, a headerless CSV requires `output` naming every column. Parquet exported by DataChain restores its saved schema; there `columns` picks signals as `select()` does (`"p.x"` keeps `p` with only `x`), and `output` takes them by position, one field each, or the top-level signals without `columns`. With `columns` or `output`, don't mix it with other Parquet files.
 
 **Data Memory (SQL, fast).** `C` = `dc.C`, `func` = `dc.func`.
 

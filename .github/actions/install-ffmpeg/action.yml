@@ -14,7 +14,7 @@ runs:
     # refreshed copy under its own key.
     - name: Restore FFmpeg packages
       id: cache
-      uses: actions/cache/restore@v6
+      uses: actions/cache/restore@v6.1.0
       with:
         path: ~/.cache/apt-archives
         key: ffmpeg-debs-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.version }}
@@ -34,7 +34,7 @@ runs:
     # Saved right away, so a later failure in the job doesn't lose it.
     - name: Save FFmpeg packages
       if: steps.cache.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v6
+      uses: actions/cache/save@v6.1.0
       with:
         path: ~/.cache/apt-archives
         key: ${{ steps.cache.outputs.cache-primary-key }}

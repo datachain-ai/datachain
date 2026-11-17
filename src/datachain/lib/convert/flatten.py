@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from pydantic import BaseModel
 
 from datachain.lib.data_model import (
+    TYPE_TAG_FIELD,
     UnionLayout,
     arm_selector,
     union_layout,
@@ -58,38 +59,30 @@ def _complete_field_kinds(
     )
 
 
-class FlatColumn(NamedTuple):
-    """One column a model emits. ``is_sentinel`` marks a tagged-union ``_type_tag``
-    discriminator; otherwise it is a leaf."""
-
-    path: tuple[str, ...]
-    is_sentinel: bool
-
-
 def iter_flat_columns(
     model: type[BaseModel], _prefix: tuple[str, ...] = ()
-) -> Iterator[FlatColumn]:
-    """Flat columns ``model`` emits, in storage order; a tagged-union node yields a
-    leading _type_tag then its arms."""
+) -> Iterator[tuple[str, ...]]:
+    """Paths of the flat columns ``model`` emits, in storage order; a tagged-union
+    node yields its ``_type_tag`` first, then its arms."""
     for name, f_info in model.model_fields.items():
         yield from iter_field_columns(f_info.annotation, (*_prefix, name))
 
 
-def iter_field_columns(anno: Any, path: tuple[str, ...]) -> Iterator[FlatColumn]:
+def iter_field_columns(anno: Any, path: tuple[str, ...]) -> Iterator[tuple[str, ...]]:
     if (layout := union_layout(anno)) is not None:
-        yield FlatColumn(path, True)  # _type_tag
+        yield (*path, TYPE_TAG_FIELD)
         for arm in layout.arms:
             arm_path = (*path, arm_selector(arm)) if layout.use_slots else path
             if (fr := ModelStore.to_pydantic(arm)) is not None:
                 yield from iter_flat_columns(fr, arm_path)
             else:
-                yield FlatColumn(arm_path, False)
+                yield arm_path
         return
     inner, _ = unwrap_optional(anno)
     if (fr := ModelStore.to_pydantic(inner)) is not None:
         yield from iter_flat_columns(fr, path)
     else:
-        yield FlatColumn(path, False)
+        yield path
 
 
 def flatten(obj: BaseModel) -> tuple:
