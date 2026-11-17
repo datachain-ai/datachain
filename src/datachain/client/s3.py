@@ -4,7 +4,6 @@ import re
 from collections.abc import Callable, Iterable
 from contextvars import ContextVar
 from datetime import datetime
-from functools import partial
 from time import monotonic
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import unquote_plus
@@ -22,7 +21,7 @@ from fsspec.utils import tokenize
 from s3fs import S3FileSystem
 
 from .fsspec import BucketStatus, RangeListedClient
-from .ranges import PROCESS_LIST_WORKERS, FileRow, Keep, Page
+from .ranges import PROCESS_LIST_WORKERS, FileRow, Keep, Page, as_file_row
 
 if TYPE_CHECKING:
     from datachain.client.writeconfig import WriteConfig
@@ -164,8 +163,14 @@ _ODD = ((b"!", b"<!"), (b"?", b"<?"), (b"]", b"]]>"))  # comment, instruction, C
 _ENTITY = re.compile(rb"&(?!(?:amp|lt|gt|quot|apos|#34|#39);)")  # any other
 _INVALID_XML_TEXT = re.compile(r"[\x00-\x08\x0b-\x1f\ufffe\uffff]")
 # "&amp;" last: "&amp;lt;" is "&lt;"
-_ENTITIES = {"&lt;": "<", "&gt;": ">", "&#34;": '"', "&apos;": "'", "&#39;": "'"}
-_ENTITIES["&amp;"] = "&"
+_ENTITIES = {
+    "&lt;": "<",
+    "&gt;": ">",
+    "&#34;": '"',
+    "&apos;": "'",
+    "&#39;": "'",
+    "&amp;": "&",
+}
 _TEXT = "([^<]*)"
 
 
@@ -182,14 +187,13 @@ _OBJECT = (
     rf"<Size>(\d+)</Size>{_REST}"
 )
 _FOLDER = rf"<CommonPrefixes><Prefix>{_TEXT}</Prefix></CommonPrefixes>"
-# groups: the entry, then key, modified, etag, size | folder
-_CONTENTS = rf"(<Contents><Key>{_TEXT}</Key>{_OBJECT}</Contents>|{_FOLDER})"
-# groups: the entry, then key, version, latest, modified, etag, size | marker:
-# tag, key, version, modified | folder
+# groups: the entry, then key, version, latest, modified, etag, size |
+# marker: key, modified | folder
+_CONTENTS = rf"(<Contents><Key>{_TEXT}</Key>()(){_OBJECT}</Contents>()()|{_FOLDER})"
 _VERSIONS = (
     rf"(<Version><Key>{_TEXT}</Key><VersionId>{_TEXT}</VersionId>"
     rf"<IsLatest>(true|false)</IsLatest>{_OBJECT}</Version>"
-    rf"|(<DeleteMarker>)<Key>{_TEXT}</Key><VersionId>{_TEXT}</VersionId>"
+    rf"|<DeleteMarker><Key>{_TEXT}</Key>{_tag('VersionId')}"
     rf"<IsLatest>(?:true|false)</IsLatest><LastModified>{_TEXT}</LastModified>"
     rf"{_REST}</DeleteMarker>|{_FOLDER})"
 )
@@ -251,13 +255,12 @@ def _split_page(body: bytes, versions: bool) -> tuple[list[Element], str, list] 
     ns = root.tag[: root.tag.find("}") + 1]
     others = [c for c in root if c.tag != f"{ns}_entries"]
     if (first and len(others) == len(root)) or any(
-        c.tag[len(ns) :] in _ENTRY_TAGS | {"Versions"} for c in others
+        c.tag[len(ns) :] in _ENTRY_TAGS for c in others
     ):
         return None  # entries inside another element, or ones not read
     return others, ns, entries
 
 
-_as_row = partial(tuple.__new__, FileRow)  # skips FileRow's argument handling
 # While ClientS3._list_page waits for a page, the source its rows are listed from
 _ROWS_OF: ContextVar[str | None] = ContextVar("_ROWS_OF", default=None)
 
@@ -278,24 +281,16 @@ def _rows_page(body: bytes, shape: Shape, source: str) -> dict[str, Any] | None:
     rows, markers, folders = [], [], []
     try:
         for entry in entries:
-            if versions:
-                _, key, version, latest, modified, etag, size, marker, *rest = entry
-                marker_key, _, marker_modified, folder = rest
-            else:
-                _, key, modified, etag, size, folder = entry
-                version, latest, marker = "", "true", ""
+            _, key, version, latest, modified, etag, size, *marker, folder = entry
             if size:
-                version = (
-                    ClientS3.clean_s3_version(_unescape(version)) if version else ""
-                )
+                version = ClientS3.clean_s3_version(_unescape(version))
                 when = _parse_timestamp(_unescape(modified))
                 etag = _unescape(etag).strip('"')
-                key = decode(_unescape(key))
-                row = (source, key, int(size), version, etag, latest == "true", when)
-                rows.append(_as_row((*row, None)))
-            elif marker:  # its date checked, as botocore converts it
-                _parse_timestamp(_unescape(marker_modified))
-                markers.append({"Key": _unescape(marker_key)})
+                row = source, decode(_unescape(key)), int(size), version, etag
+                rows.append(as_file_row((*row, latest != "false", when, None)))
+            elif marker[1]:  # its date checked, as botocore converts it
+                _parse_timestamp(_unescape(marker[1]))
+                markers.append({"Key": _unescape(marker[0])})
             else:
                 folders.append({"Prefix": _unescape(folder)})
     except ValueError:
@@ -595,23 +590,19 @@ class ClientS3(RangeListedClient):
             code = e.response.get("Error", {}).get("Code")
             if not versions or token is not None or code != "NotImplemented":
                 raise
-            page = None
-        finally:
-            _ROWS_OF.reset(rows_of)
-        if page is None:
             # stores without version support, such as R2, hold only current objects
             self._unversioned = True
             return await self._list_page(
                 prefix, start_after, None, hi, page_size, delimiter
             )
+        finally:
+            _ROWS_OF.reset(rows_of)
         keep = Keep(self, start_after, hi)
         if (rows := page.get("FileRows")) is None:  # ElementTree read the page
             entries = page.get("Versions" if versions else "Contents", [])
-            keys = [d["Key"] for d in entries]
-            rows = [self._file_row(d, versions) for d in entries if keep(d["Key"])]
-        else:
-            keys = [row[1] for row in rows]
-            rows = [row for row in rows if keep(row[1])]
+            rows = [self._file_row(d, versions) for d in entries]
+        keys = [r[1] for r in rows]
+        rows = [r for r in rows if keep(r[1])]
         listed = [d["Key"] for d in page.get("DeleteMarkers", [])]
         # folders past a delimiter: listed past, though they make no rows
         folders = [p["Prefix"] for p in page.get("CommonPrefixes", [])]

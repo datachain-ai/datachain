@@ -13,12 +13,11 @@ import threading
 import traceback
 from collections.abc import Sequence
 from contextlib import suppress
-from functools import partial
 from typing import TYPE_CHECKING, Any, BinaryIO
 
 from datachain.utils import usable_cpu_count
 
-from .ranges import FileRow, Page
+from .ranges import Page, as_file_row
 
 if TYPE_CHECKING:
     from datachain.client.fsspec import RangeListedClient
@@ -33,7 +32,6 @@ HEADER = struct.Struct("<Q")  # the size of the pickle that follows
 # a child that doesn't answer a page in time is stuck (stopped, deadlocked): the
 # parent kills it and lists the page itself; a page normally takes under a second
 REPLY_TIMEOUT = float(os.environ.get("DATACHAIN_LISTING_REPLY_TIMEOUT", "300"))
-_as_file_row = partial(tuple.__new__, FileRow)  # skips FileRow's argument handling
 
 
 def dump(message: Any) -> bytes:
@@ -118,14 +116,14 @@ def _kill_children() -> None:
 class Rows(Sequence):
     """Rows a child sent, unpickled by whoever reads them, not the event loop."""
 
-    def __init__(self, pickled: bytes, size: int) -> None:
-        self.pickled, self.size = pickled, size
-        self.rows: list | None = None
+    def __init__(self, rows: bytes, size: int) -> None:
+        self._rows: list | bytes = rows
+        self.size = size
 
     def _load(self) -> list:
-        if self.rows is None:
-            self.rows = list(map(_as_file_row, pickle.loads(self.pickled)))  # noqa: S301
-        return self.rows
+        if isinstance(rows := self._rows, bytes):
+            self._rows = rows = list(map(as_file_row, pickle.loads(rows)))  # noqa: S301
+        return rows
 
     def __len__(self) -> int:
         return self.size
@@ -319,8 +317,6 @@ async def _serve(
             encode = client.encode_page
             if encode:
                 rows = encode(page.rows)
-                if hasattr(rows, "_rows"):
-                    rows._rows = pickle.dumps(rows._rows, protocol=5)
             else:  # plain tuples: a row type would unpickle per row in Python
                 plain = [tuple(r) for r in page.rows]
                 rows = pickle.dumps(plain, protocol=5), len(plain)
