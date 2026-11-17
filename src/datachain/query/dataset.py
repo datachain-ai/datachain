@@ -476,7 +476,7 @@ class Subtract(Step):
 
 # Layout of UDF output tables and their ledgers, part of every UDF checkpoint
 # hash: a change makes checkpoints of the old layout recompute once.
-UDF_OUTPUT_FORMAT = b"writer-ledger-2"
+UDF_OUTPUT_FORMAT = b"writer-ledger-1"
 
 
 def process_udf_outputs(
