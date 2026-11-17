@@ -12,7 +12,7 @@ from functools import partial
 from itertools import islice
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from pydantic import BaseModel
+from pydantic import BaseModel, RootModel
 
 from datachain import json
 from datachain.lib.model_store import ModelStore
@@ -252,7 +252,12 @@ def _python_dump(obj: BaseModel) -> Any:
     try:
         return obj.model_dump()
     except TypeError:
-        return {k: getattr(obj, k) for k in type(obj).model_fields}
+        if isinstance(obj, RootModel):
+            return obj.root
+        return {
+            **(obj.__pydantic_extra__ or {}),
+            **{k: getattr(obj, k) for k in type(obj).model_fields},
+        }
 
 
 def _check_merged_keys(obj: Any, dumped: Any) -> None:
@@ -261,7 +266,7 @@ def _check_merged_keys(obj: Any, dumped: Any) -> None:
     if isinstance(obj, BaseModel):
         obj = _python_dump(obj)
     if isinstance(obj, dict) and isinstance(dumped, dict):
-        if len(obj) != len(dumped):
+        if len(dumped) < len(obj) and any(type(k) is not str for k in obj):
             from datachain.lib.udf import JsonSerializationError
 
             raise JsonSerializationError(
@@ -270,8 +275,9 @@ def _check_merged_keys(obj: Any, dumped: Any) -> None:
                 column_name="",
                 value_repr=repr(obj),
             )
-        for value, dumped_value in zip(obj.values(), dumped.values(), strict=True):
-            _check_merged_keys(value, dumped_value)
+        if len(obj) == len(dumped):
+            for value, dumped_value in zip(obj.values(), dumped.values(), strict=True):
+                _check_merged_keys(value, dumped_value)
     elif (
         isinstance(obj, (list, tuple, set))
         and isinstance(dumped, list)
