@@ -164,6 +164,11 @@ class StudioClient:
 
         return team
 
+    def _token_and_team(self) -> tuple[str, str]:
+        # The token first: without a login there is usually no team either, and
+        # "not logged in" is the error that tells the user what to do.
+        return self.token, self.team
+
     def _check_dependencies(self) -> None:
         try:
             import msgpack  # noqa: F401
@@ -181,10 +186,11 @@ class StudioClient:
         import msgpack
         import requests
 
+        token, team = self._token_and_team()
         kwargs = (
-            {"params": {**data, "team_name": self.team}}
+            {"params": {**data, "team_name": team}}
             if method == "GET"
-            else {"json": {**data, "team_name": self.team}}
+            else {"json": {**data, "team_name": team}}
         )
 
         response = requests.request(
@@ -192,7 +198,7 @@ class StudioClient:
             url=f"{self.url}/{route}",
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"token {self.token}",
+                "Authorization": f"token {token}",
             },
             timeout=self.timeout,
             **kwargs,  # type: ignore[arg-type]
@@ -223,10 +229,11 @@ class StudioClient:
         """
         import requests
 
+        token, team = self._token_and_team()
         kwargs = (
-            {"params": {**data, "team_name": self.team}}
+            {"params": {**data, "team_name": team}}
             if method == "GET"
-            else {"json": {**data, "team_name": self.team}}
+            else {"json": {**data, "team_name": team}}
         )
 
         response = requests.request(
@@ -234,7 +241,7 @@ class StudioClient:
             url=f"{self.url}/{route}",
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"token {self.token}",
+                "Authorization": f"token {token}",
             },
             timeout=self.timeout,
             **kwargs,  # type: ignore[arg-type]
@@ -272,15 +279,15 @@ class StudioClient:
         """
         import requests
 
-        # Add team_name to params
-        request_params = {**(params or {}), "team_name": self.team}
+        token, team = self._token_and_team()
+        request_params = {**(params or {}), "team_name": team}
 
         response = requests.post(
             url=f"{self.url}/{route}",
             files=files,
             params=request_params,
             headers={
-                "Authorization": f"token {self.token}",
+                "Authorization": f"token {token}",
             },
             timeout=self.timeout,
         )
@@ -337,18 +344,19 @@ class StudioClient:
         Yields:
             Dict containing either job status updates or log messages
         """
+        token, team = self._token_and_team()
         parsed_url = urlparse(self.url)
         ws_url = urlunparse(
             parsed_url._replace(scheme="wss" if parsed_url.scheme == "https" else "ws")
         )
-        ws_url = f"{ws_url}/logs/follow/?job_id={job_id}&team_name={self.team}"
+        ws_url = f"{ws_url}/logs/follow/?job_id={job_id}&team_name={team}"
         if no_follow:
             ws_url += "&no_follow=true"
 
         try:
             async with websockets.connect(
                 ws_url,
-                additional_headers={"Authorization": f"token {self.token}"},
+                additional_headers={"Authorization": f"token {token}"},
             ) as websocket:
                 while True:
                     try:

@@ -11,10 +11,7 @@ from datachain import semver
 from datachain.catalog import is_namespace_local
 from datachain.cli.utils import determine_flavors
 from datachain.data_storage import JobStatus
-from datachain.error import (
-    DataChainError,
-    DatasetNotFoundError,
-)
+from datachain.error import DatasetNotFoundError
 from datachain.lib.dataset_description import DatasetDescription
 from datachain.lib.dataset_info import DatasetInfo
 from datachain.lib.dc import describe
@@ -213,14 +210,7 @@ def rm_dataset(
         # removing Studio dataset from CLI
         from datachain.studio import remove_studio_dataset
 
-        if is_token_set(team):
-            remove_studio_dataset(
-                team, name, namespace_name, project_name, version, force
-            )
-        else:
-            raise DataChainError(
-                "Not logged in to Studio. Log in with 'datachain auth login'."
-            )
+        remove_studio_dataset(team, name, namespace_name, project_name, version, force)
     else:
         try:
             project = catalog.metastore.get_project(project_name, namespace_name)
@@ -251,14 +241,9 @@ def edit_dataset(
     else:
         from datachain.studio import edit_studio_dataset
 
-        if is_token_set(team):
-            edit_studio_dataset(
-                team, name, namespace_name, project_name, new_name, description, attrs
-            )
-        else:
-            raise DataChainError(
-                "Not logged in to Studio. Log in with 'datachain auth login'."
-            )
+        edit_studio_dataset(
+            team, name, namespace_name, project_name, new_name, description, attrs
+        )
 
 
 def _timestamp(value: datetime) -> str:

@@ -1225,6 +1225,26 @@ def test_studio_jobs_json_prints_the_response(capsys, studio_token):
     assert json.loads(capsys.readouterr().out) == [job]
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["job", "ls"],
+        ["job", "cancel", "job-id"],
+        ["job", "logs", "job-id"],
+        pytest.param(
+            ["dataset", "rm", "dev.animals.name", "--studio"],
+            marks=skip_if_not_sqlite,
+        ),
+    ],
+)
+def test_studio_command_without_login_or_team(capsys, command):
+    assert main(command) == 1
+
+    err = capsys.readouterr().err
+    assert f"Not logged in to Studio at {STUDIO_URL}" in err
+    assert "team is not set" not in err
+
+
 def test_studio_cancel_job(capsys, mocker):
     job_id = "8bddde6c-c3ca-41b0-9d87-ee945bfdce70"
     with requests_mock.mock() as m:

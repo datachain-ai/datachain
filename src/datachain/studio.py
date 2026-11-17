@@ -36,7 +36,6 @@ from datachain.remote.studio import (
     StudioClient,
     get_studio_team,
     get_studio_url,
-    is_token_set,
 )
 from datachain.utils import flatten
 
@@ -833,11 +832,6 @@ def upload_files(client: StudioClient, files: list[str]) -> list[str]:
 
 
 def cancel_job(job_id: str, team_name: str | None):
-    if not is_token_set(team_name):
-        raise DataChainError(
-            "Not logged in to Studio. Log in with 'datachain auth login'."
-        )
-
     client = StudioClient(team=team_name)
     response = client.cancel_job(job_id)
     if not response.ok:
@@ -917,11 +911,6 @@ def _stage_duration(step: dict, job_finished: bool) -> str:
 
 
 def show_job_logs(job_id: str, team_name: str | None):
-    if not is_token_set(team_name):
-        raise DataChainError(
-            "Not logged in to Studio. Log in with 'datachain auth login'."
-        )
-
     client = StudioClient(team=team_name)
     return show_logs_from_client(client, job_id)
 
