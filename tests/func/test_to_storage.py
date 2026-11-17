@@ -209,6 +209,30 @@ def test_remote_export_links_cached_bytes_or_falls_back_to_copy(
     assert (output / "source.bin").is_symlink() == cache
 
 
+@pytest.mark.parametrize("alias", ["same", "hardlink", "symlink"])
+def test_remote_file_save_over_cached_source_preserves_bytes(
+    test_session, http_server, tmp_path, alias
+):
+    if alias == "symlink" and os.name == "nt":
+        pytest.skip("Creating symlinks needs privileges on Windows")
+    (tmp_path / "source.bin").write_bytes(b"original")
+    file = File.at(f"{http_server}/source.bin", session=test_session)
+    file.ensure_cached()
+    cached = Path(file.get_local_path())
+    destination = cached if alias == "same" else tmp_path / "alias.bin"
+    if alias == "hardlink":
+        os.link(cached, destination)
+    elif alias == "symlink":
+        destination.symlink_to(cached)
+
+    saved = file.save(destination)
+
+    assert cached.read_bytes() == b"original"
+    assert destination.read_bytes() == b"original"
+    assert os.path.samefile(cached, destination)
+    assert saved.read() == b"original"
+
+
 def test_to_storage_reexports_cached_file_after_source_is_deleted(
     test_session, tmp_path
 ):

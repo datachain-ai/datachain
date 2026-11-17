@@ -816,7 +816,9 @@ class File(DataModel):
             os.makedirs(os.path.dirname(lpath), exist_ok=True)
             if self._caching_enabled:
                 self.ensure_cached()
-            source_client.download_to(self, lpath, callback=self._download_cb)
+            source = self.get_local_path()
+            if source is None or not self._same_file(source, lpath):
+                source_client.download_to(self, lpath, callback=self._download_cb)
             result = client.get_file_info(rel_path)
         else:
             with self.open(mode="rb") as src:
