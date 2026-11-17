@@ -1024,15 +1024,17 @@ class File(DataModel):
         client = self._catalog.get_client(self.source)
         client.download(self, callback=self._download_cb)
 
+    def _prefetch_target(self) -> "File":
+        if self.location:
+            return VFileRegistry.parent(self, self.location)  # type: ignore[arg-type]
+        return self
+
     async def _prefetch(self, download_cb: "Callback | None" = None) -> bool:
         if self._catalog is None:
             raise RuntimeError("cannot prefetch file because catalog is not setup")
 
-        file = self
-        if self.location:
-            file = VFileRegistry.parent(self, self.location)  # type: ignore[arg-type]
-
-        client = self._catalog.get_client(self.source)
+        file = self._prefetch_target()
+        client = self._catalog.get_client(file.source)
         await client._download(file, callback=download_cb or self._download_cb)
         file._set_stream(
             self._catalog, caching_enabled=True, download_cb=DEFAULT_CALLBACK

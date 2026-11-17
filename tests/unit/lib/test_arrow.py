@@ -786,3 +786,186 @@ def test_parquet_buffered_file_freed_by_refcount(catalog):
     del f, parts
     assert file_ref() is None
     assert parts_ref() is None
+
+
+def test_parquet_buffered_file_closes_fallback_remote_stream(catalog, mocker):
+    import io
+
+    file = File(path="table.parquet", source="file:///tmp")
+    client = catalog.get_client(file.source)
+    remote = io.BytesIO(b"01234567")
+    close_spy = mocker.spy(remote, "close")
+    mocker.patch.object(client, "open_object", return_value=remote)
+    f = _ParquetBufferedFile(client, file, 8, [(0, b"0123")])
+    f.seek(4)
+    assert f.read(4) == b"4567"
+    f.close()
+    assert close_spy.call_count == 1
+
+
+def test_generator_prefetch_file_checks_archive_target_size(catalog, monkeypatch):
+    import asyncio
+
+    parent = File(source="s3://bucket", path="huge.tar", size=100 * 1024 * 1024)
+    member = File(
+        source="s3://bucket",
+        path="small.parquet",
+        size=100,
+        location=[{"vtype": "tar", "parent": parent.model_dump()}],
+    )
+    member._set_stream(catalog)
+    model = dict_to_data_model("Row", {"a": int})
+    gen = ArrowGenerator(
+        pa.schema([("a", pa.int64())]),
+        model,
+        prefetch_max_size=8 * 1024 * 1024,
+        format="parquet",
+    )
+    assert asyncio.run(gen._prefetch_file(member)) is False
+    assert "_parquet_parts" not in member.__dict__
+
+
+def test_parquet_prefetch_deduplicates_and_waits_on_error(
+    tmp_path, catalog, monkeypatch, mocker
+):
+    import io
+    import threading
+    import time
+    from contextlib import contextmanager
+
+    path = tmp_path / "multi.parquet"
+    pq.write_table(
+        pa.table({"a": list(range(1000)), "pad": [b"z" * 100] * 1000}),
+        path,
+        row_group_size=250,
+        compression="NONE",
+    )
+    raw_bytes = path.read_bytes()
+    monkeypatch.setattr(arrow_mod, "PARQUET_FOOTER_SAMPLE_SIZE", 4096)
+
+    gen = ArrowGenerator(
+        pa.schema([("a", pa.int64()), ("pad", pa.binary())]),
+        dict_to_data_model("Row", {"a": int}),
+        columns=["a"],
+        prefetch_max_size=1,
+        format="parquet",
+    )
+
+    f1 = File(source="s3://bucket", path="multi.parquet", size=len(raw_bytes))
+    f2 = File(source="s3://bucket", path="multi.parquet", size=len(raw_bytes))
+    f1._set_stream(catalog)
+    f2._set_stream(catalog)
+    client = catalog.get_client(f1.source)
+    mocker.patch.object(catalog, "get_client", return_value=client)
+
+    calls = 0
+
+    @contextmanager
+    def fake_open_object(file, **kwargs):
+        nonlocal calls
+        calls += 1
+        stream = io.BytesIO(raw_bytes)
+        stream._fetch_range = lambda s, e: raw_bytes[s:e]  # type: ignore[attr-defined]
+        yield stream
+
+    mocker.patch.object(client, "open_object", side_effect=fake_open_object)
+    gen._prefetch_parquet(f1, ["a"])
+    gen._prefetch_parquet(f2, ["a"])
+    assert calls == 1
+    assert f1.__dict__.pop("_parquet_parts") is f2.__dict__.pop("_parquet_parts")
+
+    closed_while_running, running, idx = False, 0, 0
+    lock, entered_second = threading.Lock(), threading.Event()
+
+    @contextmanager
+    def error_open_object(file, **kwargs):
+        nonlocal closed_while_running
+        stream = io.BytesIO(raw_bytes)
+
+        def fetch_range(s, e):
+            nonlocal idx, running
+            with lock:
+                idx, running = idx + 1, running + 1
+                my_idx = idx
+            try:
+                if my_idx == 1:
+                    entered_second.wait(timeout=1)
+                    raise OSError("boom")
+                entered_second.set()
+                time.sleep(0.05)
+                return raw_bytes[s:e]
+            finally:
+                with lock:
+                    running -= 1
+
+        stream._fetch_range = fetch_range  # type: ignore[attr-defined]
+        try:
+            yield stream
+        finally:
+            with lock:
+                closed_while_running = running > 0
+
+    mocker.patch.object(client, "open_object", side_effect=error_open_object)
+    with pytest.raises(OSError, match="boom"):
+        arrow_mod._read_parquet_parts(client, f1, ["a"])
+    assert not closed_while_running
+
+
+def test_parquet_prefetch_cancel_waits_for_cleanup(
+    tmp_path, catalog, monkeypatch, mocker
+):
+    import asyncio
+    import io
+    import threading
+    import time
+    from contextlib import contextmanager
+
+    path = tmp_path / "cancel.parquet"
+    table = pa.table({"a": list(range(1000)), "pad": [b"z" * 100] * 1000})
+    pq.write_table(table, path, row_group_size=250, compression="NONE")
+    raw_bytes = path.read_bytes()
+    monkeypatch.setattr(arrow_mod, "PARQUET_FOOTER_SAMPLE_SIZE", 4096)
+
+    model = dict_to_data_model("Row", {"a": int})
+    gen = ArrowGenerator(
+        pa.schema([("a", pa.int64()), ("pad", pa.binary())]),
+        model,
+        columns=["a"],
+        prefetch_max_size=1,
+        format="parquet",
+    )
+    f1 = File(source="s3://bucket", path="cancel.parquet", size=len(raw_bytes))
+    f1._set_stream(catalog)
+    client = catalog.get_client(f1.source)
+    mocker.patch.object(catalog, "get_client", return_value=client)
+
+    started = threading.Event()
+    finished = threading.Event()
+
+    @contextmanager
+    def slow_open_object(file, **kwargs):
+        stream = io.BytesIO(raw_bytes)
+
+        def fetch_range(s, e):
+            started.set()
+            time.sleep(0.05)
+            return raw_bytes[s:e]
+
+        stream._fetch_range = fetch_range  # type: ignore[attr-defined]
+        try:
+            yield stream
+        finally:
+            finished.set()
+
+    mocker.patch.object(client, "open_object", side_effect=slow_open_object)
+
+    async def cancel_prefetch():
+        task = asyncio.create_task(gen._prefetch_file(f1))
+        await asyncio.to_thread(started.wait, 2.0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert finished.is_set()
+        assert "_parquet_parts" not in f1.__dict__
+
+    asyncio.run(cancel_prefetch())

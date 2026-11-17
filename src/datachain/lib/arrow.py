@@ -2,10 +2,12 @@ import asyncio
 import hashlib
 import io
 import sys
+import threading
 from collections.abc import Iterator, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, TypeGuard
+from weakref import WeakValueDictionary
 
 import numpy as np
 import pyarrow as pa
@@ -107,6 +109,19 @@ _PARQUET_PREFETCH_EXECUTOR = ThreadPoolExecutor(PARQUET_RANGE_THREADS)
 _PARQUET_RANGE_EXECUTOR = ThreadPoolExecutor(PARQUET_RANGE_THREADS)
 
 
+class _ParquetParts(list):
+    pass
+
+
+_PARQUET_PARTS_GUARD = threading.Lock()
+_PARQUET_PARTS_CACHE: WeakValueDictionary[
+    tuple[str, tuple[str, ...]], _ParquetParts
+] = WeakValueDictionary()
+_PARQUET_PARTS_LOCKS: WeakValueDictionary[
+    tuple[str, tuple[str, ...]], threading.Lock
+] = WeakValueDictionary()
+
+
 def _leaf_names(field: pa.Field) -> list[str]:
     if not field.type.num_fields:
         return [field.name]
@@ -150,14 +165,17 @@ def _column_ranges(
 
 
 def _read_parquet_parts(
-    client: "Client", file: File, columns: Sequence[str]
+    client: "Client",
+    file: File,
+    columns: Sequence[str],
+    stop: threading.Event | None = None,
 ) -> tuple[int, list[tuple[int, bytes]]]:
     """Read the Parquet footer sample and selected column chunks, then close."""
     with client.open_object(
         file, use_cache=False, cb=file._download_cb, block_size=0
     ) as stream:
         size = stream.seek(0, io.SEEK_END)
-        if size <= 0:
+        if size <= 0 or (stop is not None and stop.is_set()):
             return size, []
         sample_start = max(0, size - PARQUET_FOOTER_SAMPLE_SIZE)
         stream.seek(sample_start)
@@ -166,6 +184,8 @@ def _read_parquet_parts(
             return size, [(sample_start, sample)]
         footer_start = size - 8 - int.from_bytes(sample[-8:-4], "little")
         if 0 <= footer_start < sample_start:
+            if stop is not None and stop.is_set():
+                return size, []
             stream.seek(footer_start)
             sample = stream.read(sample_start - footer_start) + sample
             sample_start = footer_start
@@ -184,11 +204,21 @@ def _read_parquet_parts(
             cb = file._download_cb
 
             def fetch(span: tuple[int, int]) -> tuple[int, bytes]:
+                if stop is not None and stop.is_set():
+                    return span[0], b""
                 data = raw._fetch_range(*span)
                 cb.relative_update(len(data))
                 return span[0], data
 
-            parts = list(_PARQUET_RANGE_EXECUTOR.map(fetch, spans))
+            futures = [_PARQUET_RANGE_EXECUTOR.submit(fetch, span) for span in spans]
+            try:
+                parts = [fut.result() for fut in futures]
+            finally:
+                for fut in futures:
+                    fut.cancel()
+                wait(futures)
+            if stop is not None and stop.is_set():
+                return size, []
         if parts and parts[-1][0] + len(parts[-1][1]) == sample_start:
             parts[-1] = (parts[-1][0], parts[-1][1] + sample)
         else:
@@ -228,7 +258,20 @@ class _ParquetBufferedFile(AbstractBufferedFile):
             remote.seek(start)
             return remote.read(end - start)
 
+        def close_remote() -> None:
+            nonlocal remote
+            if remote is not None:
+                remote.close()
+                remote = None
+
         self.cache.fetcher = fetch
+        self._close_remote = close_remote
+
+    def close(self) -> None:
+        try:
+            super().close()
+        finally:
+            self._close_remote()
 
 
 class _PartialReadHandler(FSSpecHandler):
@@ -350,10 +393,28 @@ class ArrowGenerator(Generator):
             return True
         if not (columns := self._parquet_columns(file)):
             return False
+        stop = threading.Event()
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(
-            _PARQUET_PREFETCH_EXECUTOR, self._prefetch_parquet, file, columns
+        task = asyncio.ensure_future(
+            loop.run_in_executor(
+                _PARQUET_PREFETCH_EXECUTOR,
+                self._prefetch_parquet,
+                file,
+                columns,
+                stop,
+            )
         )
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            stop.set()
+            cleanup = asyncio.gather(task, return_exceptions=True)
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    pass
+            raise
         return True
 
     def _parquet_columns(self, file: File) -> list[str] | None:
@@ -362,6 +423,7 @@ class ArrowGenerator(Generator):
             or not is_parquet(self.kwargs.get("format"))
             or self.nrows
             or self.datachain_read
+            or file.location
             or file._caching_enabled
             or file.get_local_path()
         ):
@@ -372,9 +434,27 @@ class ArrowGenerator(Generator):
         # Picked columns are in self.columns with output, else in self.input_schema.
         return self.columns or self.input_schema.names  # type: ignore[union-attr]
 
-    def _prefetch_parquet(self, file: File, columns: Sequence[str]) -> None:
-        client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
-        file.__dict__["_parquet_parts"] = _read_parquet_parts(client, file, columns)
+    def _prefetch_parquet(
+        self,
+        file: File,
+        columns: Sequence[str],
+        stop: threading.Event | None = None,
+    ) -> None:
+        key = (file.get_hash(), tuple(columns))
+        with _PARQUET_PARTS_GUARD:
+            lock = _PARQUET_PARTS_LOCKS.get(key)
+            if lock is None:
+                _PARQUET_PARTS_LOCKS[key] = lock = threading.Lock()
+        with lock:
+            parts = _PARQUET_PARTS_CACHE.get(key)
+            if parts is None:
+                client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
+                raw_parts = _read_parquet_parts(client, file, columns, stop=stop)
+                if stop is not None and stop.is_set():
+                    return
+                parts = _ParquetParts(raw_parts)
+                _PARQUET_PARTS_CACHE[key] = parts
+            file.__dict__["_parquet_parts"] = parts
 
     def process(self, file: File):
         if file._caching_enabled:
