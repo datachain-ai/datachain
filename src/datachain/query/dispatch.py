@@ -35,6 +35,7 @@ from datachain.utils import (
     flatten,
     safe_closing,
     usable_cpu_count,
+    worker_thread_env,
     worker_thread_limits,
 )
 
@@ -78,17 +79,26 @@ def guided_tasks(
         raise ValueError("n_workers and max_size must be positive")
     it = iter(items)
     remaining, done = total, 0
+    pending: list[Any] = []
     while True:
-        left = remaining if remaining > 0 else done // 2
+        if weight is None:
+            left = remaining if remaining > 0 else done // 2
+        else:
+            left = min(remaining, done) if remaining > 0 else done // 2
         size = max(1, min(max_size, -(-left // (2 * n_workers))))
         if weight is None:
             task = tuple(islice(it, size))
             used = len(task)
         else:
             chunk, used = [], 0
-            for item in it:
+            for item in chain(pending, it):
+                pending.clear()
+                w = weight(item)
+                if chunk and used + w > size:
+                    pending.append(item)
+                    break
                 chunk.append(item)
-                used += weight(item)
+                used += w
                 if used >= size:
                     break
             task = tuple(chunk)
@@ -189,7 +199,7 @@ class UDFDispatcher:
             self._catalog = Catalog(metastore, warehouse, **self.catalog_init_params)
         return self._catalog
 
-    def _create_worker(self) -> "UDFWorker":
+    def _create_worker(self, _worker_index: int = 0) -> "UDFWorker":
         udf: UDFAdapter = loads(self.udf_data)
         # Ensure all registered DataModels have rebuilt schemas in worker processes.
         ModelStore.rebuild_all()
@@ -206,7 +216,11 @@ class UDFDispatcher:
             self.udf_fields,
         )
 
-    def _run_worker(self, n_workers: int) -> None:
+    def _run_worker(
+        self, worker_index_or_n_workers: int, n_workers: int | None = None
+    ) -> None:
+        if n_workers is None:
+            n_workers = worker_index_or_n_workers
         try:
             # This process owns its native pools. Set limits before loading the UDF;
             # the dispatcher must not change the calling process's global state.
@@ -244,11 +258,15 @@ class UDFDispatcher:
             n_workers = 1  # Single-threaded (on this worker)
         n_workers = get_n_workers_from_arg(n_workers)
         if self.is_batching:
-            input_rows = iter(input_rows)
-            first = tuple(islice(input_rows, n_workers))
-            n_workers = max(1, len(first))
-            input_rows = chain(first, input_rows)
-            del first
+            if isinstance(input_rows, Sequence):
+                self.rows_total = sum(map(len, input_rows))
+                n_workers = max(1, min(n_workers, len(input_rows)))
+            else:
+                input_rows = iter(input_rows)
+                first = tuple(islice(input_rows, n_workers))
+                n_workers = max(1, len(first))
+                input_rows = chain(first, input_rows)
+                del first
         else:
             n_workers = max(1, min(n_workers, self.rows_total))
 
@@ -311,7 +329,7 @@ class UDFDispatcher:
         batch_size = self.batching.count if isinstance(self.batching, Batch) else 1
         return max(1, rows_per_task // batch_size)
 
-    def run_udf_parallel(  # noqa: C901, PLR0912
+    def run_udf_parallel(  # noqa: C901, PLR0912, PLR0915
         self,
         n_workers: int,
         input_rows: Iterable["RowsOutput"],
@@ -324,20 +342,40 @@ class UDFDispatcher:
 
         pool = [
             self.ctx.Process(
-                name=f"Worker-UDF-{i}", target=self._run_worker, args=(n_workers,)
+                name=f"Worker-UDF-{i}", target=self._run_worker, args=(i, n_workers)
             )
             for i in range(n_workers)
         ]
         try:
-            for p in pool:
-                p.start()
+            env = worker_thread_env(n_workers)
+            saved = {name: os.environ.get(name) for name in env}
+            try:
+                os.environ.update(env)
+                for p in pool:
+                    p.start()
+            finally:
+                for name, value in saved.items():
+                    if value is None:
+                        os.environ.pop(name, None)
+                    else:
+                        os.environ[name] = value
+
             # Will be set to True when the input is exhausted
             input_finished = False
 
             if self.is_batching:
+                total = (
+                    sum(map(len, input_rows))
+                    if isinstance(input_rows, Sequence)
+                    else self.rows_total
+                )
                 input_rows = iter(input_rows)
                 first = tuple(islice(input_rows, n_workers))
-                remaining = self.rows_total - sum(map(len, first))
+                first_rows = sum(map(len, first))
+                if 0 < total < first_rows and first:
+                    remaining = max(0, total - len(first)) * (first_rows // len(first))
+                else:
+                    remaining = total - first_rows
             else:
                 input_rows = flatten(input_rows)
                 first = ()
@@ -357,13 +395,21 @@ class UDFDispatcher:
             # Stop all workers after the input rows have finished processing
             input_data = chain(input_tasks, [STOP_SIGNAL] * n_workers)
 
-            # Add initial buffer of tasks
-            for _ in range(self.buffer_size):
+            # Add initial buffer of tasks (up to buffer_size rows)
+            buffered_rows = 0
+            for i in range(self.buffer_size):
+                if i >= n_workers and buffered_rows >= self.buffer_size:
+                    break
                 try:
-                    put_into_queue(self.task_queue, next(input_data))
+                    task = next(input_data)
                 except StopIteration:
                     input_finished = True
                     break
+                put_into_queue(self.task_queue, task)
+                if task is not STOP_SIGNAL:
+                    buffered_rows += (
+                        sum(map(len, task)) if self.is_batching else len(task)
+                    )
 
             # Process all tasks
             while n_workers > 0:

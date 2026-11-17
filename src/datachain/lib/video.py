@@ -392,7 +392,7 @@ def sample_video_frames(
             start = _stream_start_time(stream)
             for frame_index, frame in enumerate(container.decode(stream)):
                 timestamp = _frame_timestamp(frame, frame_index, stream_fps, start)
-                if frame_index == 0 and stream.start_time is None:
+                if frame_index == 0:
                     start = timestamp
                 while (timestamp - start) * fps + FRAME_INDEX_EPSILON >= sample_index:
                     result = VideoFrame(

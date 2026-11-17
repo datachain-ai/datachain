@@ -332,7 +332,8 @@ def test_worker_start_failure_cleans_up_and_restores_environment(
     second.is_alive.return_value = False
 
     def start():
-        assert dict(os.environ) == before
+        assert os.environ["OMP_NUM_THREADS"] == "1"
+        assert os.environ["DATACHAIN_WORKER_THREADS"] == "1"
 
     first.start.side_effect = start
     second.start.side_effect = OSError("worker could not start")
@@ -443,3 +444,36 @@ def test_udf_entrypoint_restores_only_injected_safe_path(monkeypatch, mocker, in
         udf_entrypoint()
     assert ("PYTHONSAFEPATH" in os.environ) is not injected
     assert "_DATACHAIN_UDF_SAFE_PATH" not in os.environ
+
+
+def test_skewed_partitions_do_not_pack_all_small_partitions_with_huge_tail():
+    partitions = [[i] * 10 for i in range(20)] + [list(range(10_000))]
+    tasks = list(guided_tasks(partitions[4:], 10_160, 4, 10_000, weight=len))
+    assert [p for task in tasks for p in task] == partitions[4:]
+    # The trailing 10,000-row partition stays in its own task, and the 16 small
+    # partitions are spread across multiple tasks rather than lumped into one.
+    assert tasks[-1] == (partitions[-1],)
+    assert len(tasks) >= 8
+
+
+def test_parallel_dispatch_buffers_without_draining_entire_input_iterator(
+    dispatcher, mocker
+):
+    dispatcher.rows_total = 100_000
+    pulled = 0
+
+    def pages():
+        nonlocal pulled
+        for i in range(10):
+            pulled += 1
+            yield list(range(i * 10_000, (i + 1) * 10_000))
+
+    task_queue, done_queue = mocker.Mock(), mocker.Mock()
+    done_queue.get_nowait.side_effect = [{"status": FINISHED_STATUS}] * 4
+    mocker.patch.object(dispatcher.ctx, "Queue", side_effect=[task_queue, done_queue])
+    mocker.patch.object(dispatcher.ctx, "Process")
+    mocker.patch.object(dispatcher, "_shutdown_workers")
+
+    dispatcher.run_udf_parallel(4, pages(), None, None, None)
+
+    assert pulled < 10

@@ -578,7 +578,7 @@ def worker_thread_limits(n_workers: int) -> Iterator[None]:
             env[api_env.get(pool["internal_api"], WORKER_THREADS_ENV)].split(",")[0]
         )
         prefix = pool["prefix"]
-        limits[prefix] = min(limits.get(prefix, budget), pool["num_threads"])
+        limits[prefix] = min(limits.get(prefix, budget), budget, pool["num_threads"])
     saved = {name: os.environ.get(name) for name in env}
     try:
         os.environ.update(env)

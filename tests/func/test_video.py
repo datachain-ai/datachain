@@ -1408,8 +1408,9 @@ def test_sample_frames_selects_first_frame_at_or_after_target(
     )
 
 
+@pytest.mark.parametrize("start_time", [None, 0])
 def test_sample_frames_with_unknown_start_begin_at_the_first_frame(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, start_time
 ):
     path = tmp_path / "video.mov"
     _write_single_stream_video(
@@ -1422,7 +1423,7 @@ def test_sample_frames_with_unknown_start_begin_at_the_first_frame(
         with original_open(*args, **kwargs) as container:
             stream = container.streams.video[0]
             metadata = SimpleNamespace(
-                start_time=None,
+                start_time=start_time,
                 time_base=stream.time_base,
                 average_rate=stream.average_rate,
                 base_rate=stream.base_rate,

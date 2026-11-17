@@ -860,13 +860,16 @@ def test_worker_thread_limits_handle_unknown_and_duplicate_native_pools(monkeypa
         {"prefix": "unknown", "internal_api": "openmp", "num_threads": None},
         {"prefix": "libgomp", "internal_api": "openmp", "num_threads": 1},
         {"prefix": "libgomp", "internal_api": "openmp", "num_threads": 8},
+        {"prefix": "shared", "internal_api": "openmp", "num_threads": 8},
+        {"prefix": "shared", "internal_api": "mkl", "num_threads": 8},
     ]
     controller.limit.return_value = nullcontext()
     monkeypatch.setattr(threadpoolctl, "ThreadpoolController", lambda: controller)
     monkeypatch.setattr(utils, "usable_cpu_count", lambda: 8)
+    monkeypatch.setenv("MKL_NUM_THREADS", "2")
     with utils.worker_thread_limits(2):
         assert utils.worker_threads() is not None
-    controller.limit.assert_called_once_with(limits={"libgomp": 1})
+    controller.limit.assert_called_once_with(limits={"libgomp": 1, "shared": 2})
 
 
 @pytest.mark.parametrize("name", ["OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS"])
