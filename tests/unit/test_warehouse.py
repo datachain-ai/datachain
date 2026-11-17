@@ -1,23 +1,37 @@
 import base64
 import json
+import os
+import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime, timedelta, timezone
 from enum import StrEnum
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
+import pyarrow as pa
 import pytest
 import sqlalchemy as sa
 
 import datachain as dc
-from datachain.data_storage.codec import check_value
+from datachain.data_storage.codec import RowCodec, TypeCodec, check_value
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SQLiteWarehouse
+from datachain.data_storage.sqlite_arrow import SQLiteArrowWriter
 from datachain.lib.file import File
 from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.udf import JsonSerializationError, OutputRows, UdfError
 from datachain.sql.sqlite.base import adapt_datetime
-from datachain.sql.types import JSON, Array, DateTime, Float, String
+from datachain.sql.types import (
+    JSON,
+    Array,
+    Binary,
+    Boolean,
+    DateTime,
+    Float,
+    Int64,
+    String,
+)
 from tests.utils import skip_if_not_sqlite
 
 
@@ -348,14 +362,13 @@ DATETIMES = [
 @pytest.mark.parametrize("value", DATETIMES)
 def test_codec_stores_datetimes_as_the_adapter_text(sqlite_db, value):
     # Filter parameters still go through adapt_datetime: stored text must match it.
-    import pyarrow as pa
-
     codec = SQLiteWarehouse(sqlite_db).row_codec([DateTime()])
 
     assert codec.encode((value,)) == (adapt_datetime(value),)
-    assert codec.encode_arrow(
+    encoded = codec.encode_arrow(
         pa.record_batch([pa.array([value, None])], names=["t"])
-    ) == [(adapt_datetime(value),), (None,)]
+    )
+    assert encoded.column(0).to_pylist() == [adapt_datetime(value), None]
 
 
 class _StrEnum(StrEnum):
@@ -444,3 +457,94 @@ def test_check_value_converts_array_items(value, col_type, expected):
 def test_check_value_does_not_re_encode_dict_array_items():
     value = [{"a": 1}, {"b": 2}]
     assert check_value(Array(JSON()))(value) == value
+
+
+def test_encode_arrow_keeps_arrow_batch_when_all_columns_support_it():
+    codecs = [
+        TypeCodec(
+            kept=frozenset({int}),
+            encode=int,
+            default=False,
+            encode_column=lambda c: c.cast(pa.int64()),
+        ),
+        TypeCodec(
+            kept=frozenset({str}),
+            encode=str,
+            default="",
+            encode_column=lambda c: c.cast(pa.string()),
+        ),
+    ]
+    batch = pa.record_batch(
+        [pa.array([1, None], type=pa.int64()), pa.array(["a", None])],
+        names=["b", "s"],
+    )
+    encoded = RowCodec(codecs).encode_arrow(batch)
+    assert isinstance(encoded, pa.RecordBatch)
+    assert [c.to_pylist() for c in encoded.columns] == [[1, 0], ["a", ""]]
+
+    # Missing trailing column stays in Arrow when its codec supports pa.nulls().
+    short = pa.record_batch([pa.array([1, None], type=pa.int64())], names=["b"])
+    encoded_short = RowCodec(codecs).encode_arrow(short)
+    assert isinstance(encoded_short, pa.RecordBatch)
+    assert [c.to_pylist() for c in encoded_short.columns] == [[1, 0], ["", ""]]
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize("nullable", [False, True])
+def test_native_arrow_matches_scalar_codec_storage(warehouse_tmpfile, nullable, mocker):
+    wh = warehouse_tmpfile
+    wh.ARROW_WRITER_THRESHOLD = 1024
+    specs = [
+        (String, pa.array(["", "a\x00b", "é", None])),
+        (String, pa.array(["one", None, "two", "one"]).dictionary_encode()),
+        (String, pa.nulls(4)),
+        (DateTime, pa.nulls(4)),
+        (Binary, pa.array([b"", b"a\x00b", b"x", None])),
+        (Boolean, pa.array([True, False, None, True])),
+        (Int64, pa.array([-(2**63), 2**63 - 1, None, 0])),
+        (Float, pa.array([float("nan"), float("inf"), None, -0.0])),
+        (Float, pa.array([1.25, None, 2.5, 0], type=pa.float32())),
+        (
+            DateTime,
+            pa.array([-1, 0, 1234567, None], type=pa.timestamp("us", "Asia/Kolkata")),
+        ),
+        (JSON, pa.array(['{"a": 1}', "null", None, "{}"])),
+    ]
+    columns = [
+        sa.Column(f"c{i}", t.as_nullable(t) if nullable else t())
+        for i, (t, _) in enumerate(specs)
+    ]
+    batch = pa.record_batch([a for _, a in specs], names=[c.name for c in columns])
+    batch = pa.Table.from_batches([batch] * 512).combine_chunks().to_batches()[0]
+    codec = wh.row_codec(columns)
+    native = codec.encode_arrow(batch)
+    assert isinstance(native, pa.RecordBatch)
+    expected = [
+        codec.encode(row)
+        for row in zip(*(a.to_pylist() for _, a in specs), strict=True)
+    ] * 512
+    reference = wh.create_dataset_rows_table("scalar_reference", columns=columns)
+    actual = wh.create_dataset_rows_table(
+        "arrow_actual", columns=[sa.Column(c.name, c.type) for c in columns]
+    )
+    try:
+        native_write = mocker.spy(SQLiteArrowWriter, "write")
+        with wh.writer(reference, batch.schema.names) as w:
+            w.extend(expected)
+        with wh.writer(actual, batch.schema.names) as w:
+            w.append_arrow(native)
+        if os.name == "nt":
+            native_write.assert_not_called()
+        else:
+            native_write.assert_called_once()
+        # Raw sqlite values and storage classes, bypassing registered converters.
+        fields = ", ".join(f'"{c.name}", typeof("{c.name}")' for c in columns)
+        with closing(sqlite3.connect(wh.db.db_file)) as db:
+            actual_sql = f"SELECT {fields} FROM arrow_actual"  # noqa: S608
+            expected_sql = f"SELECT {fields} FROM scalar_reference"  # noqa: S608
+            assert (
+                db.execute(actual_sql).fetchall() == db.execute(expected_sql).fetchall()
+            )
+    finally:
+        wh.db.drop_table(reference)
+        wh.db.drop_table(actual)

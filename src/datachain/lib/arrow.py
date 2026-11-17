@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, TypeGuard
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 from fsspec.implementations.local import LocalFileSystem
@@ -333,7 +334,7 @@ class ArrowGenerator(Generator):
                 n = batch.num_rows
                 columns = [
                     *(pa.repeat(v, n) for v in file_values),
-                    pa.array(range(start, start + n)),
+                    pa.array(np.arange(start, start + n, dtype=np.int64)),
                     pa.repeat(stored_options, n),
                     *columns,
                 ]

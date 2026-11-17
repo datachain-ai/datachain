@@ -1,8 +1,9 @@
+import importlib.util
 import logging
 import os
 import sqlite3
 from collections.abc import Callable, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from functools import cached_property, partial, wraps
 from time import sleep
 from typing import TYPE_CHECKING, Any
@@ -31,6 +32,7 @@ from datachain.data_storage import AbstractDBMetastore, AbstractWarehouse
 from datachain.data_storage.codec import (
     TypeCodec,
     base_decode,
+    cast_arrow_column,
     compose,
     decode_datetime,
     value_codec,
@@ -58,6 +60,7 @@ from datachain.sql.types import Array, DateTime
 from datachain.utils import DataChainDir
 
 if TYPE_CHECKING:
+    import pyarrow as pa
     from sqlalchemy import CTE, Subquery
     from sqlalchemy.dialects.sqlite import Insert
     from sqlalchemy.engine.base import Engine
@@ -67,6 +70,9 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger("datachain")
+_HAS_ADBC = (
+    os.name != "nt" and importlib.util.find_spec("adbc_driver_sqlite") is not None
+)
 
 RETRY_START_SEC = 0.01
 RETRY_MAX_TIMES = 10
@@ -759,12 +765,14 @@ _MIN_DATETIME_US = -62_135_596_800_000_000  # 0001-01-01 00:00:00
 _MAX_DATETIME_US = 253_402_300_799_999_999  # 9999-12-31 23:59:59.999999
 
 
-def _encode_datetime_column(column: Any) -> list[Any] | None:
+def _encode_datetime_column(column: Any) -> Any:
     """An Arrow timestamp column as the text `adapt_datetime` stores; None for
     any other column."""
     import pyarrow as pa
     import pyarrow.compute as pc
 
+    if pa.types.is_null(column.type):
+        return column.cast(pa.string())
     if not pa.types.is_timestamp(column.type):
         return None
     # Arrow holds aware timestamps as UTC instants: without the timezone they give
@@ -784,9 +792,61 @@ def _encode_datetime_column(column: Any) -> list[Any] | None:
         )
         usts = i64.view(pa.timestamp("us"))
     text = usts.cast(pa.string())
-    return pc.replace_substring_regex(
-        text, pattern=r"\.000000$", replacement=""
-    ).to_pylist()
+    return pc.replace_substring_regex(text, pattern=r"\.000000$", replacement="")
+
+
+def _encode_scalar_column(python_type: type, column: Any) -> Any:
+    """Only accept Arrow types whose Python values this scalar codec accepts."""
+    import pyarrow as pa
+
+    target = {str: pa.string(), bytes: pa.binary(), float: pa.float64()}.get(
+        python_type, pa.int64()
+    )
+    return cast_arrow_column(python_type, target, column)
+
+
+class _SQLiteArrowSink:
+    """Native SQLite Arrow writer for one table, spawned past the row threshold."""
+
+    def __init__(self, warehouse: "SQLiteWarehouse", table: Table) -> None:
+        self.warehouse = warehouse
+        self.table = table
+        self.writer: Any = None
+        self.disabled = False
+        self.rows_seen = 0
+
+    def write(self, batch: "pa.RecordBatch") -> None:
+        from datachain.data_storage.sqlite_arrow import SQLiteArrowWriter
+
+        wh = self.warehouse
+        self.rows_seen += batch.num_rows
+        if self.disabled or wh.db.db.in_transaction:
+            wh.insert_arrow(self.table, batch)
+            return
+        if self.writer is None:
+            # Starting a process costs more than binding a small batch.
+            if (
+                self.rows_seen < wh.ARROW_WRITER_THRESHOLD
+                or not _HAS_ADBC
+                or wh.db.db_file == ":memory:"
+            ):
+                wh.insert_arrow(self.table, batch)
+                return
+            assert wh.db.db_file is not None
+            self.writer = SQLiteArrowWriter(wh.db.db_file, self.table.name)
+        try:
+            self.writer.write(batch)
+        except sqlite3.OperationalError as exc:
+            if self.writer.ready or "exited before acknowledging" not in str(exc):
+                raise
+            self.close()
+            self.disabled = True
+            wh.insert_arrow(self.table, batch)
+
+    def close(self) -> None:
+        if self.writer is not None:
+            writer, self.writer = self.writer, None
+            writer.close()
 
 
 class SQLiteWarehouse(AbstractWarehouse):
@@ -794,6 +854,8 @@ class SQLiteWarehouse(AbstractWarehouse):
     SQLite Warehouse uses SQLite3 for storing indexed data locally.
     This is currently used for the local cli.
     """
+
+    ARROW_WRITER_THRESHOLD: int = 500_000
 
     db: SQLiteDatabaseEngine
 
@@ -875,13 +937,19 @@ class SQLiteWarehouse(AbstractWarehouse):
         ledger: Sequence[tuple] = (),
     ) -> None:
         quote = self.db.dialect.identifier_preparer.quote
-        with self.db.transaction():
+        ctx = nullcontext() if self.db.db.in_transaction else self.db.transaction()
+        with ctx:
             if rows:  # an empty block is a ledger-only flush
                 self.db.executemany(_insert_sql(quote, table.name, columns), rows)
             if ledger:
                 assert parts is not None
                 sql = _insert_sql(quote, parts.name, LEDGER_COLUMNS)
                 self.db.executemany(sql, ledger)
+
+    def arrow_writer(self, table: Table) -> _SQLiteArrowSink:
+        # ADBC embeds a different SQLite library. Only a separate process may
+        # open the live file alongside sqlite3 without breaking POSIX locks.
+        return _SQLiteArrowSink(self, table)
 
     @retry_sqlite_locks
     def claim_writer_no(self, parts: Table) -> int:
@@ -924,6 +992,14 @@ class SQLiteWarehouse(AbstractWarehouse):
             )
         if isinstance(sql_type, Array):
             return codec._replace(encode=partial(compose, adapt_array, codec.encode))
+        if codec.kept and (kept := next(iter(codec.kept))) in (
+            str,
+            bytes,
+            bool,
+            int,
+            float,
+        ):
+            return codec._replace(encode_column=partial(_encode_scalar_column, kept))
         return codec
 
     def export_dataset_table(

@@ -42,6 +42,8 @@ if TYPE_CHECKING:
     from contextlib import AbstractContextManager
     from typing import Self
 
+    import pyarrow as pa
+
     from datachain.cache import Cache
     from datachain.catalog import Catalog
     from datachain.data_storage import AbstractWarehouse
@@ -181,7 +183,7 @@ UDFOutputSpec = Mapping[str, ColumnType]
 # implementing it: the output values in their stored form, then the sys values.
 UDFResult = tuple[Any, ...]
 # A gen or agg result: the rows of one part (an input row, a partition) and its key
-UDFPart = tuple[Any, Iterable[UDFResult]]
+UDFPart = tuple[Any, "Iterable[UDFResult | pa.RecordBatch]"]
 
 PROGRESS_INTERVAL = 0.1  # seconds
 
@@ -281,8 +283,8 @@ class OutputRows:
                 e, self.names, self.schema, self.udf_kind, num_values
             ) from e.__cause__
 
-    def encode_batch(self, batch: Any) -> list[tuple]:
-        """An Arrow batch of leaf columns as stored rows."""
+    def encode_batch(self, batch: "pa.RecordBatch") -> "pa.RecordBatch | list[tuple]":
+        """An Arrow batch of leaf columns as stored columns or tuples."""
         try:
             return self.codec.encode_arrow(batch)
         except RowEncodeError as e:
@@ -1045,7 +1047,7 @@ class Generator(UDFBase):
                         column.split(DEFAULT_DELIMITER)[0], "gen()"
                     )
 
-        def _stored_rows(result_objs, key) -> Iterator[tuple]:
+        def _stored_rows(result_objs, key) -> "Iterator[UDFResult | pa.RecordBatch]":
             pa = sys.modules.get("pyarrow")  # batches come only from arrow readers
             for result_obj in result_objs:
                 if pa is not None and isinstance(result_obj, pa.RecordBatch):
@@ -1053,7 +1055,11 @@ class Generator(UDFBase):
                         columns = (c.to_pylist() for c in result_obj.columns)
                         for values in zip(*columns, strict=True):
                             _check_delta_key(key, values)
-                    yield from output_rows.encode_batch(result_obj)
+                    encoded = output_rows.encode_batch(result_obj)
+                    if isinstance(encoded, pa.RecordBatch):
+                        yield encoded
+                    else:
+                        yield from encoded
                     continue
                 values = output_rows.flatten(result_obj)
                 if key is not None:

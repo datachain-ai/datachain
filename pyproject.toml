@@ -61,6 +61,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+adbc = [
+  "adbc-driver-sqlite>=1.0; sys_platform != 'win32'"
+]
 docs = [
   "mkdocs>=1.5.2",
   "mkdocs-gen-files>=0.5.0",
@@ -106,7 +109,7 @@ zarr = [
   "zarr>=3.0.0"
 ]
 tests = [
-  "datachain[torch,audio,remote,vector,hf,video,postgres,zarr]",
+  "datachain[adbc,torch,audio,remote,vector,hf,video,postgres,zarr]",
   "pytest>=8,<9.3",
   "pytest-asyncio",
   "pytest-sugar>=0.9.6",
