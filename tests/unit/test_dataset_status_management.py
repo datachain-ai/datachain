@@ -1609,42 +1609,102 @@ def test_delayed_reservation_release_does_not_delete_replacement(
             "b", "", query_type=JobQueryType.PYTHON, status=JobStatus.RUNNING
         )
     )
+    from datachain.query.session import Session
+
     active_job = [job_a]
-    monkeypatch.setattr(test_session, "get_or_create_job", lambda: active_job[0])
+    Session._CURRENT_JOB = job_a
+    monkeypatch.setattr(Session, "get_or_create_job", lambda self: active_job[0])
 
     complete = catalog.complete_dataset_version
-    drop_rows = catalog.warehouse.drop_dataset_rows_table
+    release = catalog.release_reservation
 
     def fail_job_a(dataset, version, **kwargs):
-        if active_job[0].id == job_a.id:
+        if active_job[0].id == job_a.id and dataset.name == "race":
             raise RuntimeError("job A failed before completion")
         return complete(dataset, version, **kwargs)
 
-    def pause_before_drop(dataset, version):
-        if active_job[0].id == job_a.id and version == "2.0.0":
-            ds = catalog.get_dataset("race", versions=None, include_incomplete=True)
-            assert (
-                catalog.remove_dataset_version(ds, "2.0.0", keep_metadata=False)
-                is False
-            )
-        return drop_rows(dataset, version)
+    cleaned = []
+
+    def delayed_release(dataset, version, job_id=None):
+        if job_id == job_a.id and version == "2.0.0":
+            from datachain.query.session import Session
+
+            # While job A's release_reservation is delayed, GC cleans up job A's
+            # reservation and job B publishes a replacement 2.0.0.
+            metastore.set_job_status(job_a.id, JobStatus.FAILED)
+            cleaned.append(catalog.cleanup_dataset_versions())
+            active_job[0] = job_b
+            Session._CURRENT_JOB = job_b
+            dc.read_values(v=[20], session=test_session).save("race", version="2.0.0")
+            active_job[0] = job_a
+            Session._CURRENT_JOB = job_a
+        return release(dataset, version, job_id)
 
     monkeypatch.setattr(catalog, "complete_dataset_version", fail_job_a)
-    monkeypatch.setattr(catalog.warehouse, "drop_dataset_rows_table", pause_before_drop)
+    monkeypatch.setattr(catalog, "release_reservation", delayed_release)
 
     with pytest.raises(RuntimeError, match="job A failed"):
         dc.read_values(v=[2], session=test_session).save("race", version="2.0.0")
 
-    active_job[0] = job_b
-    dc.read_values(v=[20], session=test_session).save("race", version="2.0.0")
-
-    # Even if a stale release_reservation runs again with job A's old record,
-    # job B's completed 2.0.0 remains intact.
+    assert cleaned == [1]
+    # Job B's completed 2.0.0 and its rows remain intact after A's delayed release.
     ds_b = catalog.get_dataset("race", versions=None, include_incomplete=True)
     assert ds_b.get_version("2.0.0").status == DatasetStatus.COMPLETE
     assert dc.read_dataset("race", version="2.0.0", session=test_session).to_values(
         "v"
     ) == [20]
+
+
+def test_removing_claim_recovers_after_error_or_dead_owner(test_session, monkeypatch):
+    import socket
+    import time
+
+    from datachain.data_storage.job import JobQueryType, JobStatus
+
+    catalog = test_session.catalog
+    metastore = catalog.metastore
+    job_id = metastore.create_job(
+        "rm", "", query_type=JobQueryType.PYTHON, status=JobStatus.FAILED
+    )
+    job = metastore.get_job(job_id)
+    monkeypatch.setattr(test_session, "get_or_create_job", lambda: job)
+
+    dc.read_values(v=[1], session=test_session).save("recover_err", version="1.0.0")
+    drop_rows = catalog.warehouse.drop_dataset_rows_table
+    failed_once = False
+
+    def fail_first_drop(dataset, version):
+        nonlocal failed_once
+        if dataset.name == "recover_err" and not failed_once:
+            failed_once = True
+            raise RuntimeError("transient drop failure")
+        return drop_rows(dataset, version)
+
+    monkeypatch.setattr(catalog.warehouse, "drop_dataset_rows_table", fail_first_drop)
+    ds = catalog.get_dataset("recover_err", versions=["1.0.0"])
+    with pytest.raises(RuntimeError, match="transient drop failure"):
+        catalog.remove_dataset_version(ds, "1.0.0", keep_metadata=False)
+
+    # Freshly fetched record retries and completes removal
+    ds_retry = catalog.get_dataset(
+        "recover_err", versions=["1.0.0"], include_incomplete=True
+    )
+    assert ds_retry.get_version("1.0.0").status == DatasetStatus.REMOVING
+    assert catalog.remove_dataset_version(ds_retry, "1.0.0", keep_metadata=False) is True
+
+    # Simulate a process that died after persisting its REMOVING claim
+    dc.read_values(v=[2], session=test_session).save("recover_dead", version="1.0.0")
+    ds_dead = catalog.get_dataset("recover_dead", versions=["1.0.0"])
+    dead_claim = f"removing:{socket.gethostname()}:99999999:{int(time.time())}:deadbeef"
+    metastore.update_dataset_version(
+        ds_dead,
+        "1.0.0",
+        status=DatasetStatus.REMOVING,
+        removed_at=datetime.now(UTC),
+        pending_metadata_drop=True,
+        content_hash=dead_claim,
+    )
+    assert catalog.cleanup_dataset_versions() == 1
 
 
 def test_claim_version_recreates_dataset_deleted_by_failed_first_save(

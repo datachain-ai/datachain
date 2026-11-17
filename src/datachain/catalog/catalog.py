@@ -3,6 +3,7 @@ import logging
 import os
 import os.path
 import posixpath
+import socket
 import sqlite3
 import sys
 import time
@@ -14,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 from fnmatch import fnmatchcase
 from functools import reduce
 from typing import TYPE_CHECKING, Any, Self
+from uuid import uuid4
 
 import sqlalchemy as sa
 from sqlalchemy import Column
@@ -93,6 +95,35 @@ PULL_DATASET_CHUNK_TIMEOUT = 3600
 PULL_DATASET_SLEEP_INTERVAL = 0.1  # sleep time while waiting for chunk to be available
 PULL_DATASET_CHECK_STATUS_INTERVAL = 20  # interval to check export status in Studio
 _MAX_VERSION_CLAIM_RETRIES = 20
+_ACTIVE_REMOVALS: set[str] = set()
+_REMOVAL_CLAIM_TTL_SEC = 300
+
+
+def _pid_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _is_active_removal_claim(claim: str | None, version_uuid: str) -> bool:
+    if not claim or not claim.startswith("removing:"):
+        return False
+    try:
+        _, host, pid_str, ts_str, _ = claim.split(":", 4)
+        pid, ts = int(pid_str), int(ts_str)
+    except ValueError:
+        return False
+    if time.time() - ts > _REMOVAL_CLAIM_TTL_SEC:
+        return False
+    if host == socket.gethostname():
+        if pid == os.getpid():
+            return version_uuid in _ACTIVE_REMOVALS
+        return _pid_is_alive(pid)
+    return True
 
 
 def _round_robin_batch(urls: list[str], num_workers: int) -> list[list[str]]:
@@ -1346,17 +1377,9 @@ class Catalog:
         another caller had already claimed it.
         """
         v = dataset.get_version(version)
-
-        claimed = self.metastore.update_dataset_version(
-            dataset,
-            version,
-            expected_status=expected_status,
-            expected_job_id=expected_job_id,
-            status=DatasetStatus.REMOVING,
-            removed_at=v.removed_at or datetime.now(UTC),
-            pending_metadata_drop=not keep_metadata,
-        )
-        if claimed is None:
+        if v.status == DatasetStatus.REMOVING and _is_active_removal_claim(
+            v.content_hash, v.uuid
+        ):
             logger.debug(
                 "Skipped remove of %s@%s: another caller is already handling it",
                 dataset.name,
@@ -1364,18 +1387,52 @@ class Catalog:
             )
             return False
 
-        self.warehouse.drop_dataset_rows_table(dataset, version)
-
-        if keep_metadata:
-            self.metastore.update_dataset_version(
+        claim = f"removing:{socket.gethostname()}:{os.getpid()}:{int(time.time())}:{uuid4().hex[:8]}"
+        _ACTIVE_REMOVALS.add(v.uuid)
+        try:
+            claimed = self.metastore.update_dataset_version(
                 dataset,
                 version,
-                expected_status=DatasetStatus.REMOVING,
-                status=DatasetStatus.REMOVED,
+                expected_status=expected_status,
+                expected_job_id=expected_job_id,
+                status=DatasetStatus.REMOVING,
+                removed_at=v.removed_at or datetime.now(UTC),
+                pending_metadata_drop=not keep_metadata,
+                content_hash=claim,
             )
-        else:
-            self.metastore.remove_dataset_version(dataset, version)
-        return True
+            if claimed is None:
+                logger.debug(
+                    "Skipped remove of %s@%s: another caller is already handling it",
+                    dataset.name,
+                    version,
+                )
+                return False
+
+            try:
+                self.warehouse.drop_dataset_rows_table(dataset, version)
+
+                if keep_metadata:
+                    self.metastore.update_dataset_version(
+                        dataset,
+                        version,
+                        expected_status=DatasetStatus.REMOVING,
+                        status=DatasetStatus.REMOVED,
+                        content_hash=None,
+                    )
+                else:
+                    self.metastore.remove_dataset_version(dataset, version)
+            except BaseException:
+                with suppress(Exception):
+                    self.metastore.update_dataset_version(
+                        dataset,
+                        version,
+                        expected_status=DatasetStatus.REMOVING,
+                        content_hash=None,
+                    )
+                raise
+            return True
+        finally:
+            _ACTIVE_REMOVALS.discard(v.uuid)
 
     def _remove_versions(
         self,
@@ -2580,9 +2637,13 @@ class Catalog:
 
         # Remove output/partial tables using exact names from checkpoints
         output_tables = [ch.table_name for ch in checkpoints]
-        output_tables += [
-            parts_table_name(ch.table_name) for ch in checkpoints if ch.partial
-        ]
+        for ch in checkpoints:
+            if ch.partial:
+                output_tables.append(parts_table_name(ch.table_name))
+                output_tables.extend(
+                    self.warehouse.db.list_tables(pattern=f"{ch.table_name}_%")
+                )
+        output_tables = list(dict.fromkeys(output_tables))
         if output_tables:
             logger.info(
                 "Removing %d UDF output tables: %s", len(output_tables), output_tables
