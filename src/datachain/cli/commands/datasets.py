@@ -60,7 +60,7 @@ def list_datasets(
     name: str | None = None,
     include_removed: bool = False,
 ) -> None:
-    all, local, studio = determine_flavors(studio, local, all, is_token_set())
+    all, local, studio = determine_flavors(studio, local, all, is_token_set(team))
     if name:
         latest_only = False
 
@@ -213,7 +213,7 @@ def rm_dataset(
         # removing Studio dataset from CLI
         from datachain.studio import remove_studio_dataset
 
-        if is_token_set():
+        if is_token_set(team):
             remove_studio_dataset(
                 team, name, namespace_name, project_name, version, force
             )
@@ -251,7 +251,7 @@ def edit_dataset(
     else:
         from datachain.studio import edit_studio_dataset
 
-        if is_token_set():
+        if is_token_set(team):
             edit_studio_dataset(
                 team, name, namespace_name, project_name, new_name, description, attrs
             )

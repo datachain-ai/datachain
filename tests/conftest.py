@@ -1063,7 +1063,7 @@ def dataset_rows():
 
 @pytest.fixture
 def studio_token():
-    studio_login()
+    studio_login(team="team_name")
 
 
 @pytest.fixture

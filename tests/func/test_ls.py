@@ -16,11 +16,6 @@ from datachain.lib.listing import LISTING_PREFIX, _sanitize_ds_name
 from tests.utils import studio_login
 
 
-@pytest.fixture
-def studio_config(global_config_dir):
-    studio_login()
-
-
 def same_lines(lines1, lines2):
     def _split_lines(lines):
         return [line.strip() for line in sorted(lines.split("\n"))]
@@ -259,7 +254,7 @@ dog3
 """
 
 
-def test_ls_remote_sources(cloud_type, capsys, monkeypatch, studio_config):
+def test_ls_remote_sources(cloud_type, capsys, monkeypatch, studio_token):
     src = f"{cloud_type}://bucket"
     with monkeypatch.context() as m:
         m.setattr("requests.request", mock_post)
@@ -268,7 +263,7 @@ def test_ls_remote_sources(cloud_type, capsys, monkeypatch, studio_config):
     assert captured.out == ls_remote_sources_output.format(src=src)
 
 
-def test_ls_all_labels_local_and_studio_sections(capsys, monkeypatch, studio_config):
+def test_ls_all_labels_local_and_studio_sections(capsys, monkeypatch, studio_token):
     ls_module = importlib.import_module("datachain.cli.commands.ls")
     with monkeypatch.context() as m:
         m.setattr(ls_module, "ls_local", lambda *a, **kw: print("local-data"))
@@ -277,8 +272,18 @@ def test_ls_all_labels_local_and_studio_sections(capsys, monkeypatch, studio_con
     assert capsys.readouterr().out == "Local:\nlocal-data\n\nStudio:\nstudio-data\n"
 
 
+def test_ls_all_lists_local_only_without_a_token_for_the_team(capsys, monkeypatch):
+    studio_login(teams=["team-a"])
+    ls_module = importlib.import_module("datachain.cli.commands.ls")
+    with monkeypatch.context() as m:
+        m.setattr(ls_module, "ls_local", lambda *a, **kw: print("local-data"))
+        m.setattr(ls_module, "ls_remote", lambda *a, **kw: print("studio-data"))
+        ls(["s3://x"], all=True, team="team-b")
+    assert capsys.readouterr().out == "local-data\n"
+
+
 def test_ls_default_only_local_when_logged_into_studio(
-    capsys, monkeypatch, studio_config
+    capsys, monkeypatch, studio_token
 ):
     ls_module = importlib.import_module("datachain.cli.commands.ls")
     called = {"local": 0, "remote": 0}

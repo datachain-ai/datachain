@@ -14,6 +14,7 @@ from typing_extensions import TypedDict
 from datachain.config import Config
 from datachain.dataset import DatasetRecord
 from datachain.error import DataChainError
+from datachain.remote.credentials import resolve_token
 from datachain.utils import STUDIO_URL, retry_with_backoff
 
 T = TypeVar("T")
@@ -80,10 +81,12 @@ def get_studio_team(config: dict | None = None) -> str | None:
     return get_studio_env_variable("TEAM") or config.get("team")
 
 
-def is_token_set() -> bool:
-    from datachain.remote.credentials import has_login
+def is_token_set(team: str | None = None) -> bool:
+    """True if a token is available for the current Studio and this team.
 
-    return has_login(get_studio_url())
+    Without a team, the default team is used.
+    """
+    return resolve_token(get_studio_url(), team or get_studio_team()) is not None
 
 
 def _parse_dates(obj: dict, date_fields: list[str]):
@@ -118,8 +121,6 @@ class StudioClient:
 
     @property
     def token(self) -> str:
-        from datachain.remote.credentials import resolve_token
-
         url = get_studio_url(self.config)
         team = self._team or get_studio_team(self.config)
         token = resolve_token(url, team)

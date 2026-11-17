@@ -11,12 +11,14 @@ usage: datachain auth logout [-h] [-v] [-q] [--local] [--team TEAM]
 
 ## Description
 
-This command revokes the tokens saved for the current Studio on Studio and removes them. By default, it removes your global tokens; use `--local` to remove the project's tokens instead. With `--team`, only the token scoped to that team is removed. If that token is scoped to more teams, you are logged out of all of them.
+This command logs out of Studio: it revokes the saved tokens, so Studio no longer accepts them, and removes them from the credentials file. If Studio no longer accepts a token, for example because it was already revoked, the token is only removed from the file.
+
+By default, it removes your tokens for the current Studio. Use `--local` to remove the project's tokens instead. With `--team`, only the token for that team is removed. If that token is used for more teams, it is removed for all of them.
 
 ## Options
 
 * `--local` - Remove the project's tokens instead of your global tokens.
-* `--team TEAM` - Remove only the token scoped to this team.
+* `--team TEAM` - Remove only the token for this team.
 * `-H HOSTNAME`, `--hostname HOSTNAME` - The Studio to log out from. Defaults to the current Studio.
 * `-h`, `--help` - Show the help message and exit.
 * `-v`, `--verbose` - Be verbose.

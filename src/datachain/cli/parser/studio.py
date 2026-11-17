@@ -87,7 +87,7 @@ def add_auth_parser(subparsers, parent_parser) -> None:
     login_parser.add_argument(
         "--expires-in",
         type=int,
-        default=None,
+        default=365,
         help="Token expiration in days (default: 365)",
     )
 
