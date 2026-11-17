@@ -212,7 +212,9 @@ def check_list(
         )
     if item_type is dict:
         first = next((v for v in value if v is not None), None)
-        if json_array_text or (first is not None and not isinstance(first, dict)):
+        if json_array_text or (
+            first is not None and not isinstance(first, (dict, BaseModel))
+        ):
             # Array(JSON) stores each item as JSON text when json_array_text=True
             # or in the legacy non-dict shape; "null" decodes to None.
             return [encode_json(v, array_json_key) for v in value]
