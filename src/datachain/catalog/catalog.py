@@ -102,28 +102,25 @@ _REMOVAL_CLAIM_TTL_SEC = 300
 def _pid_is_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
     except PermissionError:
         return True
+    except OSError:
+        return False
     return True
 
 
 def _is_active_removal_claim(claim: str | None, version_uuid: str) -> bool:
     if not claim or not claim.startswith("removing:"):
         return False
-    try:
-        _, host, pid_str, ts_str, _ = claim.split(":", 4)
-        pid, ts = int(pid_str), int(ts_str)
-    except ValueError:
+    _, host, pid_str, ts_str, _ = claim.split(":", 4)
+    if time.time() - int(ts_str) > _REMOVAL_CLAIM_TTL_SEC:
         return False
-    if time.time() - ts > _REMOVAL_CLAIM_TTL_SEC:
-        return False
-    if host == socket.gethostname():
-        if pid == os.getpid():
-            return version_uuid in _ACTIVE_REMOVALS
-        return _pid_is_alive(pid)
-    return True
+    if host != socket.gethostname():
+        return True
+    pid = int(pid_str)
+    return (
+        version_uuid in _ACTIVE_REMOVALS if pid == os.getpid() else _pid_is_alive(pid)
+    )
 
 
 def _round_robin_batch(urls: list[str], num_workers: int) -> list[list[str]]:
