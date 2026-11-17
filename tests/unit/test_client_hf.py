@@ -612,6 +612,26 @@ def test_bucket_metadata_and_resolve_path_with_revision(catalog, monkeypatch):
     resolved = fs.resolve_path("buckets/org/bucket/file.bin", revision="main")
     assert getattr(resolved, "bucket_id", None) == "org/bucket"
 
+    repo_client = HfClient("datasets", {"token": False}, catalog.cache)
+    monkeypatch.setattr(
+        repo_client.fs.sync_fs,
+        "resolve_path",
+        lambda path, revision=None: SimpleNamespace(
+            repo_id="org/repo",
+            revision=revision or "main",
+            unresolve=lambda: "datasets/org/repo@main",
+        ),
+    )
+    monkeypatch.setattr(
+        repo_client.fs.sync_fs,
+        "find",
+        lambda *args, **kwargs: {
+            "datasets/org/repo@main/a.txt": {"size": 4, "last_commit": None}
+        },
+    )
+    with pytest.raises(RuntimeError, match="without last_commit"):
+        repo_client._list("org/repo")
+
 
 def test_anon_translates_to_token_false_and_credentials_detected():
     assert HfClient.has_explicit_credentials({"token": "hf_secret"})

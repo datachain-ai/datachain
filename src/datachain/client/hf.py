@@ -125,10 +125,8 @@ class HfClient(Client):
             if name == path:
                 info = fs.info(name, **({"expand_info": True} if repository else {}))
                 relative = prefix
-            elif name.startswith(under):
-                relative = base + name[len(under) :]
             else:
-                continue
+                relative = base + name[len(under) :]
             commit = info.get("last_commit")
             if repository and commit is None:
                 raise RuntimeError(
