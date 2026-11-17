@@ -582,6 +582,11 @@ def test_studio_token(capsys):
     assert f"Not logged in to Studio at {STUDIO_URL}" in capsys.readouterr().err
 
 
+def test_studio_token_creates_no_directory(tmp_dir):
+    assert main(["auth", "token"]) == 1
+    assert not (tmp_dir / ".datachain").exists()
+
+
 def test_studio_token_for_team(capsys):
     studio_login(default_team="acme")
     studio_login(token="customer_token", teams=["customer-x"])  # noqa: S106

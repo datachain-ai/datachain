@@ -1,3 +1,4 @@
+import os
 from collections.abc import Mapping
 from contextlib import contextmanager
 from enum import Enum
@@ -24,8 +25,6 @@ class Config:
     def __init__(self, level: ConfigLevel | None = None):
         self.level = level
 
-        self.init()
-
     @classmethod
     def get_dir(cls, level: ConfigLevel | None) -> str:
         if level == ConfigLevel.SYSTEM:
@@ -33,11 +32,7 @@ class Config:
         if level == ConfigLevel.GLOBAL:
             return global_config_dir()
 
-        return str(DataChainDir.find().root)
-
-    def init(self):
-        d = DataChainDir(self.get_dir(self.level))
-        d.init()
+        return DataChainDir().root
 
     def load_one(self, level: ConfigLevel | None = None) -> TOMLDocument:
         config_path = DataChainDir(self.get_dir(level)).config
@@ -76,7 +71,10 @@ class Config:
         return DataChainDir(self.get_dir(self.level)).config
 
     def write(self, config: TOMLDocument):
-        with open(self.config_file(), "w") as f:
+        # Only writing creates the directory; reading a missing config is empty.
+        path = self.config_file()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
             dump(config, f)
 
     def get_remote_config(self, remote: str = "") -> Mapping[str, str]:
