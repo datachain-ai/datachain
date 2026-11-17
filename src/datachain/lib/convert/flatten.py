@@ -98,8 +98,10 @@ def _flatten_model(model: type[BaseModel], obj: BaseModel, out: list) -> list:
             out.append(value)
         elif value is None:
             out.extend(_emit_absent(kind.inner))
-        else:
+        elif isinstance(value, BaseModel):
             _flatten_model(kind.inner, value, out)
+        else:
+            out.append(value)
     return out
 
 
@@ -125,7 +127,8 @@ def flatten_value(value, anno) -> tuple:
     if kind.is_model:
         if value is None:  # outer-merge pad
             return tuple(_emit_absent(kind.inner))
-        return flatten(value)
+        if isinstance(value, BaseModel):
+            return flatten(value)
     return (value,)
 
 

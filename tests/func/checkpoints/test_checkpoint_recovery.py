@@ -1322,10 +1322,12 @@ def test_generator_mid_input_multi_flush_crash_trims_tail(test_session, same_job
     assert vals == [(n * 100 + i,) for n in (1, 2, 3) for i in range(counts[n])]
 
 
-def test_cross_job_resume_while_the_source_still_commits(test_session, monkeypatch):
+@pytest.mark.parametrize("source_promotes", [False, True])
+def test_cross_job_resume_while_the_source_still_commits(
+    test_session, monkeypatch, source_promotes
+):
     """A resume in another job copies the source's partial table and ledger while
-    the source job may still be committing parts. A part committed between the
-    two copies must neither be lost nor duplicated."""
+    the source job may still be committing parts or promoting its partial table."""
     failing = True
 
     def gen(num: int) -> Iterator[int]:
@@ -1347,6 +1349,7 @@ def test_cross_job_resume_while_the_source_still_commits(test_session, monkeypat
     reset_session_job_state()
     with pytest.raises(RuntimeError, match="crash at 3"):
         run()
+    source_job = test_session.get_or_create_job()
 
     warehouse = test_session.catalog.warehouse
     (source_name,) = warehouse.db.list_tables(pattern="udf_%_output_partial")
@@ -1369,11 +1372,21 @@ def test_cross_job_resume_while_the_source_still_commits(test_session, monkeypat
         if "_output_partial" not in name:
             return table
         if not copied:
-            # the source job commits input 4 between the two copies
-            writer_no = warehouse.claim_writer_no(source_parts)
-            with warehouse.writer(source, ["val"], writer_no, source_parts) as w:
-                w.extend([(400,), (401,), (402,)])
-                w.commit(input_id)
+            if source_promotes:
+                # Source job finishes and promotes between ledger copy and data copy
+                from datachain.query.session import Session
+
+                resuming_job = Session._CURRENT_JOB
+                Session._CURRENT_JOB = source_job
+                monkeypatch.setattr(warehouse, "create_table_from_query", copy)
+                run()
+                Session._CURRENT_JOB = resuming_job
+            else:
+                # the source job commits input 4 between the two copies
+                writer_no = warehouse.claim_writer_no(source_parts)
+                with warehouse.writer(source, ["val"], writer_no, source_parts) as w:
+                    w.extend([(400,), (401,), (402,)])
+                    w.commit(input_id)
         copied.append(name)
         return table
 
@@ -1381,5 +1394,5 @@ def test_cross_job_resume_while_the_source_still_commits(test_session, monkeypat
     reset_session_job_state()
     failing = False
     vals = run().order_by("val").to_values("val")
-    assert len(copied) == 2
+    assert len(copied) == (1 if source_promotes else 2)
     assert vals == [n * 100 + i for n in (1, 2, 3, 4, 5) for i in range(3)]

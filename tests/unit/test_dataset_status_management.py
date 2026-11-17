@@ -1588,3 +1588,60 @@ def test_running_ancestor_version_is_not_reclaimed_and_completion_is_owner_fence
 
     with pytest.raises(ConcurrentDatasetModificationError):
         catalog.complete_dataset_version(ds1, "1.0.0", expected_job_id=job1)
+
+
+def test_delayed_reservation_release_does_not_delete_replacement(
+    test_session, monkeypatch
+):
+    from datachain.data_storage.job import JobQueryType, JobStatus
+
+    catalog = test_session.catalog
+    metastore = catalog.metastore
+    dc.read_values(v=[1], session=test_session).save("race", version="1.0.0")
+
+    job_a = metastore.get_job(
+        metastore.create_job(
+            "a", "", query_type=JobQueryType.PYTHON, status=JobStatus.RUNNING
+        )
+    )
+    job_b = metastore.get_job(
+        metastore.create_job(
+            "b", "", query_type=JobQueryType.PYTHON, status=JobStatus.RUNNING
+        )
+    )
+    active_job = [job_a]
+    monkeypatch.setattr(test_session, "get_or_create_job", lambda: active_job[0])
+
+    complete = catalog.complete_dataset_version
+    drop_rows = catalog.warehouse.drop_dataset_rows_table
+
+    def fail_job_a(dataset, version, **kwargs):
+        if active_job[0].id == job_a.id:
+            raise RuntimeError("job A failed before completion")
+        return complete(dataset, version, **kwargs)
+
+    def pause_before_drop(dataset, version):
+        if active_job[0].id == job_a.id and version == "2.0.0":
+            ds = catalog.get_dataset("race", versions=None, include_incomplete=True)
+            assert (
+                catalog.remove_dataset_version(ds, "2.0.0", keep_metadata=False)
+                is False
+            )
+        return drop_rows(dataset, version)
+
+    monkeypatch.setattr(catalog, "complete_dataset_version", fail_job_a)
+    monkeypatch.setattr(catalog.warehouse, "drop_dataset_rows_table", pause_before_drop)
+
+    with pytest.raises(RuntimeError, match="job A failed"):
+        dc.read_values(v=[2], session=test_session).save("race", version="2.0.0")
+
+    active_job[0] = job_b
+    dc.read_values(v=[20], session=test_session).save("race", version="2.0.0")
+
+    # Even if a stale release_reservation runs again with job A's old record,
+    # job B's completed 2.0.0 remains intact.
+    ds_b = catalog.get_dataset("race", versions=None, include_incomplete=True)
+    assert ds_b.get_version("2.0.0").status == DatasetStatus.COMPLETE
+    assert dc.read_dataset("race", version="2.0.0", session=test_session).to_values(
+        "v"
+    ) == [20]

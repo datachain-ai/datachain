@@ -91,7 +91,7 @@ PULL_DATASET_MAX_THREADS = 5
 PULL_DATASET_CHUNK_TIMEOUT = 3600
 PULL_DATASET_SLEEP_INTERVAL = 0.1  # sleep time while waiting for chunk to be available
 PULL_DATASET_CHECK_STATUS_INTERVAL = 20  # interval to check export status in Studio
-_MAX_VERSION_CLAIM_RETRIES = 5
+_MAX_VERSION_CLAIM_RETRIES = 20
 
 
 def _round_robin_batch(urls: list[str], num_workers: int) -> list[list[str]]:
@@ -926,6 +926,29 @@ class Catalog:
             content_hash=content_hash,
         )
 
+    def _recreate_dataset(
+        self,
+        dataset: "DatasetRecord",
+        name: str,
+        project: Project | None,
+        columns: Sequence[Column],
+        feature_schema: dict | None,
+        query_script: str,
+    ) -> "DatasetRecord":
+        schema = {
+            c.name: c.type.to_dict() for c in columns if isinstance(c.type, SQLType)
+        }
+        return self.metastore.create_dataset(
+            name,
+            project.id if project else None,
+            feature_schema=feature_schema,
+            query_script=query_script,
+            schema=schema,
+            ignore_if_exists=True,
+            description=dataset.description,
+            attrs=dataset.attrs,
+        )
+
     @staticmethod
     def _next_auto_version(dataset: "DatasetRecord", update_version: str | None) -> str:
         """Compute the next version for a dataset based on the update strategy."""
@@ -961,7 +984,7 @@ class Catalog:
         auto-computed from the dataset and retried up to
         ``_MAX_VERSION_CLAIM_RETRIES`` times on conflict.
         """
-        max_retries = 0 if version else _MAX_VERSION_CLAIM_RETRIES
+        max_retries = _MAX_VERSION_CLAIM_RETRIES
         target_version = version or self._next_auto_version(dataset, update_version)
 
         for attempt in range(1 + max_retries):
@@ -981,17 +1004,26 @@ class Catalog:
                     f" the current latest one"
                 )
 
-            dataset, version_created = self.create_dataset_version(
-                dataset,
-                target_version,
-                feature_schema=feature_schema,
-                query_script=query_script,
-                sources=sources,
-                columns=columns,
-                uuid=uuid,
-                job_id=job_id,
-                content_hash=content_hash,
-            )
+            try:
+                dataset, version_created = self.create_dataset_version(
+                    dataset,
+                    target_version,
+                    feature_schema=feature_schema,
+                    query_script=query_script,
+                    sources=sources,
+                    columns=columns,
+                    uuid=uuid,
+                    job_id=job_id,
+                    content_hash=content_hash,
+                )
+            except (DatasetNotFoundError, sa.exc.IntegrityError):
+                dataset = self._recreate_dataset(
+                    dataset, name, project, columns, feature_schema, query_script
+                )
+                target_version = version or self._next_auto_version(
+                    dataset, update_version
+                )
+                continue
 
             if version_created:
                 assert len(dataset.versions) == 1
@@ -999,7 +1031,7 @@ class Catalog:
                 return dataset
 
             # Another writer claimed this version between our check and insert.
-            if attempt >= max_retries:
+            if version or attempt >= max_retries:
                 break
 
             logger.debug(
@@ -1010,12 +1042,17 @@ class Catalog:
                 attempt + 1,
                 1 + max_retries,
             )
-            dataset = self.get_dataset(
-                name,
-                namespace_name=project.namespace.name if project else None,
-                project_name=project.name if project else None,
-                versions=None,
-            )
+            try:
+                dataset = self.get_dataset(
+                    name,
+                    namespace_name=project.namespace.name if project else None,
+                    project_name=project.name if project else None,
+                    versions=None,
+                )
+            except DatasetNotFoundError:
+                dataset = self._recreate_dataset(
+                    dataset, name, project, columns, feature_schema, query_script
+                )
             target_version = self._next_auto_version(dataset, update_version)
 
         if version:
@@ -1132,10 +1169,11 @@ class Catalog:
         updated = self.metastore.update_dataset_version(
             dataset,
             version,
+            expected_status=DatasetStatus.CREATED,
             expected_job_id=expected_job_id,
             **values,
         )
-        if expected_job_id is not None and updated is None:
+        if updated is None:
             raise ConcurrentDatasetModificationError(
                 f"Could not update status of {dataset.name}@{version}: "
                 f"current owner is not {expected_job_id}"
@@ -1321,17 +1359,27 @@ class Catalog:
             )
             return False
 
-        self.warehouse.drop_dataset_rows_table(dataset, version)
+        try:
+            self.warehouse.drop_dataset_rows_table(dataset, version)
 
-        if keep_metadata:
-            self.metastore.update_dataset_version(
-                dataset,
-                version,
-                expected_status=DatasetStatus.REMOVING,
-                status=DatasetStatus.REMOVED,
-            )
-        else:
-            self.metastore.remove_dataset_version(dataset, version)
+            if keep_metadata:
+                self.metastore.update_dataset_version(
+                    dataset,
+                    version,
+                    expected_status=DatasetStatus.REMOVING,
+                    status=DatasetStatus.REMOVED,
+                )
+            else:
+                self.metastore.remove_dataset_version(dataset, version)
+        except BaseException:
+            with suppress(Exception):
+                self.metastore.update_dataset_version(
+                    dataset,
+                    version,
+                    expected_status=DatasetStatus.REMOVING,
+                    removed_at=None,
+                )
+            raise
         return True
 
     def _remove_versions(

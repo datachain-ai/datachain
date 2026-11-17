@@ -37,7 +37,7 @@ def test_checkpoint_resume_after_sigkill(
     cmd = [sys.executable, str(WORKER), str(tmp_path), kind, str(parallel), interval]
 
     killed = run_test_subprocess([*cmd, "kill"], env)
-    rc, _, stderr = wait_for_test_subprocess(killed, 60)
+    rc, _, stderr = wait_for_test_subprocess(killed, int(float(interval)) + 60)
     assert rc == -signal.SIGKILL, stderr
 
     for path in tmp_path.glob("calls-*"):
