@@ -250,23 +250,30 @@ def array_json_key(key: Any) -> str:
     return str(key)
 
 
-def _python_dump(obj: BaseModel) -> Any:
-    try:
-        return obj.model_dump()
-    except TypeError:
-        if isinstance(obj, RootModel):
-            return obj.root
-        return {
-            **(obj.__pydantic_extra__ or {}),
-            **{k: getattr(obj, k) for k in type(obj).model_fields},
-        }
+def _model_fields_dict(obj: BaseModel) -> Any:
+    if isinstance(obj, RootModel):
+        return obj.root
+    out = dict(obj.__pydantic_extra__ or {})
+    for name, field in type(obj).model_fields.items():
+        val = getattr(obj, name)
+        out[name] = val
+        if field.alias:
+            out[field.alias] = val
+        if field.serialization_alias:
+            out[field.serialization_alias] = val
+    return out
 
 
 def _check_merged_keys(obj: Any, dumped: Any) -> None:
     """Raises when the JSON dump of a model merged two keys of one of its dicts."""
     obj = _numpy_to_python(obj)
     if isinstance(obj, BaseModel):
-        obj = _python_dump(obj)
+        obj = _model_fields_dict(obj)
+        if isinstance(obj, dict) and isinstance(dumped, dict):
+            for k, dumped_value in dumped.items():
+                if k in obj:
+                    _check_merged_keys(obj[k], dumped_value)
+            return
     if isinstance(obj, dict) and isinstance(dumped, dict):
         if len(dumped) < len(obj) and any(type(k) is not str for k in obj):
             from datachain.lib.udf import JsonSerializationError
@@ -298,7 +305,7 @@ def to_jsonable(obj: Any, key_converter: Callable[[Any], str] | None = None) -> 
         # native types are serialized in a compatible way. Numpy is the one
         # thing it refuses and this project's encoder handles.
         dumped = obj.model_dump(mode="json", fallback=json.numpy_to_python)
-        _check_merged_keys(_python_dump(obj), dumped)
+        _check_merged_keys(obj, dumped)
         return dumped
 
     if isinstance(obj, dict):

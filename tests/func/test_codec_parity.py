@@ -353,7 +353,7 @@ def test_model_dict_key_check_edge_cases():
 
 
 def test_read_records_rejects_unknown_keys(test_session):
-    from pydantic import BaseModel
+    from pydantic import BaseModel, computed_field
 
     from datachain.lib.udf import UdfError
     from datachain.lib.utils import DataChainParamsError
@@ -368,3 +368,16 @@ def test_read_records_rejects_unknown_keys(test_session):
         dc.read_values(k=[1], session=test_session).map(
             pt=lambda k: {"x": k}, output=Pt
         ).to_list()
+
+    once = iter([7])
+
+    class Payload(BaseModel):
+        @computed_field
+        @property
+        def number(self) -> int:
+            return next(once)
+
+    payload = Payload()
+    assert dc.read_values(x=[1], session=test_session).map(
+        value=lambda x: payload, output=dict
+    ).to_values("value") == [{"number": 7}]

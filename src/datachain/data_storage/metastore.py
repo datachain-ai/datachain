@@ -1555,8 +1555,13 @@ class AbstractDBMetastore(AbstractMetastore):
             if (
                 expected_status == DatasetStatus.REMOVING
                 and values.get("status") == DatasetStatus.REMOVING
+                and "content_hash" in values
             ):
-                update_stmt = update_stmt.where(dv.c.removed_at.is_(None))
+                update_stmt = update_stmt.where(
+                    dv.c.content_hash.is_(None)
+                    if version_obj.content_hash is None
+                    else dv.c.content_hash == version_obj.content_hash
+                )
         if expected_job_id is not None:
             update_stmt = update_stmt.where(dv.c.job_id == expected_job_id)
         result = self.db.execute(update_stmt.values(values))  # type: ignore [attr-defined]

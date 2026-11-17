@@ -312,3 +312,41 @@ def test_cleanup_preserves_input_tables_when_run_group_active(
     assert warehouse.db.has_table(input_table)
 
     warehouse.cleanup_tables([input_table])
+
+
+def test_gen_ledger_table_dropped_on_completion_and_cleanup(test_session, nums_dataset):
+    catalog = test_session.catalog
+    metastore = catalog.metastore
+    warehouse = catalog.warehouse
+
+    def gen_twice(num: int):
+        yield num
+        yield num * 10
+
+    reset_session_job_state()
+    dc.read_dataset("nums", session=test_session).gen(
+        val=gen_twice, output=int
+    ).save("nums_gen_ok")
+    finish_job(metastore, test_session.get_or_create_job().id)
+    assert warehouse.db.list_tables(pattern="udf_%_parts") == []
+
+    def gen_fail(num: int):
+        if num == 3:
+            raise RuntimeError("gen failed")
+        yield num
+
+    reset_session_job_state()
+    with pytest.raises(RuntimeError, match="gen failed"):
+        dc.read_dataset("nums", session=test_session).gen(
+            val=gen_fail, output=int
+        ).save("nums_gen_fail")
+    job_id = test_session.get_or_create_job().id
+    assert len(warehouse.db.list_tables(pattern="udf_%_parts")) == 1
+
+    finish_job(metastore, job_id)
+    old_time = datetime.now(UTC) - timedelta(hours=5)
+    metastore.db.execute(
+        metastore._checkpoints.update().values(created_at=old_time)
+    )
+    catalog.cleanup_checkpoints()
+    assert warehouse.db.list_tables(pattern="udf_%_parts") == []
