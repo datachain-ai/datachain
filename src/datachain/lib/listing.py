@@ -100,8 +100,7 @@ def list_scope_pages(
 def _scope_pages(client, scope: "ListScope", method: str) -> Iterator[Sequence[tuple]]:
     pages = client.scandir(scope.prefix, method=method)
     try:
-        with safe_closing(iter_over_async(pages, get_loop())) as rows:
-            yield from rows
+        yield from iter_over_async(pages, get_loop())
     except FileNotFoundError:  # nothing under the prefix: fine in a folder
         _check_folder(client, scope.folder)
 
@@ -538,6 +537,12 @@ class StoredPage:
 
     def __len__(self) -> int:
         return self.size
+
+    def __getstate__(self) -> tuple[bytes, int, int]:
+        return pickle.dumps(self.rows, protocol=5), self.digest, self.size
+
+    def __setstate__(self, state: tuple[bytes, int, int]) -> None:
+        self._rows, self.digest, self.size = state
 
 
 @dataclass(frozen=True)

@@ -2,6 +2,7 @@ import asyncio
 import unicodedata
 from collections.abc import Callable, Iterable
 from datetime import datetime
+from functools import partial
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -60,6 +61,8 @@ class FileRow(NamedTuple):
         return self._file().rebase(*args, **kwargs)
 
 
+as_file_row = partial(tuple.__new__, FileRow)  # skips FileRow's argument handling
+
 # A range has one request in flight, so these cap both open ranges and requests.
 LIST_WORKERS = 16  # while this process fetches every page
 PROCESS_LIST_WORKERS = 64  # once child processes fetch pages: they parse in parallel
@@ -67,7 +70,6 @@ PROCESS_LIST_WORKERS = 64  # once child processes fetch pages: they parse in par
 # only cost CPU and memory. Past it the parent, which also inserts the rows,
 # cannot parse pages fast enough.
 POOL_ROWS = 10_000
-CUT_RANGES = 64  # the most ranges a listing starts at the folders it names
 SPLIT_PAGES = 4  # a young range splits at most this many pages ahead
 YOUNG_PAGES = 4  # a range is young until it and its parents read this many pages
 
@@ -241,8 +243,7 @@ class RangeListing:
         self.pool = pool
         self.order = client.key_order
         self.ranges: asyncio.Queue[KeyRange] = asyncio.Queue()
-        self.first = KeyRange("", None, self.order, 0)
-        self.ranges.put_nowait(self.first)
+        self.ranges.put_nowait(KeyRange("", None, self.order, 0))
         self.open_ranges = 1  # queued or being read
         self.max_ranges = PROCESS_LIST_WORKERS if pool and pool.size else LIST_WORKERS
         self.alphabet: set[str] = set()
@@ -331,17 +332,24 @@ class RangeListing:
         except Exception:  # noqa: BLE001
             return
         read_to = self.order(page.last)
+        if level.first is not None and self.order(level.first) <= read_to:
+            return  # the server ignored the start key
+        if any(
+            self.order(f) <= read_to and not page.last.startswith(f)
+            for f in level.folders
+        ):
+            return
         folders = sorted(
             (f for f in level.folders if self.order(f) > read_to), key=self.order
         )
-        folders = folders[:: -(-len(folders) // CUT_RANGES) or 1]
+        folders = folders[:: -(-len(folders) // self.max_ranges) or 1]
         for lo, hi in zip(folders, [*folders[1:], None], strict=False):
             self.open_ranges += 1
             self.ranges.put_nowait(KeyRange(lo, hi, self.order, 0))
         if folders:
             self.has_split = True
             first.hi = folders[0]  # its next page is not asked for yet
-        if self.pool and len(folders) > 1:
+        if self.pool and (level.token is not None or len(folders) >= LIST_WORKERS):
             self.pool.start()
 
     async def _read(self, key_range: KeyRange) -> None:
@@ -352,7 +360,7 @@ class RangeListing:
         try:
             while True:
                 rows, token = self._advance(key_range, page)
-                first = key_range is self.first and key_range.age == 1
+                first = not key_range.lo and key_range.age == 1
                 if first and token is not None and self._may_split():
                     await self._cut(key_range, page)
                 if token is not None:
