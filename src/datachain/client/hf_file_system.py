@@ -3,7 +3,7 @@
 import functools
 from contextlib import contextmanager
 from dataclasses import replace
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qsl, quote, urlparse
 
 import huggingface_hub
 from huggingface_hub import HfFileSystem, hf_file_system, hf_hub_url
@@ -90,6 +90,12 @@ class PinnedHfFileSystemFile(HfFileSystemFile):
                 req_headers is not None
                 and urlparse(final).hostname != urlparse(url).hostname
                 and all(key.lower() != "authorization" for key in req_headers)
+                and not any(
+                    "range" in key.lower()
+                    for key, _ in parse_qsl(
+                        urlparse(final).query, keep_blank_values=True
+                    )
+                )
             ):
                 self._resolved_url = final
             return r.content

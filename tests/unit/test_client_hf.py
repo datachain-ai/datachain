@@ -760,6 +760,11 @@ def hf_range(catalog, monkeypatch, hf_repositories):
             RESOLVE_URL,
             "Bearer hf_secret",
         ),
+        (
+            "https://cdn.hf.co/signed?X-Xet-Signed-Range=bytes%3D0-3",
+            RESOLVE_URL,
+            "Bearer hf_secret",
+        ),
     ],
 )
 def test_range_redirect_caching_policy(hf_range, first_resp, next_url, next_auth):
