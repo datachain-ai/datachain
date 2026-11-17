@@ -1695,9 +1695,15 @@ def test_removing_claim_recovers_after_error_or_dead_owner(test_session, monkeyp
     )
 
     # Simulate a process that died after persisting its REMOVING claim
+    from datachain.catalog.catalog import _is_active_removal_claim
+
+    now_ts = int(time.time())
+    assert _is_active_removal_claim(f"removing:other-host:1:{now_ts}:x", "u") is True
+    assert _is_active_removal_claim("removing:other-host:1:0:x", "u") is False
+
     dc.read_values(v=[2], session=test_session).save("recover_dead", version="1.0.0")
     ds_dead = catalog.get_dataset("recover_dead", versions=["1.0.0"])
-    dead_claim = f"removing:{socket.gethostname()}:99999999:{int(time.time())}:deadbeef"
+    dead_claim = f"removing:{socket.gethostname()}:99999999:{now_ts}:deadbeef"
     metastore.update_dataset_version(
         ds_dead,
         "1.0.0",
