@@ -6,7 +6,7 @@ We support integration with Okta, and instructions are provided below; but other
 
 SSO for teams can be configured by team admins, and requires configuration on both DataChain Studio and the IdP. The exact steps for this depend on the IdP.
 
-Once the SSO configuration is complete users can login to DataChain Studio by opening their team's login page `https://studio.datachain.ai/api/teams/<TEAM_NAME>/sso` in their browser. They can also login directly from their Okta end-user dashboards by clicking on the DataChain Studio integration icon.
+Once the SSO configuration is complete users can login to DataChain Studio by opening their team's login page `https://studio.datachain.ai/api/teams/<TEAM_NAME>/sso` in their browser. Sign-ins started from the IdP, such as the Okta end-user dashboard, are rejected. To keep a DataChain Studio icon on the Okta dashboard, hide the SAML app's icon and add an Okta Bookmark App that opens the team's login page.
 
 If a user does not have a pre-assigned role when they sign in to a team, they will be auto-assigned the Viewer role.
 
