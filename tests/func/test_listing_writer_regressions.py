@@ -29,8 +29,9 @@ def _listed(session, folder):
     return dc.read_storage(folder.as_uri(), session=session).to_values("file.path")
 
 
+@pytest.mark.parametrize("newer", ["new.txt", "base.txt"], ids=["changed", "unchanged"])
 def test_refresh_that_ends_during_an_older_scan_stays_latest(
-    test_session, folder, monkeypatch
+    test_session, folder, monkeypatch, newer
 ):
     _refresh(test_session, folder, "base.txt")
     list_pages = listing.list_pages
@@ -39,18 +40,19 @@ def test_refresh_that_ends_during_an_older_scan_stays_latest(
     def scan_then_refresh(*args, **kwargs):
         pages = list(list_pages(*args, **kwargs))
         monkeypatch.setattr(listing, "list_pages", list_pages)
-        returned.extend(_refresh(test_session, folder, "new.txt"))
+        returned.extend(_refresh(test_session, folder, newer))
         return pages
 
     monkeypatch.setattr(listing, "list_pages", scan_then_refresh)
     _refresh(test_session, folder, "old.txt")
 
-    assert returned == ["new.txt"]
-    assert _listed(test_session, folder) == ["new.txt"]
+    assert returned == [newer]
+    assert _listed(test_session, folder) == [newer]
 
 
+@pytest.mark.parametrize("newer", ["new.txt", "base.txt"], ids=["changed", "unchanged"])
 def test_refresh_that_ends_before_an_older_one_publishes_stays_latest(
-    test_session, folder, monkeypatch
+    test_session, folder, monkeypatch, newer
 ):
     _refresh(test_session, folder, "base.txt")
     catalog = test_session.catalog
@@ -59,14 +61,14 @@ def test_refresh_that_ends_before_an_older_one_publishes_stays_latest(
 
     def refresh_then_complete(*args, **kwargs):
         monkeypatch.setattr(catalog, "complete_dataset_version", complete)
-        returned.extend(_refresh(test_session, folder, "new.txt"))
+        returned.extend(_refresh(test_session, folder, newer))
         return complete(*args, **kwargs)
 
     monkeypatch.setattr(catalog, "complete_dataset_version", refresh_then_complete)
     _refresh(test_session, folder, "old.txt")
 
-    assert returned == ["new.txt"]
-    assert _listed(test_session, folder) == ["new.txt"]
+    assert returned == [newer]
+    assert _listed(test_session, folder) == [newer]
 
 
 @pytest.mark.parametrize("newer", ["new.txt", "base.txt"], ids=["changed", "unchanged"])
@@ -262,6 +264,36 @@ def test_unchanged_refresh_with_removed_reservation_raises(
 
     monkeypatch.setattr(catalog.warehouse, "insert_stored_rows", remove_after_store)
     with pytest.raises(ConcurrentDatasetModificationError):
+        dc.read_storage(tmp_path, session=test_session, update=True).to_values(
+            "file.path"
+        )
+
+
+def test_heartbeat_and_mid_scan_removal_abort_cleanly(
+    test_session, tmp_path, monkeypatch
+):
+    (tmp_path / "a.txt").write_text("a")
+    catalog = test_session.catalog
+    name, *_ = listing.get_listing(tmp_path.as_uri(), test_session, update=True)
+    monkeypatch.setattr(listing, "RESERVATION_TOUCH_INTERVAL", -1)
+
+    # 1. Heartbeat touch succeeds when reservation is active
+    assert dc.read_storage(tmp_path, session=test_session, update=True).to_values(
+        "file.path"
+    ) == ["a.txt"]
+
+    # 2. Heartbeat touch raises ConcurrentDatasetModificationError if reservation was removed
+    orig_pages = listing.list_pages
+
+    def remove_before_touch(*args, **kwargs):
+        pages = list(orig_pages(*args, **kwargs))
+        ds = catalog.get_dataset(name, versions=None)
+        for v in [v for v in ds.all_versions if v.status == DatasetStatus.CREATED]:
+            catalog.remove_dataset_version(ds, v.version, keep_metadata=False)
+        return pages
+
+    monkeypatch.setattr(listing, "list_pages", remove_before_touch)
+    with pytest.raises(ConcurrentDatasetModificationError, match="was removed"):
         dc.read_storage(tmp_path, session=test_session, update=True).to_values(
             "file.path"
         )

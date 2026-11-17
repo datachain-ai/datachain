@@ -551,6 +551,7 @@ def write_listing(
 ) -> "DatasetRecord | None":
     """Store the listing of the prefix ``uri`` as the next version of ``ds_name``.
     An unchanged listing drops that version and restarts the latest one's TTL."""
+    from datachain import semver
     from datachain.dataset import DEFAULT_DATASET_VERSION, DatasetStatus
     from datachain.lib.signal_schema import SignalSchema
 
@@ -625,22 +626,33 @@ def write_listing(
                 raise
         content_hash = f"{LISTING_DIGEST}:{count}:{total % (1 << 128):032x}"
         latest = _latest_version(catalog, ds_name, project)
-        if (
-            latest
-            and (
-                latest[1].content_hash == content_hash
-                or latest[1].version_value > dataset.versions[0].version_value
+        if latest:
+            prev_ds, prev_ver = latest
+            ver_val = dataset.versions[0].version_value
+            fence = (
+                max(prev_ver.version_value, semver.value(prev_ver.sources))
+                if prev_ver.sources
+                else prev_ver.version_value
             )
-            and catalog.release_reservation(dataset, version, job_id)
-        ):
-            if latest[1].content_hash == content_hash:
-                metastore.update_dataset_version(
-                    latest[0],
-                    latest[1].version,
-                    expected_status=DatasetStatus.COMPLETE,
-                    finished_at=datetime.now(UTC),
-                )
-            return None
+            older_publishing = any(
+                prev_ver.version_value < v.version_value < ver_val
+                and v.status == DatasetStatus.CREATED
+                and v.content_hash is not None
+                for v in prev_ds.all_versions
+            )
+            if (
+                fence > ver_val
+                or (prev_ver.content_hash == content_hash and not older_publishing)
+            ) and catalog.release_reservation(dataset, version, job_id):
+                if prev_ver.content_hash == content_hash and ver_val >= fence:
+                    metastore.update_dataset_version(
+                        prev_ds,
+                        prev_ver.version,
+                        expected_status=DatasetStatus.COMPLETE,
+                        finished_at=datetime.now(UTC),
+                        sources=version,
+                    )
+                return None
         if (
             metastore.update_dataset_version(
                 dataset,
