@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 import datachain as dc
 from datachain.data_storage.codec import check_value
-from datachain.data_storage.schema import partition_columns
+from datachain.data_storage.schema import PARTITION_COLUMN_ID, partition_columns
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SQLiteWarehouse
 from datachain.lib.file import File
@@ -113,10 +113,14 @@ def test_dataset_select_paginated_with_limit(limit, numbers_table, warehouse):
 
 
 def test_dataset_select_paginated_keyset(numbers_table, warehouse):
-    # pages by (partition_id, sys__id) after the last key, never by offset
+    # pages by (sys__partition_id, sys__id) after the last key, never by offset
     t = numbers_table.c
-    partition = sa.case((t.primality == "prime", 1), else_=2).label("partition_id")
-    query = sa.select(t.sys__id, partition).order_by(t.number.desc())
+    partition = sa.case((t.primality == "prime", 1), else_=2).label(PARTITION_COLUMN_ID)
+    query = (
+        sa.select(t.sys__id, partition)
+        .order_by(t.number.desc())
+        .execution_options(_datachain_partitioned=True)
+    )
     with patch.object(
         type(warehouse),
         attribute="dataset_rows_select",
@@ -136,13 +140,12 @@ def test_dataset_select_paginated_needs_sys_id(numbers_table, warehouse):
         list(warehouse.dataset_select_paginated(query))
 
 
+@skip_if_not_sqlite
 def test_partition_table_is_indexed(warehouse):
-    # agg pages seek on (partition_id, sys__id) instead of sorting the input
-    if not isinstance(warehouse, SQLiteWarehouse):
-        pytest.skip("SQLite builds the index; ClickHouse sorts the table instead")
+    # agg pages seek on (sys__partition_id, sys__id) instead of sorting the input
     table = warehouse.create_udf_table(partition_columns())
-    sql = f"PRAGMA index_info('ix_{table.name}_partition_id')"
-    assert [row[2] for row in warehouse.db.execute_str(sql)] == ["partition_id"]
+    sql = f"PRAGMA index_info('ix_{table.name}_{PARTITION_COLUMN_ID}')"
+    assert [row[2] for row in warehouse.db.execute_str(sql)] == [PARTITION_COLUMN_ID]
 
 
 def test_dataset_rows_select(numbers_table, warehouse):
@@ -532,3 +535,32 @@ def test_user_partition_id_column_survives_unpartitioned_udf_pagination(
         ("d", "d#"),
         ("e", "e#"),
     ]
+
+    grouped = dc.read_values(
+        key=["a", "a", "b", "b", "b"],
+        partition_id=[10, None, 5, None, 1],
+        session=test_session,
+    )
+    agg_counts = (
+        grouped.agg(cnt=lambda key: [len(key)], partition_by="key", output=int)
+        .order_by("cnt")
+        .to_values("cnt")
+    )
+    assert agg_counts == [2, 3]
+
+    agg_with_user_col = (
+        grouped.agg(
+            summary=lambda key, partition_id: [f"{key[0]}:{len(partition_id)}"],
+            partition_by="key",
+            output=str,
+        )
+        .order_by("summary")
+        .to_values("summary")
+    )
+    assert agg_with_user_col == ["a:2", "b:3"]
+
+    unpartitioned_agg = dc.read_values(
+        partition_id=["p1", "p2", "p3"],
+        session=test_session,
+    ).agg(joined=lambda partition_id: ["|".join(sorted(partition_id))], output=str)
+    assert unpartitioned_agg.to_values("joined") == ["p1|p2|p3"]

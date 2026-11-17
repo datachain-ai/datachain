@@ -275,7 +275,7 @@ class DataTable:
         return DirExpansion(self.column)
 
 
-PARTITION_COLUMN_ID = "partition_id"
+PARTITION_COLUMN_ID = "sys__partition_id"
 
 partition_col_names = [PARTITION_COLUMN_ID]
 

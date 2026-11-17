@@ -1058,7 +1058,7 @@ def test_udf_reads_only_param_columns(test_session, apply, expected):
 
     with patch.object(AbstractWarehouse, "dataset_rows_select", spy):
         result = apply(chain).save("pruned")
-    inputs = [names - {"partition_id"} for names in read if "b" not in names]
+    inputs = [names - {"sys__partition_id"} for names in read if "b" not in names]
     assert {"sys__id", "a"} in inputs  # reads after the UDF (the preview) hold b
     assert not any({"tag", "unused"} & names for names in inputs)
     assert sorted(result.to_values("b")) == expected

@@ -1,4 +1,3 @@
-import contextlib
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator, Sequence
 from itertools import groupby, islice
@@ -68,7 +67,7 @@ class Batch(BatchingStrategy):
         query: sa.Select,
         id_col: sa.ColumnElement | None = None,
     ) -> Generator[RowsOutput, None, None]:
-        with contextlib.closing(NoBatching()(execute, query, id_col)) as rows:
+        with safe_closing(NoBatching()(execute, query, id_col)) as rows:
             yield from iter(lambda: list(islice(rows, self.count)), [])
 
 
@@ -96,7 +95,7 @@ class Partition(BatchingStrategy):
         partition_of = itemgetter(names.index(PARTITION_COLUMN_ID))
         id_at = names.index("sys__id")
         # execute pages rows in partition order (dataset_select_paginated)
-        with contextlib.closing(execute(query)) as rows:
+        with safe_closing(execute(query)) as rows:
             for _, group in groupby(rows, partition_of):
                 batch = list(group)
                 yield [r[id_at] for r in batch] if id_col is not None else batch
