@@ -575,15 +575,19 @@ def test_pinned_unchanged_check_reuses_sdk_directory_cache(
 def test_mutable_branch_version_checks_etag_on_unchanged():
     client = HfClient("datasets", {}, Mock(spec=Cache))
     client._fs = Mock()
-    client._fs._info = AsyncMock(
-        side_effect=[{"size": 4}, {"size": 4, "blob_id": "new-blob"}]
-    )
+    client._fs._info = AsyncMock(return_value={"size": 4, "blob_id": "new-blob"})
     file = File(
         source=client.uri,
         path="org/repo/a.txt",
         version="main",
         etag="old-blob",
         size=4,
+    )
+    with pytest.raises(FileNotFoundError, match="etag was old-blob, now new-blob"):
+        client.check_unchanged(file)
+
+    client._fs._info = AsyncMock(
+        side_effect=[{"size": 4}, {"size": 4, "blob_id": "new-blob"}]
     )
     with pytest.raises(FileNotFoundError, match="etag was old-blob, now new-blob"):
         client.check_unchanged(file)
