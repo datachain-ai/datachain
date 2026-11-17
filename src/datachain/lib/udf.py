@@ -334,9 +334,6 @@ class UDFAdapter:
     def prefetch(self) -> int:
         return self.inner.prefetch
 
-    def input_columns(self) -> list[str]:
-        return self.inner.input_columns()
-
 
 class UDFBase(AbstractUDF):
     """Base class for stateful user-defined functions.
@@ -538,8 +535,8 @@ class UDFBase(AbstractUDF):
         assert self.params is not None
         return self.prefetch if self.params._file_stream_params else 0
 
-    def input_columns(self) -> list[str]:
-        """The input columns `run()` reads, besides sys__id and the partition id."""
+    def read_columns(self) -> list[str]:
+        """The db columns `run()` reads, besides sys__id and the partition id."""
         assert self.params is not None
         return self.params.read_columns()
 
@@ -1002,9 +999,9 @@ class Generator(UDFBase):
     delta_key: "Sequence[tuple[str, str]]" = ()
     delta_key_presence: "Sequence[tuple[KeyPresence, KeyPresence]]" = ()
 
-    def input_columns(self) -> list[str]:
+    def read_columns(self) -> list[str]:
         keys = [spec[0] for spec, _ in self.delta_key_presence if spec is not None]
-        return [*super().input_columns(), *(c for c, _ in self.delta_key), *keys]
+        return [*super().read_columns(), *(c for c, _ in self.delta_key), *keys]
 
     def run(  # noqa: C901
         self,

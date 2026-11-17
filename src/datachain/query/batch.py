@@ -1,12 +1,12 @@
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator, Sequence
-from itertools import groupby, islice
+from itertools import groupby
 from operator import itemgetter
 
 import sqlalchemy as sa
 
 from datachain.data_storage.schema import PARTITION_COLUMN_ID
-from datachain.utils import safe_closing
+from datachain.utils import batched, safe_closing
 
 DEFAULT_BATCH_SIZE = 10_000
 
@@ -43,7 +43,6 @@ class NoBatching(BatchingStrategy):
         query: sa.Select,
         id_col: sa.ColumnElement | None = None,
     ) -> Generator[Sequence, None, None]:
-        query = query.execution_options(_datachain_partitioned=False)
         if id_col is not None:
             query = query.with_only_columns(id_col)
         with safe_closing(execute(query)) as rows:
@@ -68,7 +67,7 @@ class Batch(BatchingStrategy):
         id_col: sa.ColumnElement | None = None,
     ) -> Generator[RowsOutput, None, None]:
         with safe_closing(NoBatching()(execute, query, id_col)) as rows:
-            yield from iter(lambda: list(islice(rows, self.count)), [])
+            yield from (list(b) for b in batched(rows, self.count))
 
 
 class Partition(BatchingStrategy):
@@ -88,7 +87,6 @@ class Partition(BatchingStrategy):
     ) -> Generator[RowsOutput, None, None]:
         if (partition_col := query.selected_columns.get(PARTITION_COLUMN_ID)) is None:
             raise RuntimeError("partition column not found in query")
-        query = query.execution_options(_datachain_partitioned=True)
         if id_col is not None:
             query = query.with_only_columns(id_col, partition_col)
         names = list(query.selected_columns.keys())

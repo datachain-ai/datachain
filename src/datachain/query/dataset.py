@@ -476,7 +476,7 @@ class Subtract(Step):
 
 # Layout of UDF output tables and their ledgers, part of every UDF checkpoint
 # hash: a change makes checkpoints of the old layout recompute once.
-UDF_OUTPUT_FORMAT = b"writer-ledger-1"
+UDF_OUTPUT_FORMAT = b"writer-ledger-2"
 
 
 def process_udf_outputs(
@@ -637,7 +637,7 @@ class UDFStep(Step, ABC):
         to select
         """
 
-    def populate_udf_output_table(  # noqa: C901, PLR0912, PLR0915
+    def populate_udf_output_table(  # noqa: PLR0915
         self,
         udf_table: "Table",
         query: Select,
@@ -649,12 +649,10 @@ class UDFStep(Step, ABC):
     ) -> None:
         catalog = self.session.catalog
         # read only the columns the UDF reads: a wide input costs nothing extra
-        read = {"sys__id", *self.udf.input_columns()}
-        if self.partition_by is not None:
-            read.add(PARTITION_COLUMN_ID)
+        read = {"sys__id", PARTITION_COLUMN_ID, *self.udf.inner.read_columns()}
         query = query.with_only_columns(
             *(c for c in query.selected_columns if c.name in read)
-        ).execution_options(_datachain_partitioned=self.partition_by is not None)
+        )
         rows_to_process = catalog.warehouse.query_count(query)
         if rows_to_process == 0:
             logger.debug(
@@ -1035,6 +1033,7 @@ class UDFStep(Step, ABC):
             create_fn=lambda name: self.warehouse.create_udf_table(
                 partition_columns(), name=name
             ),
+            preserve_sys_ids=True,
         )
 
     def _prepare_partition_query(

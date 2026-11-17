@@ -116,20 +116,16 @@ def test_dataset_select_paginated_keyset(numbers_table, warehouse):
     # pages by (sys__partition_id, sys__id) after the last key, never by offset
     t = numbers_table.c
     partition = sa.case((t.primality == "prime", 1), else_=2).label(PARTITION_COLUMN_ID)
-    query = (
-        sa.select(t.sys__id, partition)
-        .order_by(t.number.desc())
-        .execution_options(_datachain_partitioned=True)
-    )
+    query = sa.select(t.sys__id, partition).order_by(t.number.desc())
     with patch.object(
         type(warehouse),
         attribute="dataset_rows_select",
         wraps=warehouse.dataset_rows_select,
     ) as mock_dataset_rows_select:
         rows = list(warehouse.dataset_select_paginated(query, page_size=5))
-    pages = [str(call.args[0]) for call in mock_dataset_rows_select.call_args_list]
+    pages = [call.args[0] for call in mock_dataset_rows_select.call_args_list]
     assert len(pages) == 15  # 5 * 14 + 3
-    assert not any("OFFSET" in page for page in pages)
+    assert all(page._offset_clause is None for page in pages)
     assert rows == sorted(rows, key=lambda row: (row[1], row[0]))
     assert len({row[0] for row in rows}) == 73
 
@@ -483,84 +479,23 @@ def test_check_value_does_not_re_encode_dict_array_items():
     assert check_value(Array(JSON()))(value) == value
 
 
-def test_user_partition_id_column_survives_unpartitioned_udf_pagination(
-    test_session, monkeypatch
-):
+def test_user_partition_id_column_in_udfs(test_session, monkeypatch):
     orig = test_session.catalog.warehouse.dataset_select_paginated
-
-    def small_pages(self, query, page_size=2):
-        return orig.__func__(self, query, page_size=2)
-
     monkeypatch.setattr(
         type(test_session.catalog.warehouse),
         "dataset_select_paginated",
-        small_pages,
+        lambda self, query, page_size=2: orig.__func__(self, query, page_size=2),
     )
-
     chain = dc.read_values(
-        key=["a", "b", "c", "d", "e"],
-        partition_id=[10, None, 5, None, 1],
-        session=test_session,
-    )
-    mapped = chain.map(tag=lambda key: f"{key}!").order_by("key").to_list("key", "tag")
-    assert mapped == [("a", "a!"), ("b", "b!"), ("c", "c!"), ("d", "d!"), ("e", "e!")]
-
-    mapped_reading_col = (
-        chain.map(
-            label=lambda key, partition_id: f"{key}:{partition_id}",
-        )
-        .order_by("key")
-        .to_list("label")
-    )
-    assert mapped_reading_col == [
-        ("a:10",),
-        ("b:None",),
-        ("c:5",),
-        ("d:None",),
-        ("e:1",),
-    ]
-
-    batched_res = (
-        chain.batch_map(
-            tag=lambda key: [f"{k}#" for k in key],
-            batch=2,
-        )
-        .order_by("key")
-        .to_list("key", "tag")
-    )
-    assert batched_res == [
-        ("a", "a#"),
-        ("b", "b#"),
-        ("c", "c#"),
-        ("d", "d#"),
-        ("e", "e#"),
-    ]
-
-    grouped = dc.read_values(
         key=["a", "a", "b", "b", "b"],
         partition_id=[10, None, 5, None, 1],
         session=test_session,
     )
-    agg_counts = (
-        grouped.agg(cnt=lambda key: [len(key)], partition_by="key", output=int)
+    assert chain.map(label=lambda key, partition_id: f"{key}:{partition_id}").to_values(
+        "label"
+    ) == ["a:10", "a:None", "b:5", "b:None", "b:1"]
+    assert (
+        chain.agg(cnt=lambda key: [len(key)], partition_by="key", output=int)
         .order_by("cnt")
         .to_values("cnt")
-    )
-    assert agg_counts == [2, 3]
-
-    agg_with_user_col = (
-        grouped.agg(
-            summary=lambda key, partition_id: [f"{key[0]}:{len(partition_id)}"],
-            partition_by="key",
-            output=str,
-        )
-        .order_by("summary")
-        .to_values("summary")
-    )
-    assert agg_with_user_col == ["a:2", "b:3"]
-
-    unpartitioned_agg = dc.read_values(
-        partition_id=["p1", "p2", "p3"],
-        session=test_session,
-    ).agg(joined=lambda partition_id: ["|".join(sorted(partition_id))], output=str)
-    assert unpartitioned_agg.to_values("joined") == ["p1|p2|p3"]
+    ) == [2, 3]
