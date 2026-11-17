@@ -88,7 +88,11 @@ logger = logging.getLogger("datachain")
 
 def _is_in(column, values: Sequence) -> "ColumnElement":
     """`column IN values`, as `=` for one value: an IN list compiles per call."""
-    return column == values[0] if len(values) == 1 else column.in_(values)
+    return (
+        column == values[0]
+        if len(values) == 1 and values[0] is not None
+        else column.in_(values)
+    )
 
 
 DEPTH_LIMIT_DEFAULT = 100

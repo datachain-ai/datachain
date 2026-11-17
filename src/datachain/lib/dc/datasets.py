@@ -225,7 +225,7 @@ def read_dataset(
         # Remote metadata may not have been pulled locally yet. Keep that path
         # (and missing-version fallback) unchanged.
         if (is_studio() or is_namespace_local(namespace_name)) and dataset.has_version(
-            version
+            str(version)
         ):
             resolved_dataset = dataset
 

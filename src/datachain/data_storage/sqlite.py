@@ -263,7 +263,29 @@ class SQLiteDatabaseEngine(DatabaseEngine):
     def get_table(self, name: str) -> Table:
         if self.is_closed:
             self._reconnect()
-        return super().get_table(name)
+        rows = self.execute_str(f"PRAGMA table_info({quote(name)})").fetchall()
+        if not rows:
+            if (cached := self.metadata.tables.get(name)) is not None:
+                self.metadata.remove(cached)
+            raise TableMissingError(f"Table '{name}' not found")
+        if (cached := self.metadata.tables.get(name)) is not None:
+            if [c.name for c in cached.columns] == [r[1] for r in rows]:
+                return cached
+            self.metadata.remove(cached)
+        resolve_type = self.dialect._resolve_type_affinity
+        return Table(
+            name,
+            self.metadata,
+            *(
+                Column(
+                    row[1],
+                    resolve_type(row[2].upper()),
+                    nullable=not row[3],
+                    primary_key=bool(row[5]),
+                )
+                for row in rows
+            ),
+        )
 
     @retry_sqlite_locks
     def execute(self, query) -> sqlite3.Cursor:
@@ -887,18 +909,6 @@ class SQLiteWarehouse(AbstractWarehouse):
 
     def instr(self, source, target) -> "ColumnElement":
         return cast(func.instr(source, target), sqlalchemy.Boolean)
-
-    def get_table(self, name: str) -> sqlalchemy.Table:
-        rows = self.db.execute_str(f"PRAGMA table_info({quote(name)})").fetchall()
-        if not rows:
-            if (cached := self.db.metadata.tables.get(name)) is not None:
-                self.db.metadata.remove(cached)
-            raise TableMissingError(f"Table '{name}' not found")
-        if (cached := self.db.metadata.tables.get(name)) is not None and [
-            c.name for c in cached.columns
-        ] != [r[1] for r in rows]:
-            self.db.metadata.remove(cached)
-        return super().get_table(name)
 
     def type_codec(self, sql_type: Any) -> TypeCodec:
         """Datetimes are stored as UTC text, arrays as JSON text."""

@@ -446,6 +446,7 @@ def test_check_value_does_not_re_encode_dict_array_items():
     assert check_value(Array(JSON()))(value) == value
 
 
+@skip_if_not_sqlite
 def test_get_table_evicts_stale_cached_table_when_dropped_out_of_band(warehouse):
     from datachain.error import TableMissingError
     from datachain.sql.types import Int64
@@ -460,6 +461,7 @@ def test_get_table_evicts_stale_cached_table_when_dropped_out_of_band(warehouse)
     assert "udf_cached_check" not in warehouse.db.metadata.tables
 
 
+@skip_if_not_sqlite
 def test_get_table_supports_temp_views_mixed_case_and_add_column(warehouse):
     from datachain.sql.types import Int64
 
@@ -475,3 +477,9 @@ def test_get_table_supports_temp_views_mixed_case_and_add_column(warehouse):
     warehouse.db.add_column("MixedCaseRel", sa.Column("y", Int64))
     refreshed = warehouse.get_table("MixedCaseRel")
     assert "y" in refreshed.c
+
+    with warehouse.db.transaction():
+        warehouse.db.execute_str("CREATE TABLE tx_rel (x INTEGER)")
+        warehouse.db.execute_str("INSERT INTO tx_rel VALUES (1)")
+        assert "x" in warehouse.get_table("tx_rel").c
+    assert warehouse.db.execute_str("SELECT x FROM tx_rel").fetchall() == [(1,)]
