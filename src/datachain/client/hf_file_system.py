@@ -40,8 +40,7 @@ class _PinnedStreamFile(HfFileSystemStreamFile):
         try:
             super().close()
         finally:
-            if hasattr(self, "_exit_stack"):
-                self._exit_stack.close()
+            self._exit_stack.close()
 
 
 class PinnedHfFileSystem(HfFileSystem):
@@ -55,8 +54,6 @@ class PinnedHfFileSystem(HfFileSystem):
 
             if parse_uri := getattr(huggingface_hub, "parse_hf_uri", None):
                 parsed = parse_uri(f"hf://{path}")
-                if getattr(parsed, "is_bucket", False):
-                    return super().resolve_path(path)
                 uri = replace(parsed, revision=revision).to_uri()
                 return super().resolve_path(uri, revision=revision)
 
