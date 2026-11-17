@@ -361,16 +361,6 @@ def batched(iterable: Iterable[_T_co], batch_size: int) -> Iterator[tuple[_T_co,
     yield from (tuple(batch) for batch in _dynamic_batched_core(iterable, batch_size))
 
 
-def batched_it(
-    iterable: Iterable[_T_co],
-    batch_size: int = DEFAULT_BATCH_SIZE,
-) -> Iterator[Iterator[_T_co]]:
-    """
-    Batch data into iterators with dynamic sizing based on row count and memory usage.
-    """
-    yield from (iter(batch) for batch in _dynamic_batched_core(iterable, batch_size))
-
-
 def flatten(items):
     for item in items:
         if isinstance(item, (list, tuple)):

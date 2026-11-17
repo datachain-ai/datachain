@@ -2880,16 +2880,18 @@ class AbstractDBMetastore(AbstractMetastore):
             created_at=now,
             status=CheckpointStatus.ACTIVE,
         )
-        # One atomic statement both reactivates a checkpoint and returns its
-        # actual ID, including when another caller already created it.
         query = query.on_conflict_do_update(  # type: ignore[attr-defined]
             index_elements=["job_id", "hash"],
             set_={
                 "status": CheckpointStatus.ACTIVE,
                 "created_at": now,
             },
-        ).returning(*(self._checkpoints.c[f] for f in self._checkpoints_fields))
-        return self.checkpoint_class.parse(*next(iter(self.db.execute(query))))
+        )
+        with self.db.transaction():
+            self.db.execute(query)
+            checkpoint = self.find_checkpoint(job_id, _hash)
+        assert checkpoint is not None
+        return checkpoint
 
     def list_checkpoints(
         self,
