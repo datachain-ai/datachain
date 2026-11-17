@@ -1645,3 +1645,24 @@ def test_delayed_reservation_release_does_not_delete_replacement(
     assert dc.read_dataset("race", version="2.0.0", session=test_session).to_values(
         "v"
     ) == [20]
+
+
+def test_claim_version_recreates_dataset_deleted_by_failed_first_save(
+    test_session, monkeypatch
+):
+    catalog = test_session.catalog
+    create_ver = catalog.create_dataset_version
+    deleted_once = False
+
+    def delete_parent_then_create(dataset, version, **kwargs):
+        nonlocal deleted_once
+        if dataset.name == "first_race" and not deleted_once:
+            deleted_once = True
+            catalog.metastore.remove_dataset(dataset)
+        return create_ver(dataset, version, **kwargs)
+
+    monkeypatch.setattr(catalog, "create_dataset_version", delete_parent_then_create)
+    saved = dc.read_values(v=[1], session=test_session).save("first_race")
+    assert deleted_once
+    assert saved.version == "1.0.0"
+    assert dc.read_dataset("first_race", session=test_session).to_values("v") == [1]
