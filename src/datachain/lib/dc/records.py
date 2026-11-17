@@ -4,9 +4,11 @@ from typing import TYPE_CHECKING, Any, cast
 
 import sqlalchemy
 
+from datachain.data_storage.codec import RowEncodeError
 from datachain.lib.convert.flatten import classify_field, flatten_value, union_layout
 from datachain.lib.data_model import DataType, is_chain_type, validate_chain_type
 from datachain.lib.signal_schema import SignalSchema
+from datachain.lib.udf import output_value_error
 from datachain.lib.utils import (
     DataChainParamsError,
     assert_unique_export_columns,
@@ -93,9 +95,6 @@ def create_records_dataset(
     only (used by ``read_values`` and the listing chain to opt out of
     content-derived hashing).
     """
-    from datachain.data_storage.codec import RowEncodeError
-    from datachain.lib.udf import output_value_error
-
     from .datasets import read_dataset
 
     session = Session.get(session, in_memory=in_memory)

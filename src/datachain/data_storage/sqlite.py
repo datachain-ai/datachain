@@ -730,10 +730,10 @@ def _decode_array(item: Callable[[Any], Any], value: Any) -> Any:
 
 def decode_sqlite(sql_type: Any) -> Callable[[Any], Any] | None:
     """How SQLite reads `sql_type`: datetimes as UTC, arrays from JSON text."""
-    if isinstance(sql_type, DateTime) or getattr(sql_type, "_kind", None) == "datetime":
+    if isinstance(sql_type, DateTime):
         return decode_sqlite_datetime
     decode = base_decode(sql_type, decode_sqlite)
-    if isinstance(sql_type, Array) or getattr(sql_type, "_kind", None) == "array":
+    if isinstance(sql_type, Array):
         assert decode is not None  # base_decode always reads an array
         return partial(_decode_array, decode)
     return decode
@@ -759,6 +759,8 @@ def _encode_datetime_column(column: Any) -> list[Any] | None:
     if (bounds["min"] is not None and bounds["min"] < _MIN_DATETIME_US) or (
         bounds["max"] is not None and bounds["max"] > _MAX_DATETIME_US
     ):
+        if not column.type.tz:
+            return None
         i64 = pc.max_element_wise(
             pc.min_element_wise(i64, _MAX_DATETIME_US, skip_nulls=False),
             _MIN_DATETIME_US,
@@ -778,8 +780,6 @@ class SQLiteWarehouse(AbstractWarehouse):
     """
 
     db: SQLiteDatabaseEngine
-
-    # Cache for our defined column types to dialect specific TypeEngine relations
 
     def __init__(
         self,
@@ -909,16 +909,13 @@ class SQLiteWarehouse(AbstractWarehouse):
     def type_codec(self, sql_type: Any) -> TypeCodec:
         """Datetimes are stored as UTC text, arrays as JSON text."""
         codec = value_codec(sql_type, self.column_default(sql_type), decode_sqlite)
-        if (
-            isinstance(sql_type, DateTime)
-            or getattr(sql_type, "_kind", None) == "datetime"
-        ):
+        if isinstance(sql_type, DateTime):
             return codec._replace(
                 kept=frozenset(),
                 encode=partial(compose, adapt_datetime, codec.encode),
                 encode_column=_encode_datetime_column,
             )
-        if isinstance(sql_type, Array) or getattr(sql_type, "_kind", None) == "array":
+        if isinstance(sql_type, Array):
             return codec._replace(encode=partial(compose, adapt_array, codec.encode))
         return codec
 
