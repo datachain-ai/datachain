@@ -189,7 +189,9 @@ class Cache:  # noqa: PLW1641
         self.odb.protect(self.odb.oid_to_path(oid))
 
     def store_data(self, file: "File", contents: bytes) -> None:
-        self.odb.add_bytes(file.get_hash(), contents)
+        oid = file.get_hash()
+        if not self.odb.exists(oid):
+            self.odb.add_bytes(oid, contents)
 
     def clear(self) -> None:
         """
