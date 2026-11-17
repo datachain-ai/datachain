@@ -891,3 +891,21 @@ def test_prefetch_budget_keeps_row_bound_with_a_smaller_explicit_count():
         stop.set()
         thread.join(1)
     assert not thread.is_alive()
+
+    # Same OID with different sizes across rows keeps budget.bytes balanced
+    f_known = File(source="s3://b", path="a.bin", size=100)
+    f_unknown = File(source="s3://b", path="a.bin", size=-1)
+    t1 = budget.targets_for([f_known])
+    t2 = budget.targets_for([f_unknown])
+    assert budget.targets_for([f_known, f_unknown]) == t2
+    budget.give_back(200)
+    budget.give_back(200)
+    budget.give_back(1)
+    assert budget.bytes == 0
+    budget.take(t1, stop)
+    budget.take(t2, stop)
+    assert budget.bytes == 100
+    budget.give_back(t1)
+    assert budget.bytes == 100
+    budget.give_back(t2)
+    assert budget.bytes == 0

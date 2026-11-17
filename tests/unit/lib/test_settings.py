@@ -483,3 +483,13 @@ def test_settings_add_keeps_prefetch_unset():
     assert (settings.prefetch_auto, settings.prefetch_bytes) == (True, 1000)
     settings.add(Settings(prefetch=4))
     assert (settings.prefetch_auto, settings.prefetch) == (False, 4)
+
+
+def test_settings_positional_arguments_preserve_order():
+    settings = Settings(False, 2, 4, 8)
+    assert (settings.cache, settings.prefetch, settings.parallel, settings.workers) == (
+        False,
+        2,
+        4,
+        8,
+    )
