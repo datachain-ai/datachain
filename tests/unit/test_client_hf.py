@@ -493,6 +493,7 @@ def test_bucket_metadata_and_resolve_path_with_revision(catalog, monkeypatch):
     assert getattr(resolved, "bucket_id", None) == "org/bucket"
 
     import asyncio
+
     from fsspec.callbacks import DEFAULT_CALLBACK
 
     monkeypatch.setattr(
