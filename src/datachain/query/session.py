@@ -12,7 +12,7 @@ from uuid import uuid4
 from weakref import WeakSet
 
 from datachain.catalog import get_catalog
-from datachain.data_storage import JobQueryType, JobStatus
+from datachain.data_storage import AbstractDBMetastore, JobQueryType, JobStatus
 from datachain.dataset import SESSION_DATASET_PREFIX
 from datachain.error import DataChainError, JobNotFoundError, TableMissingError
 
@@ -131,6 +131,8 @@ class Session:
         # Datasets should persist even if the session fails
         self._cleanup_temp_datasets()
         if self.is_new_catalog:
+            if self.catalog.in_memory:
+                self._finalize_job_success()
             self.catalog.metastore.close_on_exit()
             self.catalog.warehouse.close_on_exit()
 
@@ -242,6 +244,12 @@ class Session:
     def _finalize_job_success(self):
         """Mark the current job as completed."""
         if (
+            self.catalog.in_memory
+            and isinstance(self.catalog.metastore, AbstractDBMetastore)
+            and getattr(self.catalog.metastore.db, "is_closed", False)
+        ):
+            return
+        if (
             Session._CURRENT_JOB
             and Session._OWNS_JOB
             and Session._JOB_STATUS == JobStatus.RUNNING
@@ -335,6 +343,13 @@ class Session:
             # suppress error when metastore has been reset during testing
             except TableMissingError:
                 pass
+            except Exception:
+                if not isinstance(
+                    catalog.metastore, AbstractDBMetastore
+                ) or catalog.metastore.db.has_table(
+                    catalog.metastore._datasets_versions.name
+                ):
+                    raise
         # A retained chain/view must not keep other catalogs alive after cleanup.
         self._cleanup_catalogs[:] = [self.catalog]
 

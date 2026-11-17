@@ -479,7 +479,13 @@ def test_get_table_supports_temp_views_mixed_case_and_add_column(warehouse):
     assert "y" in refreshed.c
 
     with warehouse.db.transaction():
-        warehouse.db.execute_str("CREATE TABLE tx_rel (x INTEGER)")
+        warehouse.db.execute_str("CREATE TABLE tx_rel (x INTEGER DEFAULT 7)")
         warehouse.db.execute_str("INSERT INTO tx_rel VALUES (1)")
-        assert "x" in warehouse.get_table("tx_rel").c
+        tx_tbl = warehouse.get_table("tx_rel")
+        assert "x" in tx_tbl.c
+        assert tx_tbl.c.x.server_default is not None
     assert warehouse.db.execute_str("SELECT x FROM tx_rel").fetchall() == [(1,)]
+
+    warehouse.db.execute_str("DROP TABLE tx_rel")
+    warehouse.db.execute_str("CREATE TABLE tx_rel (x TEXT)")
+    assert isinstance(warehouse.get_table("tx_rel").c.x.type, sa.Text)

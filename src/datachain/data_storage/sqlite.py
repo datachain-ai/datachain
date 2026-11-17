@@ -268,11 +268,16 @@ class SQLiteDatabaseEngine(DatabaseEngine):
             if (cached := self.metadata.tables.get(name)) is not None:
                 self.metadata.remove(cached)
             raise TableMissingError(f"Table '{name}' not found")
-        if (cached := self.metadata.tables.get(name)) is not None:
-            if [c.name for c in cached.columns] == [r[1] for r in rows]:
-                return cached
-            self.metadata.remove(cached)
         resolve_type = self.dialect._resolve_type_affinity
+        cols = [(row[1], type(resolve_type(row[2].upper()))) for row in rows]
+        if (cached := self.metadata.tables.get(name)) is not None and [
+            (
+                c.name,
+                type(resolve_type(str(c.type.compile(dialect=self.dialect)).upper())),
+            )
+            for c in cached.columns
+        ] == cols:
+            return cached
         return Table(
             name,
             self.metadata,
@@ -281,10 +286,12 @@ class SQLiteDatabaseEngine(DatabaseEngine):
                     row[1],
                     resolve_type(row[2].upper()),
                     nullable=not row[3],
+                    server_default=text(str(row[4])) if row[4] is not None else None,
                     primary_key=bool(row[5]),
                 )
                 for row in rows
             ),
+            extend_existing=True,
         )
 
     @retry_sqlite_locks
@@ -292,7 +299,7 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         if self.is_closed:
             # Reconnect in case of being closed previously.
             self._reconnect()
-        return self.db.execute(*self.to_args(query))
+        return self.db.execute(*self.compile_to_args(query))
 
     @retry_sqlite_locks
     def executemany(self, sql: str, params) -> None:
@@ -481,7 +488,6 @@ class SQLiteMetastore(AbstractDBMetastore):
         db_file = get_db_file_in_memory(db_file, in_memory)
 
         self.db = db or SQLiteDatabaseEngine.from_db_file(db_file)
-        self.db.compiled_cache = {}
 
         if not _initialize:
             self.default_table_names = [table.name for table in self._metastore_tables]

@@ -283,9 +283,7 @@ def test_cleanup_removes_temporary_data_from_closed_separate_database(
     _check_closed_catalog_cleanup(catalog, catalog_tmpfile)
 
 
-def test_in_memory_session_exit_keeps_sqlite_error_type(tmp_path):
-    # A job finalized at exit after its in-memory metastore closed must not
-    # surface as TableMissingError (a missing table is a plain SQLite error).
+def test_in_memory_session_exit_finalizes_job_cleanly(tmp_path):
     import subprocess
     import sys
 
@@ -303,4 +301,14 @@ def test_in_memory_session_exit_keeps_sqlite_error_type(tmp_path):
         env={**os.environ, "DATACHAIN_ROOT_DIR": str(tmp_path)},
         check=False,
     )
-    assert "TableMissingError" not in result.stderr
+    assert result.returncode == 0
+    assert "Traceback" not in result.stderr
+
+
+def test_session_cleanup_tolerates_dropped_metastore_tables(catalog):
+    metastore = catalog.metastore
+    session = Session("dropped", catalog=catalog)
+    metastore.db.drop_table(metastore._datasets_dependencies, if_exists=True)
+    metastore.db.drop_table(metastore._dataset_version_jobs, if_exists=True)
+    metastore.db.drop_table(metastore._datasets_versions)
+    session._cleanup_temp_datasets()

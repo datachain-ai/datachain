@@ -28,9 +28,6 @@ class DatabaseEngine(ABC, Serializable):
 
     engine: "Engine"
     metadata: "MetaData"
-    # Compiled metastore statements by shape (SQL text and bind names, never
-    # data, so no other process can make an entry stale); None turns it off.
-    compiled_cache: dict | None = None
 
     def __enter__(self) -> Self:
         return self
@@ -75,38 +72,21 @@ class DatabaseEngine(ABC, Serializable):
             return (result.string,)
         return result.string, params
 
-    def to_args(
-        self, statement: "ClauseElement"
-    ) -> tuple[str] | tuple[str, dict[str, Any]]:
-        """`compile_to_args`, compiling each shape once if `compiled_cache` is
-        set. An IN list renders into the text, so it compiles every time."""
-        cache = self.compiled_cache
-        if cache is None or not (key := statement._generate_cache_key()):
-            return self.compile_to_args(statement)
-        if (compiled := cache.get(key.key)) is None:
-            compiled = self.compile(statement, cache_key=key)
-            if getattr(compiled, "post_compile_params", None):
-                return compiled.string, compiled.params or {}
-            cache[key.key] = compiled
-        params: Any = compiled.construct_params(extracted_parameters=key[1])
-        return compiled.string, params or {}
-
     @abstractmethod
     def execute(self, query) -> Iterator[tuple[Any, ...]]: ...
 
     def get_table(self, name: str) -> "Table":
-        """Get a table by name, raising TableMissingError if not found. Only its
-        columns are reflected: one query, where indexes and keys take ten more."""
-        if (table := self.metadata.tables.get(name)) is not None:
-            return table
-        try:
-            columns = [
-                sa.Column(c["name"], c["type"], primary_key=bool(c.get("primary_key")))
-                for c in sa.inspect(self.engine).get_columns(name)
-            ]
-        except sa.exc.NoSuchTableError as e:
-            raise TableMissingError(f"Table '{name}' not found") from e
-        return sa.Table(name, self.metadata, *columns)
+        """Get a table by name, raising TableMissingError if not found."""
+        table = self.metadata.tables.get(name)
+        if table is None:
+            try:
+                sa.Table(name, self.metadata, autoload_with=self.engine)
+                table = self.metadata.tables.get(name)
+                if table is None:
+                    raise TableMissingError(f"Table '{name}' not found")
+            except sa.exc.NoSuchTableError as e:
+                raise TableMissingError(f"Table '{name}' not found") from e
+        return table
 
     @abstractmethod
     def executemany(self, sql: str, params) -> None: ...

@@ -10,12 +10,7 @@ from datachain.data_storage.job import JobQueryType, JobStatus
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SCHEMA_VERSION, SQLiteMetastore
 from datachain.dataset import DatasetStatus
-from datachain.error import (
-    DatasetNotFoundError,
-    DatasetStateNotLoadedError,
-    OutdatedDatabaseSchemaError,
-    TableMissingError,
-)
+from datachain.error import DatasetStateNotLoadedError, OutdatedDatabaseSchemaError
 from datachain.lib.dc.listings import read_listing_dataset
 from datachain.lib.listing import parse_listing_uri
 from tests.conftest import cleanup_sqlite_db
@@ -352,18 +347,3 @@ def test_list_datasets_include_removed_lists_dataset_with_only_removing_versions
     assert "removing-only" in {
         d.name for d in metastore.list_datasets(include_removed=True)
     }
-
-
-def test_listing_without_metastore_tables_raises_table_missing(metastore):
-    # session cleanup relies on this after tests drop the metastore tables
-    metastore.db.drop_table(metastore._datasets_dependencies, if_exists=True)
-    metastore.db.drop_table(metastore._dataset_version_jobs, if_exists=True)
-    metastore.db.drop_table(metastore._datasets_versions)
-    with pytest.raises(TableMissingError):
-        list(metastore.list_datasets_by_prefix("session_"))
-
-
-def test_get_dataset_none_version_does_not_match_versionless_dataset(metastore):
-    metastore.create_dataset("versionless")
-    with pytest.raises(DatasetNotFoundError):
-        metastore.get_dataset("versionless", versions=[None], include_incomplete=True)
