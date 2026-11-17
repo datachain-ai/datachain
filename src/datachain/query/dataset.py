@@ -2485,6 +2485,8 @@ def _used_columns(steps: Sequence[Step]) -> set[str] | None:
         ):
             return None
         if isinstance(step, SQLSelect):
+            if "sys__rand" in cols and "sys__id" not in cols:
+                return None
             cols = {c for c in cols if not c.startswith("sys__")}
         if "sys__rand" in cols:
             return None
