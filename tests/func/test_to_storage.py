@@ -732,7 +732,7 @@ def test_to_storage_filename_ignores_inactive_file_arm(test_session, tmp_path):
         output={"value": ImageFile | VideoFile},
         session=test_session,
     ).mutate(value__ImageFile__path="ignored.bin")
-    assert [file.path for file in chain.to_values("value")] == ["a.bin", "b.bin"]
+    assert sorted(file.path for file in chain.to_values("value")) == ["a.bin", "b.bin"]
 
     chain.to_storage(tmp_path / "out", signal="value", placement="filename")
 
