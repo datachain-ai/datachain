@@ -432,12 +432,8 @@ class DatasetDiffOperation(Step):
         **kwargs,
     ) -> "StepResult":
         source_query = query_generator.select()
-        bounded = kwargs.get("bounded", False)
-        if bounded:
-            source_query = source_query.execution_options(datachain_bounded_query=True)
 
         right_before = len(self.dq.temp_table_names)
-        # Matching can require every target key even when the source is limited.
         target_full = self.dq.apply_steps().select()
         temp_tables.extend(self.dq.temp_table_names[right_before:])
         # Exclude sys columns from target - only key columns are used for matching
@@ -2355,12 +2351,11 @@ class SQLUnion(Step):
         state: "QueryState",
         **kwargs,
     ) -> StepResult:
-        bounded = kwargs.get("bounded", False)
         left_before = len(self.query1.temp_table_names)
-        q1 = self.query1.apply_steps(bounded=bounded).select().subquery()
+        q1 = self.query1.apply_steps().select().subquery()
         temp_tables.extend(self.query1.temp_table_names[left_before:])
         right_before = len(self.query2.temp_table_names)
-        q2 = self.query2.apply_steps(bounded=bounded).select().subquery()
+        q2 = self.query2.apply_steps().select().subquery()
         temp_tables.extend(self.query2.temp_table_names[right_before:])
 
         columns1 = _drop_system_columns(q1.columns)
@@ -2458,29 +2453,25 @@ class SQLJoin(Step):
             query2=self.query2.replace_sources(replacements),
         )
 
-    def get_query(
-        self, dq: "DatasetQuery", temp_tables: list[str], *, bounded: bool = False
-    ) -> sa.Subquery:
-        materialize = any(isinstance(step, (SQLJoin, SQLUnion)) for step in dq.steps)
+    def get_query(self, dq: "DatasetQuery", temp_tables: list[str]) -> sa.Subquery:
         temp_tables_before = len(dq.temp_table_names)
-        query = dq.apply_steps(bounded=bounded and not materialize).select()
+        query = dq.apply_steps().select()
         temp_tables.extend(dq.temp_table_names[temp_tables_before:])
 
-        if materialize:
-            warehouse = self.catalog.warehouse
-            columns = [
-                c if isinstance(c, Column) else Column(c.name, c.type)
-                for c in query.subquery().columns
-            ]
-            table = warehouse.create_dataset_rows_table(
-                warehouse.temp_table_name(), columns=columns
-            )
-            temp_tables.append(table.name)
-            warehouse.insert_into(table, query)
-            query = table.select()
-        return query.execution_options(datachain_bounded_query=bounded).subquery(
-            dq.table.name
+        if not any(isinstance(step, (SQLJoin, SQLUnion)) for step in dq.steps):
+            return query.subquery(dq.table.name)
+
+        warehouse = self.catalog.warehouse
+        columns = [
+            c if isinstance(c, Column) else Column(c.name, c.type)
+            for c in query.subquery().columns
+        ]
+        table = warehouse.create_dataset_rows_table(
+            warehouse.temp_table_name(), columns=columns
         )
+        temp_tables.append(table.name)
+        warehouse.insert_into(table, query)
+        return table.select().subquery(dq.table.name)
 
     def bind_and_validate_expression(self, exp: ColumnElement, q1, q2) -> ColumnElement:
         left_name = self.query1.table.name
@@ -2553,9 +2544,8 @@ class SQLJoin(Step):
         state: "QueryState",
         **kwargs,
     ) -> StepResult:
-        bounded = kwargs.get("bounded", False)
-        q1 = self.get_query(self.query1, temp_tables, bounded=bounded)
-        q2 = self.get_query(self.query2, temp_tables, bounded=bounded)
+        q1 = self.get_query(self.query1, temp_tables)
+        q2 = self.get_query(self.query2, temp_tables)
 
         q1_columns = _drop_system_columns(q1.c)
         existing_column_names = {c.name for c in q1_columns}
@@ -2936,7 +2926,7 @@ class DatasetQuery:
             for sub_query in step.sub_queries:
                 sub_query.resolve_all_listings()
 
-    def apply_steps(self, *, bounded: bool = False) -> QueryGenerator:
+    def apply_steps(self) -> QueryGenerator:
         """
         Apply the steps in the query and return the resulting
         sqlalchemy.SelectBase.
@@ -2966,37 +2956,6 @@ class DatasetQuery:
             query = query.filter(C.sys__rand % total == index)
             query.steps = query.steps[-1:] + query.steps[:-1]
 
-        # A limit can stop streaming steps early, but sorting, UDFs and other
-        # blocking steps still consume their complete input. Look backward before
-        # building joins, since SQLLimit itself is applied afterward. Backend
-        # pagination does not appear here and must not disable key materialization.
-        bounded_steps = []
-        for step in reversed(query.steps):
-            if isinstance(step, SQLLimit):
-                bounded = True
-            elif isinstance(step, SQLJoin) and step.full:
-                # SQLite emulates a full join with a duplicate-removing UNION.
-                bounded = False
-            elif not (
-                isinstance(
-                    step,
-                    (
-                        SQLFilter,
-                        SQLSelectExcept,
-                        SQLOffset,
-                        SQLJoin,
-                        SQLUnion,
-                        Subtract,
-                    ),
-                )
-                or (
-                    isinstance(step, SQLSelect)
-                    and all(isinstance(arg, (str, ColumnClause)) for arg in step.args)
-                )
-            ):
-                bounded = False
-            bounded_steps.append(bounded)
-
         if query.starting_step is not None:
             result = query.starting_step.apply()
             self.dependencies.update(result.dependencies)
@@ -3013,9 +2972,7 @@ class DatasetQuery:
         # Stage flags reset at the start of every apply_steps run; they only
         # describe the in-flight query under construction here.
         state = QueryState(self.catalog.warehouse)
-        for step, step_bounded in zip(
-            query.steps, reversed(bounded_steps), strict=True
-        ):
+        for step in query.steps:
             hash_input = _hash
             hasher.update(step.hash().encode("utf-8"))
             _hash = hasher.hexdigest()
@@ -3028,7 +2985,6 @@ class DatasetQuery:
                 hash_input=hash_input,
                 hash_output=hash_output,
                 checkpoints_enabled=self.checkpoints_enabled,
-                bounded=step_bounded,
             )  # a chain of steps linked by results
             self.dependencies.update(result.dependencies)
             # Most non-SQLClause steps materialize a fresh relation, so any

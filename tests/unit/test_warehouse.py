@@ -296,8 +296,8 @@ def _nested_scans(db, query):
 @pytest.mark.parametrize(
     "kind,computed,lazy",
     [
-        ("inner", "left", True),
-        ("inner", "right", True),
+        ("inner", "left", False),
+        ("inner", "right", False),
         ("inner", "both", False),
         ("left", "left", True),
         ("left", "right", False),
@@ -358,8 +358,17 @@ def test_computed_join_keys_scale_linearly(
         expected = [(i, i) for i in range(1, 74)]
 
     assert sorted(warehouse.db.execute(query)) == expected
-    assert calls <= 4 * 73
+    assert calls <= 2 * 73
     assert not _nested_scans(warehouse.db, query)
+    if kind == "inner" and computed in ("left", "right"):
+        # Filtering the non-computed side uses the index on the computed CTE.
+        calls = 0
+        result = query.subquery()
+        plain_id = result.c.right_id if computed == "left" else result.c.id
+        filtered = sa.select(result).where(plain_id.in_([1, 2, 3, 4, 5]))
+        assert len(list(warehouse.db.execute(filtered))) == 5
+        assert calls == 73
+        assert not _nested_scans(warehouse.db, filtered)
     if lazy:
         # A filter on the computed side reaches it before its keys are computed.
         calls = 0
@@ -414,7 +423,8 @@ def test_computed_join_preview_does_not_scan_all_right_keys(
         elif preview == "limit_before_order":
             joined = joined.limit(1).order_by("x", descending=True)
         assert joined.limit(1).to_list() == [(0, 0)]
-    assert calls["right"] == 1
+    assert calls["left"] <= 2
+    assert calls["right"] == 12
 
 
 @skip_if_not_sqlite
@@ -489,8 +499,66 @@ def test_computed_join_full_read_and_pagination_keep_linear_key_work(
 
 @skip_if_not_sqlite
 def test_computed_subtract_with_limit_keeps_results(computed_join_inputs):
-    left, right, _, _ = computed_join_inputs
+    left, right, calls, _ = computed_join_inputs
     assert right.subtract(left, on="key").select("y").limit(1).to_list() == [(3,)]
+    assert calls["left"] == 3
+    assert calls["right"] == 4
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize("direct", [False, True])
+def test_computed_join_evaluates_key_once_per_row_on_duplicates(test_session, direct):
+    calls = 0
+
+    def stem_key(path):
+        nonlocal calls
+        calls += 1
+        return path.split(".")[0]
+
+    test_session.catalog.warehouse.db.db.create_function(
+        "test_stem_key", 1, stem_key, deterministic=True
+    )
+    left = dc.read_values(stem=["x"] * 20, session=test_session)
+    right = dc.read_values(path=["x.png"] * 20, session=test_session)
+    if direct:
+        right_on = sa.func.test_stem_key(right.c("path"), type_=sa.String())
+    else:
+        right = right.mutate(stem=sa.func.test_stem_key(dc.C.path, type_=sa.String()))
+        right_on = "stem"
+    rows = left.merge(right, on="stem", right_on=right_on).to_list("stem", "path")
+    assert len(rows) == 400
+    assert calls == 20
+
+
+@skip_if_not_sqlite
+def test_computed_join_indexes_against_cast_other_key(warehouse, numbers_table):
+    calls = 0
+
+    def join_key(value):
+        nonlocal calls
+        calls += 1
+        return str(value)
+
+    warehouse.db.db.create_function(
+        "test_str_join_key", 1, join_key, deterministic=True
+    )
+    number = numbers_table.c.number
+    left = sa.select(
+        number.label("id"), sa.cast(number, sa.String).label("key")
+    ).subquery()
+    right = sa.select(
+        number.label("id"),
+        sa.func.test_str_join_key(number, type_=sa.String).label("key"),
+    ).subquery()
+    query = warehouse.join(
+        left,
+        right,
+        left.c.key == right.c.key,
+        columns=[left.c.id, right.c.id.label("right_id")],
+    )
+    assert sorted(warehouse.db.execute(query)) == [(i, i) for i in range(1, 74)]
+    assert calls == 73
+    assert not _nested_scans(warehouse.db, query)
 
 
 @skip_if_not_sqlite

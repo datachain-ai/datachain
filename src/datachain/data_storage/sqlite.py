@@ -4,6 +4,7 @@ import sqlite3
 from array import array
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
+from decimal import Decimal
 from functools import cached_property, wraps
 from time import sleep
 from typing import TYPE_CHECKING, Any, ClassVar, Union
@@ -26,11 +27,12 @@ from sqlalchemy.sql import func, operators
 from sqlalchemy.sql.elements import (
     BinaryExpression,
     BooleanClauseList,
+    Cast,
     ColumnClause,
     Label,
     TypeCoerce,
 )
-from sqlalchemy.sql.expression import Executable, cast
+from sqlalchemy.sql.expression import cast
 from sqlalchemy.sql.selectable import Join, Select
 from sqlalchemy.sql.visitors import iterate, replacement_traverse
 
@@ -143,14 +145,18 @@ def _is_computed(expression: "ColumnElement") -> bool:
     return any(not isinstance(p, (ColumnClause, Label)) for p in expression.proxy_set)
 
 
+def _has_affinity(expression: "ColumnElement") -> bool:
+    return all(isinstance(p, (ColumnClause, Label, Cast)) for p in expression.proxy_set)
+
+
 def _key_affinity(key: "ColumnElement", other: "ColumnElement") -> "TypeEngine | None":
-    if _is_computed(other):
+    if not _has_affinity(other):
         return None
     try:
         other_type = other.type.python_type
     except NotImplementedError:
         return None
-    if other_type in (int, float, bool):
+    if other_type in (int, float, bool, Decimal):
         return sqlalchemy.Numeric()
     try:
         key_type = key.type.python_type
@@ -165,23 +171,80 @@ def _key_affinity(key: "ColumnElement", other: "ColumnElement") -> "TypeEngine |
     return None
 
 
+def _probe_side(
+    side: "FromClause",
+    side_keys: dict["ColumnElement", tuple[BinaryExpression, "ColumnElement"]],
+    needed: set[ColumnClause],
+) -> tuple[
+    "FromClause",
+    dict["ClauseElement", "ClauseElement"],
+    list["ColumnElement"],
+]:
+    selected = [column for column in side.c if column in needed]
+    used_names = {column.name for column in side.c}
+    raw_labels: list = []
+    raw_keys: list[tuple[ColumnElement, str]] = []
+    cast_specs: list = []
+
+    def next_name(idx: int) -> str:
+        name = f"__dc_join_key_{idx}"
+        while name in used_names:
+            name += "_"
+        used_names.add(name)
+        return name
+
+    for key, (term, other) in side_keys.items():
+        affinity = _key_affinity(key, other)
+        if isinstance(key, ColumnClause):
+            raw_name = key.name
+        else:
+            raw_name = next_name(len(raw_labels) + len(cast_specs))
+            raw_labels.append(key.label(raw_name))
+            raw_keys.append((key, raw_name))
+        if affinity is not None:
+            idx_name = next_name(len(raw_labels) + len(cast_specs))
+            cast_specs.append((raw_name, term, key, other, affinity, idx_name))
+
+    if cast_specs:
+        raw = select(*selected, *raw_labels).offset(0).subquery()
+        values = (
+            select(
+                *raw.c,
+                *(
+                    cast(raw.c[raw_name], affinity).label(idx_name)
+                    for raw_name, _, _, _, affinity, idx_name in cast_specs
+                ),
+            )
+            .offset(0)
+            .cte()
+        )
+    else:
+        values = select(*selected, *raw_labels).offset(0).cte()
+
+    replacements: dict[ClauseElement, ClauseElement] = {
+        column: values.c[column.name] for column in selected
+    }
+    replacements |= {key: values.c[raw_name] for key, raw_name in raw_keys}
+    index_terms: list[ColumnElement] = []
+    for _, term, key, other, affinity, idx_name in cast_specs:
+        column = values.c[idx_name]
+        cast_other = other if isinstance(other, Cast) else cast(other, affinity)
+        operands = (column, cast_other) if key is term.left else (cast_other, column)
+        index_terms.append(term.operator(*operands))
+    return values, replacements, index_terms
+
+
 def _probe_computed_keys(
     join: Join, required: "Sequence[ClauseElement]", full: bool = False
 ) -> tuple[Join, dict["ClauseElement", "ClauseElement"]]:
     # Fence only probed computed keys. Affinity-cast copies make them indexable;
     # the original comparisons preserve SQLite's runtime comparison semantics.
     assert join.onclause is not None
-    # Materialized keys must not erase SQLite's collation precedence. Keep the
-    # original query for collated joins and explicit limits/previews. The outer
-    # LIMIT is not built yet here; its hint travels with the input SELECT.
+    # Materialized keys must not erase SQLite's collation precedence.
     if any(
         isinstance(node, (ColumnClause, Label, BinaryExpression))
         and getattr(node.type, "collation", None)
         for node in iterate(join.onclause)
-    ) or any(
-        isinstance(query := getattr(side, "element", None), Executable)
-        and query.get_execution_options().get("datachain_bounded_query")
-        for side in (join.left, join.right)
     ):
         return join, {}
     keys: dict[FromClause, dict] = {join.left: {}, join.right: {}}
@@ -198,12 +261,16 @@ def _probe_computed_keys(
                 for side, side_keys in keys.items():
                     if tables == {side} and _is_computed(key):
                         side_keys[key] = (term, other)
-    probed = (
-        [join.right]
-        if keys[join.right] and (keys[join.left] or join.isouter or full)
-        else []
-    )
-    probed += [join.left] if keys[join.left] and full else []
+    if full:
+        probed = [side for side in (join.left, join.right) if keys[side]]
+    elif join.isouter:
+        probed = [join.right] if keys[join.right] else []
+    else:
+        probed = (
+            [join.right]
+            if keys[join.right]
+            else ([join.left] if keys[join.left] else [])
+        )
     if not probed:
         return join, {}
     needed = {
@@ -216,28 +283,10 @@ def _probe_computed_keys(
     replacements: dict[ClauseElement, ClauseElement] = {}
     index_terms: list[ColumnElement] = []
     for side in probed:
-        planned: list = []
-        for key, (term, other) in keys[side].items():
-            affinity = _key_affinity(key, other)
-            if affinity is None and isinstance(key, ColumnClause):
-                continue
-            name = f"__dc_join_key_{len(planned)}"
-            while name in side.c:
-                name += "_"
-            value = key if affinity is None else cast(key, affinity)
-            planned.append((key, term, other, affinity, value.label(name)))
-        selected = [column for column in side.c if column in needed]
-        values = select(*selected, *(p[-1] for p in planned)).offset(0).cte()
+        values, side_replacements, side_terms = _probe_side(side, keys[side], needed)
         sides[side] = values
-        replacements |= {column: values.c[column.name] for column in selected}
-        for key, term, other, affinity, label in planned:
-            column = values.c[label.name]
-            if affinity is None:
-                replacements[key] = column
-                continue
-            other = cast(other, affinity)
-            operands = (column, other) if key is term.left else (other, column)
-            index_terms.append(term.operator(*operands))
+        replacements |= side_replacements
+        index_terms.extend(side_terms)
     left, right = (sides.get(side, side) for side in (join.left, join.right))
     onclause = _replace(sqlalchemy.and_(join.onclause, *index_terms), replacements)
     return sqlalchemy.join(left, right, onclause, isouter=join.isouter), replacements
