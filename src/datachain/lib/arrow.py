@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import sys
 from collections.abc import Iterator, Sequence
@@ -138,6 +139,7 @@ def pyarrow_fs(file: File, format):
 class ArrowGenerator(Generator):
     # Rows per scanned batch: small enough to bound memory over many files.
     DEFAULT_BATCH_SIZE = 2**14
+    projectable: bool = False
 
     def __init__(
         self,
@@ -191,6 +193,34 @@ class ArrowGenerator(Generator):
         schema = self.input_schema.to_string() if self.input_schema else ""
         read = schema + json.dumps(self.columns)
         return hashlib.sha256((super().hash(include_body) + read).encode()).hexdigest()
+
+    def project(self, names: set[str]) -> "ArrowGenerator | None":
+        """Return a copy reading only the top-level signals used by ``names``,
+        or None when nothing would be dropped or no data column is used."""
+        if (
+            not self.projectable
+            or self.delta_key
+            or self.input_schema is None
+            or self.output is None
+        ):
+            return None
+        kept = {
+            name: anno
+            for name, anno in self.output.values.items()
+            if not names.isdisjoint(SignalSchema({name: anno}).db_signals())
+        }
+        data = {k: v for k, v in kept.items() if k in self.output_schema.model_fields}
+        if not data or len(kept) == len(self.output.values):
+            return None
+        raw = normalize_col_names(self.input_schema.names)
+        projected = copy.copy(self)
+        projected.columns = [raw[k] for k in data]
+        projected.output_schema = dict_to_data_model(self.output_schema.__name__, data)
+        projected.source = len(kept) > len(data)
+        projected.output = SignalSchema(kept)
+        if is_parquet(self.kwargs.get("format")):
+            projected.prefetch_max_size = PARTIAL_READ_PREFETCH_MAX_SIZE
+        return projected
 
     def process(self, file: File):
         if file._caching_enabled:
