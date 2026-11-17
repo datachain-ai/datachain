@@ -493,6 +493,45 @@ def test_bucket_metadata_and_resolve_path_with_revision(catalog, monkeypatch):
     resolved = fs.resolve_path("buckets/org/bucket/file.bin", revision="main")
     assert getattr(resolved, "bucket_id", None) == "org/bucket"
 
+    import asyncio
+    from fsspec.callbacks import DEFAULT_CALLBACK
+
+    monkeypatch.setattr(
+        hf_file_system.HfFileSystem, "get_file", lambda self, rpath, *a, **kw: rpath
+    )
+    assert (
+        fs.get_file("buckets/org/bucket/file.bin", "dst")
+        == "buckets/org/bucket/file.bin"
+    )
+    assert (
+        fs.get_file("buckets/org/bucket/file.bin", "dst", revision="main")
+        == "buckets/org/bucket/file.bin"
+    )
+    bclient = HfClient("buckets", {"token": False}, catalog.cache)
+    bclient._fs = Mock()
+    bclient._fs.sync_fs = fs
+    bclient._fs._get_file = AsyncMock(return_value=None)
+    asyncio.run(
+        bclient.get_file("buckets/org/bucket/file.bin", "dst", DEFAULT_CALLBACK)
+    )
+
+    commit = "a" * 40
+    rclient = HfClient("datasets", {"token": False}, catalog.cache)
+    monkeypatch.setattr(
+        rclient.fs.sync_fs,
+        "resolve_path",
+        lambda path, revision=None: SimpleNamespace(revision=commit),
+    )
+    rclient.check_unchanged(
+        File(
+            source=rclient.uri,
+            path=f"org/repo@{commit}/a.txt",
+            version="",
+            etag="blob",
+            size=4,
+        )
+    )
+
 
 def test_anon_translates_to_token_false_and_credentials_detected():
     assert HfClient.has_explicit_credentials({"token": "hf_secret"})

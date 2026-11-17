@@ -190,8 +190,6 @@ class HfClient(Client):
             finally:
                 if hasattr(src, "_exit_stack"):
                     src._exit_stack.close()
-                elif getattr(src, "response", None) is not None:
-                    src.response.close()
 
     async def _check_unchanged(
         self, file: "File", *, info: dict[str, Any] | None = None
