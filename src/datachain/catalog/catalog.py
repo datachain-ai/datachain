@@ -470,15 +470,14 @@ def instantiate_node_groups(
 
 def matches_find_filters(node: Node, names, inames, paths, ipaths, size, typ) -> bool:
     """True if a file without a listing passes the same filters as Listing.find."""
-    name = posixpath.basename(node.path)
     if size is not None:
         limit = suffix_to_number(size)
         if (limit >= 0 and node.size < limit) or (limit < 0 and node.size > -limit):
             return False
     return (
         (typ is None or typ in {"f", "file", "files"})
-        and all(fnmatchcase(name, p) for p in names or ())
-        and all(fnmatchcase(name.lower(), p.lower()) for p in inames or ())
+        and all(fnmatchcase(node.name, p) for p in names or ())
+        and all(fnmatchcase(node.name.lower(), p.lower()) for p in inames or ())
         and all(fnmatchcase(node.path, p) for p in paths or ())
         and all(fnmatchcase(node.path.lower(), p.lower()) for p in ipaths or ())
     )
