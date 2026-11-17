@@ -1026,6 +1026,7 @@ class UDFStep(Step, ABC):
             create_fn=lambda name: self.warehouse.create_udf_table(
                 partition_columns(), name=name
             ),
+            preserve_sys_ids=True,
         )
 
     def _prepare_partition_query(
@@ -1256,6 +1257,8 @@ class UDFStep(Step, ABC):
     def _promote_partial(
         self, partial_table: "Table", parts: "Table | None", final_name: str
     ) -> "Table":
+        if parts is not None:
+            self.warehouse.trim_to_ledger(partial_table, parts)
         # Same hash may already have a final table from earlier in this job
         self.warehouse.db.drop_table(
             sa.Table(final_name, sa.MetaData()), if_exists=True
@@ -1381,6 +1384,7 @@ class UDFStep(Step, ABC):
         source_name = Checkpoint.partial_output_table_name(
             checkpoint.job_id, checkpoint.hash
         )
+        parts = None
         try:
             source_table = self._output_table(source_name)
             # a gen/agg partial table without its ledger is never trusted:
@@ -1390,7 +1394,42 @@ class UDFStep(Step, ABC):
                 if self.is_generator
                 else None
             )
-        except TableMissingError:
+            if is_same_job:
+                partial_table, parts = source_table, source_parts
+            else:
+                # Different job: copy to current job (don't mutate another job's table).
+                # The source job may still be running: copy its ledger first. Rows of
+                # every part in that copy are already durable, so the data copy taken
+                # after it holds them; anything newer is trimmed as uncommitted.
+                partial_name = Checkpoint.partial_output_table_name(
+                    job.id, checkpoint.hash
+                )
+                if source_parts is not None:
+                    parts = self.warehouse.create_table_from_query(
+                        parts_table_name(partial_name),
+                        sa.select(source_parts),
+                        create_fn=self.warehouse.create_parts_table,
+                        preserve_sys_ids=True,
+                    )
+                partial_table = self.warehouse.create_table_from_query(
+                    partial_name,
+                    sa.select(source_table),
+                    create_fn=self.create_output_table,
+                    preserve_sys_ids=True,
+                )
+        except Exception:
+            if not is_same_job and parts is not None:
+                self.warehouse.db.drop_table(parts, if_exists=True)
+            if self.warehouse.db.has_table(source_name) and (
+                not self.is_generator
+                or self.warehouse.db.has_table(parts_table_name(source_name))
+            ):
+                raise
+            if ch := self._find_udf_checkpoint(job, hash_output):
+                try:
+                    return self._skip_udf(ch, hash_input, query, job)
+                except TableMissingError:
+                    pass
             logger.warning(
                 "UDF(%s) [job=%s run_group=%s]: Partial table not found for "
                 "checkpoint %s, falling back to run from scratch",
@@ -1403,31 +1442,9 @@ class UDFStep(Step, ABC):
                 checkpoint.hash, hash_output, hash_input, query, job
             )
 
-        if is_same_job:
-            partial_table, parts = source_table, source_parts
-        else:
-            # Different job: copy to current job (don't mutate another job's table).
-            # The source job may still be running: copy its ledger first. Rows of
-            # every part in that copy are already durable, so the data copy taken
-            # after it holds them; anything newer is trimmed as uncommitted.
-            partial_name = Checkpoint.partial_output_table_name(job.id, checkpoint.hash)
-            parts = None
-            if source_parts is not None:
-                parts = self.warehouse.create_table_from_query(
-                    parts_table_name(partial_name),
-                    sa.select(source_parts),
-                    create_fn=self.warehouse.create_parts_table,
-                    preserve_sys_ids=True,
-                )
-            partial_table = self.warehouse.create_table_from_query(
-                partial_name,
-                sa.select(source_table),
-                create_fn=self.create_output_table,
-                preserve_sys_ids=True,
-            )
-
         if parts is not None:
-            self.warehouse.trim_to_ledger(partial_table, parts)
+            if not is_same_job:
+                self.warehouse.trim_to_ledger(partial_table, parts)
             processed = committed_part_keys(parts)
         else:
             processed = sa.select(partial_table.c.sys__id)

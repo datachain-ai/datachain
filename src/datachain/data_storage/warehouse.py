@@ -1055,12 +1055,16 @@ class AbstractWarehouse(ABC, Serializable):
         staging_name = self.temp_table_name()
         staging_table = create_fn(staging_name)
 
-        self.insert_into(
-            staging_table,
-            query,
-            progress_cb=progress_cb,
-            preserve_sys_ids=preserve_sys_ids,
-        )
+        try:
+            self.insert_into(
+                staging_table,
+                query,
+                progress_cb=progress_cb,
+                preserve_sys_ids=preserve_sys_ids,
+            )
+        except BaseException:
+            self.db.drop_table(staging_table, if_exists=True)
+            raise
 
         try:
             return self.rename_table(staging_table, name)
