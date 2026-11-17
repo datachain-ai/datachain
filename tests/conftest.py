@@ -185,6 +185,9 @@ def clean_environment(
     monkeypatch_session.chdir(working_dir)
     monkeypatch_session.delenv(DataChainDir.ENV_VAR, raising=False)
     monkeypatch_session.delenv(DataChainDir.ENV_VAR_DATACHAIN_ROOT, raising=False)
+    # A developer's own Studio login must not reach the tests.
+    for var in ("TOKEN", "URL", "TEAM"):
+        monkeypatch_session.delenv(f"DATACHAIN_STUDIO_{var}", raising=False)
 
 
 def _create_job(metastore: AbstractMetastore) -> str:
@@ -1063,7 +1066,7 @@ def dataset_rows():
 
 @pytest.fixture
 def studio_token():
-    studio_login(team="team_name")
+    studio_login(default_team="team_name")
 
 
 @pytest.fixture

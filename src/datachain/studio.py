@@ -22,13 +22,12 @@ from datachain.error import DataChainError
 from datachain.remote.credentials import (
     TOKEN_ENV,
     Login,
-    LoginExistsError,
     add_login,
     all_logins,
     conflicting_login,
-    legacy_login,
+    level_flag,
     load_logins,
-    migrate_legacy,
+    logout_command,
     normalize_url,
     remove_login,
     select_login,
@@ -148,7 +147,7 @@ def process_auth_cli_args(args: "Namespace"):
     if args.cmd == "login":
         return login(args)
     if args.cmd == "logout":
-        return logout(args.local, args.team, args.hostname)
+        return logout(args.local, args.team, args.hostname, args.all)
     if args.cmd == "token":
         return token(args.team)
     if args.cmd == "list":
@@ -185,26 +184,15 @@ def set_team(args: "Namespace"):
     print(f"Set default team to '{args.team_name}' in {file_path}")
 
 
-def _level_flag(level: ConfigLevel) -> str:
-    return " --local" if level == ConfigLevel.LOCAL else ""
-
-
-def _logout_command(login: Login, teams: list[str] | None, current_url: str) -> str:
-    host_flag = f" -H {login.url}" if login.url != current_url else ""
-    team_flag = ""
-    if login.teams is not None:
-        overlap = sorted(set(login.teams) & set(teams or []))
-        team_flag = f" --team {overlap[0]}"
-    return f"datachain auth logout{host_flag}{team_flag}{_level_flag(login.level)}"
-
-
 def _login_exists_error(
     existing: Login, teams: list[str] | None, current_url: str
 ) -> DataChainError:
+    team = next((t for t in teams or () if t in (existing.teams or ())), None)
+    command = logout_command(existing, team, host=existing.url != current_url)
     return DataChainError(
         f"Token already exists for {existing.url} ({existing.describe_teams()}) "
         f"in {existing.path}. To login with a different token, logout using "
-        f"`{_logout_command(existing, teams, current_url)}`."
+        f"`{command}`."
     )
 
 
@@ -220,14 +208,7 @@ def login(args: "Namespace"):
     team_names = list(dict.fromkeys(args.team)) if args.team else None
     expires_in_days = args.expires_in
 
-    if moved := migrate_legacy(level):
-        print(f"Moved the Studio token for {moved.url} to {moved.path}.")
-
     if existing := conflicting_login(level, hostname, team_names):
-        if existing == moved:
-            command = _logout_command(existing, team_names, current_url)
-            print(f"To login with a different token, logout using `{command}`.")
-            return 0
         raise _login_exists_error(existing, team_names, current_url)
 
     open_browser = not args.no_open
@@ -254,27 +235,26 @@ def login(args: "Namespace"):
         raise DataChainError(f"Failed to authenticate with Studio: {exc}") from exc
 
     expires = datetime.now(UTC) + timedelta(days=expires_in_days)
-    try:
-        credentials_path = add_login(
-            Login(
-                url=hostname,
-                token=access_token,
-                teams=team_names,
-                name=token_name,
-                expires=expires.date().isoformat(),
-                level=level,
-            )
+    credentials_path = add_login(
+        Login(
+            url=hostname,
+            token=access_token,
+            teams=team_names,
+            name=token_name,
+            expires=expires.date().isoformat(),
+            level=level,
         )
-    except LoginExistsError as exc:
-        # Another login for these teams was saved while this one was in progress.
-        raise _login_exists_error(exc.login, team_names, current_url) from None
+    )
     print(f"Authentication complete. Saved token to {credentials_path}.")
     if team_names:
         print(f"Token is scoped to teams: {', '.join(team_names)}")
     print(f"Token will expire in {expires_in_days} days.")
 
-    if hostname != current_url:
+    if hostname == current_url:
+        default_team = get_studio_team()
+    else:
         # A team picked for another Studio means nothing on this one.
+        default_team = None
         config = Config(level)
         with config.edit() as conf:
             studio_conf = conf.get("studio", {})
@@ -283,7 +263,6 @@ def login(args: "Namespace"):
             conf["studio"] = studio_conf
         print(f"Set Studio URL to {hostname} in {config.config_file()}")
 
-    default_team = get_studio_team()
     if team_names and len(team_names) == 1 and not default_team:
         file_path = _save_default_team(team_names[0], level)
         print(f"Set default team to '{team_names[0]}' in {file_path}")
@@ -316,30 +295,66 @@ def _revoke(login: Login) -> None:
         )
 
 
-def logout(local: bool = False, team: str | None = None, hostname: str | None = None):
+def _nothing_to_logout(
+    url: str, team: str | None, saved: list[Login], level: ConfigLevel
+) -> str:
+    local = level_flag(level)
+    if not saved:
+        return f"Not logged in to Studio at {url}. Log in with 'datachain auth login'."
+    if team:
+        if any(login.teams is None for login in saved):
+            return (
+                f"No token is saved for team '{team}' alone. To remove the token "
+                f"for all teams, run `datachain auth logout{local}`."
+            )
+        return f"No token is saved for team '{team}' at {url}."
+    teams = ", ".join(sorted({t for login in saved for t in login.teams or ()}))
+    return (
+        f"No token for all teams is saved for {url}, only tokens for teams "
+        f"{teams}. Remove one with `datachain auth logout --team <team>{local}`, "
+        f"or all of them with `datachain auth logout --all{local}`."
+    )
+
+
+def _clear_default_team(level: ConfigLevel) -> None:
+    config = Config(level)
+    if "team" not in config.read().get("studio", {}):
+        return
+    with config.edit() as conf:
+        if studio := conf.get("studio"):
+            studio.pop("team", None)
+            if not studio:
+                del conf["studio"]
+
+
+def logout(
+    local: bool = False,
+    team: str | None = None,
+    hostname: str | None = None,
+    all_teams: bool = False,
+):
     level = ConfigLevel.LOCAL if local else ConfigLevel.GLOBAL
     url = normalize_url(hostname or get_studio_url())
-    logins = [
-        login
-        for login in load_logins(level)
-        if login.url == url
-        and (team is None or (login.teams is not None and team in login.teams))
-    ]
-    if team is None and (legacy := legacy_login(level)) and legacy.url == url:
-        logins.append(legacy)
+    saved = [login for login in load_logins(level) if login.url == url]
+    if all_teams:
+        logins = saved
+    elif team:
+        logins = [login for login in saved if team in (login.teams or ())]
+    else:
+        logins = [login for login in saved if login.teams is None]
 
     if not logins:
-        for_team = f" for team '{team}'" if team else ""
-        raise DataChainError(
-            f"Not logged in to Studio at {url}{for_team}. "
-            "Log in with 'datachain auth login'."
-        )
+        raise DataChainError(_nothing_to_logout(url, team, saved, level))
 
     for login in logins:
         # Removed one at a time, so a failed revoke keeps the tokens not yet revoked.
         _revoke(login)
         remove_login(login)
         print(f"Logged out from Studio at {url} ({login.describe_teams()}).")
+
+    if len(logins) == len(saved):
+        # The default team belonged to the tokens just removed.
+        _clear_default_team(level)
 
     print("(you can log back in with 'datachain auth login')")
 

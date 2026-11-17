@@ -71,14 +71,14 @@ def get_studio_url(config: dict | None = None) -> str:
     )
 
 
-def _is_server_error(status_code: int) -> bool:
-    return str(status_code).startswith("5")
-
-
 def get_studio_team(config: dict | None = None) -> str | None:
     if config is None:
         config = Config().read().get("studio", {}) or {}
     return get_studio_env_variable("TEAM") or config.get("team")
+
+
+def _is_server_error(status_code: int) -> bool:
+    return str(status_code).startswith("5")
 
 
 def is_token_set(team: str | None = None) -> bool:

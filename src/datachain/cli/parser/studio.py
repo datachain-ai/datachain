@@ -93,8 +93,8 @@ def add_auth_parser(subparsers, parent_parser) -> None:
 
     auth_logout_help = "Log out from Studio"
     auth_logout_description = (
-        "Revoke and remove the Studio tokens saved for the current Studio URL. "
-        "With --team, only the token scoped to that team is removed."
+        "Revoke and remove the Studio token for all teams. With --team, the "
+        "token for that team instead; with --all, every token for the Studio."
     )
 
     logout_parser = auth_subparser.add_parser(
@@ -110,11 +110,18 @@ def add_auth_parser(subparsers, parent_parser) -> None:
         default=False,
         help="Remove the token from the project's .datachain/credentials",
     )
-    logout_parser.add_argument(
+    logout_scope = logout_parser.add_mutually_exclusive_group()
+    logout_scope.add_argument(
         "--team",
         action="store",
         default=None,
-        help="Remove only the token scoped to this team",
+        help="Remove the token for this team instead of the token for all teams",
+    )
+    logout_scope.add_argument(
+        "--all",
+        action="store_true",
+        default=False,
+        help="Remove every token for the Studio: for all teams and for each team",
     )
     logout_parser.add_argument(
         "-H",

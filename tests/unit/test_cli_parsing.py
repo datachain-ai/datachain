@@ -115,27 +115,27 @@ def test_datasets_ls_flavor_defaults():
 
 
 @pytest.mark.parametrize(
-    "studio,local,all,token,expected",
+    "studio,local,all,logged_in,expected",
     [
-        # No flags defaults to local-only (regardless of token presence)
-        (False, False, False, None, (False, True, False)),
-        (False, False, False, "tok", (False, True, False)),
-        # Explicit --all keeps both on with a token, downgrades to local without
-        (False, False, True, "tok", (True, False, False)),
-        (False, False, True, None, (False, True, False)),
+        # No flags defaults to local-only (regardless of login)
+        (False, False, False, False, (False, True, False)),
+        (False, False, False, True, (False, True, False)),
+        # Explicit --all keeps both on when logged in, downgrades to local otherwise
+        (False, False, True, True, (True, False, False)),
+        (False, False, True, False, (False, True, False)),
         # Explicit single-source flags clear --all
-        (True, False, False, "tok", (False, False, True)),
-        (False, True, False, None, (False, True, False)),
-        (True, True, False, "tok", (False, True, True)),
+        (True, False, False, True, (False, False, True)),
+        (False, True, False, False, (False, True, False)),
+        (True, True, False, True, (False, True, True)),
     ],
 )
-def test_determine_flavors(studio, local, all, token, expected):
-    assert determine_flavors(studio, local, all, token) == expected
+def test_determine_flavors(studio, local, all, logged_in, expected):
+    assert determine_flavors(studio, local, all, logged_in) == expected
 
 
 def test_determine_flavors_studio_without_token():
     with pytest.raises(DataChainError, match="Not logged in to Studio"):
-        determine_flavors(studio=True, local=False, all=False, token=None)
+        determine_flavors(studio=True, local=False, all=False, logged_in=False)
 
 
 def test_dataset_describe_parser():

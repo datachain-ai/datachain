@@ -20,7 +20,7 @@ The token is saved in a `credentials` file in your DataChain config directory, f
 
 A token you log in with without `--team` works for all your teams. A token you log in with `--team` is used for those teams only. You can save both, for example a token for a team from another account, or a token with fewer permissions for one team.
 
-A command runs for a team: the one given with `--team`, or the default team (see [`datachain auth team`](team.md)). DataChain uses the first token from this list that works for that team:
+A command runs for a team: the one given with `--team`, or the default team (see [`datachain auth team`](team.md)). DataChain uses the first token from this list that is saved for that team:
 
 1. The `DATACHAIN_STUDIO_TOKEN` environment variable.
 2. The project's token for this team (saved with `--local --team`).
@@ -28,7 +28,7 @@ A command runs for a team: the one given with `--team`, or the default team (see
 4. Your token for this team (saved with `--team`).
 5. Your token for all teams.
 
-Run [`datachain auth list`](list.md) to see the saved tokens and which one is used.
+Run [`datachain auth list`](list.md) to see the saved tokens and which one is used. If that token has expired, the command fails and names the token to replace; DataChain does not switch to another token, which could belong to another account.
 
 If you log in with exactly one `--team` and no default team is set yet, that team becomes the default team.
 
@@ -38,7 +38,7 @@ With `-H`, DataChain logs in to that Studio instance and uses it for later comma
 
 ### Tokens saved by older versions
 
-Older DataChain versions saved the token in the config file. Such a token still works, and DataChain warns about it. Run `datachain auth login` to move it to the credentials file.
+Older DataChain versions saved the token in the config file. DataChain no longer reads it: log in again, and remove `token` from the `[studio]` section of the config.
 
 ## Options
 

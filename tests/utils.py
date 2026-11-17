@@ -19,12 +19,11 @@ from upath.implementations.cloud import CloudPath
 
 import datachain as dc
 from datachain.catalog.catalog import Catalog
-from datachain.config import ConfigLevel
+from datachain.config import Config, ConfigLevel
 from datachain.dataset import DatasetDependency, DatasetRecord
 from datachain.lib.tar import process_tar
 from datachain.query import C
 from datachain.remote.credentials import Login, add_login
-from datachain.studio import _save_default_team
 from datachain.utils import STUDIO_URL
 
 DEFAULT_TREE: dict[str, Any] = {
@@ -136,6 +135,8 @@ def create_tar_dataset(session, uri: str, ds_name: str) -> dc.DataChain:
     tar_entries = chain.filter(C("file.path").glob("*.tar")).gen(file=process_tar)
     return chain.union(tar_entries).save(ds_name)
 
+
+posix_only = pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
 
 skip_if_not_sqlite = pytest.mark.skipif(
     os.environ.get("DATACHAIN_METASTORE") is not None
@@ -382,12 +383,15 @@ def reset_session_job_state():
 
 def studio_login(
     token: str = "isat_access_token",  # noqa: S107
-    team: str | None = None,
-    url: str | None = None,
+    default_team: str | None = None,
+    url: str = STUDIO_URL,
     teams: list[str] | None = None,
     level: ConfigLevel = ConfigLevel.GLOBAL,
 ) -> None:
     """Save a Studio login and, if given, the default team at the same level."""
-    add_login(Login(url=url or STUDIO_URL, token=token, teams=teams, level=level))
-    if team:
-        _save_default_team(team, level)
+    add_login(Login(url=url, token=token, teams=teams, level=level))
+    if default_team:
+        with Config(level).edit() as conf:
+            studio = conf.get("studio", {})
+            studio["team"] = default_team
+            conf["studio"] = studio

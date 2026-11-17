@@ -14,27 +14,23 @@ import logging
 import os
 import stat
 import tempfile
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import tomlkit
 
 from datachain.config import Config, ConfigLevel
 from datachain.error import DataChainError
-from datachain.utils import STUDIO_URL, DataChainDir, interprocess_file_lock
+from datachain.utils import DataChainDir
 
 logger = logging.getLogger("datachain")
 
 CREDENTIALS = DataChainDir.CREDENTIALS
 TOKEN_ENV = "DATACHAIN_STUDIO_TOKEN"  # noqa: S105
 
-# Levels with a credentials file. A project's logins win over the user's.
-LOGIN_LEVELS = (ConfigLevel.LOCAL, ConfigLevel.GLOBAL)
-# Lookup order. A token an older version saved as `[studio] token` can also sit in
-# the system config.
-LOOKUP_LEVELS = (*LOGIN_LEVELS, ConfigLevel.SYSTEM)
+# Levels with a credentials file, in lookup order: a project's logins win.
+LEVELS = (ConfigLevel.LOCAL, ConfigLevel.GLOBAL)
 
 _warned: set[str] = set()
 
@@ -46,12 +42,11 @@ class Login:
     # None: every team the token can reach.
     teams: list[str] | None = None
     name: str | None = None
+    # ISO date, as saved by `datachain auth login`.
     expires: str | None = None
     level: ConfigLevel = ConfigLevel.GLOBAL
     # Path of the file the login was read from or is saved to.
     path: str = field(default="", compare=False)
-    # Saved by an older version as `[studio] token` in the config file.
-    legacy: bool = False
 
     def __post_init__(self) -> None:
         self.url = normalize_url(self.url)
@@ -64,30 +59,33 @@ class Login:
     def describe_teams(self) -> str:
         return "all teams" if self.teams is None else ", ".join(self.teams)
 
-
-class LoginExistsError(DataChainError):
-    def __init__(self, login: Login) -> None:
-        self.login = login
-        super().__init__(
-            f"Token already exists for {login.url} ({login.describe_teams()}) "
-            f"in {login.path}"
-        )
+    def expired(self) -> bool:
+        try:
+            return date.fromisoformat(self.expires or "") < datetime.now(UTC).date()
+        except ValueError:
+            return False
 
 
 def normalize_url(url: str) -> str:
     return url.rstrip("/")
 
 
+def level_flag(level: ConfigLevel) -> str:
+    return " --local" if level == ConfigLevel.LOCAL else ""
+
+
+def logout_command(login: Login, team: str | None = None, host: bool = False) -> str:
+    """The `datachain auth logout` command that removes this login.
+
+    For a team's login, `team` picks the team to name; it defaults to the first.
+    """
+    host_flag = f" -H {login.url}" if host else ""
+    team_flag = f" --team {team or login.teams[0]}" if login.teams else ""
+    return f"datachain auth logout{host_flag}{team_flag}{level_flag(login.level)}"
+
+
 def credentials_path(level: ConfigLevel) -> str:
-    if level not in LOGIN_LEVELS:
-        raise ValueError(f"Logins are not stored at the {level.value} level")
     return os.path.join(Config.get_dir(level), CREDENTIALS)
-
-
-def _warn_once(path: str, msg: str, *args) -> None:
-    if path not in _warned:
-        _warned.add(path)
-        logger.warning(msg, *args)
 
 
 def _open_to_others(path: str) -> bool:
@@ -111,53 +109,40 @@ def load_logins(level: ConfigLevel, *, for_update: bool = False) -> list[Login]:
                     f"Other users can access {path}, so DataChain does not use the "
                     f"Studio tokens in it. Run `chmod 600 {path}` if you trust it."
                 )
-            _warn_once(
-                path,
-                "Ignoring Studio logins in %s: other users can access it. "
-                "Run `chmod 600 %s` if you trust it.",
-                path,
-                path,
-            )
+            if path not in _warned:
+                _warned.add(path)
+                logger.warning(
+                    "Ignoring Studio logins in %s: other users can access it. "
+                    "Run `chmod 600 %s` if you trust it.",
+                    path,
+                    path,
+                )
             return []
         with open(path, encoding="utf-8") as f:
             doc = tomlkit.load(f).unwrap()
     except FileNotFoundError:
         return []
 
-    logins = []
-    for item in doc.get("login", []):
-        if not item.get("url") or not item.get("token"):
-            continue
-        logins.append(
-            Login(
-                url=item["url"],
-                token=item["token"],
-                teams=item.get("teams"),
-                name=item.get("name"),
-                expires=item.get("expires"),
-                level=level,
-                path=path,
-            )
+    return [
+        Login(
+            url=item["url"],
+            token=item["token"],
+            teams=item.get("teams"),
+            name=item.get("name"),
+            expires=item.get("expires"),
+            level=level,
+            path=path,
         )
-    return logins
+        for item in doc.get("login", [])
+        if item.get("url") and item.get("token")
+    ]
 
 
-@contextmanager
-def _updating(level: ConfigLevel) -> Iterator[list[Login]]:
-    """Read this level's logins under a lock, and save the list when done."""
+def save_logins(level: ConfigLevel, logins: list[Login]) -> str:
     path = credentials_path(level)
-    directory = os.path.dirname(path)
-    os.makedirs(directory, mode=0o700, exist_ok=True)
-    with interprocess_file_lock(f"{path}.lock"):
-        logins = load_logins(level, for_update=True)
-        yield logins
-        _save_logins(level, path, logins)
-
-
-def _save_logins(level: ConfigLevel, path: str, logins: list[Login]) -> None:
     if not logins:
         Path(path).unlink(missing_ok=True)
-        return
+        return path
 
     doc = tomlkit.document()
     entries = tomlkit.aot()
@@ -175,6 +160,7 @@ def _save_logins(level: ConfigLevel, path: str, logins: list[Login]) -> None:
     doc["login"] = entries
 
     directory = os.path.dirname(path)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
     if level == ConfigLevel.LOCAL:
         _ignore_in_git(directory)
 
@@ -187,11 +173,11 @@ def _save_logins(level: ConfigLevel, path: str, logins: list[Login]) -> None:
     except BaseException:
         os.remove(tmp)
         raise
+    return path
 
 
 def _ignore_in_git(directory: str) -> None:
-    # Covers the lock file next to the credentials as well.
-    pattern = f"/{CREDENTIALS}*"
+    pattern = f"/{CREDENTIALS}"
     gitignore = Path(directory) / ".gitignore"
     try:
         content = gitignore.read_text(encoding="utf-8")
@@ -204,109 +190,41 @@ def _ignore_in_git(directory: str) -> None:
         f.write(f"{prefix}{pattern}\n")
 
 
-def legacy_login(level: ConfigLevel) -> Login | None:
-    """The token an older version saved in this level's config, if any.
-
-    It is bound to the URL in the same file, so a URL set at another level (say,
-    a repo's config) never receives it.
-    """
-    path = os.path.join(Config.get_dir(level), DataChainDir.CONFIG)
-    try:
-        with open(path, encoding="utf-8") as f:
-            studio = tomlkit.load(f).unwrap().get("studio", {}) or {}
-    except FileNotFoundError:
-        return None
-    if not (token := studio.get("token")):
-        return None
-    return Login(
-        url=studio.get("url") or STUDIO_URL,
-        token=token,
-        level=level,
-        path=path,
-        legacy=True,
-    )
-
-
-def _logins_at(level: ConfigLevel) -> list[Login]:
-    logins = load_logins(level) if level in LOGIN_LEVELS else []
-    if legacy := legacy_login(level):
-        logins.append(legacy)
-    return logins
-
-
 def all_logins() -> list[Login]:
-    """Every stored login, in lookup order."""
-    return [login for level in LOOKUP_LEVELS for login in _logins_at(level)]
+    """Every saved login, in lookup order."""
+    return [login for level in LEVELS for login in load_logins(level)]
 
 
 def select_login(logins: list[Login], url: str, team: str | None) -> Login | None:
     """The login to use for this Studio URL and team, from the given ones."""
     url = normalize_url(url)
-    for level in LOOKUP_LEVELS:
-        matching = [
-            lg
-            for lg in logins
-            if lg.level == level and lg.url == url and lg.covers(team)
-        ]
-        scoped = next((lg for lg in matching if lg.teams is not None), None)
-        if found := scoped or next(iter(matching), None):
-            return found
-    return None
+    matching = [lg for lg in logins if lg.url == url and lg.covers(team)]
+    # A project's login wins; then a login for the team wins over all teams.
+    return min(
+        matching,
+        key=lambda lg: (LEVELS.index(lg.level), lg.teams is None),
+        default=None,
+    )
 
 
 def find_login(url: str, team: str | None) -> Login | None:
-    """The stored login to use for this Studio URL and team, if any."""
-    for level in LOOKUP_LEVELS:
-        if found := select_login(_logins_at(level), url, team):
-            if found.legacy:
-                _warn_legacy(found)
-            return found
-    return None
-
-
-def _warn_legacy(login: Login) -> None:
-    if login.level == ConfigLevel.SYSTEM:
-        # `auth login` can't write the system config, so it can't move this one.
-        _warn_once(
-            login.path,
-            "The Studio token is stored in the system config file %s, which other "
-            "users and tools may read. Run `datachain auth login` to save your own "
-            "token in a private credentials file, and remove `studio.token` from %s.",
-            login.path,
-            login.path,
-        )
-        return
-    flag = " --local" if login.level == ConfigLevel.LOCAL else ""
-    _warn_once(
-        login.path,
-        "The Studio token is stored in the config file %s, which other users and "
-        "tools may read. Run `datachain auth login%s` to move it to a private "
-        "credentials file.",
-        login.path,
-        flag,
-    )
+    """The saved login to use for this Studio URL and team, if any."""
+    return select_login(all_logins(), url, team)
 
 
 def resolve_token(url: str, team: str | None) -> str | None:
     if token := os.environ.get(TOKEN_ENV):
         return token
-    login = find_login(url, team)
-    return login.token if login else None
-
-
-def _conflict(logins: list[Login], url: str, teams: list[str] | None) -> Login | None:
-    for login in logins:
-        if login.url != normalize_url(url):
-            continue
-        if teams is None and login.teams is None:
-            return login
-        if (
-            teams is not None
-            and login.teams is not None
-            and set(teams) & set(login.teams)
-        ):
-            return login
-    return None
+    if not (login := find_login(url, team)):
+        return None
+    if login.expired():
+        # Falling back to another token could switch to another account.
+        scope = "all teams" if login.teams is None else f"team '{team}'"
+        raise DataChainError(
+            f"The Studio token for {scope} in {login.path} expired on "
+            f"{login.expires}. Run `{logout_command(login, team)}` and log in again."
+        )
+    return login.token
 
 
 def conflicting_login(
@@ -315,43 +233,27 @@ def conflicting_login(
     """A login at this level that a new login for these teams would overlap.
 
     Per level and URL there is at most one all-teams login, and each team is in
-    at most one scoped login. Fails like an update would, so `auth login` stops
+    at most one team login. Fails like an update would, so `auth login` stops
     before the browser if the login can't be saved.
     """
-    return _conflict(load_logins(level, for_update=True), url, teams)
+    url = normalize_url(url)
+    for login in load_logins(level, for_update=True):
+        if login.url != url:
+            continue
+        if teams is None and login.teams is None:
+            return login
+        if teams and login.teams and set(teams) & set(login.teams):
+            return login
+    return None
 
 
 def add_login(login: Login) -> str:
-    """Save a login. Raises LoginExistsError if it overlaps a saved one."""
-    with _updating(login.level) as logins:
-        if existing := _conflict(logins, login.url, login.teams):
-            raise LoginExistsError(existing)
-        logins.append(login)
-    login.path = credentials_path(login.level)
+    logins = load_logins(login.level, for_update=True)
+    logins.append(login)
+    login.path = save_logins(login.level, logins)
     return login.path
 
 
 def remove_login(login: Login) -> None:
-    if login.legacy:
-        with Config(login.level).edit() as conf:
-            if studio := conf.get("studio"):
-                studio.pop("token", None)
-                if not studio:
-                    del conf["studio"]
-        return
-    with _updating(login.level) as logins:
-        logins[:] = [lg for lg in logins if lg != login]
-
-
-def migrate_legacy(level: ConfigLevel) -> Login | None:
-    """Move the token an older version kept in this level's config into logins."""
-    if level not in LOGIN_LEVELS or not (legacy := legacy_login(level)):
-        return None
-    login = Login(url=legacy.url, token=legacy.token, level=level)
-    try:
-        add_login(login)
-    except LoginExistsError:
-        # Already has an all-teams login there; leave the old token to logout.
-        return None
-    remove_login(legacy)
-    return login
+    logins = load_logins(login.level, for_update=True)
+    save_logins(login.level, [lg for lg in logins if lg != login])
