@@ -51,14 +51,18 @@ from datachain.lib.data_model import (
     StandardType,
     arm_selector,
     dict_to_data_model,
-    union_arms,
     union_layout,
     unwrap_optional,
 )
 from datachain.lib.file import EXPORT_FILES_MAX_THREADS, ArrowRow, File, FileExporter
 from datachain.lib.file import ExportPlacement as FileExportPlacement
 from datachain.lib.model_store import ModelStore
-from datachain.lib.settings import AUTO_PREFETCH, AUTO_PREFETCH_BYTES, Settings
+from datachain.lib.settings import (
+    AUTO_PREFETCH,
+    AUTO_PREFETCH_BYTES,
+    DEFAULT_PREFETCH,
+    Settings,
+)
 from datachain.lib.signal_schema import (
     KeyPresence,
     SignalResolvingError,
@@ -1664,20 +1668,18 @@ class DataChain:
         settings = self._settings
         udf_obj.prefetch = settings.prefetch or 0
         udf_obj.prefetch_bytes = None
+        udf_obj._prefetch_min_rows = 1
         # Batches keep the plain count; rows without files have nothing to fetch.
         if udf_obj.is_input_batched or not (
-            udf_obj.params
-            and any(
-                inspect.isclass(arm) and issubclass(arm, File)
-                for param_type in udf_obj.params.values.values()
-                for arm in union_arms(param_type)[0]
-            )
+            udf_obj.params and any(udf_obj.params._file_stream_params.values())
         ):
             return
         udf_obj.prefetch_bytes = settings.prefetch_bytes
         if settings.prefetch_auto:
             udf_obj.prefetch = AUTO_PREFETCH
-            udf_obj.prefetch_bytes = settings.prefetch_bytes or AUTO_PREFETCH_BYTES
+            if settings.prefetch_bytes is None:
+                udf_obj.prefetch_bytes = AUTO_PREFETCH_BYTES
+                udf_obj._prefetch_min_rows = 2 * DEFAULT_PREFETCH + 1
 
     def _bind_udf_settings(self, func, target_class):
         """Resolve a `BoundSpec` (e.g. a `datachain.llm` operation) into a concrete

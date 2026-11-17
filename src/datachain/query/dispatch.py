@@ -243,7 +243,7 @@ class UDFDispatcher:
             )
             with safe_closing(udf_results):
                 process_udf_outputs(
-                    self.catalog.warehouse.clone(),
+                    catalog.warehouse,
                     self.table,
                     udf_results,
                     udf,

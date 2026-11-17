@@ -576,8 +576,30 @@ def _read_ahead(monkeypatch, files, fail_path=None):
         (_files(*[BIG] * 40), 2, MIN_HELD),
         (_files(*[0] * 40), 2, MIN_HELD),
         (
+            [
+                File(
+                    source="s3://bucket",
+                    path=f"f{i}",
+                    size=2048,
+                    location=[
+                        {
+                            "vtype": "tar",
+                            "parent": {
+                                "source": "s3://bucket",
+                                "path": f"archive-{i}.tar",
+                                "size": BIG,
+                            },
+                        }
+                    ],
+                )
+                for i in range(40)
+            ],
+            2,
+            MIN_HELD,
+        ),
+        (
             _files(
-                *[2048] * 40,
+                *[2048] * 300,
                 location=[
                     {
                         "vtype": "tar",
@@ -589,11 +611,11 @@ def _read_ahead(monkeypatch, files, fail_path=None):
                     }
                 ],
             ),
-            2,
-            MIN_HELD,
+            MIN_HELD + 1,
+            2 * AUTO_PREFETCH + 1,
         ),
     ],
-    ids=["small", "medium", "big", "unsized", "in-archive"],
+    ids=["small", "medium", "big", "unsized", "in-archive", "shared-archive"],
 )
 def test_default_prefetch_holds_files_within_the_limit(
     monkeypatch, files, min_in_flight, max_held
@@ -684,6 +706,8 @@ def test_prefetch_budget_counts_real_download_targets():
     members = _files(1, 2, location=[{"vtype": "tar", "parent": parent.model_dump()}])
     assert budget.size(members) == 4096
     assert budget.size(_files(0)) == 512
+    listed_empty = File(source="s3://bucket", path="empty", size=0, etag="d41d8cd98f")
+    assert budget.size([listed_empty]) == 0
 
 
 @pytest.mark.parametrize("prefetch,batch_size", [(4, 1), (16, 32), (2, 4)])
@@ -905,8 +929,11 @@ def test_closing_prefetch_waits_for_download_cleanup(monkeypatch):
 @pytest.mark.parametrize(
     "settings,expected",
     [
-        ({}, (AUTO_PREFETCH, AUTO_PREFETCH_BYTES)),
-        ({"prefetch": 4, "prefetch_bytes": 1000}, (4, 1000)),
+        ({}, (AUTO_PREFETCH, AUTO_PREFETCH_BYTES, MIN_HELD)),
+        ({"prefetch": 4, "prefetch_bytes": 1000}, (4, 1000, 1)),
+        ({"prefetch": 1, "prefetch_bytes": 1000}, (1, 1000, 1)),
+        ({"prefetch": 2, "prefetch_bytes": 1000}, (2, 1000, 1)),
+        ({"prefetch_bytes": 1000}, (AUTO_PREFETCH, 1000, 1)),
     ],
 )
 def test_union_file_parameters_keep_prefetch_settings(
@@ -919,7 +946,136 @@ def test_union_file_parameters_keep_prefetch_settings(
     ).settings(**settings)
     mapped = chain.map(y=lambda file: 0, params="file", output=int)
     udf = mapped._query.steps[-1].udf.inner
-    assert (udf.prefetch, udf.prefetch_bytes) == expected
+    assert (udf.prefetch, udf.prefetch_bytes, udf._prefetch_min_rows) == expected
+
+
+def test_nested_data_model_file_parameters_keep_prefetch_settings(test_session):
+    from datachain.lib.data_model import DataModel
+    from datachain.lib.udf import _row_files
+
+    class Holder(DataModel):
+        item: File
+
+    holder = Holder(item=File(source="s3://bucket", path="a", size=10))
+    chain = dc.read_values(holder=[holder], session=test_session)
+    mapped = chain.map(y=lambda holder: holder.item.path, params="holder", output=str)
+    udf = mapped._query.steps[-1].udf.inner
+    assert (udf.prefetch, udf.prefetch_bytes) == (AUTO_PREFETCH, AUTO_PREFETCH_BYTES)
+    assert list(_row_files([1, holder], None)) == [holder.item]
+
+
+@pytest.mark.parametrize("prefetch", [1, 2, 4, AUTO_PREFETCH])
+def test_explicit_prefetch_bytes_enforces_single_row_minimum(monkeypatch, prefetch):
+    from datachain.lib.udf import _prefetch_inputs
+
+    taken = []
+
+    async def fake_prefetch(self, download_cb=None):
+        await asyncio.sleep(0.05)
+        return True
+
+    def rows():
+        for row in enumerate(_files(*[2000] * 20)):
+            taken.append(row)
+            yield row
+
+    monkeypatch.setattr(File, "_prefetch", fake_prefetch)
+    inputs = _prefetch_inputs(rows(), prefetch, max_bytes=1000, min_rows=1)
+    with closing(inputs):
+        next(inputs)
+        time.sleep(0.2)
+        # 1 row admitted and yielded, 1 row blocked in admitted() waiting for budget
+        assert len(taken) == 2
+
+
+def test_zero_byte_rows_still_respect_max_rows_bound(monkeypatch):
+    from datachain.lib.udf import _prefetch_inputs
+
+    taken = []
+
+    def rows():
+        for i in range(200):
+            row = (i, None)
+            taken.append(row)
+            yield row
+
+    inputs = _prefetch_inputs(rows(), 4, max_bytes=1000, min_rows=1)
+    with closing(inputs):
+        next(inputs)
+        time.sleep(0.1)
+        # max_rows = 2 * 4 + 1 = 9 in flight + 1 blocked in admitted()
+        assert len(taken) <= 10
+
+
+def test_mutated_file_in_udf_does_not_corrupt_prefetch_budget(monkeypatch):
+    from datachain.lib.udf import _prefetch_inputs
+
+    async def fake_prefetch(self, download_cb=None):
+        return True
+
+    monkeypatch.setattr(File, "_prefetch", fake_prefetch)
+    files = _files(*[600] * 10)
+    inputs = _prefetch_inputs(
+        ((i, f) for i, f in enumerate(files)),
+        prefetch=2,
+        max_bytes=1000,
+        min_rows=1,
+    )
+    seen = []
+    for i, f in inputs:
+        f.size = 0
+        f.path = ""
+        seen.append(i)
+    assert seen == list(range(10))
+
+
+def test_archive_prefetch_deduplicates_downloads_and_removes_parent_after_last_member(
+    catalog, monkeypatch
+):
+    from datachain.client.fsspec import Client
+    from datachain.lib.udf import _files_to_prefetch, _prefetch_inputs
+
+    parent = File(source="s3://bucket", path="shard.tar", size=4096)
+    loc = [{"vtype": "tar", "parent": parent.model_dump()}]
+    members = _files(10, 20, 30, location=loc)
+    for m in members:
+        m._set_stream(catalog)
+
+    # max_size checks the parent archive size (4096), not the member size (10)
+    assert list(_files_to_prefetch(members[:1], None, max_size=100)) == []
+    assert list(_files_to_prefetch(members[:1], None, max_size=5000)) == members[:1]
+
+    downloads = 0
+
+    async def fake_put_in_cache(self, file, callback=None):
+        nonlocal downloads
+        downloads += 1
+        await asyncio.sleep(0.05)
+        self.cache.store_data(file, b"tar-bytes")
+
+    monkeypatch.setattr(Client, "_put_in_cache", fake_put_in_cache)
+
+    inputs = _prefetch_inputs(
+        ((m,) for m in members),
+        prefetch=4,
+        remove_prefetched=True,
+        max_bytes=10000,
+        min_rows=1,
+    )
+    with closing(inputs) as it:
+        first = next(it)[0]
+        assert catalog.cache.contains(parent)
+        second = next(it)[0]
+        # Archive stays cached while remaining members are in flight
+        assert catalog.cache.contains(parent)
+        third = next(it)[0]
+        assert catalog.cache.contains(parent)
+        with pytest.raises(StopIteration):
+            next(it)
+    # Removed once the last member row finishes
+    assert not catalog.cache.contains(parent)
+    assert downloads == 1
+    assert [first.size, second.size, third.size] == [10, 20, 30]
 
 
 def test_prefetch_budget_keeps_row_bound_with_a_smaller_explicit_count():
@@ -951,3 +1107,49 @@ def test_prefetch_skips_lease_resolution_for_empty_paths():
     assert list(_prefetch_inputs([[file]], prefetch=1, remove_prefetched=True)) == [
         [file]
     ]
+
+
+def test_prefetch_archive_respects_max_size_and_resolves_parent_once(
+    catalog, monkeypatch, mocker
+):
+    from datachain.lib.file import VFileRegistry
+
+    parent = File(source="s3://bucket", path="shard.tar", size=4096)
+    loc = [{"vtype": "tar", "parent": parent.model_dump()}]
+    member = _files(10, location=loc)[0]
+    member._set_stream(catalog)
+
+    async def fake_prefetch(self, download_cb=None):
+        return True
+
+    monkeypatch.setattr(File, "_prefetch", fake_prefetch)
+    spy = mocker.spy(VFileRegistry, "parent")
+
+    # Archive target (4096) exceeds max_size (100): neither prefetched nor retained
+    assert list(
+        _prefetch_inputs(
+            [[member]],
+            prefetch=1,
+            remove_prefetched=True,
+            max_size=100,
+            max_bytes=10000,
+            min_rows=1,
+        )
+    ) == [[member]]
+    assert spy.call_count == 1
+    assert not catalog.cache._prefetch_refs
+
+    spy.reset_mock()
+    # Archive target (4096) within max_size (5000): resolved once in udf.py
+    assert list(
+        _prefetch_inputs(
+            [[member]],
+            prefetch=1,
+            remove_prefetched=True,
+            max_size=5000,
+            max_bytes=10000,
+            min_rows=1,
+        )
+    ) == [[member]]
+    assert spy.call_count == 1
+    assert not catalog.cache._prefetch_refs

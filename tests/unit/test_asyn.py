@@ -308,3 +308,30 @@ def test_iter_over_async_exits_after_an_error():
 def test_mapper_requires_positive_limits(workers, queue_size):
     with pytest.raises(ValueError, match="must be positive"):
         AsyncMapper(fake_io, [], workers=workers, queue_size=queue_size)
+
+
+def test_mapper_shutdown_drains_work_queue_on_loop_thread_safely():
+    loop = get_loop()
+    was_debug = loop.get_debug()
+    asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop).result()
+    loop.call_soon_threadsafe(loop.set_debug, True)
+    gate = asyncio.Event()
+
+    async def slow_worker(x):
+        if x == 0:
+            return x
+        await gate.wait()
+        return x
+
+    try:
+        for _ in range(10):
+            mapper = AsyncMapper(
+                slow_worker, range(100), workers=4, loop=loop, queue_size=1
+            )
+            it = mapper.iterate(timeout=4)
+            assert next(it) == 0
+            time.sleep(0.01)
+            it.close()
+    finally:
+        loop.call_soon_threadsafe(loop.set_debug, was_debug)
+        join_all_tasks(loop)
