@@ -1,4 +1,6 @@
+import asyncio
 import hashlib
+import io
 import sys
 from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -8,7 +10,9 @@ from typing import TYPE_CHECKING, Any, TypeGuard
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
+import pyarrow.parquet as pq
 from fsspec.implementations.local import LocalFileSystem
+from fsspec.spec import AbstractBufferedFile
 from pyarrow._csv import ParseOptions
 from pyarrow.dataset import CsvFileFormat, Dataset, ParquetFileFormat, dataset
 from pyarrow.fs import FileInfo, FileType, FSSpecHandler, PyFileSystem
@@ -39,6 +43,7 @@ SCHEMA_READ_THREADS = 32
 
 if TYPE_CHECKING:
     from datasets.features.features import Features
+    from fsspec import Callback
     from pydantic import BaseModel
 
     from datachain.client import Client
@@ -91,6 +96,139 @@ _CSV_PARSE_OPTIONS = (
 
 # A partial read prefetches files up to this size and reads larger ones in parts.
 PARTIAL_READ_PREFETCH_MAX_SIZE = 8 * 1024 * 1024
+# Footer sample read upfront so metadata and trailing chunks take one GET.
+PARQUET_FOOTER_SAMPLE_SIZE = 1024 * 1024
+# Column chunk ranges closer than this are coalesced into one request.
+PARQUET_RANGE_GAP = 64 * 1024
+# Per-file cap on prefetched column chunk bytes; larger reads fall back to streaming.
+PARQUET_RANGE_MAX_BYTES = 64 * 1024 * 1024
+PARQUET_RANGE_THREADS = 8
+_PARQUET_PREFETCH_EXECUTOR = ThreadPoolExecutor(PARQUET_RANGE_THREADS)
+_PARQUET_RANGE_EXECUTOR = ThreadPoolExecutor(PARQUET_RANGE_THREADS)
+
+
+def _leaf_names(field: pa.Field) -> list[str]:
+    if not field.type.num_fields:
+        return [field.name]
+    return [
+        name
+        for i in range(field.type.num_fields)
+        for name in _leaf_names(field.type.field(i))
+    ]
+
+
+def _column_ranges(
+    metadata: pq.FileMetaData,
+    columns: Sequence[str],
+    gap: int = PARQUET_RANGE_GAP,
+) -> list[tuple[int, int]]:
+    """Byte ranges of the column chunks for the top-level Arrow `columns`."""
+    pairs = [
+        (field.name, leaf)
+        for field in metadata.schema.to_arrow_schema()
+        for leaf in _leaf_names(field)
+    ]
+    if [leaf for _, leaf in pairs] != metadata.schema.names:
+        return []
+    wanted = set(columns)
+    indices = [i for i, (top, _) in enumerate(pairs) if top in wanted]
+    ranges = sorted(
+        (start, start + col.total_compressed_size)
+        for r in range(metadata.num_row_groups)
+        for group in (metadata.row_group(r),)
+        for i in indices
+        if (col := group.column(i)).total_compressed_size > 0
+        for start in (col.dictionary_page_offset or col.data_page_offset,)
+    )
+    coalesced: list[tuple[int, int]] = []
+    for start, end in ranges:
+        if coalesced and start - coalesced[-1][1] <= gap:
+            coalesced[-1] = (coalesced[-1][0], max(coalesced[-1][1], end))
+        else:
+            coalesced.append((start, end))
+    return coalesced
+
+
+def _read_parquet_parts(
+    client: "Client", file: File, columns: Sequence[str]
+) -> tuple[int, list[tuple[int, bytes]]]:
+    """Read the Parquet footer sample and selected column chunks, then close."""
+    with client.open_object(
+        file, use_cache=False, cb=file._download_cb, block_size=0
+    ) as stream:
+        size = stream.seek(0, io.SEEK_END)
+        if size <= 0:
+            return size, []
+        sample_start = max(0, size - PARQUET_FOOTER_SAMPLE_SIZE)
+        stream.seek(sample_start)
+        sample = stream.read(size - sample_start)
+        if len(sample) < 8 or sample[-4:] != b"PAR1":
+            return size, [(sample_start, sample)]
+        footer_start = size - 8 - int.from_bytes(sample[-8:-4], "little")
+        if 0 <= footer_start < sample_start:
+            stream.seek(footer_start)
+            sample = stream.read(sample_start - footer_start) + sample
+            sample_start = footer_start
+        try:
+            ranges = _column_ranges(pq.read_metadata(pa.BufferReader(sample)), columns)
+        except pa.ArrowException:
+            ranges = []
+        parts: list[tuple[int, bytes]] = []
+        if 0 < sum(end - start for start, end in ranges) <= PARQUET_RANGE_MAX_BYTES:
+            spans = [
+                (start, min(end, sample_start))
+                for start, end in ranges
+                if start < sample_start
+            ]
+            raw: Any = getattr(stream, "fileobj", stream)
+            cb = file._download_cb
+
+            def fetch(span: tuple[int, int]) -> tuple[int, bytes]:
+                data = raw._fetch_range(*span)
+                cb.relative_update(len(data))
+                return span[0], data
+
+            parts = list(_PARQUET_RANGE_EXECUTOR.map(fetch, spans))
+        if parts and parts[-1][0] + len(parts[-1][1]) == sample_start:
+            parts[-1] = (parts[-1][0], parts[-1][1] + sample)
+        else:
+            parts.append((sample_start, sample))
+        return size, parts
+
+
+class _ParquetBufferedFile(AbstractBufferedFile):
+    """Serves prefetched Parquet byte ranges, opening the remote file on miss."""
+
+    def __init__(
+        self,
+        client: "Client",
+        file: File,
+        size: int,
+        parts: Sequence[tuple[int, bytes]],
+    ):
+        super().__init__(
+            client.fs,
+            file.get_fs_path(),
+            size=size,
+            block_size=0,
+            cache_type="none",
+        )
+        remote: Any = None
+
+        def fetch(start: int, end: int) -> bytes:
+            nonlocal remote
+            end = min(end, size)
+            for part_start, part in parts:
+                if part_start <= start and end <= part_start + len(part):
+                    return part[start - part_start : end - part_start]
+            if remote is None:
+                remote = client.open_object(
+                    file, use_cache=False, cb=file._download_cb, block_size=0
+                )
+            remote.seek(start)
+            return remote.read(end - start)
+
+        self.cache.fetcher = fetch
 
 
 class _PartialReadHandler(FSSpecHandler):
@@ -105,11 +243,18 @@ class _PartialReadHandler(FSSpecHandler):
     those columns. CSV and JSON are read from the start, so they keep read-ahead.
     """
 
-    def __init__(self, client: "Client", file: File, block_size: int | None):
+    def __init__(
+        self,
+        client: "Client",
+        file: File,
+        block_size: int | None,
+        parts: tuple[int, list[tuple[int, bytes]]] | None = None,
+    ):
         super().__init__(client.fs)
         self.client = client
         self.file = file
         self.block_size = block_size
+        self.parts = parts
 
     def get_file_info(self, paths):
         # Describes the recorded file without looking up the latest object, which a
@@ -117,12 +262,15 @@ class _PartialReadHandler(FSSpecHandler):
         return [FileInfo(path, FileType.File) for path in paths]
 
     def open_input_file(self, path):
-        f = self.client.open_object(
-            self.file,
-            use_cache=False,
-            cb=self.file._download_cb,
-            block_size=self.block_size,
-        )
+        if self.parts is not None:
+            f: Any = _ParquetBufferedFile(self.client, self.file, *self.parts)
+        else:
+            f = self.client.open_object(
+                self.file,
+                use_cache=False,
+                cb=self.file._download_cb,
+                block_size=self.block_size,
+            )
         return pa.PythonFile(f, mode="r")
 
 
@@ -131,8 +279,11 @@ def pyarrow_fs(file: File, format):
     if isinstance(client.fs, LocalFileSystem):
         client.check_unchanged(file)
         return client.fs
+    parts = file.__dict__.pop("_parquet_parts", None)
     block_size = 0 if is_parquet(format) else None
-    return PyFileSystem(_PartialReadHandler(client, file, block_size=block_size))
+    return PyFileSystem(
+        _PartialReadHandler(client, file, block_size=block_size, parts=parts)
+    )
 
 
 class ArrowGenerator(Generator):
@@ -192,6 +343,39 @@ class ArrowGenerator(Generator):
         read = schema + json.dumps(self.columns)
         return hashlib.sha256((super().hash(include_body) + read).encode()).hexdigest()
 
+    async def _prefetch_file(
+        self, file: File, download_cb: "Callback | None" = None
+    ) -> bool:
+        if await super()._prefetch_file(file, download_cb):
+            return True
+        if not (columns := self._parquet_columns(file)):
+            return False
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            _PARQUET_PREFETCH_EXECUTOR, self._prefetch_parquet, file, columns
+        )
+        return True
+
+    def _parquet_columns(self, file: File) -> list[str] | None:
+        if (
+            not self.prefetch_max_size
+            or not is_parquet(self.kwargs.get("format"))
+            or self.nrows
+            or self.datachain_read
+            or file._caching_enabled
+            or file.get_local_path()
+        ):
+            return None
+        client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
+        if isinstance(client.fs, LocalFileSystem):
+            return None
+        # Picked columns are in self.columns with output, else in self.input_schema.
+        return self.columns or self.input_schema.names  # type: ignore[union-attr]
+
+    def _prefetch_parquet(self, file: File, columns: Sequence[str]) -> None:
+        client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
+        file.__dict__["_parquet_parts"] = _read_parquet_parts(client, file, columns)
+
     def process(self, file: File):
         if file._caching_enabled:
             file.ensure_cached()
@@ -199,6 +383,10 @@ class ArrowGenerator(Generator):
             fs_path = file.path
             fs = ReferenceFileSystem({fs_path: [cache_path]})
         else:
+            if "_parquet_parts" not in file.__dict__ and (
+                columns := self._parquet_columns(file)
+            ):
+                self._prefetch_parquet(file, columns)
             fs = pyarrow_fs(file, self.kwargs.get("format"))
             fs_path = file.get_fs_path()
 

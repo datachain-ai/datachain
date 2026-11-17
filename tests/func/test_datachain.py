@@ -1685,6 +1685,39 @@ def test_read_parquet_columns_fetch_only_those_columns(
     assert sum(cb.value for cb in download_callbacks) > 0
 
 
+@pytest.mark.filterwarnings("ignore:Sending a large body:ResourceWarning")
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize("prefetch", [2, 0])
+def test_read_parquet_columns_fetches_footer_and_chunk_ranges_once_per_file(
+    cloud_test_catalog_upload, fetched_bytes, tmp_path, prefetch
+):
+    ctc = cloud_test_catalog_upload
+    rng = np.random.default_rng(0)
+    # Footer > 64 KiB so pyarrow alone would read the 64 KiB tail and then the footer.
+    table = pa.table(
+        {f"c{i}": rng.random(120_000) for i in range(10)}
+    ).replace_schema_metadata({b"pad": b"x" * 100_000})
+    for i in range(2):
+        pq.write_table(table, tmp_path / f"f{i}.parquet", row_group_size=120_000)
+        file = _put_parquet(ctc, f"parts/f{i}.parquet", table, row_group_size=120_000)
+    local = dc.read_parquet(
+        tmp_path.as_uri(), columns=["c1", "c8"], session=ctc.session
+    ).order_by("c1", "c8")
+    chain = dc.read_parquet(
+        f"{ctc.src_uri}/parts/*.parquet",
+        columns=["c1", "c8"],
+        settings={"prefetch": prefetch},
+        session=ctc.session,
+    ).order_by("c1", "c8")
+    fetched_bytes[:] = [0, 0]
+
+    assert chain.to_list("c1", "c8") == local.to_list("c1", "c8")
+    # Per file: 1 footer sample + 2 non-adjacent column chunk ranges (not 4 sequential).
+    assert fetched_bytes[1] == 2 * 3
+    assert 0 < fetched_bytes[0] < 2 * (file.size // 3)
+
+
 class _Wide(DataModel):
     x: float
     a: float
