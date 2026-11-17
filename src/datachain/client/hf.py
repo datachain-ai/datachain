@@ -8,8 +8,7 @@ from datachain.lib.file import File
 
 from .fsspec import Client
 
-CHUNK_SIZE = 8 * 1024 * 1024
-COMMIT = re.compile("[0-9a-f]{40}")
+COMMIT = re.compile(r"[0-9a-f]{40}")
 
 
 class classproperty:  # noqa: N801
@@ -73,11 +72,20 @@ def get_hf_filesystem_cls():
 class HfClient(Client):
     PREFIX = "hf://"
     protocol = "hf"
-    PINNED_VERSION_IS_IMMUTABLE = True
+    CREDENTIAL_KEYS = frozenset({"token"})
 
     @classproperty
     def FS_CLASS(cls):  # noqa: N802, N805
         return get_hf_filesystem_cls()
+
+    @classmethod
+    def create_fs(cls, **kwargs):
+        if kwargs.pop("anon", False):
+            kwargs.setdefault("token", False)
+        return super().create_fs(**kwargs)
+
+    def _is_version_pinned(self, file: "File") -> bool:
+        return bool(COMMIT.fullmatch(file.version))
 
     def _version_kwargs(self, version_id: str | None) -> dict[str, Any]:
         return {"revision": version_id} if version_id else {}
@@ -91,36 +99,75 @@ class HfClient(Client):
     def _ls_dir_kwargs(self) -> dict[str, Any]:
         return {"expand_info": True}
 
+    def _open_remote(self, file: "File", block_size: int | None = None):
+        self.check_unchanged(file)
+        return self.fs.open(
+            file.get_fs_path(),
+            **self._block_size_kwargs(block_size),
+            **self._version_kwargs(file.version),
+            **({"size": file.size} if file.size and file.size > 0 else {}),
+        )
+
+    async def get_current_etag(self, file: "File") -> str:
+        full_path = file.get_fs_path()
+        info = await self.fs._info(full_path, **self._version_kwargs(file.version))
+        etag = info.get("blob_id") or info.get("xet_hash")
+        if etag is None:
+            info = await self.fs._info(
+                full_path, **self._file_info_kwargs(file.version)
+            )
+            etag = info.get("blob_id") or info.get("xet_hash")
+        return etag or ""
+
+    def _is_bucket(self, info: dict[str, Any] | None = None) -> bool:
+        return (
+            self.name == "buckets"
+            or self.name.startswith("buckets/")
+            or (
+                info is not None
+                and "last_commit" not in info
+                and any(k in info for k in ("xet_hash", "mtime", "uploaded_at"))
+            )
+        )
+
     def info_to_file(self, v: dict[str, Any], path: str) -> File:
         last_commit = v.get("last_commit")
-        if last_commit is None:
+        if last_commit is None and not self._is_bucket(v):
             raise RuntimeError(
                 "huggingface_hub returned file metadata without last_commit; "
                 "expected expanded HF metadata for file version tracking"
             )
-
+        last_modified = (
+            last_commit.date if last_commit else v.get("mtime") or v.get("uploaded_at")
+        )
         return File(
             source=self.uri,
             path=path,
-            size=v["size"],
-            etag=v.get("blob_id", ""),
-            version=last_commit.oid,
-            last_modified=last_commit.date,
+            size=v.get("size") or 0,
+            etag=v.get("blob_id") or v.get("xet_hash") or "",
+            version=last_commit.oid if last_commit else "",
+            **({"last_modified": last_modified} if last_modified else {}),
         )
 
+    CHUNK_SIZE = 8 * 1024 * 1024
+
     async def get_file(self, lpath, rpath, callback, version_id: str | None = None):
+        from threading import Event
+
         fs = self.fs.sync_fs
         p = await asyncio.to_thread(
             fs.resolve_path, lpath, **self._version_kwargs(version_id)
         )
         if not getattr(p, "repo_id", None):
             return await super().get_file(lpath, rpath, callback, version_id)
+        stop = Event()
         task = asyncio.create_task(
-            asyncio.to_thread(self._stream, p.unresolve(), rpath, callback)
+            asyncio.to_thread(self._stream, p.unresolve(), rpath, callback, stop)
         )
         try:
             await asyncio.shield(task)
         except asyncio.CancelledError:
+            stop.set()
             cleanup = asyncio.gather(task, return_exceptions=True)
             while not cleanup.done():
                 try:
@@ -129,27 +176,36 @@ class HfClient(Client):
                     pass
             raise
 
-    def _stream(self, path: str, dst: str, callback) -> None:
+    def _stream(self, path: str, dst: str, callback, stop=None) -> None:
         with (
             self.fs.sync_fs.open(path, "rb", block_size=0) as src,
             open(dst, "wb") as out,
         ):
-            while chunk := src.read(CHUNK_SIZE):
-                out.write(chunk)
-                callback.relative_update(len(chunk))
+            try:
+                while (stop is None or not stop.is_set()) and (
+                    chunk := src.read(self.CHUNK_SIZE)
+                ):
+                    out.write(chunk)
+                    callback.relative_update(len(chunk))
+            finally:
+                if hasattr(src, "_exit_stack"):
+                    src._exit_stack.close()
+                elif getattr(src, "response", None) is not None:
+                    src.response.close()
 
     async def _check_unchanged(
         self, file: "File", *, info: dict[str, Any] | None = None
     ) -> None:
-        if COMMIT.fullmatch(file.version):
+        if self._is_version_pinned(file):
             return
-        p = await asyncio.to_thread(
-            self.fs.sync_fs.resolve_path,
-            file.get_fs_path(),
-            **self._version_kwargs(file.version),
-        )
-        if not COMMIT.fullmatch(getattr(p, "revision", None) or ""):
-            await super()._check_unchanged(file, info=info)
+        if not file.version and "@" in file.path:
+            p = await asyncio.to_thread(
+                self.fs.sync_fs.resolve_path,
+                file.get_fs_path(),
+            )
+            if COMMIT.fullmatch(getattr(p, "revision", None) or ""):
+                return
+        await super()._check_unchanged(file, info=info)
 
     def rel_path(self, path):
         return posixpath.relpath(path, self.name)
