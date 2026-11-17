@@ -329,6 +329,17 @@ def test_model_dict_key_check_edge_cases():
     with pytest.raises(JsonSerializationError, match="would be lost"):
         encode_json(WithExtra(d={1: "a", "1": "b"}))
 
+    class WithJsonFilter(BaseModel):
+        value: dict
+
+        @field_serializer("value", when_used="json")
+        def drop_none(self, v):
+            return {k: val for k, val in v.items() if val is not None}
+
+    assert decode_json(encode_json(WithJsonFilter(value={"a": 1, "b": None}))) == {
+        "value": {"a": 1}
+    }
+
     ch_json_array = value_codec(Array(JSON()), [], json_array_text=True)
     assert ch_json_array.encode([{b"a": "bytes", (1, "x"): "tuple"}]) == [
         '{"a":"bytes","(1, \'x\')":"tuple"}'
