@@ -600,14 +600,16 @@ def write_listing(
                     )
                 touched = time.monotonic()
 
-    table = warehouse.create_dataset_rows_table(
-        warehouse.temp_table_name(), columns=columns
-    )
+    table = None
     try:
         if job:
             metastore.link_dataset_version_to_job(
                 dataset.versions[0].id, job.id, is_creator=True
             )
+        table_name = warehouse.dataset_table_name(dataset, version)
+        table = warehouse.create_dataset_rows_table(
+            f"{table_name}__{dataset.versions[0].uuid[:8]}", columns=columns
+        )
         with safe_closing(
             list_pages(uri, catalog.cache, client_config, encode)
         ) as pages:
@@ -642,7 +644,7 @@ def write_listing(
                 f"Could not save {dataset.name}@{version}: "
                 "the version was removed or modified before save completed."
             )
-        warehouse.rename_table(table, warehouse.dataset_table_name(dataset, version))
+        warehouse.rename_table(table, table_name)
         completed = catalog.complete_dataset_version(
             dataset, version, expected_job_id=job_id
         )
@@ -652,7 +654,8 @@ def write_listing(
             catalog.release_reservation(dataset, version, job_id)
         raise
     finally:
-        warehouse.db.drop_table(table, if_exists=True)
+        if table is not None:
+            warehouse.db.drop_table(table, if_exists=True)
 
 
 def _latest_version(
