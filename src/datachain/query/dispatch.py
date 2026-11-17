@@ -220,12 +220,15 @@ class UDFDispatcher:
     def _run_worker(
         self, worker_index_or_n_workers: int, n_workers: int | None = None
     ) -> None:
-        n_workers = worker_index_or_n_workers if n_workers is None else n_workers
+        if n_workers is None:
+            worker_index, n_workers = 0, worker_index_or_n_workers
+        else:
+            worker_index = worker_index_or_n_workers
         try:
             # This process owns its native pools. Set limits before loading the UDF;
             # the dispatcher must not change the calling process's global state.
             with worker_thread_limits(n_workers):
-                worker = self._create_worker()
+                worker = self._create_worker(worker_index)
                 worker.run()
         except (Exception, KeyboardInterrupt) as e:
             if self.done_queue:

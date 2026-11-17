@@ -257,7 +257,10 @@ def test_worker_sets_cpu_share_before_loading_udf(
     before = dict(os.environ)
     worker = mocker.Mock()
 
-    def create():
+    seen_indices: list[int] = []
+
+    def create(worker_index: int = 0):
+        seen_indices.append(worker_index)
         assert os.environ["DATACHAIN_WORKER_THREADS"] == "2"
         assert os.environ["OMP_NUM_THREADS"] == "2"
         assert os.environ["MKL_NUM_THREADS"] == "1"
@@ -268,10 +271,12 @@ def test_worker_sets_cpu_share_before_loading_udf(
     mocker.patch.object(dispatcher, "_create_worker", side_effect=create)
     if fail:
         with pytest.raises(RuntimeError, match="UDF failed to load"):
-            dispatcher._run_worker(4)
+            dispatcher._run_worker(3, 4)
     else:
         dispatcher._run_worker(4)
-        worker.run.assert_called_once()
+        dispatcher._run_worker(3, 4)
+        assert worker.run.call_count == 2
+        assert seen_indices == [0, 3]
     assert dict(os.environ) == before
 
 
