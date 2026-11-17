@@ -282,7 +282,7 @@ def test_heartbeat_and_mid_scan_removal_abort_cleanly(
         "file.path"
     ) == ["a.txt"]
 
-    # 2. Heartbeat touch raises ConcurrentDatasetModificationError if reservation was removed
+    # 2. Heartbeat touch raises if the reservation was removed
     orig_pages = listing.list_pages
 
     def remove_before_touch(*args, **kwargs):
