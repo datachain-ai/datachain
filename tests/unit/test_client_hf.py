@@ -462,6 +462,12 @@ def test_mutable_branch_version_checks_etag_on_unchanged():
         client.check_unchanged(file)
     client._fs.sync_fs.resolve_path.assert_not_called()
 
+    client._fs._info = AsyncMock(
+        side_effect=[{"size": 4}, {"size": 4, "blob_id": "new-blob"}]
+    )
+    with pytest.raises(FileNotFoundError, match="etag was old-blob, now new-blob"):
+        client.check_unchanged(file)
+
 
 def test_bucket_metadata_and_resolve_path_with_revision(catalog, monkeypatch):
     cache = Mock(spec=Cache)
@@ -486,6 +492,45 @@ def test_bucket_metadata_and_resolve_path_with_revision(catalog, monkeypatch):
     resolved = fs.resolve_path("buckets/org/bucket/file.bin", revision="main")
     assert getattr(resolved, "bucket_id", None) == "org/bucket"
 
+    import asyncio
+    from fsspec.callbacks import DEFAULT_CALLBACK
+
+    monkeypatch.setattr(
+        hf_file_system.HfFileSystem, "get_file", lambda self, rpath, *a, **kw: rpath
+    )
+    assert (
+        fs.get_file("buckets/org/bucket/file.bin", "dst")
+        == "buckets/org/bucket/file.bin"
+    )
+    assert (
+        fs.get_file("buckets/org/bucket/file.bin", "dst", revision="main")
+        == "buckets/org/bucket/file.bin"
+    )
+    bclient = HfClient("buckets", {"token": False}, catalog.cache)
+    bclient._fs = Mock()
+    bclient._fs.sync_fs = fs
+    bclient._fs._get_file = AsyncMock(return_value=None)
+    asyncio.run(
+        bclient.get_file("buckets/org/bucket/file.bin", "dst", DEFAULT_CALLBACK)
+    )
+
+    commit = "a" * 40
+    rclient = HfClient("datasets", {"token": False}, catalog.cache)
+    monkeypatch.setattr(
+        rclient.fs.sync_fs,
+        "resolve_path",
+        lambda path, revision=None: SimpleNamespace(revision=commit),
+    )
+    rclient.check_unchanged(
+        File(
+            source=rclient.uri,
+            path=f"org/repo@{commit}/a.txt",
+            version="",
+            etag="blob",
+            size=4,
+        )
+    )
+
 
 def test_anon_translates_to_token_false_and_credentials_detected():
     assert HfClient.has_explicit_credentials({"token": "hf_secret"})
@@ -497,6 +542,12 @@ def test_anon_translates_to_token_false_and_credentials_detected():
 def test_stream_file_close_releases_exit_stack(catalog, monkeypatch, hf_repositories):
     fs = HfClient("datasets", {"token": False}, catalog.cache).fs.sync_fs
     stream = fs.open("datasets/org/repo@main/a.txt", "rb", block_size=0)
+    monkeypatch.setattr(
+        hf_file_system.HfFileSystemStreamFile,
+        "_open_connection",
+        lambda self: None,
+    )
+    stream._open_connection()
     closed = Mock()
     stream._exit_stack.callback(closed)
     stream.close()
@@ -508,18 +559,36 @@ def test_auth_http_error_is_also_permission_error(catalog, monkeypatch):
     from huggingface_hub.errors import HfHubHTTPError
 
     fs = HfClient("datasets", {"token": False}, catalog.cache).fs.sync_fs
-    resp = httpx.Response(
+    resp_401 = httpx.Response(
         401,
         request=httpx.Request("GET", "https://huggingface.co/api/datasets/org/repo"),
     )
+    resp_500 = httpx.Response(
+        500,
+        request=httpx.Request("GET", "https://huggingface.co/api/datasets/org/repo"),
+    )
 
-    def fail(*args, **kwargs):
-        raise HfHubHTTPError("401 Unauthorized", response=resp)
-
-    monkeypatch.setattr(hf_file_system.HfFileSystem, "resolve_path", fail)
+    monkeypatch.setattr(
+        hf_file_system.HfFileSystem,
+        "resolve_path",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            HfHubHTTPError("401 Unauthorized", response=resp_401)
+        ),
+    )
     with pytest.raises(PermissionError) as exc_info:
         fs.resolve_path("datasets/org/repo/a.txt")
     assert isinstance(exc_info.value, HfHubHTTPError)
+
+    monkeypatch.setattr(
+        hf_file_system.HfFileSystem,
+        "resolve_path",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            HfHubHTTPError("500 Internal Server Error", response=resp_500)
+        ),
+    )
+    with pytest.raises(HfHubHTTPError) as exc_500:
+        fs.resolve_path("datasets/org/repo/a.txt")
+    assert not isinstance(exc_500.value, PermissionError)
 
 
 def test_hf_filesystem_is_pickleable(catalog):
