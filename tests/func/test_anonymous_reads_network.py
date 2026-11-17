@@ -24,6 +24,7 @@ def _anon_env(tmp_path):
     # Hide local credentials (env vars, gcloud ADC) so reads are anonymous.
     drop_prefix = (
         "GCSFS_",
+        "FSSPEC_",
         "GOOGLE_",
         "DATACHAIN_GCP_",
         "DATACHAIN_METASTORE",
@@ -63,6 +64,9 @@ def test_smoke_environment_ignores_inherited_backends(tmp_path, monkeypatch):
         "DATACHAIN_WAREHOUSE_ARG_DB_FILE": str(caller_db),
         "DATACHAIN__METASTORE": "invalid inherited metastore",
         "DATACHAIN__WAREHOUSE": "invalid inherited warehouse",
+        "FSSPEC_GS": '{"token": "google_default"}',
+        "FSSPEC_GS_TOKEN": "google_default",
+        "FSSPEC_CONFIG_DIR": str(tmp_path / "caller-config"),
     }
     for key, value in inherited.items():
         monkeypatch.setenv(key, value)

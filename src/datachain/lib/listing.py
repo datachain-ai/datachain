@@ -2,7 +2,6 @@ import functools
 import glob
 import logging
 import os
-import posixpath
 import re
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
@@ -11,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, TypeVar, cast
 
 from fsspec.asyn import get_loop, sync
-from sqlalchemy.sql.expression import or_, true
+from sqlalchemy import or_, true
 
 import datachain.fs.utils as fsutils
 from datachain.asyn import iter_over_async
@@ -21,7 +20,7 @@ from datachain.lib.convert.flatten import flatten
 from datachain.lib.file import File, FileRow
 from datachain.query.schema import C, Column
 from datachain.sql.functions import path as pathfunc
-from datachain.utils import uses_glob
+from datachain.utils import parent_path, uses_glob
 
 if TYPE_CHECKING:
     from sqlalchemy import ColumnElement
@@ -103,7 +102,7 @@ def list_pages(uri: str, cache, client_config=None) -> Iterator[Sequence[tuple]]
     config = client_config or {}
     client = Client.get_client(uri, cache, **config)  # type: ignore[arg-type]
     _, path = Client.parse_url(uri)
-    pages = client.scandir(path.rstrip("/"))
+    pages = client.scandir(path.removesuffix("/"))
     for page in iter_over_async(pages, get_loop()):
         yield [*map(file_row, page)] if page and isinstance(page[0], File) else page
 
@@ -193,6 +192,10 @@ def select_paths(dc: D, paths: "PathFilter") -> D:
     return dc
 
 
+def list_folder(path: str) -> str:
+    return path.lstrip("/").removesuffix("/")
+
+
 @dataclass(frozen=True)
 class PathFilter:
     """The paths of a listing that a URI selects: any of ``any_of`` and all of
@@ -205,12 +208,12 @@ class PathFilter:
     @classmethod
     def ls(cls, path: str, recursive: bool | None) -> "PathFilter":
         if not recursive:
-            return cls(any_of=(("parent", path.lstrip("/").rstrip("/*")),))
+            return cls(any_of=(("parent", list_folder(path)),))
         if not path or path == "/":
             return cls()
         if uses_glob(path):
             return cls(any_of=(("glob", path),))
-        return cls(any_of=(("eq", path), ("glob", path.rstrip("/") + "/*")))
+        return cls(any_of=(("eq", path), ("glob", path.removesuffix("/") + "/*")))
 
     def glob(self, pattern: str) -> "PathFilter":
         return PathFilter(self.any_of, (*self.all_of, ("glob", pattern)))
@@ -238,7 +241,7 @@ class PathFilter:
             if op == "glob":
                 regex = _glob_regex(value)
                 return lambda path: regex is not None and bool(regex.fullmatch(path))
-            return lambda path: _parent(path) == value
+            return lambda path: parent_path(path) == value
 
         any_of = [check(*c) for c in self.any_of]
         all_of = [check(*c) for c in self.all_of]
@@ -246,12 +249,6 @@ class PathFilter:
             (not any_of or any(c(path) for c in any_of))
             and all(c(path) for c in all_of)
         )
-
-
-def _parent(path: str) -> str:
-    """SQLite's ``path_parent``: the path without its name and the slashes
-    before it."""
-    return path.rstrip(path.replace("/", "")).rstrip("/")
 
 
 @functools.lru_cache(maxsize=256)
@@ -389,18 +386,17 @@ def parse_listing_uri(uri: str, versions: bool = True) -> tuple[str, str, str]:
     """
     storage_uri, path = Client.parse_url(uri)
     if uses_glob(path):
-        lst_uri_path = posixpath.dirname(path)
+        # up to the last "/": "d//*.txt" is listed under "d//"
+        lst_uri_path = path[: path.rfind("/") + 1]
     else:
         if path:
-            storage_uri, path = Client.parse_url(f"{uri.rstrip('/')}/")
+            storage_uri, path = Client.parse_url(
+                uri if uri.endswith("/") else f"{uri}/"
+            )
         lst_uri_path = path
 
     lst_uri = f"{storage_uri}/{lst_uri_path.lstrip('/')}"
-    ds_name = (
-        f"{LISTING_PREFIX}{storage_uri}/{posixpath.join(lst_uri_path, '').lstrip('/')}"
-    )
-
-    ds_name = _sanitize_ds_name(ds_name)
+    ds_name = _sanitize_ds_name(f"{LISTING_PREFIX}{lst_uri}")
     if not versions:
         ds_name = CURRENT_LISTING_PREFIX + ds_name.removeprefix(LISTING_PREFIX)
 

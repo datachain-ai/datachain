@@ -637,3 +637,28 @@ def test_gcs_small_reads_share_one_block_request(
         for _ in range(8):
             assert stream.read(16) == b"a" * 16
     assert fetched_bytes == [1040, 1]
+
+
+@pytest.mark.usefixtures("no_gcp_credentials")
+@pytest.mark.parametrize("matching", [False, True])
+@pytest.mark.parametrize("fs_class", [GCSFileSystem, ExtendedGcsFileSystem])
+def test_explicit_cache_token_requires_matching_credentials(
+    monkeypatch, matching, fs_class
+):
+    monkeypatch.setattr(GCSClient, "FS_CLASS", fs_class)
+    token = Credentials("cached")
+    monkeypatch.setattr(
+        "gcsfs.credentials.GoogleCredentials.tokens",
+        {("project" if matching else "other", "full_control"): token},
+    )
+    kwargs = {"anon": False, "token": "cache", "project": "project"}
+    if matching:
+        assert (
+            GCSClient.create_fs(
+                **kwargs, skip_instance_cache=True
+            ).credentials.credentials
+            is token
+        )
+    else:
+        with pytest.raises(DefaultCredentialsError, match="No GCS credentials found"):
+            GCSClient.create_fs(**kwargs, skip_instance_cache=True)

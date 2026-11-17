@@ -48,12 +48,11 @@ class GCSClient(RangeListedClient):
         anon = kwargs.pop("anon", None)
         if os.environ.get("DATACHAIN_GCP_CREDENTIALS"):
             kwargs["token"] = json.loads(os.environ["DATACHAIN_GCP_CREDENTIALS"])
-        if anon:
-            kwargs["token"] = "anon"  # noqa: S105
-        elif kwargs.get("token") is None and os.environ.get(
+        if kwargs.get("token") is None and os.environ.get(
             "GOOGLE_APPLICATION_CREDENTIALS"
         ):
             kwargs["token"] = "google_default"  # noqa: S105
+        kwargs["token"] = "anon" if anon else kwargs.get("token")
         if anon is False and kwargs.get("token") == "anon":
             raise ValueError("anon=False conflicts with token='anon'")
         # Read gzip-encoded objects without decompressing them, so the bytes match
@@ -74,19 +73,15 @@ class GCSClient(RangeListedClient):
         }
 
         credential = kwargs.get("token")
-        key = (
-            tokenize(
-                kwargs.get("project"),
-                kwargs.get("access"),
-                {
-                    name: value
-                    for name, value in os.environ.items()
-                    if name.startswith(("GOOGLE_", "GCE_", "CLOUDSDK_"))
-                    or name in {"HOME", "APPDATA", "NO_GCE_CHECK"}
-                },
-            )
-            if credential is None or credential == "google_default"
-            else ""
+        key = tokenize(
+            kwargs.get("project"),
+            kwargs.get("access"),
+            {
+                name: value
+                for name, value in os.environ.items()
+                if name.startswith(("GOOGLE_", "GCE_", "CLOUDSDK_"))
+                or name in {"HOME", "APPDATA", "NO_GCE_CHECK"}
+            },
         )
         if credential is None:
             error: GoogleAuthError | ValueError | None = None
@@ -117,6 +112,8 @@ class GCSClient(RangeListedClient):
                 raise error or DefaultCredentialsError("No GCS credentials found")
             kwargs["token"] = "anon"  # noqa: S105
         fs = super().create_fs(**kwargs)
+        if anon is False and fs.credentials.credentials is None:
+            raise DefaultCredentialsError("No GCS credentials found")
         if credential == "google_default":
             _ADC_FAILURES.pop(key, None)
         return cast("GCSFileSystem", fs)
