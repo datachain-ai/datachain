@@ -563,7 +563,6 @@ class DataChain:
         self,
         cache: bool | None = None,
         prefetch: bool | int | None = None,
-        prefetch_bytes: int | None = None,
         parallel: bool | int | None = None,
         workers: int | None = None,
         namespace: str | None = None,
@@ -574,6 +573,7 @@ class DataChain:
         ephemeral: bool | None = None,
         llm: str | None = None,
         llm_params: "LLMParams | None" = None,
+        prefetch_bytes: int | None = None,
     ) -> "Self":
         """Set chain execution parameters. Returns the chain itself, allowing method
         chaining for subsequent operations. To restore all settings to their default

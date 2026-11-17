@@ -37,7 +37,6 @@ class Settings:
         self,
         cache: bool | None = None,
         prefetch: bool | int | None = None,
-        prefetch_bytes: int | None = None,
         parallel: bool | int | None = None,
         workers: int | None = None,
         namespace: str | None = None,
@@ -47,6 +46,7 @@ class Settings:
         ephemeral: bool | None = None,
         llm: str | None = None,
         llm_params: LLMParams | None = None,
+        prefetch_bytes: int | None = None,
     ) -> None:
         if cache is None:
             self._cache = None

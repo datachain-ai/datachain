@@ -543,6 +543,7 @@ class _PrefetchBudget:
         self.min_rows = min(max(1, min_rows), max_rows)
         self.rows = self.bytes = 0
         self.targets: Counter[str] = Counter()
+        self.target_sizes: dict[str, int] = {}
         self.changed = threading.Condition()
 
     def _target_size(self, target: File) -> int:
@@ -555,8 +556,12 @@ class _PrefetchBudget:
         return self.max_bytes
 
     def targets_for(self, files: Iterable[File]) -> dict[str, int]:
-        targets = (file._prefetch_target() for file in files)
-        return {target.get_hash(): self._target_size(target) for target in targets}
+        targets: dict[str, int] = {}
+        for file in files:
+            target = file._prefetch_target()
+            oid = target.get_hash()
+            targets[oid] = max(targets.get(oid, 0), self._target_size(target))
+        return targets
 
     def size(self, files: Iterable[File]) -> int:
         return sum(self.targets_for(files).values())
@@ -584,6 +589,7 @@ class _PrefetchBudget:
                 for oid, size in item.items():
                     if not self.targets[oid]:
                         self.bytes += size
+                        self.target_sizes[oid] = size
                     self.targets[oid] += 1
 
     def give_back(self, item: int | Mapping[str, int]) -> None:
@@ -592,11 +598,11 @@ class _PrefetchBudget:
             if isinstance(item, int):
                 self.bytes -= item
             else:
-                for oid, size in item.items():
+                for oid in item:
                     self.targets[oid] -= 1
                     if not self.targets[oid]:
                         del self.targets[oid]
-                        self.bytes -= size
+                        self.bytes -= self.target_sizes.pop(oid)
             self.changed.notify_all()
 
 
