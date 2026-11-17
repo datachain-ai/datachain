@@ -129,3 +129,22 @@ def test_full_outer_join_preserves_all_rows(test_session):
     count_after = dc.read_dataset("test_merge", session=test_session).count()
 
     assert count_after == 6
+
+
+@pytest.mark.parametrize("expression", [False, True])
+def test_merge_filtered_branch(test_session, expression):
+    chain = dc.read_values(id=[1, 2, 3], session=test_session)
+    right = chain.filter(dc.C("id") > 1)
+
+    on = chain.c("id") + 1 if expression else "id"
+    right_on = right.c("id") + 1 if expression else "id"
+    merged = chain.merge(right, on=on, right_on=right_on, inner=True)
+
+    assert merged.order_by("id").to_list() == [(2, 2), (3, 3)]
+    merged.save("filtered_join")
+    assert dc.read_dataset("filtered_join", session=test_session).order_by(
+        "id"
+    ).to_list() == [
+        (2, 2),
+        (3, 3),
+    ]
