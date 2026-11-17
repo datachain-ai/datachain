@@ -1,5 +1,8 @@
+import asyncio
+import logging
 import os
 import subprocess
+import threading
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -474,6 +477,44 @@ def test_identity_probe_rechecks_authenticated_identity_after_ttl(no_azure_env, 
     assert probe.call_count == 2
 
 
+def test_async_metadata_keeps_loop_live_during_identity_probe(no_azure_env, mocker):
+    started, release = threading.Event(), threading.Event()
+
+    def get_token(*args, **kwargs):
+        started.set()
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("Identity discovery is blocking the event loop")
+        assert release.wait(5), "The event loop must release the pending probe"
+        raise CredentialUnavailableError("no identity")
+
+    probe = mocker.patch(
+        "azure.identity.DefaultAzureCredential.get_token", side_effect=get_token
+    )
+    mocker.patch.object(
+        AzureClient.FS_CLASS, "_info", new=AsyncMock(return_value=_INFO)
+    )
+    client = AzureClient("mycontainer", {"account_name": "pending"}, MagicMock())
+    file = File(source="az://mycontainer", path="blob.txt")
+
+    async def read():
+        tasks = [asyncio.create_task(client.get_size(file)) for _ in range(2)]
+        try:
+            assert await asyncio.to_thread(started.wait, 5)
+            # This coroutine runs while the synchronous provider is still waiting.
+            await asyncio.sleep(0)
+        finally:
+            release.set()
+        return await asyncio.gather(*tasks)
+
+    assert sync(get_loop(), read) == [42, 42]
+    assert client.fs.anon
+    probe.assert_called_once()
+
+
 def test_identity_probe_does_not_share_different_credential_selections(
     no_azure_env, mocker
 ):
@@ -549,7 +590,7 @@ def test_create_fs_keeps_fsspec_anonymous_setting(no_azure_env, monkeypatch, ano
 
 
 def test_create_fs_reloads_environment_credentials_for_same_account(
-    no_azure_env, monkeypatch, mocker
+    no_azure_env, monkeypatch, mocker, caplog
 ):
     from azure.core.credentials import AccessToken
 
@@ -569,7 +610,14 @@ def test_create_fs_reloads_environment_credentials_for_same_account(
         "azure.identity.ClientSecretCredential.get_token",
         return_value=AccessToken("token", 2**31),
     )
-    assert AzureClient.create_fs(**options).anon
+    with caplog.at_level(logging.WARNING):
+        assert AzureClient.create_fs(**options).anon
+    assert "failed to retrieve a token" not in caplog.text
+
+    authenticated = AzureClient.create_fs(**options, anon=False)
+    with caplog.at_level(logging.WARNING), pytest.raises(ClientAuthenticationError):
+        authenticated.sync_credential.get_token("https://storage.azure.com/.default")
+    assert "failed to retrieve a token" in caplog.text
     for name, value in {
         "AZURE_CLIENT_ID": "client",
         "AZURE_TENANT_ID": "tenant",

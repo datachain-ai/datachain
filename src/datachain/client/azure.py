@@ -1,9 +1,13 @@
+import asyncio
+import logging
 import os
 import shutil
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from email.utils import parsedate_to_datetime
+from functools import cached_property
 from tempfile import SpooledTemporaryFile
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import unquote
@@ -39,6 +43,11 @@ _COPY_BUFFER_SIZE = 8 * 1024 * 1024
 _SCOPE = "https://storage.azure.com/.default"
 _AUTH_RETRY_TTL = 60.0  # seconds: an az login or an identity may come later
 _CREDENTIAL_CHECKS: dict[tuple, tuple[float, bool]] = {}
+_IDENTITY_PROBE: ContextVar[bool] = ContextVar("azure_identity_probe", default=False)
+# A failed automatic probe is expected; explicit authentication keeps SDK warnings.
+logging.getLogger("azure.identity._credentials.chained").addFilter(
+    lambda _: not _IDENTITY_PROBE.get()
+)
 
 
 def _identity_environment() -> frozenset[tuple[str, str]]:
@@ -65,10 +74,13 @@ class _AzureFileSystem(AzureBlobFileSystem):
 
 
 def _cannot_authenticate(credential: Any) -> bool:
+    probe = _IDENTITY_PROBE.set(True)
     try:
         credential.get_token(_SCOPE)
     except ClientAuthenticationError:
         return True
+    finally:
+        _IDENTITY_PROBE.reset(probe)
     return False
 
 
@@ -122,6 +134,18 @@ class AzureClient(RangeListedClient):
             "tenant_id",
         }
     )
+
+    @cached_property
+    def _fs_lock(self) -> asyncio.Lock:
+        return asyncio.Lock()
+
+    async def _get_fs(self) -> AzureBlobFileSystem:
+        if self._fs is None:
+            async with self._fs_lock:
+                if self._fs is None:
+                    # Identity discovery may block on a CLI or metadata server.
+                    self._fs = await asyncio.to_thread(self.create_fs, **self.fs_kwargs)
+        return cast("AzureBlobFileSystem", self._fs)
 
     @classmethod
     def create_fs(cls, **kwargs) -> AzureBlobFileSystem:
@@ -335,7 +359,8 @@ class AzureClient(RangeListedClient):
             # it does not accept version_id as a kwarg.  Embed it in the path
             # so split_path can recover it on the adlfs side.
             lpath = f"{lpath}?versionid={version_id}"
-        await self.fs._get_file(lpath, rpath, callback=callback)
+        fs = await self._get_fs()
+        await fs._get_file(lpath, rpath, callback=callback)
 
     _hns = False
 
@@ -357,9 +382,10 @@ class AzureClient(RangeListedClient):
         delimiter: str = "",
     ) -> Page:
         assert not delimiter, "Azure lists with no delimiter"
+        fs = await self._get_fs()
         kwargs = {"start_from": start_after} if start_after and token is None else {}
         include = ["metadata", "versions"] if self._is_version_aware() else ["metadata"]
-        async with self.fs.service_client.get_container_client(
+        async with fs.service_client.get_container_client(
             container=self.name
         ) as container:
             # raw page XML: the SDK's deserializer is most of the listing's CPU
