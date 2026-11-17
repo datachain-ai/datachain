@@ -22,7 +22,7 @@ from fsspec import Callback
 from fsspec.callbacks import DEFAULT_CALLBACK, TqdmCallback
 from sqlalchemy import Column
 from sqlalchemy.sql import func as f
-from sqlalchemy.sql.elements import ColumnClause, ColumnElement, Label
+from sqlalchemy.sql.elements import ColumnClause, ColumnElement, Label, TextClause
 from sqlalchemy.sql.expression import label
 from sqlalchemy.sql.selectable import (
     GenerativeSelect,
@@ -30,7 +30,7 @@ from sqlalchemy.sql.selectable import (
     SelectBase,
     TableClause,
 )
-from sqlalchemy.sql.visitors import replacement_traverse
+from sqlalchemy.sql.visitors import iterate, replacement_traverse
 
 # Resolve parent packages before their children to keep import-lock ordering consistent.
 from datachain.catalog import catalog as _catalog
@@ -2430,6 +2430,89 @@ class ResultIter:
             self._row_iter.close()  # type: ignore[attr-defined]
 
 
+def _expr_columns(exprs: Iterable[Any]) -> set[str] | None:
+    names: set[str] = set()
+    for expr in exprs:
+        if isinstance(expr, str):
+            names.add(expr)
+            continue
+        if isinstance(expr, Function):
+            expr = expr.get_column()
+        for elem in iterate(expr):
+            if isinstance(elem, TextClause):
+                return None
+            if isinstance(elem, ColumnClause):
+                if elem.is_literal:
+                    return None
+                names.add(elem.name)
+            elif isinstance(name := getattr(elem, "element", None), str):
+                names.add(name)
+    return names
+
+
+def _udf_exprs(step: UDFStep) -> Iterable[Any] | None:
+    if (params := step.udf.inner.params) is None:
+        return None
+    return (*params.db_signals(), *ensure_sequence(step.partition_by or ()))
+
+
+_STEP_EXPRS: dict[type[Step], Callable[[Any], Iterable[Any] | None]] = {
+    SQLSelect: lambda s: s.args or None,
+    SQLGroupBy: lambda s: (*s.cols, *s.group_by),
+    SQLCount: lambda _: (),
+    SQLFilter: lambda s: s.expressions,
+    SQLOrderBy: lambda s: s.args,
+    SQLMutate: lambda s: s.args,
+    SQLDistinct: lambda s: s.args or None,
+    SQLLimit: lambda _: (),
+    SQLOffset: lambda _: (),
+    RegenerateSystemColumns: lambda _: (),
+    RowGenerator: _udf_exprs,
+}
+
+
+def _used_columns(steps: Sequence[Step]) -> set[str] | None:
+    """Return the DB column names used before the first step that bounds
+    the input columns, or None when every column must be kept."""
+    used: set[str] = set()
+    bounded = False
+    for step in steps:
+        get_exprs = _STEP_EXPRS.get(type(step))
+        if (
+            get_exprs is None
+            or (exprs := get_exprs(step)) is None
+            or (cols := _expr_columns(exprs)) is None
+        ):
+            return None
+        if isinstance(step, SQLSelect):
+            cols = {c for c in cols if not c.startswith("sys__")}
+        if "sys__rand" in cols:
+            return None
+        if not bounded:
+            used |= cols
+            bounded = isinstance(step, (SQLSelect, SQLGroupBy, SQLCount, RowGenerator))
+    return used if bounded else None
+
+
+def _project_reads(steps: Sequence[Step]) -> list[Step]:
+    from datachain.lib.arrow import ArrowGenerator
+
+    result = list(steps)
+    for i, step in enumerate(result):
+        if (
+            isinstance(step, RowGenerator)
+            and isinstance(inner := step.udf.inner, ArrowGenerator)
+            and (used := _used_columns(result[i + 1 :])) is not None
+            and (projected := inner.project(used)) is not None
+        ):
+            assert projected.output is not None
+            udf = attrs.evolve(
+                step.udf, inner=projected, output=projected.output.to_udf_spec()
+            )
+            result[i] = attrs.evolve(step, udf=udf)
+    return result
+
+
 class DatasetQuery:
     def __init__(
         self,
@@ -2631,6 +2714,7 @@ class DatasetQuery:
             hasher.update(self.delta_spec.hash().encode("utf-8"))
 
         query = self.clone()
+        query.steps = _project_reads(query.steps)
 
         index = os.getenv("DATACHAIN_QUERY_CHUNK_INDEX", self._chunk_index)
         total = os.getenv("DATACHAIN_QUERY_CHUNK_TOTAL", self._chunk_total)
