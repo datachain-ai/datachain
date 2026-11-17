@@ -23,6 +23,8 @@ from datachain.studio import POST_LOGIN_MESSAGE
 from datachain.utils import STUDIO_URL
 from tests.utils import posix_only, skip_if_not_sqlite, studio_login
 
+OTHER_URL = "https://other.example.com"
+
 pytestmark = pytest.mark.usefixtures("tmp_dir")
 
 
@@ -189,7 +191,7 @@ def test_studio_login_repeated_team_is_one_team(get_access_token):
 
 
 @pytest.mark.parametrize("local", [False, True])
-def test_studio_login_scoped_token_keeps_default_team(mocker, local):
+def test_studio_login_team_token_keeps_default_team(mocker, local):
     mocker.patch(
         "dvc_studio_client.auth.get_access_token",
         return_value=("token_name", "customer_token"),
@@ -213,7 +215,7 @@ def test_studio_login_token_already_exists(capsys):
     assert "`datachain auth logout`" in err
 
 
-def test_studio_login_scoped_token_already_exists(capsys):
+def test_studio_login_team_token_already_exists(capsys):
     studio_login(teams=["ml-team", "data-team"])
 
     assert main(["auth", "login", "--team", "data-team"]) == 1
@@ -361,6 +363,26 @@ def test_studio_logout_without_a_token_for_all_teams(capsys):
     err = capsys.readouterr().err
     assert "only tokens for teams x" in err
     assert "`datachain auth logout --all`" in err
+
+
+def test_studio_logout_hints_keep_the_other_studio(capsys):
+    studio_login(teams=["x"], url=OTHER_URL)
+
+    assert main(["auth", "logout", "-H", OTHER_URL]) == 1
+    err = capsys.readouterr().err
+    assert f"`datachain auth logout -H {OTHER_URL} --team <team>`" in err
+    assert f"`datachain auth logout -H {OTHER_URL} --all`" in err
+
+
+def test_studio_logout_other_studio_keeps_the_default_team():
+    studio_login(url=OTHER_URL)
+    studio_login(default_team="acme")
+
+    with requests_mock.mock() as m:
+        m.post(f"{OTHER_URL}/api/device-logout", json={})
+        assert main(["auth", "logout", "-H", OTHER_URL]) == 0
+
+    assert Config().read()["studio"]["team"] == "acme"
 
 
 def test_studio_logout_team_without_a_token_for_the_team(capsys):
@@ -681,6 +703,24 @@ def test_dataset_ls_all_lists_local_only_without_a_token_for_the_team(mocker, ca
 
     studio.assert_not_called()
     assert "local.local.local" in capsys.readouterr().out
+
+
+def test_expired_token_only_breaks_studio_listings(capsys):
+    studio_login(expires="2020-01-01")
+
+    assert main(["ls", "."]) == 0
+    assert main(["dataset", "ls"]) == 0
+    capsys.readouterr()
+
+    assert main(["ls", ".", "--studio"]) == 1
+    assert "expired on 2020-01-01" in capsys.readouterr().err
+
+
+def test_studio_command_with_team_tokens_but_no_team(capsys):
+    studio_login(teams=["a", "b"])
+
+    assert main(["job", "ls"]) == 1
+    assert "Studio team is not set" in capsys.readouterr().err
 
 
 def test_studio_datasets(capsys, studio_datasets, mocker):

@@ -10,7 +10,6 @@ from datachain.error import DataChainError
 from datachain.remote.credentials import (
     TOKEN_ENV,
     Login,
-    add_login,
     credentials_path,
     load_logins,
     resolve_token,
@@ -103,7 +102,7 @@ def test_env_token_wins_for_every_team(monkeypatch):
 
 
 def test_is_token_set_checks_the_team():
-    studio_login("scoped", teams=["customer-x"])
+    studio_login("team-token", teams=["customer-x"])
 
     assert is_token_set("customer-x")
     assert not is_token_set("acme")
@@ -123,15 +122,15 @@ def test_client_has_no_token_for_a_url_set_by_the_project():
 
 def test_client_uses_team_to_pick_token():
     studio_login("all", default_team="acme")
-    studio_login("scoped", teams=["customer-x"])
+    studio_login("team-token", teams=["customer-x"])
 
     assert StudioClient().token == "all"  # noqa: S105
-    assert StudioClient(team="customer-x").token == "scoped"  # noqa: S105
+    assert StudioClient(team="customer-x").token == "team-token"  # noqa: S105
 
 
 def test_expired_token_fails_instead_of_falling_back():
-    add_login(Login(url=STUDIO_URL, token="old", teams=["x"], expires="2020-01-01"))  # noqa: S106
-    add_login(Login(url=STUDIO_URL, token="all", expires="2099-01-01"))  # noqa: S106
+    studio_login("old", teams=["x"], expires="2020-01-01")
+    studio_login("all", expires="2099-01-01")
 
     with pytest.raises(DataChainError) as exc:
         resolve_token(STUDIO_URL, "x")

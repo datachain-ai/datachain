@@ -246,7 +246,7 @@ def login(args: "Namespace"):
     )
     print(f"Authentication complete. Saved token to {credentials_path}.")
     if team_names:
-        print(f"Token is scoped to teams: {', '.join(team_names)}")
+        print(f"Token is for teams: {', '.join(team_names)}")
     print(f"Token will expire in {expires_in_days} days.")
 
     if hostname == current_url:
@@ -295,23 +295,23 @@ def _revoke(login: Login) -> None:
 
 
 def _nothing_to_logout(
-    url: str, team: str | None, saved: list[Login], level: ConfigLevel
+    url: str, team: str | None, saved: list[Login], level: ConfigLevel, host: str
 ) -> str:
-    local = level_flag(level)
+    flags = f"{host}{level_flag(level)}"
     if not saved:
-        return f"Not logged in to Studio at {url}. Log in with 'datachain auth login'."
+        return f"Not logged in to Studio at {url}."
     if team:
         if any(login.teams is None for login in saved):
             return (
                 f"No token is saved for team '{team}' alone. To remove the token "
-                f"for all teams, run `datachain auth logout{local}`."
+                f"for all teams, run `datachain auth logout{flags}`."
             )
         return f"No token is saved for team '{team}' at {url}."
     teams = ", ".join(sorted({t for login in saved for t in login.teams or ()}))
     return (
         f"No token for all teams is saved for {url}, only tokens for teams "
-        f"{teams}. Remove one with `datachain auth logout --team <team>{local}`, "
-        f"or all of them with `datachain auth logout --all{local}`."
+        f"{teams}. Remove one with `datachain auth logout{flags} --team <team>`, "
+        f"or all of them with `datachain auth logout{flags} --all`."
     )
 
 
@@ -333,7 +333,8 @@ def logout(
     all_teams: bool = False,
 ):
     level = ConfigLevel.LOCAL if local else ConfigLevel.GLOBAL
-    url = normalize_url(hostname or get_studio_url())
+    current_url = get_studio_url()
+    url = normalize_url(hostname or current_url)
     saved = [login for login in load_logins(level) if login.url == url]
     if all_teams:
         logins = saved
@@ -343,7 +344,8 @@ def logout(
         logins = [login for login in saved if login.teams is None]
 
     if not logins:
-        raise DataChainError(_nothing_to_logout(url, team, saved, level))
+        host = f" -H {url}" if url != current_url else ""
+        raise DataChainError(_nothing_to_logout(url, team, saved, level, host))
 
     for login in logins:
         # Removed one at a time, so a failed revoke keeps the tokens not yet revoked.
@@ -351,7 +353,7 @@ def logout(
         remove_login(login)
         print(f"Logged out from Studio at {url} ({login.describe_teams()}).")
 
-    if len(logins) == len(saved):
+    if len(logins) == len(saved) and url == current_url:
         # The default team belonged to the tokens just removed.
         _clear_default_team(level)
 

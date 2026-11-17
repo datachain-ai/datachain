@@ -57,7 +57,9 @@ def list_datasets(
     name: str | None = None,
     include_removed: bool = False,
 ) -> None:
-    all, local, studio = determine_flavors(studio, local, all, is_token_set(team))
+    all, local, studio = determine_flavors(
+        studio, local, all, lambda: is_token_set(team)
+    )
     if name:
         latest_only = False
 

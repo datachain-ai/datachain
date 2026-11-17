@@ -387,9 +387,10 @@ def studio_login(
     url: str = STUDIO_URL,
     teams: list[str] | None = None,
     level: ConfigLevel = ConfigLevel.GLOBAL,
+    expires: str | None = None,
 ) -> None:
     """Save a Studio login and, if given, the default team at the same level."""
-    add_login(Login(url=url, token=token, teams=teams, level=level))
+    add_login(Login(url=url, token=token, teams=teams, level=level, expires=expires))
     if default_team:
         with Config(level).edit() as conf:
             studio = conf.get("studio", {})

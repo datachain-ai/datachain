@@ -7,7 +7,6 @@ from datachain.cli import get_logging_level, get_parser
 from datachain.cli.parser.utils import CustomArgumentParser as ArgumentParser
 from datachain.cli.parser.utils import find_columns_type
 from datachain.cli.utils import CommaSeparatedArgs, determine_flavors
-from datachain.error import DataChainError
 
 
 def test_find_columns_type():
@@ -130,12 +129,18 @@ def test_datasets_ls_flavor_defaults():
     ],
 )
 def test_determine_flavors(studio, local, all, logged_in, expected):
-    assert determine_flavors(studio, local, all, logged_in) == expected
+    assert determine_flavors(studio, local, all, lambda: logged_in) == expected
 
 
-def test_determine_flavors_studio_without_token():
-    with pytest.raises(DataChainError, match="Not logged in to Studio"):
-        determine_flavors(studio=True, local=False, all=False, logged_in=False)
+@pytest.mark.parametrize(
+    "studio,local,all",
+    [(False, False, False), (False, True, False), (True, False, False)],
+)
+def test_determine_flavors_checks_login_only_for_all(studio, local, all):
+    def logged_in():
+        raise AssertionError("credentials read")
+
+    determine_flavors(studio, local, all, logged_in)
 
 
 def test_dataset_describe_parser():
