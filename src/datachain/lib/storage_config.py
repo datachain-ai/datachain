@@ -1,7 +1,6 @@
 from collections.abc import Sequence
 
 from datachain.client import Client
-from datachain.lib.dc.storage_pattern import validate_cloud_bucket_name
 from datachain.query.session import Session
 
 
@@ -61,6 +60,8 @@ def client_configs(
     and ``version_aware=False`` without ``versions``. An explicit session is
     never changed.
     """
+    from datachain.lib.dc.storage_pattern import validate_cloud_bucket_name
+
     for single_uri in uris:
         validate_cloud_bucket_name(str(single_uri))
     config = _session_client_config(session, client_config)
