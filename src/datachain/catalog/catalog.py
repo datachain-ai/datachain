@@ -13,7 +13,6 @@ from datetime import UTC, datetime, timedelta
 from fnmatch import fnmatchcase
 from functools import reduce
 from typing import TYPE_CHECKING, Any, Self
-from uuid import uuid4
 
 import sqlalchemy as sa
 from sqlalchemy import Column
@@ -589,10 +588,6 @@ class Catalog:
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         self.close()
-
-    @classmethod
-    def generate_query_dataset_name(cls) -> str:
-        return f"{QUERY_DATASET_PREFIX}_{uuid4().hex}"
 
     def get_client(
         self, uri: str, *, client_config: dict | None = None, **config: Any

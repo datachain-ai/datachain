@@ -260,24 +260,6 @@ def global_config_dir():
     )
 
 
-def human_time_to_int(time: str) -> int | None:
-    if not time:
-        return None
-
-    suffix = time[-1]
-    try:
-        num = int(time if suffix.isdigit() else time[:-1])
-    except ValueError:
-        return None
-    return num * {
-        "h": 60 * 60,
-        "d": 60 * 60 * 24,
-        "w": 60 * 60 * 24 * 7,
-        "m": 31 * 24 * 60 * 60,
-        "y": 60 * 60 * 24 * 365,
-    }.get(suffix.lower(), 1)
-
-
 def time_to_str(dt):
     if isinstance(dt, str):
         dt = isoparse(dt)
@@ -515,16 +497,6 @@ def usable_cpu_count() -> int:
     return max(min([cpus, *caps]), 1)
 
 
-def get_env_list(
-    key: str, default: Sequence | None = None, sep: str = ","
-) -> Sequence[str] | None:
-    try:
-        str_val = os.environ[key]
-    except KeyError:
-        return default
-    return str_val.split(sep=sep)
-
-
 def show_df(
     df: "pd.DataFrame", collapse_columns: bool = True, system_columns: bool = False
 ) -> None:
@@ -555,23 +527,6 @@ def show_df(
 
     with pd.option_context("display.max_rows", None, *options):  # show all rows
         print(df)
-
-
-def show_records(
-    records: list[dict] | None,
-    collapse_columns: bool = False,
-    system_columns: bool = False,
-    hidden_fields: list[str] | None = None,
-) -> None:
-    import pandas as pd
-
-    if not records:
-        return
-
-    df = pd.DataFrame.from_records(records)
-    if hidden_fields:
-        df = df.drop(columns=hidden_fields, errors="ignore")
-    return show_df(df, collapse_columns=collapse_columns, system_columns=system_columns)
 
 
 def inside_colab() -> bool:

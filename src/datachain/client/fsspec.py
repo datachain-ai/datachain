@@ -57,11 +57,6 @@ def is_cloud_uri(uri: str) -> bool:
     return protocol in CLOUD_STORAGE_PROTOCOLS
 
 
-def get_cloud_schemes() -> list[str]:
-    """Get list of cloud storage scheme prefixes."""
-    return [f"{p}://" for p in CLOUD_STORAGE_PROTOCOLS]
-
-
 class Bucket(NamedTuple):
     name: str
     uri: "StorageURI"

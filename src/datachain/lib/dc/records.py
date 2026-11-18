@@ -4,9 +4,11 @@ from typing import TYPE_CHECKING, Any, cast
 
 import sqlalchemy
 
+from datachain.data_storage.codec import RowEncodeError
 from datachain.lib.convert.flatten import classify_field, flatten_value, union_layout
 from datachain.lib.data_model import DataType, is_chain_type, validate_chain_type
 from datachain.lib.signal_schema import SignalSchema
+from datachain.lib.udf import output_value_error
 from datachain.lib.utils import (
     DataChainParamsError,
     assert_unique_export_columns,
@@ -93,9 +95,6 @@ def create_records_dataset(
     only (used by ``read_values`` and the listing chain to opt out of
     content-derived hashing).
     """
-    from datachain.query.dataset import adjust_outputs, get_col_types
-    from datachain.sql.types import SQLType
-
     from .datasets import read_dataset
 
     session = Session.get(session, in_memory=in_memory)
@@ -135,17 +134,23 @@ def create_records_dataset(
     dr = warehouse.dataset_rows(dsr)
     table = dr.get_table()
 
-    # Optimization: Compute row types once, rather than for every row.
-    col_types = get_col_types(
-        warehouse,
-        {c.name: c.type for c in columns if isinstance(c.type, SQLType)},
-    )
+    names = [c.name for c in columns]
+    known = set(names) | {c.name for c in warehouse.dataset_row_cls.sys_columns()}
 
-    records = (
-        adjust_outputs(warehouse, record, col_types, signal_schema)
-        for record in flat_records
-    )
-    warehouse.insert_rows(table, records)
+    def _row(record: dict) -> tuple:
+        if extra := record.keys() - known:
+            raise DataChainParamsError(
+                f"Unexpected keys in record: {', '.join(sorted(extra))}"
+            )
+        return tuple(record.get(name) for name in names)
+
+    codec = warehouse.row_codec(columns)
+    try:
+        warehouse.insert_tuples(
+            table, names, map(codec.encode, map(_row, flat_records))
+        )
+    except RowEncodeError as e:
+        raise output_value_error(e, names, signal_schema) from e.__cause__
     warehouse.insert_rows_done(table)
 
     # Finalize warehouse-derived metadata before marking the version COMPLETE.

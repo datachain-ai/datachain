@@ -6,25 +6,20 @@ import string
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
-from datetime import datetime
-from typing import TYPE_CHECKING, Any, Self, Union, cast
-from urllib.parse import urlparse
+from typing import TYPE_CHECKING, Any, Self, cast
 
 import attrs
 import sqlalchemy as sa
 from sqlalchemy.sql.expression import true
 from sqlalchemy.sql.selectable import GenerativeSelect
 
-from datachain import json
 from datachain.client import Client
-from datachain.data_storage.schema import convert_rows_custom_column_types
+from datachain.data_storage.codec import RowCodec, TypeCodec, value_codec
 from datachain.data_storage.serializer import Serializable
 from datachain.dataset import DatasetRecord, StorageURI
 from datachain.error import TableRenameError
 from datachain.lib.file import File
-from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.udf import JsonSerializationError
 from datachain.node import DirType, DirTypeGroup, Node, NodeWithPath, get_path
 from datachain.query.batch import DEFAULT_BATCH_SIZE, RowsOutput
 from datachain.query.schema import ColumnMeta
@@ -39,7 +34,6 @@ if TYPE_CHECKING:
         _OnClauseArgument,
     )
     from sqlalchemy.sql.selectable import FromClause
-    from sqlalchemy.types import TypeEngine
 
     from datachain.data_storage import schema
     from datachain.data_storage.buffer import InsertBuffer
@@ -50,34 +44,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger("datachain")
 
 SELECT_BATCH_SIZE = 100_000  # number of rows to fetch at a time
-
-
-def to_json_text(value: Any) -> str:
-    """Return a value as the JSON text `convert_type` stores in a JSON column."""
-    return json.dumps(_to_jsonable(value), ensure_ascii=False, serialize_numpy=True)
-
-
-def _to_jsonable(obj: Any) -> Any:
-    """Recursively convert Python/Pydantic structures into JSON-serializable
-    objects.
-    """
-
-    if ModelStore.is_pydantic(type(obj)):
-        # Use Pydantic's JSON mode to ensure datetime and other non-JSON
-        # native types are serialized in a compatible way. Numpy is the one
-        # thing it refuses and this project's encoder handles.
-        return obj.model_dump(mode="json", fallback=json.numpy_to_python)
-
-    if isinstance(obj, dict):
-        return {
-            k if isinstance(k, str) else to_json_text(k): _to_jsonable(v)
-            for k, v in obj.items()
-        }
-
-    if isinstance(obj, (list, tuple, set)):
-        return [_to_jsonable(i) for i in obj]
-
-    return obj
 
 
 class AbstractWarehouse(ABC, Serializable):
@@ -113,78 +79,24 @@ class AbstractWarehouse(ABC, Serializable):
         """Return query adjusted for warehouse-specific LIMIT/OFFSET semantics."""
         return query
 
-    def convert_type(  # noqa: PLR0911
-        self,
-        val: Any,
-        col_type: SQLType,
-        col_python_type: Any,
-        col_type_name: str,
-        col_name: str,
-    ) -> Any:
-        """
-        Tries to convert value to specific type if needed and if compatible,
-        otherwise throws an ValueError.
-        If value is a list or some other iterable, it tries to convert sub elements
-        as well
-        """
-        import numpy as np
+    def type_codec(self, sql_type: Any) -> TypeCodec:
+        """How this warehouse stores and reads back values of `sql_type`.
 
-        if isinstance(val, (np.ndarray, np.generic)):
-            val = val.tolist()
+        The default stores Python values as they are, checked and normalized. A
+        warehouse whose stored form differs overrides this."""
+        return value_codec(sql_type, self.column_default(sql_type))
 
-        # Optimization: Precompute all the column type variables.
-        value_type = type(val)
+    def column_default(self, sql_type: Any) -> Any:
+        """The value stored for None, and read back for NULL."""
+        if not isinstance(sql_type, SQLType) or sql_type.dc_nullable:
+            return None
+        return sql_type.default_value(self.db.dialect)
 
-        if col_python_type is list and value_type in (list, tuple, set):
-            if len(val) == 0:
-                return []
-
-            item_python_type = self.python_type(col_type.item_type)
-
-            if item_python_type is not list:
-                if isinstance(val[0], item_python_type):
-                    # SQLite ARRAY storage expects a list; tuples/sets must be
-                    # converted to lists even when element types already match.
-                    return list(val)
-                if item_python_type is float and isinstance(val[0], int):
-                    return [float(i) for i in val]
-
-            # Optimization: Reuse these values for each function call within the
-            # list comprehension.
-            item_type_info = (
-                col_type.item_type,
-                item_python_type,
-                type(col_type.item_type).__name__,
-                col_name,
-            )
-            return [self.convert_type(i, *item_type_info) for i in val]
-
-        # Special use case with JSON type as we save it as string
-        if col_python_type is dict or col_type_name == "JSON":
-            if value_type is str:
-                return val
-            json_ready = _to_jsonable(val)
-            try:
-                return json.dumps(json_ready, ensure_ascii=False, serialize_numpy=True)
-            except TypeError as e:
-                raise JsonSerializationError(
-                    f"JSON serialization error: {e}",
-                    column_name=col_name,
-                    value_repr=repr(val),
-                ) from e
-
-        if isinstance(val, col_python_type):
-            if col_python_type is datetime and value_type is not datetime:
-                # sqlite3 can't bind subclasses such as pandas.Timestamp.
-                # This drops nanoseconds, as the ClickHouse driver does.
-                return datetime.combine(val.date(), val.timetz())
-            return val
-        if col_python_type is float and isinstance(val, int):
-            return float(val)
-
-        raise ValueError(
-            f"Value {val!r} with type {value_type} incompatible for "
-            f"column type {col_type_name}"
+    def row_codec(self, columns: Iterable[Any]) -> RowCodec:
+        """The codec of rows of `columns`, given as columns or SQL types."""
+        types = (getattr(c, "type", c) for c in columns)
+        return RowCodec(
+            [self.type_codec(t() if isinstance(t, type) else t) for t in types]
         )
 
     @abstractmethod
@@ -348,12 +260,6 @@ class AbstractWarehouse(ABC, Serializable):
     # Table Name Internal Functions
     #
 
-    @staticmethod
-    def uri_to_storage_info(uri: str) -> tuple[str, str]:
-        parsed = urlparse(uri)
-        name = parsed.path if parsed.scheme == "file" else parsed.netloc
-        return parsed.scheme, name
-
     def dataset_table_name(self, dataset: DatasetRecord, version: str) -> str:
         return self._construct_dataset_table_name(
             dataset.project.namespace.name,
@@ -418,14 +324,13 @@ class AbstractWarehouse(ABC, Serializable):
         self,
         query: sa.Select,
         **kwargs,
-    ) -> Iterator[tuple[Any, ...]]:
+    ) -> Iterator[Sequence[Any]]:
         """
         Fetch dataset rows from database.
         """
+        codec = self.row_codec(query.selected_columns)
         with safe_closing(self.db.execute(query, **kwargs)) as rows:
-            yield from convert_rows_custom_column_types(
-                query.selected_columns, rows, self.db.dialect
-            )
+            yield from codec.decode_rows(rows)
 
     def dataset_rows_select_from_ids(
         self,
@@ -653,10 +558,6 @@ class AbstractWarehouse(ABC, Serializable):
         client_config=None,
     ) -> None:
         """Exports dataset table to the cloud, e.g to some s3 bucket"""
-
-    def python_type(self, col_type: Union["TypeEngine", "SQLType"]) -> Any:
-        """Returns python type representation of some Sqlalchemy column type"""
-        return col_type.python_type
 
     def add_node_type_where(
         self,
@@ -1077,10 +978,6 @@ class AbstractWarehouse(ABC, Serializable):
             order_by=order_by,
         )
         return self.db.execute(query)
-
-    def update_node(self, node_id: int, values: dict[str, Any]) -> None:
-        # TODO used only in formats which will be deleted
-        """Update entry of a specific node in the database."""
 
     def create_udf_table(
         self,

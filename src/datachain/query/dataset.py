@@ -6,14 +6,13 @@ import secrets
 import string
 import subprocess
 import sys
-import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from copy import copy
 from datetime import UTC, datetime
 from functools import wraps
 from types import GeneratorType
-from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypeVar, cast
 from uuid import uuid4
 
 import attrs
@@ -64,8 +63,7 @@ from datachain.lib.signal_schema import (
     SignalSchema,
     generate_merge_root_mapping,
 )
-from datachain.lib.udf import JsonSerializationError, UdfError, _get_cache
-from datachain.lib.utils import type_to_str
+from datachain.lib.udf import _get_cache, _Progress
 from datachain.progress import (
     CombinedDownloadCallback,
     TqdmCombinedDownloadCallback,
@@ -88,7 +86,6 @@ from datachain.utils import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
     from typing import Concatenate, Self
 
     from sqlalchemy.sql.elements import KeyedColumnElement
@@ -374,15 +371,6 @@ class QueryStep:
         return hashlib.sha256(anchor.encode()).hexdigest()
 
 
-def generator_then_call(generator, func: Callable):
-    """
-    Yield items from generator then execute a function and yield
-    its result.
-    """
-    yield from generator
-    yield func() or []
-
-
 @frozen
 class DatasetDiffOperation(Step):
     """
@@ -512,170 +500,6 @@ class Subtract(DatasetDiffOperation):
         )
 
 
-class ColType(NamedTuple):
-    name: str
-    sql_type: SQLType
-    python_type: type
-    type_name: str
-    default: Any
-    kept_type: type | None  # a value of this type goes in unconverted
-    item_type: type | None  # a list whose first item has this type goes in unconverted
-
-
-def adjust_outputs(
-    warehouse: "AbstractWarehouse",
-    row: dict[str, Any],
-    col_types: list[ColType],
-    signal_schema: SignalSchema,
-    udf_kind: str | None = None,
-) -> dict[str, Any]:
-    """
-    This function does a couple of things to prepare a row for inserting into the db:
-    1. Fill default values for columns that have None and add missing columns
-    2. Validate values with its corresponding DB column types and convert types
-       if needed and possible
-    """
-    # Optimization: Use precomputed column type values as these do not change for each
-    # row in the same UDF.
-    for (
-        col_name,
-        col_type,
-        col_python_type,
-        col_type_name,
-        default_value,
-        kept_type,
-        _,
-    ) in col_types:
-        # Fill missing values with defaults
-        if col_name not in row:
-            row[col_name] = default_value
-            continue
-
-        row_val = row[col_name]
-
-        # Fill explicit None values with defaults
-        if row_val is None:
-            row[col_name] = default_value
-            continue
-
-        if type(row_val) is kept_type:
-            continue
-
-        # Validate and convert type if needed and possible
-        try:
-            row[col_name] = warehouse.convert_type(
-                row_val, col_type, col_python_type, col_type_name, col_name
-            )
-        except Exception as e:
-            expected_type = type_to_str(signal_schema.get_column_type(col_name))
-
-            if isinstance(e, JsonSerializationError):
-                msg = (
-                    f"UDF returned an invalid value for output column {col_name!r}. "
-                    f"Expected JSON-serializable {expected_type}. "
-                    f"{e.message}"
-                )
-            else:
-                actual_type_name = type(row_val).__name__
-                msg = (
-                    f"UDF returned an invalid value for output column {col_name!r}. "
-                    f"Expected {expected_type}, got {row_val!r} "
-                    f"(type: {actual_type_name})."
-                )
-
-            if udf_kind is not None:
-                udf_values = sum(1 for k in row if not str(k).startswith("sys__"))
-                expected = len(col_types)
-                if udf_values != expected:
-                    value_word = "value" if udf_values == 1 else "values"
-                    are_word = "is" if expected == 1 else "are"
-                    msg += (
-                        f" Note: UDF call returned {udf_values} {value_word} "
-                        f"while {expected} {are_word} expected "
-                        f"per output definition"
-                    )
-                    if udf_kind in ("agg", "gen"):
-                        msg += (
-                            f", {udf_kind}() UDFs usually use yield "
-                            "and have return type Iterator."
-                        )
-                    else:
-                        msg += "."
-            raise UdfError(msg) from e
-    return row
-
-
-def get_col_types(
-    warehouse: "AbstractWarehouse", output: "Mapping[str, Any]"
-) -> list[ColType]:
-    """Column types, computed once per run rather than once per row."""
-    from datachain.data_storage.warehouse import AbstractWarehouse
-
-    dialect = warehouse.db.dialect
-    # a warehouse's own convert_type sees every value
-    exact = type(warehouse).convert_type is AbstractWarehouse.convert_type
-    col_types = []
-    for name, col_type in output.items():
-        sql_type = col_type() if isinstance(col_type, type) else col_type
-        python_type = warehouse.python_type(sql_type)
-        type_name = type(sql_type).__name__
-        default = (
-            None
-            if getattr(sql_type, "dc_nullable", False)
-            else col_type.default_value(dialect)
-        )
-        kept_type: type | None = None
-        item_type: type | None = None
-        if exact and python_type is list:
-            # convert_type checks only the first item, and recurses into a list
-            item = warehouse.python_type(sql_type.item_type)
-            item_type = None if item is list else item
-        elif exact and (python_type is dict or type_name == "JSON"):
-            kept_type = str  # JSON text, which convert_type keeps as it is
-        elif exact:
-            kept_type = python_type
-        col_types.append(
-            ColType(
-                name, sql_type, python_type, type_name, default, kept_type, item_type
-            )
-        )
-    return col_types
-
-
-def _tuple_adjuster(col_types: list[ColType]) -> Callable[[tuple], tuple | None]:
-    """For a gen row of the output columns, then ``sys__input_id``,
-    ``sys__partial`` and ``sys__empty``: the row with column defaults in place of
-    None, or None when ``adjust_outputs`` must convert it."""
-    kept_types = []
-    for c in col_types:
-        kept = list if c.item_type else c.kept_type
-        kept_types.append(frozenset({type(None), kept} if kept else {type(None)}))
-    lists = [(i, c.item_type) for i, c in enumerate(col_types) if c.item_type]
-    defaults = [
-        (i, c.default) for i, c in enumerate(col_types) if c.default is not None
-    ]
-
-    def adjust(row: tuple) -> tuple | None:
-        # map stops at the output columns: the sys values are the generator's own
-        if not all(map(frozenset.__contains__, kept_types, map(type, row))):
-            return None
-        for i, item_type in lists:
-            if (value := row[i]) and not isinstance(value[0], item_type):
-                return None
-        if not defaults:
-            return row
-        values = list(row)
-        for i, default in defaults:
-            if values[i] is None:
-                values[i] = default
-        return tuple(values)
-
-    return adjust
-
-
-PROGRESS_INTERVAL = 0.1  # seconds
-
-
 def process_udf_outputs(
     warehouse: "AbstractWarehouse",
     udf_table: "Table",
@@ -684,57 +508,18 @@ def process_udf_outputs(
     cb: Callback = DEFAULT_CALLBACK,
     batch_size: int | None = None,
 ) -> None:
-    # Optimization: Compute row types once, rather than for every row.
-    udf_col_types = get_col_types(warehouse, udf.output)
-    udf_signal_schema = udf.inner.output
-
-    # Determine UDF kind based on batching behavior
-    if udf.inner.is_input_batched and udf.inner.is_output_batched:
-        udf_kind = "agg"
-    elif udf.inner.is_output_batched:
-        udf_kind = "gen"
-    else:
-        udf_kind = "map"
-
-    if udf_kind == "map":
-        columns = ["sys__id", *udf.output]
-    else:
-        columns = [*udf.output, "sys__input_id", "sys__partial", "sys__empty"]
-
-    adjust_tuple = _tuple_adjuster(udf_col_types)
+    # The UDF yields its outputs already in stored form, then its sys values.
+    columns = [*udf.output, *udf.inner.sys_columns]
 
     def _insert_rows():
-        # Progress is reported every PROGRESS_INTERVAL, not per row: a call per
-        # row adds about a sixth to the time to read plain columns.
-        generated = 0
-        report_at = 0.0
-        for udf_output in udf_results:
-            if not udf_output:
-                continue
-
-            with safe_closing(udf_output):
-                for row in udf_output:
-                    generated += 1
-                    if (now := time.monotonic()) >= report_at:
-                        cb.relative_update(generated)
-                        generated, report_at = 0, now + PROGRESS_INTERVAL
-                    if type(row) is tuple:
-                        if (
-                            udf_kind != "map"
-                            and (fast := adjust_tuple(row)) is not None
-                        ):
-                            yield fast
-                            continue
-                        row = dict(zip(columns, row, strict=True))
-                    row = adjust_outputs(
-                        warehouse,
-                        row,
-                        udf_col_types,
-                        udf_signal_schema,
-                        udf_kind=udf_kind,
-                    )
-                    yield tuple(map(row.__getitem__, columns))
-        cb.relative_update(generated)
+        with _Progress(cb) as progress:
+            for udf_output in udf_results:
+                if not udf_output:
+                    continue
+                with safe_closing(udf_output):
+                    for row in udf_output:
+                        progress.add(1)
+                        yield row
 
     rows = _insert_rows()
     try:
@@ -1122,19 +907,6 @@ class UDFStep(Step, ABC):
         )
 
         return tbl
-
-    def clone(self, partition_by: PartitionByType | None = None) -> "Self":
-        if partition_by is not None:
-            return self.__class__(
-                self.udf,
-                self.session,
-                partition_by=partition_by,
-                parallel=self.parallel,
-                workers=self.workers,
-                min_task_size=self.min_task_size,
-                batch_size=self.batch_size,
-            )
-        return self.__class__(self.udf, self.session)
 
     @property
     def _udf_name(self) -> str:
