@@ -198,6 +198,25 @@ def test_studio_login_token_already_exists(get_access_token, capsys):
     assert "`datachain auth logout`" in err
 
 
+def test_studio_login_saved_by_another_login_while_the_browser_was_open(
+    get_access_token, capsys
+):
+    def another_login_finishes_first(**kwargs):
+        studio_login("other_token", teams=["x"])
+        return "token_name", "isat_access_token"
+
+    get_access_token.side_effect = another_login_finishes_first
+
+    with requests_mock.mock() as m:
+        m.post(f"{STUDIO_URL}/api/device-logout", json={})
+        assert main(["auth", "login", "--team", "x"]) == 1
+        # The new token is not saved, so it is revoked.
+        assert m.last_request.headers["Authorization"] == "token isat_access_token"
+
+    assert saved_tokens() == ["other_token"]
+    assert "Token already exists" in capsys.readouterr().err
+
+
 def test_studio_login_team_token_already_exists(get_access_token, capsys):
     studio_login(teams=["ml-team", "data-team"])
 
@@ -263,7 +282,11 @@ def test_studio_old_config_token_is_ignored_and_revoked_on_login(get_access_toke
     assert resolve_token(STUDIO_URL, "acme") == "isat_access_token"
 
 
-def test_studio_old_config_token_is_revoked_where_it_was_used(get_access_token):
+def test_studio_old_config_token_is_revoked_where_it_was_used(
+    get_access_token, monkeypatch
+):
+    # The token goes only to the Studio that issued it, not to the one in the env.
+    monkeypatch.setenv("DATACHAIN_STUDIO_URL", "https://env-studio.example.com")
     with Config(ConfigLevel.LOCAL).edit() as conf:
         conf["studio"] = {"token": "old_token", "url": OTHER_URL}
     with Config(ConfigLevel.GLOBAL).edit() as conf:
@@ -272,7 +295,8 @@ def test_studio_old_config_token_is_revoked_where_it_was_used(get_access_token):
     with requests_mock.mock() as m:
         m.post(f"{OTHER_URL}/api/device-logout", json={})
         assert main(["auth", "login", "--local"]) == 0
-        assert m.call_count == 1
+        assert [r.url for r in m.request_history] == [f"{OTHER_URL}/api/device-logout"]
+        assert m.last_request.headers["Authorization"] == "token old_token"
 
     assert Config(ConfigLevel.LOCAL).read()["studio"] == {"url": OTHER_URL}
     assert Config(ConfigLevel.GLOBAL).read()["studio"] == {"token": "global_token"}
@@ -290,31 +314,20 @@ def test_studio_old_config_token_is_removed_if_revoke_fails(get_access_token, ca
     assert "Revoke it in your Studio settings" in capsys.readouterr().err
 
 
-def test_studio_login_http_error_400(get_access_token, mocker, capsys):
-    mock_response = mocker.MagicMock()
-    mock_response.status_code = 400
-    mock_response.json.return_value = {"detail": "Invalid token scope"}
+@pytest.mark.parametrize(
+    "status_code,expected",
+    [(400, "Invalid token scope"), (500, "500 Server Error")],
+)
+def test_studio_login_http_error(get_access_token, capsys, status_code, expected):
+    def device_login(**kwargs):
+        with requests_mock.mock() as m:
+            m.post(STUDIO_URL, status_code=status_code, json={"detail": expected})
+            requests.post(STUDIO_URL, timeout=1).raise_for_status()
 
-    http_error = requests.HTTPError()
-    http_error.response = mock_response
-    get_access_token.side_effect = http_error
-
-    assert main(["auth", "login"]) == 1
-    captured = capsys.readouterr()
-    assert "Failed to authenticate with Studio: Invalid token scope" in captured.err
-
-
-def test_studio_login_http_error_other(get_access_token, mocker, capsys):
-    mock_response = mocker.MagicMock()
-    mock_response.status_code = 500
-
-    http_error = requests.HTTPError("Server error")
-    http_error.response = mock_response
-    get_access_token.side_effect = http_error
+    get_access_token.side_effect = device_login
 
     assert main(["auth", "login"]) == 1
-    captured = capsys.readouterr()
-    assert "Failed to authenticate with Studio: Server error" in captured.err
+    assert f"Failed to authenticate with Studio: {expected}" in capsys.readouterr().err
 
 
 def test_studio_logout(global_config_dir):
@@ -480,7 +493,7 @@ def test_studio_logout_url_from_env(monkeypatch):
     studio_login("config_token", url=config_url)
     studio_login("env_token", url=env_url)
     with Config(ConfigLevel.GLOBAL).edit() as conf:
-        conf["studio"] = {"url": config_url}
+        conf["studio"] = {"url": config_url, "team": "acme"}
 
     with requests_mock.mock() as m:
         m.post(
@@ -492,6 +505,8 @@ def test_studio_logout_url_from_env(monkeypatch):
         assert m.last_request.headers["Authorization"] == "token env_token"
 
     assert saved_tokens() == ["config_token"]
+    # The default team is for the config's Studio, whose token is still saved.
+    assert Config(ConfigLevel.GLOBAL).read()["studio"]["team"] == "acme"
 
 
 def test_studio_logout_network_error_aborts(capsys):
@@ -548,8 +563,9 @@ def test_studio_logout_local_preserves_parent_token(tmp_dir, monkeypatch):
     (tmp_dir / ".git").mkdir()
     (tmp_dir / ".datachain").mkdir()
     (tmp_dir / ".datachain" / "db").touch()
-    studio_login("parent-token", level=ConfigLevel.LOCAL)
+    studio_login("parent-token", "parent-team", level=ConfigLevel.LOCAL)
     parent_credentials = (tmp_dir / ".datachain" / "credentials").read_text()
+    parent_config = (tmp_dir / ".datachain" / "config").read_text()
     child = tmp_dir / "child"
     (child / ".datachain").mkdir(parents=True)
     # The credentials file alone marks the child's project state.
@@ -569,6 +585,7 @@ def test_studio_logout_local_preserves_parent_token(tmp_dir, monkeypatch):
     assert not (child / ".datachain" / "credentials").exists()
     credentials = (tmp_dir / ".datachain" / "credentials").read_text()
     assert credentials == parent_credentials
+    assert (tmp_dir / ".datachain" / "config").read_text() == parent_config
     assert not (nested / ".datachain").exists()
 
 
@@ -688,8 +705,9 @@ def test_expired_token_only_breaks_studio_listings(capsys):
     assert main(["dataset", "ls"]) == 0
     capsys.readouterr()
 
-    assert main(["ls", ".", "--studio"]) == 1
-    assert "expired on 2020-01-01" in capsys.readouterr().err
+    for command in (["ls", ".", "--studio"], ["ls", "--studio"]):
+        assert main(command) == 1
+        assert "expired on 2020-01-01" in capsys.readouterr().err
 
 
 def test_studio_command_with_team_tokens_but_no_team(capsys):
@@ -1210,6 +1228,8 @@ def test_studio_jobs_json_prints_the_response(capsys, studio_token):
 @pytest.mark.parametrize(
     "command",
     [
+        # Without a path, no request is sent.
+        ["ls", "--studio"],
         ["job", "ls"],
         ["job", "cancel", "job-id"],
         ["job", "logs", "job-id"],

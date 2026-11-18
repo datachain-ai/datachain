@@ -98,6 +98,12 @@ def ls_remote(
     from datachain.remote.studio import StudioClient
 
     client = StudioClient(team=team)
+    if not paths:
+        # No request is sent, so check the login here: without one, `ls --studio`
+        # would print nothing and succeed.
+        _ = client.token
+        return
+
     first = True
     for path, response in client.ls(paths):
         if not first:
