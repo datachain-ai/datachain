@@ -302,8 +302,9 @@ def test_gc_keeps_a_jobless_listing_that_runs_for_hours(test_session):
             created_at=datetime.now(UTC) - timedelta(hours=2),
         )
         clock[0] += 2 * 3600
-        yield encode([listing.file_row(File(path="b.jpg", etag="e2"))])
+        yield encode([])  # an empty page of delete/folder markers still refreshes TTL
         catalog.cleanup_dataset_versions()
+        yield encode([listing.file_row(File(path="b.jpg", etag="e2"))])
 
     with (
         patch.object(listing, "list_pages", side_effect=pages),

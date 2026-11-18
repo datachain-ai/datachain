@@ -382,8 +382,7 @@ class Client(ABC):
                 subdirs.add(subprefix)
             else:
                 files.append(self.info_to_file(info, subprefix))
-        if files:
-            await result_queue.put(files)
+        await result_queue.put(files)
         found_count = len(subdirs) + len(files)
         pbar.update(found_count)
         return subdirs

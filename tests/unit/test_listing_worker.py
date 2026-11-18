@@ -248,6 +248,11 @@ def test_short_listing_takes_a_request_per_page_and_no_children(mocker):
     assert client.requests == 2
     assert not start.call_count
 
+    marker_only_first_page = KeysClient(
+        [("a/", "1"), ("b/", "1"), ("c/", "1"), ("d/", "1"), ("e.txt", "1")]
+    )
+    assert [len(p) for p in _listed(marker_only_first_page, processes=False)] == [0, 1]
+
 
 @pytest.fixture(autouse=True)
 def fake_groups(monkeypatch):
