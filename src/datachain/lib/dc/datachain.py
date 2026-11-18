@@ -1781,14 +1781,17 @@ class DataChain:
             return self
         new_schema = self.signals_schema.to_partial(*args)
 
-        if "sys" in self.signals_schema.values and "sys" not in new_schema.values:
+        implicit_sys = (
+            "sys" in self.signals_schema.values and "sys" not in new_schema.values
+        )
+        if implicit_sys:
             new_schema = SignalSchema({"sys": self.signals_schema.values["sys"]}) | (
                 new_schema
             )
 
         columns = new_schema.db_signals()
         return self._evolve(
-            query=self._query.select(*columns),
+            query=self._query.select(*columns, implicit_sys=implicit_sys),
             signal_schema=new_schema,
         )
 
