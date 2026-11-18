@@ -178,10 +178,11 @@ def _probe_side(
 ) -> tuple[
     "FromClause",
     dict["ClauseElement", "ClauseElement"],
+    dict["ClauseElement", "ClauseElement"],
     list["ColumnElement"],
 ]:
     selected = [column for column in side.c if column in needed]
-    used_names = {column.name for column in side.c}
+    used_names = {column.name.lower() for column in side.c}
     raw_labels: list = []
     raw_keys: list[tuple[ColumnElement, str]] = []
     cast_specs: list = []
@@ -224,14 +225,16 @@ def _probe_side(
     replacements: dict[ClauseElement, ClauseElement] = {
         column: values.c[column.name] for column in selected
     }
-    replacements |= {key: values.c[raw_name] for key, raw_name in raw_keys}
+    key_replacements: dict[ClauseElement, ClauseElement] = {
+        key: values.c[raw_name] for key, raw_name in raw_keys
+    }
     index_terms: list[ColumnElement] = []
     for _, term, key, other, affinity, idx_name in cast_specs:
         column = values.c[idx_name]
         cast_other = other if isinstance(other, Cast) else cast(other, affinity)
         operands = (column, cast_other) if key is term.left else (cast_other, column)
         index_terms.append(term.operator(*operands))
-    return values, replacements, index_terms
+    return values, replacements, key_replacements, index_terms
 
 
 def _probe_computed_keys(
@@ -281,14 +284,18 @@ def _probe_computed_keys(
     }
     sides: dict[FromClause, FromClause] = {}
     replacements: dict[ClauseElement, ClauseElement] = {}
+    on_replacements: dict[ClauseElement, ClauseElement] = {}
     index_terms: list[ColumnElement] = []
     for side in probed:
-        values, side_replacements, side_terms = _probe_side(side, keys[side], needed)
+        values, side_replacements, key_replacements, side_terms = _probe_side(
+            side, keys[side], needed
+        )
         sides[side] = values
         replacements |= side_replacements
+        on_replacements |= side_replacements | key_replacements
         index_terms.extend(side_terms)
     left, right = (sides.get(side, side) for side in (join.left, join.right))
-    onclause = _replace(sqlalchemy.and_(join.onclause, *index_terms), replacements)
+    onclause = _replace(sqlalchemy.and_(join.onclause, *index_terms), on_replacements)
     return sqlalchemy.join(left, right, onclause, isouter=join.isouter), replacements
 
 

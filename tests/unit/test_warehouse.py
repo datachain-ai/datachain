@@ -782,3 +782,84 @@ def test_full_computed_join_with_reversed_predicate(sqlite_db):
         columns=[left.c.key, right.c.key.label("right_key")],
     )
     assert list(sqlite_db.execute(query)) == [("a", "a")]
+
+
+@skip_if_not_sqlite
+def test_computed_join_avoids_case_insensitive_key_label_collision(sqlite_db):
+    warehouse = SQLiteWarehouse(sqlite_db)
+    left = sa.select(sa.literal(1).label("key")).subquery()
+    right = sa.select(
+        sa.literal(999).label("__DC_JOIN_KEY_0"),
+        sa.literal(1).label("key"),
+    ).subquery()
+    query = warehouse.join(
+        left,
+        right,
+        left.c.key == (right.c.key + 0),
+        columns=[left.c.key, right.c.__DC_JOIN_KEY_0],
+    )
+    assert list(sqlite_db.execute(query)) == [(1, 999)]
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize("full", [False, True])
+def test_computed_outer_join_evaluates_projected_expression_after_null_extension(
+    sqlite_db, full
+):
+    warehouse = SQLiteWarehouse(sqlite_db)
+    left = sa.select(sa.literal(1).label("key")).subquery()
+    right = sa.select(sa.literal(2).label("key")).subquery()
+    key = sa.func.coalesce(right.c.key, 0)
+    query = warehouse.join(
+        left,
+        right,
+        (left.c.key + 0) == key,
+        inner=False,
+        full=full,
+        columns=[left.c.key, key.label("right_key")],
+    )
+    expected = [(1, 0), (None, 2)] if full else [(1, 0)]
+    assert sorted(sqlite_db.execute(query), key=repr) == sorted(expected, key=repr)
+
+
+@skip_if_not_sqlite
+def test_computed_join_evaluates_key_once_on_nonnumeric_values_in_numeric_column(
+    sqlite_db,
+):
+    warehouse = SQLiteWarehouse(sqlite_db)
+    left = sa.Table(
+        "nonnumeric_left",
+        sqlite_db.metadata,
+        sa.Column("id", sa.Integer),
+        sa.Column("key", sa.Integer),
+    )
+    right = sa.Table(
+        "nonnumeric_right",
+        sqlite_db.metadata,
+        sa.Column("id", sa.Integer),
+    )
+    sqlite_db.create_table(left)
+    sqlite_db.create_table(right)
+    values = [f"a{i}" for i in range(8)]
+    sqlite_db.db.executemany(
+        "INSERT INTO nonnumeric_left VALUES (?, ?)", list(enumerate(values))
+    )
+    sqlite_db.db.executemany(
+        "INSERT INTO nonnumeric_right VALUES (?)", [(i,) for i in range(len(values))]
+    )
+    calls = 0
+
+    def key_fn(idx):
+        nonlocal calls
+        calls += 1
+        return values[idx]
+
+    sqlite_db.db.create_function("test_nonnumeric_key", 1, key_fn, deterministic=True)
+    query = warehouse.join(
+        left,
+        right,
+        left.c.key == sa.func.test_nonnumeric_key(right.c.id, type_=sa.String),
+        columns=[left.c.id, right.c.id.label("right_id")],
+    )
+    assert sorted(sqlite_db.execute(query)) == [(i, i) for i in range(len(values))]
+    assert calls == len(values)
