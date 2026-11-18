@@ -1492,14 +1492,12 @@ class AbstractDBMetastore(AbstractMetastore):
         values: dict[str, Any] = {}
         version_values: dict[str, Any] = {}
         for field, value in kwargs.items():
-            if (
-                field in ("id", "created_at")
-                or field not in self._dataset_version_fields
-            ):
+            if field == "id" or field not in self._dataset_version_fields:
                 continue  # these fields are read-only or not applicable
 
             if value is None and field in (
                 "status",
+                "created_at",
                 "sources",
                 "query_script",
                 "error_message",

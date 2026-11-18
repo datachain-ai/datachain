@@ -313,11 +313,15 @@ class AbstractWarehouse(ABC, Serializable):
     ) -> None:
         """Drops a dataset rows table for the given dataset name."""
         table_name = self.dataset_table_name(dataset, version)
-        table = sa.Table(table_name, self.db.metadata)
-        self.db.drop_table(table, if_exists=if_exists)
-        # Remove from metadata cache to allow recreation
-        if table_name in self.db.metadata.tables:
-            self.db.metadata.remove(self.db.metadata.tables[table_name])
+        names = [table_name]
+        if dataset.has_version(version):
+            names.append(f"{table_name}__{dataset.get_version(version).uuid[:8]}")
+        for name in names:
+            table = sa.Table(name, self.db.metadata)
+            self.db.drop_table(table, if_exists=if_exists)
+            # Remove from metadata cache to allow recreation
+            if name in self.db.metadata.tables:
+                self.db.metadata.remove(self.db.metadata.tables[name])
 
     def dataset_rows_select(
         self,
@@ -446,6 +450,10 @@ class AbstractWarehouse(ABC, Serializable):
     ) -> None:
         """Insert rows already in stored form (``RowCodec.encode``), in the order
         of ``columns``, in blocks of ``batch_size``."""
+        if "sys__id" not in columns and "sys__id" in table.c:
+            with self.writer(table, columns, batch_size=batch_size) as w:
+                w.extend(rows)
+            return
         for block in batched(rows, batch_size or self.INSERT_BATCH_SIZE):
             self.insert_block(table, columns, list(block))
 

@@ -9,7 +9,6 @@ import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from copy import copy
-from datetime import UTC, datetime
 from functools import wraps
 from types import GeneratorType
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypeVar, cast
@@ -368,7 +367,10 @@ class QueryStep:
     def hash(self) -> str:
         version = self.dataset.get_version(self.dataset_version)
         anchor = (
-            version.content_hash if version.content_hash is not None else version.uuid
+            version.content_hash
+            if version.content_hash is not None
+            and not is_listing_dataset(self.dataset.name)
+            else version.uuid
         )
         return hashlib.sha256(anchor.encode()).hexdigest()
 
@@ -3135,12 +3137,7 @@ class DatasetQuery:
         then the version is created, the table is renamed into place, and the
         version is completed.
         """
-        if kwargs.get("listing"):
-            # Listing saves are internal — use existing job if present,
-            # but don't create one (e.g. Studio backend `datachain ls`).
-            job = self.session.get_job()
-        else:
-            job = self.session.get_or_create_job()
+        job = self.session.get_or_create_job()
         job_id = job.id if job else None
         if query_script is None:
             query_script = job.query if job else ""
@@ -3201,13 +3198,6 @@ class DatasetQuery:
                 if dependencies:
                     self._set_dependencies(dependencies)
                 self._add_dependencies(dataset, version)  # type: ignore [arg-type]
-
-                if kwargs.get("listing"):
-                    reused = self._reuse_listing_if_unchanged(
-                        dataset, version, name, project
-                    )
-                    if reused is not None:
-                        return reused
 
                 # Mark as COMPLETE only after all operations succeed.
                 self.catalog.complete_dataset_version(
@@ -3270,48 +3260,6 @@ class DatasetQuery:
             )
             for dep in dependencies
         }
-
-    def _reuse_listing_if_unchanged(
-        self,
-        dataset: "DatasetRecord",
-        version: str,
-        name: str,
-        project: Project,
-    ) -> "Self | None":
-        """If the new listing version's content matches the previous COMPLETE
-        version, discard the new (still CREATED) version and return a query
-        pointing at the previous one. Returns None if there's no match (caller
-        continues the normal save flow).
-        """
-        from datachain.lib.listing import calc_fingerprint
-
-        full_dataset = self.catalog.get_dataset(
-            name,
-            namespace_name=project.namespace.name,
-            project_name=project.name,
-            versions=None,
-        )
-        prev_version = full_dataset.latest_complete_version
-        if not prev_version:
-            return None
-
-        old_fp = calc_fingerprint(self.session, full_dataset, prev_version)
-        new_fp = calc_fingerprint(self.session, full_dataset, version)
-        if old_fp != new_fp:
-            return None
-
-        self.catalog.remove_dataset_version(full_dataset, version, keep_metadata=False)
-        # updating TTL of a bucket listing
-        self.catalog.metastore.update_dataset_version(
-            full_dataset, prev_version, finished_at=datetime.now(UTC)
-        )
-        return self.__class__(
-            name=name,
-            namespace_name=project.namespace.name,
-            project_name=project.name,
-            version=prev_version,
-            session=self.session,
-        )
 
     @property
     def is_ordered(self) -> bool:
