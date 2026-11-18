@@ -1,7 +1,6 @@
 import logging
 import os
 import sqlite3
-from array import array
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from functools import cached_property, partial, wraps
@@ -29,7 +28,6 @@ from sqlalchemy.sql.selectable import Select
 
 import datachain.sql.sqlite
 from datachain.data_storage import AbstractDBMetastore, AbstractWarehouse
-from datachain.data_storage.buffer import InsertBuffer
 from datachain.data_storage.codec import (
     TypeCodec,
     base_decode,
@@ -39,6 +37,7 @@ from datachain.data_storage.codec import (
 )
 from datachain.data_storage.db_engine import DatabaseEngine
 from datachain.data_storage.schema import DefaultSchema
+from datachain.data_storage.writer import ID_BITS, LEDGER_COLUMNS
 from datachain.dataset import DatasetRecord, StorageURI
 from datachain.error import (
     DataChainError,
@@ -56,7 +55,7 @@ from datachain.sql.sqlite.base import (
 )
 from datachain.sql.sqlite.types import adapt_array
 from datachain.sql.types import Array, DateTime
-from datachain.utils import DataChainDir, batched_it
+from datachain.utils import DataChainDir
 
 if TYPE_CHECKING:
     from sqlalchemy import CTE, Subquery
@@ -91,6 +90,14 @@ OUTDATED_SCHEMA_ERROR_MESSAGE = (
 
 def _get_in_memory_uri():
     return "file::memory:?cache=shared"
+
+
+def _insert_sql(quote: Callable[[str], str], table: str, columns: Sequence[str]):
+    if not columns:
+        return f"INSERT INTO {quote(table)} DEFAULT VALUES"
+    names = ", ".join(map(quote, columns))
+    marks = ", ".join("?" * len(columns))
+    return f"INSERT INTO {quote(table)} ({names}) VALUES ({marks})"  # noqa: S608
 
 
 def get_retry_sleep_sec(retry_count: int) -> int:
@@ -186,6 +193,7 @@ class SQLiteDatabaseEngine(DatabaseEngine):
 
             db.isolation_level = None  # Use autocommit mode
             db.execute("PRAGMA foreign_keys = ON")
+            db.execute("PRAGMA page_size = 16384")  # takes effect on a new database
             db.execute("PRAGMA cache_size = -102400")  # 100 MiB
             # Switching to WAL requires an exclusive lock, so retry briefly
             # in case another process is initializing the same DB file.
@@ -454,6 +462,8 @@ class SQLiteMetastore(AbstractDBMetastore):
         db: SQLiteDatabaseEngine | None = None,
         db_file: str | None = None,
         in_memory: bool = False,
+        *,
+        _initialize: bool = True,
     ):
         self.schema: DefaultSchema = DefaultSchema()
 
@@ -464,6 +474,10 @@ class SQLiteMetastore(AbstractDBMetastore):
         db_file = get_db_file_in_memory(db_file, in_memory)
 
         self.db = db or SQLiteDatabaseEngine.from_db_file(db_file)
+
+        if not _initialize:
+            self.default_table_names = [table.name for table in self._metastore_tables]
+            return
 
         with self._init_guard():
             self._init_meta_table()
@@ -477,7 +491,9 @@ class SQLiteMetastore(AbstractDBMetastore):
         self.close()
 
     def clone(self, use_new_connection: bool = False) -> "SQLiteMetastore":
-        return SQLiteMetastore(db=self.db.clone())
+        # This database was initialized by the original; a new connection does
+        # not need to rerun migrations, backfills, and namespace creation.
+        return SQLiteMetastore(db=self.db.clone(), _initialize=False)
 
     def clone_params(self) -> tuple[Callable[..., Any], list[Any], dict[str, Any]]:
         """
@@ -793,7 +809,6 @@ class SQLiteWarehouse(AbstractWarehouse):
         db_file = get_db_file_in_memory(db_file, in_memory)
 
         self.db = db or SQLiteDatabaseEngine.from_db_file(db_file)
-        self.buffers: dict[str, InsertBuffer] = {}
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         """Close connection upon exit from context manager."""
@@ -851,46 +866,38 @@ class SQLiteWarehouse(AbstractWarehouse):
         query = dr.select(dr.c("source", column="file")).distinct()
         return [StorageURI(row[0]) for row in self.db.execute(query)]
 
-    def _insert_from_buffer(
+    def insert_block(
         self,
         table: Table,
         columns: Sequence[str],
-        entries: list[tuple],
-        final: bool = False,
-        cursor: Any = None,
+        rows: Sequence[tuple],
+        parts: Table | None = None,
+        ledger: Sequence[tuple] = (),
     ) -> None:
-        """Callback for InsertBuffer to insert a batch of entries."""
-        if not entries:
-            return
         quote = self.db.dialect.identifier_preparer.quote
-        sql = (
-            f"INSERT INTO {quote(table.name)} ({', '.join(map(quote, columns))}) "  # noqa: S608
-            f"VALUES ({', '.join('?' * len(columns))})"
-            if columns
-            else f"INSERT INTO {quote(table.name)} DEFAULT VALUES"
-        )
         with self.db.transaction():
-            # transactions speeds up inserts significantly as there is no separate
-            # transaction created for each insert row
-            self.db.executemany(sql, entries)
+            if rows:  # an empty block is a ledger-only flush
+                self.db.executemany(_insert_sql(quote, table.name, columns), rows)
+            if ledger:
+                assert parts is not None
+                sql = _insert_sql(quote, parts.name, LEDGER_COLUMNS)
+                self.db.executemany(sql, ledger)
 
-    def get_buffer(
-        self,
-        table: Table,
-        columns: Sequence[str],
-        buffer_size: int,
-        flush_interval: float,
-    ) -> InsertBuffer:
-        """Get or create an InsertBuffer for the given table."""
-        if table.name not in self.buffers:
-            self.buffers[table.name] = InsertBuffer(
-                table,
-                columns,
-                self._insert_from_buffer,
-                buffer_size,
-                flush_interval=flush_interval,
-            )
-        return self.buffers[table.name]
+    @retry_sqlite_locks
+    def claim_writer_no(self, parts: Table) -> int:
+        # one transaction: SQLite's write lock makes the read of max() atomic
+        q = quote(parts.name)
+        sql = (
+            f"INSERT INTO {q} (part_key, writer_no, lo, hi) "  # noqa: S608
+            f"SELECT NULL, w, (w << {ID_BITS}) + 1, w << {ID_BITS} FROM "
+            f"(SELECT coalesce(max(writer_no), -1) + 1 AS w FROM {q})"
+        )
+        with self.db.transaction() as db:
+            db.execute(sql)
+            (writer_no,) = db.execute(
+                f"SELECT max(writer_no) FROM {q}"  # noqa: S608
+            ).fetchone()
+        return writer_no
 
     def instr(self, source, target) -> "ColumnElement":
         return cast(func.instr(source, target), sqlalchemy.Boolean)
@@ -938,53 +945,14 @@ class SQLiteWarehouse(AbstractWarehouse):
         progress_cb: Callable[[int], None] | None = None,
         preserve_sys_ids: bool = False,
     ) -> None:
-        col_id = (
-            query.selected_columns.sys__id
-            if "sys__id" in query.selected_columns
-            else None
-        )
-
-        # If there is no sys__id column, we cannot copy the table in batches,
-        # and we need to copy all rows at once. Same if there is a group by clause.
-        if col_id is None or len(query._group_by_clause) > 0:
-            select_q = query.with_only_columns(
+        if not preserve_sys_ids:
+            query = query.with_only_columns(
                 *[c for c in query.selected_columns if c.name != "sys__id"]
             )
-            q = table.insert().from_select(list(select_q.selected_columns), select_q)
-            self.db.execute(q)
-            return
-
-        select_ids = query.with_only_columns(col_id)
-        # Read all ids up front (8 bytes each) so no read cursor stays open and
-        # holds a WAL snapshot while the batches are inserted.
-        ids = array("q", (row[0] for row in self.db.execute(select_ids)))
-
-        if preserve_sys_ids:
-            select_q = query.offset(None).limit(None)
-        else:
-            select_q = (
-                query.with_only_columns(
-                    *[c for c in query.selected_columns if c.name != "sys__id"]
-                )
-                .offset(None)
-                .limit(None)
-            )
-
-        for batch in batched_it(ids, self.INSERT_BATCH_SIZE):
-            batch_ids = list(batch)
-            low, high = min(batch_ids), max(batch_ids)
-            # binding thousands of ids dominates the copy: a batch that is a whole
-            # range of ids is copied as that range
-            if high - low + 1 == len(batch_ids) == len(set(batch_ids)):
-                select_q._where_criteria = (col_id.between(low, high),)
-            else:
-                select_q._where_criteria = (col_id.in_(batch_ids),)
-            q = table.insert().from_select(list(select_q.selected_columns), select_q)
-
-            self.db.execute(q)
-
-            if progress_cb:
-                progress_cb(len(batch_ids))
+        q = table.insert().from_select(list(query.selected_columns), query)
+        self.db.execute(q)
+        if progress_cb:
+            progress_cb(self.db.execute_str("SELECT changes()").fetchone()[0])
 
     def join(
         self,

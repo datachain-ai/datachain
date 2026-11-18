@@ -995,7 +995,7 @@ class DataChain:
                 namespace=project.namespace.name,
                 project=project.name,
                 version=dataset_version.version,
-                **kwargs,
+                **{"session": self.session, **kwargs},
             )
 
             # Reusing a completed save checkpoint skips QueryStep.apply(), so mark
@@ -1106,7 +1106,7 @@ class DataChain:
                 name,
                 namespace=project.namespace.name,
                 project=project.name,
-                **kwargs,
+                **{"session": self.session, **kwargs},
             )
             starting_step = result._query.starting_step
             if starting_step is not None:
