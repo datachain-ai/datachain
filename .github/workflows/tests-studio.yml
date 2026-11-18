@@ -103,9 +103,7 @@ jobs:
       - name: Update DataChain requirement in Studio
         if: ${{ env.BRANCH != 'main' }}
         working-directory: backend
-        # This job installs the SaaS package and worker requirements directly;
-        # it does not use the backend's uv.lock or its private dependencies.
-        run: ./bin/update_datachain --rev "$BRANCH"
+        run: make update_datachain_deps "${{ env.BRANCH }}"
 
       - name: Install FFmpeg
         timeout-minutes: 10
