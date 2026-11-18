@@ -668,6 +668,10 @@ def test_patterns_agree_with_elementtree_or_decline(s3_bodies):
         PAGE.replace(b"<Name>b</Name>", b"<Name>b</Tag>"),
         PAGE.replace(b"2026-09-30T23:00:00.000Z", b"not-a-date"),
         VERSIONS.replace(b"2026-09-30T23:00:00.000Z", b"not-a-date"),
+        VERSIONS.replace(
+            b"<LastModified>2026-09-30T23:00:00.000Z</LastModified></DeleteMarker>",
+            b"<LastModified></LastModified></DeleteMarker>",
+        ),
     ):
         op = "ListObjectVersions" if b"<ListVersionsResult" in bad else "ListObjectsV2"
         assert _page(bad, op) is None

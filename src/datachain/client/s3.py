@@ -292,7 +292,7 @@ def _rows_page(body: bytes, shape: Shape, source: str) -> dict[str, Any] | None:
                 etag = _unescape(etag).strip('"')
                 row = source, decode(_unescape(key)), int(size), version, etag
                 rows.append(as_file_row((*row, latest != "false", when, None)))
-            elif marker[1]:  # its date checked, as botocore converts it
+            elif folder is None:  # its date checked, as botocore converts it
                 _parse_timestamp(_unescape(marker[1]))
                 markers.append({"Key": _unescape(marker[0])})
             else:
@@ -614,7 +614,7 @@ class ClientS3(RangeListedClient):
             rows = [self._file_row(d, versions) for d in entries]
         keys = [r[1] for r in rows]
         rows = [r for r in rows if keep(r[1])]
-        listed = [d["Key"] for d in page.get("DeleteMarkers", [])]
+        markers = [d["Key"] for d in page.get("DeleteMarkers", [])]
         # folders past a delimiter: listed past, though they make no rows
         folders = [p["Prefix"] for p in page.get("CommonPrefixes", [])]
         if not page.get("IsTruncated"):
@@ -626,7 +626,7 @@ class ClientS3(RangeListedClient):
         return Page(
             rows,
             keys[0] if keys else None,
-            max(keys + listed + folders, default=None),
+            max(keys + markers + folders, default=None),
             token,
             keep.past_lo,
             keep.past_hi,

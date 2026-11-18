@@ -283,12 +283,11 @@ class RangeListing:
         if level.token is not None:
             return  # more folders than one page names; where their keys lie is unknown
         read_to = self.order(page.last)
-        if level.first is not None and self.order(level.first) <= read_to:
-            return  # the server ignored the start key
-        if any(
+        if (level.first is not None and self.order(level.first) <= read_to) or any(
             self.order(f) <= read_to and not page.last.startswith(f)
             for f in level.folders
         ):
+            self.splits = False  # the server ignored the start key
             return
         folders = sorted(
             (f for f in level.folders if self.order(f) > read_to), key=self.order
