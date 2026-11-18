@@ -1,5 +1,7 @@
 """Tests for dataset status management and failed version cleanup."""
 
+import socket
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -7,7 +9,8 @@ import sqlalchemy as sa
 
 import datachain as dc
 from datachain import semver
-from datachain.data_storage import JobStatus
+from datachain.catalog.catalog import _is_active_removal_claim
+from datachain.data_storage import JobQueryType, JobStatus
 from datachain.dataset import (
     SESSION_DATASET_PREFIX,
     DatasetRecord,
@@ -27,7 +30,8 @@ from datachain.lib.dc.datasets import (
     read_dataset,
 )
 from datachain.lib.listing import LISTING_PREFIX
-from datachain.sql.types import String
+from datachain.query.session import Session
+from datachain.sql.types import Int64, String
 
 
 @pytest.fixture
@@ -1543,9 +1547,6 @@ def test_interrupt_after_publication_keeps_the_dataset(test_session, monkeypatch
 def test_running_ancestor_version_is_not_reclaimed_and_completion_is_owner_fenced(
     test_session,
 ):
-    from datachain.data_storage.job import JobQueryType, JobStatus
-    from datachain.sql.types import Int64
-
     catalog = test_session.catalog
     metastore = catalog.metastore
 
@@ -1593,8 +1594,6 @@ def test_running_ancestor_version_is_not_reclaimed_and_completion_is_owner_fence
 def test_delayed_reservation_release_does_not_delete_replacement(
     test_session, monkeypatch
 ):
-    from datachain.data_storage.job import JobQueryType, JobStatus
-
     catalog = test_session.catalog
     metastore = catalog.metastore
     dc.read_values(v=[1], session=test_session).save("race", version="1.0.0")
@@ -1609,8 +1608,6 @@ def test_delayed_reservation_release_does_not_delete_replacement(
             "b", "", query_type=JobQueryType.PYTHON, status=JobStatus.RUNNING
         )
     )
-    from datachain.query.session import Session
-
     active_job = [job_a]
     Session._CURRENT_JOB = job_a
     monkeypatch.setattr(Session, "get_or_create_job", lambda self: active_job[0])
@@ -1627,8 +1624,6 @@ def test_delayed_reservation_release_does_not_delete_replacement(
 
     def delayed_release(dataset, version, job_id=None):
         if job_id == job_a.id and version == "2.0.0":
-            from datachain.query.session import Session
-
             # While job A's release_reservation is delayed, GC cleans up job A's
             # reservation and job B publishes a replacement 2.0.0.
             metastore.set_job_status(job_a.id, JobStatus.FAILED)
@@ -1656,11 +1651,6 @@ def test_delayed_reservation_release_does_not_delete_replacement(
 
 
 def test_removing_claim_recovers_after_error_or_dead_owner(test_session, monkeypatch):
-    import socket
-    import time
-
-    from datachain.data_storage.job import JobQueryType, JobStatus
-
     catalog = test_session.catalog
     metastore = catalog.metastore
     job_id = metastore.create_job(
@@ -1695,8 +1685,6 @@ def test_removing_claim_recovers_after_error_or_dead_owner(test_session, monkeyp
     )
 
     # Simulate a process that died after persisting its REMOVING claim
-    from datachain.catalog.catalog import _is_active_removal_claim
-
     now_ts = int(time.time())
     assert _is_active_removal_claim(f"removing:other-host:1:{now_ts}:x", "u") is True
     assert _is_active_removal_claim("removing:other-host:1:0:x", "u") is False
