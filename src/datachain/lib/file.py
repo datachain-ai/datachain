@@ -38,7 +38,6 @@ if TYPE_CHECKING:
 
     from datachain.catalog import Catalog
     from datachain.client.fsspec import Client
-    from datachain.dataset import RowDict
     from datachain.query.session import Session
 
 sha256 = partial(hashlib.sha256, usedforsecurity=False)
@@ -530,10 +529,6 @@ class File(DataModel):
         file._set_stream(catalog)
         return file
 
-    @classmethod
-    def _from_row(cls, row: "RowDict") -> "Self":
-        return cls(**{key: row[key] for key in cls._datachain_column_types})
-
     @property
     def name(self) -> str:
         """The file name extracted from the path.
@@ -996,9 +991,17 @@ class File(DataModel):
         caching_enabled: bool = False,
         download_cb: Callback = DEFAULT_CALLBACK,
     ) -> None:
-        self._catalog = catalog
-        self._caching_enabled = caching_enabled
-        self._download_cb = download_cb
+        if type(self) is File:
+            # pydantic's __setattr__ costs more than the read of a plain File
+            self.__dict__.update(
+                _catalog=catalog,
+                _caching_enabled=caching_enabled,
+                _download_cb=download_cb,
+            )
+        else:
+            self._catalog = catalog
+            self._caching_enabled = caching_enabled
+            self._download_cb = download_cb
 
     def ensure_cached(self) -> None:
         """Download the file to the local cache.

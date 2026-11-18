@@ -11,6 +11,7 @@ import shutil
 from abc import ABC, abstractmethod
 from collections.abc import (
     AsyncIterator,
+    Callable,
     Iterator,
     Sequence,
 )
@@ -57,11 +58,6 @@ def is_cloud_uri(uri: str) -> bool:
     return protocol in CLOUD_STORAGE_PROTOCOLS
 
 
-def get_cloud_schemes() -> list[str]:
-    """Get list of cloud storage scheme prefixes."""
-    return [f"{p}://" for p in CLOUD_STORAGE_PROTOCOLS]
-
-
 class Bucket(NamedTuple):
     name: str
     uri: "StorageURI"
@@ -96,6 +92,9 @@ class Client(ABC):
     # True when the bytes at a version id are never replaced, only appended to.
     # Then a changed size means the file changed, and a changed etag alone doesn't.
     PINNED_VERSION_IS_IMMUTABLE: ClassVar[bool] = False
+    # Set by a listing writer: what a listing child makes of a page's rows before
+    # sending them, a picklable function. The parent's own pages stay rows.
+    encode_page: Callable[[list], Any] | None = None
 
     @classmethod
     def has_explicit_credentials(cls, client_config: dict | None) -> bool:
@@ -383,8 +382,7 @@ class Client(ABC):
                 subdirs.add(subprefix)
             else:
                 files.append(self.info_to_file(info, subprefix))
-        if files:
-            await result_queue.put(files)
+        await result_queue.put(files)
         found_count = len(subdirs) + len(files)
         pbar.update(found_count)
         return subdirs

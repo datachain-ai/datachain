@@ -5,18 +5,19 @@ import sqlalchemy as sa
 
 from datachain.lib.settings import Settings
 
+COLUMNS = ["sys__id", "value"]
+
 
 def test_insert_rows_default_batch_size(warehouse):
-    """Test that insert_rows uses default batch size when batch_size is None."""
+    """Test that insert_stored_rows uses default batch size when batch_size is None."""
     table = warehouse.create_udf_table([sa.Column("value", sa.Integer)])
 
-    rows = [{"sys__id": i, "value": i} for i in range(100)]
+    rows = [(i, i) for i in range(100)]
 
     with patch.object(
         warehouse.db, "executemany", wraps=warehouse.db.executemany
     ) as mock_exec:
-        warehouse.insert_rows(table, rows, batch_size=None)
-        warehouse.insert_rows_done(table)
+        warehouse.insert_stored_rows(table, COLUMNS, rows, batch_size=None)
         # With default batch size, 100 rows should be inserted in 1 call
         assert mock_exec.call_count == 1
 
@@ -24,17 +25,16 @@ def test_insert_rows_default_batch_size(warehouse):
 
 
 def test_insert_rows_custom_batch_size(warehouse):
-    """Test that insert_rows respects custom batch_size parameter."""
+    """Test that insert_stored_rows respects custom batch_size parameter."""
     table = warehouse.create_udf_table([sa.Column("value", sa.Integer)])
 
     # Create 250 rows with a batch size of 100
-    rows = [{"sys__id": i, "value": i} for i in range(250)]
+    rows = [(i, i) for i in range(250)]
 
     with patch.object(
         warehouse.db, "executemany", wraps=warehouse.db.executemany
     ) as mock_exec:
-        warehouse.insert_rows(table, rows, batch_size=100)
-        warehouse.insert_rows_done(table)
+        warehouse.insert_stored_rows(table, COLUMNS, rows, batch_size=100)
         # Should be called 3 times: 100 + 100 + 50
         assert mock_exec.call_count == 3
 
@@ -44,13 +44,12 @@ def test_insert_rows_custom_batch_size(warehouse):
 def test_insert_rows_small_batch_size(warehouse):
     table = warehouse.create_udf_table([sa.Column("value", sa.Integer)])
 
-    rows = [{"sys__id": i, "value": i} for i in range(10)]
+    rows = [(i, i) for i in range(10)]
 
     with patch.object(
         warehouse.db, "executemany", wraps=warehouse.db.executemany
     ) as mock_exec:
-        warehouse.insert_rows(table, rows, batch_size=3)
-        warehouse.insert_rows_done(table)
+        warehouse.insert_stored_rows(table, COLUMNS, rows, batch_size=3)
         # Should be called 4 times: 3 + 3 + 3 + 1
         assert mock_exec.call_count == 4
 
@@ -58,16 +57,15 @@ def test_insert_rows_small_batch_size(warehouse):
 
 
 def test_insert_rows_batch_size_larger_than_data(warehouse):
-    """Test insert_rows when batch_size is larger than the number of rows."""
+    """Test insert_stored_rows when batch_size is larger than the number of rows."""
     table = warehouse.create_udf_table([sa.Column("value", sa.Integer)])
 
-    rows = [{"sys__id": i, "value": i} for i in range(50)]
+    rows = [(i, i) for i in range(50)]
 
     with patch.object(
         warehouse.db, "executemany", wraps=warehouse.db.executemany
     ) as mock_exec:
-        warehouse.insert_rows(table, rows, batch_size=1000)
-        warehouse.insert_rows_done(table)
+        warehouse.insert_stored_rows(table, COLUMNS, rows, batch_size=1000)
         # Should be called once since all rows fit in one batch
         assert mock_exec.call_count == 1
 
@@ -75,16 +73,15 @@ def test_insert_rows_batch_size_larger_than_data(warehouse):
 
 
 def test_insert_rows_batch_size_one(warehouse):
-    """Test insert_rows with batch_size=1 (edge case)."""
+    """Test insert_stored_rows with batch_size=1 (edge case)."""
     table = warehouse.create_udf_table([sa.Column("value", sa.Integer)])
 
-    rows = [{"sys__id": i, "value": i} for i in range(5)]
+    rows = [(i, i) for i in range(5)]
 
     with patch.object(
         warehouse.db, "executemany", wraps=warehouse.db.executemany
     ) as mock_exec:
-        warehouse.insert_rows(table, rows, batch_size=1)
-        warehouse.insert_rows_done(table)
+        warehouse.insert_stored_rows(table, COLUMNS, rows, batch_size=1)
         # Should be called 5 times, once per row
         assert mock_exec.call_count == 5
 
@@ -92,14 +89,13 @@ def test_insert_rows_batch_size_one(warehouse):
 
 
 def test_insert_rows_empty_rows(warehouse):
-    """Test insert_rows with empty rows iterable."""
+    """Test insert_stored_rows with empty rows iterable."""
     table = warehouse.create_udf_table([sa.Column("value", sa.Integer)])
 
     with patch.object(
         warehouse.db, "executemany", wraps=warehouse.db.executemany
     ) as mock_exec:
-        warehouse.insert_rows(table, [], batch_size=None)
-        warehouse.insert_rows_done(table)
+        warehouse.insert_stored_rows(table, COLUMNS, [], batch_size=None)
         # Should not be called for empty rows
         assert mock_exec.call_count == 0
 
@@ -111,10 +107,9 @@ def test_insert_rows_preserves_data_integrity(warehouse):
     table = warehouse.create_udf_table([sa.Column("value", sa.Integer)])
 
     # Create data and insert with different batch sizes
-    rows = [{"sys__id": i, "value": i * 2} for i in range(1, 101)]
+    rows = [(i, i * 2) for i in range(1, 101)]
 
-    warehouse.insert_rows(table, rows, batch_size=25)
-    warehouse.insert_rows_done(table)
+    warehouse.insert_stored_rows(table, COLUMNS, rows, batch_size=25)
 
     # Verify all data was inserted correctly
     query = sa.select(table.c.value).order_by(table.c.sys__id)
@@ -169,18 +164,17 @@ def test_batch_size_immutability():
 
 
 def test_generator_rows(warehouse):
-    """Test insert_rows with a generator as rows parameter."""
+    """Test insert_stored_rows with a generator as rows parameter."""
     table = warehouse.create_udf_table([sa.Column("value", sa.Integer)])
 
     def row_generator():
         for i in range(50):
-            yield {"sys__id": i, "value": i}
+            yield (i, i)
 
     with patch.object(
         warehouse.db, "executemany", wraps=warehouse.db.executemany
     ) as mock_exec:
-        warehouse.insert_rows(table, row_generator(), batch_size=20)
-        warehouse.insert_rows_done(table)
+        warehouse.insert_stored_rows(table, COLUMNS, row_generator(), batch_size=20)
         # Should be called 3 times: 20 + 20 + 10
         assert mock_exec.call_count == 3
 
@@ -188,16 +182,15 @@ def test_generator_rows(warehouse):
 
 
 def test_iterator_rows(warehouse):
-    """Test insert_rows with an iterator as rows parameter."""
+    """Test insert_stored_rows with an iterator as rows parameter."""
     table = warehouse.create_udf_table([sa.Column("value", sa.Integer)])
 
-    rows = iter([{"sys__id": i, "value": i} for i in range(75)])
+    rows = iter([(i, i) for i in range(75)])
 
     with patch.object(
         warehouse.db, "executemany", wraps=warehouse.db.executemany
     ) as mock_exec:
-        warehouse.insert_rows(table, rows, batch_size=30)
-        warehouse.insert_rows_done(table)
+        warehouse.insert_stored_rows(table, COLUMNS, rows, batch_size=30)
         # Should be called 3 times: 30 + 30 + 15
         assert mock_exec.call_count == 3
 
@@ -205,14 +198,13 @@ def test_iterator_rows(warehouse):
 
 
 def test_insert_rows_without_batch_size_parameter(warehouse):
-    """Test that insert_rows works when batch_size is not specified."""
+    """Test that insert_stored_rows works when batch_size is not specified."""
     table = warehouse.create_udf_table([sa.Column("value", sa.Integer)])
 
-    rows = [{"sys__id": i, "value": i} for i in range(100)]
+    rows = [(i, i) for i in range(100)]
 
     # Call without specifying batch_size (should use default)
-    warehouse.insert_rows(table, rows)
-    warehouse.insert_rows_done(table)
+    warehouse.insert_stored_rows(table, COLUMNS, rows)
 
     # Verify data was inserted
     query = sa.select(sa.func.count()).select_from(table)
@@ -227,18 +219,16 @@ def test_existing_code_patterns(warehouse):
     table = warehouse.create_udf_table([sa.Column("value", sa.Integer)])
 
     # Pattern 1: No batch_size specified
-    rows1 = [{"sys__id": i, "value": i} for i in range(50)]
-    warehouse.insert_rows(table, rows1)
+    rows1 = [(i, i) for i in range(50)]
+    warehouse.insert_stored_rows(table, COLUMNS, rows1)
 
     # Pattern 2: Explicit None
-    rows2 = [{"sys__id": i + 50, "value": i + 50} for i in range(50)]
-    warehouse.insert_rows(table, rows2, batch_size=None)
+    rows2 = [(i + 50, i + 50) for i in range(50)]
+    warehouse.insert_stored_rows(table, COLUMNS, rows2, batch_size=None)
 
     # Pattern 3: Custom batch_size
-    rows3 = [{"sys__id": i + 100, "value": i + 100} for i in range(50)]
-    warehouse.insert_rows(table, rows3, batch_size=25)
-
-    warehouse.insert_rows_done(table)
+    rows3 = [(i + 100, i + 100) for i in range(50)]
+    warehouse.insert_stored_rows(table, COLUMNS, rows3, batch_size=25)
 
     # Verify all data was inserted
     query = sa.select(sa.func.count()).select_from(table)
@@ -248,13 +238,12 @@ def test_existing_code_patterns(warehouse):
     warehouse.db.drop_table(table)
 
 
-def test_insert_tuples_in_column_order(warehouse):
+def test_insert_stored_rows_in_column_order(warehouse):
     table = warehouse.create_udf_table(
         [sa.Column("a", sa.Integer), sa.Column("b", sa.Integer)]
     )
 
-    warehouse.insert_tuples(table, ["b", "sys__id", "a"], [(7, 1, 2), (8, 2, 3)])
-    warehouse.insert_rows_done(table)
+    warehouse.insert_stored_rows(table, ["b", "sys__id", "a"], [(7, 1, 2), (8, 2, 3)])
 
     query = sa.select(table.c.sys__id, table.c.a, table.c.b).order_by(table.c.sys__id)
     assert list(warehouse.dataset_rows_select(query)) == [(1, 2, 7), (2, 3, 8)]
@@ -262,14 +251,13 @@ def test_insert_tuples_in_column_order(warehouse):
     warehouse.db.drop_table(table)
 
 
-def test_insert_tuples_into_other_columns_flushes_first(warehouse):
+def test_insert_stored_rows_into_other_columns(warehouse):
     table = warehouse.create_udf_table(
         [sa.Column("a", sa.Integer), sa.Column("b", sa.Integer)]
     )
 
-    warehouse.insert_tuples(table, ["sys__id", "a"], [(1, 2)])
-    warehouse.insert_tuples(table, ["sys__id", "b"], [(2, 9)])
-    warehouse.insert_rows_done(table)
+    warehouse.insert_stored_rows(table, ["sys__id", "a"], [(1, 2)])
+    warehouse.insert_stored_rows(table, ["sys__id", "b"], [(2, 9)])
 
     first = sa.select(table.c.a).where(table.c.sys__id == 1)
     second = sa.select(table.c.b).where(table.c.sys__id == 2)

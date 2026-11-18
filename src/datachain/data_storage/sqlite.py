@@ -1,13 +1,12 @@
 import logging
 import os
 import sqlite3
-from array import array
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from decimal import Decimal
-from functools import cached_property, wraps
+from functools import cached_property, partial, wraps
 from time import sleep
-from typing import TYPE_CHECKING, Any, ClassVar, Union
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import sqlalchemy
@@ -38,9 +37,16 @@ from sqlalchemy.sql.visitors import iterate, replacement_traverse
 
 import datachain.sql.sqlite
 from datachain.data_storage import AbstractDBMetastore, AbstractWarehouse
-from datachain.data_storage.buffer import InsertBuffer
+from datachain.data_storage.codec import (
+    TypeCodec,
+    base_decode,
+    compose,
+    decode_datetime,
+    value_codec,
+)
 from datachain.data_storage.db_engine import DatabaseEngine
 from datachain.data_storage.schema import DefaultSchema
+from datachain.data_storage.writer import ID_BITS, LEDGER_COLUMNS
 from datachain.dataset import DatasetRecord, StorageURI
 from datachain.error import (
     DataChainError,
@@ -51,9 +57,14 @@ from datachain.namespace import Namespace
 from datachain.progress import tqdm
 from datachain.project import Project
 from datachain.sql.sqlite import create_user_defined_sql_functions, sqlite_dialect
-from datachain.sql.sqlite.base import load_usearch_extension
-from datachain.sql.types import SQLType
-from datachain.utils import DataChainDir, batched_it
+from datachain.sql.sqlite.base import (
+    _normalize_datetime_for_read,
+    adapt_datetime,
+    load_usearch_extension,
+)
+from datachain.sql.sqlite.types import adapt_array
+from datachain.sql.types import Array, DateTime
+from datachain.utils import DataChainDir
 
 if TYPE_CHECKING:
     from sqlalchemy import CTE, Subquery
@@ -90,6 +101,14 @@ OUTDATED_SCHEMA_ERROR_MESSAGE = (
 
 def _get_in_memory_uri():
     return "file::memory:?cache=shared"
+
+
+def _insert_sql(quote: Callable[[str], str], table: str, columns: Sequence[str]):
+    if not columns:
+        return f"INSERT INTO {quote(table)} DEFAULT VALUES"
+    names = ", ".join(map(quote, columns))
+    marks = ", ".join("?" * len(columns))
+    return f"INSERT INTO {quote(table)} ({names}) VALUES ({marks})"  # noqa: S608
 
 
 def get_retry_sleep_sec(retry_count: int) -> int:
@@ -350,6 +369,7 @@ class SQLiteDatabaseEngine(DatabaseEngine):
 
             db.isolation_level = None  # Use autocommit mode
             db.execute("PRAGMA foreign_keys = ON")
+            db.execute("PRAGMA page_size = 16384")  # takes effect on a new database
             db.execute("PRAGMA cache_size = -102400")  # 100 MiB
             # Switching to WAL requires an exclusive lock, so retry briefly
             # in case another process is initializing the same DB file.
@@ -618,6 +638,8 @@ class SQLiteMetastore(AbstractDBMetastore):
         db: SQLiteDatabaseEngine | None = None,
         db_file: str | None = None,
         in_memory: bool = False,
+        *,
+        _initialize: bool = True,
     ):
         self.schema: DefaultSchema = DefaultSchema()
 
@@ -628,6 +650,10 @@ class SQLiteMetastore(AbstractDBMetastore):
         db_file = get_db_file_in_memory(db_file, in_memory)
 
         self.db = db or SQLiteDatabaseEngine.from_db_file(db_file)
+
+        if not _initialize:
+            self.default_table_names = [table.name for table in self._metastore_tables]
+            return
 
         with self._init_guard():
             self._init_meta_table()
@@ -641,7 +667,9 @@ class SQLiteMetastore(AbstractDBMetastore):
         self.close()
 
     def clone(self, use_new_connection: bool = False) -> "SQLiteMetastore":
-        return SQLiteMetastore(db=self.db.clone())
+        # This database was initialized by the original; a new connection does
+        # not need to rerun migrations, backfills, and namespace creation.
+        return SQLiteMetastore(db=self.db.clone(), _initialize=False)
 
     def clone_params(self) -> tuple[Callable[..., Any], list[Any], dict[str, Any]]:
         """
@@ -881,6 +909,62 @@ class SQLiteMetastore(AbstractDBMetastore):
         return Project.default()
 
 
+def decode_sqlite_datetime(value: Any) -> Any:
+    value = decode_datetime(value)
+    return None if value is None else _normalize_datetime_for_read(value)
+
+
+def _decode_array(item: Callable[[Any], Any], value: Any) -> Any:
+    from datachain import json
+
+    return item(json.loads(value) if isinstance(value, str) else value)
+
+
+def decode_sqlite(sql_type: Any) -> Callable[[Any], Any] | None:
+    """How SQLite reads `sql_type`: datetimes as UTC, arrays from JSON text."""
+    if isinstance(sql_type, DateTime):
+        return decode_sqlite_datetime
+    decode = base_decode(sql_type, decode_sqlite)
+    if isinstance(sql_type, Array):
+        assert decode is not None  # base_decode always reads an array
+        return partial(_decode_array, decode)
+    return decode
+
+
+_MIN_DATETIME_US = -62_135_596_800_000_000  # 0001-01-01 00:00:00
+_MAX_DATETIME_US = 253_402_300_799_999_999  # 9999-12-31 23:59:59.999999
+
+
+def _encode_datetime_column(column: Any) -> list[Any] | None:
+    """An Arrow timestamp column as the text `adapt_datetime` stores; None for
+    any other column."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    if not pa.types.is_timestamp(column.type):
+        return None
+    # Arrow holds aware timestamps as UTC instants: without the timezone they give
+    # the naive UTC text adapt_datetime stores.
+    usts = column.cast(pa.timestamp("us"))
+    i64 = usts.view("int64")
+    bounds = pc.min_max(i64).as_py()
+    if (bounds["min"] is not None and bounds["min"] < _MIN_DATETIME_US) or (
+        bounds["max"] is not None and bounds["max"] > _MAX_DATETIME_US
+    ):
+        if not column.type.tz:
+            return None
+        i64 = pc.max_element_wise(
+            pc.min_element_wise(i64, _MAX_DATETIME_US, skip_nulls=False),
+            _MIN_DATETIME_US,
+            skip_nulls=False,
+        )
+        usts = i64.view(pa.timestamp("us"))
+    text = usts.cast(pa.string())
+    return pc.replace_substring_regex(
+        text, pattern=r"\.000000$", replacement=""
+    ).to_pylist()
+
+
 class SQLiteWarehouse(AbstractWarehouse):
     """
     SQLite Warehouse uses SQLite3 for storing indexed data locally.
@@ -888,9 +972,6 @@ class SQLiteWarehouse(AbstractWarehouse):
     """
 
     db: SQLiteDatabaseEngine
-
-    # Cache for our defined column types to dialect specific TypeEngine relations
-    _col_python_type: ClassVar[dict[type, "TypeEngine"]] = {}
 
     def __init__(
         self,
@@ -904,7 +985,6 @@ class SQLiteWarehouse(AbstractWarehouse):
         db_file = get_db_file_in_memory(db_file, in_memory)
 
         self.db = db or SQLiteDatabaseEngine.from_db_file(db_file)
-        self.buffers: dict[str, InsertBuffer] = {}
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         """Close connection upon exit from context manager."""
@@ -962,46 +1042,38 @@ class SQLiteWarehouse(AbstractWarehouse):
         query = dr.select(dr.c("source", column="file")).distinct()
         return [StorageURI(row[0]) for row in self.db.execute(query)]
 
-    def _insert_from_buffer(
+    def insert_block(
         self,
         table: Table,
         columns: Sequence[str],
-        entries: list[tuple],
-        final: bool = False,
-        cursor: Any = None,
+        rows: Sequence[tuple],
+        parts: Table | None = None,
+        ledger: Sequence[tuple] = (),
     ) -> None:
-        """Callback for InsertBuffer to insert a batch of entries."""
-        if not entries:
-            return
         quote = self.db.dialect.identifier_preparer.quote
-        sql = (
-            f"INSERT INTO {quote(table.name)} ({', '.join(map(quote, columns))}) "  # noqa: S608
-            f"VALUES ({', '.join('?' * len(columns))})"
-            if columns
-            else f"INSERT INTO {quote(table.name)} DEFAULT VALUES"
-        )
         with self.db.transaction():
-            # transactions speeds up inserts significantly as there is no separate
-            # transaction created for each insert row
-            self.db.executemany(sql, entries)
+            if rows:  # an empty block is a ledger-only flush
+                self.db.executemany(_insert_sql(quote, table.name, columns), rows)
+            if ledger:
+                assert parts is not None
+                sql = _insert_sql(quote, parts.name, LEDGER_COLUMNS)
+                self.db.executemany(sql, ledger)
 
-    def get_buffer(
-        self,
-        table: Table,
-        columns: Sequence[str],
-        buffer_size: int,
-        flush_interval: float,
-    ) -> InsertBuffer:
-        """Get or create an InsertBuffer for the given table."""
-        if table.name not in self.buffers:
-            self.buffers[table.name] = InsertBuffer(
-                table,
-                columns,
-                self._insert_from_buffer,
-                buffer_size,
-                flush_interval=flush_interval,
-            )
-        return self.buffers[table.name]
+    @retry_sqlite_locks
+    def claim_writer_no(self, parts: Table) -> int:
+        # one transaction: SQLite's write lock makes the read of max() atomic
+        q = quote(parts.name)
+        sql = (
+            f"INSERT INTO {q} (part_key, writer_no, lo, hi) "  # noqa: S608
+            f"SELECT NULL, w, (w << {ID_BITS}) + 1, w << {ID_BITS} FROM "
+            f"(SELECT coalesce(max(writer_no), -1) + 1 AS w FROM {q})"
+        )
+        with self.db.transaction() as db:
+            db.execute(sql)
+            (writer_no,) = db.execute(
+                f"SELECT max(writer_no) FROM {q}"  # noqa: S608
+            ).fetchone()
+        return writer_no
 
     def instr(self, source, target) -> "ColumnElement":
         return cast(func.instr(source, target), sqlalchemy.Boolean)
@@ -1017,18 +1089,18 @@ class SQLiteWarehouse(AbstractWarehouse):
         except sqlalchemy.exc.NoSuchTableError:
             raise TableMissingError(f"Table '{name}' not found") from None
 
-    def python_type(self, col_type: Union["TypeEngine", "SQLType"]) -> Any:
-        if not isinstance(col_type, SQLType):
-            return col_type.python_type
-
-        # converting our defined column types to dialect specific TypeEngine
-        col_type_cls = type(col_type)
-        if col_type_cls not in self._col_python_type:
-            self._col_python_type[col_type_cls] = col_type.type_engine(sqlite_dialect)
-        python_type = self._col_python_type[col_type_cls].python_type
-        if python_type is object:
-            return col_type.python_type
-        return python_type
+    def type_codec(self, sql_type: Any) -> TypeCodec:
+        """Datetimes are stored as UTC text, arrays as JSON text."""
+        codec = value_codec(sql_type, self.column_default(sql_type), decode_sqlite)
+        if isinstance(sql_type, DateTime):
+            return codec._replace(
+                kept=frozenset(),
+                encode=partial(compose, adapt_datetime, codec.encode),
+                encode_column=_encode_datetime_column,
+            )
+        if isinstance(sql_type, Array):
+            return codec._replace(encode=partial(compose, adapt_array, codec.encode))
+        return codec
 
     def export_dataset_table(
         self,
@@ -1049,53 +1121,14 @@ class SQLiteWarehouse(AbstractWarehouse):
         progress_cb: Callable[[int], None] | None = None,
         preserve_sys_ids: bool = False,
     ) -> None:
-        col_id = (
-            query.selected_columns.sys__id
-            if "sys__id" in query.selected_columns
-            else None
-        )
-
-        # If there is no sys__id column, we cannot copy the table in batches,
-        # and we need to copy all rows at once. Same if there is a group by clause.
-        if col_id is None or len(query._group_by_clause) > 0:
-            select_q = query.with_only_columns(
+        if not preserve_sys_ids:
+            query = query.with_only_columns(
                 *[c for c in query.selected_columns if c.name != "sys__id"]
             )
-            q = table.insert().from_select(list(select_q.selected_columns), select_q)
-            self.db.execute(q)
-            return
-
-        select_ids = query.with_only_columns(col_id)
-        # Read all ids up front (8 bytes each) so no read cursor stays open and
-        # holds a WAL snapshot while the batches are inserted.
-        ids = array("q", (row[0] for row in self.db.execute(select_ids)))
-
-        if preserve_sys_ids:
-            select_q = query.offset(None).limit(None)
-        else:
-            select_q = (
-                query.with_only_columns(
-                    *[c for c in query.selected_columns if c.name != "sys__id"]
-                )
-                .offset(None)
-                .limit(None)
-            )
-
-        for batch in batched_it(ids, self.INSERT_BATCH_SIZE):
-            batch_ids = list(batch)
-            low, high = min(batch_ids), max(batch_ids)
-            # binding thousands of ids dominates the copy: a batch that is a whole
-            # range of ids is copied as that range
-            if high - low + 1 == len(batch_ids) == len(set(batch_ids)):
-                select_q._where_criteria = (col_id.between(low, high),)
-            else:
-                select_q._where_criteria = (col_id.in_(batch_ids),)
-            q = table.insert().from_select(list(select_q.selected_columns), select_q)
-
-            self.db.execute(q)
-
-            if progress_cb:
-                progress_cb(len(batch_ids))
+        q = table.insert().from_select(list(query.selected_columns), query)
+        self.db.execute(q)
+        if progress_cb:
+            progress_cb(self.db.execute_str("SELECT changes()").fetchone()[0])
 
     def join(
         self,

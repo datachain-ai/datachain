@@ -675,7 +675,6 @@ def test_filter_after_merge_does_not_bind_size_inside_sqlalchemy_select(test_ses
 def test_merge_file_stems_with_pandas_duplicates_and_unmatched(
     test_session, kind, direct
 ):
-
     left = dc.read_values(
         file=[
             dc.File(path=path)
