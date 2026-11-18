@@ -10,6 +10,7 @@ import datachain as dc
 from datachain import DataModel, func
 from datachain.error import DatasetNotFoundError, SchemaDriftError
 from datachain.lib.dc import C
+from datachain.lib.dc.storage import DEFAULT_DELTA_ON, _delta_keys
 from datachain.lib.file import File, FileRow, ImageFile
 from datachain.lib.utils import DataChainParamsError
 from datachain.toolkit import train_test_split
@@ -1365,3 +1366,308 @@ def test_delta_gen_keeps_keys_in_file_rows(test_session, changed):
             chain.save("file_row_result")
     else:
         assert chain.save("file_row_result").to_values("file.path") == ["a"]
+
+
+@pytest.mark.parametrize(
+    "uris,versions,on,compare,expected",
+    [
+        (["gs://b/d/"], True, DEFAULT_DELTA_ON, None, "gcs"),
+        (["gs://b/d/"], False, DEFAULT_DELTA_ON, None, "default"),
+        (["gs://b/d/", "s3://b/d/"], True, DEFAULT_DELTA_ON, None, "default"),
+        (["s3://b/d/"], True, DEFAULT_DELTA_ON, None, "default"),
+        (["gs://b/d/"], True, "file.path", None, "default"),
+        (["gs://b/d/"], True, DEFAULT_DELTA_ON, "file.etag", "default"),
+    ],
+)
+def test_delta_keys_on_gcs_follow_generation(uris, versions, on, compare, expected):
+    keys = {
+        "gcs": (("file.path", "file.version"), "file.size"),
+        "default": (on, compare),
+    }
+    assert _delta_keys(uris, versions, on, compare) == keys[expected]
+
+
+@pytest.mark.parametrize("cloud_type", ["gs"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_delta_from_gcs_reprocesses_new_generations(cloud_test_catalog_upload):
+    ctc = cloud_test_catalog_upload
+    uri = f"{ctc.src_uri}/delta-{uuid.uuid4().hex[:8]}/"
+    File.upload(b"1", uri + "a.txt", ctc.catalog)
+    File.upload(b"2", uri + "b.txt", ctc.catalog)
+    processed = []
+
+    def size(file: File) -> int:
+        processed.append(file.name)
+        return file.size
+
+    def run():
+        chain = dc.read_storage(uri, update=True, delta=True, session=ctc.session)
+        return chain.map(n=size).save("gcs_delta")
+
+    run()
+    assert sorted(processed) == ["a.txt", "b.txt"]
+    processed.clear()
+    run()
+    assert processed == []
+    File.upload(b"22", uri + "b.txt", ctc.catalog)
+    processed.clear()
+    assert sorted(run().to_values("n")) == [1, 2]
+    assert processed == ["b.txt"]
+
+
+def _strip_file_md5_from_stored_dataset(
+    session,
+    name: str,
+    *,
+    namespace: str | None = None,
+    project: str | None = None,
+    legacy_schema_v1: bool = False,
+) -> None:
+    """Simulate a dataset saved before File.md5 existed by dropping *__md5 columns
+    from the warehouse table and removing them from metastore schema metadata."""
+    import json
+
+    import sqlalchemy as sa
+
+    catalog = session.catalog
+    ds = catalog.get_dataset(
+        name,
+        namespace_name=namespace,
+        project_name=project,
+        versions=None,
+        include_incomplete=False,
+    )
+    ver = ds.get_version(ds.latest_version)
+    table_name = catalog.warehouse.dataset_table_name(ds, ds.latest_version)
+    db = catalog.warehouse.db
+
+    for col in [c.name for c in db.get_table(table_name).columns]:
+        if col.endswith("__md5"):
+            db.execute_str(f'ALTER TABLE "{table_name}" DROP COLUMN "{col}"')
+
+    if table_name in db.metadata.tables:
+        db.metadata.remove(db.metadata.tables[table_name])
+
+    mt_db = catalog.metastore.db
+    dv_t = catalog.metastore._datasets_versions
+    d_t = catalog.metastore._datasets
+    (raw_schema,) = mt_db.execute(
+        sa.select(dv_t.c.schema).where(dv_t.c.id == ver.id)
+    ).fetchone()
+    new_schema = {
+        k: v for k, v in json.loads(raw_schema).items() if not k.endswith("__md5")
+    }
+    new_feature_schema = dict(ver.feature_schema)
+    if "_custom_types" in new_feature_schema:
+        cts = dict(new_feature_schema["_custom_types"])
+        for ct_name, ct_val in list(cts.items()):
+            if ct_name.startswith("File@"):
+                ct_copy = dict(ct_val)
+                ct_copy["fields"] = {
+                    k: v for k, v in ct_copy.get("fields", {}).items() if k != "md5"
+                }
+                if "hidden_fields" in ct_copy:
+                    ct_copy["hidden_fields"] = [
+                        f for f in ct_copy["hidden_fields"] if f != "md5"
+                    ]
+                if legacy_schema_v1:
+                    cts[ct_name] = ct_copy["fields"]
+                else:
+                    cts[ct_name] = ct_copy
+        new_feature_schema["_custom_types"] = cts
+
+    mt_db.execute(
+        sa.update(dv_t)
+        .where(dv_t.c.id == ver.id)
+        .values(
+            schema=json.dumps(new_schema),
+            feature_schema=json.dumps(new_feature_schema),
+        )
+    )
+    mt_db.execute(
+        sa.update(d_t)
+        .where(d_t.c.id == ds.id)
+        .values(
+            schema=json.dumps(new_schema),
+            feature_schema=json.dumps(new_feature_schema),
+        )
+    )
+
+
+class NullableEtagFile(File):
+    etag: str | None = None  # type: ignore[assignment]
+
+
+def test_old_file_subclass_with_nullable_etag_reads_md5_default(test_session):
+    dc.read_values(
+        file=[NullableEtagFile(source="s3://b", path="a")], session=test_session
+    ).save("nullable_etag")
+    _strip_file_md5_from_stored_dataset(test_session, "nullable_etag")
+
+    chain = dc.read_dataset("nullable_etag", session=test_session)
+    assert [f.md5 for f in chain.to_values("file")] == [""]
+
+
+def test_union_with_saved_partial_file(test_session):
+    chain = dc.read_values(
+        file=[File(source="s3://b", path="a")], session=test_session
+    ).select_except("file.md5")
+    assert chain.union(chain.save("partial")).count() == 2
+
+
+@pytest.mark.parametrize("legacy_schema_v1", [False, True])
+def test_backward_compat_dataset_without_file_md5(
+    test_session, tmp_path, legacy_schema_v1
+):
+    from datachain.diff import CompareStatus
+    from datachain.lib.dc.listings import read_listing_dataset
+
+    local_file = tmp_path / "hello.txt"
+    local_file.write_text("hello world")
+    local_etag = local_file.stat().st_mtime.hex()
+    source_uri = f"file://{tmp_path}"
+
+    ds_name = f"old_ds_{int(legacy_schema_v1)}"
+    dc.read_values(
+        file=[
+            File(
+                source="gs://b",
+                path="a.txt",
+                size=5,
+                version="1",
+                etag="e1",
+                md5="should_be_dropped",
+            ),
+            File(
+                source=source_uri,
+                path="hello.txt",
+                size=11,
+                version="",
+                etag=local_etag,
+            ),
+        ],
+        opt_file=[
+            File(source="gs://b", path="opt.txt", etag="eo"),
+            None,
+        ],
+        output={"file": File, "opt_file": File | None},
+        session=test_session,
+    ).save(ds_name)
+
+    _strip_file_md5_from_stored_dataset(
+        test_session, ds_name, legacy_schema_v1=legacy_schema_v1
+    )
+
+    old = dc.read_dataset(ds_name, session=test_session).order_by("file.path")
+    assert old.to_values("file.md5") == ["", ""]
+    assert [f.md5 for f in old.to_values("file")] == ["", ""]
+    opts = old.to_values("opt_file")
+    assert opts[0] is not None and opts[0].md5 == ""
+    assert opts[1] is None
+    assert old.filter(C("file.md5") == "").count() == 2
+    assert old.order_by("file.md5", "file.path").to_values("file.path") == [
+        "a.txt",
+        "hello.txt",
+    ]
+    assert old.distinct("file.md5").count() == 1
+
+    # Opening a file from the old dataset
+    (hello_obj,) = old.filter(C("file.path") == "hello.txt").to_values("file")
+    assert hello_obj.read_text() == "hello world"
+
+    # Union (both arm orders), merge, subtract, file_diff with a new dataset
+    new = dc.read_values(
+        file=[
+            File(
+                source="gs://b",
+                path="a.txt",
+                size=5,
+                version="1",
+                etag="e1",
+                md5="d41d8cd98f00b204e9800998ecf8427e",
+            ),
+            File(
+                source=source_uri,
+                path="hello.txt",
+                size=11,
+                version="",
+                etag="e_local_changed",
+            ),
+        ],
+        opt_file=[None, None],
+        output={"file": File, "opt_file": File | None},
+        session=test_session,
+    ).save(f"new_ds_{int(legacy_schema_v1)}")
+
+    assert old.union(new).count() == 4
+    assert new.union(old).count() == 4
+    assert old.merge(new, on="file.path").count() == 2
+    assert old.subtract(new, on="file.path").count() == 0
+
+    fdiff = new.file_diff(
+        old, added=True, deleted=True, modified=True, same=True, status_col="diff"
+    )
+    assert dict(fdiff.to_list("file.path", "diff")) == {
+        "a.txt": CompareStatus.SAME,
+        "hello.txt": CompareStatus.MODIFIED,
+    }
+
+    # A delta pipeline saved before File.md5 does not reprocess unchanged files.
+    src_name = f"old_delta_src_{int(legacy_schema_v1)}"
+    out_name = f"old_delta_out_{int(legacy_schema_v1)}"
+    processed: list[str] = []
+
+    def record(file: File) -> str:
+        processed.append(file.path)
+        return file.path
+
+    dc.read_values(
+        file=[
+            File(source="s3://b", path="a.txt", version="1", etag="e1"),
+            File(source="s3://b", path="b.txt", version="1", etag="e2"),
+        ],
+        session=test_session,
+    ).save(src_name)
+    _strip_file_md5_from_stored_dataset(
+        test_session, src_name, legacy_schema_v1=legacy_schema_v1
+    )
+
+    dc.read_dataset(src_name, delta=True, session=test_session).settings(
+        prefetch=0
+    ).map(res=record).save(out_name)
+    _strip_file_md5_from_stored_dataset(
+        test_session, out_name, legacy_schema_v1=legacy_schema_v1
+    )
+    assert sorted(processed) == ["a.txt", "b.txt"]
+
+    # a.txt is unchanged, b.txt has a new etag: only b.txt is reprocessed.
+    dc.read_values(
+        file=[
+            File(source="s3://b", path="a.txt", version="1", etag="e1"),
+            File(source="s3://b", path="b.txt", version="1", etag="e2_mod"),
+        ],
+        session=test_session,
+    ).save(src_name)
+    processed.clear()
+    updated = (
+        dc.read_dataset(src_name, delta=True, session=test_session)
+        .settings(prefetch=0)
+        .map(res=record)
+        .save(out_name)
+    )
+    assert processed == ["b.txt"]
+    assert sorted(updated.to_values("file.path")) == ["a.txt", "b.txt"]
+
+    # Cached listing without file__md5
+    lst_name = "lst__gs://old_bucket/"
+    ns = test_session.catalog.metastore.system_namespace_name
+    proj = test_session.catalog.metastore.listing_project_name
+    dc.read_values(
+        file=[File(source="gs://old_bucket", path="x.txt", size=3, etag="ex")],
+        session=test_session,
+    ).settings(namespace=ns, project=proj).save(lst_name, listing=True)
+    _strip_file_md5_from_stored_dataset(
+        test_session, lst_name, namespace=ns, project=proj
+    )
+    lst_chain, _ = read_listing_dataset(lst_name, session=test_session)
+    assert lst_chain.to_values("file.md5") == [""]

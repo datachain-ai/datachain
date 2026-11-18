@@ -696,3 +696,24 @@ def test_warehouse_empty_segment_folder_expansion_and_size(test_session):
     (node,) = wh.expand_path(rows, "d*//")
     assert node.path == "d/"
     assert wh.size(rows, node) == (5, 0)
+
+
+@pytest.mark.parametrize(
+    "storage,first,second,same",
+    [
+        ("gs://b", {"etag": "e1"}, {"etag": "e2"}, True),
+        ("gs://b", {}, {"md5": "m2"}, False),
+        ("gs://b", {"version": "1"}, {"version": "2"}, False),
+        ("s3://b", {"md5": ""}, {"md5": "", "etag": "e2"}, False),
+    ],
+)
+def test_listing_digest_uses_md5_before_etag(storage, first, second, same):
+    from datachain.lib.listing import file_row, rows_digest
+
+    with_etag = not Client.get_implementation(storage).PINNED_VERSION_IS_IMMUTABLE
+
+    def digest(fields):
+        file = File(source=storage, path="a", size=10, etag="e1", md5="m1")
+        return rows_digest([file_row(file.model_copy(update=fields))], with_etag)
+
+    assert (digest(first) == digest(second)) is same

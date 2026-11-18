@@ -64,7 +64,7 @@ def test_file_row_is_no_optional_file(test_session):
         file=rows, output=dc.File | None
     )
 
-    with pytest.raises(UdfError, match="returned 8 values while 9 are expected"):
+    with pytest.raises(UdfError, match="returned 9 values while 10 are expected"):
         chain.save("optional")
 
 
