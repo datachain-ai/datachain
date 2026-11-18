@@ -1,67 +1,19 @@
 import asyncio
+import itertools
+import logging
+import math
 import unicodedata
 from collections.abc import Callable, Iterable
-from datetime import datetime
-from functools import partial
-from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from datachain.utils import TIME_ZERO, parent_path
+from datachain.progress import tqdm
+from datachain.utils import getenv_bool
 
 if TYPE_CHECKING:
     from .fsspec import RangeListedClient, ResultQueue
     from .listing_worker import Pool
 
-
-class FileRow(NamedTuple):
-    """A ``File`` as its flat columns, in DB order. Range listings yield these and
-    they go to the DB as they are, so ``File``'s validators don't run on them: the
-    listing clients make valid rows (a scheme in ``source``, no ``location``)."""
-
-    source: str
-    path: str
-    size: int = 0
-    version: str = ""
-    etag: str = ""
-    is_latest: bool = True
-    last_modified: datetime = TIME_ZERO
-    location: dict | list[dict] | None = None
-
-    # File's path helpers, which read only ``path``: no File is built
-    @property
-    def name(self) -> str:
-        return PurePosixPath(self.path).name
-
-    @property
-    def parent(self) -> str:
-        return parent_path(self.path) if "/" in self.path else "."
-
-    def get_file_suffix(self) -> str:
-        return PurePosixPath(self.path).suffix
-
-    def get_file_ext(self) -> str:
-        return PurePosixPath(self.path).suffix.lstrip(".")
-
-    def get_file_stem(self) -> str:
-        return PurePosixPath(self.path).stem
-
-    # File's helpers that need a File: one is built from the row
-    def _file(self):
-        from datachain.lib.file import File
-
-        return File(**self._asdict())
-
-    def get_fs_path(self) -> str:
-        return self._file().get_fs_path()
-
-    def get_hash(self) -> str:
-        return self._file().get_hash()
-
-    def rebase(self, *args, **kwargs) -> str:
-        return self._file().rebase(*args, **kwargs)
-
-
-as_file_row = partial(tuple.__new__, FileRow)  # skips FileRow's argument handling
+logger = logging.getLogger("datachain")
 
 # A range has one request in flight, so these cap both open ranges and requests.
 LIST_WORKERS = 16  # while this process fetches every page
@@ -232,10 +184,6 @@ class RangeListing:
         pool: "Pool | None",
         delimiter: str = "",
     ) -> None:
-        # here, not at the top: a listing child imports this module, and not these
-        from datachain.progress import tqdm
-        from datachain.utils import getenv_bool
-
         self.client = client
         self.prefix = prefix
         self.delimiter = delimiter  # with it, keys past a delimiter are skipped
@@ -318,10 +266,10 @@ class RangeListing:
             await self._seam(lo, 1, page.past_lo or "")
         return page
 
-    async def _cut(self, first: KeyRange, page: Page) -> None:
+    async def _cut(self, first_range: KeyRange, page: Page) -> None:
         """After the first page, starts ranges at the folders past it that one
-        request with a delimiter names, and the child processes: a large listing
-        starts spread over its keys instead of splitting its way out of one."""
+        request with a delimiter names: a large listing starts spread over its
+        keys instead of splitting its way out of one."""
         if self.delimiter or not self.client.NAMES_FOLDERS or page.last is None:
             return
         try:
@@ -329,44 +277,45 @@ class RangeListing:
                 level = await self.client._list_page(
                     self.prefix, page.last, None, delimiter="/"
                 )
-        except Exception:  # noqa: BLE001
+        except Exception:
+            logger.debug("Listing %s: no folder cut", self.client.uri, exc_info=True)
             return
+        if level.token is not None:
+            return  # more folders than one page names; where their keys lie is unknown
         read_to = self.order(page.last)
-        if level.first is not None and self.order(level.first) <= read_to:
-            return  # the server ignored the start key
-        if any(
+        if (level.first is not None and self.order(level.first) <= read_to) or any(
             self.order(f) <= read_to and not page.last.startswith(f)
             for f in level.folders
         ):
+            self.splits = False  # the server ignored the start key
             return
         folders = sorted(
             (f for f in level.folders if self.order(f) > read_to), key=self.order
         )
-        folders = folders[:: -(-len(folders) // self.max_ranges) or 1]
-        for lo, hi in zip(folders, [*folders[1:], None], strict=False):
+        folders = folders[:: math.ceil(len(folders) / self.max_ranges) or 1]
+        for lo, hi in itertools.pairwise([*folders, None]):
             self.open_ranges += 1
-            self.ranges.put_nowait(KeyRange(lo, hi, self.order, 0))
+            self.ranges.put_nowait(KeyRange(lo or "", hi, self.order, 0))
         if folders:
             self.has_split = True
-            first.hi = folders[0]  # its next page is not asked for yet
-        if self.pool and (level.token is not None or len(folders) >= LIST_WORKERS):
-            self.pool.start()
+            first_range.hi = folders[0]  # its next page is not asked for yet
 
     async def _read(self, key_range: KeyRange) -> None:
         """Reads the range a page at a time; the next page is on its way while
-        this one waits for room in the result queue."""
+        this one waits for room in the result queue. Empty pages still go in
+        the queue so the reader's reservation heartbeat advances per page."""
         page = await self._fetch(key_range, None)
         next_page: asyncio.Task | None = None
         try:
             while True:
                 rows, token = self._advance(key_range, page)
-                first = not key_range.lo and key_range.age == 1
-                if first and token is not None and self._may_split():
+                first_page = not key_range.lo and key_range.age == 1
+                if first_page and token is not None and self._may_split():
                     await self._cut(key_range, page)
                 if token is not None:
                     next_page = asyncio.create_task(self._fetch(key_range, token))
+                await self.result_queue.put(rows)
                 if rows:
-                    await self.result_queue.put(rows)
                     self.pbar.update(len(rows))
                     self.rows += len(rows)
                 if next_page is None:

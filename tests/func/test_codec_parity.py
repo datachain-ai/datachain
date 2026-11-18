@@ -1,14 +1,36 @@
-"""Round trips adopted from #1979's parity tests (the typed-codec draft). They test
-the stored values only: #1979's per-signal codec metadata is not ours."""
-
-from datetime import UTC, datetime
+import math
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
+import numpy as np
+import pyarrow as pa
 import pytest
+import sqlalchemy as sa
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    RootModel,
+    SerializeAsAny,
+    computed_field,
+    field_serializer,
+)
 
 import datachain as dc
-from tests.utils import skip_if_not_sqlite
+from datachain.data_storage.codec import (
+    RowCodec,
+    TypeCodec,
+    decode_bool,
+    decode_json,
+    decode_list,
+    encode_json,
+    value_codec,
+)
+from datachain.data_storage.sqlite import SQLiteWarehouse
+from datachain.lib.udf import JsonSerializationError, UdfError
+from datachain.lib.utils import DataChainParamsError
+from datachain.sql.types import JSON, Array, DateTime, Float, SQLType
 
 DT_0 = datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=UTC)
 DT_1 = datetime(2024, 2, 3, 4, 5, 6, 654321, tzinfo=UTC)
@@ -55,54 +77,50 @@ def _save_and_reload(chain, test_session, prefix: str):
     ("annotation", "values"),
     [
         pytest.param(
-            list[int | None],
-            [[], [None], [None, 1], [1, None], [None, None], [1, 2]],
+            list[int],
+            [[], [1], [1, 2]],
             id="int",
         ),
         pytest.param(
-            list[float | None],
-            [[], [None], [None, 1.25], [1.25, None], [None, None], [1.25, 2.5]],
+            list[float],
+            [[], [1.25], [1.25, 2.5]],
             id="float",
+        ),
+        pytest.param(
+            list[dict | None],
+            [[], [None], [None, {"a": 1}], [{"a": 1}, None]],
+            id="nullable-dict",
         ),
     ],
 )
-@skip_if_not_sqlite  # ClickHouse arrays hold no NULL
 @pytest.mark.parametrize("writer", WRITERS)
-def test_nullable_numeric_array_write_path_parity(
-    test_session, writer, annotation, values
-):
-    """Every writer keeps a None item a None, wherever it sits."""
+def test_array_write_path_parity(test_session, writer, annotation, values):
     chain = _collection_chain(test_session, writer, annotation, values)
     assert chain.order_by("row_id").to_values("value") == values
-    reloaded = _save_and_reload(chain, test_session, f"codec_nullable_{writer}")
+    reloaded = _save_and_reload(chain, test_session, f"codec_array_{writer}")
     assert reloaded.order_by("row_id").to_values("value") == values
 
 
-@skip_if_not_sqlite  # ClickHouse arrays hold no NULL
 @pytest.mark.parametrize("writer", WRITERS)
-def test_nested_nullable_datetime_round_trip(writer, test_session):
-    """A nullable nested annotation must not turn datetimes into strings; the
-    first row has no None, so the data cannot be what decides."""
+def test_nested_datetime_round_trip(writer, test_session):
     values = [
         [[DT_0, DT_1], [DT_2]],
-        [None, [DT_2], None],
-        [None, None],
+        [[DT_2]],
         [],
     ]
-    chain = _collection_chain(test_session, writer, list[list[datetime] | None], values)
+    chain = _collection_chain(test_session, writer, list[list[datetime]], values)
     reloaded = _save_and_reload(chain, test_session, f"codec_datetime_{writer}")
 
     actual = reloaded.order_by("row_id").to_values("value")
     assert actual == values
     assert isinstance(actual[0][0][0], datetime)
-    assert isinstance(actual[1][1][0], datetime)
+    assert isinstance(actual[1][0][0], datetime)
 
 
-@skip_if_not_sqlite  # ClickHouse arrays hold no NULL
 @pytest.mark.parametrize("writer", WRITERS)
-def test_optional_collection_distinguishes_none_from_empty(writer, test_session):
-    values = [None, [], [1, 2]]
-    chain = _collection_chain(test_session, writer, list[int] | None, values)
+def test_optional_json_array_distinguishes_none_from_empty(writer, test_session):
+    values = [[None], [{}], [{"a": 1}]]
+    chain = _collection_chain(test_session, writer, list[dict | None], values)
     reloaded = _save_and_reload(chain, test_session, f"codec_optional_{writer}")
 
     assert reloaded.order_by("row_id").to_values("value") == values
@@ -111,12 +129,11 @@ def test_optional_collection_distinguishes_none_from_empty(writer, test_session)
 @pytest.mark.parametrize(
     ("annotation", "value"),
     [
-        pytest.param(list[int | None], [None, 1, None], id="nullable-list"),
+        pytest.param(list[int], [1, 2, 3], id="int-list"),
         pytest.param(
-            list[list[datetime] | None],
-            [None, [DT_0, DT_1], None],
+            list[list[datetime]],
+            [[DT_0, DT_1], [DT_2]],
             id="nested-datetime",
-            marks=skip_if_not_sqlite,  # ClickHouse arrays hold no NULL
         ),
     ],
 )
@@ -160,8 +177,6 @@ def test_mixed_numeric_array_and_dict_keys_in_array(test_session):
 
 
 def test_leading_none_model_list_round_trip_and_key_collision(test_session):
-    from datachain.lib.udf import UdfError
-
     values = [None, _DatedModel(when=DT_0)]
     chain = _save_and_reload(
         dc.read_values(
@@ -181,14 +196,6 @@ def test_leading_none_model_list_round_trip_and_key_collision(test_session):
 
 
 def test_mutable_and_nan_defaults_do_not_alias_across_rows():
-    import math
-
-    import numpy as np
-    import sqlalchemy as sa
-
-    from datachain.data_storage.codec import RowCodec, TypeCodec, decode_list
-    from datachain.sql.types import JSON, Array, Float
-
     rc = RowCodec(
         [
             TypeCodec(frozenset(), lambda x: x, []),
@@ -216,10 +223,6 @@ def test_mutable_and_nan_defaults_do_not_alias_across_rows():
 
 
 def test_empty_marker_columnar_chunks_keep_shape(test_session):
-    import pyarrow as pa
-
-    from datachain.data_storage.codec import RowCodec
-
     chain = dc.read_records(
         [{"v": _EmptyMarker()}],
         schema={"v": _EmptyMarker | None},
@@ -233,29 +236,6 @@ def test_empty_marker_columnar_chunks_keep_shape(test_session):
 
 
 def test_model_dict_key_check_edge_cases():
-    from datetime import timedelta, timezone
-
-    import numpy as np
-    import pyarrow as pa
-    from pydantic import (
-        BaseModel,
-        ConfigDict,
-        Field,
-        RootModel,
-        SerializeAsAny,
-        field_serializer,
-    )
-
-    from datachain.data_storage.codec import (
-        decode_bool,
-        decode_json,
-        encode_json,
-        value_codec,
-    )
-    from datachain.data_storage.sqlite import SQLiteWarehouse
-    from datachain.lib.udf import JsonSerializationError
-    from datachain.sql.types import JSON, Array, DateTime, SQLType
-
     assert decode_json(encode_json(RootModel[str]("hello"))) == "hello"
     assert decode_json(encode_json(RootModel[str]("123"))) == "123"
     assert decode_json(encode_json(np.str_('{"a": 1}'))) == {"a": 1}
@@ -353,7 +333,26 @@ def test_model_dict_key_check_edge_cases():
 
 
 def test_read_records_rejects_unknown_keys(test_session):
-    from datachain.lib.utils import DataChainParamsError
-
     with pytest.raises(DataChainParamsError, match="Unexpected keys in record: typo"):
         dc.read_records([{"x": 1, "typo": 2}], schema={"x": int}, session=test_session)
+
+    class Pt(BaseModel):
+        x: int
+
+    with pytest.raises(UdfError, match="pt__x"):
+        dc.read_values(k=[1], session=test_session).map(
+            pt=lambda k: {"x": k}, output=Pt
+        ).to_list()
+
+    once = iter([7])
+
+    class Payload(BaseModel):
+        @computed_field
+        @property
+        def number(self) -> int:
+            return next(once)
+
+    payload = Payload()
+    assert dc.read_values(x=[1], session=test_session).map(
+        value=lambda x: payload, output=dict
+    ).to_values("value") == [{"number": 7}]

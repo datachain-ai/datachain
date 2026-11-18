@@ -25,6 +25,8 @@ from typing import (
 
 import sqlalchemy
 from pydantic import BaseModel
+from sqlalchemy.sql.elements import ColumnClause
+from sqlalchemy.sql.visitors import replacement_traverse
 
 from datachain import json, semver
 from datachain.checkpoint import CheckpointStatus
@@ -2432,8 +2434,24 @@ class DataChain:
                     on, right_on, "'on' and 'right_on' must have the same length'"
                 )
 
-        if self == right_ds:
+        right_keys = right_on or on
+        right_table = right_ds._query.table
+        if self._query.table.name == right_table.name:
             right_ds = right_ds.clone()
+
+            def rebind_right(element, **_kwargs):
+                if isinstance(element, ColumnClause) and element.table is right_table:
+                    column = sqlalchemy.column(element.name, element.type)
+                    column.table = right_ds._query.table
+                    return column
+                return None
+
+            right_keys = [
+                replacement_traverse(key, {}, rebind_right)
+                if isinstance(key, ColumnExpr)
+                else key
+                for key in right_keys
+            ]
 
         errors = []
 
@@ -2453,7 +2471,7 @@ class DataChain:
         ops = [
             _resolve(self, left, "left")
             == _resolve(right_ds, right, "right" if right_on else None)
-            for left, right in zip(on, right_on or on, strict=False)
+            for left, right in zip(on, right_keys, strict=False)
         ]
 
         if errors:

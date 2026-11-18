@@ -7971,7 +7971,6 @@ def test_multi_signal_map_resolves_string_annotations(test_session):
     assert sorted(result.to_list("first", "second")) == [(2, 2), (3, 4)]
 
 
-# Ported from #1978: a None in a list says nothing about its neighbours.
 class NullableInts(BaseModel):
     vals: list[int | None]
 
@@ -8027,7 +8026,6 @@ class DictItemHolder(BaseModel):
     vals: list[dict[str, DictItem] | None]
 
 
-@skip_if_not_sqlite  # ClickHouse arrays hold no NULL
 @pytest.mark.parametrize(
     "vals",
     [
@@ -8080,8 +8078,6 @@ def test_a_mixed_list_led_by_a_model_is_left_alone(test_session):
     assert rows == [([{"n": 1}, {"b": 2}, None],)]
 
 
-# Ported from #1943: dict keys that collide as JSON must not lose a value (#1914).
-# Untyped dicts: a model refuses a union-typed key (str | int) at declaration.
 @pytest.mark.parametrize("shape", ["bare", "in-a-list"])
 def test_save_refuses_colliding_dict_keys_inside_a_model(test_session, shape):
     class Inner(DataModel):

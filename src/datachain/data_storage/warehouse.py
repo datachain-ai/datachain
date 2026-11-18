@@ -313,11 +313,15 @@ class AbstractWarehouse(ABC, Serializable):
     ) -> None:
         """Drops a dataset rows table for the given dataset name."""
         table_name = self.dataset_table_name(dataset, version)
-        table = sa.Table(table_name, self.db.metadata)
-        self.db.drop_table(table, if_exists=if_exists)
-        # Remove from metadata cache to allow recreation
-        if table_name in self.db.metadata.tables:
-            self.db.metadata.remove(self.db.metadata.tables[table_name])
+        names = [table_name]
+        if dataset.has_version(version):
+            names.append(f"{table_name}__{dataset.get_version(version).uuid[:8]}")
+        for name in names:
+            table = sa.Table(name, self.db.metadata)
+            self.db.drop_table(table, if_exists=if_exists)
+            # Remove from metadata cache to allow recreation
+            if name in self.db.metadata.tables:
+                self.db.metadata.remove(self.db.metadata.tables[name])
 
     def dataset_rows_select(
         self,
@@ -1055,12 +1059,16 @@ class AbstractWarehouse(ABC, Serializable):
         staging_name = self.temp_table_name()
         staging_table = create_fn(staging_name)
 
-        self.insert_into(
-            staging_table,
-            query,
-            progress_cb=progress_cb,
-            preserve_sys_ids=preserve_sys_ids,
-        )
+        try:
+            self.insert_into(
+                staging_table,
+                query,
+                progress_cb=progress_cb,
+                preserve_sys_ids=preserve_sys_ids,
+            )
+        except BaseException:
+            self.db.drop_table(staging_table, if_exists=True)
+            raise
 
         try:
             return self.rename_table(staging_table, name)
