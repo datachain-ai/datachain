@@ -127,6 +127,7 @@ class _PartialReadHandler(FSSpecHandler):
 
 
 def pyarrow_fs(file: File, format):
+    file._raise_if_deleted()
     client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
     if isinstance(client.fs, LocalFileSystem):
         client.check_unchanged(file)

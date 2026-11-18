@@ -10,7 +10,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import blake2b
-from typing import TYPE_CHECKING, TypeVar, cast
+from typing import TYPE_CHECKING, Literal, TypeVar, cast
 
 from fsspec.asyn import get_loop, sync
 from sqlalchemy import or_, true
@@ -48,6 +48,8 @@ RESERVATION_TOUCH_INTERVAL = 300
 LISTING_DIGEST = "listing-v1"
 # listing of current objects only, read_storage(versions=False)
 CURRENT_LISTING_PREFIX = f"{LISTING_PREFIX}current__"
+
+Versions = bool | Literal["all"]
 
 D = TypeVar("D", bound="DataChain")
 
@@ -155,9 +157,10 @@ def ls(
     return select_paths(dc, PathFilter.ls(path, recursive))
 
 
-def select_paths(dc: D, paths: "PathFilter") -> D:
-    """The latest files of a listing chain whose paths ``paths`` selects."""
-    dc = dc.filter(Column("file.is_latest") == true())
+def select_paths(dc: D, paths: "PathFilter", latest: bool = True) -> D:
+    """Select paths from a listing, optionally keeping only current files."""
+    if latest:
+        dc = dc.filter(Column("file.is_latest") == true())
     for condition in paths.sql(Column("file.path")):
         dc = dc.filter(condition)
     return dc
@@ -511,12 +514,15 @@ def ensure_listing(
 
 def rows_digest(rows: Iterable[tuple], with_etag: bool) -> int:
     """The sum of a 128-bit hash of each ``FileRow`` row's identity: its source,
-    path, version id (or md5, or etag if it has neither), size, whether it is the
-    latest version, and its etag when ``with_etag``. A sum, not XOR, so that a
-    file listed twice counts twice; the order of rows does not matter."""
+    path, version id (or, without one, its delete time, md5 or etag), size, whether
+    it is the latest version, and its etag when ``with_etag``. A sum, not XOR, so
+    that a file listed twice counts twice; the order of rows does not matter."""
     total = 0
-    for source, path, size, version, etag, is_latest, _, _, md5 in rows:
-        key = f"{source}\0{path}\0{version or md5 or etag}\0{size}\0{is_latest:d}"
+    for row in rows:
+        source, path, size, version, etag, is_latest, modified, _, md5, deleted = row
+        if version in ("", "null"):
+            version = str(modified) if deleted else md5 or etag
+        key = f"{source}\0{path}\0{version}\0{size}\0{is_latest:d}"
         if with_etag:
             key += f"\0{etag}"
         digest = blake2b(key.encode(errors="surrogatepass"), digest_size=16)

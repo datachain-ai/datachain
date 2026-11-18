@@ -1441,8 +1441,10 @@ def _strip_file_md5_from_stored_dataset(
     table_name = catalog.warehouse.dataset_table_name(ds, ds.latest_version)
     db = catalog.warehouse.db
 
+    added_cols = set(File._ADDED_COLUMNS)
+    added_suffixes = tuple(f"__{c}" for c in added_cols)
     for col in [c.name for c in db.get_table(table_name).columns]:
-        if col.endswith("__md5"):
+        if col.endswith(added_suffixes):
             db.execute_str(f'ALTER TABLE "{table_name}" DROP COLUMN "{col}"')
 
     if table_name in db.metadata.tables:
@@ -1455,7 +1457,9 @@ def _strip_file_md5_from_stored_dataset(
         sa.select(dv_t.c.schema).where(dv_t.c.id == ver.id)
     ).fetchone()
     new_schema = {
-        k: v for k, v in json.loads(raw_schema).items() if not k.endswith("__md5")
+        k: v
+        for k, v in json.loads(raw_schema).items()
+        if not k.endswith(added_suffixes)
     }
     new_feature_schema = dict(ver.feature_schema)
     if "_custom_types" in new_feature_schema:
@@ -1464,11 +1468,13 @@ def _strip_file_md5_from_stored_dataset(
             if ct_name.startswith("File@"):
                 ct_copy = dict(ct_val)
                 ct_copy["fields"] = {
-                    k: v for k, v in ct_copy.get("fields", {}).items() if k != "md5"
+                    k: v
+                    for k, v in ct_copy.get("fields", {}).items()
+                    if k not in added_cols
                 }
                 if "hidden_fields" in ct_copy:
                     ct_copy["hidden_fields"] = [
-                        f for f in ct_copy["hidden_fields"] if f != "md5"
+                        f for f in ct_copy["hidden_fields"] if f not in added_cols
                     ]
                 if legacy_schema_v1:
                     cts[ct_name] = ct_copy["fields"]
@@ -1505,13 +1511,14 @@ def test_old_file_subclass_with_nullable_etag_reads_md5_default(test_session):
     _strip_file_md5_from_stored_dataset(test_session, "nullable_etag")
 
     chain = dc.read_dataset("nullable_etag", session=test_session)
-    assert [f.md5 for f in chain.to_values("file")] == [""]
+    assert [(f.md5, f.is_deleted) for f in chain.to_values("file")] == [("", False)]
 
 
-def test_union_with_saved_partial_file(test_session):
+@pytest.mark.parametrize("field", ["md5", "is_deleted"])
+def test_union_with_saved_partial_file(test_session, field):
     chain = dc.read_values(
         file=[File(source="s3://b", path="a")], session=test_session
-    ).select_except("file.md5")
+    ).select_except(f"file.{field}")
     assert chain.union(chain.save("partial")).count() == 2
 
 
@@ -1560,11 +1567,15 @@ def test_backward_compat_dataset_without_file_md5(
 
     old = dc.read_dataset(ds_name, session=test_session).order_by("file.path")
     assert old.to_values("file.md5") == ["", ""]
+    assert old.to_values("file.is_deleted") == [False, False]
     assert [f.md5 for f in old.to_values("file")] == ["", ""]
+    assert [f.is_deleted for f in old.to_values("file")] == [False, False]
     opts = old.to_values("opt_file")
-    assert opts[0] is not None and opts[0].md5 == ""
+    assert opts[0] is not None and opts[0].md5 == "" and opts[0].is_deleted is False
     assert opts[1] is None
+    assert old.to_values("opt_file.is_deleted") == [False, None]
     assert old.filter(C("file.md5") == "").count() == 2
+    assert old.filter(C("file.is_deleted") == False).count() == 2  # noqa: E712
     assert old.order_by("file.md5", "file.path").to_values("file.path") == [
         "a.txt",
         "hello.txt",
@@ -1671,6 +1682,7 @@ def test_backward_compat_dataset_without_file_md5(
     )
     lst_chain, _ = read_listing_dataset(lst_name, session=test_session)
     assert lst_chain.to_values("file.md5") == [""]
+    assert lst_chain.to_values("file.is_deleted") == [False]
 
 
 def test_delta_gen_without_delta_on_column_in_udf_params(test_session):

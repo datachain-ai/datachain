@@ -63,6 +63,8 @@ class Node:
     location: dict | list[dict] | None = None
     source: StorageURI = StorageURI("")  # noqa: RUF009
     dir_type: int = DirType.FILE
+    md5: str = ""
+    is_deleted: bool = False
 
     @property
     def is_dir(self) -> bool:
@@ -105,6 +107,8 @@ class Node:
             is_latest=self.is_latest,
             location=self.location,
             last_modified=self.last_modified or TIME_ZERO,
+            md5=self.md5,
+            is_deleted=self.is_deleted,
         )
 
     @classmethod
@@ -119,6 +123,8 @@ class Node:
             version=f.version,
             location=f.location,
             dir_type=DirType.FILE,
+            md5=f.md5,
+            is_deleted=f.is_deleted,
         )
 
     @classmethod
@@ -138,6 +144,8 @@ class Node:
             version=_dval("version"),
             location=None if _dval("location") == "" else _dval("location"),
             dir_type=d.get(f"{file_prefix}__dir_type", DirType.FILE),
+            md5=_dval("md5") or "",
+            is_deleted=bool(_dval("is_deleted")),
         )
 
     @classmethod

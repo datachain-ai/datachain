@@ -40,10 +40,13 @@ Each use lists the storage again: iterating the same listing twice lists it twic
 
 ## Versioned Buckets
 
-On a bucket with versioning enabled (S3, GCS, Azure), `list_storage()` and `read_storage()` give the current files only: old versions are not included, so counts and sums are over current files. `versions` decides only whether the rows carry version ids:
+On a bucket with versioning enabled (S3, GCS, Azure), `list_storage()` and `read_storage()` return current files by default. Use `versions` to choose what to include:
 
-- `versions=True`, the default: each file has its `version` id. The listing asks the storage for versions, so it is slower, and `save()` keeps old versions in the saved listing too.
+- `versions=True`, the default: each file has its `version` id. The listing asks the storage for versions, so it is slower, and `save()` keeps old versions and rows for deleted objects in the saved listing too.
 - `versions=False`: no version ids; a faster listing.
+- `versions="all"`: every retained version and rows for deleted objects, from the same saved listing as `True`.
+
+For rows for deleted objects, `file.is_deleted` is `True`; use `C("file.is_deleted")` to filter them in a query. On GCS, deletes are inferred from the next retained generation, so an overwrite whose replacing generation was pruned by a lifecycle rule shows as a delete.
 
 ```python
 total = sum(
@@ -51,7 +54,7 @@ total = sum(
 )
 ```
 
-`read_storage()` reuses a listing from `save()` made with the same `versions`, on S3, GCS and Azure even when the bucket has no versioning. Local files, Hugging Face and HTTP storages have one kind of listing, and `versions` changes nothing there.
+`read_storage()` reuses a listing from `save()`: `True` and `"all"` share one saved listing and `False` has its own, on S3, GCS and Azure even when the bucket has no versioning. Local files, Hugging Face and HTTP storages have one kind of listing, and `versions` changes nothing there.
 
 ## Credentials
 
