@@ -6,6 +6,7 @@ import sqlalchemy as sa
 import datachain as dc
 from datachain import func
 from datachain.lib.file import File
+from datachain.query.session import Session
 from tests.utils import reset_session_job_state, skip_if_not_sqlite
 
 
@@ -1387,8 +1388,6 @@ def test_cross_job_resume_while_the_source_still_commits(
         if not copied:
             if mode == "promote":
                 # Source job finishes and promotes between ledger copy and data copy
-                from datachain.query.session import Session
-
                 resuming_job = Session._CURRENT_JOB
                 Session._CURRENT_JOB = source_job
                 monkeypatch.setattr(warehouse, "create_table_from_query", copy)

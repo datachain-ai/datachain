@@ -1,3 +1,4 @@
+import time
 from collections.abc import Iterator
 
 import pytest
@@ -172,8 +173,6 @@ def test_parallel_checkpoint_recovery_no_duplicates(test_session_tmpfile, parall
 
 
 def test_parallel_gen_in_ephemeral_mode_returns_every_row(test_session_tmpfile):
-    import time
-
     def twice(num: int) -> Iterator[int]:
         time.sleep(0.01)
         yield num
