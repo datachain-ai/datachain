@@ -402,3 +402,25 @@ def test_an_optional_nested_collection_round_trips(test_session, vals):
     )
 
     assert rows == [(vals,)]
+
+
+class OptionalChildren(BaseModel):
+    vals: list[NestedItem | None]
+
+
+@pytest.mark.parametrize(
+    "vals",
+    [
+        pytest.param([NestedItem(n=1), None], id="none-last"),
+        pytest.param([None, NestedItem(n=2)], id="none-first"),
+        pytest.param([None, None], id="all-none"),
+    ],
+)
+def test_a_list_of_optional_models_round_trips(test_session, vals):
+    rows = (
+        dc.read_values(i=[1], session=test_session)
+        .map(h=lambda: OptionalChildren(vals=vals), output=OptionalChildren)
+        .to_list("h.vals")
+    )
+
+    assert rows == [(vals,)]
