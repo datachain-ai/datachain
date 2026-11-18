@@ -2216,9 +2216,13 @@ class ArrowRow(DataModel):
     def open(self):
         """Stream row contents from indexed file."""
         from pyarrow.csv import ParseOptions, ReadOptions
-        from pyarrow.dataset import CsvFileFormat, dataset
+        from pyarrow.dataset import CsvFileFormat
 
-        from datachain.lib.arrow import fix_pyarrow_format, pyarrow_fs
+        from datachain.lib.arrow import (
+            _file_dataset,
+            fix_pyarrow_format,
+        )
+        from datachain.utils import safe_closing
 
         kwargs = dict(self.kwargs)
         if csv := kwargs.pop("csv", None):
@@ -2235,14 +2239,8 @@ class ArrowRow(DataModel):
 
         if self.file._caching_enabled:
             self.file.ensure_cached()
-            path = self.file.get_local_path()
-            ds = dataset(path, **kwargs)
-        else:
-            path = self.file.get_fs_path()
-            fs = pyarrow_fs(self.file, kwargs.get("format"))
-            ds = dataset(path, filesystem=fs, **kwargs)
-
-        yield next(ds.take([self.index]).to_reader())
+        with safe_closing(_file_dataset(self.file, kwargs)) as ds:
+            yield next(ds.take([self.index]).to_reader())
 
     def read(self):
         """Returns row contents as dict.
