@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import re
 from collections.abc import Callable, Iterable
@@ -20,12 +21,15 @@ from fsspec.asyn import sync_wrapper
 from fsspec.utils import tokenize
 from s3fs import S3FileSystem
 
+from datachain.lib.file import File, FileRow, as_file_row
+
 from .fsspec import BucketStatus, RangeListedClient
-from .ranges import PROCESS_LIST_WORKERS, FileRow, Keep, Page, as_file_row
+from .ranges import PROCESS_LIST_WORKERS, Keep, Page
 
 if TYPE_CHECKING:
     from datachain.client.writeconfig import WriteConfig
-    from datachain.lib.file import File
+
+logger = logging.getLogger("datachain")
 
 _CREDENTIAL_CHECKS: dict[tuple, tuple[float, bool]] = {}
 
@@ -175,7 +179,7 @@ _TEXT = "([^<]*)"
 
 
 def _tag(name: str, content: str = "[^<&]*") -> str:
-    return rf"(?:<{name}>{content}</{name}>|<{name}\s*/>)"
+    return rf"(?:<{name}>{content}</{name}>|<{name}[ \t\r\n]*/>)"
 
 
 _CHECKSUMS = rf"{_tag('ChecksumAlgorithm')}|{_tag('ChecksumType')}"
@@ -187,15 +191,14 @@ _OBJECT = (
     rf"<Size>(\d+)</Size>{_REST}"
 )
 _FOLDER = rf"<CommonPrefixes><Prefix>{_TEXT}</Prefix></CommonPrefixes>"
-# groups: the entry, then key, version, latest, modified, etag, size |
-# marker: key, modified | folder
-_CONTENTS = rf"(<Contents><Key>{_TEXT}</Key>()(){_OBJECT}</Contents>()()|{_FOLDER})"
+# groups: key, version, latest, modified, etag, size | marker: key, modified | folder
+_CONTENTS = rf"<Contents><Key>{_TEXT}</Key>()(){_OBJECT}</Contents>()()|{_FOLDER}"
 _VERSIONS = (
-    rf"(<Version><Key>{_TEXT}</Key><VersionId>{_TEXT}</VersionId>"
+    rf"<Version><Key>{_TEXT}</Key><VersionId>{_TEXT}</VersionId>"
     rf"<IsLatest>(true|false)</IsLatest>{_OBJECT}</Version>"
     rf"|<DeleteMarker><Key>{_TEXT}</Key>{_tag('VersionId')}"
     rf"<IsLatest>(?:true|false)</IsLatest><LastModified>{_TEXT}</LastModified>"
-    rf"{_REST}</DeleteMarker>|{_FOLDER})"
+    rf"{_REST}</DeleteMarker>|{_FOLDER}"
 )
 _ENTRIES = {False: re.compile(_CONTENTS), True: re.compile(_VERSIONS)}
 _FIRST = re.compile(r"<(?:Contents|Version|DeleteMarker|CommonPrefixes)[\s/>]")
@@ -215,7 +218,10 @@ def _unescape(text: str) -> str:
 def _plain_text(body: bytes) -> str | None:
     """The page as text, when it holds nothing the patterns do not read."""
     if body.startswith(b"<?xml"):
-        if body[: len(_DECLARATION)].lower() != _DECLARATION.lower():
+        if body[: len(_DECLARATION)] not in (
+            _DECLARATION,
+            _DECLARATION.replace(b"UTF-8", b"utf-8"),
+        ):
             return None
         body = body[len(_DECLARATION) :].removeprefix(b"\n")
     if any(b in body and odd in body for b, odd in _ODD) or _ENTITY.search(body):
@@ -237,17 +243,13 @@ def _split_page(body: bytes, versions: bool) -> tuple[list[Element], str, list] 
         return None
     entries = []
     if first := _FIRST.search(text):
-        start = first.start()
-        if not (entries := _ENTRIES[versions].findall(text, start)):
-            return None
-        # where the last entry of its kind ends: an entry past it not read is
-        # the root's child, which the check below turns away
-        close = entries[-1][0][entries[-1][0].rindex("</") :]
-        end = text.rfind(close) + len(close)
-        # nothing between entries: they cover all from the first to the last
-        if sum(len(entry[0]) for entry in entries) != end - start:
-            return None
-        text = text[:start] + _MARK + text[end:]
+        pos, match = first.start(), _ENTRIES[versions].match
+        while entry := match(text, pos):  # one after another, from the first
+            entries.append(entry.groups())
+            pos = entry.end()
+        if not entries or _FIRST.search(text, pos):
+            return None  # an entry the patterns don't read
+        text = text[: first.start()] + _MARK + text[pos:]
     try:
         root = fromstring(text)  # noqa: S314
     except ParseError:
@@ -277,11 +279,13 @@ def _rows_page(body: bytes, shape: Shape, source: str) -> dict[str, Any] | None:
         return None
     others, ns, entries = split
     page = _read(others, _fields(shape, ns))
+    # botocore decodes DeleteMarkers and CommonPrefixes after the parse; FileRows are
+    # ours
     decode = _decode_url if page.get("EncodingType") == "url" else str
     rows, markers, folders = [], [], []
     try:
         for entry in entries:
-            _, key, version, latest, modified, etag, size, *marker, folder = entry
+            key, version, latest, modified, etag, size, *marker, folder = entry
             if size:
                 version = ClientS3.clean_s3_version(_unescape(version))
                 when = _parse_timestamp(_unescape(modified))
@@ -422,6 +426,7 @@ class ClientS3(RangeListedClient):
     # that state replaces them, so those files are checked by etag.
     PINNED_VERSION_IS_IMMUTABLE = True
     _unversioned = False  # the server can't list versions
+    _declined_pages = 0  # pages in a row the patterns declined before reading one
 
     @staticmethod
     def _normalize_s3_kwargs(kwargs: dict) -> dict:
@@ -577,7 +582,7 @@ class ClientS3(RangeListedClient):
         await self.fs.set_session()
         s3 = await self.fs.get_s3(self.name)
         list_page = s3.list_object_versions if versions else s3.list_objects_v2
-        rows_of = _ROWS_OF.set(self.uri)
+        rows_of = _ROWS_OF.set(self.uri if self._declined_pages < 3 else None)
         try:
             page = await list_page(
                 Bucket=self.name,
@@ -598,7 +603,13 @@ class ClientS3(RangeListedClient):
         finally:
             _ROWS_OF.reset(rows_of)
         keep = Keep(self, start_after, hi)
-        if (rows := page.get("FileRows")) is None:  # ElementTree read the page
+        if (rows := page.get("FileRows")) is not None:
+            self._declined_pages = -1
+        else:  # ElementTree read the page
+            if 0 <= self._declined_pages < 3:
+                self._declined_pages += 1
+                if self._declined_pages == 3:
+                    logger.debug("Listing %s: reading pages with ElementTree", self.uri)
             entries = page.get("Versions" if versions else "Contents", [])
             rows = [self._file_row(d, versions) for d in entries]
         keys = [r[1] for r in rows]
@@ -638,9 +649,7 @@ class ClientS3(RangeListedClient):
     def clean_s3_version(ver: str | None) -> str:
         return ver if (ver is not None and ver != "null") else ""
 
-    def info_to_file(self, v: dict[str, Any], path: str) -> "File":
-        from datachain.lib.file import File
-
+    def info_to_file(self, v: dict[str, Any], path: str) -> File:
         return File(
             source=self.uri,
             path=path,

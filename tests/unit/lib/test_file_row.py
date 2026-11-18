@@ -77,10 +77,11 @@ def test_file_validators_are_known():
 
 def test_file_rows_take_file_attributes():
     row = FileRow("s3://bucket", "dir/a.txt", 3)
+    file = File(source="s3://bucket", path="dir/a.txt", size=3)
 
-    assert row.get_fs_path() == "s3://bucket/dir/a.txt"
-    assert row.get_hash()
-    assert row.rebase("dir", "/out") == "/out/a.txt"
+    assert row.get_fs_path() == file.get_fs_path() == "s3://bucket/dir/a.txt"
+    assert row.get_hash() == file.get_hash()
+    assert row.rebase("dir", "/out") == file.rebase("dir", "/out") == "/out/a.txt"
     assert row.name == "a.txt"
     assert row.get_file_ext() == "txt"
     with pytest.raises(AttributeError):

@@ -10,13 +10,13 @@ from botocore.exceptions import ClientError
 from botocore.utils import parse_timestamp
 from fsspec.asyn import get_loop, sync
 
+from datachain.client import s3 as s3_mod
 from datachain.client.s3 import (
     _FIELDS,
     ClientS3,
     _fields,
     _handle_200_error,
     _parse_timestamp,
-    _plain_text,
     _rows_page,
 )
 from datachain.client.writeconfig import WriteConfig
@@ -287,22 +287,42 @@ def s3_bodies(mocker):
         skip_instance_cache=True,
     )
 
-    def listed(*answers: bytes):
+    def page(*answers, versions=False, delimiter=""):
         bodies[:] = answers
+        requests.clear()
+        client = ClientS3("b", {"version_aware": versions}, None)
+        client._fs = fs
+        fs.version_aware = versions
+        return (
+            sync(get_loop(), client._list_page, "", "", None, delimiter=delimiter),
+            len(requests),
+        )
 
-        async def keys():
-            await fs.set_session()
-            s3 = await fs.get_s3()
-            page = await s3.list_objects_v2(Bucket="b")
-            return [d["Key"] for d in page.get("Contents", [])]
+    def listed(*answers, versions=False):
+        listed_page, count = page(*answers, versions=versions)
+        return [r.path for r in listed_page.rows], count
 
-        return sync(get_loop(), keys), len(requests)
-
+    listed.page = page
+    listed.fs = fs
+    listed.bodies = bodies
     yield listed
     server.shutdown()
     server.server_close()
 
 
+def _as_versions_xml(body: bytes) -> bytes:
+    version = b"<Version><VersionId>v1</VersionId><IsLatest>true</IsLatest>"
+    return (
+        body.replace(b"ListBucketResult", b"ListVersionsResult")
+        .replace(b"<Contents>", version)
+        .replace(b"</Contents>", b"</Version>")
+    )
+
+
+NBSP_TAG = PAGE.replace(b"</Size>", "</Size><StorageClass\u00a0/>".encode())
+
+
+@pytest.mark.parametrize("versions", [False, True])
 @pytest.mark.parametrize(
     "answers, keys, requests",
     [
@@ -312,12 +332,31 @@ def s3_bodies(mocker):
         ([MALFORMED, PAGE], ["a"], 2),
         ([TRUNCATED, PAGE], ["a"], 2),
         ([ERROR_200, PAGE], ["a"], 2),
+        ([NBSP_TAG, PAGE], ["a"], 2),
+        ([PAGE.replace(b"</Key>", b"\x0b</Key>"), PAGE], ["a"], 2),
+        ([PAGE.replace(b"</Key>", "\ufffe".encode() + b"</Key>"), PAGE], ["a"], 2),
+        ([PAGE.replace(b"version", b"VERSION"), PAGE], ["a"], 2),
         ([PAGE.replace(b"s3.amazonaws.com/doc/", b"doc.s3.amazonaws.com/")], ["a"], 1),
     ],
-    ids=["valid", "comment", "empty", "malformed", "truncated", "error", "gcs-xml"],
+    ids=[
+        "valid",
+        "comment",
+        "empty",
+        "malformed",
+        "truncated",
+        "error",
+        "nbsp-tag",
+        "control",
+        "nonchar",
+        "upper-decl",
+        "gcs-xml",
+    ],
 )
-def test_s3_listing_retries_only_a_bad_200(s3_bodies, answers, keys, requests):
-    assert s3_bodies(*answers) == (keys, requests)
+def test_s3_listing_retries_only_a_bad_200(
+    s3_bodies, versions, answers, keys, requests
+):
+    bodies = [_as_versions_xml(b) if versions else b for b in answers]
+    assert s3_bodies(*bodies, versions=versions) == (keys, requests)
 
 
 @pytest.mark.parametrize(
@@ -456,7 +495,7 @@ def test_list_page_falls_back_to_current_objects_without_version_support():
 
 
 WHEN = _parse_timestamp("2026-09-30T23:00:00.000Z")
-FOLDER = b"<CommonPrefixes><Prefix>z/</Prefix></CommonPrefixes>"
+FOLDER = b"<CommonPrefixes><Prefix>p/z+1%26/</Prefix></CommonPrefixes>"
 
 
 def _page(body: bytes, op: str = "ListObjectsV2"):
@@ -465,51 +504,170 @@ def _page(body: bytes, op: str = "ListObjectsV2"):
     return _rows_page(body, shape, "s3://b")
 
 
-ENCODED = PAGE.replace(b"<Key>a</Key>", b"<Key>p/a+b%26c</Key>").replace(
-    b"<IsTruncated>", b"<EncodingType>url</EncodingType><IsTruncated>"
+ENCODED = (
+    PAGE.replace(b"<Key>a</Key>", b"<Key>p/a+b%26c</Key>")
+    .replace(
+        b"<IsTruncated>false</IsTruncated>",
+        b"<EncodingType>url</EncodingType><IsTruncated>true</IsTruncated>"
+        b"<NextContinuationToken>t+1</NextContinuationToken>",
+    )
+    .replace(b"</Contents>", b"</Contents>" + FOLDER)
 )
 VERSIONS = (
     b'<?xml version="1.0" encoding="UTF-8"?>\n<ListVersionsResult '
     b'xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Name>b</Name>'
-    b"<MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>"
-    b"<Version><Key>a</Key><VersionId>v1</VersionId><IsLatest>true</IsLatest>"
+    b"<MaxKeys>1000</MaxKeys><EncodingType>url</EncodingType>"
+    b"<IsTruncated>true</IsTruncated><NextKeyMarker>p/d+1%26</NextKeyMarker>"
+    b"<NextVersionIdMarker>v2</NextVersionIdMarker>"
+    b"<Version><Key>p/a+b%26c</Key><VersionId>v1</VersionId><IsLatest>true</IsLatest>"
     b"<LastModified>2026-09-30T23:00:00.000Z</LastModified>"
     b"<ETag>&quot;e&quot;</ETag><Size>1</Size></Version>"
-    b"<DeleteMarker><Key>d</Key><VersionId>v2</VersionId><IsLatest>true</IsLatest>"
+    b"<DeleteMarker><Key>p/d+1%26</Key><VersionId>v2</VersionId><IsLatest>true</IsLatest>"
     b"<LastModified>2026-09-30T23:00:00.000Z</LastModified></DeleteMarker>"
     + FOLDER
     + b"</ListVersionsResult>"
 )
 
 
-def test_patterns_read_a_page_as_s3_writes_it():
-    page = _page(ENCODED.replace(b"</Contents>", b"</Contents>" + FOLDER))
-    versions = _page(VERSIONS, "ListObjectVersions")
+def test_patterns_read_a_page_as_s3_writes_it(s3_bodies):
+    assert _page(ENCODED) is not None
+    assert _page(VERSIONS, "ListObjectVersions") is not None
 
-    assert _plain_text(PAGE).isprintable()
-    assert [tuple(r) for r in page["FileRows"]] == [
+    page, count = s3_bodies.page(ENCODED, versions=False, delimiter="/")
+    versions, v_count = s3_bodies.page(VERSIONS, versions=True, delimiter="/")
+
+    assert (count, v_count) == (1, 1)
+    assert [tuple(r) for r in page.rows] == [
         ("s3://b", "p/a b&c", 1, "", "e", True, WHEN, None)
     ]
-    assert page["CommonPrefixes"] == [{"Prefix": "z/"}]
-    assert page["IsTruncated"] is False
-    assert [tuple(r) for r in versions["FileRows"]] == [
-        ("s3://b", "a", 1, "v1", "e", True, WHEN, None)
+    assert (page.folders, page.last, page.token) == (("p/z 1&/",), "p/z 1&/", "t+1")
+    assert [tuple(r) for r in versions.rows] == [
+        ("s3://b", "p/a b&c", 1, "v1", "e", True, WHEN, None)
     ]
-    assert versions["DeleteMarkers"] == [{"Key": "d"}]
-    assert versions["CommonPrefixes"] == [{"Prefix": "z/"}]
+    assert (versions.folders, versions.last, versions.token) == (
+        ("p/z 1&/",),
+        "p/z 1&/",
+        ("p/d 1&", "v2"),
+    )
 
 
+@pytest.mark.parametrize("versions", [False, True])
 @pytest.mark.parametrize(
-    "body",
+    "old, new, key",
     [
-        PAGE.replace(b"<Name>", b"<!-- c --><Name>"),
-        PAGE.replace(b"<Size>1</Size>", b"<Size>1</Size><Extra/>"),
-        PAGE.replace(b"</Key>", b"&#13;</Key>"),
-        PAGE.replace(b"</Key>", b"\r</Key>"),
-        PAGE.replace(b"</Key>", b"\x0b</Key>"),
-        PAGE.replace(b"</Key>", "\ufffe".encode() + b"</Key>"),
+        (b"<Name>", b"<!-- c --><Name>", "a"),
+        (b"<Size>1</Size>", b"<Size>1</Size><Extra/>", "a"),
+        (b"</Key>", b"&#13;</Key>", "a\r"),
+        (b"</Key>", b"\r</Key>", "a\n"),
+        (b'"1.0" encoding="UTF-8"', b"'1.0' encoding='utf-8'", "a"),
     ],
-    ids=["comment", "unknown-field", "char-reference", "cr", "control", "nonchar"],
+    ids=["comment", "unknown-field", "char-reference", "cr", "single-quoted-decl"],
 )
-def test_elementtree_reads_a_page_the_patterns_do_not(body):
-    assert _page(body) is None
+def test_elementtree_reads_a_page_the_patterns_do_not(
+    s3_bodies, versions, old, new, key
+):
+    body = (_as_versions_xml(PAGE) if versions else PAGE).replace(old, new)
+    op = "ListObjectVersions" if versions else "ListObjectsV2"
+
+    assert _page(body, op) is None
+    assert s3_bodies(body, versions=versions) == ([key], 1)
+
+
+def test_client_stops_trying_patterns_after_three_declined_pages(
+    s3_bodies, mocker, caplog
+):
+    declined = PAGE.replace(b"<Size>1</Size>", b"<Size>1</Size><Extra/>")
+    spy = mocker.spy(s3_mod, "_rows_page")
+    client = ClientS3("b", {"version_aware": False}, None)
+    client._fs = s3_bodies.fs
+    s3_bodies.fs.version_aware = False
+    s3_bodies.bodies[:] = [declined, declined, declined, PAGE]
+
+    with caplog.at_level("DEBUG", logger="datachain"):
+        pages = [sync(get_loop(), client._list_page, "", "", None) for _ in range(4)]
+
+    assert [[r.path for r in p.rows] for p in pages] == [["a"]] * 4
+    assert spy.call_count == 3
+    assert "reading pages with ElementTree" in caplog.text
+
+
+def test_patterns_agree_with_elementtree_or_decline(s3_bodies):
+    entry_a = (
+        b"<Contents><Key>a&amp;lt;b&amp;c&lt;d&gt;&apos;&#34;&#39;</Key>"
+        b"<LastModified>2026-09-30T23:00:00.000Z</LastModified>"
+        b"<ETag>&quot;e1&quot;</ETag><ChecksumAlgorithm>CRC32</ChecksumAlgorithm>"
+        b"<ChecksumType>FULL_OBJECT</ChecksumType><Size>1</Size>"
+        b"<StorageClass>STANDARD</StorageClass>"
+        b"<Owner><ID>o</ID><DisplayName>d</DisplayName></Owner></Contents>"
+    )
+    entry_b = (
+        b"<Contents><Key>b</Key>"
+        b"<LastModified>2026-09-30T23:00:00.000Z</LastModified>"
+        b"<ETag>&quot;e2&quot;</ETag><Size>2</Size>"
+        b"<StorageClass \t\n/><Owner><ID/><DisplayName/></Owner></Contents>"
+    )
+    accepted = [
+        PAGE.replace(b"UTF-8", b"utf-8"),
+        PAGE.replace(
+            b"<Contents><Key>a</Key><LastModified>2026-09-30T23:00:00.000Z</LastModified>"
+            b"<ETag>&quot;e&quot;</ETag><Size>1</Size></Contents>",
+            b"",
+        ),
+        PAGE.replace(
+            b"<Contents><Key>a</Key><LastModified>2026-09-30T23:00:00.000Z</LastModified>"
+            b"<ETag>&quot;e&quot;</ETag><Size>1</Size></Contents>",
+            entry_a + entry_b + FOLDER,
+        ),
+        ENCODED,
+        VERSIONS,
+    ]
+    declined = [
+        # gap between entries: must decline so the second entry is not dropped
+        PAGE.replace(b"</Contents>", b"</Contents><Extra/>" + entry_b),
+        # trailing entry with reordered fields: must decline so it is not dropped
+        PAGE.replace(
+            b"</Contents>",
+            b"</Contents><Contents><Size>2</Size><Key>b</Key>"
+            b"<LastModified>2026-09-30T23:00:00.000Z</LastModified>"
+            b"<ETag>&quot;e2&quot;</ETag></Contents>",
+        ),
+        # nested entry inside another tag: must decline so it is not treated as root's
+        PAGE.replace(b"<Contents>", b"<Extra><Contents>").replace(
+            b"</Contents>", b"</Contents></Extra>"
+        ),
+        # unread entry before matched entries: must decline so it is not skipped
+        PAGE.replace(
+            b"<Contents>",
+            b"<CommonPrefixes><Extra/><Prefix>z/</Prefix></CommonPrefixes><Contents>",
+        ),
+    ]
+    for body in accepted:
+        versions = b"<ListVersionsResult" in body
+        op = "ListObjectVersions" if versions else "ListObjectsV2"
+        assert _page(body, op) is not None
+        fast, _ = s3_bodies.page(body, versions=versions, delimiter="/")
+        s3_bodies.bodies[:] = [body]
+        client = ClientS3("b", {"version_aware": versions}, None)
+        client._fs = s3_bodies.fs
+        client._declined_pages = 3
+        slow = sync(get_loop(), client._list_page, "", "", None, delimiter="/")
+        assert fast == slow
+
+    for body in declined:
+        assert _page(body) is None
+        fast, _ = s3_bodies.page(body, delimiter="/")
+        s3_bodies.bodies[:] = [body]
+        client = ClientS3("b", {"version_aware": False}, None)
+        client._fs = s3_bodies.fs
+        client._declined_pages = 3
+        slow = sync(get_loop(), client._list_page, "", "", None, delimiter="/")
+        assert fast == slow
+
+    for bad in (
+        PAGE + b"\xff",
+        PAGE.replace(b"<Name>b</Name>", b"<Name>b</Nam>"),
+        PAGE.replace(b"2026-09-30T23:00:00.000Z", b"not-a-date"),
+        VERSIONS.replace(b"2026-09-30T23:00:00.000Z", b"not-a-date"),
+    ):
+        op = "ListObjectVersions" if b"<ListVersionsResult" in bad else "ListObjectsV2"
+        assert _page(bad, op) is None
