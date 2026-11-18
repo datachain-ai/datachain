@@ -18,7 +18,11 @@ from sqlalchemy import or_, true
 import datachain.fs.utils as fsutils
 from datachain.asyn import iter_over_async
 from datachain.client import Client
-from datachain.error import ClientError, DatasetNotFoundError
+from datachain.error import (
+    ClientError,
+    ConcurrentDatasetModificationError,
+    DatasetNotFoundError,
+)
 from datachain.lib.convert.flatten import flatten
 from datachain.lib.file import File, FileRow
 from datachain.query.schema import Column
@@ -562,6 +566,7 @@ def write_listing(
 ) -> "DatasetRecord | None":
     """Store the listing of the prefix ``uri`` as the next version of ``ds_name``.
     An unchanged listing drops that version and restarts the latest one's TTL."""
+    from datachain import semver
     from datachain.dataset import DEFAULT_DATASET_VERSION, DatasetStatus
     from datachain.lib.signal_schema import SignalSchema
 
@@ -596,54 +601,99 @@ def write_listing(
             total += page.digest
             yield from page.rows
             if time.monotonic() - touched > RESERVATION_TOUCH_INTERVAL:
-                metastore.update_dataset_version(
-                    dataset,
-                    version,
-                    expected_status=DatasetStatus.CREATED,
-                    created_at=datetime.now(UTC),
-                )
+                if (
+                    metastore.update_dataset_version(
+                        dataset,
+                        version,
+                        expected_status=DatasetStatus.CREATED,
+                        expected_job_id=job_id,
+                        created_at=datetime.now(UTC),
+                    )
+                    is None
+                ):
+                    raise ConcurrentDatasetModificationError(
+                        f"Listing {dataset.name}@{version} was removed while running"
+                    )
                 touched = time.monotonic()
 
+    table = None
     try:
         if job:
             metastore.link_dataset_version_to_job(
                 dataset.versions[0].id, job.id, is_creator=True
             )
+        table_name = warehouse.dataset_table_name(dataset, version)
         table = warehouse.create_dataset_rows_table(
-            warehouse.dataset_table_name(dataset, version), columns=columns
+            f"{table_name}__{dataset.versions[0].uuid[:8]}", columns=columns
         )
         with safe_closing(
             list_pages(uri, catalog.cache, client_config, encode)
         ) as pages:
-            warehouse.insert_stored_rows(
-                table, [c.name for c in columns], rows(pages), LISTING_BATCH_SIZE
-            )
+            try:
+                warehouse.insert_stored_rows(
+                    table, [c.name for c in columns], rows(pages), LISTING_BATCH_SIZE
+                )
+            except Exception as e:
+                if not warehouse.db.has_table(table.name):
+                    raise ConcurrentDatasetModificationError(
+                        f"Listing {dataset.name}@{version} was removed while running"
+                    ) from e
+                raise
         content_hash = f"{LISTING_DIGEST}:{count}:{total % (1 << 128):032x}"
-        latest = (
-            _latest_version(catalog, ds_name, project)
-            if version != DEFAULT_DATASET_VERSION
-            else None
-        )
-        if (
-            latest
-            and latest[1].content_hash == content_hash
-            and catalog.release_reservation(dataset, version, job_id)
-        ):
-            metastore.update_dataset_version(
-                latest[0],
-                latest[1].version,
-                expected_status=DatasetStatus.COMPLETE,
-                finished_at=datetime.now(UTC),
+        latest = _latest_version(catalog, ds_name, project)
+        if latest:
+            prev_ds, prev_ver = latest
+            ver_val = dataset.versions[0].version_value
+            fence = (
+                max(prev_ver.version_value, semver.value(prev_ver.sources))
+                if prev_ver.sources
+                else prev_ver.version_value
             )
-            return None
+            older_publishing = any(
+                prev_ver.version_value < v.version_value < ver_val
+                and v.status == DatasetStatus.CREATED
+                and v.content_hash is not None
+                for v in prev_ds.all_versions
+            )
+            if (
+                fence > ver_val
+                or (prev_ver.content_hash == content_hash and not older_publishing)
+            ) and catalog.release_reservation(dataset, version, job_id):
+                if prev_ver.content_hash == content_hash and ver_val >= fence:
+                    metastore.update_dataset_version(
+                        prev_ds,
+                        prev_ver.version,
+                        expected_status=DatasetStatus.COMPLETE,
+                        finished_at=datetime.now(UTC),
+                        sources=version,
+                    )
+                return None
+        if (
+            metastore.update_dataset_version(
+                dataset,
+                version,
+                expected_status=DatasetStatus.CREATED,
+                expected_job_id=job_id,
+                content_hash=content_hash,
+            )
+            is None
+        ):
+            raise ConcurrentDatasetModificationError(
+                f"Could not save {dataset.name}@{version}: "
+                "the version was removed or modified before save completed."
+            )
+        warehouse.rename_table(table, table_name)
         completed = catalog.complete_dataset_version(
-            dataset, version, content_hash=content_hash, expected_job_id=job_id
+            dataset, version, expected_job_id=job_id
         )
         return completed if version == DEFAULT_DATASET_VERSION else None
     except BaseException:
         with suppress(Exception):
             catalog.release_reservation(dataset, version, job_id)
         raise
+    finally:
+        if table is not None:
+            warehouse.db.drop_table(table, if_exists=True)
 
 
 def _latest_version(

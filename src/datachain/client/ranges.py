@@ -354,7 +354,8 @@ class RangeListing:
 
     async def _read(self, key_range: KeyRange) -> None:
         """Reads the range a page at a time; the next page is on its way while
-        this one waits for room in the result queue."""
+        this one waits for room in the result queue. Empty pages still go in
+        the queue so the reader's reservation heartbeat advances per page."""
         page = await self._fetch(key_range, None)
         next_page: asyncio.Task | None = None
         try:
@@ -365,8 +366,8 @@ class RangeListing:
                     await self._cut(key_range, page)
                 if token is not None:
                     next_page = asyncio.create_task(self._fetch(key_range, token))
+                await self.result_queue.put(rows)
                 if rows:
-                    await self.result_queue.put(rows)
                     self.pbar.update(len(rows))
                     self.rows += len(rows)
                 if next_page is None:

@@ -1028,6 +1028,7 @@ class UDFStep(Step, ABC):
             create_fn=lambda name: self.warehouse.create_udf_table(
                 partition_columns(), name=name
             ),
+            preserve_sys_ids=True,
         )
 
     def _prepare_partition_query(
@@ -1258,6 +1259,8 @@ class UDFStep(Step, ABC):
     def _promote_partial(
         self, partial_table: "Table", parts: "Table | None", final_name: str
     ) -> "Table":
+        if parts is not None:
+            self.warehouse.trim_to_ledger(partial_table, parts)
         # Same hash may already have a final table from earlier in this job
         self.warehouse.db.drop_table(
             sa.Table(final_name, sa.MetaData()), if_exists=True
@@ -1383,6 +1386,12 @@ class UDFStep(Step, ABC):
         source_name = Checkpoint.partial_output_table_name(
             checkpoint.job_id, checkpoint.hash
         )
+        partial_name = (
+            f"{source_name}_{uuid4().hex[:8]}"
+            if is_same_job
+            else Checkpoint.partial_output_table_name(job.id, checkpoint.hash)
+        )
+        parts = None
         try:
             source_table = self._output_table(source_name)
             # a gen/agg partial table without its ledger is never trusted:
@@ -1392,28 +1401,11 @@ class UDFStep(Step, ABC):
                 if self.is_generator
                 else None
             )
-        except TableMissingError:
-            logger.warning(
-                "UDF(%s) [job=%s run_group=%s]: Partial table not found for "
-                "checkpoint %s, falling back to run from scratch",
-                self._udf_name,
-                self._job_id_short(job),
-                self._run_group_id_short(job),
-                checkpoint,
-            )
-            return self._run_from_scratch(
-                checkpoint.hash, hash_output, hash_input, query, job
-            )
-
-        if is_same_job:
-            partial_table, parts = source_table, source_parts
-        else:
-            # Different job: copy to current job (don't mutate another job's table).
-            # The source job may still be running: copy its ledger first. Rows of
+            # Copy to a fresh table even in the same job so any leftover worker
+            # from the failed attempt writes only into the old table.
+            # The source may still be running: copy its ledger first. Rows of
             # every part in that copy are already durable, so the data copy taken
             # after it holds them; anything newer is trimmed as uncommitted.
-            partial_name = Checkpoint.partial_output_table_name(job.id, checkpoint.hash)
-            parts = None
             if source_parts is not None:
                 parts = self.warehouse.create_table_from_query(
                     parts_table_name(partial_name),
@@ -1427,8 +1419,42 @@ class UDFStep(Step, ABC):
                 create_fn=self.create_output_table,
                 preserve_sys_ids=True,
             )
+        except Exception:
+            if parts is not None:
+                self.warehouse.db.drop_table(parts, if_exists=True)
+            if self.warehouse.db.has_table(source_name) and (
+                not self.is_generator
+                or self.warehouse.db.has_table(parts_table_name(source_name))
+            ):
+                raise
+            if ch := self._find_udf_checkpoint(job, hash_output):
+                try:
+                    return self._skip_udf(ch, hash_input, query, job)
+                except TableMissingError:
+                    pass
+            logger.warning(
+                "UDF(%s) [job=%s run_group=%s]: Partial table not found for "
+                "checkpoint %s, falling back to run from scratch",
+                self._udf_name,
+                self._job_id_short(job),
+                self._run_group_id_short(job),
+                checkpoint,
+            )
+            return self._run_from_scratch(
+                checkpoint.hash, hash_output, hash_input, query, job
+            )
 
         if parts is not None:
+            # Drop any ledger commit whose rows were removed by source duplicate
+            # arbitration between the ledger copy and the data copy.
+            ids = sa.select(partial_table.c.sys__id)
+            self.warehouse.db.execute(
+                parts.delete().where(
+                    parts.c.part_key.is_not(None),
+                    parts.c.lo <= parts.c.hi,
+                    ~(parts.c.lo.in_(ids) & parts.c.hi.in_(ids)),
+                )
+            )
             self.warehouse.trim_to_ledger(partial_table, parts)
             processed = committed_part_keys(parts)
         else:
@@ -1441,27 +1467,41 @@ class UDFStep(Step, ABC):
         # `input_query` is rebuilt from the input table and lacks partition_id.
         unprocessed_input = query if self.partition_by is not None else input_query
 
-        # The anti-join must stay fixed while resumed outputs are appended.
-        with self._snapshot_processed_input_ids(processed) as processed_ids:
-            unprocessed_query = self.calculate_unprocessed_rows(
-                unprocessed_input, processed_ids
-            )
+        try:
+            # The anti-join must stay fixed while resumed outputs are appended.
+            with self._snapshot_processed_input_ids(processed) as processed_ids:
+                unprocessed_query = self.calculate_unprocessed_rows(
+                    unprocessed_input, processed_ids
+                )
 
-            # Count rows before populating with new rows
-            output_rows_reused = self.warehouse.table_rows_count(partial_table)
-            rows_input = self.warehouse.table_rows_count(input_table)
-            rows_to_process = self.warehouse.query_count(unprocessed_query)
-            rows_reused = rows_input - rows_to_process  # input rows reused
+                # Count rows before populating with new rows
+                output_rows_reused = self.warehouse.table_rows_count(partial_table)
+                rows_input = self.warehouse.table_rows_count(input_table)
+                rows_to_process = self.warehouse.query_count(unprocessed_query)
+                rows_reused = rows_input - rows_to_process  # input rows reused
 
-            self.populate_udf_output_table(
-                partial_table,
-                unprocessed_query,
-                continued=True,
-                rows_reused=rows_reused,
-                output_rows_reused=output_rows_reused,
-                rows_total=rows_input,
-                parts=parts,
-            )
+                self.populate_udf_output_table(
+                    partial_table,
+                    unprocessed_query,
+                    continued=True,
+                    rows_reused=rows_reused,
+                    output_rows_reused=output_rows_reused,
+                    rows_total=rows_input,
+                    parts=parts,
+                )
+        except BaseException:
+            if is_same_job:
+                self.warehouse.db.drop_table(source_table, if_exists=True)
+                self.warehouse.rename_table(partial_table, source_name)
+                if parts is not None and source_parts is not None:
+                    self.warehouse.db.drop_table(source_parts, if_exists=True)
+                    self.warehouse.rename_table(parts, parts_table_name(source_name))
+            raise
+
+        if is_same_job:
+            self.warehouse.db.drop_table(source_table, if_exists=True)
+            if source_parts is not None:
+                self.warehouse.db.drop_table(source_parts, if_exists=True)
 
         output_table = self._promote_partial(
             partial_table, parts, Checkpoint.output_table_name(job.id, hash_output)

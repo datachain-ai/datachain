@@ -129,3 +129,46 @@ def test_full_outer_join_preserves_all_rows(test_session):
     count_after = dc.read_dataset("test_merge", session=test_session).count()
 
     assert count_after == 6
+
+
+@pytest.mark.parametrize(
+    "keys,expected",
+    [
+        pytest.param(lambda left, right: ("id", "id"), [(2, 2), (3, 3)], id="column"),
+        pytest.param(
+            lambda left, right: ("id", None),
+            [(2, 2), (3, 3)],
+            id="column-without-right-on",
+        ),
+        pytest.param(
+            lambda left, right: (left.c("id") + 1, right.c("id") + 1),
+            [(2, 2), (3, 3)],
+            id="expression",
+        ),
+        pytest.param(
+            lambda left, right: (left.c("id") + 1, None),
+            [(2, 2), (3, 3)],
+            id="expression-without-right-on",
+        ),
+        pytest.param(
+            lambda left, right: (left.c("id") + 1, right.c("id")),
+            [(1, 2), (2, 3)],
+            id="asymmetric-expression",
+        ),
+    ],
+)
+def test_merge_branches_sharing_table(test_session, keys, expected):
+    chain = dc.read_values(id=[1, 2, 3], session=test_session)
+    right = chain.filter(dc.C("id") > 1)
+    on, right_on = keys(chain, right)
+
+    merged = chain.merge(right, on=on, right_on=right_on, inner=True)
+
+    assert merged.order_by("id").to_list() == expected
+    merged.save("shared_table_join")
+    assert (
+        dc.read_dataset("shared_table_join", session=test_session)
+        .order_by("id")
+        .to_list()
+        == expected
+    )

@@ -3,6 +3,8 @@ import logging
 import os
 import os.path
 import posixpath
+import socket
+import sqlite3
 import sys
 import time
 from collections.abc import Iterable, Iterator, Sequence
@@ -13,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 from fnmatch import fnmatchcase
 from functools import reduce
 from typing import TYPE_CHECKING, Any, Self
+from uuid import uuid4
 
 import sqlalchemy as sa
 from sqlalchemy import Column
@@ -91,7 +94,33 @@ PULL_DATASET_MAX_THREADS = 5
 PULL_DATASET_CHUNK_TIMEOUT = 3600
 PULL_DATASET_SLEEP_INTERVAL = 0.1  # sleep time while waiting for chunk to be available
 PULL_DATASET_CHECK_STATUS_INTERVAL = 20  # interval to check export status in Studio
-_MAX_VERSION_CLAIM_RETRIES = 5
+_MAX_VERSION_CLAIM_RETRIES = 20
+_ACTIVE_REMOVALS: set[str] = set()
+_REMOVAL_CLAIM_TTL_SEC = 300
+
+
+def _pid_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _is_active_removal_claim(claim: str | None, version_uuid: str) -> bool:
+    if not claim or not claim.startswith("removing:"):
+        return False
+    _, host, pid_str, ts_str, _ = claim.split(":", 4)
+    if time.time() - int(ts_str) > _REMOVAL_CLAIM_TTL_SEC:
+        return False
+    if host != socket.gethostname():
+        return True
+    pid = int(pid_str)
+    return (
+        version_uuid in _ACTIVE_REMOVALS if pid == os.getpid() else _pid_is_alive(pid)
+    )
 
 
 def _round_robin_batch(urls: list[str], num_workers: int) -> list[list[str]]:
@@ -926,6 +955,29 @@ class Catalog:
             content_hash=content_hash,
         )
 
+    def _recreate_dataset(
+        self,
+        dataset: "DatasetRecord",
+        name: str,
+        project: Project | None,
+        columns: Sequence[Column],
+        feature_schema: dict | None,
+        query_script: str,
+    ) -> "DatasetRecord":
+        schema = {
+            c.name: c.type.to_dict() for c in columns if isinstance(c.type, SQLType)
+        }
+        return self.metastore.create_dataset(
+            name,
+            project.id if project else None,
+            feature_schema=feature_schema,
+            query_script=query_script,
+            schema=schema,
+            ignore_if_exists=True,
+            description=dataset.description,
+            attrs=dataset.attrs,
+        )
+
     @staticmethod
     def _next_auto_version(dataset: "DatasetRecord", update_version: str | None) -> str:
         """Compute the next version for a dataset based on the update strategy."""
@@ -961,7 +1013,7 @@ class Catalog:
         auto-computed from the dataset and retried up to
         ``_MAX_VERSION_CLAIM_RETRIES`` times on conflict.
         """
-        max_retries = 0 if version else _MAX_VERSION_CLAIM_RETRIES
+        max_retries = _MAX_VERSION_CLAIM_RETRIES
         target_version = version or self._next_auto_version(dataset, update_version)
 
         for attempt in range(1 + max_retries):
@@ -981,17 +1033,30 @@ class Catalog:
                     f" the current latest one"
                 )
 
-            dataset, version_created = self.create_dataset_version(
-                dataset,
-                target_version,
-                feature_schema=feature_schema,
-                query_script=query_script,
-                sources=sources,
-                columns=columns,
-                uuid=uuid,
-                job_id=job_id,
-                content_hash=content_hash,
-            )
+            try:
+                dataset, version_created = self.create_dataset_version(
+                    dataset,
+                    target_version,
+                    feature_schema=feature_schema,
+                    query_script=query_script,
+                    sources=sources,
+                    columns=columns,
+                    uuid=uuid,
+                    job_id=job_id,
+                    content_hash=content_hash,
+                )
+            except (
+                DatasetNotFoundError,
+                sa.exc.IntegrityError,
+                sqlite3.IntegrityError,
+            ):
+                dataset = self._recreate_dataset(
+                    dataset, name, project, columns, feature_schema, query_script
+                )
+                target_version = version or self._next_auto_version(
+                    dataset, update_version
+                )
+                continue
 
             if version_created:
                 assert len(dataset.versions) == 1
@@ -999,7 +1064,7 @@ class Catalog:
                 return dataset
 
             # Another writer claimed this version between our check and insert.
-            if attempt >= max_retries:
+            if version or attempt >= max_retries:
                 break
 
             logger.debug(
@@ -1010,12 +1075,17 @@ class Catalog:
                 attempt + 1,
                 1 + max_retries,
             )
-            dataset = self.get_dataset(
-                name,
-                namespace_name=project.namespace.name if project else None,
-                project_name=project.name if project else None,
-                versions=None,
-            )
+            try:
+                dataset = self.get_dataset(
+                    name,
+                    namespace_name=project.namespace.name if project else None,
+                    project_name=project.name if project else None,
+                    versions=None,
+                )
+            except DatasetNotFoundError:
+                dataset = self._recreate_dataset(
+                    dataset, name, project, columns, feature_schema, query_script
+                )
             target_version = self._next_auto_version(dataset, update_version)
 
         if version:
@@ -1132,10 +1202,11 @@ class Catalog:
         updated = self.metastore.update_dataset_version(
             dataset,
             version,
+            expected_status=DatasetStatus.CREATED,
             expected_job_id=expected_job_id,
             **values,
         )
-        if expected_job_id is not None and updated is None:
+        if updated is None:
             raise ConcurrentDatasetModificationError(
                 f"Could not update status of {dataset.name}@{version}: "
                 f"current owner is not {expected_job_id}"
@@ -1303,17 +1374,9 @@ class Catalog:
         another caller had already claimed it.
         """
         v = dataset.get_version(version)
-
-        claimed = self.metastore.update_dataset_version(
-            dataset,
-            version,
-            expected_status=expected_status,
-            expected_job_id=expected_job_id,
-            status=DatasetStatus.REMOVING,
-            removed_at=v.removed_at or datetime.now(UTC),
-            pending_metadata_drop=not keep_metadata,
-        )
-        if claimed is None:
+        if v.status == DatasetStatus.REMOVING and _is_active_removal_claim(
+            v.content_hash, v.uuid
+        ):
             logger.debug(
                 "Skipped remove of %s@%s: another caller is already handling it",
                 dataset.name,
@@ -1321,18 +1384,55 @@ class Catalog:
             )
             return False
 
-        self.warehouse.drop_dataset_rows_table(dataset, version)
-
-        if keep_metadata:
-            self.metastore.update_dataset_version(
+        claim = (
+            f"removing:{socket.gethostname()}:{os.getpid()}"
+            f":{int(time.time())}:{uuid4().hex[:8]}"
+        )
+        _ACTIVE_REMOVALS.add(v.uuid)
+        try:
+            claimed = self.metastore.update_dataset_version(
                 dataset,
                 version,
-                expected_status=DatasetStatus.REMOVING,
-                status=DatasetStatus.REMOVED,
+                expected_status=expected_status,
+                expected_job_id=expected_job_id,
+                status=DatasetStatus.REMOVING,
+                removed_at=v.removed_at or datetime.now(UTC),
+                pending_metadata_drop=not keep_metadata,
+                content_hash=claim,
             )
-        else:
-            self.metastore.remove_dataset_version(dataset, version)
-        return True
+            if claimed is None:
+                logger.debug(
+                    "Skipped remove of %s@%s: another caller is already handling it",
+                    dataset.name,
+                    version,
+                )
+                return False
+
+            try:
+                self.warehouse.drop_dataset_rows_table(dataset, version)
+
+                if keep_metadata:
+                    self.metastore.update_dataset_version(
+                        dataset,
+                        version,
+                        expected_status=DatasetStatus.REMOVING,
+                        status=DatasetStatus.REMOVED,
+                        content_hash=None,
+                    )
+                else:
+                    self.metastore.remove_dataset_version(dataset, version)
+            except BaseException:
+                with suppress(Exception):
+                    self.metastore.update_dataset_version(
+                        dataset,
+                        version,
+                        expected_status=DatasetStatus.REMOVING,
+                        content_hash=None,
+                    )
+                raise
+            return True
+        finally:
+            _ACTIVE_REMOVALS.discard(v.uuid)
 
     def _remove_versions(
         self,
@@ -2537,9 +2637,13 @@ class Catalog:
 
         # Remove output/partial tables using exact names from checkpoints
         output_tables = [ch.table_name for ch in checkpoints]
-        output_tables += [
-            parts_table_name(ch.table_name) for ch in checkpoints if ch.partial
-        ]
+        for ch in checkpoints:
+            if ch.partial:
+                output_tables.append(parts_table_name(ch.table_name))
+                output_tables.extend(
+                    self.warehouse.db.list_tables(pattern=f"{ch.table_name}_%")
+                )
+        output_tables = list(dict.fromkeys(output_tables))
         if output_tables:
             logger.info(
                 "Removing %d UDF output tables: %s", len(output_tables), output_tables
