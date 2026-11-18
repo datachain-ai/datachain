@@ -761,7 +761,8 @@ def test_read_parquet_parts_falls_back_when_over_bound(
     raw = path.read_bytes()
     monkeypatch.setattr(arrow_mod, "PARTIAL_READ_PREFETCH_MAX_SIZE", 1)
     monkeypatch.setattr(arrow_mod, "PARQUET_FOOTER_SAMPLE_SIZE", 4096)
-    monkeypatch.setattr(arrow_mod, "PARQUET_RANGE_MAX_BYTES", 1)
+    # Column chunks (~8 KiB) fit under 10 KiB, but footer + chunks exceed it.
+    monkeypatch.setattr(arrow_mod, "PARQUET_RANGE_MAX_BYTES", 10_000)
     spy = mocker.spy(arrow_mod, "_read_parquet_parts")
 
     values = dc.read_parquet(
@@ -769,6 +770,16 @@ def test_read_parquet_parts_falls_back_when_over_bound(
     ).to_values("a")
 
     assert spy.spy_return == (len(raw), [(len(raw) - 4096, raw[-4096:])])
+    assert sorted(values) == list(range(1000))
+
+    # Full footer (~500 B) exceeds PARQUET_RANGE_MAX_BYTES when expanding a 64 B sample.
+    monkeypatch.setattr(arrow_mod, "PARQUET_FOOTER_SAMPLE_SIZE", 64)
+    monkeypatch.setattr(arrow_mod, "PARQUET_RANGE_MAX_BYTES", 128)
+    values = dc.read_parquet(
+        f"{http_server}/over.parquet", columns=["a"], session=test_session
+    ).to_values("a")
+
+    assert spy.spy_return == (len(raw), [])
     assert sorted(values) == list(range(1000))
 
 
@@ -825,12 +836,10 @@ def test_generator_prefetch_file_checks_archive_target_size(catalog, monkeypatch
     assert "_parquet_parts" not in member.__dict__
 
 
-def test_parquet_prefetch_deduplicates_and_waits_on_error(
-    tmp_path, catalog, monkeypatch, mocker
+def test_parquet_prefetch_deduplicates_versioned_files(
+    tmp_path, catalog, http_server, monkeypatch, mocker
 ):
     import io
-    import threading
-    import time
     from contextlib import contextmanager
 
     path = tmp_path / "multi.parquet"
@@ -851,12 +860,16 @@ def test_parquet_prefetch_deduplicates_and_waits_on_error(
         format="parquet",
     )
 
-    f1 = File(source="s3://bucket", path="multi.parquet", size=len(raw_bytes))
-    f2 = File(source="s3://bucket", path="multi.parquet", size=len(raw_bytes))
+    f1 = File(
+        source="s3://bucket", path="multi.parquet", size=len(raw_bytes), etag="e1"
+    )
+    f2 = File(
+        source="s3://bucket", path="multi.parquet", size=len(raw_bytes), etag="e1"
+    )
     f1._set_stream(catalog)
     f2._set_stream(catalog)
     client = catalog.get_client(f1.source)
-    mocker.patch.object(catalog, "get_client", return_value=client)
+    get_client_patch = mocker.patch.object(catalog, "get_client", return_value=client)
 
     calls = 0
 
@@ -873,9 +886,62 @@ def test_parquet_prefetch_deduplicates_and_waits_on_error(
     gen._prefetch_parquet(f2, ["a"])
     assert calls == 1
     assert f1.__dict__.pop("_parquet_parts") is f2.__dict__.pop("_parquet_parts")
+    mocker.stop(get_client_patch)
 
-    closed_while_running, running, idx = False, 0, 0
-    lock, entered_second = threading.Lock(), threading.Event()
+    # Overlapping reads of a mutable unversioned HTTP URL must not share cached bytes.
+    mutable_path = tmp_path / "mutable.parquet"
+    mutable_gen = ArrowGenerator(
+        pa.schema([("a", pa.int64())]),
+        dict_to_data_model("Row", {"a": int}),
+        columns=["a"],
+        prefetch_max_size=1,
+        format="parquet",
+    )
+    pq.write_table(pa.table({"a": [1]}), mutable_path)
+    u1 = File(
+        source=http_server, path="mutable.parquet", size=mutable_path.stat().st_size
+    )
+    u1._set_stream(catalog, caching_enabled=False)
+    mutable_gen._prefetch_parquet(u1, ["a"])
+
+    pq.write_table(pa.table({"a": [2]}), mutable_path)
+    u2 = File(
+        source=http_server, path="mutable.parquet", size=mutable_path.stat().st_size
+    )
+    u2._set_stream(catalog, caching_enabled=False)
+    mutable_gen._prefetch_parquet(u2, ["a"])
+
+    assert [row.a for _, row in mutable_gen.process(u1)] == [1]
+    assert [row.a for _, row in mutable_gen.process(u2)] == [2]
+
+
+def test_parquet_prefetch_waits_for_sibling_ranges_on_error(
+    tmp_path, catalog, monkeypatch, mocker
+):
+    import io
+    import threading
+    from contextlib import contextmanager
+
+    path = tmp_path / "multi.parquet"
+    pq.write_table(
+        pa.table({"a": [1, 2], "pad": [b"x" * 100_000, b"y" * 100_000]}),
+        path,
+        row_group_size=1,
+        compression="NONE",
+        use_dictionary=False,
+    )
+    raw_bytes = path.read_bytes()
+    monkeypatch.setattr(arrow_mod, "PARQUET_FOOTER_SAMPLE_SIZE", 4096)
+
+    f1 = File(source="s3://bucket", path="multi.parquet", size=len(raw_bytes))
+    f1._set_stream(catalog)
+    client = catalog.get_client(f1.source)
+
+    closed_while_running, running, calls = False, 0, 0
+    lock = threading.Lock()
+    entered_second = threading.Event()
+    first_raising = threading.Event()
+    release_second = threading.Event()
 
     @contextmanager
     def error_open_object(file, **kwargs):
@@ -883,16 +949,18 @@ def test_parquet_prefetch_deduplicates_and_waits_on_error(
         stream = io.BytesIO(raw_bytes)
 
         def fetch_range(s, e):
-            nonlocal idx, running
+            nonlocal calls, running
             with lock:
-                idx, running = idx + 1, running + 1
-                my_idx = idx
+                calls, running = calls + 1, running + 1
+                my_call = calls
             try:
-                if my_idx == 1:
-                    entered_second.wait(timeout=1)
+                if my_call == 1:
+                    assert entered_second.wait(timeout=5)
+                    first_raising.set()
                     raise OSError("boom")
                 entered_second.set()
-                time.sleep(0.05)
+                assert first_raising.wait(timeout=5)
+                release_second.wait(timeout=0.05)
                 return raw_bytes[s:e]
             finally:
                 with lock:
@@ -904,10 +972,14 @@ def test_parquet_prefetch_deduplicates_and_waits_on_error(
         finally:
             with lock:
                 closed_while_running = running > 0
+            release_second.set()
 
     mocker.patch.object(client, "open_object", side_effect=error_open_object)
     with pytest.raises(OSError, match="boom"):
         arrow_mod._read_parquet_parts(client, f1, ["a"])
+    assert calls == 2
+    assert entered_second.is_set()
+    assert first_raising.is_set()
     assert not closed_while_running
 
 
