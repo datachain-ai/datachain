@@ -5,18 +5,17 @@ from contextlib import contextmanager
 from dataclasses import replace
 from urllib.parse import parse_qsl, quote, urlparse
 
-import huggingface_hub
 from huggingface_hub import HfFileSystem, hf_file_system, hf_hub_url
 from huggingface_hub.constants import (
     HF_HUB_DOWNLOAD_TIMEOUT,
     REPO_TYPES_URL_PREFIXES,
 )
-from huggingface_hub.errors import HfHubHTTPError
 from huggingface_hub.hf_file_system import (
     SPECIAL_REFS_REVISION_REGEX,
     HfFileSystemFile,
     HfFileSystemStreamFile,
 )
+from huggingface_hub.utils import HfHubHTTPError
 
 
 @functools.cache
@@ -105,12 +104,12 @@ class PinnedHfFileSystem(HfFileSystem):
     """Use the listed commit even when a URI names a branch or tag."""
 
     def resolve_path(self, path, revision=None):
-        path = self._strip_protocol(path).removeprefix("models/")
+        path = self._strip_protocol(path)
         with _translate_auth_error():
             if revision is None or path.startswith("buckets/"):
                 return super().resolve_path(path)
 
-            if parse_uri := getattr(huggingface_hub, "parse_hf_uri", None):
+            if parse_uri := getattr(hf_file_system, "parse_hf_uri", None):
                 parsed = parse_uri(f"hf://{path}")
                 uri = replace(parsed, revision=revision).to_uri()
                 return super().resolve_path(uri, revision=revision)

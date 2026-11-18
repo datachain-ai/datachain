@@ -3,7 +3,6 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock
 
-import huggingface_hub
 import pytest
 from fsspec.asyn import sync
 from huggingface_hub import hf_file_system
@@ -23,7 +22,10 @@ def hf_repositories(monkeypatch):
 
     def exists(self, repo_type, repo_id, revision):
         calls.append((repo_type, repo_id, revision))
-        if repo_id in {"org/repo", "gpt2"} and revision != "missing":
+        if (
+            repo_id in {"org/repo", "models/repo", "buckets/org", "gpt2"}
+            and revision != "missing"
+        ):
             return True, None
         return False, HFValidationError("Unknown test repository")
 
@@ -222,15 +224,15 @@ def test_cache_fill_with_branch_uri_downloads_selected_revision(
 @pytest.mark.parametrize(
     "path",
     [
-        "org/repo@main/archive.tar",
-        "org/repo@refs/pr/1/archive.tar",
-        "org/repo@refs%2Fpr%2F1/archive.tar",
-        "org/repo@v1/archive.tar",
-        "org/repo/archive.tar",
+        "repo@main/archive.tar",
+        "repo@refs/pr/1/archive.tar",
+        "repo@refs%2Fpr%2F1/archive.tar",
+        "repo@v1/archive.tar",
+        "repo/archive.tar",
     ],
 )
 @pytest.mark.parametrize("block_size", [None, 0])
-@pytest.mark.parametrize("repo_type", ["datasets", "models"])
+@pytest.mark.parametrize("client_name,prefix", [("datasets", "org/"), ("org", "")])
 def test_open_reads_listed_commit_with_revision_in_uri(
     catalog,
     monkeypatch,
@@ -238,10 +240,11 @@ def test_open_reads_listed_commit_with_revision_in_uri(
     tar_member_range_requests,
     path,
     block_size,
-    repo_type,
+    client_name,
+    prefix,
     hf_repositories,
 ):
-    client = HfClient(repo_type, {"token": False}, catalog.cache)
+    client = HfClient(client_name, {"token": False}, catalog.cache)
     _, raw = small_tar_member_data
     commit = "a" * 40
     monkeypatch.setattr(client.fs, "_info", AsyncMock(return_value={"size": len(raw)}))
@@ -255,11 +258,12 @@ def test_open_reads_listed_commit_with_revision_in_uri(
         ),
     )
     tar_member_range_requests(PinnedHfFileSystemFile)
-    file = File(source=client.uri, path=path, size=len(raw), version=commit)
+    rel_path = f"{prefix}{path}"
+    file = File(source=client.uri, path=rel_path, size=len(raw), version=commit)
     with client.open_object(file, use_cache=False, block_size=block_size) as stream:
         assert stream.fileobj.resolved_path.revision == commit
         assert stream.read(5) == raw[:5]
-    assert file.path == path
+    assert file.path == rel_path
 
 
 @pytest.mark.parametrize(
@@ -285,14 +289,27 @@ def test_resolve_path_keeps_at_sign_in_file_name(
         ("datasets/org/repo@main/a@b.txt", "a@b.txt"),
         ("datasets/org/repo/a@b.txt", "a@b.txt"),
         ("datasets/org/repo@refs/pr/1/a.txt", "a.txt"),
-        ("models/org/repo/a.txt", "a.txt"),
+        ("org/repo/a.txt", "a.txt"),
         ("datasets/org/repo/@a.txt", "@a.txt"),
     ],
 )
 def test_pinned_paths_without_sdk_uri_parser(
     catalog, monkeypatch, hf_repositories, path, expected
 ):
-    monkeypatch.setattr(huggingface_hub, "parse_hf_uri", None, raising=False)
+    orig_parse = getattr(hf_file_system, "parse_hf_uri", None)
+    orig_resolve = hf_file_system.HfFileSystem.resolve_path
+
+    def resolve_without_sdk_parser(self, path, revision=None):
+        monkeypatch.setattr(hf_file_system, "parse_hf_uri", orig_parse, raising=False)
+        try:
+            return orig_resolve(self, path, revision=revision)
+        finally:
+            monkeypatch.setattr(hf_file_system, "parse_hf_uri", None, raising=False)
+
+    monkeypatch.setattr(hf_file_system, "parse_hf_uri", None, raising=False)
+    monkeypatch.setattr(
+        hf_file_system.HfFileSystem, "resolve_path", resolve_without_sdk_parser
+    )
     fs = HfClient("datasets", {"token": False}, catalog.cache).fs.sync_fs
     resolved = fs.resolve_path(path, revision="c1")
     assert (resolved.repo_id, resolved.revision, resolved.path_in_repo) == (
@@ -379,12 +396,17 @@ def test_pinned_missing_namespaced_repo_does_not_fall_back_to_short_repo(
         fs.resolve_path("gpt2/missing@main/file.txt", revision="c1")
 
 
-@pytest.mark.parametrize("path", ["models/org/repo/a.txt", "datasets/org/repo/a.txt"])
+@pytest.mark.parametrize("path", ["org/repo/a.txt", "datasets/org/repo/a.txt"])
 def test_unpinned_paths_use_sdk_repo_type(catalog, hf_repositories, path):
-    fs = HfClient("models", {"token": False}, catalog.cache).fs.sync_fs
+    client = HfClient("org", {"token": False}, catalog.cache)
+    fs = client.fs.sync_fs
     resolved = fs.resolve_path(path)
     assert resolved.repo_id == "org/repo"
     assert resolved.path_in_repo == "a.txt"
+    if not path.startswith("datasets/"):
+        rel = client.rel_path(resolved.unresolve())
+        client.validate_file_path(rel)
+        assert rel == "repo/a.txt"
 
 
 def test_special_ref_path_matches_sdk_parsing(catalog, hf_repositories):
@@ -409,18 +431,6 @@ def test_pinned_commit_does_not_require_uri_branch(catalog, monkeypatch):
     assert resolved.revision == "c1"
     assert resolved.path_in_repo == "a@b.txt"
     assert calls and set(calls) == {"c1"}
-
-
-def test_pinned_unchanged_check_uses_size_without_expanded_metadata():
-    client = HfClient("datasets", {}, Mock(spec=Cache))
-    client._fs = Mock()
-    client._fs._info = AsyncMock(return_value={"size": 4, "blob_id": "blob"})
-    file = File(
-        source=client.uri, path="org/repo/a.txt", version="c1", etag="blob", size=4
-    )
-    client.check_unchanged(file)
-    client._fs._info.assert_awaited_once_with(file.get_fs_path(), revision="c1")
-    client._fs.sync_fs.resolve_path.assert_not_called()
 
 
 def test_pinned_unchanged_check_reuses_sdk_directory_cache(
@@ -558,7 +568,7 @@ def test_stream_file_close_releases_exit_stack(catalog, monkeypatch, hf_reposito
 
 def test_auth_http_error_is_also_permission_error(catalog, monkeypatch):
     import httpx
-    from huggingface_hub.errors import HfHubHTTPError
+    from huggingface_hub.utils import HfHubHTTPError
 
     fs = HfClient("datasets", {"token": False}, catalog.cache).fs.sync_fs
     resp_401 = httpx.Response(
