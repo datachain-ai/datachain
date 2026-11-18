@@ -1,17 +1,19 @@
 import hashlib
+import sys
 from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, TypeGuard
 
 import pyarrow as pa
+import pyarrow.compute as pc
 from fsspec.implementations.local import LocalFileSystem
 from pyarrow._csv import ParseOptions
 from pyarrow.dataset import CsvFileFormat, Dataset, ParquetFileFormat, dataset
 from pyarrow.fs import FileInfo, FileType, FSSpecHandler, PyFileSystem
 
 from datachain import json
-from datachain.data_storage.warehouse import to_json_text
+from datachain.data_storage.codec import to_json_text
 from datachain.fs.reference import ReferenceFileSystem
 from datachain.lib.convert.flatten import classify_field, flatten, iter_field_columns
 from datachain.lib.convert.unflatten import ABSENT, unflatten_to_json_pos
@@ -27,7 +29,7 @@ from datachain.lib.data_model import (
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema, SignalSchemaError
-from datachain.lib.udf import FlatRow, Generator
+from datachain.lib.udf import Generator
 from datachain.lib.utils import normalize_col_names
 from datachain.progress import tqdm
 from datachain.utils import safe_closing
@@ -133,7 +135,8 @@ def pyarrow_fs(file: File, format):
 
 
 class ArrowGenerator(Generator):
-    DEFAULT_BATCH_SIZE = 2**17  # same as `pyarrow._dataset._DEFAULT_BATCH_SIZE`
+    # Rows per scanned batch: small enough to bound memory over many files.
+    DEFAULT_BATCH_SIZE = 2**14
 
     def __init__(
         self,
@@ -219,12 +222,13 @@ class ArrowGenerator(Generator):
 
         source_kwargs = self._source_kwargs() if self.source else None
         schema = ds.schema
-        kw: dict[str, Any] = {}
-        if self.nrows:
-            kw = {"batch_size": min(self.DEFAULT_BATCH_SIZE, self.nrows)}
+        kw: dict[str, Any] = {
+            "batch_size": min(self.DEFAULT_BATCH_SIZE, self.nrows or sys.maxsize),
+            "batch_readahead": 1,
+        }
         if (names := self._flat_columns(schema)) is not None:
             kw["columns"] = names
-            yield from self._flat_rows(self._batches(ds, kw), file, source_kwargs)
+            yield from self._column_batches(self._batches(ds, kw), file, source_kwargs)
             return
         if self.datachain_read:
             objs = self._signal_objects(ds, kw)
@@ -301,30 +305,41 @@ class ArrowGenerator(Generator):
         names = (self.columns or schema.names)[: len(fields)]
         for name, field in zip(names, fields, strict=True):
             i = schema.get_field_index(name)
-            if i < 0 or not _is_plain_type(col_type := schema.field(i).type):
+            if i < 0 or not _is_plain_type(
+                col_type := schema.field(i).type, top_level=True
+            ):
                 return None
             if classify_field(field.annotation).inner != arrow_type_mapper(col_type):
                 return None
         return names
 
-    def _flat_rows(
+    def _column_batches(
         self,
         batches: Iterator[tuple[int, pa.RecordBatch]],
         file: File,
         source_kwargs: dict[str, Any] | None,
-    ) -> Iterator[FlatRow]:
+    ) -> Iterator[pa.RecordBatch]:
+        """The batches as the output's leaf columns, with no row built in Python."""
         if source_kwargs is not None:
             # Every row's source is the same but its index: the file's columns,
             # the index, then the read options.
             source = ArrowRow(file=file, index=0, kwargs=source_kwargs)
             *file_values, _, stored_options = map(_json_text, flatten(source))
         for start, batch in batches:
-            rows = zip(*(c.to_pylist() for c in batch.columns), strict=True)
-            if source_kwargs is None:
-                yield from map(FlatRow, rows)
-            else:
-                for index, values in enumerate(rows, start):
-                    yield FlatRow((*file_values, index, stored_options, *values))
+            if not batch.num_rows:
+                continue
+            columns = [_microseconds(c) for c in batch.columns]
+            if source_kwargs is not None:
+                n = batch.num_rows
+                columns = [
+                    *(pa.repeat(v, n) for v in file_values),
+                    pa.array(range(start, start + n)),
+                    pa.repeat(stored_options, n),
+                    *columns,
+                ]
+            yield pa.RecordBatch.from_arrays(
+                columns, names=[str(i) for i in range(len(columns))]
+            )
 
     def _signal_objects(self, ds: Dataset, kw: dict[str, Any]) -> Iterator["BaseModel"]:
         """Read each row of a file written by DataChain into the output model by
@@ -787,14 +802,15 @@ def _is_scalar_type(col_type: pa.DataType) -> bool:
     )
 
 
-def _is_plain_type(col_type: pa.DataType) -> bool:
+def _is_plain_type(col_type: pa.DataType, top_level: bool = False) -> bool:
     """Whether pyarrow gives the column's values as pydantic and the DB keep them,
-    typed as `arrow_type_mapper` types them."""
+    typed as `arrow_type_mapper` types them. A top-level column counts after
+    `_microseconds`."""
     if pa.types.is_dictionary(col_type) or pa.types.is_list(col_type):
         return _is_plain_type(col_type.value_type)
     if pa.types.is_timestamp(col_type):
         # pyarrow gives nanoseconds as pandas Timestamps.
-        return col_type.unit != "ns"
+        return top_level or col_type.unit != "ns"
     return (
         pa.types.is_integer(col_type)
         or pa.types.is_float32(col_type)
@@ -804,6 +820,21 @@ def _is_plain_type(col_type: pa.DataType) -> bool:
         or pa.types.is_large_string(col_type)
         or pa.types.is_binary(col_type)
         or pa.types.is_null(col_type)
+    )
+
+
+def _microseconds(column: pa.Array) -> pa.Array:
+    """A nanosecond timestamp column floored to microseconds, as the DB stores it."""
+    col_type = column.type
+    if not pa.types.is_timestamp(col_type) or col_type.unit != "ns":
+        return column
+    naive = column.cast(pa.timestamp("ns"))
+    micros = naive.cast(pa.timestamp("us"), safe=False)
+    # A cast truncates towards zero. Correct negative fractions without flooring
+    # in ns, which would overflow int64 at the earliest representable timestamp.
+    rounded_up = pc.greater(micros.cast(pa.timestamp("ns")), naive).cast(pa.int64())
+    return pc.subtract(micros.cast(pa.int64()), rounded_up).cast(
+        pa.timestamp("us", tz=col_type.tz)
     )
 
 
