@@ -1,5 +1,6 @@
 import enum
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Annotated, Dict, Literal, Union  # noqa: UP035
 
 import pytest
@@ -277,4 +278,15 @@ def test_python_to_sql_does_not_run_a_field_validator():
     assert python_to_sql(annotation).to_dict() == {
         "type": "Array",
         "item_type": {"type": "Int64"},
+    }
+
+
+def test_an_optional_nested_array_keeps_a_typed_leaf():
+    assert python_to_sql(list[list[datetime] | None]).to_dict() == {
+        "type": "Array",
+        "item_type": {"type": "Array", "item_type": {"type": "DateTime"}},
+    }
+    assert python_to_sql(list[list[int] | None]).to_dict() == {
+        "type": "Array",
+        "item_type": {"type": "JSON", "dc_nullable": True},
     }
