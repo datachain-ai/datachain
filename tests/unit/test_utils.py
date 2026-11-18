@@ -13,7 +13,6 @@ from datachain.testing import drop_all_tables
 from datachain.utils import (
     _cpu_quotas,
     batched,
-    batched_it,
     checkpoints_enabled,
     datachain_paths_join,
     determine_processes,
@@ -27,7 +26,6 @@ from datachain.utils import (
     suffix_to_number,
     usable_cpu_count,
     uses_glob,
-    with_last_flag,
 )
 
 DATACHAIN_TEST_PATHS = ["/file1", "file2", "/dir/file3", "dir/file4"]
@@ -288,30 +286,6 @@ def test_batched_row_limit():
     assert batches[3] == (12, 13, 14)
 
 
-@pytest.mark.parametrize(
-    "num_rows,batch_size",
-    (
-        (300_000, 500),
-        (100_000, 500),
-        (100_000, 100_000),
-        (1, 1),
-    ),
-)
-def test_batched_it(num_rows, batch_size):
-    rows = iter(list(range(num_rows)))
-    batches = batched_it(iter(rows), batch_size)
-    num_batches = 0
-    uniq_data = set()
-    for batch in batches:
-        num_batches += 1
-        batch_l = list(batch)
-        assert len(batch_l) == batch_size
-        uniq_data.update(batch_l)
-
-    assert num_batches == num_rows / batch_size
-    assert len(uniq_data) == num_rows
-
-
 def test_interprocess_file_lock_writes_pid_and_releases(tmp_path):
     lock_path = tmp_path / "pull.lock"
     pid_path = Path(f"{lock_path.as_posix()}.pid")
@@ -417,35 +391,6 @@ def test_interprocess_file_lock_no_dir_in_path(tmp_path, monkeypatch):
     bare = "bare_test.lock"
     with interprocess_file_lock(bare, timeout=0):
         assert (tmp_path / bare).exists()
-
-
-def gen3():
-    yield from range(3)
-
-
-@pytest.mark.parametrize(
-    "input_data, expected",
-    [
-        (
-            [10, 20, 30],
-            [(10, False), (20, False), (30, True)],
-        ),
-        (
-            [42],
-            [(42, True)],
-        ),
-        (
-            [],
-            [],
-        ),
-        (
-            gen3(),  # generator input
-            [(0, False), (1, False), (2, True)],
-        ),
-    ],
-)
-def test_with_last_flag(input_data, expected):
-    assert list(with_last_flag(input_data)) == expected
 
 
 def test_checkpoints_enabled_default():

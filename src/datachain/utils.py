@@ -260,24 +260,6 @@ def global_config_dir():
     )
 
 
-def human_time_to_int(time: str) -> int | None:
-    if not time:
-        return None
-
-    suffix = time[-1]
-    try:
-        num = int(time if suffix.isdigit() else time[:-1])
-    except ValueError:
-        return None
-    return num * {
-        "h": 60 * 60,
-        "d": 60 * 60 * 24,
-        "w": 60 * 60 * 24 * 7,
-        "m": 31 * 24 * 60 * 60,
-        "y": 60 * 60 * 24 * 365,
-    }.get(suffix.lower(), 1)
-
-
 def time_to_str(dt):
     if isinstance(dt, str):
         dt = isoparse(dt)
@@ -377,16 +359,6 @@ def batched(iterable: Iterable[_T_co], batch_size: int) -> Iterator[tuple[_T_co,
     The last batch may be shorter.
     """
     yield from (tuple(batch) for batch in _dynamic_batched_core(iterable, batch_size))
-
-
-def batched_it(
-    iterable: Iterable[_T_co],
-    batch_size: int = DEFAULT_BATCH_SIZE,
-) -> Iterator[Iterator[_T_co]]:
-    """
-    Batch data into iterators with dynamic sizing based on row count and memory usage.
-    """
-    yield from (iter(batch) for batch in _dynamic_batched_core(iterable, batch_size))
 
 
 def flatten(items):
@@ -597,18 +569,6 @@ def worker_threads() -> int | None:
     with suppress(KeyError, ValueError):
         return max(1, int(os.environ[WORKER_THREADS_ENV]))
     return None
-
-
-def get_env_list(
-    key: str, default: Sequence | None = None, sep: str = ","
-) -> Sequence[str] | None:
-    try:
-        str_val = os.environ[key]
-    except KeyError:
-        return default
-    return str_val.split(sep=sep)
-
-
 def show_df(
     df: "pd.DataFrame", collapse_columns: bool = True, system_columns: bool = False
 ) -> None:
@@ -639,23 +599,6 @@ def show_df(
 
     with pd.option_context("display.max_rows", None, *options):  # show all rows
         print(df)
-
-
-def show_records(
-    records: list[dict] | None,
-    collapse_columns: bool = False,
-    system_columns: bool = False,
-    hidden_fields: list[str] | None = None,
-) -> None:
-    import pandas as pd
-
-    if not records:
-        return
-
-    df = pd.DataFrame.from_records(records)
-    if hidden_fields:
-        df = df.drop(columns=hidden_fields, errors="ignore")
-    return show_df(df, collapse_columns=collapse_columns, system_columns=system_columns)
 
 
 def inside_colab() -> bool:
@@ -798,26 +741,3 @@ def ensure_sequence(x) -> Sequence:
     if isinstance(x, Sequence) and not isinstance(x, (str, bytes)):
         return x
     return [x]
-
-
-def with_last_flag(iterable):
-    """
-    Returns flag saying is this element the last in the iterator or not, together
-    with the element.
-
-    Example:
-    for item, is_last in with_last_flag(my_gen()):
-        ...
-    """
-    it = iter(iterable)
-    try:
-        prev = next(it)
-    except StopIteration:
-        return
-
-    for item in it:
-        yield prev, False
-        prev = item
-
-    # last item
-    yield prev, True
