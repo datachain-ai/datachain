@@ -30,7 +30,6 @@ from datachain.remote.credentials import (
     load_logins,
     normalize_url,
     remove_login,
-    select_login,
 )
 from datachain.remote.studio import (
     StudioClient,
@@ -394,35 +393,29 @@ def list_logins():
         print(f"Studio URL: {url}")
     print(f"Default team: {team or 'not set'}")
 
-    logins = all_logins()
     rows = []
-    current = None
     if os.environ.get(TOKEN_ENV):
-        rows.append(["->", url, "*", "", "", f"${TOKEN_ENV}"])
-    else:
-        current = select_login(logins, url, team)
+        rows.append([url, "*", "", "", f"${TOKEN_ENV}"])
     rows.extend(
         [
-            "->" if login is current else "",
             login.url,
-            # *: saved without --team, the fallback for any team.
+            # *: saved without --team, the fallback when no token is for the team.
             "*" if login.teams is None else ", ".join(login.teams),
             login.name or "",
             login.expires or "",
             login.path,
         ]
-        for login in logins
+        for login in all_logins()
     )
 
     if not rows:
         print("Not logged in to Studio. Log in with 'datachain auth login'.")
         return 0
 
-    headers = ["", "Studio", "Teams", "Name", "Expires", "Saved in"]
-    if not any(self_hosted(row[1]) for row in rows):
+    headers = ["Studio", "Teams", "Name", "Expires", "Saved in"]
+    if not any(self_hosted(row[0]) for row in rows):
         # All for the default Studio, so the column says nothing.
-        headers.pop(1)
-        rows = [[row[0], *row[2:]] for row in rows]
+        headers, rows = headers[1:], [row[1:] for row in rows]
     print()
     print(tabulate.tabulate(rows, headers=headers))
     return 0

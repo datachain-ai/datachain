@@ -678,9 +678,8 @@ def test_studio_auth_list(capsys):
     assert lines[0] == "Default team: acme"
     # The default Studio goes unnamed.
     assert STUDIO_URL not in out
-    [current] = [line for line in lines if line.startswith("->")]
-    assert current.split()[1] == "*"
-    assert any("customer-x" in line and not line.startswith("->") for line in lines)
+    # The fallback token, saved without --team, shows as `*`.
+    assert [line.split()[0] for line in lines[4:]] == ["*", "customer-x"]
     assert "isat_access_token" not in out + err
     assert "customer_token" not in out + err
 
@@ -695,20 +694,17 @@ def test_studio_auth_list_names_a_self_hosted_studio(capsys):
 
     lines = capsys.readouterr().out.splitlines()
     assert lines[0] == f"Studio URL: {OTHER_URL}"
-    [current] = [line for line in lines if line.startswith("->")]
-    assert OTHER_URL in current
-    assert any(STUDIO_URL in line for line in lines if not line.startswith("->"))
+    assert sorted(line.split()[0] for line in lines[5:]) == [OTHER_URL, STUDIO_URL]
 
 
-def test_studio_auth_list_marks_env_token(capsys, monkeypatch):
+def test_studio_auth_list_shows_env_token_first(capsys, monkeypatch):
     studio_login()
     monkeypatch.setenv("DATACHAIN_STUDIO_TOKEN", "env_token")
 
     assert main(["auth", "list"]) == 0
 
     out, err = capsys.readouterr()
-    [current] = [line for line in out.splitlines() if line.startswith("->")]
-    assert "$DATACHAIN_STUDIO_TOKEN" in current
+    assert "$DATACHAIN_STUDIO_TOKEN" in out.splitlines()[4]
     assert "env_token" not in out + err
     assert "isat_access_token" not in out + err
 

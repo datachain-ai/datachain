@@ -17,7 +17,7 @@ This command lists the Studio tokens saved for you and for this project, and sho
 * `Expires` - The date the token expires.
 * `Saved in` - The file the token is saved in.
 
-The token used for the default team is marked with `->`. See [`datachain auth login`](login.md) for how DataChain picks it. If `DATACHAIN_STUDIO_TOKEN` is set, it is listed first and marked instead, because it is used for every team.
+If `DATACHAIN_STUDIO_TOKEN` is set, it is listed first: it is used for every team, before the saved tokens. See [`datachain auth login`](login.md) for how DataChain picks a token.
 
 Token values are not shown. Run [`datachain auth token`](token.md) to print one.
 
@@ -39,8 +39,8 @@ datachain auth list
 ```
 Default team: acme
 
-    Teams       Name        Expires     Saved in
---  ----------  ----------  ----------  -------------------------------
-->  *           laptop      2027-11-16  ~/.config/datachain/credentials
-    customer-x  customer-x  2027-02-14  ~/.config/datachain/credentials
+Teams       Name        Expires     Saved in
+----------  ----------  ----------  -------------------------------
+*           laptop      2027-11-16  ~/.config/datachain/credentials
+customer-x  customer-x  2027-02-14  ~/.config/datachain/credentials
 ```

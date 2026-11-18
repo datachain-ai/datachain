@@ -176,10 +176,7 @@ def add_auth_parser(subparsers, parent_parser) -> None:
     )
 
     auth_list_help = "List saved Studio tokens"
-    auth_list_description = (
-        "List the Studio tokens saved for this project and user, and mark the one "
-        "used for the default team."
-    )
+    auth_list_description = "List the Studio tokens saved for this project and user."
 
     auth_subparser.add_parser(
         "list",

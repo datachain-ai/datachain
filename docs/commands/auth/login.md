@@ -28,7 +28,7 @@ A command runs for a team: the one given with `--team`, or the default team (see
 
 A token saved with `--team` is used only for those teams. A token saved without `--team` is the fallback: DataChain uses it when no token is saved for the command's team. Which teams Studio accepts it for depends on what you chose in Studio when you logged in. You can keep both, for example a token for a team from another account, or a token with fewer permissions for one team.
 
-Run [`datachain auth list`](list.md) to see the saved tokens and which one is used. If that token has expired, the command fails and names the token to replace; DataChain does not switch to another token, which could belong to another account.
+Run [`datachain auth list`](list.md) to see the saved tokens. If the token picked has expired, the command fails and names the token to replace; DataChain does not switch to another token, which could belong to another account.
 
 If you log in with exactly one `--team` and no default team is set yet, that team becomes the default team.
 
