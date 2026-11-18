@@ -18,6 +18,7 @@ import pytest
 from pyarrow.dataset import ParquetFileFormat
 
 import datachain as dc
+import datachain.lib.listing as listing_lib
 from datachain import DataModel, func
 from datachain.dataset import DatasetDependencyType
 from datachain.fs.utils import path_to_fsspec_uri
@@ -292,6 +293,8 @@ def test_read_storage_versions(cloud_test_catalog, cloud_prefix):
     assert current.to_list("file.path", "file.size", "file.version") == [
         (f"{prefix}/kept", 2, "")
     ]
+    rows = dc.list_storage(uri, session=session, versions=False)
+    assert [(r.path, r.version) for r in rows] == [(f"{prefix}/kept", "")]
     # the two listings are cached apart and hold different rows
     assert listing(True).versions
     assert not listing(False).versions
@@ -302,6 +305,81 @@ def test_read_storage_versions(cloud_test_catalog, cloud_prefix):
         listing(True).name,
         listing(False).name,
     }
+
+
+@pytest.mark.parametrize(
+    "cloud_type,version_aware",
+    [("s3", True), ("gs", True)],
+    indirect=True,
+)
+def test_read_storage_all_versions_reads_the_latest_listing(
+    cloud_test_catalog, cloud_prefix, mocker
+):
+    ctc = cloud_test_catalog
+    session = ctc.session
+    prefix = cloud_prefix
+    (ctc.src / prefix / "kept").write_text("1")
+    (ctc.src / prefix / "kept").write_text("22")
+    (ctc.src / prefix / "gone").write_text("x")
+    (ctc.src / prefix / "gone").unlink()
+    uri = f"{ctc.src_uri}/{prefix}"
+    write_listing = mocker.spy(listing_lib, "write_listing")
+
+    latest = dc.read_storage(uri, session=session)
+    every = dc.read_storage(uri, session=session, versions="all")
+
+    assert latest.to_list("file.path", "file.is_deleted") == [(f"{prefix}/kept", False)]
+    assert [r.path for r in dc.list_storage(uri, session=session)] == [f"{prefix}/kept"]
+    assert sorted(
+        every.to_list("file.path", "file.size", "file.is_latest", "file.is_deleted")
+    ) == [
+        (f"{prefix}/gone", 0, False, True),
+        (f"{prefix}/gone", 1, False, False),
+        (f"{prefix}/kept", 1, False, False),
+        (f"{prefix}/kept", 2, True, False),
+    ]
+    (listing,) = session.catalog.listings(prefix=f"{uri}/")
+    assert listing.name == parse_listing_uri(uri)[0]
+    assert write_listing.call_count == 1
+
+
+@pytest.mark.parametrize("versions", [False, True, "all"])
+def test_versions_of_unversioned_storage_give_the_same_rows(
+    tmp_dir, test_session, versions
+):
+    (tmp_dir / "a.txt").write_text("a")
+    uri = tmp_dir.as_uri()
+
+    chain = dc.read_storage(uri, session=test_session, versions=versions)
+
+    assert chain.to_list("file.path", "file.is_latest") == [("a.txt", True)]
+    rows = dc.list_storage(uri, session=test_session, versions=versions)
+    assert [r.path for r in rows] == ["a.txt"]
+    assert [ls.name for ls in test_session.catalog.listings()] == [
+        parse_listing_uri(f"{uri}/")[0]
+    ]
+
+
+@pytest.mark.parametrize("versions", ["latest", 2, 0, 1, 1.0, np.bool_(True)])
+@pytest.mark.parametrize("reader", [dc.read_storage, dc.list_storage])
+def test_storage_rejects_unknown_versions(tmp_dir, test_session, versions, reader):
+    with pytest.raises(ValueError, match="versions must be"):
+        reader(tmp_dir.as_uri(), session=test_session, versions=versions)
+
+
+def test_read_storage_versions_none_lists_current_objects(tmp_dir, test_session):
+    (tmp_dir / "a.txt").write_text("a")
+
+    chain = dc.read_storage(tmp_dir.as_uri(), session=test_session, versions=None)
+
+    assert chain.to_values("file.path") == ["a.txt"]
+
+
+def test_read_storage_all_versions_refuses_delta(tmp_dir, test_session):
+    with pytest.raises(ValueError, match="delta is not supported"):
+        dc.read_storage(
+            tmp_dir.as_uri(), session=test_session, versions="all", delta=True
+        )
 
 
 @pytest.mark.parametrize(

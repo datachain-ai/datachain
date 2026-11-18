@@ -403,6 +403,14 @@ class Client(ABC):
     def _is_version_aware(self) -> bool:
         return getattr(self.fs, "version_aware", False)
 
+    def _deleted_row(self, path: str, version: str, last_modified: datetime) -> tuple:
+        """A row for a deleted object: ``path`` was deleted at ``last_modified``."""
+        from datachain.lib.file import FileRow
+
+        return FileRow(
+            self.uri, path, 0, version, "", False, last_modified, is_deleted=True
+        )
+
     def _version_kwargs(self, version_id: str | None) -> dict[str, Any]:
         if version_id:
             return {"version_id": version_id}
@@ -627,6 +635,7 @@ class Client(ABC):
         sync(get_loop(), functools.partial(self._put_in_cache, file, callback=callback))
 
     async def _put_in_cache(self, file: "File", *, callback: "Callback" = None) -> None:
+        file._raise_if_deleted()
         assert not file.location
         await self._check_unchanged(file)
         await self.cache.download(file, self, callback=callback)

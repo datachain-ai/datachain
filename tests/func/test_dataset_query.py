@@ -381,7 +381,7 @@ def test_mutate(cloud_test_catalog, save, animal_dataset):
     else:
         result = q.db_results(row_factory=lambda c, v: dict(zip(c, v, strict=False)))
     assert len(result) == 4
-    assert len(result[0]) == 16
+    assert len(result[0]) == 17
     cols = {"size10x", "size1000x", "s2", "s3", "s4"}
     new_data = [[v for k, v in r.items() if k in cols] for r in result]
     assert new_data == [

@@ -270,6 +270,7 @@ class DataTable:
             sa.Column("file__last_modified", DateTime()),
             sa.Column("file__location", JSON()),
             sa.Column("file__md5", String()),
+            sa.Column("file__is_deleted", Boolean()),
         ]
 
     def dir_expansion(self):
