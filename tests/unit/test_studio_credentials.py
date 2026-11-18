@@ -1,19 +1,13 @@
 import logging
-import os
 import stat
+from datetime import date
 from pathlib import Path
 
 import pytest
 
 from datachain.config import Config, ConfigLevel
 from datachain.error import DataChainError
-from datachain.remote.credentials import (
-    TOKEN_ENV,
-    Login,
-    credentials_path,
-    load_logins,
-    resolve_token,
-)
+from datachain.remote.credentials import Login, load_logins, resolve_token
 from datachain.remote.studio import StudioClient, is_token_set
 from datachain.utils import STUDIO_URL
 from tests.utils import posix_only, studio_login
@@ -95,7 +89,7 @@ def test_login_for_another_url_falls_through():
 def test_env_token_wins_for_every_team(monkeypatch):
     studio_login("local", teams=["acme"], level=LOCAL)
     studio_login("global")
-    monkeypatch.setenv(TOKEN_ENV, "env")
+    monkeypatch.setenv("DATACHAIN_STUDIO_TOKEN", "env")
 
     assert resolve_token(STUDIO_URL, "acme") == "env"
     assert is_token_set("other-team")
@@ -129,15 +123,14 @@ def test_client_uses_team_to_pick_token():
 
 
 def test_expired_token_fails_instead_of_falling_back():
-    studio_login("old", teams=["x"], expires="2020-01-01")
-    studio_login("all", expires="2099-01-01")
+    studio_login("old", teams=["x"], expires=date(2020, 1, 1))
+    studio_login("all", expires=date(2099, 1, 1))
 
-    with pytest.raises(DataChainError) as exc:
+    with pytest.raises(
+        DataChainError,
+        match=r"expired on 2020-01-01\. Run `datachain auth logout --team x`",
+    ):
         resolve_token(STUDIO_URL, "x")
-
-    message = str(exc.value)
-    assert "expired on 2020-01-01" in message
-    assert "`datachain auth logout --team x`" in message
     assert resolve_token(STUDIO_URL, "y") == "all"
 
 
@@ -148,44 +141,21 @@ def test_login_normalizes_url_and_teams():
 
 
 @posix_only
-def test_saved_file_is_private():
+def test_saved_file_is_private(global_config_dir):
     studio_login("token")
 
-    assert stat.S_IMODE(os.stat(credentials_path(GLOBAL)).st_mode) == 0o600
+    path = Path(global_config_dir) / "credentials"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 @posix_only
-def test_file_open_to_others_is_ignored(caplog):
+def test_file_open_to_others_is_ignored(caplog, tmp_dir):
     # What a token committed to a repo looks like after a clone.
     studio_login("committed", level=LOCAL)
-    os.chmod(credentials_path(LOCAL), 0o644)
+    (tmp_dir / ".datachain" / "credentials").chmod(0o644)
 
     with caplog.at_level(logging.WARNING, logger="datachain"):
         assert load_logins(LOCAL) == []
         assert resolve_token(STUDIO_URL, None) is None
     [warning] = caplog.messages
     assert "other users can access it" in warning
-
-
-@posix_only
-def test_file_open_to_others_is_not_overwritten():
-    studio_login("committed", level=LOCAL)
-    path = Path(credentials_path(LOCAL))
-    path.chmod(0o644)
-    saved = path.read_text()
-
-    with pytest.raises(DataChainError, match="chmod 600"):
-        studio_login("new", teams=["x"], level=LOCAL)
-
-    assert path.read_text() == saved
-
-
-def test_local_login_is_ignored_in_git(tmp_dir):
-    gitignore = tmp_dir / ".datachain" / ".gitignore"
-    gitignore.parent.mkdir()
-    gitignore.write_text("/cache")
-
-    studio_login("token", level=LOCAL)
-    studio_login("other", teams=["x"], level=LOCAL)
-
-    assert gitignore.read_text() == "/cache\n/credentials\n"

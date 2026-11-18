@@ -1,13 +1,13 @@
 """Studio logins: tokens kept outside the config, each bound to one Studio URL.
 
-A login holds a token for one Studio URL, scoped either to a list of teams or to
-all teams the token can reach. Logins live in a ``credentials`` file next to the
+A login holds a token for one Studio URL, either for a list of teams or for all
+teams the token can reach. Logins live in a ``credentials`` file next to the
 config: in the project's ``.datachain/`` (``--local``) or in the global config dir.
 The file is written ``0600`` and ignored if other users can read it.
 
 A command finds its token from the Studio URL and team it acts on:
 ``DATACHAIN_STUDIO_TOKEN`` first, then the project's logins, then the user's. At
-each level a login scoped to the team wins over an all-teams login.
+each level a token for the team wins over a token for all teams.
 """
 
 import logging
@@ -42,8 +42,7 @@ class Login:
     # None: every team the token can reach.
     teams: list[str] | None = None
     name: str | None = None
-    # ISO date, as saved by `datachain auth login`.
-    expires: str | None = None
+    expires: date | None = None
     level: ConfigLevel = ConfigLevel.GLOBAL
     # Path of the file the login was read from or is saved to.
     path: str = field(default="", compare=False)
@@ -54,34 +53,28 @@ class Login:
             self.teams = list(dict.fromkeys(self.teams))
 
     def covers(self, team: str | None) -> bool:
-        return self.teams is None or (team is not None and team in self.teams)
+        return self.teams is None or team in self.teams
 
     def describe_teams(self) -> str:
         return "all teams" if self.teams is None else ", ".join(self.teams)
 
     def expired(self) -> bool:
-        try:
-            return date.fromisoformat(self.expires or "") < datetime.now(UTC).date()
-        except ValueError:
-            return False
+        return self.expires is not None and self.expires < datetime.now(UTC).date()
+
+    def logout_command(self, team: str | None = None, host: bool = False) -> str:
+        """The `datachain auth logout` command that removes this login.
+
+        For a token for teams, `team` picks the team to name; it defaults to the
+        first.
+        """
+        host_flag = f" -H {self.url}" if host else ""
+        team_flag = f" --team {team or self.teams[0]}" if self.teams else ""
+        local_flag = " --local" if self.level == ConfigLevel.LOCAL else ""
+        return f"datachain auth logout{host_flag}{team_flag}{local_flag}"
 
 
 def normalize_url(url: str) -> str:
     return url.rstrip("/")
-
-
-def level_flag(level: ConfigLevel) -> str:
-    return " --local" if level == ConfigLevel.LOCAL else ""
-
-
-def logout_command(login: Login, team: str | None = None, host: bool = False) -> str:
-    """The `datachain auth logout` command that removes this login.
-
-    For a team's login, `team` picks the team to name; it defaults to the first.
-    """
-    host_flag = f" -H {login.url}" if host else ""
-    team_flag = f" --team {team or login.teams[0]}" if login.teams else ""
-    return f"datachain auth logout{host_flag}{team_flag}{level_flag(login.level)}"
 
 
 def credentials_path(level: ConfigLevel) -> str:
@@ -138,7 +131,7 @@ def load_logins(level: ConfigLevel, *, for_update: bool = False) -> list[Login]:
     ]
 
 
-def save_logins(level: ConfigLevel, logins: list[Login]) -> str:
+def _save_logins(level: ConfigLevel, logins: list[Login]) -> str:
     path = credentials_path(level)
     if not logins:
         Path(path).unlink(missing_ok=True)
@@ -197,7 +190,6 @@ def all_logins() -> list[Login]:
 
 def select_login(logins: list[Login], url: str, team: str | None) -> Login | None:
     """The login to use for this Studio URL and team, from the given ones."""
-    url = normalize_url(url)
     matching = [lg for lg in logins if lg.url == url and lg.covers(team)]
     # A project's login wins; then a login for the team wins over all teams.
     return min(
@@ -207,22 +199,17 @@ def select_login(logins: list[Login], url: str, team: str | None) -> Login | Non
     )
 
 
-def find_login(url: str, team: str | None) -> Login | None:
-    """The saved login to use for this Studio URL and team, if any."""
-    return select_login(all_logins(), url, team)
-
-
 def resolve_token(url: str, team: str | None) -> str | None:
     if token := os.environ.get(TOKEN_ENV):
         return token
-    if not (login := find_login(url, team)):
+    if not (login := select_login(all_logins(), url, team)):
         return None
     if login.expired():
         # Falling back to another token could switch to another account.
         scope = "all teams" if login.teams is None else f"team '{team}'"
         raise DataChainError(
             f"The Studio token for {scope} in {login.path} expired on "
-            f"{login.expires}. Run `{logout_command(login, team)}` and log in again."
+            f"{login.expires}. Run `{login.logout_command(team)}` and log in again."
         )
     return login.token
 
@@ -236,7 +223,6 @@ def conflicting_login(
     at most one team login. Fails like an update would, so `auth login` stops
     before the browser if the login can't be saved.
     """
-    url = normalize_url(url)
     for login in load_logins(level, for_update=True):
         if login.url != url:
             continue
@@ -249,11 +235,9 @@ def conflicting_login(
 
 def add_login(login: Login) -> str:
     logins = load_logins(login.level, for_update=True)
-    logins.append(login)
-    login.path = save_logins(login.level, logins)
-    return login.path
+    return _save_logins(login.level, [*logins, login])
 
 
 def remove_login(login: Login) -> None:
     logins = load_logins(login.level, for_update=True)
-    save_logins(login.level, [lg for lg in logins if lg != login])
+    _save_logins(login.level, [lg for lg in logins if lg != login])

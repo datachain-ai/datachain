@@ -47,7 +47,7 @@ Older DataChain versions saved the token in the config file. DataChain no longer
 * `-n NAME`, `--name NAME` - The name of the authentication token. It will be used to identify the token shown in Studio profile. Defaults to a random name.
 * `--no-open` - Use code-based authentication without browser. You will be presented with a user code to enter in the browser. DataChain will also use this if it cannot launch the browser on your behalf.
 * `--local` - Save the token in the project's `.datachain/credentials`. The project's tokens are used before yours.
-* `--team TEAM` - Scope token to specific teams, and use it for these teams only. Can be specified multiple times to scope to multiple teams.
+* `--team TEAM` - Create a token for this team, used only for it. Can be specified multiple times for several teams.
 * `--expires-in EXPIRES_IN` - Token expiration in days. Defaults to 365 days.
 * `-h`, `--help` - Show the help message and exit.
 * `-v`, `--verbose` - Be verbose.
@@ -75,7 +75,7 @@ datachain auth login --name my-token
 datachain auth login --no-open
 ```
 
-5. Save a token for this project only, scoped to the team it works with:
+5. Save a token for this project only, for the team it works with:
 ```bash
 datachain auth login --local --team data-team
 ```

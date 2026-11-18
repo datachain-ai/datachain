@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tarfile
 from collections.abc import Callable
+from datetime import date
 from string import printable
 from tarfile import DIRTYPE, TarInfo
 from time import sleep, time
@@ -23,7 +24,7 @@ from datachain.config import Config, ConfigLevel
 from datachain.dataset import DatasetDependency, DatasetRecord
 from datachain.lib.tar import process_tar
 from datachain.query import C
-from datachain.remote.credentials import Login, add_login
+from datachain.remote.credentials import Login, add_login, load_logins
 from datachain.utils import STUDIO_URL
 
 DEFAULT_TREE: dict[str, Any] = {
@@ -381,13 +382,17 @@ def reset_session_job_state():
     os.environ.pop("DATACHAIN_JOB_ID", None)
 
 
+def saved_tokens(level: ConfigLevel = ConfigLevel.GLOBAL) -> list[str]:
+    return [login.token for login in load_logins(level)]
+
+
 def studio_login(
     token: str = "isat_access_token",  # noqa: S107
     default_team: str | None = None,
     url: str = STUDIO_URL,
     teams: list[str] | None = None,
     level: ConfigLevel = ConfigLevel.GLOBAL,
-    expires: str | None = None,
+    expires: date | None = None,
 ) -> None:
     """Save a Studio login and, if given, the default team at the same level."""
     add_login(Login(url=url, token=token, teams=teams, level=level, expires=expires))

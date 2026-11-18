@@ -73,14 +73,10 @@ def add_auth_parser(subparsers, parent_parser) -> None:
         ),
     )
 
-    # Team scoping arguments
     login_parser.add_argument(
         "--team",
         action="append",
-        help=(
-            "Scope token to specific teams (can specify multiple). "
-            "The token is then used for these teams only"
-        ),
+        help=("Create a token for this team, used only for it (can specify multiple)"),
     )
 
     # Expiration arguments
