@@ -196,7 +196,7 @@ class ArrowGenerator(Generator):
 
     def project(self, names: set[str]) -> "ArrowGenerator | None":
         """Return a copy reading only the top-level signals used by ``names``,
-        or None when nothing would be dropped or no data column is used."""
+        or None when nothing would be dropped."""
         if (
             not self.projectable
             or self.delta_key
@@ -210,6 +210,9 @@ class ArrowGenerator(Generator):
             if not names.isdisjoint(SignalSchema({name: anno}).db_signals())
         }
         data = {k: v for k, v in kept.items() if k in self.output_schema.model_fields}
+        if not data and self.output_schema.model_fields:
+            first = next(iter(self.output_schema.model_fields))
+            kept[first] = data[first] = self.output.values[first]
         if not data or len(kept) == len(self.output.values):
             return None
         raw = normalize_col_names(self.input_schema.names)

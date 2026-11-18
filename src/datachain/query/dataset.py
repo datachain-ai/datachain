@@ -1819,6 +1819,7 @@ class RegenerateSystemColumns(Step):
 @frozen
 class SQLSelect(SQLClause):
     args: tuple[Function | ColumnElement, ...]
+    implicit_sys: bool = False
 
     def hash_inputs(self) -> str:
         return hash_column_elements(self.args)
@@ -2464,6 +2465,9 @@ _STEP_EXPRS: dict[type[Step], Callable[[Any], Iterable[Any] | None]] = {
 }
 
 
+_SYS = frozenset({"sys__id", "sys__rand"})
+
+
 def _used_columns(steps: Sequence[Step]) -> set[str] | None:
     """Return the DB column names used before the first step that bounds
     the input columns, or None when every column must be kept."""
@@ -2477,10 +2481,8 @@ def _used_columns(steps: Sequence[Step]) -> set[str] | None:
             or (cols := _expr_columns(exprs)) is None
         ):
             return None
-        if isinstance(step, SQLSelect):
-            if "sys__rand" in cols and "sys__id" not in cols:
-                return None
-            cols = {c for c in cols if not c.startswith("sys__")}
+        if isinstance(step, SQLSelect) and step.implicit_sys:
+            cols -= _SYS
         if "sys__rand" in cols:
             return None
         if not bounded:
@@ -2872,7 +2874,7 @@ class DatasetQuery:
         return cast("Self", rewritten)
 
     @detach
-    def select(self, *args, **kwargs) -> "Self":
+    def select(self, *args, implicit_sys: bool = False, **kwargs) -> "Self":
         """
         Select the given columns or expressions using a subquery.
 
@@ -2889,7 +2891,7 @@ class DatasetQuery:
         """
         named_args = [v.label(k) for k, v in kwargs.items()]
         query = self.clone()
-        query.steps.append(SQLSelect((*args, *named_args)))
+        query.steps.append(SQLSelect((*args, *named_args), implicit_sys=implicit_sys))
         return query
 
     @detach
