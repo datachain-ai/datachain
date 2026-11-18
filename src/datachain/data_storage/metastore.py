@@ -1511,10 +1511,7 @@ class AbstractDBMetastore(AbstractMetastore):
                 values[field] = json.dumps(value) if value else None
                 version_values[field] = parse_schema(value) if value else None
             elif field == "feature_schema":
-                if value is None:
-                    values[field] = None
-                else:
-                    values[field] = json.dumps(value)
+                values[field] = json.dumps(value) if value is not None else None
                 version_values[field] = value
             elif field == "preview":
                 if value is None:
@@ -1549,15 +1546,26 @@ class AbstractDBMetastore(AbstractMetastore):
 
         dv = self._datasets_versions
         update_stmt = self._datasets_versions_update().where(
-            dv.c.dataset_id == dataset.id, dv.c.version == version
+            dv.c.dataset_id == dataset.id,
+            dv.c.version == version,
+            dv.c.uuid == version_obj.uuid,
         )
         if expected_status is not None:
             update_stmt = update_stmt.where(dv.c.status == expected_status)
+            if (
+                expected_status == DatasetStatus.REMOVING
+                and values.get("status") == DatasetStatus.REMOVING
+                and "content_hash" in values
+            ):
+                update_stmt = update_stmt.where(
+                    dv.c.content_hash.is_(None)
+                    if version_obj.content_hash is None
+                    else dv.c.content_hash == version_obj.content_hash
+                )
         if expected_job_id is not None:
             update_stmt = update_stmt.where(dv.c.job_id == expected_job_id)
         result = self.db.execute(update_stmt.values(values))  # type: ignore [attr-defined]
-        guarded = expected_status is not None or expected_job_id is not None
-        if guarded and result.rowcount == 0:  # type: ignore [attr-defined]
+        if result.rowcount == 0:  # type: ignore [attr-defined]
             return None
 
         version_obj.update(**version_values)
@@ -1877,13 +1885,11 @@ class AbstractDBMetastore(AbstractMetastore):
                 f"Dataset {dataset.name} version {version} not found."
             )
 
+        v = dataset.get_version(version)
         d = self._datasets
         dv = self._datasets_versions
 
         with self.db.transaction():
-            self.remove_dataset_dependencies(dataset, version)
-            self.remove_dataset_dependants(dataset, version)
-
             # Lock the parent dataset row so concurrent saves of a new
             # version can't sneak in between the count and the delete-
             # if-empty below. No-op on SQLite (writes are already
@@ -1893,10 +1899,25 @@ class AbstractDBMetastore(AbstractMetastore):
                 .where(d.c.id == dataset.id)
                 .with_for_update()
             )
+            if not list(
+                self.db.execute(
+                    self._datasets_versions_select(dv.c.id).where(
+                        (dv.c.dataset_id == dataset.id)
+                        & (dv.c.version == version)
+                        & (dv.c.uuid == v.uuid)
+                    )
+                )
+            ):
+                return dataset
+
+            self.remove_dataset_dependencies(dataset, version)
+            self.remove_dataset_dependants(dataset, version)
 
             self.db.execute(
                 self._datasets_versions_delete().where(
-                    (dv.c.dataset_id == dataset.id) & (dv.c.version == version)
+                    (dv.c.dataset_id == dataset.id)
+                    & (dv.c.version == version)
+                    & (dv.c.uuid == v.uuid)
                 )
             )
 

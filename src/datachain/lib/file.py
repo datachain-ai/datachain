@@ -12,7 +12,7 @@ from datetime import datetime
 from functools import partial
 from io import BytesIO
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
 
 from fsspec import Callback
@@ -23,7 +23,6 @@ from pydantic import Field, field_validator, model_validator
 import datachain.sql  # noqa: F401
 from datachain import json
 from datachain.client import fileslice
-from datachain.client.ranges import FileRow  # noqa: F401
 from datachain.client.writeconfig import WriteConfig
 from datachain.fs.utils import path_to_fsspec_uri
 from datachain.lib.data_model import DataModel
@@ -1238,6 +1237,52 @@ class File(DataModel):
             ```
         """
         return rebase_path(self.get_fs_path(), old_base, new_base, suffix, extension)
+
+
+class FileRow(NamedTuple):
+    """A ``File`` as its flat columns, in DB order. Range listings yield these and
+    they go to the DB as they are, so ``File``'s validators don't run on them: the
+    listing clients make valid rows (a scheme in ``source``, no ``location``)."""
+
+    source: str
+    path: str
+    size: int = 0
+    version: str = ""
+    etag: str = ""
+    is_latest: bool = True
+    last_modified: datetime = TIME_ZERO
+    location: dict | list[dict] | None = None
+
+    # File's path helpers, which read only ``path``: no File is built
+    @property
+    def name(self) -> str:
+        return PurePosixPath(self.path).name
+
+    @property
+    def parent(self) -> str:
+        return parent_path(self.path) if "/" in self.path else "."
+
+    def get_file_suffix(self) -> str:
+        return PurePosixPath(self.path).suffix
+
+    def get_file_ext(self) -> str:
+        return PurePosixPath(self.path).suffix.lstrip(".")
+
+    def get_file_stem(self) -> str:
+        return PurePosixPath(self.path).stem
+
+    # File's helpers that need a File: one is built from the row
+    def get_fs_path(self) -> str:
+        return File(**self._asdict()).get_fs_path()
+
+    def get_hash(self) -> str:
+        return File(**self._asdict()).get_hash()
+
+    def rebase(self, *args, **kwargs) -> str:
+        return File(**self._asdict()).rebase(*args, **kwargs)
+
+
+as_file_row = partial(tuple.__new__, FileRow)  # skips FileRow's argument handling
 
 
 class TextFile(File):

@@ -7,6 +7,8 @@ import pytest
 
 import datachain as dc
 from datachain.client import Client
+from datachain.dataset import DatasetStatus
+from datachain.error import ConcurrentDatasetModificationError
 from datachain.lib import listing
 from datachain.lib.file import File
 from datachain.lib.listing import (
@@ -300,8 +302,9 @@ def test_gc_keeps_a_jobless_listing_that_runs_for_hours(test_session):
             created_at=datetime.now(UTC) - timedelta(hours=2),
         )
         clock[0] += 2 * 3600
-        yield encode([listing.file_row(File(path="b.jpg", etag="e2"))])
+        yield encode([])  # an empty page of delete/folder markers still refreshes TTL
         catalog.cleanup_dataset_versions()
+        yield encode([listing.file_row(File(path="b.jpg", etag="e2"))])
 
     with (
         patch.object(listing, "list_pages", side_effect=pages),
@@ -480,3 +483,63 @@ def test_listing_insert_batch_size(test_session, tmp_dir, mocker, settings):
     dc.read_storage(tmp_dir.as_uri(), session=test_session, settings=settings).exec()
 
     assert spy.call_args.args[-1] == LISTING_BATCH_SIZE
+
+
+def test_overlapping_first_listings_reuse_version(test_session):
+    uri = "s3://bucket/data/"
+    name, _, _ = parse_listing_uri(uri)
+    entry = File(path="x.jpg", etag="e1")
+    nested = True
+
+    def overlapping(uri, cache, client_config, encode):
+        nonlocal nested
+        yield encode([listing.file_row(entry)])
+        if nested:
+            nested = False
+            listing.write_listing(uri, name, test_session, {})
+
+    with patch.object(listing, "list_pages", side_effect=overlapping):
+        listing.write_listing(uri, name, test_session, {})
+
+    ds = test_session.catalog.get_dataset(name, versions=None)
+    assert [v.version for v in ds.versions] == ["2.0.0"]
+
+
+def test_removed_and_rereserved_listing_does_not_clobber_replacement(test_session):
+    uri = "s3://bucket/data/"
+    name, _, _ = parse_listing_uri(uri)
+    catalog = test_session.catalog
+    old_file = File(path="a.jpg", etag="e1")
+    new_file = File(path="b.jpg", etag="e2")
+    _save_listing(test_session, uri, old_file)
+
+    replacement_ds = None
+
+    def stale_scan(uri, cache, client_config, encode):
+        nonlocal replacement_ds
+        yield encode([listing.file_row(old_file), listing.file_row(new_file)])
+        # Remove the in-flight 2.0.0 reservation and re-reserve 2.0.0 before A finishes
+        ds = catalog.get_dataset(name, versions=None, include_incomplete=True)
+        catalog.remove_dataset_version(ds, "2.0.0", keep_metadata=False)
+        project = catalog.metastore.get_project(
+            catalog.metastore.listing_project_name,
+            catalog.metastore.system_namespace_name,
+        )
+        replacement_ds = catalog.create_dataset(
+            name,
+            project,
+            columns=catalog.warehouse.dataset_row_cls.listing_columns(),
+            listing=True,
+            update_version="major",
+        )
+        assert replacement_ds.versions[0].version == "2.0.0"
+
+    with (
+        patch.object(listing, "list_pages", side_effect=stale_scan),
+        pytest.raises(ConcurrentDatasetModificationError),
+    ):
+        listing.write_listing(uri, name, test_session, {})
+
+    ds = catalog.get_dataset(name, versions=None, include_incomplete=True)
+    assert ds.get_version("2.0.0").uuid == replacement_ds.versions[0].uuid
+    assert ds.get_version("2.0.0").status == DatasetStatus.CREATED

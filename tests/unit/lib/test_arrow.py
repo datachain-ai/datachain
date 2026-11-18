@@ -250,6 +250,20 @@ def test_read_parquet_after_to_parquet_reads_its_signals(tmp_path, test_session)
     assert chain.order_by("text").to_values("text") == ["hello", "world"]
 
 
+@skip_if_not_sqlite  # ClickHouse driver shifts pre-1970 sub-second timestamps by +1s
+def test_read_parquet_ns_timestamp_before_1970_drops_nanoseconds(
+    tmp_path, test_session
+):
+    path = tmp_path / "ns.parquet"
+    pq.write_table(pa.table({"t": pa.array([-1], pa.timestamp("ns", tz="UTC"))}), path)
+
+    chain = dc.read_parquet(path.as_uri(), session=test_session)
+
+    assert chain.to_values("t") == [
+        datetime(1969, 12, 31, 23, 59, 59, 999999, tzinfo=UTC)
+    ]
+
+
 class Declared(dc.DataModel):
     a: int | None = None
 
