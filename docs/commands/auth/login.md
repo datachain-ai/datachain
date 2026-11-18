@@ -32,10 +32,6 @@ Run [`datachain auth list`](list.md) to see the saved tokens and which one is us
 
 If you log in with exactly one `--team` and no default team is set yet, that team becomes the default team.
 
-### Upgrading from older versions
-
-Older DataChain versions saved the token in the config file. It is no longer used, so log in again. Logging in removes the old token from the config and revokes it.
-
 ### Self-hosted Studio
 
 With `-H`, DataChain logs in to that Studio instance and uses it for later commands. A token is only sent to the instance it was issued by. If the instance is set with `DATACHAIN_STUDIO_URL` instead, logging in doesn't set a default team; set `DATACHAIN_STUDIO_TEAM`.
