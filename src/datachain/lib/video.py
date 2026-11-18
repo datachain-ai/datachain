@@ -762,7 +762,10 @@ def save_video_fragment(
                 threads = _video_threads()
                 _run_ffmpeg(
                     ffmpeg.input(input_file, ss=start, to=end, threads=threads).output(
-                        temp_output, threads=threads, **_ffmpeg_output_options(format)
+                        temp_output,
+                        threads=threads,
+                        filter_threads=threads,
+                        **_ffmpeg_output_options(format),
                     ),
                     video,
                     timeout,

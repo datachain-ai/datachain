@@ -824,7 +824,7 @@ def test_get_frames(video_file):
 @pytest.mark.parametrize(
     "method,args", [("get_frames", (0, 5)), ("sample_frames", (1,))]
 )
-def test_get_frames_get_np_no_double_decode(video_file, monkeypatch, method, args):
+def test_frame_iterators_get_np_no_double_decode(video_file, monkeypatch, method, args):
     open_call_count = 0
     real_open = VideoFile.open
 
@@ -966,20 +966,24 @@ def test_video_stream_index_is_relative_to_video_streams(audio_first_video):
     assert info.height == 16
 
 
-def test_video_stream_index_error(video_file):
-    with pytest.raises(ValueError):
-        list(video_file.as_video_file().sample_frames(video_stream_index=-1))
-    with pytest.raises(FileError):
-        list(video_file.as_video_file().sample_frames(video_stream_index=1))
-
-    with pytest.raises(ValueError):
-        video_file.as_video_file().get_frame(0, video_stream_index=-1)
-
-    with pytest.raises(FileError):
-        video_file.as_video_file().get_info(video_stream_index=1)
-
-    with pytest.raises(FileError):
-        list(video_file.as_video_file().get_frames(0, 1, video_stream_index=1))
+@pytest.mark.parametrize(
+    "method,args,video_stream_index,expected_exc",
+    [
+        ("sample_frames", (), -1, ValueError),
+        ("sample_frames", (), 1, FileError),
+        ("get_frame", (0,), -1, ValueError),
+        ("get_info", (), 1, FileError),
+        ("get_frames", (0, 1), 1, FileError),
+    ],
+)
+def test_video_stream_index_error(
+    video_file, method, args, video_stream_index, expected_exc
+):
+    call = getattr(video_file.as_video_file(), method)
+    with pytest.raises(expected_exc):
+        result = call(*args, video_stream_index=video_stream_index)
+        if method in {"get_frames", "sample_frames"}:
+            list(result)
 
 
 @pytest.mark.parametrize(
@@ -989,7 +993,7 @@ def test_video_stream_index_error(video_file):
         ("sample_frames", (), "unable to sample video frames"),
     ],
 )
-def test_get_frames_wraps_decode_errors(method, args, message):
+def test_frame_iterators_wrap_decode_errors(method, args, message):
     file = VideoFile.upload(b"not a video", "broken.mp4")
 
     with pytest.raises(FileError, match=message):
@@ -1327,6 +1331,8 @@ def test_save_video_fragment_invokes_ffmpeg_non_interactively(
     assert args[input_thread_index + 1] == str(threads)
     output_thread_index = args.index("-threads", input_index)
     assert args[output_thread_index + 1] == str(threads)
+    filter_thread_index = args.index("-filter_threads", input_index)
+    assert args[filter_thread_index + 1] == str(threads)
     assert "pipe:1" not in args
     assert args[-1].endswith(".mp4")
 
