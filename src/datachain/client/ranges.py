@@ -13,9 +13,10 @@ if TYPE_CHECKING:
 # A range has one request in flight, so these cap both open ranges and requests.
 LIST_WORKERS = 16  # while this process fetches every page
 PROCESS_LIST_WORKERS = 64  # once child processes fetch pages: they parse in parallel
-# Child processes start once a listing has this many rows; below it one process
-# keeps up with the network, and children would only cost CPU and memory.
-POOL_ROWS = 100_000
+# Child processes start once a listing has this many rows; below it they would
+# only cost CPU and memory. Past it the parent, which also inserts the rows,
+# cannot parse pages fast enough.
+POOL_ROWS = 10_000
 SPLIT_PAGES = 4  # a young range splits at most this many pages ahead
 YOUNG_PAGES = 4  # a range is young until it and its parents read this many pages
 
@@ -23,7 +24,7 @@ YOUNG_PAGES = 4  # a range is young until it and its parents read this many page
 class Page(NamedTuple):
     """One listing request's reply."""
 
-    rows: list[Any]  # FileRow rows of the keys kept
+    rows: Any  # FileRow rows of the keys kept, or what a listing child made of them
     first: str | None  # the first object's key; None when the page has none
     last: str | None  # the last key of any kind, delete markers included
     token: Any  # resumes after this page; None on the last page
@@ -33,8 +34,9 @@ class Page(NamedTuple):
 
 
 class Keep:
-    """Which listed keys become rows: valid keys up to ``hi``. Notes the first key
-    past ``lo``, the first past ``hi``, and whether the keys came in order."""
+    """Which listed keys become rows: valid keys past ``lo`` up to ``hi``. Notes
+    the first key past ``lo``, the first past ``hi``, and whether the keys came in
+    order."""
 
     def __init__(self, client: "RangeListedClient", lo: str, hi: str | None) -> None:
         self.order, self.valid = client.key_order, client._is_valid_key
@@ -50,8 +52,9 @@ class Keep:
         if self.previous is not None and order_key < self.previous:
             self.in_order = False
         self.previous = order_key
-        if self.past_lo is None and order_key > self.lo_key:
-            self.past_lo = key
+        if order_key <= self.lo_key:  # GCS and Azure list lo itself
+            return False
+        self.past_lo = self.past_lo or key
         if self.hi_key is None or order_key <= self.hi_key:
             return self.valid(key)
         self.past_hi = self.past_hi or key
@@ -259,7 +262,8 @@ class RangeListing:
 
     async def _read(self, key_range: KeyRange) -> None:
         """Reads the range a page at a time; the next page is on its way while
-        this one waits for room in the result queue."""
+        this one waits for room in the result queue. Empty pages still go in
+        the queue so the reader's reservation heartbeat advances per page."""
         page = await self._fetch(key_range, None)
         next_page: asyncio.Task | None = None
         try:
@@ -267,8 +271,8 @@ class RangeListing:
                 rows, token = self._advance(key_range, page)
                 if token is not None:
                     next_page = asyncio.create_task(self._fetch(key_range, token))
+                await self.result_queue.put(rows)
                 if rows:
-                    await self.result_queue.put(rows)
                     self.pbar.update(len(rows))
                     self.rows += len(rows)
                 if next_page is None:
@@ -291,9 +295,6 @@ class RangeListing:
         elif not page.in_order or (first is not None and first < key_range.read_to):
             self._out_of_order()
         rows = page.rows
-        keys = [self.order(r.path) for r in rows]
-        if keys and keys[0] <= key_range.lo_key:  # GCS and Azure list lo itself
-            rows = [r for r, k in zip(rows, keys, strict=True) if k > key_range.lo_key]
         if (last := page.last) is None:
             return rows, page.token
         key_range.read_to = self.order(last)
@@ -305,8 +306,7 @@ class RangeListing:
             if page.token is not None and past_first_page and self._may_split():
                 if self.pool and self.rows >= POOL_ROWS:
                     self.pool.start()
-                page_start = page.rows[0].path if page.rows else None
-                self._split(key_range, last, page_start)
+                self._split(key_range, last, page.first)
         return rows, page.token
 
     def _may_split(self) -> bool:
