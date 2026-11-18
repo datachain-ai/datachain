@@ -184,7 +184,9 @@ def _read_parquet_parts(
             return size, [(sample_start, sample)]
         footer_start = size - 8 - int.from_bytes(sample[-8:-4], "little")
         if 0 <= footer_start < sample_start:
-            if stop is not None and stop.is_set():
+            if size - footer_start > PARQUET_RANGE_MAX_BYTES or (
+                stop is not None and stop.is_set()
+            ):
                 return size, []
             stream.seek(footer_start)
             sample = stream.read(sample_start - footer_start) + sample
@@ -193,13 +195,17 @@ def _read_parquet_parts(
             ranges = _column_ranges(pq.read_metadata(pa.BufferReader(sample)), columns)
         except pa.ArrowException:
             ranges = []
+        spans = [
+            (start, min(end, sample_start))
+            for start, end in ranges
+            if start < sample_start
+        ]
         parts: list[tuple[int, bytes]] = []
-        if 0 < sum(end - start for start, end in ranges) <= PARQUET_RANGE_MAX_BYTES:
-            spans = [
-                (start, min(end, sample_start))
-                for start, end in ranges
-                if start < sample_start
-            ]
+        if (
+            ranges
+            and len(sample) + sum(end - start for start, end in spans)
+            <= PARQUET_RANGE_MAX_BYTES
+        ):
             raw: Any = getattr(stream, "fileobj", stream)
             cb = file._download_cb
 
@@ -305,7 +311,7 @@ class _PartialReadHandler(FSSpecHandler):
         return [FileInfo(path, FileType.File) for path in paths]
 
     def open_input_file(self, path):
-        if self.parts is not None:
+        if self.parts is not None and self.parts[1]:
             f: Any = _ParquetBufferedFile(self.client, self.file, *self.parts)
         else:
             f = self.client.open_object(
@@ -440,6 +446,12 @@ class ArrowGenerator(Generator):
         columns: Sequence[str],
         stop: threading.Event | None = None,
     ) -> None:
+        if not (file.version or file.etag):
+            client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
+            raw_parts = _read_parquet_parts(client, file, columns, stop=stop)
+            if stop is None or not stop.is_set():
+                file.__dict__["_parquet_parts"] = _ParquetParts(raw_parts)
+            return
         key = (file.get_hash(), tuple(columns))
         with _PARQUET_PARTS_GUARD:
             lock = _PARQUET_PARTS_LOCKS.get(key)
