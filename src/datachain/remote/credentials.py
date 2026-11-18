@@ -14,7 +14,7 @@ import logging
 import os
 import stat
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -44,13 +44,15 @@ class Login:
     name: str | None = None
     expires: date | None = None
     level: ConfigLevel = ConfigLevel.GLOBAL
-    # Path of the file the login was read from or is saved to.
-    path: str = field(default="", compare=False)
 
     def __post_init__(self) -> None:
         self.url = normalize_url(self.url)
         if self.teams is not None:
             self.teams = list(dict.fromkeys(self.teams))
+
+    @property
+    def path(self) -> str:
+        return credentials_path(self.level)
 
     def covers(self, team: str | None) -> bool:
         return self.teams is None or team in self.teams
@@ -124,7 +126,6 @@ def load_logins(level: ConfigLevel, *, for_update: bool = False) -> list[Login]:
             name=item.get("name"),
             expires=item.get("expires"),
             level=level,
-            path=path,
         )
         for item in doc.get("login", [])
         if item.get("url") and item.get("token")
@@ -206,9 +207,9 @@ def resolve_token(url: str, team: str | None) -> str | None:
         return None
     if login.expired():
         # Falling back to another token could switch to another account.
-        scope = "all teams" if login.teams is None else f"team '{team}'"
+        target = "all teams" if login.teams is None else f"team '{team}'"
         raise DataChainError(
-            f"The Studio token for {scope} in {login.path} expired on "
+            f"The Studio token for {target} in {login.path} expired on "
             f"{login.expires}. Run `{login.logout_command(team)}` and log in again."
         )
     return login.token

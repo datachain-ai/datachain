@@ -18,7 +18,7 @@ This command shows the Studio URL and the default team DataChain uses, and the S
 * `Expires` - The date the token expires.
 * `Saved in` - The file the token is saved in.
 
-The token used for the default team is marked with `*`. See [`datachain auth login`](login.md) for how DataChain picks it.
+The token used for the default team is marked with `*`. See [`datachain auth login`](login.md) for how DataChain picks it. If `DATACHAIN_STUDIO_TOKEN` is set, it is listed first and marked instead, because it is used for every team.
 
 Token values are not shown. Run [`datachain auth token`](token.md) to print one.
 

@@ -80,12 +80,12 @@ datachain auth login --no-open
 datachain auth login --local --team data-team
 ```
 
-6. Authenticate with team scoping:
+6. Log in with a token for one team:
 ```bash
 datachain auth login --team data-team
 ```
 
-7. Authenticate with multiple teams:
+7. Log in with a token for several teams:
 ```bash
 datachain auth login --team data-team --team ml-team
 ```
@@ -95,12 +95,7 @@ datachain auth login --team data-team --team ml-team
 datachain auth login --expires-in 90
 ```
 
-9. Authenticate with team scoping and custom expiration:
-```bash
-datachain auth login --team data-team --expires-in 30 --name short-term-token
-```
-
-10. Keep a second token for one team next to your main token:
+9. Keep a second token for one team next to your main token:
 ```bash
 datachain auth login
 datachain auth login --team customer-team

@@ -188,19 +188,21 @@ def test_studio_login_team_token_keeps_default_team(get_access_token, local):
     assert resolve_token(STUDIO_URL, "customer-x") == "customer_token"
 
 
-def test_studio_login_token_already_exists(capsys):
+def test_studio_login_token_already_exists(get_access_token, capsys):
     studio_login()
 
     assert main(["auth", "login"]) == 1
+    get_access_token.assert_not_called()
     err = capsys.readouterr().err
     assert "Token already exists" in err
     assert "`datachain auth logout`" in err
 
 
-def test_studio_login_team_token_already_exists(capsys):
+def test_studio_login_team_token_already_exists(get_access_token, capsys):
     studio_login(teams=["ml-team", "data-team"])
 
     assert main(["auth", "login", "--team", "data-team"]) == 1
+    get_access_token.assert_not_called()
     assert "`datachain auth logout --team data-team`" in capsys.readouterr().err
 
 
@@ -818,29 +820,9 @@ def test_dataset_ls_include_removed_flows_to_studio(
 
 @skip_if_not_sqlite
 @pytest.mark.parametrize("is_studio", (False,))
-def test_studio_edit_dataset(capsys, mocker):
+def test_studio_edit_dataset(studio_token):
     with requests_mock.mock() as m:
         m.post(f"{STUDIO_URL}/api/datachain/datasets", json={})
-
-        # Studio token is required
-        assert (
-            main(
-                [
-                    "dataset",
-                    "edit",
-                    "dev.animals.name",
-                    "--new-name",
-                    "new-name",
-                    "--team",
-                    "team_name",
-                ]
-            )
-            == 1
-        )
-        out = capsys.readouterr().err
-        assert "Not logged in to Studio" in out
-
-        studio_login(default_team="team_name")
 
         assert (
             main(
@@ -902,21 +884,9 @@ def test_studio_edit_dataset(capsys, mocker):
 
 
 @skip_if_not_sqlite
-def test_studio_rm_dataset(capsys, mocker):
+def test_studio_rm_dataset(studio_token):
     with requests_mock.mock() as m:
         m.delete(f"{STUDIO_URL}/api/datachain/datasets", json={})
-
-        # Studio token is required
-        assert (
-            main(
-                ["dataset", "rm", "dev.animals.name", "--team", "team_name", "--studio"]
-            )
-            == 1
-        )
-        out = capsys.readouterr().err
-        assert "Not logged in to Studio" in out
-
-        studio_login(default_team="team_name")
 
         assert (
             main(
@@ -947,9 +917,7 @@ def test_studio_rm_dataset(capsys, mocker):
         }
 
 
-def test_studio_list_jobs(capsys):
-    studio_login(default_team="team_name")
-
+def test_studio_list_jobs(capsys, studio_token):
     with requests_mock.mock() as m:
         m.get(
             re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
@@ -1249,6 +1217,10 @@ def test_studio_jobs_json_prints_the_response(capsys, studio_token):
             ["dataset", "rm", "dev.animals.name", "--studio"],
             marks=skip_if_not_sqlite,
         ),
+        pytest.param(
+            ["dataset", "edit", "dev.animals.name", "--new-name", "new-name"],
+            marks=skip_if_not_sqlite,
+        ),
     ],
 )
 def test_studio_command_without_login_or_team(capsys, command):
@@ -1259,27 +1231,19 @@ def test_studio_command_without_login_or_team(capsys, command):
     assert "team is not set" not in err
 
 
-def test_studio_cancel_job(capsys, mocker):
+def test_studio_cancel_job(studio_token):
     job_id = "8bddde6c-c3ca-41b0-9d87-ee945bfdce70"
     with requests_mock.mock() as m:
         m.post(f"{STUDIO_URL}/api/datachain/jobs/{job_id}/cancel", json={})
-
-        # Studio token is required
-        assert main(["job", "cancel", job_id]) == 1
-        out = capsys.readouterr().err
-        assert "Not logged in to Studio" in out
-
-        studio_login(default_team="team_name")
 
         assert main(["job", "cancel", job_id]) == 0
         assert m.called
 
 
-def test_studio_run(capsys, mocker, tmp_dir):
+def test_studio_run(capsys, mocker, tmp_dir, studio_token):
     mocker.patch(
         "datachain.remote.studio.websockets.connect", side_effect=mocked_connect
     )
-    studio_login(default_team="team_name")
 
     job_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
     with requests_mock.mock() as m:

@@ -106,14 +106,14 @@ def add_auth_parser(subparsers, parent_parser) -> None:
         default=False,
         help="Remove the token from the project's .datachain/credentials",
     )
-    logout_scope = logout_parser.add_mutually_exclusive_group()
-    logout_scope.add_argument(
+    logout_tokens = logout_parser.add_mutually_exclusive_group()
+    logout_tokens.add_argument(
         "--team",
         action="store",
         default=None,
         help="Remove the token for this team instead of the token for all teams",
     )
-    logout_scope.add_argument(
+    logout_tokens.add_argument(
         "--all",
         action="store_true",
         default=False,

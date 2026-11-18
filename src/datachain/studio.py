@@ -245,7 +245,7 @@ def login(args: "Namespace"):
         raise DataChainError(f"Failed to authenticate with Studio: {exc}") from exc
 
     expires = datetime.now(UTC) + timedelta(days=expires_in_days)
-    credentials_path = add_login(
+    path = add_login(
         Login(
             url=hostname,
             token=access_token,
@@ -255,7 +255,7 @@ def login(args: "Namespace"):
             level=level,
         )
     )
-    print(f"Authentication complete. Saved token to {credentials_path}.")
+    print(f"Authentication complete. Saved token to {path}.")
     if team_names:
         print(f"Token is for teams: {', '.join(team_names)}")
     print(f"Token will expire in {expires_in_days} days.")
@@ -339,19 +339,15 @@ def logout(
     # Fails on a file open to others, as removing a token from it would.
     saved = [lg for lg in load_logins(level, for_update=True) if lg.url == url]
     if all_teams:
-        logins = saved
+        logins, what = saved, "No token"
     elif team:
         logins = [login for login in saved if team in (login.teams or ())]
+        what = f"No token for team '{team}'"
     else:
         logins = [login for login in saved if login.teams is None]
+        what = "No token for all teams"
 
     if not logins:
-        if all_teams:
-            what = "No token"
-        elif team:
-            what = f"No token for team '{team}'"
-        else:
-            what = "No token for all teams"
         raise DataChainError(
             f"{what} is saved for {url} in {credentials_path(level)}. "
             "Run `datachain auth list` to see the saved tokens."
