@@ -1,5 +1,5 @@
 from collections.abc import Iterator
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from types import GeneratorType
 from unittest.mock import patch
 
@@ -40,6 +40,11 @@ def test_dataset_select_paginated_dataset_larger_than_batch_size(test_session):
     assert set(values) == set(db_values)
 
 
+def row_inserts(executemany) -> int:
+    """executemany calls that insert rows, not the writer's ledger rows."""
+    return sum("_parts" not in call.args[0] for call in executemany.call_args_list)
+
+
 def test_dataset_insert_batch_size(test_session, warehouse, ignore_checkpoints):
     def udf_map(value: int) -> int:
         return value + 100
@@ -56,13 +61,13 @@ def test_dataset_insert_batch_size(test_session, warehouse, ignore_checkpoints):
         dc.read_values(value=list(range(100)), session=test_session).save("values")
         # 1 for read_values gen() output, 1 for save
         # Note: processed_table no longer exists (sys__input_id is in output table now)
-        assert mock_executemany.call_count == 2
+        assert row_inserts(mock_executemany) == 2
         mock_executemany.reset_mock()
 
         # Mapper
 
         dc.read_dataset("values", session=test_session).map(x2=udf_map).save("large")
-        assert mock_executemany.call_count == 1
+        assert row_inserts(mock_executemany) == 1
         mock_executemany.reset_mock()
 
         chain = (
@@ -71,7 +76,7 @@ def test_dataset_insert_batch_size(test_session, warehouse, ignore_checkpoints):
             .map(x2=udf_map)
             .save("large")
         )
-        assert mock_executemany.call_count == 10
+        assert row_inserts(mock_executemany) == 10
         mock_executemany.reset_mock()
         assert set(chain.to_values("x2")) == set(range(100, 200))
 
@@ -79,7 +84,7 @@ def test_dataset_insert_batch_size(test_session, warehouse, ignore_checkpoints):
 
         dc.read_dataset("values", session=test_session).gen(x2=udf_gen).save("large")
         # Only 1 call for gen() output (processed_table no longer exists)
-        assert mock_executemany.call_count == 1
+        assert row_inserts(mock_executemany) == 1
         mock_executemany.reset_mock()
 
         chain = (
@@ -89,13 +94,13 @@ def test_dataset_insert_batch_size(test_session, warehouse, ignore_checkpoints):
             .save("large")
         )
         # Only 20 for outputs (processed_table no longer exists)
-        assert mock_executemany.call_count == 20
+        assert row_inserts(mock_executemany) == 20
         mock_executemany.reset_mock()
         assert set(chain.to_values("x2")) == set(range(200))
 
 
 def test_warehouse_keeps_utc_datetime_unchanged(test_session):
-    timestamp = datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=timezone.utc)
+    timestamp = datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=UTC)
 
     dc.read_values(ts=[timestamp], session=test_session).save(
         "warehouse_utc_datetime_round_trip"
@@ -124,8 +129,8 @@ def test_warehouse_round_trips_datetime_cast_from_string(test_session):
     )
 
     assert rows == [
-        (1, datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)),
-        (2, datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=timezone.utc)),
+        (1, datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)),
+        (2, datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=UTC)),
     ]
 
 
@@ -166,4 +171,4 @@ def test_sqlite_warehouse_converts_other_timezones_to_utc(test_session):
         "sqlite_warehouse_timezone_to_utc", session=test_session
     ).to_values("ts")
 
-    assert rows == [timestamp.astimezone(timezone.utc)]
+    assert rows == [timestamp.astimezone(UTC)]

@@ -4,6 +4,7 @@ import signal
 import subprocess
 import sys
 import textwrap
+from io import BytesIO
 from pathlib import Path, PurePosixPath
 from typing import cast
 from urllib.parse import urlparse
@@ -13,11 +14,193 @@ from PIL import Image
 
 import datachain as dc
 from datachain import Session
-from datachain.lib.file import File, ImageFile
+from datachain.lib.file import (
+    AudioFile,
+    File,
+    FileError,
+    ImageFile,
+    TextFile,
+    VideoFile,
+)
+from datachain.lib.tar import process_tar
 from tests.conftest import get_cloud_test_catalog, make_cloud_server
-from tests.utils import images_equal, skip_if_not_sqlite
+from tests.utils import images_equal, make_tar, skip_if_not_sqlite, tree_from_path
 
 python_exc = sys.executable or "python3"
+
+
+@pytest.mark.parametrize("same", [False, True])
+def test_file_save_checks_full_destination_path(
+    test_session, tmp_path, monkeypatch, same
+):
+    source = tmp_path / "source"
+    other = tmp_path / "other"
+    source.mkdir()
+    other.mkdir()
+    (source / "a.bin").write_bytes(b"source bytes")
+    (other / "a.bin").write_bytes(b"old bytes")
+    file = File.at(source / "a.bin", session=test_session)
+    monkeypatch.chdir(other if same else source)
+    destination = (source if same else other) / "a.bin"
+    saved = file.save(str(destination))
+    assert destination.read_bytes() == b"source bytes"
+    assert (source / "a.bin").read_bytes() == b"source bytes"
+    assert saved.read() == b"source bytes"
+
+
+@pytest.mark.parametrize("file_cls", [File, TextFile, ImageFile, VideoFile, AudioFile])
+def test_to_storage_copies_bytes_as_stored(test_session, tmp_path, file_cls):
+    (tmp_path / "a.jpg").write_bytes(b"not decoded")
+    dc.read_values(
+        file=[file_cls(path="a.jpg", source=tmp_path.as_uri())], session=test_session
+    ).to_storage(tmp_path / "out", placement="filename")
+    assert (tmp_path / "out" / "a.jpg").read_bytes() == b"not decoded"
+
+
+@pytest.mark.parametrize("link_type", ["copy", "symlink"])
+def test_to_storage_relative_source_preserves_bytes(
+    test_session, tmp_path, monkeypatch, link_type
+):
+    monkeypatch.chdir(tmp_path)
+    source = tmp_path / "a.jpg"
+    source.write_bytes(b"original bytes")
+    dc.read_values(file=[ImageFile(path=source.name)], session=test_session).settings(
+        cache=False, prefetch=0
+    ).to_storage(tmp_path, placement="filename", link_type=link_type)
+    assert source.read_bytes() == b"original bytes"
+
+
+@pytest.mark.parametrize("alias", ["same", "hardlink", "symlink"])
+@pytest.mark.parametrize("cached_archive", [False, True])
+def test_virtual_image_export_preserves_backing_archive(
+    test_session, tmp_path, alias, cached_archive
+):
+    image = BytesIO()
+    Image.new("RGB", (1, 1)).save(image, format="JPEG")
+    archive = tmp_path / "archive.tar"
+    original = make_tar({archive.name: image.getvalue()})
+    archive.write_bytes(original)
+    archive_file = File.at(archive, session=test_session)
+    if cached_archive:
+        archive_file.ensure_cached()
+    member = next(process_tar(archive_file))
+    output = tmp_path if alias == "same" else tmp_path / "out"
+    if alias != "same":
+        output.mkdir()
+        if alias == "symlink":
+            if os.name == "nt":
+                pytest.skip("Creating symlinks needs privileges on Windows")
+            (output / archive.name).symlink_to(archive)
+        else:
+            os.link(archive, output / archive.name)
+    with pytest.raises(FileError, match="backing file"):
+        dc.read_values(
+            file=[ImageFile(**member.model_dump())], session=test_session
+        ).settings(cache=False, prefetch=0).to_storage(output, placement="filename")
+    assert archive.read_bytes() == original
+    assert (output / archive.name).read_bytes() == original
+
+
+@pytest.mark.parametrize("file_cls", [File, ImageFile])
+@pytest.mark.parametrize("cache", [False, True])
+@pytest.mark.parametrize("alias", ["same", "hardlink", "symlink"])
+@pytest.mark.parametrize("link_type", ["copy", "symlink"])
+def test_to_storage_over_source_preserves_bytes(
+    test_session, tmp_path, file_cls, cache, alias, link_type
+):
+    source = tmp_path / "a.jpg"
+    source.write_bytes(b"original bytes")
+    output = tmp_path if alias == "same" else tmp_path / "out"
+    if alias != "same":
+        output.mkdir()
+        if alias == "symlink":
+            if os.name == "nt":
+                pytest.skip("Creating symlinks needs privileges on Windows")
+            (output / source.name).symlink_to(source)
+        else:
+            os.link(source, output / source.name)
+    dc.read_values(
+        file=[file_cls(path=source.name, source=tmp_path.as_uri())],
+        session=test_session,
+    ).settings(cache=cache).to_storage(
+        output, placement="filename", link_type=link_type
+    )
+    assert source.read_bytes() == b"original bytes"
+    assert (output / source.name).read_bytes() == b"original bytes"
+
+
+@pytest.mark.parametrize("cache", [False, True])
+@pytest.mark.parametrize("alias", ["same", "hardlink"])
+@pytest.mark.parametrize("operation", ["save", "copy", "symlink"])
+def test_export_over_source_uses_the_saved_file_contents(
+    test_session, tmp_path, cache, alias, operation
+):
+    source = tmp_path / "input.bin"
+    source.write_bytes(b"old")
+    (file,) = dc.read_storage(source.as_uri(), session=test_session).to_values("file")
+    if cache:
+        file.ensure_cached()
+    output = tmp_path if alias == "same" else tmp_path / "out"
+    output.mkdir(exist_ok=True)
+    destination = output / source.name
+    if alias == "hardlink":
+        os.link(source, destination)
+    mtime = source.stat().st_mtime + 1
+    source.write_bytes(b"new")
+    os.utime(source, (mtime, mtime))
+
+    def export():
+        if operation == "save":
+            file.save(str(destination))
+        else:
+            file.export(
+                output, placement="filename", use_cache=cache, link_type=operation
+            )
+
+    if cache:
+        export()
+        assert destination.read_bytes() == b"old"
+    else:
+        with pytest.raises(FileNotFoundError, match="changed on the source"):
+            export()
+        assert destination.read_bytes() == b"new"
+
+
+@pytest.mark.parametrize("cache", [False, True])
+def test_remote_export_links_cached_bytes_or_falls_back_to_copy(
+    test_session, http_server, tmp_path, cache
+):
+    if cache and os.name == "nt":
+        pytest.skip("Creating symlinks needs privileges on Windows")
+    (tmp_path / "source.bin").write_bytes(b"original")
+    file = File.at(f"{http_server}/source.bin", session=test_session)
+    output = tmp_path / "out"
+
+    file.export(output, placement="filename", use_cache=cache, link_type="symlink")
+
+    assert (output / "source.bin").read_bytes() == b"original"
+    assert (output / "source.bin").is_symlink() == cache
+
+
+def test_to_storage_reexports_cached_file_after_source_is_deleted(
+    test_session, tmp_path
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    path = source / "a.bin"
+    path.write_bytes(b"original bytes")
+    chain = (
+        dc.read_storage(source.as_uri(), session=test_session)
+        .settings(cache=True)
+        .persist()
+    )
+    output = tmp_path / "out"
+    chain.to_storage(output, placement="filename")
+    path.unlink()
+
+    chain.to_storage(output, placement="filename")
+
+    assert (output / "a.bin").read_bytes() == b"original bytes"
 
 
 @pytest.mark.parametrize("placement", ["fullpath", "filename", "filepath"])
@@ -357,3 +540,65 @@ def test_cross_cloud_transfer(
             gcloud_client.fs.rm(dest_dir, recursive=True)
         except FileNotFoundError:
             pass
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_to_storage_skips_empty_segments_locally(cloud_test_catalog, tmp_dir, caplog):
+    ctc = cloud_test_catalog
+    client = ctc.catalog.get_client(ctc.src_uri)
+    prefix = "empty-seg"
+    keys = {"r/b.txt": b"real", "r//b.txt": b"odd", "x//alone.txt": b"alone"}
+    for key, data in keys.items():
+        client.fs.pipe_file(f"{client.name}/{prefix}/{key}", data)
+    client.fs.invalidate_cache()
+    out = tmp_dir / "out"
+    try:
+        with caplog.at_level("WARNING", logger="datachain"):
+            dc.read_storage(f"{ctc.src_uri}/{prefix}", session=ctc.session).to_storage(
+                out, placement="filepath"
+            )
+    finally:
+        client.fs.rm(f"{client.name}/{prefix}", recursive=True)
+        client.fs.invalidate_cache()
+
+    assert tree_from_path(out) == {prefix: {"r": {"b.txt": "real"}}}
+    for key in ("r//b.txt", "x//alone.txt"):
+        assert f"File '{prefix}/{key}' not exported: path has '//'" in caplog.text
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_to_storage_keeps_empty_segments_in_cloud(cloud_test_catalog):
+    ctc = cloud_test_catalog
+    client = ctc.catalog.get_client(ctc.src_uri)
+    src, dst = "empty-seg-src", "empty-seg-dst"
+    client.fs.pipe_file(f"{client.name}/{src}/x//a.txt", b"a")
+    client.fs.invalidate_cache()
+    try:
+        dc.read_storage(f"{ctc.src_uri}/{src}", session=ctc.session).to_storage(
+            f"{ctc.src_uri}/{dst}", placement="filepath"
+        )
+        client.fs.invalidate_cache()
+        assert client.fs.cat_file(f"{client.name}/{dst}/{src}/x//a.txt") == b"a"
+    finally:
+        client.fs.rm(f"{client.name}/{src}", recursive=True)
+        client.fs.rm(f"{client.name}/{dst}", recursive=True)
+        client.fs.invalidate_cache()
+
+
+@pytest.mark.parametrize("placement", ["filename", "etag"])
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_to_storage_empty_segments_with_flat_placement(cloud_test_catalog, placement):
+    ctc = cloud_test_catalog
+    client = ctc.catalog.get_client(ctc.src_uri)
+    key = "flat-export/d//e.txt"
+    client.fs.pipe_file(f"{client.name}/{key}", b"content")
+    client.fs.invalidate_cache()
+    out = ctc.working_dir / "out"
+    try:
+        dc.read_storage(f"{ctc.src_uri}/flat-export/", session=ctc.session).to_storage(
+            out, placement=placement
+        )
+        assert [p.read_bytes() for p in out.iterdir()] == [b"content"]
+    finally:
+        client.fs.rm(f"{client.name}/{key}")
+        client.fs.invalidate_cache()

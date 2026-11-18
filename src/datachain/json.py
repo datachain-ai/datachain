@@ -7,7 +7,7 @@ All code inside DataChain should import this module instead of using
 :mod:`ujson` directly.
 """
 
-import datetime as _dt
+import datetime as dt
 import json as _json
 import math as _math
 import sys as _sys
@@ -35,27 +35,27 @@ DEFAULT_PREVIEW_BYTES = 1024
 
 # To make it looks like Pydantic's ISO format with 'Z' for UTC
 # It is minor but nice to have consistency
-def _format_datetime(value: _dt.datetime) -> str:
+def _format_datetime(value: dt.datetime) -> str:
     iso = value.isoformat()
 
     offset = value.utcoffset()
     if value.tzinfo is None or offset is None:
         return iso
 
-    if offset == _dt.timedelta(0) and iso.endswith(("+00:00", "-00:00")):
+    if offset == dt.timedelta(0) and iso.endswith(("+00:00", "-00:00")):
         return iso[:-6] + "Z"
 
     return iso
 
 
-def _format_time(value: _dt.time) -> str:
+def _format_time(value: dt.time) -> str:
     iso = value.isoformat()
 
     offset = value.utcoffset()
     if value.tzinfo is None or offset is None:
         return iso
 
-    if offset == _dt.timedelta(0) and iso.endswith(("+00:00", "-00:00")):
+    if offset == dt.timedelta(0) and iso.endswith(("+00:00", "-00:00")):
         return iso[:-6] + "Z"
 
     return iso
@@ -65,11 +65,11 @@ def _coerce(value: Any, serialize_bytes: bool, serialize_numpy: bool) -> Any:
     """Return a JSON-serializable representation for supported extra types."""
 
     converted = _SENTINEL
-    if isinstance(value, _dt.datetime):
+    if isinstance(value, dt.datetime):
         converted = _format_datetime(value)
-    elif isinstance(value, _dt.date):
+    elif isinstance(value, dt.date):
         converted = value.isoformat()
-    elif isinstance(value, _dt.time):
+    elif isinstance(value, dt.time):
         converted = _format_time(value)
     elif isinstance(value, _uuid.UUID):
         converted = str(value)

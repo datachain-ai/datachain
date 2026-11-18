@@ -1,10 +1,17 @@
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.exc import CompileError
 
-from datachain.sql.types import TypeReadConverter, validate_datetime_cast_input_type
+from datachain.data_storage.codec import decode_bool, decode_datetime
+from datachain.sql.types import (
+    Array,
+    Int64,
+    SQLType,
+    String,
+    validate_datetime_cast_input_type,
+)
 
 
 @pytest.mark.parametrize(
@@ -26,15 +33,13 @@ from datachain.sql.types import TypeReadConverter, validate_datetime_cast_input_
         ("0", False),
     ],
 )
-def test_type_read_converter_boolean_normalizes_known_values(value, expected):
-    converter = TypeReadConverter()
-    assert converter.boolean(value) is expected
+def test_decode_boolean_normalizes_known_values(value, expected):
+    assert decode_bool(value) is expected
 
 
-def test_type_read_converter_boolean_passthrough_for_unknown_strings():
-    converter = TypeReadConverter()
+def test_decode_boolean_passthrough_for_unknown_strings():
     value = "maybe"
-    assert converter.boolean(value) == value
+    assert decode_bool(value) == value
 
 
 @pytest.mark.parametrize(
@@ -52,7 +57,7 @@ def test_type_read_converter_boolean_passthrough_for_unknown_strings():
         ),
         pytest.param(
             "2024-01-02T03:04:05Z",
-            datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 3, 4, 5, tzinfo=UTC),
             id="z_suffix",
         ),
         pytest.param(
@@ -67,42 +72,33 @@ def test_type_read_converter_boolean_passthrough_for_unknown_strings():
         ),
         pytest.param(
             "2024-01-02 03:04:05.123456789+00:00",
-            datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=UTC),
             id="extra_fraction_with_offset",
         ),
     ],
 )
-def test_type_read_converter_datetime_parses_valid_strings(value, expected):
-    converter = TypeReadConverter()
-
-    assert converter.datetime(value) == expected
+def test_decode_datetime_parses_valid_strings(value, expected):
+    assert decode_datetime(value) == expected
 
 
-def test_type_read_converter_datetime_passthrough_for_datetime_values():
-    converter = TypeReadConverter()
-    value = datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+def test_decode_datetime_passthrough_for_datetime_values():
+    value = datetime(2024, 1, 2, 3, 4, 5, tzinfo=UTC)
 
-    assert converter.datetime(value) is value
-
-
-def test_type_read_converter_datetime_passthrough_for_none():
-    converter = TypeReadConverter()
-
-    assert converter.datetime(None) is None
+    assert decode_datetime(value) is value
 
 
-def test_type_read_converter_datetime_raises_for_invalid_strings():
-    converter = TypeReadConverter()
+def test_decode_datetime_passthrough_for_none():
+    assert decode_datetime(None) is None
 
+
+def test_decode_datetime_raises_for_invalid_strings():
     with pytest.raises(ValueError, match="Invalid isoformat string"):
-        converter.datetime("not-a-datetime")
+        decode_datetime("not-a-datetime")
 
 
-def test_type_read_converter_datetime_raises_for_unexpected_values():
-    converter = TypeReadConverter()
-
+def test_decode_datetime_raises_for_unexpected_values():
     with pytest.raises(TypeError, match="expected str, datetime, or None"):
-        converter.datetime(123)
+        decode_datetime(123)
 
 
 @pytest.mark.parametrize(
@@ -130,3 +126,25 @@ def test_validate_datetime_cast_input_type_allows_date():
 
 def test_validate_datetime_cast_input_type_allows_unknown_types():
     validate_datetime_cast_input_type(sa.null().type)
+
+
+def test_array_cache_key_includes_item_type():
+    assert Array(String())._static_cache_key != Array(Int64())._static_cache_key
+    assert Array(String)._static_cache_key == Array(String())._static_cache_key
+
+
+def test_cache_key_includes_nullable():
+    nullable = SQLType.as_nullable(Int64)
+    assert Int64()._static_cache_key != nullable._static_cache_key
+    assert Array(Int64)._static_cache_key != Array(nullable)._static_cache_key
+
+
+def test_cache_ok_opt_out_is_inherited():
+    class Uncached(String):
+        cache_ok = False
+
+    class Child(Uncached):
+        pass
+
+    assert Child.cache_ok is False
+    assert Int64.cache_ok is True

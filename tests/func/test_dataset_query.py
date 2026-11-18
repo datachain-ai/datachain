@@ -1,4 +1,3 @@
-import io
 import posixpath
 import uuid
 from unittest.mock import ANY
@@ -12,10 +11,30 @@ from datachain.error import DatasetNotFoundError
 from datachain.lib.file import File
 from datachain.lib.listing import parse_listing_uri
 from datachain.lib.signal_schema import SignalSchema
-from datachain.query import C, DatasetQuery, Object, Stream
+from datachain.query import C, DatasetQuery
 from datachain.sql.functions import path as pathfunc
 from datachain.sql.types import String
 from tests.utils import assert_row_names, dataset_dependency_asdict
+
+
+def test_shared_dependency_edges_are_not_duplicated(test_session):
+    catalog = test_session.catalog
+    dc.read_values(value=[1], session=test_session).save("source")
+    dc.read_dataset("source", session=test_session).save("first")
+    dc.read_dataset("first", session=test_session).save("second")
+    dc.read_dataset("first", session=test_session).union(
+        dc.read_dataset("second", session=test_session)
+    ).save("top")
+
+    deps = {
+        dep.name: dep
+        for dep in catalog.get_dataset_dependencies("top", "1.0.0", indirect=True)
+        if dep is not None
+    }
+    first = [deps["first"], *deps["second"].dependencies]
+    for dep in first:
+        assert dep is not None
+        assert [child.name for child in dep.dependencies if child] == ["source"]
 
 
 def from_result_row(col_names, row):
@@ -575,97 +594,6 @@ def test_row_number_with_order_by_name_ascending(cloud_test_catalog, animal_data
     ]
 
 
-def to_str(buf) -> str:
-    return io.TextIOWrapper(buf, encoding="utf8").read()
-
-
-@pytest.mark.parametrize("use_cache", [False, True])
-def test_extract(cloud_test_catalog, dogs_dataset, use_cache):
-    catalog = cloud_test_catalog.catalog
-    q = DatasetQuery(name=dogs_dataset.name, version="1.0.0", catalog=catalog)
-    results = set()
-    for path, stream in q.extract("file__path", Stream(), cache=use_cache):
-        with stream:
-            value = stream.read().decode("utf-8")
-        results.add((posixpath.basename(path), value))
-    assert results == {
-        ("dog1", "woof"),
-        ("dog2", "arf"),
-        ("dog3", "bark"),
-        ("dog4", "ruff"),
-    }
-
-
-def test_extract_object(cloud_test_catalog, dogs_dataset):
-    ctc = cloud_test_catalog
-    ds = DatasetQuery(name=dogs_dataset.name, version="1.0.0", catalog=ctc.catalog)
-    data = ds.extract(Object(to_str), "file__path")
-    assert {(value, posixpath.basename(path)) for value, path in data} == {
-        ("woof", "dog1"),
-        ("arf", "dog2"),
-        ("bark", "dog3"),
-        ("ruff", "dog4"),
-    }
-
-
-def test_extract_chunked(cloud_test_catalog, dogs_dataset):
-    ctc = cloud_test_catalog
-    n = 5
-    all_data = []
-    ds = DatasetQuery(name=dogs_dataset.name, version="1.0.0", catalog=ctc.catalog)
-    for i in range(n):
-        data = ds.chunk(i, n).extract(Object(to_str), "file__path")
-        all_data.extend(data)
-
-    assert {(value, posixpath.basename(path)) for value, path in all_data} == {
-        ("woof", "dog1"),
-        ("arf", "dog2"),
-        ("bark", "dog3"),
-        ("ruff", "dog4"),
-    }
-
-
-def test_extract_chunked_limit(cloud_test_catalog, dogs_dataset):
-    ctc = cloud_test_catalog
-    chunks = 5
-    limit = 1
-    all_data = []
-    q = DatasetQuery(name=dogs_dataset.name, version="1.0.0", catalog=ctc.catalog)
-    # Add sufficient rows to ensure each chunk has rows
-    for _ in range(5):
-        q = q.union(q)
-    for i in range(chunks):
-        data = q.limit(limit).chunk(i, chunks).extract(Object(to_str), "file__path")
-        all_data.extend(data)
-
-    assert len(all_data) == limit
-
-
-@pytest.mark.parametrize(
-    "cloud_type, version_aware",
-    [("file", False)],
-    indirect=True,
-)
-def test_extract_limit(cloud_test_catalog, dogs_dataset):
-    catalog = cloud_test_catalog.catalog
-    q = DatasetQuery(name=dogs_dataset.name, version="1.0.0", catalog=catalog)
-    results = list(q.limit(2).extract("file__path"))
-    assert len(results) == 2
-
-
-@pytest.mark.parametrize(
-    "cloud_type, version_aware",
-    [("file", False)],
-    indirect=True,
-)
-def test_extract_order_by(cloud_test_catalog, dogs_dataset):
-    catalog = cloud_test_catalog.catalog
-    q = DatasetQuery(name=dogs_dataset.name, version="1.0.0", catalog=catalog)
-    results = list(q.order_by("sys__rand").extract("file__path"))
-    pairs = list(q.extract("sys__rand", "file__path"))
-    assert results == [(p[1],) for p in sorted(pairs)]
-
-
 @pytest.mark.parametrize(
     "cloud_type,version_aware",
     [("s3", True)],
@@ -1124,12 +1052,12 @@ def test_dataset_dependencies_one_dataset_as_dependency(
     ] == expected
 
 
-@pytest.mark.parametrize("method", ["union", "join"])
+@pytest.mark.parametrize("method", ["union", "join", "subtract"])
 def test_dataset_dependencies_multiple_direct_dataset_dependencies(
     cloud_test_catalog, dogs_dataset, cats_dataset, method
 ):
     # multiple direct dataset dependencies can be achieved with methods that are
-    # combining multiple DatasetQuery instances into new one like union or join
+    # combining multiple DatasetQuery instances, like union, join or subtract
     ds_name = uuid.uuid4().hex
     catalog = cloud_test_catalog.catalog
     listing = catalog.listings()[0]
@@ -1140,8 +1068,10 @@ def test_dataset_dependencies_multiple_direct_dataset_dependencies(
 
     if method == "union":
         dogs.union(cats).save(ds_name)
-    else:
+    elif method == "join":
         dogs.join(cats, "file__path").save(ds_name)
+    else:
+        dogs.subtract(cats, [("file__path", "file__path")]).save(ds_name)
 
     storage_depenedncy = {
         "id": ANY,
@@ -1284,3 +1214,25 @@ def test_save_subset_of_columns(cloud_test_catalog, cats_dataset):
 
     dataset = catalog.get_dataset("cats")
     assert dataset.schema == {"file__path": String}
+
+
+@pytest.mark.parametrize("explicit_session", [False, True])
+def test_query_catalog_override_keeps_session_consistent(
+    test_session, explicit_session
+):
+    catalog = test_session.catalog
+    source = dc.read_values(value=[1, 2], session=test_session).save("source")
+    other = catalog.copy()
+    other.client_config = {"use_symlinks": True}
+    with dc.Session("parent", catalog=other) as parent:
+        query = DatasetQuery(
+            name=source.dataset.name,
+            catalog=catalog,
+            session=parent if explicit_session else None,
+        )
+        assert query.catalog is query.session.catalog is catalog
+        assert query.session.name == parent.name
+        saved = query.save("consistent")
+        assert saved.catalog is saved.session.catalog is catalog
+        assert parent.catalog is other
+        assert other.client_config == {"use_symlinks": True}

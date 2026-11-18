@@ -2,31 +2,30 @@ import hashlib
 import inspect
 import json
 import logging
+import sys
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import closing, nullcontext
+from collections.abc import Set as AbstractSet
+from contextlib import closing, contextmanager, nullcontext
 from dataclasses import dataclass
 from functools import partial
 from graphlib import CycleError, TopologicalSorter
+from itertools import islice
+from operator import itemgetter
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import attrs
-from fsspec.callbacks import DEFAULT_CALLBACK, Callback
-from pydantic import BaseModel
+from fsspec import Callback
+from fsspec.callbacks import DEFAULT_CALLBACK
 
 from datachain.asyn import AsyncMapper
 from datachain.cache import temporary_cache
-from datachain.dataset import RowDict
+from datachain.data_storage.codec import RowEncodeError
 from datachain.hash_utils import hash_callable
-from datachain.lib.convert.flatten import (
-    classify_field,
-    flatten,
-    flatten_value,
-    is_optional_model,
-)
 from datachain.lib.file import File, FileError
 from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.utils import AbstractUDF, DataChainParamsError
+from datachain.lib.utils import AbstractUDF, DataChainParamsError, type_to_str
 from datachain.query.batch import (
     Batch,
     BatchingStrategy,
@@ -34,20 +33,23 @@ from datachain.query.batch import (
     Partition,
     RowsOutputBatch,
 )
+from datachain.query.schema import DEFAULT_DELIMITER
 from datachain.sql.types import SQLType
-from datachain.utils import safe_closing, with_last_flag
+from datachain.utils import safe_closing
 
 logger = logging.getLogger("datachain")
 
 if TYPE_CHECKING:
     from collections import abc
     from contextlib import AbstractContextManager
-
-    from typing_extensions import Self
+    from typing import Self
 
     from datachain.cache import Cache
     from datachain.catalog import Catalog
+    from datachain.data_storage import AbstractWarehouse
+    from datachain.data_storage.codec import RowCodec
     from datachain.lib.settings import Settings
+    from datachain.lib.signal_schema import KeyPresence
     from datachain.lib.udf_signature import UdfSignature
     from datachain.query.batch import RowsOutput
 
@@ -177,9 +179,116 @@ ColumnType = Any
 # Specification for the output of a UDF
 UDFOutputSpec = Mapping[str, ColumnType]
 
-# Result type when calling the UDF wrapper around the actual
-# Python function / class implementing it.
-UDFResult = dict[str, Any]
+# Result type when calling the UDF wrapper around the actual Python function / class
+# implementing it: the output values in their stored form, then the sys values.
+UDFResult = tuple[Any, ...]
+# A gen or agg result: the rows of one part (an input row, a partition) and its key
+UDFPart = tuple[Any, Iterable[UDFResult]]
+
+PROGRESS_INTERVAL = 0.1  # seconds
+
+
+class _Progress:
+    """Adds counts to a callback every ``PROGRESS_INTERVAL`` rather than per row:
+    a callback call costs about as much as a plain row's own work."""
+
+    __slots__ = ("callback", "pending", "report_at")
+
+    def __init__(self, callback: Callback) -> None:
+        self.callback = callback
+        self.pending = 0
+        self.report_at = 0.0
+
+    def add(self, count: int) -> None:
+        self.pending += count
+        if (now := time.monotonic()) >= self.report_at:
+            self.callback.relative_update(self.pending)
+            self.pending, self.report_at = 0, now + PROGRESS_INTERVAL
+
+    def __enter__(self) -> "Self":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if self.pending:
+            self.callback.relative_update(self.pending)
+
+
+def output_value_error(
+    error: RowEncodeError,
+    names: Sequence[str],
+    schema: SignalSchema,
+    udf_kind: str | None = None,
+    num_values: int | None = None,
+) -> UdfError:
+    """The error for a value an output column cannot take."""
+    name = names[error.column]
+    expected = type_to_str(schema.get_column_type(name))
+    cause = error.__cause__
+    if isinstance(cause, JsonSerializationError):
+        msg = (
+            f"UDF returned an invalid value for output column {name!r}. "
+            f"Expected JSON-serializable {expected}. {cause.message}"
+        )
+    else:
+        msg = (
+            f"UDF returned an invalid value for output column {name!r}. "
+            f"Expected {expected}, got {error.value!r} "
+            f"(type: {type(error.value).__name__})."
+        )
+    width = len(names)
+    if udf_kind is not None and num_values is not None and num_values != width:
+        value_word = "value" if num_values == 1 else "values"
+        are_word = "is" if width == 1 else "are"
+        msg += (
+            f" Note: UDF call returned {num_values} {value_word} "
+            f"while {width} {are_word} expected per output definition"
+        )
+        if udf_kind in ("agg", "gen"):
+            msg += (
+                f", {udf_kind}() UDFs usually use yield and have return type Iterator."
+            )
+        else:
+            msg += "."
+    return UdfError(msg)
+
+
+class OutputRows:
+    """A UDF's results as stored rows, compiled once per run: a result is
+    flattened into leaf values by the output schema, then encoded by the
+    warehouse's row codec. This is the only place UDF output values convert."""
+
+    def __init__(self, udf: "UDFBase", warehouse: "AbstractWarehouse") -> None:
+        spec = udf.output.to_udf_spec()
+        self.names = list(spec)
+        self.width = len(self.names)
+        self.schema = udf.output
+        self.udf_kind = udf.udf_kind
+        self.flatten = udf.output.row_flattener()
+        self.codec: RowCodec = warehouse.row_codec(spec.values())
+
+    def __call__(self, result: Any) -> tuple:
+        """One UDF result as a stored row."""
+        return self.encode(self.flatten(result))
+
+    def encode(self, values: Sequence[Any]) -> tuple:
+        """Leaf values as a stored row: missing trailing values are filled in,
+        extra ones dropped."""
+        num_values = len(values)
+        if num_values != self.width:
+            values = (*values[: self.width], *(None,) * (self.width - num_values))
+        try:
+            return self.codec.encode(values)
+        except RowEncodeError as e:
+            raise output_value_error(
+                e, self.names, self.schema, self.udf_kind, num_values
+            ) from e.__cause__
+
+    def encode_batch(self, batch: Any) -> list[tuple]:
+        """An Arrow batch of leaf columns as stored rows."""
+        try:
+            return self.codec.encode_arrow(batch)
+        except RowEncodeError as e:
+            raise output_value_error(e, self.names, self.schema) from e.__cause__
 
 
 @attrs.define(slots=False)
@@ -187,24 +296,26 @@ class UDFAdapter:
     inner: "UDFBase"
     output: UDFOutputSpec
     batch_size: int | None = None
-    batch: int = 1
+    batch: int | None = None
 
     def hash(self, include_body: bool = True) -> str:
-        # Mixed in here rather than in UDFBase.hash so that a UDF overriding its
-        # own hash -- _MultiSignalMapper does, and user subclasses may -- cannot
-        # drop it. Every UDF reaches the warehouse through this adapter.
-        return hashlib.sha256(
+        # The column types are hashed too: a checkpoint written under other
+        # column types must not be reused.
+        inner_hash = hashlib.sha256(
             bytes.fromhex(self.inner.hash(include_body=include_body))
-            + bytes.fromhex(_physical_schema_hash(self.inner.output))
+            + bytes.fromhex(_output_types_hash(self.output))
         ).hexdigest()
+        if self.batch is None:
+            return inner_hash
+        return hashlib.sha256(f"{inner_hash}:batched".encode()).hexdigest()
 
     def get_batching(self, use_partitioning: bool = False) -> BatchingStrategy:
         if use_partitioning:
             return Partition()
 
-        if self.batch == 1:
+        if self.batch is None:
             return NoBatching()
-        if self.batch > 1:
+        if self.batch >= 1:
             return Batch(self.batch)
         raise ValueError(f"invalid batch size {self.batch}")
 
@@ -216,7 +327,7 @@ class UDFAdapter:
         cache: bool,
         download_cb: Callback = DEFAULT_CALLBACK,
         processed_cb: Callback = DEFAULT_CALLBACK,
-    ) -> Iterator[Iterable[UDFResult]]:
+    ) -> Iterator[Iterable[UDFResult] | UDFPart]:
         yield from self.inner.run(
             udf_fields,
             udf_inputs,
@@ -231,21 +342,13 @@ class UDFAdapter:
         return self.inner.prefetch
 
 
-def _physical_schema_hash(output: "SignalSchema") -> str:
-    """Fingerprint of the columns a UDF writes, as the warehouse will type them.
-
-    The logical schema hash does not move when an annotation starts mapping to a
-    different SQL type, so a checkpoint written before such a change would be
-    reused under the new one and its rows read back as the wrong thing. Both the
-    completed and the partial checkpoint keys are derived from here.
-    """
+def _output_types_hash(output: UDFOutputSpec) -> str:
+    """Hash of the column types a UDF writes."""
     spec = {
         name: (sql_type if isinstance(sql_type, SQLType) else sql_type()).to_dict()
-        for name, sql_type in output.to_udf_spec().items()
+        for name, sql_type in output.items()
     }
-    return hashlib.sha256(
-        json.dumps(spec, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    return hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()
 
 
 class UDFBase(AbstractUDF):
@@ -298,6 +401,7 @@ class UDFBase(AbstractUDF):
 
     is_input_batched = False
     is_output_batched = False
+    udf_kind = "map"  # named in output errors: map, gen or agg
     prefetch: int = 0
     # Class-level default so subclasses that skip super().__init__() still
     # have this attribute; _MultiSignalMapper sets params/output per entry
@@ -349,6 +453,23 @@ class UDFBase(AbstractUDF):
         """Teardown process executed on each process/worker after processing ends.
         This is needed for tasks like closing connections to end-points.
         """
+
+    @contextmanager
+    def _teardown_on_exit(self) -> Iterator[None]:
+        """Run teardown() after processing, also when it fails or stops early.
+        A teardown error after a processing error is logged, so the processing
+        error is the one raised."""
+        try:
+            yield
+        except BaseException:
+            try:
+                self.teardown()
+            except Exception:
+                logger.exception(
+                    "Failed to tear down UDF %r after an error", self.verbose_name
+                )
+            raise
+        self.teardown()
 
     def _init(
         self,
@@ -404,7 +525,7 @@ class UDFBase(AbstractUDF):
     def to_udf_wrapper(
         self,
         batch_size: int | None = None,
-        batch: int = 1,
+        batch: int | None = None,
     ) -> UDFAdapter:
         return UDFAdapter(
             self,
@@ -421,90 +542,86 @@ class UDFBase(AbstractUDF):
         cache: bool,
         download_cb: Callback = DEFAULT_CALLBACK,
         processed_cb: Callback = DEFAULT_CALLBACK,
-    ) -> Iterator[Iterable[UDFResult]]:
+    ) -> Iterator[Iterable[UDFResult] | UDFPart]:
         raise NotImplementedError
 
-    def _flatten_row(self, row):
-        if len(self.output.values) > 1 and not isinstance(row, BaseModel):
-            annos = self.output.values
-            # The row may be shorter than the declared outputs (the arrow/parquet
-            # reader omits trailing signals) but not longer.
-            if len(row) > len(annos):
-                raise ValueError(
-                    f"UDF returned {len(row)} values but {len(annos)} are declared "
-                    "in output"
-                )
-            flat: list[Any] = []
-            # strict=False as shorter row is allowed for arrow/parquet (guarded above)
-            for obj, anno in zip(row, annos.values(), strict=False):
-                # tag is added only when obj IS the Optional value, not a wrapper.
-                if is_optional_model(anno) and (
-                    obj is None or isinstance(obj, classify_field(anno).inner)
-                ):
-                    flat.extend(flatten_value(obj, anno))
-                else:
-                    flat.extend(self._obj_to_list(obj))
-            return tuple(flat)
-        if isinstance(row, tuple):
-            return row
-        if len(self.output.values) == 1:
-            single_type = next(iter(self.output.values.values()))
-            return flatten_value(row, single_type)
-        return tuple(self._obj_to_list(row))
+    @property
+    def _effective_prefetch(self) -> int:
+        """Prefetch only when an input can carry a file."""
+        assert self.params is not None
+        return self.prefetch if self.params._file_stream_params else 0
 
-    @staticmethod
-    def _obj_to_list(obj):
-        return flatten(obj) if isinstance(obj, BaseModel) else [obj]
+    def _input_reader(
+        self,
+        udf_fields: "Sequence[str]",
+        catalog: "Catalog",
+        cache: bool,
+        download_cb: Callback,
+        include_id: bool = True,
+    ) -> Callable[[Sequence[Any]], Sequence[Any]]:
+        """A function reading the UDF's arguments (after ``sys__id`` when
+        `include_id`) from an input row of `udf_fields`, compiled once per run."""
+        assert self.params is not None
+        id_names = ["sys__id"] if include_id else []
+        columns = self.params.plain_columns()
+        if columns is not None:
+            positions = {name: i for i, name in enumerate(udf_fields)}
+            names = [*id_names, *columns]
+            if not names:
+                return lambda row: ()
+            getter = itemgetter(*(positions[c] for c in names))
+            return getter if len(names) > 1 else lambda row: (getter(row),)
+        read = self.params.row_reader(udf_fields)
+        set_streams = self.params.set_file_streams
+        id_pos = udf_fields.index("sys__id") if include_id else None
 
-    def _parse_row(
-        self, row_dict: RowDict, catalog: "Catalog", cache: bool, download_cb: Callback
-    ) -> list[Any]:
-        assert self.params
-        row = [row_dict[p] for p in self.params.to_udf_spec()]
-        obj_row = self.params.row_to_objs(row)
-        self.params.set_file_streams(obj_row, catalog, cache, download_cb)
-        return obj_row
+        def prepare(row: Sequence[Any]) -> Sequence[Any]:
+            objs = read(row)
+            set_streams(objs, catalog, cache, download_cb)
+            return (row[id_pos], *objs) if id_pos is not None else objs
 
-    def _prepare_row(
-        self, row, udf_fields, catalog, cache, download_cb, include_id=False
-    ):
-        row_dict = RowDict(zip(udf_fields, row, strict=False))
-        udf_input = self._parse_row(row_dict, catalog, cache, download_cb)
-        if include_id:
-            return row_dict["sys__id"], *udf_input
-        return udf_input
+        return prepare
 
 
 def noop(*args, **kwargs):
     pass
 
 
+def _row_files(row: Iterable, batch_columns: set[int] | None) -> Iterator[File]:
+    """Files in scalar arguments and batched data columns."""
+    for i, obj in enumerate(row):
+        if isinstance(obj, File):
+            yield obj
+        elif batch_columns is not None and i in batch_columns and isinstance(obj, list):
+            yield from (item for item in obj if isinstance(item, File))
+
+
 async def _prefetch_input(
     row: T,
     download_cb: Callback | None = None,
     after_prefetch: "Callable[[], None]" = noop,
+    batch_columns: set[int] | None = None,
+    max_size: int | None = None,
 ) -> T:
-    for obj in row:
-        if isinstance(obj, File) and obj.path:
-            try:
-                if await obj._prefetch(download_cb):
-                    after_prefetch()
-            except FileError as e:
-                logger.warning(
-                    "Skipping prefetch for '%s/%s': %s", obj.source, obj.path, e
-                )
+    for obj in _row_files(row, batch_columns):  # type: ignore[arg-type]
+        if not obj.path or (max_size is not None and not 0 < obj.size <= max_size):
+            continue
+        try:
+            if await obj._prefetch(download_cb):
+                after_prefetch()
+        except FileError as e:
+            logger.warning("Skipping prefetch for '%s/%s': %s", obj.source, obj.path, e)
     return row
 
 
-def _remove_prefetched(row: T) -> None:
-    for obj in row:
-        if isinstance(obj, File):
-            catalog = obj._catalog
-            assert catalog is not None
-            try:
-                catalog.cache.remove(obj)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("Failed to remove prefetched item %r: %s", obj.name, e)
+def _remove_prefetched(row: T, batch_columns: set[int] | None = None) -> None:
+    for obj in _row_files(row, batch_columns):  # type: ignore[arg-type]
+        catalog = obj._catalog
+        assert catalog is not None
+        try:
+            catalog.cache.remove(obj)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to remove prefetched item %r: %s", obj.name, e)
 
 
 def _prefetch_inputs(
@@ -513,6 +630,8 @@ def _prefetch_inputs(
     download_cb: Callback | None = None,
     after_prefetch: Callable[[], None] | None = None,
     remove_prefetched: bool = False,
+    batch_columns: set[int] | None = None,
+    max_size: int | None = None,
 ) -> "abc.Generator[T, None, None]":
     if not prefetch:
         yield from prepared_inputs
@@ -524,7 +643,13 @@ def _prefetch_inputs(
             increment_file_count: Callable[[], None] = download_cb.increment_file_count
             after_prefetch = increment_file_count
 
-    f = partial(_prefetch_input, download_cb=download_cb, after_prefetch=after_prefetch)
+    f = partial(
+        _prefetch_input,
+        download_cb=download_cb,
+        after_prefetch=after_prefetch,
+        batch_columns=batch_columns,
+        max_size=max_size,
+    )
     mapper = AsyncMapper(f, prepared_inputs, workers=prefetch)
     with closing(mapper.iterate()) as row_iter:
         for row in row_iter:
@@ -532,7 +657,7 @@ def _prefetch_inputs(
                 yield row  # type: ignore[misc]
             finally:
                 if remove_prefetched:
-                    _remove_prefetched(row)
+                    _remove_prefetched(row, batch_columns)
 
 
 def _get_cache(
@@ -552,8 +677,31 @@ def _get_cache(
     return nullcontext(cache)
 
 
+def _batch_results(result: Any, expected: int, label: str) -> list[Any]:
+    """Read one result per input row, consuming at most one extra result."""
+    if isinstance(
+        result, (str, bytes, bytearray, Mapping, AbstractSet)
+    ) or not isinstance(result, Iterable):
+        raise UdfError(
+            f"{label} must return a list or iterator of row results, "
+            f"got {type(result).__name__}. output= describes one row"
+        )
+    with safe_closing(result):
+        results = list(islice(result, expected + 1))
+    if len(results) != expected:
+        got = f"more than {expected}" if len(results) > expected else len(results)
+        raise UdfError(
+            f"{label} must return one output per input row: "
+            f"got {got} outputs for {expected} inputs"
+        )
+    return results
+
+
 class Mapper(UDFBase):
-    """Inherit from this class to pass to `DataChain.map()`."""
+    """Inherit from this class to pass to `DataChain.map()`.
+
+    For lists of rows per call, use `BatchMapper` with `DataChain.batch_map()`.
+    """
 
     prefetch: int = 2
 
@@ -567,34 +715,74 @@ class Mapper(UDFBase):
         processed_cb: Callback = DEFAULT_CALLBACK,
     ) -> Iterator[Iterable[UDFResult]]:
         self.setup()
+        # Prepared columns holding one value per row: sys__id and data columns.
+        batch_columns: set[int] | None = None
+        if self.is_input_batched:
+            assert self.params is not None
+            batch_columns = {0} | {
+                i
+                for i, name in enumerate(self.params.values, 1)
+                if name not in self.params.setup_func
+            }
+        label = (
+            f"batch_map() function {(self.verbose_name if self._func else self.name)!r}"
+        )
+        prefetch = self._effective_prefetch
+        output_row = OutputRows(self, catalog.warehouse)
 
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
+            prepare = self._input_reader(udf_fields, catalog, cache, download_cb)
             with safe_closing(udf_inputs):
                 for row in udf_inputs:
-                    yield self._prepare_row(
-                        row, udf_fields, catalog, cache, download_cb, include_id=True
-                    )
+                    if batch_columns is None:
+                        yield prepare(row)
+                        continue
+                    yield [
+                        list(col) if i in batch_columns else col[0]
+                        for i, col in enumerate(zip(*map(prepare, row), strict=True))
+                    ]
 
         prepared_inputs = _prepare_rows(udf_inputs)
         prepared_inputs = _prefetch_inputs(
             prepared_inputs,
-            self.prefetch,
+            prefetch,
             download_cb=download_cb,
-            remove_prefetched=bool(self.prefetch) and not cache,
+            remove_prefetched=bool(prefetch) and not cache,
+            batch_columns=batch_columns,
         )
 
-        with closing(prepared_inputs):
+        with (
+            self._teardown_on_exit(),
+            closing(prepared_inputs),
+            _Progress(processed_cb) as progress,
+        ):
             for id_, *udf_args in prepared_inputs:
-                result_objs = self.process(*udf_args)
-                udf_output = self._flatten_row(result_objs)
-                output = [
-                    {"sys__id": id_}
-                    | dict(zip(self.signal_names, udf_output, strict=False))
-                ]
-                processed_cb.relative_update(1)
-                yield output
+                if batch_columns is None:
+                    progress.add(1)
+                    yield [(*output_row(self.process(*udf_args)), id_)]
+                    continue
+                self._batch_length = len(id_)
+                results = _batch_results(self.process(*udf_args), len(id_), label)
+                progress.add(len(results))
+                # lazy: rows encoded before an invalid one are still written
+                yield (
+                    (*output_row(result), row_id)
+                    for row_id, result in zip(id_, results, strict=True)
+                )
 
-        self.teardown()
+
+class BatchMapper(Mapper):
+    """Inherit from this class to pass to `DataChain.batch_map()`.
+
+    `process()` receives a list of up to `batch` values for each column
+    parameter, even with `batch=1`; resources from `chain.setup()` are passed
+    unchanged. It returns `list[T]` or `Iterator[T]` with one result per input
+    row, in input order, and the output column has type `T`. Any other number
+    of results raises `UdfError`. `setup()` and `teardown()` run once per worker
+    process.
+    """
+
+    is_input_batched = True
 
 
 def _make_bound_adapter(fn: Callable, cols: list[str]) -> Callable:
@@ -626,8 +814,11 @@ class _MultiSignalMapper(Mapper):
         signal_map: "dict[str, Callable | UDFBase]",
         *,
         bound_columns: dict[str, list[str]] | None = None,
+        batched: bool = False,
     ):
         super().__init__()
+        self.is_input_batched = batched
+        self._method_name = "batch_map" if batched else "map"
         self._signal_map = signal_map
         self._bound_columns = bound_columns or {}
         output_names = set(signal_map)
@@ -642,7 +833,8 @@ class _MultiSignalMapper(Mapper):
                 params = self._resolve_sig_params(name, fn)
             if name in params:
                 raise DataChainParamsError(
-                    f"map() entry {name!r} declares a parameter named {name!r} "
+                    f"{self._method_name}() entry {name!r} declares a parameter "
+                    f"named {name!r} "
                     "- an entry can't read a column with the same name as its "
                     "own output. Rename the output or the parameter."
                 )
@@ -653,7 +845,7 @@ class _MultiSignalMapper(Mapper):
             self._exec_order = list(TopologicalSorter(deps).static_order())
         except CycleError as e:
             raise ValueError(
-                f"Cyclic dependency between map functions: {e.args[1]}"
+                f"Cyclic dependency between {self._method_name} functions: {e.args[1]}"
             ) from e
 
         # combined_params = union of params NOT resolved from other outputs,
@@ -687,7 +879,8 @@ class _MultiSignalMapper(Mapper):
         if isinstance(fn, UDFBase):
             if not isinstance(fn, Mapper):
                 raise DataChainParamsError(
-                    f"map() entry {name!r} is a {type(fn).__name__}; only "
+                    f"{self._method_name}() entry {name!r} is a "
+                    f"{type(fn).__name__}; only "
                     "Mapper subclasses (or plain callables) are supported "
                     "in multi-signal .map() - use .gen() / .agg() for "
                     "other UDF types"
@@ -707,8 +900,8 @@ class _MultiSignalMapper(Mapper):
         ]
         if bad:
             raise DataChainParamsError(
-                f"map() function {name!r} has parameters that can't "
-                f"be passed by name ({bad}); multi-signal .map() calls "
+                f"{self._method_name}() function {name!r} has parameters that can't "
+                f"be passed by name ({bad}); multi-signal .{self._method_name}() calls "
                 "each function with keyword arguments"
             )
         return [p.name for p in sig_params]
@@ -737,7 +930,22 @@ class _MultiSignalMapper(Mapper):
         for name in self._exec_order:
             params = self._per_func_params[name]
             kw = {p: (results[p] if p in results else row_by_name[p]) for p in params}
-            results[name] = self._callers[name](**kw)
+            if self.is_input_batched:
+                assert self.params is not None
+                kw = {
+                    p: list(value)
+                    if p in results or p not in self.params.setup_func
+                    else value
+                    for p, value in kw.items()
+                }
+            result = self._callers[name](**kw)
+            if self.is_input_batched:
+                result = _batch_results(
+                    result, self._batch_length, f"batch_map() entry {name!r}"
+                )
+            results[name] = result
+        if self.is_input_batched:
+            return list(zip(*(results[name] for name in self._signal_map), strict=True))
         # Output order follows the user's declared kwarg order, not exec order.
         return tuple(results[name] for name in self._signal_map)
 
@@ -778,13 +986,28 @@ class _MultiSignalMapper(Mapper):
         return hashlib.sha256(b"".join([bytes.fromhex(p) for p in parts])).hexdigest()
 
 
+def _key_presence_values(
+    row: Sequence[Any], specs: Sequence[tuple[int, str | None] | None]
+) -> tuple[bool, ...]:
+    return tuple(
+        spec is None
+        or (row[spec[0]] is not None and (spec[1] is None or row[spec[0]] == spec[1]))
+        for spec in specs
+    )
+
+
 class Generator(UDFBase):
     """Inherit from this class to pass to `DataChain.gen()`."""
 
     is_output_batched = True
+    udf_kind = "gen"
     prefetch: int = 2
+    prefetch_max_size: int | None = None
+    # (input, output) columns of a delta key each output row must keep
+    delta_key: "Sequence[tuple[str, str]]" = ()
+    delta_key_presence: "Sequence[tuple[KeyPresence, KeyPresence]]" = ()
 
-    def run(
+    def run(  # noqa: C901
         self,
         udf_fields: "Sequence[str]",
         udf_inputs: "Iterable[Sequence[Any]]",
@@ -792,53 +1015,92 @@ class Generator(UDFBase):
         cache: bool,
         download_cb: Callback = DEFAULT_CALLBACK,
         processed_cb: Callback = DEFAULT_CALLBACK,
-    ) -> Iterator[Iterable[UDFResult]]:
+    ) -> Iterator[UDFPart]:
         self.setup()
+        signal_names = list(self.signal_names)
+        key_inputs = [udf_fields.index(column) for column, _ in self.delta_key]
+        key_outputs = [signal_names.index(column) for _, column in self.delta_key]
+        presence_inputs = [
+            (udf_fields.index(spec[0]), spec[1]) if spec is not None else None
+            for spec, _ in self.delta_key_presence
+        ]
+        presence_outputs = [
+            (signal_names.index(spec[0]), spec[1]) if spec is not None else None
+            for _, spec in self.delta_key_presence
+        ]
+        key_columns = [column for _, column in self.delta_key]
+        key_columns += [
+            spec[0]
+            for left, right in self.delta_key_presence
+            if (spec := right or left) is not None
+        ]
+        input_keys: dict[Any, tuple] = {}
+        prefetch = self._effective_prefetch
+        output_rows = OutputRows(self, catalog.warehouse)
 
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
+            prepare = self._input_reader(udf_fields, catalog, cache, download_cb)
             with safe_closing(udf_inputs):
                 for row in udf_inputs:
-                    yield self._prepare_row(
-                        row, udf_fields, catalog, cache, download_cb, include_id=True
+                    prepared = prepare(row)
+                    if key_columns:
+                        input_keys[prepared[0]] = tuple(
+                            row[i] for i in key_inputs
+                        ) + _key_presence_values(row, presence_inputs)
+                    yield prepared
+
+        def _check_delta_key(key, output):
+            values = tuple(output[i] for i in key_outputs) + _key_presence_values(
+                output, presence_outputs
+            )
+            for expected, value, column in zip(key, values, key_columns, strict=True):
+                if value != expected:
+                    from datachain.delta import delta_key_changed_error
+
+                    raise delta_key_changed_error(
+                        column.split(DEFAULT_DELIMITER)[0], "gen()"
                     )
 
-        def _process_row(row):
-            row_id, *row = row
-            has_output = False
+        def _stored_rows(result_objs, key) -> Iterator[tuple]:
+            pa = sys.modules.get("pyarrow")  # batches come only from arrow readers
+            for result_obj in result_objs:
+                if pa is not None and isinstance(result_obj, pa.RecordBatch):
+                    if key is not None:
+                        columns = (c.to_pylist() for c in result_obj.columns)
+                        for values in zip(*columns, strict=True):
+                            _check_delta_key(key, values)
+                    yield from output_rows.encode_batch(result_obj)
+                    continue
+                values = output_rows.flatten(result_obj)
+                if key is not None:
+                    _check_delta_key(key, values)
+                yield output_rows.encode(values)
+
+        def _process_row(row_id, row):
+            key = input_keys.pop(row_id) if key_columns else None
             result = self.process(*row)
             if result is None:
                 result = iter(())
             with safe_closing(result) as result_objs:
-                for result_obj, is_last in with_last_flag(result_objs):
-                    has_output = True
-                    udf_output = self._flatten_row(result_obj)
-                    udf_output = dict(zip(self.signal_names, udf_output, strict=False))
-                    udf_output["sys__input_id"] = row_id
-                    udf_output["sys__partial"] = not is_last
-                    udf_output["sys__empty"] = None
-                    yield udf_output
-            if not has_output:
-                # Marker: records that this input was processed but yielded nothing.
-                yield {
-                    "sys__input_id": row_id,
-                    "sys__partial": False,
-                    "sys__empty": True,
-                }
+                yield from _stored_rows(result_objs, key)
 
         prepared_inputs = _prepare_rows(udf_inputs)
         prepared_inputs = _prefetch_inputs(
             prepared_inputs,
-            self.prefetch,
+            prefetch,
             download_cb=download_cb,
-            remove_prefetched=bool(self.prefetch) and not cache,
+            remove_prefetched=bool(prefetch) and not cache,
+            max_size=self.prefetch_max_size,
         )
 
-        with closing(prepared_inputs):
-            for row in prepared_inputs:
-                yield _process_row(row)
-                processed_cb.relative_update(1)
-
-        self.teardown()
+        with (
+            self._teardown_on_exit(),
+            closing(prepared_inputs),
+            _Progress(processed_cb) as progress,
+        ):
+            for row_id, *row in prepared_inputs:
+                yield row_id, _process_row(row_id, row)
+                progress.add(1)
 
 
 class Aggregator(UDFBase):
@@ -846,6 +1108,7 @@ class Aggregator(UDFBase):
 
     is_input_batched = True
     is_output_batched = True
+    udf_kind = "agg"
 
     def run(
         self,
@@ -855,56 +1118,42 @@ class Aggregator(UDFBase):
         cache: bool,
         download_cb: Callback = DEFAULT_CALLBACK,
         processed_cb: Callback = DEFAULT_CALLBACK,
-    ) -> Iterator[Iterable[UDFResult]]:
+    ) -> Iterator[UDFPart]:
         from datachain.data_storage.schema import PARTITION_COLUMN_ID
 
         self.setup()
+        output_row = OutputRows(self, catalog.warehouse)
+        prepare = self._input_reader(
+            udf_fields, catalog, cache, download_cb, include_id=False
+        )
+
+        def _output(result_objs: Any) -> Iterator[tuple]:
+            if result_objs is None:
+                return
+            with safe_closing(result_objs):
+                yield from map(output_row, result_objs)
 
         # Check if partition_id is available (when partition_by is used)
         partition_id_idx = None
         if PARTITION_COLUMN_ID in udf_fields:
             partition_id_idx = list(udf_fields).index(PARTITION_COLUMN_ID)
 
-        for batch in udf_inputs:
-            # Get partition_id from first row if available (all rows in batch share it)
-            # This is used to track which partition produced each output for checkpoints
-            input_id = None
-            if partition_id_idx is not None:
-                input_id = batch[0][partition_id_idx]
+        with self._teardown_on_exit():
+            for batch in udf_inputs:
+                # Get partition_id from first row if available (all rows in batch
+                # share it). This is used to track which partition produced each
+                # output for checkpoints
+                input_id = None
+                if partition_id_idx is not None:
+                    input_id = batch[0][partition_id_idx]
 
-            prepared_rows = [
-                self._prepare_row(row, udf_fields, catalog, cache, download_cb)
-                for row in batch
-            ]
-            batched_args = zip(*prepared_rows, strict=False)
-            # Convert aggregated column values to lists. This keeps behavior
-            # consistent with the type hints promoted in the public API.
-            udf_args = [
-                list(arg) if isinstance(arg, tuple) else arg for arg in batched_args
-            ]
-            result_objs = self.process(*udf_args)
-            if result_objs is None:
-                result_objs = iter(())
-            udf_outputs = (self._flatten_row(row) for row in result_objs)
-
-            def _process_partition(udf_outputs, input_id):
-                has_output = False
-                for row, is_last in with_last_flag(udf_outputs):
-                    has_output = True
-                    udf_output = dict(zip(self.signal_names, row, strict=False))
-                    udf_output["sys__input_id"] = input_id
-                    udf_output["sys__partial"] = not is_last
-                    udf_output["sys__empty"] = None
-                    yield udf_output
-                if not has_output:
-                    yield {
-                        "sys__input_id": input_id,
-                        "sys__partial": False,
-                        "sys__empty": True,
-                    }
-
-            output = _process_partition(udf_outputs, input_id)
-            processed_cb.relative_update(len(batch))
-            yield output
-
-        self.teardown()
+                prepared_rows = [prepare(row) for row in batch]
+                batched_args = zip(*prepared_rows, strict=False)
+                # Convert aggregated column values to lists. This keeps behavior
+                # consistent with the type hints promoted in the public API.
+                udf_args = [
+                    list(arg) if isinstance(arg, tuple) else arg for arg in batched_args
+                ]
+                output = _output(self.process(*udf_args))
+                processed_cb.relative_update(len(batch))
+                yield input_id, output

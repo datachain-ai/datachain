@@ -48,7 +48,7 @@ def process(file) -> str:
 **Third run** (`python process.py`): DataChain detects that `processed_files` was already created with the same chain. It skips everything:
 
 ```
-Checkpoint found for dataset 'processed_files', skipping creation
+Reusing dataset 'processed_files@1.0.0' (skipping recompute)
 ```
 
 ## What Invalidates Checkpoints
@@ -161,9 +161,12 @@ dc.read_storage("gs://datachain-demo/dogs-and-cats/", anon=True).filter(
 def score(file) -> float:
     return file.size
 
+
 # Run 2 - changed logic
 def score(file) -> float:
     return file.size / 1024
+
+
 # → Python operation recomputes from scratch
 ```
 
@@ -176,9 +179,12 @@ def score(file) -> float:
         raise ValueError("bug")
     return file.size
 
+
 # Run 2 - bug fixed, same output type
 def score(file) -> float:
     return file.size
+
+
 # → Python operation continues from where it stopped, already-processed rows are skipped
 ```
 

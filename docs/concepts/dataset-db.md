@@ -95,11 +95,7 @@ DataChain also supports attaching metrics and parameters alongside provenance:
 ```python
 import datachain as dc
 
-results = (
-    dc.read_dataset("training_data")
-    .map(prediction=run_model)
-    .save("predictions")
-)
+results = dc.read_dataset("training_data").map(prediction=run_model).save("predictions")
 
 dc.metrics.set("accuracy", 0.95)
 dc.metrics.set("f1_score", 0.91)

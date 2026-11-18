@@ -1,4 +1,3 @@
-import copy
 from collections.abc import Iterable
 from typing import (  # noqa: UP035
     Annotated,
@@ -25,6 +24,7 @@ from datachain.lib.utils import (
     type_to_str,
 )
 from datachain.sql.types import (
+    JSON,
     Array,
     String,
 )
@@ -44,6 +44,7 @@ class MyFeature(BaseModel):
         (list[str], Array(String())),
         (Iterable[str], Array(String())),
         (list[list[str]], Array(Array(String()))),
+        (list[str | int], JSON()),
     ),
 )
 def test_convert_type_to_datachain_array(typ, expected):
@@ -54,7 +55,6 @@ def test_convert_type_to_datachain_array(typ, expected):
     "typ",
     (
         str | int,
-        list[str | int],
         MyFeature,
         MyModel,
     ),
@@ -131,6 +131,41 @@ def test_normalize_column_names_repeat_generated_after_normalize():
     res = normalize_col_names(["c0_CoLuMn", "_column", "column"])
 
     assert res == {"c0_column": "c0_CoLuMn", "c1_column": "_column", "column": "column"}
+
+
+@pytest.mark.parametrize(
+    "src,old_base,new_base,expected",
+    [
+        ("s3://src/d/e.txt", "s3://src", "s3://dst/new", "s3://dst/new/d/e.txt"),
+        ("s3://src/d//e.txt", "s3://src", "s3://dst/new", "s3://dst/new/d//e.txt"),
+        ("s3://src/d///e.txt", "s3://src", "s3://dst/", "s3://dst/d///e.txt"),
+        ("s3://src/d//e.txt", "s3://src/d", "s3://dst", "s3://dst//e.txt"),
+        ("s3://src/d///e.txt", "s3://src/d//", "s3://dst", "s3://dst//e.txt"),
+        ("s3://src/e.txt", "s3://src", "s3://dst/d//", "s3://dst/d//e.txt"),
+        (r"s3://src/a\b.txt", "s3://src", "s3://dst", r"s3://dst/a\b.txt"),
+    ],
+)
+def test_rebase_path_keeps_cloud_keys_as_is(src, old_base, new_base, expected):
+    assert rebase_path(src, old_base, new_base) == expected
+
+
+def test_rebase_path_converts_windows_bases_of_a_file_uri():
+    assert rebase_path("file:///C:/data/a.txt", r"C:\data", r"C:\out") == "C:/out/a.txt"
+
+
+@pytest.mark.parametrize(
+    "new_base,expected",
+    [
+        (r"file:///C:\out", "file:///C:/out/d/e.txt"),
+        ("file:///tmp/out//", "file:///tmp/out/d/e.txt"),
+        ("file:///tmp/./out", "file:///tmp/out/d/e.txt"),
+        ("file:///", "file:///d/e.txt"),
+        (r"\\server\share\out", "//server/share/out/d/e.txt"),
+        ("file:////server/share/out", "file:////server/share/out/d/e.txt"),
+    ],
+)
+def test_rebase_path_normalizes_local_uri_base(new_base, expected):
+    assert rebase_path("s3://src/d/e.txt", "s3://src", new_base) == expected
 
 
 def test_rebase_path_basic():
@@ -295,8 +330,8 @@ def test_type_to_str_matrix(type_, expected):
 def test_type_to_str_typing_module_vs_builtin_generics():
     """Ensure typing.List/Dict and built-in generics stringify identically.
 
-    Confirms Python 3.10+ behavior where get_origin() normalizes both forms
-    to built-ins, and type_to_str produces the same string.
+    get_origin() normalizes both forms to built-ins, so type_to_str produces the
+    same string.
     """
     from typing import get_origin
 
@@ -336,17 +371,12 @@ def test_type_to_str_empty_generics():
     assert type_to_str(Tuple) == "tuple"  # noqa: UP006
 
 
+@pytest.mark.usefixtures("empty_model_store")
 def test_type_to_str_pydantic_model_uses_model_store():
-    snapshot = copy.deepcopy(ModelStore.store)
-    ModelStore.store = {}
-    try:
+    class Sample(DataModel):
+        a: int
 
-        class Sample(DataModel):
-            a: int
-
-        assert type_to_str(Sample) == ModelStore.get_name(Sample)
-    finally:
-        ModelStore.store = snapshot
+    assert type_to_str(Sample) == ModelStore.get_name(Sample)
 
 
 def test_callable_name_callable_instance():
@@ -385,3 +415,17 @@ def test_callable_name_udf_like():
 )
 def test_callable_name_non_callable(obj, expected):
     assert callable_name(obj) == expected
+
+
+@pytest.mark.parametrize("base", [".", "./", "", "/", "file:///", "./out"])
+@pytest.mark.parametrize(
+    "src,old_base",
+    [
+        ("s3://src/d//e.txt", "s3://src"),
+        ("s3://src/d//e.txt", "s3://src/d"),
+        ("s3://src/d/", "s3://src"),
+    ],
+)
+def test_rebase_rejects_empty_key_segments_for_local_destinations(base, src, old_base):
+    with pytest.raises(ValueError, match="must not contain empty segments"):
+        rebase_path(src, old_base, base)

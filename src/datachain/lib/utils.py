@@ -3,7 +3,7 @@ import re
 import types
 import warnings
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Container, Sequence
 from pathlib import PurePosixPath
 from typing import Annotated, Any, Final, Literal, Union, get_args, get_origin
 from typing import Literal as LiteralEx
@@ -36,6 +36,21 @@ class DataChainParamsError(DataChainError):
 class DataChainColumnError(DataChainParamsError):
     def __init__(self, col_name: str, msg: str):
         super().__init__(f"Error for column {col_name}: {msg}")
+
+
+def assert_unique_export_columns(paths: "Sequence[Sequence[str]]", delimiter: str):
+    seen: dict[str, str] = {}
+    for path in paths:
+        parts = [p for p in path if p]
+        dotted = ".".join(parts)
+        flat = delimiter.join(parts)
+        if flat in seen:
+            raise DataChainColumnError(
+                dotted,
+                f"maps to the same export column as '{seen[flat]}'; "
+                "rename one of the columns",
+            )
+        seen[flat] = dotted
 
 
 def callable_name(obj: object) -> str:
@@ -86,6 +101,14 @@ def normalize_col_names(col_names: Sequence[str]) -> dict[str, str]:
     return new_col_names
 
 
+def unique_name(name: str, taken: Container[str]) -> str:
+    """Return `name`, or the first `cN_name` that is not taken."""
+    new_name, i = name, 0
+    while new_name in taken:
+        new_name, i = f"c{i}_{name}", i + 1
+    return new_name
+
+
 def rebase_path(
     src_path: str,
     old_base: str,
@@ -114,22 +137,18 @@ def rebase_path(
         scheme, sep, rest = url.partition("://")
         return (scheme, rest) if sep else ("", url)
 
-    def _to_posix(path: str) -> str:
+    def _norm(scheme: str, path: str) -> str:
+        # a cloud key as is: d//e.txt and d/e.txt are different objects
+        if scheme and scheme != "file":
+            return path
         return PurePosixPath(path.replace("\\", "/")).as_posix()
 
     src_scheme, src_rest = _split_scheme(src_path)
-    old_scheme, old_rest = _split_scheme(old_base)
+    _, old_rest = _split_scheme(old_base)
     new_scheme, new_rest = _split_scheme(new_base)
 
-    # For scheme URLs, treat everything after :// as the opaque "path" for rebasing.
-    # For plain paths, use the full string.
-    src_path_only = src_rest if src_scheme else src_path
-    old_base_only = old_rest if old_scheme else old_base
-
-    src_path_norm = _to_posix(src_path_only)
-    old_base_norm = _to_posix(old_base_only)
-
-    old_base_norm = old_base_norm.rstrip("/") + "/"
+    src_path_norm = _norm(src_scheme, src_rest)
+    old_base_norm = _norm(src_scheme, old_rest).removesuffix("/") + "/"
     idx = (src_path_norm + "/").find(old_base_norm)
     if idx == -1 or (idx > 0 and src_path_norm[idx - 1] != "/"):
         raise ValueError(
@@ -139,7 +158,8 @@ def rebase_path(
     relative_path = src_path_norm[relative_start:]
 
     # Parse the filename
-    path_obj = PurePosixPath(relative_path)
+    parent, separator, name = relative_path.rpartition("/")
+    path_obj = PurePosixPath(name)
     stem = path_obj.stem
     current_ext = path_obj.suffix
 
@@ -156,22 +176,23 @@ def rebase_path(
     new_name = new_stem + new_ext
 
     # Reconstruct path with new base
-    parent = str(path_obj.parent)
-    if parent == ".":
-        new_relative_path = new_name
-    else:
-        new_relative_path = str(PurePosixPath(parent) / new_name)
+    new_relative_path = f"{parent}{separator}{new_name}"
+    if (not new_scheme or new_scheme == "file") and "//" in f"/{new_relative_path}/":
+        raise ValueError(
+            f"unsafe local path for {src_path!r}: must not contain empty segments"
+        )
 
-    if new_scheme:
-        base_path = _to_posix(new_rest)
-        full_path = str(PurePosixPath(base_path) / new_relative_path)
-        return f"{new_scheme}://{full_path}"
-
-    return str(PurePosixPath(_to_posix(new_base)) / new_relative_path)
+    base = _norm(new_scheme, new_rest)
+    joined = (
+        new_relative_path
+        if base == "."
+        else f"{base.removesuffix('/')}/{new_relative_path}"
+    )
+    return f"{new_scheme}://{joined}" if new_scheme else joined
 
 
 def type_to_str(  # noqa: C901, PLR0911, PLR0912
-    type_: type | types.EllipsisType | None,
+    type_: Any,
     subtypes: list | None = None,
     *,
     warn_with: Callable[[str], None] | None = None,
@@ -197,7 +218,7 @@ def type_to_str(  # noqa: C901, PLR0911, PLR0912
                 register_pydantic=register_pydantic,
             )
             return f"Optional[{type_str}]"
-        formatted_types = ", ".join(
+        arm_names = [
             type_to_str(
                 arg,
                 subtypes,
@@ -205,8 +226,10 @@ def type_to_str(  # noqa: C901, PLR0911, PLR0912
                 register_pydantic=register_pydantic,
             )
             for arg in args
-        )
-        return f"Union[{formatted_types}]"
+        ]
+        # order-independent arms: one type, one serialization, one schema hash
+        arm_names.sort(key=lambda name: (name == "NoneType", name))
+        return f"Union[{', '.join(arm_names)}]"
     if origin is list:
         args = get_args(type_)
         if len(args) == 0:

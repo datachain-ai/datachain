@@ -66,53 +66,6 @@ def test_flatten_nested():
     assert flatten(t1) == ("sfo", "sf", 567, {"42": 999}, 1849)
 
 
-def test_flatten_list_field():
-    class Trace(BaseModel):
-        x: int
-        y: int
-
-    class Nested(BaseModel):
-        traces: list[Trace]
-
-    n = Nested(traces=[Trace(x=1, y=1), Trace(x=2, y=2)])
-    assert flatten(n) == ([{"x": 1, "y": 1}, {"x": 2, "y": 2}],)
-
-
-def test_flatten_nested_list_field():
-    class Trace(BaseModel):
-        x: int
-        y: int
-
-    class Nested(BaseModel):
-        traces: list[list[Trace]]
-
-    n = Nested(traces=[[Trace(x=1, y=1)], [Trace(x=2, y=2)]])
-    assert flatten(n) == ([[{"x": 1, "y": 1}], [{"x": 2, "y": 2}]],)
-
-
-def test_flatten_multiple_nested_list_field():
-    class Trace(BaseModel):
-        x: int
-        y: int
-
-    class Nested(BaseModel):
-        traces: list[list[list[Trace]]]
-
-    n = Nested(
-        traces=[
-            [[Trace(x=1, y=1)], [Trace(x=2, y=2)]],
-            [[Trace(x=3, y=3)], [Trace(x=4, y=4)]],
-        ]
-    )
-
-    assert flatten(n) == (
-        [
-            [[{"x": 1, "y": 1}], [{"x": 2, "y": 2}]],
-            [[{"x": 3, "y": 3}], [{"x": 4, "y": 4}]],
-        ],
-    )
-
-
 def test_flatten_list():
     t1 = FileInfo(parent="p1", name="n4", size=3, location={"a": "b"})
     t2 = FileInfo(parent="p2", name="n5", size=2, location={"c": "d"})
@@ -269,7 +222,7 @@ def test_unflatten_to_json_list():
     json = unflatten_to_json(_Parent, flt)
     assert json == {
         "name": "parent1",
-        "children": [{"type": 12, "name": "child1"}, {"type": 13, "name": "child2"}],
+        "children": p.children,
     }
 
 
@@ -294,10 +247,7 @@ def test_unflatten_to_json_dict():
     json = unflatten_to_json(_Parent, flt)
     assert json == {
         "name": "parent1",
-        "children": {
-            "child1": {"type": 12, "address": "sf"},
-            "child2": {"type": 13, "address": "nyc"},
-        },
+        "children": p.children,
     }
 
 
@@ -339,7 +289,7 @@ def test_unflatten_to_json_list_of_lists():
 
     assert unflatten_to_json(_Company, flatten(p)) == {
         "name": "Co",
-        "parents": [{"name": "parent1", "children": [{"type": 12, "name": "child1"}]}],
+        "parents": p.parents,
     }
 
 

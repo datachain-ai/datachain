@@ -1,41 +1,32 @@
 import glob
 import itertools
 import logging
-import posixpath
 import secrets
 import string
-import sys
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
-from typing import TYPE_CHECKING, Any, Union, cast
-from urllib.parse import urlparse
-
-if sys.version_info >= (3, 11):
-    from typing import Self
-else:
-    from typing_extensions import Self
+from typing import TYPE_CHECKING, Any, Self, cast
 
 import attrs
 import sqlalchemy as sa
 from sqlalchemy.sql.expression import true
 from sqlalchemy.sql.selectable import GenerativeSelect
 
-from datachain import json
 from datachain.client import Client
-from datachain.data_storage.schema import convert_rows_custom_column_types
+from datachain.data_storage.codec import RowCodec, TypeCodec, value_codec
 from datachain.data_storage.serializer import Serializable
+from datachain.data_storage.writer import ID_BITS, MAX_ID, Writer, parts_columns
 from datachain.dataset import DatasetRecord, StorageURI
 from datachain.error import TableRenameError
 from datachain.lib.file import File
-from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.udf import JsonSerializationError
 from datachain.node import DirType, DirTypeGroup, Node, NodeWithPath, get_path
-from datachain.query.batch import RowsOutput
+from datachain.query.batch import DEFAULT_BATCH_SIZE, RowsOutput
 from datachain.query.schema import ColumnMeta
 from datachain.sql.functions import path as pathfunc
 from datachain.sql.types import SQLType
-from datachain.utils import LIKE_ESCAPE_CHAR, safe_closing, sql_escape_like
+from datachain.utils import LIKE_ESCAPE_CHAR, batched, safe_closing, sql_escape_like
 
 if TYPE_CHECKING:
     from sqlalchemy.sql._typing import (
@@ -44,10 +35,8 @@ if TYPE_CHECKING:
         _OnClauseArgument,
     )
     from sqlalchemy.sql.selectable import FromClause
-    from sqlalchemy.types import TypeEngine
 
     from datachain.data_storage import schema
-    from datachain.data_storage.buffer import InsertBuffer
     from datachain.data_storage.db_engine import DatabaseEngine
     from datachain.data_storage.schema import DataTable
 
@@ -74,11 +63,10 @@ class AbstractWarehouse(ABC, Serializable):
     UDF_TABLE_NAME_PREFIX = "udf_"
     TMP_TABLE_NAME_PREFIX = "tmp_"
     INSERT_BATCH_SIZE: int = 10_000
-    INSERT_FLUSH_INTERVAL: float = 60.0
+    INSERT_FLUSH_INTERVAL: float = 2.0
 
     schema: "schema.Schema"
     db: "DatabaseEngine"
-    buffers: dict[str, "InsertBuffer"]
 
     def __enter__(self) -> Self:
         return self
@@ -86,111 +74,28 @@ class AbstractWarehouse(ABC, Serializable):
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         """Default behavior is to do nothing, as connections may be shared."""
 
-    def cleanup_for_tests(self):
-        """Cleanup for tests."""
-
     def normalize_limit_offset(self, query: GenerativeSelect) -> GenerativeSelect:
         """Return query adjusted for warehouse-specific LIMIT/OFFSET semantics."""
         return query
 
-    def _to_jsonable(self, obj: Any) -> Any:
-        """Recursively convert Python/Pydantic structures into JSON-serializable
-        objects.
-        """
+    def type_codec(self, sql_type: Any) -> TypeCodec:
+        """How this warehouse stores and reads back values of `sql_type`.
 
-        if ModelStore.is_pydantic(type(obj)):
-            # Use Pydantic's JSON mode to ensure datetime and other non-JSON
-            # native types are serialized in a compatible way. Numpy is the one
-            # thing it refuses and this project's encoder handles.
-            return obj.model_dump(mode="json", fallback=json.numpy_to_python)
+        The default stores Python values as they are, checked and normalized. A
+        warehouse whose stored form differs overrides this."""
+        return value_codec(sql_type, self.column_default(sql_type))
 
-        if isinstance(obj, dict):
-            out: dict[str, Any] = {}
-            for k, v in obj.items():
-                if not isinstance(k, str):
-                    key_str = json.dumps(
-                        self._to_jsonable(k),
-                        ensure_ascii=False,
-                        serialize_numpy=True,
-                    )
-                else:
-                    key_str = k
-                out[key_str] = self._to_jsonable(v)
-            return out
+    def column_default(self, sql_type: Any) -> Any:
+        """The value stored for None, and read back for NULL."""
+        if not isinstance(sql_type, SQLType) or sql_type.dc_nullable:
+            return None
+        return sql_type.default_value(self.db.dialect)
 
-        if isinstance(obj, (list, tuple, set)):
-            return [self._to_jsonable(i) for i in obj]
-
-        return obj
-
-    def convert_type(  # noqa: PLR0911
-        self,
-        val: Any,
-        col_type: SQLType,
-        col_python_type: Any,
-        col_type_name: str,
-        col_name: str,
-    ) -> Any:
-        """
-        Tries to convert value to specific type if needed and if compatible,
-        otherwise throws an ValueError.
-        If value is a list or some other iterable, it tries to convert sub elements
-        as well
-        """
-        import numpy as np
-
-        if isinstance(val, (np.ndarray, np.generic)):
-            val = val.tolist()
-
-        # Optimization: Precompute all the column type variables.
-        value_type = type(val)
-
-        if col_python_type is list and value_type in (list, tuple, set):
-            if len(val) == 0:
-                return []
-
-            item_python_type = self.python_type(col_type.item_type)
-
-            if item_python_type is not list:
-                if isinstance(val[0], item_python_type):
-                    # SQLite ARRAY storage expects a list; tuples/sets must be
-                    # converted to lists even when element types already match.
-                    return list(val)
-                if item_python_type is float and isinstance(val[0], int):
-                    return [float(i) for i in val]
-
-            # Optimization: Reuse these values for each function call within the
-            # list comprehension.
-            item_type_info = (
-                col_type.item_type,
-                item_python_type,
-                type(col_type.item_type).__name__,
-                col_name,
-            )
-            return [self.convert_type(i, *item_type_info) for i in val]
-
-        # Special use case with JSON type as we save it as string
-        if col_python_type is dict or col_type_name == "JSON":
-            if value_type is str:
-                return val
-            json_ready = self._to_jsonable(val)
-            try:
-                return json.dumps(json_ready, ensure_ascii=False, serialize_numpy=True)
-            except TypeError as e:
-                raise JsonSerializationError(
-                    f"JSON serialization error: {e}",
-                    column_name=col_name,
-                    value_repr=repr(val),
-                ) from e
-
-        if isinstance(val, col_python_type):
-            return val
-        if col_python_type is float and isinstance(val, int):
-            return float(val)
-
-        raise ValueError(
-            f"Value {val!r} with type {value_type} incompatible for "
-            f"column type {col_type_name}"
+    def row_codec(self, columns: Iterable[Any]) -> RowCodec:
+        """The codec of rows of `columns`, given as columns or SQL types."""
+        types = (getattr(c, "type", c) for c in columns)
+        return RowCodec(
+            [self.type_codec(t() if isinstance(t, type) else t) for t in types]
         )
 
     @abstractmethod
@@ -354,12 +259,6 @@ class AbstractWarehouse(ABC, Serializable):
     # Table Name Internal Functions
     #
 
-    @staticmethod
-    def uri_to_storage_info(uri: str) -> tuple[str, str]:
-        parsed = urlparse(uri)
-        name = parsed.path if parsed.scheme == "file" else parsed.netloc
-        return parsed.scheme, name
-
     def dataset_table_name(self, dataset: DatasetRecord, version: str) -> str:
         return self._construct_dataset_table_name(
             dataset.project.namespace.name,
@@ -414,24 +313,27 @@ class AbstractWarehouse(ABC, Serializable):
     ) -> None:
         """Drops a dataset rows table for the given dataset name."""
         table_name = self.dataset_table_name(dataset, version)
-        table = sa.Table(table_name, self.db.metadata)
-        self.db.drop_table(table, if_exists=if_exists)
-        # Remove from metadata cache to allow recreation
-        if table_name in self.db.metadata.tables:
-            self.db.metadata.remove(self.db.metadata.tables[table_name])
+        names = [table_name]
+        if dataset.has_version(version):
+            names.append(f"{table_name}__{dataset.get_version(version).uuid[:8]}")
+        for name in names:
+            table = sa.Table(name, self.db.metadata)
+            self.db.drop_table(table, if_exists=if_exists)
+            # Remove from metadata cache to allow recreation
+            if name in self.db.metadata.tables:
+                self.db.metadata.remove(self.db.metadata.tables[name])
 
     def dataset_rows_select(
         self,
         query: sa.Select,
         **kwargs,
-    ) -> Iterator[tuple[Any, ...]]:
+    ) -> Iterator[Sequence[Any]]:
         """
         Fetch dataset rows from database.
         """
+        codec = self.row_codec(query.selected_columns)
         with safe_closing(self.db.execute(query, **kwargs)) as rows:
-            yield from convert_rows_custom_column_types(
-                query.selected_columns, rows, self.db.dialect
-            )
+            yield from codec.decode_rows(rows)
 
     def dataset_rows_select_from_ids(
         self,
@@ -448,8 +350,33 @@ class AbstractWarehouse(ABC, Serializable):
         query = query._clone().offset(None).limit(None).order_by(None)
 
         if is_batched:
+            id_index = next(
+                i for i, column in enumerate(query.selected_columns) if column is id_col
+            )
+
+            def fetch(batches):
+                rows_by_id = defaultdict(list)
+                row_ids = itertools.chain.from_iterable(batches)
+                for row in self.dataset_rows_select(query.where(id_col.in_(row_ids))):
+                    rows_by_id[row[id_index]].append(row)
+                for batch in batches:
+                    yield [
+                        row
+                        for row_id in dict.fromkeys(batch)
+                        for row in rows_by_id[row_id]
+                    ]
+
+            batches: list[RowsOutput] = []
+            count = 0
             for batch in ids:
-                yield list(self.dataset_rows_select(query.where(id_col.in_(batch))))
+                if batches and count + len(batch) > DEFAULT_BATCH_SIZE:
+                    yield from fetch(batches)
+                    batches = []
+                    count = 0
+                batches.append(batch)
+                count += len(batch)
+            if batches:
+                yield from fetch(batches)
         else:
             yield from self.dataset_rows_select(query.where(id_col.in_(ids)))
 
@@ -514,47 +441,84 @@ class AbstractWarehouse(ABC, Serializable):
         ((nrows, *rest),) = self.db.execute(query)
         return nrows, rest[0] if rest else 0
 
-    @abstractmethod
-    def prepare_entries(self, entries: "Iterable[File]") -> Iterable[dict[str, Any]]:
-        """Convert File entries so they can be passed on to `insert_rows()`"""
-
-    def insert_rows(
+    def insert_stored_rows(
         self,
         table: sa.Table,
-        rows: Iterable[dict[str, Any]],
+        columns: Sequence[str],
+        rows: Iterable[tuple],
         batch_size: int | None = None,
     ) -> None:
-        """Does batch inserts of any kind of rows into table.
+        """Insert rows already in stored form (``RowCodec.encode``), in the order
+        of ``columns``, in blocks of ``batch_size``."""
+        if "sys__id" not in columns and "sys__id" in table.c:
+            with self.writer(table, columns, batch_size=batch_size) as w:
+                w.extend(rows)
+            return
+        for block in batched(rows, batch_size or self.INSERT_BATCH_SIZE):
+            self.insert_block(table, columns, list(block))
 
-        `insert_rows_done` must be called after this function is used
-        (and all rows have been inserted).
-        """
-        buffer_size = batch_size if batch_size is not None else self.INSERT_BATCH_SIZE
-        buffer = self.get_buffer(
-            table, buffer_size=buffer_size, flush_interval=self.INSERT_FLUSH_INTERVAL
-        )
-        buffer.insert_many(rows)
-
-    @abstractmethod
-    def get_buffer(
+    def writer(
         self,
         table: sa.Table,
-        buffer_size: int,
-        flush_interval: float,
-    ) -> "InsertBuffer":
-        """Get or create an InsertBuffer for the given table."""
+        columns: Sequence[str],
+        writer_no: int = 0,
+        parts: sa.Table | None = None,
+        batch_size: int | None = None,
+    ) -> Writer:
+        """A writer of rows into table, with ids and a ledger: see ``Writer``."""
+        return Writer(self, table, columns, writer_no, parts, batch_size)
 
-    def close_buffer(self, table: sa.Table) -> None:
-        """Flush and close the buffer for the given table."""
-        if table.name not in self.buffers:
-            return
-        self.buffers[table.name].flush()
-        self.buffers[table.name].close()
-        del self.buffers[table.name]
+    def create_parts_table(self, name: str) -> sa.Table:
+        """Create an empty ledger: see ``Writer``."""
+        return self.create_udf_table(parts_columns(), name=name)
 
-    def insert_rows_done(self, table: sa.Table) -> None:
-        """Signal that row inserts are complete by flushing and closing the buffer."""
-        self.close_buffer(table)
+    @abstractmethod
+    def insert_block(
+        self,
+        table: sa.Table,
+        columns: Sequence[str],
+        rows: Sequence[tuple],
+        parts: sa.Table | None = None,
+        ledger: Sequence[tuple] = (),
+    ) -> None:
+        """Insert rows, which carry their sys__id, then the ledger rows of the
+        parts they finish. A ledger row must not become visible before the rows
+        it covers: insert both in one transaction, or the rows first. Both are
+        lists, so an insert retried after a lock error sees every row again."""
+
+    @abstractmethod
+    def claim_writer_no(self, parts: sa.Table) -> int:
+        """Claim the next writer_no of the table whose ledger is parts, atomically
+        and durably: a claim row ``(NULL, writer_no, lo, hi)`` with the empty
+        range ``lo = writer_no << ID_BITS | 1``, ``hi = lo - 1``. Numbers are
+        never reused, so a restart cannot collide with an earlier attempt."""
+
+    def delete_id_ranges(
+        self, table: sa.Table, ranges: Sequence[tuple[int, int]]
+    ) -> None:
+        """Delete the rows whose sys__id lies in any inclusive (lo, hi) range,
+        a hundred ranges per statement: an OR of thousands is too deep for SQL
+        parsers (SQLite stops at a depth of 1000)."""
+        id_col = table.c.sys__id
+        for batch in batched(ranges, 100):
+            terms = (id_col.between(lo, hi) for lo, hi in batch)
+            self.db.execute(table.delete().where(sa.or_(*terms)))
+
+    def trim_to_ledger(self, table: sa.Table, parts: sa.Table) -> None:
+        """Delete the rows outside the ledger's committed ranges: one range per
+        writer, from the end of its committed prefix to the next writer's first id."""
+        committed = self.db.execute(
+            sa.select(parts.c.writer_no, sa.func.max(parts.c.hi))
+            .group_by(parts.c.writer_no)
+            .order_by(parts.c.writer_no)
+        )
+        gaps, lo = [], 0
+        for writer_no, hi in committed:
+            if (first := (writer_no << ID_BITS) + 1) > lo:
+                gaps.append((lo, first - 1))
+            lo = max(lo, hi + 1)
+        gaps.append((lo, MAX_ID))
+        self.delete_id_ranges(table, gaps)
 
     @abstractmethod
     def instr(self, source, target) -> sa.ColumnElement:
@@ -607,10 +571,6 @@ class AbstractWarehouse(ABC, Serializable):
     ) -> None:
         """Exports dataset table to the cloud, e.g to some s3 bucket"""
 
-    def python_type(self, col_type: Union["TypeEngine", "SQLType"]) -> Any:
-        """Returns python type representation of some Sqlalchemy column type"""
-        return col_type.python_type
-
     def add_node_type_where(
         self,
         query: sa.Select,
@@ -649,9 +609,9 @@ class AbstractWarehouse(ABC, Serializable):
         """
         dr = dataset_rows
         columns = [c.name for c in query.selected_columns]
-        for row in self.db.execute(query):
+        for row in self.dataset_rows_select(query):
             d = dict(zip(columns, row, strict=False))
-            yield Node(**{dr.without_object(k): v for k, v in d.items()})
+            yield Node.from_row(d, file_prefix=dr.column)
 
     def get_dirs_by_parent_path(
         self,
@@ -689,7 +649,7 @@ class AbstractWarehouse(ABC, Serializable):
         return self.get_nodes(
             self.expand_query(de, q, dr)
             .where(
-                (de.c(q, "path").op("GLOB")(path_glob))
+                (de.c(q, "path").op("GLOB", is_comparison=True)(path_glob))
                 & ~self.instr(relpath, "/")
                 & (de.c(q, "path") != dirpath)
             )
@@ -707,19 +667,19 @@ class AbstractWarehouse(ABC, Serializable):
         dr = dataset_rows
         de = dr.dir_expansion()
         q = de.query(
-            dr.select().where(dr.c("is_latest") == true()).subquery(),
-            column=dr.column,
+            dr.select().where(dr.c("is_latest") == true()).subquery()
         ).subquery()
         q = self.expand_query(de, q, dr)
 
-        q = q.where(de.c(q, "path") == get_path(parent, name)).order_by(
-            de.c(q, "source"), de.c(q, "path"), de.c(q, "version")
+        columns = q.selected_columns
+        q = q.where(columns[dr.col_name("path")] == get_path(parent, name)).order_by(
+            *(columns[dr.col_name(field)] for field in ("source", "path", "version"))
         )
-        row = next(self.dataset_rows_select(q), None)
-        if not row:
+        node = next(self.get_nodes(q, dr), None)
+        if node is None:
             path = f"{parent}/{name}"
             raise FileNotFoundError(f"Unable to resolve path {path!r}")
-        return Node(*row)
+        return node
 
     def _populate_nodes_by_path(
         self, dataset_rows: "DataTable", path_list: list[str]
@@ -755,10 +715,16 @@ class AbstractWarehouse(ABC, Serializable):
                 )
                 result.extend(nodes)
         else:
-            result = [
-                self._get_node_by_path_list(dataset_rows, path, curr_name)
-                for path in matched_paths
-            ]
+            result = []
+            for path in matched_paths:
+                try:
+                    node = self._get_node_by_path_list(dataset_rows, path, curr_name)
+                except FileNotFoundError:
+                    continue
+                result.append(node)
+            if not result and matched_paths:
+                pattern = "/".join(path_list)
+                raise FileNotFoundError(f"Unable to resolve path {pattern!r}")
         return result
 
     @staticmethod
@@ -819,7 +785,7 @@ class AbstractWarehouse(ABC, Serializable):
 
     def expand_path(self, dataset_rows: "DataTable", path: str) -> list[Node]:
         """Simulates Unix-like shell expansion"""
-        clean_path = path.strip("/")
+        clean_path = path.lstrip("/").removesuffix("/")
         path_list = clean_path.split("/") if clean_path != "" else []
         res = self._populate_nodes_by_path(dataset_rows, path_list)
         if path.endswith("/"):
@@ -906,7 +872,8 @@ class AbstractWarehouse(ABC, Serializable):
             # Return node size if this is not a directory
             return node_size, 1
 
-        sub_glob = posixpath.join(path, "*")
+        # "d/" is the folder named "" in "d": its files match "d//*"
+        sub_glob = f"{path}/*" if path else "*"
         dr = dataset_rows
         selections: list[sa.ColumnElement] = [
             sa.func.sum(dr.c("size")),
@@ -916,7 +883,8 @@ class AbstractWarehouse(ABC, Serializable):
         results = next(
             self.db.execute(
                 dr.select(*selections).where(
-                    (dr.c("path").op("GLOB")(sub_glob)) & (dr.c("is_latest") == true())
+                    (dr.c("path").op("GLOB", is_comparison=True)(sub_glob))
+                    & (dr.c("is_latest") == true())
                 )
             ),
             (0, 0),
@@ -947,8 +915,8 @@ class AbstractWarehouse(ABC, Serializable):
         path = de.c(q, "path")
 
         if parent_path:
-            sub_glob = posixpath.join(parent_path, "*")
-            conds.append(path.op("GLOB")(sub_glob))
+            sub_glob = f"{parent_path}/*"
+            conds.append(path.op("GLOB", is_comparison=True)(sub_glob))
         else:
             conds.append(path != "")
 
@@ -992,7 +960,9 @@ class AbstractWarehouse(ABC, Serializable):
         prefix_len = len(node.path)
 
         def make_node_with_path(node: Node) -> NodeWithPath:
-            return NodeWithPath(node, node.path[prefix_len:].lstrip("/").split("/"))
+            return NodeWithPath(
+                node, node.path[prefix_len:].removeprefix("/").split("/")
+            )
 
         return map(make_node_with_path, self.get_nodes(query, dr))
 
@@ -1020,10 +990,6 @@ class AbstractWarehouse(ABC, Serializable):
             order_by=order_by,
         )
         return self.db.execute(query)
-
-    def update_node(self, node_id: int, values: dict[str, Any]) -> None:
-        # TODO used only in formats which will be deleted
-        """Update entry of a specific node in the database."""
 
     def create_udf_table(
         self,
@@ -1097,12 +1063,16 @@ class AbstractWarehouse(ABC, Serializable):
         staging_name = self.temp_table_name()
         staging_table = create_fn(staging_name)
 
-        self.insert_into(
-            staging_table,
-            query,
-            progress_cb=progress_cb,
-            preserve_sys_ids=preserve_sys_ids,
-        )
+        try:
+            self.insert_into(
+                staging_table,
+                query,
+                progress_cb=progress_cb,
+                preserve_sys_ids=preserve_sys_ids,
+            )
+        except BaseException:
+            self.db.drop_table(staging_table, if_exists=True)
+            raise
 
         try:
             return self.rename_table(staging_table, name)

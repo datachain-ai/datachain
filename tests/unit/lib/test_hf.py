@@ -1,12 +1,28 @@
-from datasets import Array2D, Dataset, DatasetDict, Sequence, Value
+import copy
+import importlib.metadata
+import sys
 
-from datachain.lib.data_model import dict_to_data_model
+import pytest
+from datasets import (
+    Array2D,
+    ClassLabel,
+    Dataset,
+    DatasetDict,
+    Features,
+    List,
+    Sequence,
+    Value,
+)
+
+import datachain as dc
+from datachain.lib.data_model import DataModel, dict_to_data_model
 from datachain.lib.hf import (
     HFClassLabel,
     HFGenerator,
     get_output_schema,
     stream_splits,
 )
+from datachain.lib.model_store import ModelStore
 
 
 def test_hf():
@@ -26,12 +42,11 @@ def test_hf_split():
     ds_test = Dataset.from_dict({"pok emon": ["charizard", "pikachu"]})
     ds_dict = DatasetDict({"train": ds_train, "test": ds_test})
     ds_dict = stream_splits(ds_dict)
-    hf_schema, norm_names = get_output_schema(ds_dict["train"].features, ["split"])
+    hf_schema, norm_names = get_output_schema(ds_dict["train"].features)
     schema = {"split": str} | hf_schema
+    model = dict_to_data_model("", schema, ["split", *norm_names.values()])
 
-    gen = HFGenerator(
-        ds_dict, dict_to_data_model("", schema, list(norm_names.values()))
-    )
+    gen = HFGenerator(ds_dict, model, split_name="split")
     gen.setup()
     row = next(iter(gen.process("train")))
 
@@ -81,6 +96,107 @@ def test_hf_sequence_dict():
     assert row.pokemon.name == ["bulbasaur"]
 
 
+def _first_row(ds):
+    schema, norm_names = get_output_schema(ds.features)
+    gen = HFGenerator(ds, dict_to_data_model("", schema, list(norm_names.values())))
+    gen.setup()
+    return next(iter(gen.process()))
+
+
+def test_hf_list_of_class_labels():
+    features = Features({"labels": List(ClassLabel(names=["cat", "dog"]))})
+    ds = Dataset.from_dict({"labels": [[0, 1]]}, features=features)
+    row = _first_row(ds)
+    assert [(c.string, c.integer) for c in row.labels] == [("cat", 0), ("dog", 1)]
+
+
+def test_read_hf_list_of_class_labels(test_session):
+    labels = List(ClassLabel(names=["cat", "dog"]))
+    features = Features({"id": Value("int64"), "labels": labels})
+    ds = Dataset.from_dict({"id": [1], "labels": [[0, 1]]}, features=features)
+    (labels,) = dc.read_hf(ds, session=test_session).to_values("labels")
+    assert [c.string for c in labels] == ["cat", "dog"]
+
+
+@pytest.mark.parametrize("column", ["", "data"])
+def test_read_hf_splits_with_split_column_names_split_signal_c0_split(
+    test_session, column
+):
+    ds = DatasetDict(
+        {
+            "train": Dataset.from_dict({"split": ["a"], "n": [1]}),
+            "test": Dataset.from_dict({"split": ["b"], "n": [2]}),
+        }
+    )
+
+    chain = dc.read_hf(ds, column=column, session=test_session)
+    prefix = f"{column}." if column else ""
+    signals = [f"{prefix}{name}" for name in ("c0_split", "split", "n")]
+    assert sorted(chain.to_list(*signals)) == [("test", "b", 2), ("train", "a", 1)]
+
+
+class Tag(DataModel):
+    name: str
+
+
+TAGS = ({"tags": List({"name": Value("string")})}, {"tags": [[{"name": "x"}]]})
+LABELS = ({"labels": List(ClassLabel(names=["a", "b"]))}, {"labels": [[0, 1]]})
+LABEL = ({"label": ClassLabel(names=["a", "b"])}, {"label": [1]})
+META = ({"meta": {"name": Value("string")}}, {"meta": [{"name": "x"}]})
+
+
+@pytest.mark.parametrize(
+    "features,data,output,expected",
+    [
+        (*TAGS, list[dict], [{"name": "x"}]),
+        (*TAGS, list[dict[str, str]], [{"name": "x"}]),
+        (*TAGS, list[Tag], [Tag(name="x")]),
+        (*LABELS, list[int], [0, 1]),
+        (*LABELS, list[int] | None, [0, 1]),
+        (*LABEL, int, 1),
+        (*META, dict, {"name": "x"}),
+    ],
+)
+def test_read_parquet_hf_explicit_output(
+    tmp_path, test_session, features, data, output, expected
+):
+    (name,) = features
+    path = tmp_path / "hf.parquet"
+    Dataset.from_dict(data, features=Features(features)).to_parquet(path)
+    chain = dc.read_parquet(path.as_uri(), output={name: output}, session=test_session)
+    assert chain.to_values(name) == [expected]
+
+
+def test_hf_list_of_class_labels_missing():
+    features = Features({"labels": List(ClassLabel(names=["cat", "dog"]))})
+    ds = Dataset.from_dict({"labels": [None]}, features=features)
+    assert _first_row(ds).labels is None
+
+
+def test_hf_list_of_dicts_with_class_label():
+    tag = {"name": Value("string"), "kind": ClassLabel(names=["a", "b"])}
+    features = Features({"tags": List(tag)})
+    ds = Dataset.from_dict({"tags": [[{"name": "x", "kind": 1}]]}, features=features)
+    row = _first_row(ds)
+    assert [(t.name, t.kind.string) for t in row.tags] == [("x", "b")]
+
+
+def test_hf_sequence_dict_with_class_label():
+    tag = {"kind": ClassLabel(names=["a", "b"])}
+    features = Features({"tags": Sequence(tag)})
+    ds = Dataset.from_dict({"tags": [{"kind": [1, 0]}]}, features=features)
+    row = _first_row(ds)
+    assert [k.string for k in row.tags.kind] == ["b", "a"]
+
+
+def test_read_parquet_hf_list_of_class_labels(tmp_path, test_session):
+    features = Features({"labels": List(ClassLabel(names=["cat", "dog"]))})
+    path = tmp_path / "labels.parquet"
+    Dataset.from_dict({"labels": [[1, 0]]}, features=features).to_parquet(path)
+    (labels,) = dc.read_parquet(path.as_uri(), session=test_session).to_values("labels")
+    assert [c.string for c in labels] == ["dog", "cat"]
+
+
 def test_hf_array():
     ds = Dataset.from_dict({"arr": [[[0, 1], [2, 3]]]})
     new_features = ds.features.copy()
@@ -93,3 +209,47 @@ def test_hf_array():
     gen.setup()
     row = next(iter(gen.process()))
     assert row.arr == [[0, 1], [2, 3]]
+
+
+@pytest.fixture
+def unloaded_hf(monkeypatch):
+    monkeypatch.delitem(sys.modules, "datachain.lib.hf")
+    monkeypatch.delattr("datachain.lib.hf")
+    monkeypatch.setattr(ModelStore, "store", copy.deepcopy(ModelStore.store))
+
+
+def _datasets_not_installed(name):
+    raise importlib.metadata.PackageNotFoundError(name)
+
+
+@pytest.mark.parametrize(
+    "fake_version,reason",
+    [
+        (
+            lambda name: "2.2.1",
+            "datachain requires 'datasets>=4.0.0' but version 2.2.1 is installed.",
+        ),
+        (_datasets_not_installed, "No package metadata was found for datasets"),
+    ],
+    ids=["outdated", "missing"],
+)
+def test_import_rejects_unusable_datasets(
+    unloaded_hf, monkeypatch, fake_version, reason
+):
+    monkeypatch.setitem(sys.modules, "datasets", None)
+    monkeypatch.setattr(importlib.metadata, "version", fake_version)
+
+    with pytest.raises(ImportError) as exc_info:
+        importlib.import_module("datachain.lib.hf")
+
+    assert str(exc_info.value) == (
+        f"Missing dependencies for huggingface datasets: {reason}\n"
+        "To install run:\n\n"
+        "  pip install 'datachain[hf]'\n"
+    )
+
+
+def test_import_accepts_datasets_4(unloaded_hf, monkeypatch):
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "4.0.0")
+
+    assert importlib.import_module("datachain.lib.hf").HFClassLabel

@@ -1,3 +1,4 @@
+import pickle
 from typing import get_args, get_origin
 
 import pytest
@@ -66,6 +67,16 @@ def test_features_length_missmatch():
         dc.read_values(value1=[1, 2, 3], value2=[1, 2, 3, 4, 5])
 
 
+def test_values_to_tuples_error_message_after_pickling():
+    with pytest.raises(ValuesToTupleError) as exc_info:
+        dc.read_values(a=[1, 2], b=[1])
+
+    err = pickle.loads(pickle.dumps(exc_info.value))  # noqa: S301
+    assert str(err) == (
+        "Cannot convert signals: signal 'b' should have length 2 while 1 is given"
+    )
+
+
 def test_unknown_output_type():
     with pytest.raises(ValuesToTupleError):
 
@@ -89,6 +100,45 @@ def test_output_length_missmatch():
 def test_output_spec_wrong_type():
     with pytest.raises(ValuesToTupleError):
         dc.read_values(value1=[1, 2, 3], output=123)
+
+
+def test_values_to_tuples_with_reordered_output_builds_rows_in_output_order():
+    typ, _out, vals = values_to_tuples(
+        output={"label": str, "number": int}, number=[1, 2], label=["one", "two"]
+    )
+
+    assert get_args(typ) == (str, int)
+    assert vals == [("one", 1), ("two", 2)]
+
+
+def test_read_values_with_reordered_output_keeps_values_in_their_columns(
+    test_session,
+):
+    chain = dc.read_values(
+        left=[1, 2],
+        right=[10, 20],
+        output={"right": int, "left": int},
+        session=test_session,
+    )
+
+    assert chain.order_by("left").to_list("left", "right") == [(1, 10), (2, 20)]
+
+
+def test_read_values_with_reordered_output_and_column_keeps_values_in_their_fields(
+    test_session,
+):
+    chain = dc.read_values(
+        left=[1, 2],
+        right=[10, 20],
+        output={"right": int, "left": int},
+        column="pair",
+        session=test_session,
+    )
+
+    assert chain.order_by("pair.left").to_list("pair.left", "pair.right") == [
+        (1, 10),
+        (2, 20),
+    ]
 
 
 def test_resolve_column():

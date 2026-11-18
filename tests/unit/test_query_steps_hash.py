@@ -1,23 +1,16 @@
 import hashlib
 import math
-from unittest.mock import patch
 
 import pytest
 import sqlalchemy as sa
 from pydantic import BaseModel
 
 import datachain as dc
-import datachain.lib.udf
 from datachain import C, func
 from datachain.dataset import DatasetRecord, DatasetVersion
 from datachain.func.func import Func
 from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.udf import (
-    Aggregator,
-    Generator,
-    Mapper,
-    _physical_schema_hash,
-)
+from datachain.lib.udf import Aggregator, Generator, Mapper, UDFAdapter
 from datachain.lib.udf_signature import UdfSignature
 from datachain.query.dataset import (
     QueryStep,
@@ -37,6 +30,7 @@ from datachain.query.dataset import (
     Subtract,
     UDFSignal,
 )
+from datachain.sql.types import JSON
 
 
 class CustomFeature(BaseModel):
@@ -299,37 +293,37 @@ def test_subtract_hash(test_session, numbers_dataset, on):
             double,
             ["x"],
             {"double": int},
-            "00828a30a1bcd1b6be89443eb29155566f1452314e32a31688a4fbb09cb66b56",
+            "4908d84ef9da9bc3d01139ed9dbae3a1658c5dfd95100f10242333ba61db8670",
         ),
         (
             double2,
             ["y"],
             {"double": int},
-            "a226c2a7b79c4dd564de8b87435232e75081960099334caa0a73a7f2abc1db0e",
+            "0346ecf98ecb7871fc091f00f0d0c03caa3cca869b009a2987b7dbcd0b1f8252",
         ),
         (
             double_default,
             ["x"],
             {"double": int},
-            "4a482cce48f0355a7bab70f8e7fed5e359abe6a268ea734d2d3c602429172a28",
+            "a054c2830afc5789af7be028357d353716053e109f23293a5f6491eecb1be216",
         ),
         (
             double_kwonly,
             ["x"],
             {"double": int},
-            "3806199b9f26447c3a4d35906db56a0606e8be749cc2d05c95bc68b76f999c3a",
+            "ca3181f491bc77c76f1a6553f0e65b9968337824cd952370c5a71d08e6f465e3",
         ),
         (
             map_custom_feature,
             ["t1"],
             {"x": CustomFeature},
-            "0a65e2a71ad56a0885dc2946d3eb671691301fce145bc340a498699d9ff6467c",
+            "add51841b421b48f1acf83f26837f2707a356434aa0a67d549fce88016fa7b43",
         ),
         (
             DoubleMapper(),
             ["x"],
             {"double": int},
-            "93959fba32e813329f25f6da3bd44efe05fdebbb6016fa8fc4c089e8d2d40226",
+            "dd648a071232ffe1d8c41709ae25dd9703381edc62eae32938850878ceee973b",
         ),
     ],
 )
@@ -344,6 +338,13 @@ def test_udf_mapper_hash(
     assert UDFSignal(udf_adapter, None).hash() == _hash
 
 
+def test_udf_hash_after_output_column_type_change_differs():
+    sign = UdfSignature.parse("", {}, double, ["x"], {"double": int}, False)
+    udf_adapter = Mapper._create(sign, SignalSchema(sign.params)).to_udf_wrapper()
+    as_json = UDFAdapter(udf_adapter.inner, {"double": JSON})
+    assert as_json.hash() != udf_adapter.hash()
+
+
 @pytest.mark.parametrize(
     "func,params,output,_hash",
     [
@@ -351,25 +352,25 @@ def test_udf_mapper_hash(
             double_gen,
             ["x"],
             {"double": int},
-            "e9383ecc5ce95415712703bcde1bb7497970725e75558886f853f228d8a154a3",
+            "6c1c537ad940852b1d1ac3e64ba81f6758e62ad13e6e61fc04d803799ef106c7",
         ),
         (
             double_gen_multi_arg,
             ["x", "y"],
             {"double": int},
-            "c449bd01564036355dba07fb413190736d05227cedf6e5957ad2362c5c123104",
+            "b80bb802570ba148c4c4cd3d899d469f18c99e6643e94d09799946425140c694",
         ),
         (
             custom_feature_gen,
             ["t1"],
             {"x": CustomFeature},
-            "cb997dc1c0520eff030f95c56a3aff2710a672098b40cbfe822336921357da4e",
+            "5ff0dcece4256bfbe5cb0e7a862fdc669324cfcec1d0c289d5f3db5b4bdffbdd",
         ),
         (
             TripleGenerator(),
             ["x"],
             {"triple": int},
-            "c5847628a5054535c9fd1cc82577f9687f8bfcf9a6cf869dea900436c7d54f3d",
+            "154e2d90f1364a3cbaf0350e17f1a5a94a5cc0ff7d0e610274c10004def0c577",
         ),
     ],
 )
@@ -392,14 +393,14 @@ def test_udf_generator_hash(
             ["x"],
             {"double": int},
             [C("x")],
-            "b33eb0499464e40d234f88826f92b75a5e5494201ebbc0a14eb586ec4baeaccd",
+            "9ac800e5f9f8635e931b18af072d66f80746393afceba9fb18a7c70c0608cb00",
         ),
         (
             custom_feature_gen,
             ["t1"],
             {"x": CustomFeature},
             [C.t1.my_name],
-            "ca165e80f74d8392851e8b75cbd71f29de7232f0a9fe14b0cf0cc55b036f01ea",
+            "21a7ccecd081d474f21f5f45603d73d1dfe2601429f87f5242b11ad0e86a4d64",
         ),
     ],
 )
@@ -466,36 +467,3 @@ def test_query_step_hash_uses_version_uuid():
     ds.versions[0].uuid = uuid1
     ds.name = "completely_different_name"
     assert QueryStep(None, ds, "1.0.0").hash() == hash1
-
-
-def test_a_udf_hash_follows_the_physical_column_types():
-    # The logical schema does not move when an annotation starts mapping to a
-    # different SQL type, so without this a checkpoint written before such a
-    # change would be reused under the new one and read back as the wrong type.
-    as_json = SignalSchema({"v": int})
-    assert _physical_schema_hash(as_json) != _physical_schema_hash(
-        SignalSchema({"v": str})
-    )
-    assert _physical_schema_hash(as_json) == _physical_schema_hash(
-        SignalSchema({"v": int})
-    )
-
-
-@pytest.mark.parametrize("multi_output", [False, True], ids=["single", "multi"])
-def test_the_physical_fingerprint_reaches_every_udf_hash(multi_output):
-    # A UDF that overrides hash() -- _MultiSignalMapper does, and a user
-    # subclass may -- must not be able to drop the framework's own key, or a
-    # checkpoint written under different physical types would be reused.
-    def one(i: int) -> int:
-        return i
-
-    def two(i: int) -> int:
-        return i
-
-    chain = dc.read_values(i=[1])
-    chain = chain.map(a=one, b=two) if multi_output else chain.map(a=one)
-    udf = [s for s in chain._query.steps if hasattr(s, "udf")][-1].udf
-
-    before = udf.hash()
-    with patch.object(datachain.lib.udf, "_physical_schema_hash", lambda _: "ff" * 32):
-        assert udf.hash() != before

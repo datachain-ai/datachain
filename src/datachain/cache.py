@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING
 from dvc_data.hashfile.db.local import LocalHashFileDB
 from dvc_objects.fs.local import LocalFileSystem
 from dvc_objects.fs.utils import remove
-from fsspec.callbacks import Callback, TqdmCallback
+from fsspec import Callback
+from fsspec.callbacks import TqdmCallback
 
 if TYPE_CHECKING:
     from datachain.client import Client
@@ -128,15 +129,13 @@ class Cache:  # noqa: PLW1641
             await client.get_file(
                 from_path, tmp_info, callback=cb, version_id=file.version
             )
+            oid = file.get_hash()
+            self.odb.add(tmp_info, odb_fs, oid, hardlink=True)
         finally:
             if not callback:
                 cb.close()
-
-        try:
-            oid = file.get_hash()
-            self.odb.add(tmp_info, self.odb.fs, oid)
-        finally:
-            os.unlink(tmp_info)
+            remove(tmp_info)
+        self.odb.protect(self.odb.oid_to_path(oid))
 
     def store_data(self, file: "File", contents: bytes) -> None:
         self.odb.add_bytes(file.get_hash(), contents)

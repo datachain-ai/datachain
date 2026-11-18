@@ -12,6 +12,10 @@ for examples of how to create a chain.
 
 ::: datachain.lib.dc.listings.listings
 
+::: datachain.lib.dc.storage.list_storage
+
+::: datachain.lib.dc.storage.Listing
+
 ::: datachain.lib.dc.csv.read_csv
 
 ::: datachain.lib.dc.datasets.read_dataset
@@ -19,6 +23,10 @@ for examples of how to create a chain.
 ::: datachain.lib.dc.hf.read_hf
 
 ::: datachain.lib.dc.json.read_json
+
+::: datachain.lib.dc.lerobot.read_lerobot
+
+::: datachain.lib.dc.mcap.read_mcap
 
 ::: datachain.lib.dc.pandas.read_pandas
 
@@ -32,7 +40,15 @@ for examples of how to create a chain.
 
 ::: datachain.lib.dc.values.read_values
 
+::: datachain.lib.dc.webdataset.read_webdataset
+
 ::: datachain.lib.dc.database.read_database
+
+::: datachain.lib.dc.datasets.describe
+
+::: datachain.lib.dataset_description.DatasetDescription
+
+::: datachain.lib.dataset_description.DatasetDependencyInfo
 
 ::: datachain.lib.dc.datasets.datasets
 

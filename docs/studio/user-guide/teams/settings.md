@@ -8,8 +8,9 @@ team and are thus different from
 Additionally, you can also
 [manage connections to self-hosted GitLab servers](#manage-connections-to-self-hosted-gitlab-servers),
 [configure sso](#configure-single-sign-on-sso),
-[edit collaborators](#edit-collaborators), and
-[set up permissions](permissions.md#permissions).
+[edit collaborators](#edit-collaborators),
+[set up permissions](permissions.md#permissions), and
+[connect agents through the MCP server](../agents/mcp.md).
 
 ## Manage connections to self-hosted GitLab servers
 
@@ -28,9 +29,7 @@ Microsoft AD, etc. See
 
 Once the SSO configuration is complete, users can login to DataChain Studio
 using their team's login page at
-`http://studio.datachain.ai/api/teams/<TEAM_NAME>/sso`. They can also login
-directly from their Okta dashboards by clicking on the DataChain Studio
-integration icon.
+`http://studio.datachain.ai/api/teams/<TEAM_NAME>/sso`.
 
 If a user does not have a pre-assigned role when they sign in to a team, they
 will be auto-assigned the [`Viewer` role](permissions.md#roles).

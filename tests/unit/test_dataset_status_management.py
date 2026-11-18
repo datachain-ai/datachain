@@ -1,13 +1,16 @@
 """Tests for dataset status management and failed version cleanup."""
 
-from datetime import datetime, timedelta, timezone
+import socket
+import time
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import sqlalchemy as sa
 
 import datachain as dc
 from datachain import semver
-from datachain.data_storage import JobStatus
+from datachain.catalog.catalog import _is_active_removal_claim
+from datachain.data_storage import JobQueryType, JobStatus
 from datachain.dataset import (
     SESSION_DATASET_PREFIX,
     DatasetRecord,
@@ -27,7 +30,8 @@ from datachain.lib.dc.datasets import (
     read_dataset,
 )
 from datachain.lib.listing import LISTING_PREFIX
-from datachain.sql.types import String
+from datachain.query.session import Session
+from datachain.sql.types import Int64, String
 
 
 @pytest.fixture
@@ -443,7 +447,7 @@ def test_get_dataset_versions_to_clean_finds_no_job_id(test_session):
     test_session.catalog.metastore.db.execute(
         dv.update()
         .where(dv.c.dataset_id == dataset.id)
-        .values(created_at=datetime.now(timezone.utc) - timedelta(hours=2))
+        .values(created_at=datetime.now(UTC) - timedelta(hours=2))
     )
 
     # Now it should be returned
@@ -1452,3 +1456,269 @@ def test_complete_dataset_version_raises_friendly_when_removed_concurrently(
 
     assert isinstance(exc_info.value.__cause__, ConcurrentDatasetModificationError)
     assert "Could not update status" in str(exc_info.value.__cause__)
+
+
+def test_save_reserves_version_after_steps_run(test_session, job, monkeypatch):
+    seen = []
+
+    def check_absent(stage: str) -> None:
+        try:
+            test_session.catalog.get_dataset("reserved", versions=None)
+            seen.append(f"{stage}:found")
+        except DatasetNotFoundError:
+            seen.append(f"{stage}:absent")
+
+    def peek(value: str) -> str:
+        check_absent("udf")
+        return value
+
+    warehouse = test_session.catalog.warehouse
+    orig_insert_into = warehouse.insert_into
+
+    def insert_into_and_peek(table, *args, **kwargs):
+        orig_insert_into(table, *args, **kwargs)
+        check_absent("copy")
+
+    monkeypatch.setattr(warehouse, "insert_into", insert_into_and_peek)
+    dc.read_values(value=["a"], session=test_session).map(peek=peek, output=str).save(
+        "reserved"
+    )
+
+    assert seen[-2:] == ["udf:absent", "copy:absent"]
+    assert set(seen) == {"udf:absent", "copy:absent"}
+    ds = test_session.catalog.get_dataset("reserved", versions=None)
+    assert ds.get_version("1.0.0").status == DatasetStatus.COMPLETE
+
+
+def test_failed_save_gives_version_back(test_session, job, monkeypatch):
+    catalog = test_session.catalog
+    complete = catalog.complete_dataset_version
+
+    def fail_completion(dataset, *args, **kwargs):
+        if dataset.name == "given_back":
+            raise RuntimeError("completion failed")
+        return complete(dataset, *args, **kwargs)
+
+    monkeypatch.setattr(catalog, "complete_dataset_version", fail_completion)
+    chain = dc.read_values(value=["a"], session=test_session)
+    with pytest.raises(RuntimeError, match="completion failed"):
+        chain.save("given_back", version="1.0.0")
+    with pytest.raises(DatasetNotFoundError):
+        catalog.get_dataset("given_back", versions=None, include_incomplete=True)
+
+    monkeypatch.setattr(catalog, "complete_dataset_version", complete)
+    saved = chain.save("given_back", version="1.0.0")
+    assert saved.dataset.latest_version == "1.0.0"
+
+
+def test_explicit_version_conflict_fails_before_steps_run(test_session, job):
+    calls = []
+
+    def count(value: str) -> str:
+        calls.append(value)
+        return value
+
+    chain = dc.read_values(value=["a"], session=test_session)
+    chain.save("taken", version="1.0.0")
+    with pytest.raises(RuntimeError, match=r"already has version 1\.0\.0"):
+        chain.map(res=count, output=str).save("taken", version="1.0.0")
+    assert calls == []
+
+
+def test_interrupt_after_publication_keeps_the_dataset(test_session, monkeypatch):
+    catalog = test_session.catalog
+    complete = catalog.complete_dataset_version
+
+    def complete_then_interrupt(dataset, *args, **kwargs):
+        complete(dataset, *args, **kwargs)
+        if dataset.name == "published":
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(catalog, "complete_dataset_version", complete_then_interrupt)
+    chain = dc.read_values(name=["a"], session=test_session)
+    with pytest.raises(KeyboardInterrupt):
+        chain.save("published")
+
+    ds = catalog.get_dataset("published", versions=None)
+    assert ds.get_version("1.0.0").status == DatasetStatus.COMPLETE
+    assert dc.read_dataset("published", session=test_session).to_values("name") == ["a"]
+
+
+def test_running_ancestor_version_is_not_reclaimed_and_completion_is_owner_fenced(
+    test_session,
+):
+    catalog = test_session.catalog
+    metastore = catalog.metastore
+
+    job1 = metastore.create_job(
+        "save-1", "print(1)", query_type=JobQueryType.PYTHON, status=JobStatus.RUNNING
+    )
+    job2 = metastore.create_job(
+        "save-2",
+        "print(1)",
+        query_type=JobQueryType.PYTHON,
+        status=JobStatus.RUNNING,
+        rerun_from_job_id=job1,
+    )
+
+    # Job 1 reserves 1.0.0 while still RUNNING
+    ds1 = catalog.create_dataset(
+        "concurrent_save",
+        columns=[sa.Column("v", Int64)],
+        job_id=job1,
+    )
+    assert ds1.versions[0].version == "1.0.0"
+
+    # Job 2 starts while job 1 is still RUNNING -> must NOT reclaim 1.0.0, gets 1.0.1
+    ds2 = catalog.create_dataset(
+        "concurrent_save",
+        columns=[sa.Column("v", Int64)],
+        job_id=job2,
+    )
+    assert ds2.versions[0].version == "1.0.1"
+
+    # If job 1's version was somehow taken over by another owner before completion,
+    # complete_dataset_version with expected_job_id=job1 must fail with
+    # ConcurrentDatasetModificationError.
+    table1 = catalog.warehouse.create_dataset_rows_table(
+        catalog.warehouse.dataset_table_name(ds1, "1.0.0"),
+        columns=[sa.Column("v", Int64)],
+    )
+    catalog.warehouse.insert_stored_rows(table1, ["v"], [(1,)])
+    metastore.update_dataset_version(ds1, "1.0.0", job_id=job2)
+
+    with pytest.raises(ConcurrentDatasetModificationError):
+        catalog.complete_dataset_version(ds1, "1.0.0", expected_job_id=job1)
+
+
+def test_delayed_reservation_release_does_not_delete_replacement(
+    test_session, monkeypatch
+):
+    catalog = test_session.catalog
+    metastore = catalog.metastore
+    dc.read_values(v=[1], session=test_session).save("race", version="1.0.0")
+
+    job_a = metastore.get_job(
+        metastore.create_job(
+            "a", "", query_type=JobQueryType.PYTHON, status=JobStatus.RUNNING
+        )
+    )
+    job_b = metastore.get_job(
+        metastore.create_job(
+            "b", "", query_type=JobQueryType.PYTHON, status=JobStatus.RUNNING
+        )
+    )
+    active_job = [job_a]
+    Session._CURRENT_JOB = job_a
+    monkeypatch.setattr(Session, "get_or_create_job", lambda self: active_job[0])
+
+    complete = catalog.complete_dataset_version
+    release = catalog.release_reservation
+
+    def fail_job_a(dataset, version, **kwargs):
+        if active_job[0].id == job_a.id and dataset.name == "race":
+            raise RuntimeError("job A failed before completion")
+        return complete(dataset, version, **kwargs)
+
+    cleaned = []
+
+    def delayed_release(dataset, version, job_id=None):
+        if job_id == job_a.id and version == "2.0.0":
+            # While job A's release_reservation is delayed, GC cleans up job A's
+            # reservation and job B publishes a replacement 2.0.0.
+            metastore.set_job_status(job_a.id, JobStatus.FAILED)
+            cleaned.append(catalog.cleanup_dataset_versions())
+            active_job[0] = job_b
+            Session._CURRENT_JOB = job_b
+            dc.read_values(v=[20], session=test_session).save("race", version="2.0.0")
+            active_job[0] = job_a
+            Session._CURRENT_JOB = job_a
+        return release(dataset, version, job_id)
+
+    monkeypatch.setattr(catalog, "complete_dataset_version", fail_job_a)
+    monkeypatch.setattr(catalog, "release_reservation", delayed_release)
+
+    with pytest.raises(RuntimeError, match="job A failed"):
+        dc.read_values(v=[2], session=test_session).save("race", version="2.0.0")
+
+    assert cleaned == [1]
+    # Job B's completed 2.0.0 and its rows remain intact after A's delayed release.
+    ds_b = catalog.get_dataset("race", versions=None, include_incomplete=True)
+    assert ds_b.get_version("2.0.0").status == DatasetStatus.COMPLETE
+    assert dc.read_dataset("race", version="2.0.0", session=test_session).to_values(
+        "v"
+    ) == [20]
+
+
+def test_removing_claim_recovers_after_error_or_dead_owner(test_session, monkeypatch):
+    catalog = test_session.catalog
+    metastore = catalog.metastore
+    job_id = metastore.create_job(
+        "rm", "", query_type=JobQueryType.PYTHON, status=JobStatus.FAILED
+    )
+    job = metastore.get_job(job_id)
+    monkeypatch.setattr(test_session, "get_or_create_job", lambda: job)
+
+    dc.read_values(v=[1], session=test_session).save("recover_err", version="1.0.0")
+    drop_rows = catalog.warehouse.drop_dataset_rows_table
+    failed_once = False
+
+    def fail_first_drop(dataset, version):
+        nonlocal failed_once
+        if dataset.name == "recover_err" and not failed_once:
+            failed_once = True
+            raise RuntimeError("transient drop failure")
+        return drop_rows(dataset, version)
+
+    monkeypatch.setattr(catalog.warehouse, "drop_dataset_rows_table", fail_first_drop)
+    ds = catalog.get_dataset("recover_err", versions=["1.0.0"])
+    with pytest.raises(RuntimeError, match="transient drop failure"):
+        catalog.remove_dataset_version(ds, "1.0.0", keep_metadata=False)
+
+    # Freshly fetched record retries and completes removal
+    ds_retry = catalog.get_dataset(
+        "recover_err", versions=["1.0.0"], include_incomplete=True
+    )
+    assert ds_retry.get_version("1.0.0").status == DatasetStatus.REMOVING
+    assert (
+        catalog.remove_dataset_version(ds_retry, "1.0.0", keep_metadata=False) is True
+    )
+
+    # Simulate a process that died after persisting its REMOVING claim
+    now_ts = int(time.time())
+    assert _is_active_removal_claim(f"removing:other-host:1:{now_ts}:x", "u") is True
+    assert _is_active_removal_claim("removing:other-host:1:0:x", "u") is False
+
+    dc.read_values(v=[2], session=test_session).save("recover_dead", version="1.0.0")
+    ds_dead = catalog.get_dataset("recover_dead", versions=["1.0.0"])
+    dead_claim = f"removing:{socket.gethostname()}:99999999:{now_ts}:deadbeef"
+    metastore.update_dataset_version(
+        ds_dead,
+        "1.0.0",
+        status=DatasetStatus.REMOVING,
+        removed_at=datetime.now(UTC),
+        pending_metadata_drop=True,
+        content_hash=dead_claim,
+    )
+    assert catalog.cleanup_dataset_versions() == 1
+
+
+def test_claim_version_recreates_dataset_deleted_by_failed_first_save(
+    test_session, monkeypatch
+):
+    catalog = test_session.catalog
+    create_ver = catalog.create_dataset_version
+    deleted_once = False
+
+    def delete_parent_then_create(dataset, version, **kwargs):
+        nonlocal deleted_once
+        if dataset.name == "first_race" and not deleted_once:
+            deleted_once = True
+            catalog.metastore.remove_dataset(dataset)
+        return create_ver(dataset, version, **kwargs)
+
+    monkeypatch.setattr(catalog, "create_dataset_version", delete_parent_then_create)
+    saved = dc.read_values(v=[1], session=test_session).save("first_race")
+    assert deleted_once
+    assert saved.version == "1.0.0"
+    assert dc.read_dataset("first_race", session=test_session).to_values("v") == [1]

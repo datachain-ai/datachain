@@ -52,8 +52,8 @@ def test_dump_serialize_bytes_writes_expected_stream() -> None:
 
 def test_datetime_serialization_matches_pydantic_json_mode() -> None:
     payload = DatePayload(
-        timestamp=dt.datetime(2024, 1, 1, 12, 30, tzinfo=dt.timezone.utc),
-        clock=dt.time(6, 45, tzinfo=dt.timezone.utc),
+        timestamp=dt.datetime(2024, 1, 1, 12, 30, tzinfo=dt.UTC),
+        clock=dt.time(6, 45, tzinfo=dt.UTC),
         date=dt.date(2024, 1, 2),
     )
     expected = payload.model_dump(mode="json")

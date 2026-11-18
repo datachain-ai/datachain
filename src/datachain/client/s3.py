@@ -1,42 +1,289 @@
 import asyncio
 import os
+from collections.abc import Callable
+from datetime import datetime
+from time import monotonic
 from typing import TYPE_CHECKING, Any, cast
+from xml.etree.ElementTree import Element, ParseError, fromstring
 
-from botocore.exceptions import NoCredentialsError
-from fsspec.asyn import get_loop, sync
+from aiobotocore.parsers import AioResponseParserFactory, AioRestXMLParser
+from aiobotocore.session import AioSession
+from botocore import handlers
+from botocore.exceptions import ClientError, NoCredentialsError
+from botocore.model import Shape
+from botocore.session import Session
+from botocore.utils import parse_timestamp
+from fsspec.asyn import sync_wrapper
+from fsspec.utils import tokenize
 from s3fs import S3FileSystem
 
-from datachain.lib.file import File
-from datachain.progress import tqdm
+from datachain.lib.file import File, FileRow
 
-from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue
+from .fsspec import BucketStatus, RangeListedClient
+from .ranges import PROCESS_LIST_WORKERS, Keep, Page
 
 if TYPE_CHECKING:
     from datachain.client.writeconfig import WriteConfig
 
-UPDATE_CHUNKSIZE = 1000
+_CREDENTIAL_CHECKS: dict[tuple, tuple[float, bool]] = {}
 
 
-class ClientS3(Client):
-    FS_CLASS = S3FileSystem
+def _has_explicit_credentials(kwargs: dict[str, Any]) -> bool:
+    client_kwargs = kwargs.get("client_kwargs") or {}
+    return any(
+        kwargs.get(key) is not None for key in ClientS3.CREDENTIAL_KEYS - {"profile"}
+    ) or any(
+        client_kwargs.get(key) is not None
+        for key in (
+            "aws_access_key_id",
+            "aws_secret_access_key",
+            "aws_session_token",
+        )
+    )
+
+
+def _credential_key(kwargs: dict[str, Any]) -> tuple:
+    env = frozenset(
+        (k, v)
+        for k, v in os.environ.items()
+        if k.startswith("AWS_") or k == "BOTO_CONFIG"
+    )
+    files = []
+    for path in (
+        os.environ.get("AWS_CONFIG_FILE", "~/.aws/config"),
+        os.environ.get("AWS_SHARED_CREDENTIALS_FILE", "~/.aws/credentials"),
+        os.environ.get("BOTO_CONFIG", "~/.boto"),
+    ):
+        path = os.path.abspath(os.path.expanduser(os.path.expandvars(path)))
+        try:
+            stat = os.stat(path)
+        except OSError:
+            stamp = None
+        else:
+            stamp = (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+        files.append((path, stamp))
+    return kwargs.get("profile"), env, tuple(files)
+
+
+def _has_credentials(kwargs: dict[str, Any]) -> bool:
+    return _has_explicit_credentials(kwargs) or _finds_credentials(
+        *_credential_key(kwargs)
+    )
+
+
+def _finds_credentials(profile: str | None, env: frozenset, files: tuple) -> bool:
+    key = profile, env, files
+    if key in _CREDENTIAL_CHECKS:
+        checked, found = _CREDENTIAL_CHECKS[key]
+        if found or monotonic() - checked < 60:
+            return found
+    found = Session(profile=profile).get_credentials() is not None
+    if len(_CREDENTIAL_CHECKS) >= 16:
+        _CREDENTIAL_CHECKS.pop(next(iter(_CREDENTIAL_CHECKS), ()), None)
+    _CREDENTIAL_CHECKS[key] = monotonic(), found
+    return found
+
+
+def _head_bucket(fs: S3FileSystem, name: str) -> tuple[int, str | None]:
+    try:
+        meta = fs.call_s3("head_bucket", Bucket=name)["ResponseMetadata"]
+    except OSError as e:
+        if not isinstance(e.__cause__, ClientError):
+            raise
+        meta = e.__cause__.response["ResponseMetadata"]
+        status = meta["HTTPStatusCode"]
+        # R2 refuses anonymous requests with 400; other service errors must
+        # keep their original exception, including authenticated 400 and 429.
+        if status == 301:
+            raise e.__cause__ from None
+        if status not in (401, 403, 404) and not (status == 400 and fs.anon):
+            raise
+    headers = meta.get("HTTPHeaders", {})
+    return meta["HTTPStatusCode"], headers.get("x-amz-bucket-region")
+
+
+def _parse_timestamp(value: Any) -> datetime:
+    try:
+        return datetime.fromisoformat(value)
+    except (TypeError, ValueError):  # header dates and epoch seconds
+        return parse_timestamp(value)
+
+
+_LISTINGS = ("ListObjectsV2Output", "ListObjectVersionsOutput")
+_SCALARS: dict[str, Callable[[str], Any]] = {
+    "integer": int,
+    "long": int,
+    "boolean": lambda text: text == "true",
+    "timestamp": _parse_timestamp,
+}
+Fields = dict[str, tuple[str, Callable[[Element], Any], bool]]
+_FIELDS: dict[tuple[str, str], Fields] = {}  # every client builds its own shapes
+
+
+def _fields(shape: Shape, ns: str) -> Fields:
+    """Readers of a structure's child elements by tag, in namespace ``ns``."""
+    if (shape.name, ns) not in _FIELDS:
+        _FIELDS[shape.name, ns] = {
+            ns + member.serialization.get("name", name): (
+                name,
+                _reader(member.member if member.type_name == "list" else member, ns),
+                member.type_name == "list",
+            )
+            for name, member in shape.members.items()
+        }
+    return _FIELDS[shape.name, ns]
+
+
+def _reader(shape: Shape, ns: str) -> Callable[[Element], Any]:
+    if shape.type_name == "structure":
+        return lambda node: _read(node, _fields(shape, ns))
+    convert = _SCALARS.get(shape.type_name, str)
+    return lambda node: convert(node.text or "")
+
+
+def _read(node: Element, fields: Fields) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for child in node:
+        if field := fields.get(child.tag):
+            key, read, repeated = field
+            if repeated:
+                out.setdefault(key, []).append(read(child))
+            else:
+                out[key] = read(child)
+    return out
+
+
+class _ListingParser(AioRestXMLParser):
+    """Reads listing pages straight from the XML, without botocore's model walk.
+    A page that does not parse, or holds an error, is a 500 that botocore retries."""
+
+    def _do_parse(self, response, shape):
+        if getattr(shape, "name", "") not in _LISTINGS or not response["body"]:
+            return super()._do_parse(response, shape)
+        try:
+            root = fromstring(response["body"])  # noqa: S314
+            ns = root.tag[: root.tag.find("}") + 1]  # the page's namespace, or ""
+        except ParseError:
+            root, ns = None, ""
+        if root is None or root.tag == f"{ns}Error":
+            response["status_code"] = 500
+            return self._do_error_parse(response, shape)
+        parsed = {"ResponseMetadata": self._populate_response_metadata(response)}
+        self._parse_non_payload_attrs(response, shape, shape.members, parsed)
+        return parsed | _read(root, _fields(shape, ns))
+
+
+class _ParserFactory(AioResponseParserFactory):
+    def create_parser(self, protocol_name):
+        if protocol_name == "rest-xml":
+            return _ListingParser(**self._defaults)
+        return super().create_parser(protocol_name)
+
+
+def _handle_200_error(operation_model, response_dict, **kwargs) -> None:
+    """botocore's 200-error check; a listing page is checked by its parser."""
+    if getattr(operation_model.output_shape, "name", "") not in _LISTINGS:
+        handlers._handle_200_error(operation_model, response_dict, **kwargs)
+
+
+class _ListingSession(AioSession):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        factory = _ParserFactory()
+        factory.set_parser_defaults(timestamp_parser=_parse_timestamp)
+        self.register_component("response_parser_factory", factory)
+        self.unregister("before-parse.s3.*", handlers._handle_200_error)
+        self.register("before-parse.s3.*", _handle_200_error)
+
+
+class _S3FileSystem(S3FileSystem):
+    """Every session it makes parses listings with ``_ListingParser``."""
+
+    def __init__(self, *args, credential_token=None, **kwargs):
+        # The token partitions fsspec's instance cache when provider inputs change.
+        self._credential_retry_at = 0.0
+        super().__init__(*args, **kwargs)
+
+    async def set_session(self, refresh=False, kwargs={}):  # noqa: B006
+        mine = isinstance(self.session, _ListingSession)
+        auto_anon = self.storage_options.get("anon") is None
+        retry_credentials = False
+        if (
+            auto_anon
+            and self._s3 is not None
+            and self.anon
+            and mine
+            and monotonic() >= self._credential_retry_at
+        ):
+            checked, found = _CREDENTIAL_CHECKS.get(
+                _credential_key(self.storage_options), (0.0, False)
+            )
+            self._credential_retry_at = checked + 60
+            retry_credentials = found or monotonic() >= self._credential_retry_at
+        if (self._s3 is None or refresh or retry_credentials) and auto_anon:
+            was_anonymous = self.anon
+            if self.session is None or mine:
+                if refresh:
+                    _CREDENTIAL_CHECKS.pop(_credential_key(self.storage_options), None)
+                self.anon = not await asyncio.to_thread(
+                    _has_credentials, self.storage_options
+                )
+                if self.anon:
+                    checked, _ = _CREDENTIAL_CHECKS.get(
+                        _credential_key(self.storage_options), (monotonic(), False)
+                    )
+                    self._credential_retry_at = checked + 60
+            elif not _has_explicit_credentials(self.storage_options):
+                self.anon = await self.session.get_credentials() is None
+            refresh = refresh or (self._s3 is not None and was_anonymous != self.anon)
+        if self.session is None or (refresh and mine):
+            self.session = _ListingSession(**self.kwargs)
+        self._session_is_owned = False  # s3fs keeps the session, even on refresh
+        return await super().set_session(refresh, kwargs)
+
+    _connect = set_session
+    connect = sync_wrapper(set_session)
+
+
+class ClientS3(RangeListedClient):
+    FS_CLASS = _S3FileSystem
     PREFIX = "s3://"
+    LISTS_LEVELS = True
     protocol = "s3"
     CREDENTIAL_KEYS = frozenset(
-        {"key", "secret", "token", "aws_key", "aws_secret", "aws_token"}
+        {
+            "key",
+            "secret",
+            "token",
+            "aws_key",
+            "aws_secret",
+            "aws_token",
+            "username",
+            "password",
+        }
     )
+    # A version id always names the same bytes, except "null". S3 gives that id to
+    # objects written while versioning is off or suspended, and another write in
+    # that state replaces them, so those files are checked by etag.
+    PINNED_VERSION_IS_IMMUTABLE = True
+    _unversioned = False  # the server can't list versions
 
     @staticmethod
     def _normalize_s3_kwargs(kwargs: dict) -> dict:
         if "aws_endpoint_url" in kwargs:
-            kwargs.setdefault("client_kwargs", {}).setdefault(
-                "endpoint_url", kwargs.pop("aws_endpoint_url")
-            )
+            kwargs["client_kwargs"] = {
+                "endpoint_url": kwargs.pop("aws_endpoint_url")
+            } | (kwargs.get("client_kwargs") or {})
         if "aws_key" in kwargs:
             kwargs.setdefault("key", kwargs.pop("aws_key"))
         if "aws_secret" in kwargs:
             kwargs.setdefault("secret", kwargs.pop("aws_secret"))
         if "aws_token" in kwargs:
             kwargs.setdefault("token", kwargs.pop("aws_token"))
+        if "region_name" in kwargs:
+            kwargs["config_kwargs"] = {"region_name": kwargs.pop("region_name")} | (
+                kwargs.get("config_kwargs") or {}
+            )
         return kwargs
 
     @classmethod
@@ -46,10 +293,10 @@ class ClientS3(Client):
         # We want to use newer v4 signature version since regions added after
         # 2014 are not going to support v2 which is the older one.
         # All regions support v4.
-        kwargs.setdefault("config_kwargs", {}).setdefault("signature_version", "s3v4")
-
-        if "region_name" in kwargs:
-            kwargs["config_kwargs"].setdefault("region_name", kwargs.pop("region_name"))
+        kwargs["config_kwargs"] = {"signature_version": "s3v4"} | (
+            kwargs.get("config_kwargs") or {}
+        )
+        kwargs["config_kwargs"].setdefault("max_pool_connections", PROCESS_LIST_WORKERS)
 
         # remove this `if` when https://github.com/fsspec/s3fs/pull/929 lands
         if not os.environ.get("AWS_REGION") and not os.environ.get("AWS_ENDPOINT_URL"):
@@ -57,61 +304,54 @@ class ClientS3(Client):
             # it tries to randomly guess and creates wrong signature
             kwargs.setdefault("cache_regions", True)
 
-        if not kwargs.get("anon"):
-            try:
-                # Run an inexpensive check to see if credentials are available
-                super().create_fs(**kwargs).sign("s3://bucket/object")
-            except NoCredentialsError:
-                kwargs["anon"] = True
-            except NotImplementedError:
-                pass
+        if kwargs.get("anon") is None and not _has_explicit_credentials(kwargs):
+            kwargs["credential_token"] = tokenize(_credential_key(kwargs))
 
         return cast("S3FileSystem", super().create_fs(**kwargs))
 
     @classmethod
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:
-        # Step 1: Anonymous probe. cache_regions=True handles PermanentRedirect
-        # (bucket-in-wrong-region) transparently so the bucket is found → exists=True.
-        # Preserve endpoint/region settings from caller kwargs; strip credentials.
-        strip = cls.CREDENTIAL_KEYS | {"anon"}
+        # HeadBucket returns the region; do not discover it with another probe.
+        kwargs["cache_regions"] = False
+        kwargs["skip_instance_cache"] = True
+        kwargs.pop("asynchronous", None)
+        kwargs.pop("loop", None)
+        not_found = BucketStatus(
+            exists=False, access="denied", error=f"S3 bucket '{name}' not found"
+        )
+        strip = (cls.CREDENTIAL_KEYS - {"profile"}) | {"anon"}
         anon_kwargs = cls._normalize_s3_kwargs(
             {k: v for k, v in kwargs.items() if k not in strip}
         )
         anon_kwargs["anon"] = True
-        anon_kwargs.setdefault("cache_regions", True)
-        anon_fs = S3FileSystem(**anon_kwargs)
-        try:
-            sync(get_loop(), anon_fs._info, name)
+        status, region = _head_bucket(S3FileSystem(**anon_kwargs), name)
+        if status == 200:
             return BucketStatus(exists=True, access="anonymous")
-        except PermissionError:
-            pass
-        except FileNotFoundError:
-            return BucketStatus(
-                exists=False, access="denied", error=f"S3 bucket '{name}' not found"
-            )
+        if status == 404:
+            return not_found
 
-        # Step 2: Authenticated probe.
         # Use raw S3FileSystem to bypass ClientS3.create_fs()'s auto-anon fallback.
         auth_kwargs = cls._normalize_s3_kwargs(
             {k: v for k, v in kwargs.items() if k != "anon"}
         )
-        auth_kwargs.setdefault("cache_regions", True)
-
-        auth_fs = S3FileSystem(**auth_kwargs)
+        if region:
+            auth_kwargs["config_kwargs"] = {"region_name": region} | (
+                auth_kwargs.get("config_kwargs") or {}
+            )
         try:
-            sync(get_loop(), auth_fs._info, name)
+            status, _ = _head_bucket(S3FileSystem(**auth_kwargs), name)
+        except NoCredentialsError:
+            status = 403
+        if status == 200:
             return BucketStatus(exists=True, access="authenticated")
-        except (NoCredentialsError, PermissionError):
-            return BucketStatus(
-                exists=True,
-                access="denied",
-                error=f"Access denied to S3 bucket '{name}'"
-                " — check AWS credentials/permissions",
-            )
-        except FileNotFoundError:
-            return BucketStatus(
-                exists=False, access="denied", error=f"S3 bucket '{name}' not found"
-            )
+        if status == 404:
+            return not_found
+        return BucketStatus(
+            exists=True,
+            access="denied",
+            error=f"Access denied to S3 bucket '{name}'"
+            " — check AWS credentials/permissions",
+        )
 
     @staticmethod
     def _write_kwargs(cfg: "WriteConfig", *, streaming: bool) -> dict[str, Any]:
@@ -151,110 +391,85 @@ class ClientS3(Client):
 
         return self.fs.sign(self.get_uri(path), expiration=expires, **kwargs)
 
-    async def _fetch_flat(self, start_prefix: str, result_queue: ResultQueue) -> None:
-        async def get_pages(it, page_queue):
-            try:
-                async for page in it:
-                    await page_queue.put(page.get(contents_key, []))
-            finally:
-                await page_queue.put(None)
+    def _lists_in_key_order(self) -> bool:
+        # directory buckets and R2 don't list keys in code point order
+        s3 = self._fs and self._fs._s3  # a listing has made it
+        endpoint = s3.meta.endpoint_url if s3 else ""
+        return not (self.name.endswith("--x-s3") or "r2.cloudflarestorage" in endpoint)
 
-        async def process_pages(page_queue, result_queue, prefix):
-            found = False
-            with tqdm(desc=f"Listing {self.uri}", unit=" objects", leave=False) as pbar:
-                while (res := await page_queue.get()) is not None:
-                    if res:
-                        found = True
-                    entries = [
-                        self._entry_from_boto(d, self.name, versions)
-                        for d in res
-                        if self._is_valid_key(d["Key"])
-                    ]
-                    if entries:
-                        await result_queue.put(entries)
-                        pbar.update(len(entries))
-            if not found and prefix:
-                raise FileNotFoundError(f"Unable to resolve remote path: {prefix}")
-
+    async def _list_page(
+        self,
+        prefix: str,
+        start_after: str,
+        token: Any,
+        hi: str | None = None,
+        page_size: int | None = None,
+        delimiter: str = "",
+    ) -> Page:
+        versions = self._is_version_aware() and not self._unversioned
+        kwargs: dict[str, Any] = {"Delimiter": delimiter} if delimiter else {}
+        if versions:
+            if token is not None:
+                kwargs["KeyMarker"], version_marker = token
+                if version_marker:
+                    kwargs["VersionIdMarker"] = version_marker
+            elif start_after:
+                kwargs["KeyMarker"] = start_after
+        elif token is not None:
+            kwargs["ContinuationToken"] = token
+        elif start_after:
+            kwargs["StartAfter"] = start_after
+        await self.fs.set_session()
+        s3 = await self.fs.get_s3(self.name)
+        list_page = s3.list_object_versions if versions else s3.list_objects_v2
         try:
-            prefix = start_prefix
-            if prefix:
-                prefix = prefix.lstrip(DELIMITER) + DELIMITER
-            versions = self._is_version_aware()
-            fs = self.fs
-            await fs.set_session()
-            s3 = await fs.get_s3(self.name)
-            if versions:
-                method = "list_object_versions"
-                contents_key = "Versions"
-            else:
-                method = "list_objects_v2"
-                contents_key = "Contents"
-            pag = s3.get_paginator(method)
-            it = pag.paginate(
+            page = await list_page(
                 Bucket=self.name,
                 Prefix=prefix,
-                Delimiter="",
+                MaxKeys=page_size or self.LIST_PAGE_SIZE,
+                **kwargs,
+                **self.fs.req_kw,  # requester_pays
             )
-            page_queue: asyncio.Queue[list] = asyncio.Queue(2)
-            consumer = asyncio.create_task(
-                process_pages(page_queue, result_queue, prefix)
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code")
+            if not versions or token is not None or code != "NotImplemented":
+                raise
+            # stores without version support, such as R2, hold only current objects
+            self._unversioned = True
+            return await self._list_page(
+                prefix, start_after, None, hi, page_size, delimiter
             )
-            try:
-                await get_pages(it, page_queue)
-                await consumer
-            finally:
-                consumer.cancel()  # In case get_pages() raised
-        finally:
-            result_queue.put_nowait(None)
-
-    async def _fetch_default(
-        self, start_prefix: str, result_queue: ResultQueue
-    ) -> None:
-        await self._fetch_flat(start_prefix, result_queue)
-
-    def _entry_from_boto(self, v, bucket, versions=False) -> File:
-        return File(
-            source=self.uri,
-            path=v["Key"],
-            etag=v.get("ETag", "").strip('"'),
-            version=(
-                ClientS3.clean_s3_version(v.get("VersionId", "")) if versions else ""
-            ),
-            is_latest=v.get("IsLatest", True),
-            last_modified=v.get("LastModified", ""),
-            size=v["Size"],
+        entries = page.get("Versions" if versions else "Contents", [])
+        keys = [d["Key"] for d in entries + page.get("DeleteMarkers", [])]
+        # folders past a delimiter: listed past, though they make no rows
+        keys += [p["Prefix"] for p in page.get("CommonPrefixes", [])]
+        if not page.get("IsTruncated"):
+            token = None
+        elif versions:
+            token = page["NextKeyMarker"], page.get("NextVersionIdMarker")
+        else:
+            token = page["NextContinuationToken"]
+        keep = Keep(self, start_after, hi)
+        return Page(
+            [self._file_row(d, versions) for d in entries if keep(d["Key"])],
+            entries[0]["Key"] if entries else None,
+            max(keys, default=None),
+            token,
+            keep.past_lo,
+            keep.past_hi,
+            keep.in_order,
         )
 
-    async def _fetch_dir(
-        self,
-        prefix,
-        pbar,
-        result_queue: ResultQueue,
-    ) -> set[str]:
-        if prefix:
-            prefix = prefix.lstrip(DELIMITER) + DELIMITER
-        files = []
-        subdirs = set()
-        found = False
-        async for info in self.fs._iterdir(self.name, prefix=prefix, versions=True):
-            full_path = info["name"]
-            _, subprefix, _ = self.fs.split_path(full_path)
-            if prefix.strip(DELIMITER) == subprefix.strip(DELIMITER):
-                found = True
-                continue
-            if info["type"] == "directory":
-                subdirs.add(subprefix)
-            else:
-                files.append(self.info_to_file(info, subprefix))
-                pbar.update()
-            found = True
-        if not found:
-            raise FileNotFoundError(f"Unable to resolve remote path: {prefix}")
-        if files:
-            await result_queue.put(files)
-        pbar.update(len(subdirs))
-        return subdirs
+    def _file_row(self, v, versions: bool) -> tuple:
+        return FileRow(
+            self.uri,
+            v["Key"],
+            v["Size"],
+            ClientS3.clean_s3_version(v.get("VersionId", "")) if versions else "",
+            v.get("ETag", "").strip('"'),
+            v.get("IsLatest", True),
+            v["LastModified"],
+        )
 
     @staticmethod
     def clean_s3_version(ver: str | None) -> str:

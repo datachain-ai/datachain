@@ -1,5 +1,6 @@
 import os
 import re
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import cloudpickle
@@ -7,6 +8,7 @@ import cloudpickle
 from datachain.lib import meta_formats
 from datachain.lib.data_model import DataType
 from datachain.lib.file import File, FileType
+from datachain.lib.udf import Generator
 
 if TYPE_CHECKING:
     from typing_extensions import ParamSpec
@@ -14,6 +16,14 @@ if TYPE_CHECKING:
     from .datachain import DataChain
 
     P = ParamSpec("P")
+
+
+class _ReadJson(Generator):
+    def __init__(self, parse: Callable, prefetch_max_size: int | None):
+        super().__init__()
+        # The function's signature gives the step its params and output.
+        self.process = parse  # type: ignore[method-assign]
+        self.prefetch_max_size = prefetch_max_size
 
 
 def read_json(
@@ -40,7 +50,7 @@ def read_json(
         model_name: optional generated model name
         format: "json", "jsonl"
         jmespath: optional JMESPATH expression to reduce JSON
-        nrows: optional row limit for jsonl and JSON arrays
+        nrows: optional row limit per file, for jsonl and JSON arrays
 
     Example:
         infer JSON schema from data, reduce using JMESPATH
@@ -55,6 +65,8 @@ def read_json(
         chain = dc.read_json("gs://json_ds", schema_from="gs://json/my.json")
         ```
     """
+    from datachain.lib.arrow import PARTIAL_READ_PREFETCH_MAX_SIZE
+
     from .storage import read_storage
 
     if schema_from == "auto":
@@ -69,21 +81,18 @@ def read_json(
     if not column:
         column = format
     chain = read_storage(uri=path, type=type, **kwargs)
-    signal_dict = {
-        column: meta_formats.read_meta(
-            schema_from=schema_from,
-            format=format,
-            spec=spec,
-            model_name=model_name,
-            jmespath=jmespath,
-            nrows=nrows,
-            session=kwargs.get("session"),
-        ),
-        "params": {"file": File},
-    }
-    # disable prefetch if nrows is set
-    settings = {"prefetch": 0} if nrows else {}
-
+    parse = meta_formats.read_meta(
+        schema_from=schema_from,
+        format=format,
+        spec=spec,
+        model_name=model_name,
+        jmespath=jmespath,
+        nrows=nrows,
+        session=kwargs.get("session"),
+    )
     cloudpickle.register_pickle_by_value(meta_formats)
 
-    return chain.settings(**settings).gen(**signal_dict)  # type: ignore[misc, arg-type]
+    # JSON is parsed whole, so only JSONL with nrows reads part of a file.
+    partial = nrows and format == "jsonl"
+    max_size = PARTIAL_READ_PREFETCH_MAX_SIZE if partial else None
+    return chain.gen(params={"file": File}, **{column: _ReadJson(parse, max_size)})  # type: ignore[arg-type]

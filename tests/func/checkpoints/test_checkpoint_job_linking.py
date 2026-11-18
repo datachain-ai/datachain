@@ -137,37 +137,31 @@ def test_dataset_job_linking_with_reset(test_session, ignore_checkpoints, nums_d
     assert job1_datasets[0] == ("nums_reset", "1.0.0", True)
 
 
-def test_dataset_version_job_id_updates_to_latest(test_session, nums_dataset):
+def test_dataset_version_job_id_stays_on_creator(test_session, nums_dataset):
     catalog = test_session.catalog
+    metastore = catalog.metastore
 
     chain = dc.read_dataset("nums", session=test_session)
     name = "nums_jobid"
 
-    # -------------- FIRST RUN -------------------
     reset_session_job_state()
     chain.save(name)
     job1_id = test_session.get_or_create_job().id
 
-    dataset = catalog.get_dataset(name, versions=None)
-    assert dataset.get_version(dataset.latest_version).job_id == job1_id
-
-    # -------------- SECOND RUN: Reuse via checkpoint -------------------
     reset_session_job_state()
     chain.save(name)
     job2_id = test_session.get_or_create_job().id
 
-    # job_id should now point to job2 (latest)
-    dataset = catalog.get_dataset(name, versions=None)
-    assert dataset.get_version(dataset.latest_version).job_id == job2_id
-
-    # -------------- THIRD RUN: Another reuse -------------------
     reset_session_job_state()
     chain.save(name)
     job3_id = test_session.get_or_create_job().id
 
-    # job_id should now point to job3 (latest)
     dataset = catalog.get_dataset(name, versions=None)
-    assert dataset.get_version(dataset.latest_version).job_id == job3_id
+    assert dataset.latest_version == "1.0.0"
+    assert dataset.get_version("1.0.0").job_id == job1_id
+    assert get_dataset_versions_for_job(metastore, job1_id) == [(name, "1.0.0", True)]
+    assert get_dataset_versions_for_job(metastore, job2_id) == [(name, "1.0.0", False)]
+    assert get_dataset_versions_for_job(metastore, job3_id) == [(name, "1.0.0", False)]
 
 
 def test_job_ancestry_depth_exceeded(test_session, monkeypatch, nums_dataset):

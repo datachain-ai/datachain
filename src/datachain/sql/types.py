@@ -12,8 +12,6 @@ for sqlite we can use `sqlite.register_converter`
 ( https://docs.python.org/3/library/sqlite3.html#sqlite3.register_converter )
 """
 
-import numbers
-import re
 from copy import copy
 from datetime import date, datetime
 from types import MappingProxyType
@@ -22,15 +20,14 @@ from typing import Any, Union
 import sqlalchemy as sa
 from sqlalchemy import TypeDecorator, types
 from sqlalchemy.exc import CompileError
+from sqlalchemy.sql import operators
 
-from datachain import json as jsonlib
 from datachain.lib.data_model import StandardType
+
+_OperatorClass = getattr(operators, "OperatorClass", None)
 
 _registry: dict[str, "TypeConverter"] = {}
 registry = MappingProxyType(_registry)
-
-_read_converter_registry: dict[str, "TypeReadConverter"] = {}
-read_converter_registry = MappingProxyType(_read_converter_registry)
 
 _type_defaults_registry: dict[str, "TypeDefaults"] = {}
 type_defaults_registry = MappingProxyType(_type_defaults_registry)
@@ -40,22 +37,7 @@ db_defaults_registry = MappingProxyType(_db_defaults_registry)
 
 NullType = types.NullType
 
-_DATETIME_EXTRA_FRACTION_RE = re.compile(r"(\.\d{6})\d+")
 _DATETIME_CAST_INPUT_TYPES = frozenset({str, bytes, date, datetime})
-
-
-def parse_datetime_text(value: str) -> datetime:
-    normalized = value.replace("Z", "+00:00") if value.endswith("Z") else value
-    try:
-        return datetime.fromisoformat(normalized)
-    except ValueError:
-        # Python 3.10 rejects ISO timestamps with more than 6 fractional digits,
-        # while newer versions truncate them to microseconds. Trim and retry so
-        # parsing stays compatible across our supported Python versions.
-        truncated = _DATETIME_EXTRA_FRACTION_RE.sub(r"\1", normalized)
-        if truncated == normalized:
-            raise
-        return datetime.fromisoformat(truncated)
 
 
 def datetime_cast_input_error_message(type_name: str) -> str:
@@ -67,11 +49,11 @@ def datetime_cast_input_error_message(type_name: str) -> str:
 
 def validate_datetime_cast_input_type(type_) -> None:
     try:
-        python_type = type_.python_type
+        python_type = dict if isinstance(type_, types.JSON) else type_.python_type
     except (AttributeError, NotImplementedError):
         return
 
-    if python_type in _DATETIME_CAST_INPUT_TYPES:
+    if python_type is object or python_type in _DATETIME_CAST_INPUT_TYPES:
         return
 
     python_type_name = getattr(python_type, "__name__", repr(python_type))
@@ -80,10 +62,6 @@ def validate_datetime_cast_input_type(type_) -> None:
 
 def register_backend_types(dialect_name: str, type_cls):
     _registry[dialect_name] = type_cls
-
-
-def register_type_read_converters(dialect_name: str, trc: "TypeReadConverter"):
-    _read_converter_registry[dialect_name] = trc
 
 
 def register_type_defaults(dialect_name: str, td: "TypeDefaults"):
@@ -105,21 +83,6 @@ def converter(dialect) -> "TypeConverter":
         except KeyError:
             raise ValueError(
                 f"No type converter registered for dialect: {dialect.name!r} "
-                f"and no default converter available"
-            ) from None
-
-
-def read_converter(dialect) -> "TypeReadConverter":
-    name = dialect.name
-    try:
-        return read_converter_registry[name]
-    except KeyError:
-        # Fall back to default converter if specific dialect not found
-        try:
-            return read_converter_registry["default"]
-        except KeyError:
-            raise ValueError(
-                f"No read type converter registered for dialect: {dialect.name!r} "
                 f"and no default converter available"
             ) from None
 
@@ -161,18 +124,45 @@ class SQLType(TypeDecorator):
     # Optional[scalar] marker -> backend emits a nullable column so None round-trips.
     dc_nullable: bool = False
 
+    if _OperatorClass is not None:
+        operator_classes = _OperatorClass.ANY
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        cls.cache_ok = cls.__dict__.get("cache_ok", cls.cache_ok)
+
+    @property
+    def _static_cache_key(self):
+        key = super()._static_cache_key
+        if self.dc_nullable and isinstance(key, tuple):
+            return (*key, ("dc_nullable", True))
+        return key
+
     def load_dialect_impl(self, dialect):
         impl = self._load_dialect_impl(dialect)
         if self.dc_nullable:
             return converter(dialect).nullable(impl)
         return impl
 
+    # each type's method name on TypeConverter, TypeDefaults and DBDefaults,
+    # and its Python type
+    _kind: str
+    _python: StandardType
+
     def _load_dialect_impl(self, dialect):
-        return super().load_dialect_impl(dialect)
+        return getattr(converter(dialect), self._kind)()
 
     @property
     def python_type(self) -> StandardType:
-        raise NotImplementedError
+        return self._python
+
+    @classmethod
+    def default_value(cls, dialect):
+        return getattr(type_defaults(dialect), cls._kind)()
+
+    @classmethod
+    def db_default_value(cls, dialect):
+        return getattr(db_defaults(dialect), cls._kind)()
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"type": self.__class__.__name__}
@@ -196,194 +186,60 @@ class SQLType(TypeDecorator):
 
 class String(SQLType):
     impl = types.String
-
-    @property
-    def python_type(self) -> StandardType:
-        return str
-
-    def _load_dialect_impl(self, dialect):
-        return converter(dialect).string()
-
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).string()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).string()
-
-    def on_read_convert(self, value, dialect):
-        return read_converter(dialect).string(value)
+    _kind = "string"
+    _python = str
 
 
 class Boolean(SQLType):
     impl = types.Boolean
-
-    @property
-    def python_type(self) -> StandardType:
-        return bool
-
-    def _load_dialect_impl(self, dialect):
-        return converter(dialect).boolean()
-
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).boolean()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).boolean()
-
-    def on_read_convert(self, value, dialect):
-        return read_converter(dialect).boolean(value)
+    _kind = "boolean"
+    _python = bool
 
 
 class Int(SQLType):
     impl = types.INTEGER
-
-    @property
-    def python_type(self) -> StandardType:
-        return int
-
-    def _load_dialect_impl(self, dialect):
-        return converter(dialect).int()
-
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).int()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).int()
-
-    def on_read_convert(self, value, dialect):
-        return read_converter(dialect).int(value)
+    _kind = "int"
+    _python = int
 
 
 class Int32(Int):
-    def _load_dialect_impl(self, dialect):
-        return converter(dialect).int32()
-
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).int32()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).int32()
-
-    def on_read_convert(self, value, dialect):
-        return read_converter(dialect).int32(value)
+    _kind = "int32"
 
 
 class UInt32(Int):
-    def _load_dialect_impl(self, dialect):
-        return converter(dialect).uint32()
-
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).uint32()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).uint32()
-
-    def on_read_convert(self, value, dialect):
-        return read_converter(dialect).uint32(value)
+    _kind = "uint32"
 
 
 class Int64(Int):
-    def _load_dialect_impl(self, dialect):
-        return converter(dialect).int64()
-
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).int64()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).int64()
-
-    def on_read_convert(self, value, dialect):
-        return read_converter(dialect).int64(value)
+    _kind = "int64"
 
 
 class UInt64(Int):
-    def _load_dialect_impl(self, dialect):
-        return converter(dialect).uint64()
-
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).uint64()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).uint64()
-
-    def on_read_convert(self, value, dialect):
-        return read_converter(dialect).uint64(value)
+    _kind = "uint64"
 
 
 class Float(SQLType):
     impl = types.FLOAT
-
-    @property
-    def python_type(self) -> StandardType:
-        return float
-
-    def _load_dialect_impl(self, dialect):
-        return converter(dialect).float()
-
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).float()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).float()
-
-    def on_read_convert(self, value, dialect):
-        return read_converter(dialect).float(value)
+    _kind = "float"
+    _python = float
 
 
 class Float32(Float):
-    def _load_dialect_impl(self, dialect):
-        return converter(dialect).float32()
-
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).float32()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).float32()
-
-    def on_read_convert(self, value, dialect):
-        return read_converter(dialect).float32(value)
+    _kind = "float32"
 
 
 class Float64(Float):
-    def _load_dialect_impl(self, dialect):
-        return converter(dialect).float64()
-
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).float64()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).float64()
-
-    def on_read_convert(self, value, dialect):
-        return read_converter(dialect).float64(value)
+    _kind = "float64"
 
 
 class Array(SQLType):
     impl = types.ARRAY
+    _kind = "array"
+    _python = list
 
-    @property
-    def python_type(self) -> StandardType:
-        return list
+    def __init__(self, item_type, *args, **kwargs):
+        self.item_type = item_type() if isinstance(item_type, type) else item_type
+        super().__init__(self.item_type, *args, **kwargs)
 
     def _load_dialect_impl(self, dialect):
         return converter(dialect).array(self.item_type)
@@ -430,165 +286,23 @@ class Array(SQLType):
             inst.dc_nullable = True
         return inst
 
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).array()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).array()
-
-    def on_read_convert(self, value, dialect):
-        r = read_converter(dialect).array(value, self.item_type, dialect)
-        if isinstance(self.item_type, JSON):
-            r = [jsonlib.loads(item) if isinstance(item, str) else item for item in r]
-        return r
-
 
 class JSON(SQLType):
     impl = types.JSON
-
-    @property
-    def python_type(self) -> StandardType:
-        return dict
-
-    def _load_dialect_impl(self, dialect):
-        return converter(dialect).json()
-
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).json()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).json()
-
-    def on_read_convert(self, value, dialect):
-        return read_converter(dialect).json(value)
+    _kind = "json"
+    _python = dict
 
 
 class DateTime(SQLType):
     impl = types.DATETIME
-
-    @property
-    def python_type(self) -> StandardType:
-        return datetime
-
-    def _load_dialect_impl(self, dialect):
-        return converter(dialect).datetime()
-
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).datetime()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).datetime()
-
-    def on_read_convert(self, value, dialect):
-        return read_converter(dialect).datetime(value)
+    _kind = "datetime"
+    _python = datetime
 
 
 class Binary(SQLType):
     impl = types.BINARY
-
-    @property
-    def python_type(self) -> StandardType:
-        return bytes
-
-    def _load_dialect_impl(self, dialect):
-        return converter(dialect).binary()
-
-    @staticmethod
-    def default_value(dialect):
-        return type_defaults(dialect).binary()
-
-    @staticmethod
-    def db_default_value(dialect):
-        return db_defaults(dialect).binary()
-
-    def on_read_convert(self, value, dialect):
-        return read_converter(dialect).binary(value)
-
-
-class TypeReadConverter:
-    def string(self, value):
-        return value
-
-    def boolean(self, value):
-        if value is None or isinstance(value, bool):
-            return value
-
-        if isinstance(value, numbers.Integral):
-            return bool(value)
-        if isinstance(value, str):
-            normalized = value.strip().lower()
-            if normalized in {"true", "t", "yes", "y", "1"}:
-                return True
-            if normalized in {"false", "f", "no", "n", "0"}:
-                return False
-
-        return value
-
-    def int(self, value):
-        return value
-
-    def int32(self, value):
-        return value
-
-    def uint32(self, value):
-        return value
-
-    def int64(self, value):
-        return value
-
-    def uint64(self, value):
-        return value
-
-    def float(self, value):
-        if value is None:
-            return float("nan")
-        if isinstance(value, str) and value.lower() == "nan":
-            return float("nan")
-        return value
-
-    def float32(self, value):
-        return self.float(value)
-
-    def float64(self, value):
-        return self.float(value)
-
-    def array(self, value, item_type, dialect):
-        if value is None or item_type is None:
-            return value
-        return [item_type.on_read_convert(x, dialect) for x in value]
-
-    def json(self, value):
-        if isinstance(value, str):
-            if value == "":
-                return {}
-            return jsonlib.loads(value)
-        return value
-
-    def datetime(self, value):
-        if value is None:
-            return value
-
-        if isinstance(value, datetime):
-            return value
-
-        if isinstance(value, str):
-            return parse_datetime_text(value)
-
-        raise TypeError(
-            "datetime read converter expected str, datetime, or None; "
-            f"got {type(value).__name__}"
-        )
-
-    def binary(self, value):
-        if isinstance(value, str):
-            return value.encode()
-        return value
+    _kind = "binary"
+    _python = bytes
 
 
 class TypeConverter:

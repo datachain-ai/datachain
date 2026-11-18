@@ -8,7 +8,7 @@ This script demonstrates DataChain's retry functionality by:
 3. Using retry flags to reprocess failed records in a second pass
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import datachain as dc
 from datachain import C, DataModel
@@ -34,7 +34,7 @@ def process_data(item_id: int, content: str, attempt: int) -> ProcessingResult:
     error = item_id % 2 == 1 and attempt == 1
     return ProcessingResult(
         processed_content="" if error else content.upper(),
-        processed_at=datetime.now(tz=timezone.utc).isoformat(),
+        processed_at=datetime.now(tz=UTC).isoformat(),
         error=f"Processing error for item {item_id} (attempt {attempt})"
         if error
         else "",

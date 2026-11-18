@@ -14,23 +14,17 @@ A `save()` followed by `read_dataset()` creates a stage boundary:
 import datachain as dc
 
 # Stage 1: Extract chunks from PDFs
-dc.read_storage("s3://docs/*.pdf") \
-    .gen(chunk=split_pdf) \
-    .save("chunks")
+dc.read_storage("s3://docs/*.pdf").gen(chunk=split_pdf).save("chunks")
 
 # Stage 2: Generate embeddings
-dc.read_dataset("chunks") \
-    .setup(model=lambda: load_embedding_model()) \
-    .settings(parallel=8) \
-    .map(emb=embed_chunk) \
-    .save("chunk_embeddings")
+dc.read_dataset("chunks").setup(model=lambda: load_embedding_model()).settings(
+    parallel=8
+).map(emb=embed_chunk).save("chunk_embeddings")
 
 # Stage 3: Classify with LLM
-dc.read_dataset("chunk_embeddings") \
-    .setup(client=lambda: create_llm_client()) \
-    .settings(parallel=4) \
-    .map(category=classify) \
-    .save("classified_chunks")
+dc.read_dataset("chunk_embeddings").setup(client=lambda: create_llm_client()).settings(
+    parallel=4
+).map(category=classify).save("classified_chunks")
 ```
 
 If Stage 2 fails at 80% completion, checkpoints preserve completed rows. Fix the bug, re-run, and DataChain resumes from where it left off. Stage 1 is skipped entirely because its chain hash matches.
@@ -43,15 +37,13 @@ Run two models on the same dataset, then merge the results:
 import datachain as dc
 
 # Run two models
-dc.read_dataset("chunk_embeddings") \
-    .setup(client=lambda: model_a_client()) \
-    .map(response_a=run_model_a) \
-    .save("model_a_results")
+dc.read_dataset("chunk_embeddings").setup(client=lambda: model_a_client()).map(
+    response_a=run_model_a
+).save("model_a_results")
 
-dc.read_dataset("chunk_embeddings") \
-    .setup(client=lambda: model_b_client()) \
-    .map(response_b=run_model_b) \
-    .save("model_b_results")
+dc.read_dataset("chunk_embeddings").setup(client=lambda: model_b_client()).map(
+    response_b=run_model_b
+).save("model_b_results")
 
 # Merge and compare
 a = dc.read_dataset("model_a_results")

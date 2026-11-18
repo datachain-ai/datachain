@@ -8,9 +8,10 @@ import re
 import sys
 import time
 from collections.abc import Iterable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import cloudpickle
@@ -19,8 +20,9 @@ from dateutil.parser import isoparse
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
+    from typing import Self
+
     import pandas as pd
-    from typing_extensions import Self
 
     from datachain.dataset import DatasetDependency
 
@@ -31,7 +33,7 @@ logger = logging.getLogger("datachain")
 
 
 NUL = b"\0"
-TIME_ZERO = datetime.fromtimestamp(0, tz=timezone.utc)
+TIME_ZERO = datetime.fromtimestamp(0, tz=UTC)
 
 APPNAME = "datachain"
 APPAUTHOR = "iterative"
@@ -41,6 +43,10 @@ STUDIO_URL = "https://studio.datachain.ai"
 
 
 T = TypeVar("T")
+
+
+def parent_path(path: str) -> str:
+    return path.rpartition("/")[0]
 
 
 class DataChainDir:
@@ -60,6 +66,8 @@ class DataChainDir:
         db: str | None = None,
         config: str | None = None,
     ) -> None:
+        if root is None:
+            root = os.environ.get(self.ENV_VAR)
         self.root = osp.abspath(root) if root is not None else self.default_root()
         self.cache = (
             osp.abspath(cache) if cache is not None else osp.join(self.root, self.CACHE)
@@ -87,21 +95,30 @@ class DataChainDir:
             root_dir = os.environ[cls.ENV_VAR_DATACHAIN_ROOT]
         except KeyError:
             root_dir = os.getcwd()
+            cwd = Path(root_dir)
+            nearest = None
+            for directory in (cwd, *cwd.parents):
+                datachain_dir = directory / cls.DEFAULT
+                if nearest is None and (
+                    osp.isfile(datachain_dir / cls.DB)
+                    or osp.isfile(datachain_dir / cls.CONFIG)
+                ):
+                    nearest = datachain_dir
+                # Only reuse ancestor state inside a containing Git project.
+                # Worktrees and submodules use a .git file instead of a directory.
+                if osp.exists(directory / ".git"):
+                    return str(nearest or datachain_dir)
 
         return osp.join(root_dir, cls.DEFAULT)
 
     @classmethod
     def find(cls, create: bool = True) -> "Self":
-        try:
-            root = os.environ[cls.ENV_VAR]
-        except KeyError:
-            root = cls.default_root()
-        instance = cls(root)
-        if not osp.isdir(root):
+        instance = cls()
+        if not osp.isdir(instance.root):
             if create:
                 instance.init()
             else:
-                raise NotADirectoryError(root)
+                raise NotADirectoryError(instance.root)
         return instance
 
 
@@ -243,24 +260,6 @@ def global_config_dir():
     )
 
 
-def human_time_to_int(time: str) -> int | None:
-    if not time:
-        return None
-
-    suffix = time[-1]
-    try:
-        num = int(time if suffix.isdigit() else time[:-1])
-    except ValueError:
-        return None
-    return num * {
-        "h": 60 * 60,
-        "d": 60 * 60 * 24,
-        "w": 60 * 60 * 24 * 7,
-        "m": 31 * 24 * 60 * 60,
-        "y": 60 * 60 * 24 * 365,
-    }.get(suffix.lower(), 1)
-
-
 def time_to_str(dt):
     if isinstance(dt, str):
         dt = isoparse(dt)
@@ -362,16 +361,6 @@ def batched(iterable: Iterable[_T_co], batch_size: int) -> Iterator[tuple[_T_co,
     yield from (tuple(batch) for batch in _dynamic_batched_core(iterable, batch_size))
 
 
-def batched_it(
-    iterable: Iterable[_T_co],
-    batch_size: int = DEFAULT_BATCH_SIZE,
-) -> Iterator[Iterator[_T_co]]:
-    """
-    Batch data into iterators with dynamic sizing based on row count and memory usage.
-    """
-    yield from (iter(batch) for batch in _dynamic_batched_core(iterable, batch_size))
-
-
 def flatten(items):
     for item in items:
         if isinstance(item, (list, tuple)):
@@ -450,14 +439,52 @@ def determine_processes(
     return parallel
 
 
-def get_env_list(
-    key: str, default: Sequence | None = None, sep: str = ","
-) -> Sequence[str] | None:
-    try:
-        str_val = os.environ[key]
-    except KeyError:
-        return default
-    return str_val.split(sep=sep)
+def _cpu_quotas(
+    root: str = "/sys/fs/cgroup", membership: str = "/proc/self/cgroup"
+) -> list[tuple[int, int]]:
+    """``(quota, period)`` of each cgroup this process is in, and their parents."""
+    quotas = []
+    with suppress(OSError, ValueError):
+        for line in Path(membership).read_text().splitlines():
+            try:
+                _, controllers, path = line.split(":", 2)
+            except ValueError:
+                continue
+            if not controllers:  # v2
+                base, files = root, ["cpu.max"]
+            elif "cpu" in controllers.split(","):  # v1
+                base = os.path.join(root, controllers)
+                if not os.path.isdir(base):
+                    base = os.path.join(root, "cpu")
+                files = ["cpu.cfs_quota_us", "cpu.cfs_period_us"]
+            else:
+                continue
+            parts = [p for p in path.split("/") if p]
+            for depth in range(len(parts) + 1):
+                folder = os.path.join(base, *parts[:depth])
+                with suppress(OSError, ValueError):
+                    quota, period = " ".join(
+                        Path(folder, name).read_text() for name in files
+                    ).split()
+                    if quota not in ("max", "-1"):
+                        quotas.append((int(quota), int(period)))
+    return quotas
+
+
+def usable_cpu_count() -> int:
+    """CPUs this process may use: its affinity, capped by its cgroups' CPU quotas.
+
+    ``os.cpu_count()`` reports the host inside containers; a fractional quota
+    rounds up.
+    """
+    cpus = os.cpu_count() or 1
+    with suppress(OSError):
+        if hasattr(os, "process_cpu_count"):
+            cpus = os.process_cpu_count() or cpus
+        elif hasattr(os, "sched_getaffinity"):
+            cpus = len(os.sched_getaffinity(0))
+    caps = [-(-quota // period) for quota, period in _cpu_quotas() if period > 0]
+    return max(min([cpus, *caps]), 1)
 
 
 def show_df(
@@ -490,23 +517,6 @@ def show_df(
 
     with pd.option_context("display.max_rows", None, *options):  # show all rows
         print(df)
-
-
-def show_records(
-    records: list[dict] | None,
-    collapse_columns: bool = False,
-    system_columns: bool = False,
-    hidden_fields: list[str] | None = None,
-) -> None:
-    import pandas as pd
-
-    if not records:
-        return
-
-    df = pd.DataFrame.from_records(records)
-    if hidden_fields:
-        df = df.drop(columns=hidden_fields, errors="ignore")
-    return show_df(df, collapse_columns=collapse_columns, system_columns=system_columns)
 
 
 def inside_colab() -> bool:
@@ -649,26 +659,3 @@ def ensure_sequence(x) -> Sequence:
     if isinstance(x, Sequence) and not isinstance(x, (str, bytes)):
         return x
     return [x]
-
-
-def with_last_flag(iterable):
-    """
-    Returns flag saying is this element the last in the iterator or not, together
-    with the element.
-
-    Example:
-    for item, is_last in with_last_flag(my_gen()):
-        ...
-    """
-    it = iter(iterable)
-    try:
-        prev = next(it)
-    except StopIteration:
-        return
-
-    for item in it:
-        yield prev, False
-        prev = item
-
-    # last item
-    yield prev, True

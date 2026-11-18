@@ -1,7 +1,7 @@
 import os
 import posixpath
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +22,23 @@ class FileClient(Client):
     FS_CLASS = LocalFileSystem
     PREFIX = "file://"
     protocol = "file"
+
+    @staticmethod
+    def format_etag(etag: str) -> str:
+        """Show the stored etag, plus mtime when it is ``st_mtime.hex()``.
+
+        Local listings store mtime as ``float.hex()``. Conversion is limited to
+        that canonical shape so non-canonical values stay intact.
+        """
+        rendered = str(etag)
+        try:
+            mtime = float.fromhex(rendered)
+            if mtime.hex() != rendered:
+                return rendered
+            iso = datetime.fromtimestamp(mtime, UTC).isoformat()
+        except (ValueError, OverflowError, OSError):
+            return rendered
+        return f"{rendered} (mtime {iso})"
 
     def __init__(
         self,
@@ -221,7 +238,7 @@ class FileClient(Client):
             size=v.get("size", ""),
             etag=v["mtime"].hex(),
             is_latest=True,
-            last_modified=datetime.fromtimestamp(v["mtime"], timezone.utc),
+            last_modified=datetime.fromtimestamp(v["mtime"], UTC),
         )
 
     def fetch_nodes(

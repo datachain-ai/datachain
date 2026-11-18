@@ -2,6 +2,7 @@ import math
 
 import pandas as pd
 import pytest
+import sqlalchemy as sa
 from pydantic import BaseModel
 from sqlalchemy import func
 
@@ -534,3 +535,136 @@ def test_merge_with_drops_sys_columns(test_session):
 
     sys_rand = list(df_with_sys[sys_rand_col])
     assert len(sys_rand) == len(set(sys_rand))
+
+
+def _chains_with_size(session, right_paths=("x", "y"), right_sizes=(3, 1)):
+    left = dc.read_values(path=["x", "y"], size=[1, 2], session=session)
+    right = dc.read_values(
+        path=list(right_paths), size=list(right_sizes), session=session
+    )
+    return left, right
+
+
+def _select_count(chain) -> int:
+    query = chain._query.apply_steps().select()
+    return str(query.compile(dialect=chain._query.dialect)).count("SELECT")
+
+
+@pytest.mark.parametrize(
+    "expr,expected",
+    [
+        (lambda: C("size") > 1, "y"),
+        (lambda: C("right_size") > 1, "x"),
+        (lambda: C("size") > C("right_size"), "y"),
+        (lambda: C("right_size") > C("size"), "x"),
+    ],
+    ids=["size", "right-size", "size-gt-right-size", "right-size-gt-size"],
+)
+def test_filter_after_merge_reads_size_from_left_and_right_size_from_right(
+    test_session, expr, expected
+):
+    left, right = _chains_with_size(test_session)
+    merged = left.merge(right, on="path")
+    assert merged.filter(expr()).to_list("path") == [(expected,)]
+
+
+@pytest.mark.parametrize(
+    "descending,expected",
+    [(False, "x"), (True, "y")],
+    ids=["ascending", "descending"],
+)
+def test_order_by_size_after_merge_sorts_by_left_size(
+    test_session, descending, expected
+):
+    left, right = _chains_with_size(test_session)
+    merged = left.merge(right, on="path")
+    top = merged.order_by("size", descending=descending).limit(1)
+    assert top.to_list("path") == [(expected,)]
+
+
+def test_distinct_size_after_merge_dedupes_by_left_size(test_session):
+    left, right = _chains_with_size(test_session, right_sizes=(1, 1))
+    merged = left.merge(right, on="path")
+    assert sorted(merged.distinct("size").to_list("path")) == [("x",), ("y",)]
+
+
+@pytest.mark.parametrize(
+    "extend,expected",
+    [
+        (lambda c: c.filter(C("size") > C("right_size")), [("y",)]),
+        (lambda c: c.order_by("size", descending=True).limit(1), [("y",)]),
+        (lambda c: c.order_by("path").filter(C("size") > 1), [("y",)]),
+        (lambda c: c.distinct("size"), [("x",), ("y",)]),
+    ],
+    ids=["filter", "order-by-limit", "order-by-filter", "distinct"],
+)
+def test_filter_order_by_distinct_after_merge_add_no_extra_select(
+    test_session, extend, expected
+):
+    left, right = _chains_with_size(test_session)
+    chain = extend(left.merge(right, on="path"))
+    assert sorted(chain.to_list("path")) == expected
+    assert _select_count(chain) == _select_count(left) + _select_count(right) + 1
+
+
+def test_filter_after_merge_with_right_on_reads_size_from_left(test_session):
+    left = dc.read_values(path=["x", "y"], size=[1, 2], session=test_session)
+    right = dc.read_values(name=["x", "y"], size=[3, 1], session=test_session)
+    merged = left.merge(right, on="path", right_on="name")
+    assert merged.filter(C("size") > C("right_size")).to_list("path") == [("y",)]
+
+
+@pytest.mark.parametrize("inner", [True, False], ids=["inner", "left"])
+def test_filter_after_merge_with_rows_missing_on_right(test_session, inner):
+    left, right = _chains_with_size(test_session, right_paths=("x",), right_sizes=(1,))
+    merged = left.merge(right, on="path", inner=inner)
+    assert merged.filter(C("size") == C("right_size")).to_list("path") == [("x",)]
+    expected = [] if inner else [("y", None)]
+    assert merged.filter(C("size") > 1).to_list("path", "right_size") == expected
+
+
+def test_filter_after_full_merge_with_rows_missing_on_either_side(test_session):
+    left, right = _chains_with_size(
+        test_session, right_paths=("x", "z"), right_sizes=(1, 3)
+    )
+    merged = left.merge(right, on="path", full=True)
+    assert merged.filter(C("size") > 1).to_list("path", "right_path") == [("y", None)]
+    assert merged.filter(C("right_size") > 1).to_list("path", "right_path") == [
+        (None, "z")
+    ]
+    assert merged.filter(C("size") == C("right_size")).to_list("path") == [("x",)]
+
+
+def test_filter_after_merging_chain_with_itself_reads_size_from_left(test_session):
+    chain = dc.read_values(path=["x", "y"], size=[1, 2], session=test_session)
+    merged = chain.merge(chain, on="path")
+    assert merged.filter(C("size") > 1).to_list("path", "right_size") == [("y", 2)]
+
+
+def test_filter_and_order_by_file_size_after_merge_read_left_file(test_session):
+    left = dc.read_values(
+        file=[dc.File(path="a", size=1), dc.File(path="b", size=2)],
+        session=test_session,
+    )
+    right = dc.read_values(
+        file=[dc.File(path="a", size=3), dc.File(path="b", size=1)],
+        session=test_session,
+    )
+    merged = left.merge(right, on="file.path")
+    diff = merged.filter(C("file.size") > C("right_file.size"))
+    assert diff.to_list("file.path", "file.size", "right_file.size") == [("b", 2, 1)]
+    assert merged.filter(C("file.size") > 1).to_list("file.path") == [("b",)]
+    assert merged.order_by("file.size", descending=True).to_list("file.path") == [
+        ("b",),
+        ("a",),
+    ]
+
+
+def test_filter_after_merge_does_not_bind_size_inside_sqlalchemy_select(test_session):
+    # Artificial for now: only hand-written SQLAlchemy, not a DataChain call,
+    # puts a select inside a filter
+    left, right = _chains_with_size(test_session)
+    merged = left.merge(right, on="path")
+    allowed = sa.select(sa.literal(3).label("size")).subquery()
+    in_allowed = C("right_size").in_(sa.select(C("size")).select_from(allowed))
+    assert merged.filter(in_allowed).to_list("path", "right_size") == [("x", 3)]

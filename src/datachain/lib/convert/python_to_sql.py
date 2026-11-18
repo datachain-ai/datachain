@@ -7,6 +7,7 @@ from typing import Annotated, Any, Literal, Union, get_args, get_origin
 from pydantic import BaseModel
 from typing_extensions import Literal as LiteralEx
 
+import datachain.sql  # noqa: F401
 from datachain.lib.data_model import (
     NULLABLE_SCALARS,
     is_mapping_annotation,
@@ -189,6 +190,13 @@ def _list_to_array(typ, args):
     args0 = args[0]
     if ModelStore.is_pydantic(args0):
         return Array(JSON())
+
+    # a multi-arm Union element has no uniform Array element type -> store as JSON
+    # (Optional[scalar], one non-None arm, stays a nullable Array)
+    if get_origin(args0) in (Union, UnionType) and (
+        len([a for a in get_args(args0) if a is not type(None)]) > 1
+    ):
+        return JSON()
 
     list_type = list_of_args_to_type(args)
     # Optional[scalar] elements map to a nullable Array element so None survives

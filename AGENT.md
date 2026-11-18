@@ -145,7 +145,7 @@ they cluster in a knowable matrix. Therefore, for any change here:
   - the new signal as the **only** signal in the chain;
   - through **every op**, not just the leaf read: filter / order_by / mutate / group_by /
     distinct / **merge** (on the signal *and* carried through a join) / subtract /
-    **`window`** (`.over` with the **readable name and the slot form**) / aggregates over
+    **`window`** (`.over` with the **readable name and its `__` db-name form**) / aggregates over
     the leaf **with NULL rows mixed in**;
   - through **`union`**, in **both arm orders** — the operation is not symmetric;
   - under **`.label()`/aliasing**, and as a leaf **inside a composed `Func`** (`f(x) + 1`),

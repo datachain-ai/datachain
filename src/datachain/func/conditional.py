@@ -7,12 +7,12 @@ from sqlalchemy import or_ as sql_or
 from sqlalchemy import true as sql_true
 
 from datachain.lib.convert.python_to_sql import python_to_sql
-from datachain.lib.data_model import OPTIONAL_PRESENT_TAG
+from datachain.lib.data_model import NULLABLE_SCALARS, unwrap_optional
 from datachain.lib.utils import DataChainParamsError
 from datachain.query.schema import Column, ColumnExpr
 from datachain.sql.functions import conditional
 
-from .func import Func, _SentinelAwareFunc, _source_is_nullable
+from .func import Func, _source_is_nullable, _TagAwareFunc
 
 if TYPE_CHECKING:
     from sqlalchemy import TableClause
@@ -23,9 +23,9 @@ if TYPE_CHECKING:
 CaseT = int | float | complex | bool | str | Func | ColumnExpr
 
 
-class _IsNoneFunc(_SentinelAwareFunc):
-    """``isnone`` reads the ``_type_tag`` discriminator for an
-    ``Optional[DataModel]``; for any other column it is plain ``col IS NULL``."""
+class _IsNoneFunc(_TagAwareFunc):
+    """``isnone``: a tagged union is None when its ``_type_tag`` is NULL; any other
+    column is plain ``col IS NULL``."""
 
     def is_nullable_result(
         self,
@@ -35,23 +35,20 @@ class _IsNoneFunc(_SentinelAwareFunc):
         # isnone is always True/False, never NULL.
         return False
 
-    def _sentinel_column(
+    def _tag_column(
         self,
-        sentinel_path: str,
+        tag_path: str,
         label: str | None,
         table: "TableClause | None",
     ) -> Column:
-        sentinel = Column(sentinel_path)
-        sentinel.table = table
-        func_col = sql_case(
-            (sql_or(sentinel.is_(None), sentinel != OPTIONAL_PRESENT_TAG), True),
-            else_=False,
-        )
+        tag = Column(tag_path)
+        tag.table = table
+        func_col = sql_case((tag.is_(None), True), else_=False)
         return self._finalize_column(func_col, python_to_sql(bool), label)
 
 
 class _CaseFunc(Func):
-    """``case`` with no ``else_`` is nullable (unmatched rows are NULL)."""
+    """``case`` preserves nullable return values and unmatched rows."""
 
     def is_nullable_result(
         self,
@@ -60,7 +57,18 @@ class _CaseFunc(Func):
     ) -> bool:
         if self.kwargs.get("else_") is None:
             return True
-        return super().is_nullable_result(signals_schema, col_type)
+        if signals_schema is None:
+            return False
+        inner, _ = unwrap_optional(col_type or self.get_result_type(signals_schema))
+        values = [
+            self.kwargs["else_"],
+            *(b[1] for b in self.cols if isinstance(b, tuple)),
+        ]
+        return inner in NULLABLE_SCALARS and any(
+            isinstance(value, (ColumnExpr, Func))
+            and _source_is_nullable(value, signals_schema)
+            for value in values
+        )
 
 
 class _LogicalFunc(Func):

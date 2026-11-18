@@ -10,6 +10,7 @@ import msgpack
 import pytest
 
 import datachain as dc
+import datachain.lib.listing as listing_lib
 from datachain.cli import ls
 from datachain.config import Config, ConfigLevel
 from datachain.lib.listing import LISTING_PREFIX, _sanitize_ds_name
@@ -390,3 +391,31 @@ REMOTE_DATA: dict[str, list[dict[str, Any]]] = {
         },
     ],
 }
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("root", [False, True])
+def test_ls_client_config_override(cloud_test_catalog, capsys, root):
+    ctc = cloud_test_catalog
+    config = ctc.client_config.copy()
+    original = {"endpoint_url": "http://127.0.0.1:1", "anon": True}
+    ctc.catalog.client_config = original.copy()
+    uri = ctc.src_uri
+    if root:
+        uri = uri[: uri.find("://") + 3]
+    ls([uri], catalog=ctc.catalog, client_config=config)
+    output = capsys.readouterr().out
+    if not root:
+        assert same_lines(output, "cats/\ndescription\ndogs/\n")
+    else:
+        assert ctc.src_uri.removeprefix(uri) in output
+    assert ctc.catalog.client_config == original
+
+
+def test_ls_updates_duplicate_sources_once(cloud_test_catalog, mocker, capsys):
+    ctc = cloud_test_catalog
+    uri = f"{ctc.src_uri}/dogs/"
+    write = mocker.spy(listing_lib, "write_listing")
+    ls([uri, uri], catalog=ctc.catalog, update=True)
+    assert capsys.readouterr().out.splitlines().count("dog1") == 2
+    assert write.call_count == 1

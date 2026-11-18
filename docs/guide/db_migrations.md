@@ -87,7 +87,7 @@ for fname in os.listdir(import_dir):
     if not fname.endswith(".parquet"):
         continue
     base = fname[:-8]  # remove '.parquet'
-    name, version = base.split('.', 1)  # split on first dot
+    name, version = base.split(".", 1)  # split on first dot
     filepath = os.path.join(import_dir, fname)
     datasets.append((name, Version(version), filepath))
 

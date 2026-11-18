@@ -7,9 +7,8 @@ import string
 import subprocess
 import sys
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from copy import copy
-from datetime import datetime, timezone
 from functools import wraps
 from types import GeneratorType
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypeVar, cast
@@ -19,16 +18,22 @@ import attrs
 import sqlalchemy
 import sqlalchemy as sa
 from attrs import frozen
-from fsspec.callbacks import DEFAULT_CALLBACK, Callback, TqdmCallback
+from fsspec import Callback
+from fsspec.callbacks import DEFAULT_CALLBACK, TqdmCallback
 from sqlalchemy import Column
 from sqlalchemy.sql import func as f
 from sqlalchemy.sql.elements import ColumnClause, ColumnElement, Label
 from sqlalchemy.sql.expression import label
-from sqlalchemy.sql.selectable import GenerativeSelect, Select, TableClause
+from sqlalchemy.sql.selectable import (
+    GenerativeSelect,
+    Select,
+    SelectBase,
+    TableClause,
+)
 from sqlalchemy.sql.visitors import replacement_traverse
 
-from datachain.asyn import ASYNC_WORKERS, AsyncMapper, OrderedMapper
-from datachain.catalog.catalog import clone_catalog_with_cache
+# Resolve parent packages before their children to keep import-lock ordering consistent.
+from datachain.catalog import catalog as _catalog
 from datachain.checkpoint import Checkpoint, CheckpointStatus
 from datachain.checkpoint_event import (
     CheckpointEventType,
@@ -40,34 +45,33 @@ from datachain.data_storage.schema import (
     partition_col_names,
     partition_columns,
 )
-from datachain.dataset import DatasetDependency, RowDict
+from datachain.data_storage.writer import committed_part_keys, parts_table_name
+from datachain.dataset import DatasetDependency
 from datachain.error import (
+    DatasetInvalidVersionError,
     DatasetNotFoundError,
     QueryScriptAbortError,
     QueryScriptCancelError,
     TableMissingError,
 )
-from datachain.func.base import Function
+from datachain.func import base
 from datachain.hash_utils import hash_column_elements
 from datachain.job import Job
 from datachain.lib.data_model import NULLABLE_SCALARS
-from datachain.lib.listing import is_listing_dataset, listing_dataset_expired
-from datachain.lib.signal_schema import SignalSchema, generate_merge_root_mapping
-from datachain.lib.udf import JsonSerializationError, UdfError, _get_cache
-from datachain.lib.utils import type_to_str
+from datachain.lib.listing import ensure_listing, is_listing_dataset
+from datachain.lib.signal_schema import (
+    KeyPresence,
+    SignalSchema,
+    generate_merge_root_mapping,
+)
+from datachain.lib.udf import _get_cache, _Progress
 from datachain.progress import (
     CombinedDownloadCallback,
     TqdmCombinedDownloadCallback,
     tqdm,
 )
 from datachain.project import Project
-from datachain.query.schema import (
-    DEFAULT_DELIMITER,
-    C,
-    ColumnExpr,
-    UDFParamSpec,
-    normalize_param,
-)
+from datachain.query.schema import DEFAULT_DELIMITER, C, ColumnExpr
 from datachain.query.session import Session
 from datachain.query.udf import UdfInfo
 from datachain.sql.functions.random import rand
@@ -83,21 +87,21 @@ from datachain.utils import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
-    from typing import Concatenate
+    from typing import Concatenate, Self
 
     from sqlalchemy.sql.elements import KeyedColumnElement
     from sqlalchemy.sql.schema import Table
-    from typing_extensions import ParamSpec, Self
+    from typing_extensions import ParamSpec
 
     from datachain.catalog import Catalog
     from datachain.data_storage import AbstractWarehouse
     from datachain.dataset import DatasetRecord
-    from datachain.lib.udf import UDFAdapter, UDFResult
+    from datachain.lib.udf import UDFAdapter, UDFPart, UDFResult
 
     P = ParamSpec("P")
 
 
+Function = base.Function
 PartitionByType = str | Function | ColumnExpr | Sequence[str | Function | ColumnExpr]
 JoinPredicateType = str | ColumnExpr
 DatasetDependencyType = tuple["DatasetRecord", str]
@@ -167,6 +171,39 @@ def step_result(
     return StepResult(
         query_generator=QueryGenerator(func=func, columns=tuple(columns)),
         dependencies=tuple(dependencies),
+    )
+
+
+def _bind_shared_names(cols: Iterable[Any], query: Select) -> tuple[Any, ...]:
+    """Bind bare names that several of the query's sources have, like both
+    sides of a join, to the columns the query selects under those names."""
+    seen: set[str] = set()
+    shared: set[str] = set()
+    for source in query.columns_clause_froms:
+        shared |= seen & set(source.c.keys())
+        seen |= set(source.c.keys())
+    names = {
+        name: c.element if isinstance(c, Label) else c
+        for name, c in query.selected_columns.items()
+        if name in shared
+    }
+    if not names:
+        return tuple(cols)
+
+    def bind(element, **_kwargs):
+        # A nested SELECT resolves names against its own FROM. Artificial for
+        # now: only hand-written SQLAlchemy puts one in these clauses.
+        if isinstance(element, SelectBase):
+            return element
+        if isinstance(element, C) and element.table is None:
+            return names.get(element.name)
+        return None
+
+    return tuple(
+        names.get(C(c).name, c)
+        if isinstance(c, str)
+        else replacement_traverse(c, {}, bind)
+        for c in cols
     )
 
 
@@ -263,10 +300,9 @@ class Step(ABC):
         """Immediate sub-queries contained in this step."""
         return []
 
-    def replace_source(
+    def replace_sources(
         self,
-        source: "DatasetQuery",
-        replacement: "DatasetQuery",
+        replacements: dict[int, "DatasetQuery"],
     ) -> "Step":
         return self
 
@@ -306,10 +342,17 @@ class QueryStep:
     dataset: "DatasetRecord"
     dataset_version: str
 
+    def _record_access(self) -> None:
+        self.catalog.metastore.record_dataset_version_access(
+            self.dataset,
+            self.dataset_version,
+        )
+
     def apply(self) -> "StepResult":
         def q(*columns):
             return sqlalchemy.select(*columns)
 
+        self._record_access()
         dr = self.catalog.warehouse.dataset_rows(self.dataset, self.dataset_version)
         # Use a short alias with dataset ID suffix for uniqueness and SQL brevity
         ds_id = dr.table.name.rsplit("_", 1)[-1]
@@ -324,71 +367,50 @@ class QueryStep:
     def hash(self) -> str:
         version = self.dataset.get_version(self.dataset_version)
         anchor = (
-            version.content_hash if version.content_hash is not None else version.uuid
+            version.content_hash
+            if version.content_hash is not None
+            and not is_listing_dataset(self.dataset.name)
+            else version.uuid
         )
         return hashlib.sha256(anchor.encode()).hexdigest()
 
 
-def generator_then_call(generator, func: Callable):
-    """
-    Yield items from generator then execute a function and yield
-    its result.
-    """
-    yield from generator
-    yield func() or []
+def _key_present(columns: Any, presence: KeyPresence) -> ColumnElement:
+    """Whether a key node holds a value, by ``SignalSchema.key_presence``."""
+    if presence is None:
+        return sa.true()
+    tag, arm = presence
+    is_set = columns[tag].is_not(None)
+    return is_set if arm is None else sa.and_(is_set, columns[tag] == arm)
 
 
 @frozen
-class DatasetDiffOperation(Step):
-    """
-    Abstract class for operations that are calculation some kind of diff between
-    datasets queries like subtract etc.
-    """
+class Subtract(Step):
+    """Rows of the query whose keys ``on`` are not in ``dq``."""
 
     dq: "DatasetQuery"
     catalog: "Catalog"
+    on: Sequence[str | tuple[str, str]]
+    # Key nodes compared by whether they hold a value on each side.
+    presence: Sequence[tuple[KeyPresence, KeyPresence]] = ()
 
     def clone(self) -> "Self":
-        return self.__class__(self.dq, self.catalog)
+        return attrs.evolve(self)
 
-    def collect_delta_sources(
-        self,
-    ) -> list["DatasetQuery"]:
+    def collect_delta_sources(self) -> list["DatasetQuery"]:
         return self.dq.delta_sources()
 
     @property
     def sub_queries(self) -> list["DatasetQuery"]:
         return [self.dq]
 
-    def replace_source(
-        self,
-        source: "DatasetQuery",
-        replacement: "DatasetQuery",
-    ) -> "Step":
-        return attrs.evolve(
-            self,
-            dq=self.dq.replace_source(source, replacement),
-        )
-
-    @abstractmethod
-    def query(
-        self,
-        source_query: Select,
-        target_query: Select,
-    ) -> sa.Selectable:
-        """
-        Should return select query that calculates desired diff between dataset queries
-        """
+    def replace_sources(self, replacements: dict[int, "DatasetQuery"]) -> "Step":
+        return attrs.evolve(self, dq=self.dq.replace_sources(replacements))
 
     def apply(
-        self,
-        query_generator,
-        temp_tables: list[str],
-        state: "QueryState",
-        **kwargs,
+        self, query_generator, temp_tables: list[str], state: "QueryState", **kwargs
     ) -> "StepResult":
         source_query = query_generator.select()
-
         right_before = len(self.dq.temp_table_names)
         target_full = self.dq.apply_steps().select()
         temp_tables.extend(self.dq.temp_table_names[right_before:])
@@ -397,38 +419,13 @@ class DatasetDiffOperation(Step):
             *(c for c in target_full.selected_columns if not c.name.startswith("sys__"))
         )
 
-        # creating temp table that will hold subtract results
-        temp_table_name = self.catalog.warehouse.temp_table_name()
-        temp_tables.append(temp_table_name)
-
-        columns = [
-            c if isinstance(c, Column) else Column(c.name, c.type)
-            for c in source_query.selected_columns
-        ]
-        temp_table = self.catalog.warehouse.create_dataset_rows_table(
-            temp_table_name,
-            columns=columns,
-            if_not_exists=False,
-        )
-
-        diff_q = self.query(source_query, target_query)
-
-        insert_q = temp_table.insert().from_select(
-            source_query.selected_columns,  # type: ignore[arg-type]
-            diff_q,
-        )
-
-        self.catalog.warehouse.db.execute(insert_q)
+        diff_q = cast("SelectBase", self.query(source_query, target_query)).subquery()
 
         def q(*columns):
-            return sqlalchemy.select(*columns)
+            return sqlalchemy.select(*columns).select_from(diff_q)
 
-        return step_result(q, temp_table.c)
-
-
-@frozen
-class Subtract(DatasetDiffOperation):
-    on: Sequence[str | tuple[str, str]]
+        columns = [diff_q.c[c.name] for c in source_query.selected_columns]
+        return step_result(q, columns, dependencies=self.dq.dependencies)
 
     def _normalize_on(self) -> list[tuple[str, str]]:
         return [(col, col) if isinstance(col, str) else col for col in self.on]
@@ -439,162 +436,91 @@ class Subtract(DatasetDiffOperation):
             f"{a}:{b}".encode()
             for a, b in sorted(normalized, key=lambda t: (t[0], t[1]))
         )
+        on_bytes += "".join(sorted(f"{a}:{b}" for a, b in self.presence)).encode()
 
         return hashlib.sha256(bytes.fromhex(self.dq.hash()) + on_bytes).hexdigest()
 
     def query(self, source_query: Select, target_query: Select) -> sa.Selectable:
-        return self.catalog.warehouse.subtract_query(
-            source_query,
-            target_query,
-            self._normalize_on(),
-        )
+        on = self._normalize_on()
+        if not self.presence:
+            return self.catalog.warehouse.subtract_query(source_query, target_query, on)
+        # Compare presence as extra key columns, dropped again from the result.
+        used = {
+            c.name.casefold()
+            for query in (source_query, target_query)
+            for c in query.selected_columns
+        }
+        names = []
+        for i in range(len(self.presence)):
+            name = f"__dc_present_{i}"
+            while name.casefold() in used:
+                name = "_" + name
+            names.append(name)
+            used.add(name.casefold())
 
-
-def adjust_outputs(
-    warehouse: "AbstractWarehouse",
-    row: dict[str, Any],
-    col_types: list[tuple[str, SQLType, type, str, Any]],
-    signal_schema: SignalSchema,
-    udf_kind: str | None = None,
-) -> dict[str, Any]:
-    """
-    This function does a couple of things to prepare a row for inserting into the db:
-    1. Fill default values for columns that have None and add missing columns
-    2. Validate values with its corresponding DB column types and convert types
-       if needed and possible
-    """
-    # Optimization: Use precomputed column type values as these do not change for each
-    # row in the same UDF.
-    for (
-        col_name,
-        col_type,
-        col_python_type,
-        col_type_name,
-        default_value,
-    ) in col_types:
-        # Fill missing values with defaults
-        if col_name not in row:
-            row[col_name] = default_value
-            continue
-
-        row_val = row[col_name]
-
-        # Fill explicit None values with defaults
-        if row_val is None:
-            row[col_name] = default_value
-            continue
-
-        # Validate and convert type if needed and possible
-        try:
-            row[col_name] = warehouse.convert_type(
-                row_val, col_type, col_python_type, col_type_name, col_name
+        def with_presence(query: Select, side: int) -> Select:
+            columns = query.selected_columns
+            return query.add_columns(
+                *(
+                    sa.case((_key_present(columns, pair[side]), 1), else_=0).label(name)
+                    for name, pair in zip(names, self.presence, strict=True)
+                ),
             )
-        except Exception as e:
-            expected_type = type_to_str(signal_schema.get_column_type(col_name))
 
-            if isinstance(e, JsonSerializationError):
-                msg = (
-                    f"UDF returned an invalid value for output column {col_name!r}. "
-                    f"Expected JSON-serializable {expected_type}. "
-                    f"{e.message}"
-                )
-            else:
-                actual_type_name = type(row_val).__name__
-                msg = (
-                    f"UDF returned an invalid value for output column {col_name!r}. "
-                    f"Expected {expected_type}, got {row_val!r} "
-                    f"(type: {actual_type_name})."
-                )
-
-            if udf_kind is not None:
-                udf_values = sum(1 for k in row if not str(k).startswith("sys__"))
-                expected = len(col_types)
-                if udf_values != expected:
-                    value_word = "value" if udf_values == 1 else "values"
-                    are_word = "is" if expected == 1 else "are"
-                    msg += (
-                        f" Note: UDF call returned {udf_values} {value_word} "
-                        f"while {expected} {are_word} expected "
-                        f"per output definition"
-                    )
-                    if udf_kind in ("agg", "gen"):
-                        msg += (
-                            f", {udf_kind}() UDFs usually use yield "
-                            "and have return type Iterator."
-                        )
-                    else:
-                        msg += "."
-            raise UdfError(msg) from e
-    return row
-
-
-def get_col_types(
-    warehouse: "AbstractWarehouse", output: "Mapping[str, Any]"
-) -> list[tuple]:
-    """Optimization: Precompute column types so these don't have to be computed
-    in the convert_type function for each row in a loop."""
-    dialect = warehouse.db.dialect
-    return [
-        (
-            col_name,
-            # Check if type is already instantiated or not
-            col_type_inst := col_type() if isinstance(col_type, type) else col_type,
-            warehouse.python_type(col_type_inst),
-            type(col_type_inst).__name__,
-            None
-            if getattr(col_type_inst, "dc_nullable", False)
-            else col_type.default_value(dialect),
+        return self.catalog.warehouse.subtract_query(
+            with_presence(source_query, 0),
+            with_presence(target_query, 1),
+            [*on, *zip(names, names, strict=True)],
         )
-        for col_name, col_type in output.items()
-    ]
+
+
+# Layout of UDF output tables and their ledgers, part of every UDF checkpoint
+# hash: a change makes checkpoints of the old layout recompute once.
+UDF_OUTPUT_FORMAT = b"writer-ledger-1"
 
 
 def process_udf_outputs(
     warehouse: "AbstractWarehouse",
     udf_table: "Table",
-    udf_results: Iterator[Iterable["UDFResult"]],
+    udf_results: "Iterator[Iterable[UDFResult] | UDFPart]",
     udf: "UDFAdapter",
     cb: Callback = DEFAULT_CALLBACK,
     batch_size: int | None = None,
+    writer_no: int | None = None,
+    parts: "Table | None" = None,
 ) -> None:
-    # Optimization: Compute row types once, rather than for every row.
-    udf_col_types = get_col_types(warehouse, udf.output)
-    udf_signal_schema = udf.inner.output
+    """Write UDF results into udf_table through one Writer.
 
-    # Determine UDF kind based on batching behavior
-    if udf.inner.is_input_batched and udf.inner.is_output_batched:
-        udf_kind = "agg"
-    elif udf.inner.is_output_batched:
-        udf_kind = "gen"
-    else:
-        udf_kind = "map"
+    A map result is a batch of rows keyed by their input ``sys__id``. A gen or
+    agg result is ``(part_key, rows)``: the writer assigns the ids under
+    ``writer_no`` and records the finished part in the ``parts`` ledger. With a
+    ledger and no writer_no given, the writer_no is claimed from the ledger.
+    """
+    if writer_no is None:
+        writer_no = 0 if parts is None else warehouse.claim_writer_no(parts)
+    # The UDF yields its outputs already in stored form; a map row then its sys__id.
+    is_map = udf.inner.udf_kind == "map"
+    columns = [*udf.output, "sys__id"] if is_map else list(udf.output)
 
-    def _insert_rows():
-        for udf_output in udf_results:
-            if not udf_output:
-                continue
+    def _rows(udf_output, progress):
+        for row in udf_output:
+            progress.add(1)
+            yield row
 
-            with safe_closing(udf_output):
-                for row in udf_output:
-                    cb.relative_update()
-                    yield adjust_outputs(
-                        warehouse,
-                        row,
-                        udf_col_types,
-                        udf_signal_schema,
-                        udf_kind=udf_kind,
-                    )
-
-    try:
-        warehouse.insert_rows(
-            udf_table,
-            _insert_rows(),
-            batch_size=batch_size,
-        )
-    finally:
-        # Always flush the buffer even if an exception occurs
-        # This ensures partial results are visible for checkpoint continuation
-        warehouse.insert_rows_done(udf_table)
+    with (
+        _Progress(cb) as progress,
+        warehouse.writer(udf_table, columns, writer_no, parts, batch_size) as writer,
+    ):
+        for result in udf_results:
+            part_key, udf_output = (None, result) if is_map else result
+            # an error mid-part closes the UDF's outputs now, not at GC
+            with (
+                safe_closing(udf_output),
+                contextlib.closing(_rows(udf_output, progress)) as rows,
+            ):
+                writer.extend(rows)
+            if not is_map:
+                writer.commit(part_key)
 
 
 def get_download_callback(suffix: str = "", **kwargs) -> CombinedDownloadCallback:
@@ -650,6 +576,7 @@ class UDFStep(Step, ABC):
             bytes.fromhex(self.udf.hash()),
             bytes.fromhex(hash_column_elements(partition_by)),
             str(self.is_generator).encode(),
+            UDF_OUTPUT_FORMAT,
         ]
 
         return hashlib.sha256(b"".join(parts)).hexdigest()
@@ -657,32 +584,6 @@ class UDFStep(Step, ABC):
     @abstractmethod
     def create_output_table(self, name: str) -> "Table":
         """Method that creates a table where temp udf results will be saved"""
-
-    def _checkpoint_tracking_columns(self) -> list["sqlalchemy.Column"]:
-        """
-        Columns needed for checkpoint tracking in UDF output tables.
-
-        Returns list of columns:
-        - sys__input_id: Tracks which input produced each output. Allows atomic
-          writes and reconstruction of processed inputs from output table during
-          checkpoint recovery. Nullable because mappers use sys__id (1:1 mapping)
-          while generators populate this field explicitly (1:N mapping).
-        - sys__partial: Tracks incomplete inputs during checkpoint recovery.
-          For generators, all rows except the last one for each input are marked
-          as partial=True. If an input has no row with partial=False, it means the
-          input was not fully processed and needs to be re-run. Nullable because
-          mappers (1:1) don't use this field.
-        """
-        sys_id_type = next(
-            c.type
-            for c in self.warehouse.dataset_row_cls.sys_columns()
-            if c.name == "sys__id"
-        )
-        return [
-            sa.Column("sys__input_id", type(sys_id_type), nullable=True),
-            sa.Column("sys__partial", sa.Boolean, nullable=True),
-            sa.Column("sys__empty", sa.Boolean, nullable=True),
-        ]
 
     def get_input_query(self, input_table_name: str, original_query: Select) -> Select:
         """Get a select query for UDF input."""
@@ -744,6 +645,7 @@ class UDFStep(Step, ABC):
         rows_reused: int = 0,
         output_rows_reused: int = 0,
         rows_total: int | None = None,
+        parts: "Table | None" = None,
     ) -> None:
         catalog = self.session.catalog
         rows_to_process = catalog.warehouse.query_count(query)
@@ -781,7 +683,7 @@ class UDFStep(Step, ABC):
 
         prefetch = self.udf.prefetch
         with _get_cache(catalog.cache, prefetch, use_cache=self.cache) as _cache:
-            catalog = clone_catalog_with_cache(catalog, _cache)
+            catalog = _catalog.clone_catalog_with_cache(catalog, _cache)
 
             try:
                 if udf_distributor_class and not catalog.in_memory:
@@ -804,6 +706,8 @@ class UDFStep(Step, ABC):
                         continued=continued,
                         rows_reused=rows_reused,
                         output_rows_reused=output_rows_reused,
+                        # only with a ledger: a distributor without it still runs
+                        **({"parts": parts} if parts is not None else {}),
                     )
                     udf_distributor()
                     return
@@ -841,6 +745,7 @@ class UDFStep(Step, ABC):
                         cache=self.cache,
                         rows_total=rows_to_process,
                         batch_size=self.batch_size,
+                        parts=parts,
                     )
 
                     # Run the UDFDispatcher in another process to avoid needing
@@ -848,7 +753,17 @@ class UDFStep(Step, ABC):
                     exec_cmd = get_datachain_executable()
                     cmd = [*exec_cmd, "internal-run-udf"]
                     envs = dict(os.environ)
-                    envs["PYTHONPATH"] = os.getcwd()
+                    if "PYTHONSAFEPATH" not in envs:
+                        envs["PYTHONSAFEPATH"] = "1"
+                        envs["_DATACHAIN_UDF_SAFE_PATH"] = "1"
+                    paths = [
+                        sys.path[0] or os.getcwd(),
+                        *os.environ.get("PYTHONPATH", "").split(os.pathsep),
+                        os.getcwd(),
+                    ]
+                    envs["PYTHONPATH"] = os.pathsep.join(
+                        dict.fromkeys(path or os.getcwd() for path in paths)
+                    )
                     process_data = filtered_cloudpickle_dumps(udf_info)
 
                     with subprocess.Popen(  # noqa: S603
@@ -898,6 +813,7 @@ class UDFStep(Step, ABC):
                                 self.udf,
                                 cb=generated_cb,
                                 batch_size=self.batch_size,
+                                parts=parts,
                             )
                     finally:
                         download_cb.close()
@@ -963,19 +879,6 @@ class UDFStep(Step, ABC):
         )
 
         return tbl
-
-    def clone(self, partition_by: PartitionByType | None = None) -> "Self":
-        if partition_by is not None:
-            return self.__class__(
-                self.udf,
-                self.session,
-                partition_by=partition_by,
-                parallel=self.parallel,
-                workers=self.workers,
-                min_task_size=self.min_task_size,
-                batch_size=self.batch_size,
-            )
-        return self.__class__(self.udf, self.session)
 
     @property
     def _udf_name(self) -> str:
@@ -1125,6 +1028,7 @@ class UDFStep(Step, ABC):
             create_fn=lambda name: self.warehouse.create_udf_table(
                 partition_columns(), name=name
             ),
+            preserve_sys_ids=True,
         )
 
     def _prepare_partition_query(
@@ -1202,6 +1106,7 @@ class UDFStep(Step, ABC):
                 + self.udf.hash(include_body=False)
                 + hash_column_elements(partition_by)
             ).encode()
+            + UDF_OUTPUT_FORMAT
         ).hexdigest()
 
         if not checkpoints_enabled:
@@ -1295,19 +1200,9 @@ class UDFStep(Step, ABC):
             self._run_group_id_short(job),
             checkpoint.job_id,
         )
-        # Reflection returns generic backend types (e.g. ClickHouse String gives
-        # bytes instead of str, DateTime defaults break CREATE TABLE downstream).
-        # Restore SQLTypes from our known schema so downstream query generation
-        # decodes values correctly.
-        reflected = self.warehouse.get_table(
+        output_table = self._output_table(
             Checkpoint.output_table_name(checkpoint.job_id, checkpoint.hash)
         )
-        known_types = {
-            **dict(self.udf.output.items()),
-            **{c.name: c.type for c in self.warehouse.dataset_row_cls.sys_columns()},
-            **{c.name: c.type for c in self._checkpoint_tracking_columns()},
-        }
-        output_table = coerce_table_types(reflected, known_types)
 
         input_table = self.get_or_create_input_table(query, hash_input, job)
 
@@ -1342,6 +1237,38 @@ class UDFStep(Step, ABC):
         )
 
         return output_table, input_table
+
+    def _output_table(self, name: str) -> "Table":
+        """An existing output table with our SQLTypes over the reflected ones."""
+        # Reflection returns generic backend types (e.g. ClickHouse String gives
+        # bytes instead of str, DateTime defaults break CREATE TABLE downstream).
+        # Restore SQLTypes from our known schema so downstream query generation
+        # decodes values correctly.
+        known_types = {
+            **dict(self.udf.output.items()),
+            **{c.name: c.type for c in self.warehouse.dataset_row_cls.sys_columns()},
+        }
+        return coerce_table_types(self.warehouse.get_table(name), known_types)
+
+    def _resumable_in_parts(self) -> bool:
+        """Whether the output gets a ledger: gen or agg with partition_by.
+        A map output row is keyed by its input row, so the table is its own
+        record; an agg without partition_by is one part and reruns whole."""
+        return self.is_generator and not self.is_single_partition_aggregator
+
+    def _promote_partial(
+        self, partial_table: "Table", parts: "Table | None", final_name: str
+    ) -> "Table":
+        if parts is not None:
+            self.warehouse.trim_to_ledger(partial_table, parts)
+        # Same hash may already have a final table from earlier in this job
+        self.warehouse.db.drop_table(
+            sa.Table(final_name, sa.MetaData()), if_exists=True
+        )
+        output_table = self.warehouse.rename_table(partial_table, final_name)
+        if parts is not None:
+            self.warehouse.db.drop_table(parts, if_exists=True)
+        return output_table
 
     def _run_from_scratch(
         self,
@@ -1378,56 +1305,39 @@ class UDFStep(Step, ABC):
         input_table = self.get_or_create_input_table(query, hash_input, job)
 
         partial_table_name = Checkpoint.partial_output_table_name(run_id, partial_hash)
-        # Drop stale partial table from earlier chain with same hash in this job
-        self.warehouse.db.drop_table(
-            sa.Table(partial_table_name, sa.MetaData()), if_exists=True
-        )
+        parts_name = parts_table_name(partial_table_name)
+        # Drop stale partial tables from earlier chain with same hash in this job
+        for name in (partial_table_name, parts_name):
+            self.warehouse.db.drop_table(sa.Table(name, sa.MetaData()), if_exists=True)
         partial_output_table = self.create_output_table(partial_table_name)
+        parts = None
+        if partial_checkpoint and self._resumable_in_parts():
+            parts = self.warehouse.create_parts_table(parts_name)
 
         if self.partition_by is not None:
             input_query = query
         else:
             input_query = self.get_input_query(input_table.name, query)
 
-        self.populate_udf_output_table(partial_output_table, input_query)
+        self.populate_udf_output_table(partial_output_table, input_query, parts=parts)
 
-        final_table_name = Checkpoint.output_table_name(run_id, hash_output)
-        try:
-            # Same hash may already have a final table from earlier in this job
-            existing = self.warehouse.get_table(final_table_name)
-            self.warehouse.db.drop_table(existing)
-        except TableMissingError:
-            pass
-        output_table = self.warehouse.rename_table(
-            partial_output_table, final_table_name
+        output_table = self._promote_partial(
+            partial_output_table,
+            parts,
+            Checkpoint.output_table_name(run_id, hash_output),
         )
 
         if checkpoints_enabled and job:
-            # Promote partial checkpoint to final and log event
-            if partial_checkpoint:
-                self.metastore.update_checkpoints(
-                    [partial_checkpoint.id], status=CheckpointStatus.DELETED
-                )
-            self.metastore.get_or_create_checkpoint(job.id, hash_output)
-            logger.debug(
-                "UDF(%s) [job=%s run_group=%s]: Promoted partial to final, hash=%s",
-                self._udf_name,
-                self._job_id_short(job),
-                self._run_group_id_short(job),
-                hash_output[:8],
-            )
-
             rows_input = self.warehouse.table_rows_count(input_table)
-            rows_generated = self.warehouse.table_rows_count(output_table)
-            self._log_event(
+            self._finish_checkpoint(
                 job,
+                partial_checkpoint,
+                output_table,
                 CheckpointEventType.UDF_FROM_SCRATCH,
-                checkpoint_hash=hash_output,
                 hash_input=hash_input,
                 hash_output=hash_output,
                 rows_input=rows_input,
                 rows_processed=rows_input,
-                rows_output=rows_generated,
                 rows_input_reused=0,
                 rows_output_reused=0,
             )
@@ -1443,6 +1353,10 @@ class UDFStep(Step, ABC):
 
         Same job: appends directly to existing partial table, no copy.
         Different job: copies partial table to current job first.
+
+        gen and partitioned agg resume from the ledger: rows outside its
+        committed ranges are deleted, inputs whose part is committed are
+        skipped, and the rest are written under a fresh writer_no.
 
         Returns (output_table, input_table).
         """
@@ -1469,20 +1383,55 @@ class UDFStep(Step, ABC):
         input_table = self.get_or_create_input_table(query, hash_input, job)
 
         # Locate the source partial table using the checkpoint's job_id
+        source_name = Checkpoint.partial_output_table_name(
+            checkpoint.job_id, checkpoint.hash
+        )
+        partial_name = (
+            f"{source_name}_{uuid4().hex[:8]}"
+            if is_same_job
+            else Checkpoint.partial_output_table_name(job.id, checkpoint.hash)
+        )
+        parts = None
         try:
-            reflected = self.warehouse.get_table(
-                Checkpoint.partial_output_table_name(checkpoint.job_id, checkpoint.hash)
+            source_table = self._output_table(source_name)
+            # a gen/agg partial table without its ledger is never trusted:
+            # TableMissingError makes it run again from scratch
+            source_parts = (
+                self.warehouse.get_table(parts_table_name(source_name))
+                if self.is_generator
+                else None
             )
-            # Restore SQLTypes so downstream reads decode values correctly
-            known_types = {
-                **dict(self.udf.output.items()),
-                **{
-                    c.name: c.type for c in self.warehouse.dataset_row_cls.sys_columns()
-                },
-                **{c.name: c.type for c in self._checkpoint_tracking_columns()},
-            }
-            source_partial_table = coerce_table_types(reflected, known_types)
-        except TableMissingError:
+            # Copy to a fresh table even in the same job so any leftover worker
+            # from the failed attempt writes only into the old table.
+            # The source may still be running: copy its ledger first. Rows of
+            # every part in that copy are already durable, so the data copy taken
+            # after it holds them; anything newer is trimmed as uncommitted.
+            if source_parts is not None:
+                parts = self.warehouse.create_table_from_query(
+                    parts_table_name(partial_name),
+                    sa.select(source_parts),
+                    create_fn=self.warehouse.create_parts_table,
+                    preserve_sys_ids=True,
+                )
+            partial_table = self.warehouse.create_table_from_query(
+                partial_name,
+                sa.select(source_table),
+                create_fn=self.create_output_table,
+                preserve_sys_ids=True,
+            )
+        except Exception:
+            if parts is not None:
+                self.warehouse.db.drop_table(parts, if_exists=True)
+            if self.warehouse.db.has_table(source_name) and (
+                not self.is_generator
+                or self.warehouse.db.has_table(parts_table_name(source_name))
+            ):
+                raise
+            if ch := self._find_udf_checkpoint(job, hash_output):
+                try:
+                    return self._skip_udf(ch, hash_input, query, job)
+                except TableMissingError:
+                    pass
             logger.warning(
                 "UDF(%s) [job=%s run_group=%s]: Partial table not found for "
                 "checkpoint %s, falling back to run from scratch",
@@ -1495,49 +1444,21 @@ class UDFStep(Step, ABC):
                 checkpoint.hash, hash_output, hash_input, query, job
             )
 
-        incomplete_input_ids = self.find_incomplete_inputs(source_partial_table)
-        if incomplete_input_ids:
-            logger.debug(
-                "UDF(%s) [job=%s run_group=%s]: Found %d incomplete inputs "
-                "to re-process",
-                self._udf_name,
-                self._job_id_short(job),
-                self._run_group_id_short(job),
-                len(incomplete_input_ids),
-            )
-
-        if is_same_job:
-            # Same job: use existing partial table directly
-            partial_table = source_partial_table
-            if incomplete_input_ids:
-                # Delete incomplete rows in-place — they will be re-processed
-                self.warehouse.db.execute(
-                    partial_table.delete().where(
-                        partial_table.c.sys__input_id.in_(incomplete_input_ids)
-                    )
+        if parts is not None:
+            # Drop any ledger commit whose rows were removed by source duplicate
+            # arbitration between the ledger copy and the data copy.
+            ids = sa.select(partial_table.c.sys__id)
+            self.warehouse.db.execute(
+                parts.delete().where(
+                    parts.c.part_key.is_not(None),
+                    parts.c.lo <= parts.c.hi,
+                    ~(parts.c.lo.in_(ids) & parts.c.hi.in_(ids)),
                 )
+            )
+            self.warehouse.trim_to_ledger(partial_table, parts)
+            processed = committed_part_keys(parts)
         else:
-            # Different job: copy to current job (don't mutate another job's table)
-            partial_table_name = Checkpoint.partial_output_table_name(
-                job.id, checkpoint.hash
-            )
-            if incomplete_input_ids:
-                filtered_query = sa.select(source_partial_table).where(
-                    source_partial_table.c.sys__input_id.not_in(incomplete_input_ids)
-                )
-                partial_table = self.warehouse.create_table_from_query(
-                    partial_table_name,
-                    filtered_query,
-                    create_fn=self.create_output_table,
-                    preserve_sys_ids=True,
-                )
-            else:
-                partial_table = self.warehouse.create_table_from_query(
-                    partial_table_name,
-                    sa.select(source_partial_table),
-                    create_fn=self.create_output_table,
-                    preserve_sys_ids=True,
-                )
+            processed = sa.select(partial_table.c.sys__id)
 
         input_query = self.get_input_query(input_table.name, query)
 
@@ -1546,34 +1467,79 @@ class UDFStep(Step, ABC):
         # `input_query` is rebuilt from the input table and lacks partition_id.
         unprocessed_input = query if self.partition_by is not None else input_query
 
-        unprocessed_query = self.calculate_unprocessed_rows(
-            unprocessed_input,
-            partial_table,
-            incomplete_input_ids,
+        try:
+            # The anti-join must stay fixed while resumed outputs are appended.
+            with self._snapshot_processed_input_ids(processed) as processed_ids:
+                unprocessed_query = self.calculate_unprocessed_rows(
+                    unprocessed_input, processed_ids
+                )
+
+                # Count rows before populating with new rows
+                output_rows_reused = self.warehouse.table_rows_count(partial_table)
+                rows_input = self.warehouse.table_rows_count(input_table)
+                rows_to_process = self.warehouse.query_count(unprocessed_query)
+                rows_reused = rows_input - rows_to_process  # input rows reused
+
+                self.populate_udf_output_table(
+                    partial_table,
+                    unprocessed_query,
+                    continued=True,
+                    rows_reused=rows_reused,
+                    output_rows_reused=output_rows_reused,
+                    rows_total=rows_input,
+                    parts=parts,
+                )
+        except BaseException:
+            if is_same_job:
+                self.warehouse.db.drop_table(source_table, if_exists=True)
+                self.warehouse.rename_table(partial_table, source_name)
+                if parts is not None and source_parts is not None:
+                    self.warehouse.db.drop_table(source_parts, if_exists=True)
+                    self.warehouse.rename_table(parts, parts_table_name(source_name))
+            raise
+
+        if is_same_job:
+            self.warehouse.db.drop_table(source_table, if_exists=True)
+            if source_parts is not None:
+                self.warehouse.db.drop_table(source_parts, if_exists=True)
+
+        output_table = self._promote_partial(
+            partial_table, parts, Checkpoint.output_table_name(job.id, hash_output)
         )
 
-        # Count rows before populating with new rows
-        output_rows_reused = self.warehouse.table_rows_count(partial_table)
-        rows_input = self.warehouse.table_rows_count(input_table)
-        rows_to_process = self.warehouse.query_count(unprocessed_query)
-        rows_reused = rows_input - rows_to_process  # input rows reused
-
-        self.populate_udf_output_table(
-            partial_table,
-            unprocessed_query,
-            continued=True,
-            rows_reused=rows_reused,
-            output_rows_reused=output_rows_reused,
-            rows_total=rows_input,
+        self._finish_checkpoint(
+            job,
+            partial_checkpoint,
+            output_table,
+            CheckpointEventType.UDF_CONTINUED,
+            hash_partial=checkpoint.hash,
+            hash_input=hash_input,
+            hash_output=hash_output,
+            rerun_from_job_id=checkpoint.job_id,
+            rows_input=rows_input,
+            rows_processed=rows_to_process,
+            rows_input_reused=rows_reused,
+            rows_output_reused=output_rows_reused,
         )
 
-        output_table = self.warehouse.rename_table(
-            partial_table, Checkpoint.output_table_name(job.id, hash_output)
-        )
+        return output_table, input_table
 
-        self.metastore.update_checkpoints(
-            [partial_checkpoint.id], status=CheckpointStatus.DELETED
-        )
+    def _finish_checkpoint(
+        self,
+        job: Job,
+        partial_checkpoint: Checkpoint | None,
+        output_table: "Table",
+        event_type: CheckpointEventType,
+        *,
+        hash_output: str,
+        rows_output_reused: int,
+        **event,
+    ) -> None:
+        """Promote the step's partial checkpoint to final and log its event."""
+        if partial_checkpoint:
+            self.metastore.update_checkpoints(
+                [partial_checkpoint.id], status=CheckpointStatus.DELETED
+            )
         self.metastore.get_or_create_checkpoint(job.id, hash_output)
         logger.debug(
             "UDF(%s) [job=%s run_group=%s]: Promoted partial to final, hash=%s",
@@ -1582,93 +1548,40 @@ class UDFStep(Step, ABC):
             self._run_group_id_short(job),
             hash_output[:8],
         )
-
-        # Log checkpoint event with row counts
-        total_output = self.warehouse.table_rows_count(output_table)
-        rows_generated = total_output - output_rows_reused
+        rows_output = self.warehouse.table_rows_count(output_table)
         self._log_event(
             job,
-            CheckpointEventType.UDF_CONTINUED,
+            event_type,
             checkpoint_hash=hash_output,
-            hash_partial=checkpoint.hash,
-            hash_input=hash_input,
             hash_output=hash_output,
-            rerun_from_job_id=checkpoint.job_id,
-            rows_input=rows_input,
-            rows_processed=rows_to_process,
-            rows_output=rows_generated,
-            rows_input_reused=rows_reused,
-            rows_output_reused=output_rows_reused,
+            rows_output=rows_output - rows_output_reused,
+            rows_output_reused=rows_output_reused,
+            **event,
         )
 
-        return output_table, input_table
-
-    @abstractmethod
-    def processed_input_ids_query(self, partial_table: "Table"):
-        """
-        Create a subquery that returns processed input sys__ids from partial table.
-
-        Args:
-            partial_table: The UDF partial table
-
-        Returns:
-            A subquery with a single column labeled 'sys__processed_id' containing
-            processed input IDs
-        """
-
-    @abstractmethod
-    def find_incomplete_inputs(self, partial_table: "Table") -> list[int]:
-        """
-        Find input IDs that were only partially processed before a crash.
-        For generators (1:N), an input is incomplete if it has output rows but none
-        with sys__partial=False. For mappers (1:1), this never happens.
-
-        Returns:
-            List of incomplete input IDs that need to be re-processed
-        """
+    @contextlib.contextmanager
+    def _snapshot_processed_input_ids(self, processed: Select):
+        snapshot = self.warehouse.create_pre_udf_table(
+            processed.with_only_columns(
+                processed.selected_columns[0].label("sys__processed_id")
+            ),
+            self.warehouse.temp_table_name(),
+        )
+        try:
+            yield snapshot
+        finally:
+            self.warehouse.db.drop_table(snapshot, if_exists=True)
 
     def calculate_unprocessed_rows(
-        self,
-        input_query: Select,
-        partial_table: "Table",
-        incomplete_input_ids: list[int] | None = None,
+        self, input_query: Select, processed_ids: "Table"
     ) -> Select:
-        """
-        Calculate which input rows haven't been processed yet.
-
-        Args:
-            input_query: Select query for the UDF input table (with proper types)
-            partial_table: The UDF partial table
-            incomplete_input_ids: List of input IDs that were partially processed
-                and need to be re-run (for generators only)
-
-        Returns:
-            A filtered query containing only unprocessed rows
-        """
-        incomplete_input_ids = incomplete_input_ids or []
-        processed_input_ids_subquery = self.processed_input_ids_query(partial_table)
-
-        # For Aggregator with partition_by: filter by partition_id
-        unprocessed_filter: sa.ColumnElement[bool]
-        if self.partition_by is not None:
-            from datachain.data_storage.schema import PARTITION_COLUMN_ID
-
-            partition_id_col = input_query.selected_columns[PARTITION_COLUMN_ID]
-            unprocessed_filter = partition_id_col.notin_(
-                sa.select(processed_input_ids_subquery.c.sys__processed_id)
+        """The input rows, or for partition_by the partitions, not processed yet."""
+        key = "sys__id" if self.partition_by is None else PARTITION_COLUMN_ID
+        return input_query.where(
+            input_query.selected_columns[key].notin_(
+                sa.select(processed_ids.c.sys__processed_id)
             )
-        else:
-            sys_id_col = input_query.selected_columns.sys__id
-            unprocessed_filter = sys_id_col.notin_(
-                sa.select(processed_input_ids_subquery.c.sys__processed_id)
-            )
-
-        if incomplete_input_ids and self.partition_by is None:
-            unprocessed_filter = sa.or_(
-                unprocessed_filter, sys_id_col.in_(incomplete_input_ids)
-            )
-
-        return input_query.where(unprocessed_filter)
+        )
 
 
 @frozen
@@ -1688,31 +1601,11 @@ class UDFSignal(UDFStep):
     def _step_type(self) -> CheckpointStepType:
         return CheckpointStepType.UDF_MAP
 
-    def processed_input_ids_query(self, partial_table: "Table"):
-        """
-        For mappers (1:1 mapping): returns sys__id from partial table.
-
-        Since mappers have a 1:1 relationship between input and output,
-        the sys__id in the partial table directly corresponds to input sys__ids.
-        """
-        # labeling it with sys__processed_id to have common name since for udf signal
-        # we use sys__id and in generator we use sys__input_id
-        return sa.select(partial_table.c.sys__id.label("sys__processed_id")).subquery()
-
-    def find_incomplete_inputs(self, partial_table: "Table") -> list[int]:
-        """
-        For mappers (1:1 mapping): always returns empty list.
-        Mappers cannot have incomplete inputs because each input produces exactly
-        one output atomically. Either the output exists or it doesn't.
-        """
-        return []
-
     def create_output_table(self, name: str) -> "Table":
         columns: list[sqlalchemy.Column[Any]] = [
             sqlalchemy.Column(col_name, col_type)
             for (col_name, col_type) in self.udf.output.items()
         ]
-        columns.extend(self._checkpoint_tracking_columns())
         return self.warehouse.create_udf_table(columns, name=name)
 
     def create_result_query(
@@ -1799,42 +1692,10 @@ class RowGenerator(UDFStep):
     def _step_type(self) -> CheckpointStepType:
         return CheckpointStepType.UDF_GEN
 
-    def processed_input_ids_query(self, partial_table: "Table"):
-        """
-        For generators (1:N mapping): returns distinct sys__input_id from partial table.
-
-        Since generators can produce multiple outputs per input (1:N relationship),
-        we use sys__input_id which tracks which input created each output row.
-        """
-        # labeling it with sys__processed_id to have common name since for udf signal
-        # we use sys__id and in generator we use sys__input_id
-        return sa.select(
-            sa.distinct(partial_table.c.sys__input_id).label("sys__processed_id")
-        ).subquery()
-
-    def find_incomplete_inputs(self, partial_table: "Table") -> list[int]:
-        """
-        For generators (1:N mapping): find inputs missing sys__partial=False row.
-
-        An input is incomplete if it has output rows but none with sys__partial=False,
-        indicating the process crashed before finishing all outputs for that input.
-        These inputs need to be re-processed and their partial results filtered out.
-        """
-        # Find inputs that don't have any row with sys__partial=False
-        incomplete_query = sa.select(sa.distinct(partial_table.c.sys__input_id)).where(
-            partial_table.c.sys__input_id.not_in(
-                sa.select(partial_table.c.sys__input_id).where(
-                    partial_table.c.sys__partial == False  # noqa: E712
-                )
-            )
-        )
-        return [row[0] for row in self.warehouse.db.execute(incomplete_query)]
-
     def create_output_table(self, name: str) -> "Table":
         columns: list[Column] = [
             Column(name, typ) for name, typ in self.udf.output.items()
         ]
-        columns.extend(self._checkpoint_tracking_columns())
         return self.warehouse.create_dataset_rows_table(
             name,
             columns=tuple(columns),
@@ -1844,21 +1705,9 @@ class RowGenerator(UDFStep):
     def create_result_query(
         self, udf_table, query: Select
     ) -> tuple[QueryGeneratorFunc, list["sqlalchemy.Column"]]:
-        # Filter out empty-input marker rows (inputs that yielded nothing)
-        udf_table_query = (
-            udf_table.select()
-            .where(
-                sa.or_(
-                    udf_table.c.sys__empty.is_(None),
-                    udf_table.c.sys__empty == sa.false(),
-                )
-            )
-            .subquery()
-        )
-        # Exclude checkpoint tracking columns from the result
-        excluded = {c.name for c in self._checkpoint_tracking_columns()}
+        udf_table_query = udf_table.select().subquery()
         udf_table_cols: list[sqlalchemy.Label[Any]] = [
-            label(c.name, c) for c in udf_table_query.columns if c.name not in excluded
+            label(c.name, c) for c in udf_table_query.columns
         ]
 
         def q(*columns):
@@ -1867,7 +1716,7 @@ class RowGenerator(UDFStep):
             cols = [c for c in udf_table_cols if c.name in names]
             return sqlalchemy.select(*cols).select_from(udf_table_query)
 
-        return q, [c for c in udf_table_query.columns if c.name not in excluded]
+        return q, list(udf_table_query.columns)
 
 
 @frozen
@@ -2022,7 +1871,7 @@ class SQLFilter(SQLClause):
 
     def apply_sql_clause(self, query: Select) -> Select:
         expressions = self.parse_cols(self.expressions)
-        return query.filter(*expressions)
+        return query.filter(*_bind_shared_names(expressions, query))
 
     def requires_boundary(self, state: "QueryState") -> bool:
         # WHERE applied after GROUP BY / LIMIT / OFFSET / DISTINCT would filter
@@ -2044,7 +1893,7 @@ class SQLOrderBy(SQLClause):
 
     def apply_sql_clause(self, query: Select) -> Select:
         args = self.parse_cols(self.args)
-        return query.order_by(*args)
+        return query.order_by(*_bind_shared_names(args, query))
 
     def requires_boundary(self, state: "QueryState") -> bool:
         # Re-ordering after LIMIT/OFFSET would change which rows are kept.
@@ -2112,10 +1961,11 @@ class SQLDistinct(SQLClause):
         return hash_column_elements(self.args)
 
     def apply_sql_clause(self, query):
+        args = _bind_shared_names(self.args, query)
         if self.dialect == "sqlite":
-            return query.group_by(*self.args)
+            return query.group_by(*args)
 
-        return query.distinct(*self.args)
+        return query.distinct(*args)
 
     def requires_boundary(self, state: "QueryState") -> bool:
         # DISTINCT after GROUP BY / LIMIT / OFFSET should de-duplicate the
@@ -2146,15 +1996,14 @@ class SQLUnion(Step):
     def sub_queries(self) -> list["DatasetQuery"]:
         return [self.query1, self.query2]
 
-    def replace_source(
+    def replace_sources(
         self,
-        source: "DatasetQuery",
-        replacement: "DatasetQuery",
+        replacements: dict[int, "DatasetQuery"],
     ) -> "Step":
         return attrs.evolve(
             self,
-            query1=self.query1.replace_source(source, replacement),
-            query2=self.query2.replace_source(source, replacement),
+            query1=self.query1.replace_sources(replacements),
+            query2=self.query2.replace_sources(replacements),
         )
 
     def apply(
@@ -2256,15 +2105,14 @@ class SQLJoin(Step):
     def sub_queries(self) -> list["DatasetQuery"]:
         return [self.query1, self.query2]
 
-    def replace_source(
+    def replace_sources(
         self,
-        source: "DatasetQuery",
-        replacement: "DatasetQuery",
+        replacements: dict[int, "DatasetQuery"],
     ) -> "Step":
         return attrs.evolve(
             self,
-            query1=self.query1.replace_source(source, replacement),
-            query2=self.query2.replace_source(source, replacement),
+            query1=self.query1.replace_sources(replacements),
+            query2=self.query2.replace_sources(replacements),
         )
 
     def get_query(self, dq: "DatasetQuery", temp_tables: list[str]) -> sa.Subquery:
@@ -2276,20 +2124,16 @@ class SQLJoin(Step):
             return query.subquery(dq.table.name)
 
         warehouse = self.catalog.warehouse
-
         columns = [
             c if isinstance(c, Column) else Column(c.name, c.type)
             for c in query.subquery().columns
         ]
-        temp_table = warehouse.create_dataset_rows_table(
-            warehouse.temp_table_name(),
-            columns=columns,
+        table = warehouse.create_dataset_rows_table(
+            warehouse.temp_table_name(), columns=columns
         )
-        temp_tables.append(temp_table.name)
-
-        warehouse.insert_into(temp_table, query)
-
-        return temp_table.select().subquery(dq.table.name)
+        temp_tables.append(table.name)
+        warehouse.insert_into(table, query)
+        return table.select().subquery(dq.table.name)
 
     def bind_and_validate_expression(self, exp: ColumnElement, q1, q2) -> ColumnElement:
         left_name = self.query1.table.name
@@ -2477,8 +2321,8 @@ class SQLGroupBy(SQLClause):
                 key = c.name
                 value = c.get_column()
             elif isinstance(c, (str, C)):
-                key = str(c)
-                value = subquery.c[str(c)]
+                key = c.name if isinstance(c, C) else str(c)  # str() quotes names
+                value = subquery.c[key]
             else:
                 key = c.name
                 value = c  # type: ignore[assignment]
@@ -2572,7 +2416,9 @@ class DatasetQuery:
         checkpoints_enabled: bool = True,
     ) -> None:
         self.session = Session.get(session, catalog=catalog, in_memory=in_memory)
-        self.catalog = catalog or self.session.catalog
+        if catalog is not None and catalog is not self.session.catalog:
+            self.session = self.session._with_catalog(catalog)
+        self.catalog = self.session.catalog
         self.steps: list[Step] = list(steps)
         self._chunk_index: int | None = None
         self._chunk_total: int | None = None
@@ -2591,6 +2437,7 @@ class DatasetQuery:
         self.checkpoints_enabled = checkpoints_enabled
 
         self.list_ds_name: str | None = None
+        self.listing_ds: list[DatasetRecord] = []  # shared with clones
         self.dialect = self.catalog.warehouse.db.dialect
 
         if name is None:
@@ -2721,27 +2568,18 @@ class DatasetQuery:
     def resolve_listing(self) -> None:
         """Runs listing pre-step if needed"""
         if self.list_ds_name and not self.starting_step:
-            listing_ds = None
-            try:
-                listing_ds = self.catalog.get_dataset(
-                    self.list_ds_name,
-                    versions=None,
-                    include_incomplete=False,
-                )
-            except DatasetNotFoundError:
-                pass
-
-            if not listing_ds or self.update or listing_dataset_expired(listing_ds):
-                assert self.listing_fn
-                self.listing_fn()
-                listing_ds = self.catalog.get_dataset(
-                    self.list_ds_name,
-                    versions=None,
-                    include_incomplete=False,
+            if not self.listing_ds:
+                self.listing_ds.append(
+                    ensure_listing(
+                        self.list_ds_name,
+                        self.catalog,
+                        self.listing_fn,
+                        update=self.update,
+                    )
                 )
 
             # at this point we know what is our starting listing dataset name
-            self._set_starting_step(listing_ds)  # type: ignore [arg-type]
+            self._set_starting_step(self.listing_ds[0])
 
     def resolve_all_listings(self) -> None:
         """Recursively resolve listings for this query and all sub-queries."""
@@ -2880,48 +2718,6 @@ class DatasetQuery:
                 result.close()
             self.cleanup()
 
-    def extract(
-        self, *params: UDFParamSpec, workers=ASYNC_WORKERS, **kwargs
-    ) -> Iterable[tuple]:
-        """
-        Extract columns from each row in the query.
-
-        Returns an iterable of tuples matching the given params.
-
-        To ensure prompt resource cleanup, it is recommended to wrap this
-        with contextlib.closing().
-        """
-        actual_params = [normalize_param(p) for p in params]
-        try:
-            query = self.apply_steps().select()
-            query_fields = [str(c.name) for c in query.selected_columns]
-
-            def row_iter() -> Generator[Sequence, None, None]:
-                # warehouse isn't threadsafe, we need to clone() it
-                # in the thread that uses the results
-                with self.catalog.warehouse.clone() as warehouse:
-                    gen = warehouse.dataset_select_paginated(query)
-                    with contextlib.closing(gen) as rows:
-                        yield from rows
-
-            async def get_params(row: Sequence) -> tuple:
-                row_dict = RowDict(zip(query_fields, row, strict=False))
-                return tuple(
-                    [
-                        await p.get_value_async(
-                            self.catalog, row_dict, mapper, **kwargs
-                        )
-                        for p in actual_params
-                    ]
-                )
-
-            MapperCls = OrderedMapper if query._order_by_clauses else AsyncMapper  # noqa: N806
-            with contextlib.closing(row_iter()) as rows:
-                mapper = MapperCls(get_params, rows, workers=workers)
-                yield from mapper.iterate()
-        finally:
-            self.cleanup()
-
     def sample(self, n) -> "Self":
         """
         Return a random sample from the dataset.
@@ -2953,25 +2749,17 @@ class DatasetQuery:
         if self.delta_spec is not None:
             sources.append(self)
 
-        return sources
+        return list({id(source): source for source in sources}.values())
 
-    def replace_source(
-        self,
-        source: "DatasetQuery",
-        replacement: "DatasetQuery",
-    ) -> "Self":
-        if self is source:
-            rewritten = replacement.clone(new_table=False)
-            rewritten.table = self.table
-            rewritten_steps = rewritten.steps.copy()
-        else:
-            rewritten = self.clone(new_table=False)
-            rewritten_steps = []
-
-        rewritten_steps.extend(
-            step.replace_source(source, replacement) for step in self.steps
+    def replace_sources(self, replacements: dict[int, "DatasetQuery"]) -> "Self":
+        replacement = replacements.get(id(self))
+        rewritten = (replacement if replacement is not None else self).clone(
+            new_table=False
         )
-        rewritten.steps = rewritten_steps
+        rewritten.table = self.table
+        steps = rewritten.steps.copy() if replacement is not None else []
+        steps.extend(step.replace_sources(replacements) for step in self.steps)
+        rewritten.steps = steps
         return cast("Self", rewritten)
 
     @detach
@@ -3145,7 +2933,6 @@ class DatasetQuery:
         right = dataset_query.clone()
         return DatasetQuery(
             session=self.session,
-            catalog=self.catalog,
             steps=[SQLUnion(left, right)],
             checkpoints_enabled=self.checkpoints_enabled,
         )
@@ -3172,7 +2959,6 @@ class DatasetQuery:
         )
         return DatasetQuery(
             session=self.session,
-            catalog=self.catalog,
             steps=[SQLJoin(self.catalog, left, right, predicates, inner, full, rname)],
             checkpoints_enabled=self.checkpoints_enabled,
         )
@@ -3214,7 +3000,7 @@ class DatasetQuery:
 
         Parallel can optionally be specified as >= 1 for parallel processing with a
         specific number of processes, or set to -1 for the default of
-        the number of CPUs (cores) on the current machine.
+        the CPUs available to the process, respecting affinity and container quotas.
 
         For distributed processing with the appropriate distributed module installed,
         workers can optionally be specified as >= 1 for a specific number of workers,
@@ -3239,9 +3025,14 @@ class DatasetQuery:
         return query
 
     @detach
-    def subtract(self, dq: "DatasetQuery", on: Sequence[tuple[str, str]]) -> "Self":
+    def subtract(
+        self,
+        dq: "DatasetQuery",
+        on: Sequence[tuple[str, str]],
+        presence: Sequence[tuple[KeyPresence, KeyPresence]] = (),
+    ) -> "Self":
         query = self.clone()
-        query.steps.append(Subtract(dq, self.catalog, on=on))
+        query.steps.append(Subtract(dq, self.catalog, on=on, presence=presence))
         return query
 
     @detach
@@ -3339,45 +3130,28 @@ class DatasetQuery:
         query_script: str | None = None,
         **kwargs,
     ) -> "Self":
-        """Save the query as a dataset."""
-        if kwargs.get("listing"):
-            # Listing saves are internal — use existing job if present,
-            # but don't create one (e.g. Studio backend `datachain ls`).
-            job = self.session.get_job()
-        else:
-            job = self.session.get_or_create_job()
+        """Save the query as a dataset.
+
+        A taken explicit version fails before any work, without writing. The
+        steps and final table materialization run into a temporary table first,
+        then the version is created, the table is renamed into place, and the
+        version is completed.
+        """
+        job = self.session.get_or_create_job()
         job_id = job.id if job else None
         if query_script is None:
             query_script = job.query if job else ""
 
         project = project or self.catalog.metastore.default_project
-        try:
-            if name and version:
-                existing = self.catalog.get_dataset(
-                    name,
-                    namespace_name=project.namespace.name,
-                    project_name=project.name,
-                    versions=[version],
-                    include_incomplete=True,
-                )
-                if existing.has_version(version):
-                    if existing.get_version(version).is_removed:
-                        raise RuntimeError(
-                            f"Version {version} of dataset {name} was "
-                            "removed. Pick a different version."
-                        )
-                    raise RuntimeError(f"Dataset {name} already has version {version}")
-        except DatasetNotFoundError:
-            pass
         if not name and version:
             raise RuntimeError("Cannot set version for temporary datasets")
-
+        if name and version:
+            self._check_explicit_version(name, version, project)
         if not name:
             name = self.session.generate_temp_dataset_name()
 
         try:
             query = self.apply_steps()
-
             columns = [
                 c if isinstance(c, Column) else Column(c.name, c.type)
                 for c in query.columns
@@ -3388,18 +3162,14 @@ class DatasetQuery:
                     "Ensure at least one column (other than 'id') is selected."
                 )
 
-            # Phase 1: Create a temp staging table and populate it.
-            # If the process dies here, only an orphaned tmp_ table remains,
-            # cleaned up by 'datachain gc'.
-            temp_table_name: str = self.catalog.warehouse.temp_table_name()
-            self.catalog.warehouse.create_dataset_rows_table(
+            warehouse = self.catalog.warehouse
+            temp_table_name = warehouse.temp_table_name()
+            temp_table = warehouse.create_dataset_rows_table(
                 temp_table_name, columns=columns
             )
             self.temp_table_names.append(temp_table_name)
-            temp_table = self.catalog.warehouse.get_table(temp_table_name)
-            self.catalog.warehouse.insert_into(temp_table, query.select())
+            warehouse.insert_into(temp_table, query.select())
 
-            # Phase 2: Claim the version (metadata only).
             dataset = self.catalog.create_dataset(
                 name,
                 project,
@@ -3413,54 +3183,33 @@ class DatasetQuery:
                 query_script=query_script,
                 **kwargs,
             )
-
-            assert len(dataset.versions) == 1
-            dataset_version = (
-                dataset.get_version(version) if version else dataset.versions[0]
-            )
-            version = dataset_version.version
-
-            # Phase 3: Rename staging table to the final dataset table name.
-            final_table_name = self.catalog.warehouse.dataset_table_name(
-                dataset, version
-            )
-            self.catalog.warehouse.rename_table(temp_table, final_table_name)
-            self.temp_table_names.remove(temp_table_name)
-
-            # Link this dataset version to the job that created it
-            if job_id:
-                self.catalog.metastore.link_dataset_version_to_job(
-                    dataset.get_version(version).id, job_id, is_creator=True
+            version = dataset.versions[0].version
+            try:
+                warehouse.rename_table(
+                    temp_table, warehouse.dataset_table_name(dataset, version)
                 )
+                self.temp_table_names.remove(temp_table_name)
 
-            if dependencies:
-                # overriding dependencies
-                self.dependencies = set()
-                for dep in dependencies:
-                    self.dependencies.add(
-                        (
-                            self.catalog.get_dataset(
-                                dep.name,
-                                namespace_name=dep.namespace,
-                                project_name=dep.project,
-                                versions=[dep.version],
-                                include_incomplete=False,
-                            ),
-                            dep.version,
-                        )
+                # Link this dataset version to the job that created it
+                if job_id:
+                    self.catalog.metastore.link_dataset_version_to_job(
+                        dataset.get_version(version).id, job_id, is_creator=True
                     )
+                if dependencies:
+                    self._set_dependencies(dependencies)
+                self._add_dependencies(dataset, version)  # type: ignore [arg-type]
 
-            self._add_dependencies(dataset, version)  # type: ignore [arg-type]
-
-            if kwargs.get("listing"):
-                reused = self._reuse_listing_if_unchanged(
-                    dataset, version, name, project
+                # Mark as COMPLETE only after all operations succeed.
+                self.catalog.complete_dataset_version(
+                    dataset, version, expected_job_id=job_id
                 )
-                if reused is not None:
-                    return reused
-
-            # Mark as COMPLETE only after all operations succeed.
-            self.catalog.complete_dataset_version(dataset, version)
+            except BaseException:
+                # Give back the reservation, as if it was never made. It is
+                # removed only while still CREATED and ours: an interrupt right
+                # after completion must not remove a published version.
+                with contextlib.suppress(Exception):
+                    self.catalog.release_reservation(dataset, version, job_id)
+                raise
         finally:
             self.cleanup()
         return self.__class__(
@@ -3468,50 +3217,49 @@ class DatasetQuery:
             namespace_name=project.namespace.name,
             project_name=project.name,
             version=version,
-            catalog=self.catalog,
+            session=self.session,
         )
 
-    def _reuse_listing_if_unchanged(
-        self,
-        dataset: "DatasetRecord",
-        version: str,
-        name: str,
-        project: Project,
-    ) -> "Self | None":
-        """If the new listing version's content matches the previous COMPLETE
-        version, discard the new (still CREATED) version and return a query
-        pointing at the previous one. Returns None if there's no match (caller
-        continues the normal save flow).
-        """
-        from datachain.lib.listing import calc_fingerprint
-
-        full_dataset = self.catalog.get_dataset(
-            name,
-            namespace_name=project.namespace.name,
-            project_name=project.name,
-            versions=None,
+    def _check_explicit_version(
+        self, name: str, version: str, project: Project
+    ) -> None:
+        """Fail before any work if an explicit version is taken or removed."""
+        try:
+            existing = self.catalog.get_dataset(
+                name,
+                namespace_name=project.namespace.name,
+                project_name=project.name,
+                versions=[version],
+                include_incomplete=True,
+            )
+        except DatasetNotFoundError:
+            return
+        if not existing.has_version(version):
+            return
+        if existing.get_version(version).is_removed:
+            raise DatasetInvalidVersionError(
+                f"Version {version} of dataset {name} was "
+                "removed. Pick a different version."
+            )
+        raise DatasetInvalidVersionError(
+            f"Dataset {name} already has version {version}"
         )
-        prev_version = full_dataset.latest_complete_version
-        if not prev_version:
-            return None
 
-        old_fp = calc_fingerprint(self.session, full_dataset, prev_version)
-        new_fp = calc_fingerprint(self.session, full_dataset, version)
-        if old_fp != new_fp:
-            return None
-
-        self.catalog.remove_dataset_version(full_dataset, version, keep_metadata=False)
-        # updating TTL of a bucket listing
-        self.catalog.metastore.update_dataset_version(
-            full_dataset, prev_version, finished_at=datetime.now(timezone.utc)
-        )
-        return self.__class__(
-            name=name,
-            namespace_name=project.namespace.name,
-            project_name=project.name,
-            version=prev_version,
-            catalog=self.catalog,
-        )
+    def _set_dependencies(self, dependencies: list[DatasetDependency]) -> None:
+        """Override the dependencies collected from the steps."""
+        self.dependencies = {
+            (
+                self.catalog.get_dataset(
+                    dep.name,
+                    namespace_name=dep.namespace,
+                    project_name=dep.project,
+                    versions=[dep.version],
+                    include_incomplete=False,
+                ),
+                dep.version,
+            )
+            for dep in dependencies
+        }
 
     @property
     def is_ordered(self) -> bool:

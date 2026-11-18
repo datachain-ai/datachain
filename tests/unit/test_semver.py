@@ -121,6 +121,16 @@ def test_compare(v1, v2, result):
         ("1.2", False),
         ("1", False),
         ("1.2.3.4", False),
+        ("01.02.03", False),
+        ("1.00.0", False),
+        ("10.0.0", True),
+        ("+2.0.0", False),
+        ("1.+2.3", False),
+        ("1.2.-0", False),
+        (" 1.2.3", False),
+        ("1.2.3 ", False),
+        ("1_0.2.3", False),
+        ("\u0661.2.3", False),
     ],
 )
 def test_validate(version, valid):

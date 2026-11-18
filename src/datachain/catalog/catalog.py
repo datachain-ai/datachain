@@ -3,21 +3,19 @@ import logging
 import os
 import os.path
 import posixpath
+import socket
+import sqlite3
 import sys
 import time
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from copy import copy
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from functools import cached_property, reduce
-from typing import TYPE_CHECKING, Any
+from datetime import UTC, datetime, timedelta
+from fnmatch import fnmatchcase
+from functools import reduce
+from typing import TYPE_CHECKING, Any, Self
 from uuid import uuid4
-
-if sys.version_info >= (3, 11):
-    from typing import Self
-else:
-    from typing_extensions import Self
 
 import sqlalchemy as sa
 from sqlalchemy import Column
@@ -25,6 +23,7 @@ from sqlalchemy import Column
 from datachain.cache import Cache
 from datachain.checkpoint import Checkpoint, CheckpointStatus
 from datachain.client import Client
+from datachain.data_storage.writer import parts_table_name
 from datachain.dataset import (
     DATASET_PREFIX,
     DEFAULT_DATASET_VERSION,
@@ -56,10 +55,15 @@ from datachain.nodes_thread_pool import NodesThreadPool
 from datachain.progress import tqdm
 from datachain.project import Project
 from datachain.sql.types import DateTime, SQLType
-from datachain.utils import DataChainDir, DatasetIdentifier, interprocess_file_lock
+from datachain.utils import (
+    DataChainDir,
+    DatasetIdentifier,
+    interprocess_file_lock,
+    suffix_to_number,
+)
 
 from .datasource import DataSource
-from .dependency import build_dependency_hierarchy, populate_nested_dependencies
+from .dependency import build_dependency_hierarchy
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -69,7 +73,7 @@ if TYPE_CHECKING:
     from datachain.job import Job
     from datachain.lib.dc.datachain import DataChain
     from datachain.lib.listing_info import ListingInfo
-    from datachain.listing import Listing
+    from datachain.listing import SavedListing
     from datachain.remote.studio import StudioClient
 
 logger = logging.getLogger("datachain")
@@ -90,7 +94,33 @@ PULL_DATASET_MAX_THREADS = 5
 PULL_DATASET_CHUNK_TIMEOUT = 3600
 PULL_DATASET_SLEEP_INTERVAL = 0.1  # sleep time while waiting for chunk to be available
 PULL_DATASET_CHECK_STATUS_INTERVAL = 20  # interval to check export status in Studio
-_MAX_VERSION_CLAIM_RETRIES = 5
+_MAX_VERSION_CLAIM_RETRIES = 20
+_ACTIVE_REMOVALS: set[str] = set()
+_REMOVAL_CLAIM_TTL_SEC = 300
+
+
+def _pid_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _is_active_removal_claim(claim: str | None, version_uuid: str) -> bool:
+    if not claim or not claim.startswith("removing:"):
+        return False
+    _, host, pid_str, ts_str, _ = claim.split(":", 4)
+    if time.time() - int(ts_str) > _REMOVAL_CLAIM_TTL_SEC:
+        return False
+    if host != socket.gethostname():
+        return True
+    pid = int(pid_str)
+    return (
+        version_uuid in _ACTIVE_REMOVALS if pid == os.getpid() else _pid_is_alive(pid)
+    )
 
 
 def _round_robin_batch(urls: list[str], num_workers: int) -> list[list[str]]:
@@ -263,7 +293,7 @@ class DatasetRowsFetcher(NodesThreadPool):
 class NodeGroup:
     """Class for a group of nodes from the same source"""
 
-    listing: "Listing | None"
+    listing: "SavedListing | None"
     client: Client
     sources: list[DataSource]
 
@@ -282,7 +312,8 @@ class NodeGroup:
         for src in self.sources:
             if recursive and src.is_container():
                 for nwp in src.find():
-                    yield nwp.n
+                    if not nwp.has_empty_segments:
+                        yield nwp.n
             else:
                 yield src.node
 
@@ -358,7 +389,7 @@ def collect_nodes_for_cp(
 
     # Collect all sources to process
     for node_group in node_groups:
-        listing: Listing | None = node_group.listing
+        listing: SavedListing | None = node_group.listing
         valid_sources: list[DataSource] = []
         for dsrc in node_group.sources:
             if dsrc.is_single_object():
@@ -430,7 +461,7 @@ def instantiate_node_groups(
     for node_group in node_groups:
         if not node_group.sources:
             continue
-        listing: Listing | None = node_group.listing
+        listing: SavedListing | None = node_group.listing
         source_path: str = node_group.source_path
 
         copy_dir_contents = always_copy_dir_contents or source_path.endswith("/")
@@ -466,10 +497,27 @@ def instantiate_node_groups(
         instantiate_progress_bar.close()
 
 
+def matches_find_filters(node: Node, names, inames, paths, ipaths, size, typ) -> bool:
+    """True if a file without a listing passes the same filters as Listing.find."""
+    if size is not None:
+        limit = suffix_to_number(size)
+        if (limit >= 0 and node.size < limit) or (limit < 0 and node.size > -limit):
+            return False
+    return (
+        (typ is None or typ in {"f", "file", "files"})
+        and all(fnmatchcase(node.name, p) for p in names or ())
+        and all(fnmatchcase(node.name.lower(), p.lower()) for p in inames or ())
+        and all(fnmatchcase(node.path, p) for p in paths or ())
+        and all(fnmatchcase(node.path.lower(), p.lower()) for p in ipaths or ())
+    )
+
+
 def find_column_to_str(  # noqa: PLR0911
     row: tuple[Any, ...], field_lookup: dict[str, int], src: DataSource, column: str
 ) -> str:
     if column == "du":
+        if src.listing is None:
+            return str(row[field_lookup["size"]])
         return str(
             src.listing.du(
                 {f: row[field_lookup[f]] for f in ["dir_type", "size", "path"]}
@@ -529,11 +577,11 @@ class Catalog:
         self.in_memory = in_memory
         self._owns_connections = True  # False for copies, prevents double-close
 
-    @cached_property
+    @property
     def session(self):
         from datachain.query.session import Session
 
-        return Session.get(catalog=self)
+        return Session.get(catalog=self)._with_catalog(self)
 
     def get_init_params(self) -> dict[str, Any]:
         return {
@@ -571,15 +619,15 @@ class Catalog:
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         self.close()
 
-    @classmethod
-    def generate_query_dataset_name(cls) -> str:
-        return f"{QUERY_DATASET_PREFIX}_{uuid4().hex}"
-
-    def get_client(self, uri: str, **config: Any) -> Client:
+    def get_client(
+        self, uri: str, *, client_config: dict | None = None, **config: Any
+    ) -> Client:
         """
         Return the client corresponding to the given source `uri`.
         """
-        config = config or self.client_config
+        config = (
+            client_config if client_config is not None else config or self.client_config
+        )
         cls = Client.get_implementation(uri)
         return cls.from_source(StorageURI(uri), self.cache, **config)
 
@@ -588,27 +636,63 @@ class Catalog:
         source: str,
         update=False,
         client_config=None,
-        column="file",
         skip_indexing=False,
-    ) -> tuple["Listing | None", Client, str]:
-        from datachain import read_storage
-        from datachain.listing import Listing
-
-        read_storage(source, session=self.session, update=update, column=column).exec()
-
-        list_ds_name, list_uri, list_path, _ = get_listing(
-            source, self.session, update=update
+        *,
+        _prepared_listings: set[str] | None = None,
+    ) -> tuple["SavedListing | None", Client, str]:
+        from datachain.client.local import FileClient
+        from datachain.lib.dc.storage_pattern import (
+            normalize_storage_uri,
+            split_uri_pattern,
         )
+        from datachain.lib.listing import (
+            ensure_listing,
+            listing_uri_from_name,
+            write_listing,
+        )
+        from datachain.lib.storage_config import client_configs, session_for
+        from datachain.listing import SavedListing
+
+        source = normalize_storage_uri(source)
+        is_local = issubclass(Client.get_implementation(source), FileClient)
+        client_config = self.client_config if client_config is None else client_config
+        session_config, config = client_configs(
+            [source], None, anon=None, client_config=client_config, versions=True
+        )
+        session = session_for(self.session, session_config, in_memory=False)
+        source_uri, pattern = split_uri_pattern(source)
+        prepared = set() if _prepared_listings is None else _prepared_listings
+        list_ds_name, list_uri, list_path, _ = get_listing(
+            source_uri, session, update=update
+        )
+        if list_ds_name is not None:
+            ensure_listing(
+                list_ds_name,
+                session.catalog,
+                lambda: write_listing(
+                    listing_uri_from_name(list_ds_name),
+                    list_ds_name,
+                    session,
+                    config,
+                ),
+                update=update and list_ds_name not in prepared,
+            )
+            prepared.add(list_ds_name)
+        if pattern is not None:
+            if is_local:
+                list_path = posixpath.join(list_path, pattern)
+            else:
+                _, list_path = Client.parse_url(source)
+
         lst = None
-        client = Client.get_client(list_uri, self.cache, **self.client_config)
+        client = Client.get_client(list_uri, self.cache, **config)
 
         if list_ds_name:
-            lst = Listing(
+            lst = SavedListing(
                 self.metastore.clone(),
                 self.warehouse.clone(),
                 client,
                 dataset_name=list_ds_name,
-                column=column,
             )
 
         return lst, client, list_path
@@ -621,15 +705,19 @@ class Catalog:
         skip_indexing=False,
         client_config=None,
         only_index=False,
+        *,
+        _prepared_listings: set[str] | None = None,
     ) -> Iterator[list["DataSource"] | None]:
-        enlisted_sources: list[tuple[Listing | None, Client, str]] = []
+        enlisted_sources: list[tuple[SavedListing | None, Client, str]] = []
+        _prepared_listings = set() if _prepared_listings is None else _prepared_listings
         try:
             for src in sources:  # Opt: parallel
                 listing, client, file_path = self.enlist_source(
                     src,
                     update,
-                    client_config=client_config or self.client_config,
+                    client_config=client_config,
                     skip_indexing=skip_indexing,
+                    _prepared_listings=_prepared_listings,
                 )
                 enlisted_sources.append((listing, client, file_path))
 
@@ -664,7 +752,8 @@ class Catalog:
         no_glob: bool = False,
         client_config=None,
     ) -> list[NodeGroup]:
-        from datachain.listing import Listing
+        from datachain.lib.storage_config import session_for
+        from datachain.listing import SavedListing
         from datachain.query.dataset import DatasetQuery
 
         def _row_to_node(d: dict[str, Any]) -> Node:
@@ -672,9 +761,11 @@ class Catalog:
             return Node.from_row(d)
 
         enlisted_sources: list[tuple[bool, bool, Any]] = []
-        client_config = client_config or self.client_config
+        _prepared_listings: set[str] = set()
+        client_config = self.client_config if client_config is None else client_config
+        session = session_for(self.session, client_config, in_memory=False)
         for src in sources:  # Opt: parallel
-            listing: Listing | None
+            listing: SavedListing | None
             if src.startswith("ds://"):
                 (ds_namespace, ds_project, ds_name, ds_version) = parse_dataset_uri(src)
                 dataset = self.get_dataset(
@@ -692,11 +783,11 @@ class Catalog:
                 )
                 indexed_sources = []
                 for source in dataset_sources:
-                    client = self.get_client(source, **client_config)
+                    client = self.get_client(source, client_config=client_config)
                     uri = client.uri
-                    dataset_name, _, _, _ = get_listing(uri, self.session)
+                    dataset_name, _, _, _ = get_listing(uri, session)
                     assert dataset_name
-                    listing = Listing(
+                    listing = SavedListing(
                         self.metastore.clone(),
                         self.warehouse.clone(),
                         client,
@@ -723,7 +814,10 @@ class Catalog:
                 enlisted_sources.append((False, True, indexed_sources))
             else:
                 listing, client, source_path = self.enlist_source(
-                    src, update, client_config=client_config
+                    src,
+                    update,
+                    client_config=client_config,
+                    _prepared_listings=_prepared_listings,
                 )
                 enlisted_sources.append((False, False, (listing, client, source_path)))
 
@@ -861,6 +955,29 @@ class Catalog:
             content_hash=content_hash,
         )
 
+    def _recreate_dataset(
+        self,
+        dataset: "DatasetRecord",
+        name: str,
+        project: Project | None,
+        columns: Sequence[Column],
+        feature_schema: dict | None,
+        query_script: str,
+    ) -> "DatasetRecord":
+        schema = {
+            c.name: c.type.to_dict() for c in columns if isinstance(c.type, SQLType)
+        }
+        return self.metastore.create_dataset(
+            name,
+            project.id if project else None,
+            feature_schema=feature_schema,
+            query_script=query_script,
+            schema=schema,
+            ignore_if_exists=True,
+            description=dataset.description,
+            attrs=dataset.attrs,
+        )
+
     @staticmethod
     def _next_auto_version(dataset: "DatasetRecord", update_version: str | None) -> str:
         """Compute the next version for a dataset based on the update strategy."""
@@ -896,7 +1013,7 @@ class Catalog:
         auto-computed from the dataset and retried up to
         ``_MAX_VERSION_CLAIM_RETRIES`` times on conflict.
         """
-        max_retries = 0 if version else _MAX_VERSION_CLAIM_RETRIES
+        max_retries = _MAX_VERSION_CLAIM_RETRIES
         target_version = version or self._next_auto_version(dataset, update_version)
 
         for attempt in range(1 + max_retries):
@@ -907,7 +1024,7 @@ class Catalog:
                         "removed. Pick a different version."
                     )
                 raise DatasetInvalidVersionError(
-                    f"Version {target_version} already exists in dataset {name}"
+                    f"Dataset {name} already has version {target_version}"
                 )
 
             if validate_version and not dataset.is_valid_next_version(target_version):
@@ -916,17 +1033,30 @@ class Catalog:
                     f" the current latest one"
                 )
 
-            dataset, version_created = self.create_dataset_version(
-                dataset,
-                target_version,
-                feature_schema=feature_schema,
-                query_script=query_script,
-                sources=sources,
-                columns=columns,
-                uuid=uuid,
-                job_id=job_id,
-                content_hash=content_hash,
-            )
+            try:
+                dataset, version_created = self.create_dataset_version(
+                    dataset,
+                    target_version,
+                    feature_schema=feature_schema,
+                    query_script=query_script,
+                    sources=sources,
+                    columns=columns,
+                    uuid=uuid,
+                    job_id=job_id,
+                    content_hash=content_hash,
+                )
+            except (
+                DatasetNotFoundError,
+                sa.exc.IntegrityError,
+                sqlite3.IntegrityError,
+            ):
+                dataset = self._recreate_dataset(
+                    dataset, name, project, columns, feature_schema, query_script
+                )
+                target_version = version or self._next_auto_version(
+                    dataset, update_version
+                )
+                continue
 
             if version_created:
                 assert len(dataset.versions) == 1
@@ -934,7 +1064,7 @@ class Catalog:
                 return dataset
 
             # Another writer claimed this version between our check and insert.
-            if attempt >= max_retries:
+            if version or attempt >= max_retries:
                 break
 
             logger.debug(
@@ -945,12 +1075,17 @@ class Catalog:
                 attempt + 1,
                 1 + max_retries,
             )
-            dataset = self.get_dataset(
-                name,
-                namespace_name=project.namespace.name if project else None,
-                project_name=project.name if project else None,
-                versions=None,
-            )
+            try:
+                dataset = self.get_dataset(
+                    name,
+                    namespace_name=project.namespace.name if project else None,
+                    project_name=project.name if project else None,
+                    versions=None,
+                )
+            except DatasetNotFoundError:
+                dataset = self._recreate_dataset(
+                    dataset, name, project, columns, feature_schema, query_script
+                )
             target_version = self._next_auto_version(dataset, update_version)
 
         if version:
@@ -1014,8 +1149,6 @@ class Catalog:
     def update_dataset_version_with_warehouse_info(
         self, dataset: DatasetRecord, version: str, **kwargs
     ) -> None:
-        from datachain.query.dataset import DatasetQuery
-
         dataset_version = dataset.get_version(version)
         if dataset_version._preview_loaded:
             raise RuntimeError(
@@ -1036,18 +1169,11 @@ class Catalog:
             if size != dataset_version.size:
                 values["size"] = size
 
-        preview = (
-            DatasetQuery(
-                name=dataset.name,
-                namespace_name=dataset.project.namespace.name,
-                project_name=dataset.project.name,
-                version=version,
-                catalog=self,
-                include_incomplete=True,  # Allow reading CREATED version
-            )
-            .limit(20)
-            .to_db_records()
-        )
+        table = self.warehouse.dataset_rows(dataset, version).get_table()
+        preview = [
+            dict(zip(table.c.keys(), row, strict=True))
+            for row in self.warehouse.dataset_rows_select(table.select().limit(20))
+        ]
         preview_rows = len(preview)
         values["preview"] = preview
 
@@ -1072,7 +1198,19 @@ class Catalog:
         if not values:
             return
 
-        self.metastore.update_dataset_version(dataset, version, **values)
+        expected_job_id = values.pop("expected_job_id", None)
+        updated = self.metastore.update_dataset_version(
+            dataset,
+            version,
+            expected_status=DatasetStatus.CREATED,
+            expected_job_id=expected_job_id,
+            **values,
+        )
+        if updated is None:
+            raise ConcurrentDatasetModificationError(
+                f"Could not update status of {dataset.name}@{version}: "
+                f"current owner is not {expected_job_id}"
+            )
 
     def complete_dataset_version(
         self,
@@ -1082,8 +1220,9 @@ class Catalog:
         error_message: str = "",
         error_stack: str = "",
         script_output: str = "",
+        expected_job_id: str | None = None,
         **kwargs,
-    ) -> None:
+    ) -> DatasetRecord:
         """Finalize a dataset version after its rows table has been populated.
 
         This refreshes warehouse-derived metadata first, then marks the version
@@ -1095,8 +1234,13 @@ class Catalog:
         # finalize) and ConcurrentDatasetModificationError (expected_status
         # guard lost to a concurrent state change). Anything else propagates.
         try:
-            self.update_dataset_version_with_warehouse_info(dataset, version, **kwargs)
-            self.metastore.update_dataset_status(
+            self.update_dataset_version_with_warehouse_info(
+                dataset,
+                version,
+                expected_job_id=expected_job_id,
+                **kwargs,
+            )
+            return self.metastore.update_dataset_status(
                 dataset,
                 DatasetStatus.COMPLETE,
                 version=version,
@@ -1104,6 +1248,7 @@ class Catalog:
                 error_stack=error_stack,
                 script_output=script_output,
                 expected_status=DatasetStatus.CREATED,
+                expected_job_id=expected_job_id,
             )
         except (TableMissingError, ConcurrentDatasetModificationError) as e:
             raise ConcurrentDatasetModificationError(
@@ -1182,7 +1327,25 @@ class Catalog:
             )
 
         return self._claim_and_remove(
-            dataset, version, expected_status=v.status, keep_metadata=keep_metadata
+            dataset,
+            version,
+            expected_status=v.status,
+            expected_job_id=v.job_id if v.status == DatasetStatus.CREATED else None,
+            keep_metadata=keep_metadata,
+        )
+
+    def release_reservation(
+        self, dataset: DatasetRecord, version: str, job_id: str | None
+    ) -> bool:
+        """Remove a version that a save of ``job_id`` reserved and never
+        published. One guarded UPDATE requires status CREATED and that owner,
+        so a published (COMPLETE) version is never touched."""
+        return self._claim_and_remove(
+            dataset,
+            version,
+            expected_status=DatasetStatus.CREATED,
+            expected_job_id=job_id,
+            keep_metadata=False,
         )
 
     def _claim_and_remove(
@@ -1192,6 +1355,7 @@ class Catalog:
         *,
         expected_status: int,
         keep_metadata: bool,
+        expected_job_id: str | None = None,
     ) -> bool:
         """Flip the version status to REMOVING (guarded UPDATE) with the
         appropriate ``pending_metadata_drop`` flag, then drop the rows
@@ -1210,16 +1374,9 @@ class Catalog:
         another caller had already claimed it.
         """
         v = dataset.get_version(version)
-
-        claimed = self.metastore.update_dataset_version(
-            dataset,
-            version,
-            expected_status=expected_status,
-            status=DatasetStatus.REMOVING,
-            removed_at=v.removed_at or datetime.now(timezone.utc),
-            pending_metadata_drop=not keep_metadata,
-        )
-        if claimed is None:
+        if v.status == DatasetStatus.REMOVING and _is_active_removal_claim(
+            v.content_hash, v.uuid
+        ):
             logger.debug(
                 "Skipped remove of %s@%s: another caller is already handling it",
                 dataset.name,
@@ -1227,18 +1384,55 @@ class Catalog:
             )
             return False
 
-        self.warehouse.drop_dataset_rows_table(dataset, version)
-
-        if keep_metadata:
-            self.metastore.update_dataset_version(
+        claim = (
+            f"removing:{socket.gethostname()}:{os.getpid()}"
+            f":{int(time.time())}:{uuid4().hex[:8]}"
+        )
+        _ACTIVE_REMOVALS.add(v.uuid)
+        try:
+            claimed = self.metastore.update_dataset_version(
                 dataset,
                 version,
-                expected_status=DatasetStatus.REMOVING,
-                status=DatasetStatus.REMOVED,
+                expected_status=expected_status,
+                expected_job_id=expected_job_id,
+                status=DatasetStatus.REMOVING,
+                removed_at=v.removed_at or datetime.now(UTC),
+                pending_metadata_drop=not keep_metadata,
+                content_hash=claim,
             )
-        else:
-            self.metastore.remove_dataset_version(dataset, version)
-        return True
+            if claimed is None:
+                logger.debug(
+                    "Skipped remove of %s@%s: another caller is already handling it",
+                    dataset.name,
+                    version,
+                )
+                return False
+
+            try:
+                self.warehouse.drop_dataset_rows_table(dataset, version)
+
+                if keep_metadata:
+                    self.metastore.update_dataset_version(
+                        dataset,
+                        version,
+                        expected_status=DatasetStatus.REMOVING,
+                        status=DatasetStatus.REMOVED,
+                        content_hash=None,
+                    )
+                else:
+                    self.metastore.remove_dataset_version(dataset, version)
+            except BaseException:
+                with suppress(Exception):
+                    self.metastore.update_dataset_version(
+                        dataset,
+                        version,
+                        expected_status=DatasetStatus.REMOVING,
+                        content_hash=None,
+                    )
+                raise
+            return True
+        finally:
+            _ACTIVE_REMOVALS.discard(v.uuid)
 
     def _remove_versions(
         self,
@@ -1363,19 +1557,22 @@ class Catalog:
             raise ValueError("Sources needs to be non empty list")
 
         from datachain import read_dataset, read_storage
+        from datachain.lib.storage_config import session_for
 
+        client_config = self.client_config if client_config is None else client_config
+        session = session_for(self.session, client_config, in_memory=False)
         project = project or self.metastore.default_project
 
         chains = []
         for source in sources:
             if source.startswith(DATASET_PREFIX):
-                dc = read_dataset(source[len(DATASET_PREFIX) :], session=self.session)
+                dc = read_dataset(source[len(DATASET_PREFIX) :], session=session)
             else:
                 dc = read_storage(
                     source,
-                    session=self.session,
+                    session=session,
                     recursive=recursive,
-                    client_config=client_config or self.client_config,
+                    client_config=client_config,
                 )
 
             chains.append(dc)
@@ -1454,7 +1651,6 @@ class Catalog:
         include_removed: bool = False,
         include_preview: bool = False,
     ) -> DatasetRecord:
-
         namespace_name = namespace_name or self.metastore.default_namespace_name
         project_name = project_name or self.metastore.default_project_name
 
@@ -1572,23 +1768,16 @@ class Catalog:
         if not dependency_nodes:
             return []
 
-        dependency_map, children_map = build_dependency_hierarchy(dependency_nodes)
+        dependency_map, children_map = build_dependency_hierarchy(
+            dependency_nodes, indirect=indirect
+        )
 
         root_key = (dataset_id, version_id)
         if root_key not in children_map:
             return []
 
         root_dependency_ids = children_map[root_key]
-        root_dependencies = [dependency_map[dep_id] for dep_id in root_dependency_ids]
-
-        if indirect:
-            for dependency in root_dependencies:
-                if dependency is not None:
-                    populate_nested_dependencies(
-                        dependency, dependency_nodes, dependency_map, children_map
-                    )
-
-        return root_dependencies
+        return [dependency_map[dep_id] for dep_id in root_dependency_ids]
 
     def get_dataset_dependencies(
         self,
@@ -1703,22 +1892,22 @@ class Catalog:
         Returns list of ListingInfo objects which are representing specific
         storage listing datasets
         """
-        from datachain.lib.listing import LISTING_PREFIX
+        from datachain.lib.listing import listing_name_prefixes
         from datachain.lib.listing_info import ListingInfo
 
-        if prefix and not prefix.startswith(LISTING_PREFIX):
-            prefix = LISTING_PREFIX + prefix
-
-        listing_datasets_versions = self.list_datasets_versions(
-            prefix=prefix,
-            include_listing=True,
-            with_job=False,
-            project=self.metastore.listing_project,
-        )
+        prefixes: list[str | None] = [None]
+        if prefix:
+            prefixes = list(listing_name_prefixes(prefix))
 
         return [
             ListingInfo.from_models(d, v, j)
-            for d, v, j in listing_datasets_versions
+            for name_prefix in prefixes
+            for d, v, j in self.list_datasets_versions(
+                prefix=name_prefix,
+                include_listing=True,
+                with_job=False,
+                project=self.metastore.listing_project,
+            )
             if is_listing_dataset(d.name)
         ]
 
@@ -1754,10 +1943,10 @@ class Catalog:
         content_disposition: str | None = None,
         **kwargs,
     ) -> str:
-        client_config = client_config or self.client_config
+        client_config = self.client_config if client_config is None else client_config
         if client_config.get("anon"):
             content_disposition = None
-        client = Client.get_client(source, self.cache, **client_config)
+        client = self.get_client(source, client_config=client_config)
         return client.url(
             path,
             version_id=version_id,
@@ -1881,12 +2070,14 @@ class Catalog:
         skip_indexing=False,
         *,
         client_config=None,
+        _prepared_listings: set[str] | None = None,
     ) -> Iterator[tuple[DataSource, Iterable[tuple]]]:
         with self.enlist_sources(
             sources,
             update,
             skip_indexing=skip_indexing,
-            client_config=client_config or self.client_config,
+            client_config=client_config,
+            _prepared_listings=_prepared_listings,
         ) as data_sources:
             if data_sources is None:
                 return
@@ -2238,7 +2429,7 @@ class Catalog:
             with self.enlist_sources(
                 sources,
                 update,
-                client_config=client_config or self.client_config,
+                client_config=client_config,
             ):
                 pass
 
@@ -2266,7 +2457,6 @@ class Catalog:
         This function copies files from cloud sources to local destination directory
         If cloud source is not indexed, or has expired index, it runs indexing
         """
-        client_config = client_config or self.client_config
         node_groups = self.enlist_sources_grouped(
             sources,
             update,
@@ -2321,7 +2511,7 @@ class Catalog:
         with self.enlist_sources(
             sources,
             update,
-            client_config=client_config or self.client_config,
+            client_config=client_config,
         ) as matched_sources:
             if matched_sources is None:
                 return
@@ -2337,7 +2527,10 @@ class Catalog:
                 )
 
             for src in matched_sources:
-                yield from du_dirs(src, src.node, depth)
+                if src.listing is None:
+                    yield src.get_node_uri(src.node), src.node.size
+                else:
+                    yield from du_dirs(src, src.node, depth)
 
     def find(
         self,
@@ -2356,7 +2549,7 @@ class Catalog:
         with self.enlist_sources(
             sources,
             update,
-            client_config=client_config or self.client_config,
+            client_config=client_config,
         ) as matched_sources:
             if matched_sources is None:
                 return
@@ -2381,9 +2574,16 @@ class Catalog:
             fields = list(field_set)
             field_lookup = {f: i for i, f in enumerate(fields)}
             for src in matched_sources:
-                results = src.listing.find(
-                    src.node, fields, names, inames, paths, ipaths, size, typ
-                )
+                if src.listing is not None:
+                    results = src.listing.find(
+                        src.node, fields, names, inames, paths, ipaths, size, typ
+                    )
+                elif matches_find_filters(
+                    src.node, names, inames, paths, ipaths, size, typ
+                ):
+                    results = [tuple(getattr(src.node, f) for f in fields)]
+                else:
+                    results = []
                 for row in results:
                     yield "\t".join(
                         find_column_to_str(row, field_lookup, src, column)
@@ -2400,7 +2600,7 @@ class Catalog:
         with self.enlist_sources(
             sources,
             update,
-            client_config=client_config or self.client_config,
+            client_config=client_config,
             only_index=True,
         ):
             pass
@@ -2420,7 +2620,7 @@ class Catalog:
         if ttl_seconds is None:
             ttl_seconds = CHECKPOINTS_TTL
 
-        ttl_threshold = datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds)
+        ttl_threshold = datetime.now(UTC) - timedelta(seconds=ttl_seconds)
 
         # Expire + collect everything in one metastore call
         checkpoints, inactive_group_ids = self.metastore.expire_checkpoints(
@@ -2437,6 +2637,13 @@ class Catalog:
 
         # Remove output/partial tables using exact names from checkpoints
         output_tables = [ch.table_name for ch in checkpoints]
+        for ch in checkpoints:
+            if ch.partial:
+                output_tables.append(parts_table_name(ch.table_name))
+                output_tables.extend(
+                    self.warehouse.db.list_tables(pattern=f"{ch.table_name}_%")
+                )
+        output_tables = list(dict.fromkeys(output_tables))
         if output_tables:
             logger.info(
                 "Removing %d UDF output tables: %s", len(output_tables), output_tables

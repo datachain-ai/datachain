@@ -1,6 +1,6 @@
 import json
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import Column, DateTime
@@ -95,7 +95,7 @@ def test_dataset_dependency_dataset_name(dep_name, dep_type, expected):
         name=dep_name,
         version="1.0.0",
         type=dep_type,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         namespace="dev",
         project="animals",
         dependencies=[],

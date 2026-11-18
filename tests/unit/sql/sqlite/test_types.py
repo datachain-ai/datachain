@@ -1,4 +1,4 @@
-from datetime import MAXYEAR, MINYEAR, date, datetime, timedelta, timezone, tzinfo
+from datetime import MAXYEAR, MINYEAR, UTC, date, datetime, timedelta, timezone, tzinfo
 
 import numpy as np
 import pytest
@@ -6,6 +6,7 @@ import sqlalchemy as sa
 import ujson as json
 from sqlalchemy.exc import CompileError
 
+from datachain.data_storage.sqlite import decode_sqlite, decode_sqlite_datetime
 from datachain.sql.sqlite import base as sqlite_base
 from datachain.sql.sqlite.base import (
     adapt_datetime,
@@ -13,13 +14,13 @@ from datachain.sql.sqlite.base import (
     sqlite_datetime_cast,
 )
 from datachain.sql.sqlite.types import (
-    SQLiteTypeReadConverter,
     adapt_array,
     adapt_dict,
     adapt_np_array,
     adapt_np_generic,
     convert_array,
 )
+from datachain.sql.types import Array as DCArray
 from datachain.sql.types import DateTime as DCDateTime
 from datachain.sql.types import Int as DCInt
 
@@ -91,10 +92,8 @@ def test_convert_array():
     assert convert_array("[1,2]") == [1, 2]
 
 
-def test_sqlite_type_read_converter_array_decodes_json_string():
-    converter = SQLiteTypeReadConverter()
-
-    assert converter.array("[1,2]", DCInt(), sqlite_base.sqlite_dialect) == [1, 2]
+def test_decode_sqlite_array_decodes_json_string():
+    assert decode_sqlite(DCArray(DCInt))("[1,2]") == [1, 2]
 
 
 @pytest.mark.parametrize(
@@ -103,59 +102,53 @@ def test_sqlite_type_read_converter_array_decodes_json_string():
         pytest.param(None, None, id="none"),
         pytest.param(
             datetime(2024, 1, 2, 3, 4, 5),
-            datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 3, 4, 5, tzinfo=UTC),
             id="naive_datetime",
         ),
         pytest.param(
             datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone(timedelta(hours=-5))),
-            datetime(2024, 1, 2, 8, 4, 5, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 8, 4, 5, tzinfo=UTC),
             id="aware_datetime",
         ),
         pytest.param(
             "2024-01-02",
-            datetime(2024, 1, 2, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 0, 0, 0, tzinfo=UTC),
             id="date_only_string",
         ),
         pytest.param(
             "2024-01-02 03:04:05",
-            datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 3, 4, 5, tzinfo=UTC),
             id="naive_string",
         ),
         pytest.param(
             "2024-01-02T03:04:05Z",
-            datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 3, 4, 5, tzinfo=UTC),
             id="z_suffix_string",
         ),
         pytest.param(
             "2024-01-02T03:04:05-05:00",
-            datetime(2024, 1, 2, 8, 4, 5, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 8, 4, 5, tzinfo=UTC),
             id="offset_string",
         ),
         pytest.param(
             "2024-01-02 03:04:05.123456789",
-            datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=UTC),
             id="extra_fraction_string",
         ),
     ],
 )
-def test_sqlite_type_read_converter_datetime_normalizes_values(value, expected):
-    converter = SQLiteTypeReadConverter()
-
-    assert converter.datetime(value) == expected
+def test_decode_sqlite_datetime_normalizes_values(value, expected):
+    assert decode_sqlite_datetime(value) == expected
 
 
-def test_sqlite_type_read_converter_datetime_raises_for_invalid_strings():
-    converter = SQLiteTypeReadConverter()
-
+def test_decode_sqlite_datetime_raises_for_invalid_strings():
     with pytest.raises(ValueError, match="Invalid isoformat string"):
-        converter.datetime("not-a-datetime")
+        decode_sqlite_datetime("not-a-datetime")
 
 
-def test_sqlite_type_read_converter_datetime_raises_for_unexpected_values():
-    converter = SQLiteTypeReadConverter()
-
+def test_decode_sqlite_datetime_raises_for_unexpected_values():
     with pytest.raises(TypeError, match="expected str, datetime, or None"):
-        converter.datetime(123)
+        decode_sqlite_datetime(123)
 
 
 @pytest.mark.parametrize(
@@ -226,27 +219,27 @@ def test_adapt_datetime_reraises_other_errors():
     [
         pytest.param(
             b"2024-01-02",
-            datetime(2024, 1, 2, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 0, 0, 0, tzinfo=UTC),
             id="date_only",
         ),
         pytest.param(
             b"2024-01-02 03:04:05.123456",
-            datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=UTC),
             id="naive_datetime",
         ),
         pytest.param(
             b"2024-01-02T03:04:05Z",
-            datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 3, 4, 5, tzinfo=UTC),
             id="z_suffix",
         ),
         pytest.param(
             b"2024-01-02 03:04:05.123456+00:00",
-            datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=UTC),
             id="utc_offset",
         ),
         pytest.param(
             b"2024-01-02 03:04:05.123456789",
-            datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=UTC),
             id="extra_fraction",
         ),
     ],
@@ -260,12 +253,12 @@ def test_convert_datetime_normalizes_values(value, expected):
     [
         pytest.param(
             b"9999-12-31 23:59:59.999999-01:00",
-            datetime.max.replace(tzinfo=timezone.utc),
+            datetime.max.replace(tzinfo=UTC),
             id="max_year",
         ),
         pytest.param(
             b"0001-01-01 00:00:00+01:00",
-            datetime.min.replace(tzinfo=timezone.utc),
+            datetime.min.replace(tzinfo=UTC),
             id="min_year",
         ),
     ],
@@ -274,15 +267,11 @@ def test_convert_datetime_falls_back_for_boundary_years(value, expected):
     assert convert_datetime(value) == expected
 
 
-def test_convert_datetime_reraises_other_errors(monkeypatch):
-    monkeypatch.setattr(
-        sqlite_base,
-        "parse_datetime_text",
-        lambda _value: datetime(2024, 1, 2, 3, 4, 5, tzinfo=ValueErrorTZ()),
-    )
+def test_normalize_datetime_for_read_reraises_other_errors():
+    value = datetime(2024, 1, 2, 3, 4, 5, tzinfo=ValueErrorTZ())
 
     with pytest.raises(ValueError, match="boom"):
-        convert_datetime(b"ignored")
+        sqlite_base._normalize_datetime_for_read(value)
 
 
 def test_sqlite_datetime_cast_returns_none_for_none():

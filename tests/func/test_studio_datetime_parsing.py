@@ -75,7 +75,7 @@ def test_parse_start_time_various_formats():
         assert isinstance(result, str)
         # Verify it's a valid ISO format
         try:
-            datetime.fromisoformat(result.replace("Z", "+00:00"))
+            datetime.fromisoformat(result)
         except ValueError:
             pytest.fail(f"Failed to parse result '{result}' as ISO format")
 

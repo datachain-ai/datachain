@@ -66,7 +66,7 @@ def test_auto_anon_unsupported_backend_yields_no_anon(tmp_dir, catalog):
 
 
 @pytest.mark.parametrize("explicit", [True, False])
-@patch("datachain.lib.dc.storage._all_buckets_anonymous")
+@patch("datachain.lib.storage_config._all_buckets_anonymous")
 def test_explicit_anon_skips_auto_detect(probe, explicit, tmp_dir, catalog):
     chain = dc.read_storage(tmp_dir.as_uri(), anon=explicit)
     probe.assert_not_called()

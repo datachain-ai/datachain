@@ -43,7 +43,7 @@ import datachain as dc
 base = (
     dc.read_storage("s3://bucket/images/", type="image")
     .map(emb=clip_embedding)
-    .persist()   # cache intermediate result
+    .persist()  # cache intermediate result
 )
 
 large = base.filter(dc.C("file.size") > 10_000).save("large_images")

@@ -1,15 +1,20 @@
 import hashlib
 from collections.abc import Iterable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import sqlalchemy
-from pydantic import BaseModel
 
-from datachain.lib.convert.flatten import flatten
-from datachain.lib.data_model import DataType
-from datachain.lib.model_store import ModelStore
+from datachain.data_storage.codec import RowEncodeError
+from datachain.lib.convert.flatten import classify_field, flatten_value, union_layout
+from datachain.lib.data_model import DataType, is_chain_type, validate_chain_type
 from datachain.lib.signal_schema import SignalSchema
+from datachain.lib.udf import output_value_error
+from datachain.lib.utils import (
+    DataChainParamsError,
+    assert_unique_export_columns,
+)
 from datachain.query import Session
+from datachain.query.schema import DEFAULT_DELIMITER
 
 if TYPE_CHECKING:
     from typing_extensions import ParamSpec
@@ -20,19 +25,25 @@ if TYPE_CHECKING:
 
 
 def _flatten_record(record: dict, signal_schema: SignalSchema) -> dict:
-    """Converts nested DataModel objects like {"person": Person(...)} into flattened
-    dictionaries like {"person__name": "Alice", "person__age": 30, ...}.
+    """Flatten model and union field values into their DB columns, e.g.
+    {"person": Person(...)} -> {"person__name": "Alice", ...}. Plain scalars and
+    already-flattened keys (e.g. "person__name") pass through unchanged.
     """
-    flattened = {}
+    flattened: dict[str, Any] = {}
 
     for key, value in record.items():
-        if isinstance(value, BaseModel) and ModelStore.is_pydantic(type(value)):
-            db_columns = signal_schema.db_signals(name=key)
-            flat_values = flatten(value)
+        anno = signal_schema.values.get(key)
+        needs_flatten = anno is not None and (
+            union_layout(anno) is not None or classify_field(anno).is_model
+        )
+        if needs_flatten:
+            db_columns = cast("list[str]", signal_schema.db_signals(name=key))
+            flat_values = flatten_value(value, anno)
             flattened.update(dict(zip(db_columns, flat_values, strict=True)))
         else:
             flattened[key] = value
 
+    signal_schema.infer_type_tags(flattened)
     return flattened
 
 
@@ -81,16 +92,20 @@ def create_records_dataset(
 ) -> "DataChain":
     """Create a temp dataset from pre-flattened records with caller-supplied
     ``content_hash``. Pass ``content_hash=None`` to anchor identity on UUID
-    only (used by ``read_values`` and the listing chain to opt out of
-    content-derived hashing).
+    only (used by ``read_values`` to opt out of content-derived hashing).
     """
-    from datachain.query.dataset import adjust_outputs, get_col_types
-    from datachain.sql.types import SQLType
-
     from .datasets import read_dataset
 
     session = Session.get(session, in_memory=in_memory)
     catalog = session.catalog
+
+    for signal, anno in schema.items():
+        validate_chain_type(anno)
+        if not is_chain_type(anno):
+            raise DataChainParamsError(
+                f"schema type '{getattr(anno, '__name__', anno)}' of signal"
+                f" {signal!r} is not supported"
+            )
 
     name = session.generate_temp_dataset_name()
     signal_schema = SignalSchema(schema)
@@ -118,18 +133,23 @@ def create_records_dataset(
     dr = warehouse.dataset_rows(dsr)
     table = dr.get_table()
 
-    # Optimization: Compute row types once, rather than for every row.
-    col_types = get_col_types(
-        warehouse,
-        {c.name: c.type for c in columns if isinstance(c.type, SQLType)},
-    )
+    names = [c.name for c in columns]
+    known = set(names) | {c.name for c in warehouse.dataset_row_cls.sys_columns()}
 
-    records = (
-        adjust_outputs(warehouse, record, col_types, signal_schema)
-        for record in flat_records
-    )
-    warehouse.insert_rows(table, records)
-    warehouse.insert_rows_done(table)
+    def _row(record: dict) -> tuple:
+        if extra := record.keys() - known:
+            raise DataChainParamsError(
+                f"Unexpected keys in record: {', '.join(sorted(extra))}"
+            )
+        return tuple(record.get(name) for name in names)
+
+    codec = warehouse.row_codec(columns)
+    try:
+        warehouse.insert_stored_rows(
+            table, names, map(codec.encode, map(_row, flat_records))
+        )
+    except RowEncodeError as e:
+        raise output_value_error(e, names, signal_schema) from e.__cause__
 
     # Finalize warehouse-derived metadata before marking the version COMPLETE.
     catalog.complete_dataset_version(dsr, dataset_version)
@@ -215,6 +235,10 @@ def read_records(
         to_insert = []
 
     signal_schema = SignalSchema(schema)
+    assert_unique_export_columns(
+        [c.split(DEFAULT_DELIMITER) for c in signal_schema.db_signals()],
+        DEFAULT_DELIMITER,
+    )
     flat: Iterable[dict] = (_flatten_record(rec, signal_schema) for rec in to_insert)
     content_hash: str | None = None
     if isinstance(to_insert, (list, tuple)):

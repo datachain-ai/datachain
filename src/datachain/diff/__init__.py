@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from enum import Enum
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from datachain.func import case, ifelse, isnone, or_
@@ -17,7 +17,7 @@ LEFT_DIFF_COL_NAME = "diff_95f95344064a4b819c8625cd1a5cfc2b"
 RIGHT_DIFF_COL_NAME = "diff_5808838a49b54849aa461d7387376d34"
 
 
-class CompareStatus(str, Enum):
+class CompareStatus(StrEnum):
     ADDED = "A"
     DELETED = "D"
     MODIFIED = "M"
@@ -70,6 +70,9 @@ def _compare(  # noqa: C901
     right_cols = right.signals_schema.clone_without_sys_signals().db_signals()
     cols_select = list(left.signals_schema.clone_without_sys_signals().values.keys())
 
+    left.signals_schema.reject_union_keys("diff", *on)
+    right.signals_schema.reject_union_keys("diff", *(right_on or on))
+
     # getting correct on and right_on column names
     on_ = on
     on = left.signals_schema.resolve(*on).db_signals()  # type: ignore[assignment]
@@ -121,31 +124,30 @@ def _compare(  # noqa: C901
             ]
         )
 
-    dc_diff = (
-        left.merge(right, on=on, right_on=right_on, rname=rname, full=True)
-        .mutate(
-            **{
-                diff_col: case(
-                    (isnone(ldiff_col), CompareStatus.DELETED),
-                    (isnone(rdiff_col), CompareStatus.ADDED),
-                    (modified_cond, CompareStatus.MODIFIED),
-                    else_=CompareStatus.SAME,
-                )
-            }
-        )
-        # when the row is deleted, we need to take column values from the right chain
-        .mutate(
-            **{
-                f"{l_on}": ifelse(
-                    C(diff_col) == CompareStatus.DELETED,
-                    C(f"{rname + l_on if on == right_on else r_on}"),
-                    C(l_on),
-                )
-                for l_on, r_on in zip(on, right_on, strict=False)  # type: ignore[arg-type]
-            }
-        )
-        .select_except(ldiff_col, rdiff_col)
+    dc_diff = left.merge(
+        right, on=on, right_on=right_on, rname=rname, full=True
+    ).mutate(
+        **{
+            diff_col: case(
+                (isnone(ldiff_col), CompareStatus.DELETED),
+                (isnone(rdiff_col), CompareStatus.ADDED),
+                (modified_cond, CompareStatus.MODIFIED),
+                else_=CompareStatus.SAME,
+            )
+        }
     )
+    # Restore deleted keys without changing the models' logical field types.
+    restored_keys = {
+        l_on: ifelse(
+            C(diff_col) == CompareStatus.DELETED,
+            C(f"{rname + l_on if on == right_on else r_on}"),
+            C(l_on),
+        ).get_column(dc_diff.signals_schema)
+        for l_on, r_on in zip(on, right_on, strict=False)  # type: ignore[arg-type]
+    }
+    dc_diff = dc_diff._evolve(
+        query=dc_diff._query.mutate(new_schema=dc_diff.signals_schema, **restored_keys)
+    ).select_except(ldiff_col, rdiff_col)
 
     if not added:
         dc_diff = dc_diff.filter(C(diff_col) != CompareStatus.ADDED)

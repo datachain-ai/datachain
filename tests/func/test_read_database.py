@@ -8,7 +8,6 @@ import sqlalchemy
 from sqlalchemy.orm import Session
 
 from datachain import read_database
-from datachain.data_storage.sqlite import SQLiteWarehouse
 from datachain.lib.dc import database
 
 
@@ -104,7 +103,7 @@ def test_nullable(sqlite3_connection, test_session):
     ]
 
 
-def test_all_null_values(sqlite3_connection, test_session, warehouse):
+def test_all_null_values(sqlite3_connection, test_session):
     sqlite3_connection.execute("CREATE TABLE tbl (id INTEGER PRIMARY KEY, num INTEGER)")
     sqlite3_connection.executemany(
         "INSERT INTO tbl(num) VALUES(?)", [(None,) for _ in range(1, 1000)]
@@ -112,11 +111,10 @@ def test_all_null_values(sqlite3_connection, test_session, warehouse):
     sqlite3_connection.commit()
 
     chain = read_database("select * from tbl", sqlite3_connection, session=test_session)
-    # if all values are null, the column type defaults to str
-    assert chain.schema == {"id": int, "num": str}
-    default_value = None if isinstance(warehouse, SQLiteWarehouse) else ""
+    # if all values are null, the column type defaults to str | None
+    assert chain.schema == {"id": int, "num": str | None}
     assert sorted(chain.to_records(), key=lambda r: r["id"]) == [
-        {"id": i, "num": default_value} for i in range(1, 1000)
+        {"id": i, "num": None} for i in range(1, 1000)
     ]
 
 

@@ -1,14 +1,14 @@
 import argparse
 import json
 import os
-from datetime import datetime, timezone
-from glob import glob
+from datetime import UTC, datetime
 
 from utils import (
     bucket_file_path,
     collect_datasets,
     dataset_file_path,
     dc_import,
+    local_db_files,
     parse_semver,
     parse_uri,
     read_frontmatter,
@@ -203,12 +203,12 @@ def cmd_plan(studio: bool = False, output: str | None = None):
     """Compute what needs updating and output a JSON plan."""
     dc = dc_import()
 
-    matches = glob(".datachain/db*")
+    matches = local_db_files()
     if not matches:
         db_last_updated = "1970-01-01T00:00:00Z"
     else:
         mtime = max(os.path.getmtime(p) for p in matches)
-        dt = datetime.fromtimestamp(mtime, tz=timezone.utc)
+        dt = datetime.fromtimestamp(mtime, tz=UTC)
         db_last_updated = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     datasets_out, datasets_up_to_date = plan_datasets(dc, db_last_updated, studio)

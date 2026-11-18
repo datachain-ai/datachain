@@ -73,6 +73,81 @@ def test_conditional_case(test_session):
     ]
 
 
+@pytest.mark.parametrize("nullable_branch", ["if", "else"])
+def test_ifelse_preserves_nullable_values_when_materialized(
+    test_session, nullable_branch
+):
+    source = dc.read_values(
+        position=[0, 1],
+        key=[1, None],
+        take=[nullable_branch == "if"] * 2,
+        output={"position": int, "key": int | None, "take": bool},
+        session=test_session,
+    )
+    expression = (
+        func.ifelse(dc.C("take"), dc.C("key"), 1)
+        if nullable_branch == "if"
+        else func.ifelse(dc.C("take"), 1, dc.C("key"))
+    )
+    result = source.mutate(value=expression).persist().order_by("position")
+    assert result.schema["value"] == int | None
+    assert result.to_values("value") == [1, None]
+
+
+def test_ifelse_preserves_optional_arrays(test_session):
+    source = dc.read_values(
+        position=[0, 1],
+        items=[[1], None],
+        output={"position": int, "items": list[int] | None},
+        session=test_session,
+    )
+    expected = source.order_by("position").to_values("items")
+    result = source.mutate(
+        value=func.ifelse(dc.C("position") == 0, dc.C("items"), dc.C("items"))
+    ).persist()
+    assert result.order_by("position").to_values("value") == expected
+
+
+@pytest.mark.parametrize("nullable_field", [False, True])
+def test_case_preserves_optional_model_field_types_on_save(
+    test_session, nullable_field
+):
+    class Item(dc.DataModel):
+        value: int
+        label: str = "kept"
+
+    class NullableItem(dc.DataModel):
+        value: int | None
+        label: str = "kept"
+
+    model = NullableItem if nullable_field else Item
+    source = dc.read_values(
+        position=[0, 1],
+        item=[model(value=1), None],
+        output={"position": int, "item": model | None},
+        session=test_session,
+    )
+    expression = func.case((dc.C("item.value") > 10, dc.C("item.value")))
+    if nullable_field:
+        source.mutate(item__value=expression).save("mutated")
+        result = dc.read_dataset("mutated", session=test_session).order_by("position")
+        assert result.to_values("item") == [
+            NullableItem(value=None),
+            None,
+        ]
+    else:
+        with pytest.raises(ValueError, match="Altering nested column type"):
+            source.mutate(item__value=expression).save("invalid")
+        source.mutate(item__value=func.ifelse(dc.C("item.value") > 10, 1, 2)).save(
+            "mutated"
+        )
+        result = dc.read_dataset("mutated", session=test_session).order_by("position")
+        assert result.to_values("item") == [
+            Item(value=2),
+            None,
+        ]
+
+
 def test_conditional_ifelse(test_session):
     class Data(dc.DataModel):
         i: int

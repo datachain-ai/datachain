@@ -17,7 +17,7 @@ import datachain as dc
 
 files = dc.read_storage("gs://datachain-demo/").to_list()
 totals = {}
-for f, in files:
+for (f,) in files:
     ext = f.path.rsplit(".", 1)[-1].lower()
     total_bytes, file_count = totals.get(ext, (0, 0))
     totals[ext] = (total_bytes + f.size, file_count + 1)
@@ -91,7 +91,9 @@ import datachain as dc
 
 chain = dc.read_storage("s3://bucket/data/")
 chain.filter(dc.C("score") > 0.9)
-chain.filter((dc.C("meta.inference.class_") == "cat") & (dc.C("meta.confidence") > 0.93))
+chain.filter(
+    (dc.C("meta.inference.class_") == "cat") & (dc.C("meta.confidence") > 0.93)
+)
 chain.filter(dc.C("detection.label").contains("person"))
 
 chain.select("file.path", "score")

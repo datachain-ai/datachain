@@ -107,7 +107,7 @@ class IntKind(enum.IntEnum):
     ONE = 1
 
 
-class StrKind(str, enum.Enum):
+class StrKind(enum.StrEnum):
     A = "a"
 
 

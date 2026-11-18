@@ -1,17 +1,24 @@
 import pickle
+import time
+from collections.abc import Iterator
 
 import pytest
 from cloudpickle import dumps, loads
-from fsspec.callbacks import DEFAULT_CALLBACK
+from fsspec.callbacks import DEFAULT_CALLBACK, TqdmCallback
 from pydantic import BaseModel
 
 import datachain as dc
 from datachain import Mapper
-from datachain.dataset import RowDict
 from datachain.lib.file import File
 from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.udf import JsonSerializationError, UDFBase, UdfError, UdfRunError
+from datachain.lib.udf import (
+    JsonSerializationError,
+    UDFBase,
+    UdfError,
+    UdfRunError,
+)
 from datachain.lib.utils import DataChainError
+from datachain.query import dataset
 
 from .test_udf_signature import get_sign
 
@@ -150,7 +157,9 @@ def test_udf_does_not_traverse_setup_value():
     udf = UDFBase()
     udf.params = SignalSchema({"config": str}, setup={"config": lambda: value})
 
-    assert udf._parse_row(RowDict(), object(), False, DEFAULT_CALLBACK) == [value]
+    assert udf._input_reader([], object(), False, DEFAULT_CALLBACK, include_id=False)(
+        ()
+    ) == [value]
 
 
 def test_udf_sets_stream_on_setup_file():
@@ -159,7 +168,7 @@ def test_udf_sets_stream_on_setup_file():
     udf.params = SignalSchema({"ref": str}, setup={"ref": lambda: file})
     catalog = object()
 
-    udf._parse_row(RowDict(), catalog, False, DEFAULT_CALLBACK)
+    udf._input_reader([], catalog, False, DEFAULT_CALLBACK, include_id=False)(())
 
     assert file._catalog is catalog
 
@@ -173,7 +182,7 @@ def test_udf_sets_stream_in_setup_model_collection():
     udf.params = SignalSchema({"ref": str}, setup={"ref": lambda: Bundle(files=[file])})
     catalog = object()
 
-    udf._parse_row(RowDict(), catalog, False, DEFAULT_CALLBACK)
+    udf._input_reader([], catalog, False, DEFAULT_CALLBACK, include_id=False)(())
 
     assert file._catalog is catalog
 
@@ -183,7 +192,7 @@ def test_udf_does_not_traverse_bare_setup_collection():
     udf = UDFBase()
     udf.params = SignalSchema({"ref": str}, setup={"ref": lambda: files})
 
-    udf._parse_row(RowDict(), object(), False, DEFAULT_CALLBACK)
+    udf._input_reader([], object(), False, DEFAULT_CALLBACK, include_id=False)(())
 
     assert files[0]._catalog is None
 
@@ -361,7 +370,6 @@ def test_udf_output_type_error_message_json_serialization_failure(
 def test_map_prefetch_skips_invalid_path_files(
     monkeypatch, test_session, caplog, bad_path
 ):
-
     monkeypatch.delenv("DATACHAIN_DISTRIBUTED", raising=False)
 
     files = [File(source="s3://bucket", path=bad_path) for _ in range(3)]
@@ -379,3 +387,135 @@ def test_map_prefetch_skips_invalid_path_files(
 
     assert result == [(bad_path,)] * 3
     assert any("Skipping prefetch" in m for m in caplog.messages)
+
+
+def test_output_schema_is_built_once_per_run(test_session, mocker):
+    spec = mocker.spy(SignalSchema, "to_udf_spec")
+    chain = dc.read_values(x=list(range(200)), session=test_session)
+    chain.map(y=lambda x: x + 1, output=int).gen(
+        z=lambda y: iter([y]), output=int
+    ).save("udf_spec")
+    assert spec.call_count < 20
+
+
+def test_an_insert_error_closes_the_udf_outputs(test_session, mocker):
+    closed = []
+
+    def numbers(n: int) -> Iterator[int]:
+        try:
+            yield from range(n)
+        finally:
+            closed.append(n)
+
+    def failing_insert(self, table, columns, rows, parts=None, ledger=()):
+        raise OSError(28, "No space left on device")
+
+    chain = dc.read_values(n=[1000], session=test_session).save("inputs")
+    mocker.patch.object(
+        type(test_session.catalog.warehouse), "insert_block", failing_insert
+    )
+    mocker.patch.object(type(test_session.catalog.warehouse), "INSERT_BATCH_SIZE", 10)
+    with pytest.raises(OSError, match="No space left") as error:
+        chain.gen(x=numbers, output=int).save("numbers")
+    # the error's traceback holds the generator: it must be closed already
+    assert closed == [1000]
+    assert error.value.__traceback__ is not None
+
+
+UDF_CLASSES = {
+    "map": dc.Mapper,
+    "batch_map": dc.BatchMapper,
+    "gen": dc.Generator,
+    "agg": dc.Aggregator,
+}
+
+
+def _apply(chain, verb, **signal_map):
+    kwargs = {"batch": 2} if verb == "batch_map" else {}
+    return getattr(chain, verb)(output=int, **kwargs, **signal_map)
+
+
+@pytest.mark.parametrize("verb", list(UDF_CLASSES))
+@pytest.mark.parametrize("process_error", [False, True])
+def test_teardown_runs_once_and_keeps_process_error(
+    test_session, caplog, verb, process_error
+):
+    calls = []
+
+    class Broken(UDF_CLASSES[verb]):
+        def process(self, value):
+            if process_error:
+                raise ValueError("boom-process")
+            return value if verb in ("map", "batch_map") else [1]
+
+        def teardown(self):
+            calls.append("teardown")
+            raise RuntimeError("boom-teardown")
+
+    chain = dc.read_values(value=[1, 2], session=test_session)
+    with pytest.raises(
+        ValueError if process_error else RuntimeError,
+        match="boom-process" if process_error else "boom-teardown",
+    ):
+        _apply(chain, verb, result=Broken()).to_values("result")
+    assert calls == ["teardown"]
+    assert ("Failed to tear down" in caplog.text) == process_error
+
+
+@pytest.mark.parametrize("verb", list(UDF_CLASSES))
+def test_udf_instance_shared_by_chains(test_session, verb):
+    process = {
+        "map": lambda value: value * 2,
+        "batch_map": lambda value: [v * 2 for v in value],
+        "gen": lambda value: [value * 2],
+        "agg": lambda value: [v * 2 for v in value],
+    }[verb]
+
+    class Twice(UDF_CLASSES[verb]):
+        def process(self, value):
+            return process(value)
+
+    udf = Twice()
+    chain = dc.read_values(value=[1, 2, 3], session=test_session)
+    first = _apply(chain, verb, first=udf)
+    second = _apply(chain, verb, second=udf)
+    assert sorted(first.to_values("first")) == [2, 4, 6]
+    assert sorted(second.to_values("second")) == [2, 4, 6]
+    assert udf.params is None
+
+
+@pytest.mark.parametrize(
+    "output,value,stored",
+    [(list[float], [1, 2.5], "[1.0, 2.5]"), (list[list[float]], [[1]], "[[1.0]]")],
+)
+def test_gen_tuple_rows_convert_list_items_to_the_column_type(
+    test_session, output, value, stored
+):
+    def rows(n: int) -> Iterator[tuple]:
+        yield (value,)
+
+    chain = dc.read_values(n=[1], session=test_session).gen(v=rows, output=output)
+
+    assert repr(chain.to_values("v")[0]) == stored
+
+
+def test_gen_reports_generated_rows_once_per_interval(
+    test_session, mocker, monkeypatch
+):
+    now = 0.0
+    monkeypatch.setattr(time, "monotonic", lambda: now)
+    callbacks = mocker.spy(dataset, "get_generated_callback")
+    updates = mocker.spy(TqdmCallback, "relative_update")
+
+    def rows(n: int) -> Iterator[int]:
+        nonlocal now
+        for i, seconds in enumerate([0, 0, 1, 1, 1, 2, 2]):
+            now = seconds
+            yield i
+
+    chain = dc.read_values(n=[1], session=test_session).gen(v=rows, output=int)
+
+    assert chain.count() == 7
+    generated = callbacks.spy_return
+    reported = [c.args[1] for c in updates.call_args_list if c.args[0] is generated]
+    assert (len(reported), sum(reported)) == (4, 7)

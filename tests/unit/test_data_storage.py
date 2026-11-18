@@ -1,5 +1,5 @@
 import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -48,7 +48,7 @@ COMPLEX_TREE: dict[str, Any] = {
         [Float64(), lambda val: math.isnan(val)],  # noqa: PLW0108
         [Array(Int), []],
         [JSON(), {}],
-        [DateTime(), datetime(1970, 1, 1, 0, 0, tzinfo=timezone.utc)],
+        [DateTime(), datetime(1970, 1, 1, 0, 0, tzinfo=UTC)],
         [Binary(), b""],
     ],
 )
@@ -62,8 +62,7 @@ def test_db_defaults(col_type, default_value, catalog):
         server_default=col_type.db_default_value(warehouse.db.dialect),
     )
     table = warehouse.create_udf_table([table_col])
-    warehouse.insert_rows(table, [{"sys__id": 1}])
-    warehouse.insert_rows_done(table)
+    warehouse.insert_stored_rows(table, ["sys__id"], [(1,)])
 
     query = sqlalchemy.Select(table_col).select_from(table)
 

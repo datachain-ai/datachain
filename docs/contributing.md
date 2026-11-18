@@ -40,7 +40,7 @@ Tracker](https://github.com/datachain-ai/datachain/issues).
 
 ## How to set up your development environment
 
-You need Python 3.8+ and the following tools:
+You need Python 3.11+ and the following tools:
 
 -   [Nox](https://nox.thea.codes/)
 

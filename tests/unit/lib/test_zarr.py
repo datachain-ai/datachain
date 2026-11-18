@@ -107,6 +107,16 @@ def test_read_zarr_custom_column(tmp_dir, test_session):
     assert store.path == "s.zarr"
 
 
+def test_read_zarr_into_file_column_names_file_signal_c0_file(tmp_dir, test_session):
+    _make_store(tmp_dir / "s.zarr", "s")
+    uri = (tmp_dir / "s.zarr").as_uri()
+
+    chain = dc.read_zarr(uri, column="file", session=test_session)
+    ((store, file),) = chain.to_list("file", "c0_file")
+    assert store.path == "s.zarr"
+    assert file == dc.read_zarr(uri, session=test_session).to_values("file")[0]
+
+
 def test_zarr_array_only_store(tmp_dir, test_session):
     zarr.open_array(str(tmp_dir / "arr.zarr"), mode="w", shape=(2, 3), dtype="uint8")
 

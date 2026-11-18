@@ -62,7 +62,7 @@ class DatasetStateNotLoadedError(DataChainError):
     pass
 
 
-class DatasetInvalidVersionError(Exception):
+class DatasetInvalidVersionError(DataChainError):
     pass
 
 
@@ -123,6 +123,10 @@ class TableRenameError(DataChainError):
 
 
 class OutdatedDatabaseSchemaError(DataChainError):
+    pass
+
+
+class OutdatedDatasetFormatError(DataChainError):
     pass
 
 

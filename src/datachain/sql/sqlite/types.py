@@ -1,10 +1,9 @@
 import sqlite3
-from datetime import timezone
 
 from sqlalchemy import types
 
 from datachain import json
-from datachain.sql.types import TypeConverter, TypeReadConverter
+from datachain.sql.types import TypeConverter
 
 try:
     import numpy as np
@@ -65,20 +64,3 @@ def register_type_converters():
 class SQLiteTypeConverter(TypeConverter):
     def array(self, item_type):
         return Array(item_type)
-
-
-class SQLiteTypeReadConverter(TypeReadConverter):
-    def array(self, value, item_type, dialect):
-        if isinstance(value, str):
-            value = json.loads(value)
-        return super().array(value, item_type, dialect)
-
-    def datetime(self, value):
-        value = super().datetime(value)
-
-        if value is None:
-            return None
-
-        if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)

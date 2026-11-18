@@ -1,75 +1,58 @@
+import functools
 import glob
 import logging
 import os
-import posixpath
 import re
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, TypeVar
+import time
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager, suppress
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from hashlib import blake2b
+from typing import TYPE_CHECKING, TypeVar, cast
 
-from fsspec.asyn import get_loop
-from sqlalchemy.sql.expression import true
+from fsspec.asyn import get_loop, sync
+from sqlalchemy import or_, true
 
 import datachain.fs.utils as fsutils
 from datachain.asyn import iter_over_async
 from datachain.client import Client
-from datachain.error import ClientError
-from datachain.lib.file import File
-from datachain.query.schema import C, Column
+from datachain.error import (
+    ClientError,
+    ConcurrentDatasetModificationError,
+    DatasetNotFoundError,
+)
+from datachain.lib.convert.flatten import flatten
+from datachain.lib.file import File, FileRow
+from datachain.query.schema import Column
 from datachain.sql.functions import path as pathfunc
-from datachain.utils import uses_glob
+from datachain.utils import parent_path, safe_closing, uses_glob
 
 if TYPE_CHECKING:
-    from datachain.dataset import DatasetRecord
+    from sqlalchemy import ColumnElement
+
+    from datachain.catalog import Catalog
+    from datachain.client.fsspec import RangeListedClient
+    from datachain.data_storage.codec import RowCodec
+    from datachain.dataset import DatasetRecord, DatasetVersion
     from datachain.lib.dc import DataChain
+    from datachain.project import Project
     from datachain.query.session import Session
 
 LISTING_TTL = 4 * 60 * 60  # cached listing lasts 4 hours
 LISTING_PREFIX = "lst__"  # listing datasets start with this name
+LISTING_BATCH_SIZE = 50_000  # rows per insert: listing rows are small
+RESERVATION_TOUCH_INTERVAL = 300
+# a listing version's content_hash: this prefix, its row count and rows_digest sum
+LISTING_DIGEST = "listing-v1"
+# listing of current objects only, read_storage(versions=False)
+CURRENT_LISTING_PREFIX = f"{LISTING_PREFIX}current__"
 
 D = TypeVar("D", bound="DataChain")
 
 # Disable warnings for remote errors in clients
 logging.getLogger("aiobotocore.credentials").setLevel(logging.CRITICAL)
 logging.getLogger("gcsfs").setLevel(logging.CRITICAL)
-
-
-def calc_fingerprint(session: "Session", dataset: "DatasetRecord", version: str) -> int:
-    """Compute an order-independent content fingerprint for a listing version.
-
-    Uses file path + version (if available) or etag as the content identifier.
-    Version is preferred over etag because etags can be unstable on some cloud
-    providers (GCS, Azure) due to internal operations like storage class changes.
-    """
-    # Inline imports: lib.listing sits below lib.dc / query.dataset / func in the
-    # import graph (catalog.catalog imports this module during init), so hoisting
-    # any of these triggers a circular import.
-    from datachain.func.aggregate import xor_agg
-    from datachain.func.conditional import case
-    from datachain.func.string import string_hash
-    from datachain.lib.dc.datachain import DataChain
-    from datachain.lib.dc.utils import Sys
-    from datachain.lib.settings import Settings
-    from datachain.lib.signal_schema import SignalSchema
-    from datachain.query.dataset import DatasetQuery
-
-    query = DatasetQuery(
-        name=dataset.name,
-        version=version,
-        session=session,
-        include_incomplete=True,
-    )
-    signal_schema = SignalSchema({"sys": Sys, "file": File})
-    chain = DataChain(query, Settings(), signal_schema)
-
-    identifier = case(
-        (C("file.version") != "", C("file.version")),
-        else_=C("file.etag"),
-    )
-    return chain.group_by(  # type: ignore[return-value]
-        fp=xor_agg(string_hash(C("file.path"), identifier)),
-    ).to_values("fp")[0]
 
 
 def listing_dataset_expired(lst_ds) -> bool:
@@ -79,25 +62,73 @@ def listing_dataset_expired(lst_ds) -> bool:
         return False
 
     expires = lst_version.finished_at + timedelta(seconds=LISTING_TTL)
-    return datetime.now(timezone.utc) > expires
+    return datetime.now(UTC) > expires
 
 
-def list_bucket(uri: str, cache, client_config=None) -> Callable:
-    """
-    Function that returns another generator function that yields File objects
-    from bucket where each File represents one bucket entry.
-    """
+def list_pages(
+    uri: str, cache, client_config=None, encode: "PageEncoder | None" = None
+) -> Iterator:
+    """Pages of ``FileRow`` rows of every object under the ``uri`` prefix, or
+    with ``encode``, ``StoredPage``s: listing children encode the pages they
+    parse, and this process the rest."""
+    config = client_config or {}
+    client = Client.get_client(uri, cache, **config)  # type: ignore[arg-type]
+    client.encode_page = encode
+    _, path = Client.parse_url(uri)
+    # a child's pages are StoredPages already
+    with safe_closing(
+        iter_over_async(client.scandir(path.removesuffix("/")), get_loop())
+    ) as pages:
+        for page in pages:
+            if isinstance(page, StoredPage):
+                yield page
+                continue
+            rows = (
+                [*map(file_row, page)] if page and isinstance(page[0], File) else page
+            )
+            yield encode(rows) if encode else rows
 
-    def list_func() -> Iterator[File]:
-        config = client_config or {}
-        client = Client.get_client(uri, cache, **config)  # type: ignore[arg-type]
-        _, path = Client.parse_url(uri)
-        for entries in iter_over_async(client.scandir(path.rstrip("/")), get_loop()):
-            yield from entries
 
-    list_func.__name__ = "read_storage"
+def list_scope_pages(
+    uri: str, scope: "ListScope", cache, client_config=None
+) -> Iterator[Sequence[tuple]]:
+    """Pages of ``FileRow`` rows of the keys ``scope`` holds in the storage of
+    ``uri``, whose client lists parts of a folder (S3, GCS, Azure)."""
+    config = client_config or {}
+    client = cast("RangeListedClient", Client.get_client(uri, cache, **config))  # type: ignore[arg-type]
+    method = "level" if scope.one_level and client.LISTS_LEVELS else "prefix"
+    return _scope_pages(client, scope, method)
 
-    return list_func
+
+def _scope_pages(client, scope: "ListScope", method: str) -> Iterator[Sequence[tuple]]:
+    pages = client.scandir(scope.prefix, method=method)
+    try:
+        yield from iter_over_async(pages, get_loop())
+    except FileNotFoundError:  # nothing under the prefix: fine in a folder
+        _check_folder(client, scope.folder)
+
+
+def _check_folder(client, folder: str) -> None:
+    """Raise, as a listing of ``folder`` would, when it holds no keys. The probe
+    also raises the backend's error for a missing bucket, when ``folder`` is
+    its root."""
+    has_keys = sync(get_loop(), client.has_keys, folder)  # a missing bucket raises
+    if folder and not has_keys:
+        raise FileNotFoundError(f"Unable to resolve remote path: {folder}")
+
+
+@dataclass(frozen=True)
+class ListScope:
+    """What a URI's listing must read of its ``folder``: the keys that start
+    with ``prefix``, only those with no delimiter past it if ``one_level``."""
+
+    folder: str
+    prefix: str
+    one_level: bool
+
+
+def file_row(file: File) -> FileRow:
+    return FileRow(*flatten(file))
 
 
 def get_file_info(uri: str, cache, client_config=None) -> File:
@@ -113,7 +144,6 @@ def ls(
     dc: D,
     path: str,
     recursive: bool | None = True,
-    column="file",
 ) -> D:
     """
     Return files by some path from DataChain instance which contains bucket listing.
@@ -121,29 +151,138 @@ def ls(
     If recursive is set to False, only first level children will be returned by
     specified path
     """
+    return select_paths(dc, PathFilter.ls(path, recursive))
 
-    def _file_c(name: str) -> Column:
-        return Column(f"{column}.{name}")
 
-    dc = dc.filter(_file_c("is_latest") == true())
+def select_paths(dc: D, paths: "PathFilter") -> D:
+    """The latest files of a listing chain whose paths ``paths`` selects."""
+    dc = dc.filter(Column("file.is_latest") == true())
+    for condition in paths.sql(Column("file.path")):
+        dc = dc.filter(condition)
+    return dc
 
-    if recursive:
+
+def list_folder(path: str) -> str:
+    return path.lstrip("/").removesuffix("/")
+
+
+@dataclass(frozen=True)
+class PathFilter:
+    """The paths of a listing that a URI selects: any of ``any_of`` and all of
+    ``all_of``, each an ``(op, value)`` with op ``eq``, ``glob`` or ``parent``.
+    ``read_storage`` applies it in SQL, ``dc.list_storage`` in Python."""
+
+    any_of: tuple[tuple[str, str], ...] = ()
+    all_of: tuple[tuple[str, str], ...] = ()
+
+    @classmethod
+    def ls(cls, path: str, recursive: bool | None) -> "PathFilter":
+        if not recursive:
+            return cls(any_of=(("parent", list_folder(path)),))
         if not path or path == "/":
-            # root of a bucket, returning all latest files from it
-            return dc
+            return cls()
+        if uses_glob(path):
+            return cls(any_of=(("glob", path),))
+        return cls(any_of=(("eq", path), ("glob", path.removesuffix("/") + "/*")))
 
-        if not uses_glob(path):
-            # path is not glob, so it's pointing to some directory or a specific
-            # file and we are adding proper filter for it
-            return dc.filter(
-                (_file_c("path") == path)
-                | (_file_c("path").glob(path.rstrip("/") + "/*"))
-            )
+    def glob(self, pattern: str) -> "PathFilter":
+        return PathFilter(self.any_of, (*self.all_of, ("glob", pattern)))
 
-        # path has glob syntax so we are returning glob filter
-        return dc.filter(_file_c("path").glob(path))
-    # returning only first level children by path
-    return dc.filter(pathfunc.parent(_file_c("path")) == path.lstrip("/").rstrip("/*"))
+    def sql(self, path: Column) -> "list[ColumnElement]":
+        """One condition per filter step: ``any_of`` combined, then each of
+        ``all_of``. The steps feed chain hashes, so their split is kept."""
+
+        def cond(op: str, value: str) -> "ColumnElement":
+            if op == "eq":
+                return path == value
+            if op == "glob":
+                return path.glob(value)
+            return pathfunc.parent(path) == value
+
+        steps = [or_(*(cond(*c) for c in self.any_of))] if self.any_of else []
+        return steps + [cond(*c) for c in self.all_of]
+
+    def matcher(self) -> "Callable[[str], bool]":
+        """The filter as a function of a path, built once for many rows."""
+
+        def check(op: str, value: str) -> "Callable[[str], bool]":
+            if op == "eq":
+                return value.__eq__
+            if op == "glob":
+                regex = _glob_regex(value)
+                return lambda path: regex is not None and bool(regex.fullmatch(path))
+            return lambda path: parent_path(path) == value
+
+        any_of = [check(*c) for c in self.any_of]
+        all_of = [check(*c) for c in self.all_of]
+        return lambda path: (
+            (not any_of or any(c(path) for c in any_of))
+            and all(c(path) for c in all_of)
+        )
+
+
+@functools.lru_cache(maxsize=256)
+def _glob_parts(pattern: str) -> "list[str] | None":
+    """SQLite's GLOB split at ``*`` into regexes; None matches nothing."""
+    parts: list[list[str]] = []
+    out: list[str] = []
+    i, n = 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        i += 1
+        if c == "*":
+            parts.append(out)
+            out = []
+        elif c == "?":
+            out.append(".")
+        elif c == "[":
+            negate = i < n and pattern[i] == "^"
+            j = i + negate
+            members, prior = [], None
+            if j < n and pattern[j] == "]":
+                members.append("\\]")
+                j += 1
+            while j < n and pattern[j] != "]":
+                c = pattern[j]
+                if c == "-" and prior and j + 1 < n and pattern[j + 1] != "]":
+                    if prior <= pattern[j + 1]:
+                        members.append(
+                            f"{re.escape(prior)}-{re.escape(pattern[j + 1])}"
+                        )
+                    prior = None
+                    j += 2
+                else:
+                    members.append(re.escape(c))
+                    prior = c
+                    j += 1
+            if j >= n:
+                return None
+            out.append(f"[{'^' if negate else ''}{''.join(members)}]")
+            i = j + 1
+        else:
+            out.append(re.escape(c))
+    parts.append(out)
+    return ["".join(p) for p in parts]
+
+
+@functools.lru_cache(maxsize=256)
+def _glob_regex(pattern: str) -> "re.Pattern | None":
+    """SQLite's GLOB as a regex; None matches nothing. ``(?>...)`` keeps the
+    leftmost match of each part between stars, so matching stays linear."""
+    parts = _glob_parts(pattern)
+    if parts is None:
+        return None
+    head, *rest = parts
+    if rest:
+        *middle, tail = rest
+        head += "".join(f"(?>.*?{m})" for m in middle) + f".*{tail}"
+    return re.compile(head, re.DOTALL)
+
+
+def glob_match(path: str, pattern: str) -> bool:
+    """SQLite's GLOB."""
+    regex = _glob_regex(pattern)
+    return regex is not None and regex.fullmatch(path) is not None
 
 
 _DS_ENCODE_RE = re.compile(r"[^a-zA-Z0-9_/:\-]")
@@ -210,25 +349,35 @@ def _desanitize_ds_name(encoded: str) -> str:
     return _DS_DECODE_RE.sub(_repl, encoded)
 
 
-def parse_listing_uri(uri: str) -> tuple[str, str, str]:
+def parse_listing_uri(uri: str, versions: bool = True) -> tuple[str, str, str]:
     """
-    Parsing uri and returns listing dataset name, listing uri and listing path
+    Parsing uri and returns listing dataset name, listing uri and listing path.
+    A listing of current objects only (``versions=False``) gets its own name.
     """
     storage_uri, path = Client.parse_url(uri)
     if uses_glob(path):
-        lst_uri_path = posixpath.dirname(path)
+        # up to the last "/": "d//*.txt" is listed under "d//"
+        lst_uri_path = path[: path.rfind("/") + 1]
     else:
-        storage_uri, path = Client.parse_url(f"{uri.rstrip('/')}/")
+        if path:
+            storage_uri, path = Client.parse_url(
+                uri if uri.endswith("/") else f"{uri}/"
+            )
         lst_uri_path = path
 
     lst_uri = f"{storage_uri}/{lst_uri_path.lstrip('/')}"
-    ds_name = (
-        f"{LISTING_PREFIX}{storage_uri}/{posixpath.join(lst_uri_path, '').lstrip('/')}"
-    )
-
-    ds_name = _sanitize_ds_name(ds_name)
+    ds_name = _sanitize_ds_name(f"{LISTING_PREFIX}{lst_uri}")
+    if not versions:
+        ds_name = CURRENT_LISTING_PREFIX + ds_name.removeprefix(LISTING_PREFIX)
 
     return ds_name, lst_uri, path
+
+
+def listing_name_prefixes(prefix: str) -> list[str]:
+    """Listing-name prefixes that match a storage URI prefix, one per mode."""
+    if prefix.startswith(LISTING_PREFIX):
+        return [prefix]
+    return [LISTING_PREFIX + prefix, CURRENT_LISTING_PREFIX + prefix]
 
 
 def is_listing_dataset(name: str) -> bool:
@@ -244,7 +393,8 @@ def listing_uri_from_name(dataset_name: str) -> str:
     """
     if not is_listing_dataset(dataset_name):
         raise ValueError(f"Dataset {dataset_name} is not a listing")
-    return _desanitize_ds_name(dataset_name.removeprefix(LISTING_PREFIX))
+    name = dataset_name.removeprefix(CURRENT_LISTING_PREFIX)
+    return _desanitize_ds_name(name.removeprefix(LISTING_PREFIX))
 
 
 @contextmanager
@@ -255,15 +405,38 @@ def _reraise_as_client_error() -> Iterator[None]:
         raise ClientError(message=str(e), error_code=getattr(e, "code", None)) from e
 
 
+def names_object(client: Client, uri: str) -> bool:
+    """True if ``uri`` names a single object rather than a prefix or a glob."""
+    isfile = _reraise_as_client_error()(fsutils.isfile)
+    return not glob.has_magic(uri) and not uri.endswith("/") and isfile(client.fs, uri)
+
+
+def describe_listing(
+    client: Client, uri: str, versions: bool = True
+) -> tuple[str, str, str] | None:
+    """The listing dataset name, listing URI and listing path of ``uri``, or
+    None when it names a single object."""
+    if names_object(client, uri):
+        return None
+    # local, HF and HTTP storages have no versions: one kind of listing
+    versions = versions or not hasattr(client.fs, "version_aware")
+    return parse_listing_uri(uri, versions=versions)
+
+
 def get_listing(
-    uri: str | os.PathLike[str], session: "Session", update: bool = False
+    uri: str | os.PathLike[str],
+    session: "Session",
+    update: bool = False,
+    versions: bool = True,
 ) -> tuple[str | None, str, str, bool]:
     """Returns correct listing dataset name that must be used for saving listing
     operation. It takes into account existing listings and reusability of those.
     It also returns boolean saying if returned dataset name is reused / already
     exists or not (on update it always returns False - just because there was no
     reason to complicate it so far). And it returns correct listing path that should
-    be used to find rows based on uri.
+    be used to find rows based on uri. With ``versions=False`` on a storage
+    that keeps object versions, the listing holds current objects only and
+    neither reuses nor is reused by a listing of all versions.
     """
     from datachain.client.local import FileClient
     from datachain.telemetry import telemetry
@@ -278,12 +451,12 @@ def get_listing(
         uri = os.fspath(uri)
 
     # we don't want to use cached dataset (e.g. for a single file listing)
-    isfile = _reraise_as_client_error()(fsutils.isfile)
-    if not glob.has_magic(uri) and not uri.endswith("/") and isfile(client.fs, uri):
+    described = describe_listing(client, uri, versions)
+    if described is None:
         _, path = Client.parse_url(uri)
         return None, uri, path, False
 
-    ds_name, list_uri, list_path = parse_listing_uri(uri)
+    ds_name, list_uri, list_path = described
     listing = None
     listings = [
         ls for ls in catalog.listings() if not ls.is_expired and ls.contains(ds_name)
@@ -315,3 +488,211 @@ def get_listing(
 
     ds_name = listing.name if listing else ds_name
     return ds_name, list_uri, list_path, bool(listing)
+
+
+def ensure_listing(
+    name: str, catalog: "Catalog", write: Callable | None, *, update: bool = False
+) -> "DatasetRecord":
+    """Create or refresh the selected snapshot only when needed."""
+    dataset = None
+    if not update:
+        try:
+            dataset = catalog.get_dataset(name, versions=None, include_incomplete=False)
+        except DatasetNotFoundError:
+            pass
+    if dataset is None or listing_dataset_expired(dataset):
+        assert write is not None
+        dataset = write() or catalog.get_dataset(
+            name, versions=None, include_incomplete=False
+        )
+    return dataset
+
+
+def rows_digest(rows: Iterable[tuple], with_etag: bool) -> int:
+    """The sum of a 128-bit hash of each ``FileRow`` row's identity: its source,
+    path, version id (or etag if it has none), size, whether it is the latest
+    version, and its etag when ``with_etag``. A sum, not XOR, so that a file
+    listed twice counts twice; the order of rows does not matter."""
+    total = 0
+    for source, path, size, version, etag, is_latest, *_ in rows:
+        key = f"{source}\0{path}\0{version or etag}\0{size}\0{is_latest:d}"
+        if with_etag:
+            key += f"\0{etag}"
+        digest = blake2b(key.encode(errors="surrogatepass"), digest_size=16)
+        total += int.from_bytes(digest.digest())
+    return total
+
+
+class StoredPage:
+    """A page of listing rows in the warehouse's stored form, and their
+    ``rows_digest``: made where the page was parsed, inserted as it is."""
+
+    def __init__(self, rows: list[tuple], digest: int) -> None:
+        self.rows, self.digest = rows, digest
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+
+@dataclass(frozen=True)
+class PageEncoder:
+    """``FileRow`` rows to a ``StoredPage``; listing children run it."""
+
+    codec: "RowCodec"
+    with_etag: bool
+
+    def __call__(self, rows: Sequence[tuple]) -> StoredPage:
+        stored = list(map(self.codec.encode, rows))
+        return StoredPage(stored, rows_digest(rows, self.with_etag))
+
+
+def write_listing(
+    uri: str, ds_name: str, session: "Session", client_config: dict
+) -> "DatasetRecord | None":
+    """Store the listing of the prefix ``uri`` as the next version of ``ds_name``.
+    An unchanged listing drops that version and restarts the latest one's TTL."""
+    from datachain import semver
+    from datachain.dataset import DEFAULT_DATASET_VERSION, DatasetStatus
+    from datachain.lib.signal_schema import SignalSchema
+
+    catalog = session.catalog
+    metastore, warehouse = catalog.metastore, catalog.warehouse
+    project = metastore.get_project(
+        metastore.listing_project_name, metastore.system_namespace_name, create=True
+    )
+    columns = warehouse.dataset_row_cls.listing_columns()
+    with_etag = not Client.get_implementation(uri).PINNED_VERSION_IS_IMMUTABLE
+    encode = PageEncoder(warehouse.row_codec(columns), with_etag)
+    job = session.get_job()
+    job_id = job.id if job else None
+    dataset = catalog.create_dataset(
+        ds_name,
+        project,
+        columns=columns,
+        feature_schema=SignalSchema({"file": File}).serialize(),
+        listing=True,
+        update_version="major",
+        job_id=job_id,
+        query_script=job.query if job else "",
+    )
+    version = dataset.versions[0].version
+    count = total = 0
+
+    def rows(pages: Iterator[StoredPage]) -> Iterator[tuple]:
+        nonlocal count, total
+        touched = time.monotonic()
+        for page in pages:
+            count += len(page)
+            total += page.digest
+            yield from page.rows
+            if time.monotonic() - touched > RESERVATION_TOUCH_INTERVAL:
+                if (
+                    metastore.update_dataset_version(
+                        dataset,
+                        version,
+                        expected_status=DatasetStatus.CREATED,
+                        expected_job_id=job_id,
+                        created_at=datetime.now(UTC),
+                    )
+                    is None
+                ):
+                    raise ConcurrentDatasetModificationError(
+                        f"Listing {dataset.name}@{version} was removed while running"
+                    )
+                touched = time.monotonic()
+
+    table = None
+    try:
+        if job:
+            metastore.link_dataset_version_to_job(
+                dataset.versions[0].id, job.id, is_creator=True
+            )
+        table_name = warehouse.dataset_table_name(dataset, version)
+        table = warehouse.create_dataset_rows_table(
+            f"{table_name}__{dataset.versions[0].uuid[:8]}", columns=columns
+        )
+        with safe_closing(
+            list_pages(uri, catalog.cache, client_config, encode)
+        ) as pages:
+            try:
+                warehouse.insert_stored_rows(
+                    table, [c.name for c in columns], rows(pages), LISTING_BATCH_SIZE
+                )
+            except Exception as e:
+                if not warehouse.db.has_table(table.name):
+                    raise ConcurrentDatasetModificationError(
+                        f"Listing {dataset.name}@{version} was removed while running"
+                    ) from e
+                raise
+        content_hash = f"{LISTING_DIGEST}:{count}:{total % (1 << 128):032x}"
+        latest = _latest_version(catalog, ds_name, project)
+        if latest:
+            prev_ds, prev_ver = latest
+            ver_val = dataset.versions[0].version_value
+            fence = (
+                max(prev_ver.version_value, semver.value(prev_ver.sources))
+                if prev_ver.sources
+                else prev_ver.version_value
+            )
+            older_publishing = any(
+                prev_ver.version_value < v.version_value < ver_val
+                and v.status == DatasetStatus.CREATED
+                and v.content_hash is not None
+                for v in prev_ds.all_versions
+            )
+            if (
+                fence > ver_val
+                or (prev_ver.content_hash == content_hash and not older_publishing)
+            ) and catalog.release_reservation(dataset, version, job_id):
+                if prev_ver.content_hash == content_hash and ver_val >= fence:
+                    metastore.update_dataset_version(
+                        prev_ds,
+                        prev_ver.version,
+                        expected_status=DatasetStatus.COMPLETE,
+                        finished_at=datetime.now(UTC),
+                        sources=version,
+                    )
+                return None
+        if (
+            metastore.update_dataset_version(
+                dataset,
+                version,
+                expected_status=DatasetStatus.CREATED,
+                expected_job_id=job_id,
+                content_hash=content_hash,
+            )
+            is None
+        ):
+            raise ConcurrentDatasetModificationError(
+                f"Could not save {dataset.name}@{version}: "
+                "the version was removed or modified before save completed."
+            )
+        warehouse.rename_table(table, table_name)
+        completed = catalog.complete_dataset_version(
+            dataset, version, expected_job_id=job_id
+        )
+        return completed if version == DEFAULT_DATASET_VERSION else None
+    except BaseException:
+        with suppress(Exception):
+            catalog.release_reservation(dataset, version, job_id)
+        raise
+    finally:
+        if table is not None:
+            warehouse.db.drop_table(table, if_exists=True)
+
+
+def _latest_version(
+    catalog: "Catalog", name: str, project: "Project"
+) -> "tuple[DatasetRecord, DatasetVersion] | None":
+    """The listing ``name`` and its latest complete version, if it has one."""
+    try:
+        dataset = catalog.get_dataset(
+            name,
+            namespace_name=project.namespace.name,
+            project_name=project.name,
+            versions=None,
+        )
+    except DatasetNotFoundError:
+        return None
+    version = dataset.latest_complete_version
+    return (dataset, dataset.get_version(version)) if version else None

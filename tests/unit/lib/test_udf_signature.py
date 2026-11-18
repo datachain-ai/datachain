@@ -8,7 +8,11 @@ from pydantic import BaseModel
 from datachain.lib.data_model import DataType
 from datachain.lib.file import File
 from datachain.lib.udf import Mapper
-from datachain.lib.udf_signature import UdfSignature, UdfSignatureError
+from datachain.lib.udf_signature import (
+    UdfSignature,
+    UdfSignatureError,
+    _resolve_annotation,
+)
 
 
 def get_sign(
@@ -226,3 +230,50 @@ def test_generator_requires_iterator_return_annotation_even_with_output_override
             {"a": int, "b": int},
             True,
         )
+
+
+@pytest.mark.parametrize(
+    "anno",
+    [t.Union[str, list[str]], str | list[str]],  # noqa: UP007  # both spellings
+)
+def test_unsupported_output_type_rejected_for_both_union_spellings(anno):
+    def func(p1) -> str:
+        return "x"
+
+    with pytest.raises(UdfSignatureError, match="is not supported"):
+        get_sign(func, output={"value": anno})
+
+
+@pytest.mark.parametrize(
+    "annotation,expected",
+    [
+        (list[int], int),
+        (list[list[float]], list[float]),
+        (t.Iterator[int], int),
+        (t.Iterator[list[float]], list[float]),
+    ],
+)
+def test_batch_map_output_signature(annotation, expected):
+    def fn(value: list[int]):
+        return value
+
+    fn.__annotations__["return"] = annotation
+    sign = UdfSignature.parse("", {"result": fn}, is_generator=False, is_batch_map=True)
+    assert sign.output_schema.values == {"result": expected}
+
+
+@pytest.mark.parametrize("annotation", [int, tuple[int, int], list])
+def test_batch_map_rejects_scalar_output(annotation):
+    def fn(value: list[int]):
+        return value
+
+    fn.__annotations__["return"] = annotation
+    with pytest.raises(UdfSignatureError, match=r"list\[T\] or Iterator\[T\]"):
+        UdfSignature.parse("", {"result": fn}, is_generator=False, is_batch_map=True)
+
+
+SelfAlias = "SelfAlias"
+
+
+def test_resolve_annotation_keeps_self_referencing_string():
+    assert _resolve_annotation("SelfAlias", func_str) == "SelfAlias"
