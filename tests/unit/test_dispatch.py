@@ -184,6 +184,7 @@ def test_single_dispatcher_uses_temporary_cache_with_persistent_fallback(
     dispatcher.cache = False
     dispatcher.udf_fields = []
     dispatcher.table = mocker.sentinel.table
+    dispatcher.parts = None
     dispatcher.batch_size = None
     udf = mocker.Mock(prefetch=1)
     paths = []

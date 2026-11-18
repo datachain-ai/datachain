@@ -2,36 +2,33 @@ import asyncio
 import hashlib
 import inspect
 import logging
+import sys
 import threading
+import time
 from abc import ABC, abstractmethod
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from contextlib import closing, contextmanager, nullcontext
 from dataclasses import dataclass
-from functools import cached_property, partial
+from functools import partial
 from graphlib import CycleError, TopologicalSorter
 from itertools import islice
+from operator import itemgetter
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import attrs
 from fsspec import Callback
 from fsspec.callbacks import DEFAULT_CALLBACK
-from pydantic import BaseModel
 
 from datachain.asyn import AsyncMapper
 from datachain.cache import temporary_cache
-from datachain.dataset import RowDict
+from datachain.data_storage.codec import RowEncodeError
 from datachain.hash_utils import hash_callable
-from datachain.lib.convert.flatten import (
-    flatten,
-    flatten_value,
-    union_value_match,
-)
-from datachain.lib.file import File, FileError, FileRow
+from datachain.lib.file import File, FileError
 from datachain.lib.settings import DEFAULT_PREFETCH
 from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.utils import AbstractUDF, DataChainParamsError
+from datachain.lib.utils import AbstractUDF, DataChainParamsError, type_to_str
 from datachain.query.batch import (
     Batch,
     BatchingStrategy,
@@ -40,7 +37,7 @@ from datachain.query.batch import (
     RowsOutputBatch,
 )
 from datachain.query.schema import DEFAULT_DELIMITER
-from datachain.utils import TIME_ZERO, safe_closing, with_last_flag
+from datachain.utils import TIME_ZERO, safe_closing
 
 logger = logging.getLogger("datachain")
 PREFETCH_FILE_WORKERS = 20
@@ -52,6 +49,8 @@ if TYPE_CHECKING:
 
     from datachain.cache import Cache
     from datachain.catalog import Catalog
+    from datachain.data_storage import AbstractWarehouse
+    from datachain.data_storage.codec import RowCodec
     from datachain.lib.settings import Settings
     from datachain.lib.signal_schema import KeyPresence
     from datachain.lib.udf_signature import UdfSignature
@@ -183,16 +182,116 @@ ColumnType = Any
 # Specification for the output of a UDF
 UDFOutputSpec = Mapping[str, ColumnType]
 
-# Result type when calling the UDF wrapper around the actual
-# Python function / class implementing it.
-UDFResult = dict[str, Any]
+# Result type when calling the UDF wrapper around the actual Python function / class
+# implementing it: the output values in their stored form, then the sys values.
+UDFResult = tuple[Any, ...]
+# A gen or agg result: the rows of one part (an input row, a partition) and its key
+UDFPart = tuple[Any, Iterable[UDFResult]]
+
+PROGRESS_INTERVAL = 0.1  # seconds
 
 
-class FlatRow(tuple):
-    """A generator's output row as its flat columns, in DB order. It goes to the
-    DB as it is, with no model built or flattened per row."""
+class _Progress:
+    """Adds counts to a callback every ``PROGRESS_INTERVAL`` rather than per row:
+    a callback call costs about as much as a plain row's own work."""
 
-    __slots__ = ()
+    __slots__ = ("callback", "pending", "report_at")
+
+    def __init__(self, callback: Callback) -> None:
+        self.callback = callback
+        self.pending = 0
+        self.report_at = 0.0
+
+    def add(self, count: int) -> None:
+        self.pending += count
+        if (now := time.monotonic()) >= self.report_at:
+            self.callback.relative_update(self.pending)
+            self.pending, self.report_at = 0, now + PROGRESS_INTERVAL
+
+    def __enter__(self) -> "Self":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if self.pending:
+            self.callback.relative_update(self.pending)
+
+
+def output_value_error(
+    error: RowEncodeError,
+    names: Sequence[str],
+    schema: SignalSchema,
+    udf_kind: str | None = None,
+    num_values: int | None = None,
+) -> UdfError:
+    """The error for a value an output column cannot take."""
+    name = names[error.column]
+    expected = type_to_str(schema.get_column_type(name))
+    cause = error.__cause__
+    if isinstance(cause, JsonSerializationError):
+        msg = (
+            f"UDF returned an invalid value for output column {name!r}. "
+            f"Expected JSON-serializable {expected}. {cause.message}"
+        )
+    else:
+        msg = (
+            f"UDF returned an invalid value for output column {name!r}. "
+            f"Expected {expected}, got {error.value!r} "
+            f"(type: {type(error.value).__name__})."
+        )
+    width = len(names)
+    if udf_kind is not None and num_values is not None and num_values != width:
+        value_word = "value" if num_values == 1 else "values"
+        are_word = "is" if width == 1 else "are"
+        msg += (
+            f" Note: UDF call returned {num_values} {value_word} "
+            f"while {width} {are_word} expected per output definition"
+        )
+        if udf_kind in ("agg", "gen"):
+            msg += (
+                f", {udf_kind}() UDFs usually use yield and have return type Iterator."
+            )
+        else:
+            msg += "."
+    return UdfError(msg)
+
+
+class OutputRows:
+    """A UDF's results as stored rows, compiled once per run: a result is
+    flattened into leaf values by the output schema, then encoded by the
+    warehouse's row codec. This is the only place UDF output values convert."""
+
+    def __init__(self, udf: "UDFBase", warehouse: "AbstractWarehouse") -> None:
+        spec = udf.output.to_udf_spec()
+        self.names = list(spec)
+        self.width = len(self.names)
+        self.schema = udf.output
+        self.udf_kind = udf.udf_kind
+        self.flatten = udf.output.row_flattener()
+        self.codec: RowCodec = warehouse.row_codec(spec.values())
+
+    def __call__(self, result: Any) -> tuple:
+        """One UDF result as a stored row."""
+        return self.encode(self.flatten(result))
+
+    def encode(self, values: Sequence[Any]) -> tuple:
+        """Leaf values as a stored row: missing trailing values are filled in,
+        extra ones dropped."""
+        num_values = len(values)
+        if num_values != self.width:
+            values = (*values[: self.width], *(None,) * (self.width - num_values))
+        try:
+            return self.codec.encode(values)
+        except RowEncodeError as e:
+            raise output_value_error(
+                e, self.names, self.schema, self.udf_kind, num_values
+            ) from e.__cause__
+
+    def encode_batch(self, batch: Any) -> list[tuple]:
+        """An Arrow batch of leaf columns as stored rows."""
+        try:
+            return self.codec.encode_arrow(batch)
+        except RowEncodeError as e:
+            raise output_value_error(e, self.names, self.schema) from e.__cause__
 
 
 @attrs.define(slots=False)
@@ -226,7 +325,7 @@ class UDFAdapter:
         cache: bool,
         download_cb: Callback = DEFAULT_CALLBACK,
         processed_cb: Callback = DEFAULT_CALLBACK,
-    ) -> Iterator[Iterable[UDFResult]]:
+    ) -> Iterator[Iterable[UDFResult] | UDFPart]:
         yield from self.inner.run(
             udf_fields,
             udf_inputs,
@@ -291,6 +390,7 @@ class UDFBase(AbstractUDF):
 
     is_input_batched = False
     is_output_batched = False
+    udf_kind = "map"  # named in output errors: map, gen or agg
     prefetch: int = 0
     prefetch_bytes: int | None = None
     _prefetch_min_rows: int = 1
@@ -433,52 +533,8 @@ class UDFBase(AbstractUDF):
         cache: bool,
         download_cb: Callback = DEFAULT_CALLBACK,
         processed_cb: Callback = DEFAULT_CALLBACK,
-    ) -> Iterator[Iterable[UDFResult]]:
+    ) -> Iterator[Iterable[UDFResult] | UDFPart]:
         raise NotImplementedError
-
-    @cached_property
-    def _output_names(self) -> list[str]:
-        return list(self.output.values)
-
-    def _flatten_row(self, row):
-        if len(self.output.values) > 1 and not isinstance(row, BaseModel):
-            annos = self.output.values
-            # The row may be shorter than the declared outputs (the arrow/parquet
-            # reader omits trailing signals) but not longer.
-            if len(row) > len(annos):
-                raise ValueError(
-                    f"UDF returned {len(row)} values but {len(annos)} are declared "
-                    "in output"
-                )
-            flat: list[Any] = []
-            names = self._output_names
-            # strict=False as shorter row is allowed for arrow/parquet (guarded above)
-            for i, (obj, anno) in enumerate(zip(row, annos.values(), strict=False)):
-                # names[i:] are the signals a cover model at this position holds
-                if union_value_match(obj, anno, names[i:]):
-                    flat.extend(flatten_value(obj, anno))
-                else:
-                    flat.extend(self._obj_to_list(obj))
-            return tuple(flat)
-        if isinstance(row, tuple):
-            return row
-        if len(self.output.values) == 1:
-            single_type = next(iter(self.output.values.values()))
-            return flatten_value(row, single_type)
-        return tuple(self._obj_to_list(row))
-
-    def _file_row_output(self) -> bool:
-        """Whether a ``FileRow`` is a whole output row: one output with
-        ``FileRow``'s columns. Listing's fast path: its rows are stored as they
-        come, without a ``File`` built and flattened per row."""
-        if len(self.output.values) != 1:
-            return False
-        name = next(iter(self.output.values))
-        return list(self.signal_names) == [f"{name}__{f}" for f in FileRow._fields]
-
-    @staticmethod
-    def _obj_to_list(obj):
-        return flatten(obj) if isinstance(obj, BaseModel) else [obj]
 
     @property
     def _effective_prefetch(self) -> int:
@@ -486,22 +542,36 @@ class UDFBase(AbstractUDF):
         assert self.params is not None
         return self.prefetch if self.params._file_stream_params else 0
 
-    def _parse_row(
-        self, row_dict: RowDict, catalog: "Catalog", cache: bool, download_cb: Callback
-    ) -> list[Any]:
-        assert self.params
-        obj_row = self.params.row_to_objs(row_dict)
-        self.params.set_file_streams(obj_row, catalog, cache, download_cb)
-        return obj_row
+    def _input_reader(
+        self,
+        udf_fields: "Sequence[str]",
+        catalog: "Catalog",
+        cache: bool,
+        download_cb: Callback,
+        include_id: bool = True,
+    ) -> Callable[[Sequence[Any]], Sequence[Any]]:
+        """A function reading the UDF's arguments (after ``sys__id`` when
+        `include_id`) from an input row of `udf_fields`, compiled once per run."""
+        assert self.params is not None
+        id_names = ["sys__id"] if include_id else []
+        columns = self.params.plain_columns()
+        if columns is not None:
+            positions = {name: i for i, name in enumerate(udf_fields)}
+            names = [*id_names, *columns]
+            if not names:
+                return lambda row: ()
+            getter = itemgetter(*(positions[c] for c in names))
+            return getter if len(names) > 1 else lambda row: (getter(row),)
+        read = self.params.row_reader(udf_fields)
+        set_streams = self.params.set_file_streams
+        id_pos = udf_fields.index("sys__id") if include_id else None
 
-    def _prepare_row(
-        self, row, udf_fields, catalog, cache, download_cb, include_id=False
-    ):
-        row_dict = RowDict(zip(udf_fields, row, strict=False))
-        udf_input = self._parse_row(row_dict, catalog, cache, download_cb)
-        if include_id:
-            return row_dict["sys__id"], *udf_input
-        return udf_input
+        def prepare(row: Sequence[Any]) -> Sequence[Any]:
+            objs = read(row)
+            set_streams(objs, catalog, cache, download_cb)
+            return (row[id_pos], *objs) if id_pos is not None else objs
+
+        return prepare
 
 
 def noop(*args, **kwargs):
@@ -799,7 +869,6 @@ class Mapper(UDFBase):
         processed_cb: Callback = DEFAULT_CALLBACK,
     ) -> Iterator[Iterable[UDFResult]]:
         self.setup()
-        signal_names = list(self.signal_names)
         # Prepared columns holding one value per row: sys__id and data columns.
         batch_columns: set[int] | None = None
         if self.is_input_batched:
@@ -812,13 +881,11 @@ class Mapper(UDFBase):
         label = (
             f"batch_map() function {(self.verbose_name if self._func else self.name)!r}"
         )
+        prefetch = self._effective_prefetch
+        output_row = OutputRows(self, catalog.warehouse)
 
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
-            def prepare(row):
-                return self._prepare_row(
-                    row, udf_fields, catalog, cache, download_cb, include_id=True
-                )
-
+            prepare = self._input_reader(udf_fields, catalog, cache, download_cb)
             with safe_closing(udf_inputs):
                 for row in udf_inputs:
                     if batch_columns is None:
@@ -841,26 +908,24 @@ class Mapper(UDFBase):
             min_rows=self._prefetch_min_rows,
         )
 
-        with self._teardown_on_exit(), closing(prepared_inputs):
+        with (
+            self._teardown_on_exit(),
+            closing(prepared_inputs),
+            _Progress(processed_cb) as progress,
+        ):
             for id_, *udf_args in prepared_inputs:
                 if batch_columns is None:
-                    udf_output = self._flatten_row(self.process(*udf_args))
-                    output = [
-                        {"sys__id": id_}
-                        | dict(zip(signal_names, udf_output, strict=False))
-                    ]
-                else:
-                    self._batch_length = len(id_)
-                    results = _batch_results(self.process(*udf_args), len(id_), label)
-                    output = [
-                        {"sys__id": row_id}
-                        | dict(
-                            zip(signal_names, self._flatten_row(result), strict=False)
-                        )
-                        for row_id, result in zip(id_, results, strict=True)
-                    ]
-                processed_cb.relative_update(len(output))
-                yield output
+                    progress.add(1)
+                    yield [(*output_row(self.process(*udf_args)), id_)]
+                    continue
+                self._batch_length = len(id_)
+                results = _batch_results(self.process(*udf_args), len(id_), label)
+                progress.add(len(results))
+                # lazy: rows encoded before an invalid one are still written
+                yield (
+                    (*output_row(result), row_id)
+                    for row_id, result in zip(id_, results, strict=True)
+                )
 
 
 class BatchMapper(Mapper):
@@ -1092,13 +1157,14 @@ class Generator(UDFBase):
     """Inherit from this class to pass to `DataChain.gen()`."""
 
     is_output_batched = True
+    udf_kind = "gen"
     prefetch: int = 2
     prefetch_max_size: int | None = None
     # (input, output) columns of a delta key each output row must keep
     delta_key: "Sequence[tuple[str, str]]" = ()
     delta_key_presence: "Sequence[tuple[KeyPresence, KeyPresence]]" = ()
 
-    def run(
+    def run(  # noqa: C901
         self,
         udf_fields: "Sequence[str]",
         udf_inputs: "Iterable[Sequence[Any]]",
@@ -1106,10 +1172,9 @@ class Generator(UDFBase):
         cache: bool,
         download_cb: Callback = DEFAULT_CALLBACK,
         processed_cb: Callback = DEFAULT_CALLBACK,
-    ) -> Iterator[Iterable[UDFResult]]:
+    ) -> Iterator[UDFPart]:
         self.setup()
         signal_names = list(self.signal_names)
-        flat_rows = (FlatRow, FileRow) if self._file_row_output() else (FlatRow,)
         key_inputs = [udf_fields.index(column) for column, _ in self.delta_key]
         key_outputs = [signal_names.index(column) for _, column in self.delta_key]
         presence_inputs = [
@@ -1127,13 +1192,14 @@ class Generator(UDFBase):
             if (spec := right or left) is not None
         ]
         input_keys: dict[Any, tuple] = {}
+        prefetch = self._effective_prefetch
+        output_rows = OutputRows(self, catalog.warehouse)
 
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
+            prepare = self._input_reader(udf_fields, catalog, cache, download_cb)
             with safe_closing(udf_inputs):
                 for row in udf_inputs:
-                    prepared = self._prepare_row(
-                        row, udf_fields, catalog, cache, download_cb, include_id=True
-                    )
+                    prepared = prepare(row)
                     if key_columns:
                         input_keys[prepared[0]] = tuple(
                             row[i] for i in key_inputs
@@ -1152,36 +1218,28 @@ class Generator(UDFBase):
                         column.split(DEFAULT_DELIMITER)[0], "gen()"
                     )
 
-        def _process_row(row):
-            row_id, *row = row
+        def _stored_rows(result_objs, key) -> Iterator[tuple]:
+            pa = sys.modules.get("pyarrow")  # batches come only from arrow readers
+            for result_obj in result_objs:
+                if pa is not None and isinstance(result_obj, pa.RecordBatch):
+                    if key is not None:
+                        columns = (c.to_pylist() for c in result_obj.columns)
+                        for values in zip(*columns, strict=True):
+                            _check_delta_key(key, values)
+                    yield from output_rows.encode_batch(result_obj)
+                    continue
+                values = output_rows.flatten(result_obj)
+                if key is not None:
+                    _check_delta_key(key, values)
+                yield output_rows.encode(values)
+
+        def _process_row(row_id, row):
             key = input_keys.pop(row_id) if key_columns else None
-            has_output = False
             result = self.process(*row)
             if result is None:
                 result = iter(())
             with safe_closing(result) as result_objs:
-                for result_obj, is_last in with_last_flag(result_objs):
-                    has_output = True
-                    if type(result_obj) in flat_rows:
-                        if key is not None:
-                            _check_delta_key(key, result_obj)
-                        yield result_obj + (row_id, not is_last, None)  # noqa: RUF005
-                        continue
-                    udf_output = self._flatten_row(result_obj)
-                    if key is not None:
-                        _check_delta_key(key, udf_output)
-                    udf_output = dict(zip(signal_names, udf_output, strict=False))
-                    udf_output["sys__input_id"] = row_id
-                    udf_output["sys__partial"] = not is_last
-                    udf_output["sys__empty"] = None
-                    yield udf_output
-            if not has_output:
-                # Marker: records that this input was processed but yielded nothing.
-                yield {
-                    "sys__input_id": row_id,
-                    "sys__partial": False,
-                    "sys__empty": True,
-                }
+                yield from _stored_rows(result_objs, key)
 
         prefetch = self._effective_prefetch
         prepared_inputs = _prepare_rows(udf_inputs)
@@ -1195,10 +1253,14 @@ class Generator(UDFBase):
             min_rows=self._prefetch_min_rows,
         )
 
-        with self._teardown_on_exit(), closing(prepared_inputs):
-            for row in prepared_inputs:
-                yield _process_row(row)
-                processed_cb.relative_update(1)
+        with (
+            self._teardown_on_exit(),
+            closing(prepared_inputs),
+            _Progress(processed_cb) as progress,
+        ):
+            for row_id, *row in prepared_inputs:
+                yield row_id, _process_row(row_id, row)
+                progress.add(1)
 
 
 class Aggregator(UDFBase):
@@ -1206,6 +1268,7 @@ class Aggregator(UDFBase):
 
     is_input_batched = True
     is_output_batched = True
+    udf_kind = "agg"
 
     def run(
         self,
@@ -1215,11 +1278,20 @@ class Aggregator(UDFBase):
         cache: bool,
         download_cb: Callback = DEFAULT_CALLBACK,
         processed_cb: Callback = DEFAULT_CALLBACK,
-    ) -> Iterator[Iterable[UDFResult]]:
+    ) -> Iterator[UDFPart]:
         from datachain.data_storage.schema import PARTITION_COLUMN_ID
 
         self.setup()
-        signal_names = list(self.signal_names)
+        output_row = OutputRows(self, catalog.warehouse)
+        prepare = self._input_reader(
+            udf_fields, catalog, cache, download_cb, include_id=False
+        )
+
+        def _output(result_objs: Any) -> Iterator[tuple]:
+            if result_objs is None:
+                return
+            with safe_closing(result_objs):
+                yield from map(output_row, result_objs)
 
         # Check if partition_id is available (when partition_by is used)
         partition_id_idx = None
@@ -1235,37 +1307,13 @@ class Aggregator(UDFBase):
                 if partition_id_idx is not None:
                     input_id = batch[0][partition_id_idx]
 
-                prepared_rows = [
-                    self._prepare_row(row, udf_fields, catalog, cache, download_cb)
-                    for row in batch
-                ]
+                prepared_rows = [prepare(row) for row in batch]
                 batched_args = zip(*prepared_rows, strict=False)
                 # Convert aggregated column values to lists. This keeps behavior
                 # consistent with the type hints promoted in the public API.
                 udf_args = [
                     list(arg) if isinstance(arg, tuple) else arg for arg in batched_args
                 ]
-                result_objs = self.process(*udf_args)
-                if result_objs is None:
-                    result_objs = iter(())
-                udf_outputs = (self._flatten_row(row) for row in result_objs)
-
-                def _process_partition(udf_outputs, input_id):
-                    has_output = False
-                    for row, is_last in with_last_flag(udf_outputs):
-                        has_output = True
-                        udf_output = dict(zip(signal_names, row, strict=False))
-                        udf_output["sys__input_id"] = input_id
-                        udf_output["sys__partial"] = not is_last
-                        udf_output["sys__empty"] = None
-                        yield udf_output
-                    if not has_output:
-                        yield {
-                            "sys__input_id": input_id,
-                            "sys__partial": False,
-                            "sys__empty": True,
-                        }
-
-                output = _process_partition(udf_outputs, input_id)
+                output = _output(self.process(*udf_args))
                 processed_cb.relative_update(len(batch))
-                yield output
+                yield input_id, output

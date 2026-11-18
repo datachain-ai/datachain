@@ -207,7 +207,6 @@ def _read_storage(
             update=update,
             versions=versions,
             settings=settings,
-            in_memory=in_memory,
             delta=delta,
             delta_on=delta_on,
             delta_result_on=delta_result_on,
@@ -564,7 +563,6 @@ def _prepare_listing(
     update: bool = False,
     versions: bool = True,
     settings: dict | None = None,
-    in_memory: bool = False,
     delta: bool | None = False,
     delta_on: str | Sequence[str] | None = None,
     delta_result_on: str | Sequence[str] | None = None,
@@ -609,9 +607,6 @@ def _prepare_listing(
             name,
             session,
             client_config,
-            file_type=file_type,
-            settings=settings,
-            in_memory=in_memory,
         )
     )
     return chain, list_uri, list_path
