@@ -35,6 +35,8 @@ ROOT = os.path.dirname(os.path.dirname(datachain.__file__))
 
 
 class FakeClient:
+    encode_page = None
+
     def __init__(self, out, fail=False):
         self.out, self.fail, self.probed_before_ready = out, fail, None
         self.probed = None
