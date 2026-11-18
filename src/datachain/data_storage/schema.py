@@ -1,4 +1,4 @@
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 import sqlalchemy as sa
@@ -17,13 +17,10 @@ from datachain.sql.types import (
 )
 
 if TYPE_CHECKING:
-    from sqlalchemy.engine.interfaces import Dialect
     from sqlalchemy.sql.base import (
-        ColumnCollection,
         Executable,
         ReadOnlyColumnCollection,
     )
-    from sqlalchemy.sql.elements import ColumnElement
 
     from datachain.data_storage.db_engine import DatabaseEngine
 
@@ -70,35 +67,6 @@ def coerce_table_types(table: sa.Table, column_types: dict[str, Any]) -> sa.Tabl
         else:
             columns.append(sa.Column(c.name, c.type))
     return sa.Table(table.name, sa.MetaData(), *columns)
-
-
-def convert_rows_custom_column_types(
-    columns: "ColumnCollection[str, ColumnElement[Any]]",
-    rows: Iterator[tuple[Any, ...]],
-    dialect: "Dialect",
-) -> Iterator[tuple[Any, ...]]:
-    """
-    This function converts values of rows columns based on their types which are
-    defined in columns. We are only converting column values for which types are
-    subclasses of our SQLType, as only for those we have converters registered.
-    """
-    # indexes of SQLType column in a list of columns so that we can skip the rest
-    custom_columns_types: list[tuple[int, SQLType]] = [
-        (idx, c.type) for idx, c in enumerate(columns) if isinstance(c.type, SQLType)
-    ]
-
-    if not custom_columns_types:
-        yield from rows
-
-    for row in rows:
-        row_list = list(row)
-        for idx, t in custom_columns_types:
-            if row_list[idx] is None:
-                row_list[idx] = None if t.dc_nullable else t.default_value(dialect)
-            else:
-                row_list[idx] = t.on_read_convert(row_list[idx], dialect)
-
-        yield tuple(row_list)
 
 
 class DirExpansion:

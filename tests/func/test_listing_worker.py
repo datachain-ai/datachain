@@ -15,7 +15,6 @@ from datachain.client import Client, listing_worker
 from datachain.client.listing_worker import Pool
 from datachain.lib.convert.flatten import flatten
 from datachain.lib.file import File, FileRow
-from datachain.lib.listing import list_bucket
 
 TREE = {
     "a": "1",
@@ -70,7 +69,8 @@ def remote_rows(mocker):
 
     async def recorded(self, *args):
         page = await list_page(self, *args)
-        got.extend(page.rows if page else [])
+        if page and len(page.rows):
+            got.append(page.rows)
         return page
 
     mocker.patch.object(Pool, "list_page", recorded)
@@ -239,15 +239,30 @@ def test_config_that_does_not_pickle_lists_in_process(client, tree, remote_rows)
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 @pytest.mark.parametrize("tree", [TREE], indirect=True)
-def test_read_storage_rows_from_children(client, tree, children):
-    uri = f"{client.uri}/"
-    chain = dc.read_values(seed=[0]).gen(
-        file=list_bucket(uri, None, client_config=client.fs_kwargs)
+@pytest.mark.parametrize(
+    "file_type, file_cls",
+    [
+        ("binary", File),
+        ("image", dc.ImageFile),
+        ("text", dc.TextFile),
+        ("video", dc.VideoFile),
+        ("audio", dc.AudioFile),
+    ],
+)
+def test_read_storage_rows_from_children(
+    client, tree, children, remote_rows, test_session, file_type, file_cls
+):
+    chain = dc.read_storage(
+        f"{client.uri}/",
+        type=file_type,
+        client_config=client.fs_kwargs,
+        session=test_session,
     )
 
-    files = chain.order_by("file.path", "file.version").to_values("file")
+    files = chain.to_values("file")
 
-    assert children
+    assert remote_rows
+    assert {type(f) for f in files} == {file_cls}
     assert sorted(flatten(f) for f in files) == listing(client, processes=False)
 
 
@@ -259,28 +274,6 @@ def test_listing_rows_are_normalized_files(client, tree):
     assert rows
     assert all(type(r) is FileRow for r in rows)
     assert [flatten(File(**r._asdict())) for r in rows] == [tuple(r) for r in rows]
-
-
-@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
-@pytest.mark.parametrize("tree", [TREE], indirect=True)
-@pytest.mark.parametrize(
-    "file_type", [dc.ImageFile, dc.TextFile, dc.VideoFile, dc.AudioFile]
-)
-def test_file_types_from_children(
-    client, tree, children, remote_rows, test_session, file_type
-):
-    files = (
-        dc.read_values(seed=[0], session=test_session)
-        .gen(
-            file=list_bucket(f"{client.uri}/", None, client_config=client.fs_kwargs),
-            output={"file": file_type},
-        )
-        .to_values("file")
-    )
-
-    assert remote_rows
-    assert {type(f) for f in files} == {file_type}
-    assert sorted(flatten(f) for f in files) == listing(client, processes=False)
 
 
 @pytest.fixture
@@ -336,9 +329,10 @@ def test_children_import_datachain_whatever_the_cwd_holds(
 
 
 CREDENTIAL_PROCESS = """
-import json, os, stat, sys
-with open(sys.argv[1], "a") as log:
-    log.write(f"{os.getppid()} {stat.S_ISFIFO(os.fstat(0).st_mode)}\\n")
+import json, os, pathlib, stat, sys
+(pathlib.Path(sys.argv[1]) / f"{os.getpid()}").write_text(
+    f"{os.getppid()} {stat.S_ISFIFO(os.fstat(0).st_mode)}"
+)
 print(json.dumps({"Version": 1, "AccessKeyId": sys.argv[2],
                   "SecretAccessKey": sys.argv[3], "SessionToken": sys.argv[4]}))
 """
@@ -352,7 +346,8 @@ def test_children_take_credentials_from_a_credential_process(
     import os
     import sys
 
-    script, log = tmp_path / "creds.py", tmp_path / "creds.log"
+    script, log = tmp_path / "creds.py", tmp_path / "creds"
+    log.mkdir()
     script.write_text(CREDENTIAL_PROCESS)
     kwargs = dict(client.fs_kwargs)
     keys = [kwargs.pop(k) for k in ("aws_key", "aws_secret", "aws_token")]
@@ -369,7 +364,7 @@ def test_children_take_credentials_from_a_credential_process(
 
     assert len(listing(client)) == len(listing(client, processes=False))
     assert remote_rows
-    calls = [line.split() for line in log.read_text().splitlines()]
+    calls = [p.read_text().split() for p in log.iterdir()]
     in_children = [fifo for ppid, fifo in calls if int(ppid) != os.getpid()]
     assert in_children
     assert set(in_children) == {"False"}  # the frame pipe is not their stdin

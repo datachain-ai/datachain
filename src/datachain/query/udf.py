@@ -23,6 +23,7 @@ class UdfInfo(TypedDict):
     cache: bool
     rows_total: int
     batch_size: int | None
+    parts: "Table | None"
 
 
 class AbstractUDFDistributor(ABC):
@@ -46,6 +47,8 @@ class AbstractUDFDistributor(ABC):
         continued: bool = False,
         rows_reused: int = 0,
         output_rows_reused: int = 0,
+        *,
+        parts: "Table | None" = None,  # last and optional: older distributors
     ) -> None: ...
 
     @abstractmethod
