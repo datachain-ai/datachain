@@ -181,6 +181,7 @@ def test_run_udf_single_uses_temporary_prefetch_cache(monkeypatch):
     dispatcher.is_batching = False
     dispatcher.udf_fields = []
     dispatcher.table = MagicMock()
+    dispatcher.parts = None
     dispatcher.batch_size = None
     dispatcher.rows_total = 1
     dispatcher.batching = None

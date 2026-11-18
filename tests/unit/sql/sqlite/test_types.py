@@ -6,6 +6,7 @@ import sqlalchemy as sa
 import ujson as json
 from sqlalchemy.exc import CompileError
 
+from datachain.data_storage.sqlite import decode_sqlite, decode_sqlite_datetime
 from datachain.sql.sqlite import base as sqlite_base
 from datachain.sql.sqlite.base import (
     adapt_datetime,
@@ -13,13 +14,13 @@ from datachain.sql.sqlite.base import (
     sqlite_datetime_cast,
 )
 from datachain.sql.sqlite.types import (
-    SQLiteTypeReadConverter,
     adapt_array,
     adapt_dict,
     adapt_np_array,
     adapt_np_generic,
     convert_array,
 )
+from datachain.sql.types import Array as DCArray
 from datachain.sql.types import DateTime as DCDateTime
 from datachain.sql.types import Int as DCInt
 
@@ -91,10 +92,8 @@ def test_convert_array():
     assert convert_array("[1,2]") == [1, 2]
 
 
-def test_sqlite_type_read_converter_array_decodes_json_string():
-    converter = SQLiteTypeReadConverter()
-
-    assert converter.array("[1,2]", DCInt(), sqlite_base.sqlite_dialect) == [1, 2]
+def test_decode_sqlite_array_decodes_json_string():
+    assert decode_sqlite(DCArray(DCInt))("[1,2]") == [1, 2]
 
 
 @pytest.mark.parametrize(
@@ -138,24 +137,18 @@ def test_sqlite_type_read_converter_array_decodes_json_string():
         ),
     ],
 )
-def test_sqlite_type_read_converter_datetime_normalizes_values(value, expected):
-    converter = SQLiteTypeReadConverter()
-
-    assert converter.datetime(value) == expected
+def test_decode_sqlite_datetime_normalizes_values(value, expected):
+    assert decode_sqlite_datetime(value) == expected
 
 
-def test_sqlite_type_read_converter_datetime_raises_for_invalid_strings():
-    converter = SQLiteTypeReadConverter()
-
+def test_decode_sqlite_datetime_raises_for_invalid_strings():
     with pytest.raises(ValueError, match="Invalid isoformat string"):
-        converter.datetime("not-a-datetime")
+        decode_sqlite_datetime("not-a-datetime")
 
 
-def test_sqlite_type_read_converter_datetime_raises_for_unexpected_values():
-    converter = SQLiteTypeReadConverter()
-
+def test_decode_sqlite_datetime_raises_for_unexpected_values():
     with pytest.raises(TypeError, match="expected str, datetime, or None"):
-        converter.datetime(123)
+        decode_sqlite_datetime(123)
 
 
 @pytest.mark.parametrize(

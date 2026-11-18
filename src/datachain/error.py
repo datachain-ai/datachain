@@ -62,7 +62,7 @@ class DatasetStateNotLoadedError(DataChainError):
     pass
 
 
-class DatasetInvalidVersionError(Exception):
+class DatasetInvalidVersionError(DataChainError):
     pass
 
 

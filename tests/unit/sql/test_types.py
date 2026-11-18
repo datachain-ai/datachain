@@ -4,12 +4,12 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.exc import CompileError
 
+from datachain.data_storage.codec import decode_bool, decode_datetime
 from datachain.sql.types import (
     Array,
     Int64,
     SQLType,
     String,
-    TypeReadConverter,
     validate_datetime_cast_input_type,
 )
 
@@ -33,15 +33,13 @@ from datachain.sql.types import (
         ("0", False),
     ],
 )
-def test_type_read_converter_boolean_normalizes_known_values(value, expected):
-    converter = TypeReadConverter()
-    assert converter.boolean(value) is expected
+def test_decode_boolean_normalizes_known_values(value, expected):
+    assert decode_bool(value) is expected
 
 
-def test_type_read_converter_boolean_passthrough_for_unknown_strings():
-    converter = TypeReadConverter()
+def test_decode_boolean_passthrough_for_unknown_strings():
     value = "maybe"
-    assert converter.boolean(value) == value
+    assert decode_bool(value) == value
 
 
 @pytest.mark.parametrize(
@@ -79,37 +77,28 @@ def test_type_read_converter_boolean_passthrough_for_unknown_strings():
         ),
     ],
 )
-def test_type_read_converter_datetime_parses_valid_strings(value, expected):
-    converter = TypeReadConverter()
-
-    assert converter.datetime(value) == expected
+def test_decode_datetime_parses_valid_strings(value, expected):
+    assert decode_datetime(value) == expected
 
 
-def test_type_read_converter_datetime_passthrough_for_datetime_values():
-    converter = TypeReadConverter()
+def test_decode_datetime_passthrough_for_datetime_values():
     value = datetime(2024, 1, 2, 3, 4, 5, tzinfo=UTC)
 
-    assert converter.datetime(value) is value
+    assert decode_datetime(value) is value
 
 
-def test_type_read_converter_datetime_passthrough_for_none():
-    converter = TypeReadConverter()
-
-    assert converter.datetime(None) is None
+def test_decode_datetime_passthrough_for_none():
+    assert decode_datetime(None) is None
 
 
-def test_type_read_converter_datetime_raises_for_invalid_strings():
-    converter = TypeReadConverter()
-
+def test_decode_datetime_raises_for_invalid_strings():
     with pytest.raises(ValueError, match="Invalid isoformat string"):
-        converter.datetime("not-a-datetime")
+        decode_datetime("not-a-datetime")
 
 
-def test_type_read_converter_datetime_raises_for_unexpected_values():
-    converter = TypeReadConverter()
-
+def test_decode_datetime_raises_for_unexpected_values():
     with pytest.raises(TypeError, match="expected str, datetime, or None"):
-        converter.datetime(123)
+        decode_datetime(123)
 
 
 @pytest.mark.parametrize(
