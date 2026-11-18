@@ -7,6 +7,8 @@ import pytest
 
 import datachain as dc
 from datachain.client import Client
+from datachain.dataset import DatasetStatus
+from datachain.error import ConcurrentDatasetModificationError
 from datachain.lib import listing
 from datachain.lib.file import File
 from datachain.lib.listing import (
@@ -503,9 +505,6 @@ def test_overlapping_first_listings_reuse_version(test_session):
 
 
 def test_removed_and_rereserved_listing_does_not_clobber_replacement(test_session):
-    from datachain.dataset import DatasetStatus
-    from datachain.error import ConcurrentDatasetModificationError
-
     uri = "s3://bucket/data/"
     name, _, _ = parse_listing_uri(uri)
     catalog = test_session.catalog
