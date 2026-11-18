@@ -4,6 +4,7 @@ import sys
 from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from functools import partial
 from typing import TYPE_CHECKING, Any, TypeGuard
 
 import numpy as np
@@ -15,6 +16,8 @@ from pyarrow.dataset import CsvFileFormat, Dataset, ParquetFileFormat, dataset
 from pyarrow.fs import FileInfo, FileType, FSSpecHandler, PyFileSystem
 
 from datachain import json
+from datachain.cache import Cache, ReadonlyCache
+from datachain.catalog.catalog import clone_catalog_with_cache
 from datachain.data_storage.codec import to_json_text
 from datachain.fs.reference import ReferenceFileSystem
 from datachain.lib.arrow_filter import to_arrow_filter
@@ -72,6 +75,14 @@ def fix_pyarrow_format(format, parse_options=None):
 
 def is_parquet(format) -> bool:
     return format == "parquet" or isinstance(format, ParquetFileFormat)
+
+
+def is_lance(format) -> bool:
+    return format == "lance"
+
+
+def is_columnar(format) -> bool:
+    return is_parquet(format) or is_lance(format)
 
 
 # CSV options that decide where a file's rows and columns start.
@@ -140,8 +151,198 @@ def pyarrow_fs(file: File, format):
     return PyFileSystem(_PartialReadHandler(client, file, block_size=block_size))
 
 
+_LANCE_TABLE_DIRS = frozenset(
+    ("data", "_versions", "_transactions", "_deletions", "_indices")
+)
+
+
+def _is_lance_table_file(file: File, client: "Client") -> bool:
+    fs_path = file.get_fs_path().replace("\\", "/").rstrip("/")
+    parts = fs_path.split("/")
+    stop = 2 if "://" in fs_path else -1
+    for i in range(len(parts) - 2, stop, -1):
+        if parts[i] in _LANCE_TABLE_DIRS:
+            if i > stop + 1 and parts[i - 1].endswith(".lance"):
+                return True
+            prefix = f"{'/'.join(parts[:i])}/"
+            if client.fs.isdir(f"{prefix}_versions") and (
+                parts[i] == "data" or client.fs.isdir(f"{prefix}data")
+            ):
+                return True
+    return False
+
+
+def _find_lance_blob(fields: Sequence[pa.Field], prefix: str = "") -> str | None:
+    for f in fields:
+        name = f"{prefix}{f.name}"
+        if (f.metadata or {}).get(b"lance-encoding:blob") == b"true":
+            return name
+        if pa.types.is_struct(f.type) and (
+            blob := _find_lance_blob(list(f.type), f"{name}.")
+        ):
+            return blob
+    return None
+
+
+def _lance_file_reader():
+    try:
+        from lance.file import LanceFileReader
+    except ImportError as exc:
+        raise ImportError(
+            f"Missing dependency for Lance files: {exc}\n"
+            "To install run:\n\n"
+            "  pip install 'datachain[lance]'\n"
+        ) from exc
+    return LanceFileReader
+
+
+def _local_lance_path(file: File) -> str:
+    catalog = file._catalog
+    assert catalog is not None
+    client = catalog.get_client(file.source)
+    if _is_lance_table_file(file, client):
+        raise ValueError(
+            f"'{file.path}' is inside a Lance table directory; "
+            "read_lance reads standalone .lance data files"
+        )
+    if (path := file.get_local_path()) is not None:
+        return path
+    if isinstance(client.fs, LocalFileSystem):
+        client.check_unchanged(file)
+        return file.get_fs_path()
+    if isinstance(cache := catalog.cache, ReadonlyCache):
+        file = file.model_copy()
+        file._catalog = clone_catalog_with_cache(
+            catalog, Cache(cache.cache_dir, cache.tmp_dir)
+        )
+    file.ensure_cached()
+    path = file.get_local_path()
+    assert path is not None
+    return path
+
+
+class _LanceDataset:
+    """Adapter reading a single Lance v2 data file via `LanceFileReader`."""
+
+    def __init__(self, file: File, schema: pa.Schema | None = None):
+        self._readers: dict[tuple[str, ...], Any] = {}
+        reader_cls = _lance_file_reader()
+        self._path = _local_lance_path(file)
+        self._base_reader = reader_cls(self._path)
+        meta = self._base_reader.metadata()
+        if blob := _find_lance_blob(list(meta.schema)):
+            self.close()
+            raise ValueError(
+                f"Lance blob column '{blob}' in '{file.path}' is not "
+                "supported; read_lance reads standalone .lance data files"
+            )
+        self.num_rows: int = meta.num_rows
+        self._physical_schema: pa.Schema = meta.schema
+        self.schema: pa.Schema = schema or self._physical_schema
+
+    def _reader(self, present: tuple[str, ...]) -> Any:
+        # Lance's projection parser rejects empty column names.
+        if "" in present or list(present) == self._physical_schema.names:
+            return self._base_reader
+        if (reader := self._readers.get(present)) is None:
+            escaped = [f"`{c.replace('`', '``')}`" for c in present]
+            reader = _lance_file_reader()(self._path, columns=escaped)
+            self._readers[present] = reader
+        return reader
+
+    def _read(
+        self,
+        columns: Sequence[str],
+        take: pa.Array | None = None,
+        *,
+        start: int,
+        n: int,
+    ) -> pa.Table:
+        present = tuple(c for c in columns if c in self._physical_schema.names)
+        raw = None
+        if present and n:
+            r = self._reader(present)
+            if take is not None:
+                idx = (pc.add(take, start) if start else take).to_pylist()
+                raw = r.take_rows(idx, batch_size=len(idx)).to_table()
+            else:
+                raw = r.read_range(start, n, batch_size=n).to_table()
+        rows = n if take is None else len(take)
+        return pa.Table.from_arrays(
+            [
+                raw.column(c).cast(t)
+                if raw is not None and c in present
+                else pa.nulls(rows, t)
+                for c in columns
+                for t in (self.schema.field(c).type,)
+            ],
+            names=list(columns),
+        )
+
+    def chunks(self, step: int):
+        for start in range(0, self.num_rows, step):
+            n = min(step, self.num_rows - start)
+            yield start, n, partial(self._read, start=start, n=n)
+
+    def to_batches(self, **kw: Any) -> Iterator[pa.RecordBatch]:
+        columns = list(kw.get("columns") or self.schema.names)
+        step = kw.get("batch_size") or ArrowGenerator.DEFAULT_BATCH_SIZE
+        for _, _, read in self.chunks(step):
+            yield from read(columns).to_batches(step)
+
+    def filtered_batches(
+        self,
+        filter_expr: pc.Expression,
+        filter_columns: Sequence[str],
+        columns: Sequence[str],
+        batch_size: int,
+    ) -> Iterator[tuple[pa.Array, pa.RecordBatch]]:
+        keys = [c for c in filter_columns if c in self.schema.names]
+        rest = [c for c in columns if c not in keys]
+        index = unique_name("index", self.schema.names)
+        with tqdm(desc="Parsed by pyarrow", unit="rows", leave=False) as pbar:
+            for start, num_rows, read in self.chunks(ArrowGenerator.DEFAULT_BATCH_SIZE):
+                hits = (
+                    read(keys)
+                    .append_column(index, pa.arange(0, num_rows))
+                    .filter(filter_expr)
+                )
+                pbar.update(num_rows)
+                if not hits.num_rows:
+                    continue
+                cols = dict(zip(hits.column_names, hits.columns, strict=True))
+                if rest:
+                    take = hits[index] if hits.num_rows < num_rows else None
+                    data = read(rest, take)
+                    cols.update(zip(rest, data.columns, strict=True))
+                index_col = pc.add(hits[index], start) if start else hits[index]
+                table = pa.table(
+                    [*(cols[c] for c in columns), index_col], [*columns, index]
+                )
+                for batch in table.to_batches(batch_size):
+                    yield batch.column(index), batch.drop_columns([index])
+
+    def take(self, indices: Sequence[int]) -> pa.Table:
+        for i in indices:
+            if i < 0 or i >= self.num_rows:
+                raise IndexError(f"Row index {i} out of range ({self.num_rows} rows)")
+        unique = sorted(set(indices))
+        table = self._read(
+            self.schema.names,
+            pa.array(unique, type=pa.int64()),
+            start=0,
+            n=len(unique),
+        )
+        pos = {idx: j for j, idx in enumerate(unique)}
+        return table.take([pos[i] for i in indices])
+
+    def close(self) -> None:
+        self._readers.clear()
+        self._base_reader = None
+
+
 def read_batches(
-    ds: Dataset, nrows: int | None = None, **kw: Any
+    ds: Dataset | _LanceDataset, nrows: int | None = None, **kw: Any
 ) -> Iterator[tuple[int, pa.RecordBatch]]:
     """Yield the file's batches up to nrows rows, each with its first row's
     index."""
@@ -404,7 +605,7 @@ class ArrowGenerator(Generator):
             kept[pick] = data[pick] = self.output.values[pick]
         pushed = (
             to_arrow_filter(filters, self.input_schema, data)
-            if is_parquet(self.kwargs.get("format"))
+            if is_columnar(self.kwargs.get("format"))
             else None
         )
         if len(kept) == len(self.output.values) and pushed is None:
@@ -423,69 +624,68 @@ class ArrowGenerator(Generator):
     def process(self, file: File):
         if file._caching_enabled:
             file.ensure_cached()
-        if cache_path := file.get_local_path():
-            fs_path = file.path
-            fs = ReferenceFileSystem({fs_path: [cache_path]})
-        else:
-            fs = pyarrow_fs(file, self.kwargs.get("format"))
-            fs_path = file.get_fs_path()
-
         kwargs = self.kwargs
         if format := kwargs.get("format"):
             kwargs["format"] = fix_pyarrow_format(format, self.parse_options)
 
-        if self.datachain_read:
-            # Each file is read with its own columns and types, which other files
-            # may differ from.
-            ds = dataset(fs_path, filesystem=fs, **kwargs)
-            _check_type_tags(file, ds.schema)
-        else:
-            ds = dataset(fs_path, schema=self.input_schema, filesystem=fs, **kwargs)
+        # With datachain_read, each file is read with its own columns and types.
+        in_schema = None if self.datachain_read else self.input_schema
+        with safe_closing(_file_dataset(file, kwargs, in_schema)) as ds:
+            if self.datachain_read:
+                _check_type_tags(file, ds.schema)
 
-        use_datachain_schema = _written_by_datachain(ds.schema)
-        if self.written_by_datachain not in (None, use_datachain_schema):
-            kind = "is" if use_datachain_schema else "isn't"
-            raise ValueError(
-                f"{_MIXED_FILES}, and '{file.path}' {kind} written by DataChain"
-            )
+            use_datachain_schema = _written_by_datachain(ds.schema)
+            if self.written_by_datachain not in (None, use_datachain_schema):
+                kind = "is" if use_datachain_schema else "isn't"
+                raise ValueError(
+                    f"{_MIXED_FILES}, and '{file.path}' {kind} written by DataChain"
+                )
 
-        source_kwargs = self._source_kwargs() if self.source else None
-        schema = ds.schema
-        kw: dict[str, Any] = {
-            "batch_size": min(self.DEFAULT_BATCH_SIZE, self.nrows or sys.maxsize),
-            "batch_readahead": 1,
-        }
-        if (names := self._flat_columns(schema)) is not None:
-            kw["columns"] = names
-            yield from self._column_batches(self._batches(ds, kw), file, source_kwargs)
-            return
-        if self.datachain_read:
-            for index, obj in enumerate(self._signal_objects(ds, kw)):
-                yield self._process_record(obj, file, index, source_kwargs)
-            return
-        if self.columns is not None:
-            present = set(schema.names)
-            kw["columns"] = [c for c in self.columns if c in present]
-            # Decode Hugging Face features only for the columns being read.
-            fields = [schema.field(c) for c in kw["columns"]]
-            schema = pa.schema(fields, metadata=schema.metadata)
-        hf_schema = _get_hf_schema(schema)
-        for start, batch in self._batches(ds, kw):
-            # Maps are read as dicts. Duplicate keys raise an error.
-            records = batch.to_pylist(maps_as_pydicts="strict")
-            indices = (
-                range(start, start + len(records))
-                if isinstance(start, int)
-                else start.to_pylist()
-            )
-            for index, record in zip(indices, records, strict=True):
-                obj = self._process_non_datachain_record(record, hf_schema)
-                yield self._process_record(obj, file, index, source_kwargs)
+            source_kwargs = self._source_kwargs() if self.source else None
+            schema = ds.schema
+            kw: dict[str, Any] = {
+                "batch_size": min(self.DEFAULT_BATCH_SIZE, self.nrows or sys.maxsize),
+                "batch_readahead": 1,
+            }
+            if (names := self._flat_columns(schema)) is not None:
+                kw["columns"] = names
+                yield from self._column_batches(
+                    self._batches(ds, kw), file, source_kwargs
+                )
+                return
+            if self.datachain_read:
+                assert isinstance(ds, Dataset)
+                for index, obj in enumerate(self._signal_objects(ds, kw)):
+                    yield self._process_record(obj, file, index, source_kwargs)
+                return
+            if self.columns is not None:
+                present = set(schema.names)
+                kw["columns"] = [c for c in self.columns if c in present]
+                # Decode Hugging Face features only for the columns being read.
+                fields = [schema.field(c) for c in kw["columns"]]
+                schema = pa.schema(fields, metadata=schema.metadata)
+            hf_schema = _get_hf_schema(schema)
+            for start, batch in self._batches(ds, kw):
+                # Maps are read as dicts. Duplicate keys raise an error.
+                records = batch.to_pylist(maps_as_pydicts="strict")
+                indices = (
+                    range(start, start + len(records))
+                    if isinstance(start, int)
+                    else start.to_pylist()
+                )
+                for index, record in zip(indices, records, strict=True):
+                    obj = self._process_non_datachain_record(record, hf_schema)
+                    yield self._process_record(obj, file, index, source_kwargs)
 
     def _batches(
-        self, ds: Dataset, kw: dict[str, Any]
+        self, ds: Dataset | _LanceDataset, kw: dict[str, Any]
     ) -> Iterator[tuple[int | pa.Array, pa.RecordBatch]]:
         if self.filter is not None:
+            if isinstance(ds, _LanceDataset):
+                columns = kw.get("columns") or ds.schema.names
+                return ds.filtered_batches(
+                    self.filter, self.filter_columns, columns, kw["batch_size"]
+                )
             return filter_batches(ds, self.filter, self.filter_columns, **kw)
         return read_batches(ds, self.nrows, **kw)
 
@@ -648,12 +848,20 @@ def _dataset_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     return kwargs
 
 
-def _file_dataset(file: File, kwargs: dict[str, Any]) -> Dataset:
-    fs = pyarrow_fs(file, kwargs.get("format"))
-    return dataset(file.get_fs_path(), filesystem=fs, **kwargs)  # type: ignore[union-attr]
+def _file_dataset(
+    file: File, kwargs: dict[str, Any], schema: pa.Schema | None = None
+) -> Dataset | _LanceDataset:
+    if is_lance(kwargs.get("format")):
+        return _LanceDataset(file, schema)
+    fs_path = file.get_fs_path()
+    if cache_path := file.get_local_path():
+        fs: Any = ReferenceFileSystem({fs_path: [cache_path]})
+    else:
+        fs = pyarrow_fs(file, kwargs.get("format"))
+    return dataset(fs_path, schema=schema, filesystem=fs, **kwargs)
 
 
-def _file_datasets(chain: "DataChain", **kwargs) -> Iterator[Dataset]:
+def _file_datasets(chain: "DataChain", **kwargs) -> Iterator[Dataset | _LanceDataset]:
     kwargs = _dataset_kwargs(kwargs)
     for (file,) in chain.to_iter("file"):
         yield _file_dataset(file, kwargs)  # type: ignore[arg-type]
@@ -666,7 +874,8 @@ def file_schemas(chain: "DataChain", **kwargs) -> list[pa.Schema]:
     files = chain.order_by("file.path").to_values("file")
 
     def file_schema(file: File) -> pa.Schema:
-        schema = _file_dataset(file, kwargs).schema
+        with safe_closing(_file_dataset(file, kwargs)) as ds:
+            schema = ds.schema
         _check_type_tags(file, schema)
         return schema
 
@@ -732,8 +941,11 @@ def read_columns(
     these names with its own types. Partition and pandas index columns at the end
     are left out when output has no fields for them.
     """
-    ds = next(_file_datasets(chain.order_by("file.path").limit(1), **kwargs))
-    schema = ds.schema
+    with safe_closing(
+        next(_file_datasets(chain.order_by("file.path").limit(1), **kwargs))
+    ) as ds:
+        schema = ds.schema
+        fragments = ds.get_fragments() if isinstance(ds, Dataset) else None
     fields = len(model.model_fields)
     if signal_schema := _get_datachain_schema(schema):
         signals = _signal_paths(signal_schema, columns, replace_source)
@@ -746,8 +958,8 @@ def read_columns(
 
     if columns is not None:
         schema, _ = merge_schemas([schema], columns)
-    elif len(schema) > fields:
-        physical = next(ds.get_fragments()).physical_schema
+    elif len(schema) > fields and fragments is not None:
+        physical = next(fragments).physical_schema
         extra = set(schema.names) - set(physical.names)
         index = (schema.pandas_metadata or {}).get("index_columns", [])
         extra |= {c for c in index if isinstance(c, str)}
@@ -965,7 +1177,11 @@ def arrow_type_mapper(col_type: pa.DataType, column: str = "") -> type:  # noqa:
     """Convert pyarrow types to basic types."""
     if pa.types.is_timestamp(col_type):
         return datetime
-    if pa.types.is_binary(col_type):
+    if (
+        pa.types.is_binary(col_type)
+        or pa.types.is_large_binary(col_type)
+        or pa.types.is_fixed_size_binary(col_type)
+    ):
         return bytes
     if pa.types.is_floating(col_type):
         return float
@@ -977,7 +1193,11 @@ def arrow_type_mapper(col_type: pa.DataType, column: str = "") -> type:  # noqa:
         return datetime
     if pa.types.is_string(col_type) or pa.types.is_large_string(col_type):
         return str
-    if pa.types.is_list(col_type):
+    if (
+        pa.types.is_list(col_type)
+        or pa.types.is_large_list(col_type)
+        or pa.types.is_fixed_size_list(col_type)
+    ):
         item_type = _arrow_field_type_mapper(
             col_type.value_field, column, nullable_scalars_only=True
         )
@@ -1029,7 +1249,12 @@ def _is_plain_type(col_type: pa.DataType, top_level: bool = False) -> bool:
     """Whether pyarrow gives the column's values as pydantic and the DB keep them,
     typed as `arrow_type_mapper` types them. A top-level column counts after
     `_microseconds`."""
-    if pa.types.is_dictionary(col_type) or pa.types.is_list(col_type):
+    if (
+        pa.types.is_dictionary(col_type)
+        or pa.types.is_list(col_type)
+        or pa.types.is_large_list(col_type)
+        or pa.types.is_fixed_size_list(col_type)
+    ):
         return _is_plain_type(col_type.value_type)
     if pa.types.is_timestamp(col_type):
         # pyarrow gives nanoseconds as pandas Timestamps.
@@ -1042,6 +1267,8 @@ def _is_plain_type(col_type: pa.DataType, top_level: bool = False) -> bool:
         or pa.types.is_string(col_type)
         or pa.types.is_large_string(col_type)
         or pa.types.is_binary(col_type)
+        or pa.types.is_large_binary(col_type)
+        or pa.types.is_fixed_size_binary(col_type)
         or pa.types.is_null(col_type)
     )
 

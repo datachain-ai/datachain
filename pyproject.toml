@@ -105,8 +105,11 @@ postgres = [
 zarr = [
   "zarr>=3.0.0"
 ]
+lance = [
+  "pylance>=1.0.0"
+]
 tests = [
-  "datachain[torch,audio,remote,vector,hf,video,postgres,zarr]",
+  "datachain[torch,audio,remote,vector,hf,video,postgres,zarr,lance]",
   "pytest>=8,<9.3",
   "pytest-asyncio",
   "pytest-sugar>=0.9.6",

@@ -2940,9 +2940,9 @@ class DataChain:
                 omitted (along with `output` and `column`), DataChain automatically
                 reads only the columns used by `select()`, `group_by()`, `count()`, or
                 `gen()` (even after `filter()`, `order_by()`, or `mutate()`), and on
-                Parquet applies `filter()` conditions while reading so only the needed
-                rows and columns are loaded (`filter()`, `select()`, and `order_by()`
-                can appear in any order).
+                Parquet or Lance applies `filter()` conditions while reading so only
+                the needed rows and columns are loaded (`filter()`, `select()`, and
+                `order_by()` can appear in any order).
             kwargs: Parameters to pass to pyarrow.dataset.dataset.
 
         Example:
