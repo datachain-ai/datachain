@@ -3786,11 +3786,9 @@ def test_read_parquet_projects_columns_across_steps(
             [3],
         ),
         (
-            lambda c: (
-                c.filter(C("sys.rand") == c.to_list("a", "sys.rand")[0][1]).to_values(
-                    "a"
-                )
-            ),
+            lambda c: c.filter(
+                C("sys.rand") == c.to_list("a", "sys.rand")[0][1]
+            ).to_values("a"),
             [3],
         ),
     ],
