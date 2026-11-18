@@ -36,6 +36,7 @@ from datachain.remote.studio import (
     StudioClient,
     get_studio_team,
     get_studio_url,
+    self_hosted,
 )
 from datachain.utils import STUDIO_URL, flatten
 
@@ -201,9 +202,9 @@ def _login_exists_error(
     team = next((t for t in teams or () if t in (existing.teams or ())), None)
     command = existing.logout_command(team, host=existing.url != current_url)
     return DataChainError(
-        f"Token already exists for {existing.url} ({existing.describe_teams()}) "
-        f"in {existing.path}. To login with a different token, logout using "
-        f"`{command}`."
+        f"Token already exists{self_hosted(existing.url, ' for ')} "
+        f"({existing.describe_teams()}) in {existing.path}. To login with a "
+        f"different token, logout using `{command}`."
     )
 
 
@@ -286,29 +287,15 @@ def login(args: "Namespace"):
 
 
 def _remove_old_token(level: ConfigLevel) -> None:
-    """Revoke and remove a token that an older version saved in the config.
-
-    DataChain no longer reads it, but the config is readable by others and the
-    token works on Studio until it expires.
-    """
+    """Remove, and try to revoke, a token an older version saved in the config."""
     studio_conf = Config(level).read().get("studio", {})
     if not (old_token := studio_conf.get("token")):
         return
-
-    # The Studio the older `auth login` saved with the token; not the environment's.
-    old = Login(url=studio_conf.get("url") or STUDIO_URL, token=old_token)
     path = _update_studio_config(level, token=None)
-    try:
-        _revoke(old)
-    except DataChainError:
-        print(
-            f"Removed the Studio token an older version saved in {path}, but could "
-            f"not revoke it. Revoke it in your Studio settings at {old.url}.",
-            file=sys.stderr,
-        )
-    else:
-        # Revoked now, or already invalid: either way it no longer works.
-        print(f"Removed the Studio token an older version saved in {path}.")
+    print(f"Removed the token an older version saved in {path}.")
+    # Sent only to the Studio saved with it, never to the environment's.
+    with contextlib.suppress(DataChainError):
+        _revoke(Login(url=studio_conf.get("url") or STUDIO_URL, token=old_token))
 
 
 def _revoke(login: Login) -> None:
@@ -365,12 +352,12 @@ def logout(
         what = f"No token for team '{team}'"
     else:
         logins = [login for login in saved if login.teams is None]
-        what = "No token for all teams"
+        what = "No token without a team"
 
     if not logins:
         raise DataChainError(
-            f"{what} is saved for {url} in {credentials_path(level)}. "
-            "Run `datachain auth list` to see the saved tokens."
+            f"{what} is saved{self_hosted(url, ' for ')} in {credentials_path(level)}."
+            " Run `datachain auth list` to see the saved tokens."
         )
 
     # The default team saved at this level is for the Studio saved there, and goes
@@ -387,7 +374,7 @@ def logout(
         # Removed one at a time, so a failed revoke keeps the tokens not yet revoked.
         _revoke(login)
         remove_login(login)
-        print(f"Logged out from Studio at {url} ({login.describe_teams()}).")
+        print(f"Logged out from Studio{self_hosted(url)} ({login.describe_teams()}).")
 
     if clear_team:
         # The config with the team keeps this .datachain/ found.
@@ -403,14 +390,15 @@ def token(team: str | None = None):
 def list_logins():
     url = get_studio_url()
     team = get_studio_team()
-    print(f"Studio URL: {url}")
+    if self_hosted(url):
+        print(f"Studio URL: {url}")
     print(f"Default team: {team or 'not set'}")
 
     logins = all_logins()
     rows = []
     current = None
     if os.environ.get(TOKEN_ENV):
-        rows.append(["*", url, "all teams", "", "", f"${TOKEN_ENV}"])
+        rows.append(["*", url, "any team", "", "", f"${TOKEN_ENV}"])
     else:
         current = select_login(logins, url, team)
     rows.extend(
@@ -430,6 +418,10 @@ def list_logins():
         return 0
 
     headers = ["", "Studio", "Teams", "Name", "Expires", "Saved in"]
+    if not any(self_hosted(row[1]) for row in rows):
+        # All for the default Studio, so the column says nothing.
+        headers.pop(1)
+        rows = [[row[0], *row[2:]] for row in rows]
     print()
     print(tabulate.tabulate(rows, headers=headers))
     return 0

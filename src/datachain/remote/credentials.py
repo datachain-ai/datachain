@@ -1,13 +1,15 @@
 """Studio logins: tokens kept outside the config, each bound to one Studio URL.
 
-A login holds a token for one Studio URL, either for a list of teams or for all
-teams the token can reach. Logins live in a ``credentials`` file next to the
-config: in the project's ``.datachain/`` (``--local``) or in the global config dir.
-The file is written ``0600`` and ignored if other users can read it.
+A login holds a token for one Studio URL, either for a list of teams or, saved
+without ``--team``, for any team that has no token of its own. Which teams Studio
+accepts it for is set in Studio when the token is created. Logins live in a
+``credentials`` file next to the config: in the project's ``.datachain/``
+(``--local``) or in the global config dir. The file is written ``0600`` and
+ignored if other users can read it.
 
 A command finds its token from the Studio URL and team it acts on:
 ``DATACHAIN_STUDIO_TOKEN`` first, then the project's logins, then the user's. At
-each level a token for the team wins over a token for all teams.
+each level a token for the team wins over a token without teams.
 """
 
 import logging
@@ -39,7 +41,7 @@ _warned: set[str] = set()
 class Login:
     url: str
     token: str
-    # None: every team the token can reach.
+    # None: saved without --team, used for any team without a token of its own.
     teams: list[str] | None = None
     name: str | None = None
     expires: date | None = None
@@ -58,7 +60,7 @@ class Login:
         return self.teams is None or team in self.teams
 
     def describe_teams(self) -> str:
-        return "all teams" if self.teams is None else ", ".join(self.teams)
+        return "any team" if self.teams is None else ", ".join(self.teams)
 
     def expired(self) -> bool:
         return self.expires is not None and self.expires < datetime.now(UTC).date()
@@ -192,7 +194,7 @@ def all_logins() -> list[Login]:
 def select_login(logins: list[Login], url: str, team: str | None) -> Login | None:
     """The login to use for this Studio URL and team, from the given ones."""
     matching = [lg for lg in logins if lg.url == url and lg.covers(team)]
-    # A project's login wins; then a login for the team wins over all teams.
+    # A project's login wins; then a login for the team wins over one without teams.
     return min(
         matching,
         key=lambda lg: (LEVELS.index(lg.level), lg.teams is None),
@@ -207,9 +209,9 @@ def resolve_token(url: str, team: str | None) -> str | None:
         return None
     if login.expired():
         # Falling back to another token could switch to another account.
-        target = "all teams" if login.teams is None else f"team '{team}'"
+        which = "without a team" if login.teams is None else f"for team '{team}'"
         raise DataChainError(
-            f"The Studio token for {target} in {login.path} expired on "
+            f"The Studio token {which} in {login.path} expired on "
             f"{login.expires}. Run `{login.logout_command(team)}` and log in again."
         )
     return login.token

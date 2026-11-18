@@ -299,14 +299,21 @@ def test_studio_login_for_env_url_sets_no_default_team(get_access_token, monkeyp
     assert resolve_token(OTHER_URL, "x") == "isat_access_token"
 
 
-def test_studio_old_config_token_is_ignored_and_revoked_on_login(get_access_token):
+# A failed revoke doesn't stop the login.
+@pytest.mark.parametrize("revoke_status", [200, 500])
+def test_studio_old_config_token_is_ignored_and_revoked_on_login(
+    get_access_token, capsys, revoke_status
+):
     with Config(ConfigLevel.GLOBAL).edit() as conf:
         conf["studio"] = {"token": "old_token", "team": "acme"}
 
     assert main(["auth", "token"]) == 1
+    assert "older version saved in the config is no longer used" in (
+        capsys.readouterr().err
+    )
 
     with requests_mock.mock() as m:
-        m.post(f"{STUDIO_URL}/api/device-logout", json={})
+        m.post(f"{STUDIO_URL}/api/device-logout", status_code=revoke_status, json={})
         assert main(["auth", "login"]) == 0
         assert m.last_request.headers["Authorization"] == "token old_token"
 
@@ -334,18 +341,6 @@ def test_studio_old_config_token_is_revoked_where_it_was_used(
     assert Config(ConfigLevel.GLOBAL).read()["studio"] == {"token": "global_token"}
 
 
-def test_studio_old_config_token_is_removed_if_revoke_fails(get_access_token, capsys):
-    with Config(ConfigLevel.GLOBAL).edit() as conf:
-        conf["studio"] = {"token": "old_token"}
-
-    with requests_mock.mock() as m:
-        m.post(f"{STUDIO_URL}/api/device-logout", status_code=500)
-        assert main(["auth", "login"]) == 0
-
-    assert "studio" not in Config(ConfigLevel.GLOBAL).read()
-    assert "Revoke it in your Studio settings" in capsys.readouterr().err
-
-
 @pytest.mark.parametrize(
     "status_code,body,expected",
     [
@@ -367,7 +362,7 @@ def test_studio_login_http_error(get_access_token, capsys, status_code, body, ex
     assert f"Failed to authenticate with Studio: {expected}" in capsys.readouterr().err
 
 
-def test_studio_logout(global_config_dir):
+def test_studio_logout(capsys, global_config_dir):
     studio_login()
 
     with requests_mock.mock() as m:
@@ -379,6 +374,7 @@ def test_studio_logout(global_config_dir):
         assert m.called
         assert m.last_request.headers["Authorization"] == "token isat_access_token"
 
+    assert "Logged out from Studio (any team)." in capsys.readouterr().out
     assert saved_tokens() == []
     # No default team to clear, so no config file is written.
     assert not (Path(global_config_dir) / "config").exists()
@@ -404,8 +400,8 @@ def test_studio_logout_clears_default_team_with_the_last_token():
 @pytest.mark.parametrize(
     "args,expected",
     [
-        ([], f"No token for all teams is saved for {STUDIO_URL}"),
-        (["--team", "y"], f"No token for team 'y' is saved for {STUDIO_URL}"),
+        ([], "No token without a team is saved in "),
+        (["--team", "y"], "No token for team 'y' is saved in "),
         (["-H", OTHER_URL, "--all"], f"No token is saved for {OTHER_URL}"),
     ],
 )
@@ -649,7 +645,7 @@ def test_studio_token(capsys):
 
 def test_studio_token_without_login_fails_and_creates_no_directory(capsys, tmp_dir):
     assert main(["auth", "token"]) == 1
-    assert f"Not logged in to Studio at {STUDIO_URL}" in capsys.readouterr().err
+    assert "Not logged in to Studio. Use" in capsys.readouterr().err
     assert not (tmp_dir / ".datachain").exists()
 
 
@@ -679,12 +675,29 @@ def test_studio_auth_list(capsys):
 
     out, err = capsys.readouterr()
     lines = out.splitlines()
-    assert lines[:2] == [f"Studio URL: {STUDIO_URL}", "Default team: acme"]
+    assert lines[0] == "Default team: acme"
+    # The default Studio goes unnamed.
+    assert STUDIO_URL not in out
     [current] = [line for line in lines if line.startswith("*")]
-    assert "all teams" in current
+    assert "any team" in current
     assert any("customer-x" in line and not line.startswith("*") for line in lines)
     assert "isat_access_token" not in out + err
     assert "customer_token" not in out + err
+
+
+def test_studio_auth_list_names_a_self_hosted_studio(capsys):
+    studio_login()
+    studio_login("other_token", url=OTHER_URL)
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"url": OTHER_URL}
+
+    assert main(["auth", "list"]) == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == f"Studio URL: {OTHER_URL}"
+    [current] = [line for line in lines if line.startswith("*")]
+    assert OTHER_URL in current
+    assert any(STUDIO_URL in line for line in lines if not line.startswith("*"))
 
 
 def test_studio_auth_list_marks_env_token(capsys, monkeypatch):
@@ -1298,7 +1311,7 @@ def test_studio_command_without_login_or_team(capsys, command):
     assert main(command) == 1
 
     err = capsys.readouterr().err
-    assert f"Not logged in to Studio at {STUDIO_URL}" in err
+    assert "Not logged in to Studio. Use" in err
     assert "team is not set" not in err
 
 

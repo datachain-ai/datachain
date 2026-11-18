@@ -71,6 +71,11 @@ def get_studio_url(config: dict | None = None) -> str:
     )
 
 
+def self_hosted(url: str, prefix: str = " at ") -> str:
+    """Names a self-hosted Studio in a message; the default Studio goes unnamed."""
+    return "" if url.rstrip("/") == STUDIO_URL else f"{prefix}{url}"
+
+
 def get_studio_team(config: dict | None = None) -> str | None:
     if config is None:
         config = Config().read().get("studio", {}) or {}
@@ -130,8 +135,13 @@ class StudioClient:
                 # Only tokens for teams are saved, so the team is what's missing.
                 self._get_team()
             for_team = f" for team '{team}'" if team else ""
+            old = (
+                " The token an older version saved in the config is no longer used."
+                if self.config.get("token")
+                else ""
+            )
             raise DataChainError(
-                f"Not logged in to Studio at {url}{for_team}. Use "
+                f"Not logged in to Studio{self_hosted(url)}{for_team}.{old} Use "
                 "`datachain auth login` or environment variable "
                 "`DATACHAIN_STUDIO_TOKEN` to set a token."
             )

@@ -10,10 +10,9 @@ usage: datachain auth list [-h] [-v] [-q]
 
 ## Description
 
-This command shows the Studio URL and the default team DataChain uses, and the Studio tokens saved for this project and for you. For each token, it shows:
+This command lists the Studio tokens saved for you and for this project, and shows the default team. For each token, it shows:
 
-* `Studio` - The Studio instance that issued the token.
-* `Teams` - The teams the token is used for, or `all teams`.
+* `Teams` - The teams the token is used for (saved with `--team`), or `any team` for a token saved without `--team`, which is used for any team that has no token of its own.
 * `Name` - The token name, as shown in your Studio profile.
 * `Expires` - The date the token expires.
 * `Saved in` - The file the token is saved in.
@@ -21,6 +20,8 @@ This command shows the Studio URL and the default team DataChain uses, and the S
 The token used for the default team is marked with `*`. See [`datachain auth login`](login.md) for how DataChain picks it. If `DATACHAIN_STUDIO_TOKEN` is set, it is listed first and marked instead, because it is used for every team.
 
 Token values are not shown. Run [`datachain auth token`](token.md) to print one.
+
+With a self-hosted Studio, it also shows the Studio URL in use and, for each token, the Studio instance that issued it.
 
 ## Options
 
@@ -36,11 +37,10 @@ datachain auth list
 ```
 
 ```
-Studio URL: https://studio.datachain.ai
 Default team: acme
 
-    Studio                       Teams       Name        Expires     Saved in
---  ---------------------------  ----------  ----------  ----------  ---------------------------------
-*   https://studio.datachain.ai  all teams   laptop      2027-11-16  ~/.config/datachain/credentials
-    https://studio.datachain.ai  customer-x  customer-x  2027-02-14  ~/.config/datachain/credentials
+    Teams       Name        Expires     Saved in
+--  ----------  ----------  ----------  -------------------------------
+*   any team    laptop      2027-11-16  ~/.config/datachain/credentials
+    customer-x  customer-x  2027-02-14  ~/.config/datachain/credentials
 ```

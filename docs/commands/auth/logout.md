@@ -15,30 +15,32 @@ This command logs out of Studio: it revokes a saved token, so Studio no longer a
 
 Each `datachain auth login` has a matching logout:
 
-* `datachain auth logout` removes the token for all teams, saved by `datachain auth login`.
-* `datachain auth logout --team TEAM` removes the token for that team, saved by `datachain auth login --team TEAM`. If that token is also used for other teams, it is removed for them too.
-* `datachain auth logout --all` removes every token for the Studio.
+* `datachain auth logout` removes the token saved by `datachain auth login`, without `--team`.
+* `datachain auth logout --team TEAM` removes the token saved by `datachain auth login --team TEAM`. If that token is also used for other teams, it is removed for them too.
+* `datachain auth logout --all` removes every token.
 
-By default, it removes your tokens for the current Studio. Use `--local` to remove the project's tokens instead, and `-H` for another Studio. When the last token for the Studio saved in the config is removed from a file, the default team set at the same level is cleared too.
+Use `--local` to remove the project's tokens instead of yours. When the last token is removed from a file, the default team set at the same level is cleared too.
+
+With a self-hosted Studio, logout removes the tokens for the instance in use, and `-H` picks another one. The default team is cleared with the last token for the instance saved in the config.
 
 ## Options
 
 * `--local` - Remove the project's tokens instead of your global tokens.
-* `--team TEAM` - Remove the token for this team instead of the token for all teams.
-* `--all` - Remove every token for the Studio: the token for all teams and the token for each team.
-* `-H HOSTNAME`, `--hostname HOSTNAME` - The Studio to log out from. Defaults to the current Studio.
+* `--team TEAM` - Remove the token for this team instead of the one saved without `--team`.
+* `--all` - Remove every token, saved with or without `--team`.
+* `-H HOSTNAME`, `--hostname HOSTNAME` - The self-hosted Studio instance to log out from. Defaults to the one in use.
 * `-h`, `--help` - Show the help message and exit.
 * `-v`, `--verbose` - Be verbose.
 * `-q`, `--quiet` - Be quiet.
 
 ## Examples
 
-1. Remove your token for all teams:
+1. Remove your token:
 ```bash
 datachain auth logout
 ```
 
-2. Remove the project's token for all teams:
+2. Remove the project's token:
 ```bash
 datachain auth logout --local
 ```
@@ -48,7 +50,7 @@ datachain auth logout --local
 datachain auth logout --team customer-team
 ```
 
-4. Remove every token for the current Studio:
+4. Remove all your tokens:
 ```bash
 datachain auth logout --all
 ```

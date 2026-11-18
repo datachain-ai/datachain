@@ -18,31 +18,31 @@ The token is saved in a `credentials` file in your DataChain config directory, f
 
 ### Tokens for specific teams
 
-A token you log in with without `--team` works for all your teams. A token you log in with `--team` is used for those teams only. You can save both, for example a token for a team from another account, or a token with fewer permissions for one team.
-
 A command runs for a team: the one given with `--team`, or the default team (see [`datachain auth team`](team.md)). DataChain uses the first token from this list that is saved for that team:
 
 1. The `DATACHAIN_STUDIO_TOKEN` environment variable.
 2. The project's token for this team (saved with `--local --team`).
-3. The project's token for all teams (saved with `--local`).
+3. The project's token saved without `--team` (with `--local`).
 4. Your token for this team (saved with `--team`).
-5. Your token for all teams.
+5. Your token saved without `--team`.
+
+A token saved with `--team` is used only for those teams. A token saved without `--team` is used for any team that has no token of its own; which teams Studio accepts it for depends on what you chose in Studio when you logged in. You can keep both, for example a token for a team from another account, or a token with fewer permissions for one team.
 
 Run [`datachain auth list`](list.md) to see the saved tokens and which one is used. If that token has expired, the command fails and names the token to replace; DataChain does not switch to another token, which could belong to another account.
 
-If you log in with exactly one `--team` and no default team is set yet, that team becomes the default team. This applies to the Studio saved in the config, not to one set with `DATACHAIN_STUDIO_URL`; for that one, set `DATACHAIN_STUDIO_TEAM`.
+If you log in with exactly one `--team` and no default team is set yet, that team becomes the default team.
+
+### Upgrading from older versions
+
+Older DataChain versions saved the token in the config file. It is no longer used, so log in again. Logging in removes the old token from the config and revokes it.
 
 ### Self-hosted Studio
 
-With `-H`, DataChain logs in to that Studio instance and uses it for later commands. A token is only sent to the instance it was issued by.
-
-### Tokens saved by older versions
-
-Older DataChain versions saved the token in the config file. DataChain no longer reads it, so log in again. Logging in revokes the old token saved at the same level (global, or `--local` for the project) on Studio and removes it from the config. If Studio can't be reached, the token is still removed from the config, and you can revoke it in your Studio settings.
+With `-H`, DataChain logs in to that Studio instance and uses it for later commands. A token is only sent to the instance it was issued by. If the instance is set with `DATACHAIN_STUDIO_URL` instead, logging in doesn't set a default team; set `DATACHAIN_STUDIO_TEAM`.
 
 ## Options
 
-* `-H HOSTNAME`, `--hostname HOSTNAME` - The hostname of the Studio instance to authenticate with.
+* `-H HOSTNAME`, `--hostname HOSTNAME` - The hostname of a self-hosted Studio instance to authenticate with.
 * `-s SCOPES`, `--scopes SCOPES` - Authentication token scopes. Allowed scopes: `EXPERIMENTS`, `DATASETS`, `MODELS`. Defaults to all available scopes.
 * `-n NAME`, `--name NAME` - The name of the authentication token. It will be used to identify the token shown in Studio profile. Defaults to a random name.
 * `--no-open` - Use code-based authentication without browser. You will be presented with a user code to enter in the browser. DataChain will also use this if it cannot launch the browser on your behalf.

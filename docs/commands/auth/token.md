@@ -10,7 +10,7 @@ usage: datachain auth token [-h] [-v] [-q] [--team TEAM]
 
 ## Description
 
-This command displays the token DataChain uses for the current Studio and the default team, or the team given with `--team`. See [`datachain auth login`](login.md) for how the token is picked.
+This command displays the token DataChain uses for the default team, or the team given with `--team`. See [`datachain auth login`](login.md) for how the token is picked.
 
 ## Options
 

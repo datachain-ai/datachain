@@ -39,7 +39,7 @@ def add_auth_parser(subparsers, parent_parser) -> None:
         "--hostname",
         action="store",
         default=None,
-        help="Hostname of the Studio instance",
+        help="Hostname of a self-hosted Studio instance",
     )
     login_parser.add_argument(
         "-s",
@@ -89,8 +89,8 @@ def add_auth_parser(subparsers, parent_parser) -> None:
 
     auth_logout_help = "Log out from Studio"
     auth_logout_description = (
-        "Revoke and remove the Studio token for all teams. With --team, the "
-        "token for that team instead; with --all, every token for the Studio."
+        "Revoke and remove the Studio token saved without --team. With --team, "
+        "the token for that team instead; with --all, every token."
     )
 
     logout_parser = auth_subparser.add_parser(
@@ -111,20 +111,20 @@ def add_auth_parser(subparsers, parent_parser) -> None:
         "--team",
         action="store",
         default=None,
-        help="Remove the token for this team instead of the token for all teams",
+        help="Remove the token for this team instead of the one saved without --team",
     )
     logout_tokens.add_argument(
         "--all",
         action="store_true",
         default=False,
-        help="Remove every token for the Studio: for all teams and for each team",
+        help="Remove every token, saved with or without --team",
     )
     logout_parser.add_argument(
         "-H",
         "--hostname",
         action="store",
         default=None,
-        help="Hostname of the Studio instance (default: the current one)",
+        help="Hostname of a self-hosted Studio instance (default: the one in use)",
     )
 
     auth_team_help = "Set or show default team for Studio operations"
@@ -158,7 +158,7 @@ def add_auth_parser(subparsers, parent_parser) -> None:
 
     auth_token_help = "View Studio authentication token"  # noqa: S105
     auth_token_description = (
-        "Display the token DataChain uses for the current Studio and team."  # noqa: S105
+        "Display the token DataChain uses for the default team or --team."  # noqa: S105
     )
 
     token_parser = auth_subparser.add_parser(
@@ -178,7 +178,7 @@ def add_auth_parser(subparsers, parent_parser) -> None:
     auth_list_help = "List saved Studio tokens"
     auth_list_description = (
         "List the Studio tokens saved for this project and user, and mark the one "
-        "used for the current Studio and team."
+        "used for the default team."
     )
 
     auth_subparser.add_parser(
