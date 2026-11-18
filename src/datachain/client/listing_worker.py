@@ -28,7 +28,7 @@ logger = logging.getLogger("datachain")
 
 # a frozen app's executable starts the app, not Python's "-c"
 _SPAWNS = bool(sys.executable) and not getattr(sys, "frozen", False)
-LIST_PROCESSES = min(4, cpus) if _SPAWNS and (cpus := usable_cpu_count()) > 1 else 0
+LIST_PROCESSES = min(8, cpus) if _SPAWNS and (cpus := usable_cpu_count()) > 1 else 0
 HEADER = struct.Struct("<Q")  # the size of the pickle that follows
 # a child that doesn't answer a page in time is stuck (stopped, deadlocked): the
 # parent kills it and lists the page itself; a page normally takes under a second
@@ -122,8 +122,9 @@ class Pool:
     def __init__(self, client: "RangeListedClient", prefix: str, size: int) -> None:
         # the page size travels so that tests can shrink it in children too
         spec = (type(client), client.name, client.fs_kwargs, client.cache)
+        self.encode = client.encode_page
         try:
-            self.spec = dump((*spec, client.LIST_PAGE_SIZE, prefix))
+            self.spec = dump((*spec, client.LIST_PAGE_SIZE, prefix, self.encode))
         except Exception:
             logger.debug(
                 "Listing in one process: client config does not pickle", exc_info=True
@@ -202,7 +203,7 @@ class Pool:
         if (page := reply.result()) is None:
             return None
         rows, *rest = page
-        return Page(list(map(_as_file_row, rows)), *rest)
+        return Page(rows if self.encode else list(map(_as_file_row, rows)), *rest)
 
     def _drop(self, proc: asyncio.subprocess.Process, replies: dict) -> None:
         """Kills a stuck child; its pending pages come back None now, as the kill
@@ -238,9 +239,10 @@ def main(out_fd: int) -> None:
         os.dup2(devnull.fileno(), 0)
     try:
         if (spec := load(inp)) is not None:
-            cls, name, fs_kwargs, cache, page_size, prefix = spec
+            cls, name, fs_kwargs, cache, page_size, prefix, encode = spec
             client = cls(name, fs_kwargs, cache)
             client.LIST_PAGE_SIZE = page_size
+            client.encode_page = encode
     except Exception as e:  # noqa: BLE001
         spec = None  # such as a class in the parent's __main__: the parent lists alone
         with suppress(OSError):
@@ -292,8 +294,10 @@ async def _serve(
         answer = None
         with suppress(Exception):
             page = await client._list_page(prefix, start_after, token, hi)
+            encode = client.encode_page
             # plain tuples: a row type would unpickle per row in Python
-            answer = dump((rid, ([tuple(r) for r in page.rows], *page[1:])))
+            rows = encode(page.rows) if encode else [tuple(r) for r in page.rows]
+            answer = dump((rid, (rows, *page[1:])))
         write_frame(answer or dump((rid, None)))
 
     # read from the start: a parent gone during the warm-up ends this child

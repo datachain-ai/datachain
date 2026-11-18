@@ -74,10 +74,13 @@ def main() -> None:
         return original_create_dataset_version(self, *args, **kwargs)
 
     try:
-        with patch.object(
-            Catalog,
-            "create_dataset_version",
-            new=wrapped_create_dataset_version,
+        with (
+            patch.object(
+                Catalog,
+                "create_dataset_version",
+                new=wrapped_create_dataset_version,
+            ),
+            patch("datachain.catalog.catalog._MAX_VERSION_CLAIM_RETRIES", 5),
         ):
             saved = dc.read_values(num=[int(worker_id)], session=None).save(
                 dataset_name
