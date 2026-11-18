@@ -569,6 +569,8 @@ def worker_threads() -> int | None:
     with suppress(KeyError, ValueError):
         return max(1, int(os.environ[WORKER_THREADS_ENV]))
     return None
+
+
 def show_df(
     df: "pd.DataFrame", collapse_columns: bool = True, system_columns: bool = False
 ) -> None:
