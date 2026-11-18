@@ -92,8 +92,8 @@ class Partition(BatchingStrategy):
         names = list(query.selected_columns.keys())
         partition_of = itemgetter(names.index(PARTITION_COLUMN_ID))
         id_at = names.index("sys__id")
+        batch = (lambda g: [r[id_at] for r in g]) if id_col is not None else list
         # execute pages rows in partition order (dataset_select_paginated)
         with safe_closing(execute(query)) as rows:
             for _, group in groupby(rows, partition_of):
-                batch = list(group)
-                yield [r[id_at] for r in batch] if id_col is not None else batch
+                yield batch(group)

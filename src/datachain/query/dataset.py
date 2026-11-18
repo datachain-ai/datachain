@@ -1026,10 +1026,15 @@ class UDFStep(Step, ABC):
         if checkpoint.job_id == job.id:
             return source_table
 
+        part_col = (
+            source_table.c[PARTITION_COLUMN_ID]
+            if PARTITION_COLUMN_ID in source_table.c
+            else source_table.c["partition_id"].label(PARTITION_COLUMN_ID)
+        )
         # Different job: copy to current job
         return self.warehouse.create_table_from_query(
             Checkpoint.partition_table_name(job.id, _hash),
-            sa.select(source_table),
+            sa.select(source_table.c.sys__id, part_col),
             create_fn=lambda name: self.warehouse.create_udf_table(
                 partition_columns(), name=name
             ),
@@ -1085,6 +1090,11 @@ class UDFStep(Step, ABC):
         # each page of the input seeks to its first row instead of sorting. An
         # alias: a reflected table's columns may belong to another Table object.
         part = partition_tbl.alias()
+        part_col = (
+            part.c[PARTITION_COLUMN_ID]
+            if PARTITION_COLUMN_ID in part.c
+            else part.c["partition_id"].label(PARTITION_COLUMN_ID)
+        )
         result_query = query.join(
             part, part.c.sys__id == query.selected_columns.sys__id
         ).with_only_columns(
@@ -1092,7 +1102,7 @@ class UDFStep(Step, ABC):
                 part.c.sys__id.label("sys__id") if c.name == "sys__id" else c
                 for c in query.selected_columns
             ),
-            part.c[PARTITION_COLUMN_ID],
+            part_col,
         )
         return result_query, _continue
 

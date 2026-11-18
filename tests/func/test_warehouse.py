@@ -30,13 +30,13 @@ def test_dataset_select_paginated_dataset_larger_than_batch_size(test_session):
     db_values = chain.to_values("value")
 
     rows = warehouse.dataset_select_paginated(
-        sa.select(table.c.sys__id, table.c.value), page_size=1000
+        sa.select(table.c.value).order_by(table.c.value), page_size=1000
     )
     assert isinstance(rows, GeneratorType)
 
     rows = list(rows)
     assert len(rows) == 10_000
-    _, values = zip(*rows, strict=False)
+    (values,) = zip(*rows, strict=False)
     assert set(values) == set(db_values)
 
 

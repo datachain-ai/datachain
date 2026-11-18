@@ -116,7 +116,7 @@ def test_dataset_select_paginated_keyset(numbers_table, warehouse):
     # pages by (sys__partition_id, sys__id) after the last key, never by offset
     t = numbers_table.c
     partition = sa.case((t.primality == "prime", 1), else_=2).label(PARTITION_COLUMN_ID)
-    query = sa.select(t.sys__id, partition).order_by(t.number.desc())
+    query = sa.select(t.sys__id, partition)
     with patch.object(
         type(warehouse),
         attribute="dataset_rows_select",
@@ -130,10 +130,17 @@ def test_dataset_select_paginated_keyset(numbers_table, warehouse):
     assert len({row[0] for row in rows}) == 73
 
 
-def test_dataset_select_paginated_needs_sys_id(numbers_table, warehouse):
-    query = sa.select(numbers_table.c.number)
-    with pytest.raises(ValueError, match="sys__id"):
-        list(warehouse.dataset_select_paginated(query))
+def test_dataset_select_paginated_preserves_columns_order_and_offset(
+    numbers_table, warehouse
+):
+    t = numbers_table.c
+    for query in (
+        sa.select(t.number).order_by(t.number),
+        sa.select(t.sys__id, t.number).order_by(t.number.desc()).offset(5).limit(12),
+    ):
+        assert list(warehouse.dataset_select_paginated(query, page_size=4)) == list(
+            warehouse.dataset_rows_select(query)
+        )
 
 
 @skip_if_not_sqlite
