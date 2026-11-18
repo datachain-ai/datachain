@@ -268,14 +268,46 @@ def test_studio_login_local_new_host_sets_its_own_default_team(get_access_token)
     assert Config().read()["studio"] == {"url": url, "team": "x"}
 
 
-def test_studio_old_config_token_is_ignored(get_access_token):
+def test_studio_old_config_token_is_ignored_and_revoked_on_login(get_access_token):
     with Config(ConfigLevel.GLOBAL).edit() as conf:
         conf["studio"] = {"token": "old_token", "team": "acme"}
 
     assert main(["auth", "token"]) == 1
 
-    assert main(["auth", "login"]) == 0
+    with requests_mock.mock() as m:
+        m.post(f"{STUDIO_URL}/api/device-logout", json={})
+        assert main(["auth", "login"]) == 0
+        assert m.last_request.headers["Authorization"] == "token old_token"
+
+    assert Config(ConfigLevel.GLOBAL).read()["studio"] == {"team": "acme"}
     assert find_login(STUDIO_URL, "acme").token == "isat_access_token"  # noqa: S105
+
+
+def test_studio_old_config_token_is_revoked_where_it_was_used(get_access_token):
+    with Config(ConfigLevel.LOCAL).edit() as conf:
+        conf["studio"] = {"token": "old_token", "url": OTHER_URL}
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"token": "global_token"}
+
+    with requests_mock.mock() as m:
+        m.post(f"{OTHER_URL}/api/device-logout", json={})
+        assert main(["auth", "login", "--local"]) == 0
+        assert m.call_count == 1
+
+    assert Config(ConfigLevel.LOCAL).read()["studio"] == {"url": OTHER_URL}
+    assert Config(ConfigLevel.GLOBAL).read()["studio"] == {"token": "global_token"}
+
+
+def test_studio_old_config_token_is_removed_if_revoke_fails(get_access_token, capsys):
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"token": "old_token"}
+
+    with requests_mock.mock() as m:
+        m.post(f"{STUDIO_URL}/api/device-logout", status_code=500)
+        assert main(["auth", "login"]) == 0
+
+    assert "studio" not in Config(ConfigLevel.GLOBAL).read()
+    assert "Revoke it in your Studio settings" in capsys.readouterr().err
 
 
 def test_studio_login_http_error_400(mocker, capsys):

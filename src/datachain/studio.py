@@ -248,6 +248,7 @@ def login(args: "Namespace"):
     if team_names:
         print(f"Token is for teams: {', '.join(team_names)}")
     print(f"Token will expire in {expires_in_days} days.")
+    _remove_old_token(level)
 
     if hostname == current_url:
         default_team = get_studio_team()
@@ -268,6 +269,41 @@ def login(args: "Namespace"):
     elif not default_team:
         print("You can now use 'datachain auth team' to set the default team.")
     return 0
+
+
+def _remove_old_token(level: ConfigLevel) -> None:
+    """Revoke and remove a token that an older version saved in the config.
+
+    DataChain no longer reads it, but the config is readable by others and the
+    token works on Studio until it expires.
+    """
+    config = Config(level)
+    studio_conf = config.read().get("studio", {})
+    if not (old_token := studio_conf.get("token")):
+        return
+
+    # Where older versions sent this token: the URL from this level's config.
+    old = Login(url=get_studio_url(studio_conf), token=old_token)
+    try:
+        _revoke(old)
+        revoked = True
+    except DataChainError:
+        revoked = False
+
+    with config.edit() as conf:
+        del conf["studio"]["token"]
+        if not conf["studio"]:
+            del conf["studio"]
+
+    path = config.config_file()
+    if revoked:
+        print(f"Revoked and removed the Studio token an older version saved in {path}.")
+    else:
+        print(
+            f"Removed the Studio token an older version saved in {path}, but could "
+            f"not revoke it. Revoke it in your Studio settings at {old.url}.",
+            file=sys.stderr,
+        )
 
 
 def _revoke(login: Login) -> None:

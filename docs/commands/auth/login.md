@@ -38,7 +38,7 @@ With `-H`, DataChain logs in to that Studio instance and uses it for later comma
 
 ### Tokens saved by older versions
 
-Older DataChain versions saved the token in the config file. DataChain no longer reads it: log in again, and remove `token` from the `[studio]` section of the config.
+Older DataChain versions saved the token in the config file. DataChain no longer reads it, so log in again. Logging in revokes the old token saved at the same level (global, or `--local` for the project) on Studio and removes it from the config. If Studio can't be reached, the token is still removed from the config, and you can revoke it in your Studio settings.
 
 ## Options
 
