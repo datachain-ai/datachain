@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -236,14 +237,13 @@ def login(args: "Namespace"):
     except StudioAuthError as exc:
         raise DataChainError(f"Failed to authenticate with Studio: {exc}") from exc
     except requests.HTTPError as exc:
+        message = str(exc)
         response = exc.response
         # A 4xx response is falsy.
         if response is not None and response.status_code == 400:
-            message = response.json().get("detail", "Unknown error")
-            raise DataChainError(
-                f"Failed to authenticate with Studio: {message}"
-            ) from exc
-        raise DataChainError(f"Failed to authenticate with Studio: {exc}") from exc
+            with contextlib.suppress(ValueError):  # Not JSON, e.g. a proxy's page.
+                message = response.json().get("detail", message)
+        raise DataChainError(f"Failed to authenticate with Studio: {message}") from exc
 
     expires = datetime.now(UTC) + timedelta(days=expires_in_days)
     new = Login(
@@ -266,13 +266,16 @@ def login(args: "Namespace"):
     print(f"Token will expire in {expires_in_days} days.")
     _remove_old_token(level)
 
-    if hostname == current_url:
-        default_team = get_studio_team()
-    else:
+    # Compared with the config being changed, not with a project's or the
+    # environment's URL.
+    level_conf = _level_studio_config(level)
+    if args.hostname and hostname != normalize_url(level_conf.get("url") or STUDIO_URL):
         # A team picked for another Studio means nothing on this one.
         default_team = None
         path = _update_studio_config(level, url=hostname, team=None)
         print(f"Set Studio URL to {hostname} in {path}")
+    else:
+        default_team = level_conf.get("team")
 
     if team_names and len(team_names) == 1 and not default_team:
         file_path = _update_studio_config(level, team=team_names[0])
@@ -332,11 +335,12 @@ def _revoke(login: Login) -> None:
         )
 
 
-def _config_url(level: ConfigLevel) -> str:
-    """The Studio URL the config sets at this level, ignoring the environment."""
-    levels = Config.LEVELS[: Config.LEVELS.index(level) + 1]
-    urls = [Config(lvl).read().get("studio", {}).get("url") for lvl in levels]
-    return normalize_url(next((u for u in reversed(urls) if u), STUDIO_URL))
+def _level_studio_config(level: ConfigLevel) -> dict:
+    """The `[studio]` settings at this level over lower levels', without the env."""
+    studio: dict = {}
+    for lvl in Config.LEVELS[: Config.LEVELS.index(level) + 1]:
+        studio.update(Config(lvl).read().get("studio", {}))
+    return studio
 
 
 def logout(
@@ -348,7 +352,8 @@ def logout(
     level = ConfigLevel.LOCAL if local else ConfigLevel.GLOBAL
     url = normalize_url(hostname or get_studio_url())
     # Fails on a file open to others, as removing a token from it would.
-    saved = [lg for lg in load_logins(level, for_update=True) if lg.url == url]
+    level_logins = load_logins(level, for_update=True)
+    saved = [lg for lg in level_logins if lg.url == url]
     if all_teams:
         logins, what = saved, "No token"
     elif team:
@@ -364,13 +369,11 @@ def logout(
             "Run `datachain auth list` to see the saved tokens."
         )
 
-    # The default team set at this level goes with the last token for its Studio.
+    # The default team set at this level goes with the last token saved there.
     # Decided before removing: a project's .datachain/ that has only credentials
     # is not found once they are gone, and a parent project's would be.
-    clear_team = (
-        len(logins) == len(saved)
-        and "team" in Config(level).read().get("studio", {})
-        and _config_url(level) == url
+    clear_team = len(logins) == len(level_logins) and "team" in (
+        Config(level).read().get("studio", {})
     )
 
     for login in logins:

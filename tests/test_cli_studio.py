@@ -267,6 +267,28 @@ def test_studio_login_local_new_host_sets_its_own_default_team(get_access_token)
     assert Config().read()["studio"] == {"url": OTHER_URL, "team": "x"}
 
 
+@pytest.mark.parametrize(
+    "hostname,expected",
+    [
+        # The global config's Studio already: its default team stays.
+        (STUDIO_URL, {"team": "acme"}),
+        # Only the project's Studio: the global config switches to it.
+        (OTHER_URL, {"url": OTHER_URL, "team": "customer"}),
+    ],
+)
+def test_studio_login_hostname_is_compared_with_the_config_it_changes(
+    get_access_token, hostname, expected
+):
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"team": "acme"}
+    with Config(ConfigLevel.LOCAL).edit() as conf:
+        conf["studio"] = {"url": OTHER_URL}
+
+    assert main(["auth", "login", "-H", hostname, "--team", "customer"]) == 0
+
+    assert Config(ConfigLevel.GLOBAL).read()["studio"] == expected
+
+
 def test_studio_old_config_token_is_ignored_and_revoked_on_login(get_access_token):
     with Config(ConfigLevel.GLOBAL).edit() as conf:
         conf["studio"] = {"token": "old_token", "team": "acme"}
@@ -315,13 +337,18 @@ def test_studio_old_config_token_is_removed_if_revoke_fails(get_access_token, ca
 
 
 @pytest.mark.parametrize(
-    "status_code,expected",
-    [(400, "Invalid token scope"), (500, "500 Server Error")],
+    "status_code,body,expected",
+    [
+        (400, {"json": {"detail": "Invalid token scope"}}, "Invalid token scope"),
+        # Not JSON, e.g. a proxy's error page.
+        (400, {"text": "<html>Bad Request</html>"}, "400 Client Error"),
+        (500, {"json": {"detail": "Oops"}}, "500 Server Error"),
+    ],
 )
-def test_studio_login_http_error(get_access_token, capsys, status_code, expected):
+def test_studio_login_http_error(get_access_token, capsys, status_code, body, expected):
     def device_login(**kwargs):
         with requests_mock.mock() as m:
-            m.post(STUDIO_URL, status_code=status_code, json={"detail": expected})
+            m.post(STUDIO_URL, status_code=status_code, **body)
             requests.post(STUDIO_URL, timeout=1).raise_for_status()
 
     get_access_token.side_effect = device_login
@@ -391,7 +418,7 @@ def test_studio_logout_hostname():
         assert m.last_request.headers["Authorization"] == "token other_token"
 
     assert saved_tokens() == ["isat_access_token"]
-    # The default team belongs to the current Studio, which still has its token.
+    # A token is still saved in the file, so the default team stays.
     assert Config().read()["studio"]["team"] == "acme"
 
 
@@ -505,8 +532,19 @@ def test_studio_logout_url_from_env(monkeypatch):
         assert m.last_request.headers["Authorization"] == "token env_token"
 
     assert saved_tokens() == ["config_token"]
-    # The default team is for the config's Studio, whose token is still saved.
+    # The config's Studio still has its token in the file, so the team stays.
     assert Config(ConfigLevel.GLOBAL).read()["studio"]["team"] == "acme"
+
+
+def test_studio_logout_last_token_for_env_url_clears_default_team(monkeypatch):
+    monkeypatch.setenv("DATACHAIN_STUDIO_URL", OTHER_URL)
+    studio_login(url=OTHER_URL, teams=["x"], default_team="x")
+
+    with requests_mock.mock() as m:
+        m.post(f"{OTHER_URL}/api/device-logout", json={})
+        assert main(["auth", "logout", "--team", "x"]) == 0
+
+    assert "studio" not in Config().read()
 
 
 def test_studio_logout_network_error_aborts(capsys):
