@@ -374,7 +374,7 @@ def test_studio_logout(capsys, global_config_dir):
         assert m.called
         assert m.last_request.headers["Authorization"] == "token isat_access_token"
 
-    assert "Logged out from Studio (any team)." in capsys.readouterr().out
+    assert "Logged out from Studio.\n" in capsys.readouterr().out
     assert saved_tokens() == []
     # No default team to clear, so no config file is written.
     assert not (Path(global_config_dir) / "config").exists()
@@ -400,9 +400,9 @@ def test_studio_logout_clears_default_team_with_the_last_token():
 @pytest.mark.parametrize(
     "args,expected",
     [
-        ([], "No token without a team is saved in "),
-        (["--team", "y"], "No token for team 'y' is saved in "),
-        (["-H", OTHER_URL, "--all"], f"No token is saved for {OTHER_URL}"),
+        ([], "No token saved without --team in "),
+        (["--team", "y"], "No token for team 'y' in "),
+        (["-H", OTHER_URL, "--all"], f"No token at {OTHER_URL} in "),
     ],
 )
 def test_studio_logout_without_a_matching_token(capsys, args, expected):
@@ -678,9 +678,9 @@ def test_studio_auth_list(capsys):
     assert lines[0] == "Default team: acme"
     # The default Studio goes unnamed.
     assert STUDIO_URL not in out
-    [current] = [line for line in lines if line.startswith("*")]
-    assert "any team" in current
-    assert any("customer-x" in line and not line.startswith("*") for line in lines)
+    [current] = [line for line in lines if line.startswith("->")]
+    assert current.split()[1] == "*"
+    assert any("customer-x" in line and not line.startswith("->") for line in lines)
     assert "isat_access_token" not in out + err
     assert "customer_token" not in out + err
 
@@ -695,9 +695,9 @@ def test_studio_auth_list_names_a_self_hosted_studio(capsys):
 
     lines = capsys.readouterr().out.splitlines()
     assert lines[0] == f"Studio URL: {OTHER_URL}"
-    [current] = [line for line in lines if line.startswith("*")]
+    [current] = [line for line in lines if line.startswith("->")]
     assert OTHER_URL in current
-    assert any(STUDIO_URL in line for line in lines if not line.startswith("*"))
+    assert any(STUDIO_URL in line for line in lines if not line.startswith("->"))
 
 
 def test_studio_auth_list_marks_env_token(capsys, monkeypatch):
@@ -707,7 +707,7 @@ def test_studio_auth_list_marks_env_token(capsys, monkeypatch):
     assert main(["auth", "list"]) == 0
 
     out, err = capsys.readouterr()
-    [current] = [line for line in out.splitlines() if line.startswith("*")]
+    [current] = [line for line in out.splitlines() if line.startswith("->")]
     assert "$DATACHAIN_STUDIO_TOKEN" in current
     assert "env_token" not in out + err
     assert "isat_access_token" not in out + err

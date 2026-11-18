@@ -202,9 +202,9 @@ def _login_exists_error(
     team = next((t for t in teams or () if t in (existing.teams or ())), None)
     command = existing.logout_command(team, host=existing.url != current_url)
     return DataChainError(
-        f"Token already exists{self_hosted(existing.url, ' for ')} "
-        f"({existing.describe_teams()}) in {existing.path}. To login with a "
-        f"different token, logout using `{command}`."
+        f"Token already exists{existing.for_teams()}{self_hosted(existing.url)} in "
+        f"{existing.path}. To login with a different token, logout using "
+        f"`{command}`."
     )
 
 
@@ -352,12 +352,12 @@ def logout(
         what = f"No token for team '{team}'"
     else:
         logins = [login for login in saved if login.teams is None]
-        what = "No token without a team"
+        what = "No token saved without --team"
 
     if not logins:
         raise DataChainError(
-            f"{what} is saved{self_hosted(url, ' for ')} in {credentials_path(level)}."
-            " Run `datachain auth list` to see the saved tokens."
+            f"{what}{self_hosted(url)} in {credentials_path(level)}. "
+            "Run `datachain auth list` to see the saved tokens."
         )
 
     # The default team saved at this level is for the Studio saved there, and goes
@@ -374,7 +374,7 @@ def logout(
         # Removed one at a time, so a failed revoke keeps the tokens not yet revoked.
         _revoke(login)
         remove_login(login)
-        print(f"Logged out from Studio{self_hosted(url)} ({login.describe_teams()}).")
+        print(f"Logged out from Studio{self_hosted(url)}{login.for_teams()}.")
 
     if clear_team:
         # The config with the team keeps this .datachain/ found.
@@ -398,14 +398,15 @@ def list_logins():
     rows = []
     current = None
     if os.environ.get(TOKEN_ENV):
-        rows.append(["*", url, "any team", "", "", f"${TOKEN_ENV}"])
+        rows.append(["->", url, "*", "", "", f"${TOKEN_ENV}"])
     else:
         current = select_login(logins, url, team)
     rows.extend(
         [
-            "*" if login is current else "",
+            "->" if login is current else "",
             login.url,
-            login.describe_teams(),
+            # *: saved without --team, the fallback for any team.
+            "*" if login.teams is None else ", ".join(login.teams),
             login.name or "",
             login.expires or "",
             login.path,

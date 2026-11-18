@@ -1,8 +1,8 @@
 """Studio logins: tokens kept outside the config, each bound to one Studio URL.
 
 A login holds a token for one Studio URL, either for a list of teams or, saved
-without ``--team``, for any team that has no token of its own. Which teams Studio
-accepts it for is set in Studio when the token is created. Logins live in a
+without ``--team``, as the fallback when no token is saved for a team. Which teams
+Studio accepts it for is set in Studio when the token is created. Logins live in a
 ``credentials`` file next to the config: in the project's ``.datachain/``
 (``--local``) or in the global config dir. The file is written ``0600`` and
 ignored if other users can read it.
@@ -41,7 +41,7 @@ _warned: set[str] = set()
 class Login:
     url: str
     token: str
-    # None: saved without --team, used for any team without a token of its own.
+    # None: saved without --team; the fallback when no token is saved for a team.
     teams: list[str] | None = None
     name: str | None = None
     expires: date | None = None
@@ -59,8 +59,11 @@ class Login:
     def covers(self, team: str | None) -> bool:
         return self.teams is None or team in self.teams
 
-    def describe_teams(self) -> str:
-        return "any team" if self.teams is None else ", ".join(self.teams)
+    def for_teams(self) -> str:
+        """Names the teams in a message; empty for a token saved without --team."""
+        if not self.teams:
+            return ""
+        return f" for team{'s' if len(self.teams) > 1 else ''} {', '.join(self.teams)}"
 
     def expired(self) -> bool:
         return self.expires is not None and self.expires < datetime.now(UTC).date()
@@ -209,9 +212,9 @@ def resolve_token(url: str, team: str | None) -> str | None:
         return None
     if login.expired():
         # Falling back to another token could switch to another account.
-        which = "without a team" if login.teams is None else f"for team '{team}'"
+        which = f" for team '{team}'" if login.teams else ""
         raise DataChainError(
-            f"The Studio token {which} in {login.path} expired on "
+            f"The Studio token{which} in {login.path} expired on "
             f"{login.expires}. Run `{login.logout_command(team)}` and log in again."
         )
     return login.token

@@ -26,7 +26,7 @@ A command runs for a team: the one given with `--team`, or the default team (see
 4. Your token for this team (saved with `--team`).
 5. Your token saved without `--team`.
 
-A token saved with `--team` is used only for those teams. A token saved without `--team` is used for any team that has no token of its own; which teams Studio accepts it for depends on what you chose in Studio when you logged in. You can keep both, for example a token for a team from another account, or a token with fewer permissions for one team.
+A token saved with `--team` is used only for those teams. A token saved without `--team` is the fallback: DataChain uses it when no token is saved for the command's team. Which teams Studio accepts it for depends on what you chose in Studio when you logged in. You can keep both, for example a token for a team from another account, or a token with fewer permissions for one team.
 
 Run [`datachain auth list`](list.md) to see the saved tokens and which one is used. If that token has expired, the command fails and names the token to replace; DataChain does not switch to another token, which could belong to another account.
 
@@ -34,7 +34,7 @@ If you log in with exactly one `--team` and no default team is set yet, that tea
 
 ### Self-hosted Studio
 
-With `-H`, DataChain logs in to that Studio instance and uses it for later commands. A token is only sent to the instance it was issued by. If the instance is set with `DATACHAIN_STUDIO_URL` instead, logging in doesn't set a default team; set `DATACHAIN_STUDIO_TEAM`.
+With `-H`, DataChain logs in to that Studio instance and uses it for later commands. A token is only sent to the instance it was issued by.
 
 ## Options
 
