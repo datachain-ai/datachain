@@ -410,6 +410,23 @@ def test_listing_update_drops_deleted_file_on_versioned_storage(cloud_test_catal
     assert paths == ["deleted/kept"]
 
 
+def test_listing_digest_of_null_versions():
+    t1 = datetime(2026, 10, 1, tzinfo=UTC)
+    t2 = datetime(2026, 10, 2, tzinfo=UTC)
+    file = File(path="x.jpg", version="null", etag="e1", last_modified=t1)
+    deleted = file.model_copy(
+        update={"etag": "", "is_latest": False, "is_deleted": True}
+    )
+
+    def fp(f, **changes):
+        return _digest("s3://bucket", f.model_copy(update=changes))
+
+    assert fp(file) == fp(file, last_modified=t2)
+    assert fp(file) != fp(file, etag="e2")
+    assert fp(deleted) != fp(deleted, last_modified=t2)
+    assert fp(deleted) != fp(deleted, is_deleted=False)
+
+
 def test_read_storage_single_local_file_deterministic_hash(test_session, tmp_dir):
     (tmp_dir / "a.txt").write_text("hello")
     uri = (tmp_dir / "a.txt").as_uri()

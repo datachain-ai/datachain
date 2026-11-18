@@ -51,6 +51,15 @@ LARGE_TREE: dict[str, Any] = {
 NUM_TREE = {f"{i:06d}": f"{i}" for i in range(1024)}
 
 
+async def listing_pages(client, prefix="", lo="", hi=None):
+    pages, token = [], None
+    while True:
+        page = await client._list_page(prefix, lo, token, hi)
+        pages.append(page)
+        if (token := page.token) is None:
+            return pages
+
+
 def _tree_files(tree, prefix=""):
     for key, value in tree.items():
         name = f"{prefix}{key}"

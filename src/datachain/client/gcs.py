@@ -36,7 +36,7 @@ class GCSClient(RangeListedClient):
     PINNED_VERSION_IS_IMMUTABLE = True
     # the fields a listing asks for: GCS sends every field otherwise
     LIST_FIELDS = (
-        "items(name,size,generation,etag,md5Hash,timeDeleted,updated),"
+        "items(name,size,generation,etag,md5Hash,timeCreated,timeDeleted,updated),"
         "nextPageToken,prefixes"
     )
 
@@ -250,6 +250,8 @@ class GCSClient(RangeListedClient):
         page_size: int | None = None,
         delimiter: str = "",
     ) -> Page:
+        versions = self._is_version_aware()
+        page_token, held = token if versions and token is not None else (token, None)
         page = await self.fs._call(
             "GET",
             "b/{}/o",
@@ -259,30 +261,83 @@ class GCSClient(RangeListedClient):
             startOffset=start_after or None,
             endOffset=None if hi is None else f"{hi}\0",  # exclusive
             maxResults=page_size or self.LIST_PAGE_SIZE,
-            pageToken=token,
+            pageToken=page_token,
             fields=self.LIST_FIELDS,
             json_out=True,
-            versions="true" if self._is_version_aware() else "false",
+            versions="true" if versions else "false",
         )
         items = page.get("items", [])
         keep = Keep(self, start_after, hi)
+        first = items[0]["name"] if items else None
         # folders past a delimiter: listed past, though they make no rows
         keys = [d["name"] for d in items] + page.get("prefixes", [])
+        last = max(keys, default=None)
+        next_token = page.get("nextPageToken")
+        kept = [d for d in items if keep(d["name"])]
+        if versions:
+            # fake-gcs-server lists the current generation before older ones
+            kept = sorted(
+                ([held] if held else []) + kept,
+                key=lambda d: (d["name"], int(d["generation"])),
+            )
+            # a generation's delete time depends on the next generation of its
+            # key: hold the last one for the range's next page, if it reads one
+            more = next_token is not None and (
+                last is None or hi is None or keep.order(last) <= keep.hi_key
+            )
+            held = kept[-1] if more and kept else None
+            rows = self._rows(kept, held)
+            next_token = None if next_token is None else (next_token, held)
+        else:
+            rows = [self._file_row(d) for d in kept]
         return Page(
-            [self._file_row(d) for d in items if keep(d["name"])],
-            items[0]["name"] if items else None,
-            max(keys, default=None),
-            page.get("nextPageToken"),
+            rows,
+            first,
+            last,
+            next_token,
             keep.past_lo,
             keep.past_hi,
             keep.in_order,
         )
+
+    def _rows(
+        self, items: list[dict[str, Any]], held: dict[str, Any] | None
+    ) -> list[tuple]:
+        """Rows of ``items`` with rows for deleted objects; ``held`` waits for
+        the next page."""
+        rows = []
+        for i, d in enumerate(items):
+            if d is held:
+                continue
+            rows.append(self._file_row(d))
+            after = items[i + 1] if i + 1 < len(items) else None
+            if deleted_at := self._deleted_at(d, after):
+                version = f"deleted:{d['generation']}"
+                rows.append(self._deleted_row(d["name"], version, deleted_at))
+        return rows
+
+    def _deleted_at(
+        self, d: dict[str, Any], after: dict[str, Any] | None
+    ) -> datetime | None:
+        """When generation ``d`` was deleted; None while it is live or after the
+        next generation replaced it (an overwrite)."""
+        if not (deleted := d.get("timeDeleted")):
+            return None
+        deleted_at = self.parse_timestamp(deleted)
+        replaced = (
+            after is not None
+            and after["name"] == d["name"]
+            and self.parse_timestamp(after["timeCreated"]) <= deleted_at
+        )
+        return None if replaced else deleted_at
 
     @staticmethod
     def _decode_md5(md5_hash: str | None) -> str:
         return base64.b64decode(md5_hash).hex() if md5_hash else ""
 
     def _file_row(self, d: dict[str, Any]) -> tuple:
+        # ``updated`` of a noncurrent generation can come after its delete
+        modified = d["timeCreated"] if d.get("timeDeleted") else d["updated"]
         return FileRow(
             self.uri,
             d["name"],
@@ -290,7 +345,7 @@ class GCSClient(RangeListedClient):
             d.get("generation", "") if self._is_version_aware() else "",
             d.get("etag", ""),
             not d.get("timeDeleted"),
-            self.parse_timestamp(d["updated"]),
+            self.parse_timestamp(modified),
             md5=self._decode_md5(d.get("md5Hash")),
         )
 
