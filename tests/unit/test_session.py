@@ -284,7 +284,7 @@ def test_cleanup_removes_temporary_data_from_closed_separate_database(
 
 
 @skip_if_not_sqlite
-def test_in_memory_session_exit_finalizes_job_cleanly(monkeypatch):
+def test_in_memory_session_exit_finalizes_job_cleanly(catalog, monkeypatch):
     monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
     reset_session_job_state()
     try:
@@ -293,6 +293,27 @@ def test_in_memory_session_exit_finalizes_job_cleanly(monkeypatch):
             assert Session._JOB_STATUS == JobStatus.RUNNING
         assert Session._JOB_STATUS == JobStatus.COMPLETE
         s._finalize_job_success()
+
+        reset_session_job_state()
+        with pytest.raises(ValueError, match="boom"):
+            with Session("t", in_memory=True) as s:
+                dc.read_values(x=[1], session=s).save("a")
+                raise ValueError("boom")
+        assert Session._JOB_STATUS == JobStatus.FAILED
+
+        reset_session_job_state()
+        with pytest.raises(KeyboardInterrupt):
+            with Session("t", in_memory=True) as s:
+                dc.read_values(x=[1], session=s).save("a")
+                raise KeyboardInterrupt
+        assert Session._JOB_STATUS == JobStatus.CANCELED
+
+        reset_session_job_state()
+        with Session("outer", catalog=catalog) as outer:
+            outer.get_or_create_job()
+            with Session("inner", in_memory=True):
+                pass
+            assert Session._JOB_STATUS == JobStatus.RUNNING
     finally:
         reset_session_job_state()
 

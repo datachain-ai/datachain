@@ -1859,19 +1859,40 @@ def test_read_dataset_missing_version_retains_fallback(test_session, mocker):
 def test_read_dataset_remote_metadata_still_pulls_selected_version(
     test_session, mocker
 ):
-    source = dc.read_values(num=[1], session=test_session).save("selected")
+    remote_meta = (
+        dc.read_values(num=[1], session=test_session)
+        .save("remote_seed", version="1.0.0")
+        ._query.starting_step.dataset
+    )
     mocker.patch("datachain.lib.dc.datasets.is_studio", return_value=False)
-    resolve = mocker.patch.object(
+    mocker.patch("datachain.lib.dc.utils.is_studio", return_value=False)
+    get_remote = mocker.patch.object(
         test_session.catalog,
-        "get_dataset_with_remote_fallback",
-        return_value=source._query.starting_step.dataset,
+        "get_remote_dataset",
+        return_value=remote_meta,
     )
 
-    dc.read_dataset("dev.project.selected", version="1.0.0", session=test_session)
+    def pull_selected(remote_ds_uri, local_ds_name=None, local_ds_version=None, **kw):
+        test_session.catalog.metastore.create_project("dev", "project", validate=False)
+        dc.read_values(num=[1], session=test_session).save(
+            f"dev.project.{local_ds_name}", version=local_ds_version
+        )
 
-    assert resolve.call_count == 2
-    assert resolve.call_args.kwargs["pull_dataset"] is True
-    assert resolve.call_args.kwargs["version"] == "1.0.0"
+    pull = mocker.patch.object(
+        test_session.catalog, "pull_dataset", side_effect=pull_selected
+    )
+
+    chain = dc.read_dataset(
+        "dev.project.selected", version="1.0.0", session=test_session
+    )
+
+    get_remote.assert_called_once_with("dev", "project", "selected")
+    pull.assert_called_once_with(
+        remote_ds_uri="ds://dev.project.selected@v1.0.0",
+        local_ds_name="selected",
+        local_ds_version="1.0.0",
+    )
+    assert chain.to_values("num") == [1]
 
 
 def test_chain_of_maps(test_session):

@@ -92,6 +92,7 @@ class Session:
         session_uuid = uuid4().hex[: self.SESSION_UUID_LEN]
         self.name = f"{name}_{session_uuid}"
         self.is_new_catalog = not catalog
+        self._owns_process_job = False
         self._parent: Session | None = None
         self.catalog = catalog or get_catalog(
             client_config=client_config, in_memory=in_memory
@@ -110,6 +111,7 @@ class Session:
         # The owner cleans up temporary datasets created through this view.
         view._cleanup_catalogs = self._cleanup_catalogs
         view.is_new_catalog = False
+        view._owns_process_job = False
         return view
 
     def __enter__(self):
@@ -121,6 +123,13 @@ class Session:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.is_new_catalog and self.catalog.in_memory and self._owns_process_job:
+            if exc_type is None:
+                self._finalize_job_success()
+            elif issubclass(exc_type, KeyboardInterrupt):
+                self._finalize_job_as_canceled()
+            else:
+                self._finalize_job_as_failed(exc_type, exc_val, exc_tb)
         self._close()
         if Session.SESSION_CONTEXTS:
             Session.SESSION_CONTEXTS.pop()
@@ -131,8 +140,6 @@ class Session:
         # Datasets should persist even if the session fails
         self._cleanup_temp_datasets()
         if self.is_new_catalog:
-            if self.catalog.in_memory:
-                self._finalize_job_success()
             self.catalog.metastore.close_on_exit()
             self.catalog.warehouse.close_on_exit()
 
@@ -227,6 +234,7 @@ class Session:
             Session._CURRENT_JOB = self.catalog.metastore.get_job(job_id)
             Session._OWNS_JOB = True
             Session._JOB_STATUS = JobStatus.RUNNING
+            self._owns_process_job = True
 
             # register cleanup hooks only once
             if not Session._JOB_HOOKS_REGISTERED:

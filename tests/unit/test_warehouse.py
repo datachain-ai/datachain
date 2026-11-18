@@ -490,3 +490,9 @@ def test_get_table_supports_temp_views_mixed_case_and_add_column(warehouse):
     warehouse.db.execute_str("DROP TABLE tx_rel")
     warehouse.db.execute_str("CREATE TABLE tx_rel (x TEXT)")
     assert isinstance(warehouse.get_table("tx_rel").c.x.type, sa.Text)
+
+    warehouse.db.execute_str(
+        "CREATE TABLE measure"
+        " (x INTEGER, doubled INTEGER GENERATED ALWAYS AS (2*x) STORED)"
+    )
+    assert {"x", "doubled"} <= set(warehouse.get_table("measure").c.keys())

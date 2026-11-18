@@ -263,7 +263,11 @@ class SQLiteDatabaseEngine(DatabaseEngine):
     def get_table(self, name: str) -> Table:
         if self.is_closed:
             self._reconnect()
-        rows = self.execute_str(f"PRAGMA table_info({quote(name)})").fetchall()
+        rows = [
+            row
+            for row in self.execute_str(f"PRAGMA table_xinfo({quote(name)})").fetchall()
+            if row[6] != 1
+        ]
         if not rows:
             if (cached := self.metadata.tables.get(name)) is not None:
                 self.metadata.remove(cached)
