@@ -266,18 +266,18 @@ def login(args: "Namespace"):
     print(f"Token will expire in {expires_in_days} days.")
     _remove_old_token(level)
 
-    # Compared with the config being changed, not with a project's or the
-    # environment's URL.
-    level_conf = _level_studio_config(level)
-    if args.hostname and hostname != normalize_url(level_conf.get("url") or STUDIO_URL):
+    # The default team saved at a level is for the Studio saved at that level.
+    studio = _level_studio_config(level)
+    if args.hostname and hostname != _studio_url(studio):
         # A team picked for another Studio means nothing on this one.
-        default_team = None
         path = _update_studio_config(level, url=hostname, team=None)
         print(f"Set Studio URL to {hostname} in {path}")
-    else:
-        default_team = level_conf.get("team")
+        studio = {"url": hostname}
 
-    if team_names and len(team_names) == 1 and not default_team:
+    # A Studio set only by the environment or a project gets no default team here.
+    for_level = hostname == _studio_url(studio)
+    default_team = studio.get("team") if for_level else None
+    if for_level and team_names and len(team_names) == 1 and not default_team:
         file_path = _update_studio_config(level, team=team_names[0])
         print(f"Set default team to '{team_names[0]}' in {file_path}")
     elif not default_team:
@@ -343,6 +343,11 @@ def _level_studio_config(level: ConfigLevel) -> dict:
     return studio
 
 
+def _studio_url(studio: dict) -> str:
+    # An empty URL is the default Studio, as in get_studio_url().
+    return normalize_url(studio.get("url") or STUDIO_URL)
+
+
 def logout(
     local: bool = False,
     team: str | None = None,
@@ -352,8 +357,7 @@ def logout(
     level = ConfigLevel.LOCAL if local else ConfigLevel.GLOBAL
     url = normalize_url(hostname or get_studio_url())
     # Fails on a file open to others, as removing a token from it would.
-    level_logins = load_logins(level, for_update=True)
-    saved = [lg for lg in level_logins if lg.url == url]
+    saved = [lg for lg in load_logins(level, for_update=True) if lg.url == url]
     if all_teams:
         logins, what = saved, "No token"
     elif team:
@@ -369,11 +373,14 @@ def logout(
             "Run `datachain auth list` to see the saved tokens."
         )
 
-    # The default team set at this level goes with the last token saved there.
-    # Decided before removing: a project's .datachain/ that has only credentials
-    # is not found once they are gone, and a parent project's would be.
-    clear_team = len(logins) == len(level_logins) and "team" in (
-        Config(level).read().get("studio", {})
+    # The default team saved at this level is for the Studio saved there, and goes
+    # with that Studio's last token. Decided before removing: a project's
+    # .datachain/ that has only credentials is not found once they are gone, and
+    # a parent project's would be.
+    clear_team = (
+        len(logins) == len(saved)
+        and "team" in Config(level).read().get("studio", {})
+        and _studio_url(_level_studio_config(level)) == url
     )
 
     for login in logins:

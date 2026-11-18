@@ -289,6 +289,16 @@ def test_studio_login_hostname_is_compared_with_the_config_it_changes(
     assert Config(ConfigLevel.GLOBAL).read()["studio"] == expected
 
 
+def test_studio_login_for_env_url_sets_no_default_team(get_access_token, monkeypatch):
+    monkeypatch.setenv("DATACHAIN_STUDIO_URL", OTHER_URL)
+
+    assert main(["auth", "login", "--team", "x"]) == 0
+
+    # The config's Studio is still the default one, so team x isn't its default.
+    assert "studio" not in Config().read()
+    assert resolve_token(OTHER_URL, "x") == "isat_access_token"
+
+
 def test_studio_old_config_token_is_ignored_and_revoked_on_login(get_access_token):
     with Config(ConfigLevel.GLOBAL).edit() as conf:
         conf["studio"] = {"token": "old_token", "team": "acme"}
@@ -418,7 +428,7 @@ def test_studio_logout_hostname():
         assert m.last_request.headers["Authorization"] == "token other_token"
 
     assert saved_tokens() == ["isat_access_token"]
-    # A token is still saved in the file, so the default team stays.
+    # The default team is for the config's Studio, which still has its token.
     assert Config().read()["studio"]["team"] == "acme"
 
 
@@ -532,19 +542,22 @@ def test_studio_logout_url_from_env(monkeypatch):
         assert m.last_request.headers["Authorization"] == "token env_token"
 
     assert saved_tokens() == ["config_token"]
-    # The config's Studio still has its token in the file, so the team stays.
+    # The default team is for the config's Studio, whose token is still saved.
     assert Config(ConfigLevel.GLOBAL).read()["studio"]["team"] == "acme"
 
 
-def test_studio_logout_last_token_for_env_url_clears_default_team(monkeypatch):
-    monkeypatch.setenv("DATACHAIN_STUDIO_URL", OTHER_URL)
-    studio_login(url=OTHER_URL, teams=["x"], default_team="x")
+def test_studio_logout_local_empty_url_is_the_default_studio():
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"url": OTHER_URL}
+    studio_login(default_team="x", level=ConfigLevel.LOCAL)
+    with Config(ConfigLevel.LOCAL).edit() as conf:
+        conf["studio"]["url"] = ""
 
     with requests_mock.mock() as m:
-        m.post(f"{OTHER_URL}/api/device-logout", json={})
-        assert main(["auth", "logout", "--team", "x"]) == 0
+        m.post(f"{STUDIO_URL}/api/device-logout", json={})
+        assert main(["auth", "logout", "--local"]) == 0
 
-    assert "studio" not in Config().read()
+    assert Config(ConfigLevel.LOCAL).read()["studio"] == {"url": ""}
 
 
 def test_studio_logout_network_error_aborts(capsys):

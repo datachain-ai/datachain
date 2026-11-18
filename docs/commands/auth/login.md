@@ -30,7 +30,7 @@ A command runs for a team: the one given with `--team`, or the default team (see
 
 Run [`datachain auth list`](list.md) to see the saved tokens and which one is used. If that token has expired, the command fails and names the token to replace; DataChain does not switch to another token, which could belong to another account.
 
-If you log in with exactly one `--team` and no default team is set yet, that team becomes the default team.
+If you log in with exactly one `--team` and no default team is set yet, that team becomes the default team. This applies to the Studio saved in the config, not to one set with `DATACHAIN_STUDIO_URL`; for that one, set `DATACHAIN_STUDIO_TEAM`.
 
 ### Self-hosted Studio
 

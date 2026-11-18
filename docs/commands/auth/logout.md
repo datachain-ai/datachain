@@ -19,7 +19,7 @@ Each `datachain auth login` has a matching logout:
 * `datachain auth logout --team TEAM` removes the token for that team, saved by `datachain auth login --team TEAM`. If that token is also used for other teams, it is removed for them too.
 * `datachain auth logout --all` removes every token for the Studio.
 
-By default, it removes your tokens for the current Studio. Use `--local` to remove the project's tokens instead, and `-H` for another Studio. When the last token in a file is removed, the default team set at the same level is cleared too.
+By default, it removes your tokens for the current Studio. Use `--local` to remove the project's tokens instead, and `-H` for another Studio. When the last token for the Studio saved in the config is removed from a file, the default team set at the same level is cleared too.
 
 ## Options
 
