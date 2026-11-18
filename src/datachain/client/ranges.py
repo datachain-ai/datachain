@@ -277,7 +277,7 @@ class RangeListing:
                 level = await self.client._list_page(
                     self.prefix, page.last, None, delimiter="/"
                 )
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("Listing %s: no folder cut", self.client.uri, exc_info=True)
             return
         if level.token is not None:
