@@ -168,29 +168,32 @@ def list_folder(path: str) -> str:
 
 @dataclass(frozen=True)
 class PathFilter:
-    """The paths of a listing that a URI selects: any of ``any_of`` and all of
-    ``all_of``, each an ``(op, value)`` with op ``eq``, ``glob`` or ``parent``.
+    """The paths of a listing that a URI selects: those that pass every step.
+    A step is ``(op, value)`` conditions, with op ``eq``, ``glob`` or
+    ``parent``, and a path passes it by meeting any of them.
     ``read_storage`` applies it in SQL, ``dc.list_storage`` in Python."""
 
-    any_of: tuple[tuple[str, str], ...] = ()
-    all_of: tuple[tuple[str, str], ...] = ()
+    steps: tuple[tuple[tuple[str, str], ...], ...] = ()
 
     @classmethod
     def ls(cls, path: str, recursive: bool | None) -> "PathFilter":
         if not recursive:
-            return cls(any_of=(("parent", list_folder(path)),))
+            return cls().step(("parent", list_folder(path)))
         if not path or path == "/":
             return cls()
         if uses_glob(path):
-            return cls(any_of=(("glob", path),))
-        return cls(any_of=(("eq", path), ("glob", path.removesuffix("/") + "/*")))
+            return cls().step(("glob", path))
+        return cls().step(("eq", path), ("glob", path.removesuffix("/") + "/*"))
 
-    def glob(self, pattern: str) -> "PathFilter":
-        return PathFilter(self.any_of, (*self.all_of, ("glob", pattern)))
+    def step(self, *conditions: tuple[str, str]) -> "PathFilter":
+        return PathFilter((*self.steps, conditions))
+
+    def glob(self, *patterns: str) -> "PathFilter":
+        return self.step(*(("glob", pattern) for pattern in patterns))
 
     def sql(self, path: Column) -> "list[ColumnElement]":
-        """One condition per filter step: ``any_of`` combined, then each of
-        ``all_of``. The steps feed chain hashes, so their split is kept."""
+        """One condition per step. The steps feed chain hashes, so their split
+        is kept."""
 
         def cond(op: str, value: str) -> "ColumnElement":
             if op == "eq":
@@ -199,8 +202,7 @@ class PathFilter:
                 return path.glob(value)
             return pathfunc.parent(path) == value
 
-        steps = [or_(*(cond(*c) for c in self.any_of))] if self.any_of else []
-        return steps + [cond(*c) for c in self.all_of]
+        return [or_(*(cond(*c) for c in step)) for step in self.steps]
 
     def matcher(self) -> "Callable[[str], bool]":
         """The filter as a function of a path, built once for many rows."""
@@ -213,12 +215,21 @@ class PathFilter:
                 return lambda path: regex is not None and bool(regex.fullmatch(path))
             return lambda path: parent_path(path) == value
 
-        any_of = [check(*c) for c in self.any_of]
-        all_of = [check(*c) for c in self.all_of]
-        return lambda path: (
-            (not any_of or any(c(path) for c in any_of))
-            and all(c(path) for c in all_of)
-        )
+        def any_of(checks: "list[Callable[[str], bool]]") -> "Callable[[str], bool]":
+            if len(checks) == 1:
+                return checks[0]
+            return lambda path: any(c(path) for c in checks)
+
+        steps = [any_of([check(*c) for c in step]) for step in self.steps]
+
+        def match(path: str) -> bool:
+            # A loop is faster than all() here, and this runs for every row.
+            for step in steps:  # noqa: SIM110
+                if not step(path):
+                    return False
+            return True
+
+        return match
 
 
 @functools.lru_cache(maxsize=256)

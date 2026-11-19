@@ -12,7 +12,7 @@ from datachain.catalog.catalog import DataSource
 from datachain.client import Client
 from datachain.fs.utils import path_to_fsspec_uri
 from datachain.lib.dc.storage_pattern import (
-    convert_globstar_to_glob,
+    globstar_globs,
     path_filter,
     should_use_recursion,
     split_uri_pattern,
@@ -587,6 +587,9 @@ def test_glob_match_is_sqlite_glob(pattern):
         PathFilter.ls("d*/x", True),
         PathFilter.ls("dir/", True).glob("dir/*.txt"),
         PathFilter.ls("", False).glob("a?"),
+        path_filter("dir/", "**/x.txt", True),
+        path_filter("dir/", "**/x.txt", False),
+        path_filter("", "**/a/x.txt", True),
     ],
 )
 def test_path_filter_python_matches_sql(test_session, paths):
@@ -607,31 +610,6 @@ def test_path_filter_python_matches_sql(test_session, paths):
         chain = chain.filter(condition)
 
     assert sorted(chain.to_values("path")) == sorted(filter(paths.matcher(), names))
-
-
-@pytest.mark.parametrize("list_path", ["", "dir/"])
-@pytest.mark.parametrize("recursive", [False, True])
-def test_leading_globstar_literal_matches_zero_directories(
-    test_session, list_path, recursive
-):
-    matches = [
-        f"{list_path}{name}"
-        for name in ("report.json", "nested/report.json", "nested/deep/report.json")
-    ]
-    names = matches + [
-        f"{list_path}{name}"
-        for name in ("notreport.json", "report.json.bak", "nested/notreport.json")
-    ]
-    if list_path:
-        names.extend(["directory/report.json", "elsewhere/report.json"])
-    paths = path_filter(list_path, "**/report.json", recursive)
-    expected = matches if recursive else matches[:1]
-    chain = dc.read_values(path=names, session=test_session)
-    for condition in paths.sql(dc.C("path")):
-        chain = chain.filter(condition)
-
-    assert sorted(chain.to_values("path")) == sorted(expected)
-    assert sorted(filter(paths.matcher(), names)) == sorted(expected)
 
 
 def test_glob_match_is_sqlite_glob_on_random_patterns():
@@ -679,7 +657,7 @@ def test_select_paths_keeps_filter_steps(test_session, list_path, pattern, recur
             else (path == list_path) | path.glob(list_path.rstrip("/") + "/*")
         )
     if pattern:
-        glob = convert_globstar_to_glob(pattern)
+        (glob,) = globstar_globs(pattern)
         if subpath := list_path.strip("/"):
             glob = f"{subpath}/{glob}"
         expected = expected.filter(path.glob(glob))

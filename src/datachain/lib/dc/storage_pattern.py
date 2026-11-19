@@ -1,6 +1,7 @@
 import glob
 import os
 from collections.abc import Sequence
+from itertools import pairwise
 
 from datachain.client.fsspec import is_cloud_uri
 from datachain.lib.listing import ListScope, PathFilter, list_folder
@@ -195,54 +196,22 @@ def _expand_range(range_spec: str) -> list[str]:  # noqa: PLR0911
     return [range_spec]
 
 
-def convert_globstar_to_glob(filter_pattern: str) -> str:
-    """Convert a ``**`` globstar pattern into an equivalent GLOB pattern."""
-    if "**" not in filter_pattern:
-        return filter_pattern
+def globstar_globs(pattern: str) -> list[str]:
+    """The GLOB patterns that together match what ``pattern`` matches.
 
-    parts = filter_pattern.split("/")
-    globstar_positions = [i for i, p in enumerate(parts) if p == "**"]
-
-    num_globstars = len(globstar_positions)
-
-    if num_globstars <= 1:
-        if filter_pattern == "**/*":
-            return "*"
-        if filter_pattern.startswith("**/"):
-            remaining = filter_pattern[3:]
-            if "/" not in remaining:
-                # Pattern like **/*.ext or **/temp?.*
-                # The ** means zero or more directories
-                # For zero directories: pattern should be just the filename pattern
-                # For one or more: pattern should be */filename
-                # Since we can't OR in GLOB, we choose the more permissive option
-                # that works with recursive listing
-                # Special handling: if it's a simple extension pattern, match broadly
-                if remaining.startswith("*."):
-                    return remaining
-                return f"*/{remaining}"
-
-        return filter_pattern.replace("**", "*")
-
-    middle_parts = []
-    start_idx = globstar_positions[0] + 1
-    end_idx = globstar_positions[-1]
-    for i in range(start_idx, end_idx):
-        if parts[i] != "**":
-            middle_parts.append(parts[i])
-
-    if not middle_parts:
-        result = filter_pattern.replace("**", "*")
-    else:
-        middle_pattern = "/".join(middle_parts)
-        last_part = parts[-1] if parts[-1] != "**" else "*"
-
-        if last_part != "*":
-            result = f"*{middle_pattern}*{last_part}"
-        else:
-            result = f"*{middle_pattern}*"
-
-    return result
+    ``**/`` is zero or more directories. GLOB's ``*`` crosses ``/``, so that is
+    either nothing or ``*/``: ``**/a.txt`` is ``a.txt`` or ``*/a.txt``. Before
+    a ``*`` it is nothing, because that ``*`` matches the directories too.
+    """
+    parts = pattern.split("/")
+    heads = [""]
+    for part, after in pairwise(parts):
+        if part != "**":
+            heads = [f"{head}{part}/" for head in heads]
+        elif not after.startswith("*"):
+            heads += [f"{head}*/" for head in heads]
+    # Any other "**", as in "dir/**", is GLOB's "*".
+    return [f"{head}{parts[-1]}".replace("**", "*") for head in heads]
 
 
 def storage_sources(uris: Sequence) -> list[tuple[str, str | None]]:
@@ -265,28 +234,10 @@ def path_filter(
     """The paths a URI with glob ``pattern`` selects from its base's listing."""
     if pattern is None:
         return PathFilter.ls(list_path, recursive)
-    glob_pattern, use_recursive = _pattern(pattern, list_path, recursive)
-    paths = PathFilter.ls(list_path, use_recursive)
-    filename = pattern.removeprefix("**/")
-    if (
-        filename != pattern
-        and filename
-        and "/" not in filename
-        and not glob.has_magic(filename)
-    ):
-        return PathFilter(
-            any_of=(("eq", _glob_pattern(filename, list_path)), ("glob", glob_pattern)),
-            all_of=() if use_recursive else paths.any_of,
-        )
-    return paths.glob(glob_pattern)
-
-
-def _pattern(pattern: str, list_path: str, recursive: bool | None) -> tuple[str, bool]:
-    """``pattern`` as a glob of full paths, and whether it recurses."""
-    return (
-        _glob_pattern(pattern, list_path),
-        should_use_recursion(pattern, recursive or False),
-    )
+    folder = _folder(list_path)
+    globs = [f"{folder}{glob_pattern}" for glob_pattern in globstar_globs(pattern)]
+    use_recursive = should_use_recursion(pattern, recursive or False)
+    return PathFilter.ls(list_path, use_recursive).glob(*globs)
 
 
 def list_scope(
@@ -296,22 +247,20 @@ def list_scope(
     that start with the pattern's literal head, one level only if the URI
     doesn't recurse. None when it is the whole listing.
     """
-    folder = list_folder(list_path)
-    folder = f"{folder}/" if folder else ""
+    folder = _folder(list_path)
     if pattern is None:
         return None if recursive else ListScope(folder, folder, True)
-    head, use_recursive = _pattern(pattern, list_path, recursive)
-    magic = [i for c in "*?[" if (i := head.find(c)) >= 0]
-    head = head[: min(magic, default=len(head))]
-    prefix = head if head.startswith(folder) else folder
-    one_level = not use_recursive
+    magic = [i for c in "*?[" if (i := pattern.find(c)) >= 0]
+    prefix = folder + pattern[: min(magic, default=len(pattern))]
+    one_level = not should_use_recursion(pattern, recursive or False)
     if not one_level and prefix == folder:
         return None
     return ListScope(folder, prefix, one_level)
 
 
-def _glob_pattern(pattern: str, list_path: str) -> str:
-    glob_pattern = convert_globstar_to_glob(pattern)
-    if subpath := list_folder(list_path):
-        glob_pattern = f"{subpath}/{glob_pattern}"
-    return glob_pattern
+def _folder(list_path: str) -> str:
+    """``list_path`` as the start of the paths under it: ``dir/``, or nothing
+    at the root.
+    """
+    folder = list_folder(list_path)
+    return f"{folder}/" if folder else ""
