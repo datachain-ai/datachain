@@ -15,28 +15,29 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
 
-from fsspec.callbacks import DEFAULT_CALLBACK, Callback
+from fsspec import Callback
+from fsspec.callbacks import DEFAULT_CALLBACK
 from fsspec.utils import stringify_path
 from pydantic import Field, field_validator, model_validator
 
+import datachain.sql  # noqa: F401
 from datachain import json
-from datachain.client.fileslice import FileSlice
+from datachain.client import fileslice
 from datachain.client.writeconfig import WriteConfig
 from datachain.fs.utils import path_to_fsspec_uri
 from datachain.lib.data_model import DataModel
 from datachain.lib.utils import DataChainError, rebase_path
 from datachain.nodes_thread_pool import NodesThreadPool
 from datachain.sql.types import JSON, Boolean, DateTime, Int, String
-from datachain.utils import TIME_ZERO
+from datachain.utils import TIME_ZERO, parent_path
 
 if TYPE_CHECKING:
-    from typing import Self
+    from typing import BinaryIO, Self
 
     from numpy import ndarray
 
     from datachain.catalog import Catalog
     from datachain.client.fsspec import Client
-    from datachain.dataset import RowDict
     from datachain.query.session import Session
 
 sha256 = partial(hashlib.sha256, usedforsecurity=False)
@@ -175,7 +176,7 @@ class TarVFile(VFile):
         if block_size is None:
             block_size = min(size, TAR_READ_BLOCK_SIZE)
         fd = client.open_object(tar_file, use_cache=True, block_size=block_size)
-        return FileSlice(fd, offset, size, file.name)
+        return fileslice.FileSlice(fd, offset, size, file.name)
 
     @classmethod
     def parent(cls, file: "File", location: list[dict]) -> "File":
@@ -528,10 +529,6 @@ class File(DataModel):
         file._set_stream(catalog)
         return file
 
-    @classmethod
-    def _from_row(cls, row: "RowDict") -> "Self":
-        return cls(**{key: row[key] for key in cls._datachain_column_types})
-
     @property
     def name(self) -> str:
         """The file name extracted from the path.
@@ -554,7 +551,7 @@ class File(DataModel):
             file.parent  # 'data/subdir'
             ```
         """
-        return str(PurePosixPath(self.path).parent)
+        return parent_path(self.path) if "/" in self.path else "."
 
     @contextmanager
     def open(
@@ -616,27 +613,14 @@ class File(DataModel):
         client: Client = self._catalog.get_client(self.source, **merged_cfg)
 
         if not writing:
-            if self.location:
-                with VFileRegistry.open(
-                    self,
-                    self.location,  # type: ignore[arg-type]
-                    block_size=block_size,
-                ) as f:
-                    with self._wrap_text(f, mode, open_kwargs=open_kwargs) as wrapped:
-                        yield wrapped
-                return
-            if self._caching_enabled:
-                self.ensure_cached()
-            with client.open_object(
-                self, use_cache=True, cb=self._download_cb, block_size=block_size
-            ) as f:
+            with self._open_read(client=client, block_size=block_size) as f:
                 with self._wrap_text(f, mode, open_kwargs=open_kwargs) as wrapped:
                     yield wrapped
             return
 
         # write path
         full_path = self.get_fs_path()
-        fs_mode = mode if "b" in mode else f"{mode}b"
+        fs_mode = mode if "b" in mode else mode.replace("t", "", 1) + "b"
         binary_kwargs = {
             k: v for k, v in open_kwargs.items() if k not in self._TEXT_WRAPPER_ALLOWED
         }
@@ -658,6 +642,32 @@ class File(DataModel):
         refreshed = client.get_file_info(self.path, version_id=version_hint)
         for k, v in refreshed.model_dump().items():
             setattr(self, k, v)
+
+    @contextmanager
+    def _open_read(
+        self,
+        *,
+        block_size: int | None = None,
+        cache: bool = True,
+        client: "Client | None" = None,
+    ) -> Iterator["BinaryIO"]:
+        if self._catalog is None:
+            raise RuntimeError("Cannot open file: catalog is not set")
+        if self.location:
+            with VFileRegistry.open(
+                self,
+                self.location,  # type: ignore[arg-type]
+                block_size=block_size,
+            ) as stream:
+                yield stream
+            return
+        if cache and self._caching_enabled:
+            self.ensure_cached()
+        client = client or self._catalog.get_client(self.source)
+        with client.open_object(
+            self, use_cache=True, cb=self._download_cb, block_size=block_size
+        ) as stream:
+            yield stream
 
     @contextmanager
     def _wrap_text(
@@ -699,7 +709,7 @@ class File(DataModel):
     def read_bytes(self, length: int = -1):
         """Returns file contents as bytes."""
         block_size = min(length, PARTIAL_READ_BLOCK_SIZE) if length > 0 else None
-        with self.open(mode="rb", block_size=block_size) as stream:
+        with self._open_read(block_size=block_size, cache=length < 0) as stream:
             return stream.read(length)
 
     def read_text(self, **open_kwargs):
@@ -783,7 +793,33 @@ class File(DataModel):
             write_options=write_options,
         )
         with self.open(mode="rb") as src:
-            result = client.upload(src, rel_path, write_config=write_config)
+            backing = (
+                VFileRegistry.parent(self, self.location)  # type: ignore[arg-type]
+                if self.location
+                else self
+            )
+            source = backing.get_local_path()
+            local_destination = (
+                client.fs._strip_protocol(client.get_uri(rel_path))
+                if client.PREFIX == "file://"
+                else None
+            )
+            if local_destination is not None and (
+                (source is not None and self._same_file(source, local_destination))
+                or (
+                    (source is None or self.location)
+                    and backing._is_local_file(local_destination)
+                )
+            ):
+                if self.location:
+                    raise FileError(
+                        "Cannot overwrite a virtual file's backing file",
+                        self.source,
+                        self.path,
+                    )
+                result = client.get_file_info(rel_path)
+            else:
+                result = client.upload(src, rel_path, write_config=write_config)
         result._set_stream(self._catalog)
         return result
 
@@ -800,6 +836,18 @@ class File(DataModel):
             client_cls.storage_uri(storage), **(client_config or {})
         )
         return client, rel_path
+
+    def _is_local_file(self, destination: str) -> bool:
+        if (self.source and not self.source.startswith("file://")) or self.location:
+            return False
+        return self._same_file(self.get_fs_path(), destination)
+
+    @staticmethod
+    def _same_file(source: str, destination: str) -> bool:
+        try:
+            return os.path.samefile(source, destination)
+        except OSError:
+            return False
 
     def _symlink_to(self, destination: str) -> None:
         if self.location:
@@ -908,6 +956,8 @@ class File(DataModel):
                     stringify_path(output),
                     dst,
                 )
+            if link_type == "symlink" and self._is_local_file(dst):
+                link_type = "copy"
         else:
             # For cloud exports, simply join the output prefix and suffix.
             # Relying on cloud clients to do their own validation.
@@ -922,7 +972,9 @@ class File(DataModel):
                 if exc.errno not in (errno.ENOTSUP, errno.EXDEV, errno.ENOSYS):
                     raise
 
-        self.save(
+        # copy as stored; subclass save() overrides may re-encode
+        File.save(
+            self,
             dst,
             client_config=client_config,
             content_type=content_type,
@@ -939,9 +991,17 @@ class File(DataModel):
         caching_enabled: bool = False,
         download_cb: Callback = DEFAULT_CALLBACK,
     ) -> None:
-        self._catalog = catalog
-        self._caching_enabled = caching_enabled
-        self._download_cb = download_cb
+        if type(self) is File:
+            # pydantic's __setattr__ costs more than the read of a plain File
+            self.__dict__.update(
+                _catalog=catalog,
+                _caching_enabled=caching_enabled,
+                _download_cb=download_cb,
+            )
+        else:
+            self._catalog = catalog
+            self._caching_enabled = caching_enabled
+            self._download_cb = download_cb
 
     def ensure_cached(self) -> None:
         """Download the file to the local cache.
@@ -1200,7 +1260,7 @@ class FileRow(NamedTuple):
 
     @property
     def parent(self) -> str:
-        return str(PurePosixPath(self.path).parent)
+        return parent_path(self.path) if "/" in self.path else "."
 
     def get_file_suffix(self) -> str:
         return PurePosixPath(self.path).suffix
@@ -1288,7 +1348,9 @@ class ImageFile(File):
         """
         Retrieves metadata and information about the image file.
 
-        With prefetch and cache off, reads only the parts of the file it needs.
+        Reuses cached content when available without populating the cache.
+        Use `.settings(prefetch=0)` for metadata-only chains to avoid downloading
+        files in advance.
 
         Returns:
             Image: A Model containing image metadata such as width, height and format.
@@ -1400,7 +1462,9 @@ class VideoFile(File):
         """
         Retrieves metadata and information about the video file.
 
-        With prefetch and cache off, reads only the parts of the file it needs.
+        Reuses cached content when available without populating the cache.
+        Use `.settings(prefetch=0)` for metadata-only chains to avoid downloading
+        files in advance.
 
         Args:
             video_stream_index: Zero-based index among video streams to inspect.
@@ -1577,7 +1641,9 @@ class AudioFile(File):
         """
         Retrieves metadata and information about the audio file.
 
-        With prefetch and cache off, reads only the parts of the file it needs.
+        Reuses cached content when available without populating the cache.
+        Use `.settings(prefetch=0)` for metadata-only chains to avoid downloading
+        files in advance.
 
         Returns:
             Audio: A Model containing audio metadata such as duration,
@@ -2173,7 +2239,7 @@ class ArrowRow(DataModel):
             fs = pyarrow_fs(self.file, kwargs.get("format"))
             ds = dataset(path, filesystem=fs, **kwargs)
 
-        return ds.take([self.index]).to_reader()
+        yield next(ds.take([self.index]).to_reader())
 
     def read(self):
         """Returns row contents as dict.
@@ -2183,7 +2249,7 @@ class ArrowRow(DataModel):
         kept, e.g. column types.
         """
         with self.open() as record_batch:
-            return record_batch.to_pylist()[0]
+            return record_batch.to_pylist(maps_as_pydicts="strict")[0]
 
 
 def get_file_type(type_: FileType = "binary") -> type[File]:

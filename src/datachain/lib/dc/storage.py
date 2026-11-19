@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from .datachain import DataChain
 
 
-def read_storage(  # noqa: PLR0913
+def read_storage(
     uri: str | os.PathLike[str] | list[str] | list[os.PathLike[str]],
     *,
     type: FileType = "binary",
@@ -35,7 +35,6 @@ def read_storage(  # noqa: PLR0913
     settings: dict | None = None,
     in_memory: bool = False,
     recursive: bool | None = True,
-    column: str = "file",
     update: bool = False,
     anon: bool | None = None,
     versions: bool = True,
@@ -69,7 +68,6 @@ def read_storage(  # noqa: PLR0913
               - `{1..9}` : brace numeric or alphabetic range
         type: read file as "binary", "text", or "image" data. Default is "binary".
         recursive: search recursively for the given path.
-        column: Column name that will contain File objects. Default is "file".
         update: list the storage again instead of reusing a saved listing.
             Default is False.
         anon: If True, we will treat cloud bucket as public one.
@@ -162,7 +160,6 @@ def read_storage(  # noqa: PLR0913
         settings=settings,
         in_memory=in_memory,
         recursive=recursive,
-        column=column,
         update=update,
         versions=versions,
         delta=delta,
@@ -183,7 +180,6 @@ def _read_storage(
     settings: dict | None = None,
     in_memory: bool = False,
     recursive: bool | None = True,
-    column: str = "file",
     update: bool = False,
     versions: bool = True,
     delta: bool | None = False,
@@ -208,11 +204,9 @@ def _read_storage(
             client_config,
             prepared_listings,
             file_type=file_type,
-            column=column,
             update=update,
             versions=versions,
             settings=settings,
-            in_memory=in_memory,
             delta=delta,
             delta_on=delta_on,
             delta_result_on=delta_result_on,
@@ -228,7 +222,7 @@ def _read_storage(
 
         chains.append(
             listing_lib.select_paths(
-                dc, path_filter(list_path, glob_pattern, recursive), column
+                dc, path_filter(list_path, glob_pattern, recursive)
             )
         )
 
@@ -245,9 +239,6 @@ def _read_storage(
             session=session,
             settings=settings,
             in_memory=in_memory,
-        )
-        file_chain.signals_schema = file_chain.signals_schema.mutate(
-            {f"{column}": file_type}
         )
         storage_chain = storage_chain.union(file_chain) if storage_chain else file_chain
 
@@ -569,11 +560,9 @@ def _prepare_listing(
     prepared: set[str],
     *,
     file_type: type[File] = File,
-    column: str = "file",
     update: bool = False,
     versions: bool = True,
     settings: dict | None = None,
-    in_memory: bool = False,
     delta: bool | None = False,
     delta_on: str | Sequence[str] | None = None,
     delta_result_on: str | Sequence[str] | None = None,
@@ -610,7 +599,7 @@ def _prepare_listing(
     )
     # A snapshot shared by several URIs is prepared once per operation.
     prepared.add(name)
-    chain.signals_schema = chain.signals_schema.mutate({column: file_type})
+    chain.signals_schema = chain.signals_schema.mutate({"file": file_type})
     # A reused snapshot can cover a parent: always refresh its whole prefix.
     chain._query.set_listing_fn(
         lambda: listing_lib.write_listing(
@@ -618,10 +607,6 @@ def _prepare_listing(
             name,
             session,
             client_config,
-            column=column,
-            file_type=file_type,
-            settings=settings,
-            in_memory=in_memory,
         )
     )
     return chain, list_uri, list_path

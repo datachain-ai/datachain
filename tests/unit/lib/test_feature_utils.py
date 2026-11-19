@@ -1,3 +1,4 @@
+import pickle
 from typing import get_args, get_origin
 
 import pytest
@@ -64,6 +65,16 @@ def test_not_array_value_error():
 def test_features_length_missmatch():
     with pytest.raises(ValuesToTupleError):
         dc.read_values(value1=[1, 2, 3], value2=[1, 2, 3, 4, 5])
+
+
+def test_values_to_tuples_error_message_after_pickling():
+    with pytest.raises(ValuesToTupleError) as exc_info:
+        dc.read_values(a=[1, 2], b=[1])
+
+    err = pickle.loads(pickle.dumps(exc_info.value))  # noqa: S301
+    assert str(err) == (
+        "Cannot convert signals: signal 'b' should have length 2 while 1 is given"
+    )
 
 
 def test_unknown_output_type():

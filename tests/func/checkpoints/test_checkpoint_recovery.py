@@ -1,10 +1,12 @@
 from collections.abc import Iterator
 
 import pytest
+import sqlalchemy as sa
 
 import datachain as dc
 from datachain import func
 from datachain.lib.file import File
+from datachain.query.session import Session
 from tests.utils import reset_session_job_state, skip_if_not_sqlite
 
 
@@ -1040,19 +1042,24 @@ def test_batch_map_checkpoint_recovery(
         return [n * 10 for n in num]
 
     warehouse = session.catalog.warehouse
-    original_convert = type(warehouse).convert_type
+    type_codec = type(warehouse).type_codec
     converted = 0
 
-    def interrupt_conversion(self, value, col_type, python_type, type_name, col_name):
-        nonlocal converted
-        if col_name == "result":
+    def interrupt_conversion(self, sql_type):
+        codec = type_codec(self, sql_type)
+
+        def encode(value):
+            nonlocal converted
             converted += 1
             if failing and fail_during_insert and converted == 5:
                 raise RuntimeError("batch insertion interrupted")
-        return original_convert(self, value, col_type, python_type, type_name, col_name)
+            return codec.encode(value)
 
-    # on the class: the UDF write path calls convert_type only when it is overridden
-    monkeypatch.setattr(type(warehouse), "convert_type", interrupt_conversion)
+        # every value goes through encode: the UDF writes only the "result" column
+        return codec._replace(kept=frozenset(), encode=encode)
+
+    # on the class: UDF outputs are encoded by the warehouse's type codecs
+    monkeypatch.setattr(type(warehouse), "type_codec", interrupt_conversion)
 
     def run(batch):
         return (
@@ -1182,3 +1189,232 @@ def test_checkpoint_resume_across_input_pages(
     )
     assert result == expected
     assert sorted(processed) == sorted(set(range(12)) - completed)
+
+
+@pytest.mark.parametrize("retry", [False, True])
+@pytest.mark.parametrize("failures", [1, 2])
+def test_delta_update_after_interrupted_udf_resumes_remaining_rows(
+    test_session, monkeypatch, retry, failures
+):
+    metastore = test_session.catalog.metastore
+    state = {"fail": False, "calls": 0}
+
+    def record(id) -> int:
+        state["calls"] += 1
+        if state["fail"] and state["calls"] > 3:
+            raise RuntimeError("interrupted delta")
+        return id * 2
+
+    def save():
+        chain = (
+            dc.read_dataset(
+                "resume_source",
+                delta=True,
+                delta_on="id",
+                delta_retry=retry,
+                session=test_session,
+            )
+            .settings(batch_size=1)
+            .map(value=record)
+        )
+        if retry:
+            chain = chain.filter(dc.C.id != 3)
+        return chain.save("resume_result")
+
+    def new_job(**kwargs):
+        reset_session_job_state()
+        if parent_id := kwargs.get("rerun_from_job_id"):
+            kwargs["run_group_id"] = metastore.get_job(parent_id).run_group_id
+        job_id = metastore.create_job("delta", "", **kwargs)
+        monkeypatch.setenv("DATACHAIN_JOB_ID", job_id)
+        return job_id
+
+    dc.read_values(id=[1, 2, 3], session=test_session).save("resume_source")
+    previous_job = new_job()
+    save()
+    dc.read_values(id=list(range(1, 14)), session=test_session).save("resume_source")
+    for _ in range(failures):
+        previous_job = new_job(rerun_from_job_id=previous_job)
+        state.update(fail=True, calls=0)
+        with pytest.raises(RuntimeError, match="interrupted delta"):
+            save()
+    new_job(rerun_from_job_id=previous_job)
+    state.update(fail=False, calls=0)
+    result = save()
+    assert state["calls"] == 10 + int(retry) - 3 * failures
+    assert sorted(result.to_iter("id", "value")) == [
+        (id, id * 2) for id in range(1, 14) if not (retry and id == 3)
+    ]
+
+
+def test_delta_update_with_no_retry_rows_reuses_udf_between_sibling_saves(test_session):
+    processed = []
+
+    def record(id):
+        processed.append(id)
+        return id * 2, ""
+
+    def save(name):
+        return (
+            dc.read_dataset(
+                "sibling_source",
+                delta=True,
+                delta_on="id",
+                delta_retry="error",
+                session=test_session,
+            )
+            .map(record, output={"value": int, "error": str})
+            .save(name)
+        )
+
+    dc.read_values(id=[1, 2], session=test_session).save("sibling_source")
+    save("sibling_a")
+    save("sibling_b")
+    assert sorted(processed) == [1, 2]
+    dc.read_values(id=[1, 2, 3], session=test_session).save("sibling_source")
+    processed.clear()
+    a, b = save("sibling_a"), save("sibling_b")
+    assert processed == [3]
+    assert (
+        sorted(a.to_list("id", "value"))
+        == sorted(b.to_list("id", "value"))
+        == [(1, 2), (2, 4), (3, 6)]
+    )
+
+
+@pytest.mark.parametrize("same_job", [True, False])
+def test_generator_mid_input_multi_flush_crash_trims_tail(test_session, same_job):
+    """An input whose rows span several flushes crashes mid-stream: resume keeps
+    the inputs committed in the same flushes and drops the crashed input's
+    flushed rows, which the ledger does not cover."""
+    processed = []
+    failing = True
+    counts = {1: 2, 2: 10, 3: 3}
+
+    def gen(num: int) -> Iterator[int]:
+        processed.append(num)
+        for i in range(counts[num]):
+            if failing and num == 2 and i == 7:
+                raise RuntimeError("mid-input crash after multiple flushes")
+            yield num * 100 + i
+
+    dc.read_values(num=[1, 2, 3], session=test_session).save("multi_flush_nums")
+
+    def run():
+        return (
+            dc.read_dataset("multi_flush_nums", session=test_session)
+            .order_by("num")
+            .settings(batch_size=4)
+            .gen(val=gen, output=int)
+            .save("multi_flush_out")
+        )
+
+    reset_session_job_state()
+    with pytest.raises(RuntimeError, match="mid-input crash"):
+        run()
+    assert processed == [1, 2]
+
+    if not same_job:
+        reset_session_job_state()
+    failing = False
+    processed.clear()
+    vals = run().order_by("val").to_list("val")
+    assert processed == [2, 3]
+    assert vals == [(n * 100 + i,) for n in (1, 2, 3) for i in range(counts[n])]
+
+
+@pytest.mark.parametrize("mode", ["append", "promote", "arbitrate", "same_job_zombie"])
+def test_cross_job_resume_while_the_source_still_commits(
+    test_session, monkeypatch, mode
+):
+    """A resume in another job (or same-job retry) copies the source's partial
+    table and ledger while the source may still be committing parts, arbitrating
+    duplicates, or promoting its partial table."""
+    failing = True
+
+    def gen(num: int) -> Iterator[int]:
+        if failing and num == 3:
+            raise RuntimeError("crash at 3")
+        for i in range(3):
+            yield num * 100 + i
+
+    dc.read_values(num=[1, 2, 3, 4, 5], session=test_session).save("live_nums")
+
+    def run():
+        return (
+            dc.read_dataset("live_nums", session=test_session)
+            .order_by("num")
+            .gen(val=gen, output=int)
+            .save("live_out")
+        )
+
+    reset_session_job_state()
+    with pytest.raises(RuntimeError, match="crash at 3"):
+        run()
+    source_job = test_session.get_or_create_job()
+
+    warehouse = test_session.catalog.warehouse
+    (source_name,) = warehouse.db.list_tables(pattern="udf_%_output_partial")
+    source = warehouse.get_table(source_name)
+    source_parts = warehouse.get_table(f"{source_name}_parts")
+    (inputs,) = [
+        table
+        for name in warehouse.db.list_tables(pattern="udf_%_input")
+        if "num" in (table := warehouse.get_table(name)).c
+    ]
+    (input_id,) = next(
+        warehouse.db.execute(sa.select(inputs.c.sys__id).where(inputs.c.num == 4))
+    )
+
+    if mode == "arbitrate":
+        # Writer 0 flushed uncommitted rows for input 4; Writer 1 committed input 4
+        w0 = warehouse.claim_writer_no(source_parts)
+        w1 = warehouse.claim_writer_no(source_parts)
+        with warehouse.writer(source, ["val"], w0, source_parts) as writer0:
+            writer0.extend([(400,), (401,), (402,)])
+        with warehouse.writer(source, ["val"], w1, source_parts) as writer1:
+            w1_lo = writer1.part_lo
+            writer1.extend([(400,), (401,), (402,)])
+            w1_hi = writer1.next_id - 1
+            writer1.commit(input_id)
+
+    copy = warehouse.create_table_from_query
+    copied = []
+
+    def copy_while_source_commits(name, *args, **kwargs):
+        table = copy(name, *args, **kwargs)
+        if "_output_partial" not in name:
+            return table
+        if not copied:
+            if mode == "promote":
+                # Source job finishes and promotes between ledger copy and data copy
+                resuming_job = Session._CURRENT_JOB
+                Session._CURRENT_JOB = source_job
+                monkeypatch.setattr(warehouse, "create_table_from_query", copy)
+                run()
+                Session._CURRENT_JOB = resuming_job
+            elif mode == "arbitrate":
+                # Source arbitrates duplicate: deletes w1's rows/commit
+                warehouse.delete_id_ranges(source, [(w1_lo, w1_hi)])
+                warehouse.db.execute(
+                    source_parts.delete().where(
+                        source_parts.c.part_key == input_id,
+                        source_parts.c.writer_no == w1,
+                    )
+                )
+            else:
+                # the source job (or zombie writer) commits input 4 into source
+                writer_no = warehouse.claim_writer_no(source_parts)
+                with warehouse.writer(source, ["val"], writer_no, source_parts) as w:
+                    w.extend([(400,), (401,), (402,)])
+                    w.commit(input_id)
+        copied.append(name)
+        return table
+
+    monkeypatch.setattr(warehouse, "create_table_from_query", copy_while_source_commits)
+    if mode != "same_job_zombie":
+        reset_session_job_state()
+    failing = False
+    vals = run().order_by("val").to_values("val")
+    assert len(copied) == (1 if mode == "promote" else 2)
+    assert vals == [n * 100 + i for n in (1, 2, 3, 4, 5) for i in range(3)]

@@ -1,194 +1,101 @@
 import argparse
 import json
-import sys
+from typing import TYPE_CHECKING
 
-from changes import build_changes
 from schema import extract_preview, extract_schema, get_catalog, parse_dataset_name
-from utils import dc_import, dep_entry
+from utils import dc_import
+
+from datachain.dataset import parse_dataset_with_version
+from datachain.error import DataChainError, NotFoundError
+from datachain.lib.dataset_metadata import read_dataset_metadata
+from datachain.lib.dc.utils import is_studio
+from datachain.skill.knowledge.collect import snapshot_from_metadata
+from datachain.skill.knowledge.snapshot import MAX_VERSION_ENTRIES
+
+if TYPE_CHECKING:
+    from datachain.skill.knowledge.types import DatasetSnapshot
 
 
-def _warn(msg: str) -> None:
-    print(f"[dc-knowledge warning] {msg}", file=sys.stderr)
-
-
-def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR0915
-    """Fetch schema, preview, query_script, changes, and deps.
-
-    Returns a dict with keys:
-    name, schema, preview, query_script, changes, dependencies.
-    """
-    dc = dc_import()
-    from datachain.dataset import parse_dataset_with_version
-
+def fetch_dataset_snapshot(
+    name_version: str,
+    *,
+    summarize: bool = False,
+    max_version_entries: int | None = MAX_VERSION_ENTRIES,
+) -> "DatasetSnapshot":
     name, version = parse_dataset_with_version(name_version)
-    _namespace, _project, _bare_name = parse_dataset_name(name)
-    is_studio_dataset = bool(_namespace and _project)
-
-    chain = None
-    try:
-        chain = dc.read_dataset(name_version)
-    except Exception as e:  # noqa: BLE001
-        _warn(f"read_dataset({name_version}): {e}")
-
-    schema = {}
-    if chain is not None:
-        try:
-            schema = extract_schema(chain)
-        except Exception as e:  # noqa: BLE001
-            _warn(f"extract_schema({name}): {e}")
-
-    preview = None
-    if chain is not None:
-        preview = extract_preview(chain)
-
-    query_script = None
-    uuid = None
-    attrs: list[str] = []
-    description: str | None = None
-    _prev_version_info = None
-    dependencies = []
-
-    if is_studio_dataset:
-        try:
-            from datachain.dataset import DatasetRecord
-            from datachain.remote.studio import StudioClient
-
-            client = StudioClient()
-            response = client.dataset_info(_namespace, _project, _bare_name)
-            if response.ok and response.data:
-                dataset = DatasetRecord.from_dict(response.data)
-                attrs = list(dataset.attrs or [])
-                description = dataset.description
-                resolved_ver = version or dataset.latest_version
-                if version is None:
-                    version = resolved_ver
-                dv = dataset.get_version(resolved_ver)
-                query_script = dv.query_script or None
-                uuid = getattr(dv, "uuid", None)
-                sorted_vers = sorted(dataset.versions, key=lambda v: v.version_value)
-                idx = next(
-                    (i for i, v in enumerate(sorted_vers) if v.version == resolved_ver),
-                    None,
-                )
-                if idx is not None and idx > 0:
-                    p = sorted_vers[idx - 1]
-                    _prev_version_info = (
-                        p.version,
-                        p.query_script or None,
-                    )
-        except Exception as e:  # noqa: BLE001
-            _warn(f"Studio dataset_info({name}): {e}")
-    else:
-        catalog = None
-        if chain is not None:
-            catalog = chain.session.catalog
-        if catalog is None:
-            try:
-                catalog = get_catalog()
-            except Exception as e:  # noqa: BLE001
-                _warn(f"get_catalog(): {e}")
-
-        if version is None and catalog is not None:
-            try:
-                ds = catalog.get_dataset(_bare_name, include_incomplete=False)
-                version = ds.latest_version
-            except Exception as e:  # noqa: BLE001
-                _warn(f"resolve version for {_bare_name}: {e}")
-        if version is None:
-            for row in dc.datasets(column="dataset").to_iter():
-                info = row[0]
-                if info.name == _bare_name:
-                    version = str(info.version)
-                    break
-
-        try:
-            if catalog is not None:
-                dataset = catalog.get_dataset(_bare_name, include_incomplete=False)
-                attrs = list(dataset.attrs or [])
-                description = dataset.description
-                resolved_ver = version or dataset.latest_version
-                dv = dataset.get_version(resolved_ver)
-                query_script = dv.query_script or None
-                uuid = getattr(dv, "uuid", None)
-                sorted_vers = sorted(dataset.versions, key=lambda v: v.version_value)
-                idx = next(
-                    (i for i, v in enumerate(sorted_vers) if v.version == resolved_ver),
-                    None,
-                )
-                if idx is not None and idx > 0:
-                    p = sorted_vers[idx - 1]
-                    _prev_version_info = (
-                        p.version,
-                        p.query_script or None,
-                    )
-        except Exception as e:  # noqa: BLE001
-            _warn(f"local catalog metadata for {_bare_name}: {e}")
-
-        try:
-            if catalog is not None and version:
-                deps = catalog.get_dataset_dependencies(
-                    name=_bare_name, version=version, indirect=False
-                )
-                for dep in deps or []:
-                    if not dep:
-                        continue
-                    dependencies.append(dep_entry(dep.name, dep.version, dep.type))
-        except Exception as e:  # noqa: BLE001
-            _warn(f"dependencies for {_bare_name}@{version}: {e}")
-
-    changes = None
-    if _prev_version_info is not None:
-        prev_version_str, prev_script = _prev_version_info
-        prev_deps = []
-        if not is_studio_dataset:
-            try:
-                if catalog is not None:
-                    prev_deps_raw = (
-                        catalog.get_dataset_dependencies(
-                            name=_bare_name,
-                            version=prev_version_str,
-                            indirect=False,
-                        )
-                        or []
-                    )
-                    prev_deps = [
-                        dep_entry(d.name, d.version, d.type) for d in prev_deps_raw if d
-                    ]
-            except Exception as e:  # noqa: BLE001
-                _warn(f"prev dependencies for {_bare_name}@{prev_version_str}: {e}")
-            changes = build_changes(
-                query_script,
-                prev_version_str,
-                prev_script,
-                dependencies,
-                prev_deps,
-            )
-        else:
-            changes = build_changes(
-                query_script,
-                prev_version_str,
-                prev_script,
-                dependencies,
-                [],
-            )
-
-    # Return fully-qualified dot-separated name for Studio datasets;
-    # bare name for local datasets.
-    output_name = (
-        f"{_namespace}.{_project}.{_bare_name}" if is_studio_dataset else _bare_name
+    # Skills also accept the legacy namespace/project/name notation.
+    namespace, project, bare_name = parse_dataset_name(name)
+    if namespace and project and "://" not in name:
+        name = f"{namespace}.{project}.{bare_name}"
+    catalog = get_catalog()
+    metadata = read_dataset_metadata(
+        catalog, name, version=version, include_preview=True
     )
+    metastore = catalog.metastore if metadata.source == "local" or is_studio() else None
+    snapshot = snapshot_from_metadata(
+        metadata, metastore, max_version_entries=max_version_entries
+    )
+    selected = snapshot["versions"][-1]
+    warnings = snapshot.setdefault("warnings", [])
+    try:
+        chain = dc_import().read_dataset(
+            f"{metadata.name}@{metadata.selected_version.version}"
+        )
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(f"read_dataset: {exc}")
+        return snapshot
 
-    return {
-        "name": output_name,
-        "uuid": uuid,
-        "attrs": attrs,
-        "description": description,
-        "schema": schema,
-        "preview": preview,
-        "query_script": query_script,
-        "changes": changes,
-        "dependencies": dependencies,
+    try:
+        selected["schema"] = extract_schema(chain)
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(f"schema: {exc}")
+    preview = extract_preview(chain)
+    if preview is None:
+        warnings.append("preview: extraction failed")
+    else:
+        selected["preview"] = preview
+    if summarize:
+        try:
+            from summary import dataset_summary_from_chain
+
+            selected["summary"] = dataset_summary_from_chain(chain)
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"summary: {exc}")
+    return snapshot
+
+
+def fetch_version_data(name_version: str) -> dict:
+    """Fetch one version's schema, preview, query script, changes, and deps."""
+    snapshot = fetch_dataset_snapshot(name_version)
+    versions = snapshot["versions"]
+    selected = versions[-1]
+    changes = selected["changes"]
+    if (
+        changes
+        and changes["script_changed"]
+        and changes["previous_script"] is None
+        and len(versions) > 1
+    ):
+        changes["previous_script"] = versions[-2]["query_script"]
+    result = {
+        "name": snapshot["name"],
+        "attrs": snapshot["attrs"],
+        "description": snapshot["description"],
+        **{
+            key: selected[key]
+            for key in (
+                "uuid",
+                "schema",
+                "preview",
+                "query_script",
+                "changes",
+                "dependencies",
+            )
+        },
     }
+    if snapshot.get("warnings"):
+        result["warnings"] = snapshot["warnings"]
+    return result
 
 
 def main():
@@ -200,7 +107,11 @@ def main():
         help="Dataset name, optionally with @version (e.g. my_dataset@1.0.0)",
     )
     args = parser.parse_args()
-    print(json.dumps(fetch_version_data(args.name), indent=2))
+    try:
+        result = fetch_version_data(args.name)
+    except (DataChainError, NotFoundError) as exc:
+        parser.exit(1, json.dumps({"error": str(exc)}) + "\n")
+    print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":

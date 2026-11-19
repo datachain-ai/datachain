@@ -42,12 +42,11 @@ def test_hf_split():
     ds_test = Dataset.from_dict({"pok emon": ["charizard", "pikachu"]})
     ds_dict = DatasetDict({"train": ds_train, "test": ds_test})
     ds_dict = stream_splits(ds_dict)
-    hf_schema, norm_names = get_output_schema(ds_dict["train"].features, ["split"])
+    hf_schema, norm_names = get_output_schema(ds_dict["train"].features)
     schema = {"split": str} | hf_schema
+    model = dict_to_data_model("", schema, ["split", *norm_names.values()])
 
-    gen = HFGenerator(
-        ds_dict, dict_to_data_model("", schema, list(norm_names.values()))
-    )
+    gen = HFGenerator(ds_dict, model, split_name="split")
     gen.setup()
     row = next(iter(gen.process("train")))
 
@@ -117,6 +116,23 @@ def test_read_hf_list_of_class_labels(test_session):
     ds = Dataset.from_dict({"id": [1], "labels": [[0, 1]]}, features=features)
     (labels,) = dc.read_hf(ds, session=test_session).to_values("labels")
     assert [c.string for c in labels] == ["cat", "dog"]
+
+
+@pytest.mark.parametrize("column", ["", "data"])
+def test_read_hf_splits_with_split_column_names_split_signal_c0_split(
+    test_session, column
+):
+    ds = DatasetDict(
+        {
+            "train": Dataset.from_dict({"split": ["a"], "n": [1]}),
+            "test": Dataset.from_dict({"split": ["b"], "n": [2]}),
+        }
+    )
+
+    chain = dc.read_hf(ds, column=column, session=test_session)
+    prefix = f"{column}." if column else ""
+    signals = [f"{prefix}{name}" for name in ("c0_split", "split", "n")]
+    assert sorted(chain.to_list(*signals)) == [("test", "b", 2), ("train", "a", 1)]
 
 
 class Tag(DataModel):

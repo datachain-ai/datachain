@@ -33,7 +33,7 @@ from sqlalchemy.sql import func as f
 from sqlalchemy.sql.selectable import Join
 
 from datachain import json
-from datachain.catalog.dependency import DatasetDependencyNode
+from datachain.catalog import dependency
 from datachain.checkpoint import Checkpoint, CheckpointStatus
 from datachain.checkpoint_event import (
     CheckpointEvent,
@@ -82,6 +82,7 @@ if TYPE_CHECKING:
     from datachain.data_storage import schema
     from datachain.data_storage.db_engine import DatabaseEngine
 
+DatasetDependencyNode = dependency.DatasetDependencyNode
 logger = logging.getLogger("datachain")
 DEPTH_LIMIT_DEFAULT = 100
 JOB_ANCESTRY_MAX_DEPTH = 100
@@ -319,11 +320,12 @@ class AbstractMetastore(ABC, Serializable):
         version: str,
         *,
         expected_status: int | None = None,
+        expected_job_id: str | None = None,
         **kwargs,
     ) -> DatasetVersion | None:
-        """Updates dataset version fields. When ``expected_status`` is given
-        the UPDATE only applies if the row's current status equals that value;
-        returns None if no row matched."""
+        """Updates dataset version fields. When ``expected_status`` or
+        ``expected_job_id`` is given the UPDATE only applies if the row's
+        current status and job_id equal them; returns None if no row matched."""
 
     def record_dataset_version_access(
         self,
@@ -460,11 +462,12 @@ class AbstractMetastore(ABC, Serializable):
         error_stack="",
         script_output="",
         expected_status: int | None = None,
+        expected_job_id: str | None = None,
     ) -> DatasetRecord:
         """Updates dataset status and appropriate fields related to status.
-        When ``expected_status`` is given the version-level UPDATE is
-        guarded by ``status = :expected``; if no version row matches, raises
-        :class:`DataChainError` before touching the dataset-level row."""
+        When ``expected_status`` or ``expected_job_id`` is given the
+        version-level UPDATE is guarded accordingly; if no version row matches,
+        raises :class:`DataChainError` before touching the dataset-level row."""
 
     @abstractmethod
     def mark_job_dataset_versions_as_failed(self, job_id: str) -> None:
@@ -514,6 +517,23 @@ class AbstractMetastore(ABC, Serializable):
         """Gets direct dataset dependencies. Each returned ``DatasetDependency``
         carries a ``removed`` flag so callers can filter or badge tombstoned
         deps without a separate query."""
+
+    def get_direct_dataset_dependents(
+        self, dataset: DatasetRecord, version: str
+    ) -> list[DatasetDependency | None]:
+        """Get versions that directly depend on this dataset version.
+
+        Optional for metastores that do not support local dataset inspection.
+        """
+        raise NotImplementedError("This metastore does not support dataset dependents")
+
+    def get_dataset_related_versions(
+        self,
+        dependencies: Sequence[DatasetDependency],
+        dependents: Sequence[DatasetDependency],
+    ) -> list[tuple[DatasetRecord, str]]:
+        """Load direct inputs and outputs together, when supported by the metastore."""
+        raise NotImplementedError
 
     @abstractmethod
     def get_dataset_dependency_nodes(
@@ -1453,6 +1473,7 @@ class AbstractDBMetastore(AbstractMetastore):
         version: str,
         *,
         expected_status: int | None = None,
+        expected_job_id: str | None = None,
         **kwargs,
     ) -> DatasetVersion | None:
         """Updates dataset version fields."""
@@ -1471,14 +1492,12 @@ class AbstractDBMetastore(AbstractMetastore):
         values: dict[str, Any] = {}
         version_values: dict[str, Any] = {}
         for field, value in kwargs.items():
-            if (
-                field in ("id", "created_at")
-                or field not in self._dataset_version_fields
-            ):
+            if field == "id" or field not in self._dataset_version_fields:
                 continue  # these fields are read-only or not applicable
 
             if value is None and field in (
                 "status",
+                "created_at",
                 "sources",
                 "query_script",
                 "error_message",
@@ -1492,10 +1511,7 @@ class AbstractDBMetastore(AbstractMetastore):
                 values[field] = json.dumps(value) if value else None
                 version_values[field] = parse_schema(value) if value else None
             elif field == "feature_schema":
-                if value is None:
-                    values[field] = None
-                else:
-                    values[field] = json.dumps(value)
+                values[field] = json.dumps(value) if value is not None else None
                 version_values[field] = value
             elif field == "preview":
                 if value is None:
@@ -1530,12 +1546,26 @@ class AbstractDBMetastore(AbstractMetastore):
 
         dv = self._datasets_versions
         update_stmt = self._datasets_versions_update().where(
-            dv.c.dataset_id == dataset.id, dv.c.version == version
+            dv.c.dataset_id == dataset.id,
+            dv.c.version == version,
+            dv.c.uuid == version_obj.uuid,
         )
         if expected_status is not None:
             update_stmt = update_stmt.where(dv.c.status == expected_status)
+            if (
+                expected_status == DatasetStatus.REMOVING
+                and values.get("status") == DatasetStatus.REMOVING
+                and "content_hash" in values
+            ):
+                update_stmt = update_stmt.where(
+                    dv.c.content_hash.is_(None)
+                    if version_obj.content_hash is None
+                    else dv.c.content_hash == version_obj.content_hash
+                )
+        if expected_job_id is not None:
+            update_stmt = update_stmt.where(dv.c.job_id == expected_job_id)
         result = self.db.execute(update_stmt.values(values))  # type: ignore [attr-defined]
-        if expected_status is not None and result.rowcount == 0:  # type: ignore [attr-defined]
+        if result.rowcount == 0:  # type: ignore [attr-defined]
             return None
 
         version_obj.update(**version_values)
@@ -1855,13 +1885,11 @@ class AbstractDBMetastore(AbstractMetastore):
                 f"Dataset {dataset.name} version {version} not found."
             )
 
+        v = dataset.get_version(version)
         d = self._datasets
         dv = self._datasets_versions
 
         with self.db.transaction():
-            self.remove_dataset_dependencies(dataset, version)
-            self.remove_dataset_dependants(dataset, version)
-
             # Lock the parent dataset row so concurrent saves of a new
             # version can't sneak in between the count and the delete-
             # if-empty below. No-op on SQLite (writes are already
@@ -1871,10 +1899,25 @@ class AbstractDBMetastore(AbstractMetastore):
                 .where(d.c.id == dataset.id)
                 .with_for_update()
             )
+            if not list(
+                self.db.execute(
+                    self._datasets_versions_select(dv.c.id).where(
+                        (dv.c.dataset_id == dataset.id)
+                        & (dv.c.version == version)
+                        & (dv.c.uuid == v.uuid)
+                    )
+                )
+            ):
+                return dataset
+
+            self.remove_dataset_dependencies(dataset, version)
+            self.remove_dataset_dependants(dataset, version)
 
             self.db.execute(
                 self._datasets_versions_delete().where(
-                    (dv.c.dataset_id == dataset.id) & (dv.c.version == version)
+                    (dv.c.dataset_id == dataset.id)
+                    & (dv.c.version == version)
+                    & (dv.c.uuid == v.uuid)
                 )
             )
 
@@ -2087,6 +2130,7 @@ class AbstractDBMetastore(AbstractMetastore):
         error_stack="",
         script_output="",
         expected_status: int | None = None,
+        expected_job_id: str | None = None,
     ) -> DatasetRecord:
         """
         Updates dataset status and appropriate fields related to status
@@ -2106,15 +2150,18 @@ class AbstractDBMetastore(AbstractMetastore):
         with self.db.transaction():
             if version:
                 # Two-step write: first the version row (with the optional
-                # status guard), then the parent dataset row below. If the
-                # guard fails, abort before the second step.
+                # status/owner guard), then the parent dataset row below. If
+                # the guard fails, abort before the second step.
                 updated = self.update_dataset_version(
                     dataset,
                     version,
                     expected_status=expected_status,
+                    expected_job_id=expected_job_id,
                     **update_data,
                 )
-                if expected_status is not None and updated is None:
+                if (
+                    expected_status is not None or expected_job_id is not None
+                ) and updated is None:
                     raise ConcurrentDatasetModificationError(
                         f"Could not update status of {dataset.name}@{version}: "
                         f"current status is not {expected_status}"
@@ -2259,6 +2306,62 @@ class AbstractDBMetastore(AbstractMetastore):
         )
 
         return [self.dependency_class.parse(*r) for r in self.db.execute(query)]
+
+    def get_direct_dataset_dependents(
+        self, dataset: DatasetRecord, version: str
+    ) -> list[DatasetDependency | None]:
+        n = self._dependency_namespaces_source
+        p = self._projects
+        d = self._dependency_datasets_source
+        dd = self._datasets_dependencies
+        dv = self._datasets_versions
+        reverse_ids: dict[SchemaItem, SchemaItem] = {
+            dd.c.dataset_id: dd.c.source_dataset_id,
+            dd.c.dataset_version_id: dd.c.source_dataset_version_id,
+        }
+        select_cols = [
+            reverse_ids.get(column, column)
+            for column in self._dataset_dependencies_select_columns()
+        ]
+        query = (
+            self._datasets_dependencies_select(*select_cols)
+            .select_from(
+                dd.join(d, dd.c.source_dataset_id == d.c.id)
+                .join(dv, dd.c.source_dataset_version_id == dv.c.id)
+                .join(p, d.c.project_id == p.c.id)
+                .join(n, p.c.namespace_id == n.c.id)
+            )
+            .where(
+                dd.c.dataset_id == dataset.id,
+                dd.c.dataset_version_id == dataset.get_version(version).id,
+                dv.c.status == DatasetStatus.COMPLETE,
+                ~d.c.name.startswith(SESSION_DATASET_PREFIX, autoescape=True),
+            )
+        )
+        return [self.dependency_class.parse(*r) for r in self.db.execute(query)]
+
+    def get_dataset_related_versions(
+        self,
+        dependencies: Sequence[DatasetDependency],
+        dependents: Sequence[DatasetDependency],
+    ) -> list[tuple[DatasetRecord, str]]:
+        dd = self._datasets_dependencies
+        related_ids = (
+            select(dd.c.dataset_version_id)
+            .where(dd.c.id.in_([dep.id for dep in dependencies]))
+            .union(
+                select(dd.c.source_dataset_version_id).where(
+                    dd.c.id.in_([dep.id for dep in dependents])
+                )
+            )
+        )
+        columns, base_from = self._dataset_version_query_base()
+        query = (
+            self._datasets_select(*columns)
+            .select_from(base_from)
+            .where(self._datasets_versions.c.id.in_(related_ids))
+        )
+        return self._fetch_version_pairs(query)
 
     def get_dataset_dependency_nodes(
         self, dataset_id: int, version_id: int, depth_limit: int = DEPTH_LIMIT_DEFAULT
@@ -2732,10 +2835,6 @@ class AbstractDBMetastore(AbstractMetastore):
         ]
 
     @cached_property
-    def _dataset_version_jobs_fields(self) -> list[str]:
-        return [c.name for c in self._dataset_version_jobs_columns() if c.name]  # type: ignore[attr-defined]
-
-    @cached_property
     def _dataset_version_jobs(self) -> "Table":
         return Table(
             self.DATASET_VERSION_JOBS_TABLE,
@@ -2769,36 +2868,27 @@ class AbstractDBMetastore(AbstractMetastore):
         _hash: str,
         partial: bool = False,
     ) -> Checkpoint:
+        now = datetime.now(UTC)
+        query = self._checkpoints_insert().values(
+            id=str(uuid4()),
+            job_id=job_id,
+            hash=_hash,
+            partial=partial,
+            created_at=now,
+            status=CheckpointStatus.ACTIVE,
+        )
+        query = query.on_conflict_do_update(  # type: ignore[attr-defined]
+            index_elements=["job_id", "hash"],
+            set_={
+                "status": CheckpointStatus.ACTIVE,
+                "created_at": now,
+            },
+        )
         with self.db.transaction():
-            query = self._checkpoints_insert().values(
-                id=str(uuid4()),
-                job_id=job_id,
-                hash=_hash,
-                partial=partial,
-                created_at=datetime.now(UTC),
-                status=CheckpointStatus.ACTIVE,
-            )
-
-            # Use upsert to handle re-activation of deleted checkpoints
-            # (e.g. same hash in same job after previous run)
-            query = query.on_conflict_do_update(  # type: ignore[attr-defined]
-                index_elements=["job_id", "hash"],
-                set_={
-                    "status": CheckpointStatus.ACTIVE,
-                    "created_at": datetime.now(UTC),
-                },
-            )
-
             self.db.execute(query)
-
             checkpoint = self.find_checkpoint(job_id, _hash)
-            if checkpoint is None:
-                raise RuntimeError(
-                    f"Checkpoint should exist after get_or_create for job_id={job_id}, "
-                    f"hash={_hash}, partial={partial}"
-                )
-
-            return checkpoint
+        assert checkpoint is not None
+        return checkpoint
 
     def list_checkpoints(
         self,

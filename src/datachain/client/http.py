@@ -2,7 +2,6 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, cast
 from urllib.parse import quote, urlparse
 
-from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from fsspec.implementations.http import HTTPFileSystem
 
 from datachain.dataset import StorageURI
@@ -162,25 +161,10 @@ class HTTPClient(Client):
         info = self.fs.info(self.get_uri(path))
         return self.info_to_file(info, path)
 
-    def open_object(
-        self,
-        file: "File",
-        use_cache: bool = True,
-        cb: Callback = DEFAULT_CALLBACK,
-        block_size: int | None = None,
-    ):
-        from datachain.client.fileslice import FileWrapper
-
-        if use_cache and (cache_path := self.cache.get_path(file)):
-            return open(cache_path, mode="rb")
-
-        assert not file.location
+    def _open_remote(self, file: File, block_size: int | None = None) -> BinaryIO:
         # block_size is ignored: servers without range support fail on small
         # blocks
-        return FileWrapper(
-            self.fs.open(file.get_fs_path()),
-            cb,
-        )
+        return super()._open_remote(file)
 
     async def get_file(self, lpath, rpath, callback, version_id: str | None = None):
         return await self.fs._get_file(lpath, rpath, callback=callback)

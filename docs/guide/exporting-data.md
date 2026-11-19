@@ -40,11 +40,9 @@ When exporting to storage, the `placement` parameter controls how file paths are
 chain.to_storage("./local-copy/", signal="file", placement="filepath")
 ```
 
-Object keys can contain empty segments, such as `d//e.txt`. Local `to_storage`
-exports skip paths with empty segments and log a warning; cloud storage with a
-flat namespace preserves them. Azure Data Lake Storage Gen2 accounts with a
-hierarchical namespace normalize empty segments, so use `placement="etag"` when
-exporting these keys there to avoid overwriting a distinct key such as `d/e.txt`.
+Object keys can contain empty segments, such as `d//e.txt`. Local `to_storage` exports skip files whose destination path has an empty segment (with the `filepath` and `fullpath` placements) and log a warning; cloud storage with a flat namespace preserves them. Azure Data Lake Storage Gen2 accounts with a hierarchical namespace normalize empty segments, so use `placement="etag"` when exporting these keys there to avoid overwriting a distinct key such as `d/e.txt`.
+
+`File.rebase()` rejects empty key segments when building a local destination, including `file://` URIs, to prevent distinct object keys from overwriting the same local file. This also protects rebased paths passed to `open()`, media writers or `File.upload()`. Choose an explicit filename or `placement="etag"` for keys that a local filesystem cannot preserve.
 
 ## PyTorch DataLoader Integration
 
@@ -150,9 +148,7 @@ def is_positive_dialogue_ending(file) -> bool:
 
 
 chain = (
-    dc.read_storage(
-        "gs://datachain-demo/chatbot-KiT/", column="file", type="text", anon=True
-    )
+    dc.read_storage("gs://datachain-demo/chatbot-KiT/", type="text", anon=True)
     .settings(parallel=8, cache=True)
     .map(is_positive=is_positive_dialogue_ending)
     .save("file_response")

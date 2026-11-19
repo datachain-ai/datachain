@@ -83,9 +83,7 @@ def is_positive_dialogue_ending(file) -> bool:
 
 
 chain = (
-    dc.read_storage(
-        "gs://datachain-demo/chatbot-KiT/", column="file", type="text", anon=True
-    )
+    dc.read_storage("gs://datachain-demo/chatbot-KiT/", type="text", anon=True)
     .settings(parallel=8, cache=True)
     .map(is_positive=is_positive_dialogue_ending)
     .save("file_response")
@@ -144,7 +142,7 @@ def eval_dialogue(file: dc.File) -> bool:
 
 
 chain = (
-    dc.read_storage("gs://datachain-demo/chatbot-KiT/", column="file", anon=True)
+    dc.read_storage("gs://datachain-demo/chatbot-KiT/", anon=True)
     .map(is_success=eval_dialogue)
     .save("mistral_files")
 )
@@ -194,7 +192,7 @@ def eval_dialog(file: dc.File) -> ChatCompletionResponse:
 
 
 chain = (
-    dc.read_storage("gs://datachain-demo/chatbot-KiT/", column="file", anon=True)
+    dc.read_storage("gs://datachain-demo/chatbot-KiT/", anon=True)
     .settings(parallel=4, cache=True)
     .map(response=eval_dialog)
     .map(status=lambda response: response.choices[0].message.content.lower()[:7])

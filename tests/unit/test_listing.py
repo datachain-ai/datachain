@@ -31,7 +31,7 @@ from datachain.lib.listing import (
     select_paths,
 )
 from datachain.listing import SavedListing
-from datachain.node import DirType, Node
+from datachain.node import DirType, Node, NodeWithPath
 from datachain.sql.functions import path as pathfunc
 from datachain.utils import uses_glob
 from tests.utils import skip_if_not_sqlite
@@ -80,7 +80,6 @@ def listing(test_session):
         catalog.warehouse.clone(),
         Client.get_client(fake_uri, catalog.cache, **catalog.client_config),
         dataset_name=dataset_name,
-        column="file",
     ) as listing_obj:
         yield listing_obj
 
@@ -581,6 +580,9 @@ def test_glob_match_is_sqlite_glob(pattern):
         PathFilter(),
         PathFilter.ls("dir/", True),
         PathFilter.ls("dir/", False),
+        PathFilter.ls("dir//", False),
+        PathFilter.ls("dir///", True),
+        PathFilter.ls("dir///", False),
         PathFilter.ls("", False),
         PathFilter.ls("d*/x", True),
         PathFilter.ls("dir/", True).glob("dir/*.txt"),
@@ -588,7 +590,18 @@ def test_glob_match_is_sqlite_glob(pattern):
     ],
 )
 def test_path_filter_python_matches_sql(test_session, paths):
-    names = ["a", "ab", "x.txt", "dir", "dir/x.txt", "dir/a/x.txt", "dirx/x", "d/x"]
+    names = [
+        "a",
+        "ab",
+        "x.txt",
+        "dir",
+        "dir/x.txt",
+        "dir/a/x.txt",
+        "dirx/x",
+        "d/x",
+        "dir//x.txt",
+        "dir///x.txt",
+    ]
     chain = dc.read_values(path=names, session=test_session)
     for condition in paths.sql(dc.C("path")):
         chain = chain.filter(condition)
@@ -676,3 +689,35 @@ def test_select_paths_keeps_filter_steps(test_session, list_path, pattern, recur
     assert [s.hash() for s in actual._query.steps] == [
         s.hash() for s in expected._query.steps
     ]
+
+
+@pytest.mark.parametrize(
+    "parts,expected",
+    [
+        (["d", "e.txt"], False),
+        (["d/e.txt"], False),
+        (["d", "", "e.txt"], True),
+        (["d//e.txt"], True),
+        (["/e.txt"], True),
+        (["d/"], True),
+    ],
+)
+def test_node_with_path_has_empty_segments(parts, expected):
+    nwp = NodeWithPath(Node(path="/".join(parts)), path=parts)
+    assert nwp.has_empty_segments is expected
+
+
+@skip_if_not_sqlite
+def test_warehouse_empty_segment_folder_expansion_and_size(test_session):
+    files = [
+        File(path="d/e.txt", size=1),
+        File(path="d//e.txt", size=2),
+        File(path="d///f.txt", size=3),
+    ]
+    dataset = dc.read_values(file=files, session=test_session).save("empty_seg").dataset
+    wh = test_session.catalog.warehouse
+    rows = wh.dataset_rows(dataset, dataset.latest_version)
+
+    (node,) = wh.expand_path(rows, "d*//")
+    assert node.path == "d/"
+    assert wh.size(rows, node) == (5, 0)

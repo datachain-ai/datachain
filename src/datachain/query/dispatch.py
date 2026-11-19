@@ -1,4 +1,6 @@
 import contextlib
+import os
+import threading
 import traceback
 from collections.abc import Iterable, Sequence
 from itertools import chain
@@ -9,7 +11,8 @@ from typing import TYPE_CHECKING, Literal
 
 import multiprocess
 from cloudpickle import load, loads
-from fsspec.callbacks import DEFAULT_CALLBACK, Callback
+from fsspec import Callback
+from fsspec.callbacks import DEFAULT_CALLBACK
 from multiprocess.context import Process
 from multiprocess.queues import Queue as MultiprocessQueue
 
@@ -41,6 +44,7 @@ OK_STATUS = "OK"
 FINISHED_STATUS = "FINISHED"
 FAILED_STATUS = "FAILED"
 NOTIFY_STATUS = "NOTIFY"
+STATS_INTERVAL_SEC = 3.0
 
 
 def get_n_workers_from_arg(n_workers: int | None = None) -> int:
@@ -53,6 +57,8 @@ def get_n_workers_from_arg(n_workers: int | None = None) -> int:
 
 def udf_entrypoint() -> int:
     """Parallel processing (faster for more CPU-heavy UDFs)."""
+    if os.environ.pop("_DATACHAIN_UDF_SAFE_PATH", None):
+        os.environ.pop("PYTHONSAFEPATH", None)
     # Load UDF info from stdin
     udf_info: UdfInfo = load(stdin.buffer)
 
@@ -122,6 +128,7 @@ class UDFDispatcher:
         self.processes = udf_info["processes"]
         self.rows_total = udf_info["rows_total"]
         self.batch_size = udf_info["batch_size"]
+        self.parts = udf_info.get("parts")
         self.buffer_size = buffer_size
         self.task_queue = None
         self.done_queue = None
@@ -137,7 +144,7 @@ class UDFDispatcher:
             self._catalog = Catalog(metastore, warehouse, **self.catalog_init_params)
         return self._catalog
 
-    def _create_worker(self) -> "UDFWorker":
+    def _create_worker(self, worker_index: int = 0) -> "UDFWorker":
         udf: UDFAdapter = loads(self.udf_data)
         # Ensure all registered DataModels have rebuilt schemas in worker processes.
         ModelStore.rebuild_all()
@@ -152,11 +159,13 @@ class UDFDispatcher:
             self.is_batching,
             self.batch_size,
             self.udf_fields,
+            self._writer_no(worker_index),
+            self.parts,
         )
 
-    def _run_worker(self) -> None:
+    def _run_worker(self, worker_index: int) -> None:
         try:
-            worker = self._create_worker()
+            worker = self._create_worker(worker_index)
             worker.run()
         except (Exception, KeyboardInterrupt) as e:
             if self.done_queue:
@@ -242,7 +251,14 @@ class UDFDispatcher:
                     udf,
                     cb=generated_cb,
                     batch_size=self.batch_size,
+                    writer_no=self._writer_no(0),
+                    parts=self.parts,
                 )
+
+    def _writer_no(self, worker_index: int) -> int | None:
+        """A table with a ledger is written under writer numbers claimed from
+        it (None); a table without one is written once, by these workers."""
+        return None if self.parts is not None else worker_index
 
     def input_batch_size(self, n_workers: int) -> int:
         rows_per_task = min(self.rows_total // n_workers, DEFAULT_BATCH_SIZE)
@@ -261,7 +277,7 @@ class UDFDispatcher:
         self.done_queue = self.ctx.Queue()
 
         pool = [
-            self.ctx.Process(name=f"Worker-UDF-{i}", target=self._run_worker)
+            self.ctx.Process(name=f"Worker-UDF-{i}", target=self._run_worker, args=(i,))
             for i in range(n_workers)
         ]
         for p in pool:
@@ -373,30 +389,64 @@ class UDFDispatcher:
             queue.join_thread()
 
 
-class DownloadCallback(Callback):
+class WorkerStats:
     def __init__(self, queue: MultiprocessQueue) -> None:
         self.queue = queue
+        self.lock = threading.Lock()
+        self.counts: dict[str, int] = {}
+
+    def add(self, name: str, inc: int = 1) -> None:
+        with self.lock:
+            self.counts[name] = self.counts.get(name, 0) + inc
+
+    def send(self, status: str) -> None:
+        with self.lock:
+            if status != NOTIFY_STATUS or self.counts:
+                put_into_queue(self.queue, {"status": status, **self.counts})
+                self.counts = {}
+
+    @contextlib.contextmanager
+    def track(self):
+        stopped = threading.Event()
+
+        def send_updates():
+            while not stopped.wait(STATS_INTERVAL_SEC):
+                self.send(NOTIFY_STATUS)
+
+        thread = threading.Thread(target=send_updates, daemon=True)
+        thread.start()
+        try:
+            yield
+        finally:
+            stopped.set()
+            thread.join()
+            self.send(NOTIFY_STATUS)
+
+
+class DownloadCallback(Callback):
+    def __init__(self, stats: WorkerStats) -> None:
+        self.stats = stats
         super().__init__()
 
     def relative_update(self, inc: int = 1) -> None:
-        put_into_queue(self.queue, {"status": NOTIFY_STATUS, "bytes_downloaded": inc})
+        self.stats.add("bytes_downloaded", inc)
 
     def increment_file_count(self, inc: int = 1) -> None:
-        put_into_queue(self.queue, {"status": NOTIFY_STATUS, "downloaded": inc})
+        self.stats.add("downloaded", inc)
 
 
 class ProcessedCallback(Callback):
     def __init__(
         self,
         name: Literal["processed", "generated"],
-        queue: MultiprocessQueue,
+        stats: WorkerStats,
     ) -> None:
         self.name = name
-        self.queue = queue
+        self.stats = stats
         super().__init__()
 
     def relative_update(self, inc: int = 1) -> None:
-        put_into_queue(self.queue, {"status": NOTIFY_STATUS, self.name: inc})
+        self.stats.add(self.name, inc)
 
 
 class UDFWorker:
@@ -412,6 +462,8 @@ class UDFWorker:
         is_batching: bool,
         batch_size: int | None,
         udf_fields: Sequence[str],
+        writer_no: int | None = None,
+        parts: "Table | None" = None,
     ) -> None:
         self.catalog = catalog
         self.udf = udf
@@ -423,14 +475,20 @@ class UDFWorker:
         self.is_batching = is_batching
         self.batch_size = batch_size
         self.udf_fields = udf_fields
+        self.writer_no = writer_no
+        self.parts = parts
 
-        self.download_cb = DownloadCallback(self.done_queue)
-        self.processed_cb = ProcessedCallback("processed", self.done_queue)
-        self.generated_cb = ProcessedCallback("generated", self.done_queue)
+        self.stats = WorkerStats(self.done_queue)
+        self.download_cb = DownloadCallback(self.stats)
+        self.processed_cb = ProcessedCallback("processed", self.stats)
+        self.generated_cb = ProcessedCallback("generated", self.stats)
 
     def run(self) -> None:
         prefetch = self.udf.prefetch
-        with _get_cache(self.catalog.cache, prefetch, use_cache=self.cache) as _cache:
+        with (
+            self.stats.track(),
+            _get_cache(self.catalog.cache, prefetch, use_cache=self.cache) as _cache,
+        ):
             catalog = clone_catalog_with_cache(self.catalog, _cache)
             udf_results = self.udf.run(
                 self.udf_fields,
@@ -444,21 +502,20 @@ class UDFWorker:
                 process_udf_outputs(
                     catalog.warehouse,
                     self.table,
-                    self.notify_and_process(udf_results),
+                    udf_results,
                     self.udf,
                     cb=self.generated_cb,
                     batch_size=self.batch_size,
+                    writer_no=self.writer_no,
+                    parts=self.parts,
                 )
-        put_into_queue(self.done_queue, {"status": FINISHED_STATUS})
-
-    def notify_and_process(self, udf_results):
-        for row in udf_results:
-            put_into_queue(self.done_queue, {"status": OK_STATUS})
-            yield row
+        self.stats.send(FINISHED_STATUS)
 
     def get_inputs(self) -> Iterable["RowsOutput"]:
         warehouse = self.catalog.warehouse.clone()
         while (batch := get_from_queue(self.task_queue)) != STOP_SIGNAL:
+            # OK makes the dispatcher queue the next task
+            self.stats.send(OK_STATUS)
             for ids in batched(batch, DEFAULT_BATCH_SIZE):
                 yield from warehouse.dataset_rows_select_from_ids(
                     self.query, ids, self.is_batching

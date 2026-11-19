@@ -114,7 +114,7 @@ def test_failed_listing_cleans_seed_and_preserves_parent(catalog, tmp_path, mock
 def test_listing_in_another_thread_preserves_active_session(
     catalog_tmpfile, tmp_path, monkeypatch
 ):
-    from datachain.lib.dc import records
+    from datachain.lib import listing as listing_lib
 
     catalog = catalog_tmpfile
     folder = tmp_path / "input"
@@ -122,12 +122,12 @@ def test_listing_in_another_thread_preserves_active_session(
     (folder / "file.txt").write_text("contents")
     entered = Event()
     resume = Event()
-    create_records = records.create_records_dataset
+    list_pages = listing_lib.list_pages
 
-    def paused_seed(*args, **kwargs):
+    def paused_listing(*args, **kwargs):
         entered.set()
         assert resume.wait(15)
-        return create_records(*args, **kwargs)
+        return list_pages(*args, **kwargs)
 
     def list_in_worker():
         with Catalog(
@@ -142,15 +142,14 @@ def test_listing_in_another_thread_preserves_active_session(
 
     with Session("owner", catalog=catalog) as parent:
         parent.get_or_create_job()
-        monkeypatch.setattr(records, "create_records_dataset", paused_seed)
+        monkeypatch.setattr(listing_lib, "list_pages", paused_listing)
         with ThreadPoolExecutor(max_workers=1) as pool:
             listing = pool.submit(list_in_worker)
             try:
                 if not entered.wait(10):
                     listing.result(timeout=1)
-                    pytest.fail("listing did not reach seed creation")
+                    pytest.fail("listing did not start")
                 assert Session.get() is parent
-                monkeypatch.setattr(records, "create_records_dataset", create_records)
                 kept = dc.read_values(value=[1]).persist()
             finally:
                 resume.set()

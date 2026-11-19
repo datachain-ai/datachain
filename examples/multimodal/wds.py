@@ -2,7 +2,6 @@ import os
 
 import datachain as dc
 from datachain.func import path
-from datachain.lib.webdataset import process_webdataset
 from datachain.lib.webdataset_laion import WDSLaion, process_laion_meta
 
 IMAGE_TARS = os.getenv(
@@ -15,12 +14,9 @@ NPZ_METADATA = os.getenv(
     "NPZ_METADATA", "gs://datachain-demo/datacomp-small/metadata/0020f*.npz"
 )
 
-wds_images = (
-    dc.read_storage(IMAGE_TARS, type="image", anon=True)
-    .settings(cache=True)
-    .gen(laion=process_webdataset(spec=WDSLaion))
-    .persist()
-)
+wds_images = dc.read_webdataset(
+    IMAGE_TARS, spec=WDSLaion, column="laion", settings={"cache": True}, anon=True
+).persist()
 
 wds_images.show(5)
 

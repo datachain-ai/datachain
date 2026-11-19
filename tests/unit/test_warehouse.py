@@ -1,14 +1,23 @@
 import base64
 import json
+from datetime import UTC, datetime, timedelta, timezone
+from enum import StrEnum
+from types import SimpleNamespace
 from unittest.mock import patch
 
+import numpy as np
 import pytest
 import sqlalchemy as sa
 
 import datachain as dc
+from datachain.data_storage.codec import check_value
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SQLiteWarehouse
 from datachain.lib.file import File
+from datachain.lib.signal_schema import SignalSchema
+from datachain.lib.udf import JsonSerializationError, OutputRows, UdfError
+from datachain.sql.sqlite.base import adapt_datetime
+from datachain.sql.types import JSON, Array, DateTime, Float, String
 from tests.utils import skip_if_not_sqlite
 
 
@@ -232,32 +241,20 @@ def test_empty_rows_insert_defaults(sqlite_db):
     warehouse = SQLiteWarehouse(sqlite_db)
     table = warehouse.create_udf_table([sa.Column("value", sa.Integer)])
 
-    warehouse.insert_rows(table, [{}, {}])
-    warehouse.insert_rows_done(table)
+    warehouse.insert_stored_rows(table, [], [(), ()])
 
     query = sa.select(table.c.value)
     assert list(warehouse.dataset_rows_select(query)) == [(None,), (None,)]
 
 
-def test_map_tuples_are_validated(sqlite_db):
-    from types import SimpleNamespace
-
-    from datachain.lib.signal_schema import SignalSchema
-    from datachain.lib.udf import UdfError
-    from datachain.query.dataset import process_udf_outputs
-    from datachain.sql.types import Int, String
-
+def test_output_rows_validate_tuples(sqlite_db):
     warehouse = SQLiteWarehouse(sqlite_db)
-    table = warehouse.create_udf_table([sa.Column("a", Int), sa.Column("b", String)])
-    inner = SimpleNamespace(
-        output=SignalSchema({"a": int, "b": str}),
-        is_input_batched=False,
-        is_output_batched=False,
-    )
-    udf = SimpleNamespace(output={"a": Int, "b": String}, inner=inner)
+    udf = SimpleNamespace(output=SignalSchema({"a": int, "b": str}), udf_kind="map")
+    output_rows = OutputRows(udf, warehouse)  # type: ignore[arg-type]
 
-    with pytest.raises(UdfError):
-        process_udf_outputs(warehouse, table, iter([[(1, "x", None)]]), udf)
+    assert output_rows((1, "x")) == (1, "x")
+    with pytest.raises(UdfError, match="output column 'a'"):
+        output_rows(("x", "y"))
 
 
 @skip_if_not_sqlite
@@ -269,8 +266,7 @@ def test_insert_into_reads_all_ids_before_inserting_batches(
     src, dst, unrelated = (
         warehouse.create_udf_table([sa.Column("value", sa.Integer)]) for _ in range(3)
     )
-    warehouse.insert_rows(src, [{"value": i} for i in range(10)])
-    warehouse.insert_rows_done(src)
+    warehouse.insert_stored_rows(src, ["value"], [(i,) for i in range(10)])
 
     # Another connection commits after each batch. With the id cursor still open,
     # the next batch fails with "database is locked".
@@ -338,3 +334,113 @@ def test_batched_id_fetch_preserves_join_fanout(numbers_table, warehouse):
         [],
         [2, 3],
     ]
+
+
+DATETIMES = [
+    datetime(2024, 1, 2, 3, 4, 5),
+    datetime(2024, 1, 2, 3, 4, 5, 120),
+    datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone(timedelta(hours=-5))),
+    datetime(1969, 12, 31, 23, 59, 59, 999999, tzinfo=UTC),
+    datetime(9, 1, 1),
+]
+
+
+@pytest.mark.parametrize("value", DATETIMES)
+def test_codec_stores_datetimes_as_the_adapter_text(sqlite_db, value):
+    # Filter parameters still go through adapt_datetime: stored text must match it.
+    import pyarrow as pa
+
+    codec = SQLiteWarehouse(sqlite_db).row_codec([DateTime()])
+
+    assert codec.encode((value,)) == (adapt_datetime(value),)
+    assert codec.encode_arrow(
+        pa.record_batch([pa.array([value, None])], names=["t"])
+    ) == [(adapt_datetime(value),), (None,)]
+
+
+class _StrEnum(StrEnum):
+    A = "a"
+    B = "b"
+    ONE = "1"
+
+
+class _Mangled(str):
+    """A str subclass whose __str__ disagrees with the key json emits."""
+
+    __slots__ = ()
+
+    def __str__(self):
+        return "MANGLED"
+
+
+class _OpaqueStr(str):
+    """A str subclass whose equality cannot spot a duplicate key."""
+
+    __slots__ = ()
+    __eq__ = object.__eq__
+    __hash__ = object.__hash__
+
+
+# Ported from #1943 (#1914): keys that collide as JSON raise instead of losing a
+# value; the codec's JSON encoder is the one place a dict becomes JSON.
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"1": "a", 1: "b"},
+        {None: "a", "null": "b"},
+        {True: "a", "true": "b"},
+        {(1, 2): "a", "[1,2]": "b"},
+        {"1": "a", _OpaqueStr("1"): "b"},
+        {_StrEnum.ONE: "a", 1: "b"},
+        {"payload": np.array([{"1": "first", 1: "second"}], dtype=object)},
+    ],
+    ids=[
+        "int-and-str",
+        "none-and-null",
+        "bool-and-str",
+        "tuple-and-str",
+        "subclass",
+        "enum-value-and-int",
+        "inside-a-numpy-object-array",
+    ],
+)
+def test_json_encoding_refuses_colliding_dict_keys(value):
+    with pytest.raises(JsonSerializationError, match="would be lost"):
+        check_value(JSON())(value)
+
+
+def test_json_array_items_refuse_colliding_dict_keys():
+    with pytest.raises(JsonSerializationError, match="would be lost"):
+        check_value(Array(JSON()))([{"1": "first", 1: "second"}])
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ({"x": "a", 2: "b"}, {"x": "a", "2": "b"}),
+        ({1: "a", 2: "b"}, {"1": "a", "2": "b"}),
+        ({_StrEnum.A: "x", _StrEnum.B: "y"}, {"a": "x", "b": "y"}),
+        ({_StrEnum.A: "x", "_StrEnum.A": "y"}, {"a": "x", "_StrEnum.A": "y"}),
+        ({_Mangled("a"): "x"}, {"a": "x"}),
+    ],
+    ids=["mixed", "all-int", "enum", "enum-and-its-label", "custom-str"],
+)
+def test_json_encoding_keeps_dict_keys_that_do_not_collide(value, expected):
+    assert json.loads(check_value(JSON())(value)) == expected
+
+
+@pytest.mark.parametrize(
+    "value,col_type,expected",
+    [
+        ([1, 2], Array(Float()), [1.0, 2.0]),
+        (("x", "y"), Array(String()), ["x", "y"]),
+    ],
+    ids=["float-from-int", "tuple-to-list"],
+)
+def test_check_value_converts_array_items(value, col_type, expected):
+    assert check_value(col_type)(value) == expected
+
+
+def test_check_value_does_not_re_encode_dict_array_items():
+    value = [{"a": 1}, {"b": 2}]
+    assert check_value(Array(JSON()))(value) == value

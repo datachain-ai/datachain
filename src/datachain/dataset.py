@@ -12,6 +12,7 @@ from uuid import uuid4
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
+import datachain.sql  # noqa: F401
 from datachain import json, semver
 from datachain.error import (
     DatasetStateNotLoadedError,
@@ -379,14 +380,6 @@ class DatasetVersion:
 
     def __hash__(self):
         return hash(f"{self.dataset_id}_{self.version}")
-
-    def is_final_status(self) -> bool:
-        return self.status in [
-            DatasetStatus.FAILED,
-            DatasetStatus.COMPLETE,
-            DatasetStatus.STALE,
-            DatasetStatus.REMOVED,
-        ]
 
     @property
     def is_removed(self) -> bool:
@@ -1077,7 +1070,3 @@ class DatasetListRecord:
             if f.name in d and f.name not in {"project", "versions", "_versions"}
         }
         return cls(**kwargs, _versions=versions, project=project)
-
-
-class RowDict(dict):
-    pass
