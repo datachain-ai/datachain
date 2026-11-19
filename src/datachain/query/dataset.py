@@ -1083,16 +1083,19 @@ class UDFStep(Step, ABC):
             temp_tables.append(partition_tbl.name)
 
         # On SQLite, the partition table's index on (sys__partition_id, rowid)
-        # lets each input page seek to its first row instead of sorting.
+        # lets each input page seek to its first row instead of sorting. The
+        # alias is required on ClickHouse when continuing from a reflected
+        # partition table (test_aggregator_continue_from_partial_same_job).
+        part = partition_tbl.alias()
         result_query = query.join(
-            partition_tbl,
-            partition_tbl.c.sys__id == query.selected_columns.sys__id,
+            part,
+            part.c.sys__id == query.selected_columns.sys__id,
         ).with_only_columns(
             *(
-                partition_tbl.c.sys__id.label("sys__id") if c.name == "sys__id" else c
+                part.c.sys__id.label("sys__id") if c.name == "sys__id" else c
                 for c in query.selected_columns
             ),
-            partition_tbl.c[PARTITION_COLUMN_ID],
+            part.c[PARTITION_COLUMN_ID],
         )
         return result_query, _continue
 

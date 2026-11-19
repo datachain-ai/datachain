@@ -124,10 +124,30 @@ def test_dataset_select_paginated_keyset(numbers_table, warehouse):
     assert len({row[0] for row in rows}) == 73
 
 
-def test_dataset_select_paginated_needs_sys_id(numbers_table, warehouse):
-    query = sa.select(numbers_table.c.number)
-    with pytest.raises(ValueError, match="sys__id"):
-        list(warehouse.dataset_select_paginated(query))
+@pytest.mark.parametrize(
+    "build_query",
+    [
+        lambda t: sa.select(t.number),
+        lambda t: sa.select(t.sys__id, t.number).offset(3),
+        lambda t: sa.select(t.sys__id, t.number).offset(3).limit(4),
+        lambda t: sa.select(t.sys__id, t.number).order_by(t.number.desc()).limit(3),
+    ],
+    ids=["missing-sys-id", "offset", "offset-limit", "foreign-order-by"],
+)
+def test_dataset_select_paginated_rejects_non_udf_queries(
+    numbers_table, warehouse, build_query
+):
+    with pytest.raises(ValueError, match="paginated query"):
+        list(warehouse.dataset_select_paginated(build_query(numbers_table.c)))
+
+
+def test_dataset_select_paginated_accepts_labeled_sys_id_order_by(
+    numbers_table, warehouse
+):
+    id_col = sa.type_coerce(numbers_table.c.sys__id, sa.Integer).label("sys__id")
+    query = sa.select(id_col).order_by(id_col).with_only_columns(id_col).limit(5)
+    rows = list(warehouse.dataset_select_paginated(query, page_size=2))
+    assert len(rows) == 5
 
 
 @skip_if_not_sqlite

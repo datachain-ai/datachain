@@ -160,9 +160,9 @@ class AbstractWarehouse(ABC, Serializable):
     ) -> Generator[Sequence, None, None]:
         """
         Rows of `query` in pages, as UDF inputs are read: ordered by sys__id,
-        after the partition id when the query selects one. The query's own
-        ORDER BY and OFFSET are ignored; its LIMIT is kept. Each page starts after
-        the previous page's last key, so no page re-reads the rows before it.
+        after the partition id when the query selects one. The query may not
+        have an OFFSET or its own ORDER BY; its LIMIT is kept. Each page starts
+        after the previous page's last key, so no page re-reads the rows before it.
         """
         if page_size is None:
             page_size = SELECT_BATCH_SIZE
@@ -171,9 +171,13 @@ class AbstractWarehouse(ABC, Serializable):
             raise ValueError("paginated query must select sys__id")
         names = [n for n in (PARTITION_COLUMN_ID, "sys__id") if n in columns]
         keys = [columns[n] for n in names]
+        # order_by() wraps a labelled column, so look inside the wrapper.
+        ordered = {getattr(c, "element", c) for c in query._order_by_clauses}
+        if query._offset is not None or not ordered <= set(keys):
+            raise ValueError("paginated query cannot have OFFSET or its own ORDER BY")
         key_at = [list(columns.keys()).index(n) for n in names]
         limit = query._limit
-        query = query.offset(None).order_by(None).order_by(*keys)
+        query = query.order_by(None).order_by(*keys)
 
         # Ensure we're using a thread-local connection
         with self.clone() as wh:

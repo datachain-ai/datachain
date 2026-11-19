@@ -1071,7 +1071,7 @@ def test_delta_gen_reads_unreferenced_delta_key_and_presence_columns(test_sessio
 
     dc.read_values(
         a=[1, 2],
-        item=[Item(k=1), Item(k=2)],
+        item=[Item(k=1), None],
         unused=["u", "v"],
         session=test_session,
     ).save("delta_gen_key_src")
@@ -1079,11 +1079,11 @@ def test_delta_gen_reads_unreferenced_delta_key_and_presence_columns(test_sessio
         dc.read_dataset(
             "delta_gen_key_src",
             delta=True,
-            delta_on="item.k",
+            delta_on="item",
             session=test_session,
         )
         .gen(
-            lambda a: [(Item(k=a), a * 10)],
+            lambda a: [(Item(k=a) if a == 1 else None, a * 10)],
             output={"item": Item | None, "b": int},
         )
         .save("delta_gen_key_out")
