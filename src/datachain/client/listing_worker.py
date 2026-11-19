@@ -11,11 +11,11 @@ import struct
 import sys
 import threading
 import traceback
+from collections.abc import Sequence
 from contextlib import suppress
-from functools import partial
 from typing import TYPE_CHECKING, Any, BinaryIO
 
-from datachain.lib.file import FileRow
+from datachain.lib.file import as_file_row
 from datachain.utils import usable_cpu_count
 
 from .ranges import Page
@@ -28,12 +28,11 @@ logger = logging.getLogger("datachain")
 
 # a frozen app's executable starts the app, not Python's "-c"
 _SPAWNS = bool(sys.executable) and not getattr(sys, "frozen", False)
-LIST_PROCESSES = min(4, cpus) if _SPAWNS and (cpus := usable_cpu_count()) > 1 else 0
+LIST_PROCESSES = min(8, cpus) if _SPAWNS and (cpus := usable_cpu_count()) > 1 else 0
 HEADER = struct.Struct("<Q")  # the size of the pickle that follows
 # a child that doesn't answer a page in time is stuck (stopped, deadlocked): the
 # parent kills it and lists the page itself; a page normally takes under a second
 REPLY_TIMEOUT = float(os.environ.get("DATACHAIN_LISTING_REPLY_TIMEOUT", "300"))
-_as_file_row = partial(tuple.__new__, FileRow)  # skips FileRow's argument handling
 
 
 def dump(message: Any) -> bytes:
@@ -115,6 +114,36 @@ def _kill_children() -> None:
         _kill(proc)
 
 
+class Rows(Sequence):
+    """Rows a child sent, unpickled by whoever reads them, not the event loop."""
+
+    def __init__(self, rows: Sequence[tuple]) -> None:
+        self._rows: list | bytes = list(rows)
+        self.size = len(rows)
+
+    def _load(self) -> list:
+        if isinstance(rows := self._rows, bytes):
+            self._rows = rows = list(map(as_file_row, pickle.loads(rows)))  # noqa: S301
+        return rows
+
+    def __len__(self) -> int:
+        return self.size
+
+    def __getitem__(self, index):  # type: ignore[override]
+        return self._load()[index]
+
+    def __iter__(self):
+        return iter(self._load())
+
+    def __getstate__(self) -> tuple[bytes, int]:
+        # plain tuples: a row type would unpickle per row in Python
+        plain = [tuple(r) for r in self._load()]
+        return pickle.dumps(plain, protocol=5), self.size
+
+    def __setstate__(self, state: tuple[bytes, int]) -> None:
+        self._rows, self.size = state
+
+
 class Pool:
     """Child processes fetching pages for one ``RangeListing``. The parent fetches
     any page a child fails or loses, so errors reach the user as raised."""
@@ -123,7 +152,7 @@ class Pool:
         # the page size travels so that tests can shrink it in children too
         spec = (type(client), client.name, client.fs_kwargs, client.cache)
         try:
-            self.spec = dump((*spec, client.LIST_PAGE_SIZE, prefix))
+            self.spec = dump((*spec, client.LIST_PAGE_SIZE, prefix, client.encode_page))
         except Exception:
             logger.debug(
                 "Listing in one process: client config does not pickle", exc_info=True
@@ -201,8 +230,7 @@ class Pool:
             return None
         if (page := reply.result()) is None:
             return None
-        rows, *rest = page
-        return Page(list(map(_as_file_row, rows)), *rest)
+        return Page(*page)
 
     def _drop(self, proc: asyncio.subprocess.Process, replies: dict) -> None:
         """Kills a stuck child; its pending pages come back None now, as the kill
@@ -238,9 +266,10 @@ def main(out_fd: int) -> None:
         os.dup2(devnull.fileno(), 0)
     try:
         if (spec := load(inp)) is not None:
-            cls, name, fs_kwargs, cache, page_size, prefix = spec
+            cls, name, fs_kwargs, cache, page_size, prefix, encode = spec
             client = cls(name, fs_kwargs, cache)
             client.LIST_PAGE_SIZE = page_size
+            client.encode_page = encode
     except Exception as e:  # noqa: BLE001
         spec = None  # such as a class in the parent's __main__: the parent lists alone
         with suppress(OSError):
@@ -292,8 +321,8 @@ async def _serve(
         answer = None
         with suppress(Exception):
             page = await client._list_page(prefix, start_after, token, hi)
-            # plain tuples: a row type would unpickle per row in Python
-            answer = dump((rid, ([tuple(r) for r in page.rows], *page[1:])))
+            encode = client.encode_page or Rows
+            answer = dump((rid, (encode(page.rows), *page[1:])))
         write_frame(answer or dump((rid, None)))
 
     # read from the start: a parent gone during the warm-up ends this child

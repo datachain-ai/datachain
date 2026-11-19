@@ -95,11 +95,13 @@ def _flatten_model(model: type[BaseModel], obj: BaseModel, out: list) -> list:
         if layout is not None:
             out.extend(_flatten_union(value, layout))
         elif not kind.is_model:
-            out.append(_flatten_scalar(value))
+            out.append(value)
         elif value is None:
             out.extend(_emit_absent(kind.inner))
-        else:
+        elif isinstance(value, BaseModel):
             _flatten_model(kind.inner, value, out)
+        else:
+            out.append(value)
     return out
 
 
@@ -121,13 +123,12 @@ def flatten_value(value, anno) -> tuple:
     ``_type_tag`` then every arm's columns, only the active arm populated."""
     if (layout := union_layout(anno)) is not None:
         return tuple(_flatten_union(value, layout))
-    if isinstance(value, (list, dict)):
-        return (_flatten_scalar(value),)
     kind = classify_field(anno)
     if kind.is_model:
         if value is None:  # outer-merge pad
             return tuple(_emit_absent(kind.inner))
-        return flatten(value)
+        if isinstance(value, BaseModel):
+            return flatten(value)
     return (value,)
 
 
@@ -147,7 +148,7 @@ def _flatten_arm(value, arm) -> Generator:
             # flatten by the declared fields, not the (maybe subclass) instance's
             yield from _flatten_model(fr, value, [])
     else:
-        yield _flatten_scalar(value)
+        yield value
 
 
 # arms that take a value of another type, as the same column type would
@@ -204,31 +205,11 @@ def _arm_matches(value, arm) -> bool:
     return isinstance(value, arm)
 
 
-def _flatten_scalar(value):
-    if isinstance(value, list):
-        return _flatten_list_field(value)
-    if isinstance(value, dict):
-        return {
-            key: val.model_dump() if ModelStore.is_pydantic(type(val)) else val
-            for key, val in value.items()
-        }
-    return value
-
-
 def flatten_list(obj_list: list[BaseModel]) -> tuple:
     out: list = []
     for obj in obj_list:
         _flatten_model(type(obj), obj, out)
     return tuple(out)
-
-
-def _flatten_list_field(value: list) -> list:
-    assert isinstance(value, list)
-    if value and ModelStore.is_pydantic(type(value[0])):
-        return [val.model_dump() for val in value]
-    if value and isinstance(value[0], list):
-        return [_flatten_list_field(v) for v in value]
-    return value
 
 
 @lru_cache(maxsize=4096)
