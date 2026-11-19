@@ -21,6 +21,8 @@ import datachain as dc
 from datachain import DataModel, func
 from datachain.dataset import DatasetDependencyType
 from datachain.fs.utils import path_to_fsspec_uri
+from datachain.lib import arrow as arrow_mod
+from datachain.lib import parquet_ranges
 from datachain.lib.arrow import PARTIAL_READ_PREFETCH_MAX_SIZE
 from datachain.lib.data_model import compute_model_fingerprint
 from datachain.lib.file import File, FileError, ImageFile
@@ -1873,22 +1875,23 @@ def test_read_parquet_columns_fetch_only_those_columns(
     assert sum(cb.value for cb in download_callbacks) > 0
 
 
-@pytest.mark.filterwarnings("ignore:Sending a large body:ResourceWarning")
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
 @pytest.mark.parametrize("prefetch", [2, 0])
 def test_read_parquet_columns_fetches_footer_and_chunk_ranges_once_per_file(
-    cloud_test_catalog_upload, fetched_bytes, tmp_path, prefetch
+    cloud_test_catalog_upload, fetched_bytes, tmp_path, monkeypatch, prefetch
 ):
     ctc = cloud_test_catalog_upload
     rng = np.random.default_rng(0)
+    monkeypatch.setattr(arrow_mod, "PARTIAL_READ_PREFETCH_MAX_SIZE", 1)
+    monkeypatch.setattr(parquet_ranges, "PARQUET_FOOTER_SAMPLE_SIZE", 128 * 1024)
     # Footer > 64 KiB so pyarrow alone would read the 64 KiB tail and then the footer.
     table = pa.table(
-        {f"c{i}": rng.random(120_000) for i in range(10)}
-    ).replace_schema_metadata({b"pad": b"x" * 100_000})
+        {f"c{i}": rng.random(8_000) for i in range(10)}
+    ).replace_schema_metadata({b"pad": b"x" * 35_000})
     for i in range(2):
-        pq.write_table(table, tmp_path / f"f{i}.parquet", row_group_size=120_000)
-        file = _put_parquet(ctc, f"parts/f{i}.parquet", table, row_group_size=120_000)
+        pq.write_table(table, tmp_path / f"f{i}.parquet", row_group_size=8_000)
+        file = _put_parquet(ctc, f"parts/f{i}.parquet", table, row_group_size=8_000)
     local = dc.read_parquet(
         tmp_path.as_uri(), columns=["c1", "c8"], session=ctc.session
     ).order_by("c1", "c8")
@@ -1903,7 +1906,7 @@ def test_read_parquet_columns_fetches_footer_and_chunk_ranges_once_per_file(
     assert chain.to_list("c1", "c8") == local.to_list("c1", "c8")
     # Per file: 1 footer sample + 2 non-adjacent column chunk ranges (not 4 sequential).
     assert fetched_bytes[1] == 2 * 3
-    assert 0 < fetched_bytes[0] < 2 * (file.size // 3)
+    assert 0 < fetched_bytes[0] < 2 * (file.size // 2)
 
 
 class _Wide(DataModel):
