@@ -7,7 +7,7 @@ from weakref import ref
 import pytest
 
 import datachain as dc
-from datachain.catalog import Catalog
+from datachain.catalog import Catalog, get_catalog
 from datachain.data_storage import JobStatus
 from datachain.dataset import SESSION_DATASET_PREFIX, DatasetStatus
 from datachain.error import DataChainError, DatasetNotFoundError, TableMissingError
@@ -360,10 +360,22 @@ def test_in_memory_session_interrupt_marks_owned_job_canceled(clean_job_state):
 def test_inner_in_memory_session_does_not_finalize_outer_job(catalog, clean_job_state):
     with Session("outer", catalog=catalog) as outer:
         job = outer.get_or_create_job()
-        with Session("inner", in_memory=True):
-            pass
+        with Session("inner", in_memory=True) as inner:
+            assert inner.get_or_create_job() == job
         assert catalog.metastore.get_job(job.id).status == JobStatus.RUNNING
     assert catalog.metastore.get_job(job.id).status == JobStatus.RUNNING
+
+
+@skip_if_not_sqlite
+def test_borrowed_in_memory_catalog_session_exit_leaves_job_running(clean_job_state):
+    in_mem = get_catalog(in_memory=True)
+    try:
+        with Session("borrowed", catalog=in_mem) as s:
+            job = s.get_or_create_job()
+        assert in_mem.metastore.get_job(job.id).status == JobStatus.RUNNING
+    finally:
+        in_mem.metastore.close_on_exit()
+        in_mem.warehouse.close_on_exit()
 
 
 @skip_if_not_sqlite

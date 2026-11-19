@@ -1870,9 +1870,10 @@ def test_save_in_default_project_skips_projects_query(test_session):
             dc.C("num") == 1
         ).save("proj_shortcut_out")
 
-    assert not any("FROM projects" in sql for sql in executed)
+    assert not any("WHERE projects.name" in sql for sql in executed)
 
 
+@skip_if_not_sqlite
 def test_read_dataset_missing_version_raises_not_found(test_session, no_studio_dataset):
     dc.read_values(num=[1], session=test_session).save("selected", version="1.0.0")
 

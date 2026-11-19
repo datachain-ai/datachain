@@ -477,6 +477,8 @@ def test_get_table_matches_case_insensitive_name_and_added_column(warehouse):
 
     warehouse.db.add_column("MixedCaseRel", sa.Column("y", Int64))
     warehouse.db.close()
+    assert "x" in warehouse.db.get_table("mixedcaserel").c
+    assert warehouse.db.is_closed is False
     refreshed = warehouse.get_table("MixedCaseRel")
     assert "y" in refreshed.c
 
