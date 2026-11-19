@@ -71,7 +71,7 @@ code = gen_datamodel_code("s3://bucket/data.json", jmespath="images")
 
 ### Selecting and naming CSV and Parquet columns
 
-When `columns` and `output` are omitted, DataChain reads only the columns your chain actually uses. If you narrow columns with `select()`, `group_by()`, `count()`, or `gen()`, unused columns are not read from the file. You can place `filter()`, `order_by()`, and `mutate()` before `select()` in any order — DataChain reads only the columns needed by those steps. If a step uses all columns (such as `map()`, `select_except()`, or joins), all columns are read.
+When `columns` and `output` are omitted, DataChain keeps only the columns your chain actually uses. When you narrow columns with `select()`, `group_by()`, `count()`, or `gen()`, Parquet reads only those columns from the file; CSV and JSON still parse the file and store only those columns. You can place `filter()`, `order_by()`, and `mutate()` before `select()` in any order — DataChain keeps only the columns needed by those steps. After `map()`, `select_except()`, or a join, every column is read.
 
 For `read_csv()`, `read_parquet()`, and `parse_tabular()`, use `columns=` to select input columns by name and set their order. Names may be written as in the file or as DataChain normalizes them: `"ZIP Code"` and `"zip_code"` refer to the same column. Unknown or repeated columns raise an error.
 

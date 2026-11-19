@@ -5,7 +5,7 @@ import sqlalchemy
 
 import datachain as dc
 from datachain import func
-from datachain.lib.arrow import ArrowGenerator
+from datachain.lib import arrow
 from datachain.lib.dc import C
 from datachain.sql.types import Int64
 
@@ -13,14 +13,13 @@ from datachain.sql.types import Int64
 @pytest.fixture
 def arrow_reads(monkeypatch):
     reads = []
-    batches = ArrowGenerator._batches
+    read_batches = arrow.read_batches
 
-    def record(self, ds, kw):
-        for start, batch in batches(self, ds, kw):
-            reads.append((batch.schema.names, self.source))
-            yield start, batch
+    def record(ds, *args, **kw):
+        reads.append(kw.get("columns") or ds.schema.names)
+        return read_batches(ds, *args, **kw)
 
-    monkeypatch.setattr(ArrowGenerator, "_batches", record)
+    monkeypatch.setattr(arrow, "read_batches", record)
     return reads
 
 
@@ -43,28 +42,33 @@ def rows_parquet(tmp_dir):
 def test_read_parquet_select_reads_only_selected_columns(
     tmp_dir, test_session, mocker, arrow_reads
 ):
-    from datachain.lib import arrow
-
     path = tmp_dir / "episodes.parquet"
     pq.write_table(
         pa.table(
             {
+                "unused": ["a", "b"],
                 "length": [10, 20],
                 "stats/x/max": [1.5, 2.5],
-                "unused": ["a", "b"],
             }
         ),
         path,
     )
     spy = mocker.spy(arrow, "file_schemas")
     chain = dc.read_parquet(path.as_uri(), session=test_session)
+    reader = chain._query.steps[-1].udf.inner
+    assert reader.prefetch_max_size is None
+    assert (
+        reader.project({"length"}).prefetch_max_size
+        == arrow.PARTIAL_READ_PREFETCH_MAX_SIZE
+    )
     selected = chain.select("length", "stats_x_max").to_list()
     assert spy.call_count == 1
-    assert arrow_reads == [(["length", "stats/x/max"], False)]
+    assert chain.count() == 2
+    assert arrow_reads == [["length", "stats/x/max"], ["length"]]
 
     full = dc.read_parquet(
         path.as_uri(),
-        output={"length": int, "stats_x_max": float, "unused": str},
+        output={"unused": str, "length": int, "stats_x_max": float},
         session=test_session,
     )
     assert (
@@ -72,7 +76,7 @@ def test_read_parquet_select_reads_only_selected_columns(
         == full.select("length", "stats_x_max").to_list()
         == [(10, 1.5), (20, 2.5)]
     )
-    assert arrow_reads[-1] == (["length", "stats/x/max", "unused"], True)
+    assert arrow_reads[-1] == ["unused", "length", "stats/x/max"]
 
 
 def test_read_parquet_select_nested_reads_top_level_column(
@@ -84,7 +88,7 @@ def test_read_parquet_select_nested_reads_top_level_column(
     ((partial_a,),) = chain.select("a.b").to_list()
     assert partial_a.model_dump() == {"b": 1}
     assert chain.to_list("a.b", "a.c") == [(1, 2)]
-    assert arrow_reads == [(["a"], False)]
+    assert arrow_reads == [["a"]]
     ((_, full_a, full_d),) = chain.to_list()
     assert (full_a.b, full_a.c, full_d) == (1, 2, 3)
 
@@ -101,7 +105,7 @@ def test_read_parquet_select_keeps_source_only_when_selected(
         (1, "rows.parquet"),
     ]
     assert chain.to_values("source.index") == [0, 1, 2, 3]
-    assert arrow_reads == [(["a"], True)]
+    assert arrow_reads == [["a"]]
     full = dc.read_parquet(
         rows_parquet,
         output={"a": int, "b": int, "c": int},
@@ -120,7 +124,7 @@ def test_read_parquet_with_source_column_pushes_down_data_or_read_source(
     assert chain.select("a", "c0_source.file.path").to_list(
         "a", "c0_source.file.path"
     ) == [(1, "df.parquet")]
-    assert arrow_reads == [(["source", "a"], False), (["a"], True)]
+    assert arrow_reads == [["source", "a"], ["a"]]
 
 
 def test_read_parquet_reused_for_different_column_selections(
@@ -135,7 +139,37 @@ def test_read_parquet_reused_for_different_column_selections(
         (1, 10, 300),
         (1, 10, 400),
     ]
-    assert arrow_reads == [(["a"], False), (["c"], False), (["a", "b", "c"], False)]
+    assert arrow_reads == [["a"], ["c"], ["a", "b", "c"]]
+
+
+def test_read_parquet_reuses_cached_full_read_before_projecting(
+    rows_parquet, test_session, arrow_reads
+):
+    chain = dc.read_parquet(rows_parquet, session=test_session)
+    assert [(r[1], r[2], r[3]) for r in chain.to_list()] == [
+        (3, 30, 100),
+        (2, 20, 200),
+        (1, 10, 300),
+        (1, 10, 400),
+    ]
+    assert chain.to_values("a") == [3, 2, 1, 1]
+    assert chain.filter(C("b") > 10).count() == 2
+    assert arrow_reads == [["a", "b", "c"]]
+
+
+def test_read_csv_and_json_project_selected_columns(tmp_dir, test_session, arrow_reads):
+    csv_path = tmp_dir / "rows.csv"
+    csv_path.write_text("a,b,c\n3,30,100\n2,20,200\n")
+    assert dc.read_csv(csv_path.as_uri(), session=test_session).filter(
+        C("b") > 20
+    ).to_values("a") == [3]
+
+    jsonl_path = tmp_dir / "rows.jsonl"
+    jsonl_path.write_text('{"a": 3, "b": 30, "c": 100}\n{"a": 2, "b": 20, "c": 200}\n')
+    assert dc.read_storage(jsonl_path.as_uri(), session=test_session).parse_tabular(
+        format="json"
+    ).to_values("c") == [100, 200]
+    assert arrow_reads == [["a", "b"], ["c"]]
 
 
 @pytest.mark.parametrize(
@@ -170,6 +204,20 @@ def test_read_parquet_reused_for_different_column_selections(
             [3, 2],
             ["a", "b"],
             id="filter_then_select",
+        ),
+        pytest.param(
+            lambda c: c.select("a").filter(C("b") > 10).to_values("a"),
+            [3, 2],
+            ["a", "b"],
+            id="select_then_filter",
+        ),
+        pytest.param(
+            lambda c: (
+                c.select("a", "b").map(x=lambda a: a + 1, output=int).to_values("x")
+            ),
+            [4, 3, 2, 2],
+            ["a", "b"],
+            id="select_then_map",
         ),
         pytest.param(
             lambda c: c.order_by("b").select("a").to_values("a"),
@@ -249,7 +297,7 @@ def test_read_parquet_projects_columns_across_steps(
         session=test_session,
     )
     assert run(chain) == expected
-    assert arrow_reads == [(columns, False)]
+    assert arrow_reads == [columns]
     assert run(full) == expected
 
 
@@ -272,8 +320,8 @@ def test_read_parquet_projects_columns_across_steps(
             id="unscoped_distinct",
         ),
         pytest.param(
-            lambda c: list(c._query.select_except("c").select("a")),
-            [(3,), (2,), (1,), (1,)],
+            lambda c: c.select_except("c").to_values("a"),
+            [3, 2, 1, 1],
             id="select_except",
         ),
         pytest.param(
@@ -341,30 +389,28 @@ def test_read_parquet_fallback_reads_all_columns(
         session=test_session,
     )
     assert run(chain) == run(full) == expected
-    assert arrow_reads[0] == (["a", "b", "c"], True)
+    assert arrow_reads[0] == ["a", "b", "c"]
 
 
-def test_read_parquet_map_reads_all_columns(rows_parquet, test_session, arrow_reads):
+def test_map_after_read_parquet_runs_once_for_two_selections(
+    rows_parquet, test_session, arrow_reads
+):
     def run(chain):
         calls = iter(range(10))
         mapped = chain.map(lambda a: next(calls), output={"tag": int})
         return mapped.to_list("a", "tag"), mapped.to_list("a", "b", "tag")
 
-    chain = dc.read_parquet(rows_parquet, session=test_session)
-    full = dc.read_parquet(
-        rows_parquet,
-        output={"a": int, "b": int, "c": int},
-        session=test_session,
-    )
-    assert (
-        run(chain)
-        == run(full)
-        == (
-            [(3, 0), (2, 1), (1, 2), (1, 3)],
-            [(3, 30, 0), (2, 20, 1), (1, 10, 2), (1, 10, 3)],
+    first, second = run(dc.read_parquet(rows_parquet, session=test_session))
+    full_first, full_second = run(
+        dc.read_parquet(
+            rows_parquet,
+            output={"a": int, "b": int, "c": int},
+            session=test_session,
         )
     )
-    assert arrow_reads == [(["a", "b", "c"], True), (["a", "b", "c"], True)]
+    assert first == full_first == [(3, 0), (2, 1), (1, 2), (1, 3)]
+    assert second == full_second == [(3, 30, 0), (2, 20, 1), (1, 10, 2), (1, 10, 3)]
+    assert arrow_reads == [["a", "b", "c"], ["a", "b", "c"]]
 
 
 def test_read_parquet_shuffle_reads_all_columns(
@@ -375,7 +421,7 @@ def test_read_parquet_shuffle_reads_all_columns(
         (a, b)
         for (a,), (b,) in zip(shuffled.to_list("a"), shuffled.to_list("b"), strict=True)
     ] == shuffled.to_list("a", "b")
-    assert arrow_reads == [(["a", "b", "c"], True)]
+    assert arrow_reads == [["a", "b", "c"]]
 
 
 def test_parse_tabular_delta_reads_all_columns(rows_parquet, test_session, arrow_reads):
@@ -395,4 +441,4 @@ def test_parse_tabular_delta_reads_all_columns(rows_parquet, test_session, arrow
         )
 
     assert read() == read(output={"a": int, "b": int, "c": int}) == [3, 2, 1, 1]
-    assert arrow_reads[0] == (["a", "b", "c"], True)
+    assert arrow_reads[0] == ["a", "b", "c"]

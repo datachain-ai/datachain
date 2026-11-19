@@ -112,6 +112,17 @@ def test_read_parquet(benchmark, parquet_uri, test_session):
     assert benchmark(run) == NUM_ROWS
 
 
+def test_read_parquet_select(benchmark, parquet_uri, test_session):
+    def run():
+        return (
+            dc.read_parquet(parquet_uri, session=test_session)
+            .select("id", "score")
+            .to_list("id", "score")
+        )
+
+    assert len(benchmark(run)) == NUM_ROWS
+
+
 def test_read_csv(benchmark, csv_uri, test_session):
     def run():
         return dc.read_csv(csv_uri, session=test_session).count()
