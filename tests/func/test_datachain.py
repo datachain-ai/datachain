@@ -1659,6 +1659,7 @@ def download_callbacks(monkeypatch):
     "read",
     [
         lambda uri, session: dc.read_parquet(uri, columns=["c3"], session=session),
+        lambda uri, session: dc.read_parquet(uri, session=session).select("c3"),
         lambda uri, session: dc.read_storage(uri, session=session).parse_tabular(
             columns=["c3"]
         ),
@@ -1666,7 +1667,12 @@ def download_callbacks(monkeypatch):
             format=ParquetFileFormat(), columns=["c3"], source=False
         ),
     ],
-    ids=["read_parquet", "parse_tabular_without_format", "parquet_file_format"],
+    ids=[
+        "read_parquet",
+        "select",
+        "parse_tabular_without_format",
+        "parquet_file_format",
+    ],
 )
 def test_read_parquet_columns_fetch_only_those_columns(
     cloud_test_catalog_upload, fetched_bytes, download_callbacks, read

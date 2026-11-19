@@ -24,6 +24,7 @@ from sqlalchemy import Column
 from sqlalchemy.sql import func as f
 from sqlalchemy.sql.elements import ColumnClause, ColumnElement, Label, TextClause
 from sqlalchemy.sql.expression import label
+from sqlalchemy.sql.functions import count as sa_count
 from sqlalchemy.sql.selectable import (
     GenerativeSelect,
     Select,
@@ -2480,11 +2481,21 @@ def _expr_columns(exprs: Iterable[Any]) -> set[str] | None:
         if isinstance(expr, str):
             names.add(expr)
             continue
+        count_star: set[int] = set()
         for elem in iterate(expr):
+            if isinstance(elem, sa_count):
+                # count(*) names no column.
+                count_star.update(
+                    id(c)
+                    for c in elem.clauses
+                    if isinstance(c, ColumnClause) and c.is_literal and c.name == "*"
+                )
             # Safety guard: raw SQL text or literal clauses may reference any column.
             if isinstance(elem, TextClause):
                 return None
             if isinstance(elem, ColumnClause):
+                if id(elem) in count_star:
+                    continue
                 if elem.is_literal:
                     return None
                 names.add(elem.name)
@@ -2514,6 +2525,14 @@ def _used_columns(steps: Sequence[Step]) -> set[str] | None:
     return used
 
 
+def _has_udf_checkpoint(step: RowGenerator, hasher: Any) -> bool:
+    h = hasher.copy()
+    h.update(step.hash().encode("utf-8"))
+    return bool(
+        step._find_udf_checkpoint(step.session.get_or_create_job(), h.hexdigest())
+    )
+
+
 def _project_step(
     step: Step,
     later_steps: Sequence[Step],
@@ -2525,17 +2544,19 @@ def _project_step(
         and (used := _used_columns(later_steps)) is not None
         and (projected := step.udf.inner.project(used)) is not None
     ):
-        full_hash = hasher.copy()
-        full_hash.update(step.hash().encode("utf-8"))
-        if checkpoints_enabled and step._find_udf_checkpoint(
-            step.session.get_or_create_job(), full_hash.hexdigest()
-        ):
-            return step
         assert projected.output is not None
         udf = attrs.evolve(
             step.udf, inner=projected, output=projected.output.to_udf_spec()
         )
-        return attrs.evolve(step, udf=udf)
+        narrow = attrs.evolve(step, udf=udf)
+        # Keep the read this chain already ran on, so the steps after it stay cached.
+        if (
+            checkpoints_enabled
+            and not _has_udf_checkpoint(narrow, hasher)
+            and _has_udf_checkpoint(step, hasher)
+        ):
+            return step
+        return narrow
     return step
 
 
