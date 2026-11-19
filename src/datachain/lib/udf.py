@@ -601,7 +601,7 @@ def _files_to_prefetch(
 class _PrefetchBudget:
     """Listed-byte read-ahead target, allowing the legacy minimum row count."""
 
-    def __init__(self, max_rows: int, max_bytes: int, min_rows: int = 1) -> None:
+    def __init__(self, max_rows: int, max_bytes: int | None, min_rows: int = 1) -> None:
         self.max_rows, self.max_bytes = max_rows, max_bytes
         self.min_rows = min(max(1, min_rows), max_rows)
         self.rows = self.bytes = 0
@@ -616,9 +616,9 @@ class _PrefetchBudget:
             target.etag or target.version or target.last_modified != TIME_ZERO
         ):
             return 0
-        return self.max_bytes
+        return self.max_bytes or 0
 
-    def targets_for(self, files: list[File]) -> dict[str, int]:
+    def targets_for(self, files: Iterable[File]) -> dict[str, int]:
         targets: dict[str, int] = {}
         for file in files:
             target = file._prefetch_target()
@@ -626,46 +626,36 @@ class _PrefetchBudget:
             targets[oid] = max(targets.get(oid, 0), self._target_size(target))
         return targets
 
-    def size(self, files: list[File]) -> int:
-        return sum(self.targets_for(files).values())
-
-    def _added_bytes(self, item: int | Mapping[str, int]) -> int:
-        if isinstance(item, int):
-            return item
+    def _added_bytes(self, item: Mapping[str, int]) -> int:
         return sum(size for oid, size in item.items() if not self.targets[oid])
 
-    def take(self, item: int | Mapping[str, int], stop: threading.Event) -> None:
+    def take(self, item: Mapping[str, int], stop: threading.Event) -> None:
         with self.changed:
             while not stop.is_set() and (
                 self.rows >= self.max_rows
                 or (
                     self.rows >= self.min_rows
+                    and self.max_bytes is not None
                     and (added := self._added_bytes(item)) > 0
                     and self.bytes + added > self.max_bytes
                 )
             ):
                 self.changed.wait(0.1)  # `stop` doesn't notify
             self.rows += 1
-            if isinstance(item, int):
-                self.bytes += item
-            else:
-                for oid, size in item.items():
-                    if not self.targets[oid]:
-                        self.bytes += size
-                        self.target_sizes[oid] = size
-                    self.targets[oid] += 1
+            for oid, size in item.items():
+                if not self.targets[oid]:
+                    self.bytes += size
+                    self.target_sizes[oid] = size
+                self.targets[oid] += 1
 
-    def give_back(self, item: int | Mapping[str, int]) -> None:
+    def give_back(self, item: Mapping[str, int]) -> None:
         with self.changed:
             self.rows -= 1
-            if isinstance(item, int):
-                self.bytes -= item
-            else:
-                for oid in item:
-                    self.targets[oid] -= 1
-                    if not self.targets[oid]:
-                        del self.targets[oid]
-                        self.bytes -= self.target_sizes.pop(oid)
+            for oid in item:
+                self.targets[oid] -= 1
+                if not self.targets[oid]:
+                    del self.targets[oid]
+                    self.bytes -= self.target_sizes.pop(oid)
             self.changed.notify_all()
 
 
@@ -694,7 +684,7 @@ def _remove_prefetched(
         catalog = obj._catalog
         assert catalog is not None
         target = obj._prefetch_target()
-        if keep and target.get_hash() in keep:
+        if target.get_hash() in keep:
             continue
         try:
             catalog.cache.remove(target)
@@ -730,16 +720,11 @@ def _prefetch_inputs(
         batch_columns=batch_columns,
         max_size=max_size,
     )
-    budget = None
-    if max_bytes is not None:
-        # prefetch=N holds N rows downloading, N downloaded and one in the UDF.
-        budget = _PrefetchBudget(2 * prefetch + 1, max_bytes, min_rows)
+    # prefetch=N holds N rows downloading, N downloaded and one in the UDF.
+    budget = _PrefetchBudget(2 * prefetch + 1, max_bytes, min_rows)
 
     def row_size(row: T) -> dict[str, int]:
-        if not budget:
-            return {}
-        files = list(_files_to_prefetch(row, batch_columns, max_size))
-        return budget.targets_for(files)
+        return budget.targets_for(_files_to_prefetch(row, batch_columns, max_size))
 
     async def fetch(item: tuple[T, dict[str, int]]) -> tuple[T, dict[str, int]]:
         row, sizes = item
@@ -752,8 +737,7 @@ def _prefetch_inputs(
         with safe_closing(prepared_inputs):
             for row in prepared_inputs:
                 sizes = row_size(row)
-                if budget:
-                    budget.take(sizes, mapper._shutdown_producer)
+                budget.take(sizes, mapper._shutdown_producer)
                 yield row, sizes
 
     mapper = AsyncMapper(fetch, admitted(), workers=prefetch)
@@ -762,13 +746,12 @@ def _prefetch_inputs(
             try:
                 yield row  # type: ignore[misc]
             finally:
-                if budget:
-                    budget.give_back(sizes)
+                budget.give_back(sizes)
                 if remove_prefetched:
                     _remove_prefetched(
                         row,
                         batch_columns,
-                        keep=budget.targets if budget else (),
+                        keep=budget.targets,
                     )
 
 
@@ -854,7 +837,6 @@ class Mapper(UDFBase):
                         for i, col in enumerate(zip(*map(prepare, row), strict=True))
                     ]
 
-        prefetch = self._effective_prefetch
         prepared_inputs = _prepare_rows(udf_inputs)
         prepared_inputs = _prefetch_inputs(
             prepared_inputs,
