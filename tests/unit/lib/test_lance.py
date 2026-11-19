@@ -1,5 +1,6 @@
 import shutil
 import sys
+from datetime import UTC
 
 import lance
 import pyarrow as pa
@@ -248,3 +249,96 @@ def test_read_lance_remote_binary_and_embeddings(tmp_dir, test_session, monkeypa
         "id"
     ) == [1, 2, 1, 2]
     assert downloads == 2
+
+
+def test_to_lance_roundtrip(tmp_dir, test_session):
+    from datetime import datetime
+    from typing import Literal
+
+    from pydantic import ConfigDict
+
+    class Item(dc.DataModel):
+        model_config = ConfigDict(extra="allow")
+        a: int
+        b: str | None = None
+        dt: datetime | None = None
+
+    class Inner(dc.DataModel):
+        tag: str | int = 0
+        foo__bar: int = 12
+        mode: Literal["fast", "slow"] | None = None
+
+    class Outer(dc.DataModel):
+        inner: Inner = Inner()
+        note: str | None = None
+        items: list[Item] | None = None
+        matrix: list[list[int]] | None = None
+        meta: dict | None = None
+        scores: dict[int, int] | None = None
+        ts: datetime | None = None
+
+    class Alt(dc.DataModel):
+        code: int = 0
+
+    t1 = datetime(2025, 1, 2, 3, 4, 5, tzinfo=UTC)
+    rows_in = [
+        Outer(
+            inner=Inner(tag="x", foo__bar=91, mode=None),
+            note="n1",
+            items=[Item(a=1, b=None, extra_k="e1")],
+            matrix=[[]],
+            meta=None,
+            scores=None,
+        ),
+        Alt(code=42),
+        Outer(
+            inner=Inner(tag=7, foo__bar=55, mode="fast"),
+            note=None,
+            items=[Item(a=2, b="z", dt=t1)],
+            matrix=[[10, 20]],
+            meta={"a": 1},
+            scores={1: 10},
+            ts=t1,
+        ),
+        Outer(
+            inner=Inner(tag=8, foo__bar=66, mode="slow"),
+            note="n3",
+            items=[],
+            matrix=[],
+            meta={"b": "two", "nested": [1, 2]},
+            scores={2: 20},
+            ts=t1,
+        ),
+    ]
+    chain = dc.read_values(
+        id=[1, 2, 3, 4],
+        o=rows_in,
+        u=[100, "hello", 200, "world"],
+        output={"id": int, "o": Outer | Alt, "u": int | str},
+        session=test_session,
+    ).order_by("id")
+
+    path = tmp_dir / "exported.lance"
+    chain.to_lance(path, chunk_size=1)
+    assert path.is_file()
+    back = dc.read_lance(path.as_uri(), session=test_session)
+    assert back.order_by("id").to_list("id", "o", "u") == [
+        (1, rows_in[0], 100),
+        (2, rows_in[1], "hello"),
+        (3, rows_in[2], 200),
+        (4, rows_in[3], "world"),
+    ]
+    assert dc.read_lance(
+        path.as_uri(),
+        columns=["o.Outer.inner.tag", "o.Outer.inner.foo__bar", "u"],
+        session=test_session,
+    ).to_list("o.Outer.inner.tag", "o.Outer.inner.foo__bar", "u") == [
+        ("x", 91, 100),
+        (None, None, "hello"),
+        (7, 55, 200),
+        (8, 66, "world"),
+    ]
+
+    empty_path = tmp_dir / "empty.lance"
+    chain.filter(C("id") < 0).to_lance(empty_path)
+    assert dc.read_lance(empty_path.as_uri(), session=test_session).count() == 0

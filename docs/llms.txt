@@ -48,7 +48,7 @@ Never use: `from datachain import File, C, func`
 ### Save and export
 - `.save("dataset_name")` -- versioned, named dataset (PREFERRED terminal operation)
 - `.persist()` -- anonymous cache for branching
-- `.to_pandas()`, `.to_parquet()`, `.to_csv()`, `.to_json()` -- export formats
+- `.to_pandas()`, `.to_parquet()`, `.to_lance()`, `.to_csv()`, `.to_json()` -- export formats
 - `.to_pytorch(transform=..., tokenizer=...)` -- iterable PyTorch Dataset for a DataLoader
 - `.to_storage("s3://output/")` -- write files to storage
 - `.to_database("table", "connection_string")` -- write to SQL database
