@@ -1,20 +1,16 @@
 import asyncio
 import hashlib
-import io
 import sys
 import threading
 from collections.abc import Iterator, Sequence
-from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, TypeGuard
-from weakref import WeakValueDictionary
 
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
-import pyarrow.parquet as pq
 from fsspec.implementations.local import LocalFileSystem
-from fsspec.spec import AbstractBufferedFile
 from pyarrow._csv import ParseOptions
 from pyarrow.dataset import CsvFileFormat, Dataset, ParquetFileFormat, dataset
 from pyarrow.fs import FileInfo, FileType, FSSpecHandler, PyFileSystem
@@ -22,6 +18,7 @@ from pyarrow.fs import FileInfo, FileType, FSSpecHandler, PyFileSystem
 from datachain import json
 from datachain.data_storage.codec import to_json_text
 from datachain.fs.reference import ReferenceFileSystem
+from datachain.lib import parquet_ranges
 from datachain.lib.convert.flatten import classify_field, flatten, iter_field_columns
 from datachain.lib.convert.unflatten import ABSENT, unflatten_to_json_pos
 from datachain.lib.data_model import (
@@ -98,186 +95,6 @@ _CSV_PARSE_OPTIONS = (
 
 # A partial read prefetches files up to this size and reads larger ones in parts.
 PARTIAL_READ_PREFETCH_MAX_SIZE = 8 * 1024 * 1024
-# Footer sample read upfront so metadata and trailing chunks take one GET.
-PARQUET_FOOTER_SAMPLE_SIZE = 1024 * 1024
-# Column chunk ranges closer than this are coalesced into one request.
-PARQUET_RANGE_GAP = 64 * 1024
-# Per-file cap on prefetched column chunk bytes; larger reads fall back to streaming.
-PARQUET_RANGE_MAX_BYTES = 64 * 1024 * 1024
-PARQUET_RANGE_THREADS = 8
-_PARQUET_PREFETCH_EXECUTOR = ThreadPoolExecutor(PARQUET_RANGE_THREADS)
-_PARQUET_RANGE_EXECUTOR = ThreadPoolExecutor(PARQUET_RANGE_THREADS)
-
-
-class _ParquetParts(list):
-    pass
-
-
-_PARQUET_PARTS_GUARD = threading.Lock()
-_PARQUET_PARTS_CACHE: WeakValueDictionary[
-    tuple[str, tuple[str, ...]], _ParquetParts
-] = WeakValueDictionary()
-_PARQUET_PARTS_LOCKS: WeakValueDictionary[
-    tuple[str, tuple[str, ...]], threading.Lock
-] = WeakValueDictionary()
-
-
-def _leaf_names(field: pa.Field) -> list[str]:
-    if not field.type.num_fields:
-        return [field.name]
-    return [
-        name
-        for i in range(field.type.num_fields)
-        for name in _leaf_names(field.type.field(i))
-    ]
-
-
-def _column_ranges(
-    metadata: pq.FileMetaData,
-    columns: Sequence[str],
-    gap: int = PARQUET_RANGE_GAP,
-) -> list[tuple[int, int]]:
-    """Byte ranges of the column chunks for the top-level Arrow `columns`."""
-    pairs = [
-        (field.name, leaf)
-        for field in metadata.schema.to_arrow_schema()
-        for leaf in _leaf_names(field)
-    ]
-    if [leaf for _, leaf in pairs] != metadata.schema.names:
-        return []
-    wanted = set(columns)
-    indices = [i for i, (top, _) in enumerate(pairs) if top in wanted]
-    ranges = sorted(
-        (start, start + col.total_compressed_size)
-        for r in range(metadata.num_row_groups)
-        for group in (metadata.row_group(r),)
-        for i in indices
-        if (col := group.column(i)).total_compressed_size > 0
-        for start in (col.dictionary_page_offset or col.data_page_offset,)
-    )
-    coalesced: list[tuple[int, int]] = []
-    for start, end in ranges:
-        if coalesced and start - coalesced[-1][1] <= gap:
-            coalesced[-1] = (coalesced[-1][0], max(coalesced[-1][1], end))
-        else:
-            coalesced.append((start, end))
-    return coalesced
-
-
-def _read_parquet_parts(
-    client: "Client",
-    file: File,
-    columns: Sequence[str],
-    stop: threading.Event | None = None,
-) -> tuple[int, list[tuple[int, bytes]]]:
-    """Read the Parquet footer sample and selected column chunks, then close."""
-    with client.open_object(
-        file, use_cache=False, cb=file._download_cb, block_size=0
-    ) as stream:
-        size = stream.seek(0, io.SEEK_END)
-        if size <= 0 or (stop is not None and stop.is_set()):
-            return size, []
-        sample_start = max(0, size - PARQUET_FOOTER_SAMPLE_SIZE)
-        stream.seek(sample_start)
-        sample = stream.read(size - sample_start)
-        if len(sample) < 8 or sample[-4:] != b"PAR1":
-            return size, [(sample_start, sample)]
-        footer_start = size - 8 - int.from_bytes(sample[-8:-4], "little")
-        if 0 <= footer_start < sample_start:
-            if size - footer_start > PARQUET_RANGE_MAX_BYTES or (
-                stop is not None and stop.is_set()
-            ):
-                return size, []
-            stream.seek(footer_start)
-            sample = stream.read(sample_start - footer_start) + sample
-            sample_start = footer_start
-        try:
-            ranges = _column_ranges(pq.read_metadata(pa.BufferReader(sample)), columns)
-        except pa.ArrowException:
-            ranges = []
-        spans = [
-            (start, min(end, sample_start))
-            for start, end in ranges
-            if start < sample_start
-        ]
-        parts: list[tuple[int, bytes]] = []
-        if (
-            ranges
-            and len(sample) + sum(end - start for start, end in spans)
-            <= PARQUET_RANGE_MAX_BYTES
-        ):
-            raw: Any = getattr(stream, "fileobj", stream)
-            cb = file._download_cb
-
-            def fetch(span: tuple[int, int]) -> tuple[int, bytes]:
-                if stop is not None and stop.is_set():
-                    return span[0], b""
-                data = raw._fetch_range(*span)
-                cb.relative_update(len(data))
-                return span[0], data
-
-            futures = [_PARQUET_RANGE_EXECUTOR.submit(fetch, span) for span in spans]
-            try:
-                parts = [fut.result() for fut in futures]
-            finally:
-                for fut in futures:
-                    fut.cancel()
-                wait(futures)
-            if stop is not None and stop.is_set():
-                return size, []
-        if parts and parts[-1][0] + len(parts[-1][1]) == sample_start:
-            parts[-1] = (parts[-1][0], parts[-1][1] + sample)
-        else:
-            parts.append((sample_start, sample))
-        return size, parts
-
-
-class _ParquetBufferedFile(AbstractBufferedFile):
-    """Serves prefetched Parquet byte ranges, opening the remote file on miss."""
-
-    def __init__(
-        self,
-        client: "Client",
-        file: File,
-        size: int,
-        parts: Sequence[tuple[int, bytes]],
-    ):
-        super().__init__(
-            client.fs,
-            file.get_fs_path(),
-            size=size,
-            block_size=0,
-            cache_type="none",
-        )
-        remote: Any = None
-
-        def fetch(start: int, end: int) -> bytes:
-            nonlocal remote
-            end = min(end, size)
-            for part_start, part in parts:
-                if part_start <= start and end <= part_start + len(part):
-                    return part[start - part_start : end - part_start]
-            if remote is None:
-                remote = client.open_object(
-                    file, use_cache=False, cb=file._download_cb, block_size=0
-                )
-            remote.seek(start)
-            return remote.read(end - start)
-
-        def close_remote() -> None:
-            nonlocal remote
-            if remote is not None:
-                remote.close()
-                remote = None
-
-        self.cache.fetcher = fetch
-        self._close_remote = close_remote
-
-    def close(self) -> None:
-        try:
-            super().close()
-        finally:
-            self._close_remote()
 
 
 class _PartialReadHandler(FSSpecHandler):
@@ -312,7 +129,9 @@ class _PartialReadHandler(FSSpecHandler):
 
     def open_input_file(self, path):
         if self.parts is not None and self.parts[1]:
-            f: Any = _ParquetBufferedFile(self.client, self.file, *self.parts)
+            f: Any = parquet_ranges.ParquetBufferedFile(
+                self.client, self.file, *self.parts
+            )
         else:
             f = self.client.open_object(
                 self.file,
@@ -323,12 +142,15 @@ class _PartialReadHandler(FSSpecHandler):
         return pa.PythonFile(f, mode="r")
 
 
-def pyarrow_fs(file: File, format):
+def pyarrow_fs(
+    file: File,
+    format,
+    parts: tuple[int, list[tuple[int, bytes]]] | None = None,
+):
     client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
     if isinstance(client.fs, LocalFileSystem):
         client.check_unchanged(file)
         return client.fs
-    parts = file.__dict__.pop("_parquet_parts", None)
     block_size = 0 if is_parquet(format) else None
     return PyFileSystem(
         _PartialReadHandler(client, file, block_size=block_size, parts=parts)
@@ -384,6 +206,12 @@ class ArrowGenerator(Generator):
         self.datachain_read = _written_by_datachain(input_schema)
         self.parse_options = kwargs.pop("parse_options", None)
         self.kwargs = kwargs
+        # By id(file); the file is held so the id stays its own until process().
+        self._parts: dict[
+            int, tuple[File, int, tuple[int, list[tuple[int, bytes]]]]
+        ] = {}
+        self._parts_bytes = 0
+        self._parts_lock = threading.Lock()
 
     def hash(self, include_body: bool = True) -> str:
         # The read schema and columns decide what is read, so reads that differ
@@ -399,35 +227,16 @@ class ArrowGenerator(Generator):
             return True
         if not (columns := self._parquet_columns(file)):
             return False
-        stop = threading.Event()
-        loop = asyncio.get_running_loop()
-        task = asyncio.ensure_future(
-            loop.run_in_executor(
-                _PARQUET_PREFETCH_EXECUTOR,
-                self._prefetch_parquet,
-                file,
-                columns,
-                stop,
-            )
+        reserved, parts = await asyncio.to_thread(
+            self._read_parquet_parts, file, columns
         )
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            stop.set()
-            cleanup = asyncio.gather(task, return_exceptions=True)
-            while not cleanup.done():
-                try:
-                    await asyncio.shield(cleanup)
-                except asyncio.CancelledError:
-                    pass
-            raise
+        self._parts[id(file)] = (file, reserved, parts)
         return True
 
     def _parquet_columns(self, file: File) -> list[str] | None:
         if (
             not self.prefetch_max_size
             or not is_parquet(self.kwargs.get("format"))
-            or self.nrows
             or self.datachain_read
             or file.location
             or file._caching_enabled
@@ -440,95 +249,95 @@ class ArrowGenerator(Generator):
         # Picked columns are in self.columns with output, else in self.input_schema.
         return self.columns or self.input_schema.names  # type: ignore[union-attr]
 
-    def _prefetch_parquet(
-        self,
-        file: File,
-        columns: Sequence[str],
-        stop: threading.Event | None = None,
-    ) -> None:
-        if not (file.version or file.etag):
-            client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
-            raw_parts = _read_parquet_parts(client, file, columns, stop=stop)
-            if stop is None or not stop.is_set():
-                file.__dict__["_parquet_parts"] = _ParquetParts(raw_parts)
-            return
-        key = (file.get_hash(), tuple(columns))
-        with _PARQUET_PARTS_GUARD:
-            lock = _PARQUET_PARTS_LOCKS.get(key)
-            if lock is None:
-                _PARQUET_PARTS_LOCKS[key] = lock = threading.Lock()
-        with lock:
-            parts = _PARQUET_PARTS_CACHE.get(key)
-            if parts is None:
-                client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
-                raw_parts = _read_parquet_parts(client, file, columns, stop=stop)
-                if stop is not None and stop.is_set():
-                    return
-                parts = _ParquetParts(raw_parts)
-                _PARQUET_PARTS_CACHE[key] = parts
-            file.__dict__["_parquet_parts"] = parts
+    def _read_parquet_parts(
+        self, file: File, columns: Sequence[str]
+    ) -> tuple[int, tuple[int, list[tuple[int, bytes]]]]:
+        reserved = 0
+
+        def reserve(n: int) -> bool:
+            nonlocal reserved
+            with self._parts_lock:
+                if n > parquet_ranges.PARQUET_RANGE_MAX_BYTES - self._parts_bytes:
+                    return False
+                self._parts_bytes += n
+                reserved = n
+                return True
+
+        client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
+        parts = parquet_ranges.read_parquet_parts(
+            client, file, columns, reserve=reserve
+        )
+        return reserved, parts
+
+    def _release_parts_bytes(self, n: int) -> None:
+        with self._parts_lock:
+            self._parts_bytes = max(0, self._parts_bytes - n)
 
     def process(self, file: File):
-        if file._caching_enabled:
-            file.ensure_cached()
-        if cache_path := file.get_local_path():
-            fs_path = file.path
-            fs = ReferenceFileSystem({fs_path: [cache_path]})
-        else:
-            if "_parquet_parts" not in file.__dict__ and (
-                columns := self._parquet_columns(file)
-            ):
-                self._prefetch_parquet(file, columns)
-            fs = pyarrow_fs(file, self.kwargs.get("format"))
-            fs_path = file.get_fs_path()
+        _, reserved, parts = self._parts.pop(id(file), (None, 0, None))
+        try:
+            if file._caching_enabled:
+                file.ensure_cached()
+            if cache_path := file.get_local_path():
+                fs_path = file.path
+                fs = ReferenceFileSystem({fs_path: [cache_path]})
+            else:
+                if parts is None and (columns := self._parquet_columns(file)):
+                    reserved, parts = self._read_parquet_parts(file, columns)
+                fs = pyarrow_fs(file, self.kwargs.get("format"), parts)
+                fs_path = file.get_fs_path()
 
-        kwargs = self.kwargs
-        if format := kwargs.get("format"):
-            kwargs["format"] = fix_pyarrow_format(format, self.parse_options)
+            kwargs = self.kwargs
+            if format := kwargs.get("format"):
+                kwargs["format"] = fix_pyarrow_format(format, self.parse_options)
 
-        if self.datachain_read:
-            # Each file is read with its own columns and types, which other files
-            # may differ from.
-            ds = dataset(fs_path, filesystem=fs, **kwargs)
-            _check_type_tags(file, ds.schema)
-        else:
-            ds = dataset(fs_path, schema=self.input_schema, filesystem=fs, **kwargs)
+            if self.datachain_read:
+                # Each file is read with its own columns and types, which other files
+                # may differ from.
+                ds = dataset(fs_path, filesystem=fs, **kwargs)
+                _check_type_tags(file, ds.schema)
+            else:
+                ds = dataset(fs_path, schema=self.input_schema, filesystem=fs, **kwargs)
 
-        use_datachain_schema = _written_by_datachain(ds.schema)
-        if self.written_by_datachain not in (None, use_datachain_schema):
-            kind = "is" if use_datachain_schema else "isn't"
-            raise ValueError(
-                f"{_MIXED_FILES}, and '{file.path}' {kind} written by DataChain"
-            )
+            use_datachain_schema = _written_by_datachain(ds.schema)
+            if self.written_by_datachain not in (None, use_datachain_schema):
+                kind = "is" if use_datachain_schema else "isn't"
+                raise ValueError(
+                    f"{_MIXED_FILES}, and '{file.path}' {kind} written by DataChain"
+                )
 
-        source_kwargs = self._source_kwargs() if self.source else None
-        schema = ds.schema
-        kw: dict[str, Any] = {
-            "batch_size": min(self.DEFAULT_BATCH_SIZE, self.nrows or sys.maxsize),
-            "batch_readahead": 1,
-        }
-        if (names := self._flat_columns(schema)) is not None:
-            kw["columns"] = names
-            yield from self._column_batches(self._batches(ds, kw), file, source_kwargs)
-            return
-        if self.datachain_read:
-            objs = self._signal_objects(ds, kw)
-        else:
-            if self.columns is not None:
-                present = set(schema.names)
-                kw["columns"] = [c for c in self.columns if c in present]
-                # Decode Hugging Face features only for the columns being read.
-                fields = [schema.field(c) for c in kw["columns"]]
-                schema = pa.schema(fields, metadata=schema.metadata)
-            hf_schema = _get_hf_schema(schema)
-            objs = (
-                self._process_non_datachain_record(record, hf_schema)
-                for _, batch in self._batches(ds, kw)
-                # Maps are read as dicts. Duplicate keys raise an error.
-                for record in batch.to_pylist(maps_as_pydicts="strict")
-            )
-        for index, obj in enumerate(objs):
-            yield self._process_record(obj, file, index, source_kwargs)
+            source_kwargs = self._source_kwargs() if self.source else None
+            schema = ds.schema
+            kw: dict[str, Any] = {
+                "batch_size": min(self.DEFAULT_BATCH_SIZE, self.nrows or sys.maxsize),
+                "batch_readahead": 1,
+            }
+            if (names := self._flat_columns(schema)) is not None:
+                kw["columns"] = names
+                yield from self._column_batches(
+                    self._batches(ds, kw), file, source_kwargs
+                )
+                return
+            if self.datachain_read:
+                objs = self._signal_objects(ds, kw)
+            else:
+                if self.columns is not None:
+                    present = set(schema.names)
+                    kw["columns"] = [c for c in self.columns if c in present]
+                    # Decode Hugging Face features only for the columns being read.
+                    fields = [schema.field(c) for c in kw["columns"]]
+                    schema = pa.schema(fields, metadata=schema.metadata)
+                hf_schema = _get_hf_schema(schema)
+                objs = (
+                    self._process_non_datachain_record(record, hf_schema)
+                    for _, batch in self._batches(ds, kw)
+                    # Maps are read as dicts. Duplicate keys raise an error.
+                    for record in batch.to_pylist(maps_as_pydicts="strict")
+                )
+            for index, obj in enumerate(objs):
+                yield self._process_record(obj, file, index, source_kwargs)
+        finally:
+            self._release_parts_bytes(reserved)
 
     def _batches(
         self, ds: Dataset, kw: dict[str, Any]

@@ -1,3 +1,5 @@
+import asyncio
+import multiprocessing
 import os
 import subprocess
 import sys
@@ -17,10 +19,9 @@ from pydantic import field_validator
 
 import datachain as dc
 from datachain.lib import arrow as arrow_mod
+from datachain.lib import parquet_ranges
 from datachain.lib.arrow import (
     ArrowGenerator,
-    _column_ranges,
-    _ParquetBufferedFile,
     arrow_type_mapper,
     file_schemas,
     is_parquet,
@@ -29,6 +30,7 @@ from datachain.lib.arrow import (
 from datachain.lib.data_model import dict_to_data_model
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.hf import HFClassLabel
+from datachain.lib.parquet_ranges import ParquetBufferedFile, column_ranges
 from tests.utils import skip_if_not_sqlite
 
 
@@ -951,52 +953,180 @@ def test_parquet_column_ranges():
             )
         )
 
-    assert _column_ranges(meta, ["cat", "nested"]) == expected
-    assert _column_ranges(meta, ["cat", "nested"], gap=200_000) == [
+    assert column_ranges(meta, ["cat", "nested"]) == expected
+    assert column_ranges(meta, ["cat", "nested"], gap=200_000) == [
         (expected[0][0], expected[-1][1])
     ]
 
 
-def test_read_parquet_parts_falls_back_when_over_bound(
+def test_read_parquet_columns_falls_back_when_chunks_exceed_budget(
+    tmp_path, test_session, http_server, monkeypatch, mocker
+):
+    path = tmp_path / "over.parquet"
+    table = pa.table({"a": list(range(1000)), "pad": [b"z" * 200] * 1000})
+    pq.write_table(
+        table, path, row_group_size=500, compression="NONE", use_dictionary=False
+    )
+    monkeypatch.setattr(arrow_mod, "PARTIAL_READ_PREFETCH_MAX_SIZE", 1)
+    monkeypatch.setattr(parquet_ranges, "PARQUET_FOOTER_SAMPLE_SIZE", 4096)
+    # Column chunks (~8 KiB) fit under 10 KiB, but footer + chunks exceed it.
+    monkeypatch.setattr(parquet_ranges, "PARQUET_RANGE_MAX_BYTES", 10_000)
+    buffered_init = mocker.spy(ParquetBufferedFile, "__init__")
+
+    values = dc.read_parquet(
+        f"{http_server}/over.parquet", columns=["a"], session=test_session
+    ).to_values("a")
+
+    assert buffered_init.call_count == 1
+    assert len(buffered_init.call_args.args[4]) == 1
+    assert sorted(values) == list(range(1000))
+
+
+def test_read_parquet_columns_falls_back_when_footer_exceeds_budget(
     tmp_path, test_session, http_server, monkeypatch, mocker
 ):
     path = tmp_path / "over.parquet"
     table = pa.table({"a": list(range(1000)), "pad": [b"z" * 100] * 1000})
-    pq.write_table(table, path, row_group_size=500, compression="NONE")
-    raw = path.read_bytes()
+    pq.write_table(
+        table, path, row_group_size=500, compression="NONE", use_dictionary=False
+    )
     monkeypatch.setattr(arrow_mod, "PARTIAL_READ_PREFETCH_MAX_SIZE", 1)
-    monkeypatch.setattr(arrow_mod, "PARQUET_FOOTER_SAMPLE_SIZE", 4096)
-    # Column chunks (~8 KiB) fit under 10 KiB, but footer + chunks exceed it.
-    monkeypatch.setattr(arrow_mod, "PARQUET_RANGE_MAX_BYTES", 10_000)
-    spy = mocker.spy(arrow_mod, "_read_parquet_parts")
-
-    values = dc.read_parquet(
-        f"{http_server}/over.parquet", columns=["a"], session=test_session
-    ).to_values("a")
-
-    assert spy.spy_return == (len(raw), [(len(raw) - 4096, raw[-4096:])])
-    assert sorted(values) == list(range(1000))
-
     # Full footer (~500 B) exceeds PARQUET_RANGE_MAX_BYTES when expanding a 64 B sample.
-    monkeypatch.setattr(arrow_mod, "PARQUET_FOOTER_SAMPLE_SIZE", 64)
-    monkeypatch.setattr(arrow_mod, "PARQUET_RANGE_MAX_BYTES", 128)
+    monkeypatch.setattr(parquet_ranges, "PARQUET_FOOTER_SAMPLE_SIZE", 64)
+    monkeypatch.setattr(parquet_ranges, "PARQUET_RANGE_MAX_BYTES", 128)
+    buffered_init = mocker.spy(ParquetBufferedFile, "__init__")
+
     values = dc.read_parquet(
         f"{http_server}/over.parquet", columns=["a"], session=test_session
     ).to_values("a")
 
-    assert spy.spy_return == (len(raw), [])
+    assert buffered_init.call_count == 0
     assert sorted(values) == list(range(1000))
 
 
-def test_parquet_buffered_file_freed_by_refcount(catalog):
+def test_read_parquet_columns_shares_byte_budget_across_prefetched_files(
+    tmp_path, test_session, http_server, monkeypatch
+):
+    for i in range(2):
+        pq.write_table(
+            pa.table(
+                {
+                    "a": list(range(i * 500, (i + 1) * 500)),
+                    "pad": [b"z" * 100] * 500,
+                }
+            ),
+            tmp_path / f"part{i}.parquet",
+            row_group_size=250,
+            compression="NONE",
+            use_dictionary=False,
+        )
+    monkeypatch.setattr(arrow_mod, "PARTIAL_READ_PREFETCH_MAX_SIZE", 1)
+    monkeypatch.setattr(parquet_ranges, "PARQUET_FOOTER_SAMPLE_SIZE", 4096)
+    monkeypatch.setattr(parquet_ranges, "PARQUET_RANGE_MAX_BYTES", 2048)
+
+    urls = [f"{http_server}/part0.parquet", f"{http_server}/part1.parquet"]
+    values = dc.read_parquet(
+        urls,
+        columns=["a"],
+        settings={"prefetch": 2},
+        session=test_session,
+    ).to_values("a")
+
+    assert sorted(values) == list(range(1000))
+
+
+def test_read_parquet_columns_after_file_without_etag_changed_reads_new_rows(
+    tmp_path, test_session, http_server_without_ranges, monkeypatch
+):
+    path = tmp_path / "mutable.parquet"
+    monkeypatch.setattr(arrow_mod, "PARTIAL_READ_PREFETCH_MAX_SIZE", 1)
+    url = f"{http_server_without_ranges}/mutable.parquet"
+
+    pq.write_table(pa.table({"a": [1], "b": ["x"]}), path)
+    assert dc.read_parquet(url, columns=["a"], session=test_session).to_values("a") == [
+        1
+    ]
+
+    pq.write_table(pa.table({"a": [2], "b": ["y"]}), path)
+    assert dc.read_parquet(url, columns=["a"], session=test_session).to_values("a") == [
+        2
+    ]
+
+
+def test_read_parquet_columns_merges_trailing_chunk_with_footer_sample(
+    tmp_path, test_session, http_server, monkeypatch, mocker
+):
+    path = tmp_path / "merge.parquet"
+    table = pa.table({"a": [1, 2], "b": [b"x" * 2048, b"y" * 2048]})
+    pq.write_table(
+        table, path, row_group_size=2, compression="NONE", use_dictionary=False
+    )
+    raw = path.read_bytes()
+    meta = pq.read_metadata(path)
+    col_b = meta.row_group(0).column(1)
+    col_b_end = col_b.data_page_offset + col_b.total_compressed_size
+    # Place sample_start inside column b's chunk so its span ends right at sample_start.
+    monkeypatch.setattr(arrow_mod, "PARTIAL_READ_PREFETCH_MAX_SIZE", 1)
+    monkeypatch.setattr(
+        parquet_ranges, "PARQUET_FOOTER_SAMPLE_SIZE", len(raw) - (col_b_end - 64)
+    )
+    buffered_init = mocker.spy(ParquetBufferedFile, "__init__")
+
+    rows = dc.read_parquet(
+        f"{http_server}/merge.parquet", columns=["b"], session=test_session
+    ).to_values("b")
+
+    assert buffered_init.call_count == 1
+    # Span [col_b_start, sample_start) merges with [sample_start, size) into one part.
+    assert buffered_init.call_args.args[4] == [
+        (col_b.data_page_offset, raw[col_b.data_page_offset :])
+    ]
+    assert sorted(rows) == [b"x" * 2048, b"y" * 2048]
+
+
+@pytest.mark.parametrize(
+    "payload,sample_size",
+    [
+        (b"not a parquet file", 4096),
+        (b"PAR1" + b"\x00" * 100 + (50).to_bytes(4, "little") + b"PAR1", 4096),
+        (b"PAR1" + b"\x00" * 100 + (50).to_bytes(4, "little") + b"PAR1", 16),
+    ],
+    ids=["non_parquet", "corrupt_footer", "corrupt_expanded_footer"],
+)
+def test_read_parquet_columns_invalid_files_fail_like_full_read(
+    tmp_path, test_session, http_server, monkeypatch, payload, sample_size
+):
+    valid = tmp_path / "0_valid.parquet"
+    pq.write_table(pa.table({"a": [1]}), valid)
+    broken = tmp_path / "1_broken.parquet"
+    broken.write_bytes(payload)
+    monkeypatch.setattr(arrow_mod, "PARTIAL_READ_PREFETCH_MAX_SIZE", 1)
+    monkeypatch.setattr(parquet_ranges, "PARQUET_FOOTER_SAMPLE_SIZE", sample_size)
+    urls = [f"{http_server}/0_valid.parquet", f"{http_server}/1_broken.parquet"]
+
+    with pytest.raises((pa.ArrowInvalid, OSError)) as full_exc:
+        dc.read_parquet(urls, output={"a": int}, session=test_session).exec()
+
+    with pytest.raises(type(full_exc.value)) as col_exc:
+        dc.read_parquet(
+            urls, output={"a": int}, columns=["a"], session=test_session
+        ).exec()
+
+    assert (
+        str(col_exc.value).split(": ")[-1].strip()
+        == str(full_exc.value).split(": ")[-1].strip()
+    )
+
+
+def test_parquet_buffered_file_freed_by_refcount(tmp_path, catalog):
     class Parts(list):
         pass
 
-    file = File(path="table.parquet", source="file:///tmp")
+    file = File(path="table.parquet", source=tmp_path.as_uri())
     client = catalog.get_client(file.source)
     parts = Parts([(0, b"PAR1")])
     parts_ref = weakref.ref(parts)
-    f = _ParquetBufferedFile(client, file, 4, parts)
+    f = ParquetBufferedFile(client, file, 4, parts)
     file_ref = weakref.ref(f)
     assert f.read() == b"PAR1"
     del f, parts
@@ -1004,27 +1134,10 @@ def test_parquet_buffered_file_freed_by_refcount(catalog):
     assert parts_ref() is None
 
 
-def test_parquet_buffered_file_closes_fallback_remote_stream(catalog, mocker):
-    import io
-
-    file = File(path="table.parquet", source="file:///tmp")
-    client = catalog.get_client(file.source)
-    remote = io.BytesIO(b"01234567")
-    close_spy = mocker.spy(remote, "close")
-    mocker.patch.object(client, "open_object", return_value=remote)
-    f = _ParquetBufferedFile(client, file, 8, [(0, b"0123")])
-    f.seek(4)
-    assert f.read(4) == b"4567"
-    f.close()
-    assert close_spy.call_count == 1
-
-
-def test_generator_prefetch_file_checks_archive_target_size(catalog, monkeypatch):
-    import asyncio
-
-    parent = File(source="s3://bucket", path="huge.tar", size=100 * 1024 * 1024)
+def test_generator_prefetch_file_checks_archive_target_size(tmp_path, catalog):
+    parent = File(source=tmp_path.as_uri(), path="huge.tar", size=100 * 1024 * 1024)
     member = File(
-        source="s3://bucket",
+        source=tmp_path.as_uri(),
         path="small.parquet",
         size=100,
         location=[{"vtype": "tar", "parent": parent.model_dump()}],
@@ -1038,96 +1151,17 @@ def test_generator_prefetch_file_checks_archive_target_size(catalog, monkeypatch
         format="parquet",
     )
     assert asyncio.run(gen._prefetch_file(member)) is False
-    assert "_parquet_parts" not in member.__dict__
+    assert not gen._parts
 
 
-def test_parquet_prefetch_deduplicates_versioned_files(
-    tmp_path, catalog, http_server, monkeypatch, mocker
+@pytest.mark.skipif(
+    "fork" not in multiprocessing.get_all_start_methods(),
+    reason="requires POSIX fork",
+)
+def test_read_parquet_columns_in_forked_child_after_parent_read(
+    tmp_path, test_session, http_server, monkeypatch
 ):
-    import io
-    from contextlib import contextmanager
-
-    path = tmp_path / "multi.parquet"
-    pq.write_table(
-        pa.table({"a": list(range(1000)), "pad": [b"z" * 100] * 1000}),
-        path,
-        row_group_size=250,
-        compression="NONE",
-    )
-    raw_bytes = path.read_bytes()
-    monkeypatch.setattr(arrow_mod, "PARQUET_FOOTER_SAMPLE_SIZE", 4096)
-
-    gen = ArrowGenerator(
-        pa.schema([("a", pa.int64()), ("pad", pa.binary())]),
-        dict_to_data_model("Row", {"a": int}),
-        columns=["a"],
-        prefetch_max_size=1,
-        format="parquet",
-    )
-
-    f1 = File(
-        source="s3://bucket", path="multi.parquet", size=len(raw_bytes), etag="e1"
-    )
-    f2 = File(
-        source="s3://bucket", path="multi.parquet", size=len(raw_bytes), etag="e1"
-    )
-    f1._set_stream(catalog)
-    f2._set_stream(catalog)
-    client = catalog.get_client(f1.source)
-    get_client_patch = mocker.patch.object(catalog, "get_client", return_value=client)
-
-    calls = 0
-
-    @contextmanager
-    def fake_open_object(file, **kwargs):
-        nonlocal calls
-        calls += 1
-        stream = io.BytesIO(raw_bytes)
-        stream._fetch_range = lambda s, e: raw_bytes[s:e]  # type: ignore[attr-defined]
-        yield stream
-
-    mocker.patch.object(client, "open_object", side_effect=fake_open_object)
-    gen._prefetch_parquet(f1, ["a"])
-    gen._prefetch_parquet(f2, ["a"])
-    assert calls == 1
-    assert f1.__dict__.pop("_parquet_parts") is f2.__dict__.pop("_parquet_parts")
-    mocker.stop(get_client_patch)
-
-    # Overlapping reads of a mutable unversioned HTTP URL must not share cached bytes.
-    mutable_path = tmp_path / "mutable.parquet"
-    mutable_gen = ArrowGenerator(
-        pa.schema([("a", pa.int64())]),
-        dict_to_data_model("Row", {"a": int}),
-        columns=["a"],
-        prefetch_max_size=1,
-        format="parquet",
-    )
-    pq.write_table(pa.table({"a": [1]}), mutable_path)
-    u1 = File(
-        source=http_server, path="mutable.parquet", size=mutable_path.stat().st_size
-    )
-    u1._set_stream(catalog, caching_enabled=False)
-    mutable_gen._prefetch_parquet(u1, ["a"])
-
-    pq.write_table(pa.table({"a": [2]}), mutable_path)
-    u2 = File(
-        source=http_server, path="mutable.parquet", size=mutable_path.stat().st_size
-    )
-    u2._set_stream(catalog, caching_enabled=False)
-    mutable_gen._prefetch_parquet(u2, ["a"])
-
-    assert [row.a for _, row in mutable_gen.process(u1)] == [1]
-    assert [row.a for _, row in mutable_gen.process(u2)] == [2]
-
-
-def test_parquet_prefetch_waits_for_sibling_ranges_on_error(
-    tmp_path, catalog, monkeypatch, mocker
-):
-    import io
-    import threading
-    from contextlib import contextmanager
-
-    path = tmp_path / "multi.parquet"
+    path = tmp_path / "fork.parquet"
     pq.write_table(
         pa.table({"a": [1, 2], "pad": [b"x" * 100_000, b"y" * 100_000]}),
         path,
@@ -1135,114 +1169,29 @@ def test_parquet_prefetch_waits_for_sibling_ranges_on_error(
         compression="NONE",
         use_dictionary=False,
     )
-    raw_bytes = path.read_bytes()
-    monkeypatch.setattr(arrow_mod, "PARQUET_FOOTER_SAMPLE_SIZE", 4096)
+    monkeypatch.setattr(arrow_mod, "PARTIAL_READ_PREFETCH_MAX_SIZE", 1)
+    monkeypatch.setattr(parquet_ranges, "PARQUET_FOOTER_SAMPLE_SIZE", 4096)
+    url = f"{http_server}/fork.parquet"
 
-    f1 = File(source="s3://bucket", path="multi.parquet", size=len(raw_bytes))
-    f1._set_stream(catalog)
-    client = catalog.get_client(f1.source)
+    assert sorted(
+        dc.read_parquet(url, columns=["a"], session=test_session).to_values("a")
+    ) == [1, 2]
 
-    closed_while_running, running, calls = False, 0, 0
-    lock = threading.Lock()
-    entered_second = threading.Event()
-    first_raising = threading.Event()
-    release_second = threading.Event()
-
-    @contextmanager
-    def error_open_object(file, **kwargs):
-        nonlocal closed_while_running
-        stream = io.BytesIO(raw_bytes)
-
-        def fetch_range(s, e):
-            nonlocal calls, running
-            with lock:
-                calls, running = calls + 1, running + 1
-                my_call = calls
-            try:
-                if my_call == 1:
-                    assert entered_second.wait(timeout=5)
-                    first_raising.set()
-                    raise OSError("boom")
-                entered_second.set()
-                assert first_raising.wait(timeout=5)
-                release_second.wait(timeout=0.05)
-                return raw_bytes[s:e]
-            finally:
-                with lock:
-                    running -= 1
-
-        stream._fetch_range = fetch_range  # type: ignore[attr-defined]
-        try:
-            yield stream
-        finally:
-            with lock:
-                closed_while_running = running > 0
-            release_second.set()
-
-    mocker.patch.object(client, "open_object", side_effect=error_open_object)
-    with pytest.raises(OSError, match="boom"):
-        arrow_mod._read_parquet_parts(client, f1, ["a"])
-    assert calls == 2
-    assert entered_second.is_set()
-    assert first_raising.is_set()
-    assert not closed_while_running
-
-
-def test_parquet_prefetch_cancel_waits_for_cleanup(
-    tmp_path, catalog, monkeypatch, mocker
-):
-    import asyncio
-    import io
-    import threading
-    import time
-    from contextlib import contextmanager
-
-    path = tmp_path / "cancel.parquet"
-    table = pa.table({"a": list(range(1000)), "pad": [b"z" * 100] * 1000})
-    pq.write_table(table, path, row_group_size=250, compression="NONE")
-    raw_bytes = path.read_bytes()
-    monkeypatch.setattr(arrow_mod, "PARQUET_FOOTER_SAMPLE_SIZE", 4096)
-
-    model = dict_to_data_model("Row", {"a": int})
-    gen = ArrowGenerator(
-        pa.schema([("a", pa.int64()), ("pad", pa.binary())]),
-        model,
-        columns=["a"],
-        prefetch_max_size=1,
-        format="parquet",
+    file = File(source=http_server, path="fork.parquet", size=path.stat().st_size)
+    client = test_session.catalog.get_client(file.source)
+    ctx = multiprocessing.get_context("fork")
+    parent_conn, child_conn = ctx.Pipe()
+    proc = ctx.Process(
+        target=lambda conn: conn.send(
+            len(
+                parquet_ranges.read_parquet_parts(client, file, ["a"], lambda n: True)[
+                    1
+                ]
+            )
+        ),
+        args=(child_conn,),
     )
-    f1 = File(source="s3://bucket", path="cancel.parquet", size=len(raw_bytes))
-    f1._set_stream(catalog)
-    client = catalog.get_client(f1.source)
-    mocker.patch.object(catalog, "get_client", return_value=client)
-
-    started = threading.Event()
-    finished = threading.Event()
-
-    @contextmanager
-    def slow_open_object(file, **kwargs):
-        stream = io.BytesIO(raw_bytes)
-
-        def fetch_range(s, e):
-            started.set()
-            time.sleep(0.05)
-            return raw_bytes[s:e]
-
-        stream._fetch_range = fetch_range  # type: ignore[attr-defined]
-        try:
-            yield stream
-        finally:
-            finished.set()
-
-    mocker.patch.object(client, "open_object", side_effect=slow_open_object)
-
-    async def cancel_prefetch():
-        task = asyncio.create_task(gen._prefetch_file(f1))
-        await asyncio.to_thread(started.wait, 2.0)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert finished.is_set()
-        assert "_parquet_parts" not in f1.__dict__
-
-    asyncio.run(cancel_prefetch())
+    proc.start()
+    proc.join(timeout=10)
+    assert proc.exitcode == 0
+    assert parent_conn.recv() == 3
