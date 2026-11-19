@@ -65,7 +65,7 @@ def read_parquet_parts(
     file: "File",
     columns: Sequence[str],
     reserve: Callable[[int], bool],
-) -> tuple[int, list[tuple[int, bytes]]]:
+) -> tuple[tuple[int, list[tuple[int, bytes]]], bool]:
     """Read the Parquet footer sample and selected column chunks, then close."""
     with client.open_object(
         file, use_cache=False, cb=file._download_cb, block_size=0
@@ -75,11 +75,11 @@ def read_parquet_parts(
         stream.seek(sample_start)
         sample = stream.read(size - sample_start)
         if len(sample) < 8 or sample[-4:] != b"PAR1":
-            return size, [(sample_start, sample)]
+            return (size, [(sample_start, sample)]), False
         footer_start = size - 8 - int.from_bytes(sample[-8:-4], "little")
         if 0 <= footer_start < sample_start:
             if size - footer_start > PARQUET_RANGE_MAX_BYTES:
-                return size, []
+                return (size, []), False
             stream.seek(footer_start)
             sample = stream.read(sample_start - footer_start) + sample
             sample_start = footer_start
@@ -111,10 +111,8 @@ def read_parquet_parts(
                 parts[-1] = (parts[-1][0], parts[-1][1] + sample)
             else:
                 parts.append((sample_start, sample))
-            return size, parts
-        if reserve(len(sample)):
-            return size, [(sample_start, sample)]
-        return size, []
+            return (size, parts), True
+        return (size, [(sample_start, sample)]), False
 
 
 class ParquetBufferedFile(AbstractBufferedFile):
