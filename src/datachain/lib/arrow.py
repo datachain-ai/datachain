@@ -93,6 +93,9 @@ _CSV_PARSE_OPTIONS = (
 
 # A partial read prefetches files up to this size and reads larger ones in parts.
 PARTIAL_READ_PREFETCH_MAX_SIZE = 8 * 1024 * 1024
+# Row groups smaller than this on average are scanned in one pass rather than
+# reading filter columns and rest columns separately per group.
+SMALL_ROW_GROUP_BYTES = 16 * 2**20
 
 
 class _PartialReadHandler(FSSpecHandler):
@@ -211,8 +214,7 @@ def _scan_group_rest(
             hi = int(np.searchsorted(pos, end))
             if hi > lo:
                 n = hi - lo
-                if n < data.num_rows:
-                    data = data.take(pa.array(pos[lo:hi] - offset))
+                data = data.take(pa.array(pos[lo:hi] - offset))
                 read = {
                     **{c: col.slice(lo, n) for c, col in key_cols.items()},
                     **dict(zip(rest, data.columns, strict=True)),
@@ -245,16 +247,19 @@ def filter_batches(
     groups = frag.subset(filter, schema=schema).row_groups
     if not groups:
         return
+    small = sum(rg.total_byte_size for rg in groups) < SMALL_ROW_GROUP_BYTES * len(
+        groups
+    )
     index = unique_name("index", schema.names)
     with tqdm(desc="Parsed by pyarrow", unit="rows", leave=False) as pbar:
-        if not rest:
+        if not rest or small:
             yield from _scan_groups(
                 frag, groups, starts, schema, columns, filter, batch_size, index, pbar
             )
             return
         matched = 0
         for i, rg in enumerate(groups):
-            if i == 2 and matched == 2:
+            if matched == 2:
                 yield from _scan_groups(
                     frag,
                     groups[i:],
