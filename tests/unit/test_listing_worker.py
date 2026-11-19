@@ -30,6 +30,7 @@ from datachain.client.listing_worker import (
 )
 from datachain.client.ranges import Keep, Page, RangeListing
 from datachain.lib.file import FileRow
+from datachain.lib.listing import PageEncoder, rows_digest
 
 ROOT = os.path.dirname(os.path.dirname(datachain.__file__))
 
@@ -426,56 +427,53 @@ def test_a_paused_parent_reads_a_reply_that_came_meanwhile(mocker):
     asyncio.run(check())
 
 
-def test_child_pages_decode_lazily_in_the_consumer(test_session, mocker):
-    from datachain.lib.listing import PageEncoder, rows_digest
-
+@pytest.mark.parametrize("encoded", [False, True], ids=["rows", "stored-page"])
+def test_child_pages_decode_lazily_in_the_consumer(test_session, mocker, encoded):
     warehouse = test_session.catalog.warehouse
     columns = warehouse.dataset_row_cls.listing_columns()
     encode = PageEncoder(warehouse.row_codec(columns), True)
+    encode_page = encode if encoded else None
     rows = [
         FileRow("fake://bucket", "a", 1, "v1"),
         FileRow("fake://bucket", "b", 2, "v2"),
     ]
-    for encode_page in (None, encode):
-        client = KeysClient([(r.path, r.version) for r in rows])
-        client.encode_page = encode_page
-        frame = dump((0, ((encode_page or Rows)(rows), "a", "b", None)))
-        loads = mocker.spy(pickle, "loads")
+    client = KeysClient([(r.path, r.version) for r in rows])
+    client.encode_page = encode_page
+    frame = dump((0, ((encode_page or Rows)(rows), "a", "b", None)))
+    loads = mocker.spy(pickle, "loads")
 
-        async def receive_page(frame=frame, client=client):
-            proc = Proc()
-            proc.stdout.feed_data(dump(None))
-            mocker.patch.object(
-                listing_worker, "_spawn", mock.AsyncMock(return_value=proc)
-            )
-            pool = Pool(client, "", 1)
-            proc.stdin.write = lambda _: pool.children and proc.stdout.feed_data(frame)
-            pool.start()
-            while not pool.children:  # noqa: ASYNC110
-                await asyncio.sleep(0)
-            page = await pool.list_page("", None, None)
-            pool.close()
-            await pool.wait_closed()
-            return page
+    async def receive_page():
+        proc = Proc()
+        proc.stdout.feed_data(dump(None))
+        mocker.patch.object(listing_worker, "_spawn", mock.AsyncMock(return_value=proc))
+        pool = Pool(client, "", 1)
+        proc.stdin.write = lambda _: pool.children and proc.stdout.feed_data(frame)
+        pool.start()
+        while not pool.children:  # noqa: ASYNC110
+            await asyncio.sleep(0)
+        page = await pool.list_page("", None, None)
+        pool.close()
+        await pool.wait_closed()
+        return page
 
-        page = asyncio.run(receive_page())
-        assert len(page.rows) == 2
-        assert loads.call_count == 2  # the ready frame and the page frame, not the rows
+    page = asyncio.run(receive_page())
+    assert len(page.rows) == 2
+    assert loads.call_count == 2  # the ready frame and the page frame, not the rows
 
-        if encode_page is None:
-            assert (page.rows[0], list(page.rows)) == (rows[0], rows)
-            assert loads.call_count == 3
-            assert list(page.rows) == rows
-            assert loads.call_count == 3
-        else:
-            expected = [encode.codec.encode(r) for r in rows]
-            assert (page.rows.rows, page.rows.digest) == (
-                expected,
-                rows_digest(rows, True),
-            )
-            assert loads.call_count == 3
-            assert page.rows.rows == expected
-            assert loads.call_count == 3
+    if not encoded:
+        assert (page.rows[0], list(page.rows)) == (rows[0], rows)
+        assert loads.call_count == 3
+        assert list(page.rows) == rows
+        assert loads.call_count == 3
+    else:
+        expected = [encode.codec.encode(r) for r in rows]
+        assert (page.rows.rows, page.rows.digest) == (
+            expected,
+            rows_digest(rows, True),
+        )
+        assert loads.call_count == 3
+        assert page.rows.rows == expected
+        assert loads.call_count == 3
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
@@ -833,14 +831,14 @@ def test_folder_cut_falls_back_to_flat_listing_when_delimiter_is_rejected(caplog
 
 def test_folder_cut_starts_ranges_at_folders_without_starting_children(mocker):
     start = mocker.spy(Pool, "start")
-    keys = [(f"dir{i:02d}/file.txt", "v1") for i in range(10)]
+    keys = [(f"dir{i:02d}/file.txt", "v1") for i in range(20)]
     client = KeysClient(keys)
     client.NAMES_FOLDERS = True
 
     assert sorted((r.path, r.version) for p in _listed(client) for r in p) == keys
     assert ("dir03/file.txt", None, "/") in client.calls
     starts = {lo for lo, token, delim in client.calls if not delim and token is None}
-    assert starts == {"", *(f"dir{i:02d}/" for i in range(4, 10))}
+    assert starts == {"", *(f"dir{i:02d}/" for i in range(4, 20))}
     assert not start.call_count
 
 
@@ -858,6 +856,8 @@ def test_folder_cut_skips_ignored_start_after_and_truncated_folder_pages(mode):
     assert sorted((r.path, r.version) for p in pages for r in p) == keys
     assert any(delim == "/" for _, _, delim in client.calls)
     assert not ({lo for lo, _, _ in client.calls} & {f"dir{i:02d}/" for i in range(10)})
+    if client.ignores_start:  # no range starts at a key
+        assert all(not lo for lo, tok, d in client.calls if not d and tok is None)
 
 
 def test_a_frozen_app_lists_in_one_process():

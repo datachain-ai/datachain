@@ -287,11 +287,13 @@ def s3_bodies(mocker):
         skip_instance_cache=True,
     )
 
-    def page(*answers, versions=False, delimiter=""):
+    def page(*answers, versions=False, delimiter="", patterns=True):
         bodies[:] = answers
         requests.clear()
         client = ClientS3("b", {"version_aware": versions}, None)
         client._fs = fs
+        if not patterns:
+            client._declined_pages = 3
         fs.version_aware = versions
         return (
             sync(get_loop(), client._list_page, "", "", None, delimiter=delimiter),
@@ -591,79 +593,98 @@ def test_client_stops_trying_patterns_after_three_declined_pages(
     assert "reading pages with ElementTree" in caplog.text
 
 
-def test_patterns_agree_with_elementtree_or_decline(s3_bodies):
-    entry_a = (
-        b"<Contents><Key>a&amp;lt;b&amp;c&lt;d&gt;&apos;&#34;&#39;</Key>"
-        b"<LastModified>2026-09-30T23:00:00.000Z</LastModified>"
-        b"<ETag>&quot;e1&quot;</ETag><ChecksumAlgorithm>CRC32</ChecksumAlgorithm>"
-        b"<ChecksumType>FULL_OBJECT</ChecksumType><Size>1</Size>"
-        b"<StorageClass>STANDARD</StorageClass>"
-        b"<Owner><ID>o</ID><DisplayName>d</DisplayName></Owner></Contents>"
-    )
-    entry_b = (
-        b"<Contents><Key>b</Key>"
-        b"<LastModified>2026-09-30T23:00:00.000Z</LastModified>"
-        b"<ETag>&quot;e2&quot;</ETag><Size>2</Size>"
-        b"<StorageClass \t\n/><Owner><ID/><DisplayName/></Owner></Contents>"
-    )
-    accepted = [
+ENTRY_A = (
+    b"<Contents><Key>a&amp;lt;b&amp;c&lt;d&gt;&apos;&#34;&#39;</Key>"
+    b"<LastModified>2026-09-30T23:00:00.000Z</LastModified>"
+    b"<ETag>&quot;e1&quot;</ETag><ChecksumAlgorithm>CRC32</ChecksumAlgorithm>"
+    b"<ChecksumType>FULL_OBJECT</ChecksumType><Size>1</Size>"
+    b"<StorageClass>STANDARD</StorageClass>"
+    b"<Owner><ID>o</ID><DisplayName>d</DisplayName></Owner></Contents>"
+)
+ENTRY_B = (
+    b"<Contents><Key>b</Key>"
+    b"<LastModified>2026-09-30T23:00:00.000Z</LastModified>"
+    b"<ETag>&quot;e2&quot;</ETag><Size>2</Size>"
+    b"<StorageClass \t\n/><Owner><ID/><DisplayName/></Owner></Contents>"
+)
+PAGE_ENTRY = (
+    b"<Contents><Key>a</Key><LastModified>2026-09-30T23:00:00.000Z</LastModified>"
+    b"<ETag>&quot;e&quot;</ETag><Size>1</Size></Contents>"
+)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
         PAGE.replace(b"UTF-8", b"utf-8"),
-        PAGE.replace(
-            b"<Contents><Key>a</Key><LastModified>2026-09-30T23:00:00.000Z</LastModified>"
-            b"<ETag>&quot;e&quot;</ETag><Size>1</Size></Contents>",
-            b"",
-        ),
-        PAGE.replace(
-            b"<Contents><Key>a</Key><LastModified>2026-09-30T23:00:00.000Z</LastModified>"
-            b"<ETag>&quot;e&quot;</ETag><Size>1</Size></Contents>",
-            entry_a + entry_b + FOLDER,
-        ),
+        PAGE.replace(PAGE_ENTRY, b""),
+        PAGE.replace(PAGE_ENTRY, ENTRY_A + ENTRY_B + FOLDER),
         ENCODED,
         VERSIONS,
-    ]
-    declined = [
+    ],
+    ids=["utf-8-decl", "empty", "entities-and-checksums", "encoded", "versions"],
+)
+def test_patterns_agree_with_elementtree_on_accepted_pages(s3_bodies, body):
+    versions = b"<ListVersionsResult" in body
+    op = "ListObjectVersions" if versions else "ListObjectsV2"
+
+    assert _page(body, op) is not None
+    fast, _ = s3_bodies.page(body, versions=versions, delimiter="/")
+    slow, _ = s3_bodies.page(body, versions=versions, delimiter="/", patterns=False)
+    assert fast == slow
+
+
+@pytest.mark.parametrize(
+    "body, keys, folders",
+    [
         # gap between entries: must decline so the second entry is not dropped
-        PAGE.replace(b"</Contents>", b"</Contents><Extra/>" + entry_b),
+        (
+            PAGE.replace(b"</Contents>", b"</Contents><Extra/>" + ENTRY_B),
+            ["a", "b"],
+            (),
+        ),
         # trailing entry with reordered fields: must decline so it is not dropped
-        PAGE.replace(
-            b"</Contents>",
-            b"</Contents><Contents><Size>2</Size><Key>b</Key>"
-            b"<LastModified>2026-09-30T23:00:00.000Z</LastModified>"
-            b"<ETag>&quot;e2&quot;</ETag></Contents>",
+        (
+            PAGE.replace(
+                b"</Contents>",
+                b"</Contents><Contents><Size>2</Size><Key>b</Key>"
+                b"<LastModified>2026-09-30T23:00:00.000Z</LastModified>"
+                b"<ETag>&quot;e2&quot;</ETag></Contents>",
+            ),
+            ["a", "b"],
+            (),
         ),
         # nested entry inside another tag: must decline so it is not treated as root's
-        PAGE.replace(b"<Contents>", b"<Extra><Contents>").replace(
-            b"</Contents>", b"</Contents></Extra>"
+        (
+            PAGE.replace(b"<Contents>", b"<Extra><Contents>").replace(
+                b"</Contents>", b"</Contents></Extra>"
+            ),
+            [],
+            (),
         ),
         # unread entry before matched entries: must decline so it is not skipped
-        PAGE.replace(
-            b"<Contents>",
-            b"<CommonPrefixes><Extra/><Prefix>z/</Prefix></CommonPrefixes><Contents>",
+        (
+            PAGE.replace(
+                b"<Contents>",
+                b"<CommonPrefixes><Extra/><Prefix>z/</Prefix></CommonPrefixes><Contents>",
+            ),
+            ["a"],
+            ("z/",),
         ),
-    ]
-    for body in accepted:
-        versions = b"<ListVersionsResult" in body
-        op = "ListObjectVersions" if versions else "ListObjectsV2"
-        assert _page(body, op) is not None
-        fast, _ = s3_bodies.page(body, versions=versions, delimiter="/")
-        s3_bodies.bodies[:] = [body]
-        client = ClientS3("b", {"version_aware": versions}, None)
-        client._fs = s3_bodies.fs
-        client._declined_pages = 3
-        slow = sync(get_loop(), client._list_page, "", "", None, delimiter="/")
-        assert fast == slow
+    ],
+    ids=["gap", "reordered-entry", "nested-entry", "unread-prefix"],
+)
+def test_elementtree_reads_entries_that_patterns_decline(
+    s3_bodies, body, keys, folders
+):
+    assert _page(body) is None
+    page, _ = s3_bodies.page(body, delimiter="/")
+    assert ([r.path for r in page.rows], page.folders) == (keys, folders)
 
-    for body in declined:
-        assert _page(body) is None
-        fast, _ = s3_bodies.page(body, delimiter="/")
-        s3_bodies.bodies[:] = [body]
-        client = ClientS3("b", {"version_aware": False}, None)
-        client._fs = s3_bodies.fs
-        client._declined_pages = 3
-        slow = sync(get_loop(), client._list_page, "", "", None, delimiter="/")
-        assert fast == slow
 
-    for bad in (
+@pytest.mark.parametrize(
+    "body",
+    [
         PAGE + b"\xff",
         PAGE.replace(b"<Name>b</Name>", b"<Name>b</Tag>"),
         PAGE.replace(b"2026-09-30T23:00:00.000Z", b"not-a-date"),
@@ -672,6 +693,15 @@ def test_patterns_agree_with_elementtree_or_decline(s3_bodies):
             b"<LastModified>2026-09-30T23:00:00.000Z</LastModified></DeleteMarker>",
             b"<LastModified></LastModified></DeleteMarker>",
         ),
-    ):
-        op = "ListObjectVersions" if b"<ListVersionsResult" in bad else "ListObjectsV2"
-        assert _page(bad, op) is None
+    ],
+    ids=[
+        "non-utf8",
+        "bad-root-xml",
+        "bad-object-date",
+        "bad-marker-date",
+        "empty-marker-date",
+    ],
+)
+def test_patterns_decline_unparseable_pages(body):
+    op = "ListObjectVersions" if b"<ListVersionsResult" in body else "ListObjectsV2"
+    assert _page(body, op) is None
