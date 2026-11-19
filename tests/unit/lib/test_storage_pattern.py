@@ -3,6 +3,7 @@ import pytest
 from datachain.lib.dc.storage_pattern import (
     _expand_range,
     expand_brace_pattern,
+    globstar_globs,
     list_scope,
     split_uri_pattern,
 )
@@ -192,6 +193,28 @@ def test_expand_brace_pattern_edge_cases():
 
 
 @pytest.mark.parametrize(
+    "pattern,globs",
+    [
+        ("*.txt", ["*.txt"]),
+        ("**", ["*"]),
+        ("**/*", ["*"]),
+        ("**/*.txt", ["*.txt"]),
+        ("**/a.txt", ["a.txt", "*/a.txt"]),
+        ("**/a?.txt", ["a?.txt", "*/a?.txt"]),
+        ("**/d/a.txt", ["d/a.txt", "*/d/a.txt"]),
+        ("**/d/*.txt", ["d/*.txt", "*/d/*.txt"]),
+        ("d*/**", ["d*/*"]),
+        ("d*/**/a.txt", ["d*/a.txt", "d*/*/a.txt"]),
+        ("**/**/a.txt", ["a.txt", "*/a.txt"]),
+        ("**/d/**/*.txt", ["d/*.txt", "*/d/*.txt"]),
+        ("**/d/**/a.txt", ["d/a.txt", "*/d/a.txt", "d/*/a.txt", "*/d/*/a.txt"]),
+    ],
+)
+def test_globstar_globs(pattern, globs):
+    assert globstar_globs(pattern) == globs
+
+
+@pytest.mark.parametrize(
     "list_path,pattern,recursive,scope",
     [
         ("dir/", None, True, None),
@@ -204,6 +227,9 @@ def test_expand_brace_pattern_edge_cases():
         ("dir", "img_0*.jpg", True, ListScope("dir/", "dir/img_0", True)),
         ("logs", "2024-*/**", True, ListScope("logs/", "logs/2024-", False)),
         ("logs", "**/*.json", True, None),
+        ("logs", "**/app.log", True, None),
+        ("logs", "**/app.log", False, ListScope("logs/", "logs/", True)),
+        ("logs", "2024-*/**/app.log", True, ListScope("logs/", "logs/2024-", False)),
         ("", "d*/x", True, ListScope("", "d", False)),
         ("dir", "a[0-9]/*", True, ListScope("dir/", "dir/a", False)),
     ],
