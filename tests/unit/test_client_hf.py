@@ -717,3 +717,90 @@ def test_bucket_url_keeps_sdk_signature(catalog, monkeypatch):
         hf_file_system.HfFileSystem, "url", lambda self, path: "bucket-url"
     )
     assert fs.url("buckets/org/bucket/file") == "bucket-url"
+
+
+def test_download_missing_file_raises_file_not_found(
+    catalog, monkeypatch, hf_repositories
+):
+    from huggingface_hub.utils import EntryNotFoundError
+
+    client = HfClient("datasets", {"token": False}, catalog.cache)
+    monkeypatch.setattr(
+        hf_file_system,
+        "hf_raise_for_status",
+        Mock(side_effect=EntryNotFoundError("404")),
+    )
+    monkeypatch.setattr(
+        hf_file_system,
+        "http_stream_backoff",
+        lambda *a, **kw: MagicMock(__enter__=lambda s: None),
+    )
+    file = File(
+        source=client.uri, path="org/repo/missing.txt", size=4, version="a" * 40
+    )
+    with pytest.raises(FileNotFoundError):
+        client.put_in_cache(file)
+
+
+def test_download_truncated_stream_raises_and_does_not_cache(
+    catalog, monkeypatch, hf_repositories
+):
+    from contextlib import contextmanager
+
+    client = HfClient("datasets", {"token": False}, catalog.cache)
+    headers_list = [{"Content-Length": "8"}, {}]
+
+    @contextmanager
+    def truncated_stream(*args, **kwargs):
+        yield SimpleNamespace(
+            status_code=200,
+            headers=headers_list.pop(0),
+            iter_bytes=lambda: iter([b"0123"]),
+            close=lambda: None,
+        )
+
+    monkeypatch.setattr(hf_file_system, "http_stream_backoff", truncated_stream)
+    monkeypatch.setattr(hf_file_system, "hf_raise_for_status", lambda _r: None)
+    file = File(source=client.uri, path="org/repo/a.txt", size=8, version="a" * 40)
+    with pytest.raises(OSError, match="Expected 8 bytes"):
+        client.download(file)
+    assert not catalog.cache.contains(file)
+    with pytest.raises(OSError, match="Expected 8 bytes"):
+        client.put_in_cache(file)
+    assert not catalog.cache.contains(file)
+
+
+@pytest.mark.parametrize(
+    "retry_status,retry_body", [(200, b"01234567"), (206, b"4567")]
+)
+def test_download_retry_handles_full_200_and_partial_206(
+    catalog, monkeypatch, hf_repositories, retry_status, retry_body
+):
+    from contextlib import contextmanager
+
+    client = HfClient("datasets", {"token": False}, catalog.cache)
+    monkeypatch.setattr(client, "CHUNK_SIZE", 4)
+    range_headers = []
+
+    def broken_chunks():
+        yield b"0123"
+        raise RuntimeError("stream interrupted")
+
+    @contextmanager
+    def fake_stream(_method, _url, *, headers, **kwargs):
+        range_headers.append(headers.get("Range"))
+        first = len(range_headers) == 1
+        yield SimpleNamespace(
+            status_code=200 if first else retry_status,
+            headers={"Content-Length": str(8 if first else len(retry_body))},
+            iter_bytes=broken_chunks if first else (lambda: iter([retry_body])),
+            close=lambda: None,
+        )
+
+    monkeypatch.setattr(hf_file_system, "http_stream_backoff", fake_stream)
+    monkeypatch.setattr(hf_file_system, "hf_raise_for_status", lambda _r: None)
+    file = File(source=client.uri, path="org/repo/a.txt", size=8, version="a" * 40)
+    client.put_in_cache(file)
+    with client.open_object(file) as f:
+        assert f.read() == b"01234567"
+    assert range_headers == [None, "bytes=4-"]

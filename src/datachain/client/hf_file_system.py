@@ -7,6 +7,7 @@ from urllib.parse import quote
 
 from huggingface_hub import HfFileSystem, hf_file_system, hf_hub_url
 from huggingface_hub.constants import REPO_TYPES_URL_PREFIXES
+from huggingface_hub.file_download import _get_file_length_from_http_response
 from huggingface_hub.hf_file_system import (
     SPECIAL_REFS_REVISION_REGEX,
     HfFileSystemStreamFile,
@@ -33,7 +34,11 @@ def _translate_auth_error():
 class _PinnedStreamFile(HfFileSystemStreamFile):
     def _open_connection(self):
         with _translate_auth_error():
-            return super()._open_connection()
+            super()._open_connection()
+        if self.loc > 0 and getattr(self.response, "status_code", None) == 200:
+            self.loc = 0
+        if self.loc == 0 and self.response is not None:
+            self.size = _get_file_length_from_http_response(self.response)
 
     def close(self):
         try:

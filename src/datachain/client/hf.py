@@ -2,7 +2,11 @@ import asyncio
 import functools
 import posixpath
 import re
+from threading import Event
 from typing import Any
+
+from fsspec.callbacks import DEFAULT_CALLBACK
+from huggingface_hub.utils import EntryNotFoundError
 
 from datachain.lib.file import File
 
@@ -152,8 +156,6 @@ class HfClient(Client):
     CHUNK_SIZE = 8 * 1024 * 1024
 
     async def get_file(self, lpath, rpath, callback, version_id: str | None = None):
-        from threading import Event
-
         fs = self.fs.sync_fs
         p = await asyncio.to_thread(
             fs.resolve_path, lpath, **self._version_kwargs(version_id)
@@ -177,19 +179,49 @@ class HfClient(Client):
             raise
 
     def _stream(self, path: str, dst: str, callback, stop=None) -> None:
-        with (
-            self.fs.sync_fs.open(path, "rb", block_size=0) as src,
-            open(dst, "wb") as out,
-        ):
-            try:
-                while (stop is None or not stop.is_set()) and (
-                    chunk := src.read(self.CHUNK_SIZE)
-                ):
-                    out.write(chunk)
-                    callback.relative_update(len(chunk))
-            finally:
-                if hasattr(src, "_exit_stack"):
+        try:
+            with (
+                self.fs.sync_fs.open(path, "rb", block_size=0) as src,
+                open(dst, "wb") as out,
+            ):
+                try:
+                    written = 0
+                    while (stop is None or not stop.is_set()) and (
+                        chunk := src.read(self.CHUNK_SIZE)
+                    ):
+                        if (
+                            written > 0
+                            and isinstance(getattr(src, "loc", None), int)
+                            and src.loc == len(chunk)
+                        ):
+                            out.seek(0)
+                            out.truncate(0)
+                            callback.relative_update(-written)
+                            written = 0
+                        out.write(chunk)
+                        written += len(chunk)
+                        callback.relative_update(len(chunk))
+                    expected = (
+                        src.size
+                        if isinstance(getattr(src, "size", None), int)
+                        else (
+                            None
+                            if callback is DEFAULT_CALLBACK
+                            else getattr(callback, "size", None)
+                        )
+                    )
+                    if (
+                        (stop is None or not stop.is_set())
+                        and isinstance(expected, int)
+                        and written != expected
+                    ):
+                        raise OSError(
+                            f"Expected {expected} bytes for {path}, got {written}"
+                        )
+                finally:
                     src._exit_stack.close()
+        except EntryNotFoundError as e:
+            raise FileNotFoundError(path) from e
 
     async def _check_unchanged(
         self, file: "File", *, info: dict[str, Any] | None = None
