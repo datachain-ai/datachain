@@ -241,7 +241,7 @@ def read_dataset(
         version=version,  #  type: ignore[arg-type]
         session=session,
         update=update,
-        _resolved_dataset=resolved_dataset,
+        dataset=resolved_dataset,
     )
 
     signals_schema = SignalSchema({"sys": Sys})

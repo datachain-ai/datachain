@@ -261,8 +261,14 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         self.is_closed = False
 
     def get_table(self, name: str) -> Table:
+        if not self.is_closed and (table := self.metadata.tables.get(name)) is not None:
+            return table
+        return self.reflect_table(name)
+
+    def reflect_table(self, name: str) -> Table:
         if self.is_closed:
             self._reconnect()
+        # Not inspect(engine): it can't see a table created in a pending transaction.
         rows = [
             row
             for row in self.execute_str(f"PRAGMA table_xinfo({quote(name)})").fetchall()
@@ -273,15 +279,6 @@ class SQLiteDatabaseEngine(DatabaseEngine):
                 self.metadata.remove(cached)
             raise TableMissingError(f"Table '{name}' not found")
         resolve_type = self.dialect._resolve_type_affinity
-        cols = [(row[1], type(resolve_type(row[2].upper()))) for row in rows]
-        if (cached := self.metadata.tables.get(name)) is not None and [
-            (
-                c.name,
-                type(resolve_type(str(c.type.compile(dialect=self.dialect)).upper())),
-            )
-            for c in cached.columns
-        ] == cols:
-            return cached
         return Table(
             name,
             self.metadata,
@@ -919,6 +916,9 @@ class SQLiteWarehouse(AbstractWarehouse):
 
     def instr(self, source, target) -> "ColumnElement":
         return cast(func.instr(source, target), sqlalchemy.Boolean)
+
+    def get_table(self, name: str) -> sqlalchemy.Table:
+        return self.db.reflect_table(name)
 
     def type_codec(self, sql_type: Any) -> TypeCodec:
         """Datetimes are stored as UTC text, arrays as JSON text."""

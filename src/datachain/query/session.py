@@ -111,7 +111,6 @@ class Session:
         # The owner cleans up temporary datasets created through this view.
         view._cleanup_catalogs = self._cleanup_catalogs
         view.is_new_catalog = False
-        view._owns_process_job = False
         return view
 
     def __enter__(self):

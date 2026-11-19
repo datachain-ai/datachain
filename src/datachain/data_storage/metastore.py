@@ -61,7 +61,6 @@ from datachain.error import (
     NamespaceNotFoundError,
     ProjectDeleteNotAllowedError,
     ProjectNotFoundError,
-    TableMissingError,
 )
 from datachain.job import Job
 from datachain.namespace import Namespace
@@ -1733,8 +1732,6 @@ class AbstractDBMetastore(AbstractMetastore):
     def _base_list_datasets_query(
         self, include_incomplete: bool = True, include_removed: bool = False
     ) -> "Select":
-        if not self.db.has_table(self._datasets_versions.name):
-            raise TableMissingError  # session cleanup, after tests drop tables
         return self._get_dataset_query(
             self._namespaces_fields,
             self._projects_fields,

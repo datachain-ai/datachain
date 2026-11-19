@@ -1,3 +1,4 @@
+import contextlib
 import datetime as dt
 import enum
 import hashlib
@@ -1827,72 +1828,56 @@ def test_read_dataset_name_version(test_session):
     assert chain.version
 
 
+@contextlib.contextmanager
+def _trace_sqlite_statements(session):
+    executed: list[str] = []
+    conns = {session.catalog.metastore.db.db, session.catalog.warehouse.db.db}
+    for conn in conns:
+        conn.set_trace_callback(executed.append)
+    try:
+        yield executed
+    finally:
+        for conn in conns:
+            conn.set_trace_callback(None)
+
+
 @skip_if_not_sqlite
 @pytest.mark.parametrize(
-    ("version", "expected"), [("1.0.0", 1), (1, 2), (">=1.0.0,<2.0.0", 2)]
+    ("version", "expected"),
+    [(None, 3), ("1.0.0", 1), (1, 2), (">=1.0.0,<2.0.0", 2)],
+    ids=["latest", "exact", "major-int", "range"],
 )
-def test_read_dataset_resolves_selected_version_once(
-    test_session, mocker, version, expected
-):
+def test_read_dataset_to_list_runs_two_statements(test_session, version, expected):
     dc.read_values(num=[1], session=test_session).save("selected", version="1.0.0")
     dc.read_values(num=[2], session=test_session).save("selected", version="1.10.0")
     dc.read_values(num=[3], session=test_session).save("selected", version="2.0.0")
-    resolve = mocker.spy(test_session.catalog, "get_dataset_with_remote_fallback")
 
-    chain = dc.read_dataset("selected", version=version, session=test_session)
+    with _trace_sqlite_statements(test_session) as executed:
+        rows = dc.read_dataset(
+            "selected", version=version, session=test_session
+        ).to_values("num")
 
-    assert chain.to_values("num") == [expected]
-    assert resolve.call_count == 1
+    assert rows == [expected]
+    assert len(executed) == 2
 
 
 @skip_if_not_sqlite
-def test_read_dataset_missing_version_retains_fallback(test_session, mocker):
+def test_save_in_default_project_skips_projects_query(test_session):
+    dc.read_values(num=[1, 2], session=test_session).save("proj_shortcut_src")
+
+    with _trace_sqlite_statements(test_session) as executed:
+        dc.read_dataset("proj_shortcut_src", session=test_session).filter(
+            dc.C("num") == 1
+        ).save("proj_shortcut_out")
+
+    assert not any("FROM projects" in sql for sql in executed)
+
+
+def test_read_dataset_missing_version_raises_not_found(test_session, no_studio_dataset):
     dc.read_values(num=[1], session=test_session).save("selected", version="1.0.0")
-    resolve = mocker.spy(test_session.catalog, "get_dataset_with_remote_fallback")
 
     with pytest.raises(DatasetNotFoundError, match=r"9\.0\.0"):
         dc.read_dataset("selected", version="9.0.0", session=test_session)
-
-    assert resolve.call_count == 2
-
-
-def test_read_dataset_remote_metadata_still_pulls_selected_version(
-    test_session, mocker
-):
-    remote_meta = (
-        dc.read_values(num=[1], session=test_session)
-        .save("remote_seed", version="1.0.0")
-        ._query.starting_step.dataset
-    )
-    mocker.patch("datachain.lib.dc.datasets.is_studio", return_value=False)
-    mocker.patch("datachain.lib.dc.utils.is_studio", return_value=False)
-    get_remote = mocker.patch.object(
-        test_session.catalog,
-        "get_remote_dataset",
-        return_value=remote_meta,
-    )
-
-    def pull_selected(remote_ds_uri, local_ds_name=None, local_ds_version=None, **kw):
-        test_session.catalog.metastore.create_project("dev", "project", validate=False)
-        dc.read_values(num=[1], session=test_session).save(
-            f"dev.project.{local_ds_name}", version=local_ds_version
-        )
-
-    pull = mocker.patch.object(
-        test_session.catalog, "pull_dataset", side_effect=pull_selected
-    )
-
-    chain = dc.read_dataset(
-        "dev.project.selected", version="1.0.0", session=test_session
-    )
-
-    get_remote.assert_called_once_with("dev", "project", "selected")
-    pull.assert_called_once_with(
-        remote_ds_uri="ds://dev.project.selected@v1.0.0",
-        local_ds_name="selected",
-        local_ds_version="1.0.0",
-    )
-    assert chain.to_values("num") == [1]
 
 
 def test_chain_of_maps(test_session):

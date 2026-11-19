@@ -197,6 +197,7 @@ def sqlite_db():
         pytest.skip("This test only runs on SQLite")
     with SQLiteDatabaseEngine.from_db_file(":memory:") as db:
         yield db
+        Session.cleanup_for_tests()
         cleanup_sqlite_db(db, [])
 
 
@@ -291,6 +292,7 @@ def warehouse(metastore):
     else:
         _warehouse = SQLiteWarehouse(db_file=":memory:")
         yield _warehouse
+        Session.cleanup_for_tests()
         try:
             check_temp_tables_cleaned_up(_warehouse)
         finally:
@@ -305,6 +307,7 @@ def warehouse(metastore):
 def catalog(metastore, warehouse):
     with Catalog(metastore=metastore, warehouse=warehouse) as catalog:
         yield catalog
+        Session.cleanup_for_tests()
 
     # Clean up job-related atexit hooks to prevent errors during pytest shutdown
     reset_session_job_state()
@@ -405,6 +408,7 @@ def warehouse_tmpfile(tmp_path, metastore_tmpfile):
     else:
         _warehouse = SQLiteWarehouse(db_file=str(tmp_path / "test.db"))
         yield _warehouse
+        Session.cleanup_for_tests()
         try:
             check_temp_tables_cleaned_up(_warehouse)
         finally:
@@ -423,6 +427,7 @@ def catalog_tmpfile(metastore_tmpfile, warehouse_tmpfile):
     # in-memory databases.
     with Catalog(metastore=metastore_tmpfile, warehouse=warehouse_tmpfile) as catalog:
         yield catalog
+        Session.cleanup_for_tests()
 
 
 @pytest.fixture
