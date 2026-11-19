@@ -47,8 +47,10 @@ def read_parquet(
             by DataChain, it picks signals as `select()` does, e.g. "p.x". When
             omitted (along with `output` and `column`), DataChain automatically
             reads only the columns used by `select()`, `group_by()`, `count()`, or
-            `gen()`, even when preceded by `filter()`, `order_by()`, or `mutate()`
-            in any order.
+            `gen()` (even after `filter()`, `order_by()`, or `mutate()`), and
+            applies `filter()` conditions while reading so only the needed rows and
+            columns are loaded (`filter()`, `select()`, and `order_by()` can appear
+            in any order).
         kwargs: Parameters to pass to `read_storage`. A directory or glob is
             listed once and the listing is reused for 4 hours, so files added or
             changed since are missed or fail to read. Pass `update=True` to list

@@ -6,21 +6,24 @@ import sqlalchemy
 import datachain as dc
 from datachain import func
 from datachain.lib import arrow
+from datachain.lib.arrow import ArrowGenerator
 from datachain.lib.dc import C
 from datachain.lib.file import File
 from datachain.sql.types import Int64
+from tests.utils import skip_if_not_sqlite
 
 
 @pytest.fixture
 def arrow_reads(monkeypatch):
     reads = []
-    read_batches = arrow.read_batches
+    for name in ("read_batches", "filter_batches"):
+        fn = getattr(arrow, name)
 
-    def record(ds, *args, **kw):
-        reads.append(kw.get("columns") or ds.schema.names)
-        return read_batches(ds, *args, **kw)
+        def record(ds, *args, _fn=fn, **kw):
+            reads.append(kw.get("columns") or ds.schema.names)
+            return _fn(ds, *args, **kw)
 
-    monkeypatch.setattr(arrow, "read_batches", record)
+        monkeypatch.setattr(arrow, name, record)
     return reads
 
 
@@ -511,3 +514,393 @@ def test_read_parquet_zero_column_count(tmp_dir, test_session):
     path = tmp_dir / "empty_cols.parquet"
     pq.write_table(pa.table({}), path)
     assert dc.read_parquet(path.as_uri(), session=test_session).count() == 0
+
+
+def test_filter_between_on_values(test_session):
+    chain = dc.read_values(x=[1, 2, 3, 4], session=test_session)
+    assert chain.filter(C("x").between(2, 3)).order_by("x").to_values("x") == [2, 3]
+    assert chain.filter(~C("x").between(2, 3)).order_by("x").to_values("x") == [1, 4]
+
+
+def test_read_parquet_filter_prunes_row_groups_and_streams_payload(
+    tmp_dir, test_session, monkeypatch
+):
+    path = tmp_dir / "multi_rg.parquet"
+    table = pa.table(
+        {
+            "a": [1, 2, 10, 20, 100, 200, 100, 100, 200, 100, 100, 100],
+            "b": [10, 20, 10, 70, 50, 60, 50, 50, 60, 50, 50, 50],
+            "payload": [f"p{i}" for i in range(12)],
+        }
+    )
+    with pq.ParquetWriter(path, table.schema) as writer:
+        writer.write_table(table.slice(0, 2))  # rg 0: pruned by stats (a < 10)
+        writer.write_table(table.slice(2, 2))  # rg 1: passes stats, 0 hits for b == 60
+        writer.write_table(table.slice(4, 8))  # rg 2: 8 rows, hits at pos 1 and 4
+
+    monkeypatch.setattr(ArrowGenerator, "DEFAULT_BATCH_SIZE", 2)
+    res = (
+        dc.read_parquet(path.as_uri(), session=test_session)
+        .filter((C("a") >= 10) & (C("b") == 60))
+        .select("payload", "source.index")
+        .to_list("payload", "source.index")
+    )
+    assert res == [("p5", 5), ("p8", 8)]
+
+
+def test_read_parquet_filter_coalesces_remaining_row_groups_after_two_match(
+    tmp_dir, test_session
+):
+    path = tmp_dir / "four_rg.parquet"
+    table = pa.table(
+        {
+            "a": [1, 0, 1, 0, 1, 0, 1, 1],
+            "payload": [f"p{i}" for i in range(8)],
+        }
+    )
+    pq.write_table(table, path, row_group_size=2)
+    res = (
+        dc.read_parquet(path.as_uri(), session=test_session)
+        .filter(C("a") == 1)
+        .select("payload", "source.index")
+        .to_list("payload", "source.index")
+    )
+    assert res == [("p0", 0), ("p2", 2), ("p4", 4), ("p6", 6), ("p7", 7)]
+
+
+def test_read_parquet_filter_without_select_preserves_source_index_and_all_columns(
+    tmp_dir, test_session
+):
+    path = tmp_dir / "rg.parquet"
+    table = pa.table(
+        {
+            "id": [10, 20, 30, 40],
+            "text": ["w0", "w1", "w2", "w3"],
+        }
+    )
+    pq.write_table(table, path, row_group_size=2)
+
+    chain = dc.read_parquet(path.as_uri(), session=test_session).filter(C("id") == 30)
+    ((source, i, text),) = chain.to_list("source", "id", "text")
+    assert (source.index, i, text) == (2, 30, "w2")
+    assert source.read() == {"id": 30, "text": "w2"}
+
+
+def test_read_parquet_filter_with_nested_column_preserves_source_index(
+    tmp_dir, test_session
+):
+    path = tmp_dir / "nested_filter.parquet"
+    pq.write_table(
+        pa.table({"a": [10, 20, 30], "nested": [{"x": 1}, {"x": 2}, {"x": 3}]}),
+        path,
+    )
+    res = (
+        dc.read_parquet(path.as_uri(), session=test_session)
+        .filter(C("a") == 20)
+        .to_list("source.index", "a", "nested.x")
+    )
+    assert res == [(1, 20, 2)]
+
+
+@pytest.mark.parametrize(
+    "predicate,expected_a,expected_indices",
+    [
+        (C("a") == 2, [2], [1]),
+        (C("a") != 1, [3, 2], [0, 1]),
+        (C("a") < 2, [1, 1], [2, 3]),
+        (C("a") <= 2, [2, 1, 1], [1, 2, 3]),
+        (C("a") > 1, [3, 2], [0, 1]),
+        (C("a") >= 2, [3, 2], [0, 1]),
+        ((C("a") == 1) & (C("c") == 400), [1], [3]),
+        ((C("a") == 3) | (C("c") == 400), [3, 1], [0, 3]),
+        (~(C("a") == 1), [3, 2], [0, 1]),
+        (~((C("a") == 1) | (C("a") == 2)), [3], [0]),
+        (C("a").in_([2, 3]), [3, 2], [0, 1]),
+        (C("a").not_in([1, 2]), [3], [0]),
+        (~C("a").in_([1, 2]), [3], [0]),
+        (C("a").between(2, 3), [3, 2], [0, 1]),
+        (~C("a").between(2, 3), [1, 1], [2, 3]),
+    ],
+)
+def test_read_parquet_filter_pushdown_operators(
+    rows_parquet,
+    test_session,
+    predicate,
+    expected_a,
+    expected_indices,
+):
+    chain = dc.read_parquet(rows_parquet, session=test_session)
+    full = dc.read_parquet(
+        rows_parquet,
+        output={"a": int, "b": int, "c": int},
+        session=test_session,
+    )
+    expected = list(zip(expected_a, expected_indices, strict=True))
+    assert (
+        chain.filter(predicate).to_list("a", "source.index")
+        == full.filter(predicate).to_list("a", "source.index")
+        == expected
+    )
+
+
+@pytest.fixture
+def nulls_parquet(tmp_dir):
+    path = tmp_dir / "nulls.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "id": [0, 1, 2, 3],
+                "x": pa.array([10, None, 20, 30], type=pa.int64()),
+                "s": pa.array(["a", None, "b", "c"], type=pa.large_string()),
+                "flag": pa.array([True, None, False, True], type=pa.bool_()),
+                "cat": pa.array(["k1", None, "k2", "k1"]).dictionary_encode(),
+            }
+        ),
+        path,
+    )
+    return path.as_uri()
+
+
+@pytest.mark.parametrize(
+    "predicate,expected",
+    [
+        pytest.param(C("x").is_(None), [1], id="is_none"),
+        pytest.param(C("x").is_not(None), [0, 2, 3], id="is_not_none"),
+        pytest.param(C("x").in_([10, 30]), [0, 3], id="in"),
+        pytest.param(C("x").not_in([10, 30]), [2], id="not_in"),
+        pytest.param(~C("x").in_([10, 20]), [3], id="not_in_expr"),
+        pytest.param(
+            (C("x").not_in([10, 30])) | C("x").is_(None),
+            [1, 2],
+            id="not_in_or_is_none",
+        ),
+        pytest.param(C("s") == "b", [2], id="large_string_eq"),
+        pytest.param(C("cat") == "k2", [2], id="dictionary_eq"),
+        pytest.param(C("flag"), [0, 3], id="bool_col"),
+    ],
+)
+def test_read_parquet_filter_pushdown_nulls_and_booleans(
+    nulls_parquet, test_session, predicate, expected
+):
+    chain = dc.read_parquet(nulls_parquet, session=test_session)
+    full = dc.read_parquet(
+        nulls_parquet,
+        output={
+            "id": int,
+            "x": int | None,
+            "s": str | None,
+            "flag": bool | None,
+            "cat": str | None,
+        },
+        session=test_session,
+    )
+    assert (
+        chain.filter(predicate).to_values("id")
+        == full.filter(predicate).to_values("id")
+        == expected
+    )
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize(
+    "predicate,expected",
+    [
+        pytest.param(C("flag").is_(False), [2], id="is_false"),
+        pytest.param(C("flag").is_not(True), [1, 2], id="is_not_true"),
+        pytest.param(
+            ~(C("flag").is_(True) & (C("id") < 2)),
+            [1, 2, 3],
+            id="not_is_true_and_lt",
+        ),
+    ],
+)
+def test_read_parquet_filter_pushdown_boolean_is_true_and_false(
+    nulls_parquet, test_session, predicate, expected
+):
+    # ClickHouse evaluates IS NOT TRUE on nullable UInt8 without matching NULL.
+    chain = dc.read_parquet(nulls_parquet, session=test_session)
+    full = dc.read_parquet(
+        nulls_parquet,
+        output={
+            "id": int,
+            "x": int | None,
+            "s": str | None,
+            "flag": bool | None,
+            "cat": str | None,
+        },
+        session=test_session,
+    )
+    assert (
+        chain.filter(predicate).to_values("id")
+        == full.filter(predicate).to_values("id")
+        == expected
+    )
+
+
+def test_read_parquet_filter_partial_pushdown_with_sql_predicate(
+    rows_parquet, test_session
+):
+    chain = dc.read_parquet(rows_parquet, session=test_session)
+    res = (
+        chain.filter((C("a") == 1) & (C("c") + 1 > 350))
+        .select("c", "source.index")
+        .to_list("c", "source.index")
+    )
+    assert res == [(400, 3)]
+
+
+def test_read_parquet_different_filters_do_not_collide_in_cache(
+    rows_parquet, test_session, arrow_reads
+):
+    chain = dc.read_parquet(rows_parquet, session=test_session)
+    assert chain.filter(C("a") == 3).to_values("b") == [30]
+    assert chain.filter(C("a") == 2).to_values("b") == [20]
+    assert chain.to_values("b") == [30, 20, 10, 10]
+    assert arrow_reads == [["a", "b"], ["a", "b"], ["b"]]
+
+
+def test_read_parquet_filters_with_long_in_lists_get_their_own_reads(
+    rows_parquet, test_session
+):
+    chain = dc.read_parquet(rows_parquet, session=test_session)
+    in_a = [-1000 - i for i in range(100)]
+    in_b = in_a.copy()
+    in_a[45] = 3
+    in_b[45] = 2
+    assert chain.filter(C("a").in_(in_a)).to_values("b") == [30]
+    assert chain.filter(C("a").in_(in_b)).to_values("b") == [20]
+
+
+def test_read_parquet_filter_preserves_sys_id_when_selected(rows_parquet, test_session):
+    chain = dc.read_parquet(rows_parquet, session=test_session)
+    assert chain.filter(C("a") == 1).to_list("a", "source.index", "sys.id") == [
+        (1, 2, 3),
+        (1, 3, 4),
+    ]
+
+
+def test_read_parquet_filter_preserves_sys_id_when_both_sys_columns_selected(
+    rows_parquet, test_session
+):
+    chain = dc.read_parquet(rows_parquet, session=test_session)
+    assert [
+        (a, idx, sid)
+        for a, idx, sid, _ in chain.filter(C("a") == 1).to_list(
+            "a", "source.index", "sys.id", "sys.rand"
+        )
+    ] == [
+        (1, 2, 3),
+        (1, 3, 4),
+    ]
+
+
+def test_read_parquet_filter_preserves_sys_id_when_filtered(rows_parquet, test_session):
+    chain = dc.read_parquet(rows_parquet, session=test_session)
+    assert chain.filter(C("a") == 1, C("sys.id") == 3).to_list("a", "source.index") == [
+        (1, 2)
+    ]
+
+
+def test_read_parquet_filter_disabled_on_literal_column(rows_parquet, test_session):
+    chain = dc.read_parquet(rows_parquet, session=test_session)
+    assert chain.filter(
+        C("a") < 3,
+        sqlalchemy.literal_column("sys__id", type_=sqlalchemy.Integer()) == 3,
+    ).to_list("a", "source.index") == [(1, 2)]
+
+
+def test_read_parquet_filter_joined_on_sys_id(tmp_dir, test_session):
+    path = tmp_dir / "join_sys.parquet"
+    pq.write_table(
+        pa.table({"a": [5, 6, 7, 8, 9, 10], "b": ["p", "q", "r", "s", "t", "u"]}),
+        path,
+    )
+    uri = path.as_uri()
+    left = dc.read_parquet(uri, session=test_session).filter(C("a") > 7)
+    right = dc.read_parquet(uri, session=test_session).select("sys.id", "b")
+    assert left.merge(right, on="sys.id", rname="r_").order_by("a").to_list(
+        "a", "r_b"
+    ) == [(8, "s"), (9, "t"), (10, "u")]
+
+
+def test_read_parquet_filter_across_select_and_order_by(
+    rows_parquet, test_session, arrow_reads
+):
+    chain = dc.read_parquet(rows_parquet, session=test_session)
+    res = (
+        chain.select("a", "b")
+        .order_by("b")
+        .filter(C("a") < 3)
+        .filter(C("b") >= 20)
+        .to_list("a", "b")
+    )
+    assert res == [(2, 20)]
+    assert arrow_reads == [["a", "b"]]
+    grouped = (
+        chain.filter(C("a") > 1)
+        .group_by(n=dc.func.count(), partition_by="a")
+        .order_by("a")
+        .to_list("a", "n")
+    )
+    assert grouped == [(2, 1), (3, 1)]
+
+
+def test_read_parquet_filter_does_not_push_across_limit_or_mutate(
+    rows_parquet, test_session
+):
+    chain = dc.read_parquet(rows_parquet, session=test_session)
+    assert chain.limit(1).filter(C("a") == 2).to_values("a") == []
+    assert chain.mutate(a=C("a") + 10).filter(C("a") == 12).to_values("a") == [12]
+
+
+@skip_if_not_sqlite
+def test_read_parquet_filter_unpushable_types_fall_back_to_sql(tmp_dir, test_session):
+    path = tmp_dir / "floats.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "id": [0, 1, 2],
+                "f": [1.5, float("nan"), None],
+                "s": ["0", "5", "9"],
+            }
+        ),
+        path,
+    )
+    chain = dc.read_parquet(path.as_uri(), session=test_session)
+    assert chain.filter(C("f") != 1.5).to_values("id") == []
+    assert chain.filter(~((C("id") == 0) | (C("f") == 1.5))).to_values("id") == []
+    assert chain.filter((C("id") == 0) | (C("f") == 1.5)).to_values("id") == [0]
+    assert chain.filter(C("f").is_(None)).to_values("id") == [1, 2]
+    assert chain.filter(C("id").not_in([0, 1.5])).to_values("id") == [1, 2]
+    assert chain.filter(C("id").between(0, 1.5)).to_values("id") == [0, 1]
+    assert chain.filter(C("id") == True).to_values("id") == [1]  # noqa: E712
+    assert chain.filter(C("id") > "5").to_values("id") == []
+    assert chain.filter(C("s") == 5).to_values("id") == [1]
+
+
+def test_read_parquet_filter_on_blank_column_name(tmp_dir, test_session):
+    blank = tmp_dir / "blank.parquet"
+    pq.write_table(pa.table({"": [0, 1, 2], "n": [10, 11, 12]}), blank)
+    res = (
+        dc.read_parquet(blank.as_uri(), session=test_session)
+        .filter(C("c0") == 1)
+        .to_list("source.index", "c0", "n")
+    )
+    assert res == [(1, 1, 11)]
+
+
+def test_read_parquet_filter_on_column_missing_in_one_file(tmp_dir, test_session):
+    drift_dir = tmp_dir / "drift"
+    drift_dir.mkdir()
+    pq.write_table(
+        pa.table({"a": [0, 1, 2, 3]}), drift_dir / "f1.parquet", row_group_size=2
+    )
+    pq.write_table(
+        pa.table({"a": [1, 2, 3, 4], "extra": ["w", "x", "y", "z"]}),
+        drift_dir / "f2.parquet",
+        row_group_size=2,
+    )
+    drift = dc.read_parquet(drift_dir.as_uri(), session=test_session)
+    assert drift.filter(C("extra").is_(None) & (C("a") == 2)).to_list(
+        "source.index", "a", "extra"
+    ) == [(2, 2, None)]

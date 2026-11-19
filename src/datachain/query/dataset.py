@@ -2197,7 +2197,13 @@ class SQLJoin(Step):
 
     def get_query(self, dq: "DatasetQuery", temp_tables: list[str]) -> sa.Subquery:
         temp_tables_before = len(dq.temp_table_names)
-        query = dq.apply_steps().select()
+        cols = _expr_columns(
+            p
+            for p in ensure_sequence(self.predicates)
+            if isinstance(p, (str, ColumnElement))
+        )
+        uses_sys = cols is None or bool(cols & _SYS)
+        query = dq.apply_steps(uses_sys=uses_sys).select()
         temp_tables.extend(dq.temp_table_names[temp_tables_before:])
 
         if not any(isinstance(step, (SQLJoin, SQLUnion)) for step in dq.steps):
@@ -2536,6 +2542,26 @@ def _used_columns(steps: Sequence[Step]) -> set[str] | None:
     return used
 
 
+def _uses_sys(step: Step) -> bool:
+    if (cols := step.used_columns()) is None:
+        return True
+    return bool(cols & _SYS)
+
+
+def _read_filters(steps: Sequence[Step]) -> list[Any]:
+    """Return the filters that apply to a read's rows as it emits them, unless a
+    step reads sys.id or sys.rand, which differ if the read emits fewer rows."""
+    filters: list[Any] = []
+    for step in steps:
+        if isinstance(step, SQLFilter):
+            filters.extend(step.parse_cols(step.expressions))
+        elif not isinstance(step, (SQLOrderBy, SQLSelect)):
+            break
+    if filters and any(_uses_sys(step) for step in steps):
+        return []
+    return filters
+
+
 def _has_udf_checkpoint(step: RowGenerator, hasher: Any) -> bool:
     h = hasher.copy()
     h.update(step.hash().encode("utf-8"))
@@ -2549,12 +2575,18 @@ def _project_step(
     later_steps: Sequence[Step],
     hasher: Any,
     checkpoints_enabled: bool,
+    uses_sys: bool = False,
 ) -> Step:
     if (
         isinstance(step, RowGenerator)
         and getattr(step.udf.inner, "projectable", False)
-        and (used := _used_columns(later_steps)) is not None
-        and (projected := step.udf.inner.project(used)) is not None
+        and (
+            projected := step.udf.inner.project(
+                _used_columns(later_steps),
+                () if uses_sys else _read_filters(later_steps),
+            )
+        )
+        is not None
     ):
         assert projected.output is not None
         udf = attrs.evolve(
@@ -2760,7 +2792,7 @@ class DatasetQuery:
             for sub_query in step.sub_queries:
                 sub_query.resolve_all_listings()
 
-    def apply_steps(self) -> QueryGenerator:
+    def apply_steps(self, uses_sys: bool = False) -> QueryGenerator:
         """
         Apply the steps in the query and return the resulting
         sqlalchemy.SelectBase.
@@ -2809,7 +2841,11 @@ class DatasetQuery:
         for i, step in enumerate(query.steps):
             hash_input = _hash
             step = _project_step(
-                step, query.steps[i + 1 :], hasher, self.checkpoints_enabled
+                step,
+                query.steps[i + 1 :],
+                hasher,
+                self.checkpoints_enabled,
+                uses_sys=uses_sys,
             )
             hasher.update(step.hash().encode("utf-8"))
             _hash = hasher.hexdigest()
