@@ -173,6 +173,14 @@ def test_recursive_listing_uses_sdk_pagination(catalog, monkeypatch, hf_reposito
             )
 
     monkeypatch.setattr(fs._api, "list_repo_tree", tree)
+    monkeypatch.setattr(
+        fs._api,
+        "_iter_repo_tree_pages",
+        lambda repo_id, path_in_repo=None, **kw: [
+            (list(tree(repo_id, path_in_repo, **kw)), True)
+        ],
+        raising=False,
+    )
     rows = sync(get_loop(), lambda: _collect_hf_listing(client, "org/repo@main"))
     assert {r.path for r in rows} == {
         "org/repo@main/data/a.txt",
