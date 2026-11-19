@@ -17,7 +17,7 @@ from tabulate import tabulate
 from datachain.cli import main
 from datachain.config import Config, ConfigLevel
 from datachain.job import Job
-from datachain.remote.credentials import load_logins, resolve_token
+from datachain.remote.credentials import all_logins, load_logins, resolve_token
 from datachain.studio import POST_LOGIN_MESSAGE
 from datachain.utils import STUDIO_URL
 from tests.utils import posix_only, saved_tokens, skip_if_not_sqlite, studio_login
@@ -56,6 +56,14 @@ def mocked_connect(url, additional_headers):
 def test_studio_login_token_check_failed(get_access_token):
     get_access_token.side_effect = AuthorizationExpiredError
     assert main(["auth", "login"]) == 1
+
+
+@pytest.mark.parametrize("days", ["0", "-1"])
+def test_studio_login_expires_in_must_be_positive(get_access_token, capsys, days):
+    assert main(["auth", "login", "--expires-in", days]) == 1
+    get_access_token.assert_not_called()
+    assert "--expires-in must be at least 1 day." in capsys.readouterr().err
+    assert all_logins() == []
 
 
 def test_studio_login_success(get_access_token):

@@ -218,6 +218,9 @@ def login(args: "Namespace"):
     # `--team a --team a` is one team.
     team_names = list(dict.fromkeys(args.team)) if args.team else None
     expires_in_days = args.expires_in
+    if expires_in_days < 1:
+        # Studio issues its default lifetime for 0, not the one saved here.
+        raise DataChainError("--expires-in must be at least 1 day.")
 
     if existing := conflicting_login(level, hostname, team_names):
         raise _login_exists_error(existing, team_names, current_url)
