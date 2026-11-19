@@ -720,7 +720,93 @@ def test_bucket_url_keeps_sdk_signature(catalog, monkeypatch):
     assert fs.url("buckets/org/bucket/file") == "bucket-url"
 
 
-RETRY_CODES = (408, 429, 500, 502, 503, 504)
+def test_download_missing_file_raises_file_not_found(
+    catalog, monkeypatch, hf_repositories
+):
+    from huggingface_hub.utils import EntryNotFoundError
+
+    client = HfClient("datasets", {"token": False}, catalog.cache)
+    monkeypatch.setattr(
+        hf_file_system,
+        "hf_raise_for_status",
+        Mock(side_effect=EntryNotFoundError("404")),
+    )
+    monkeypatch.setattr(
+        hf_file_system,
+        "http_stream_backoff",
+        lambda *a, **kw: MagicMock(__enter__=lambda s: None),
+    )
+    file = File(
+        source=client.uri, path="org/repo/missing.txt", size=4, version="a" * 40
+    )
+    with pytest.raises(FileNotFoundError):
+        client.put_in_cache(file)
+
+
+def test_download_truncated_stream_raises_and_does_not_cache(
+    catalog, monkeypatch, hf_repositories
+):
+    from contextlib import contextmanager
+
+    client = HfClient("datasets", {"token": False}, catalog.cache)
+    headers_list = [{"Content-Length": "8"}, {}]
+
+    @contextmanager
+    def truncated_stream(*args, **kwargs):
+        yield SimpleNamespace(
+            status_code=200,
+            headers=headers_list.pop(0),
+            iter_bytes=lambda: iter([b"0123"]),
+            close=lambda: None,
+        )
+
+    monkeypatch.setattr(hf_file_system, "http_stream_backoff", truncated_stream)
+    monkeypatch.setattr(hf_file_system, "hf_raise_for_status", lambda _r: None)
+    file = File(source=client.uri, path="org/repo/a.txt", size=8, version="a" * 40)
+    with pytest.raises(OSError, match="Expected 8 bytes"):
+        client.download(file)
+    assert not catalog.cache.contains(file)
+    with pytest.raises(OSError, match="Expected 8 bytes"):
+        client.put_in_cache(file)
+    assert not catalog.cache.contains(file)
+
+
+@pytest.mark.parametrize(
+    "retry_status,retry_body", [(200, b"01234567"), (206, b"4567")]
+)
+def test_download_retry_handles_full_200_and_partial_206(
+    catalog, monkeypatch, hf_repositories, retry_status, retry_body
+):
+    from contextlib import contextmanager
+
+    client = HfClient("datasets", {"token": False}, catalog.cache)
+    monkeypatch.setattr(client, "CHUNK_SIZE", 4)
+    range_headers = []
+
+    def broken_chunks():
+        yield b"0123"
+        raise RuntimeError("stream interrupted")
+
+    @contextmanager
+    def fake_stream(_method, _url, *, headers, **kwargs):
+        range_headers.append(headers.get("Range"))
+        first = len(range_headers) == 1
+        yield SimpleNamespace(
+            status_code=200 if first else retry_status,
+            headers={"Content-Length": str(8 if first else len(retry_body))},
+            iter_bytes=broken_chunks if first else (lambda: iter([retry_body])),
+            close=lambda: None,
+        )
+
+    monkeypatch.setattr(hf_file_system, "http_stream_backoff", fake_stream)
+    monkeypatch.setattr(hf_file_system, "hf_raise_for_status", lambda _r: None)
+    file = File(source=client.uri, path="org/repo/a.txt", size=8, version="a" * 40)
+    client.put_in_cache(file)
+    with client.open_object(file) as f:
+        assert f.read() == b"01234567"
+    assert range_headers == [None, "bytes=4-"]
+
+
 COMMIT = "a" * 40
 RESOLVE_URL = f"https://huggingface.co/datasets/org/repo/resolve/{COMMIT}/a.parquet"
 
@@ -734,17 +820,20 @@ def hf_range(catalog, monkeypatch, hf_repositories):
     )
     responses, calls = [], []
 
-    def backoff(method, url, *, headers, retry_on_status_codes=None, **kw):
-        calls.append((method, url, dict(headers), retry_on_status_codes))
+    def backoff(method, url, *, headers, **kw):
+        calls.append((method, url, dict(headers), kw))
         resp = responses.pop(0)
+        if isinstance(resp, Exception):
+            raise resp
         final_url, status, req_headers = (
             (resp, 206, {}) if isinstance(resp, str) else (*resp, {})[:3]
         )
         start, end = map(int, headers["range"][6:].split("-"))
+        data = b"0123456789abcdef"
         return SimpleNamespace(
             url=final_url,
             status_code=status,
-            content=b"0123456789abcdef"[start : end + 1],
+            content=data if status == 200 else data[start : end + 1],
             request=SimpleNamespace(headers=req_headers),
             raise_for_status=Mock(
                 side_effect=RuntimeError(f"HTTP {status}") if status >= 400 else None
@@ -783,9 +872,33 @@ def test_range_redirect_caching_policy(hf_range, first_resp, next_url, next_auth
     with client.open_object(file, use_cache=False, block_size=0) as stream:
         assert (stream.read(4), stream.read(4)) == (b"0123", b"4567")
 
-    assert [(m, u, h["range"], h.get("authorization"), r) for m, u, h, r in calls] == [
-        ("GET", RESOLVE_URL, "bytes=0-3", "Bearer hf_secret", RETRY_CODES),
-        ("GET", next_url, "bytes=4-7", next_auth, RETRY_CODES),
+    assert [(m, u, h["range"], h.get("authorization")) for m, u, h, _ in calls] == [
+        ("GET", RESOLVE_URL, "bytes=0-3", "Bearer hf_secret"),
+        ("GET", next_url, "bytes=4-7", next_auth),
+    ]
+
+
+@pytest.mark.parametrize(
+    "session_override",
+    [
+        SimpleNamespace(auth=("user", "pass"), headers={}),
+        SimpleNamespace(auth=None, headers={"Authorization": "Bearer custom"}),
+    ],
+)
+def test_range_redirect_not_cached_when_session_has_auth(
+    hf_range, monkeypatch, session_override
+):
+    from datachain.client import hf_file_system as dc_hf_fs
+
+    client, file, responses, calls = hf_range
+    monkeypatch.setattr(dc_hf_fs, "get_session", lambda: session_override)
+    responses.extend(["https://cdn.hf.co/signed", "https://cdn.hf.co/signed"])
+    with client.open_object(file, use_cache=False, block_size=0) as stream:
+        assert (stream.read(4), stream.read(4)) == (b"0123", b"4567")
+
+    assert [(u, h["range"], h.get("authorization")) for _, u, h, _ in calls] == [
+        (RESOLVE_URL, "bytes=0-3", "Bearer hf_secret"),
+        (RESOLVE_URL, "bytes=4-7", "Bearer hf_secret"),
     ]
 
 
@@ -801,39 +914,148 @@ def test_range_redirect_per_open_file_and_case_insensitive_auth(hf_range, monkey
         with client.open_object(file, use_cache=False, block_size=0) as stream:
             assert (stream.read(4), stream.read(4)) == (b"0123", b"4567")
 
-    assert [(m, u, h["range"], h.get("Authorization"), r) for m, u, h, r in calls] == [
-        ("GET", RESOLVE_URL, "bytes=0-3", "Bearer hf_secret", RETRY_CODES),
-        ("GET", "https://cdn.hf.co/1", "bytes=4-7", None, RETRY_CODES),
-        ("GET", RESOLVE_URL, "bytes=0-3", "Bearer hf_secret", RETRY_CODES),
-        ("GET", "https://cdn.hf.co/2", "bytes=4-7", None, RETRY_CODES),
+    assert [(m, u, h["range"], h.get("Authorization")) for m, u, h, _ in calls] == [
+        ("GET", RESOLVE_URL, "bytes=0-3", "Bearer hf_secret"),
+        ("GET", "https://cdn.hf.co/1", "bytes=4-7", None),
+        ("GET", RESOLVE_URL, "bytes=0-3", "Bearer hf_secret"),
+        ("GET", "https://cdn.hf.co/2", "bytes=4-7", None),
     ]
 
 
-@pytest.mark.parametrize("expired_status", [400, 401, 403, 404, 410])
-def test_range_read_expired_cached_url_refreshes(hf_range, expired_status):
+@pytest.mark.parametrize(
+    "first_reuse_failure",
+    [
+        ("https://cdn.hf.co/range-signed", 403),
+        ("https://cdn.hf.co/full-file", 200),
+        ("https://cdn.hf.co/bad-range", 416),
+        ("https://cdn.hf.co/unavailable", 503),
+    ],
+)
+def test_range_read_first_reuse_failure_disables_url_caching(
+    hf_range, first_reuse_failure
+):
     client, file, responses, calls = hf_range
+    cdn_url = first_reuse_failure[0]
     responses.extend(
         [
-            "https://cdn.hf.co/expired",
-            ("https://cdn.hf.co/expired", expired_status),
-            "https://cdn.hf.co/fresh",
-            "https://cdn.hf.co/fresh",
-            ("https://cdn.hf.co/fresh", expired_status),
-            ("https://cdn.hf.co/dead", expired_status),
+            cdn_url,
+            first_reuse_failure,
+            cdn_url,
+            cdn_url,
         ]
     )
     with client.open_object(file, use_cache=False, block_size=0) as stream:
         assert [stream.read(4) for _ in range(3)] == [b"0123", b"4567", b"89ab"]
-        with pytest.raises(RuntimeError, match=f"HTTP {expired_status}"):
-            stream.read(4)
 
     assert [(u, h["range"], h.get("authorization")) for _, u, h, _ in calls] == [
         (RESOLVE_URL, "bytes=0-3", "Bearer hf_secret"),
-        ("https://cdn.hf.co/expired", "bytes=4-7", None),
+        (cdn_url, "bytes=4-7", None),
         (RESOLVE_URL, "bytes=4-7", "Bearer hf_secret"),
-        ("https://cdn.hf.co/fresh", "bytes=8-11", None),
-        ("https://cdn.hf.co/fresh", "bytes=12-15", None),
-        (RESOLVE_URL, "bytes=12-15", "Bearer hf_secret"),
+        (RESOLVE_URL, "bytes=8-11", "Bearer hf_secret"),
+    ]
+
+
+def test_range_read_http_error_on_first_reuse_falls_back_and_disables_caching(
+    hf_range,
+):
+    import httpx
+
+    client, file, responses, calls = hf_range
+    responses.extend(
+        [
+            "https://cdn.hf.co/flaky",
+            httpx.ConnectError("cdn connection failed"),
+            "https://cdn.hf.co/flaky",
+            "https://cdn.hf.co/flaky",
+        ]
+    )
+    with client.open_object(file, use_cache=False, block_size=0) as stream:
+        assert [stream.read(4) for _ in range(3)] == [b"0123", b"4567", b"89ab"]
+
+    assert [(u, h["range"], h.get("authorization")) for _, u, h, _ in calls] == [
+        (RESOLVE_URL, "bytes=0-3", "Bearer hf_secret"),
+        ("https://cdn.hf.co/flaky", "bytes=4-7", None),
+        (RESOLVE_URL, "bytes=4-7", "Bearer hf_secret"),
+        (RESOLVE_URL, "bytes=8-11", "Bearer hf_secret"),
+    ]
+
+
+@pytest.mark.parametrize("expired_status", [400, 401, 403, 404, 410, 503])
+def test_range_read_expired_cached_url_after_successful_reuse_refreshes(
+    hf_range, expired_status
+):
+    client, file, responses, calls = hf_range
+    responses.extend(
+        [
+            "https://cdn.hf.co/v1",
+            "https://cdn.hf.co/v1",
+            ("https://cdn.hf.co/v1", expired_status),
+            "https://cdn.hf.co/v2",
+            "https://cdn.hf.co/v2",
+        ]
+    )
+    with client.open_object(file, use_cache=False, block_size=0) as stream:
+        assert [stream.read(4) for _ in range(4)] == [
+            b"0123",
+            b"4567",
+            b"89ab",
+            b"cdef",
+        ]
+
+    assert [(u, h["range"], h.get("authorization")) for _, u, h, _ in calls] == [
+        (RESOLVE_URL, "bytes=0-3", "Bearer hf_secret"),
+        ("https://cdn.hf.co/v1", "bytes=4-7", None),
+        ("https://cdn.hf.co/v1", "bytes=8-11", None),
+        (RESOLVE_URL, "bytes=8-11", "Bearer hf_secret"),
+        ("https://cdn.hf.co/v2", "bytes=12-15", None),
+    ]
+
+
+def test_range_redirect_with_real_httpx_client_strips_auth_on_cross_origin_redirect(
+    catalog, monkeypatch, hf_repositories
+):
+    import httpx
+    from huggingface_hub.utils import close_session, set_client_factory
+    from huggingface_hub.utils._http import default_client_factory
+
+    client = HfClient("datasets", {"token": "hf_secret"}, catalog.cache)
+    monkeypatch.setattr(client.fs.sync_fs, "info", lambda *a, **kw: {"size": 16})
+    file = File(
+        source=client.uri, path="org/repo@main/a.parquet", size=16, version=COMMIT
+    )
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(
+            (
+                str(request.url),
+                request.headers.get("range"),
+                request.headers.get("authorization"),
+            )
+        )
+        if request.url.host == "huggingface.co":
+            return httpx.Response(
+                302, headers={"location": "https://cdn.hf.co/signed-blob"}
+            )
+        start, end = map(int, request.headers["range"][6:].split("-"))
+        return httpx.Response(206, content=b"0123456789abcdef"[start : end + 1])
+
+    set_client_factory(
+        lambda: httpx.Client(
+            transport=httpx.MockTransport(handler), follow_redirects=True
+        )
+    )
+    try:
+        with client.open_object(file, use_cache=False, block_size=0) as stream:
+            assert (stream.read(4), stream.read(4)) == (b"0123", b"4567")
+    finally:
+        set_client_factory(default_client_factory)
+        close_session()
+
+    assert seen == [
+        (RESOLVE_URL, "bytes=0-3", "Bearer hf_secret"),
+        ("https://cdn.hf.co/signed-blob", "bytes=0-3", None),
+        ("https://cdn.hf.co/signed-blob", "bytes=4-7", None),
     ]
 
 

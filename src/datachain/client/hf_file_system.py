@@ -5,17 +5,19 @@ from contextlib import contextmanager
 from dataclasses import replace
 from urllib.parse import parse_qsl, quote, urlparse
 
+import httpx
 from huggingface_hub import HfFileSystem, hf_file_system, hf_hub_url
 from huggingface_hub.constants import (
     HF_HUB_DOWNLOAD_TIMEOUT,
     REPO_TYPES_URL_PREFIXES,
 )
+from huggingface_hub.file_download import _get_file_length_from_http_response
 from huggingface_hub.hf_file_system import (
     SPECIAL_REFS_REVISION_REGEX,
     HfFileSystemFile,
     HfFileSystemStreamFile,
 )
-from huggingface_hub.utils import HfHubHTTPError
+from huggingface_hub.utils import HfHubHTTPError, get_session
 
 
 @functools.cache
@@ -37,7 +39,11 @@ def _translate_auth_error():
 class _PinnedStreamFile(HfFileSystemStreamFile):
     def _open_connection(self):
         with _translate_auth_error():
-            return super()._open_connection()
+            super()._open_connection()
+        if self.loc > 0 and getattr(self.response, "status_code", None) == 200:
+            self.loc = 0
+        if self.loc == 0 and self.response is not None:
+            self.size = _get_file_length_from_http_response(self.response)
 
     def close(self):
         try:
@@ -50,6 +56,8 @@ class PinnedHfFileSystemFile(HfFileSystemFile):
     """Reuse a cross-origin redirect URL across range reads on an open file."""
 
     _resolved_url: str | None = None
+    _resolved_url_reused: bool = False
+    _can_cache_url: bool = True
 
     def _request_range(self, url: str, start: int, end: int, *, auth: bool = True):
         headers = {
@@ -66,7 +74,6 @@ class PinnedHfFileSystemFile(HfFileSystemFile):
             "GET",
             url,
             headers=headers,
-            retry_on_status_codes=(408, 429, 500, 502, 503, 504),
             timeout=HF_HUB_DOWNLOAD_TIMEOUT,
         )
 
@@ -75,20 +82,30 @@ class PinnedHfFileSystemFile(HfFileSystemFile):
             if not getattr(self.resolved_path, "repo_id", None):
                 return super()._fetch_range(start, end)
             if resolved_url := self._resolved_url:
-                r = self._request_range(resolved_url, start, end, auth=False)
-                if r.status_code not in {400, 401, 403, 404, 410}:
-                    hf_file_system.hf_raise_for_status(r)
+                try:
+                    r = self._request_range(resolved_url, start, end, auth=False)
+                except (httpx.HTTPError, HfHubHTTPError):
+                    r = None
+                if r is not None and r.status_code == 206:
+                    self._resolved_url_reused = True
                     return r.content
                 self._resolved_url = None
+                if not self._resolved_url_reused:
+                    self._can_cache_url = False
+                self._resolved_url_reused = False
             url = self.url()
             r = self._request_range(url, start, end)
             hf_file_system.hf_raise_for_status(r)
             final = str(r.url)
-            req_headers = getattr(getattr(r, "request", None), "headers", None)
+            session = get_session()
             if (
-                req_headers is not None
+                self._can_cache_url
+                and session.auth is None
                 and urlparse(final).hostname != urlparse(url).hostname
-                and all(key.lower() != "authorization" for key in req_headers)
+                and all(
+                    key.lower() != "authorization"
+                    for key in (*r.request.headers, *session.headers)
+                )
                 and not any(
                     "range" in key.lower()
                     for key, _ in parse_qsl(
@@ -154,9 +171,7 @@ class PinnedHfFileSystem(HfFileSystem):
     ):
         with _translate_auth_error():
             effective_block_size = (
-                block_size
-                if block_size is not None
-                else getattr(self, "block_size", None)
+                block_size if block_size is not None else self.block_size
             )
             if effective_block_size == 0 and "a" not in mode:
                 kwargs["block_size"] = 0
