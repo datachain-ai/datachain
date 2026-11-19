@@ -227,9 +227,12 @@ class ArrowGenerator(Generator):
             return True
         if not (columns := self._parquet_columns(file)):
             return False
-        reserved, parts = await asyncio.to_thread(
-            self._read_parquet_parts, file, columns
+        reserved, parts, fit = await asyncio.to_thread(
+            self._read_parquet_parts, file, columns, True
         )
+        if not fit:
+            # No room ahead of the read: process() fetches this file's chunks itself.
+            return False
         self._parts[id(file)] = (file, reserved, parts)
         return True
 
@@ -238,7 +241,6 @@ class ArrowGenerator(Generator):
             not self.prefetch_max_size
             or not is_parquet(self.kwargs.get("format"))
             or self.datachain_read
-            or file.location
             or file._caching_enabled
             or file.get_local_path()
         ):
@@ -250,12 +252,14 @@ class ArrowGenerator(Generator):
         return self.columns or self.input_schema.names  # type: ignore[union-attr]
 
     def _read_parquet_parts(
-        self, file: File, columns: Sequence[str]
-    ) -> tuple[int, tuple[int, list[tuple[int, bytes]]]]:
+        self, file: File, columns: Sequence[str], prefetch: bool = False
+    ) -> tuple[int, tuple[int, list[tuple[int, bytes]]], bool]:
         reserved = 0
 
         def reserve(n: int) -> bool:
             nonlocal reserved
+            if not prefetch:
+                return n <= parquet_ranges.PARQUET_RANGE_MAX_BYTES
             with self._parts_lock:
                 if n > parquet_ranges.PARQUET_RANGE_MAX_BYTES - self._parts_bytes:
                     return False
@@ -264,10 +268,14 @@ class ArrowGenerator(Generator):
                 return True
 
         client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
-        parts = parquet_ranges.read_parquet_parts(
-            client, file, columns, reserve=reserve
-        )
-        return reserved, parts
+        try:
+            parts, fit = parquet_ranges.read_parquet_parts(
+                client, file, columns, reserve=reserve
+            )
+        except BaseException:
+            self._release_parts_bytes(reserved)
+            raise
+        return reserved, parts, fit
 
     def _release_parts_bytes(self, n: int) -> None:
         with self._parts_lock:
@@ -283,7 +291,7 @@ class ArrowGenerator(Generator):
                 fs = ReferenceFileSystem({fs_path: [cache_path]})
             else:
                 if parts is None and (columns := self._parquet_columns(file)):
-                    reserved, parts = self._read_parquet_parts(file, columns)
+                    _, parts, _ = self._read_parquet_parts(file, columns)
                 fs = pyarrow_fs(file, self.kwargs.get("format"), parts)
                 fs_path = file.get_fs_path()
 

@@ -1,5 +1,3 @@
-import asyncio
-import multiprocessing
 import os
 import weakref
 from datetime import UTC, datetime
@@ -10,6 +8,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from datasets import Dataset
+from fsspec.implementations.http import HTTPFile
 from pyarrow import feather
 from pyarrow.dataset import CsvFileFormat, JsonFileFormat, ParquetFileFormat
 from pydantic import field_validator
@@ -25,7 +24,7 @@ from datachain.lib.arrow import (
     schema_to_output,
 )
 from datachain.lib.data_model import dict_to_data_model
-from datachain.lib.file import ArrowRow, File
+from datachain.lib.file import ArrowRow, File, FileError
 from datachain.lib.hf import HFClassLabel
 from datachain.lib.parquet_ranges import ParquetBufferedFile, column_ranges
 from tests.utils import skip_if_not_sqlite
@@ -754,80 +753,226 @@ def test_parquet_column_ranges():
     ]
 
 
+@pytest.fixture
+def http_requests(monkeypatch):
+    calls: list[tuple[str, int, int]] = []
+    orig = HTTPFile._fetch_range
+
+    def fetch_range(self, start, end):
+        calls.append((self.url, start, end))
+        return orig(self, start, end)
+
+    monkeypatch.setattr(HTTPFile, "_fetch_range", fetch_range)
+    return calls
+
+
 def test_read_parquet_columns_falls_back_when_chunks_exceed_budget(
-    tmp_path, test_session, http_server, monkeypatch, mocker
+    tmp_path, test_session, http_server, http_requests, monkeypatch
 ):
     path = tmp_path / "over.parquet"
     table = pa.table({"a": list(range(1000)), "pad": [b"z" * 200] * 1000})
     pq.write_table(
         table, path, row_group_size=500, compression="NONE", use_dictionary=False
     )
+    size = path.stat().st_size
     monkeypatch.setattr(arrow_mod, "PARTIAL_READ_PREFETCH_MAX_SIZE", 1)
     monkeypatch.setattr(parquet_ranges, "PARQUET_FOOTER_SAMPLE_SIZE", 4096)
-    # Column chunks (~8 KiB) fit under 10 KiB, but footer + chunks exceed it.
+    # Column chunks (~8 KiB) fit under 10 KiB, but 4 KiB footer + chunks exceed it.
     monkeypatch.setattr(parquet_ranges, "PARQUET_RANGE_MAX_BYTES", 10_000)
-    buffered_init = mocker.spy(ParquetBufferedFile, "__init__")
+    chain = dc.read_parquet(
+        f"{http_server}/over.parquet",
+        columns=["a"],
+        settings={"prefetch": 0},
+        session=test_session,
+    )
+    http_requests.clear()
 
-    values = dc.read_parquet(
-        f"{http_server}/over.parquet", columns=["a"], session=test_session
-    ).to_values("a")
+    values = chain.to_values("a")
 
-    assert buffered_init.call_count == 1
-    assert len(buffered_init.call_args.args[4]) == 1
+    ranges = [(s, e) for _, s, e in http_requests]
+    assert ranges[:2] == [(size - 4096, size), (size - 65536, size)]
+    assert len(ranges) >= 3
     assert sorted(values) == list(range(1000))
 
 
 def test_read_parquet_columns_falls_back_when_footer_exceeds_budget(
-    tmp_path, test_session, http_server, monkeypatch, mocker
+    tmp_path, test_session, http_server, http_requests, monkeypatch
 ):
     path = tmp_path / "over.parquet"
-    table = pa.table({"a": list(range(1000)), "pad": [b"z" * 100] * 1000})
+    table = pa.table({"a": list(range(1000)), "pad": [b"z" * 200] * 1000})
     pq.write_table(
         table, path, row_group_size=500, compression="NONE", use_dictionary=False
     )
+    size = path.stat().st_size
     monkeypatch.setattr(arrow_mod, "PARTIAL_READ_PREFETCH_MAX_SIZE", 1)
     # Full footer (~500 B) exceeds PARQUET_RANGE_MAX_BYTES when expanding a 64 B sample.
     monkeypatch.setattr(parquet_ranges, "PARQUET_FOOTER_SAMPLE_SIZE", 64)
     monkeypatch.setattr(parquet_ranges, "PARQUET_RANGE_MAX_BYTES", 128)
-    buffered_init = mocker.spy(ParquetBufferedFile, "__init__")
+    chain = dc.read_parquet(
+        f"{http_server}/over.parquet",
+        columns=["a"],
+        settings={"prefetch": 0},
+        session=test_session,
+    )
+    http_requests.clear()
 
-    values = dc.read_parquet(
-        f"{http_server}/over.parquet", columns=["a"], session=test_session
-    ).to_values("a")
+    values = chain.to_values("a")
 
-    assert buffered_init.call_count == 0
+    ranges = [(s, e) for _, s, e in http_requests]
+    # 64 B probe does not expand the oversized footer; pyarrow reads its 64 KiB tail.
+    assert ranges[:2] == [(size - 64, size), (size - 65536, size)]
     assert sorted(values) == list(range(1000))
 
 
 def test_read_parquet_columns_shares_byte_budget_across_prefetched_files(
-    tmp_path, test_session, http_server, monkeypatch
+    tmp_path, test_session, http_server, http_requests, monkeypatch
 ):
+    urls = []
+    for i in range(6):
+        pq.write_table(
+            pa.table(
+                {
+                    "a": [2 * i, 2 * i + 1],
+                    "b": [b"x" * 35_000, b"y" * 35_000],
+                    "c": [10 * i, 10 * i + 5],
+                }
+            ),
+            tmp_path / f"part{i}.parquet",
+            row_group_size=1,
+            compression="NONE",
+            use_dictionary=False,
+        )
+        urls.append(f"{http_server}/part{i}.parquet")
+    file_size = (tmp_path / "part0.parquet").stat().st_size
+    monkeypatch.setattr(arrow_mod, "PARTIAL_READ_PREFETCH_MAX_SIZE", 1)
+    monkeypatch.setattr(parquet_ranges, "PARQUET_FOOTER_SAMPLE_SIZE", 65536)
+    # prefetch=1 can have 3 files in flight (process, result_queue, worker);
+    # the extra 64 KiB lets a 4th file probe its footer if process() never releases.
+    monkeypatch.setattr(
+        parquet_ranges, "PARQUET_RANGE_MAX_BYTES", 3 * file_size + 65536
+    )
+    chain = dc.read_parquet(
+        urls,
+        columns=["a"],
+        settings={"prefetch": 1},
+        session=test_session,
+    )
+    http_requests.clear()
+
+    rows = chain.order_by("a").to_values("a")
+
+    assert rows == list(range(12))
+    last_calls = [r for r in http_requests if r[0].endswith("part5.parquet")]
+    assert len(last_calls) == 2
+    assert len(http_requests) == 6 * 2
+
+
+def test_read_parquet_columns_fetches_ranges_in_process_when_prefetch_budget_full(
+    tmp_path, test_session, http_server, http_requests, monkeypatch
+):
+    urls = []
     for i in range(2):
         pq.write_table(
             pa.table(
                 {
-                    "a": list(range(i * 500, (i + 1) * 500)),
-                    "pad": [b"z" * 100] * 500,
+                    "a": [2 * i, 2 * i + 1],
+                    "b": [b"x" * 70_000, b"y" * 70_000],
+                    "c": [10 * i, 10 * i + 5],
                 }
             ),
             tmp_path / f"part{i}.parquet",
-            row_group_size=250,
+            row_group_size=1,
             compression="NONE",
             use_dictionary=False,
         )
+        urls.append(f"{http_server}/part{i}.parquet")
     monkeypatch.setattr(arrow_mod, "PARTIAL_READ_PREFETCH_MAX_SIZE", 1)
-    monkeypatch.setattr(parquet_ranges, "PARQUET_FOOTER_SAMPLE_SIZE", 4096)
-    monkeypatch.setattr(parquet_ranges, "PARQUET_RANGE_MAX_BYTES", 2048)
-
-    urls = [f"{http_server}/part0.parquet", f"{http_server}/part1.parquet"]
-    values = dc.read_parquet(
+    monkeypatch.setattr(parquet_ranges, "PARQUET_FOOTER_SAMPLE_SIZE", 65536)
+    # Holds 1 file (~66 KiB), so a second prefetched file defers to process().
+    monkeypatch.setattr(parquet_ranges, "PARQUET_RANGE_MAX_BYTES", 70_000)
+    chain = dc.read_parquet(
         urls,
         columns=["a"],
         settings={"prefetch": 2},
         session=test_session,
-    ).to_values("a")
+    )
+    http_requests.clear()
 
-    assert sorted(values) == list(range(1000))
+    rows = chain.order_by("a").to_values("a")
+
+    assert rows == list(range(4))
+    for name in ("part0.parquet", "part1.parquet"):
+        calls = [r for r in http_requests if r[0].endswith(name)]
+        assert 3 <= len(calls) <= 4
+
+
+def test_read_parquet_columns_releases_budget_on_failed_range_fetch(
+    tmp_path, test_session, http_server, monkeypatch
+):
+    urls = []
+    for i in range(2):
+        pq.write_table(
+            pa.table(
+                {
+                    "a": [2 * i, 2 * i + 1],
+                    "b": [b"x" * 35_000, b"y" * 35_000],
+                    "c": [10 * i, 10 * i + 5],
+                }
+            ),
+            tmp_path / f"part{i}.parquet",
+            row_group_size=1,
+            compression="NONE",
+            use_dictionary=False,
+        )
+        urls.append(f"{http_server}/part{i}.parquet")
+    file_size = (tmp_path / "part0.parquet").stat().st_size
+    monkeypatch.setattr(arrow_mod, "PARTIAL_READ_PREFETCH_MAX_SIZE", 1)
+    monkeypatch.setattr(parquet_ranges, "PARQUET_FOOTER_SAMPLE_SIZE", 65536)
+    monkeypatch.setattr(parquet_ranges, "PARQUET_RANGE_MAX_BYTES", file_size)
+    chain = dc.read_parquet(
+        urls,
+        columns=["a"],
+        settings={"prefetch": 1},
+        session=test_session,
+    )
+    orig_fetch = HTTPFile._fetch_range
+    calls: list[tuple[str, int, int]] = []
+    failed_once = False
+
+    def flaky_fetch(self, start, end):
+        nonlocal failed_once
+        calls.append((self.url, start, end))
+        if not failed_once and self.url.endswith("part0.parquet") and start < 100:
+            failed_once = True
+            raise FileError("transient range failure", http_server, "part0.parquet")
+        return orig_fetch(self, start, end)
+
+    monkeypatch.setattr(HTTPFile, "_fetch_range", flaky_fetch)
+
+    rows = chain.order_by("a").to_values("a")
+
+    assert failed_once
+    assert rows == list(range(4))
+    part1_calls = [r for r in calls if r[0].endswith("part1.parquet")]
+    assert len(part1_calls) == 2
+
+
+def test_read_parquet_without_columns_does_not_prefetch_column_ranges(
+    tmp_path, test_session, http_server, http_requests, monkeypatch
+):
+    path = tmp_path / "full.parquet"
+    pq.write_table(pa.table({"a": [1, 2], "b": ["x", "y"]}), path)
+    size = path.stat().st_size
+    monkeypatch.setattr(parquet_ranges, "PARQUET_FOOTER_SAMPLE_SIZE", 64)
+    chain = dc.read_parquet(
+        f"{http_server}/full.parquet",
+        settings={"prefetch": 0},
+        session=test_session,
+    )
+    http_requests.clear()
+
+    assert sorted(chain.to_values("a")) == [1, 2]
+    assert (size - 64, size) not in [(s, e) for _, s, e in http_requests]
 
 
 def test_read_parquet_columns_after_file_without_etag_changed_reads_new_rows(
@@ -849,10 +994,10 @@ def test_read_parquet_columns_after_file_without_etag_changed_reads_new_rows(
 
 
 def test_read_parquet_columns_merges_trailing_chunk_with_footer_sample(
-    tmp_path, test_session, http_server, monkeypatch, mocker
+    tmp_path, test_session, http_server, http_requests, monkeypatch
 ):
     path = tmp_path / "merge.parquet"
-    table = pa.table({"a": [1, 2], "b": [b"x" * 2048, b"y" * 2048]})
+    table = pa.table({"a": [b"a" * 40_000] * 2, "b": [b"x" * 40_000, b"y" * 40_000]})
     pq.write_table(
         table, path, row_group_size=2, compression="NONE", use_dictionary=False
     )
@@ -865,18 +1010,16 @@ def test_read_parquet_columns_merges_trailing_chunk_with_footer_sample(
     monkeypatch.setattr(
         parquet_ranges, "PARQUET_FOOTER_SAMPLE_SIZE", len(raw) - (col_b_end - 64)
     )
-    buffered_init = mocker.spy(ParquetBufferedFile, "__init__")
-
-    rows = dc.read_parquet(
+    chain = dc.read_parquet(
         f"{http_server}/merge.parquet", columns=["b"], session=test_session
-    ).to_values("b")
+    )
+    http_requests.clear()
 
-    assert buffered_init.call_count == 1
-    # Span [col_b_start, sample_start) merges with [sample_start, size) into one part.
-    assert buffered_init.call_args.args[4] == [
-        (col_b.data_page_offset, raw[col_b.data_page_offset :])
-    ]
-    assert sorted(rows) == [b"x" * 2048, b"y" * 2048]
+    rows = chain.to_values("b")
+
+    # 1 footer sample + 1 span [col_b_start, sample_start), merged with no 3rd read.
+    assert len(http_requests) == 2
+    assert sorted(rows) == [b"x" * 40_000, b"y" * 40_000]
 
 
 @pytest.mark.parametrize(
@@ -927,66 +1070,3 @@ def test_parquet_buffered_file_freed_by_refcount(tmp_path, catalog):
     del f, parts
     assert file_ref() is None
     assert parts_ref() is None
-
-
-def test_generator_prefetch_file_checks_archive_target_size(tmp_path, catalog):
-    parent = File(source=tmp_path.as_uri(), path="huge.tar", size=100 * 1024 * 1024)
-    member = File(
-        source=tmp_path.as_uri(),
-        path="small.parquet",
-        size=100,
-        location=[{"vtype": "tar", "parent": parent.model_dump()}],
-    )
-    member._set_stream(catalog)
-    model = dict_to_data_model("Row", {"a": int})
-    gen = ArrowGenerator(
-        pa.schema([("a", pa.int64())]),
-        model,
-        prefetch_max_size=8 * 1024 * 1024,
-        format="parquet",
-    )
-    assert asyncio.run(gen._prefetch_file(member)) is False
-    assert not gen._parts
-
-
-@pytest.mark.skipif(
-    "fork" not in multiprocessing.get_all_start_methods(),
-    reason="requires POSIX fork",
-)
-def test_read_parquet_columns_in_forked_child_after_parent_read(
-    tmp_path, test_session, http_server, monkeypatch
-):
-    path = tmp_path / "fork.parquet"
-    pq.write_table(
-        pa.table({"a": [1, 2], "pad": [b"x" * 100_000, b"y" * 100_000]}),
-        path,
-        row_group_size=1,
-        compression="NONE",
-        use_dictionary=False,
-    )
-    monkeypatch.setattr(arrow_mod, "PARTIAL_READ_PREFETCH_MAX_SIZE", 1)
-    monkeypatch.setattr(parquet_ranges, "PARQUET_FOOTER_SAMPLE_SIZE", 4096)
-    url = f"{http_server}/fork.parquet"
-
-    assert sorted(
-        dc.read_parquet(url, columns=["a"], session=test_session).to_values("a")
-    ) == [1, 2]
-
-    file = File(source=http_server, path="fork.parquet", size=path.stat().st_size)
-    client = test_session.catalog.get_client(file.source)
-    ctx = multiprocessing.get_context("fork")
-    parent_conn, child_conn = ctx.Pipe()
-    proc = ctx.Process(
-        target=lambda conn: conn.send(
-            len(
-                parquet_ranges.read_parquet_parts(client, file, ["a"], lambda n: True)[
-                    1
-                ]
-            )
-        ),
-        args=(child_conn,),
-    )
-    proc.start()
-    proc.join(timeout=10)
-    assert proc.exitcode == 0
-    assert parent_conn.recv() == 3

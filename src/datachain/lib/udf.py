@@ -1012,10 +1012,9 @@ class Generator(UDFBase):
     async def _prefetch_file(
         self, file: File, download_cb: Callback | None = None
     ) -> bool:
-        target = file._prefetch_target()
-        if not target.path or (
+        if (
             self.prefetch_max_size is not None
-            and not (0 < target.size <= self.prefetch_max_size)
+            and not 0 < file.size <= self.prefetch_max_size
         ):
             return False
         return await file._prefetch(download_cb)
