@@ -79,7 +79,8 @@ def self_hosted(url: str, prefix: str = " at ") -> str:
 def get_studio_team(config: dict | None = None) -> str | None:
     if config is None:
         config = Config().read().get("studio", {}) or {}
-    return get_studio_env_variable("TEAM") or config.get("team")
+    # An empty team is the default turned off: no team.
+    return get_studio_env_variable("TEAM") or config.get("team") or None
 
 
 def _is_server_error(status_code: int) -> bool:

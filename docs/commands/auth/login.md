@@ -30,7 +30,7 @@ A token saved with `--team` is used only for those teams. A token saved without 
 
 Run [`datachain auth list`](list.md) to see the saved tokens. If the token picked has expired, the command fails and names the token to replace; DataChain does not switch to another token, which could belong to another account.
 
-If you log in with exactly one `--team` and no default team is set yet, that team becomes the default team.
+If you log in with exactly one `--team` and no default team is set at that level, that team becomes the default team: yours, or the project's with `--local`. To keep the default team off, run [`datachain auth team ""`](team.md).
 
 ### Self-hosted Studio
 

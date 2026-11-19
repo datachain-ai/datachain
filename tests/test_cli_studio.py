@@ -183,17 +183,39 @@ def test_studio_login_repeated_team_is_one_team(get_access_token):
     assert Config().read()["studio"]["team"] == "ml-team"
 
 
-@pytest.mark.parametrize("local", [False, True])
-def test_studio_login_team_token_keeps_default_team(get_access_token, local):
+def test_studio_login_team_token_keeps_default_team(get_access_token):
     get_access_token.return_value = ("token_name", "customer_token")
     studio_login(default_team="acme")
-    flags = ["--local"] if local else []
 
-    assert main(["auth", "login", "--team", "customer-x", *flags]) == 0
+    assert main(["auth", "login", "--team", "customer-x"]) == 0
 
     assert Config().read()["studio"]["team"] == "acme"
     assert resolve_token(STUDIO_URL, "acme") == "isat_access_token"
     assert resolve_token(STUDIO_URL, "customer-x") == "customer_token"
+
+
+def test_studio_login_local_team_sets_the_project_team_over_the_user_one(
+    get_access_token,
+):
+    studio_login(default_team="acme")
+
+    assert main(["auth", "login", "--team", "customer-x", "--local"]) == 0
+
+    assert Config(ConfigLevel.LOCAL).read()["studio"]["team"] == "customer-x"
+    assert Config(ConfigLevel.GLOBAL).read()["studio"]["team"] == "acme"
+    assert Config().read()["studio"]["team"] == "customer-x"
+
+
+@pytest.mark.parametrize("level", [ConfigLevel.GLOBAL, ConfigLevel.LOCAL])
+def test_studio_login_keeps_the_default_team_off(get_access_token, capsys, level):
+    with Config(level).edit() as conf:
+        conf["studio"] = {"team": ""}
+    flags = ["--local"] if level == ConfigLevel.LOCAL else []
+
+    assert main(["auth", "login", "--team", "ml-team", *flags]) == 0
+
+    assert Config(level).read()["studio"]["team"] == ""
+    assert "default team" not in capsys.readouterr().out
 
 
 def test_studio_login_token_already_exists(get_access_token, capsys):
@@ -444,6 +466,19 @@ def test_studio_logout_credentials_open_to_others(capsys, global_config_dir):
 
     assert main(["auth", "logout"]) == 1
     assert f"chmod 600 {path}" in capsys.readouterr().err
+
+
+def test_studio_logout_keeps_the_default_team_off():
+    studio_login()
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"team": ""}
+
+    with requests_mock.mock() as m:
+        m.post(f"{STUDIO_URL}/api/device-logout", json={})
+        assert main(["auth", "logout"]) == 0
+
+    assert saved_tokens() == []
+    assert Config().read()["studio"]["team"] == ""
 
 
 def test_studio_logout_team_removes_only_its_token():
@@ -737,6 +772,18 @@ def test_studio_team_local():
     assert config["studio"]["team"] == "team_name"
 
 
+def test_studio_team_empty_turns_the_default_off(capsys):
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"team": "acme"}
+
+    assert main(["auth", "team", ""]) == 0
+    assert "Turned off the default team in " in capsys.readouterr().out
+    assert Config().read()["studio"]["team"] == ""
+
+    assert main(["auth", "team"]) == 1
+    assert "No default team set." in capsys.readouterr().err
+
+
 def test_studio_team_no_name_and_no_default(capsys):
     assert main(["auth", "team"]) == 1
     captured = capsys.readouterr()
@@ -781,8 +828,12 @@ def test_expired_token_only_breaks_studio_listings(capsys):
         assert "expired on 2020-01-01" in capsys.readouterr().err
 
 
-def test_studio_command_with_team_tokens_but_no_team(capsys):
+@pytest.mark.parametrize("default_team", [None, ""])
+def test_studio_command_with_team_tokens_but_no_team(capsys, default_team):
     studio_login(teams=["a", "b"])
+    if default_team is not None:
+        with Config(ConfigLevel.GLOBAL).edit() as conf:
+            conf["studio"] = {"team": default_team}
 
     assert main(["job", "ls"]) == 1
     assert "Studio team is not set" in capsys.readouterr().err

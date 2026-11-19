@@ -132,7 +132,8 @@ def add_auth_parser(subparsers, parent_parser) -> None:
         "Set or show the default team for Studio operations. "
         "This will be used globally by default. "
         "Use --local to set the team locally for the current project. "
-        "If no team name is provided, the default team will be shown."
+        "If no team name is provided, the default team will be shown. "
+        'An empty name ("") turns the default team off, so logins don\'t set one.'
     )
 
     team_parser = auth_subparser.add_parser(
@@ -147,7 +148,7 @@ def add_auth_parser(subparsers, parent_parser) -> None:
         action="store",
         default=None,
         nargs="?",
-        help="Name of the team to set as default",
+        help='Name of the team to set as default, or "" to turn it off',
     )
     team_parser.add_argument(
         "--local",

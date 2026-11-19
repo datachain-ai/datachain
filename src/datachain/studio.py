@@ -192,7 +192,10 @@ def set_team(args: "Namespace"):
 
     level = ConfigLevel.LOCAL if args.local else ConfigLevel.GLOBAL
     file_path = _update_studio_config(level, team=args.team_name)
-    print(f"Set default team to '{args.team_name}' in {file_path}")
+    if args.team_name:
+        print(f"Set default team to '{args.team_name}' in {file_path}")
+    else:
+        print(f"Turned off the default team in {file_path}")
 
 
 def _login_exists_error(
@@ -279,11 +282,13 @@ def login(args: "Namespace"):
 
     # A Studio set only by the environment or a project gets no default team here.
     for_level = hostname == _studio_url(studio)
-    default_team = studio.get("team") if for_level else None
-    if for_level and team_names and len(team_names) == 1 and not default_team:
+    # Only this level's team counts, so a project login sets the project's team
+    # even if the user has one. An empty team keeps the default off.
+    own_team = Config(level).read().get("studio", {}).get("team")
+    if for_level and own_team is None and team_names and len(team_names) == 1:
         file_path = _update_studio_config(level, team=team_names[0])
         print(f"Set default team to '{team_names[0]}' in {file_path}")
-    elif not default_team:
+    elif (studio.get("team") if for_level else None) is None:
         print("You can now use 'datachain auth team' to set the default team.")
     return 0
 
@@ -366,9 +371,10 @@ def logout(
     # with that Studio's last token. Decided before removing: a project's
     # .datachain/ that has only credentials is not found once they are gone, and
     # a parent project's would be.
+    # An empty team, the default turned off, stays.
     clear_team = (
         len(logins) == len(saved)
-        and "team" in Config(level).read().get("studio", {})
+        and bool(Config(level).read().get("studio", {}).get("team"))
         and _studio_url(_level_studio_config(level)) == url
     )
 
