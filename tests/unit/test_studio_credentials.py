@@ -7,7 +7,12 @@ import pytest
 
 from datachain.config import Config, ConfigLevel
 from datachain.error import DataChainError
-from datachain.remote.credentials import Login, load_logins, resolve_token
+from datachain.remote.credentials import (
+    Login,
+    credentials_path,
+    load_logins,
+    resolve_token,
+)
 from datachain.remote.studio import StudioClient, is_token_set
 from datachain.utils import STUDIO_URL
 from tests.utils import posix_only, studio_login
@@ -138,6 +143,17 @@ def test_login_normalizes_url_and_teams():
     login = Login(url=f"{STUDIO_URL}/", token="token", teams=["a", "a", "b"])  # noqa: S106
 
     assert (login.url, login.teams) == (STUDIO_URL, ["a", "b"])
+
+
+def test_url_is_saved_only_for_a_self_hosted_studio():
+    studio_login("default")
+    studio_login("other", url=OTHER_URL)
+
+    text = Path(credentials_path(GLOBAL)).read_text()
+    assert STUDIO_URL not in text
+    assert f'url = "{OTHER_URL}"' in text
+    logins = [(lg.url, lg.token) for lg in load_logins(GLOBAL)]
+    assert logins == [(STUDIO_URL, "default"), (OTHER_URL, "other")]
 
 
 @posix_only

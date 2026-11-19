@@ -5,7 +5,8 @@ without ``--team``, as the fallback when no token is saved for a team. Which tea
 Studio accepts it for is set in Studio when the token is created. Logins live in a
 ``credentials`` file next to the config: in the project's ``.datachain/``
 (``--local``) or in the global config dir. The file is written ``0600`` and
-ignored if other users can read it.
+ignored if other users can read it. A login without ``url`` is for the default
+Studio.
 
 A command finds its token from the Studio URL and team it acts on:
 ``DATACHAIN_STUDIO_TOKEN`` first, then the project's logins, then the user's. At
@@ -24,7 +25,7 @@ import tomlkit
 
 from datachain.config import Config, ConfigLevel
 from datachain.error import DataChainError
-from datachain.utils import DataChainDir
+from datachain.utils import STUDIO_URL, DataChainDir
 
 logger = logging.getLogger("datachain")
 
@@ -125,7 +126,7 @@ def load_logins(level: ConfigLevel, *, for_update: bool = False) -> list[Login]:
 
     return [
         Login(
-            url=item["url"],
+            url=item.get("url") or STUDIO_URL,
             token=item["token"],
             teams=item.get("teams"),
             name=item.get("name"),
@@ -133,7 +134,7 @@ def load_logins(level: ConfigLevel, *, for_update: bool = False) -> list[Login]:
             level=level,
         )
         for item in doc.get("login", [])
-        if item.get("url") and item.get("token")
+        if item.get("token")
     ]
 
 
@@ -147,7 +148,8 @@ def _save_logins(level: ConfigLevel, logins: list[Login]) -> str:
     entries = tomlkit.aot()
     for login in logins:
         entry = tomlkit.table()
-        entry["url"] = login.url
+        if login.url != STUDIO_URL:
+            entry["url"] = login.url
         if login.teams is not None:
             entry["teams"] = login.teams
         if login.name:
