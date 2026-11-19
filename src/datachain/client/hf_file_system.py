@@ -3,16 +3,21 @@
 import functools
 from contextlib import contextmanager
 from dataclasses import replace
-from urllib.parse import quote
+from urllib.parse import parse_qsl, quote, urlparse
 
+import httpx
 from huggingface_hub import HfFileSystem, hf_file_system, hf_hub_url
-from huggingface_hub.constants import REPO_TYPES_URL_PREFIXES
+from huggingface_hub.constants import (
+    HF_HUB_DOWNLOAD_TIMEOUT,
+    REPO_TYPES_URL_PREFIXES,
+)
 from huggingface_hub.file_download import _get_file_length_from_http_response
 from huggingface_hub.hf_file_system import (
     SPECIAL_REFS_REVISION_REGEX,
+    HfFileSystemFile,
     HfFileSystemStreamFile,
 )
-from huggingface_hub.utils import HfHubHTTPError
+from huggingface_hub.utils import HfHubHTTPError, get_session
 
 
 @functools.cache
@@ -45,6 +50,71 @@ class _PinnedStreamFile(HfFileSystemStreamFile):
             super().close()
         finally:
             self._exit_stack.close()
+
+
+class PinnedHfFileSystemFile(HfFileSystemFile):
+    """Reuse a cross-origin redirect URL across range reads on an open file."""
+
+    _resolved_url: str | None = None
+    _resolved_url_reused: bool = False
+    _can_cache_url: bool = True
+
+    def _request_range(self, url: str, start: int, end: int, *, auth: bool = True):
+        headers = {
+            "range": f"bytes={start}-{end - 1}",
+            **self.fs._api._build_hf_headers(),
+        }
+        if not auth:
+            headers = {
+                key: val
+                for key, val in headers.items()
+                if key.lower() != "authorization"
+            }
+        return hf_file_system.http_backoff(
+            "GET",
+            url,
+            headers=headers,
+            timeout=HF_HUB_DOWNLOAD_TIMEOUT,
+        )
+
+    def _fetch_range(self, start: int, end: int) -> bytes:
+        with _translate_auth_error():
+            if not getattr(self.resolved_path, "repo_id", None):
+                return super()._fetch_range(start, end)
+            if resolved_url := self._resolved_url:
+                try:
+                    r = self._request_range(resolved_url, start, end, auth=False)
+                except (httpx.HTTPError, HfHubHTTPError):
+                    r = None
+                if r is not None and r.status_code == 206:
+                    self._resolved_url_reused = True
+                    return r.content
+                self._resolved_url = None
+                if not self._resolved_url_reused:
+                    self._can_cache_url = False
+                self._resolved_url_reused = False
+            url = self.url()
+            r = self._request_range(url, start, end)
+            hf_file_system.hf_raise_for_status(r)
+            final = str(r.url)
+            session = get_session()
+            if (
+                self._can_cache_url
+                and session.auth is None
+                and urlparse(final).hostname != urlparse(url).hostname
+                and all(
+                    key.lower() != "authorization"
+                    for key in (*r.request.headers, *session.headers)
+                )
+                and not any(
+                    "range" in key.lower()
+                    for key, _ in parse_qsl(
+                        urlparse(final).query, keep_blank_values=True
+                    )
+                )
+            ):
+                self._resolved_url = final
+            return r.content
 
 
 class PinnedHfFileSystem(HfFileSystem):
@@ -107,6 +177,15 @@ class PinnedHfFileSystem(HfFileSystem):
                 kwargs["block_size"] = 0
                 return _PinnedStreamFile(
                     self, path, mode=mode, revision=revision, **kwargs
+                )
+            if mode == "rb" and effective_block_size != 0:
+                return PinnedHfFileSystemFile(
+                    self,
+                    path,
+                    mode=mode,
+                    block_size=effective_block_size,
+                    revision=revision,
+                    **kwargs,
                 )
             return super()._open(
                 path, mode=mode, block_size=block_size, revision=revision, **kwargs
