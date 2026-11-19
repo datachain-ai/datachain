@@ -123,9 +123,9 @@ data = dc.read_csv(
 
 With `header=False` and no `columns`, `output` is required and supplies names for every input column.
 
-#### Parquet written by DataChain
+#### Parquet and Lance written by DataChain
 
-A Parquet file written by `to_parquet()` keeps its DataChain schema, so it reads back with the same signals and models. There, `columns=` picks signals as `select()` does:
+A Parquet or Lance file written by `to_parquet()` or `to_lance()` keeps its DataChain schema, so it reads back with the same signals and models. There, `columns=` picks signals as `select()` does:
 
 ```python
 class Point(dc.DataModel):

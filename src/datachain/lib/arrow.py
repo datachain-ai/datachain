@@ -1,11 +1,14 @@
 import copy
 import hashlib
+import os
+import shutil
 import sys
-from collections.abc import Iterator, Sequence
+import tempfile
+from collections.abc import Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from functools import partial
-from typing import TYPE_CHECKING, Any, TypeGuard
+from typing import TYPE_CHECKING, Any, Literal, TypeGuard, get_args, get_origin
 
 import numpy as np
 import pyarrow as pa
@@ -177,8 +180,18 @@ def _find_lance_blob(fields: Sequence[pa.Field], prefix: str = "") -> str | None
         name = f"{prefix}{f.name}"
         if (f.metadata or {}).get(b"lance-encoding:blob") == b"true":
             return name
-        if pa.types.is_struct(f.type) and (
-            blob := _find_lance_blob(list(f.type), f"{name}.")
+        t = f.type
+        while (
+            pa.types.is_list(t)
+            or pa.types.is_large_list(t)
+            or pa.types.is_fixed_size_list(t)
+        ):
+            if (t.value_field.metadata or {}).get(b"lance-encoding:blob") == b"true":
+                return name
+            t = t.value_type
+        if (
+            pa.types.is_struct(t)
+            and (blob := _find_lance_blob(list(t), f"{name}.")) is not None
         ):
             return blob
     return None
@@ -221,6 +234,98 @@ def _local_lance_path(file: File) -> str:
     return path
 
 
+_LANCE_JSON_META = {b"datachain:json": b"true"}
+_SCALAR_ARROW_TYPES: dict[Any, pa.DataType] = {
+    int: pa.int64(),
+    float: pa.float64(),
+    bool: pa.bool_(),
+    str: pa.string(),
+    bytes: pa.binary(),
+    datetime: pa.timestamp("us", tz="UTC"),
+}
+
+
+def _encode_lance_col(name: str) -> str:
+    return name.replace("%", "%25").replace(".", "%2E")
+
+
+def _decode_lance_col(name: str) -> str:
+    return name.replace("%2E", ".").replace("%25", "%")
+
+
+def _leaf_arrow_type(typ: Any, *, allow_datetime: bool = True) -> pa.DataType | None:
+    base = unwrap_optional(typ)[0]
+    origin = get_origin(base)
+    if origin is Literal:
+        args = get_args(base)
+        return (
+            _leaf_arrow_type(type(args[0]), allow_datetime=allow_datetime)
+            if args
+            else None
+        )
+    if origin in (list, Sequence):
+        args = get_args(base)
+        inner = _leaf_arrow_type(args[0], allow_datetime=False) if args else None
+        return pa.list_(inner) if inner is not None else None
+    if base is datetime and not allow_datetime:
+        return None
+    return _SCALAR_ARROW_TYPES.get(base)
+
+
+def write_lance(
+    target: File,
+    signal_schema: SignalSchema,
+    column_names: Sequence[str],
+    column_chunks: Iterable[Sequence[Sequence[Any]]],
+    *,
+    fs_kwargs: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> None:
+    _lance_file_reader()
+    from lance.file import LanceFileWriter
+
+    leaf_types = {
+        ".".join(path): _leaf_arrow_type(typ)
+        for path, typ, has_sub, _ in signal_schema.get_flat_tree(include_sentinels=True)
+        if not has_sub
+    }
+    fields = [
+        pa.field(_encode_lance_col(n), t)
+        if (t := leaf_types.get(n)) is not None
+        else pa.field(_encode_lance_col(n), pa.string(), metadata=_LANCE_JSON_META)
+        for n in column_names
+    ]
+    schema = pa.schema(
+        fields,
+        metadata={
+            DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY: json.dumps(
+                signal_schema.serialize(), ensure_ascii=False
+            ).encode("utf-8")
+        },
+    )
+    catalog = target._catalog
+    assert catalog is not None
+    with tempfile.TemporaryDirectory(dir=catalog.cache.tmp_dir) as tmp_dir:
+        tmp_path = os.path.join(tmp_dir, "out.lance")
+        with LanceFileWriter(tmp_path, schema, **kwargs) as writer:
+            for chunk in column_chunks:
+                arrays = [
+                    pa.array(
+                        col
+                        if leaf_types.get(n) is not None
+                        else [None if v is None else to_json_text(v) for v in col],
+                        type=f.type,
+                    )
+                    for n, f, col in zip(column_names, fields, chunk, strict=True)
+                ]
+                writer.write_batch(pa.Table.from_arrays(arrays, schema=schema))
+        with (
+            open(tmp_path, "rb") as src,
+            target.open("wb", client_config=fs_kwargs) as dst,
+        ):
+            shutil.copyfileobj(src, dst)
+
+
 class _LanceDataset:
     """Adapter reading a single Lance v2 data file via `LanceFileReader`."""
 
@@ -230,22 +335,33 @@ class _LanceDataset:
         self._path = _local_lance_path(file)
         self._base_reader = reader_cls(self._path)
         meta = self._base_reader.metadata()
-        if blob := _find_lance_blob(list(meta.schema)):
+        if (blob := _find_lance_blob(list(meta.schema))) is not None:
             self.close()
             raise ValueError(
                 f"Lance blob column '{blob}' in '{file.path}' is not "
                 "supported; read_lance reads standalone .lance data files"
             )
         self.num_rows: int = meta.num_rows
-        self._physical_schema: pa.Schema = meta.schema
+        self._dc = _written_by_datachain(meta.schema)
+        self._physical_schema: pa.Schema = (
+            pa.schema(
+                [f.with_name(_decode_lance_col(f.name)) for f in meta.schema],
+                metadata=meta.schema.metadata,
+            )
+            if self._dc
+            else meta.schema
+        )
         self.schema: pa.Schema = schema or self._physical_schema
+
+    def _raw_name(self, col: str) -> str:
+        return _encode_lance_col(col) if self._dc else col
 
     def _reader(self, present: tuple[str, ...]) -> Any:
         # Lance's projection parser rejects empty column names.
         if "" in present or list(present) == self._physical_schema.names:
             return self._base_reader
         if (reader := self._readers.get(present)) is None:
-            escaped = [f"`{c.replace('`', '``')}`" for c in present]
+            escaped = [f"`{self._raw_name(c).replace('`', '``')}`" for c in present]
             reader = _lance_file_reader()(self._path, columns=escaped)
             self._readers[present] = reader
         return reader
@@ -270,13 +386,13 @@ class _LanceDataset:
         rows = n if take is None else len(take)
         return pa.Table.from_arrays(
             [
-                raw.column(c).cast(t)
+                raw.column(self._raw_name(c)).cast(t)
                 if raw is not None and c in present
                 else pa.nulls(rows, t)
                 for c in columns
                 for t in (self.schema.field(c).type,)
             ],
-            names=list(columns),
+            schema=pa.schema([self.schema.field(c) for c in columns]),
         )
 
     def chunks(self, step: int):
@@ -654,7 +770,6 @@ class ArrowGenerator(Generator):
                 )
                 return
             if self.datachain_read:
-                assert isinstance(ds, Dataset)
                 for index, obj in enumerate(self._signal_objects(ds, kw)):
                     yield self._process_record(obj, file, index, source_kwargs)
                 return
@@ -764,7 +879,9 @@ class ArrowGenerator(Generator):
                 columns, names=[str(i) for i in range(len(columns))]
             )
 
-    def _signal_objects(self, ds: Dataset, kw: dict[str, Any]) -> Iterator["BaseModel"]:
+    def _signal_objects(
+        self, ds: Dataset | _LanceDataset, kw: dict[str, Any]
+    ) -> Iterator["BaseModel"]:
         """Read each row of a file written by DataChain into the output model by
         column position, as rows are read from the DB. A column the file lacks
         leaves its field out, so the field takes its default."""
@@ -785,8 +902,12 @@ class ArrowGenerator(Generator):
         for _, batch in read_batches(ds, self.nrows, **kw):
             # Maps are read as dicts. Duplicate keys raise an error.
             values = {
-                name: column.to_pylist(maps_as_pydicts="strict")
-                for name, column in zip(batch.schema.names, batch.columns, strict=True)
+                field.name: [
+                    None if v is None else json.loads(v) for v in column.to_pylist()
+                ]
+                if (field.metadata or {}).get(b"datachain:json") == b"true"
+                else column.to_pylist(maps_as_pydicts="strict")
+                for field, column in zip(batch.schema, batch.columns, strict=True)
             }
             for path, (tag, layout, arm) in parents.items():
                 # The parent's tag stands in for the path's own, set where it

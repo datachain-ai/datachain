@@ -27,7 +27,10 @@ def read_lance(
             Supports `*`, `**`, `?`, `{a,b}`, and `{1..9}` glob patterns.
         output: Result names and Python types as a dictionary, assigned by
             insertion order with exactly one field per column read. Use `columns`
-            to select inputs by name. Omit to infer names and types.
+            to select inputs by name. Omit to infer names and types or restore a
+            saved DataChain schema. On Lance files exported by DataChain, each
+            field takes one picked signal, or one top-level signal without
+            `columns`.
         column: Created column name.
         model_name: Generated model name.
         source: Whether to include info about the source file. It is named
@@ -35,12 +38,14 @@ def read_lance(
         session: Session to use for the chain.
         settings: Settings to use for the chain.
         columns: Input columns to read, in order; all if omitted. Accepts original
-            or normalized names, e.g. "ZIP Code" or "zip_code". When omitted (along
-            with `output` and `column`), DataChain automatically reads only the
-            columns used by `select()`, `group_by()`, `count()`, or `gen()` (even
-            after `filter()`, `order_by()`, or `mutate()`), and applies `filter()`
-            conditions while reading so only the needed rows and columns are loaded
-            (`filter()`, `select()`, and `order_by()` can appear in any order).
+            or normalized names, e.g. "ZIP Code" or "zip_code". For Lance files
+            exported by DataChain, it picks signals as `select()` does, e.g. "p.x".
+            When omitted (along with `output` and `column`), DataChain automatically
+            reads only the columns used by `select()`, `group_by()`, `count()`, or
+            `gen()` (even after `filter()`, `order_by()`, or `mutate()`), and
+            applies `filter()` conditions while reading so only the needed rows and
+            columns are loaded (`filter()`, `select()`, and `order_by()` can appear
+            in any order).
         kwargs: Parameters to pass to `read_storage`. A directory or glob is
             listed once and the listing is reused for 4 hours, so files added or
             changed since are missed or fail to read. Pass `update=True` to list

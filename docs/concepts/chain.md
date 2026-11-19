@@ -82,5 +82,5 @@ chain = dc.read_dataset("image_embeddings")
 Terminal operations trigger execution:
 
 - **Save**: `save("name")` creates a versioned dataset. `persist()` caches intermediate results.
-- **Export**: `to_pandas()`, `to_parquet()`, `to_csv()`, `to_json()`, `to_pytorch()`, `to_storage()`, `to_database()`
+- **Export**: `to_pandas()`, `to_parquet()`, `to_lance()`, `to_csv()`, `to_json()`, `to_pytorch()`, `to_storage()`, `to_database()`
 - **Inspect**: `show()`, `collect()`, `count()`, `sum()`, `avg()`, `min()`, `max()`
