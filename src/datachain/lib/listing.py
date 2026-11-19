@@ -2,11 +2,14 @@ import functools
 import glob
 import logging
 import os
+import pickle
 import re
-from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+import time
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from hashlib import blake2b
 from typing import TYPE_CHECKING, TypeVar, cast
 
 from fsspec.asyn import get_loop, sync
@@ -15,25 +18,34 @@ from sqlalchemy import or_, true
 import datachain.fs.utils as fsutils
 from datachain.asyn import iter_over_async
 from datachain.client import Client
-from datachain.error import ClientError, DatasetNotFoundError
+from datachain.error import (
+    ClientError,
+    ConcurrentDatasetModificationError,
+    DatasetNotFoundError,
+)
 from datachain.lib.convert.flatten import flatten
 from datachain.lib.file import File, FileRow
-from datachain.query.schema import C, Column
+from datachain.query.schema import Column
 from datachain.sql.functions import path as pathfunc
-from datachain.utils import parent_path, uses_glob
+from datachain.utils import parent_path, safe_closing, uses_glob
 
 if TYPE_CHECKING:
     from sqlalchemy import ColumnElement
 
     from datachain.catalog import Catalog
     from datachain.client.fsspec import RangeListedClient
-    from datachain.dataset import DatasetRecord
+    from datachain.data_storage.codec import RowCodec
+    from datachain.dataset import DatasetRecord, DatasetVersion
     from datachain.lib.dc import DataChain
+    from datachain.project import Project
     from datachain.query.session import Session
 
 LISTING_TTL = 4 * 60 * 60  # cached listing lasts 4 hours
 LISTING_PREFIX = "lst__"  # listing datasets start with this name
 LISTING_BATCH_SIZE = 50_000  # rows per insert: listing rows are small
+RESERVATION_TOUCH_INTERVAL = 300
+# a listing version's content_hash: this prefix, its row count and rows_digest sum
+LISTING_DIGEST = "listing-v1"
 # listing of current objects only, read_storage(versions=False)
 CURRENT_LISTING_PREFIX = f"{LISTING_PREFIX}current__"
 
@@ -42,49 +54,6 @@ D = TypeVar("D", bound="DataChain")
 # Disable warnings for remote errors in clients
 logging.getLogger("aiobotocore.credentials").setLevel(logging.CRITICAL)
 logging.getLogger("gcsfs").setLevel(logging.CRITICAL)
-
-
-def calc_fingerprint(session: "Session", dataset: "DatasetRecord", version: str) -> int:
-    """Return an order-independent fingerprint of a listing version.
-
-    Each file adds its path, its version id (or etag if it has none), its size and
-    whether it is the latest version. The etag is added too, unless the storage
-    never replaces the bytes at a version id.
-    """
-    # Inline imports: lib.listing sits below lib.dc / query.dataset / func in the
-    # import graph (catalog.catalog imports this module during init), so hoisting
-    # any of these triggers a circular import.
-    from datachain.func.aggregate import xor_agg
-    from datachain.func.conditional import case
-    from datachain.func.string import string_hash
-    from datachain.lib.dc.datachain import DataChain
-    from datachain.lib.dc.utils import Sys
-    from datachain.lib.settings import Settings
-    from datachain.lib.signal_schema import SignalSchema
-    from datachain.query.dataset import DatasetQuery
-
-    query = DatasetQuery(
-        name=dataset.name,
-        version=version,
-        session=session,
-        include_incomplete=True,
-    )
-    signal_schema = SignalSchema({"sys": Sys, "file": File})
-    chain = DataChain(query, Settings(), signal_schema)
-
-    identifier = case(
-        (C("file.version") != "", C("file.version")),
-        else_=C("file.etag"),
-    )
-    client_cls = Client.get_implementation(listing_uri_from_name(dataset.name))
-    etag = () if client_cls.PINNED_VERSION_IS_IMMUTABLE else (C("file.etag"),)
-    return chain.group_by(  # type: ignore[return-value]
-        fp=xor_agg(
-            string_hash(
-                C("file.path"), identifier, C("file.size"), C("file.is_latest"), *etag
-            )
-        ),
-    ).to_values("fp")[0]
 
 
 def listing_dataset_expired(lst_ds) -> bool:
@@ -97,14 +66,28 @@ def listing_dataset_expired(lst_ds) -> bool:
     return datetime.now(UTC) > expires
 
 
-def list_pages(uri: str, cache, client_config=None) -> Iterator[Sequence[tuple]]:
-    """Pages of ``FileRow`` rows of every object under the ``uri`` prefix."""
+def list_pages(
+    uri: str, cache, client_config=None, encode: "PageEncoder | None" = None
+) -> Iterator:
+    """Pages of ``FileRow`` rows of every object under the ``uri`` prefix, or
+    with ``encode``, ``StoredPage``s: listing children encode the pages they
+    parse, and this process the rest."""
     config = client_config or {}
     client = Client.get_client(uri, cache, **config)  # type: ignore[arg-type]
+    client.encode_page = encode
     _, path = Client.parse_url(uri)
-    pages = client.scandir(path.removesuffix("/"))
-    for page in iter_over_async(pages, get_loop()):
-        yield [*map(file_row, page)] if page and isinstance(page[0], File) else page
+    # a child's pages are StoredPages already
+    with safe_closing(
+        iter_over_async(client.scandir(path.removesuffix("/")), get_loop())
+    ) as pages:
+        for page in pages:
+            if isinstance(page, StoredPage):
+                yield page
+                continue
+            rows = (
+                [*map(file_row, page)] if page and isinstance(page[0], File) else page
+            )
+            yield encode(rows) if encode else rows
 
 
 def list_scope_pages(
@@ -147,18 +130,6 @@ class ListScope:
 
 def file_row(file: File) -> FileRow:
     return FileRow(*flatten(file))
-
-
-def list_bucket(uri: str, cache, client_config=None) -> Callable:
-    """A generator function, for ``gen()``, of the rows of ``list_pages``."""
-
-    def list_func() -> Iterator[File]:  # FileRow rows
-        for page in list_pages(uri, cache, client_config):
-            yield from page  # type: ignore[misc]
-
-    list_func.__name__ = "read_storage"
-
-    return list_func
 
 
 def get_file_info(uri: str, cache, client_config=None) -> File:
@@ -524,63 +495,219 @@ def ensure_listing(
     name: str, catalog: "Catalog", write: Callable | None, *, update: bool = False
 ) -> "DatasetRecord":
     """Create or refresh the selected snapshot only when needed."""
-    try:
-        dataset = catalog.get_dataset(name, versions=None, include_incomplete=False)
-    except DatasetNotFoundError:
-        dataset = None
-    if dataset is None or update or listing_dataset_expired(dataset):
+    dataset = None
+    if not update:
+        try:
+            dataset = catalog.get_dataset(name, versions=None, include_incomplete=False)
+        except DatasetNotFoundError:
+            pass
+    if dataset is None or listing_dataset_expired(dataset):
         assert write is not None
-        write()
-        dataset = catalog.get_dataset(name, versions=None, include_incomplete=False)
+        dataset = write() or catalog.get_dataset(
+            name, versions=None, include_incomplete=False
+        )
     return dataset
 
 
+def rows_digest(rows: Iterable[tuple], with_etag: bool) -> int:
+    """The sum of a 128-bit hash of each ``FileRow`` row's identity: its source,
+    path, version id (or etag if it has none), size, whether it is the latest
+    version, and its etag when ``with_etag``. A sum, not XOR, so that a file
+    listed twice counts twice; the order of rows does not matter."""
+    total = 0
+    for source, path, size, version, etag, is_latest, *_ in rows:
+        key = f"{source}\0{path}\0{version or etag}\0{size}\0{is_latest:d}"
+        if with_etag:
+            key += f"\0{etag}"
+        digest = blake2b(key.encode(errors="surrogatepass"), digest_size=16)
+        total += int.from_bytes(digest.digest())
+    return total
+
+
+class StoredPage:
+    """A page of listing rows in the warehouse's stored form, and their
+    ``rows_digest``: made where the page was parsed, inserted as it is."""
+
+    def __init__(self, rows: list[tuple], digest: int) -> None:
+        self._rows: list[tuple] | bytes = rows
+        self.digest = digest
+        self.size = len(rows)
+
+    @property
+    def rows(self) -> list[tuple]:
+        if isinstance(rows := self._rows, bytes):
+            self._rows = rows = pickle.loads(rows)  # noqa: S301
+        return rows
+
+    def __len__(self) -> int:
+        return self.size
+
+    def __getstate__(self) -> tuple[bytes, int, int]:
+        return pickle.dumps(self.rows, protocol=5), self.digest, self.size
+
+    def __setstate__(self, state: tuple[bytes, int, int]) -> None:
+        self._rows, self.digest, self.size = state
+
+
+@dataclass(frozen=True)
+class PageEncoder:
+    """``FileRow`` rows to a ``StoredPage``; listing children run it."""
+
+    codec: "RowCodec"
+    with_etag: bool
+
+    def __call__(self, rows: Sequence[tuple]) -> StoredPage:
+        stored = list(map(self.codec.encode, rows))
+        return StoredPage(stored, rows_digest(rows, self.with_etag))
+
+
 def write_listing(
-    uri: str,
-    ds_name: str,
-    session: "Session",
-    client_config: dict,
-    *,
-    file_type: type[File] = File,
-    settings: dict | None = None,
-    in_memory: bool = False,
-) -> None:
-    """Store the listing of the prefix ``uri``, whole, as the listing dataset
-    ``ds_name``: the snapshot ``read_storage`` reads and reuses.
-    """
-    from datachain.query.session import Session
+    uri: str, ds_name: str, session: "Session", client_config: dict
+) -> "DatasetRecord | None":
+    """Store the listing of the prefix ``uri`` as the next version of ``ds_name``.
+    An unchanged listing drops that version and restarts the latest one's TTL."""
+    from datachain import semver
+    from datachain.dataset import DEFAULT_DATASET_VERSION, DatasetStatus
+    from datachain.lib.signal_schema import SignalSchema
 
-    from .dc.records import create_records_dataset
+    catalog = session.catalog
+    metastore, warehouse = catalog.metastore, catalog.warehouse
+    project = metastore.get_project(
+        metastore.listing_project_name, metastore.system_namespace_name, create=True
+    )
+    columns = warehouse.dataset_row_cls.listing_columns()
+    with_etag = not Client.get_implementation(uri).PINNED_VERSION_IS_IMMUTABLE
+    encode = PageEncoder(warehouse.row_codec(columns), with_etag)
+    job = session.get_job()
+    job_id = job.id if job else None
+    dataset = catalog.create_dataset(
+        ds_name,
+        project,
+        columns=columns,
+        feature_schema=SignalSchema({"file": File}).serialize(),
+        listing=True,
+        update_version="major",
+        job_id=job_id,
+        query_script=job.query if job else "",
+    )
+    version = dataset.versions[0].version
+    count = total = 0
 
-    namespace = session.catalog.metastore.system_namespace_name
-    project = session.catalog.metastore.listing_project_name
-    list_func = list_bucket(uri, session.catalog.cache, client_config=client_config)
-    # content_hash=None because hash_callable doesn't capture list_func's
-    # closure (which holds the URI and the client config) -- auto-hashing
-    # the seed would let the UDF checkpoint cache return a stale listing
-    # across URIs/runs.
-    # The seed is needed only while writing this snapshot. Clean it up now rather
-    # than keeping its catalog alive until the caller's (possibly global) exit.
-    writer = Session("listing", catalog=session.catalog)
+    def rows(pages: Iterator[StoredPage]) -> Iterator[tuple]:
+        nonlocal count, total
+        touched = time.monotonic()
+        for page in pages:
+            count += len(page)
+            total += page.digest
+            yield from page.rows
+            if time.monotonic() - touched > RESERVATION_TOUCH_INTERVAL:
+                if (
+                    metastore.update_dataset_version(
+                        dataset,
+                        version,
+                        expected_status=DatasetStatus.CREATED,
+                        expected_job_id=job_id,
+                        created_at=datetime.now(UTC),
+                    )
+                    is None
+                ):
+                    raise ConcurrentDatasetModificationError(
+                        f"Listing {dataset.name}@{version} was removed while running"
+                    )
+                touched = time.monotonic()
+
+    table = None
     try:
-        (
-            create_records_dataset(
-                [{"seed": 0}],
-                schema={"seed": int},
-                content_hash=None,
-                session=writer,
-                settings=settings,
-                in_memory=in_memory,
+        if job:
+            metastore.link_dataset_version_to_job(
+                dataset.versions[0].id, job.id, is_creator=True
             )
-            .settings(
-                prefetch=0,
-                batch_size=LISTING_BATCH_SIZE,
-                namespace=namespace,
-                project=project,
-            )
-            .gen(list_func, output={"file": file_type})
-            # for internal listing datasets, we always bump major version
-            .save(ds_name, listing=True, update_version="major")
+        table_name = warehouse.dataset_table_name(dataset, version)
+        table = warehouse.create_dataset_rows_table(
+            f"{table_name}__{dataset.versions[0].uuid[:8]}", columns=columns
         )
+        with safe_closing(
+            list_pages(uri, catalog.cache, client_config, encode)
+        ) as pages:
+            try:
+                warehouse.insert_stored_rows(
+                    table, [c.name for c in columns], rows(pages), LISTING_BATCH_SIZE
+                )
+            except Exception as e:
+                if not warehouse.db.has_table(table.name):
+                    raise ConcurrentDatasetModificationError(
+                        f"Listing {dataset.name}@{version} was removed while running"
+                    ) from e
+                raise
+        content_hash = f"{LISTING_DIGEST}:{count}:{total % (1 << 128):032x}"
+        latest = _latest_version(catalog, ds_name, project)
+        if latest:
+            prev_ds, prev_ver = latest
+            ver_val = dataset.versions[0].version_value
+            fence = (
+                max(prev_ver.version_value, semver.value(prev_ver.sources))
+                if prev_ver.sources
+                else prev_ver.version_value
+            )
+            older_publishing = any(
+                prev_ver.version_value < v.version_value < ver_val
+                and v.status == DatasetStatus.CREATED
+                and v.content_hash is not None
+                for v in prev_ds.all_versions
+            )
+            if (
+                fence > ver_val
+                or (prev_ver.content_hash == content_hash and not older_publishing)
+            ) and catalog.release_reservation(dataset, version, job_id):
+                if prev_ver.content_hash == content_hash and ver_val >= fence:
+                    metastore.update_dataset_version(
+                        prev_ds,
+                        prev_ver.version,
+                        expected_status=DatasetStatus.COMPLETE,
+                        finished_at=datetime.now(UTC),
+                        sources=version,
+                    )
+                return None
+        if (
+            metastore.update_dataset_version(
+                dataset,
+                version,
+                expected_status=DatasetStatus.CREATED,
+                expected_job_id=job_id,
+                content_hash=content_hash,
+            )
+            is None
+        ):
+            raise ConcurrentDatasetModificationError(
+                f"Could not save {dataset.name}@{version}: "
+                "the version was removed or modified before save completed."
+            )
+        warehouse.rename_table(table, table_name)
+        completed = catalog.complete_dataset_version(
+            dataset, version, expected_job_id=job_id
+        )
+        return completed if version == DEFAULT_DATASET_VERSION else None
+    except BaseException:
+        with suppress(Exception):
+            catalog.release_reservation(dataset, version, job_id)
+        raise
     finally:
-        writer._close()
+        if table is not None:
+            warehouse.db.drop_table(table, if_exists=True)
+
+
+def _latest_version(
+    catalog: "Catalog", name: str, project: "Project"
+) -> "tuple[DatasetRecord, DatasetVersion] | None":
+    """The listing ``name`` and its latest complete version, if it has one."""
+    try:
+        dataset = catalog.get_dataset(
+            name,
+            namespace_name=project.namespace.name,
+            project_name=project.name,
+            versions=None,
+        )
+    except DatasetNotFoundError:
+        return None
+    version = dataset.latest_complete_version
+    return (dataset, dataset.get_version(version)) if version else None
