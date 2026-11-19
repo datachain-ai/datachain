@@ -7,6 +7,7 @@ import datachain as dc
 from datachain import func
 from datachain.lib import arrow
 from datachain.lib.dc import C
+from datachain.lib.file import File
 from datachain.sql.types import Int64
 
 
@@ -40,31 +41,28 @@ def rows_parquet(tmp_dir):
 
 
 def test_read_parquet_select_reads_only_selected_columns(
-    tmp_dir, test_session, mocker, arrow_reads
+    tmp_dir, test_session, mocker, monkeypatch, arrow_reads
 ):
     path = tmp_dir / "episodes.parquet"
     pq.write_table(
         pa.table(
             {
                 "unused": ["a", "b"],
-                "length": [10, 20],
-                "stats/x/max": [1.5, 2.5],
+                "length": pa.array([10, 20], type=pa.int64()),
+                "stats/x/max": pa.array([1.5, 2.5], type=pa.float32()),
             }
         ),
         path,
     )
+    monkeypatch.setattr(arrow, "PARTIAL_READ_PREFETCH_MAX_SIZE", 1)
+    prefetch = mocker.spy(File, "_prefetch")
     spy = mocker.spy(arrow, "file_schemas")
     chain = dc.read_parquet(path.as_uri(), session=test_session)
-    reader = chain._query.steps[-1].udf.inner
-    assert reader.prefetch_max_size is None
-    assert (
-        reader.project({"length"}).prefetch_max_size
-        == arrow.PARTIAL_READ_PREFETCH_MAX_SIZE
-    )
     selected = chain.select("length", "stats_x_max").to_list()
     assert spy.call_count == 1
+    assert prefetch.call_count == 0
     assert chain.count() == 2
-    assert arrow_reads == [["length", "stats/x/max"], ["length"]]
+    assert arrow_reads == [["length", "stats/x/max"], ["stats/x/max"]]
 
     full = dc.read_parquet(
         path.as_uri(),
@@ -76,6 +74,7 @@ def test_read_parquet_select_reads_only_selected_columns(
         == full.select("length", "stats_x_max").to_list()
         == [(10, 1.5), (20, 2.5)]
     )
+    assert prefetch.call_count == 1
     assert arrow_reads[-1] == ["unused", "length", "stats/x/max"]
 
 
@@ -155,6 +154,28 @@ def test_read_parquet_reuses_cached_full_read_before_projecting(
     assert chain.to_values("a") == [3, 2, 1, 1]
     assert chain.filter(C("b") > 10).count() == 2
     assert arrow_reads == [["a", "b", "c"]]
+    assert chain.settings(ephemeral=True).to_values("a") == [3, 2, 1, 1]
+    assert arrow_reads == [["a", "b", "c"], ["a"]]
+
+
+def test_read_parquet_full_read_does_not_invalidate_narrow_map_checkpoint(
+    rows_parquet, test_session, arrow_reads
+):
+    calls = 0
+
+    def slow(a: int) -> int:
+        nonlocal calls
+        calls += 1
+        return a + 1
+
+    chain = dc.read_parquet(rows_parquet, session=test_session)
+    mapped = chain.select("a", "b").map(x=slow)
+    assert mapped.to_values("x") == [4, 3, 2, 2]
+    assert calls == 4
+    assert len(chain.to_list()) == 4
+    assert mapped.to_values("x") == [4, 3, 2, 2]
+    assert calls == 4
+    assert arrow_reads == [["a", "b"], ["a", "b", "c"]]
 
 
 def test_read_csv_and_json_project_selected_columns(tmp_dir, test_session, arrow_reads):
@@ -239,11 +260,21 @@ def test_read_csv_and_json_project_selected_columns(tmp_dir, test_session, arrow
         ),
         pytest.param(
             lambda c: sorted(
-                c.group_by(total=func.sum("b"), partition_by="a").to_list("a", "total")
+                c.group_by(total=func.sum("b"), partition_by="a")
+                .save("grouped")
+                .to_list("a", "total")
             ),
             [(1, 20), (2, 20), (3, 30)],
             ["a", "b"],
             id="group_by",
+        ),
+        pytest.param(
+            lambda c: sorted(
+                c.group_by(n=func.count(), partition_by="a").to_list("a", "n")
+            ),
+            [(1, 2), (2, 1), (3, 1)],
+            ["a"],
+            id="group_by_count",
         ),
         pytest.param(
             lambda c: sorted(c.distinct("b").select("a").to_values("a")),
@@ -266,12 +297,27 @@ def test_read_csv_and_json_project_selected_columns(tmp_dir, test_session, arrow
             id="window_order_by",
         ),
         pytest.param(
-            lambda c: c.gen(
-                lambda b: [(b + 1,)], params=["b"], output={"d": int}
-            ).to_values("d"),
+            lambda c: (
+                c.gen(lambda b: [(b + 1,)], params=["b"], output={"d": int})
+                .save("generated")
+                .to_values("d")
+            ),
             [31, 21, 11, 11],
             ["b"],
             id="gen_params",
+        ),
+        pytest.param(
+            lambda c: sorted(
+                c.agg(
+                    lambda b: [(sum(b),)],
+                    params=["b"],
+                    partition_by="a",
+                    output={"total": int},
+                ).to_values("total")
+            ),
+            [20, 20, 30],
+            ["a", "b"],
+            id="agg_partition_by",
         ),
         pytest.param(
             lambda c: c.count(),
