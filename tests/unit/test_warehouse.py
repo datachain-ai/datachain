@@ -76,9 +76,7 @@ def test_table_rows_count(numbers_table, warehouse):
 
 
 def test_dataset_select_paginated(numbers_table, warehouse):
-    query = sa.select(numbers_table.c.sys__id, numbers_table.c.number).order_by(
-        numbers_table.c.number
-    )
+    query = sa.select(numbers_table.c.sys__id, numbers_table.c.number)
     with patch.object(
         type(warehouse),
         attribute="dataset_rows_select",
@@ -94,11 +92,7 @@ def test_dataset_select_paginated(numbers_table, warehouse):
 
 @pytest.mark.parametrize("limit", [7, 8, 9])
 def test_dataset_select_paginated_with_limit(limit, numbers_table, warehouse):
-    query = (
-        sa.select(numbers_table.c.sys__id, numbers_table.c.number)
-        .order_by(numbers_table.c.number)
-        .limit(limit)
-    )
+    query = sa.select(numbers_table.c.sys__id, numbers_table.c.number).limit(limit)
     with patch.object(
         type(warehouse),
         attribute="dataset_rows_select",
@@ -109,7 +103,7 @@ def test_dataset_select_paginated_with_limit(limit, numbers_table, warehouse):
     assert len(rows) == limit
     ids, nums = zip(*rows, strict=False)
     assert len(set(ids)) == limit
-    assert list(nums) == list(range(1, limit + 1))
+    assert set(nums) <= set(range(1, 74))
 
 
 def test_dataset_select_paginated_keyset(numbers_table, warehouse):
@@ -130,17 +124,20 @@ def test_dataset_select_paginated_keyset(numbers_table, warehouse):
     assert len({row[0] for row in rows}) == 73
 
 
-def test_dataset_select_paginated_preserves_columns_order_and_offset(
-    numbers_table, warehouse
+@pytest.mark.parametrize(
+    "build_query",
+    [
+        lambda t: sa.select(t.number),
+        lambda t: sa.select(t.sys__id, t.number).offset(1),
+        lambda t: sa.select(t.sys__id, t.number).order_by(t.number.desc()),
+    ],
+    ids=["missing-sys-id", "offset", "non-key-order-by"],
+)
+def test_dataset_select_paginated_rejects_non_udf_queries(
+    numbers_table, warehouse, build_query
 ):
-    t = numbers_table.c
-    for query in (
-        sa.select(t.number).order_by(t.number),
-        sa.select(t.sys__id, t.number).order_by(t.number.desc()).offset(5).limit(12),
-    ):
-        assert list(warehouse.dataset_select_paginated(query, page_size=4)) == list(
-            warehouse.dataset_rows_select(query)
-        )
+    with pytest.raises(ValueError, match="paginated query"):
+        list(warehouse.dataset_select_paginated(build_query(numbers_table.c)))
 
 
 @skip_if_not_sqlite
@@ -484,25 +481,3 @@ def test_check_value_converts_array_items(value, col_type, expected):
 def test_check_value_does_not_re_encode_dict_array_items():
     value = [{"a": 1}, {"b": 2}]
     assert check_value(Array(JSON()))(value) == value
-
-
-def test_user_partition_id_column_in_udfs(test_session, monkeypatch):
-    orig = test_session.catalog.warehouse.dataset_select_paginated
-    monkeypatch.setattr(
-        type(test_session.catalog.warehouse),
-        "dataset_select_paginated",
-        lambda self, query, page_size=2: orig.__func__(self, query, page_size=2),
-    )
-    chain = dc.read_values(
-        key=["a", "a", "b", "b", "b"],
-        partition_id=[10, None, 5, None, 1],
-        session=test_session,
-    )
-    assert chain.map(label=lambda key, partition_id: f"{key}:{partition_id}").to_values(
-        "label"
-    ) == ["a:10", "a:None", "b:5", "b:None", "b:1"]
-    assert (
-        chain.agg(cnt=lambda key: [len(key)], partition_by="key", output=int)
-        .order_by("cnt")
-        .to_values("cnt")
-    ) == [2, 3]

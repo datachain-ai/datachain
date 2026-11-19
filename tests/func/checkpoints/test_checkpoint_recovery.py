@@ -1420,18 +1420,16 @@ def test_cross_job_resume_while_the_source_still_commits(
     assert vals == [n * 100 + i for n in (1, 2, 3, 4, 5) for i in range(3)]
 
 
-@skip_if_not_sqlite
-@pytest.mark.parametrize("same_job", [True, False])
-def test_partitioned_agg_resume_from_legacy_partition_id_column(test_session, same_job):
-    """A partial partitioned checkpoint created before PARTITION_COLUMN_ID became
-    sys__partition_id has column partition_id in its partition table."""
+def test_partitioned_agg_restarts_when_partition_column_name_changes(
+    test_session, monkeypatch
+):
     dc.read_values(num=[1, 2, 3, 4], session=test_session).save("legacy_part_nums")
     processed = []
     failing = True
 
     def aggregate(num: list[int]) -> Iterator[tuple[int, int]]:
         if failing and len(processed) >= 2:
-            raise RuntimeError("interrupted legacy partition agg")
+            raise RuntimeError("interrupted partition agg")
         processed.extend(num)
         yield num[0], num[0] * 10
 
@@ -1444,23 +1442,21 @@ def test_partitioned_agg_resume_from_legacy_partition_id_column(test_session, sa
         )
 
     reset_session_job_state()
-    with pytest.raises(RuntimeError, match="interrupted legacy partition agg"):
+    for mod in (
+        "datachain.data_storage.schema",
+        "datachain.data_storage.warehouse",
+        "datachain.query.batch",
+        "datachain.query.dataset",
+    ):
+        monkeypatch.setattr(f"{mod}.PARTITION_COLUMN_ID", "partition_id")
+    monkeypatch.setattr("datachain.query.dataset.partition_col_names", ["partition_id"])
+    with pytest.raises(RuntimeError, match="interrupted partition agg"):
         run()
     assert len(processed) == 2
 
-    warehouse = test_session.catalog.warehouse
-    (part_name,) = warehouse.db.list_tables(pattern="udf_%_partition")
-    warehouse.db.execute_str(
-        f'ALTER TABLE "{part_name}" RENAME COLUMN sys__partition_id TO partition_id'
-    )
-    if (cached := warehouse.db.metadata.tables.get(part_name)) is not None:
-        warehouse.db.metadata.remove(cached)
-
-    first_batch = set(processed)
-    if not same_job:
-        reset_session_job_state()
+    monkeypatch.undo()
     failing = False
     processed.clear()
     rows = run().order_by("num").to_list("num", "result")
-    assert set(processed) == {1, 2, 3, 4} - first_batch
+    assert sorted(processed) == [1, 2, 3, 4]
     assert rows == [(n, n * 10) for n in (1, 2, 3, 4)]

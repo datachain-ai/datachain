@@ -1044,6 +1044,7 @@ def test_gen(test_session):
             [1, 5],
         ),
     ],
+    ids=["map", "gen", "agg"],
 )
 def test_udf_reads_only_param_columns(test_session, apply, expected):
     chain = dc.read_values(
@@ -1062,6 +1063,32 @@ def test_udf_reads_only_param_columns(test_session, apply, expected):
     assert {"sys__id", "a"} in inputs  # reads after the UDF (the preview) hold b
     assert not any({"tag", "unused"} & names for names in inputs)
     assert sorted(result.to_values("b")) == expected
+
+
+def test_delta_gen_reads_unreferenced_delta_key_and_presence_columns(test_session):
+    class Item(DataModel):
+        k: int | None = None
+
+    dc.read_values(
+        a=[1, 2],
+        item=[Item(k=1), Item(k=2)],
+        unused=["u", "v"],
+        session=test_session,
+    ).save("delta_gen_key_src")
+    chain = (
+        dc.read_dataset(
+            "delta_gen_key_src",
+            delta=True,
+            delta_on="item.k",
+            session=test_session,
+        )
+        .gen(
+            lambda a: [(Item(k=a), a * 10)],
+            output={"item": Item | None, "b": int},
+        )
+        .save("delta_gen_key_out")
+    )
+    assert sorted(chain.to_values("b")) == [10, 20]
 
 
 def test_map(test_session):
