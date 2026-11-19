@@ -175,10 +175,14 @@ def test_read_parquet_full_read_does_not_invalidate_narrow_map_checkpoint(
     mapped = chain.select("a", "b").map(x=slow)
     assert mapped.to_values("x") == [4, 3, 2, 2]
     assert calls == 4
+    filtered = chain.filter(C("a") >= 2).map(x=slow)
+    assert filtered.to_values("x") == [4, 3]
+    assert calls == 6
     assert len(chain.to_list()) == 4
     assert mapped.to_values("x") == [4, 3, 2, 2]
-    assert calls == 4
-    assert arrow_reads == [["a", "b"], ["a", "b", "c"]]
+    assert filtered.to_values("x") == [4, 3]
+    assert calls == 6
+    assert arrow_reads == [["a", "b"], ["a", "b", "c"], ["a", "b", "c"]]
 
 
 def test_read_csv_and_json_project_selected_columns(tmp_dir, test_session, arrow_reads):
@@ -539,6 +543,7 @@ def test_read_parquet_filter_prunes_row_groups_and_streams_payload(
         writer.write_table(table.slice(4, 8))  # rg 2: 8 rows, hits at pos 1 and 4
 
     monkeypatch.setattr(ArrowGenerator, "DEFAULT_BATCH_SIZE", 2)
+    monkeypatch.setattr(arrow, "SMALL_ROW_GROUP_BYTES", 0)
     res = (
         dc.read_parquet(path.as_uri(), session=test_session)
         .filter((C("a") >= 10) & (C("b") == 60))
@@ -549,27 +554,45 @@ def test_read_parquet_filter_prunes_row_groups_and_streams_payload(
 
 
 def test_read_parquet_filter_coalesces_remaining_row_groups_after_two_match(
-    tmp_dir, test_session
+    tmp_dir, test_session, monkeypatch
 ):
-    path = tmp_dir / "four_rg.parquet"
+    path = tmp_dir / "five_rg.parquet"
     table = pa.table(
         {
-            "a": [1, 0, 1, 0, 1, 0, 1, 1],
+            "a": [0, 0, 1, 0, 1, 0, 1, 1],
             "payload": [f"p{i}" for i in range(8)],
         }
     )
     pq.write_table(table, path, row_group_size=2)
+    monkeypatch.setattr(arrow, "SMALL_ROW_GROUP_BYTES", 0)
     res = (
         dc.read_parquet(path.as_uri(), session=test_session)
         .filter(C("a") == 1)
         .select("payload", "source.index")
         .to_list("payload", "source.index")
     )
-    assert res == [("p0", 0), ("p2", 2), ("p4", 4), ("p6", 6), ("p7", 7)]
+    assert res == [("p2", 2), ("p4", 4), ("p6", 6), ("p7", 7)]
+
+
+@pytest.fixture
+def arrow_rows(monkeypatch):
+    rows = []
+    for name in ("read_batches", "filter_batches"):
+        fn = getattr(arrow, name)
+
+        def record(ds, *args, _fn=fn, **kw):
+            total = 0
+            for idx, batch in _fn(ds, *args, **kw):
+                total += batch.num_rows
+                yield idx, batch
+            rows.append(total)
+
+        monkeypatch.setattr(arrow, name, record)
+    return rows
 
 
 def test_read_parquet_filter_without_select_preserves_source_index_and_all_columns(
-    tmp_dir, test_session
+    tmp_dir, test_session, arrow_rows
 ):
     path = tmp_dir / "rg.parquet"
     table = pa.table(
@@ -580,7 +603,12 @@ def test_read_parquet_filter_without_select_preserves_source_index_and_all_colum
     )
     pq.write_table(table, path, row_group_size=2)
 
-    chain = dc.read_parquet(path.as_uri(), session=test_session).filter(C("id") == 30)
+    chain = (
+        dc.read_parquet(path.as_uri(), session=test_session)
+        .filter(C("id") == 30)
+        .save("filtered_only")
+    )
+    assert arrow_rows == [1]
     ((source, i, text),) = chain.to_list("source", "id", "text")
     assert (source.index, i, text) == (2, 30, "w2")
     assert source.read() == {"id": 30, "text": "w2"}
@@ -824,9 +852,11 @@ def test_read_parquet_filter_joined_on_sys_id(tmp_dir, test_session):
 
 
 def test_read_parquet_filter_across_select_and_order_by(
-    rows_parquet, test_session, arrow_reads
+    rows_parquet, test_session, arrow_rows
 ):
     chain = dc.read_parquet(rows_parquet, session=test_session)
+    assert chain.select("a", "b").filter(C("a") == 3).to_list("a", "b") == [(3, 30)]
+    assert chain.order_by("b").filter(C("b") == 20).to_list("a", "b") == [(2, 20)]
     res = (
         chain.select("a", "b")
         .order_by("b")
@@ -835,7 +865,7 @@ def test_read_parquet_filter_across_select_and_order_by(
         .to_list("a", "b")
     )
     assert res == [(2, 20)]
-    assert arrow_reads == [["a", "b"]]
+    assert arrow_rows == [1, 1, 1]
     grouped = (
         chain.filter(C("a") > 1)
         .group_by(n=dc.func.count(), partition_by="a")
@@ -859,20 +889,23 @@ def test_read_parquet_filter_unpushable_types_fall_back_to_sql(tmp_dir, test_ses
     pq.write_table(
         pa.table(
             {
-                "id": [0, 1, 2],
-                "f": [1.5, float("nan"), None],
-                "s": ["0", "5", "9"],
+                "id": [0, 1, 2, 3],
+                "f": [1.5, 0.5, float("nan"), None],
+                "s": ["0", "5", "9", "9"],
             }
         ),
         path,
     )
     chain = dc.read_parquet(path.as_uri(), session=test_session)
-    assert chain.filter(C("f") != 1.5).to_values("id") == []
-    assert chain.filter(~((C("id") == 0) | (C("f") == 1.5))).to_values("id") == []
-    assert chain.filter((C("id") == 0) | (C("f") == 1.5)).to_values("id") == [0]
-    assert chain.filter(C("f").is_(None)).to_values("id") == [1, 2]
-    assert chain.filter(C("id").not_in([0, 1.5])).to_values("id") == [1, 2]
+    assert chain.filter(C("f") != 1.5).to_values("id") == [1]
+    assert chain.filter(~((C("id") == 0) | (C("f") == 0.5))).to_values("id") == []
+    assert chain.filter((C("id") == 0) | (C("f") == 0.5)).to_values("id") == [0, 1]
+    assert chain.filter(C("f").is_(None)).to_values("id") == [2, 3]
+    assert chain.filter(C("id").not_in([0, 1.5])).to_values("id") == [1, 2, 3]
+    assert chain.filter(C("id").in_([1, "2"])).to_values("id") == [1, 2]
     assert chain.filter(C("id").between(0, 1.5)).to_values("id") == [0, 1]
+    assert chain.filter(C("id").between(0, "2")).to_values("id") == [0, 1, 2]
+    assert chain.filter(C("s")).to_values("id") == [1, 2, 3]
     assert chain.filter(C("id") == True).to_values("id") == [1]  # noqa: E712
     assert chain.filter(C("id") > "5").to_values("id") == []
     assert chain.filter(C("s") == 5).to_values("id") == [1]

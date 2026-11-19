@@ -1720,8 +1720,9 @@ def test_read_parquet_filter_fetches_only_matching_row_groups(
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize("start_id,expected", [(0, 50_000), (500, 49_500)])
 def test_read_parquet_filter_coalesces_reads_across_many_matching_row_groups(
-    cloud_test_catalog_upload, fetched_bytes
+    cloud_test_catalog_upload, fetched_bytes, start_id, expected
 ):
     ctc = cloud_test_catalog_upload
     rng = np.random.default_rng(0)
@@ -1739,9 +1740,9 @@ def test_read_parquet_filter_coalesces_reads_across_many_matching_row_groups(
     )
     fetched_bytes[:] = [0, 0]
 
-    rows = chain.filter(dc.C("id") >= 0).to_list()
-    assert len(rows) == 50_000
-    assert 0 < fetched_bytes[1] < 10
+    rows = chain.filter(dc.C("id") >= start_id).to_list()
+    assert len(rows) == expected
+    assert 0 < fetched_bytes[1] <= 4
 
 
 class _Wide(DataModel):
