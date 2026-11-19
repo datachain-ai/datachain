@@ -399,6 +399,11 @@ class UDFBase(AbstractUDF):
         self.output = None
         self._func = None
 
+    def project(self, names: set[str]) -> "Self | None":
+        """Return a copy reading only the top-level signals used by ``names``,
+        or None when nothing would be dropped."""
+        return None
+
     def hash(self, include_body: bool = True) -> str:
         """
         Creates SHA hash of this UDF function. It takes into account function,

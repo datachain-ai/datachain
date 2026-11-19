@@ -262,6 +262,11 @@ class Step(ABC):
     """A query processing step (filtering, mutation, etc.)"""
 
     resets_query_state_after_apply: ClassVar[bool] = True
+    bounds_columns: ClassVar[bool] = False
+
+    def used_columns(self) -> set[str] | None:
+        """Names of the input columns this step reads, or None if unknown."""
+        return None
 
     @abstractmethod
     def apply(
@@ -582,6 +587,15 @@ class UDFStep(Step, ABC):
         ]
 
         return hashlib.sha256(b"".join(parts)).hexdigest()
+
+    def used_columns(self) -> set[str] | None:
+        assert self.udf.inner.params is not None
+        return _expr_columns(
+            (
+                *self.udf.inner.params.db_signals(),
+                *ensure_sequence(self.partition_by or ()),
+            )
+        )
 
     @abstractmethod
     def create_output_table(self, name: str) -> "Table":
@@ -1699,6 +1713,7 @@ class UDFSignal(UDFStep):
 class RowGenerator(UDFStep):
     """Extend dataset with new rows."""
 
+    bounds_columns: ClassVar[bool] = True
     udf: "UDFAdapter"
     session: "Session"
     partition_by: PartitionByType | None = None
@@ -1816,13 +1831,21 @@ class RegenerateSystemColumns(Step):
         return step_result(q, new_query.selected_columns)
 
 
+_SYS = frozenset({"sys__id", "sys__rand"})
+
+
 @frozen
 class SQLSelect(SQLClause):
+    bounds_columns: ClassVar[bool] = True
     args: tuple[Function | ColumnElement, ...]
     implicit_sys: bool = False
 
     def hash_inputs(self) -> str:
         return hash_column_elements(self.args)
+
+    def used_columns(self) -> set[str] | None:
+        cols = _expr_columns(self.args)
+        return cols - _SYS if cols is not None and self.implicit_sys else cols
 
     def apply_sql_clause(self, query) -> Select:
         subquery = query.subquery()
@@ -1857,6 +1880,9 @@ class SQLMutate(SQLClause):
     def hash_inputs(self) -> str:
         return hash_column_elements(self.args)
 
+    def used_columns(self) -> set[str] | None:
+        return _expr_columns(self.args)
+
     def apply_sql_clause(self, query: Select) -> Select:
         original_subquery = query.subquery()
         to_mutate = {c.name for c in self.args}
@@ -1889,6 +1915,9 @@ class SQLFilter(SQLClause):
     def hash_inputs(self) -> str:
         return hash_column_elements(self.expressions)
 
+    def used_columns(self) -> set[str] | None:
+        return _expr_columns(self.expressions)
+
     def __and__(self, other):
         expressions = self.parse_cols(self.expressions)
         return self.__class__(expressions + other)
@@ -1915,6 +1944,9 @@ class SQLOrderBy(SQLClause):
     def hash_inputs(self) -> str:
         return hash_column_elements(self.args)
 
+    def used_columns(self) -> set[str] | None:
+        return _expr_columns(self.args)
+
     def apply_sql_clause(self, query: Select) -> Select:
         args = self.parse_cols(self.args)
         return query.order_by(*_bind_shared_names(args, query))
@@ -1936,6 +1968,9 @@ class SQLLimit(SQLClause):
     def hash_inputs(self) -> str:
         return hashlib.sha256(str(self.n).encode()).hexdigest()
 
+    def used_columns(self) -> set[str]:
+        return set()
+
     def apply_sql_clause(self, query: Select) -> Select:
         return query.limit(self.n)
 
@@ -1955,6 +1990,9 @@ class SQLOffset(SQLClause):
     def hash_inputs(self) -> str:
         return hashlib.sha256(str(self.offset).encode()).hexdigest()
 
+    def used_columns(self) -> set[str]:
+        return set()
+
     def apply_sql_clause(self, query: GenerativeSelect) -> GenerativeSelect:
         return query.offset(self.offset)
 
@@ -1969,8 +2007,13 @@ class SQLOffset(SQLClause):
 
 @frozen
 class SQLCount(SQLClause):
+    bounds_columns: ClassVar[bool] = True
+
     def hash_inputs(self) -> str:
         return ""
+
+    def used_columns(self) -> set[str]:
+        return set()
 
     def apply_sql_clause(self, query):
         return sqlalchemy.select(f.count(1)).select_from(query.subquery())
@@ -1983,6 +2026,9 @@ class SQLDistinct(SQLClause):
 
     def hash_inputs(self) -> str:
         return hash_column_elements(self.args)
+
+    def used_columns(self) -> set[str] | None:
+        return _expr_columns(self.args) if self.args else None
 
     def apply_sql_clause(self, query):
         args = _bind_shared_names(self.args, query)
@@ -2319,6 +2365,7 @@ class SQLJoin(Step):
 
 @frozen
 class SQLGroupBy(SQLClause):
+    bounds_columns: ClassVar[bool] = True
     cols: Sequence[str | Function | ColumnElement]
     group_by: Sequence[str | Function | ColumnElement]
 
@@ -2328,6 +2375,9 @@ class SQLGroupBy(SQLClause):
                 hash_column_elements(self.cols) + hash_column_elements(self.group_by)
             )
         ).hexdigest()
+
+    def used_columns(self) -> set[str] | None:
+        return _expr_columns((*self.cols, *self.group_by))
 
     def apply_sql_clause(self, query) -> Select:
         if not self.cols:
@@ -2430,9 +2480,8 @@ def _expr_columns(exprs: Iterable[Any]) -> set[str] | None:
         if isinstance(expr, str):
             names.add(expr)
             continue
-        if isinstance(expr, Function):
-            expr = expr.get_column()
         for elem in iterate(expr):
+            # Safety guard: raw SQL text or literal clauses may reference any column.
             if isinstance(elem, TextClause):
                 return None
             if isinstance(elem, ColumnClause):
@@ -2440,74 +2489,54 @@ def _expr_columns(exprs: Iterable[Any]) -> set[str] | None:
                     return None
                 names.add(elem.name)
             elif isinstance(name := getattr(elem, "element", None), str):
+                # Window partition_by / order_by specs wrap the column name in .element.
                 names.add(name)
     return names
-
-
-def _udf_exprs(step: UDFStep) -> Iterable[Any] | None:
-    if (params := step.udf.inner.params) is None:
-        return None
-    return (*params.db_signals(), *ensure_sequence(step.partition_by or ()))
-
-
-_STEP_EXPRS: dict[type[Step], Callable[[Any], Iterable[Any] | None]] = {
-    SQLSelect: lambda s: s.args or None,
-    SQLGroupBy: lambda s: (*s.cols, *s.group_by),
-    SQLCount: lambda _: (),
-    SQLFilter: lambda s: s.expressions,
-    SQLOrderBy: lambda s: s.args,
-    SQLMutate: lambda s: s.args,
-    SQLDistinct: lambda s: s.args or None,
-    SQLLimit: lambda _: (),
-    SQLOffset: lambda _: (),
-    RegenerateSystemColumns: lambda _: (),
-    RowGenerator: _udf_exprs,
-}
-
-
-_SYS = frozenset({"sys__id", "sys__rand"})
 
 
 def _used_columns(steps: Sequence[Step]) -> set[str] | None:
     """Return the DB column names used before the first step that bounds
     the input columns, or None when every column must be kept."""
+    if not any(s.bounds_columns for s in steps):
+        return None
     used: set[str] = set()
     bounded = False
     for step in steps:
-        get_exprs = _STEP_EXPRS.get(type(step))
-        if (
-            get_exprs is None
-            or (exprs := get_exprs(step)) is None
-            or (cols := _expr_columns(exprs)) is None
-        ):
+        if not bounded and isinstance(step, UDFSignal):
             return None
-        if isinstance(step, SQLSelect) and step.implicit_sys:
-            cols -= _SYS
-        if "sys__rand" in cols:
+        cols = step.used_columns()
+        if cols is None or "sys__rand" in cols:
             return None
-        if not bounded:
+        if not bounded or isinstance(step, SQLFilter):
+            # A filter after a select still sees the columns the select dropped.
             used |= cols
-            bounded = isinstance(step, (SQLSelect, SQLGroupBy, SQLCount, RowGenerator))
-    return used if bounded else None
+        bounded = bounded or step.bounds_columns
+    return used
 
 
-def _project_reads(steps: Sequence[Step]) -> list[Step]:
-    from datachain.lib.arrow import ArrowGenerator
-
-    result = list(steps)
-    for i, step in enumerate(result):
-        if (
-            isinstance(step, RowGenerator)
-            and isinstance(inner := step.udf.inner, ArrowGenerator)
-            and (used := _used_columns(result[i + 1 :])) is not None
-            and (projected := inner.project(used)) is not None
+def _project_step(
+    step: Step,
+    later_steps: Sequence[Step],
+    hasher: Any,
+    checkpoints_enabled: bool,
+) -> Step:
+    if (
+        isinstance(step, RowGenerator)
+        and (used := _used_columns(later_steps)) is not None
+        and (projected := step.udf.inner.project(used)) is not None
+    ):
+        full_hash = hasher.copy()
+        full_hash.update(step.hash().encode("utf-8"))
+        if checkpoints_enabled and step._find_udf_checkpoint(
+            step.session.get_or_create_job(), full_hash.hexdigest()
         ):
-            assert projected.output is not None
-            udf = attrs.evolve(
-                step.udf, inner=projected, output=projected.output.to_udf_spec()
-            )
-            result[i] = attrs.evolve(step, udf=udf)
-    return result
+            return step
+        assert projected.output is not None
+        udf = attrs.evolve(
+            step.udf, inner=projected, output=projected.output.to_udf_spec()
+        )
+        return attrs.evolve(step, udf=udf)
+    return step
 
 
 class DatasetQuery:
@@ -2711,7 +2740,6 @@ class DatasetQuery:
             hasher.update(self.delta_spec.hash().encode("utf-8"))
 
         query = self.clone()
-        query.steps = _project_reads(query.steps)
 
         index = os.getenv("DATACHAIN_QUERY_CHUNK_INDEX", self._chunk_index)
         total = os.getenv("DATACHAIN_QUERY_CHUNK_TOTAL", self._chunk_total)
@@ -2745,8 +2773,11 @@ class DatasetQuery:
         # Stage flags reset at the start of every apply_steps run; they only
         # describe the in-flight query under construction here.
         state = QueryState(self.catalog.warehouse)
-        for step in query.steps:
+        for i, step in enumerate(query.steps):
             hash_input = _hash
+            step = _project_step(
+                step, query.steps[i + 1 :], hasher, self.checkpoints_enabled
+            )
             hasher.update(step.hash().encode("utf-8"))
             _hash = hasher.hexdigest()
             hash_output = _hash

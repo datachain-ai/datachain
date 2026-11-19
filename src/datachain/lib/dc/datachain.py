@@ -2966,7 +2966,6 @@ class DataChain:
         from datachain.lib.arrow import (
             PARTIAL_READ_PREFETCH_MAX_SIZE,
             ArrowGenerator,
-            _written_by_datachain,
             file_schemas,
             fix_pyarrow_format,
             infer_output,
@@ -3041,26 +3040,23 @@ class DataChain:
 
         # Prefetch downloads whole files, so a partial read prefetches only small ones.
         partial = nrows or (columns is not None and is_parquet(format))
-        reader = ArrowGenerator(
-            schema,
-            model,
-            source,
-            nrows,
-            columns=read,
-            written_by_datachain=written_by_datachain,
-            output_from_types=from_types,
-            parse_options=parse_options,
-            prefetch_max_size=PARTIAL_READ_PREFETCH_MAX_SIZE if partial else None,
-            **kwargs,
+        projectable = infer and not col_names and not column and columns is None
+        return self.gen(  # type: ignore[arg-type]
+            ArrowGenerator(
+                schema,
+                model,
+                source,
+                nrows,
+                columns=read,
+                written_by_datachain=written_by_datachain,
+                output_from_types=from_types,
+                parse_options=parse_options,
+                prefetch_max_size=PARTIAL_READ_PREFETCH_MAX_SIZE if partial else None,
+                projectable=projectable,
+                **kwargs,
+            ),
+            output=output,
         )
-        reader.projectable = (
-            infer
-            and not col_names
-            and not column
-            and columns is None
-            and not any(_written_by_datachain(s) for s in schemas)
-        )
-        return self.gen(reader, output=output)  # type: ignore[arg-type]
 
     def to_parquet(
         self,

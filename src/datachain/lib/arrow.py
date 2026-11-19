@@ -136,10 +136,30 @@ def pyarrow_fs(file: File, format):
     return PyFileSystem(_PartialReadHandler(client, file, block_size=block_size))
 
 
+def read_batches(
+    ds: Dataset, nrows: int | None = None, **kw: Any
+) -> Iterator[tuple[int, pa.RecordBatch]]:
+    """Yield the file's batches up to nrows rows, each with its first row's
+    index."""
+    start, remaining = 0, nrows
+    with (
+        tqdm(desc="Parsed by pyarrow", unit="rows", total=nrows, leave=False) as pbar,
+        safe_closing(ds.to_batches(**kw)) as batches,
+    ):
+        for batch in batches:
+            if remaining is not None:
+                batch = batch.slice(0, remaining)
+                remaining -= batch.num_rows
+            yield start, batch
+            start += batch.num_rows
+            pbar.update(batch.num_rows)
+            if remaining == 0:
+                break
+
+
 class ArrowGenerator(Generator):
     # Rows per scanned batch: small enough to bound memory over many files.
     DEFAULT_BATCH_SIZE = 2**14
-    projectable: bool = False
 
     def __init__(
         self,
@@ -151,6 +171,7 @@ class ArrowGenerator(Generator):
         written_by_datachain: bool | None = None,
         output_from_types: bool = False,
         prefetch_max_size: int | None = None,
+        projectable: bool = False,
         **kwargs,
     ):
         """
@@ -170,6 +191,8 @@ class ArrowGenerator(Generator):
             validators, so rows of plain values can skip it.
         prefetch_max_size : Files larger than this, or of unknown size, aren't
             prefetched.
+        projectable : Whether the query planner may narrow this read to the
+            columns that later steps use.
         kwargs: Parameters to pass to pyarrow.dataset.dataset.
         """
         super().__init__()
@@ -184,6 +207,7 @@ class ArrowGenerator(Generator):
         # Every file of a read of DataChain files is read by its column names, even
         # one whose metadata a tool such as Polars dropped when rewriting it.
         self.datachain_read = _written_by_datachain(input_schema)
+        self.projectable = projectable and not self.datachain_read
         self.parse_options = kwargs.pop("parse_options", None)
         self.kwargs = kwargs
 
@@ -197,25 +221,30 @@ class ArrowGenerator(Generator):
     def project(self, names: set[str]) -> "ArrowGenerator | None":
         """Return a copy reading only the top-level signals used by ``names``,
         or None when nothing would be dropped."""
-        if (
-            not self.projectable
-            or self.delta_key
-            or self.input_schema is None
-            or self.output is None
-        ):
+        if not self.projectable or self.delta_key:
             return None
+        assert self.input_schema is not None
+        assert self.output is not None
         kept = {
             name: anno
             for name, anno in self.output.values.items()
             if not names.isdisjoint(SignalSchema({name: anno}).db_signals())
         }
         data = {k: v for k, v in kept.items() if k in self.output_schema.model_fields}
-        if not data and self.output_schema.model_fields:
-            first = next(iter(self.output_schema.model_fields))
-            kept[first] = data[first] = self.output.values[first]
-        if not data or len(kept) == len(self.output.values):
-            return None
         raw = normalize_col_names(self.input_schema.names)
+        if not data:
+            schema = self.input_schema
+            pick = min(
+                self.output_schema.model_fields,
+                key=lambda k: (
+                    (0, t.bit_width)
+                    if pa.types.is_primitive(t := schema.field(raw[k]).type)
+                    else (1, 0)
+                ),
+            )
+            kept[pick] = data[pick] = self.output.values[pick]
+        if len(kept) == len(self.output.values):
+            return None
         projected = copy.copy(self)
         projected.columns = [raw[k] for k in data]
         projected.output_schema = dict_to_data_model(self.output_schema.__name__, data)
@@ -262,7 +291,9 @@ class ArrowGenerator(Generator):
         }
         if (names := self._flat_columns(schema)) is not None:
             kw["columns"] = names
-            yield from self._column_batches(self._batches(ds, kw), file, source_kwargs)
+            yield from self._column_batches(
+                read_batches(ds, self.nrows, **kw), file, source_kwargs
+            )
             return
         if self.datachain_read:
             objs = self._signal_objects(ds, kw)
@@ -276,34 +307,12 @@ class ArrowGenerator(Generator):
             hf_schema = _get_hf_schema(schema)
             objs = (
                 self._process_non_datachain_record(record, hf_schema)
-                for _, batch in self._batches(ds, kw)
+                for _, batch in read_batches(ds, self.nrows, **kw)
                 # Maps are read as dicts. Duplicate keys raise an error.
                 for record in batch.to_pylist(maps_as_pydicts="strict")
             )
         for index, obj in enumerate(objs):
             yield self._process_record(obj, file, index, source_kwargs)
-
-    def _batches(
-        self, ds: Dataset, kw: dict[str, Any]
-    ) -> Iterator[tuple[int, pa.RecordBatch]]:
-        """Yield the file's batches up to nrows rows, each with its first row's
-        index."""
-        start, remaining = 0, self.nrows
-        with (
-            tqdm(
-                desc="Parsed by pyarrow", unit="rows", total=self.nrows, leave=False
-            ) as pbar,
-            safe_closing(ds.to_batches(**kw)) as batches,
-        ):
-            for batch in batches:
-                if remaining is not None:
-                    batch = batch.slice(0, remaining)
-                    remaining -= batch.num_rows
-                yield start, batch
-                start += batch.num_rows
-                pbar.update(batch.num_rows)
-                if remaining == 0:
-                    break
 
     def _source_kwargs(self) -> dict[str, Any]:
         """Return the read options that each row's source keeps."""
@@ -393,7 +402,7 @@ class ArrowGenerator(Generator):
         ]
         wanted = {*names, *(tag for tag, _, _ in parents.values())}
         kw["columns"] = [c for c in schema.names if c in wanted]
-        for _, batch in self._batches(ds, kw):
+        for _, batch in read_batches(ds, self.nrows, **kw):
             # Maps are read as dicts. Duplicate keys raise an error.
             values = {
                 name: column.to_pylist(maps_as_pydicts="strict")
