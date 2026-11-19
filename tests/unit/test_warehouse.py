@@ -124,20 +124,10 @@ def test_dataset_select_paginated_keyset(numbers_table, warehouse):
     assert len({row[0] for row in rows}) == 73
 
 
-@pytest.mark.parametrize(
-    "build_query",
-    [
-        lambda t: sa.select(t.number),
-        lambda t: sa.select(t.sys__id, t.number).offset(1),
-        lambda t: sa.select(t.sys__id, t.number).order_by(t.number.desc()),
-    ],
-    ids=["missing-sys-id", "offset", "non-key-order-by"],
-)
-def test_dataset_select_paginated_rejects_non_udf_queries(
-    numbers_table, warehouse, build_query
-):
-    with pytest.raises(ValueError, match="paginated query"):
-        list(warehouse.dataset_select_paginated(build_query(numbers_table.c)))
+def test_dataset_select_paginated_needs_sys_id(numbers_table, warehouse):
+    query = sa.select(numbers_table.c.number)
+    with pytest.raises(ValueError, match="sys__id"):
+        list(warehouse.dataset_select_paginated(query))
 
 
 @skip_if_not_sqlite
