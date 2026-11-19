@@ -247,7 +247,7 @@ def _split_page(body: bytes, versions: bool) -> tuple[list[Element], str, list] 
         while entry := match(text, pos):  # one after another, from the first
             entries.append(entry.groups())
             pos = entry.end()
-        if not entries or _FIRST.search(text, pos):
+        if _FIRST.search(text, pos):
             return None  # an entry the patterns don't read
         text = text[: first.start()] + _MARK + text[pos:]
     try:
@@ -279,8 +279,7 @@ def _rows_page(body: bytes, shape: Shape, source: str) -> dict[str, Any] | None:
         return None
     others, ns, entries = split
     page = _read(others, _fields(shape, ns))
-    # botocore decodes DeleteMarkers and CommonPrefixes after the parse; FileRows are
-    # ours
+    # botocore decodes DeleteMarkers and CommonPrefixes; we decode FileRows here
     decode = _decode_url if page.get("EncodingType") == "url" else str
     rows, markers, folders = [], [], []
     try:
