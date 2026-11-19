@@ -150,6 +150,7 @@ def test_url_is_saved_only_for_a_self_hosted_studio():
     studio_login("other", url=OTHER_URL)
 
     text = Path(credentials_path(GLOBAL)).read_text()
+    assert text.startswith('[[token]]\ntoken = "default"')
     assert STUDIO_URL not in text
     assert f'url = "{OTHER_URL}"' in text
     logins = [(lg.url, lg.token) for lg in load_logins(GLOBAL)]
