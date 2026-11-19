@@ -2,9 +2,11 @@ import asyncio
 import functools
 import posixpath
 import re
+import threading
 from typing import Any
 
 from datachain.lib.file import File, FileRow
+from datachain.progress import tqdm
 
 from .fsspec import Client, ResultQueue
 
@@ -102,11 +104,25 @@ class HfClient(Client):
     async def _fetch_default(
         self, start_prefix: str, result_queue: ResultQueue
     ) -> None:
-        rows = await asyncio.to_thread(self._list, start_prefix)
-        for i in range(0, len(rows), self.LIST_PAGE_SIZE):
-            await result_queue.put(rows[i : i + self.LIST_PAGE_SIZE])
+        loop = asyncio.get_running_loop()
+        stop = threading.Event()
+        with tqdm(desc=f"Listing {self.uri}", unit=" objects", leave=False) as pbar:
 
-    def _list(self, prefix: str) -> list[FileRow]:
+            def emit(page: list[FileRow]) -> None:
+                pbar.update(len(page))
+                asyncio.run_coroutine_threadsafe(result_queue.put(page), loop).result()
+
+            try:
+                await asyncio.to_thread(self._list, start_prefix, emit, stop)
+            finally:
+                stop.set()
+
+    def _list(
+        self,
+        prefix: str,
+        emit=lambda _: None,
+        stop: threading.Event | None = None,
+    ) -> None:
         prefix = prefix.strip("/")
         path = f"{self.name}/{prefix}".rstrip("/")
         fs = self.fs.sync_fs
@@ -117,13 +133,17 @@ class HfClient(Client):
         path = resolved.unresolve()
         under = f"{path}/"
         base = f"{prefix}/" if prefix else ""
-        found = fs.find(
-            path, detail=True, **({"expand_info": True} if repository else {})
-        )
-        rows = []
+        expand = {"expand_info": True} if repository else {}
+        found = fs.find(path, detail=True, **expand)
+        if not found:
+            fs.info(path, **expand)
+            return
+        page: list[FileRow] = []
         for name, info in found.items():
+            if stop is not None and stop.is_set():
+                return
             if name == path:
-                info = fs.info(name, **({"expand_info": True} if repository else {}))
+                info = fs.info(name, **expand)
                 relative = prefix
             else:
                 relative = base + name[len(under) :]
@@ -139,7 +159,7 @@ class HfClient(Client):
                 **({"version": commit.oid} if commit else {}),
                 **({"last_modified": last_modified} if last_modified else {}),
             }
-            rows.append(
+            page.append(
                 FileRow(
                     self.uri,
                     relative,
@@ -148,9 +168,11 @@ class HfClient(Client):
                     **metadata,
                 )
             )
-        if not rows:
-            fs.info(path, **({"expand_info": True} if repository else {}))
-        return rows
+            if len(page) >= self.LIST_PAGE_SIZE:
+                emit(page)
+                page = []
+        if page:
+            emit(page)
 
     def _open_remote(self, file: "File", block_size: int | None = None):
         self.check_unchanged(file)

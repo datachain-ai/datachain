@@ -216,6 +216,41 @@ def test_recursive_listing_bucket_preserves_xet_hash_and_mtime():
     fs.find.assert_called_once_with("buckets/org/bucket/dir", detail=True)
 
 
+def test_recursive_listing_streams_pages_and_stops_on_cancel():
+    import threading
+
+    client = HfClient("datasets", {}, Mock(spec=Cache))
+    client.LIST_PAGE_SIZE = 1
+    client._fs = Mock()
+    fs = client._fs.sync_fs
+    fs.resolve_path.return_value = SimpleNamespace(
+        repo_id="org/repo",
+        revision="main",
+        path_in_repo="",
+        unresolve=lambda: "datasets/org/repo",
+    )
+    date = datetime(2024, 10, 12, tzinfo=UTC)
+    commit = SimpleNamespace(oid="c1", date=date)
+    fs.find.return_value = {
+        "datasets/org/repo/a.txt": {"size": 1, "blob_id": "b1", "last_commit": commit},
+        "datasets/org/repo/b.txt": {"size": 2, "blob_id": "b2", "last_commit": commit},
+    }
+
+    async def collect_pages():
+        return [[row.path for row in page] async for page in client.scandir("org/repo")]
+
+    assert sync(get_loop(), collect_pages) == [["org/repo/a.txt"], ["org/repo/b.txt"]]
+
+    stop = threading.Event()
+    emitted = []
+    client._list(
+        "org/repo",
+        emit=lambda page: (emitted.append([r.path for r in page]), stop.set()),
+        stop=stop,
+    )
+    assert emitted == [["org/repo/a.txt"]]
+
+
 def test_get_file_info_requests_expanded_info():
     cache = Mock(spec=Cache)
     client = HfClient("datasets/org/repo", {}, cache)
