@@ -155,7 +155,9 @@ def test_cleanup_temp_datasets_all_states(catalog, project):
             catalog.get_dataset(temp_name, include_incomplete=True)
 
 
-def test_get_with_client_config_after_session_exists_keeps_active_session(catalog):
+def test_get_with_client_config_after_session_exists_keeps_existing_session_active(
+    catalog,
+):
     default = Session.get(catalog=catalog)
 
     configured = Session.get(client_config={"anon": True})
