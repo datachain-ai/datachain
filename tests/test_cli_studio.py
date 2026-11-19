@@ -697,14 +697,17 @@ def test_studio_auth_list_names_a_self_hosted_studio(capsys):
     assert sorted(line.split()[0] for line in lines[5:]) == [OTHER_URL, STUDIO_URL]
 
 
-def test_studio_auth_list_shows_env_token_first(capsys, monkeypatch):
+def test_studio_auth_list_says_env_token_is_used(capsys, monkeypatch):
     studio_login()
     monkeypatch.setenv("DATACHAIN_STUDIO_TOKEN", "env_token")
 
     assert main(["auth", "list"]) == 0
 
     out, err = capsys.readouterr()
-    assert "$DATACHAIN_STUDIO_TOKEN" in out.splitlines()[4]
+    lines = out.splitlines()
+    assert lines[1].startswith("DATACHAIN_STUDIO_TOKEN is set")
+    # The saved tokens are still listed.
+    assert lines[5].split()[0] == "*"
     assert "env_token" not in out + err
     assert "isat_access_token" not in out + err
 

@@ -392,11 +392,11 @@ def list_logins():
     if self_hosted(url):
         print(f"Studio URL: {url}")
     print(f"Default team: {team or 'not set'}")
+    env_token = bool(os.environ.get(TOKEN_ENV))
+    if env_token:
+        print(f"{TOKEN_ENV} is set: it is used for every team, not the saved tokens.")
 
-    rows = []
-    if os.environ.get(TOKEN_ENV):
-        rows.append([url, "*", "", "", f"${TOKEN_ENV}"])
-    rows.extend(
+    rows = [
         [
             login.url,
             # *: saved without --team, the fallback when no token is for the team.
@@ -406,10 +406,10 @@ def list_logins():
             login.path,
         ]
         for login in all_logins()
-    )
-
+    ]
     if not rows:
-        print("Not logged in to Studio. Log in with 'datachain auth login'.")
+        if not env_token:
+            print("Not logged in to Studio. Log in with 'datachain auth login'.")
         return 0
 
     headers = ["Studio", "Teams", "Name", "Expires", "Saved in"]

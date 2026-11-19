@@ -17,7 +17,7 @@ This command lists the Studio tokens saved for you and for this project, and sho
 * `Expires` - The date the token expires.
 * `Saved in` - The file the token is saved in.
 
-If `DATACHAIN_STUDIO_TOKEN` is set, it is listed first: it is used for every team, before the saved tokens. See [`datachain auth login`](login.md) for how DataChain picks a token.
+If `DATACHAIN_STUDIO_TOKEN` is set, the output says so: that token is used for every team, and the saved tokens are not. See [`datachain auth login`](login.md) for how DataChain picks a token.
 
 Token values are not shown. Run [`datachain auth token`](token.md) to print one.
 
