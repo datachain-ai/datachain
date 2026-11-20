@@ -2973,6 +2973,7 @@ class DataChain:
             file_schemas,
             fix_pyarrow_format,
             infer_output,
+            is_lance,
             is_parquet,
             read_columns,
         )
@@ -3013,7 +3014,7 @@ class DataChain:
 
             if isinstance(output, dict):
                 # Signals of files written by DataChain keep their declared types.
-                declared = infer and _written_by_datachain(schema)
+                declared = infer and is_lance(format) and _written_by_datachain(schema)
                 model = dict_to_data_model(
                     model_name or column or "", output, optional=not declared
                 )

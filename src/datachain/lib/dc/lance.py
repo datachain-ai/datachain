@@ -22,51 +22,26 @@ def read_lance(
 ) -> "DataChain":
     """Generate chain from standalone Lance v2 data files (not Lance table directories).
 
+    Supports column projection and filter pushdown like `read_parquet`.
+
     Parameters:
-        path: Local path or storage URI, e.g. `s3://`, `gs://`, `az://`, `hf://`.
-            Supports `*`, `**`, `?`, `{a,b}`, and `{1..9}` glob patterns.
-        output: Result names and Python types as a dictionary, assigned by
-            insertion order with exactly one field per column read. Use `columns`
-            to select inputs by name. Omit to infer names and types or restore a
-            saved DataChain schema. On Lance files exported by DataChain, each
-            field takes one picked signal, or one top-level signal without
-            `columns`.
+        path: Local path or storage URI (e.g. `s3://`, `gs://`, `az://`, `hf://`),
+            or list of paths. Supports `*`, `**`, `?`, `{a,b}`, and `{1..9}` globs.
+        output: Dictionary mapping result column names to Python types. Omit to
+            infer from the file schema or restore a saved DataChain schema.
         column: Created column name.
         model_name: Generated model name.
-        source: Whether to include info about the source file. It is named
-            "source", or the first free "cN_source" if that name is taken.
+        source: Whether to include info about the source file (`ArrowRow`).
         session: Session to use for the chain.
         settings: Settings to use for the chain.
-        columns: Input columns to read, in order; all if omitted. Accepts original
-            or normalized names, e.g. "ZIP Code" or "zip_code". For Lance files
-            exported by DataChain, it picks signals as `select()` does, e.g. "p.x".
-            When omitted (along with `output` and `column`), DataChain automatically
-            reads only the columns used by `select()`, `group_by()`, `count()`, or
-            `gen()` (even after `filter()`, `order_by()`, or `mutate()`), and
-            applies `filter()` conditions while reading so only the needed rows and
-            columns are loaded (`filter()`, `select()`, and `order_by()` can appear
-            in any order).
-        kwargs: Parameters to pass to `read_storage`. A directory or glob is
-            listed once and the listing is reused for 4 hours, so files added or
-            changed since are missed or fail to read. Pass `update=True` to list
-            it again.
+        columns: Input columns (or DataChain signal paths) to read, in order.
+        kwargs: Parameters passed to `read_storage` (e.g. `update=True`).
 
     Example:
-        Read a file or files matching a pattern:
         ```py
         import datachain as dc
 
-        chain = dc.read_lance("s3://mybucket/file.lance")
         chain = dc.read_lance("s3://mybucket/dir/**/*.lance")
-        ```
-
-        Select and rename columns from a Lance file with `a, b, c`:
-        ```py
-        chain = dc.read_lance(
-            "s3://mybucket/file.lance",
-            columns=["c", "a"],
-            output={"x": float, "y": float},
-        )  # x receives c; y receives a
         ```
     """
     from .storage import read_storage
