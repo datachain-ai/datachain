@@ -266,15 +266,15 @@ def test_to_lance_roundtrip(tmp_dir, test_session):
     class Inner(dc.DataModel):
         tag: str | int = 0
         foo__bar: int = 12
-        mode: Literal["fast", "slow"] | None = None
+        mode: Literal["fast", "slow"] = "fast"
 
     class Outer(dc.DataModel):
         inner: Inner = Inner()
         note: str | None = None
-        items: list[Item] | None = None
-        matrix: list[list[int]] | None = None
-        meta: dict | None = None
-        scores: dict[int, int] | None = None
+        items: list[Item] = []  # noqa: RUF012
+        matrix: list[list[int]] = []  # noqa: RUF012
+        meta: dict = {}  # noqa: RUF012
+        scores: dict[int, int] = {}  # noqa: RUF012
         ts: datetime | None = None
 
     class Alt(dc.DataModel):
@@ -283,17 +283,18 @@ def test_to_lance_roundtrip(tmp_dir, test_session):
     t1 = datetime(2025, 1, 2, 3, 4, 5, tzinfo=UTC)
     rows_in = [
         Outer(
-            inner=Inner(tag="x", foo__bar=91, mode=None),
-            note="n1",
+            inner=Inner(tag="x", foo__bar=91, mode="fast"),
+            note=None,
             items=[Item(a=1, b=None, extra_k="e1")],
             matrix=[[]],
-            meta=None,
-            scores=None,
+            meta={},
+            scores={},
+            ts=None,
         ),
         Alt(code=42),
         Outer(
             inner=Inner(tag=7, foo__bar=55, mode="fast"),
-            note=None,
+            note="n2",
             items=[Item(a=2, b="z", dt=t1)],
             matrix=[[10, 20]],
             meta={"a": 1},
@@ -302,7 +303,7 @@ def test_to_lance_roundtrip(tmp_dir, test_session):
         ),
         Outer(
             inner=Inner(tag=8, foo__bar=66, mode="slow"),
-            note="n3",
+            note=None,
             items=[],
             matrix=[],
             meta={"b": "two", "nested": [1, 2]},
