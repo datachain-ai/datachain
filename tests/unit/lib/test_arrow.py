@@ -700,11 +700,11 @@ def test_read_parquet_with_parallel_keeps_every_row(
             pa.table({"n": list(range(i * 200, (i + 1) * 200))}),
             tmp_path / f"part{i}.parquet",
         )
-    result = (
-        dc.read_parquet(f"{tmp_path.as_uri()}/*.parquet", session=test_session_tmpfile)
-        .settings(parallel=2)
-        .save("parallel_arrow")
-    )
+    result = dc.read_parquet(
+        f"{tmp_path.as_uri()}/*.parquet",
+        session=test_session_tmpfile,
+        settings={"parallel": 2},
+    ).save("parallel_arrow")
     assert result.order_by("n").to_values("n") == list(range(1600))
     db = test_session_tmpfile.catalog.warehouse.db
     assert db.execute_str("PRAGMA integrity_check").fetchall() == [("ok",)]

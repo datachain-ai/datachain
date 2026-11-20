@@ -59,7 +59,7 @@ data = dc.read_parquet("s3://bucket/202{1..4}/{yellow,green}-{01..12}.parquet")
 
 Timestamps are read as Python `datetime`, which holds microseconds. Digits beyond microseconds are dropped, for example in the nanosecond timestamps that pandas 2 writes to Parquet by default.
 
-For large local SQLite loads (500K+ rows), `pip install 'datachain[adbc]'` enables a native Arrow writer subprocess (~1.4x faster on 2M rows, at the cost of ~200–250 MiB for the helper process).
+For large local SQLite loads (1M+ rows), `pip install 'datachain[adbc]'` enables a native Arrow writer subprocess (~1.3x faster on 2M rows, at the cost of ~200–250 MiB for the helper process).
 
 JMESPath is powerful for real-world JSON formats like COCO, where images, annotations, and categories live under different top-level keys. Each `read_json()` call with a different `jmespath` extracts one array, and you merge them together on shared IDs.
 

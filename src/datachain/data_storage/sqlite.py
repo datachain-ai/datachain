@@ -816,6 +816,8 @@ class _SQLiteArrowSink:
         self.rows_seen = 0
 
     def write(self, batch: "pa.RecordBatch") -> None:
+        import multiprocess
+
         from datachain.data_storage.sqlite_arrow import SQLiteArrowWriter
 
         wh = self.warehouse
@@ -829,6 +831,8 @@ class _SQLiteArrowSink:
                 self.rows_seen < wh.ARROW_WRITER_THRESHOLD
                 or not _HAS_ADBC
                 or wh.db.db_file == ":memory:"
+                # A parallel worker: its siblings already wait on the same write lock.
+                or multiprocess.parent_process() is not None
             ):
                 wh.insert_arrow(self.table, batch)
                 return

@@ -14,10 +14,10 @@ from datachain.data_storage.writer import MAX_SEQ
 from datachain.sql.types import Array, DateTime, Int, String
 from tests.utils import skip_if_not_sqlite
 
-pytestmark = [
-    skip_if_not_sqlite,
-    pytest.mark.skipif(not _HAS_ADBC, reason="adbc-driver-sqlite is not installed"),
-]
+pytestmark = skip_if_not_sqlite
+skip_if_not_adbc = pytest.mark.skipif(
+    not _HAS_ADBC, reason="adbc-driver-sqlite is not installed"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -25,6 +25,7 @@ def lower_arrow_writer_threshold(monkeypatch):
     monkeypatch.setattr(SQLiteWarehouse, "ARROW_WRITER_THRESHOLD", 1024)
 
 
+@skip_if_not_adbc
 def test_one_worker_commits_batches_without_staging(warehouse_tmpfile, mocker):
     warehouse = warehouse_tmpfile
     table = warehouse.create_dataset_rows_table("native_direct", [sa.Column("x", Int)])
@@ -47,6 +48,7 @@ def test_one_worker_commits_batches_without_staging(warehouse_tmpfile, mocker):
         warehouse.db.drop_table(table)
 
 
+@skip_if_not_adbc
 def test_worker_rejects_a_stale_owner_before_inserting(warehouse_tmpfile):
     warehouse = warehouse_tmpfile
     table = warehouse.create_dataset_rows_table("stale_owner", [sa.Column("x", Int)])
@@ -77,6 +79,7 @@ def test_worker_rejects_a_stale_owner_before_inserting(warehouse_tmpfile):
         warehouse.db.drop_table(table)
 
 
+@skip_if_not_adbc
 def test_worker_survives_an_automatic_sqlite_rollback(warehouse_tmpfile):
     warehouse = warehouse_tmpfile
     table = warehouse.create_dataset_rows_table("auto_rollback", [sa.Column("x", Int)])
@@ -97,6 +100,7 @@ def test_worker_survives_an_automatic_sqlite_rollback(warehouse_tmpfile):
         warehouse.db.drop_table(table)
 
 
+@skip_if_not_adbc
 def test_small_batches_eventually_use_native_writer(warehouse_tmpfile, mocker):
     warehouse = warehouse_tmpfile
     table = warehouse.create_dataset_rows_table("small_batches", [sa.Column("x", Int)])
@@ -111,6 +115,7 @@ def test_small_batches_eventually_use_native_writer(warehouse_tmpfile, mocker):
         warehouse.db.drop_table(table)
 
 
+@skip_if_not_adbc
 def test_dead_child_preserves_the_write_error(warehouse_tmpfile):
     with pytest.raises(sqlite3.OperationalError, match="exited before acknowledging"):
         with closing(
@@ -121,6 +126,7 @@ def test_dead_child_preserves_the_write_error(warehouse_tmpfile):
             writer.write(pa.record_batch([[1]], names=["x"]))
 
 
+@skip_if_not_adbc
 def test_broken_worker_startup_falls_back_to_row_writer(warehouse_tmpfile, mocker):
     warehouse = warehouse_tmpfile
     table = warehouse.create_dataset_rows_table("startup_fb", [sa.Column("x", Int)])
@@ -140,6 +146,7 @@ def test_broken_worker_startup_falls_back_to_row_writer(warehouse_tmpfile, mocke
         warehouse.db.drop_table(table)
 
 
+@skip_if_not_adbc
 def test_writer_exit_preserves_in_flight_exception_on_cleanup_failure(
     warehouse_tmpfile, mocker
 ):
@@ -162,6 +169,7 @@ def test_writer_exit_preserves_in_flight_exception_on_cleanup_failure(
         warehouse.db.drop_table(table)
 
 
+@skip_if_not_adbc
 def test_transaction_started_after_native_writer_opens_rolls_back(warehouse_tmpfile):
     warehouse = warehouse_tmpfile
     table = warehouse.create_dataset_rows_table("tx_after_open", [sa.Column("x", Int)])

@@ -1,6 +1,5 @@
 import base64
 import json
-import os
 import sqlite3
 from contextlib import closing
 from datetime import UTC, datetime, timedelta, timezone
@@ -16,7 +15,7 @@ import sqlalchemy as sa
 import datachain as dc
 from datachain.data_storage.codec import RowCodec, TypeCodec, check_value
 from datachain.data_storage.serializer import deserialize
-from datachain.data_storage.sqlite import SQLiteWarehouse
+from datachain.data_storage.sqlite import _HAS_ADBC, SQLiteWarehouse
 from datachain.data_storage.sqlite_arrow import SQLiteArrowWriter
 from datachain.lib.file import File
 from datachain.lib.signal_schema import SignalSchema
@@ -533,7 +532,7 @@ def test_native_arrow_matches_scalar_codec_storage(warehouse_tmpfile, nullable, 
             w.extend(expected)
         with wh.writer(actual, batch.schema.names) as w:
             w.append_arrow(native)
-        if os.name == "nt":
+        if not _HAS_ADBC:
             native_write.assert_not_called()
         else:
             native_write.assert_called_once()

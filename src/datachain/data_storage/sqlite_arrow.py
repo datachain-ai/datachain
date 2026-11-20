@@ -69,6 +69,7 @@ class SQLiteArrowWriter:
             with suppress(OSError):
                 if self.stream is not None:
                     self.stream.close()
+            with suppress(OSError):
                 process.stdin.close()
             process.wait(timeout=60)
         finally:
