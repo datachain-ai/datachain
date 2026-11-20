@@ -1,5 +1,6 @@
 import hashlib
 import inspect
+import json
 import logging
 import sys
 import time
@@ -33,6 +34,7 @@ from datachain.query.batch import (
     RowsOutputBatch,
 )
 from datachain.query.schema import DEFAULT_DELIMITER
+from datachain.sql.types import SQLType
 from datachain.utils import safe_closing
 
 logger = logging.getLogger("datachain")
@@ -297,7 +299,12 @@ class UDFAdapter:
     batch: int | None = None
 
     def hash(self, include_body: bool = True) -> str:
-        inner_hash = self.inner.hash(include_body=include_body)
+        # The column types are hashed too: a checkpoint written under other
+        # column types must not be reused.
+        inner_hash = hashlib.sha256(
+            bytes.fromhex(self.inner.hash(include_body=include_body))
+            + bytes.fromhex(_output_types_hash(self.output))
+        ).hexdigest()
         if self.batch is None:
             return inner_hash
         return hashlib.sha256(f"{inner_hash}:batched".encode()).hexdigest()
@@ -333,6 +340,15 @@ class UDFAdapter:
     @property
     def prefetch(self) -> int:
         return self.inner.prefetch
+
+
+def _output_types_hash(output: UDFOutputSpec) -> str:
+    """Hash of the column types a UDF writes."""
+    spec = {
+        name: (sql_type if isinstance(sql_type, SQLType) else sql_type()).to_dict()
+        for name, sql_type in output.items()
+    }
+    return hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()
 
 
 class UDFBase(AbstractUDF):
