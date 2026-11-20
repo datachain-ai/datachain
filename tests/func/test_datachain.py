@@ -80,7 +80,7 @@ def _anonymous(ctc):
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
-@pytest.mark.parametrize("parallel", [None, 2])
+@pytest.mark.parametrize("parallel", [1, 2], ids=["serial", "parallel"])
 def test_union_with_chain_of_other_config_reads_each_source_with_its_config(
     cloud_test_catalog_tmpfile, tmp_dir, parallel
 ):
