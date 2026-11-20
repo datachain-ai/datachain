@@ -218,7 +218,7 @@ def _read_storage(
             delta_unsafe=delta_unsafe,
         )
         if source_config is not None:
-            session.catalog.register_source_config(source, source_config)
+            session.catalog.source_client_configs[source] = source_config
         if dc is None:
             file_values.append(
                 listing_lib.get_file_info(list_uri, cache, client_config=client_config)

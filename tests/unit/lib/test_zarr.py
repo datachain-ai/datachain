@@ -185,7 +185,9 @@ def test_zarr_store_open_passes_remote_storage_options(
     monkeypatch.setattr("datachain.lib.zarr.zarr.open", fake_open)
 
     file = File(source="s3://bucket", path="s.zarr")
-    file._catalog = test_session.catalog.with_client_config({"key": "secret"})
+    catalog = test_session.catalog.copy()
+    catalog.client_config = {"key": "secret"}
+    file._catalog = catalog
     info = ZarrStore(file=file).get_info()
 
     assert captured["storage_options"] == {"key": "secret"}
