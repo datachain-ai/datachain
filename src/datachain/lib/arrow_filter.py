@@ -39,12 +39,16 @@ def _filter_fields(
     schema: pa.Schema, output: dict[str, Any]
 ) -> dict[str, tuple[str, type]]:
     """Return the read columns of a basic type, as (raw_name, python_type)."""
-    return {
-        name: (raw, anno)
-        for name, raw in normalize_col_names(schema.names).items()
-        if name in output
-        and (anno := unwrap_optional(output[name])[0]) in (int, str, bool, bytes)
-    }
+    fields: dict[str, tuple[str, type]] = {}
+    for name, raw in normalize_col_names(schema.names).items():
+        if name not in output:
+            continue
+        anno, optional = unwrap_optional(output[name])
+        if anno in (int, str, bool, bytes) and (
+            optional or not schema.field(raw).nullable
+        ):
+            fields[name] = (raw, anno)
+    return fields
 
 
 def _literal(node: Any) -> Any:
