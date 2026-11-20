@@ -1,39 +1,38 @@
 import os
 import sys
+from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
 import pytest
 
 import datachain as dc
+from datachain.client import Client
+from datachain.dataset import DatasetStatus
+from datachain.error import ConcurrentDatasetModificationError
+from datachain.lib import listing
 from datachain.lib.file import File
 from datachain.lib.listing import (
     LISTING_BATCH_SIZE,
     _sanitize_ds_name,
-    calc_fingerprint,
     get_listing,
-    list_bucket,
+    list_pages,
     parse_listing_uri,
+    rows_digest,
 )
-from datachain.query import dataset
 from tests.data import ENTRIES
 
 
-def test_listing_generator(cloud_test_catalog, cloud_type):
+def test_list_pages_rows(cloud_test_catalog):
     ctc = cloud_test_catalog
     catalog = ctc.catalog
+    pages = list_pages(f"{ctc.src_uri}/cats", catalog.cache, catalog.client_config)
 
-    uri = f"{ctc.src_uri}/cats"
-
-    chain = dc.read_records([{"uri": uri}], schema={"uri": str}).gen(
-        file=list_bucket(uri, catalog.cache, client_config=catalog.client_config)
-    )
-    assert chain.count() == 2
+    files = sorted((row for page in pages for row in page), key=lambda row: row.path)
 
     entries = sorted(
         [e for e in ENTRIES if e.path.startswith("cats/")], key=lambda e: e.path
     )
-    files = chain.order_by("file.path").to_values("file")
-
-    for cat_file, cat_entry in zip(files, entries, strict=False):
+    for cat_file, cat_entry in zip(files, entries, strict=True):
         assert cat_file.source == ctc.src_uri
         assert cat_file.path == cat_entry.path
         assert cat_file.size == cat_entry.size
@@ -116,7 +115,7 @@ def test_parse_listing_uri_with_glob(cloud_test_catalog):
     ctc = cloud_test_catalog
     dataset_name, listing_uri, listing_path = parse_listing_uri(f"{ctc.src_uri}/dogs/*")
     assert dataset_name == _sanitize_ds_name(f"lst__{ctc.src_uri}/dogs/")
-    assert listing_uri == f"{ctc.src_uri}/dogs"
+    assert listing_uri == f"{ctc.src_uri}/dogs/"
     assert listing_path == "dogs/*"
 
 
@@ -204,54 +203,40 @@ def test_listing_update_unchanged_preserves_chain_hash(test_session, tmp_dir):
     assert hash1 == hash2
 
 
-def test_calc_fingerprint_order_independent(test_session):
-    """Fingerprint should be the same regardless of row insertion order."""
-    catalog = test_session.catalog
-    ns = catalog.metastore.system_namespace_name
-    proj = catalog.metastore.listing_project_name
+def _digest(storage: str, *files: File) -> int:
+    with_etag = not Client.get_implementation(storage).PINNED_VERSION_IS_IMMUTABLE
+    return rows_digest([listing.file_row(f) for f in files], with_etag)
 
-    files1 = [File(path="a.jpg", etag="e1"), File(path="b.jpg", etag="e2")]
-    files2 = [File(path="b.jpg", etag="e2"), File(path="a.jpg", etag="e1")]
 
-    dc.read_values(file=files1, session=test_session).settings(
-        namespace=ns, project=proj
-    ).save("lst__fp-order1", listing=True)
-    dc.read_values(file=files2, session=test_session).settings(
-        namespace=ns, project=proj
-    ).save("lst__fp-order2", listing=True)
-
-    ds1 = catalog.get_dataset("lst__fp-order1", versions=None)
-    ds2 = catalog.get_dataset("lst__fp-order2", versions=None)
-
-    fp1 = calc_fingerprint(test_session, ds1, ds1.latest_version)
-    fp2 = calc_fingerprint(test_session, ds2, ds2.latest_version)
-    assert fp1 == fp2
+def test_listing_digest_counts_duplicates_in_any_order():
+    a, b = File(path="a.jpg", etag="e1"), File(path="b.jpg", etag="e2")
+    assert _digest("s3://bucket", a, a, b) == _digest("s3://bucket", b, a, a)
+    assert _digest("s3://bucket", a, a, b) != _digest("s3://bucket", a, b, b)
+    assert _digest("s3://bucket", a, a, b) != _digest("s3://bucket", a, b)
 
 
 def _save_listing(session, uri: str, file: File):
-    catalog = session.catalog
+    """Save ``file`` as a listing of ``uri``; return the listing dataset."""
     name, _, _ = parse_listing_uri(uri)
-    dc.read_values(file=[file], session=session).settings(
-        namespace=catalog.metastore.system_namespace_name,
-        project=catalog.metastore.listing_project_name,
-    ).save(name, listing=True)
-    return catalog.get_dataset(name, versions=None)
 
+    def pages(uri, cache, client_config, encode):
+        return [encode([listing.file_row(file)])]
 
-def _fingerprint(session, uri: str, file: File) -> int:
-    ds = _save_listing(session, uri, file)
-    return calc_fingerprint(session, ds, ds.latest_version)
+    with patch.object(listing, "list_pages", side_effect=pages):
+        listing.write_listing(uri, name, session, {})
+    return session.catalog.get_dataset(name, versions=None)
 
 
 def _etags(session, name: str, version: str) -> list:
     metastore = session.catalog.metastore
-    return dc.read_dataset(
+    chain = dc.read_dataset(
         name,
         namespace=metastore.system_namespace_name,
         project=metastore.listing_project_name,
         version=version,
         session=session,
-    ).to_values("file.etag")
+    )
+    return sorted(chain.to_values("file.etag"))
 
 
 @pytest.mark.parametrize(
@@ -259,25 +244,15 @@ def _etags(session, name: str, version: str) -> list:
     [("s3://bucket", False), ("gs://bucket", False), ("az://container", True)],
     ids=["s3", "gs", "azure"],
 )
-def test_calc_fingerprint_etag_counts_only_where_versions_change(
-    test_session, storage, etag_counts
-):
-    fp1 = _fingerprint(
-        test_session, f"{storage}/a/", File(path="x.jpg", version="v1", etag="e1")
-    )
-    fp2 = _fingerprint(
-        test_session, f"{storage}/b/", File(path="x.jpg", version="v1", etag="e2")
-    )
+def test_listing_digest_etag_counts_only_where_versions_change(storage, etag_counts):
+    fp1 = _digest(storage, File(path="x.jpg", version="v1", etag="e1"))
+    fp2 = _digest(storage, File(path="x.jpg", version="v1", etag="e2"))
     assert (fp1 != fp2) == etag_counts
 
 
-def test_calc_fingerprint_changes_when_version_stops_being_latest(test_session):
-    fp1 = _fingerprint(test_session, "s3://bucket/a/", File(path="x.jpg", version="v1"))
-    fp2 = _fingerprint(
-        test_session,
-        "s3://bucket/b/",
-        File(path="x.jpg", version="v1", is_latest=False),
-    )
+def test_listing_digest_changes_when_version_stops_being_latest():
+    fp1 = _digest("s3://bucket", File(path="x.jpg", version="v1"))
+    fp2 = _digest("s3://bucket", File(path="x.jpg", version="v1", is_latest=False))
     assert fp1 != fp2
 
 
@@ -286,18 +261,106 @@ def test_calc_fingerprint_changes_when_version_stops_being_latest(test_session):
     ["s3://bucket", "gs://bucket", "az://container"],
     ids=["s3", "gs", "azure"],
 )
-def test_calc_fingerprint_changes_when_size_changes(test_session, storage):
-    fp1 = _fingerprint(
-        test_session,
-        f"{storage}/a/",
-        File(path="x.jpg", version="v1", etag="e1", size=10),
-    )
-    fp2 = _fingerprint(
-        test_session,
-        f"{storage}/b/",
-        File(path="x.jpg", version="v1", etag="e1", size=20),
-    )
+def test_listing_digest_changes_when_size_changes(storage):
+    fp1 = _digest(storage, File(path="x.jpg", version="v1", etag="e1", size=10))
+    fp2 = _digest(storage, File(path="x.jpg", version="v1", etag="e1", size=20))
     assert fp1 != fp2
+
+
+def test_listing_digest_counts_the_source():
+    file = File(path="x.jpg", version="v1", etag="e1")
+    a, b = File(source="s3://a", **file.model_dump(include={"path", "version"})), file
+    assert _digest("s3://bucket", a) != _digest("s3://bucket", b)
+
+
+def test_listing_without_digest_is_not_reused(test_session):
+    uri = "s3://bucket/data/"
+    file = File(path="x.jpg", version="v1", etag="e1")
+    ds = _save_listing(test_session, uri, file)
+    assert ds.get_version("1.0.0").content_hash.startswith(listing.LISTING_DIGEST)
+    test_session.catalog.metastore.update_dataset_version(
+        ds, "1.0.0", content_hash=None
+    )
+
+    ds = _save_listing(test_session, uri, file)
+
+    assert [v.version for v in ds.versions] == ["1.0.0", "2.0.0"]
+
+
+def test_gc_keeps_a_jobless_listing_that_runs_for_hours(test_session):
+    uri = "s3://bucket/data/"
+    name, _, _ = parse_listing_uri(uri)
+    catalog = test_session.catalog
+    clock = [0.0]
+
+    def pages(uri, cache, client_config, encode):
+        yield encode([listing.file_row(File(path="a.jpg", etag="e1"))])
+        ds = catalog.get_dataset(name, versions=None)
+        catalog.metastore.update_dataset_version(
+            ds,
+            ds.versions[0].version,
+            created_at=datetime.now(UTC) - timedelta(hours=2),
+        )
+        clock[0] += 2 * 3600
+        yield encode([])  # an empty page of delete/folder markers still refreshes TTL
+        catalog.cleanup_dataset_versions()
+        yield encode([listing.file_row(File(path="b.jpg", etag="e2"))])
+
+    with (
+        patch.object(listing, "list_pages", side_effect=pages),
+        patch.object(listing.time, "monotonic", side_effect=lambda: clock[0]),
+    ):
+        listing.write_listing(uri, name, test_session, {})
+
+    assert _etags(test_session, name, "1.0.0") == ["e1", "e2"]
+
+
+def test_listing_creates_no_job(test_session, tmp_dir, mocker):
+    (tmp_dir / "a.txt").write_text("a")
+    create_job = mocker.spy(test_session.catalog.metastore, "create_job")
+    for update in (False, True):
+        dc.read_storage(tmp_dir.as_uri(), session=test_session, update=update).exec()
+    create_job.assert_not_called()
+
+
+def test_unchanged_refresh_leaves_a_version_saved_meanwhile(test_session):
+    uri = "s3://bucket/data/"
+    name, _, _ = parse_listing_uri(uri)
+    old, new = File(path="x.jpg", etag="e1"), File(path="y.jpg", etag="e2")
+    first = _save_listing(test_session, uri, old).get_version("1.0.0")
+
+    def racing(uri, cache, client_config, encode):
+        yield encode([listing.file_row(old)])
+        _save_listing(test_session, uri, new)
+
+    with patch.object(listing, "list_pages", side_effect=racing):
+        listing.write_listing(uri, name, test_session, {})
+
+    ds = test_session.catalog.get_dataset(name, versions=None)
+    latest = ds.latest_complete_version
+    assert ds.get_version("1.0.0").finished_at == first.finished_at
+    assert _etags(test_session, name, latest) == ["e2"]
+
+
+def test_overlapping_unchanged_refreshes_reuse_version(test_session):
+    uri = "s3://bucket/data/"
+    name, _, _ = parse_listing_uri(uri)
+    entry = File(path="x.jpg", etag="e1")
+    _save_listing(test_session, uri, entry)
+    nested = True
+
+    def overlapping(uri, cache, client_config, encode):
+        nonlocal nested
+        yield encode([listing.file_row(entry)])
+        if nested:
+            nested = False
+            listing.write_listing(uri, name, test_session, {})
+
+    with patch.object(listing, "list_pages", side_effect=overlapping):
+        listing.write_listing(uri, name, test_session, {})
+
+    ds = test_session.catalog.get_dataset(name, versions=None)
+    assert [v.version for v in ds.versions] == ["1.0.0"]
 
 
 @pytest.mark.parametrize(
@@ -415,8 +478,68 @@ def test_read_storage_mixed_single_file_and_dir_deterministic(test_session, tmp_
 def test_listing_insert_batch_size(test_session, tmp_dir, mocker, settings):
     # the user's batch_size tunes their UDFs, not the listing
     (tmp_dir / "a.txt").write_text("hello")
-    spy = mocker.spy(dataset, "process_udf_outputs")
+    spy = mocker.spy(test_session.catalog.warehouse, "insert_stored_rows")
 
     dc.read_storage(tmp_dir.as_uri(), session=test_session, settings=settings).exec()
 
-    assert spy.call_args.kwargs["batch_size"] == LISTING_BATCH_SIZE
+    assert spy.call_args.args[-1] == LISTING_BATCH_SIZE
+
+
+def test_overlapping_first_listings_reuse_version(test_session):
+    uri = "s3://bucket/data/"
+    name, _, _ = parse_listing_uri(uri)
+    entry = File(path="x.jpg", etag="e1")
+    nested = True
+
+    def overlapping(uri, cache, client_config, encode):
+        nonlocal nested
+        yield encode([listing.file_row(entry)])
+        if nested:
+            nested = False
+            listing.write_listing(uri, name, test_session, {})
+
+    with patch.object(listing, "list_pages", side_effect=overlapping):
+        listing.write_listing(uri, name, test_session, {})
+
+    ds = test_session.catalog.get_dataset(name, versions=None)
+    assert [v.version for v in ds.versions] == ["2.0.0"]
+
+
+def test_removed_and_rereserved_listing_does_not_clobber_replacement(test_session):
+    uri = "s3://bucket/data/"
+    name, _, _ = parse_listing_uri(uri)
+    catalog = test_session.catalog
+    old_file = File(path="a.jpg", etag="e1")
+    new_file = File(path="b.jpg", etag="e2")
+    _save_listing(test_session, uri, old_file)
+
+    replacement_ds = None
+
+    def stale_scan(uri, cache, client_config, encode):
+        nonlocal replacement_ds
+        yield encode([listing.file_row(old_file), listing.file_row(new_file)])
+        # Remove the in-flight 2.0.0 reservation and re-reserve 2.0.0 before A finishes
+        ds = catalog.get_dataset(name, versions=None, include_incomplete=True)
+        catalog.remove_dataset_version(ds, "2.0.0", keep_metadata=False)
+        project = catalog.metastore.get_project(
+            catalog.metastore.listing_project_name,
+            catalog.metastore.system_namespace_name,
+        )
+        replacement_ds = catalog.create_dataset(
+            name,
+            project,
+            columns=catalog.warehouse.dataset_row_cls.listing_columns(),
+            listing=True,
+            update_version="major",
+        )
+        assert replacement_ds.versions[0].version == "2.0.0"
+
+    with (
+        patch.object(listing, "list_pages", side_effect=stale_scan),
+        pytest.raises(ConcurrentDatasetModificationError),
+    ):
+        listing.write_listing(uri, name, test_session, {})
+
+    ds = catalog.get_dataset(name, versions=None, include_incomplete=True)
+    assert ds.get_version("2.0.0").uuid == replacement_ds.versions[0].uuid
+    assert ds.get_version("2.0.0").status == DatasetStatus.CREATED

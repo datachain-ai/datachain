@@ -15,19 +15,21 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
 
-from fsspec.callbacks import DEFAULT_CALLBACK, Callback
+from fsspec import Callback
+from fsspec.callbacks import DEFAULT_CALLBACK
 from fsspec.utils import stringify_path
 from pydantic import Field, field_validator, model_validator
 
+import datachain.sql  # noqa: F401
 from datachain import json
-from datachain.client.fileslice import FileSlice
+from datachain.client import fileslice
 from datachain.client.writeconfig import WriteConfig
 from datachain.fs.utils import path_to_fsspec_uri
 from datachain.lib.data_model import DataModel
 from datachain.lib.utils import DataChainError, rebase_path
 from datachain.nodes_thread_pool import NodesThreadPool
 from datachain.sql.types import JSON, Boolean, DateTime, Int, String
-from datachain.utils import TIME_ZERO
+from datachain.utils import TIME_ZERO, parent_path
 
 if TYPE_CHECKING:
     from typing import BinaryIO, Self
@@ -36,7 +38,6 @@ if TYPE_CHECKING:
 
     from datachain.catalog import Catalog
     from datachain.client.fsspec import Client
-    from datachain.dataset import RowDict
     from datachain.query.session import Session
 
 sha256 = partial(hashlib.sha256, usedforsecurity=False)
@@ -175,7 +176,7 @@ class TarVFile(VFile):
         if block_size is None:
             block_size = min(size, TAR_READ_BLOCK_SIZE)
         fd = client.open_object(tar_file, use_cache=True, block_size=block_size)
-        return FileSlice(fd, offset, size, file.name)
+        return fileslice.FileSlice(fd, offset, size, file.name)
 
     @classmethod
     def parent(cls, file: "File", location: list[dict]) -> "File":
@@ -528,10 +529,6 @@ class File(DataModel):
         file._set_stream(catalog)
         return file
 
-    @classmethod
-    def _from_row(cls, row: "RowDict") -> "Self":
-        return cls(**{key: row[key] for key in cls._datachain_column_types})
-
     @property
     def name(self) -> str:
         """The file name extracted from the path.
@@ -554,7 +551,7 @@ class File(DataModel):
             file.parent  # 'data/subdir'
             ```
         """
-        return str(PurePosixPath(self.path).parent)
+        return parent_path(self.path) if "/" in self.path else "."
 
     @contextmanager
     def open(
@@ -994,9 +991,17 @@ class File(DataModel):
         caching_enabled: bool = False,
         download_cb: Callback = DEFAULT_CALLBACK,
     ) -> None:
-        self._catalog = catalog
-        self._caching_enabled = caching_enabled
-        self._download_cb = download_cb
+        if type(self) is File:
+            # pydantic's __setattr__ costs more than the read of a plain File
+            self.__dict__.update(
+                _catalog=catalog,
+                _caching_enabled=caching_enabled,
+                _download_cb=download_cb,
+            )
+        else:
+            self._catalog = catalog
+            self._caching_enabled = caching_enabled
+            self._download_cb = download_cb
 
     def ensure_cached(self) -> None:
         """Download the file to the local cache.
@@ -1255,7 +1260,7 @@ class FileRow(NamedTuple):
 
     @property
     def parent(self) -> str:
-        return str(PurePosixPath(self.path).parent)
+        return parent_path(self.path) if "/" in self.path else "."
 
     def get_file_suffix(self) -> str:
         return PurePosixPath(self.path).suffix
@@ -1275,6 +1280,9 @@ class FileRow(NamedTuple):
 
     def rebase(self, *args, **kwargs) -> str:
         return File(**self._asdict()).rebase(*args, **kwargs)
+
+
+as_file_row = partial(tuple.__new__, FileRow)  # skips FileRow's argument handling
 
 
 class TextFile(File):

@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING, Literal
 
 import multiprocess
 from cloudpickle import load, loads
-from fsspec.callbacks import DEFAULT_CALLBACK, Callback
+from fsspec import Callback
+from fsspec.callbacks import DEFAULT_CALLBACK
 from multiprocess.context import Process
 from multiprocess.queues import Queue as MultiprocessQueue
 
@@ -127,6 +128,7 @@ class UDFDispatcher:
         self.processes = udf_info["processes"]
         self.rows_total = udf_info["rows_total"]
         self.batch_size = udf_info["batch_size"]
+        self.parts = udf_info.get("parts")
         self.buffer_size = buffer_size
         self.task_queue = None
         self.done_queue = None
@@ -142,7 +144,7 @@ class UDFDispatcher:
             self._catalog = Catalog(metastore, warehouse, **self.catalog_init_params)
         return self._catalog
 
-    def _create_worker(self) -> "UDFWorker":
+    def _create_worker(self, worker_index: int = 0) -> "UDFWorker":
         udf: UDFAdapter = loads(self.udf_data)
         # Ensure all registered DataModels have rebuilt schemas in worker processes.
         ModelStore.rebuild_all()
@@ -157,11 +159,13 @@ class UDFDispatcher:
             self.is_batching,
             self.batch_size,
             self.udf_fields,
+            self._writer_no(worker_index),
+            self.parts,
         )
 
-    def _run_worker(self) -> None:
+    def _run_worker(self, worker_index: int) -> None:
         try:
-            worker = self._create_worker()
+            worker = self._create_worker(worker_index)
             worker.run()
         except (Exception, KeyboardInterrupt) as e:
             if self.done_queue:
@@ -247,7 +251,14 @@ class UDFDispatcher:
                     udf,
                     cb=generated_cb,
                     batch_size=self.batch_size,
+                    writer_no=self._writer_no(0),
+                    parts=self.parts,
                 )
+
+    def _writer_no(self, worker_index: int) -> int | None:
+        """A table with a ledger is written under writer numbers claimed from
+        it (None); a table without one is written once, by these workers."""
+        return None if self.parts is not None else worker_index
 
     def input_batch_size(self, n_workers: int) -> int:
         rows_per_task = min(self.rows_total // n_workers, DEFAULT_BATCH_SIZE)
@@ -266,7 +277,7 @@ class UDFDispatcher:
         self.done_queue = self.ctx.Queue()
 
         pool = [
-            self.ctx.Process(name=f"Worker-UDF-{i}", target=self._run_worker)
+            self.ctx.Process(name=f"Worker-UDF-{i}", target=self._run_worker, args=(i,))
             for i in range(n_workers)
         ]
         for p in pool:
@@ -451,6 +462,8 @@ class UDFWorker:
         is_batching: bool,
         batch_size: int | None,
         udf_fields: Sequence[str],
+        writer_no: int | None = None,
+        parts: "Table | None" = None,
     ) -> None:
         self.catalog = catalog
         self.udf = udf
@@ -462,6 +475,8 @@ class UDFWorker:
         self.is_batching = is_batching
         self.batch_size = batch_size
         self.udf_fields = udf_fields
+        self.writer_no = writer_no
+        self.parts = parts
 
         self.stats = WorkerStats(self.done_queue)
         self.download_cb = DownloadCallback(self.stats)
@@ -491,6 +506,8 @@ class UDFWorker:
                     self.udf,
                     cb=self.generated_cb,
                     batch_size=self.batch_size,
+                    writer_no=self.writer_no,
+                    parts=self.parts,
                 )
         self.stats.send(FINISHED_STATUS)
 

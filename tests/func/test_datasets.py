@@ -232,7 +232,7 @@ def test_create_dataset_already_exist_wrong_version(test_session, saved_dataset)
             ],
         )
     assert str(exc_info.value) == (
-        f"Version 1.0.0 already exists in dataset {saved_dataset.name}"
+        f"Dataset {saved_dataset.name} already has version 1.0.0"
     )
 
 
