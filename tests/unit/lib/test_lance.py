@@ -252,9 +252,11 @@ def test_read_lance_remote_binary_and_embeddings(tmp_dir, test_session, monkeypa
 
 
 def test_to_lance_roundtrip(tmp_dir, test_session):
+    import math
     from datetime import datetime
-    from typing import Literal
+    from typing import Annotated, Literal
 
+    from lance.file import LanceFileReader
     from pydantic import ConfigDict
 
     class Item(dc.DataModel):
@@ -265,7 +267,7 @@ def test_to_lance_roundtrip(tmp_dir, test_session):
 
     class Inner(dc.DataModel):
         tag: str | int = 0
-        foo__bar: int = 12
+        foo__bar: Annotated[int, "meta"] = 12
         mode: Literal["fast", "slow"] = "fast"
 
     class Outer(dc.DataModel):
@@ -273,6 +275,7 @@ def test_to_lance_roundtrip(tmp_dir, test_session):
         note: str | None = None
         items: list[Item] = []  # noqa: RUF012
         matrix: list[list[int]] = []  # noqa: RUF012
+        dts: list[datetime] = []  # noqa: RUF012
         meta: dict = {}  # noqa: RUF012
         scores: dict[int, int] = {}  # noqa: RUF012
         ts: datetime | None = None
@@ -287,6 +290,7 @@ def test_to_lance_roundtrip(tmp_dir, test_session):
             note=None,
             items=[Item(a=1, b=None, extra_k="e1")],
             matrix=[[]],
+            dts=[t1],
             meta={},
             scores={},
             ts=None,
@@ -297,6 +301,7 @@ def test_to_lance_roundtrip(tmp_dir, test_session):
             note="n2",
             items=[Item(a=2, b="z", dt=t1)],
             matrix=[[10, 20]],
+            dts=[],
             meta={"a": 1},
             scores={1: 10},
             ts=t1,
@@ -306,6 +311,7 @@ def test_to_lance_roundtrip(tmp_dir, test_session):
             note=None,
             items=[],
             matrix=[],
+            dts=[t1],
             meta={"b": "two", "nested": [1, 2]},
             scores={2: 20},
             ts=t1,
@@ -313,22 +319,36 @@ def test_to_lance_roundtrip(tmp_dir, test_session):
     ]
     chain = dc.read_values(
         id=[1, 2, 3, 4],
+        f=[float("nan"), 1.5, 2.5, float("inf")],
         o=rows_in,
         u=[100, "hello", 200, "world"],
-        output={"id": int, "o": Outer | Alt, "u": int | str},
+        output={"id": int, "f": float, "o": Outer | Alt, "u": int | str},
         session=test_session,
     ).order_by("id")
 
     path = tmp_dir / "exported.lance"
     chain.to_lance(path, chunk_size=1)
     assert path.is_file()
+    raw_schema = LanceFileReader(str(path)).metadata().schema
+    assert raw_schema.field("o%2EOuter%2Einner%2Efoo__bar").type == pa.int64()
+    assert raw_schema.field("o%2EOuter%2Edts").type == pa.list_(
+        pa.timestamp("us", tz="UTC")
+    )
+
     back = dc.read_lance(path.as_uri(), session=test_session)
+    assert back.signals_schema.values["id"] is int
+    assert back.signals_schema.values["f"] is float
     assert back.order_by("id").to_list("id", "o", "u") == [
         (1, rows_in[0], 100),
         (2, rows_in[1], "hello"),
         (3, rows_in[2], 200),
         (4, rows_in[3], "world"),
     ]
+    f_vals = back.order_by("id").to_values("f")
+    assert math.isnan(f_vals[0]) and f_vals[1:] == [1.5, 2.5, float("inf")]
+    src_row = back.order_by("id").to_values("source")[2].read()
+    assert src_row["o.Outer.meta"] == {"a": 1}
+    assert src_row["o.Outer.scores"] == {"1": 10}
     assert dc.read_lance(
         path.as_uri(),
         columns=["o.Outer.inner.tag", "o.Outer.inner.foo__bar", "u"],

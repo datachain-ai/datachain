@@ -584,6 +584,7 @@ def dict_to_data_model(
     name: str,
     data_dict: dict[str, DataType],
     original_names: list[str] | None = None,
+    optional: bool = True,
 ) -> type[BaseModel]:
     if not original_names:
         # Gets a map of a normalized_name -> original_name
@@ -594,7 +595,7 @@ def dict_to_data_model(
     fields = {
         name: (
             anno
-            if inspect.isclass(anno) and issubclass(anno, BaseModel)
+            if not optional or (inspect.isclass(anno) and issubclass(anno, BaseModel))
             else anno | None,
             Field(
                 validation_alias=AliasChoices(name, original_names[idx] or name),

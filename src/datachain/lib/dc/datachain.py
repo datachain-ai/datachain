@@ -2969,6 +2969,7 @@ class DataChain:
         from datachain.lib.arrow import (
             PARTIAL_READ_PREFETCH_MAX_SIZE,
             ArrowGenerator,
+            _written_by_datachain,
             file_schemas,
             fix_pyarrow_format,
             infer_output,
@@ -3011,7 +3012,11 @@ class DataChain:
                 )
 
             if isinstance(output, dict):
-                model = dict_to_data_model(model_name or column or "", output)
+                # Signals of files written by DataChain keep their declared types.
+                declared = infer and _written_by_datachain(schema)
+                model = dict_to_data_model(
+                    model_name or column or "", output, optional=not declared
+                )
             else:
                 model = output  # type: ignore[assignment]
 
