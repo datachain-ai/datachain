@@ -2249,11 +2249,12 @@ class ArrowRow(DataModel):
         file again from the start up to this row, and not every reader option is
         kept, e.g. column types.
         """
-        from datachain.lib.arrow import column_values
+        from datachain.lib.arrow import column_values, json_columns
 
         with self.open() as record_batch:
+            names = json_columns(record_batch.schema)
             return {
-                name: column_values(column)[0]
+                name: column_values(column, name in names)[0]
                 for name, column in zip(
                     record_batch.schema.names, record_batch.columns, strict=True
                 )

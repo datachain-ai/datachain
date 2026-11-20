@@ -3190,13 +3190,12 @@ class DataChain:
         from datachain.lib.arrow import write_lance
 
         target = File.at(path, session=self.session)
-        column_names, column_chunks = self.to_columnar_data_with_names(
+        _, column_chunks = self.to_columnar_data_with_names(
             chunk_size, include_sentinels=True
         )
         write_lance(
             target,
             self._effective_signals_schema,
-            column_names,
             column_chunks,
             fs_kwargs=fs_kwargs,
             **kwargs,
