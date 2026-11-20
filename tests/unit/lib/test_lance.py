@@ -89,9 +89,7 @@ def test_read_lance_select_and_filter_pushdown(
     assert chain.filter(C("a") >= 1).select("b").to_values("b") == [30, 20, 10, 10]
 
 
-def test_read_lance_directory_schema_drift_and_rejects_table_root(
-    tmp_dir, test_session
-):
+def test_read_lance_rejects_table_files(tmp_dir, test_session):
     ds_dir = tmp_dir / "dataset_table"
     table = pa.table({"a": [10, 20, 30, 40], "text": ["w0", "w1", "w2", "w3"]})
     ds = lance.write_dataset(table, ds_dir, max_rows_per_file=2)
@@ -120,17 +118,22 @@ def test_read_lance_directory_schema_drift_and_rejects_table_root(
                 format="lance"
             )
 
-    for folder in ("_indices", "_versions", "data"):
-        user_dir = tmp_dir / f"user_{folder}" / folder
-        user_dir.mkdir(parents=True)
-        if folder == "data":
-            (user_dir.parent / "_versions").write_text("not a dir")
-        user_file = user_dir / "a.lance"
-        _write_lance(user_file, {"a": [1, 2]})
-        assert dc.read_lance(user_file.as_uri(), session=test_session).to_values(
-            "a"
-        ) == [1, 2]
 
+@pytest.mark.parametrize("folder", ["_indices", "_versions", "data"])
+def test_read_lance_allows_user_folder_names(tmp_dir, test_session, folder):
+    user_dir = tmp_dir / f"user_{folder}" / folder
+    user_dir.mkdir(parents=True)
+    if folder == "data":
+        (user_dir.parent / "_versions").write_text("not a dir")
+    user_file = user_dir / "a.lance"
+    _write_lance(user_file, {"a": [1, 2]})
+    assert dc.read_lance(user_file.as_uri(), session=test_session).to_values("a") == [
+        1,
+        2,
+    ]
+
+
+def test_read_lance_blob_column(tmp_dir, test_session):
     blob_ds_dir = tmp_dir / "blob_table.lance"
     blob_field = pa.field(
         "payload", pa.large_binary(), metadata={b"lance-encoding:blob": b"true"}
@@ -147,6 +150,8 @@ def test_read_lance_directory_schema_drift_and_rejects_table_root(
     ):
         dc.read_lance(standalone_blob.as_uri(), session=test_session)
 
+
+def test_read_lance_directory_schema_drift(tmp_dir, test_session):
     drift_dir = tmp_dir / "lance_drift"
     drift_dir.mkdir()
     s1 = pa.schema(
@@ -257,6 +262,7 @@ def test_read_lance_remote_binary_and_embeddings(tmp_dir, test_session, monkeypa
         "id"
     ) == [1, 2, 1, 2]
     assert downloads == 2
+    assert test_session.catalog.cache.get_total_size() == 0
 
 
 def test_to_lance_roundtrip(tmp_dir, test_session):
@@ -418,3 +424,17 @@ def test_to_lance_roundtrip(tmp_dir, test_session):
         .to_pylist()
     )
     assert [type(dc.json.loads(v)) for v in stored_enum] == [str, str]
+
+    # Shard whose schema metadata was stripped still decodes %2E column names.
+    stripped = tmp_dir / "stripped.lance"
+    stripped_table = (
+        LanceFileReader(str(path))
+        .read_all(batch_size=10)
+        .to_table()
+        .replace_schema_metadata(None)
+    )
+    _write_lance(stripped, stripped_table)
+    assert (
+        dc.read_lance([path.as_uri(), stripped.as_uri()], session=test_session).count()
+        == 8
+    )
