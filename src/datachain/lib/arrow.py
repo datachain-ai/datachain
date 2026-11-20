@@ -213,6 +213,25 @@ class ArrowGenerator(Generator):
         self._parts_bytes = 0
         self._parts_lock = threading.Lock()
 
+    def __getstate__(self) -> dict[str, Any]:
+        state = self.__dict__.copy()
+        state.pop("_parts_lock", None)
+        state["_parts"] = {}
+        state["_parts_bytes"] = 0
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        self.__dict__.update(state)
+        self._parts = {}
+        self._parts_bytes = 0
+        self._parts_lock = threading.Lock()
+
+    def teardown(self) -> None:
+        with self._parts_lock:
+            for _, reserved, _ in self._parts.values():
+                self._parts_bytes = max(0, self._parts_bytes - reserved)
+            self._parts.clear()
+
     def hash(self, include_body: bool = True) -> str:
         # The read schema and columns decide what is read, so reads that differ
         # only in them must not reuse each other's results.
@@ -227,14 +246,18 @@ class ArrowGenerator(Generator):
             return True
         if not (columns := self._parquet_columns(file)):
             return False
-        reserved, parts, fit = await asyncio.to_thread(
-            self._read_parquet_parts, file, columns, True
-        )
-        if not fit:
-            # No room ahead of the read: process() fetches this file's chunks itself.
-            return False
-        self._parts[id(file)] = (file, reserved, parts)
-        return True
+        cancelled = threading.Event()
+        try:
+            _, _, fit = await asyncio.to_thread(
+                self._read_parquet_parts, file, columns, True, cancelled
+            )
+        except BaseException:
+            with self._parts_lock:
+                cancelled.set()
+                _, reserved, _ = self._parts.pop(id(file), (None, 0, None))
+                self._parts_bytes = max(0, self._parts_bytes - reserved)
+            raise
+        return fit
 
     def _parquet_columns(self, file: File) -> list[str] | None:
         if (
@@ -252,7 +275,11 @@ class ArrowGenerator(Generator):
         return self.columns or self.input_schema.names  # type: ignore[union-attr]
 
     def _read_parquet_parts(
-        self, file: File, columns: Sequence[str], prefetch: bool = False
+        self,
+        file: File,
+        columns: Sequence[str],
+        prefetch: bool = False,
+        cancelled: threading.Event | None = None,
     ) -> tuple[int, tuple[int, list[tuple[int, bytes]]], bool]:
         reserved = 0
 
@@ -261,7 +288,9 @@ class ArrowGenerator(Generator):
             if not prefetch:
                 return n <= parquet_ranges.PARQUET_RANGE_MAX_BYTES
             with self._parts_lock:
-                if n > parquet_ranges.PARQUET_RANGE_MAX_BYTES - self._parts_bytes:
+                if (
+                    cancelled is not None and cancelled.is_set()
+                ) or n > parquet_ranges.PARQUET_RANGE_MAX_BYTES - self._parts_bytes:
                     return False
                 self._parts_bytes += n
                 reserved = n
@@ -275,6 +304,12 @@ class ArrowGenerator(Generator):
         except BaseException:
             self._release_parts_bytes(reserved)
             raise
+        if prefetch and fit:
+            with self._parts_lock:
+                if cancelled is not None and cancelled.is_set():
+                    self._parts_bytes = max(0, self._parts_bytes - reserved)
+                    return 0, parts, False
+                self._parts[id(file)] = (file, reserved, parts)
         return reserved, parts, fit
 
     def _release_parts_bytes(self, n: int) -> None:
@@ -282,7 +317,8 @@ class ArrowGenerator(Generator):
             self._parts_bytes = max(0, self._parts_bytes - n)
 
     def process(self, file: File):
-        _, reserved, parts = self._parts.pop(id(file), (None, 0, None))
+        with self._parts_lock:
+            _, reserved, parts = self._parts.pop(id(file), (None, 0, None))
         try:
             if file._caching_enabled:
                 file.ensure_cached()
