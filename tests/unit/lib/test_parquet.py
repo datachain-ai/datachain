@@ -554,24 +554,43 @@ def test_read_parquet_filter_prunes_row_groups_and_streams_payload(
 
 
 def test_read_parquet_filter_coalesces_remaining_row_groups_after_two_match(
-    tmp_dir, test_session, monkeypatch
+    tmp_dir, test_session, mocker, monkeypatch
 ):
-    path = tmp_dir / "five_rg.parquet"
+    path = tmp_dir / "seven_rg.parquet"
     table = pa.table(
         {
-            "a": [0, 0, 1, 0, 1, 0, 1, 1],
-            "payload": [f"p{i}" for i in range(8)],
+            # rg 0 and rg 1 match (1); rg 2..5 (4-group window) and rg 6 have 0s
+            # alongside 2s so statistics keep all 7 groups for C("a") == 1.
+            "a": [1, 0, 1, 0, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2],
+            "payload": [f"p{i}" for i in range(14)],
         }
     )
     pq.write_table(table, path, row_group_size=2)
     monkeypatch.setattr(arrow, "SMALL_ROW_GROUP_BYTES", 0)
+    scan_spy = mocker.spy(arrow, "_scan_groups")
+    rest_spy = mocker.spy(arrow, "_scan_group_rest")
+
+    chain = dc.read_parquet(path.as_uri(), session=test_session)
     res = (
-        dc.read_parquet(path.as_uri(), session=test_session)
-        .filter(C("a") == 1)
+        chain.filter(C("a") == 1)
         .select("payload", "source.index")
         .to_list("payload", "source.index")
     )
-    assert res == [("p2", 2), ("p4", 4), ("p6", 6), ("p7", 7)]
+    assert res == [("p0", 0), ("p2", 2)]
+    # rg 0 and rg 1 use _scan_group_rest; rg 2..5 use one 4-group _scan_groups
+    # window (0 hits -> resets matched=0); rg 6 probes filter column only (0 hits).
+    assert rest_spy.call_count == 2
+    assert scan_spy.call_count == 1
+
+    all_res = (
+        chain.filter(C("a") >= 0)
+        .select("payload", "source.index")
+        .to_list("payload", "source.index")
+    )
+    assert len(all_res) == 14
+    # rg 0 and rg 1 use _scan_group_rest; rg 2..5 and rg 6 use two _scan_groups windows.
+    assert rest_spy.call_count == 4
+    assert scan_spy.call_count == 3
 
 
 @pytest.fixture

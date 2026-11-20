@@ -21,7 +21,8 @@ import datachain as dc
 from datachain import DataModel, func
 from datachain.dataset import DatasetDependencyType
 from datachain.fs.utils import path_to_fsspec_uri
-from datachain.lib.arrow import PARTIAL_READ_PREFETCH_MAX_SIZE
+from datachain.lib import arrow
+from datachain.lib.arrow import PARTIAL_READ_PREFETCH_MAX_SIZE, SMALL_ROW_GROUP_BYTES
 from datachain.lib.data_model import compute_model_fingerprint
 from datachain.lib.file import File, FileError, ImageFile
 from datachain.lib.listing import LISTING_TTL, is_listing_dataset, parse_listing_uri
@@ -1720,11 +1721,25 @@ def test_read_parquet_filter_fetches_only_matching_row_groups(
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
-@pytest.mark.parametrize("start_id,expected", [(0, 50_000), (500, 49_500)])
+@pytest.mark.parametrize(
+    "start_id,expected,small_bytes,max_requests",
+    [
+        (0, 50_000, SMALL_ROW_GROUP_BYTES, 4),
+        (500, 49_500, SMALL_ROW_GROUP_BYTES, 4),
+        (0, 50_000, 0, 60),
+    ],
+)
 def test_read_parquet_filter_coalesces_reads_across_many_matching_row_groups(
-    cloud_test_catalog_upload, fetched_bytes, start_id, expected
+    cloud_test_catalog_upload,
+    fetched_bytes,
+    monkeypatch,
+    start_id,
+    expected,
+    small_bytes,
+    max_requests,
 ):
     ctc = cloud_test_catalog_upload
+    monkeypatch.setattr(arrow, "SMALL_ROW_GROUP_BYTES", small_bytes)
     rng = np.random.default_rng(0)
     table = pa.table(
         {
@@ -1742,7 +1757,7 @@ def test_read_parquet_filter_coalesces_reads_across_many_matching_row_groups(
 
     rows = chain.filter(dc.C("id") >= start_id).to_list()
     assert len(rows) == expected
-    assert 0 < fetched_bytes[1] <= 4
+    assert 0 < fetched_bytes[1] <= max_requests
 
 
 class _Wide(DataModel):

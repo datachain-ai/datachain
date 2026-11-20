@@ -235,9 +235,9 @@ def filter_batches(
     filter_columns: Sequence[str],
     **kw: Any,
 ) -> Iterator[tuple[pa.Array, pa.RecordBatch]]:
-    """Yield the rows the filter keeps. Row groups whose statistics or filter
-    columns match no row skip the other columns; once two groups match, scan
-    the remaining groups together."""
+    """Yield the rows the filter keeps. Small row groups are scanned in one
+    pass; large ones read filter columns first, then scan four groups at a time
+    after two match until a window has no match."""
     (frag,) = ds.get_fragments()
     schema, columns = ds.schema, kw.get("columns") or ds.schema.names
     keys = [c for c in filter_columns if c in schema.names]
@@ -257,12 +257,15 @@ def filter_batches(
                 frag, groups, starts, schema, columns, filter, batch_size, index, pbar
             )
             return
-        matched = 0
-        for i, rg in enumerate(groups):
+        i = matched = 0
+        while i < len(groups):
             if matched == 2:
-                yield from _scan_groups(
+                window = groups[i : i + 4]
+                i += len(window)
+                matched = 0
+                for indices, batch in _scan_groups(
                     frag,
-                    groups[i:],
+                    window,
                     starts,
                     schema,
                     columns,
@@ -270,8 +273,13 @@ def filter_batches(
                     batch_size,
                     index,
                     pbar,
-                )
-                break
+                ):
+                    if batch.num_rows:
+                        matched = 2
+                    yield indices, batch
+                continue
+            rg = groups[i]
+            i += 1
             part = frag.subset(row_group_ids=[rg.id])
             hits = (
                 part.to_table(schema=schema, columns=keys)
