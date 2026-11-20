@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 import regex as re
+import sqlalchemy as sa
 from PIL import Image
 
 import datachain as dc
@@ -13,6 +14,7 @@ from datachain.lib.dc import C
 from datachain.lib.file import File, FileRow, ImageFile
 from datachain.lib.utils import DataChainParamsError
 from datachain.toolkit import train_test_split
+from tests.utils import reset_session_job_state
 
 
 class DeltaKey(DataModel):
@@ -1365,3 +1367,36 @@ def test_delta_gen_keeps_keys_in_file_rows(test_session, changed):
             chain.save("file_row_result")
     else:
         assert chain.save("file_row_result").to_values("file.path") == ["a"]
+
+
+def test_delta_no_change_links_the_job_to_the_reused_version(test_session, monkeypatch):
+    monkeypatch.setattr("datachain.query.session.is_script_run", lambda: False)
+    metastore = test_session.catalog.metastore
+    dc.read_values(id=[1, 2], session=test_session).save("delta_link_source")
+
+    def run():
+        reset_session_job_state()
+        result = dc.read_dataset(
+            "delta_link_source",
+            session=test_session,
+            delta=True,
+            delta_on="id",
+            delta_compare="id",
+        ).save("delta_link_output")
+        return result, test_session.get_or_create_job().id
+
+    _, creator_id = run()
+    result, job_id = run()
+
+    assert job_id != creator_id
+    assert result.version == "1.0.0"
+    links = metastore._dataset_version_jobs
+    rows = metastore.db.execute(
+        sa.select(links.c.job_id, links.c.is_creator).where(
+            links.c.dataset_version_id == result.dataset.get_version("1.0.0").id
+        )
+    )
+    assert sorted((job, bool(creator)) for job, creator in rows) == sorted(
+        [(creator_id, True), (job_id, False)]
+    )
+    assert result.dataset.get_version("1.0.0").job_id == creator_id
