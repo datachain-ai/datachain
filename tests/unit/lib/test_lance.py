@@ -1,19 +1,31 @@
+import enum
+import math
 import shutil
 import sys
-from datetime import UTC
+from datetime import UTC, datetime
+from typing import Annotated, Literal
 
 import lance
 import pyarrow as pa
 import pytest
-from lance.file import LanceFileWriter
+import sqlalchemy as sa
+from lance.file import LanceFileReader, LanceFileWriter
+from pydantic import ConfigDict
 
 import datachain as dc
+from datachain import func
 from datachain.client.http import HTTPClient
 from datachain.lib import arrow
 from datachain.lib.arrow import ArrowGenerator, _lance_file_reader, _LanceDataset
 from datachain.lib.dc import C, DatasetPrepareError
 from datachain.lib.file import ArrowRow, File
 from datachain.utils import safe_closing
+
+
+def _write_lance(path, data, schema=None):
+    table = data if isinstance(data, pa.Table) else pa.table(data, schema=schema)
+    with LanceFileWriter(str(path), table.schema) as writer:
+        writer.write_batch(table)
 
 
 def test_read_lance_select_and_filter_pushdown(
@@ -25,15 +37,14 @@ def test_read_lance_select_and_filter_pushdown(
             _lance_file_reader()
 
     path = tmp_dir / "rows.lance"
-    table = pa.table(
+    _write_lance(
+        path,
         {
             "a": [3, 2, 1, 1],
             "b": [30, 20, 10, 10],
             "payload": ["p0", "p1", "p2", "p3"],
-        }
+        },
     )
-    with LanceFileWriter(str(path), table.schema) as writer:
-        writer.write_batch(table)
 
     monkeypatch.setattr(arrow, "PARTIAL_READ_PREFETCH_MAX_SIZE", 1)
     prefetch = mocker.spy(File, "_prefetch")
@@ -110,9 +121,7 @@ def test_read_lance_directory_schema_drift_and_rejects_table_root(
         if folder == "data":
             (user_dir.parent / "_versions").write_text("not a dir")
         user_file = user_dir / "a.lance"
-        t = pa.table({"a": [1, 2]})
-        with LanceFileWriter(str(user_file), t.schema) as w:
-            w.write_batch(t)
+        _write_lance(user_file, {"a": [1, 2]})
         assert dc.read_lance(user_file.as_uri(), session=test_session).to_values(
             "a"
         ) == [1, 2]
@@ -142,15 +151,11 @@ def test_read_lance_directory_schema_drift_and_rejects_table_root(
         ]
     )
     s2 = pa.schema([pa.field("a", pa.int64(), nullable=False)])
-    t1 = pa.table({"a": [1, 2], "extra": ["u", "v"]}, schema=s1)
-    t2 = pa.table({"a": [3, 4]}, schema=s2)
-    t3 = pa.table({"a": pa.array([], type=pa.int64())}, schema=s2)
-    with LanceFileWriter(str(drift_dir / "f1.lance"), s1) as w:
-        w.write_batch(t1)
-    with LanceFileWriter(str(drift_dir / "f2.lance"), s2) as w:
-        w.write_batch(t2)
-    with LanceFileWriter(str(drift_dir / "f3.lance"), s2) as w:
-        w.write_batch(t3)
+    _write_lance(drift_dir / "f1.lance", {"a": [1, 2], "extra": ["u", "v"]}, schema=s1)
+    _write_lance(drift_dir / "f2.lance", {"a": [3, 4]}, schema=s2)
+    _write_lance(
+        drift_dir / "f3.lance", {"a": pa.array([], type=pa.int64())}, schema=s2
+    )
 
     drift = dc.read_lance(drift_dir.as_uri(), session=test_session)
     assert drift.order_by("a").select("extra").to_values("extra") == [
@@ -169,17 +174,16 @@ def test_read_lance_special_column_names_and_null_boolean_predicates(
     tmp_dir, test_session
 ):
     path = tmp_dir / "special.lance"
-    table = pa.table(
+    _write_lance(
+        path,
         {
             "": [0, 1, 2, 3],
             "`a`": [10, 20, 30, 40],
             "a": [100, 200, 300, 400],
             "b[0]": ["x", "y", "z", "w"],
             "flag": pa.array([True, None, False, True], type=pa.bool_()),
-        }
+        },
     )
-    with LanceFileWriter(str(path), table.schema) as w:
-        w.write_batch(table)
 
     chain = dc.read_lance(path.as_uri(), session=test_session)
     assert chain.select("c0", "c1_a", "a", "b_0").to_list("c0", "c1_a", "a", "b_0") == [
@@ -198,7 +202,8 @@ def test_read_lance_special_column_names_and_null_boolean_predicates(
 def test_read_lance_remote_binary_and_embeddings(tmp_dir, test_session, monkeypatch):
     path = tmp_dir / "wide.lance"
     b0, b1 = b"A" * 100_000, b"B" * 100_000
-    table = pa.table(
+    _write_lance(
+        path,
         {
             "id": [1, 2],
             "emb": pa.array(
@@ -207,10 +212,8 @@ def test_read_lance_remote_binary_and_embeddings(tmp_dir, test_session, monkeypa
             ),
             "tags": pa.array([["t1", "t2"], ["t3"]], type=pa.large_list(pa.string())),
             "payload": pa.array([b0, b1], type=pa.large_binary()),
-        }
+        },
     )
-    with LanceFileWriter(str(path), table.schema) as w:
-        w.write_batch(table)
     raw_bytes = path.read_bytes()
     downloads = 0
 
@@ -252,13 +255,6 @@ def test_read_lance_remote_binary_and_embeddings(tmp_dir, test_session, monkeypa
 
 
 def test_to_lance_roundtrip(tmp_dir, test_session):
-    import math
-    from datetime import datetime
-    from typing import Annotated, Literal
-
-    from lance.file import LanceFileReader
-    from pydantic import ConfigDict
-
     class Item(dc.DataModel):
         model_config = ConfigDict(extra="allow")
         a: int
@@ -364,24 +360,29 @@ def test_to_lance_roundtrip(tmp_dir, test_session):
     chain.filter(C("id") < 0).to_lance(empty_path)
     assert dc.read_lance(empty_path.as_uri(), session=test_session).count() == 0
 
-    import enum
-
-    import sqlalchemy as sa
-
-    from datachain import func
-
     # Non-Optional signal holding nulls is marked Optional in metadata.
-    null_path = tmp_dir / "with_nulls.lance"
+    non_null_path = tmp_dir / "a_no_nulls.lance"
+    null_path = tmp_dir / "b_with_nulls.lance"
+    dc.read_values(id=[0], v=[1], w=[10], session=test_session).to_lance(non_null_path)
     dc.read_values(id=[1, 2], v=[1, 2], session=test_session).mutate(
         w=C("v") + sa.literal(None)
     ).to_lance(null_path, chunk_size=1)
-    null_back = dc.read_lance(null_path.as_uri(), source=False, session=test_session)
+    null_back = dc.read_lance(
+        [non_null_path.as_uri(), null_path.as_uri()],
+        source=False,
+        session=test_session,
+    )
     assert null_back._effective_signals_schema.values == {
         "id": int,
         "v": int,
         "w": int | None,
     }
-    assert null_back.order_by("id").to_values("w") == [None, None]
+    assert null_back.order_by("id").to_values("w") == [10, None, None]
+
+    zero_path = tmp_dir / "zero.lance"
+    zero_path.write_bytes(b"")
+    with pytest.raises(DatasetPrepareError, match="is 0 bytes"):
+        dc.read_lance(zero_path.as_uri(), session=test_session)
 
     # Silent truncation (1.75 -> int, 0.5 -> bool) is rejected and existing file kept.
     stored_bytes = null_path.read_bytes()
@@ -401,10 +402,9 @@ def test_to_lance_roundtrip(tmp_dir, test_session):
         B = "b"
 
     enum_path = tmp_dir / "enum.lance"
-    enum_chain = dc.read_values(id=[1, 2], s=["a", "b"], session=test_session).mutate(
+    dc.read_values(id=[1, 2], s=["a", "b"], session=test_session).mutate(
         k=sa.cast(C("s"), sa.Enum(Kind))
-    )
-    enum_chain.to_lance(enum_path)
+    ).to_lance(enum_path)
     stored_enum = (
         LanceFileReader(str(enum_path))
         .read_all(batch_size=10)

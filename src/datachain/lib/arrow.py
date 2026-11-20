@@ -85,10 +85,6 @@ def is_lance(format) -> bool:
     return format == "lance"
 
 
-def is_columnar(format) -> bool:
-    return is_parquet(format) or is_lance(format)
-
-
 # CSV options that decide where a file's rows and columns start.
 _CSV_READ_OPTIONS = (
     "column_names",
@@ -178,22 +174,13 @@ def _is_lance_table_file(file: File, client: "Client") -> bool:
 
 def _find_lance_blob(fields: Sequence[pa.Field], prefix: str = "") -> str | None:
     for f in fields:
-        name = f"{prefix}{f.name}"
+        name = (
+            prefix.rstrip(".") if f.name == "item" and prefix else f"{prefix}{f.name}"
+        )
         if (f.metadata or {}).get(b"lance-encoding:blob") == b"true":
             return name
-        t = f.type
-        while (
-            pa.types.is_list(t)
-            or pa.types.is_large_list(t)
-            or pa.types.is_fixed_size_list(t)
-        ):
-            if (t.value_field.metadata or {}).get(b"lance-encoding:blob") == b"true":
-                return name
-            t = t.value_type
-        if (
-            pa.types.is_struct(t)
-            and (blob := _find_lance_blob(list(t), f"{name}.")) is not None
-        ):
+        children = [f.type.field(i) for i in range(f.type.num_fields)]
+        if blob := _find_lance_blob(children, f"{name}."):
             return blob
     return None
 
@@ -290,15 +277,15 @@ def write_lance(
                     _to_arrow(values, f.type)
                     for values, f in zip(chunk, pq_schema, strict=True)
                 ]
-                for f, arr in zip(pq_schema, arrays, strict=True):
-                    if arr.null_count:
-                        null_free.discard(f.name)
-                lance_arrays = [
-                    arr.storage if isinstance(arr, pa.ExtensionArray) else arr
-                    for arr in arrays
-                ]
+                null_free -= {
+                    f.name
+                    for f, arr in zip(pq_schema, arrays, strict=True)
+                    if arr.null_count
+                }
                 writer.write_batch(
-                    pa.Table.from_arrays(lance_arrays, schema=lance_schema)
+                    pa.Table.from_arrays(
+                        [getattr(a, "storage", a) for a in arrays], schema=lance_schema
+                    )
                 )
             values = _optional_unless_null_free(signal_schema.values, null_free)
             if values != signal_schema.values:
@@ -320,6 +307,8 @@ class _LanceDataset:
         self._readers: dict[tuple[str, ...], Any] = {}
         reader_cls = _lance_file_reader()
         self._path = _local_lance_path(file)
+        if not os.path.getsize(self._path):
+            raise ValueError(f"Lance file '{file.path}' is 0 bytes")
         self._base_reader = reader_cls(self._path)
         meta = self._base_reader.metadata()
         if (blob := _find_lance_blob(list(meta.schema))) is not None:
@@ -379,17 +368,15 @@ class _LanceDataset:
             else:
                 raw = r.read_range(start, n, batch_size=n).to_table()
         rows = n if take is None else len(take)
+        fields = [self.schema.field(c) for c in columns]
         return pa.Table.from_arrays(
             [
-                raw.column(self._raw_name(c)).cast(t)
-                if raw is not None and c in present
-                else pa.nulls(rows, t)
-                for c in columns
-                for t in (self.schema.field(c).type,)
+                raw.column(self._raw_name(f.name)).cast(f.type)
+                if raw is not None and f.name in present
+                else pa.nulls(rows, f.type)
+                for f in fields
             ],
-            schema=pa.schema(
-                [self.schema.field(c) for c in columns], metadata=self.schema.metadata
-            ),
+            schema=pa.schema(fields, metadata=self.schema.metadata),
         )
 
     def chunks(self, step: int):
@@ -428,26 +415,21 @@ class _LanceDataset:
                     take = hits[index] if hits.num_rows < num_rows else None
                     data = read(rest, take)
                     cols.update(zip(rest, data.columns, strict=True))
-                index_col = pc.add(hits[index], start) if start else hits[index]
+                cols[index] = pc.add(hits[index], start)
                 table = pa.table(
-                    [*(cols[c] for c in columns), index_col], [*columns, index]
+                    [cols[c] for c in [*columns, index]], [*columns, index]
                 )
                 for batch in table.to_batches(batch_size):
                     yield batch.column(index), batch.drop_columns([index])
 
     def take(self, indices: Sequence[int]) -> pa.Table:
-        for i in indices:
-            if i < 0 or i >= self.num_rows:
-                raise IndexError(f"Row index {i} out of range ({self.num_rows} rows)")
-        unique = sorted(set(indices))
+        if any(i < 0 or i >= self.num_rows for i in indices):
+            raise IndexError(f"Row index out of range ({self.num_rows} rows)")
+        rows = sorted(set(indices))
         table = self._read(
-            self.schema.names,
-            pa.array(unique, type=pa.int64()),
-            start=0,
-            n=len(unique),
+            self.schema.names, pa.array(rows, pa.int64()), start=0, n=len(rows)
         )
-        pos = {idx: j for j, idx in enumerate(unique)}
-        return table.take([pos[i] for i in indices])
+        return table.take([rows.index(i) for i in indices])
 
     def close(self) -> None:
         self._readers.clear()
@@ -716,9 +698,10 @@ class ArrowGenerator(Generator):
                 ),
             )
             kept[pick] = data[pick] = self.output.values[pick]
+        fmt = self.kwargs.get("format")
         pushed = (
             to_arrow_filter(filters, self.input_schema, data)
-            if is_columnar(self.kwargs.get("format"))
+            if is_parquet(fmt) or is_lance(fmt)
             else None
         )
         if len(kept) == len(self.output.values) and pushed is None:
@@ -732,7 +715,7 @@ class ArrowGenerator(Generator):
         projected.output = SignalSchema(kept)
         if pushed is not None:
             projected.filter, projected.filter_columns, projected.filter_hash = pushed
-        if is_parquet(self.kwargs.get("format")):
+        if is_parquet(fmt):
             projected.prefetch_max_size = PARTIAL_READ_PREFETCH_MAX_SIZE
         return projected
 
@@ -746,50 +729,51 @@ class ArrowGenerator(Generator):
         # With datachain_read, each file is read with its own columns and types.
         in_schema = None if self.datachain_read else self.input_schema
         with safe_closing(_file_dataset(file, kwargs, in_schema)) as ds:
-            if self.datachain_read:
-                _check_type_tags(file, ds.schema)
+            yield from self._rows(file, ds)
 
-            use_datachain_schema = _written_by_datachain(ds.schema)
-            if self.written_by_datachain not in (None, use_datachain_schema):
-                kind = "is" if use_datachain_schema else "isn't"
-                raise ValueError(
-                    f"{_MIXED_FILES}, and '{file.path}' {kind} written by DataChain"
-                )
+    def _rows(self, file: File, ds: Dataset | _LanceDataset):
+        if self.datachain_read:
+            _check_type_tags(file, ds.schema)
 
-            source_kwargs = self._source_kwargs() if self.source else None
-            schema = ds.schema
-            kw: dict[str, Any] = {
-                "batch_size": min(self.DEFAULT_BATCH_SIZE, self.nrows or sys.maxsize),
-                "batch_readahead": 1,
-            }
-            if (names := self._flat_columns(schema)) is not None:
-                kw["columns"] = names
-                yield from self._column_batches(
-                    self._batches(ds, kw), file, source_kwargs
-                )
-                return
-            if self.datachain_read:
-                for index, obj in enumerate(self._signal_objects(ds, kw)):
-                    yield self._process_record(obj, file, index, source_kwargs)
-                return
-            if self.columns is not None:
-                present = set(schema.names)
-                kw["columns"] = [c for c in self.columns if c in present]
-                # Decode Hugging Face features only for the columns being read.
-                fields = [schema.field(c) for c in kw["columns"]]
-                schema = pa.schema(fields, metadata=schema.metadata)
-            hf_schema = _get_hf_schema(schema)
-            for start, batch in self._batches(ds, kw):
-                # Maps are read as dicts. Duplicate keys raise an error.
-                records = batch.to_pylist(maps_as_pydicts="strict")
-                indices = (
-                    range(start, start + len(records))
-                    if isinstance(start, int)
-                    else start.to_pylist()
-                )
-                for index, record in zip(indices, records, strict=True):
-                    obj = self._process_non_datachain_record(record, hf_schema)
-                    yield self._process_record(obj, file, index, source_kwargs)
+        use_datachain_schema = _written_by_datachain(ds.schema)
+        if self.written_by_datachain not in (None, use_datachain_schema):
+            kind = "is" if use_datachain_schema else "isn't"
+            raise ValueError(
+                f"{_MIXED_FILES}, and '{file.path}' {kind} written by DataChain"
+            )
+
+        source_kwargs = self._source_kwargs() if self.source else None
+        schema = ds.schema
+        kw: dict[str, Any] = {
+            "batch_size": min(self.DEFAULT_BATCH_SIZE, self.nrows or sys.maxsize),
+            "batch_readahead": 1,
+        }
+        if (names := self._flat_columns(schema)) is not None:
+            kw["columns"] = names
+            yield from self._column_batches(self._batches(ds, kw), file, source_kwargs)
+            return
+        if self.datachain_read:
+            for index, obj in enumerate(self._signal_objects(ds, kw)):
+                yield self._process_record(obj, file, index, source_kwargs)
+            return
+        if self.columns is not None:
+            present = set(schema.names)
+            kw["columns"] = [c for c in self.columns if c in present]
+            # Decode Hugging Face features only for the columns being read.
+            fields = [schema.field(c) for c in kw["columns"]]
+            schema = pa.schema(fields, metadata=schema.metadata)
+        hf_schema = _get_hf_schema(schema)
+        for start, batch in self._batches(ds, kw):
+            # Maps are read as dicts. Duplicate keys raise an error.
+            records = batch.to_pylist(maps_as_pydicts="strict")
+            indices = (
+                range(start, start + len(records))
+                if isinstance(start, int)
+                else start.to_pylist()
+            )
+            for index, record in zip(indices, records, strict=True):
+                obj = self._process_non_datachain_record(record, hf_schema)
+                yield self._process_record(obj, file, index, source_kwargs)
 
     def _batches(
         self, ds: Dataset | _LanceDataset, kw: dict[str, Any]
@@ -1058,6 +1042,16 @@ def infer_output(
     if not signal_schema:
         schema, names = merge_schemas(schemas, columns)
         return schema, schema_to_output(schema, col_names or names)[0], None
+    for s in schemas[1:]:
+        other = _get_datachain_schema(s)
+        non_null = (
+            {k for k, v in other.values.items() if not unwrap_optional(v)[1]}
+            if other
+            else ()
+        )
+        signal_schema = SignalSchema(
+            _optional_unless_null_free(signal_schema.values, non_null)
+        )
 
     signals = _signal_paths(signal_schema, columns, replace_source)
     if columns is None:
