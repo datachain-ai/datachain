@@ -510,8 +510,9 @@ class Catalog:
         cache_dir=None,
         tmp_dir=None,
         client_config: dict[str, Any] | None = None,
-        source_client_configs: dict[str, dict[str, Any]] | None = None,
         in_memory: bool = False,
+        *,
+        source_client_configs: dict[str, dict[str, Any]] | None = None,
     ):
         datachain_dir = DataChainDir(cache=cache_dir, tmp=tmp_dir)
         datachain_dir.init()

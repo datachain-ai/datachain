@@ -74,24 +74,23 @@ def test_read_storage_client_config(tmp_dir):
     }  # New client config is set.
 
 
+def _anonymous(ctc):
+    return {"aws_endpoint_url": ctc.client_config["aws_endpoint_url"], "anon": True}
+
+
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
 @pytest.mark.parametrize("parallel", [None, 2])
 def test_union_with_chain_of_other_config_reads_each_source_with_its_config(
-    cloud_server, cloud_server_credentials, tmp_path, test_session_tmpfile, parallel
+    cloud_test_catalog_tmpfile, tmp_dir, parallel
 ):
-    local_dir = tmp_path / "local"
-    local_dir.mkdir()
-    (local_dir / "note.txt").write_text("local")
-    elsewhere = {"aws_endpoint_url": "http://127.0.0.1:9"}
+    ctc = cloud_test_catalog_tmpfile
+    session = ctc.session
+    (tmp_dir / "note.txt").write_text("local")
     local = dc.read_storage(
-        local_dir.as_uri(), client_config=elsewhere, session=test_session_tmpfile
+        tmp_dir.as_uri(), client_config=_anonymous(ctc), session=session
     )
-    cats = dc.read_storage(
-        f"{cloud_server.src_uri}/cats/",
-        client_config=cloud_server.client_config,
-        session=test_session_tmpfile,
-    )
+    cats = dc.read_storage(f"{ctc.src_uri}/cats/", session=session)
 
     texts = (
         local.union(cats)
@@ -100,6 +99,24 @@ def test_union_with_chain_of_other_config_reads_each_source_with_its_config(
     )
 
     assert sorted(texts.to_values("text")) == ["local", "meow", "mrow"]
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_merge_with_chain_of_other_config_reads_right_files_with_their_config(
+    cloud_test_catalog, tmp_dir
+):
+    ctc = cloud_test_catalog
+    session = ctc.session
+    (tmp_dir / "note.txt").write_text("local")
+    local = dc.read_storage(
+        tmp_dir.as_uri(), client_config=_anonymous(ctc), session=session
+    ).mutate(key=1)
+    cats = dc.read_storage(f"{ctc.src_uri}/cats/", session=session).mutate(key=1)
+
+    right_files = local.merge(cats, on="key").to_values("right_file")
+
+    assert sorted(f.read_text() for f in right_files) == ["meow", "mrow"]
 
 
 def test_read_storage(cloud_test_catalog):

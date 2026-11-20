@@ -156,7 +156,6 @@ def read_storage(
         uris,
         session,
         client_config,
-        source_config=session_config,
         type=type,
         settings=settings,
         in_memory=in_memory,
@@ -177,7 +176,6 @@ def _read_storage(
     session: Session,
     client_config: dict,
     *,
-    source_config: dict | None = None,
     type: FileType = "binary",
     settings: dict | None = None,
     in_memory: bool = False,
@@ -200,7 +198,7 @@ def _read_storage(
     prepared_listings: set[str] = set()
 
     for list_uri_to_use, glob_pattern in storage_sources(uris):
-        dc, list_uri, list_path, source = _prepare_listing(
+        dc, list_uri, list_path = _prepare_listing(
             list_uri_to_use,
             session,
             client_config,
@@ -217,8 +215,9 @@ def _read_storage(
             delta_retry=delta_retry,
             delta_unsafe=delta_unsafe,
         )
-        if source_config is not None:
-            session.catalog.source_client_configs[source] = source_config
+        # Union and merge read this chain's files with the config they were listed with.
+        source = Client.parse_url(list_uri)[0]
+        session.catalog.source_client_configs[source] = session.catalog.client_config
         if dc is None:
             file_values.append(
                 listing_lib.get_file_info(list_uri, cache, client_config=client_config)
@@ -517,7 +516,6 @@ class Listing:
             self.uris,
             self.session,
             self.client_config,
-            source_config=self._session_config,
             recursive=self.recursive,
             settings=settings,
             in_memory=self._in_memory,
@@ -577,11 +575,11 @@ def _prepare_listing(
     delta_compare: str | Sequence[str] | None = None,
     delta_retry: bool | str | None = None,
     delta_unsafe: bool = False,
-) -> tuple["DataChain | None", str, str, str]:
+) -> tuple["DataChain | None", str, str]:
     """Select a snapshot and attach its full-prefix refresh, without reading rows.
 
-    A single file has no snapshot. Return its URI and the path used to filter rows,
-    and the `File.source` of the files read.
+    A single file has no snapshot. Return the URI of the snapshot, or of the file,
+    and the path used to filter rows.
     """
     from .datasets import read_dataset
 
@@ -589,7 +587,7 @@ def _prepare_listing(
         uri, session, update=update, versions=versions
     )
     if name is None:
-        return None, list_uri, list_path, Client.parse_url(list_uri)[0]
+        return None, list_uri, list_path
 
     catalog = session.catalog
     chain = read_dataset(
@@ -610,9 +608,10 @@ def _prepare_listing(
     prepared.add(name)
     chain.signals_schema = chain.signals_schema.mutate({"file": file_type})
     # A reused snapshot can cover a parent: always refresh its whole prefix.
+    snapshot_uri = listing_lib.listing_uri_from_name(name)
     chain._query.set_listing_fn(
         lambda: listing_lib.write_listing(
-            listing_lib.listing_uri_from_name(name),
+            snapshot_uri,
             name,
             session,
             client_config,
@@ -621,5 +620,4 @@ def _prepare_listing(
             in_memory=in_memory,
         )
     )
-    source = Client.parse_url(listing_lib.listing_uri_from_name(name))[0]
-    return chain, list_uri, list_path, source
+    return chain, snapshot_uri, list_path
