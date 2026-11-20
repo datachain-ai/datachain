@@ -18,7 +18,7 @@ from pyarrow.dataset import CsvFileFormat, Dataset, ParquetFileFormat, dataset
 from pyarrow.fs import FileInfo, FileType, FSSpecHandler, PyFileSystem
 
 from datachain import json
-from datachain.cache import Cache, ReadonlyCache
+from datachain.cache import Cache
 from datachain.catalog.catalog import clone_catalog_with_cache
 from datachain.data_storage.codec import to_json_text
 from datachain.fs.reference import ReferenceFileSystem
@@ -211,11 +211,15 @@ def _local_lance_path(file: File) -> str:
     if isinstance(client.fs, LocalFileSystem):
         client.check_unchanged(file)
         return file.get_fs_path()
-    if isinstance(cache := catalog.cache, ReadonlyCache):
-        file = file.model_copy()
-        file._catalog = clone_catalog_with_cache(
-            catalog, Cache(cache.cache_dir, cache.tmp_dir)
+    cache = catalog.cache
+    if not file._caching_enabled:
+        tmp_cache = Cache(
+            os.path.join(cache.tmp_dir, "lance"), cache.tmp_dir, fallback=cache
         )
+        if (path := tmp_cache.get_path(file)) is not None:
+            return path
+        file = file.model_copy()
+        file._catalog = clone_catalog_with_cache(catalog, tmp_cache)
     file.ensure_cached()
     path = file.get_local_path()
     assert path is not None
@@ -303,7 +307,13 @@ def write_lance(
 class _LanceDataset:
     """Adapter reading a single Lance v2 data file via `LanceFileReader`."""
 
-    def __init__(self, file: File, schema: pa.Schema | None = None):
+    def __init__(
+        self,
+        file: File,
+        schema: pa.Schema | None = None,
+        *,
+        datachain_read: bool = False,
+    ):
         self._readers: dict[tuple[str, ...], Any] = {}
         reader_cls = _lance_file_reader()
         self._path = _local_lance_path(file)
@@ -318,7 +328,7 @@ class _LanceDataset:
                 "supported; read_lance reads standalone .lance data files"
             )
         self.num_rows: int = meta.num_rows
-        self._dc = _written_by_datachain(meta.schema)
+        self._dc = datachain_read or _written_by_datachain(meta.schema)
         self._physical_schema: pa.Schema = (
             pa.schema(
                 [
@@ -728,7 +738,9 @@ class ArrowGenerator(Generator):
 
         # With datachain_read, each file is read with its own columns and types.
         in_schema = None if self.datachain_read else self.input_schema
-        with safe_closing(_file_dataset(file, kwargs, in_schema)) as ds:
+        with safe_closing(
+            _file_dataset(file, kwargs, in_schema, datachain_read=self.datachain_read)
+        ) as ds:
             yield from self._rows(file, ds)
 
     def _rows(self, file: File, ds: Dataset | _LanceDataset):
@@ -882,7 +894,7 @@ class ArrowGenerator(Generator):
         ]
         wanted = {*names, *(tag for tag, _, _ in parents.values())}
         kw["columns"] = [c for c in schema.names if c in wanted]
-        json_cols = json_columns(schema)
+        json_cols = json_columns(schema) or json_columns(self.input_schema)
         for _, batch in read_batches(ds, self.nrows, **kw):
             values = {
                 name: column_values(column, name in json_cols)
@@ -982,10 +994,14 @@ def _dataset_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
 
 
 def _file_dataset(
-    file: File, kwargs: dict[str, Any], schema: pa.Schema | None = None
+    file: File,
+    kwargs: dict[str, Any],
+    schema: pa.Schema | None = None,
+    *,
+    datachain_read: bool = False,
 ) -> Dataset | _LanceDataset:
     if is_lance(kwargs.get("format")):
-        return _LanceDataset(file, schema)
+        return _LanceDataset(file, schema, datachain_read=datachain_read)
     fs_path = file.get_fs_path()
     if cache_path := file.get_local_path():
         fs: Any = ReferenceFileSystem({fs_path: [cache_path]})
