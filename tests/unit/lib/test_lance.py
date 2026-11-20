@@ -363,3 +363,54 @@ def test_to_lance_roundtrip(tmp_dir, test_session):
     empty_path = tmp_dir / "empty.lance"
     chain.filter(C("id") < 0).to_lance(empty_path)
     assert dc.read_lance(empty_path.as_uri(), session=test_session).count() == 0
+
+    import enum
+
+    import sqlalchemy as sa
+
+    from datachain import func
+
+    # Non-Optional signal holding nulls is marked Optional in metadata.
+    null_path = tmp_dir / "with_nulls.lance"
+    dc.read_values(id=[1, 2], v=[1, 2], session=test_session).mutate(
+        w=C("v") + sa.literal(None)
+    ).to_lance(null_path, chunk_size=1)
+    null_back = dc.read_lance(null_path.as_uri(), source=False, session=test_session)
+    assert null_back._effective_signals_schema.values == {
+        "id": int,
+        "v": int,
+        "w": int | None,
+    }
+    assert null_back.order_by("id").to_values("w") == [None, None]
+
+    # Silent truncation (1.75 -> int, 0.5 -> bool) is rejected and existing file kept.
+    stored_bytes = null_path.read_bytes()
+    for expr in (
+        func.greatest("v", 1.75),
+        sa.type_coerce(C("v") + 0.5, sa.Boolean),
+    ):
+        with pytest.raises((pa.ArrowInvalid, pa.ArrowTypeError)):
+            dc.read_values(v=[1, 2], session=test_session).mutate(w=expr).to_lance(
+                null_path
+            )
+    assert null_path.read_bytes() == stored_bytes
+
+    # Enum / unmapped SQL types fall back to JSON text without crashing.
+    class Kind(enum.Enum):
+        A = "a"
+        B = "b"
+
+    enum_path = tmp_dir / "enum.lance"
+    enum_chain = dc.read_values(id=[1, 2], s=["a", "b"], session=test_session).mutate(
+        k=sa.cast(C("s"), sa.Enum(Kind))
+    )
+    enum_chain.to_lance(enum_path)
+    stored_enum = (
+        LanceFileReader(str(enum_path))
+        .read_all(batch_size=10)
+        .to_table()
+        .sort_by("id")
+        .column("k")
+        .to_pylist()
+    )
+    assert [dc.json.loads(v) for v in stored_enum] == ["a", "b"]

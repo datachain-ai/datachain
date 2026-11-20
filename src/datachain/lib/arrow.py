@@ -1,10 +1,9 @@
 import copy
 import hashlib
 import os
-import shutil
 import sys
 import tempfile
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Collection, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from functools import partial
@@ -17,7 +16,6 @@ from fsspec.implementations.local import LocalFileSystem
 from pyarrow._csv import ParseOptions
 from pyarrow.dataset import CsvFileFormat, Dataset, ParquetFileFormat, dataset
 from pyarrow.fs import FileInfo, FileType, FSSpecHandler, PyFileSystem
-from sqlalchemy.types import TypeEngine
 
 from datachain import json
 from datachain.cache import Cache, ReadonlyCache
@@ -26,6 +24,7 @@ from datachain.data_storage.codec import to_json_text
 from datachain.fs.reference import ReferenceFileSystem
 from datachain.lib.arrow_filter import to_arrow_filter
 from datachain.lib.convert.flatten import classify_field, flatten, iter_field_columns
+from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.convert.unflatten import ABSENT, unflatten_to_json_pos
 from datachain.lib.data_model import (
     NULLABLE_SCALARS,
@@ -42,22 +41,7 @@ from datachain.lib.signal_schema import SignalSchema, SignalSchemaError
 from datachain.lib.udf import Generator
 from datachain.lib.utils import normalize_col_names, unique_name
 from datachain.progress import tqdm
-from datachain.sql.types import (
-    JSON,
-    Array,
-    Binary,
-    Boolean,
-    DateTime,
-    Float,
-    Float32,
-    Float64,
-    Int,
-    Int32,
-    Int64,
-    String,
-    UInt32,
-    UInt64,
-)
+from datachain.sql.types import Array, Binary, Boolean, DateTime, Float, Int64, String
 from datachain.utils import safe_closing
 
 SCHEMA_READ_THREADS = 32
@@ -265,8 +249,7 @@ def _decode_lance_col(name: str) -> str:
 def write_lance(
     target: File,
     signal_schema: SignalSchema,
-    column_names: Sequence[str],
-    column_chunks: Iterable[Sequence[Sequence[Any]]],
+    column_chunks: Iterable[Sequence[list[Any]]],
     *,
     fs_kwargs: dict[str, Any] | None = None,
     **kwargs: Any,
@@ -274,44 +257,60 @@ def write_lance(
     _lance_file_reader()
     from lance.file import LanceFileWriter
 
-    db_columns = signal_schema.db_signals(as_columns=True)
-    column_types = [sql_to_arrow_type(c.type) for c in db_columns]  # type: ignore[union-attr]
-    fields = [
-        pa.field(_encode_lance_col(name), pa.string(), metadata=_LANCE_JSON_META)
-        if isinstance(arrow_type, pa.JsonType)
-        else pa.field(_encode_lance_col(name), arrow_type)
-        for name, arrow_type in zip(column_names, column_types, strict=True)
-    ]
-    schema = pa.schema(
-        fields,
-        metadata={
-            DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY: json.dumps(
-                signal_schema.serialize(), ensure_ascii=False
-            ).encode("utf-8")
-        },
+    pq_schema = parquet_schema(signal_schema)
+    lance_schema = pa.schema(
+        [
+            pa.field(_encode_lance_col(f.name), pa.string(), metadata=_LANCE_JSON_META)
+            if isinstance(f.type, pa.JsonType)
+            else f.with_name(_encode_lance_col(f.name))
+            for f in pq_schema
+        ]
     )
     catalog = target._catalog
     assert catalog is not None
-    with tempfile.TemporaryDirectory(dir=catalog.cache.tmp_dir) as tmp_dir:
-        tmp_path = os.path.join(tmp_dir, "out.lance")
-        with LanceFileWriter(tmp_path, schema, **kwargs) as writer:
+    client = catalog.get_client(target.source)
+    fs = (
+        client.create_fs(**{**catalog.client_config, **fs_kwargs})
+        if fs_kwargs
+        else client.fs
+    )
+    dst_path = target.get_fs_path()
+    local = isinstance(fs, LocalFileSystem)
+    if local:
+        staging = os.path.dirname(os.path.abspath(dst_path))
+        os.makedirs(staging, exist_ok=True)
+    else:
+        staging = catalog.cache.tmp_dir
+    null_free = set(pq_schema.names)
+    with tempfile.TemporaryDirectory(dir=staging) as tmp_dir:
+        staged = os.path.join(tmp_dir, "data.lance")
+        with LanceFileWriter(staged, lance_schema, **kwargs) as writer:
             for chunk in column_chunks:
                 arrays = [
-                    [None if v is None else to_json_text(v) for v in values]
-                    if isinstance(arrow_type, pa.JsonType)
-                    else values
-                    for values, arrow_type in zip(chunk, column_types, strict=True)
+                    _to_arrow(values, f.type)
+                    for values, f in zip(chunk, pq_schema, strict=True)
+                ]
+                for f, arr in zip(pq_schema, arrays, strict=True):
+                    if arr.null_count:
+                        null_free.discard(f.name)
+                lance_arrays = [
+                    arr.storage if isinstance(arr, pa.ExtensionArray) else arr
+                    for arr in arrays
                 ]
                 writer.write_batch(
-                    pa.Table.from_pydict(
-                        dict(zip(schema.names, arrays, strict=True)), schema=schema
-                    )
+                    pa.Table.from_arrays(lance_arrays, schema=lance_schema)
                 )
-        with (
-            open(tmp_path, "rb") as src,
-            target.open("wb", client_config=fs_kwargs) as dst,
-        ):
-            shutil.copyfileobj(src, dst)
+            values = _optional_unless_null_free(signal_schema.values, null_free)
+            if values != signal_schema.values:
+                signal_schema = SignalSchema(values)
+            writer.add_schema_metadata(
+                DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY.decode("utf-8"),
+                json.dumps(signal_schema.serialize(), ensure_ascii=False),
+            )
+        if local:
+            os.replace(staged, dst_path)
+        else:
+            fs.put_file(staged, dst_path)
 
 
 class _LanceDataset:
@@ -388,7 +387,9 @@ class _LanceDataset:
                 for c in columns
                 for t in (self.schema.field(c).type,)
             ],
-            schema=pa.schema([self.schema.field(c) for c in columns]),
+            schema=pa.schema(
+                [self.schema.field(c) for c in columns], metadata=self.schema.metadata
+            ),
         )
 
     def chunks(self, step: int):
@@ -897,9 +898,10 @@ class ArrowGenerator(Generator):
         ]
         wanted = {*names, *(tag for tag, _, _ in parents.values())}
         kw["columns"] = [c for c in schema.names if c in wanted]
+        json_cols = json_columns(schema)
         for _, batch in read_batches(ds, self.nrows, **kw):
             values = {
-                name: column_values(column)
+                name: column_values(column, name in json_cols)
                 for name, column in zip(batch.schema.names, batch.columns, strict=True)
             }
             for path, (tag, layout, arm) in parents.items():
@@ -954,13 +956,37 @@ class ArrowGenerator(Generator):
         return self.output_schema(**values)
 
 
-def column_values(column: pa.Array) -> list[Any]:
-    """The column's values, with JSON text parsed. Maps are read as dicts, and
-    duplicate keys raise an error."""
+def column_values(column: pa.Array, from_json: bool) -> list[Any]:
+    """The column's values, parsed where `from_json` and it holds JSON text. Maps
+    are read as dicts, and duplicate keys raise an error."""
     values = column.to_pylist(maps_as_pydicts="strict")
-    if isinstance(column.type, pa.JsonType):
+    if from_json and isinstance(column.type, pa.JsonType):
         return [None if v is None else json.loads(v) for v in values]
     return values
+
+
+def json_columns(schema: pa.Schema | None) -> set[str]:
+    """The columns files written by DataChain with this schema store as JSON."""
+    signal_schema = _get_datachain_schema(schema)
+    if signal_schema is None:
+        return set()
+    fields = parquet_schema(signal_schema)
+    return {f.name for f in fields if isinstance(f.type, pa.JsonType)}
+
+
+def _optional_unless_null_free(
+    signals: dict[str, Any], null_free: Collection[str]
+) -> dict[str, Any]:
+    """Make each signal optional unless its column, or its union tag, is in
+    `null_free`. A model is left as declared: its fields have their own columns."""
+    return {
+        path: anno
+        if ModelStore.is_pydantic(anno)
+        or path in null_free
+        or f"{path}.{TYPE_TAG_FIELD}" in null_free
+        else anno | None
+        for path, anno in signals.items()
+    }
 
 
 def _dataset_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -1035,7 +1061,7 @@ def infer_output(
 
     signals = _signal_paths(signal_schema, columns, replace_source)
     if columns is None:
-        schema = pa.unify_schemas(schemas)
+        schema = _unify_datachain_schemas(schemas)
     else:
         columns = list(signals)  # as stored, e.g. "u.Model.x" for "u.x"
         schema = _picked_schema(schemas, columns)
@@ -1234,7 +1260,22 @@ def _picked_schema(schemas: list[pa.Schema], signals: Sequence[str]) -> pa.Schem
         pa.schema([f for f in s if _in_signals(f.name, signals)], metadata=s.metadata)
         for s in schemas
     ]
-    return pa.unify_schemas(picked)
+    return _unify_datachain_schemas(picked)
+
+
+def _unify_datachain_schemas(schemas: list[pa.Schema]) -> pa.Schema:
+    """Unify the schemas of files written by DataChain. A column that one file
+    stores as JSON text unifies as JSON, as each file is read with its own types."""
+    json_cols = {f.name for s in schemas for f in s if isinstance(f.type, pa.JsonType)}
+    return pa.unify_schemas(
+        [
+            pa.schema(
+                [f.with_type(pa.json_()) if f.name in json_cols else f for f in s],
+                metadata=s.metadata,
+            )
+            for s in schemas
+        ]
+    )
 
 
 def _parent_tags(
@@ -1348,33 +1389,53 @@ def arrow_type_mapper(col_type: pa.DataType, column: str = "") -> type:  # noqa:
     raise TypeError(f"{col_type!r} datatypes not supported, column: {column}")
 
 
-_ARROW_TYPES: dict[type, pa.DataType] = {
+# The SQL types of the signals' Python types, see `python_to_sql`.
+_ARROW_TYPES: dict[Any, pa.DataType] = {
     String: pa.string(),
     Boolean: pa.bool_(),
-    Int: pa.int64(),
-    Int32: pa.int32(),
-    UInt32: pa.uint32(),
     Int64: pa.int64(),
-    UInt64: pa.uint64(),
     Float: pa.float64(),
-    Float32: pa.float32(),
-    Float64: pa.float64(),
     DateTime: pa.timestamp("us", tz="UTC"),
     Binary: pa.binary(),
 }
 
 
-def sql_to_arrow_type(sql_type: TypeEngine | type[TypeEngine]) -> pa.DataType:
+def _arrow_type(sql_type: Any) -> pa.DataType:
     """The Arrow type a column of this SQL type is written as. A column holding
-    JSON at any depth is JSON text, which keeps any keys and shapes."""
-    if isinstance(sql_type, type):
-        sql_type = sql_type()
-    if isinstance(sql_type, JSON):
-        return pa.json_()
+    JSON at any depth, or of a type with no Arrow type here, is JSON text, which
+    keeps any value."""
     if isinstance(sql_type, Array):
-        item = sql_to_arrow_type(sql_type.item_type)
+        item = _arrow_type(sql_type.item_type)
         return item if isinstance(item, pa.JsonType) else pa.list_(item)
-    return _ARROW_TYPES[type(sql_type)]
+    key = sql_type if isinstance(sql_type, type) else type(sql_type)
+    return _ARROW_TYPES.get(key, pa.json_())
+
+
+def parquet_schema(signal_schema: SignalSchema) -> pa.Schema:
+    """The Arrow schema of the signals' columns, as Parquet stores them."""
+    fields = []
+    for path, anno, has_subtree, _ in signal_schema.get_flat_tree(
+        include_sentinels=True
+    ):
+        if has_subtree:
+            continue
+        try:
+            sql_type = python_to_sql(anno)
+        except TypeError:
+            sql_type = None
+        fields.append(pa.field(".".join(path), _arrow_type(sql_type)))
+    return pa.schema(fields)
+
+
+def _to_arrow(values: list[Any], arrow_type: pa.DataType) -> pa.Array:
+    """The values as an Arrow array of the type. A value the type can't hold as
+    it is raises: a typed conversion rejects values of another kind, and a safe
+    cast of the inferred array rejects fractions an int would truncate."""
+    if isinstance(arrow_type, pa.JsonType):
+        texts = [None if v is None else to_json_text(v) for v in values]
+        return pa.array(texts, arrow_type)
+    pa.array(values).cast(arrow_type)
+    return pa.array(values, arrow_type)
 
 
 def _arrow_field_type_mapper(
