@@ -322,6 +322,32 @@ def test_in_memory_session_exit_marks_owned_job_complete(clean_job_state):
         assert peer.get_job(job.id).status == JobStatus.RUNNING
     try:
         assert peer.get_job(job.id).status == JobStatus.COMPLETE
+        assert s.get_job() is None
+    finally:
+        peer.close_on_exit()
+
+
+@skip_if_not_sqlite
+def test_inner_in_memory_job_retires_on_exit_for_outer_session(
+    catalog, clean_job_state
+):
+    with Session("outer", catalog=catalog) as outer:
+        with Session("inner", in_memory=True) as inner:
+            inner_job = inner.get_or_create_job()
+        outer_job = outer.get_or_create_job()
+        assert outer_job.id != inner_job.id
+        assert catalog.metastore.get_job(outer_job.id).status == JobStatus.RUNNING
+
+
+@skip_if_not_sqlite
+def test_in_memory_session_finalizes_job_created_via_catalog_view(clean_job_state):
+    with Session("t", in_memory=True) as s:
+        peer = s.catalog.metastore.clone(use_new_connection=True)
+        view = s._with_catalog(s.catalog.copy())
+        job = view.get_or_create_job()
+        assert peer.get_job(job.id).status == JobStatus.RUNNING
+    try:
+        assert peer.get_job(job.id).status == JobStatus.COMPLETE
     finally:
         peer.close_on_exit()
 
