@@ -1845,6 +1845,8 @@ class SQLSelect(SQLClause):
         return hash_column_elements(self.args)
 
     def used_columns(self) -> set[str] | None:
+        if not self.args:
+            return None
         cols = _expr_columns(self.args)
         return cols - _SYS if cols is not None and self.implicit_sys else cols
 
@@ -2481,6 +2483,8 @@ def _expr_columns(exprs: Iterable[Any]) -> set[str] | None:
         if isinstance(expr, str):
             names.add(expr)
             continue
+        if isinstance(expr, Function):
+            expr = expr.get_column()
         count_star: set[int] = set()
         for elem in iterate(expr):
             if isinstance(elem, sa_count):
@@ -2518,8 +2522,8 @@ def _used_columns(steps: Sequence[Step]) -> set[str] | None:
         cols = step.used_columns()
         if cols is None or "sys__rand" in cols:
             return None
-        if not bounded or isinstance(step, SQLFilter):
-            # A filter after a select still sees the columns the select dropped.
+        if not bounded or isinstance(step, (SQLFilter, SQLOrderBy, SQLDistinct)):
+            # Clauses without a subquery boundary still see columns the select dropped.
             used |= cols
         bounded = bounded or step.bounds_columns
     return used
@@ -2541,6 +2545,7 @@ def _project_step(
 ) -> Step:
     if (
         isinstance(step, RowGenerator)
+        and getattr(step.udf.inner, "projectable", False)
         and (used := _used_columns(later_steps)) is not None
         and (projected := step.udf.inner.project(used)) is not None
     ):
