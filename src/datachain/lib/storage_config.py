@@ -50,9 +50,9 @@ def client_configs(
     anon: bool | None,
     client_config: dict | None,
     versions: bool,
-) -> tuple[dict | None, dict]:
-    """The client config a session is made with, if not the active one's, and
-    the client config to list ``uris`` with.
+) -> tuple[dict, dict]:
+    """The client config to read the files of ``uris`` with, and the client
+    config to list them with.
 
     ``client_config`` if given, else the config of ``session`` or the active
     session. ``anon`` is set
@@ -73,7 +73,7 @@ def client_configs(
         anon = True
     if anon is not None:
         config = config | {"anon": anon}
-    session_config = config if client_config is not None or anon is not None else None
+    session_config = config
     if not versions:
         config = config | {"version_aware": False}
     return session_config, config

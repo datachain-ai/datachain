@@ -928,7 +928,7 @@ class File(DataModel):
 
         suffix = self._get_destination_suffix(placement)
         output_str = stringify_path(output)
-        client = self._catalog.get_client(output_str, **(client_config or {}))
+        client, _ = self._resolve_destination(output_str, client_config)
 
         # Normalization and traversal safety: for local exports, resolve to absolute
         # and validate the suffix. Cloud exports skip this — the cloud client already

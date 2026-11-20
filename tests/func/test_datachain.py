@@ -119,6 +119,40 @@ def test_merge_with_chain_of_other_config_reads_right_files_with_their_config(
     assert sorted(f.read_text() for f in right_files) == ["meow", "mrow"]
 
 
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_export_under_prefix_after_union_with_other_config_uses_source_config(
+    cloud_test_catalog, tmp_dir
+):
+    ctc = cloud_test_catalog
+    session = ctc.session
+    (tmp_dir / "note.txt").write_text("local")
+    elsewhere = {"aws_endpoint_url": "http://127.0.0.1:9"}
+    local = dc.read_storage(tmp_dir.as_uri(), client_config=elsewhere, session=session)
+    cats = dc.read_storage(f"{ctc.src_uri}/cats/", session=session)
+    cat = next(f for f in local.union(cats).to_values("file") if f.path == "cats/cat1")
+
+    cat.export(f"{ctc.src_uri}/out/nested", placement="filename")
+
+    assert (ctc.src / "out" / "nested" / "cat1").read_text() == "meow"
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_list_storage_save_after_session_change_reads_with_listing_config(
+    cloud_test_catalog,
+):
+    ctc = cloud_test_catalog
+    anonymous_catalog = ctc.catalog.copy()
+    anonymous_catalog.client_config = _anonymous(ctc)
+    with ctc.session:
+        listing = dc.list_storage(f"{ctc.src_uri}/cats/")
+    with dc.Session("anonymous", catalog=anonymous_catalog):
+        files = listing.save().to_values("file")
+
+    assert sorted(f.read_text() for f in files) == ["meow", "mrow"]
+
+
 def test_read_storage(cloud_test_catalog):
     ctc = cloud_test_catalog
     chain = dc.read_storage(ctc.src_uri, session=ctc.session)
