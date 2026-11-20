@@ -276,6 +276,18 @@ def test_select_nested_creates_partial_model(test_session):
     assert file_obj.path == "a.txt"
 
 
+def test_select_hidden_field_by_name_is_kept(test_session):
+    chain = dc.read_values(
+        file=[File(path="a.txt", source="file://", etag="abc")],
+        session=test_session,
+    )
+
+    selected = chain.select("file.etag", "file.path")
+
+    assert "file.etag" in selected.to_pandas(include_hidden=False).columns
+    assert selected.to_values("file.etag") == ["abc"]
+
+
 def test_select_preserves_sys_columns(test_session):
     chain = dc.read_values(name=["a"], session=test_session)
 
