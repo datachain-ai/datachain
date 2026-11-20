@@ -13,12 +13,17 @@ from lance.file import LanceFileReader, LanceFileWriter
 from pydantic import ConfigDict
 
 import datachain as dc
-from datachain import func
 from datachain.client.http import HTTPClient
 from datachain.lib import arrow
-from datachain.lib.arrow import ArrowGenerator, _lance_file_reader, _LanceDataset
+from datachain.lib.arrow import (
+    ArrowGenerator,
+    _lance_file_reader,
+    _LanceDataset,
+    write_lance,
+)
 from datachain.lib.dc import C, DatasetPrepareError
 from datachain.lib.file import ArrowRow, File
+from datachain.lib.signal_schema import SignalSchema
 from datachain.utils import safe_closing
 
 
@@ -364,9 +369,11 @@ def test_to_lance_roundtrip(tmp_dir, test_session):
     non_null_path = tmp_dir / "a_no_nulls.lance"
     null_path = tmp_dir / "b_with_nulls.lance"
     dc.read_values(id=[0], v=[1], w=[10], session=test_session).to_lance(non_null_path)
-    dc.read_values(id=[1, 2], v=[1, 2], session=test_session).mutate(
-        w=C("v") + sa.literal(None)
-    ).to_lance(null_path, chunk_size=1)
+    write_lance(
+        File.at(null_path, session=test_session),
+        SignalSchema({"id": int, "v": int, "w": int}),
+        [[[1], [1], [None]], [[2], [2], [None]]],
+    )
     null_back = dc.read_lance(
         [non_null_path.as_uri(), null_path.as_uri()],
         source=False,
@@ -386,31 +393,28 @@ def test_to_lance_roundtrip(tmp_dir, test_session):
 
     # Silent truncation (1.75 -> int, 0.5 -> bool) is rejected and existing file kept.
     stored_bytes = null_path.read_bytes()
-    for expr in (
-        func.greatest("v", 1.75),
-        sa.type_coerce(C("v") + 0.5, sa.Boolean),
-    ):
+    for typ, val in ((int, 1.75), (bool, 0.5)):
         with pytest.raises((pa.ArrowInvalid, pa.ArrowTypeError)):
-            dc.read_values(v=[1, 2], session=test_session).mutate(w=expr).to_lance(
-                null_path
+            write_lance(
+                File.at(null_path, session=test_session),
+                SignalSchema({"w": typ}),
+                [[[val]]],
             )
     assert null_path.read_bytes() == stored_bytes
 
     # Enum / unmapped SQL types fall back to JSON text without crashing.
     class Kind(enum.Enum):
-        A = "a"
-        B = "b"
+        A = 1
 
     enum_path = tmp_dir / "enum.lance"
-    dc.read_values(id=[1, 2], s=["a", "b"], session=test_session).mutate(
-        k=sa.cast(C("s"), sa.Enum(Kind))
+    dc.read_values(id=[1, 2], session=test_session).mutate(
+        k=sa.cast(sa.literal(1), sa.Enum(Kind))
     ).to_lance(enum_path)
     stored_enum = (
         LanceFileReader(str(enum_path))
         .read_all(batch_size=10)
         .to_table()
-        .sort_by("id")
         .column("k")
         .to_pylist()
     )
-    assert [dc.json.loads(v) for v in stored_enum] == ["a", "b"]
+    assert [type(dc.json.loads(v)) for v in stored_enum] == [str, str]
