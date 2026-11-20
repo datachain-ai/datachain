@@ -13,10 +13,15 @@ import pytest
 import sqlalchemy as sa
 
 import datachain as dc
-from datachain.data_storage.codec import RowCodec, TypeCodec, check_value
+from datachain.data_storage.codec import (
+    RowCodec,
+    RowEncodeError,
+    TypeCodec,
+    check_value,
+)
 from datachain.data_storage.serializer import deserialize
-from datachain.data_storage.sqlite import _HAS_ADBC, SQLiteWarehouse
-from datachain.data_storage.sqlite_arrow import SQLiteArrowWriter
+from datachain.data_storage.sqlite import SQLiteWarehouse
+from datachain.data_storage.writer import MAX_SEQ
 from datachain.lib.file import File
 from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.udf import JsonSerializationError, OutputRows, UdfError
@@ -28,6 +33,7 @@ from datachain.sql.types import (
     Boolean,
     DateTime,
     Float,
+    Int,
     Int64,
     String,
 )
@@ -490,9 +496,8 @@ def test_encode_arrow_keeps_arrow_batch_when_all_columns_support_it():
 
 @skip_if_not_sqlite
 @pytest.mark.parametrize("nullable", [False, True])
-def test_native_arrow_matches_scalar_codec_storage(warehouse_tmpfile, nullable, mocker):
+def test_native_arrow_matches_scalar_codec_storage(warehouse_tmpfile, nullable):
     wh = warehouse_tmpfile
-    wh.ARROW_WRITER_THRESHOLD = 1024
     specs = [
         (String, pa.array(["", "a\x00b", "é", None])),
         (String, pa.array(["one", None, "two", "one"]).dictionary_encode()),
@@ -527,15 +532,10 @@ def test_native_arrow_matches_scalar_codec_storage(warehouse_tmpfile, nullable, 
         "arrow_actual", columns=[sa.Column(c.name, c.type) for c in columns]
     )
     try:
-        native_write = mocker.spy(SQLiteArrowWriter, "write")
         with wh.writer(reference, batch.schema.names) as w:
             w.extend(expected)
         with wh.writer(actual, batch.schema.names) as w:
             w.append_arrow(native)
-        if not _HAS_ADBC:
-            native_write.assert_not_called()
-        else:
-            native_write.assert_called_once()
         # Raw sqlite values and storage classes, bypassing registered converters.
         fields = ", ".join(f'"{c.name}", typeof("{c.name}")' for c in columns)
         with closing(sqlite3.connect(wh.db.db_file)) as db:
@@ -547,3 +547,74 @@ def test_native_arrow_matches_scalar_codec_storage(warehouse_tmpfile, nullable, 
     finally:
         wh.db.drop_table(reference)
         wh.db.drop_table(actual)
+
+
+@skip_if_not_sqlite
+def test_encode_arrow_fills_missing_trailing_columns(warehouse_tmpfile):
+    warehouse = warehouse_tmpfile
+    batch = pa.record_batch([[1, 2]], names=["x"])
+
+    rc_arrow = warehouse.row_codec([sa.Column("x", Int()), sa.Column("ts", DateTime())])
+    enc_arrow = rc_arrow.encode_arrow(batch)
+    assert isinstance(enc_arrow, pa.RecordBatch)
+    assert enc_arrow.column(1).to_pylist() == [None, None]
+
+    rc_tuples = warehouse.row_codec(
+        [sa.Column("x", Int()), sa.Column("arr", Array(Int()))]
+    )
+    assert rc_tuples.encode_arrow(batch) == [(1, None), (2, None)]
+
+
+@skip_if_not_sqlite
+def test_encode_arrow_falls_back_for_unsupported_or_out_of_range_values(
+    warehouse_tmpfile,
+):
+    warehouse = warehouse_tmpfile
+    dt_codec = warehouse.row_codec([sa.Column("ts", DateTime())])
+    int_codec = warehouse.row_codec([sa.Column("x", Int())])
+
+    # Naive timestamp before year 1 falls back to tuple path; aware timestamp clamps.
+    far_past = pa.array([-70_000_000_000_000_000], type=pa.int64())
+    with pytest.raises(OverflowError):
+        dt_codec.encode_arrow(
+            pa.record_batch([far_past.view(pa.timestamp("us"))], names=["ts"])
+        )
+    clamped = dt_codec.encode_arrow(
+        pa.record_batch([far_past.view(pa.timestamp("us", "UTC"))], names=["ts"])
+    )
+    assert isinstance(clamped, pa.RecordBatch)
+    assert clamped.column(0).to_pylist() == ["0001-01-01 00:00:00"]
+
+    # Non-timestamp input for DateTime and non-scalar / overflowing uint64 for Int
+    # fall back to the tuple path.
+    with pytest.raises(RowEncodeError):
+        dt_codec.encode_arrow(pa.record_batch([pa.array([1, 2])], names=["ts"]))
+    with pytest.raises(RowEncodeError):
+        int_codec.encode_arrow(
+            pa.record_batch([pa.array([[1]], type=pa.list_(pa.int64()))], names=["x"])
+        )
+    assert int_codec.encode_arrow(
+        pa.record_batch([pa.array([2**63], type=pa.uint64())], names=["x"])
+    ) == [(2**63,)]
+
+
+@skip_if_not_sqlite
+def test_encode_arrow_rejects_invalid_utf8_strings(warehouse_tmpfile):
+    warehouse = warehouse_tmpfile
+    str_codec = warehouse.row_codec([sa.Column("s", String())])
+    invalid = pa.array([b"\xff"], type=pa.binary()).view(pa.string())
+    with pytest.raises(UnicodeDecodeError):
+        str_codec.encode_arrow(pa.record_batch([invalid], names=["s"]))
+
+
+@skip_if_not_sqlite
+def test_append_arrow_raises_when_writer_runs_out_of_ids(warehouse_tmpfile):
+    warehouse = warehouse_tmpfile
+    table = warehouse.create_dataset_rows_table("overflow_id", [sa.Column("x", Int)])
+    try:
+        with warehouse.writer(table, ["x"]) as writer:
+            writer.next_id = MAX_SEQ + 1
+            with pytest.raises(RuntimeError, match="ran out of ids"):
+                writer.append_arrow(pa.record_batch([[1]], names=["x"]))
+    finally:
+        warehouse.db.drop_table(table)

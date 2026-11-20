@@ -663,7 +663,6 @@ def test_is_parquet(format, expected):
 @pytest.mark.parametrize("format", ["parquet", "csv", "json"])
 @pytest.mark.parametrize("source", [False, True])
 def test_tabular_load_uses_native_arrow(tmp_path, test_session_tmpfile, format, source):
-    test_session_tmpfile.catalog.warehouse.ARROW_WRITER_THRESHOLD = 1024
     path = tmp_path / f"native.{format}"
     frame = pd.DataFrame({"n": list(range(2048)), "text": ["one"] * 2048})
     if format == "parquet":
@@ -687,14 +686,7 @@ def test_tabular_load_uses_native_arrow(tmp_path, test_session_tmpfile, format, 
 
 
 @skip_if_not_sqlite  # includes SQLite's PRAGMA integrity_check
-def test_read_parquet_with_parallel_keeps_every_row(
-    tmp_path, test_session_tmpfile, monkeypatch
-):
-    monkeypatch.setattr(
-        type(test_session_tmpfile.catalog.warehouse),
-        "ARROW_WRITER_THRESHOLD",
-        100,
-    )
+def test_read_parquet_with_parallel_keeps_every_row(tmp_path, test_session_tmpfile):
     for i in range(8):
         pq.write_table(
             pa.table({"n": list(range(i * 200, (i + 1) * 200))}),

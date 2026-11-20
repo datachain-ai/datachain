@@ -170,7 +170,6 @@ def test_trim_after_many_claims(warehouse, tables):
 @pytest.mark.parametrize("native", [False, True])
 def test_trim_after_arrow_batches_keeps_committed_parts(native, request):
     wh = request.getfixturevalue("warehouse_tmpfile" if native else "warehouse")
-    wh.ARROW_WRITER_THRESHOLD = 1024
     table = wh.create_dataset_rows_table("arrow_out", columns=[sa.Column("x", Int)])
     parts = wh.create_parts_table("arrow_out_parts")
     values = list(range(10, 2059))
@@ -198,7 +197,6 @@ def test_trim_after_arrow_batches_keeps_committed_parts(native, request):
 @skip_if_not_sqlite  # duplicate primary keys abort a SQLite transaction
 def test_arrow_failure_rolls_back_rows_and_leaves_part_uncommitted(warehouse_tmpfile):
     wh = warehouse_tmpfile
-    wh.ARROW_WRITER_THRESHOLD = 1024
     table = wh.create_dataset_rows_table("arrow_fail", columns=[sa.Column("x", Int)])
     parts = wh.create_parts_table("arrow_fail_parts")
     try:

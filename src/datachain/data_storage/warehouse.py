@@ -6,7 +6,6 @@ import string
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Self, cast
 
 import attrs
@@ -489,13 +488,6 @@ class AbstractWarehouse(ABC, Serializable):
             table,
             batch.schema.names,
             list(zip(*(c.to_pylist() for c in batch.columns), strict=True)),
-        )
-
-    def arrow_writer(self, table: sa.Table) -> Any:
-        """Keep native resources for one Writer; each call commits before returning."""
-        return SimpleNamespace(
-            write=lambda batch: self.insert_arrow(table, batch),
-            close=lambda: None,
         )
 
     @abstractmethod

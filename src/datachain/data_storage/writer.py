@@ -65,18 +65,13 @@ class Writer:
         self.next_id = (writer_no << ID_BITS) + 1  # id of self.rows[0]
         self.part_lo = self.next_id
         self.flush_at = time.monotonic() + self.flush_interval
-        self._arrow: Any = None
 
     def __enter__(self) -> Self:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         try:
-            try:
-                self.flush()
-            finally:
-                if self._arrow is not None:
-                    self._arrow.close()
+            self.flush()
         except Exception:
             if exc_type is None:
                 raise
@@ -114,9 +109,7 @@ class Writer:
         if self.assign_ids:
             columns.append(pa.array(np.arange(self.next_id, hi, dtype=np.int64)))
         batch = pa.RecordBatch.from_arrays(columns, names=self.columns)
-        if self._arrow is None:
-            self._arrow = self.warehouse.arrow_writer(self.table)
-        self._arrow.write(batch)
+        self.warehouse.insert_arrow(self.table, batch)
         self.next_id = hi
 
     def commit(self, part_key: Any) -> None:
