@@ -331,6 +331,18 @@ def test_read_csv_and_json_project_selected_columns(tmp_dir, test_session, arrow
             ["b"],
             id="filter_then_count",
         ),
+        pytest.param(
+            lambda c: c.select("a").order_by(C("b")).limit(2).to_values("a"),
+            [1, 1],
+            ["a", "b"],
+            id="select_then_order_by_dropped_column",
+        ),
+        pytest.param(
+            lambda c: sorted(c._query.group_by([func.avg("b")], ["a"])),
+            [(1, 10.0), (2, 20.0), (3, 30.0)],
+            ["a", "b"],
+            id="query_group_by_function",
+        ),
     ],
 )
 def test_read_parquet_projects_columns_across_steps(
@@ -354,6 +366,11 @@ def test_read_parquet_projects_columns_across_steps(
             lambda c: [(r[1], r[2], r[3]) for r in c.to_list()],
             [(3, 30, 100), (2, 20, 200), (1, 10, 300), (1, 10, 400)],
             id="to_list_all",
+        ),
+        pytest.param(
+            lambda c: [r[-3:] for r in c._query.select()],
+            [(3, 30, 100), (2, 20, 200), (1, 10, 300), (1, 10, 400)],
+            id="empty_sql_select",
         ),
         pytest.param(
             lambda c: c.save("saved").to_list("a", "b", "c"),
