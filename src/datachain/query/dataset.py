@@ -2555,7 +2555,13 @@ def _read_filters(steps: Sequence[Step]) -> list[Any]:
     for step in steps:
         if isinstance(step, SQLFilter):
             filters.extend(step.parse_cols(step.expressions))
-        elif not isinstance(step, (SQLOrderBy, SQLSelect)):
+        elif isinstance(step, SQLSelect):
+            if not all(
+                isinstance(a, str) or (isinstance(a, ColumnClause) and not a.is_literal)
+                for a in step.args
+            ):
+                break
+        elif not isinstance(step, SQLOrderBy):
             break
     if filters and any(_uses_sys(step) for step in steps):
         return []

@@ -900,6 +900,24 @@ def test_read_parquet_filter_does_not_push_across_limit_or_mutate(
     chain = dc.read_parquet(rows_parquet, session=test_session)
     assert chain.limit(1).filter(C("a") == 2).to_values("a") == []
     assert chain.mutate(a=C("a") + 10).filter(C("a") == 12).to_values("a") == [12]
+    assert [
+        r[0] for r in chain._query.select(a=C("a") + 1).select("a").filter(C("a") == 2)
+    ] == [2, 2]
+    assert [
+        r[0] for r in chain._query.select(a=C("b")).select("a").filter(C("a") == 20)
+    ] == [20]
+
+
+def test_read_parquet_filter_skips_nullable_field_with_non_optional_output():
+    from datachain.lib.arrow_filter import to_arrow_filter
+
+    nullable_schema = pa.schema([pa.field("x", pa.int64(), nullable=True)])
+    non_null_schema = pa.schema([pa.field("x", pa.int64(), nullable=False)])
+    assert to_arrow_filter([C("x") == 0], nullable_schema, {"x": int}) is None
+    assert (
+        to_arrow_filter([C("x") == 0], nullable_schema, {"x": int | None}) is not None
+    )
+    assert to_arrow_filter([C("x") == 0], non_null_schema, {"x": int}) is not None
 
 
 @skip_if_not_sqlite
