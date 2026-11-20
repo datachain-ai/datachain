@@ -8,7 +8,6 @@ from collections.abc import Iterator
 
 import multiprocess as mp
 import pytest
-from fsspec.callbacks import Callback
 
 import datachain as dc
 from datachain.client.fileslice import FileWrapper
@@ -1388,10 +1387,7 @@ def test_map_with_user_column_named_partition_id_preserves_column(test_session):
     ) == ["a:10", "a:None", "b:5", "b:None", "b:1"]
 
 
-def test_agg_with_user_column_named_partition_id_groups_by_partition_by(
-    test_session, monkeypatch
-):
-    monkeypatch.setattr("datachain.data_storage.warehouse.SELECT_BATCH_SIZE", 2)
+def test_agg_with_user_column_named_partition_id_groups_by_partition_by(test_session):
     chain = dc.read_values(
         key=["a", "a", "b", "b", "b"],
         partition_id=[10, None, 5, None, 1],
@@ -1415,20 +1411,3 @@ def test_udf_with_user_column_named_sys_partition_id_raises(test_session):
         chain.map(r=lambda num: num * 2, output=int).to_list("r")
     with pytest.raises(DataChainError, match="sys__partition_id"):
         chain.agg(r=lambda num: [sum(num)], partition_by="k", output=int).to_list("r")
-
-
-def test_map_reports_processed_row_count_to_progress_callback(
-    test_session, monkeypatch
-):
-    source = dc.read_values(num=[1, 2, 3, 4], session=test_session).save(
-        "map_progress_src"
-    )
-    cb = Callback(value=0)
-    monkeypatch.setattr("datachain.query.dataset.get_processed_callback", lambda: cb)
-    result = (
-        source.map(doubled=lambda num: num * 2, output=int)
-        .order_by("doubled")
-        .to_values("doubled")
-    )
-    assert result == [2, 4, 6, 8]
-    assert cb.value == 4

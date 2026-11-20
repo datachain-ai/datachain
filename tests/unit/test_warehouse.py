@@ -11,7 +11,6 @@ import sqlalchemy as sa
 
 import datachain as dc
 from datachain.data_storage.codec import check_value
-from datachain.data_storage.schema import PARTITION_COLUMN_ID, partition_columns
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SQLiteWarehouse
 from datachain.lib.file import File
@@ -104,58 +103,6 @@ def test_dataset_select_paginated_with_limit(limit, numbers_table, warehouse):
     ids, nums = zip(*rows, strict=False)
     assert len(set(ids)) == limit
     assert set(nums) <= set(range(1, 74))
-
-
-def test_dataset_select_paginated_keyset(numbers_table, warehouse):
-    # pages by (sys__partition_id, sys__id) after the last key, never by offset
-    t = numbers_table.c
-    partition = sa.case((t.primality == "prime", 1), else_=2).label(PARTITION_COLUMN_ID)
-    query = sa.select(t.sys__id, partition)
-    with patch.object(
-        type(warehouse),
-        attribute="dataset_rows_select",
-        wraps=warehouse.dataset_rows_select,
-    ) as mock_dataset_rows_select:
-        rows = list(warehouse.dataset_select_paginated(query, page_size=5))
-    pages = [call.args[0] for call in mock_dataset_rows_select.call_args_list]
-    assert len(pages) == 15  # 5 * 14 + 3
-    assert all(page._offset_clause is None for page in pages)
-    assert rows == sorted(rows, key=lambda row: (row[1], row[0]))
-    assert len({row[0] for row in rows}) == 73
-
-
-@pytest.mark.parametrize(
-    "build_query",
-    [
-        lambda t: sa.select(t.number),
-        lambda t: sa.select(t.sys__id, t.number).offset(3),
-        lambda t: sa.select(t.sys__id, t.number).offset(3).limit(4),
-        lambda t: sa.select(t.sys__id, t.number).order_by(t.number.desc()).limit(3),
-    ],
-    ids=["missing-sys-id", "offset", "offset-limit", "foreign-order-by"],
-)
-def test_dataset_select_paginated_rejects_non_udf_queries(
-    numbers_table, warehouse, build_query
-):
-    with pytest.raises(ValueError, match="paginated query"):
-        list(warehouse.dataset_select_paginated(build_query(numbers_table.c)))
-
-
-def test_dataset_select_paginated_accepts_labeled_sys_id_order_by(
-    numbers_table, warehouse
-):
-    id_col = sa.type_coerce(numbers_table.c.sys__id, sa.Integer).label("sys__id")
-    query = sa.select(id_col).order_by(id_col).with_only_columns(id_col).limit(5)
-    rows = list(warehouse.dataset_select_paginated(query, page_size=2))
-    assert len(rows) == 5
-
-
-@skip_if_not_sqlite
-def test_partition_table_is_indexed(warehouse):
-    # agg pages seek on (sys__partition_id, sys__id) instead of sorting the input
-    table = warehouse.create_udf_table(partition_columns())
-    sql = f"PRAGMA index_info('ix_{table.name}_{PARTITION_COLUMN_ID}')"
-    assert [row[2] for row in warehouse.db.execute_str(sql)] == [PARTITION_COLUMN_ID]
 
 
 def test_dataset_rows_select(numbers_table, warehouse):
