@@ -1,12 +1,15 @@
+import asyncio
 import multiprocessing
 import os
 import subprocess
 import sys
 import textwrap
+import threading
 import weakref
 from datetime import UTC, datetime
 from typing import get_args
 
+import cloudpickle
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -31,6 +34,7 @@ from datachain.lib.data_model import dict_to_data_model
 from datachain.lib.file import ArrowRow, File, FileError
 from datachain.lib.hf import HFClassLabel
 from datachain.lib.parquet_ranges import ParquetBufferedFile, column_ranges
+from datachain.utils import filtered_cloudpickle_dumps
 from tests.utils import skip_if_not_sqlite
 
 
@@ -1321,3 +1325,93 @@ def test_read_parquet_columns_in_forked_child_after_parent_read(
     proc.join(timeout=10)
     assert proc.exitcode == 0
     assert parent_conn.recv() == 3
+
+
+def test_arrow_generator_is_picklable_and_resets_prefetch_state(tmp_path, catalog):
+    path = tmp_path / "picklable.parquet"
+    pq.write_table(pa.table({"a": [1, 2]}), path)
+    file = File(
+        path="picklable.parquet", source=tmp_path.as_uri(), size=path.stat().st_size
+    )
+    file._set_stream(catalog, caching_enabled=False)
+
+    model = dict_to_data_model("Row", {"a": int})
+    gen = ArrowGenerator(
+        pa.schema([("a", pa.int64())]),
+        model,
+        source=False,
+        columns=["a"],
+        prefetch_max_size=1,
+        format="parquet",
+    )
+    gen._parts[id(file)] = (file, 128, (file.size, [(0, b"PAR1")]))
+    gen._parts_bytes = 128
+
+    restored = cloudpickle.loads(filtered_cloudpickle_dumps(gen))
+    assert restored._parts == {}
+    assert restored._parts_bytes == 0
+    assert [row.a for (row,) in restored.process(file)] == [1, 2]
+
+
+def test_arrow_generator_cancel_and_teardown_release_prefetch_budget(
+    tmp_path, catalog, http_server, monkeypatch
+):
+    path = tmp_path / "cancel.parquet"
+    pq.write_table(
+        pa.table({"a": [1, 2], "pad": [b"x" * 20_000, b"y" * 20_000]}),
+        path,
+        row_group_size=1,
+        compression="NONE",
+        use_dictionary=False,
+    )
+    monkeypatch.setattr(parquet_ranges, "PARQUET_FOOTER_SAMPLE_SIZE", 4096)
+    size = path.stat().st_size
+
+    model = dict_to_data_model("Row", {"a": int})
+    gen = ArrowGenerator(
+        pa.schema([("a", pa.int64()), ("pad", pa.binary())]),
+        model,
+        columns=["a"],
+        prefetch_max_size=1,
+        format="parquet",
+    )
+
+    f1 = File(source=http_server, path="cancel.parquet", size=size)
+    f1._set_stream(catalog, caching_enabled=False)
+    assert asyncio.run(gen._prefetch_file(f1)) is True
+    assert id(f1) in gen._parts
+    assert gen._parts_bytes > 0
+    gen.teardown()
+    assert gen._parts == {}
+    assert gen._parts_bytes == 0
+
+    orig_fetch = HTTPFile._fetch_range
+    in_chunk_fetch = threading.Event()
+    allow_chunk_finish = threading.Event()
+
+    def slow_chunk_fetch(self, start, end):
+        if start < 100:
+            in_chunk_fetch.set()
+            allow_chunk_finish.wait(timeout=5)
+        return orig_fetch(self, start, end)
+
+    monkeypatch.setattr(HTTPFile, "_fetch_range", slow_chunk_fetch)
+    f2 = File(source=http_server, path="cancel.parquet", size=size)
+    f2._set_stream(catalog, caching_enabled=False)
+
+    async def cancel_during_chunk_fetch():
+        task = asyncio.create_task(gen._prefetch_file(f2))
+        assert await asyncio.to_thread(in_chunk_fetch.wait, 5)
+        assert gen._parts_bytes > 0
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        allow_chunk_finish.set()
+        for _ in range(50):
+            if gen._parts_bytes == 0:
+                break
+            await asyncio.sleep(0.01)
+        assert gen._parts == {}
+        assert gen._parts_bytes == 0
+
+    asyncio.run(cancel_during_chunk_fetch())
