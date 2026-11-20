@@ -610,7 +610,7 @@ class File(DataModel):
 
         base_cfg = self._catalog.client_config_for(self.source)
         merged_cfg = {**base_cfg, **(client_config or {})}
-        client: Client = self._catalog.get_client(self.source, **merged_cfg)
+        client: Client = self._catalog.get_client(self.source, client_config=merged_cfg)
 
         if not writing:
             with self._open_read(client=client, block_size=block_size) as f:
