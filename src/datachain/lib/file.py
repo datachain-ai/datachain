@@ -2249,8 +2249,15 @@ class ArrowRow(DataModel):
         file again from the start up to this row, and not every reader option is
         kept, e.g. column types.
         """
+        from datachain.lib.arrow import column_values
+
         with self.open() as record_batch:
-            return record_batch.to_pylist(maps_as_pydicts="strict")[0]
+            return {
+                name: column_values(column)[0]
+                for name, column in zip(
+                    record_batch.schema.names, record_batch.columns, strict=True
+                )
+            }
 
 
 def get_file_type(type_: FileType = "binary") -> type[File]:

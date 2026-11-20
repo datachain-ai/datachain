@@ -8,7 +8,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from functools import partial
-from typing import TYPE_CHECKING, Any, Literal, TypeGuard, get_args, get_origin
+from typing import TYPE_CHECKING, Any, TypeGuard
 
 import numpy as np
 import pyarrow as pa
@@ -17,6 +17,7 @@ from fsspec.implementations.local import LocalFileSystem
 from pyarrow._csv import ParseOptions
 from pyarrow.dataset import CsvFileFormat, Dataset, ParquetFileFormat, dataset
 from pyarrow.fs import FileInfo, FileType, FSSpecHandler, PyFileSystem
+from sqlalchemy.types import TypeEngine
 
 from datachain import json
 from datachain.cache import Cache, ReadonlyCache
@@ -41,6 +42,22 @@ from datachain.lib.signal_schema import SignalSchema, SignalSchemaError
 from datachain.lib.udf import Generator
 from datachain.lib.utils import normalize_col_names, unique_name
 from datachain.progress import tqdm
+from datachain.sql.types import (
+    JSON,
+    Array,
+    Binary,
+    Boolean,
+    DateTime,
+    Float,
+    Float32,
+    Float64,
+    Int,
+    Int32,
+    Int64,
+    String,
+    UInt32,
+    UInt64,
+)
 from datachain.utils import safe_closing
 
 SCHEMA_READ_THREADS = 32
@@ -235,14 +252,6 @@ def _local_lance_path(file: File) -> str:
 
 
 _LANCE_JSON_META = {b"datachain:json": b"true"}
-_SCALAR_ARROW_TYPES: dict[Any, pa.DataType] = {
-    int: pa.int64(),
-    float: pa.float64(),
-    bool: pa.bool_(),
-    str: pa.string(),
-    bytes: pa.binary(),
-    datetime: pa.timestamp("us", tz="UTC"),
-}
 
 
 def _encode_lance_col(name: str) -> str:
@@ -251,25 +260,6 @@ def _encode_lance_col(name: str) -> str:
 
 def _decode_lance_col(name: str) -> str:
     return name.replace("%2E", ".").replace("%25", "%")
-
-
-def _leaf_arrow_type(typ: Any, *, allow_datetime: bool = True) -> pa.DataType | None:
-    base = unwrap_optional(typ)[0]
-    origin = get_origin(base)
-    if origin is Literal:
-        args = get_args(base)
-        return (
-            _leaf_arrow_type(type(args[0]), allow_datetime=allow_datetime)
-            if args
-            else None
-        )
-    if origin in (list, Sequence):
-        args = get_args(base)
-        inner = _leaf_arrow_type(args[0], allow_datetime=False) if args else None
-        return pa.list_(inner) if inner is not None else None
-    if base is datetime and not allow_datetime:
-        return None
-    return _SCALAR_ARROW_TYPES.get(base)
 
 
 def write_lance(
@@ -284,16 +274,13 @@ def write_lance(
     _lance_file_reader()
     from lance.file import LanceFileWriter
 
-    leaf_types = {
-        ".".join(path): _leaf_arrow_type(typ)
-        for path, typ, has_sub, _ in signal_schema.get_flat_tree(include_sentinels=True)
-        if not has_sub
-    }
+    db_columns = signal_schema.db_signals(as_columns=True)
+    column_types = [sql_to_arrow_type(c.type) for c in db_columns]  # type: ignore[union-attr]
     fields = [
-        pa.field(_encode_lance_col(n), t)
-        if (t := leaf_types.get(n)) is not None
-        else pa.field(_encode_lance_col(n), pa.string(), metadata=_LANCE_JSON_META)
-        for n in column_names
+        pa.field(_encode_lance_col(name), pa.string(), metadata=_LANCE_JSON_META)
+        if isinstance(arrow_type, pa.JsonType)
+        else pa.field(_encode_lance_col(name), arrow_type)
+        for name, arrow_type in zip(column_names, column_types, strict=True)
     ]
     schema = pa.schema(
         fields,
@@ -310,15 +297,16 @@ def write_lance(
         with LanceFileWriter(tmp_path, schema, **kwargs) as writer:
             for chunk in column_chunks:
                 arrays = [
-                    pa.array(
-                        col
-                        if leaf_types.get(n) is not None
-                        else [None if v is None else to_json_text(v) for v in col],
-                        type=f.type,
-                    )
-                    for n, f, col in zip(column_names, fields, chunk, strict=True)
+                    [None if v is None else to_json_text(v) for v in values]
+                    if isinstance(arrow_type, pa.JsonType)
+                    else values
+                    for values, arrow_type in zip(chunk, column_types, strict=True)
                 ]
-                writer.write_batch(pa.Table.from_arrays(arrays, schema=schema))
+                writer.write_batch(
+                    pa.Table.from_pydict(
+                        dict(zip(schema.names, arrays, strict=True)), schema=schema
+                    )
+                )
         with (
             open(tmp_path, "rb") as src,
             target.open("wb", client_config=fs_kwargs) as dst,
@@ -345,7 +333,15 @@ class _LanceDataset:
         self._dc = _written_by_datachain(meta.schema)
         self._physical_schema: pa.Schema = (
             pa.schema(
-                [f.with_name(_decode_lance_col(f.name)) for f in meta.schema],
+                [
+                    pa.field(
+                        _decode_lance_col(f.name),
+                        pa.json_()
+                        if (f.metadata or {}).get(b"datachain:json") == b"true"
+                        else f.type,
+                    )
+                    for f in meta.schema
+                ],
                 metadata=meta.schema.metadata,
             )
             if self._dc
@@ -728,7 +724,9 @@ class ArrowGenerator(Generator):
             return None
         projected = copy.copy(self)
         projected.columns = [raw[k] for k in data]
-        projected.output_schema = dict_to_data_model(self.output_schema.__name__, data)
+        projected.output_schema = dict_to_data_model(
+            self.output_schema.__name__, data, optional=False
+        )
         projected.source = len(kept) > len(data)
         projected.output = SignalSchema(kept)
         if pushed is not None:
@@ -900,14 +898,9 @@ class ArrowGenerator(Generator):
         wanted = {*names, *(tag for tag, _, _ in parents.values())}
         kw["columns"] = [c for c in schema.names if c in wanted]
         for _, batch in read_batches(ds, self.nrows, **kw):
-            # Maps are read as dicts. Duplicate keys raise an error.
             values = {
-                field.name: [
-                    None if v is None else json.loads(v) for v in column.to_pylist()
-                ]
-                if (field.metadata or {}).get(b"datachain:json") == b"true"
-                else column.to_pylist(maps_as_pydicts="strict")
-                for field, column in zip(batch.schema, batch.columns, strict=True)
+                name: column_values(column)
+                for name, column in zip(batch.schema.names, batch.columns, strict=True)
             }
             for path, (tag, layout, arm) in parents.items():
                 # The parent's tag stands in for the path's own, set where it
@@ -959,6 +952,15 @@ class ArrowGenerator(Generator):
                 value = anno(**value)  # type: ignore[misc]
             values[field] = value
         return self.output_schema(**values)
+
+
+def column_values(column: pa.Array) -> list[Any]:
+    """The column's values, with JSON text parsed. Maps are read as dicts, and
+    duplicate keys raise an error."""
+    values = column.to_pylist(maps_as_pydicts="strict")
+    if isinstance(column.type, pa.JsonType):
+        return [None if v is None else json.loads(v) for v in values]
+    return values
 
 
 def _dataset_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -1312,7 +1314,11 @@ def arrow_type_mapper(col_type: pa.DataType, column: str = "") -> type:  # noqa:
         return bool
     if pa.types.is_date(col_type):
         return datetime
-    if pa.types.is_string(col_type) or pa.types.is_large_string(col_type):
+    if (
+        pa.types.is_string(col_type)
+        or pa.types.is_large_string(col_type)
+        or isinstance(col_type, pa.JsonType)
+    ):
         return str
     if (
         pa.types.is_list(col_type)
@@ -1340,6 +1346,35 @@ def arrow_type_mapper(col_type: pa.DataType, column: str = "") -> type:  # noqa:
     if pa.types.is_null(col_type):
         return str  # use strings for null columns
     raise TypeError(f"{col_type!r} datatypes not supported, column: {column}")
+
+
+_ARROW_TYPES: dict[type, pa.DataType] = {
+    String: pa.string(),
+    Boolean: pa.bool_(),
+    Int: pa.int64(),
+    Int32: pa.int32(),
+    UInt32: pa.uint32(),
+    Int64: pa.int64(),
+    UInt64: pa.uint64(),
+    Float: pa.float64(),
+    Float32: pa.float32(),
+    Float64: pa.float64(),
+    DateTime: pa.timestamp("us", tz="UTC"),
+    Binary: pa.binary(),
+}
+
+
+def sql_to_arrow_type(sql_type: TypeEngine | type[TypeEngine]) -> pa.DataType:
+    """The Arrow type a column of this SQL type is written as. A column holding
+    JSON at any depth is JSON text, which keeps any keys and shapes."""
+    if isinstance(sql_type, type):
+        sql_type = sql_type()
+    if isinstance(sql_type, JSON):
+        return pa.json_()
+    if isinstance(sql_type, Array):
+        item = sql_to_arrow_type(sql_type.item_type)
+        return item if isinstance(item, pa.JsonType) else pa.list_(item)
+    return _ARROW_TYPES[type(sql_type)]
 
 
 def _arrow_field_type_mapper(
