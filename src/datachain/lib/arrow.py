@@ -221,7 +221,11 @@ class ArrowGenerator(Generator):
     def project(self, names: set[str]) -> "ArrowGenerator | None":
         """Return a copy reading only the top-level signals used by ``names``,
         or None when nothing would be dropped."""
-        if not self.projectable or self.delta_key:
+        if (
+            not self.projectable
+            or self.delta_key
+            or not self.output_schema.model_fields
+        ):
             return None
         assert self.input_schema is not None
         assert self.output is not None

@@ -505,3 +505,9 @@ def test_parse_tabular_delta_reads_all_columns(rows_parquet, test_session, arrow
 
     assert read() == read(output={"a": int, "b": int, "c": int}) == [3, 2, 1, 1]
     assert arrow_reads[0] == ["a", "b", "c"]
+
+
+def test_read_parquet_zero_column_count(tmp_dir, test_session):
+    path = tmp_dir / "empty_cols.parquet"
+    pq.write_table(pa.table({}), path)
+    assert dc.read_parquet(path.as_uri(), session=test_session).count() == 0
