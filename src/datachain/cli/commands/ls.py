@@ -4,8 +4,8 @@ from itertools import chain
 from typing import TYPE_CHECKING
 
 from datachain.cli.utils import determine_flavors
-from datachain.config import Config
 from datachain.query.session import Session
+from datachain.remote.studio import StudioClient, is_token_set
 
 if TYPE_CHECKING:
     from datachain.catalog import Catalog
@@ -20,8 +20,9 @@ def ls(
     team: str | None = None,
     **kwargs,
 ):
-    token = Config().read().get("studio", {}).get("token")
-    all, local, studio = determine_flavors(studio, local, all, token)
+    all, local, studio = determine_flavors(
+        studio, local, all, lambda: is_token_set(team)
+    )
 
     show_local = all or local
     show_studio = all or studio
@@ -94,9 +95,10 @@ def ls_remote(
     team: str | None = None,
 ):
     from datachain.node import long_line_str
-    from datachain.remote.studio import StudioClient
 
     client = StudioClient(team=team)
+    # Fails here without a login, also when there is no path to request.
+    _ = client.token
     first = True
     for path, response in client.ls(paths):
         if not first:

@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tarfile
 from collections.abc import Callable
+from datetime import date
 from string import printable
 from tarfile import DIRTYPE, TarInfo
 from time import sleep, time
@@ -19,9 +20,12 @@ from upath.implementations.cloud import CloudPath
 
 import datachain as dc
 from datachain.catalog.catalog import Catalog
+from datachain.config import Config, ConfigLevel
 from datachain.dataset import DatasetDependency, DatasetRecord
 from datachain.lib.tar import process_tar
 from datachain.query import C
+from datachain.remote.credentials import Login, add_login, load_logins
+from datachain.utils import STUDIO_URL
 
 DEFAULT_TREE: dict[str, Any] = {
     "description": "Cats and Dogs",
@@ -132,6 +136,8 @@ def create_tar_dataset(session, uri: str, ds_name: str) -> dc.DataChain:
     tar_entries = chain.filter(C("file.path").glob("*.tar")).gen(file=process_tar)
     return chain.union(tar_entries).save(ds_name)
 
+
+posix_only = pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
 
 skip_if_not_sqlite = pytest.mark.skipif(
     os.environ.get("DATACHAIN_METASTORE") is not None
@@ -374,3 +380,29 @@ def reset_session_job_state():
     # Clear DATACHAIN_JOB_ID env var to allow new job creation on next run
     # This is important for studio/SaaS mode where job_id comes from env var
     os.environ.pop("DATACHAIN_JOB_ID", None)
+
+
+def set_studio(level: ConfigLevel, **values: str) -> None:
+    """Replace the `[studio]` section of the config at this level."""
+    with Config(level).edit() as conf:
+        conf["studio"] = values
+
+
+def saved_tokens() -> list[str]:
+    return [login.token for login in load_logins()]
+
+
+def studio_login(
+    token: str = "isat_access_token",  # noqa: S107
+    default_team: str | None = None,
+    url: str = STUDIO_URL,
+    teams: list[str] | None = None,
+    expires: date | None = None,
+) -> None:
+    """Save a Studio login and, if given, the default team in the user's config."""
+    add_login(Login(url=url, token=token, teams=teams, expires=expires))
+    if default_team:
+        with Config(ConfigLevel.GLOBAL).edit() as conf:
+            studio = conf.get("studio", {})
+            studio["team"] = default_team
+            conf["studio"] = studio

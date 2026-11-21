@@ -14,6 +14,7 @@ from typing_extensions import TypedDict
 from datachain.config import Config
 from datachain.dataset import DatasetRecord
 from datachain.error import DataChainError
+from datachain.remote.credentials import load_logins, resolve_token
 from datachain.utils import STUDIO_URL, retry_with_backoff
 
 T = TypeVar("T")
@@ -70,15 +71,28 @@ def get_studio_url(config: dict | None = None) -> str:
     )
 
 
+def self_hosted(url: str) -> str:
+    """Names a self-hosted Studio in a message; the default Studio goes unnamed."""
+    return "" if url.rstrip("/") == STUDIO_URL else f" at {url}"
+
+
+def get_studio_team(config: dict | None = None) -> str | None:
+    if config is None:
+        config = Config().read().get("studio", {}) or {}
+    # An empty team is the default turned off: no team.
+    return get_studio_env_variable("TEAM") or config.get("team") or None
+
+
 def _is_server_error(status_code: int) -> bool:
     return str(status_code).startswith("5")
 
 
-def is_token_set() -> bool:
-    return (
-        bool(get_studio_env_variable("TOKEN"))
-        or Config().read().get("studio", {}).get("token") is not None
-    )
+def is_token_set(team: str | None = None) -> bool:
+    """True if a token is available for the current Studio and this team.
+
+    Without a team, the default team is used.
+    """
+    return resolve_token(get_studio_url(), team or get_studio_team()) is not None
 
 
 def _parse_dates(obj: dict, date_fields: list[str]):
@@ -113,12 +127,24 @@ class StudioClient:
 
     @property
     def token(self) -> str:
-        token = get_studio_env_variable("TOKEN") or self.config.get("token")
+        url = get_studio_url(self.config)
+        team = self._team or get_studio_team(self.config)
+        token = resolve_token(url, team)
 
         if not token:
+            if team is None and any(lg.url == url for lg in load_logins()):
+                # Only tokens for teams are saved, so the team is what's missing.
+                self._get_team()
+            for_team = f" for team '{team}'" if team else ""
+            old = (
+                " The token an older version saved in the config is no longer used."
+                if self.config.get("token")
+                else ""
+            )
             raise DataChainError(
-                "Studio token is not set. Use `datachain auth login` "
-                "or environment variable `DATACHAIN_STUDIO_TOKEN` to set it."
+                f"Not logged in to Studio{self_hosted(url)}{for_team}.{old} Use "
+                "`datachain auth login` or environment variable "
+                "`DATACHAIN_STUDIO_TOKEN` to set a token."
             )
 
         return token
@@ -140,7 +166,7 @@ class StudioClient:
         return self._team
 
     def _get_team(self) -> str:
-        team = get_studio_env_variable("TEAM") or self.config.get("team")
+        team = get_studio_team(self.config)
 
         if not team:
             raise DataChainError(
@@ -151,6 +177,11 @@ class StudioClient:
             )
 
         return team
+
+    def _token_and_team(self) -> tuple[str, str]:
+        # The token first: without a login there is usually no team either, and
+        # "not logged in" is the error that tells the user what to do.
+        return self.token, self.team
 
     def _check_dependencies(self) -> None:
         try:
@@ -169,10 +200,11 @@ class StudioClient:
         import msgpack
         import requests
 
+        token, team = self._token_and_team()
         kwargs = (
-            {"params": {**data, "team_name": self.team}}
+            {"params": {**data, "team_name": team}}
             if method == "GET"
-            else {"json": {**data, "team_name": self.team}}
+            else {"json": {**data, "team_name": team}}
         )
 
         response = requests.request(
@@ -180,7 +212,7 @@ class StudioClient:
             url=f"{self.url}/{route}",
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"token {self.token}",
+                "Authorization": f"token {token}",
             },
             timeout=self.timeout,
             **kwargs,  # type: ignore[arg-type]
@@ -211,10 +243,11 @@ class StudioClient:
         """
         import requests
 
+        token, team = self._token_and_team()
         kwargs = (
-            {"params": {**data, "team_name": self.team}}
+            {"params": {**data, "team_name": team}}
             if method == "GET"
-            else {"json": {**data, "team_name": self.team}}
+            else {"json": {**data, "team_name": team}}
         )
 
         response = requests.request(
@@ -222,7 +255,7 @@ class StudioClient:
             url=f"{self.url}/{route}",
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"token {self.token}",
+                "Authorization": f"token {token}",
             },
             timeout=self.timeout,
             **kwargs,  # type: ignore[arg-type]
@@ -260,15 +293,15 @@ class StudioClient:
         """
         import requests
 
-        # Add team_name to params
-        request_params = {**(params or {}), "team_name": self.team}
+        token, team = self._token_and_team()
+        request_params = {**(params or {}), "team_name": team}
 
         response = requests.post(
             url=f"{self.url}/{route}",
             files=files,
             params=request_params,
             headers={
-                "Authorization": f"token {self.token}",
+                "Authorization": f"token {token}",
             },
             timeout=self.timeout,
         )
@@ -325,18 +358,19 @@ class StudioClient:
         Yields:
             Dict containing either job status updates or log messages
         """
+        token, team = self._token_and_team()
         parsed_url = urlparse(self.url)
         ws_url = urlunparse(
             parsed_url._replace(scheme="wss" if parsed_url.scheme == "https" else "ws")
         )
-        ws_url = f"{ws_url}/logs/follow/?job_id={job_id}&team_name={self.team}"
+        ws_url = f"{ws_url}/logs/follow/?job_id={job_id}&team_name={team}"
         if no_follow:
             ws_url += "&no_follow=true"
 
         try:
             async with websockets.connect(
                 ws_url,
-                additional_headers={"Authorization": f"token {self.token}"},
+                additional_headers={"Authorization": f"token {token}"},
             ) as websocket:
                 while True:
                     try:

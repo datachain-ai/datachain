@@ -3,7 +3,8 @@ import json
 import logging
 import re
 import uuid
-from datetime import datetime
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -16,23 +17,28 @@ from tabulate import tabulate
 from datachain.cli import main
 from datachain.config import Config, ConfigLevel
 from datachain.job import Job
+from datachain.remote.credentials import load_logins, resolve_token
 from datachain.studio import POST_LOGIN_MESSAGE
 from datachain.utils import STUDIO_URL
-from tests.utils import skip_if_not_sqlite
+from tests.utils import (
+    posix_only,
+    saved_tokens,
+    set_studio,
+    skip_if_not_sqlite,
+    studio_login,
+)
+
+OTHER_URL = "https://other.example.com"
+
+pytestmark = pytest.mark.usefixtures("tmp_dir")
 
 
-@pytest.fixture(autouse=True)
-def clean_config_env(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-
-    for level in [ConfigLevel.LOCAL, ConfigLevel.GLOBAL]:
-        try:
-            with Config(level).edit() as conf:
-                conf.pop("studio", None)
-        except (FileNotFoundError, PermissionError):
-            continue
-
-    yield tmp_path
+@pytest.fixture
+def get_access_token(mocker):
+    return mocker.patch(
+        "dvc_studio_client.auth.get_access_token",
+        return_value=("token_name", "isat_access_token"),
+    )
 
 
 def mocked_connect(url, additional_headers):
@@ -53,34 +59,42 @@ def mocked_connect(url, additional_headers):
     return mocked_websocket
 
 
-def test_studio_login_token_check_failed(mocker):
-    mocker.patch(
-        "dvc_studio_client.auth.get_access_token",
-        side_effect=AuthorizationExpiredError,
-    )
+def test_studio_login_token_check_failed(get_access_token):
+    get_access_token.side_effect = AuthorizationExpiredError
     assert main(["auth", "login"]) == 1
 
 
-def test_studio_login_success(mocker):
-    mocker.patch(
-        "dvc_studio_client.auth.get_access_token",
-        return_value=("token_name", "isat_access_token"),
-    )
+@pytest.mark.parametrize("days", ["0", "-1"])
+def test_studio_login_expires_in_must_be_positive(get_access_token, capsys, days):
+    assert main(["auth", "login", "--expires-in", days]) == 1
+    get_access_token.assert_not_called()
+    assert "--expires-in must be at least 1 day." in capsys.readouterr().err
+    assert saved_tokens() == []
 
+
+def test_studio_login_success(get_access_token):
+    before = datetime.now(UTC).date()
     assert main(["auth", "login"]) == 0
+    after = datetime.now(UTC).date()
 
-    config = Config().read()
-    token = config["studio"]["token"]
-    assert token == "isat_access_token"  # noqa: S105
-    assert config["studio"]["url"] == STUDIO_URL
-
-
-def test_studio_login_arguments(mocker):
-    mock = mocker.patch(
-        "dvc_studio_client.auth.get_access_token",
-        return_value=("token_name", "isat_access_token"),
+    get_access_token.assert_called_with(
+        token_name=None,
+        hostname=STUDIO_URL,
+        scopes=None,
+        team_names=None,
+        expires_in_days=365,
+        client_name="DataChain",
+        open_browser=True,
+        post_login_message=POST_LOGIN_MESSAGE,
     )
+    assert saved_tokens() == ["isat_access_token"]
+    [login] = load_logins()
+    assert (login.url, login.teams, login.name) == (STUDIO_URL, None, "token_name")
+    assert login.expires in {day + timedelta(days=365) for day in (before, after)}
+    assert "studio" not in Config().read()
 
+
+def test_studio_login_arguments(get_access_token):
     assert (
         main(
             [
@@ -98,7 +112,7 @@ def test_studio_login_arguments(mocker):
         == 0
     )
 
-    mock.assert_called_with(
+    get_access_token.assert_called_with(
         token_name="token_name",  #  noqa: S106
         hostname="https://example.com",
         scopes="experiments",
@@ -108,14 +122,10 @@ def test_studio_login_arguments(mocker):
         open_browser=False,
         post_login_message=POST_LOGIN_MESSAGE,
     )
+    assert Config().read()["studio"]["url"] == "https://example.com"
 
 
-def test_studio_login_with_team_scoping(mocker):
-    mock = mocker.patch(
-        "dvc_studio_client.auth.get_access_token",
-        return_value=("token_name", "isat_access_token"),
-    )
-
+def test_studio_login_with_teams(get_access_token):
     assert (
         main(
             [
@@ -127,13 +137,12 @@ def test_studio_login_with_team_scoping(mocker):
                 "data-team",
                 "--expires-in",
                 "90",
-                "--local",
             ]
         )
         == 0
     )
 
-    mock.assert_called_with(
+    get_access_token.assert_called_with(
         token_name=None,
         hostname=STUDIO_URL,
         scopes=None,
@@ -144,92 +153,317 @@ def test_studio_login_with_team_scoping(mocker):
         post_login_message=POST_LOGIN_MESSAGE,
     )
 
-    # Check saved token is simple string
-    config = Config(level=ConfigLevel.LOCAL).read()
-    token = config["studio"]["token"]
-    assert token == "isat_access_token"  # noqa: S105
+    [login] = load_logins()
+    assert login.teams == ["ml-team", "data-team"]
+    assert "token" not in Config().read().get("studio", {})
 
 
-def test_studio_login_with_all_teams(mocker):
-    mock = mocker.patch(
-        "dvc_studio_client.auth.get_access_token",
-        return_value=("token_name", "isat_access_token"),
-    )
+@pytest.mark.parametrize("command", ["login", "logout"])
+def test_studio_local_tokens_are_no_longer_supported(
+    get_access_token, capsys, tmp_dir, command
+):
+    assert main(["auth", command, "--local"]) == 1
 
-    assert main(["auth", "login", "--local"]) == 0
-
-    mock.assert_called_with(
-        token_name=None,
-        hostname=STUDIO_URL,
-        scopes=None,
-        team_names=None,  # All teams access
-        expires_in_days=365,
-        client_name="DataChain",
-        open_browser=True,
-        post_login_message=POST_LOGIN_MESSAGE,
-    )
+    get_access_token.assert_not_called()
+    err = capsys.readouterr().err
+    assert "--local is no longer supported" in err
+    assert "`datachain auth team <team> --local`" in err
+    assert not (tmp_dir / ".datachain").exists()
 
 
-def test_studio_login_default_expiration(mocker):
-    mock = mocker.patch(
-        "dvc_studio_client.auth.get_access_token",
-        return_value=("token_name", "isat_access_token"),
-    )
+def test_studio_login_empty_team_is_rejected(get_access_token, capsys):
+    assert main(["auth", "login", "--team", ""]) == 1
 
-    assert main(["auth", "login", "--local"]) == 0
-
-    mock.assert_called_with(
-        token_name=None,
-        hostname=STUDIO_URL,
-        scopes=None,
-        team_names=None,
-        expires_in_days=365,  # Default expiration
-        client_name="DataChain",
-        open_browser=True,
-        post_login_message=POST_LOGIN_MESSAGE,
-    )
-
-    # Check saved token is simple string
-    config = Config(level=ConfigLevel.LOCAL).read()
-    token = config["studio"]["token"]
-    assert token == "isat_access_token"  # noqa: S105
+    get_access_token.assert_not_called()
+    assert "--team can't be empty." in capsys.readouterr().err
+    assert "studio" not in Config().read()
 
 
-def test_studio_login_single_team_sets_default(mocker):
-    mocker.patch(
-        "dvc_studio_client.auth.get_access_token",
-        return_value=("token_name", "isat_access_token"),
-    )
+def test_studio_login_single_team_sets_default(get_access_token, capsys):
+    assert main(["auth", "login", "--team", "ml-team"]) == 0
+
+    assert Config(ConfigLevel.GLOBAL).read()["studio"]["team"] == "ml-team"
+    assert "Set default team to 'ml-team'" in capsys.readouterr().out
+
+
+def test_studio_login_repeated_team_is_one_team(get_access_token):
+    assert main(["auth", "login", "--team", "ml-team", "--team", "ml-team"]) == 0
+
+    [login] = load_logins()
+    assert login.teams == ["ml-team"]
+    assert Config().read()["studio"]["team"] == "ml-team"
+
+
+def test_studio_login_team_token_keeps_default_team(get_access_token):
+    get_access_token.return_value = ("token_name", "customer_token")
+    studio_login(default_team="acme")
+
+    assert main(["auth", "login", "--team", "customer-x"]) == 0
+
+    assert Config().read()["studio"]["team"] == "acme"
+    assert resolve_token(STUDIO_URL, "acme") == "isat_access_token"
+    assert resolve_token(STUDIO_URL, "customer-x") == "customer_token"
+
+
+def test_studio_login_keeps_the_default_team_off(get_access_token, capsys):
+    set_studio(ConfigLevel.GLOBAL, team="")
 
     assert main(["auth", "login", "--team", "ml-team"]) == 0
 
-    config = Config().read()
-    assert config["studio"]["team"] == "ml-team"
+    assert Config(ConfigLevel.GLOBAL).read()["studio"]["team"] == ""
+    assert "default team" not in capsys.readouterr().out
 
 
-def test_studio_login_clears_stale_default_team(mocker):
-    mocker.patch(
-        "dvc_studio_client.auth.get_access_token",
-        return_value=("token_name", "isat_access_token"),
-    )
+@pytest.mark.parametrize("system_team", ["acme", ""])
+def test_studio_login_keeps_a_system_default_team(
+    get_access_token, capsys, system_team
+):
+    # A team, or the default turned off, in the system config is a default team set.
+    set_studio(ConfigLevel.SYSTEM, team=system_team)
+
+    assert main(["auth", "login", "--team", "customer"]) == 0
+
+    assert "studio" not in Config(ConfigLevel.GLOBAL).read()
+    assert Config().read()["studio"]["team"] == system_team
+    assert "default team" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("source", ["project", "env", "turned-off", None])
+def test_studio_login_hints_at_auth_team_only_without_a_team(
+    get_access_token, capsys, monkeypatch, source
+):
+    if source == "project":
+        set_studio(ConfigLevel.LOCAL, team="proj")
+    elif source == "env":
+        monkeypatch.setenv("DATACHAIN_STUDIO_TEAM", "proj")
+    elif source == "turned-off":
+        set_studio(ConfigLevel.GLOBAL, team="")
+
+    assert main(["auth", "login", "--team", "a", "--team", "b"]) == 0
+
+    hint = "You can now use 'datachain auth team'" in capsys.readouterr().out
+    assert hint == (source is None)
+
+
+def test_studio_login_token_already_exists(get_access_token, capsys):
+    studio_login()
+
+    assert main(["auth", "login"]) == 1
+    get_access_token.assert_not_called()
+    err = capsys.readouterr().err
+    assert "Token already exists" in err
+    assert "`datachain auth logout`" in err
+
+
+def test_studio_login_saved_by_another_login_while_the_browser_was_open(
+    get_access_token, capsys
+):
+    def another_login_finishes_first(**kwargs):
+        studio_login("other_token", teams=["x"])
+        return "token_name", "isat_access_token"
+
+    get_access_token.side_effect = another_login_finishes_first
+
+    with requests_mock.mock() as m:
+        m.post(f"{STUDIO_URL}/api/device-logout", json={})
+        assert main(["auth", "login", "--team", "x"]) == 1
+        # The new token is not saved, so it is revoked.
+        assert m.last_request.headers["Authorization"] == "token isat_access_token"
+
+    assert saved_tokens() == ["other_token"]
+    assert "Token already exists" in capsys.readouterr().err
+
+
+def test_studio_login_team_token_already_exists(get_access_token, capsys):
+    studio_login(teams=["ml-team", "data-team"])
+
+    assert main(["auth", "login", "--team", "data-team"]) == 1
+    get_access_token.assert_not_called()
+    assert "`datachain auth logout --team data-team`" in capsys.readouterr().err
+
+
+@posix_only
+def test_studio_login_does_not_overwrite_credentials_open_to_others(
+    get_access_token, capsys, global_config_dir
+):
+    studio_login(teams=["team-a"])
+    path = Path(global_config_dir) / "credentials"
+    path.chmod(0o644)
+    saved = path.read_text()
+
+    assert main(["auth", "login", "--team", "team-b"]) == 1
+
+    get_access_token.assert_not_called()
+    assert f"chmod 600 {path}" in capsys.readouterr().err
+    assert path.read_text() == saved
+
+
+def test_studio_login_new_host_resets_team(get_access_token):
+    get_access_token.return_value = ("token_name", "new_token")
+    old_url = "https://old-studio.example.com"
+    studio_login("old_token", url=old_url, default_team="old-team")
     with Config(ConfigLevel.GLOBAL).edit() as conf:
-        conf["studio"] = {
-            "token": "old_token",
-            "url": "https://old-studio.example.com",
-            "team": "old-team",
-        }
+        conf["studio"]["url"] = old_url
 
     assert main(["auth", "login", "--hostname", "https://new-studio.example.com"]) == 0
 
     config = Config(ConfigLevel.GLOBAL).read()
-    assert config["studio"]["token"] == "isat_access_token"  # noqa: S105
-    assert config["studio"]["url"] == "https://new-studio.example.com"
-    assert "team" not in config["studio"]
+    assert config["studio"] == {"url": "https://new-studio.example.com"}
+    logins = {lg.url: lg.token for lg in load_logins()}
+    assert logins == {
+        old_url: "old_token",
+        "https://new-studio.example.com": "new_token",
+    }
 
 
-def test_studio_logout():
+def test_studio_login_new_host_keeps_the_default_team_off(get_access_token):
+    set_studio(ConfigLevel.GLOBAL, team="")
+
+    assert main(["auth", "login", "--hostname", OTHER_URL, "--team", "x"]) == 0
+
+    assert Config(ConfigLevel.GLOBAL).read()["studio"] == {"team": "", "url": OTHER_URL}
+
+
+@pytest.mark.parametrize(
+    "hostname,expected",
+    [
+        # The global config's Studio already: its default team stays.
+        (STUDIO_URL, {"team": "acme"}),
+        # Only the project's Studio: the global config switches to it.
+        (OTHER_URL, {"url": OTHER_URL, "team": "customer"}),
+    ],
+)
+def test_studio_login_hostname_is_compared_with_the_config_it_changes(
+    get_access_token, hostname, expected
+):
+    set_studio(ConfigLevel.GLOBAL, team="acme")
+    set_studio(ConfigLevel.LOCAL, url=OTHER_URL)
+
+    assert main(["auth", "login", "-H", hostname, "--team", "customer"]) == 0
+
+    assert Config(ConfigLevel.GLOBAL).read()["studio"] == expected
+
+
+def test_studio_login_for_env_url_sets_no_default_team(get_access_token, monkeypatch):
+    monkeypatch.setenv("DATACHAIN_STUDIO_URL", OTHER_URL)
+
+    assert main(["auth", "login", "--team", "x"]) == 0
+
+    # The config's Studio is still the default one, so team x isn't its default.
+    assert "studio" not in Config().read()
+    assert resolve_token(OTHER_URL, "x") == "isat_access_token"
+
+
+# A failed revoke doesn't stop the login.
+@pytest.mark.parametrize("revoke_status", [200, 401, 500])
+def test_studio_old_config_token_is_removed_on_login(
+    get_access_token, capsys, revoke_status
+):
     with Config(ConfigLevel.GLOBAL).edit() as conf:
-        conf["studio"] = {"token": "isat_access_token", "url": STUDIO_URL}
+        conf["studio"] = {"token": "old_token", "team": "acme"}
+
+    assert main(["auth", "token"]) == 1
+    assert "older version saved in the config is no longer used" in (
+        capsys.readouterr().err
+    )
+
+    with requests_mock.mock() as m:
+        m.post(f"{STUDIO_URL}/api/device-logout", status_code=revoke_status, json={})
+        assert main(["auth", "login"]) == 0
+        assert m.last_request.headers["Authorization"] == "token old_token"
+
+    assert Config(ConfigLevel.GLOBAL).read()["studio"] == {"team": "acme"}
+    assert resolve_token(STUDIO_URL, "acme") == "isat_access_token"
+    # Quiet when Studio no longer accepts the old token; a warning when it might.
+    err = capsys.readouterr().err
+    assert ("could not revoke the old token" in err) == (revoke_status == 500)
+    assert "already revoked" not in err
+
+
+def test_studio_login_cleans_up_a_project_token_when_already_logged_in(
+    get_access_token, capsys
+):
+    # Another project's login saved your token; this project kept an old one.
+    studio_login()
+    with Config(ConfigLevel.LOCAL).edit() as conf:
+        conf["studio"] = {"token": "old_token"}
+
+    with requests_mock.mock() as m:
+        m.post(f"{STUDIO_URL}/api/device-logout", json={})
+        assert main(["auth", "login"]) == 1
+        assert [r.headers["Authorization"] for r in m.request_history] == [
+            "token old_token"
+        ]
+
+    get_access_token.assert_not_called()
+    assert "Token already exists" in capsys.readouterr().err
+    assert "studio" not in Config(ConfigLevel.LOCAL).read()
+    assert saved_tokens() == ["isat_access_token"]
+
+
+def test_studio_old_config_tokens_are_revoked_where_they_were_used(
+    get_access_token, monkeypatch
+):
+    # The project's and yours, each sent only to the Studio it was used with, not
+    # to the one in the env.
+    monkeypatch.setenv("DATACHAIN_STUDIO_URL", "https://env-studio.example.com")
+    with Config(ConfigLevel.LOCAL).edit() as conf:
+        conf["studio"] = {"token": "project_token", "url": OTHER_URL}
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"token": "user_token"}
+
+    with requests_mock.mock() as m:
+        m.post(f"{OTHER_URL}/api/device-logout", json={})
+        m.post(f"{STUDIO_URL}/api/device-logout", json={})
+        assert main(["auth", "login"]) == 0
+        revoked = [(r.url, r.headers["Authorization"]) for r in m.request_history]
+
+    assert revoked == [
+        (f"{OTHER_URL}/api/device-logout", "token project_token"),
+        (f"{STUDIO_URL}/api/device-logout", "token user_token"),
+    ]
+    assert Config(ConfigLevel.LOCAL).read()["studio"] == {"url": OTHER_URL}
+    assert "studio" not in Config(ConfigLevel.GLOBAL).read()
+
+
+def test_studio_old_config_token_is_revoked_at_an_inherited_url(get_access_token):
+    # Older versions sent a project's token to a URL saved in the user's config.
+    set_studio(ConfigLevel.GLOBAL, url=OTHER_URL)
+    with Config(ConfigLevel.LOCAL).edit() as conf:
+        conf["studio"] = {"token": "old_token"}
+
+    with requests_mock.mock() as m:
+        m.post(f"{OTHER_URL}/api/device-logout", json={})
+        assert main(["auth", "login"]) == 0
+        assert [r.url for r in m.request_history] == [f"{OTHER_URL}/api/device-logout"]
+        assert m.last_request.headers["Authorization"] == "token old_token"
+
+    assert "studio" not in Config(ConfigLevel.LOCAL).read()
+
+
+@pytest.mark.parametrize(
+    "status_code,body,expected",
+    [
+        (400, {"json": {"detail": "Invalid token scope"}}, "Invalid token scope"),
+        # Not JSON, e.g. a proxy's error page.
+        (400, {"text": "<html>Bad Request</html>"}, "400 Client Error"),
+        (500, {"json": {"detail": "Oops"}}, "500 Server Error"),
+    ],
+)
+def test_studio_login_http_error(get_access_token, capsys, status_code, body, expected):
+    def device_login(**kwargs):
+        with requests_mock.mock() as m:
+            m.post(STUDIO_URL, status_code=status_code, **body)
+            requests.post(STUDIO_URL, timeout=1).raise_for_status()
+
+    get_access_token.side_effect = device_login
+
+    assert main(["auth", "login"]) == 1
+    assert f"Failed to authenticate with Studio: {expected}" in capsys.readouterr().err
+
+
+def test_studio_logout(capsys, global_config_dir):
+    studio_login()
 
     with requests_mock.mock() as m:
         m.post(
@@ -240,35 +474,138 @@ def test_studio_logout():
         assert m.called
         assert m.last_request.headers["Authorization"] == "token isat_access_token"
 
-    config = Config(ConfigLevel.GLOBAL).read()
-    assert "token" not in config["studio"]
+    assert "Logged out from Studio.\n" in capsys.readouterr().out
+    assert saved_tokens() == []
+    # No default team to clear, so no config file is written.
+    assert not (Path(global_config_dir) / "config").exists()
 
     assert main(["auth", "logout"]) == 1
 
 
-def test_studio_logout_clears_default_team():
-    with Config(ConfigLevel.GLOBAL).edit() as conf:
-        conf["studio"] = {
-            "token": "isat_access_token",
-            "url": STUDIO_URL,
-            "team": "demo-1",
-        }
+def test_studio_logout_clears_default_team_with_the_last_token():
+    studio_login("all_token", default_team="acme")
+    studio_login("x_token", teams=["x"])
+
+    with requests_mock.mock() as m:
+        m.post(f"{STUDIO_URL}/api/device-logout", json={})
+        assert main(["auth", "logout"]) == 0
+        assert m.last_request.headers["Authorization"] == "token all_token"
+        assert saved_tokens() == ["x_token"]
+        assert Config().read()["studio"]["team"] == "acme"
+
+        assert main(["auth", "logout", "--team", "x"]) == 0
+        assert "studio" not in Config().read()
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        ([], "No token saved without --team in "),
+        (["--team", "y"], "No token for team 'y' in "),
+        (["-H", OTHER_URL, "--all"], f"No token at {OTHER_URL} in "),
+    ],
+)
+def test_studio_logout_without_a_matching_token(capsys, args, expected):
+    studio_login(teams=["x"])
+
+    assert main(["auth", "logout", *args]) == 1
+    err = capsys.readouterr().err
+    assert expected in err
+    assert "`datachain auth list`" in err
+
+
+def test_studio_logout_hostname():
+    studio_login(default_team="acme")
+    studio_login("other_token", url=OTHER_URL)
+
+    with requests_mock.mock() as m:
+        m.post(f"{OTHER_URL}/api/device-logout", json={})
+        assert main(["auth", "logout", "-H", f"{OTHER_URL}/"]) == 0
+        assert m.last_request.headers["Authorization"] == "token other_token"
+
+    assert saved_tokens() == ["isat_access_token"]
+    # The default team is for the config's Studio, which still has its token.
+    assert Config().read()["studio"]["team"] == "acme"
+
+
+@posix_only
+def test_studio_logout_credentials_open_to_others(capsys, global_config_dir):
+    studio_login()
+    path = Path(global_config_dir) / "credentials"
+    path.chmod(0o644)
+
+    assert main(["auth", "logout"]) == 1
+    assert f"chmod 600 {path}" in capsys.readouterr().err
+
+
+def test_studio_logout_keeps_the_default_team_off():
+    studio_login()
+    set_studio(ConfigLevel.GLOBAL, team="")
+
+    with requests_mock.mock() as m:
+        m.post(f"{STUDIO_URL}/api/device-logout", json={})
+        assert main(["auth", "logout"]) == 0
+
+    assert saved_tokens() == []
+    assert Config().read()["studio"]["team"] == ""
+
+
+def test_studio_logout_empty_team_removes_nothing(capsys):
+    # E.g. `--team "$TEAM"` with TEAM unset.
+    studio_login()
+
+    with requests_mock.mock() as m:
+        assert main(["auth", "logout", "--team", ""]) == 1
+        assert not m.called
+
+    assert "No token for team ''" in capsys.readouterr().err
+    assert saved_tokens() == ["isat_access_token"]
+
+
+def test_studio_logout_team_removes_only_its_token():
+    studio_login(default_team="acme")
+    studio_login("customer_token", teams=["customer-x"])
+
+    with requests_mock.mock() as m:
+        m.post(f"{STUDIO_URL}/api/device-logout", json={})
+        assert main(["auth", "logout", "--team", "customer-x"]) == 0
+        assert m.call_count == 1
+        assert m.last_request.headers["Authorization"] == "token customer_token"
+
+    assert saved_tokens() == ["isat_access_token"]
+
+
+def test_studio_logout_team_removes_the_token_for_all_its_teams():
+    studio_login(teams=["team-a", "team-b"])
+
+    with requests_mock.mock() as m:
+        m.post(f"{STUDIO_URL}/api/device-logout", json={})
+        assert main(["auth", "logout", "--team", "team-a"]) == 0
+        assert m.call_count == 1
+
+    assert saved_tokens() == []
+
+
+def test_studio_logout_all_keeps_tokens_from_the_first_failed_revoke(capsys):
+    studio_login("all_token")
+    studio_login("a_token", teams=["team-a"])
+    studio_login("b_token", teams=["team-b"])
 
     with requests_mock.mock() as m:
         m.post(
             f"{STUDIO_URL}/api/device-logout",
-            json={"detail": "Token revoked successfully"},
+            [{"json": {}}, {"json": {}, "status_code": 500}],
         )
-        assert main(["auth", "logout"]) == 0
+        assert main(["auth", "logout", "--all"]) == 1
+        sent = [r.headers["Authorization"] for r in m.request_history]
 
-    config = Config(ConfigLevel.GLOBAL).read()
-    assert "token" not in config["studio"]
-    assert "team" not in config["studio"]
+    assert sent == ["token all_token", "token a_token"]
+    assert saved_tokens() == ["a_token", "b_token"]
+    assert "500" in capsys.readouterr().err
 
 
 def test_studio_logout_token_already_revoked(capsys):
-    with Config(ConfigLevel.GLOBAL).edit() as conf:
-        conf["studio"] = {"token": "isat_access_token", "url": STUDIO_URL}
+    studio_login()
 
     with requests_mock.mock() as m:
         m.post(
@@ -278,145 +615,19 @@ def test_studio_logout_token_already_revoked(capsys):
         )
         assert main(["auth", "logout"]) == 0
 
-    config = Config(ConfigLevel.GLOBAL).read()
-    assert "token" not in config["studio"]
+    assert saved_tokens() == []
 
     err = capsys.readouterr().err
     assert "already revoked or is invalid" in err
 
 
-def test_studio_logout_custom_url():
-    custom_url = "https://custom-studio.example.com"
-    with Config(ConfigLevel.GLOBAL).edit() as conf:
-        conf["studio"] = {"token": "isat_access_token", "url": custom_url}
-
-    with requests_mock.mock() as m:
-        m.post(
-            f"{custom_url}/api/device-logout",
-            json={"detail": "Token revoked successfully"},
-        )
-        assert main(["auth", "logout"]) == 0
-        assert m.called
-        assert m.last_request.url == f"{custom_url}/api/device-logout"
-
-
-def test_studio_logout_token_only_config():
-    with Config(ConfigLevel.GLOBAL).edit() as conf:
-        conf["studio"] = {"token": "isat_access_token"}
-
-    with requests_mock.mock() as m:
-        m.post(
-            f"{STUDIO_URL}/api/device-logout",
-            json={"detail": "Token revoked successfully"},
-        )
-        assert main(["auth", "logout"]) == 0
-        assert m.last_request.url == f"{STUDIO_URL}/api/device-logout"
-
-    config = Config(ConfigLevel.GLOBAL).read()
-    assert "token" not in config["studio"]
-
-
-def test_studio_logout_url_from_env(monkeypatch):
-    env_url = "https://env-studio.example.com"
-    config_url = "https://config-studio.example.com"
-    monkeypatch.setenv("DATACHAIN_STUDIO_URL", env_url)
-
-    with Config(ConfigLevel.GLOBAL).edit() as conf:
-        conf["studio"] = {"token": "isat_access_token", "url": config_url}
-
-    with requests_mock.mock() as m:
-        m.post(
-            f"{env_url}/api/device-logout",
-            json={"detail": "Token revoked successfully"},
-        )
-        assert main(["auth", "logout"]) == 0
-        assert m.last_request.url == f"{env_url}/api/device-logout"
-
-
-def test_studio_logout_network_error_aborts(capsys):
-    with Config(ConfigLevel.GLOBAL).edit() as conf:
-        conf["studio"] = {"token": "isat_access_token", "url": STUDIO_URL}
-
-    with requests_mock.mock() as m:
-        m.post(
-            f"{STUDIO_URL}/api/device-logout",
-            exc=requests.ConnectionError,
-        )
-        assert main(["auth", "logout"]) == 1
-
-    config = Config(ConfigLevel.GLOBAL).read()
-    assert config["studio"]["token"] == "isat_access_token"  # noqa: S105
-
-    err = capsys.readouterr().err
-    assert "Could not reach Studio" in err
-
-
-def test_studio_logout_server_error_aborts(capsys):
-    with Config(ConfigLevel.GLOBAL).edit() as conf:
-        conf["studio"] = {"token": "isat_access_token", "url": STUDIO_URL}
-
-    with requests_mock.mock() as m:
-        m.post(
-            f"{STUDIO_URL}/api/device-logout",
-            json={"detail": "Internal server error"},
-            status_code=500,
-        )
-        assert main(["auth", "logout"]) == 1
-
-    config = Config(ConfigLevel.GLOBAL).read()
-    assert config["studio"]["token"] == "isat_access_token"  # noqa: S105
-
-    err = capsys.readouterr().err
-    assert "500" in err
-
-
-def test_studio_logout_local_revokes_local_token():
-    with Config(ConfigLevel.LOCAL).edit() as conf:
-        conf["studio"] = {"token": "local_token", "url": STUDIO_URL}
-
-    with requests_mock.mock() as m:
-        m.post(
-            f"{STUDIO_URL}/api/device-logout",
-            json={"detail": "Token revoked successfully"},
-        )
-        assert main(["auth", "logout", "--local"]) == 0
-        assert m.called
-        assert m.last_request.headers["Authorization"] == "token local_token"
-
-    config = Config(ConfigLevel.LOCAL).read()
-    assert "token" not in config["studio"]
-
-
-def test_studio_logout_local_preserves_parent_token(tmp_path, monkeypatch):
-    (tmp_path / ".git").mkdir()
-    (tmp_path / ".datachain" / "db").touch()
-    with Config(ConfigLevel.LOCAL).edit() as conf:
-        conf["studio"] = {"token": "parent-token", "url": STUDIO_URL}
-    parent_config = (tmp_path / ".datachain" / "config").read_text()
-    child = tmp_path / "child"
-    child_state = child / ".datachain"
-    child_state.mkdir(parents=True)
-    (child_state / "config").write_text('[studio]\ntoken = "child-token"\n')
-    nested = child / "scripts"
-    nested.mkdir()
-    monkeypatch.chdir(nested)
-    assert not (child_state / "db").exists()
-
-    with requests_mock.mock() as m:
-        m.post(f"{STUDIO_URL}/api/device-logout", json={})
-        assert main(["auth", "logout", "--local"]) == 0
-        assert m.call_count == 1
-        assert m.last_request.headers["Authorization"] == "token child-token"
-
-    assert "token" not in Config(ConfigLevel.LOCAL).read()["studio"]
-    assert (tmp_path / ".datachain" / "config").read_text() == parent_config
-    assert not (nested / ".datachain").exists()
-
-
-def test_studio_logout_trailing_slash_url():
-    url_with_slash = "https://custom-studio.example.com/"
-    with Config(ConfigLevel.GLOBAL).edit() as conf:
-        conf["studio"] = {"token": "isat_access_token", "url": url_with_slash}
+@pytest.mark.parametrize(
+    "url",
+    ["https://custom-studio.example.com", "https://custom-studio.example.com/"],
+)
+def test_studio_logout_custom_url(url):
+    studio_login(url=url)
+    set_studio(ConfigLevel.GLOBAL, url=url)
 
     with requests_mock.mock() as m:
         m.post(
@@ -428,30 +639,249 @@ def test_studio_logout_trailing_slash_url():
             m.last_request.url == "https://custom-studio.example.com/api/device-logout"
         )
 
+    assert saved_tokens() == []
+
+
+def test_studio_logout_url_from_env(monkeypatch):
+    env_url = "https://env-studio.example.com"
+    config_url = "https://config-studio.example.com"
+    monkeypatch.setenv("DATACHAIN_STUDIO_URL", env_url)
+    studio_login("config_token", url=config_url)
+    studio_login("env_token", url=env_url)
+    set_studio(ConfigLevel.GLOBAL, url=config_url, team="acme")
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{env_url}/api/device-logout",
+            json={"detail": "Token revoked successfully"},
+        )
+        assert main(["auth", "logout"]) == 0
+        assert m.last_request.url == f"{env_url}/api/device-logout"
+        assert m.last_request.headers["Authorization"] == "token env_token"
+
+    assert saved_tokens() == ["config_token"]
+    # The default team is for the config's Studio, whose token is still saved.
+    assert Config(ConfigLevel.GLOBAL).read()["studio"]["team"] == "acme"
+
+
+def test_studio_logout_empty_url_is_the_default_studio():
+    studio_login(default_team="x")
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"]["url"] = ""
+
+    with requests_mock.mock() as m:
+        m.post(f"{STUDIO_URL}/api/device-logout", json={})
+        assert main(["auth", "logout"]) == 0
+
+    assert Config(ConfigLevel.GLOBAL).read()["studio"] == {"url": ""}
+
+
+def test_studio_logout_network_error_aborts(capsys):
+    studio_login()
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/device-logout",
+            exc=requests.ConnectionError,
+        )
+        assert main(["auth", "logout"]) == 1
+
+    assert saved_tokens() == ["isat_access_token"]
+
+    err = capsys.readouterr().err
+    assert "Could not reach Studio" in err
+
+
+def test_studio_logout_server_error_aborts(capsys):
+    studio_login()
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/device-logout",
+            json={"detail": "Internal server error"},
+            status_code=500,
+        )
+        assert main(["auth", "logout"]) == 1
+
+    assert saved_tokens() == ["isat_access_token"]
+
+    err = capsys.readouterr().err
+    assert "500" in err
+
 
 def test_studio_token(capsys):
-    with Config(ConfigLevel.GLOBAL).edit() as conf:
-        conf["studio"] = {"token": "isat_access_token"}
+    studio_login()
 
     assert main(["auth", "token"]) == 0
     assert capsys.readouterr().out == "isat_access_token\n"
 
-    with Config(ConfigLevel.GLOBAL).edit() as conf:
-        del conf["studio"]["token"]
 
+def test_studio_token_without_login_fails_and_creates_no_directory(capsys, tmp_dir):
     assert main(["auth", "token"]) == 1
+    assert "Not logged in to Studio. Use" in capsys.readouterr().err
+    assert not (tmp_dir / ".datachain").exists()
 
 
-def test_studio_team_local():
+def test_studio_token_for_team(capsys):
+    studio_login(default_team="acme")
+    studio_login("customer_token", teams=["customer-x"])
+
+    assert main(["auth", "token", "--team", "customer-x"]) == 0
+    assert capsys.readouterr().out == "customer_token\n"
+
+    assert main(["auth", "token"]) == 0
+    assert capsys.readouterr().out == "isat_access_token\n"
+
+
+def test_studio_token_from_env(capsys, monkeypatch):
+    monkeypatch.setenv("DATACHAIN_STUDIO_TOKEN", "env_token")
+
+    assert main(["auth", "token"]) == 0
+    assert capsys.readouterr().out == "env_token\n"
+
+
+def test_studio_auth_list(capsys):
+    studio_login(default_team="acme")
+    studio_login("customer_token", teams=["customer-x"])
+
+    assert main(["auth", "list"]) == 0
+
+    out, err = capsys.readouterr()
+    lines = out.splitlines()
+    assert lines[0] == "Default team: acme"
+    # The default Studio goes unnamed.
+    assert STUDIO_URL not in out
+    # The fallback token, saved without --team, shows as `*`.
+    assert [line.split()[0] for line in lines[4:]] == ["*", "customer-x"]
+    assert "isat_access_token" not in out + err
+    assert "customer_token" not in out + err
+
+
+def test_studio_auth_list_names_a_self_hosted_studio(capsys):
+    studio_login()
+    studio_login("other_token", url=OTHER_URL)
+    set_studio(ConfigLevel.GLOBAL, url=OTHER_URL)
+
+    assert main(["auth", "list"]) == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == f"Studio URL: {OTHER_URL}"
+    assert sorted(line.split()[0] for line in lines[5:]) == [OTHER_URL, STUDIO_URL]
+
+
+def test_studio_auth_list_says_env_token_is_used(capsys, monkeypatch):
+    studio_login()
+    monkeypatch.setenv("DATACHAIN_STUDIO_TOKEN", "env_token")
+
+    assert main(["auth", "list"]) == 0
+
+    out, err = capsys.readouterr()
+    lines = out.splitlines()
+    assert lines[1].startswith("DATACHAIN_STUDIO_TOKEN is set")
+    # The saved tokens are still listed.
+    assert lines[5].split()[0] == "*"
+    assert "env_token" not in out + err
+    assert "isat_access_token" not in out + err
+
+
+def test_studio_auth_list_names_the_studio_when_another_is_in_use(capsys, monkeypatch):
+    studio_login()
+    monkeypatch.setenv("DATACHAIN_STUDIO_URL", OTHER_URL)
+
+    assert main(["auth", "list"]) == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == f"Studio URL: {OTHER_URL}"
+    assert lines[-1].split()[:2] == [STUDIO_URL, "*"]
+
+
+def test_studio_auth_list_keeps_names_that_look_like_numbers(capsys):
+    studio_login(teams=["1e5"])
+
+    assert main(["auth", "list"]) == 0
+
+    assert capsys.readouterr().out.splitlines()[-1].split()[0] == "1e5"
+
+
+def test_studio_auth_list_not_logged_in(capsys):
+    assert main(["auth", "list"]) == 0
+    assert "Not logged in to Studio" in capsys.readouterr().out
+
+
+def test_studio_team_global():
     assert main(["auth", "team", "team_name"]) == 0
     config = Config(ConfigLevel.GLOBAL).read()
     assert config["studio"]["team"] == "team_name"
 
 
-def test_studio_team_global():
+def test_studio_team_local():
     assert main(["auth", "team", "team_name", "--local"]) == 0
     config = Config(ConfigLevel.LOCAL).read()
     assert config["studio"]["team"] == "team_name"
+
+
+def test_studio_team_empty_turns_the_default_off(capsys):
+    set_studio(ConfigLevel.GLOBAL, team="acme")
+
+    assert main(["auth", "team", ""]) == 0
+    assert "Turned off the default team in " in capsys.readouterr().out
+    assert Config().read()["studio"]["team"] == ""
+
+    assert main(["auth", "team"]) == 1
+    assert "No default team set." in capsys.readouterr().err
+
+
+def test_studio_team_no_name_and_no_default(capsys):
+    assert main(["auth", "team"]) == 1
+    captured = capsys.readouterr()
+    assert (
+        "No default team set. Use `datachain auth team <team_name>` to set one."
+        in captured.err
+    )
+
+
+def test_studio_team_no_name_with_existing_default(capsys):
+    set_studio(ConfigLevel.GLOBAL, team="existing-team")
+
+    assert main(["auth", "team"]) == 0
+    captured = capsys.readouterr()
+    assert "Default team is 'existing-team'" in captured.out
+
+
+def test_dataset_ls_all_lists_local_only_without_a_token_for_the_team(mocker, capsys):
+    studio_login(teams=["team-a"])
+    mocker.patch(
+        "datachain.cli.commands.datasets.list_datasets_local",
+        side_effect=lambda *a, **kw: iter([("local.local.local", "1.0.0", False)]),
+    )
+    studio = mocker.patch("datachain.cli.commands.datasets.list_datasets_studio")
+
+    assert main(["dataset", "ls", "--all", "--team", "team-b"]) == 0
+
+    studio.assert_not_called()
+    assert "local.local.local" in capsys.readouterr().out
+
+
+def test_expired_token_only_breaks_studio_listings(capsys):
+    studio_login(expires=date(2020, 1, 1))
+
+    assert main(["ls", "."]) == 0
+    assert main(["dataset", "ls"]) == 0
+    capsys.readouterr()
+
+    for command in (["ls", ".", "--studio"], ["ls", "--studio"]):
+        assert main(command) == 1
+        assert "expired on 2020-01-01" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("default_team", [None, ""])
+def test_studio_command_with_team_tokens_but_no_team(capsys, default_team):
+    studio_login(teams=["a", "b"])
+    if default_team is not None:
+        set_studio(ConfigLevel.GLOBAL, team=default_team)
+
+    assert main(["job", "ls"]) == 1
+    assert "Studio team is not set" in capsys.readouterr().err
 
 
 def test_studio_datasets(capsys, studio_datasets, mocker):
@@ -575,31 +1005,9 @@ def test_dataset_ls_include_removed_flows_to_studio(
 
 @skip_if_not_sqlite
 @pytest.mark.parametrize("is_studio", (False,))
-def test_studio_edit_dataset(capsys, mocker):
+def test_studio_edit_dataset(studio_token):
     with requests_mock.mock() as m:
         m.post(f"{STUDIO_URL}/api/datachain/datasets", json={})
-
-        # Studio token is required
-        assert (
-            main(
-                [
-                    "dataset",
-                    "edit",
-                    "dev.animals.name",
-                    "--new-name",
-                    "new-name",
-                    "--team",
-                    "team_name",
-                ]
-            )
-            == 1
-        )
-        out = capsys.readouterr().err
-        assert "Not logged in to Studio" in out
-
-        # Set the studio token
-        with Config(ConfigLevel.GLOBAL).edit() as conf:
-            conf["studio"] = {"token": "isat_access_token", "team": "team_name"}
 
         assert (
             main(
@@ -661,23 +1069,9 @@ def test_studio_edit_dataset(capsys, mocker):
 
 
 @skip_if_not_sqlite
-def test_studio_rm_dataset(capsys, mocker):
+def test_studio_rm_dataset(studio_token):
     with requests_mock.mock() as m:
         m.delete(f"{STUDIO_URL}/api/datachain/datasets", json={})
-
-        # Studio token is required
-        assert (
-            main(
-                ["dataset", "rm", "dev.animals.name", "--team", "team_name", "--studio"]
-            )
-            == 1
-        )
-        out = capsys.readouterr().err
-        assert "Not logged in to Studio" in out
-
-        # Set the studio token
-        with Config(ConfigLevel.GLOBAL).edit() as conf:
-            conf["studio"] = {"token": "isat_access_token", "team": "team_name"}
 
         assert (
             main(
@@ -708,10 +1102,7 @@ def test_studio_rm_dataset(capsys, mocker):
         }
 
 
-def test_studio_list_jobs(capsys):
-    with Config(ConfigLevel.GLOBAL).edit() as conf:
-        conf["studio"] = {"token": "isat_access_token", "team": "team_name"}
-
+def test_studio_list_jobs(capsys, studio_token):
     with requests_mock.mock() as m:
         m.get(
             re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
@@ -1001,30 +1392,45 @@ def test_studio_jobs_json_prints_the_response(capsys, studio_token):
     assert json.loads(capsys.readouterr().out) == [job]
 
 
-def test_studio_cancel_job(capsys, mocker):
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Without a path, no request is sent.
+        ["ls", "--studio"],
+        ["job", "ls"],
+        ["job", "cancel", "job-id"],
+        ["job", "logs", "job-id"],
+        pytest.param(
+            ["dataset", "rm", "dev.animals.name", "--studio"],
+            marks=skip_if_not_sqlite,
+        ),
+        pytest.param(
+            ["dataset", "edit", "dev.animals.name", "--new-name", "new-name"],
+            marks=skip_if_not_sqlite,
+        ),
+    ],
+)
+def test_studio_command_without_login_or_team(capsys, command):
+    assert main(command) == 1
+
+    err = capsys.readouterr().err
+    assert "Not logged in to Studio. Use" in err
+    assert "team is not set" not in err
+
+
+def test_studio_cancel_job(studio_token):
     job_id = "8bddde6c-c3ca-41b0-9d87-ee945bfdce70"
     with requests_mock.mock() as m:
         m.post(f"{STUDIO_URL}/api/datachain/jobs/{job_id}/cancel", json={})
-
-        # Studio token is required
-        assert main(["job", "cancel", job_id]) == 1
-        out = capsys.readouterr().err
-        assert "Not logged in to Studio" in out
-
-        # Set the studio token
-        with Config(ConfigLevel.GLOBAL).edit() as conf:
-            conf["studio"] = {"token": "isat_access_token", "team": "team_name"}
 
         assert main(["job", "cancel", job_id]) == 0
         assert m.called
 
 
-def test_studio_run(capsys, mocker, tmp_dir):
+def test_studio_run(capsys, mocker, tmp_dir, studio_token):
     mocker.patch(
         "datachain.remote.studio.websockets.connect", side_effect=mocked_connect
     )
-    with Config(ConfigLevel.GLOBAL).edit() as conf:
-        conf["studio"] = {"token": "isat_access_token", "team": "team_name"}
 
     job_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
     with requests_mock.mock() as m:
@@ -2215,81 +2621,3 @@ def test_unpacker_hook_unknown_ext_type():
     assert isinstance(result, msgpack.ExtType)
     assert result.code == 99
     assert result.data == b"\x01\x02\x03"
-
-
-def test_studio_login_token_already_exists(capsys):
-    with Config(ConfigLevel.LOCAL).edit() as conf:
-        conf["studio"] = {"token": "existing_token", "url": STUDIO_URL}
-
-    assert main(["auth", "login", "--local"]) == 1
-    captured = capsys.readouterr()
-    assert "Token already exists" in captured.err
-    assert "logout using" in captured.err
-
-
-def test_studio_login_single_team_saves_default(mocker, capsys):
-    mocker.patch(
-        "dvc_studio_client.auth.get_access_token",
-        return_value=("token_name", "isat_access_token"),
-    )
-
-    assert main(["auth", "login", "--team", "my-team", "--local"]) == 0
-
-    config = Config(level=ConfigLevel.LOCAL).read()
-    assert config["studio"]["team"] == "my-team"
-
-    captured = capsys.readouterr()
-    assert "Set default team to 'my-team'" in captured.out
-
-
-def test_studio_login_http_error_400(mocker, capsys):
-    mock_response = mocker.MagicMock()
-    mock_response.status_code = 400
-    mock_response.json.return_value = {"detail": "Invalid token scope"}
-
-    http_error = requests.HTTPError()
-    http_error.response = mock_response
-
-    mocker.patch(
-        "dvc_studio_client.auth.get_access_token",
-        side_effect=http_error,
-    )
-
-    assert main(["auth", "login"]) == 1
-    captured = capsys.readouterr()
-    assert "Failed to authenticate with Studio: Invalid token scope" in captured.err
-
-
-def test_studio_login_http_error_other(mocker, capsys):
-    mock_response = mocker.MagicMock()
-    mock_response.status_code = 500
-
-    http_error = requests.HTTPError("Server error")
-    http_error.response = mock_response
-
-    mocker.patch(
-        "dvc_studio_client.auth.get_access_token",
-        side_effect=http_error,
-    )
-
-    assert main(["auth", "login"]) == 1
-    captured = capsys.readouterr()
-    assert "Failed to authenticate with Studio: Server error" in captured.err
-
-
-def test_studio_team_no_name_and_no_default(capsys):
-    assert main(["auth", "team"]) == 1
-    captured = capsys.readouterr()
-    assert (
-        "No default team set. Use `datachain auth team <team_name>` to set one."
-        in captured.err
-    )
-
-
-def test_studio_team_no_name_with_existing_default(capsys):
-    with Config(ConfigLevel.GLOBAL).edit() as conf:
-        conf["studio"] = {"team": "existing-team"}
-
-    assert main(["auth", "team"]) == 0
-    captured = capsys.readouterr()
-    assert "Default team is 'existing-team'" in captured.out
