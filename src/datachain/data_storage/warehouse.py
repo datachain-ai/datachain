@@ -543,7 +543,10 @@ class AbstractWarehouse(ABC, Serializable):
 
     @abstractmethod
     def get_table(self, name: str) -> sa.Table:
-        pass
+        """
+        Returns a SQLAlchemy Table object by name. If table doesn't exist, it should
+        create it
+        """
 
     def rename_table(self, old_table: sa.Table, new_name: str) -> sa.Table:
         """Rename table and return new Table object with same schema."""
