@@ -8,12 +8,14 @@ from azure.core.exceptions import (
 )
 from gcsfs.retry import HttpError
 from google.api_core import exceptions as google_exceptions
+from google.auth.exceptions import DefaultCredentialsError
 
 from datachain.cli import handle_bucket_command, handle_command
 from datachain.client import bucket_status
 from datachain.client.azure import AzureClient
 from datachain.client.fsspec import BucketStatus
 from datachain.client.gcs import GCSClient
+from datachain.client.s3 import ClientS3
 
 AZ_DENIED = "Access denied to Azure container 'c' — check credentials/configuration"
 GCS_DENIED = "Access denied to GCS bucket 'b' — check credentials/permissions"
@@ -96,6 +98,30 @@ def test_gcs_bucket_status(mock_create_fs, anon_effect, auth_effect, expected):
     anon_fs._call.assert_awaited_once_with(
         "GET", "b/{}/o", "b", maxResults=1, json_out=True
     )
+
+
+def test_gcs_bucket_status_reports_failed_credential_construction():
+    anon_fs = MagicMock()
+    anon_fs._call = AsyncMock(side_effect=PermissionError)
+    with patch.object(
+        GCSClient,
+        "create_fs",
+        side_effect=[anon_fs, DefaultCredentialsError("bad ADC")],
+    ) as create:
+        assert GCSClient.bucket_status("private") == BucketStatus(
+            True, "denied", "bad ADC"
+        )
+    assert create.call_args.kwargs["anon"] is False
+
+
+@pytest.mark.parametrize("client", [ClientS3, GCSClient, AzureClient])
+def test_null_credentials_do_not_count_as_explicit(client):
+    assert not client.has_explicit_credentials(dict.fromkeys(client.CREDENTIAL_KEYS))
+
+
+@pytest.mark.parametrize("alias,name", ClientS3._KEY_ALIASES)
+def test_null_s3_alias_does_not_inject_credentials(alias, name):
+    assert ClientS3._normalize_s3_kwargs({alias: None}) == {}
 
 
 @pytest.mark.parametrize(
