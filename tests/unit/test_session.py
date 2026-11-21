@@ -5,11 +5,12 @@ from weakref import ref
 import pytest
 
 import datachain as dc
-from datachain.catalog import Catalog
+from datachain.catalog import Catalog, get_catalog
+from datachain.data_storage import JobStatus
 from datachain.dataset import SESSION_DATASET_PREFIX, DatasetStatus
-from datachain.error import DataChainError, DatasetNotFoundError
+from datachain.error import DataChainError, DatasetNotFoundError, TableMissingError
 from datachain.query.session import Session
-from tests.utils import skip_if_not_sqlite
+from tests.utils import reset_session_job_state, skip_if_not_sqlite
 
 
 @pytest.fixture
@@ -280,3 +281,130 @@ def test_cleanup_removes_temporary_data_from_closed_separate_database(
     catalog, catalog_tmpfile
 ):
     _check_closed_catalog_cleanup(catalog, catalog_tmpfile)
+
+
+@pytest.fixture
+def clean_job_state(monkeypatch):
+    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
+    reset_session_job_state()
+    yield
+    reset_session_job_state()
+
+
+@skip_if_not_sqlite
+def test_in_memory_session_exit_marks_owned_job_complete(clean_job_state):
+    with Session("t", in_memory=True) as s:
+        peer = s.catalog.metastore.clone(use_new_connection=True)
+        dc.read_values(x=[1], session=s).save("a")
+        job = s.get_job()
+        hook = Session._JOB_FINALIZE_HOOK
+        assert job is not None
+        assert hook is not None
+        assert peer.get_job(job.id).status == JobStatus.RUNNING
+    try:
+        assert peer.get_job(job.id).status == JobStatus.COMPLETE
+        assert s.get_job() is None
+        assert Session._JOB_FINALIZE_HOOK is None
+        hook()  # no-op even if invoked after in-memory DB is closed
+    finally:
+        peer.close_on_exit()
+
+
+@skip_if_not_sqlite
+def test_inner_in_memory_job_retires_on_exit_for_outer_session(
+    catalog, clean_job_state
+):
+    with Session("outer", catalog=catalog) as outer:
+        with Session("inner", in_memory=True) as inner:
+            inner_job = inner.get_or_create_job()
+        outer_job = outer.get_or_create_job()
+        assert outer_job.id != inner_job.id
+        assert catalog.metastore.get_job(outer_job.id).status == JobStatus.RUNNING
+
+
+@skip_if_not_sqlite
+def test_in_memory_session_finalizes_job_created_via_catalog_view(clean_job_state):
+    with Session("t", in_memory=True) as s:
+        peer = s.catalog.metastore.clone(use_new_connection=True)
+        view = s._with_catalog(s.catalog.copy())
+        job = view.get_or_create_job()
+        assert peer.get_job(job.id).status == JobStatus.RUNNING
+    try:
+        assert peer.get_job(job.id).status == JobStatus.COMPLETE
+    finally:
+        peer.close_on_exit()
+
+
+@skip_if_not_sqlite
+def test_in_memory_session_exception_marks_owned_job_failed(clean_job_state):
+    with pytest.raises(ValueError, match="boom"):
+        with Session("t", in_memory=True) as s:
+            peer = s.catalog.metastore.clone(use_new_connection=True)
+            dc.read_values(x=[1], session=s).save("a")
+            job = s.get_job()
+            assert job is not None
+            raise ValueError("boom")
+    try:
+        assert peer.get_job(job.id).status == JobStatus.FAILED
+    finally:
+        peer.close_on_exit()
+
+
+@skip_if_not_sqlite
+def test_in_memory_session_interrupt_marks_owned_job_canceled(clean_job_state):
+    with pytest.raises(KeyboardInterrupt):
+        with Session("t", in_memory=True) as s:
+            peer = s.catalog.metastore.clone(use_new_connection=True)
+            dc.read_values(x=[1], session=s).save("a")
+            job = s.get_job()
+            assert job is not None
+            raise KeyboardInterrupt
+    try:
+        assert peer.get_job(job.id).status == JobStatus.CANCELED
+    finally:
+        peer.close_on_exit()
+
+
+@skip_if_not_sqlite
+def test_inner_in_memory_session_does_not_finalize_outer_job(catalog, clean_job_state):
+    with Session("outer", catalog=catalog) as outer:
+        job = outer.get_or_create_job()
+        with Session("inner", in_memory=True) as inner:
+            assert inner.get_or_create_job() == job
+        assert catalog.metastore.get_job(job.id).status == JobStatus.RUNNING
+    assert catalog.metastore.get_job(job.id).status == JobStatus.RUNNING
+
+
+@skip_if_not_sqlite
+def test_borrowed_in_memory_catalog_session_exit_leaves_job_running(clean_job_state):
+    in_mem = get_catalog(in_memory=True)
+    try:
+        with Session("borrowed", catalog=in_mem) as s:
+            job = s.get_or_create_job()
+        assert in_mem.metastore.get_job(job.id).status == JobStatus.RUNNING
+    finally:
+        in_mem.metastore.close_on_exit()
+        in_mem.warehouse.close_on_exit()
+
+
+@skip_if_not_sqlite
+def test_file_backed_session_exit_leaves_job_running_for_process_exit(clean_job_state):
+    with Session("file", in_memory=False) as s:
+        job = s.get_or_create_job()
+        peer = s.catalog.metastore.clone(use_new_connection=True)
+    try:
+        assert peer.get_job(job.id).status == JobStatus.RUNNING
+    finally:
+        peer.close_on_exit()
+
+
+@skip_if_not_sqlite
+def test_session_cleanup_tolerates_dropped_metastore_tables(catalog):
+    metastore = catalog.metastore
+    session = Session("dropped", catalog=catalog)
+    metastore.db.drop_table(metastore._datasets_dependencies, if_exists=True)
+    metastore.db.drop_table(metastore._dataset_version_jobs, if_exists=True)
+    metastore.db.drop_table(metastore._datasets_versions)
+    with pytest.raises(TableMissingError):
+        list(metastore.list_datasets_by_prefix("session_"))
+    session._cleanup_temp_datasets()

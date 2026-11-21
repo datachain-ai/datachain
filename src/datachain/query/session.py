@@ -92,6 +92,7 @@ class Session:
         session_uuid = uuid4().hex[: self.SESSION_UUID_LEN]
         self.name = f"{name}_{session_uuid}"
         self.is_new_catalog = not catalog
+        self._owns_process_job = False
         self._parent: Session | None = None
         self.catalog = catalog or get_catalog(
             client_config=client_config, in_memory=in_memory
@@ -121,6 +122,15 @@ class Session:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.is_new_catalog and self.catalog.in_memory and self._owns_process_job:
+            if exc_type is None:
+                self._finalize_job_success()
+            elif issubclass(exc_type, KeyboardInterrupt):
+                self._finalize_job_as_canceled()
+            else:
+                self._finalize_job_as_failed(exc_type, exc_val, exc_tb)
+            self._owns_process_job = False
+            Session._reset_process_job()
         self._close()
         if Session.SESSION_CONTEXTS:
             Session.SESSION_CONTEXTS.pop()
@@ -225,12 +235,19 @@ class Session:
             Session._CURRENT_JOB = self.catalog.metastore.get_job(job_id)
             Session._OWNS_JOB = True
             Session._JOB_STATUS = JobStatus.RUNNING
+            owner = self
+            while (
+                owner._parent is not None
+                and owner._parent.catalog.metastore is self.catalog.metastore
+            ):
+                owner = owner._parent
+            owner._owns_process_job = True
 
             # register cleanup hooks only once
             if not Session._JOB_HOOKS_REGISTERED:
 
                 def _finalize_success_hook() -> None:
-                    self._finalize_job_success()
+                    owner._finalize_job_success()
 
                 Session._JOB_FINALIZE_HOOK = _finalize_success_hook
                 atexit.register(Session._JOB_FINALIZE_HOOK)
@@ -423,14 +440,7 @@ class Session:
             sys.exit(130)
 
     @classmethod
-    def cleanup_for_tests(cls):
-        cls._close_all_contexts()
-        if cls.GLOBAL_SESSION_CTX is not None:
-            cls.GLOBAL_SESSION_CTX.__exit__(None, None, None)
-            cls.GLOBAL_SESSION_CTX = None
-            atexit.unregister(cls._global_cleanup)
-
-        # Reset job-related class variables
+    def _reset_process_job(cls) -> None:
         if cls._JOB_FINALIZE_HOOK:
             try:
                 atexit.unregister(cls._JOB_FINALIZE_HOOK)
@@ -441,6 +451,17 @@ class Session:
         cls._OWNS_JOB = None
         cls._JOB_HOOKS_REGISTERED = False
         cls._JOB_FINALIZE_HOOK = None
+
+    @classmethod
+    def cleanup_for_tests(cls):
+        cls._close_all_contexts()
+        if cls.GLOBAL_SESSION_CTX is not None:
+            cls.GLOBAL_SESSION_CTX.__exit__(None, None, None)
+            cls.GLOBAL_SESSION_CTX = None
+            atexit.unregister(cls._global_cleanup)
+
+        # Reset job-related class variables
+        cls._reset_process_job()
 
         if cls.ORIGINAL_EXCEPT_HOOK:
             sys.excepthook = cls.ORIGINAL_EXCEPT_HOOK
