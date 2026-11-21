@@ -478,12 +478,7 @@ class AbstractWarehouse(ABC, Serializable):
         table: sa.Table,
         batch: "pa.RecordBatch",
     ) -> None:
-        """Insert a batch of stored values, including explicit sys__id.
-
-        Native implementations must finish the insert before returning: the
-        Writer publishes the part's ledger row only after its batches succeed.
-        Warehouses without Arrow support use the existing block contract.
-        """
+        """Insert a batch of stored values, including explicit sys__id."""
         self.insert_block(
             table,
             batch.schema.names,

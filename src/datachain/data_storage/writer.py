@@ -11,13 +11,13 @@ import time
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, Self
 
+import numpy as np
+import pyarrow as pa
 import sqlalchemy as sa
 
 from datachain.sql.types import Int64
 
 if TYPE_CHECKING:
-    import pyarrow as pa
-
     from datachain.data_storage.warehouse import AbstractWarehouse
 
 logger = logging.getLogger("datachain")
@@ -97,9 +97,6 @@ class Writer:
     def append_arrow(self, batch: "pa.RecordBatch") -> None:
         """Append stored Arrow columns, assigning ids without Python row objects.
         Source constants, when present, are already columns in the batch."""
-        import numpy as np
-        import pyarrow as pa
-
         if self.rows:
             self.flush()
         if not batch.num_rows:

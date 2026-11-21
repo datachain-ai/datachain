@@ -8,6 +8,8 @@ from time import sleep
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+import pyarrow as pa
+import pyarrow.compute as pc
 import sqlalchemy
 from sqlalchemy import (
     Column,
@@ -763,9 +765,6 @@ _MAX_DATETIME_US = 253_402_300_799_999_999  # 9999-12-31 23:59:59.999999
 def _encode_datetime_column(column: Any) -> Any:
     """An Arrow timestamp column as the text `adapt_datetime` stores; None for
     any other column."""
-    import pyarrow as pa
-    import pyarrow.compute as pc
-
     if pa.types.is_null(column.type):
         return column.cast(pa.string())
     if not pa.types.is_timestamp(column.type):
@@ -792,8 +791,6 @@ def _encode_datetime_column(column: Any) -> Any:
 
 def _encode_scalar_column(python_type: type, column: Any) -> Any:
     """Only accept Arrow types whose Python values this scalar codec accepts."""
-    import pyarrow as pa
-
     target = {str: pa.string(), bytes: pa.binary(), float: pa.float64()}.get(
         python_type, pa.int64()
     )

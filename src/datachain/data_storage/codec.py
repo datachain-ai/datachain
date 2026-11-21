@@ -10,15 +10,14 @@ from copy import deepcopy
 from datetime import datetime
 from functools import partial
 from itertools import islice
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import Any, NamedTuple
 
+import pyarrow as pa
+import pyarrow.compute as pc
 from pydantic import BaseModel, RootModel
 
 from datachain import json
 from datachain.lib.model_store import ModelStore
-
-if TYPE_CHECKING:
-    import pyarrow as pa
 
 DECODE_BATCH_SIZE = 16
 _IMMUTABLE_DEFAULT_TYPES = frozenset(
@@ -122,9 +121,6 @@ class RowCodec:
     def encode_arrow(self, batch: "pa.RecordBatch") -> "pa.RecordBatch | list[tuple]":
         """Stored columns if every codec supports Arrow, otherwise stored tuples.
         Missing trailing columns are None."""
-        import pyarrow as pa
-        import pyarrow.compute as pc
-
         n, columns = batch.num_rows, []
         if not self.codecs:
             return [()] * n
@@ -209,8 +205,6 @@ def check_scalar(python_type: type, type_name: str, value: Any) -> Any:
 def cast_arrow_column(python_type: type, target: Any, column: Any) -> Any:
     """`column` as `target` when its Arrow type holds values that a codec of
     `python_type` keeps. None when it doesn't, or when a value doesn't fit."""
-    import pyarrow as pa
-
     t = pa.types
     accepts: dict[type, tuple[Callable[[Any], bool], ...]] = {
         str: (t.is_string, t.is_large_string),
