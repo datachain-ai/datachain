@@ -175,7 +175,7 @@ def _save_logins(level: ConfigLevel, logins: list[Login]) -> str:
         _ignore_in_git(directory)
 
     # mkstemp creates the file 0600, so the token is never readable by others.
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix=f".{CREDENTIALS}-")
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=f"{CREDENTIALS}-")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             tomlkit.dump(doc, f)
@@ -187,7 +187,8 @@ def _save_logins(level: ConfigLevel, logins: list[Login]) -> str:
 
 
 def _ignore_in_git(directory: str) -> None:
-    pattern = f"/{CREDENTIALS}"
+    # Also the temporary file a save writes first, which a crash can leave behind.
+    pattern = f"/{CREDENTIALS}*"
     gitignore = Path(directory) / ".gitignore"
     try:
         content = gitignore.read_text(encoding="utf-8")

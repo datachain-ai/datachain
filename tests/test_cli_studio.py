@@ -162,7 +162,7 @@ def test_studio_login_local_ignores_credentials_in_git(get_access_token, tmp_dir
     assert main(["auth", "login", "--local"]) == 0
     assert main(["auth", "login", "--local", "--team", "other"]) == 0
 
-    assert gitignore.read_text() == "/cache\n/credentials\n"
+    assert gitignore.read_text() == "/cache\n/credentials*\n"
 
 
 @pytest.mark.parametrize("level", [ConfigLevel.GLOBAL, ConfigLevel.LOCAL])
@@ -289,6 +289,15 @@ def test_studio_login_new_host_resets_team(get_access_token):
     }
 
 
+def test_studio_login_new_host_keeps_the_default_team_off(get_access_token):
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"team": ""}
+
+    assert main(["auth", "login", "--hostname", OTHER_URL, "--team", "x"]) == 0
+
+    assert Config(ConfigLevel.GLOBAL).read()["studio"] == {"team": "", "url": OTHER_URL}
+
+
 def test_studio_login_local_new_host_sets_its_own_default_team(get_access_token):
     assert main(["auth", "team", "acme"]) == 0
 
@@ -369,6 +378,22 @@ def test_studio_old_config_token_is_revoked_where_it_was_used(
 
     assert Config(ConfigLevel.LOCAL).read()["studio"] == {"url": OTHER_URL}
     assert Config(ConfigLevel.GLOBAL).read()["studio"] == {"token": "global_token"}
+
+
+def test_studio_old_config_token_is_revoked_at_an_inherited_url(get_access_token):
+    # Older versions sent a project's token to a URL saved in the user's config.
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"url": OTHER_URL}
+    with Config(ConfigLevel.LOCAL).edit() as conf:
+        conf["studio"] = {"token": "old_token"}
+
+    with requests_mock.mock() as m:
+        m.post(f"{OTHER_URL}/api/device-logout", json={})
+        assert main(["auth", "login", "--local"]) == 0
+        assert [r.url for r in m.request_history] == [f"{OTHER_URL}/api/device-logout"]
+        assert m.last_request.headers["Authorization"] == "token old_token"
+
+    assert "studio" not in Config(ConfigLevel.LOCAL).read()
 
 
 @pytest.mark.parametrize(

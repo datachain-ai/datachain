@@ -274,17 +274,20 @@ def login(args: "Namespace"):
 
     # The default team saved at a level is for the Studio saved at that level.
     studio = _level_studio_config(level)
-    if args.hostname and hostname != _studio_url(studio):
-        # A team picked for another Studio means nothing on this one.
-        path = _update_studio_config(level, url=hostname, team=None)
-        print(f"Set Studio URL to {hostname} in {path}")
-        studio = {"url": hostname}
-
-    # A Studio set only by the environment or a project gets no default team here.
-    for_level = hostname == _studio_url(studio)
     # Only this level's team counts, so a project login sets the project's team
     # even if the user has one. An empty team keeps the default off.
     own_team = Config(level).read().get("studio", {}).get("team")
+    if args.hostname and hostname != _studio_url(studio):
+        # A team picked for another Studio means nothing on this one; a default
+        # turned off stays off.
+        if own_team:
+            own_team = None
+        path = _update_studio_config(level, url=hostname, team=own_team)
+        print(f"Set Studio URL to {hostname} in {path}")
+        studio = {"url": hostname, "team": own_team}
+
+    # A Studio set only by the environment or a project gets no default team here.
+    for_level = hostname == _studio_url(studio)
     if for_level and own_team is None and team_names and len(team_names) == 1:
         file_path = _update_studio_config(level, team=team_names[0])
         print(f"Set default team to '{team_names[0]}' in {file_path}")
@@ -300,9 +303,11 @@ def _remove_old_token(level: ConfigLevel) -> None:
         return
     path = _update_studio_config(level, token=None)
     print(f"Removed the token an older version saved in {path}.")
-    # Sent only to the Studio saved with it, never to the environment's.
+    # Sent only to the Studio older versions used it with: the URL saved at this
+    # level or a lower one, never the environment's.
+    url = _studio_url(_level_studio_config(level))
     with contextlib.suppress(DataChainError):
-        _revoke(Login(url=studio_conf.get("url") or STUDIO_URL, token=old_token))
+        _revoke(Login(url=url, token=old_token))
 
 
 def _revoke(login: Login) -> None:
