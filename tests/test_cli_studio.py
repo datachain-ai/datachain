@@ -278,6 +278,25 @@ def test_studio_login_saved_by_another_login_while_the_browser_was_open(
     assert ("could not revoke the new token" in err) == (revoke_status == 500)
 
 
+@posix_only
+def test_studio_login_revokes_the_new_token_when_it_cant_be_saved(
+    get_access_token, capsys, global_config_dir
+):
+    def file_opens_to_others(**kwargs):
+        studio_login("other_token", teams=["y"])
+        (Path(global_config_dir) / "credentials").chmod(0o644)
+        return "token_name", "isat_access_token"
+
+    get_access_token.side_effect = file_opens_to_others
+
+    with requests_mock.mock() as m:
+        m.post(f"{STUDIO_URL}/api/device-logout", json={})
+        assert main(["auth", "login", "--team", "x"]) == 1
+        assert m.last_request.headers["Authorization"] == "token isat_access_token"
+
+    assert "Other users can access" in capsys.readouterr().err
+
+
 def test_studio_login_team_token_already_exists(get_access_token, capsys):
     studio_login(teams=["ml-team", "data-team"])
 
@@ -810,11 +829,17 @@ def test_studio_auth_list_not_logged_in(capsys):
 
 @pytest.mark.parametrize(
     "command",
-    [["auth", "token"], ["dataset", "ls", "--studio"], ["job", "ls"]],
+    [
+        ["auth", "token"],
+        ["dataset", "ls", "--studio"],
+        ["dataset", "ls", "--all"],
+        ["job", "ls"],
+    ],
 )
 def test_studio_command_with_empty_team_fails(capsys, command):
-    # E.g. `--team "$TEAM"` with TEAM unset: not the default team's token.
-    studio_login(default_team="acme")
+    # E.g. `--team "$TEAM"` with TEAM unset. No token covers the default team, so
+    # falling back to it would quietly show local results only with --all.
+    studio_login(teams=["other"], default_team="acme")
 
     with requests_mock.mock() as m:
         assert main([*command, "--team", ""]) == 1
@@ -822,7 +847,8 @@ def test_studio_command_with_empty_team_fails(capsys, command):
 
     out, err = capsys.readouterr()
     assert "--team can't be empty." in err
-    assert "isat_access_token" not in out
+    # Fails before printing anything, local results included.
+    assert out == ""
 
 
 def test_studio_team_non_ascii(capsys):

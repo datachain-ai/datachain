@@ -115,8 +115,10 @@ def test_expired_token_fails_instead_of_falling_back():
 def test_expired_token_names_a_self_hosted_studio():
     studio_login("old", url=OTHER_URL, teams=["x"], expires=date(2020, 1, 1))
 
-    with pytest.raises(DataChainError, match=f"for team 'x' at {OTHER_URL} in "):
+    with pytest.raises(DataChainError, match=f"for team 'x' at {OTHER_URL} in ") as exc:
         resolve_token(OTHER_URL, "x")
+    # Without -H, the command would remove the token for the default Studio.
+    assert f"Run `datachain auth logout -H {OTHER_URL} --team x`" in str(exc.value)
 
 
 def test_login_normalizes_url_and_teams():
@@ -167,8 +169,9 @@ def test_file_that_is_not_utf8_is_named(global_config_dir):
     path.write_bytes(b"\xff\xfe[[token]]")
     path.chmod(0o600)
 
-    with pytest.raises(DataChainError, match="Invalid Studio credentials file"):
+    with pytest.raises(DataChainError, match="Invalid Studio credentials file") as exc:
         load_logins()
+    assert str(path) in str(exc.value)
 
 
 @posix_only

@@ -268,12 +268,15 @@ def login(args: "Namespace"):
         name=token_name,
         expires=expires.date(),
     )
-    if existing := conflicting_login(hostname, team_names):
-        # Another login saved it while the browser was open. The new token is
-        # not saved, so it is revoked.
+    try:
+        if existing := conflicting_login(hostname, team_names):
+            # Another login saved it while the browser was open.
+            raise _login_exists_error(existing, team_names, current_url)
+        path = add_login(new)
+    except Exception:
+        # The new token isn't saved, so it is revoked.
         _revoke_or_warn(new, "new token")
-        raise _login_exists_error(existing, team_names, current_url)
-    path = add_login(new)
+        raise
     print(f"Authentication complete. Saved token to {path}.")
     if team_names:
         print(f"Token is for teams: {', '.join(team_names)}")

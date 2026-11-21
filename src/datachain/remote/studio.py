@@ -87,11 +87,18 @@ def _is_server_error(status_code: int) -> bool:
     return str(status_code).startswith("5")
 
 
+def _reject_empty_team(team: str | None) -> None:
+    # E.g. `--team "$TEAM"` with TEAM unset: fail rather than use another team.
+    if team == "":
+        raise DataChainError("--team can't be empty.")
+
+
 def is_token_set(team: str | None = None) -> bool:
     """True if a token is available for the current Studio and this team.
 
     Without a team, the default team is used.
     """
+    _reject_empty_team(team)
     config = Config().read().get("studio", {}) or {}
     url, team = get_studio_url(config), team or get_studio_team(config)
     return resolve_token(url, team) is not None
@@ -131,9 +138,7 @@ class Response(Generic[T]):
 
 class StudioClient:
     def __init__(self, timeout: float = 3600.0, team: str | None = None) -> None:
-        if team == "":
-            # E.g. `--team "$TEAM"` with TEAM unset: fail rather than use another team.
-            raise DataChainError("--team can't be empty.")
+        _reject_empty_team(team)
         self._check_dependencies()
         self.timeout = timeout
         self._config = None

@@ -218,10 +218,11 @@ def resolve_token(url: str, team: str | None) -> str | None:
     if login.expired():
         # Falling back to another token could switch to another account.
         which = f" for team '{team}'" if login.teams else ""
+        # -H, so the command removes this token, not one for the default Studio.
+        logout = login.logout_command(team, host=bool(self_hosted(login.url)))
         raise DataChainError(
             f"The Studio token{which}{self_hosted(login.url)} in {credentials_path()} "
-            f"expired on "
-            f"{login.expires}. Run `{login.logout_command(team)}` and log in again."
+            f"expired on {login.expires}. Run `{logout}` and log in again."
         )
     return login.token
 
