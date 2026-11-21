@@ -1626,6 +1626,15 @@ class SignalSchema:
             if isinstance(node, Grouping):
                 return Grouping(rebuild(node.element))
             if isinstance(node, BinaryExpression):
+                if node.operator in (
+                    sa_operators.between_op,
+                    sa_operators.not_between_op,
+                ) and hasattr(node.right, "clauses"):
+                    return rebuild(node.left).operate(
+                        node.operator,
+                        *[rebuild(c) for c in node.right.clauses],
+                        **node.modifiers,
+                    )
                 return rebuild(node.left).operate(node.operator, rebuild(node.right))
             if isinstance(node, BooleanClauseList):
                 joiner = or_ if node.operator is sa_operators.or_ else and_

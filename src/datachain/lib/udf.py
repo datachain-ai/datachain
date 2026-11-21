@@ -399,9 +399,11 @@ class UDFBase(AbstractUDF):
         self.output = None
         self._func = None
 
-    def project(self, names: set[str]) -> "Self | None":
-        """Return a copy reading only the top-level signals used by ``names``,
-        or None when nothing would be dropped."""
+    def project(
+        self, names: set[str] | None, filters: Sequence[Any] = ()
+    ) -> "Self | None":
+        """Return a copy reading only the top-level signals used by ``names`` (all
+        if None) and the rows ``filters`` may keep, or None if it reads the same."""
         return None
 
     def hash(self, include_body: bool = True) -> str:
