@@ -1210,3 +1210,25 @@ def test_arrow_generator_cancel_and_teardown_release_prefetch_budget(
         assert gen._parts_bytes == 0
 
     asyncio.run(cancel_during_chunk_fetch())
+
+
+def test_read_parquet_columns_missing_column_fetches_footer_once(
+    tmp_path, test_session, http_server, http_requests, monkeypatch
+):
+    pq.write_table(pa.table({"a": [1]}), tmp_path / "f0.parquet")
+    pq.write_table(pa.table({"a": [2], "b": ["x"]}), tmp_path / "f1.parquet")
+    monkeypatch.setattr(arrow_mod, "PARTIAL_READ_PREFETCH_MAX_SIZE", 1)
+    urls = [f"{http_server}/f0.parquet", f"{http_server}/f1.parquet"]
+    chain = dc.read_parquet(
+        urls,
+        columns=["b"],
+        settings={"prefetch": 2},
+        session=test_session,
+    )
+    http_requests.clear()
+
+    values = chain.to_values("b")
+
+    assert sorted(values, key=lambda v: v or "") == [None, "x"]
+    f0_calls = [r for r in http_requests if r[0].endswith("f0.parquet")]
+    assert len(f0_calls) == 1

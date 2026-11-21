@@ -128,7 +128,7 @@ class _PartialReadHandler(FSSpecHandler):
         return [FileInfo(path, FileType.File) for path in paths]
 
     def open_input_file(self, path):
-        if self.parts is not None and self.parts[1]:
+        if self.parts is not None:
             f: Any = parquet_ranges.ParquetBufferedFile(
                 self.client, self.file, *self.parts
             )

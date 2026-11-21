@@ -20,14 +20,10 @@ PARQUET_RANGE_MAX_BYTES = 64 * 1024 * 1024
 PARQUET_RANGE_THREADS = 8
 
 
-def _leaf_names(field: pa.Field) -> list[str]:
-    if not field.type.num_fields:
-        return [field.name]
-    return [
-        name
-        for i in range(field.type.num_fields)
-        for name in _leaf_names(field.type.field(i))
-    ]
+def _leaf_count(dtype: pa.DataType) -> int:
+    if not dtype.num_fields:
+        return 1
+    return sum(_leaf_count(dtype.field(i).type) for i in range(dtype.num_fields))
 
 
 def column_ranges(
@@ -36,13 +32,13 @@ def column_ranges(
     gap: int = PARQUET_RANGE_GAP,
 ) -> list[tuple[int, int]]:
     """Byte ranges of the column chunks for the top-level Arrow `columns`."""
-    pairs = [
-        (field.name, leaf)
+    tops = [
+        field.name
         for field in metadata.schema.to_arrow_schema()
-        for leaf in _leaf_names(field)
+        for _ in range(_leaf_count(field.type))
     ]
     wanted = set(columns)
-    indices = [i for i, (top, _) in enumerate(pairs) if top in wanted]
+    indices = [i for i, top in enumerate(tops) if top in wanted]
     ranges = sorted(
         (start, start + col.total_compressed_size)
         for r in range(metadata.num_row_groups)
@@ -79,21 +75,21 @@ def read_parquet_parts(
         footer_start = size - 8 - int.from_bytes(sample[-8:-4], "little")
         if 0 <= footer_start < sample_start:
             if size - footer_start > PARQUET_RANGE_MAX_BYTES:
-                return (size, []), False
+                return (size, [(sample_start, sample)]), False
             stream.seek(footer_start)
             sample = stream.read(sample_start - footer_start) + sample
             sample_start = footer_start
         try:
             ranges = column_ranges(pq.read_metadata(pa.BufferReader(sample)), columns)
         except (pa.ArrowException, OSError):
-            ranges = []
+            return (size, [(sample_start, sample)]), False
         spans = [
             (start, min(end, sample_start))
             for start, end in ranges
             if start < sample_start
         ]
         span_bytes = sum(end - start for start, end in spans)
-        if ranges and reserve(len(sample) + span_bytes):
+        if reserve(len(sample) + span_bytes):
             raw: Any = getattr(stream, "fileobj", stream)
             cb = file._download_cb
 
