@@ -290,7 +290,7 @@ def _rows_page(body: bytes, shape: Shape, source: str) -> dict[str, Any] | None:
                 when = _parse_timestamp(_unescape(modified))
                 etag = _unescape(etag).strip('"')
                 row = source, decode(_unescape(key)), int(size), version, etag
-                rows.append(as_file_row((*row, latest != "false", when, None)))
+                rows.append(as_file_row((*row, latest != "false", when, None, "")))
             elif folder is None:  # its date checked, as botocore converts it
                 _parse_timestamp(_unescape(marker[1]))
                 markers.append({"Key": _unescape(marker[0])})
