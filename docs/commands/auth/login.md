@@ -95,5 +95,5 @@ datachain auth login --expires-in 90
 ```bash
 datachain auth login
 datachain auth login --team customer-team
-datachain dataset ls --team customer-team  # uses the customer-team token
+datachain dataset ls --studio --team customer-team  # uses the customer-team token
 ```

@@ -73,7 +73,7 @@ class Config:
         # Only writing creates the directory; reading a missing config is empty.
         path = self.config_file()
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             dump(config, f)
 
 

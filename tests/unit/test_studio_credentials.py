@@ -43,6 +43,7 @@ def test_token_is_picked_by_url():
 
     assert resolve_token(STUDIO_URL, "x") == "default"
     assert resolve_token(OTHER_URL, "x") == "other"
+    assert resolve_token(f"{OTHER_URL}/", "x") == "other"
 
 
 def test_project_team_picks_the_user_token():
@@ -111,6 +112,13 @@ def test_expired_token_fails_instead_of_falling_back():
     assert resolve_token(STUDIO_URL, "y") == "all"
 
 
+def test_expired_token_names_a_self_hosted_studio():
+    studio_login("old", url=OTHER_URL, teams=["x"], expires=date(2020, 1, 1))
+
+    with pytest.raises(DataChainError, match=f"for team 'x' at {OTHER_URL} in "):
+        resolve_token(OTHER_URL, "x")
+
+
 def test_login_normalizes_url_and_teams():
     login = Login(url=f"{STUDIO_URL}/", token="token", teams=["a", "a", "b"])  # noqa: S106
 
@@ -152,6 +160,15 @@ def test_invalid_file_is_named(global_config_dir, content, error):
         load_logins()
     assert str(path) in str(exc.value)
     assert error in str(exc.value)
+
+
+def test_file_that_is_not_utf8_is_named(global_config_dir):
+    path = Path(global_config_dir) / "credentials"
+    path.write_bytes(b"\xff\xfe[[token]]")
+    path.chmod(0o600)
+
+    with pytest.raises(DataChainError, match="Invalid Studio credentials file"):
+        load_logins()
 
 
 @posix_only

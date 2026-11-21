@@ -71,7 +71,7 @@ def add_auth_parser(subparsers, parent_parser) -> None:
     login_parser.add_argument(
         "--team",
         action="append",
-        help=("Create a token for this team, used only for it (can specify multiple)"),
+        help="Create a token for this team, used only for it (can specify multiple)",
     )
 
     # Expiration arguments

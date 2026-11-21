@@ -398,10 +398,11 @@ def studio_login(
     url: str = STUDIO_URL,
     teams: list[str] | None = None,
     expires: date | None = None,
+    name: str | None = None,
 ) -> None:
     """Save a Studio login and, if given, the default team in the user's config."""
-    add_login(Login(url=url, token=token, teams=teams, expires=expires))
-    if default_team:
+    add_login(Login(url=url, token=token, teams=teams, name=name, expires=expires))
+    if default_team is not None:
         with Config(ConfigLevel.GLOBAL).edit() as conf:
             studio = conf.get("studio", {})
             studio["team"] = default_team

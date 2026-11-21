@@ -75,6 +75,12 @@ def normalize_url(url: str) -> str:
     return url.rstrip("/")
 
 
+def self_hosted(url: str) -> str:
+    """Names a self-hosted Studio in a message; the default Studio goes unnamed."""
+    url = normalize_url(url)
+    return "" if url == STUDIO_URL else f" at {url}"
+
+
 def credentials_path() -> str:
     return os.path.join(global_config_dir(), CREDENTIALS)
 
@@ -136,7 +142,7 @@ def load_logins(*, for_update: bool = False) -> list[Login]:
             doc = tomlkit.load(f).unwrap()
     except FileNotFoundError:
         return []
-    except TOMLKitError as exc:
+    except (TOMLKitError, UnicodeDecodeError) as exc:
         raise DataChainError(f"Invalid Studio credentials file {path}: {exc}") from exc
 
     entries = doc.get("token", [])
@@ -198,6 +204,7 @@ def _save_logins(logins: list[Login]) -> str:
 
 def _select_login(logins: list[Login], url: str, team: str | None) -> Login | None:
     """The login to use for this Studio URL and team, from the given ones."""
+    url = normalize_url(url)
     matching = [lg for lg in logins if lg.url == url and lg.covers(team)]
     # A login for the team wins over one without teams.
     return min(matching, key=lambda lg: lg.teams is None, default=None)
@@ -212,7 +219,8 @@ def resolve_token(url: str, team: str | None) -> str | None:
         # Falling back to another token could switch to another account.
         which = f" for team '{team}'" if login.teams else ""
         raise DataChainError(
-            f"The Studio token{which} in {credentials_path()} expired on "
+            f"The Studio token{which}{self_hosted(login.url)} in {credentials_path()} "
+            f"expired on "
             f"{login.expires}. Run `{login.logout_command(team)}` and log in again."
         )
     return login.token
@@ -225,6 +233,7 @@ def conflicting_login(url: str, teams: list[str] | None) -> Login | None:
     one team login. Fails like an update would, so `auth login` stops before the
     browser if the login can't be saved.
     """
+    url = normalize_url(url)
     for login in load_logins(for_update=True):
         if login.url != url:
             continue

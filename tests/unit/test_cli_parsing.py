@@ -126,6 +126,8 @@ def test_datasets_ls_flavor_defaults():
         (True, False, False, True, (False, False, True)),
         (False, True, False, False, (False, True, False)),
         (True, True, False, True, (False, True, True)),
+        (True, False, True, True, (False, False, True)),
+        (False, True, True, True, (False, True, False)),
     ],
 )
 def test_determine_flavors(studio, local, all, logged_in, expected):
@@ -134,7 +136,14 @@ def test_determine_flavors(studio, local, all, logged_in, expected):
 
 @pytest.mark.parametrize(
     "studio,local,all",
-    [(False, False, False), (False, True, False), (True, False, False)],
+    [
+        (False, False, False),
+        (False, True, False),
+        (True, False, False),
+        # --studio or --local clears --all, so no login check either.
+        (True, False, True),
+        (False, True, True),
+    ],
 )
 def test_determine_flavors_checks_login_only_for_all(studio, local, all):
     def logged_in():

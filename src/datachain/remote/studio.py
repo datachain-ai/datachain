@@ -14,7 +14,12 @@ from typing_extensions import TypedDict
 from datachain.config import Config
 from datachain.dataset import DatasetRecord
 from datachain.error import DataChainError
-from datachain.remote.credentials import load_logins, resolve_token
+from datachain.remote.credentials import (
+    load_logins,
+    normalize_url,
+    resolve_token,
+    self_hosted,
+)
 from datachain.utils import STUDIO_URL, retry_with_backoff
 
 T = TypeVar("T")
@@ -66,14 +71,9 @@ def get_studio_env_variable(name: str) -> Any:
 def get_studio_url(config: dict | None = None) -> str:
     if config is None:
         config = Config().read().get("studio", {}) or {}
-    return (get_studio_env_variable("URL") or config.get("url") or STUDIO_URL).rstrip(
-        "/"
+    return normalize_url(
+        get_studio_env_variable("URL") or config.get("url") or STUDIO_URL
     )
-
-
-def self_hosted(url: str) -> str:
-    """Names a self-hosted Studio in a message; the default Studio goes unnamed."""
-    return "" if url.rstrip("/") == STUDIO_URL else f" at {url}"
 
 
 def get_studio_team(config: dict | None = None) -> str | None:
@@ -92,7 +92,18 @@ def is_token_set(team: str | None = None) -> bool:
 
     Without a team, the default team is used.
     """
-    return resolve_token(get_studio_url(), team or get_studio_team()) is not None
+    config = Config().read().get("studio", {}) or {}
+    url, team = get_studio_url(config), team or get_studio_team(config)
+    return resolve_token(url, team) is not None
+
+
+def _team_not_set() -> DataChainError:
+    return DataChainError(
+        "Studio team is not set. "
+        "Use `datachain auth team <team_name>` "
+        "or environment variable `DATACHAIN_STUDIO_TEAM` to set it. "
+        "You can also set `studio.team` in the config file."
+    )
 
 
 def _parse_dates(obj: dict, date_fields: list[str]):
@@ -120,6 +131,9 @@ class Response(Generic[T]):
 
 class StudioClient:
     def __init__(self, timeout: float = 3600.0, team: str | None = None) -> None:
+        if team == "":
+            # E.g. `--team "$TEAM"` with TEAM unset: fail rather than use another team.
+            raise DataChainError("--team can't be empty.")
         self._check_dependencies()
         self.timeout = timeout
         self._config = None
@@ -129,25 +143,23 @@ class StudioClient:
     def token(self) -> str:
         url = get_studio_url(self.config)
         team = self._team or get_studio_team(self.config)
-        token = resolve_token(url, team)
+        if token := resolve_token(url, team):
+            return token
 
-        if not token:
-            if team is None and any(lg.url == url for lg in load_logins()):
-                # Only tokens for teams are saved, so the team is what's missing.
-                self._get_team()
-            for_team = f" for team '{team}'" if team else ""
-            old = (
-                " The token an older version saved in the config is no longer used."
-                if self.config.get("token")
-                else ""
-            )
-            raise DataChainError(
-                f"Not logged in to Studio{self_hosted(url)}{for_team}.{old} Use "
-                "`datachain auth login` or environment variable "
-                "`DATACHAIN_STUDIO_TOKEN` to set a token."
-            )
-
-        return token
+        if team is None and any(lg.url == url for lg in load_logins()):
+            # Only tokens for teams are saved, so the team is what's missing.
+            raise _team_not_set()
+        for_team = f" for team '{team}'" if team else ""
+        old = (
+            " The token an older version saved in the config is no longer used."
+            if self.config.get("token")
+            else ""
+        )
+        raise DataChainError(
+            f"Not logged in to Studio{self_hosted(url)}{for_team}.{old} Use "
+            "`datachain auth login` or environment variable "
+            "`DATACHAIN_STUDIO_TOKEN` to set a token."
+        )
 
     @property
     def url(self) -> str:
@@ -166,16 +178,8 @@ class StudioClient:
         return self._team
 
     def _get_team(self) -> str:
-        team = get_studio_team(self.config)
-
-        if not team:
-            raise DataChainError(
-                "Studio team is not set. "
-                "Use `datachain auth team <team_name>` "
-                "or environment variable `DATACHAIN_STUDIO_TEAM` to set it. "
-                "You can also set `studio.team` in the config file."
-            )
-
+        if not (team := get_studio_team(self.config)):
+            raise _team_not_set()
         return team
 
     def _token_and_team(self) -> tuple[str, str]:

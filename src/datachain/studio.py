@@ -29,13 +29,13 @@ from datachain.remote.credentials import (
     load_logins,
     normalize_url,
     remove_login,
+    self_hosted,
 )
 from datachain.remote.studio import (
     StudioClient,
     get_studio_env_variable,
     get_studio_team,
     get_studio_url,
-    self_hosted,
 )
 from datachain.utils import STUDIO_URL, flatten
 
@@ -46,10 +46,6 @@ if TYPE_CHECKING:
 
     from datachain.catalog import Catalog
 
-LOCAL_REMOVED = (
-    "--local is no longer supported: Studio tokens are saved only in your config. "
-    "Set the project's team with `datachain auth team <team> --local`."
-)
 POST_LOGIN_MESSAGE = (
     "Once you've logged in, return here "
     "and you'll be ready to start using DataChain with Studio."
@@ -148,7 +144,10 @@ def process_auth_cli_args(args: "Namespace"):
         return 1
 
     if args.cmd in ("login", "logout") and args.local:
-        raise DataChainError(LOCAL_REMOVED)
+        raise DataChainError(
+            "--local is no longer supported: Studio tokens are saved only in your "
+            "config. Set the project's team with `datachain auth team <team> --local`."
+        )
     if args.cmd == "login":
         return login(args)
     if args.cmd == "logout":
@@ -272,7 +271,7 @@ def login(args: "Namespace"):
     if existing := conflicting_login(hostname, team_names):
         # Another login saved it while the browser was open. The new token is
         # not saved, so it is revoked.
-        _revoke(new)
+        _revoke_or_warn(new, "new token")
         raise _login_exists_error(existing, team_names, current_url)
     path = add_login(new)
     print(f"Authentication complete. Saved token to {path}.")
@@ -325,15 +324,19 @@ def _remove_old_tokens() -> None:
         url = _studio_url(_level_studio_config(level))
         path = _update_studio_config(level, token=None)
         print(f"Removed the token an older version saved in {path}.")
-        try:
-            _revoke(Login(url=url, token=old_token))
-        except DataChainError:
-            print(
-                "Warning: could not revoke the old token on Studio"
-                f"{self_hosted(url)}, so it still works there. Revoke it in your "
-                "Studio profile.",
-                file=sys.stderr,
-            )
+        _revoke_or_warn(Login(url=url, token=old_token), "old token")
+
+
+def _revoke_or_warn(login: Login, what: str) -> None:
+    """Revoke a token DataChain doesn't keep; warn if it may still work."""
+    try:
+        _revoke(login)
+    except DataChainError:
+        print(
+            f"Warning: could not revoke the {what} on Studio{self_hosted(login.url)}, "
+            "so it still works there. Revoke it in your Studio profile.",
+            file=sys.stderr,
+        )
 
 
 def _revoke(login: Login) -> bool:
@@ -422,8 +425,8 @@ def token(team: str | None = None):
 
 
 def list_logins():
-    url = get_studio_url()
-    team = get_studio_team()
+    config = Config().read().get("studio", {}) or {}
+    url, team = get_studio_url(config), get_studio_team(config)
     if self_hosted(url):
         print(f"Studio URL: {url}")
     print(f"Default team: {team or 'not set'}")
