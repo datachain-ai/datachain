@@ -222,8 +222,10 @@ def read_dataset(
             # This handles cases like "1.2.3" which are exact versions, not specifiers
             pass
 
-        # Remote metadata may not have been pulled locally yet. Keep that path
-        # (and missing-version fallback) unchanged.
+        # Optimization: if the dataset we got above is local or in Studio, we
+        # reliably have all its metadata and can pass it down to save additional
+        # calls. Otherwise, keep it None so DatasetQuery pulls the version or
+        # runs missing-version fallback.
         if (is_studio() or is_namespace_local(namespace_name)) and dataset.has_version(
             str(version)
         ):

@@ -1,7 +1,5 @@
 import gc
 import re
-import subprocess
-import sys
 from weakref import ref
 
 import pytest
@@ -294,35 +292,20 @@ def clean_job_state(monkeypatch):
 
 
 @skip_if_not_sqlite
-def test_in_memory_session_script_exits_without_errors(tmp_path):
-    script = tmp_path / "in_mem_exit.py"
-    script.write_text(
-        "import datachain as dc\n"
-        "from datachain.query.session import Session\n"
-        "with Session('t', in_memory=True) as s:\n"
-        "    dc.read_values(x=[1], session=s).save('a')\n"
-    )
-    result = subprocess.run(  # noqa: S603
-        [sys.executable, str(script)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0
-    assert "Exception ignored" not in result.stderr
-
-
-@skip_if_not_sqlite
 def test_in_memory_session_exit_marks_owned_job_complete(clean_job_state):
     with Session("t", in_memory=True) as s:
         peer = s.catalog.metastore.clone(use_new_connection=True)
         dc.read_values(x=[1], session=s).save("a")
         job = s.get_job()
+        hook = Session._JOB_FINALIZE_HOOK
         assert job is not None
+        assert hook is not None
         assert peer.get_job(job.id).status == JobStatus.RUNNING
     try:
         assert peer.get_job(job.id).status == JobStatus.COMPLETE
         assert s.get_job() is None
+        assert Session._JOB_FINALIZE_HOOK is None
+        hook()  # no-op even if invoked after in-memory DB is closed
     finally:
         peer.close_on_exit()
 

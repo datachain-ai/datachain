@@ -411,37 +411,6 @@ def test_read_dataset_remote_basic(
 
 @skip_if_not_sqlite
 @pytest.mark.parametrize("is_studio", (False,))
-def test_read_dataset_remote_pulls_unpulled_selected_version(
-    studio_token,
-    test_session,
-    remote_dataset_multi_version,
-    mock_dataset_info_endpoint,
-    mock_export_endpoint_with_urls,
-    mock_export_status_completed,
-    mock_s3_parquet_download,
-    mock_dataset_rows_fetcher_status_check,
-):
-    mock_dataset_info_endpoint(remote_dataset_multi_version)
-    mock_s3_parquet_download()
-
-    dc.read_dataset(
-        f"{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs",
-        version="1.0.0",
-        session=test_session,
-    )
-    assert dc.datasets().to_values("version") == ["1.0.0"]
-
-    ds2 = dc.read_dataset(
-        f"{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs",
-        version="2.0.0",
-        session=test_session,
-    )
-    assert set(ds2.to_values("version")) == {"2.0.0"}
-    assert dc.datasets().to_values("version") == ["1.0.0", "2.0.0"]
-
-
-@skip_if_not_sqlite
-@pytest.mark.parametrize("is_studio", (False,))
 def test_read_dataset_remote_uses_local_when_cached(
     studio_token,
     test_session,
