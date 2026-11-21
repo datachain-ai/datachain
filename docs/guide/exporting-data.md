@@ -16,8 +16,9 @@ chain = dc.read_storage("s3://bucket/data/").filter(dc.C("file.size") > 0)
 # To pandas DataFrame
 df = chain.to_pandas()
 
-# To Parquet -- columnar format, efficient for large datasets
+# To Parquet or Lance -- columnar formats, efficient for large datasets
 chain.to_parquet("output/results.parquet")
+chain.to_lance("output/results.lance")
 
 # To CSV / JSON / JSONL
 chain.to_csv("output/results.csv")

@@ -1,9 +1,12 @@
 import copy
 import hashlib
+import os
 import sys
-from collections.abc import Iterator, Sequence
+import tempfile
+from collections.abc import Collection, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from functools import partial
 from typing import TYPE_CHECKING, Any, TypeGuard
 
 import numpy as np
@@ -15,10 +18,13 @@ from pyarrow.dataset import CsvFileFormat, Dataset, ParquetFileFormat, dataset
 from pyarrow.fs import FileInfo, FileType, FSSpecHandler, PyFileSystem
 
 from datachain import json
+from datachain.cache import Cache
+from datachain.catalog.catalog import clone_catalog_with_cache
 from datachain.data_storage.codec import to_json_text
 from datachain.fs.reference import ReferenceFileSystem
 from datachain.lib.arrow_filter import to_arrow_filter
 from datachain.lib.convert.flatten import classify_field, flatten, iter_field_columns
+from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.convert.unflatten import ABSENT, unflatten_to_json_pos
 from datachain.lib.data_model import (
     NULLABLE_SCALARS,
@@ -35,6 +41,7 @@ from datachain.lib.signal_schema import SignalSchema, SignalSchemaError
 from datachain.lib.udf import Generator
 from datachain.lib.utils import normalize_col_names, unique_name
 from datachain.progress import tqdm
+from datachain.sql.types import Array, Binary, Boolean, DateTime, Float, Int64, String
 from datachain.utils import safe_closing
 
 SCHEMA_READ_THREADS = 32
@@ -72,6 +79,10 @@ def fix_pyarrow_format(format, parse_options=None):
 
 def is_parquet(format) -> bool:
     return format == "parquet" or isinstance(format, ParquetFileFormat)
+
+
+def is_lance(format) -> bool:
+    return format == "lance"
 
 
 # CSV options that decide where a file's rows and columns start.
@@ -140,8 +151,303 @@ def pyarrow_fs(file: File, format):
     return PyFileSystem(_PartialReadHandler(client, file, block_size=block_size))
 
 
+_LANCE_TABLE_DIRS = frozenset(
+    ("data", "_versions", "_transactions", "_deletions", "_indices")
+)
+
+
+def _is_lance_table_file(file: File, client: "Client") -> bool:
+    fs_path = file.get_fs_path().replace("\\", "/").rstrip("/")
+    parts = fs_path.split("/")
+    stop = 2 if "://" in fs_path else -1
+    for i in range(len(parts) - 2, stop, -1):
+        if parts[i] in _LANCE_TABLE_DIRS:
+            if i > stop + 1 and parts[i - 1].endswith(".lance"):
+                return True
+            prefix = f"{'/'.join(parts[:i])}/"
+            if client.fs.isdir(f"{prefix}_versions") and (
+                parts[i] == "data" or client.fs.isdir(f"{prefix}data")
+            ):
+                return True
+    return False
+
+
+def _find_lance_blob(fields: Sequence[pa.Field], prefix: str = "") -> str | None:
+    for f in fields:
+        name = (
+            prefix.rstrip(".") if f.name == "item" and prefix else f"{prefix}{f.name}"
+        )
+        if (f.metadata or {}).get(b"lance-encoding:blob") == b"true":
+            return name
+        children = [f.type.field(i) for i in range(f.type.num_fields)]
+        if blob := _find_lance_blob(children, f"{name}."):
+            return blob
+    return None
+
+
+def _lance_file_reader():
+    try:
+        from lance.file import LanceFileReader
+    except ImportError as exc:
+        raise ImportError(
+            f"Missing dependency for Lance files: {exc}\n"
+            "To install run:\n\n"
+            "  pip install 'datachain[lance]'\n"
+        ) from exc
+    return LanceFileReader
+
+
+def _local_lance_path(file: File) -> str:
+    catalog = file._catalog
+    assert catalog is not None
+    client = catalog.get_client(file.source)
+    if _is_lance_table_file(file, client):
+        raise ValueError(
+            f"'{file.path}' is inside a Lance table directory; "
+            "read_lance reads standalone .lance data files"
+        )
+    if (path := file.get_local_path()) is not None:
+        return path
+    if isinstance(client.fs, LocalFileSystem):
+        client.check_unchanged(file)
+        return file.get_fs_path()
+    cache = catalog.cache
+    if not file._caching_enabled:
+        tmp_cache = Cache(
+            os.path.join(cache.tmp_dir, "lance"), cache.tmp_dir, fallback=cache
+        )
+        if (path := tmp_cache.get_path(file)) is not None:
+            return path
+        file = file.model_copy()
+        file._catalog = clone_catalog_with_cache(catalog, tmp_cache)
+    file.ensure_cached()
+    path = file.get_local_path()
+    assert path is not None
+    return path
+
+
+_LANCE_JSON_META = {b"datachain:json": b"true"}
+
+
+def _encode_lance_col(name: str) -> str:
+    return name.replace("%", "%25").replace(".", "%2E")
+
+
+def _decode_lance_col(name: str) -> str:
+    return name.replace("%2E", ".").replace("%25", "%")
+
+
+def write_lance(
+    target: File,
+    signal_schema: SignalSchema,
+    column_chunks: Iterable[Sequence[list[Any]]],
+    *,
+    fs_kwargs: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> None:
+    _lance_file_reader()
+    from lance.file import LanceFileWriter
+
+    pq_schema = parquet_schema(signal_schema)
+    lance_schema = pa.schema(
+        [
+            pa.field(_encode_lance_col(f.name), pa.string(), metadata=_LANCE_JSON_META)
+            if isinstance(f.type, pa.JsonType)
+            else f.with_name(_encode_lance_col(f.name))
+            for f in pq_schema
+        ]
+    )
+    catalog = target._catalog
+    assert catalog is not None
+    client = catalog.get_client(target.source)
+    fs = (
+        client.create_fs(**{**catalog.client_config, **fs_kwargs})
+        if fs_kwargs
+        else client.fs
+    )
+    dst_path = target.get_fs_path()
+    local = isinstance(fs, LocalFileSystem)
+    if local:
+        staging = os.path.dirname(os.path.abspath(dst_path))
+        os.makedirs(staging, exist_ok=True)
+    else:
+        staging = catalog.cache.tmp_dir
+    null_free = set(pq_schema.names)
+    with tempfile.TemporaryDirectory(dir=staging) as tmp_dir:
+        staged = os.path.join(tmp_dir, "data.lance")
+        with LanceFileWriter(staged, lance_schema, **kwargs) as writer:
+            for chunk in column_chunks:
+                arrays = [
+                    _to_arrow(values, f.type)
+                    for values, f in zip(chunk, pq_schema, strict=True)
+                ]
+                null_free -= {
+                    f.name
+                    for f, arr in zip(pq_schema, arrays, strict=True)
+                    if arr.null_count
+                }
+                writer.write_batch(
+                    pa.Table.from_arrays(
+                        [getattr(a, "storage", a) for a in arrays], schema=lance_schema
+                    )
+                )
+            values = _optional_unless_null_free(signal_schema.values, null_free)
+            if values != signal_schema.values:
+                signal_schema = SignalSchema(values)
+            writer.add_schema_metadata(
+                DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY.decode("utf-8"),
+                json.dumps(signal_schema.serialize(), ensure_ascii=False),
+            )
+        if local:
+            os.replace(staged, dst_path)
+        else:
+            fs.put_file(staged, dst_path)
+
+
+class _LanceDataset:
+    """Adapter reading a single Lance v2 data file via `LanceFileReader`."""
+
+    def __init__(
+        self,
+        file: File,
+        schema: pa.Schema | None = None,
+        *,
+        datachain_read: bool = False,
+    ):
+        self._readers: dict[tuple[str, ...], Any] = {}
+        reader_cls = _lance_file_reader()
+        self._path = _local_lance_path(file)
+        if not os.path.getsize(self._path):
+            raise ValueError(f"Lance file '{file.path}' is 0 bytes")
+        self._base_reader = reader_cls(self._path)
+        meta = self._base_reader.metadata()
+        if (blob := _find_lance_blob(list(meta.schema))) is not None:
+            self.close()
+            raise ValueError(
+                f"Lance blob column '{blob}' in '{file.path}' is not "
+                "supported; read_lance reads standalone .lance data files"
+            )
+        self.num_rows: int = meta.num_rows
+        self._dc = datachain_read or _written_by_datachain(meta.schema)
+        self._physical_schema: pa.Schema = (
+            pa.schema(
+                [
+                    pa.field(
+                        _decode_lance_col(f.name),
+                        pa.json_()
+                        if (f.metadata or {}).get(b"datachain:json") == b"true"
+                        else f.type,
+                    )
+                    for f in meta.schema
+                ],
+                metadata=meta.schema.metadata,
+            )
+            if self._dc
+            else meta.schema
+        )
+        self.schema: pa.Schema = schema or self._physical_schema
+
+    def _raw_name(self, col: str) -> str:
+        return _encode_lance_col(col) if self._dc else col
+
+    def _reader(self, present: tuple[str, ...]) -> Any:
+        # Lance's projection parser rejects empty column names.
+        if "" in present or list(present) == self._physical_schema.names:
+            return self._base_reader
+        if (reader := self._readers.get(present)) is None:
+            escaped = [f"`{self._raw_name(c).replace('`', '``')}`" for c in present]
+            reader = _lance_file_reader()(self._path, columns=escaped)
+            self._readers[present] = reader
+        return reader
+
+    def _read(
+        self,
+        columns: Sequence[str],
+        take: pa.Array | None = None,
+        *,
+        start: int,
+        n: int,
+    ) -> pa.Table:
+        present = tuple(c for c in columns if c in self._physical_schema.names)
+        raw = None
+        if present and n:
+            r = self._reader(present)
+            if take is not None:
+                idx = (pc.add(take, start) if start else take).to_pylist()
+                raw = r.take_rows(idx, batch_size=len(idx)).to_table()
+            else:
+                raw = r.read_range(start, n, batch_size=n).to_table()
+        rows = n if take is None else len(take)
+        fields = [self.schema.field(c) for c in columns]
+        return pa.Table.from_arrays(
+            [
+                raw.column(self._raw_name(f.name)).cast(f.type)
+                if raw is not None and f.name in present
+                else pa.nulls(rows, f.type)
+                for f in fields
+            ],
+            schema=pa.schema(fields, metadata=self.schema.metadata),
+        )
+
+    def chunks(self, step: int):
+        for start in range(0, self.num_rows, step):
+            n = min(step, self.num_rows - start)
+            yield start, n, partial(self._read, start=start, n=n)
+
+    def to_batches(self, **kw: Any) -> Iterator[pa.RecordBatch]:
+        columns = list(kw.get("columns") or self.schema.names)
+        step = kw.get("batch_size") or ArrowGenerator.DEFAULT_BATCH_SIZE
+        for _, _, read in self.chunks(step):
+            yield from read(columns).to_batches(step)
+
+    def filtered_batches(
+        self,
+        filter_expr: pc.Expression,
+        filter_columns: Sequence[str],
+        columns: Sequence[str],
+        batch_size: int,
+    ) -> Iterator[tuple[pa.Array, pa.RecordBatch]]:
+        keys = [c for c in filter_columns if c in self.schema.names]
+        rest = [c for c in columns if c not in keys]
+        index = unique_name("index", self.schema.names)
+        with tqdm(desc="Parsed by pyarrow", unit="rows", leave=False) as pbar:
+            for start, num_rows, read in self.chunks(ArrowGenerator.DEFAULT_BATCH_SIZE):
+                hits = (
+                    read(keys)
+                    .append_column(index, pa.arange(0, num_rows))
+                    .filter(filter_expr)
+                )
+                pbar.update(num_rows)
+                if not hits.num_rows:
+                    continue
+                cols = dict(zip(hits.column_names, hits.columns, strict=True))
+                if rest:
+                    take = hits[index] if hits.num_rows < num_rows else None
+                    data = read(rest, take)
+                    cols.update(zip(rest, data.columns, strict=True))
+                cols[index] = pc.add(hits[index], start)
+                table = pa.table(
+                    [cols[c] for c in [*columns, index]], [*columns, index]
+                )
+                for batch in table.to_batches(batch_size):
+                    yield batch.column(index), batch.drop_columns([index])
+
+    def take(self, indices: Sequence[int]) -> pa.Table:
+        if any(i < 0 or i >= self.num_rows for i in indices):
+            raise IndexError(f"Row index out of range ({self.num_rows} rows)")
+        rows = sorted(set(indices))
+        table = self._read(
+            self.schema.names, pa.array(rows, pa.int64()), start=0, n=len(rows)
+        )
+        return table.take([rows.index(i) for i in indices])
+
+    def close(self) -> None:
+        self._readers.clear()
+        self._base_reader = None
+
+
 def read_batches(
-    ds: Dataset, nrows: int | None = None, **kw: Any
+    ds: Dataset | _LanceDataset, nrows: int | None = None, **kw: Any
 ) -> Iterator[tuple[int, pa.RecordBatch]]:
     """Yield the file's batches up to nrows rows, each with its first row's
     index."""
@@ -402,45 +708,44 @@ class ArrowGenerator(Generator):
                 ),
             )
             kept[pick] = data[pick] = self.output.values[pick]
+        fmt = self.kwargs.get("format")
         pushed = (
             to_arrow_filter(filters, self.input_schema, data)
-            if is_parquet(self.kwargs.get("format"))
+            if is_parquet(fmt) or is_lance(fmt)
             else None
         )
         if len(kept) == len(self.output.values) and pushed is None:
             return None
         projected = copy.copy(self)
         projected.columns = [raw[k] for k in data]
-        projected.output_schema = dict_to_data_model(self.output_schema.__name__, data)
+        projected.output_schema = dict_to_data_model(
+            self.output_schema.__name__, data, optional=False
+        )
         projected.source = len(kept) > len(data)
         projected.output = SignalSchema(kept)
         if pushed is not None:
             projected.filter, projected.filter_columns, projected.filter_hash = pushed
-        if is_parquet(self.kwargs.get("format")):
+        if is_parquet(fmt):
             projected.prefetch_max_size = PARTIAL_READ_PREFETCH_MAX_SIZE
         return projected
 
     def process(self, file: File):
         if file._caching_enabled:
             file.ensure_cached()
-        if cache_path := file.get_local_path():
-            fs_path = file.path
-            fs = ReferenceFileSystem({fs_path: [cache_path]})
-        else:
-            fs = pyarrow_fs(file, self.kwargs.get("format"))
-            fs_path = file.get_fs_path()
-
         kwargs = self.kwargs
         if format := kwargs.get("format"):
             kwargs["format"] = fix_pyarrow_format(format, self.parse_options)
 
+        # With datachain_read, each file is read with its own columns and types.
+        in_schema = None if self.datachain_read else self.input_schema
+        with safe_closing(
+            _file_dataset(file, kwargs, in_schema, datachain_read=self.datachain_read)
+        ) as ds:
+            yield from self._rows(file, ds)
+
+    def _rows(self, file: File, ds: Dataset | _LanceDataset):
         if self.datachain_read:
-            # Each file is read with its own columns and types, which other files
-            # may differ from.
-            ds = dataset(fs_path, filesystem=fs, **kwargs)
             _check_type_tags(file, ds.schema)
-        else:
-            ds = dataset(fs_path, schema=self.input_schema, filesystem=fs, **kwargs)
 
         use_datachain_schema = _written_by_datachain(ds.schema)
         if self.written_by_datachain not in (None, use_datachain_schema):
@@ -483,9 +788,14 @@ class ArrowGenerator(Generator):
                 yield self._process_record(obj, file, index, source_kwargs)
 
     def _batches(
-        self, ds: Dataset, kw: dict[str, Any]
+        self, ds: Dataset | _LanceDataset, kw: dict[str, Any]
     ) -> Iterator[tuple[int | pa.Array, pa.RecordBatch]]:
         if self.filter is not None:
+            if isinstance(ds, _LanceDataset):
+                columns = kw.get("columns") or ds.schema.names
+                return ds.filtered_batches(
+                    self.filter, self.filter_columns, columns, kw["batch_size"]
+                )
             return filter_batches(ds, self.filter, self.filter_columns, **kw)
         return read_batches(ds, self.nrows, **kw)
 
@@ -564,7 +874,9 @@ class ArrowGenerator(Generator):
                 columns, names=[str(i) for i in range(len(columns))]
             )
 
-    def _signal_objects(self, ds: Dataset, kw: dict[str, Any]) -> Iterator["BaseModel"]:
+    def _signal_objects(
+        self, ds: Dataset | _LanceDataset, kw: dict[str, Any]
+    ) -> Iterator["BaseModel"]:
         """Read each row of a file written by DataChain into the output model by
         column position, as rows are read from the DB. A column the file lacks
         leaves its field out, so the field takes its default."""
@@ -582,10 +894,10 @@ class ArrowGenerator(Generator):
         ]
         wanted = {*names, *(tag for tag, _, _ in parents.values())}
         kw["columns"] = [c for c in schema.names if c in wanted]
+        json_cols = json_columns(schema) or json_columns(self.input_schema)
         for _, batch in read_batches(ds, self.nrows, **kw):
-            # Maps are read as dicts. Duplicate keys raise an error.
             values = {
-                name: column.to_pylist(maps_as_pydicts="strict")
+                name: column_values(column, name in json_cols)
                 for name, column in zip(batch.schema.names, batch.columns, strict=True)
             }
             for path, (tag, layout, arm) in parents.items():
@@ -640,6 +952,39 @@ class ArrowGenerator(Generator):
         return self.output_schema(**values)
 
 
+def column_values(column: pa.Array, from_json: bool) -> list[Any]:
+    """The column's values, parsed where `from_json` and it holds JSON text. Maps
+    are read as dicts, and duplicate keys raise an error."""
+    values = column.to_pylist(maps_as_pydicts="strict")
+    if from_json and isinstance(column.type, pa.JsonType):
+        return [None if v is None else json.loads(v) for v in values]
+    return values
+
+
+def json_columns(schema: pa.Schema | None) -> set[str]:
+    """The columns files written by DataChain with this schema store as JSON."""
+    signal_schema = _get_datachain_schema(schema)
+    if signal_schema is None:
+        return set()
+    fields = parquet_schema(signal_schema)
+    return {f.name for f in fields if isinstance(f.type, pa.JsonType)}
+
+
+def _optional_unless_null_free(
+    signals: dict[str, Any], null_free: Collection[str]
+) -> dict[str, Any]:
+    """Make each signal optional unless its column, or its union tag, is in
+    `null_free`. A model is left as declared: its fields have their own columns."""
+    return {
+        path: anno
+        if ModelStore.is_pydantic(anno)
+        or path in null_free
+        or f"{path}.{TYPE_TAG_FIELD}" in null_free
+        else anno | None
+        for path, anno in signals.items()
+    }
+
+
 def _dataset_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     kwargs = dict(kwargs)
     parse_options = kwargs.pop("parse_options", None)
@@ -648,12 +993,24 @@ def _dataset_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     return kwargs
 
 
-def _file_dataset(file: File, kwargs: dict[str, Any]) -> Dataset:
-    fs = pyarrow_fs(file, kwargs.get("format"))
-    return dataset(file.get_fs_path(), filesystem=fs, **kwargs)  # type: ignore[union-attr]
+def _file_dataset(
+    file: File,
+    kwargs: dict[str, Any],
+    schema: pa.Schema | None = None,
+    *,
+    datachain_read: bool = False,
+) -> Dataset | _LanceDataset:
+    if is_lance(kwargs.get("format")):
+        return _LanceDataset(file, schema, datachain_read=datachain_read)
+    fs_path = file.get_fs_path()
+    if cache_path := file.get_local_path():
+        fs: Any = ReferenceFileSystem({fs_path: [cache_path]})
+    else:
+        fs = pyarrow_fs(file, kwargs.get("format"))
+    return dataset(fs_path, schema=schema, filesystem=fs, **kwargs)
 
 
-def _file_datasets(chain: "DataChain", **kwargs) -> Iterator[Dataset]:
+def _file_datasets(chain: "DataChain", **kwargs) -> Iterator[Dataset | _LanceDataset]:
     kwargs = _dataset_kwargs(kwargs)
     for (file,) in chain.to_iter("file"):
         yield _file_dataset(file, kwargs)  # type: ignore[arg-type]
@@ -666,7 +1023,8 @@ def file_schemas(chain: "DataChain", **kwargs) -> list[pa.Schema]:
     files = chain.order_by("file.path").to_values("file")
 
     def file_schema(file: File) -> pa.Schema:
-        schema = _file_dataset(file, kwargs).schema
+        with safe_closing(_file_dataset(file, kwargs)) as ds:
+            schema = ds.schema
         _check_type_tags(file, schema)
         return schema
 
@@ -700,10 +1058,20 @@ def infer_output(
     if not signal_schema:
         schema, names = merge_schemas(schemas, columns)
         return schema, schema_to_output(schema, col_names or names)[0], None
+    for s in schemas[1:]:
+        other = _get_datachain_schema(s)
+        non_null = (
+            {k for k, v in other.values.items() if not unwrap_optional(v)[1]}
+            if other
+            else ()
+        )
+        signal_schema = SignalSchema(
+            _optional_unless_null_free(signal_schema.values, non_null)
+        )
 
     signals = _signal_paths(signal_schema, columns, replace_source)
     if columns is None:
-        schema = pa.unify_schemas(schemas)
+        schema = _unify_datachain_schemas(schemas)
     else:
         columns = list(signals)  # as stored, e.g. "u.Model.x" for "u.x"
         schema = _picked_schema(schemas, columns)
@@ -732,8 +1100,11 @@ def read_columns(
     these names with its own types. Partition and pandas index columns at the end
     are left out when output has no fields for them.
     """
-    ds = next(_file_datasets(chain.order_by("file.path").limit(1), **kwargs))
-    schema = ds.schema
+    with safe_closing(
+        next(_file_datasets(chain.order_by("file.path").limit(1), **kwargs))
+    ) as ds:
+        schema = ds.schema
+        fragments = ds.get_fragments() if isinstance(ds, Dataset) else None
     fields = len(model.model_fields)
     if signal_schema := _get_datachain_schema(schema):
         signals = _signal_paths(signal_schema, columns, replace_source)
@@ -746,8 +1117,8 @@ def read_columns(
 
     if columns is not None:
         schema, _ = merge_schemas([schema], columns)
-    elif len(schema) > fields:
-        physical = next(ds.get_fragments()).physical_schema
+    elif len(schema) > fields and fragments is not None:
+        physical = next(fragments).physical_schema
         extra = set(schema.names) - set(physical.names)
         index = (schema.pandas_metadata or {}).get("index_columns", [])
         extra |= {c for c in index if isinstance(c, str)}
@@ -899,7 +1270,22 @@ def _picked_schema(schemas: list[pa.Schema], signals: Sequence[str]) -> pa.Schem
         pa.schema([f for f in s if _in_signals(f.name, signals)], metadata=s.metadata)
         for s in schemas
     ]
-    return pa.unify_schemas(picked)
+    return _unify_datachain_schemas(picked)
+
+
+def _unify_datachain_schemas(schemas: list[pa.Schema]) -> pa.Schema:
+    """Unify the schemas of files written by DataChain. A column that one file
+    stores as JSON text unifies as JSON, as each file is read with its own types."""
+    json_cols = {f.name for s in schemas for f in s if isinstance(f.type, pa.JsonType)}
+    return pa.unify_schemas(
+        [
+            pa.schema(
+                [f.with_type(pa.json_()) if f.name in json_cols else f for f in s],
+                metadata=s.metadata,
+            )
+            for s in schemas
+        ]
+    )
 
 
 def _parent_tags(
@@ -965,7 +1351,11 @@ def arrow_type_mapper(col_type: pa.DataType, column: str = "") -> type:  # noqa:
     """Convert pyarrow types to basic types."""
     if pa.types.is_timestamp(col_type):
         return datetime
-    if pa.types.is_binary(col_type):
+    if (
+        pa.types.is_binary(col_type)
+        or pa.types.is_large_binary(col_type)
+        or pa.types.is_fixed_size_binary(col_type)
+    ):
         return bytes
     if pa.types.is_floating(col_type):
         return float
@@ -975,9 +1365,17 @@ def arrow_type_mapper(col_type: pa.DataType, column: str = "") -> type:  # noqa:
         return bool
     if pa.types.is_date(col_type):
         return datetime
-    if pa.types.is_string(col_type) or pa.types.is_large_string(col_type):
+    if (
+        pa.types.is_string(col_type)
+        or pa.types.is_large_string(col_type)
+        or isinstance(col_type, pa.JsonType)
+    ):
         return str
-    if pa.types.is_list(col_type):
+    if (
+        pa.types.is_list(col_type)
+        or pa.types.is_large_list(col_type)
+        or pa.types.is_fixed_size_list(col_type)
+    ):
         item_type = _arrow_field_type_mapper(
             col_type.value_field, column, nullable_scalars_only=True
         )
@@ -999,6 +1397,55 @@ def arrow_type_mapper(col_type: pa.DataType, column: str = "") -> type:  # noqa:
     if pa.types.is_null(col_type):
         return str  # use strings for null columns
     raise TypeError(f"{col_type!r} datatypes not supported, column: {column}")
+
+
+# The SQL types of the signals' Python types, see `python_to_sql`.
+_ARROW_TYPES: dict[Any, pa.DataType] = {
+    String: pa.string(),
+    Boolean: pa.bool_(),
+    Int64: pa.int64(),
+    Float: pa.float64(),
+    DateTime: pa.timestamp("us", tz="UTC"),
+    Binary: pa.binary(),
+}
+
+
+def _arrow_type(sql_type: Any) -> pa.DataType:
+    """The Arrow type a column of this SQL type is written as. A column holding
+    JSON at any depth, or of a type with no Arrow type here, is JSON text, which
+    keeps any value."""
+    if isinstance(sql_type, Array):
+        item = _arrow_type(sql_type.item_type)
+        return item if isinstance(item, pa.JsonType) else pa.list_(item)
+    key = sql_type if isinstance(sql_type, type) else type(sql_type)
+    return _ARROW_TYPES.get(key, pa.json_())
+
+
+def parquet_schema(signal_schema: SignalSchema) -> pa.Schema:
+    """The Arrow schema of the signals' columns, as Parquet stores them."""
+    fields = []
+    for path, anno, has_subtree, _ in signal_schema.get_flat_tree(
+        include_sentinels=True
+    ):
+        if has_subtree:
+            continue
+        try:
+            sql_type = python_to_sql(anno)
+        except TypeError:
+            sql_type = None
+        fields.append(pa.field(".".join(path), _arrow_type(sql_type)))
+    return pa.schema(fields)
+
+
+def _to_arrow(values: list[Any], arrow_type: pa.DataType) -> pa.Array:
+    """The values as an Arrow array of the type. A value the type can't hold as
+    it is raises: a typed conversion rejects values of another kind, and a safe
+    cast of the inferred array rejects fractions an int would truncate."""
+    if isinstance(arrow_type, pa.JsonType):
+        texts = [None if v is None else to_json_text(v) for v in values]
+        return pa.array(texts, arrow_type)
+    pa.array(values).cast(arrow_type)
+    return pa.array(values, arrow_type)
 
 
 def _arrow_field_type_mapper(
@@ -1029,7 +1476,12 @@ def _is_plain_type(col_type: pa.DataType, top_level: bool = False) -> bool:
     """Whether pyarrow gives the column's values as pydantic and the DB keep them,
     typed as `arrow_type_mapper` types them. A top-level column counts after
     `_microseconds`."""
-    if pa.types.is_dictionary(col_type) or pa.types.is_list(col_type):
+    if (
+        pa.types.is_dictionary(col_type)
+        or pa.types.is_list(col_type)
+        or pa.types.is_large_list(col_type)
+        or pa.types.is_fixed_size_list(col_type)
+    ):
         return _is_plain_type(col_type.value_type)
     if pa.types.is_timestamp(col_type):
         # pyarrow gives nanoseconds as pandas Timestamps.
@@ -1042,6 +1494,8 @@ def _is_plain_type(col_type: pa.DataType, top_level: bool = False) -> bool:
         or pa.types.is_string(col_type)
         or pa.types.is_large_string(col_type)
         or pa.types.is_binary(col_type)
+        or pa.types.is_large_binary(col_type)
+        or pa.types.is_fixed_size_binary(col_type)
         or pa.types.is_null(col_type)
     )
 

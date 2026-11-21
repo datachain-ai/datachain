@@ -2927,22 +2927,23 @@ class DataChain:
                 A list of names infers types. Fields map by position, with exactly one
                 field per column read. Use `columns` to select inputs by name.
                 Omit to infer names and types or restore a saved DataChain schema.
-                On Parquet exported by DataChain, each field takes one picked
-                signal, or one top-level signal without `columns`.
+                On Parquet or Lance exported by DataChain, each field takes one
+                picked signal, or one top-level signal without `columns`.
             column: Generated column name.
             model_name: Generated model name.
             source: Whether to include info about the source file. It is named
                 "source", or the first free "cN_source" if that name is taken.
             nrows: Optional row limit per file.
             columns: Input columns to read, in order; all if omitted. Accepts original
-                or normalized names, e.g. "ZIP Code" or "zip_code". For Parquet exported
-                by DataChain, it picks signals as `select()` does, e.g. "p.x". When
-                omitted (along with `output` and `column`), DataChain automatically
-                reads only the columns used by `select()`, `group_by()`, `count()`, or
-                `gen()` (even after `filter()`, `order_by()`, or `mutate()`), and on
-                Parquet applies `filter()` conditions while reading so only the needed
-                rows and columns are loaded (`filter()`, `select()`, and `order_by()`
-                can appear in any order).
+                or normalized names, e.g. "ZIP Code" or "zip_code". For Parquet or
+                Lance exported by DataChain, it picks signals as `select()` does,
+                e.g. "p.x". When omitted (along with `output` and `column`),
+                DataChain automatically reads only the columns used by `select()`,
+                `group_by()`, `count()`, or `gen()` (even after `filter()`,
+                `order_by()`, or `mutate()`), and on Parquet or Lance applies
+                `filter()` conditions while reading so only the needed rows and
+                columns are loaded (`filter()`, `select()`, and `order_by()` can
+                appear in any order).
             kwargs: Parameters to pass to pyarrow.dataset.dataset.
 
         Example:
@@ -2968,9 +2969,11 @@ class DataChain:
         from datachain.lib.arrow import (
             PARTIAL_READ_PREFETCH_MAX_SIZE,
             ArrowGenerator,
+            _written_by_datachain,
             file_schemas,
             fix_pyarrow_format,
             infer_output,
+            is_lance,
             is_parquet,
             read_columns,
         )
@@ -3010,7 +3013,11 @@ class DataChain:
                 )
 
             if isinstance(output, dict):
-                model = dict_to_data_model(model_name or column or "", output)
+                # Signals of files written by DataChain keep their declared types.
+                declared = infer and is_lance(format) and _written_by_datachain(schema)
+                model = dict_to_data_model(
+                    model_name or column or "", output, optional=not declared
+                )
             else:
                 model = output  # type: ignore[assignment]
 
@@ -3162,6 +3169,38 @@ class DataChain:
 
         if parquet_writer:
             parquet_writer.close()
+
+    def to_lance(
+        self,
+        path: str | os.PathLike[str],
+        chunk_size: int = DEFAULT_PARQUET_CHUNK_SIZE,
+        fs_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Save chain to a Lance v2 data file with SignalSchema metadata.
+
+        Parameters:
+            path: Path or storage URI to save the file. Supports local paths as
+                well as remote paths, such as s3:// or hf:// with fsspec.
+            chunk_size: The chunk size of results to read and convert to columnar
+                data, to avoid running out of memory.
+            fs_kwargs: Optional kwargs forwarded to the underlying fsspec filesystem
+                when writing (e.g., s3://, gs://, hf://).
+            kwargs: Additional keyword arguments forwarded to `LanceFileWriter`.
+        """
+        from datachain.lib.arrow import write_lance
+
+        target = File.at(path, session=self.session)
+        _, column_chunks = self.to_columnar_data_with_names(
+            chunk_size, include_sentinels=True
+        )
+        write_lance(
+            target,
+            self._effective_signals_schema,
+            column_chunks,
+            fs_kwargs=fs_kwargs,
+            **kwargs,
+        )
 
     def to_csv(
         self,

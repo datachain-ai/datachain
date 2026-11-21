@@ -52,9 +52,10 @@ labels = dc.read_csv("s3://bucket/csvs/", delimiter=";")
 meta = dc.read_json("gs://bucket/annotations.json", jmespath="images")
 captions = dc.read_json("gs://bucket/coco.json", jmespath="annotations")
 
-# Parquet -- supports glob patterns and Hive partitioning
+# Parquet and Lance -- supports glob patterns (Parquet also Hive partitioning)
 data = dc.read_parquet("s3://bucket/data/*.parquet")
 data = dc.read_parquet("s3://bucket/202{1..4}/{yellow,green}-{01..12}.parquet")
+data = dc.read_lance("s3://bucket/shards/*.lance")
 ```
 
 Timestamps are read as Python `datetime`, which holds microseconds. Digits beyond microseconds are dropped, for example in the nanosecond timestamps that pandas 2 writes to Parquet by default.
@@ -69,13 +70,13 @@ from datachain.lib.meta_formats import gen_datamodel_code
 code = gen_datamodel_code("s3://bucket/data.json", jmespath="images")
 ```
 
-### Selecting and naming CSV and Parquet columns
+### Selecting and naming CSV, Parquet, and Lance columns
 
-When `columns` and `output` are omitted, DataChain keeps only the columns your chain actually uses. When you narrow columns with `select()`, `group_by()`, `count()`, or `gen()`, Parquet reads only those columns from the file; CSV and JSON still parse the file and store only those columns. You can place `filter()`, `order_by()`, and `mutate()` before `select()` in any order — DataChain keeps only the columns needed by those steps. After `map()`, `select_except()`, or a join, every column is read.
+When `columns` and `output` are omitted, DataChain keeps only the columns your chain actually uses. When you narrow columns with `select()`, `group_by()`, `count()`, or `gen()`, Parquet and Lance read only those columns from the file (remote Lance files are cached locally first); CSV and JSON still parse the file and store only those columns. You can place `filter()`, `order_by()`, and `mutate()` before `select()` in any order — DataChain keeps only the columns needed by those steps. After `map()`, `select_except()`, or a join, every column is read.
 
-For Parquet, `filter()` conditions on basic columns (`==`, `!=`, `<`, `<=`, `>`, `>=`, `&`, `|`, `~`, `in_`, `not_in`, `between`, `is_`, `is_not`) are applied while reading the file so that only the matching rows and required columns are read. `filter()` does not have to come first: `filter()`, `select()`, and `order_by()` can be combined in any order and quantity before steps like `limit()`, `offset()`, `mutate()`, `distinct()`, `group_by()`, `gen()`, `map()`, or joins.
+For Parquet and Lance, `filter()` conditions on basic columns (`==`, `!=`, `<`, `<=`, `>`, `>=`, `&`, `|`, `~`, `in_`, `not_in`, `between`, `is_`, `is_not`) are applied while reading the file so that only the matching rows and required columns are read. `filter()` does not have to come first: `filter()`, `select()`, and `order_by()` can be combined in any order and quantity before steps like `limit()`, `offset()`, `mutate()`, `distinct()`, `group_by()`, `gen()`, `map()`, or joins.
 
-For `read_csv()`, `read_parquet()`, and `parse_tabular()`, use `columns=` to select input columns by name and set their order. Names may be written as in the file or as DataChain normalizes them: `"ZIP Code"` and `"zip_code"` refer to the same column. Unknown or repeated columns raise an error.
+For `read_csv()`, `read_parquet()`, `read_lance()`, and `parse_tabular()`, use `columns=` to select input columns by name and set their order. Names may be written as in the file or as DataChain normalizes them: `"ZIP Code"` and `"zip_code"` refer to the same column. Unknown or repeated columns raise an error.
 
 `output=` defines the result's names and Python types **by position**. A dictionary uses insertion order; CSV and `parse_tabular()` also accept a Pydantic model (field order) or a list of names (types inferred). Output names do not select or match input names. Supply exactly one output field for each column read: the selected columns if `columns` is provided, or all input columns if it is omitted. Omit `output` to infer names and types.
 
@@ -122,9 +123,9 @@ data = dc.read_csv(
 
 With `header=False` and no `columns`, `output` is required and supplies names for every input column.
 
-#### Parquet written by DataChain
+#### Parquet and Lance written by DataChain
 
-A Parquet file written by `to_parquet()` keeps its DataChain schema, so it reads back with the same signals and models. There, `columns=` picks signals as `select()` does:
+A Parquet or Lance file written by `to_parquet()` or `to_lance()` keeps its DataChain schema, so it reads back with the same signals and models. There, `columns=` picks signals as `select()` does:
 
 ```python
 class Point(dc.DataModel):
