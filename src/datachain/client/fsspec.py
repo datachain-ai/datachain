@@ -262,10 +262,13 @@ class Client(ABC):
         kwargs.update(self._version_kwargs(version_id))
         return self.fs.sign(self.get_uri(path), expiration=expires, **kwargs)
 
-    async def get_current_etag(self, file: "File") -> str:
+    async def _get_current_file(self, file: "File") -> "File":
         full_path = file.get_fs_path()
         info = await self.fs._info(full_path, **self._file_info_kwargs(file.version))
-        return self.info_to_file(info, file.path).etag
+        return self.info_to_file(info, file.path)
+
+    async def get_current_etag(self, file: "File") -> str:
+        return (await self._get_current_file(file)).etag
 
     def get_file_info(self, path: str, version_id: str | None = None) -> "File":
         self.validate_file_path(path)
@@ -649,6 +652,14 @@ class Client(ABC):
             size = int(info["size"]) if info is not None else await self.get_size(file)
             if size != file.size:
                 change = f"size was {file.size}, now {size}"
+        elif not pinned and file.md5:
+            md5 = (
+                self.info_to_file(info, file.path).md5
+                if info is not None
+                else (await self._get_current_file(file)).md5
+            )
+            if md5 != file.md5:
+                change = f"md5 was {file.md5}, now {md5}"
         elif not pinned and file.etag:
             etag = (
                 self.info_to_file(info, file.path).etag

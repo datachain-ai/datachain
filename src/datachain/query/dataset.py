@@ -59,6 +59,7 @@ from datachain.func import base
 from datachain.hash_utils import hash_column_elements
 from datachain.job import Job
 from datachain.lib.data_model import NULLABLE_SCALARS
+from datachain.lib.file import File
 from datachain.lib.listing import ensure_listing, is_listing_dataset
 from datachain.lib.signal_schema import (
     KeyPresence,
@@ -349,21 +350,57 @@ class QueryStep:
             self.dataset_version,
         )
 
-    def apply(self) -> "StepResult":
-        def q(*columns):
-            return sqlalchemy.select(*columns)
+    def _added_file_columns(self, table: "Table") -> list:
+        """Defaults of the ``File`` columns the stored table lacks, for the
+        signals of this version's schema: NULL under a NULL ``Optional[File]``."""
+        schema = self.dataset.get_version(self.dataset_version).feature_schema
+        cols = []
+        signals = SignalSchema.deserialize(schema).db_signals() if schema else []
+        for name in signals:
+            assert isinstance(name, str)
+            prefix, _, field = name.rpartition("__")
+            path = table.c.get(f"{prefix}__path")
+            if name in table.c or field not in File._ADDED_COLUMNS or path is None:
+                continue
+            sql_type = File._datachain_column_types[field]()
+            value: Any = sa.literal(File._ADDED_COLUMNS[field])
+            if getattr(path.type, "dc_nullable", False):
+                value = sa.case((path.is_(None), sa.null()), else_=value)
+                sql_type = SQLType.as_nullable(sql_type)
+            cols.append(sa.type_coerce(value, sql_type).label(name))
+        return cols
 
+    def _step_result(
+        self, table: "Table", alias_name: str | None = None
+    ) -> "StepResult":
+        if not (added := self._added_file_columns(table)):
+            source: sa.FromClause = table.alias(alias_name) if alias_name else table
+
+            def q(*columns):
+                return sqlalchemy.select(*columns)
+        else:
+            source = (
+                sa.select(*table.c, *added)
+                .select_from(table)
+                .subquery(alias_name or table.name)
+            )
+            base_query = sqlalchemy.select(*source.c).select_from(source)
+
+            def q(*columns):
+                return base_query.with_only_columns(*columns)
+
+        return step_result(
+            q,
+            source.columns,
+            dependencies=[(self.dataset, self.dataset_version)],
+        )
+
+    def apply(self) -> "StepResult":
         self._record_access()
         dr = self.catalog.warehouse.dataset_rows(self.dataset, self.dataset_version)
         # Use a short alias with dataset ID suffix for uniqueness and SQL brevity
         ds_id = dr.table.name.rsplit("_", 1)[-1]
-        aliased_table = dr.table.alias(f"__ds_t_{ds_id}")
-
-        return step_result(
-            q,
-            aliased_table.columns,
-            dependencies=[(self.dataset, self.dataset_version)],
-        )
+        return self._step_result(dr.table, f"__ds_t_{ds_id}")
 
     def hash(self) -> str:
         version = self.dataset.get_version(self.dataset_version)

@@ -1710,6 +1710,7 @@ def test_signal_resolving_type_error_with_unpicklable_field():
                 "file__is_latest",
                 "file__last_modified",
                 "file__location",
+                "file__md5",
             ],
         ),
     ],
@@ -1878,7 +1879,7 @@ def test_column_types(column_type, signal_type):
         ),
         (
             {"file": File},
-            "26a08b3793e738814f199c89c4582f9bde052ff3dcba84c2020535063df4c36c",
+            "5a71b72d9d0fdae9d1bceceb8e24f2bb75f853a7002634063928ceff2ed4f7a1",
         ),
         (
             {},

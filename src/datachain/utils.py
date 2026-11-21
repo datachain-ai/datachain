@@ -508,6 +508,7 @@ def show_df(
                 "etag",
                 "is_latest",
                 "last_modified",
+                "md5",
                 "size",
                 "version",
             ],
