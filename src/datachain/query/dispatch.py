@@ -235,10 +235,11 @@ class UDFDispatcher:
 
         prefetch = udf.prefetch
         with _get_cache(self.catalog.cache, prefetch, use_cache=self.cache) as _cache:
+            catalog = clone_catalog_with_cache(self.catalog, _cache)
             udf_results = udf.run(
                 self.udf_fields,
                 get_inputs(),
-                self.catalog,
+                catalog,
                 self.cache,
                 download_cb=download_cb,
                 processed_cb=processed_cb,

@@ -19,6 +19,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
+from weakref import WeakValueDictionary
 
 from dvc_objects.fs.system import reflink
 from fsspec import Callback
@@ -611,14 +612,23 @@ class Client(ABC):
         cfg.reject_write_options()
         return {}
 
+    _download_locks: ClassVar[WeakValueDictionary[tuple[int, str], asyncio.Lock]] = (
+        WeakValueDictionary()
+    )
+
     def download(self, file: "File", *, callback: Callback = DEFAULT_CALLBACK) -> None:
         sync(get_loop(), functools.partial(self._download, file, callback=callback))
 
     async def _download(self, file: "File", *, callback: "Callback" = None) -> None:
-        if self.cache.contains(file):
-            # Already in cache, so there's nothing to do.
-            return
-        await self._put_in_cache(file, callback=callback)
+        key = (id(self.cache), file.get_hash())
+        lock = self._download_locks.get(key)
+        if lock is None:
+            self._download_locks[key] = lock = asyncio.Lock()
+        async with lock:
+            if self.cache.contains(file):
+                # Already in cache, so there's nothing to do.
+                return
+            await self._put_in_cache(file, callback=callback)
 
     def put_in_cache(self, file: "File", *, callback: "Callback" = None) -> None:
         sync(get_loop(), functools.partial(self._put_in_cache, file, callback=callback))
