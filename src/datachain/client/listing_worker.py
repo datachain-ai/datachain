@@ -148,11 +148,14 @@ class Pool:
     """Child processes fetching pages for one ``RangeListing``. The parent fetches
     any page a child fails or loses, so errors reach the user as raised."""
 
-    def __init__(self, client: "RangeListedClient", prefix: str, size: int) -> None:
+    def __init__(
+        self, client: "RangeListedClient", prefix: str, size: int, *, raw: bool = False
+    ) -> None:
         # the page size travels so that tests can shrink it in children too
         spec = (type(client), client.name, client.fs_kwargs, client.cache)
         try:
-            self.spec = dump((*spec, client.LIST_PAGE_SIZE, prefix, client.encode_page))
+            encode = None if raw else client.encode_page
+            self.spec = dump((*spec, client.LIST_PAGE_SIZE, prefix, encode))
         except Exception:
             logger.debug(
                 "Listing in one process: client config does not pickle", exc_info=True

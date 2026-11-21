@@ -156,6 +156,9 @@ class KeysClient(RangeListedClient):
     def info_to_file(self, v, path):
         raise NotImplementedError
 
+    def _is_version_aware(self):
+        return False
+
     async def _list_page(
         self, prefix, start_after, token, hi=None, page_size=None, delimiter=""
     ) -> Page:
@@ -428,7 +431,8 @@ def test_a_paused_parent_reads_a_reply_that_came_meanwhile(mocker):
 
 
 @pytest.mark.parametrize("encoded", [False, True], ids=["rows", "stored-page"])
-def test_child_pages_decode_lazily_in_the_consumer(test_session, mocker, encoded):
+@pytest.mark.parametrize("raw", [False, True])
+def test_child_pages_decode_lazily_in_the_consumer(test_session, mocker, encoded, raw):
     warehouse = test_session.catalog.warehouse
     columns = warehouse.dataset_row_cls.listing_columns()
     encode = PageEncoder(warehouse.row_codec(columns), True)
@@ -439,14 +443,16 @@ def test_child_pages_decode_lazily_in_the_consumer(test_session, mocker, encoded
     ]
     client = KeysClient([(r.path, r.version) for r in rows])
     client.encode_page = encode_page
-    frame = dump((0, ((encode_page or Rows)(rows), "a", "b", None)))
+    child_encode = None if raw else encode_page
+    frame = dump((0, ((child_encode or Rows)(rows), "a", "b", None)))
     loads = mocker.spy(pickle, "loads")
 
     async def receive_page():
         proc = Proc()
         proc.stdout.feed_data(dump(None))
         mocker.patch.object(listing_worker, "_spawn", mock.AsyncMock(return_value=proc))
-        pool = Pool(client, "", 1)
+        pool = Pool(client, "", 1, raw=raw)
+        assert (load(io.BytesIO(pool.spec))[-1] is None) == (child_encode is None)
         proc.stdin.write = lambda _: pool.children and proc.stdout.feed_data(frame)
         pool.start()
         while not pool.children:  # noqa: ASYNC110
@@ -458,22 +464,22 @@ def test_child_pages_decode_lazily_in_the_consumer(test_session, mocker, encoded
 
     page = asyncio.run(receive_page())
     assert len(page.rows) == 2
-    assert loads.call_count == 2  # the ready frame and the page frame, not the rows
+    assert loads.call_count == 3  # the spec, ready frame and page frame, not the rows
 
-    if not encoded:
+    if not encoded or raw:
         assert (page.rows[0], list(page.rows)) == (rows[0], rows)
-        assert loads.call_count == 3
+        assert loads.call_count == 4
         assert list(page.rows) == rows
-        assert loads.call_count == 3
+        assert loads.call_count == 4
     else:
         expected = [encode.codec.encode(r) for r in rows]
         assert (page.rows.rows, page.rows.digest) == (
             expected,
             rows_digest(rows, True),
         )
-        assert loads.call_count == 3
+        assert loads.call_count == 4
         assert page.rows.rows == expected
-        assert loads.call_count == 3
+        assert loads.call_count == 4
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
@@ -952,3 +958,153 @@ def test_children_die_when_the_parent_exits_with_the_listing_open(clients):
 
     assert len(pids) == 2
     assert not _alive_after(pids, 20)
+
+
+class ChangingPagesClient(KeysClient):
+    def __init__(self, pages, *, versioned=True, ordered=True):
+        super().__init__([])
+        self.pages = pages
+        self.versioned, self.ordered = versioned, ordered
+
+    def _is_version_aware(self):
+        return self.versioned
+
+    def _lists_in_key_order(self):
+        return self.ordered
+
+    async def _list_page(self, prefix, start_after, token, hi=None, **kwargs):
+        index = token or 0
+        self.requests += 1
+        rows = self.pages[index]
+        keep = Keep(self, start_after, hi)
+        return Page(
+            [r for r in rows if keep(r.path)],
+            rows[0].path if rows else None,
+            rows[-1].path if rows else None,
+            index + 1 if index + 1 < len(self.pages) else None,
+            keep.past_lo,
+            keep.past_hi,
+            keep.in_order,
+        )
+
+
+def version_row(key, version, latest=True):
+    return FileRow("fake://bucket", key, 1, version, is_latest=latest)
+
+
+@pytest.mark.parametrize(
+    "pages,expected",
+    [
+        (
+            [
+                [("a", "1", True), ("k", "2", True)],
+                [("k", "1", True), ("z", "1", True)],
+            ],
+            [("a", "1", True), ("k", "2", False), ("k", "1", True), ("z", "1", True)],
+        ),
+        (
+            [[("k", "1", True)], [("k", "2", True)]],
+            [("k", "1", False), ("k", "2", True)],
+        ),
+        (
+            [[("k", "1", True)], [], [("k", "2", True)], [], []],
+            [("k", "1", False), ("k", "2", True)],
+        ),
+        (
+            [
+                [("k", "3", True)],
+                [("k", "2", False)],
+                [("k", "1", False)],
+                [("z", "1", True)],
+            ],
+            [("k", "3", True), ("k", "2", False), ("k", "1", False), ("z", "1", True)],
+        ),
+        (
+            [[("k", "2", False)], [("k", "1", False)]],
+            [("k", "2", False), ("k", "1", False)],
+        ),
+        (
+            [[("k", "1", True)], []],
+            [("k", "1", True)],
+        ),
+        (
+            [[("a", "1", True)], [("b", "1", True)]],
+            [("a", "1", True), ("b", "1", True)],
+        ),
+        (
+            [[("k", "1", True)], [("k", "2", True)], [("k", "3", True)]],
+            [("k", "1", False), ("k", "2", False), ("k", "3", True)],
+        ),
+    ],
+    ids=[
+        "s3-rollback",
+        "gcs-overwrite",
+        "empty-pages",
+        "history-pages",
+        "history-only",
+        "empty-final-page",
+        "different-keys",
+        "repeated-writes",
+    ],
+)
+def test_later_page_supersedes_latest_version(pages, expected, monkeypatch):
+    monkeypatch.setenv("DATACHAIN_RANGE_LISTING", "0")
+    client = ChangingPagesClient([[version_row(*r) for r in page] for page in pages])
+
+    rows = [r for page in _listed(client, processes=False) for r in page]
+
+    assert sorted((r.path, r.version, r.is_latest) for r in rows) == sorted(expected)
+    assert client.requests == len(pages)
+
+
+@pytest.mark.parametrize("versioned,ordered", [(False, True), (True, False)])
+def test_unversioned_or_unordered_pages_keep_their_rows(
+    versioned, ordered, monkeypatch
+):
+    monkeypatch.setenv("DATACHAIN_RANGE_LISTING", "0")
+    pages = [[version_row("k", "1")], [version_row("k", "2")]]
+    client = ChangingPagesClient(pages, versioned=versioned, ordered=ordered)
+
+    assert _listed(client, processes=False) == pages
+
+
+def test_latest_version_buffer_does_not_accumulate_history(monkeypatch):
+    monkeypatch.setenv("DATACHAIN_RANGE_LISTING", "0")
+    pages = (
+        [[version_row("k", "0")]]
+        + [[version_row("k", str(i), False)] for i in range(1, 100)]
+        + [[version_row("k", "100")]]
+    )
+    client = ChangingPagesClient(pages)
+
+    output = _listed(client, processes=False)
+
+    assert max(map(len, output)) <= 2
+    assert sum(map(len, output[:-1])) >= 99
+    rows = [r for page in output for r in page]
+    assert len(rows) == 101
+    assert [r.version for r in rows if r.is_latest] == ["100"]
+
+
+def test_unexpected_key_order_flushes_pending_latest(monkeypatch):
+    monkeypatch.setenv("DATACHAIN_RANGE_LISTING", "0")
+    pages = [[version_row("z", "1")], [version_row("a", "1")], [version_row("b", "1")]]
+    client = ChangingPagesClient(pages)
+
+    rows = [r for page in _listed(client, processes=False) for r in page]
+
+    assert sorted(rows) == sorted(r for page in pages for r in page)
+
+
+def test_versioned_pool_does_not_encode_latest_flags_before_reconciliation(
+    test_session,
+):
+    warehouse = test_session.catalog.warehouse
+    columns = warehouse.dataset_row_cls.listing_columns()
+    client = ChangingPagesClient([[version_row("k", "1")]])
+    client.encode_page = PageEncoder(warehouse.row_codec(columns), True)
+
+    pool = Pool(client, "", 1, raw=True)
+    spec = load(io.BytesIO(pool.spec))
+
+    assert spec[-1] is None
