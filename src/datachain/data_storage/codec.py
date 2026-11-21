@@ -10,15 +10,15 @@ from copy import deepcopy
 from datetime import datetime
 from functools import partial
 from itertools import islice
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import Any, NamedTuple
 
+import pyarrow as pa
+import pyarrow.compute as pc
 from pydantic import BaseModel, RootModel
 
 from datachain import json
+from datachain.error import RowEncodeError
 from datachain.lib.model_store import ModelStore
-
-if TYPE_CHECKING:
-    import pyarrow as pa
 
 DECODE_BATCH_SIZE = 16
 _IMMUTABLE_DEFAULT_TYPES = frozenset(
@@ -35,19 +35,7 @@ class TypeCodec(NamedTuple):
     encode: Callable[[Any], Any]
     default: Any = None
     decode: Callable[[Any], Any] | None = None
-    encode_column: "Callable[[pa.Array], list[Any] | None] | None" = None
-
-
-class RowEncodeError(ValueError):
-    """A value its column cannot take; `column` is the column's index."""
-
-    def __init__(self, column: int, value: Any) -> None:
-        self.column = column
-        self.value = value
-        super().__init__(f"invalid value {value!r} for column {column}")
-
-    def __reduce__(self):
-        return RowEncodeError, (self.column, self.value)
+    encode_column: "Callable[[pa.Array], pa.Array | None] | None" = None
 
 
 def _identity(value: Any) -> Any:
@@ -119,28 +107,37 @@ class RowCodec:
             return tuple(values)
         return row if type(row) is tuple else tuple(row)
 
-    def encode_arrow(self, batch: "pa.RecordBatch") -> list[tuple]:
-        """An Arrow batch of leaf columns as stored tuples; missing trailing
-        columns are None."""
+    def encode_arrow(self, batch: "pa.RecordBatch") -> "pa.RecordBatch | list[tuple]":
+        """Stored columns if every codec supports Arrow, otherwise stored tuples.
+        Missing trailing columns are None."""
         n, columns = batch.num_rows, []
         if not self.codecs:
             return [()] * n
         for i, codec in enumerate(self.codecs):
             if i >= batch.num_columns:
-                columns.append([codec.default] * n)
-                continue
-            column = batch.column(i)
-            if hasattr(column, "dictionary_decode"):
-                column = column.dictionary_decode()
-            if codec.encode_column and (values := codec.encode_column(column)):
-                if codec.default is not None:  # stored already, but for None
-                    values = [codec.default if v is None else v for v in values]
+                column = pa.nulls(n)
+            else:
+                column = batch.column(i)
+                if hasattr(column, "dictionary_decode"):
+                    column = column.dictionary_decode()
+            values = codec.encode_column(column) if codec.encode_column else None
+            if values is not None:
+                if values.null_count and codec.default is not None:
+                    default = self._encode_one(i, codec, codec.default)
+                    values = pc.fill_null(values, pa.scalar(default).cast(values.type))
+            elif i >= batch.num_columns:
+                values = [codec.default] * n
             else:
                 values = column.to_pylist()
                 kept = self._kept[i]
                 if kept is not None and not set(map(type, values)) <= kept:
                     values = [self._encode_one(i, codec, v) for v in values]
             columns.append(values)
+        if all(isinstance(c, pa.Array) for c in columns):
+            return pa.RecordBatch.from_arrays(
+                columns, names=[str(i) for i in range(len(columns))]
+            )
+        columns = [c.to_pylist() if isinstance(c, pa.Array) else c for c in columns]
         return list(zip(*columns, strict=True))
 
     def decode_columns(self, columns: list[Sequence[Any]]) -> list[Sequence[Any]]:
@@ -192,6 +189,30 @@ def check_scalar(python_type: type, type_name: str, value: Any) -> Any:
         f"Value {value!r} with type {type(value)} incompatible for "
         f"column type {type_name}"
     )
+
+
+def cast_arrow_column(python_type: type, target: Any, column: Any) -> Any:
+    """`column` as `target` when its Arrow type holds values that a codec of
+    `python_type` keeps. None when it doesn't, or when a value doesn't fit."""
+    t = pa.types
+    accepts: dict[type, tuple[Callable[[Any], bool], ...]] = {
+        str: (t.is_string, t.is_large_string),
+        bytes: (t.is_binary,),
+        bool: (t.is_boolean,),
+        int: (t.is_integer, t.is_boolean),
+        float: (t.is_integer, t.is_boolean, t.is_floating),
+        datetime: (t.is_timestamp,),
+    }
+    checks = (t.is_null, *accepts.get(python_type, ()))
+    if not any(check(column.type) for check in checks):
+        return None
+    try:
+        if python_type is str:
+            column.validate(full=True)
+        return column.cast(target)
+    except pa.ArrowException:
+        # Invalid UTF-8 or out-of-range integer keeps the tuple path's error.
+        return None
 
 
 def check_list(
