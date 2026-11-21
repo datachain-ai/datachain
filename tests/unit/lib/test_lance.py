@@ -403,15 +403,15 @@ def test_to_lance_roundtrip(tmp_dir, test_session):
     }
     assert null_back.order_by("id").to_values("w") == [10, None, None]
 
-    # Left-joined DataModel signal with all-null rows is promoted to Optional.
+    # Left-joined DataModel signal is widened to Optional by merge() and round-trips.
     left_chain = dc.read_values(id=[1, 2], session=test_session)
     right_chain = dc.read_values(rid=[1], m=[Item(a=7, b="ok")], session=test_session)
     right_path = tmp_dir / "a_right.lance"
     join_path = tmp_dir / "b_joined.lance"
     right_chain.to_lance(right_path)
-    left_chain.merge(right_chain, on="id", right_on="rid", inner=False).to_lance(
-        join_path
-    )
+    joined = left_chain.merge(right_chain, on="id", right_on="rid", inner=False)
+    assert joined.signals_schema.values["m"] == Item | None
+    joined.to_lance(join_path)
     join_back = dc.read_lance(join_path.as_uri(), session=test_session)
     assert join_back.signals_schema.values["m"] == Item | None
     assert join_back.order_by("id").to_list("id", "m") == [

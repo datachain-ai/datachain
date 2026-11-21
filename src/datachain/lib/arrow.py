@@ -293,13 +293,10 @@ def write_lance(
         os.makedirs(staging, exist_ok=True)
     else:
         staging = catalog.cache.tmp_dir
-    model_cols = {
-        name: [i for i, f in enumerate(schema) if f.name.startswith(f"{name}.")]
-        for name, anno in signal_schema.values.items()
-        if ModelStore.is_pydantic(anno)
+    null_free = {
+        *schema.names,
+        *(k for k, v in signal_schema.values.items() if ModelStore.is_pydantic(v)),
     }
-    model_tags: dict[str, list[str | None]] = {name: [] for name in model_cols}
-    null_free = {*schema.names, *model_cols}
     with tempfile.TemporaryDirectory(dir=staging) as tmp_dir:
         staged = os.path.join(tmp_dir, "data.lance")
         with LanceFileWriter(staged, lance_schema, **kwargs) as writer:
@@ -313,20 +310,6 @@ def write_lance(
                     for f, arr in zip(schema, arrays, strict=True)
                     if arr.null_count
                 }
-                for name, idxs in model_cols.items():
-                    if not idxs:
-                        continue
-                    tag = arm_selector(signal_schema.values[name])
-                    if all(arrays[i].null_count for i in idxs):
-                        tags = [
-                            None if all(v is None for v in row) else tag
-                            for row in zip(*(chunk[i] for i in idxs), strict=True)
-                        ]
-                        if None in tags:
-                            null_free.discard(name)
-                        model_tags[name].extend(tags)
-                    else:
-                        model_tags[name].extend([tag] * len(arrays[0]))
                 writer.write_batch(
                     pa.Table.from_arrays(
                         [getattr(a, "storage", a) for a in arrays], schema=lance_schema
@@ -335,19 +318,10 @@ def write_lance(
             values = _optional_unless_null_free(signal_schema.values, null_free)
             if values != signal_schema.values:
                 signal_schema = SignalSchema(values)
-            meta_key = DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY.decode("utf-8")
-            meta_val = json.dumps(signal_schema.serialize(), ensure_ascii=False)
-            writer.add_schema_metadata(meta_key, meta_val)
-        if promoted := [n for n in model_cols if n not in null_free]:
-            table = _lance_file_reader()(staged).read_all().to_table()
-            for name in promoted:
-                col = _encode_lance_col(f"{name}.{TYPE_TAG_FIELD}")
-                table = table.append_column(
-                    col, pa.array(model_tags[name], pa.string())
-                )
-            with LanceFileWriter(staged, table.schema, **kwargs) as writer:
-                writer.write_batch(table)
-                writer.add_schema_metadata(meta_key, meta_val)
+            writer.add_schema_metadata(
+                DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY.decode("utf-8"),
+                json.dumps(signal_schema.serialize(), ensure_ascii=False),
+            )
         if local:
             os.replace(staged, dst_path)
         else:
