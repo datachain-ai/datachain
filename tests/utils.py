@@ -382,6 +382,12 @@ def reset_session_job_state():
     os.environ.pop("DATACHAIN_JOB_ID", None)
 
 
+def set_studio(level: ConfigLevel, **values: str) -> None:
+    """Replace the `[studio]` section of the config at this level."""
+    with Config(level).edit() as conf:
+        conf["studio"] = values
+
+
 def saved_tokens() -> list[str]:
     return [login.token for login in load_logins()]
 

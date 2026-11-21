@@ -32,6 +32,7 @@ from datachain.remote.credentials import (
 )
 from datachain.remote.studio import (
     StudioClient,
+    get_studio_env_variable,
     get_studio_team,
     get_studio_url,
     self_hosted,
@@ -224,11 +225,16 @@ def login(args: "Namespace"):
     scopes = args.scopes
     # `--team a --team a` is one team.
     team_names = list(dict.fromkeys(args.team)) if args.team else None
+    if team_names and not all(team_names):
+        raise DataChainError("--team can't be empty.")
     expires_in_days = args.expires_in
     if expires_in_days < 1:
         # Studio issues its default lifetime for 0, not the one saved here.
         raise DataChainError("--expires-in must be at least 1 day.")
 
+    # Before the check below, so a login here also cleans up a project's old token
+    # when you already have a token.
+    _remove_old_tokens()
     if existing := conflicting_login(hostname, team_names):
         raise _login_exists_error(existing, team_names, current_url)
 
@@ -273,28 +279,35 @@ def login(args: "Namespace"):
     if team_names:
         print(f"Token is for teams: {', '.join(team_names)}")
     print(f"Token will expire in {expires_in_days} days.")
-    _remove_old_tokens()
 
-    # The default team in your config is for the Studio saved there.
+    # The default team in your config, over the system config's, is for the Studio
+    # saved there. An empty team is the default turned off.
     user = ConfigLevel.GLOBAL
     studio = _level_studio_config(user)
-    # An empty team keeps the default off.
-    own_team = Config(user).read().get("studio", {}).get("team")
     if args.hostname and hostname != _studio_url(studio):
         # A team picked for another Studio means nothing on this one; a default
         # turned off stays off.
-        if own_team:
-            own_team = None
-        path = _update_studio_config(user, url=hostname, team=own_team)
+        own_team = Config(user).read().get("studio", {}).get("team")
+        path = _update_studio_config(
+            user, url=hostname, team="" if own_team == "" else None
+        )
         print(f"Set Studio URL to {hostname} in {path}")
-        studio = {"url": hostname, "team": own_team}
+        studio = {"url": hostname, "team": "" if studio.get("team") == "" else None}
 
-    # A Studio set only by the environment or a project gets no default team here.
-    for_user = hostname == _studio_url(studio)
-    if for_user and own_team is None and team_names and len(team_names) == 1:
+    # A Studio set only by the environment or a project gets no default team here,
+    # and a default team set or turned off stays.
+    if (
+        hostname == _studio_url(studio)
+        and studio.get("team") is None
+        and team_names
+        and len(team_names) == 1
+    ):
         file_path = _update_studio_config(user, team=team_names[0])
         print(f"Set default team to '{team_names[0]}' in {file_path}")
-    elif (studio.get("team") if for_user else None) is None:
+    elif not get_studio_env_variable("TEAM") and "team" not in Config().read().get(
+        "studio", {}
+    ):
+        # Nothing picks a team for commands: not the env, a config, or a project.
         print("You can now use 'datachain auth team' to set the default team.")
     return 0
 
@@ -312,11 +325,19 @@ def _remove_old_tokens() -> None:
         url = _studio_url(_level_studio_config(level))
         path = _update_studio_config(level, token=None)
         print(f"Removed the token an older version saved in {path}.")
-        with contextlib.suppress(DataChainError):
+        try:
             _revoke(Login(url=url, token=old_token))
+        except DataChainError:
+            print(
+                "Warning: could not revoke the old token on Studio"
+                f"{self_hosted(url)}, so it still works there. Revoke it in your "
+                "Studio profile.",
+                file=sys.stderr,
+            )
 
 
-def _revoke(login: Login) -> None:
+def _revoke(login: Login) -> bool:
+    """Revoke the token on Studio. False if Studio no longer accepts it."""
     try:
         response = requests.post(
             f"{login.url}/api/device-logout",
@@ -329,15 +350,13 @@ def _revoke(login: Login) -> None:
         ) from exc
 
     if response.status_code == 401:
-        print(
-            "Token was already revoked or is invalid on Studio.",
-            file=sys.stderr,
-        )
-    elif not response.ok:
+        return False
+    if not response.ok:
         raise DataChainError(
             f"Studio returned HTTP {response.status_code} while revoking "
             f"the token. Please try again later."
         )
+    return True
 
 
 def _level_studio_config(level: ConfigLevel) -> dict:
@@ -363,7 +382,7 @@ def logout(
     saved = [lg for lg in load_logins(for_update=True) if lg.url == url]
     if all_teams:
         logins, what = saved, "No token"
-    elif team:
+    elif team is not None:
         logins = [login for login in saved if team in (login.teams or ())]
         what = f"No token for team '{team}'"
     else:
@@ -387,7 +406,8 @@ def logout(
 
     for login in logins:
         # Removed one at a time, so a failed revoke keeps the tokens not yet revoked.
-        _revoke(login)
+        if not _revoke(login):
+            print("Token was already revoked or is invalid on Studio.", file=sys.stderr)
         remove_login(login)
         print(f"Logged out from Studio{self_hosted(url)}{login.for_teams()}.")
 
@@ -427,11 +447,12 @@ def list_logins():
         return 0
 
     headers = ["Studio", "Teams", "Name", "Expires"]
-    if not any(self_hosted(row[0]) for row in rows):
-        # All for the default Studio, so the column says nothing.
+    if not self_hosted(url) and not any(self_hosted(row[0]) for row in rows):
+        # All for the default Studio, which is in use, so the column says nothing.
         headers, rows = headers[1:], [row[1:] for row in rows]
     print()
-    print(tabulate.tabulate(rows, headers=headers))
+    # Team and token names stay as written, even when they look like numbers.
+    print(tabulate.tabulate(rows, headers=headers, disable_numparse=True))
     return 0
 
 

@@ -30,7 +30,7 @@ To work with a team in one project, make it the project's default team with `dat
 
 Run [`datachain auth list`](list.md) to see the saved tokens. If the token picked has expired, the command fails and names the token to replace; DataChain does not switch to another token, which could belong to another account.
 
-If you log in with exactly one `--team` and no default team is set, that team becomes your default team. To keep the default team off, run [`datachain auth team ""`](team.md).
+If you log in with exactly one `--team` and no default team is set, that team becomes your default team. A project's team doesn't count, and a login to a Studio set only by a project's config or by `DATACHAIN_STUDIO_URL` doesn't set one. To keep the default team off, run [`datachain auth team ""`](team.md).
 
 ### Self-hosted Studio
 

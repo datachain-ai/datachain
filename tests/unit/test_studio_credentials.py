@@ -5,28 +5,16 @@ from pathlib import Path
 
 import pytest
 
-from datachain.config import Config, ConfigLevel
+from datachain.config import ConfigLevel
 from datachain.error import DataChainError
-from datachain.remote.credentials import (
-    Login,
-    credentials_path,
-    load_logins,
-    resolve_token,
-)
+from datachain.remote.credentials import Login, load_logins, resolve_token
 from datachain.remote.studio import StudioClient, is_token_set
 from datachain.utils import STUDIO_URL
-from tests.utils import posix_only, studio_login
+from tests.utils import posix_only, set_studio, studio_login
 
 OTHER_URL = "https://studio.example.com"
-LOCAL = ConfigLevel.LOCAL
-GLOBAL = ConfigLevel.GLOBAL
 
 pytestmark = pytest.mark.usefixtures("tmp_dir")
-
-
-def set_studio(level, **values):
-    with Config(level).edit() as conf:
-        conf["studio"] = values
 
 
 @pytest.mark.parametrize(
@@ -60,7 +48,7 @@ def test_token_is_picked_by_url():
 def test_project_team_picks_the_user_token():
     studio_login("x-token", teams=["x"])
     studio_login("y-token", teams=["y"], default_team="y")
-    set_studio(LOCAL, team="x")
+    set_studio(ConfigLevel.LOCAL, team="x")
 
     assert StudioClient().token == "x-token"  # noqa: S105
 
@@ -91,13 +79,13 @@ def test_is_token_set_checks_the_team():
     assert not is_token_set("acme")
     assert not is_token_set()
 
-    set_studio(GLOBAL, team="customer-x")
+    set_studio(ConfigLevel.GLOBAL, team="customer-x")
     assert is_token_set()
 
 
 def test_client_has_no_token_for_a_url_set_by_the_project():
     studio_login("user-token")
-    set_studio(LOCAL, url=OTHER_URL, team="acme")
+    set_studio(ConfigLevel.LOCAL, url=OTHER_URL, team="acme")
 
     with pytest.raises(DataChainError, match=f"Not logged in to Studio at {OTHER_URL}"):
         StudioClient().token  # noqa: B018
@@ -129,11 +117,11 @@ def test_login_normalizes_url_and_teams():
     assert (login.url, login.teams) == (STUDIO_URL, ["a", "b"])
 
 
-def test_url_is_saved_only_for_a_self_hosted_studio():
+def test_url_is_saved_only_for_a_self_hosted_studio(global_config_dir):
     studio_login("default")
     studio_login("other", url=OTHER_URL)
 
-    text = Path(credentials_path()).read_text()
+    text = (Path(global_config_dir) / "credentials").read_text()
     assert text.startswith('[[token]]\ntoken = "default"')
     assert STUDIO_URL not in text
     assert f'url = "{OTHER_URL}"' in text
@@ -147,6 +135,12 @@ def test_url_is_saved_only_for_a_self_hosted_studio():
         ('token = "isat_abc"\n', "each token must be a [[token]] entry"),
         ('token = ["isat_abc"]\n', "each token must be a [[token]] entry"),
         ("[[token]\n", "Unexpected character"),
+        ('[[token]]\nname = "x"\n', "`token` must be a non-empty string"),
+        ('[[token]]\ntoken = "t"\nurl = 123\n', "`url` must be a string"),
+        ('[[token]]\ntoken = "t"\nteams = "acme"\n', "`teams` must be a non-empty"),
+        ('[[token]]\ntoken = "t"\nteams = []\n', "`teams` must be a non-empty"),
+        ('[[token]]\ntoken = "t"\nexpires = "2020-01-01"\n', "`expires` must be"),
+        ('[[token]]\ntoken = "t"\nexpires = 2020-01-01T00:00:00\n', "`expires`"),
     ],
 )
 def test_invalid_file_is_named(global_config_dir, content, error):

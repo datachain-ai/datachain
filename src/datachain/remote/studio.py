@@ -71,9 +71,9 @@ def get_studio_url(config: dict | None = None) -> str:
     )
 
 
-def self_hosted(url: str, prefix: str = " at ") -> str:
+def self_hosted(url: str) -> str:
     """Names a self-hosted Studio in a message; the default Studio goes unnamed."""
-    return "" if url.rstrip("/") == STUDIO_URL else f"{prefix}{url}"
+    return "" if url.rstrip("/") == STUDIO_URL else f" at {url}"
 
 
 def get_studio_team(config: dict | None = None) -> str | None:

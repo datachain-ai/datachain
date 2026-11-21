@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from datachain.cli.utils import determine_flavors
 from datachain.query.session import Session
-from datachain.remote.studio import is_token_set
+from datachain.remote.studio import StudioClient, is_token_set
 
 if TYPE_CHECKING:
     from datachain.catalog import Catalog
@@ -95,7 +95,6 @@ def ls_remote(
     team: str | None = None,
 ):
     from datachain.node import long_line_str
-    from datachain.remote.studio import StudioClient
 
     client = StudioClient(team=team)
     # Fails here without a login, also when there is no path to request.

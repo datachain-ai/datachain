@@ -85,6 +85,30 @@ def _open_to_others(path: str) -> bool:
     return bool(os.stat(path).st_mode & (stat.S_IRWXG | stat.S_IRWXO))
 
 
+def _entry_error(item: dict) -> str | None:
+    """What is wrong with a `[[token]]` entry, or None."""
+    token = item.get("token")
+    if not isinstance(token, str) or not token:
+        return "`token` must be a non-empty string"
+    for key in ("url", "name"):
+        if not isinstance(item.get(key, ""), str):
+            return f"`{key}` must be a string"
+    teams = item.get("teams")
+    if teams is not None and not (
+        isinstance(teams, list)
+        and teams
+        and all(isinstance(t, str) and t for t in teams)
+    ):
+        return "`teams` must be a non-empty list of team names"
+    expires = item.get("expires")
+    # A TOML datetime is a datetime, which is also a date.
+    if expires is not None and (
+        not isinstance(expires, date) or isinstance(expires, datetime)
+    ):
+        return "`expires` must be a date, like 2027-01-31"
+    return None
+
+
 def load_logins(*, for_update: bool = False) -> list[Login]:
     """The saved logins.
 
@@ -121,6 +145,9 @@ def load_logins(*, for_update: bool = False) -> list[Login]:
             f"Invalid Studio credentials file {path}: each token must be a "
             "[[token]] entry."
         )
+    for item in entries:
+        if error := _entry_error(item):
+            raise DataChainError(f"Invalid Studio credentials file {path}: {error}.")
     return [
         Login(
             url=item.get("url") or STUDIO_URL,
@@ -130,7 +157,6 @@ def load_logins(*, for_update: bool = False) -> list[Login]:
             expires=item.get("expires"),
         )
         for item in entries
-        if item.get("token")
     ]
 
 
@@ -170,7 +196,7 @@ def _save_logins(logins: list[Login]) -> str:
     return path
 
 
-def select_login(logins: list[Login], url: str, team: str | None) -> Login | None:
+def _select_login(logins: list[Login], url: str, team: str | None) -> Login | None:
     """The login to use for this Studio URL and team, from the given ones."""
     matching = [lg for lg in logins if lg.url == url and lg.covers(team)]
     # A login for the team wins over one without teams.
@@ -180,7 +206,7 @@ def select_login(logins: list[Login], url: str, team: str | None) -> Login | Non
 def resolve_token(url: str, team: str | None) -> str | None:
     if token := os.environ.get(TOKEN_ENV):
         return token
-    if not (login := select_login(load_logins(), url, team)):
+    if not (login := _select_login(load_logins(), url, team)):
         return None
     if login.expired():
         # Falling back to another token could switch to another account.
