@@ -251,6 +251,9 @@ class Client(ABC):
             self._fs = self.create_fs(**self.fs_kwargs)
         return self._fs
 
+    async def _get_fs(self) -> "AbstractFileSystem":
+        return self.fs
+
     def url(
         self,
         path: str,
@@ -264,7 +267,8 @@ class Client(ABC):
 
     async def get_current_etag(self, file: "File") -> str:
         full_path = file.get_fs_path()
-        info = await self.fs._info(full_path, **self._file_info_kwargs(file.version))
+        fs = await self._get_fs()
+        info = await fs._info(full_path, **self._file_info_kwargs(file.version))
         return self.info_to_file(info, file.path).etag
 
     def get_file_info(self, path: str, version_id: str | None = None) -> "File":
@@ -280,14 +284,16 @@ class Client(ABC):
 
     async def get_size(self, file: "File") -> int:
         full_path = file.get_fs_path()
-        info = await self.fs._info(full_path, **self._version_kwargs(file.version))
+        fs = await self._get_fs()
+        info = await fs._info(full_path, **self._version_kwargs(file.version))
         size = info.get("size")
         if size is None:
             raise FileNotFoundError(full_path)
         return int(size)
 
     async def get_file(self, lpath, rpath, callback, version_id: str | None = None):
-        return await self.fs._get_file(
+        fs = await self._get_fs()
+        return await fs._get_file(
             lpath,
             rpath,
             callback=callback,
@@ -421,7 +427,8 @@ class Client(ABC):
         return {}
 
     async def ls_dir(self, path):
-        return await self.fs._ls(path, detail=True, **self._ls_dir_kwargs())
+        fs = await self._get_fs()
+        return await fs._ls(path, detail=True, **self._ls_dir_kwargs())
 
     def rel_path(self, path: str) -> str:
         return self.fs.split_path(path)[1]
