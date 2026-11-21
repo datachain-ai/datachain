@@ -2,6 +2,7 @@ import functools
 import glob
 import logging
 import os
+import pickle
 import re
 import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -528,10 +529,24 @@ class StoredPage:
     ``rows_digest``: made where the page was parsed, inserted as it is."""
 
     def __init__(self, rows: list[tuple], digest: int) -> None:
-        self.rows, self.digest = rows, digest
+        self._rows: list[tuple] | bytes = rows
+        self.digest = digest
+        self.size = len(rows)
+
+    @property
+    def rows(self) -> list[tuple]:
+        if isinstance(rows := self._rows, bytes):
+            self._rows = rows = pickle.loads(rows)  # noqa: S301
+        return rows
 
     def __len__(self) -> int:
-        return len(self.rows)
+        return self.size
+
+    def __getstate__(self) -> tuple[bytes, int, int]:
+        return pickle.dumps(self.rows, protocol=5), self.digest, self.size
+
+    def __setstate__(self, state: tuple[bytes, int, int]) -> None:
+        self._rows, self.digest, self.size = state
 
 
 @dataclass(frozen=True)

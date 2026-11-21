@@ -1671,3 +1671,26 @@ def test_backward_compat_dataset_without_file_md5(
     )
     lst_chain, _ = read_listing_dataset(lst_name, session=test_session)
     assert lst_chain.to_values("file.md5") == [""]
+
+
+def test_delta_gen_without_delta_on_column_in_udf_params(test_session):
+    dc.read_values(
+        a=[1, 2],
+        key=[NullableDeltaKey(a=1), None],
+        output={"a": int, "key": NullableDeltaKey | None},
+        session=test_session,
+    ).save("delta_gen_key_src")
+    chain = (
+        dc.read_dataset(
+            "delta_gen_key_src",
+            delta=True,
+            delta_on="key",
+            session=test_session,
+        )
+        .gen(
+            lambda a: [(NullableDeltaKey(a=a) if a == 1 else None, a * 10)],
+            output={"key": NullableDeltaKey | None, "b": int},
+        )
+        .save("delta_gen_key_out")
+    )
+    assert sorted(chain.to_values("b")) == [10, 20]

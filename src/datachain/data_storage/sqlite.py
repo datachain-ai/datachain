@@ -424,6 +424,9 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         Create table. Does nothing if table already exists when if_not_exists=True.
         """
         self.execute(CreateTable(table, if_not_exists=if_not_exists))
+        if kind == "udf":
+            for index in table.indexes:
+                self.execute(CreateIndex(index, if_not_exists=if_not_exists))
 
     def drop_table(self, table: "Table", if_exists: bool = False) -> None:
         self.execute(DropTable(table, if_exists=if_exists))
