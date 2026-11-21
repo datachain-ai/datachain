@@ -1,8 +1,10 @@
+import atexit
 import copy
 import hashlib
 import os
 import sys
 import tempfile
+import threading
 from collections.abc import Collection, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -18,7 +20,7 @@ from pyarrow.dataset import CsvFileFormat, Dataset, ParquetFileFormat, dataset
 from pyarrow.fs import FileInfo, FileType, FSSpecHandler, PyFileSystem
 
 from datachain import json
-from datachain.cache import Cache
+from datachain.cache import Cache, get_temp_cache
 from datachain.catalog.catalog import clone_catalog_with_cache
 from datachain.data_storage.codec import to_json_text
 from datachain.fs.reference import ReferenceFileSystem
@@ -197,6 +199,21 @@ def _lance_file_reader():
     return LanceFileReader
 
 
+_lance_tmp_lock = threading.Lock()
+_lance_tmp_caches: dict[str, Cache] = {}
+
+
+def _clear_lance_tmp_caches() -> None:
+    with _lance_tmp_lock:
+        caches = list(_lance_tmp_caches.values())
+        _lance_tmp_caches.clear()
+    for tmp_cache in caches:
+        tmp_cache.destroy()
+
+
+atexit.register(_clear_lance_tmp_caches)
+
+
 def _local_lance_path(file: File) -> str:
     catalog = file._catalog
     assert catalog is not None
@@ -213,9 +230,13 @@ def _local_lance_path(file: File) -> str:
         return file.get_fs_path()
     cache = catalog.cache
     if not file._caching_enabled:
-        tmp_cache = Cache(
-            os.path.join(cache.tmp_dir, "lance"), cache.tmp_dir, fallback=cache
-        )
+        with _lance_tmp_lock:
+            tmp_cache = _lance_tmp_caches.get(cache.tmp_dir)
+            if tmp_cache is None or not os.path.isdir(tmp_cache.cache_dir):
+                tmp_cache = get_temp_cache(
+                    cache.tmp_dir, prefix="lance-", fallback=cache.as_readonly()
+                )
+                _lance_tmp_caches[cache.tmp_dir] = tmp_cache
         if (path := tmp_cache.get_path(file)) is not None:
             return path
         file = file.model_copy()
@@ -248,13 +269,13 @@ def write_lance(
     _lance_file_reader()
     from lance.file import LanceFileWriter
 
-    pq_schema = parquet_schema(signal_schema)
+    schema = export_schema(signal_schema)
     lance_schema = pa.schema(
         [
             pa.field(_encode_lance_col(f.name), pa.string(), metadata=_LANCE_JSON_META)
             if isinstance(f.type, pa.JsonType)
             else f.with_name(_encode_lance_col(f.name))
-            for f in pq_schema
+            for f in schema
         ]
     )
     catalog = target._catalog
@@ -272,20 +293,40 @@ def write_lance(
         os.makedirs(staging, exist_ok=True)
     else:
         staging = catalog.cache.tmp_dir
-    null_free = set(pq_schema.names)
+    model_cols = {
+        name: [i for i, f in enumerate(schema) if f.name.startswith(f"{name}.")]
+        for name, anno in signal_schema.values.items()
+        if ModelStore.is_pydantic(anno)
+    }
+    model_tags: dict[str, list[str | None]] = {name: [] for name in model_cols}
+    null_free = {*schema.names, *model_cols}
     with tempfile.TemporaryDirectory(dir=staging) as tmp_dir:
         staged = os.path.join(tmp_dir, "data.lance")
         with LanceFileWriter(staged, lance_schema, **kwargs) as writer:
             for chunk in column_chunks:
                 arrays = [
                     _to_arrow(values, f.type)
-                    for values, f in zip(chunk, pq_schema, strict=True)
+                    for values, f in zip(chunk, schema, strict=True)
                 ]
                 null_free -= {
                     f.name
-                    for f, arr in zip(pq_schema, arrays, strict=True)
+                    for f, arr in zip(schema, arrays, strict=True)
                     if arr.null_count
                 }
+                for name, idxs in model_cols.items():
+                    if not idxs:
+                        continue
+                    tag = arm_selector(signal_schema.values[name])
+                    if all(arrays[i].null_count for i in idxs):
+                        tags = [
+                            None if all(v is None for v in row) else tag
+                            for row in zip(*(chunk[i] for i in idxs), strict=True)
+                        ]
+                        if None in tags:
+                            null_free.discard(name)
+                        model_tags[name].extend(tags)
+                    else:
+                        model_tags[name].extend([tag] * len(arrays[0]))
                 writer.write_batch(
                     pa.Table.from_arrays(
                         [getattr(a, "storage", a) for a in arrays], schema=lance_schema
@@ -294,10 +335,19 @@ def write_lance(
             values = _optional_unless_null_free(signal_schema.values, null_free)
             if values != signal_schema.values:
                 signal_schema = SignalSchema(values)
-            writer.add_schema_metadata(
-                DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY.decode("utf-8"),
-                json.dumps(signal_schema.serialize(), ensure_ascii=False),
-            )
+            meta_key = DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY.decode("utf-8")
+            meta_val = json.dumps(signal_schema.serialize(), ensure_ascii=False)
+            writer.add_schema_metadata(meta_key, meta_val)
+        if promoted := [n for n in model_cols if n not in null_free]:
+            table = _lance_file_reader()(staged).read_all().to_table()
+            for name in promoted:
+                col = _encode_lance_col(f"{name}.{TYPE_TAG_FIELD}")
+                table = table.append_column(
+                    col, pa.array(model_tags[name], pa.string())
+                )
+            with LanceFileWriter(staged, table.schema, **kwargs) as writer:
+                writer.write_batch(table)
+                writer.add_schema_metadata(meta_key, meta_val)
         if local:
             os.replace(staged, dst_path)
         else:
@@ -729,6 +779,9 @@ class ArrowGenerator(Generator):
             projected.prefetch_max_size = PARTIAL_READ_PREFETCH_MAX_SIZE
         return projected
 
+    def teardown(self):
+        _clear_lance_tmp_caches()
+
     def process(self, file: File):
         if file._caching_enabled:
             file.ensure_cached()
@@ -906,6 +959,16 @@ class ArrowGenerator(Generator):
                 values[f"{path}.{TYPE_TAG_FIELD}"] = [
                     t if arm_for_tag(layout, t) is arm else None for t in values[tag]
                 ]
+            for info, path in zip(model.model_fields.values(), paths, strict=True):
+                if (
+                    (layout := union_layout(info.annotation)) is not None
+                    and not layout.use_slots
+                    and f"{path}.{TYPE_TAG_FIELD}" not in values
+                    and any(c.startswith(f"{path}.") for c in values)
+                ):
+                    values[f"{path}.{TYPE_TAG_FIELD}"] = [
+                        arm_selector(layout.arms[0])
+                    ] * batch.num_rows
             absent = [ABSENT] * batch.num_rows
             # An output with no fields still takes one object per row.
             columns = [values.get(n, absent) for n in names] or [absent]
@@ -966,7 +1029,7 @@ def json_columns(schema: pa.Schema | None) -> set[str]:
     signal_schema = _get_datachain_schema(schema)
     if signal_schema is None:
         return set()
-    fields = parquet_schema(signal_schema)
+    fields = export_schema(signal_schema)
     return {f.name for f in fields if isinstance(f.type, pa.JsonType)}
 
 
@@ -974,12 +1037,10 @@ def _optional_unless_null_free(
     signals: dict[str, Any], null_free: Collection[str]
 ) -> dict[str, Any]:
     """Make each signal optional unless its column, or its union tag, is in
-    `null_free`. A model is left as declared: its fields have their own columns."""
+    `null_free`."""
     return {
         path: anno
-        if ModelStore.is_pydantic(anno)
-        or path in null_free
-        or f"{path}.{TYPE_TAG_FIELD}" in null_free
+        if path in null_free or f"{path}.{TYPE_TAG_FIELD}" in null_free
         else anno | None
         for path, anno in signals.items()
     }
@@ -1421,8 +1482,8 @@ def _arrow_type(sql_type: Any) -> pa.DataType:
     return _ARROW_TYPES.get(key, pa.json_())
 
 
-def parquet_schema(signal_schema: SignalSchema) -> pa.Schema:
-    """The Arrow schema of the signals' columns, as Parquet stores them."""
+def export_schema(signal_schema: SignalSchema) -> pa.Schema:
+    """The Arrow schema of the signals' exported columns."""
     fields = []
     for path, anno, has_subtree, _ in signal_schema.get_flat_tree(
         include_sentinels=True

@@ -125,7 +125,7 @@ With `header=False` and no `columns`, `output` is required and supplies names fo
 
 #### Parquet and Lance written by DataChain
 
-A Parquet or Lance file written by `to_parquet()` or `to_lance()` keeps its DataChain schema, so it reads back with the same signals and models. There, `columns=` picks signals as `select()` does:
+A Parquet or Lance file written by `to_parquet()` or `to_lance()` keeps its DataChain schema, so it reads back with the same signals and models. Automatic column projection and filter pushdown do not apply to files written by DataChain yet; use `columns=` to pick signals as `select()` does:
 
 ```python
 class Point(dc.DataModel):

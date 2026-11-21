@@ -3,6 +3,7 @@ import math
 import shutil
 import sys
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated, Literal
 
 import lance
@@ -233,6 +234,7 @@ def test_read_lance_remote_binary_and_embeddings(tmp_dir, test_session, monkeypa
         shutil.copy(path, rpath)
 
     monkeypatch.setattr(HTTPClient, "get_file", fake_get_file)
+    cache = test_session.catalog.cache
     file = File(source="http://mock", path="wide.lance", size=len(raw_bytes))
     chain = dc.read_values(
         file=[file], session=test_session, settings={"prefetch": 0}
@@ -246,23 +248,32 @@ def test_read_lance_remote_binary_and_embeddings(tmp_dir, test_session, monkeypa
     assert [(emb, tags, payload) for _, emb, tags, payload in rows] == [
         ([5.0, 6.0, 7.0, 8.0], ["t3"], b1)
     ]
-    for _ in range(3):
-        assert rows[0][0].read() == {
-            "id": 2,
-            "emb": [5.0, 6.0, 7.0, 8.0],
-            "tags": ["t3"],
-            "payload": b1,
-        }
     assert downloads == 1
+    assert cache.get_total_size() == 0
+    assert not list(Path(cache.tmp_dir).glob("lance-*"))
+
+    assert rows[0][0].read() == {
+        "id": 2,
+        "emb": [5.0, 6.0, 7.0, 8.0],
+        "tags": ["t3"],
+        "payload": b1,
+    }
+    assert downloads == 2
+    assert cache.get_total_size() == 0
+    assert not list(Path(cache.tmp_dir).glob("lance-*"))
 
     f2 = File(source="http://mock", path="wide2.lance", size=len(raw_bytes))
     assert dc.read_values(
-        file=[file, f2], session=test_session, settings={"prefetch": 0}
+        file=[file, f2],
+        session=test_session,
+        settings={"cache": True, "prefetch": 0},
     ).parse_tabular(format="lance", columns=["id"], output={"id": int}).to_values(
         "id"
     ) == [1, 2, 1, 2]
-    assert downloads == 2
-    assert test_session.catalog.cache.get_total_size() == 0
+    assert downloads == 4
+    for _ in range(3):
+        assert rows[0][0].read()["id"] == 2
+    assert downloads == 4
 
 
 def test_to_lance_roundtrip(tmp_dir, test_session):
@@ -391,6 +402,33 @@ def test_to_lance_roundtrip(tmp_dir, test_session):
         "w": int | None,
     }
     assert null_back.order_by("id").to_values("w") == [10, None, None]
+
+    # Left-joined DataModel signal with all-null rows is promoted to Optional.
+    left_chain = dc.read_values(id=[1, 2], session=test_session)
+    right_chain = dc.read_values(rid=[1], m=[Item(a=7, b="ok")], session=test_session)
+    right_path = tmp_dir / "a_right.lance"
+    join_path = tmp_dir / "b_joined.lance"
+    right_chain.to_lance(right_path)
+    left_chain.merge(right_chain, on="id", right_on="rid", inner=False).to_lance(
+        join_path
+    )
+    join_back = dc.read_lance(join_path.as_uri(), session=test_session)
+    assert join_back.signals_schema.values["m"] == Item | None
+    assert join_back.order_by("id").to_list("id", "m") == [
+        (1, Item(a=7, b="ok")),
+        (2, None),
+    ]
+    multi_model_back = dc.read_lance(
+        [right_path.as_uri(), join_path.as_uri()],
+        columns=["m"],
+        session=test_session,
+    )
+    assert multi_model_back.signals_schema.values["m"] == Item | None
+    assert sorted(multi_model_back.to_values("m"), key=lambda x: x is None) == [
+        Item(a=7, b="ok"),
+        Item(a=7, b="ok"),
+        None,
+    ]
 
     zero_path = tmp_dir / "zero.lance"
     zero_path.write_bytes(b"")

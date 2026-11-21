@@ -2969,6 +2969,7 @@ class DataChain:
         from datachain.lib.arrow import (
             PARTIAL_READ_PREFETCH_MAX_SIZE,
             ArrowGenerator,
+            _clear_lance_tmp_caches,
             _written_by_datachain,
             file_schemas,
             fix_pyarrow_format,
@@ -3032,7 +3033,11 @@ class DataChain:
                 )
                 written_by_datachain = schema is not None
         except (ValueError, pa.ArrowTypeError) as e:
+            _clear_lance_tmp_caches()
             raise DatasetPrepareError(self.name, e) from e
+        except BaseException:
+            _clear_lance_tmp_caches()
+            raise
 
         if column:
             output = {column: model}  # type: ignore[dict-item]
