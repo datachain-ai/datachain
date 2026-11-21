@@ -26,6 +26,7 @@ from datachain.remote.credentials import (
     add_login,
     conflicting_login,
     credentials_path,
+    env_token_url,
     load_logins,
     normalize_url,
     remove_login,
@@ -241,7 +242,9 @@ def login(args: "Namespace"):
     try:
         token_name, access_token = get_access_token(
             token_name=name,
-            hostname=hostname,
+            # The client joins "api/..." to it: without the slash, a path prefix like
+            # /workspace would be dropped.
+            hostname=f"{hostname}/",
             scopes=scopes,
             team_names=team_names,
             expires_in_days=expires_in_days,
@@ -257,7 +260,9 @@ def login(args: "Namespace"):
         # A 4xx response is falsy.
         if response is not None and response.status_code == 400:
             with contextlib.suppress(ValueError):  # Not JSON, e.g. a proxy's page.
-                message = response.json().get("detail", message)
+                body = response.json()
+                if isinstance(body, dict):
+                    message = body.get("detail", message)
         raise DataChainError(f"Failed to authenticate with Studio: {message}") from exc
 
     expires = datetime.now(UTC) + timedelta(days=expires_in_days)
@@ -272,6 +277,9 @@ def login(args: "Namespace"):
         if existing := conflicting_login(hostname, team_names):
             # Another login saved it while the browser was open.
             raise _login_exists_error(existing, team_names, current_url)
+        # The settings first: if they can't be saved, neither is the token, so the
+        # same login can be run again.
+        messages = _save_login_settings(hostname, bool(args.hostname), team_names)
         path = add_login(new)
     except Exception:
         # The new token isn't saved, so it is revoked.
@@ -281,13 +289,25 @@ def login(args: "Namespace"):
     if team_names:
         print(f"Token is for teams: {', '.join(team_names)}")
     print(f"Token will expire in {expires_in_days} days.")
+    for message in messages:
+        print(message)
+    return 0
 
+
+def _save_login_settings(
+    hostname: str, switch_host: bool, team_names: list[str] | None
+) -> list[str]:
+    """Update your config for a login: the Studio URL with -H, and the default team.
+
+    Returns the messages to print once the login is saved.
+    """
+    messages = []
     # The default team in your config, over the system config's, is for the Studio
     # saved there. An empty team is the default turned off. A system config's team
     # is the machine's setting and applies to any Studio until you set your own.
     user = ConfigLevel.GLOBAL
     studio = _level_studio_config(user)
-    if args.hostname and hostname != _studio_url(studio):
+    if switch_host and hostname != _studio_url(studio):
         # A team you picked for another Studio means nothing on this one, so yours
         # is removed; a default turned off stays off, and the system config's team
         # still applies.
@@ -295,7 +315,7 @@ def login(args: "Namespace"):
         path = _update_studio_config(
             user, url=hostname, team="" if own_team == "" else None
         )
-        print(f"Set Studio URL to {hostname} in {path}")
+        messages.append(f"Set Studio URL to {hostname} in {path}")
         studio = _level_studio_config(user)
 
     # A Studio set only by the environment or a project gets no default team here,
@@ -306,14 +326,16 @@ def login(args: "Namespace"):
         and team_names
         and len(team_names) == 1
     ):
-        file_path = _update_studio_config(user, team=team_names[0])
-        print(f"Set default team to '{team_names[0]}' in {file_path}")
+        path = _update_studio_config(user, team=team_names[0])
+        messages.append(f"Set default team to '{team_names[0]}' in {path}")
     elif not get_studio_env_variable("TEAM") and "team" not in Config().read().get(
         "studio", {}
     ):
         # Nothing picks a team for commands: not the env, a config, or a project.
-        print("You can now use 'datachain auth team' to set the default team.")
-    return 0
+        messages.append(
+            "You can now use 'datachain auth team' to set the default team."
+        )
+    return messages
 
 
 def _remove_old_tokens() -> None:
@@ -438,7 +460,13 @@ def list_logins():
         print(f"Studio URL: {url}")
     print(f"Default team: {team or 'not set'}")
     env_token = bool(os.environ.get(TOKEN_ENV))
-    if env_token:
+    if env_token and url != env_token_url():
+        print(
+            f"{TOKEN_ENV} is set, but not sent to {url}, which only a project's "
+            "config sets."
+        )
+        env_token = False
+    elif env_token:
         print(f"{TOKEN_ENV} is set: it is used for every team, not the saved tokens.")
 
     rows = [

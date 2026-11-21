@@ -72,21 +72,13 @@ def get_logging_level(args: Namespace) -> int:
 
 def determine_flavors(
     studio: bool, local: bool, all: bool, logged_in: Callable[[], bool]
-):
-    """Which of local and Studio results to show.
+) -> tuple[bool, bool]:
+    """Whether to show local and Studio results.
 
     `logged_in` is called only for `--all`, to fall back to local results without
     a token. A local listing never reads the credentials, and `--studio` gets its
-    error (not logged in, no team, expired token) from the Studio request.
+    error (not logged in, no team, expired token) from the Studio client.
     """
     if local or studio:
-        all = False
-
-    if all and not logged_in():
-        all = False
-        local = True
-
-    if not (studio or local or all):
-        local = True
-
-    return all, local, studio
+        return local, studio
+    return True, all and logged_in()

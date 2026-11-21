@@ -15,6 +15,9 @@ from datachain.config import Config
 from datachain.dataset import DatasetRecord
 from datachain.error import DataChainError
 from datachain.remote.credentials import (
+    TOKEN_ENV,
+    URL_ENV,
+    env_token_url,
     load_logins,
     normalize_url,
     resolve_token,
@@ -151,6 +154,11 @@ class StudioClient:
         if token := resolve_token(url, team):
             return token
 
+        if os.environ.get(TOKEN_ENV) and url != env_token_url():
+            raise DataChainError(
+                f"{TOKEN_ENV} is not sent to {url}, which only a project's config "
+                f"sets. Set {URL_ENV}={url} if you trust it."
+            )
         if team is None and any(lg.url == url for lg in load_logins()):
             # Only tokens for teams are saved, so the team is what's missing.
             raise _team_not_set()

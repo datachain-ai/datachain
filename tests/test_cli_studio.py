@@ -14,6 +14,7 @@ import websockets
 from dvc_studio_client.auth import AuthorizationExpiredError
 from tabulate import tabulate
 
+import datachain as dc
 from datachain.cli import main
 from datachain.config import Config, ConfigLevel
 from datachain.job import Job
@@ -79,7 +80,7 @@ def test_studio_login_success(get_access_token):
 
     get_access_token.assert_called_with(
         token_name=None,
-        hostname=STUDIO_URL,
+        hostname=f"{STUDIO_URL}/",
         scopes=None,
         team_names=None,
         expires_in_days=365,
@@ -114,7 +115,7 @@ def test_studio_login_arguments(get_access_token):
 
     get_access_token.assert_called_with(
         token_name="token_name",  # noqa: S106
-        hostname="https://example.com",
+        hostname="https://example.com/",
         scopes="experiments",
         team_names=None,
         expires_in_days=365,
@@ -144,7 +145,7 @@ def test_studio_login_with_teams(get_access_token):
 
     get_access_token.assert_called_with(
         token_name=None,
-        hostname=STUDIO_URL,
+        hostname=f"{STUDIO_URL}/",
         scopes=None,
         team_names=["ml-team", "data-team"],  # Multiple teams
         expires_in_days=90,  # Custom expiration
@@ -287,6 +288,48 @@ def test_studio_login_saved_by_another_login_while_the_browser_was_open(
     # A failed revoke doesn't hide why the login stopped.
     assert "Token already exists" in err
     assert ("could not revoke the new token" in err) == (revoke_status == 500)
+
+
+def test_studio_login_keeps_the_path_of_a_self_hosted_studio():
+    # Only the HTTP boundary is mocked, so the URL the login client builds counts.
+    base = "https://studio.example.test/workspace"
+    device = {
+        "device_code": "d",
+        "user_code": "u",
+        "verification_uri": f"{base}/auth/device",
+        "token_uri": f"{base}/api/device-login/token",
+        "token_name": "laptop",
+        "expires_in": 900,
+    }
+    with requests_mock.mock() as m:
+        m.post(f"{base}/api/device-login", json=device)
+        m.post(f"{base}/api/device-login/token", json={"access_token": "isat_new"})
+        assert main(["auth", "login", "--no-open", "-H", f"{base}/"]) == 0
+        assert m.request_history[0].url == f"{base}/api/device-login"
+
+    assert [(lg.url, lg.token) for lg in load_logins()] == [(base, "isat_new")]
+
+
+@posix_only
+def test_studio_login_saves_nothing_when_the_config_cant_be_written(
+    get_access_token, global_config_dir
+):
+    set_studio(ConfigLevel.GLOBAL, team="")
+    config = Path(global_config_dir) / "config"
+    config.chmod(0o444)
+
+    with requests_mock.mock() as m:
+        m.post(f"{OTHER_URL}/api/device-logout", json={})
+        assert main(["auth", "login", "-H", OTHER_URL, "--team", "x"]) == 1
+        # The new token isn't saved, so it is revoked.
+        assert m.last_request.headers["Authorization"] == "token isat_access_token"
+    assert saved_tokens() == []
+
+    # So the same login works once the config can be written.
+    config.chmod(0o644)
+    assert main(["auth", "login", "-H", OTHER_URL, "--team", "x"]) == 0
+    assert saved_tokens() == ["isat_access_token"]
+    assert Config(ConfigLevel.GLOBAL).read()["studio"] == {"team": "", "url": OTHER_URL}
 
 
 @posix_only
@@ -484,6 +527,8 @@ def test_studio_old_config_token_is_revoked_at_an_inherited_url(get_access_token
         (400, {"json": {"detail": "Invalid token scope"}}, "Invalid token scope"),
         # Not JSON, e.g. a proxy's error page.
         (400, {"text": "<html>Bad Request</html>"}, "400 Client Error"),
+        # JSON, but not an object.
+        (400, {"json": ["Bad Request"]}, "400 Client Error"),
         (500, {"json": {"detail": "Oops"}}, "500 Server Error"),
     ],
 )
@@ -759,16 +804,17 @@ def test_studio_token_from_env(capsys, monkeypatch):
     assert capsys.readouterr().out == "env_token\n"
 
 
-def table_rows(out: str) -> list[list[str]]:
-    """The rows of the table in `auth list` output, split into cells."""
-    lines = out.splitlines()
-    divider = next(i for i, line in enumerate(lines) if line.startswith("---"))
-    return [line.split() for line in lines[divider + 1 :]]
+def auth_table(rows: list[list[str]], studio: bool = False) -> str:
+    """The `auth list` table for these rows, headers included."""
+    headers = ["Teams", "Name", "Expires"]
+    return tabulate(
+        rows, headers=["Studio", *headers] if studio else headers, disable_numparse=True
+    )
 
 
 def test_studio_auth_list(capsys):
-    studio_login(default_team="acme", name="laptop", expires=date(2027, 11, 16))
-    studio_login("customer_token", teams=["customer-x"])
+    studio_login(default_team="acme", name="work laptop", expires=date(2027, 11, 16))
+    studio_login("customer_token", teams=["customer-x"], expires=date(2027, 2, 14))
 
     assert main(["auth", "list"]) == 0
 
@@ -777,7 +823,8 @@ def test_studio_auth_list(capsys):
     # The default Studio goes unnamed.
     assert STUDIO_URL not in out
     # The fallback token, saved without --team, shows as `*`.
-    assert table_rows(out) == [["*", "laptop", "2027-11-16"], ["customer-x"]]
+    expected = [["*", "work laptop", "2027-11-16"], ["customer-x", "", "2027-02-14"]]
+    assert auth_table(expected) in out
     assert "isat_access_token" not in out + err
     assert "customer_token" not in out + err
 
@@ -791,7 +838,8 @@ def test_studio_auth_list_names_a_self_hosted_studio(capsys):
 
     out = capsys.readouterr().out
     assert out.splitlines()[0] == f"Studio URL: {OTHER_URL}"
-    assert sorted(row[0] for row in table_rows(out)) == [OTHER_URL, STUDIO_URL]
+    expected = [[STUDIO_URL, "*", "", ""], [OTHER_URL, "*", "", ""]]
+    assert auth_table(expected, studio=True) in out
 
 
 def test_studio_auth_list_says_env_token_is_used(capsys, monkeypatch):
@@ -803,9 +851,22 @@ def test_studio_auth_list_says_env_token_is_used(capsys, monkeypatch):
     out, err = capsys.readouterr()
     assert out.splitlines()[1].startswith("DATACHAIN_STUDIO_TOKEN is set")
     # The saved tokens are still listed.
-    assert table_rows(out) == [["*"]]
+    assert auth_table([["*", "", ""]]) in out
     assert "env_token" not in out + err
     assert "isat_access_token" not in out + err
+
+
+def test_studio_auth_list_says_env_token_is_not_sent_to_a_project_studio(
+    capsys, monkeypatch
+):
+    monkeypatch.setenv("DATACHAIN_STUDIO_TOKEN", "env_token")
+    set_studio(ConfigLevel.LOCAL, url=OTHER_URL)
+
+    assert main(["auth", "list"]) == 0
+
+    out = capsys.readouterr().out
+    assert f"DATACHAIN_STUDIO_TOKEN is set, but not sent to {OTHER_URL}" in out
+    assert "Not logged in to Studio" in out
 
 
 def test_studio_auth_list_env_token_without_saved_tokens(capsys, monkeypatch):
@@ -826,7 +887,7 @@ def test_studio_auth_list_names_the_studio_when_another_is_in_use(capsys, monkey
 
     out = capsys.readouterr().out
     assert out.splitlines()[0] == f"Studio URL: {OTHER_URL}"
-    assert table_rows(out) == [[STUDIO_URL, "*"]]
+    assert auth_table([[STUDIO_URL, "*", "", ""]], studio=True) in out
 
 
 def test_studio_auth_list_keeps_names_that_look_like_numbers(capsys):
@@ -834,7 +895,7 @@ def test_studio_auth_list_keeps_names_that_look_like_numbers(capsys):
 
     assert main(["auth", "list"]) == 0
 
-    assert table_rows(capsys.readouterr().out) == [["1e5"]]
+    assert auth_table([["1e5", "", ""]]) in capsys.readouterr().out
 
 
 def test_studio_auth_list_not_logged_in(capsys):
@@ -849,6 +910,7 @@ def test_studio_auth_list_not_logged_in(capsys):
         ["dataset", "ls", "--studio"],
         ["dataset", "ls", "--all"],
         ["ls", ".", "--all"],
+        ["ls", ".", "--local", "--studio"],
         ["job", "ls"],
     ],
 )
@@ -913,18 +975,28 @@ def test_studio_team_no_name_with_existing_default(capsys):
     assert "Default team is 'existing-team'" in captured.out
 
 
-def test_dataset_ls_all_lists_local_only_without_a_token_for_the_team(mocker, capsys):
+def test_dataset_ls_all_lists_local_only_without_a_token_for_the_team(
+    capsys, requests_mock, test_session
+):
+    from datachain.cli.commands.datasets import list_datasets
+
     studio_login(teams=["team-a"])
-    mocker.patch(
-        "datachain.cli.commands.datasets.list_datasets_local",
-        side_effect=lambda *a, **kw: iter([("local.local.local", "1.0.0", False)]),
-    )
-    studio = mocker.patch("datachain.cli.commands.datasets.list_datasets_studio")
+    dc.read_values(num=[1], session=test_session).save("local-ds")
 
-    assert main(["dataset", "ls", "--all", "--team", "team-b"]) == 0
+    list_datasets(test_session.catalog, all=True, team="team-b")
 
-    studio.assert_not_called()
-    assert "local.local.local" in capsys.readouterr().out
+    assert "local-ds" in capsys.readouterr().out
+    assert not requests_mock.called
+
+
+def test_ls_local_and_studio_without_a_login_prints_nothing(capsys, tmp_dir):
+    (tmp_dir / "data.txt").write_text("x")
+
+    assert main(["ls", ".", "--local", "--studio"]) == 1
+
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "Not logged in to Studio" in err
 
 
 def test_expired_token_only_breaks_studio_listings(capsys):
@@ -1498,6 +1570,45 @@ def test_studio_cancel_job(studio_token):
 
         assert main(["job", "cancel", job_id]) == 0
         assert m.called
+
+
+def test_studio_cancel_job_with_only_env_vars(monkeypatch):
+    monkeypatch.setenv("DATACHAIN_STUDIO_TOKEN", "env_token")
+    monkeypatch.setenv("DATACHAIN_STUDIO_TEAM", "team_name")
+    job_id = "8bddde6c-c3ca-41b0-9d87-ee945bfdce70"
+    with requests_mock.mock() as m:
+        m.post(f"{STUDIO_URL}/api/datachain/jobs/{job_id}/cancel", json={})
+
+        assert main(["job", "cancel", job_id]) == 0
+        assert m.last_request.headers["Authorization"] == "token env_token"
+
+
+def test_studio_job_logs_with_only_env_vars(capsys, mocker, monkeypatch):
+    from websockets.datastructures import Headers
+    from websockets.exceptions import InvalidStatus
+    from websockets.http11 import Response
+
+    monkeypatch.setenv("DATACHAIN_STUDIO_TOKEN", "env_token")
+    monkeypatch.setenv("DATACHAIN_STUDIO_TEAM", "team_name")
+    sent = []
+
+    def mock_connect(url, additional_headers):
+        sent.append(additional_headers)
+        raise InvalidStatus(Response(403, "Forbidden", Headers()))
+
+    mocker.patch("datachain.remote.studio.websockets.connect", side_effect=mock_connect)
+    mocker.patch("datachain.studio.RECONNECT_MAX_ATTEMPTS", 0)
+
+    with requests_mock.mock() as m:
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "RUNNING"}],
+        )
+        main(["job", "logs", str(uuid.uuid4())])
+
+    # Past the auth checks with the env vars alone, to the log stream.
+    assert sent == [{"Authorization": "token env_token"}]
+    assert "Not logged in" not in capsys.readouterr().err
 
 
 def test_studio_run(capsys, mocker, tmp_dir, studio_token):

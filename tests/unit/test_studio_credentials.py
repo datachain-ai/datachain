@@ -46,6 +46,31 @@ def test_token_is_picked_by_url():
     assert resolve_token(f"{OTHER_URL}/", "x") == "other"
 
 
+def test_env_token_is_not_sent_to_a_studio_only_a_project_sets(monkeypatch):
+    monkeypatch.setenv("DATACHAIN_STUDIO_TOKEN", "env")
+    set_studio(ConfigLevel.LOCAL, url=OTHER_URL, team="acme")
+
+    assert resolve_token(OTHER_URL, "acme") is None
+    with pytest.raises(DataChainError, match=f"TOKEN is not sent to {OTHER_URL}"):
+        StudioClient().token  # noqa: B018
+    # A token you saved for that Studio is still used.
+    studio_login("saved", url=OTHER_URL)
+    assert StudioClient().token == "saved"  # noqa: S105
+
+
+@pytest.mark.parametrize("source", ["env", "user", "system"])
+def test_env_token_goes_to_a_studio_you_chose(monkeypatch, source):
+    monkeypatch.setenv("DATACHAIN_STUDIO_TOKEN", "env")
+    set_studio(ConfigLevel.LOCAL, url=OTHER_URL)
+    if source == "env":
+        monkeypatch.setenv("DATACHAIN_STUDIO_URL", OTHER_URL)
+    else:
+        level = ConfigLevel.GLOBAL if source == "user" else ConfigLevel.SYSTEM
+        set_studio(level, url=OTHER_URL)
+
+    assert resolve_token(OTHER_URL, "x") == "env"
+
+
 def test_project_team_picks_the_user_token():
     studio_login("x-token", teams=["x"])
     studio_login("y-token", teams=["y"], default_team="y")
@@ -182,6 +207,23 @@ def test_file_that_is_not_utf8_is_named(global_config_dir):
     with pytest.raises(DataChainError, match="Invalid Studio credentials file") as exc:
         load_logins()
     assert str(path) in str(exc.value)
+
+
+@posix_only
+def test_chmod_hint_quotes_a_path_with_spaces(caplog, monkeypatch, tmp_path):
+    config_dir = tmp_path / "Application Support"
+    monkeypatch.setenv("DATACHAIN_GLOBAL_CONFIG_DIR", str(config_dir))
+    studio_login("token")
+    path = config_dir / "credentials"
+    path.chmod(0o644)
+    hint = f"chmod 600 '{path}'"
+
+    with caplog.at_level(logging.WARNING, logger="datachain"):
+        assert load_logins() == []
+    assert hint in caplog.text
+    with pytest.raises(DataChainError) as exc:
+        load_logins(for_update=True)
+    assert hint in str(exc.value)
 
 
 @posix_only

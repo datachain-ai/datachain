@@ -57,7 +57,7 @@ def list_datasets(
     name: str | None = None,
     include_removed: bool = False,
 ) -> None:
-    all, local, studio = determine_flavors(
+    show_local, show_studio = determine_flavors(
         studio, local, all, lambda: is_token_set(team)
     )
     if name:
@@ -65,14 +65,14 @@ def list_datasets(
 
     local_pairs = (
         list(list_datasets_local(catalog, name, include_removed=include_removed))
-        if all or local
+        if show_local
         else []
     )
     local_datasets = {(n, v) for n, v, _ in local_pairs}
     local_removed = {(n, v) for n, v, r in local_pairs if r}
     studio_datasets = (
         set(list_datasets_studio(team=team, name=name, include_removed=include_removed))
-        if all or studio
+        if show_studio
         else set()
     )
 
@@ -113,7 +113,7 @@ def list_datasets(
     rows = [
         _datasets_tabulate_row(
             name=n,
-            both=all or (local and studio),
+            both=show_local and show_studio,
             local_version=local_version,
             studio_version=studio_version,
             local_removed=local_removed,

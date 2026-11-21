@@ -20,12 +20,15 @@ def ls(
     team: str | None = None,
     **kwargs,
 ):
-    all, local, studio = determine_flavors(
+    show_local, show_studio = determine_flavors(
         studio, local, all, lambda: is_token_set(team)
     )
-
-    show_local = all or local
-    show_studio = all or studio
+    client = None
+    if show_studio:
+        client = StudioClient(team=team)
+        # Fails before any output, local results included: without a login or a
+        # team, also when there is no path to request.
+        _ = client.token, client.team
     label_sections = show_local and show_studio
 
     if show_local:
@@ -33,10 +36,10 @@ def ls(
             print("Local:")
         ls_local(sources, long=long, **kwargs)
 
-    if show_studio:
+    if client:
         if label_sections:
             print("\nStudio:")
-        ls_remote(sources, long=long, team=team)
+        ls_remote(sources, client, long=long)
 
 
 def ls_local(
@@ -89,16 +92,9 @@ def format_ls_entry(entry: str) -> str:
     return shlex.quote(entry)
 
 
-def ls_remote(
-    paths: Iterable[str],
-    long: bool = False,
-    team: str | None = None,
-):
+def ls_remote(paths: Iterable[str], client: StudioClient, long: bool = False):
     from datachain.node import long_line_str
 
-    client = StudioClient(team=team)
-    # Fails here without a login or a team, also when there is no path to request.
-    _ = client.token, client.team
     first = True
     for path, response in client.ls(paths):
         if not first:

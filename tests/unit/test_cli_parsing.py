@@ -116,18 +116,18 @@ def test_datasets_ls_flavor_defaults():
 @pytest.mark.parametrize(
     "studio,local,all,logged_in,expected",
     [
-        # No flags defaults to local-only (regardless of login)
-        (False, False, False, False, (False, True, False)),
-        (False, False, False, True, (False, True, False)),
+        # (show_local, show_studio). No flags: local only, whatever the login.
+        (False, False, False, False, (True, False)),
+        (False, False, False, True, (True, False)),
         # Explicit --all keeps both on when logged in, downgrades to local otherwise
-        (False, False, True, True, (True, False, False)),
-        (False, False, True, False, (False, True, False)),
+        (False, False, True, True, (True, True)),
+        (False, False, True, False, (True, False)),
         # Explicit single-source flags clear --all
-        (True, False, False, True, (False, False, True)),
-        (False, True, False, False, (False, True, False)),
-        (True, True, False, True, (False, True, True)),
-        (True, False, True, True, (False, False, True)),
-        (False, True, True, True, (False, True, False)),
+        (True, False, False, True, (False, True)),
+        (False, True, False, False, (True, False)),
+        (True, True, False, True, (True, True)),
+        (True, False, True, True, (False, True)),
+        (False, True, True, True, (True, False)),
     ],
 )
 def test_determine_flavors(studio, local, all, logged_in, expected):

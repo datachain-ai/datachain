@@ -10,6 +10,8 @@ entry; one without ``url`` is for the default Studio.
 
 A command finds its token from the Studio URL and team it acts on:
 ``DATACHAIN_STUDIO_TOKEN`` first, then a token for the team, then the fallback.
+The env token is only sent to a Studio you chose (``DATACHAIN_STUDIO_URL``, your
+or the system config, or the default), never to one only a project's config sets.
 """
 
 import logging
@@ -24,6 +26,7 @@ from pathlib import Path
 import tomlkit
 from tomlkit.exceptions import TOMLKitError
 
+from datachain.config import Config, ConfigLevel
 from datachain.error import DataChainError
 from datachain.utils import STUDIO_URL, global_config_dir
 
@@ -31,6 +34,7 @@ logger = logging.getLogger("datachain")
 
 CREDENTIALS = "credentials"
 TOKEN_ENV = "DATACHAIN_STUDIO_TOKEN"  # noqa: S105
+URL_ENV = "DATACHAIN_STUDIO_URL"
 
 _warned: set[str] = set()
 
@@ -85,6 +89,20 @@ def self_hosted(url: str) -> str:
     return "" if url == STUDIO_URL else f" at {url}"
 
 
+def env_token_url() -> str:
+    """The Studio `DATACHAIN_STUDIO_TOKEN` may be sent to.
+
+    One you chose: from the env, your or the system config, or the default. A
+    project's config, which a cloned repo can contain, doesn't count.
+    """
+    if url := os.environ.get(URL_ENV):
+        return normalize_url(url)
+    studio: dict = {}
+    for level in (ConfigLevel.SYSTEM, ConfigLevel.GLOBAL):
+        studio.update(Config(level).read().get("studio", {}) or {})
+    return normalize_url(studio.get("url") or STUDIO_URL)
+
+
 def credentials_path() -> str:
     return os.path.join(global_config_dir(), CREDENTIALS)
 
@@ -131,7 +149,8 @@ def load_logins(*, for_update: bool = False) -> list[Login]:
             if for_update:
                 raise DataChainError(
                     f"Other users can access {path}, so DataChain does not use the "
-                    f"Studio tokens in it. Run `chmod 600 {path}` if you trust it."
+                    f"Studio tokens in it. Run `chmod 600 {shlex.quote(path)}` if you "
+                    "trust it."
                 )
             if path not in _warned:
                 _warned.add(path)
@@ -139,7 +158,7 @@ def load_logins(*, for_update: bool = False) -> list[Login]:
                     "Ignoring Studio tokens in %s: other users can access it. "
                     "Run `chmod 600 %s` if you trust it.",
                     path,
-                    path,
+                    shlex.quote(path),
                 )
             return []
         with open(path, encoding="utf-8") as f:
@@ -215,7 +234,8 @@ def _select_login(logins: list[Login], url: str, team: str | None) -> Login | No
 
 
 def resolve_token(url: str, team: str | None) -> str | None:
-    if token := os.environ.get(TOKEN_ENV):
+    url = normalize_url(url)
+    if (token := os.environ.get(TOKEN_ENV)) and url == env_token_url():
         return token
     if not (login := _select_login(load_logins(), url, team)):
         return None

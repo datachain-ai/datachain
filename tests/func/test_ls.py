@@ -272,14 +272,18 @@ def test_ls_all_labels_local_and_studio_sections(capsys, monkeypatch, studio_tok
     assert capsys.readouterr().out == "Local:\nlocal-data\n\nStudio:\nstudio-data\n"
 
 
-def test_ls_all_lists_local_only_without_a_token_for_the_team(capsys, monkeypatch):
+def test_ls_all_lists_local_only_without_a_token_for_the_team(
+    capsys, requests_mock, tmp_dir
+):
     studio_login(teams=["team-a"])
-    ls_module = importlib.import_module("datachain.cli.commands.ls")
-    with monkeypatch.context() as m:
-        m.setattr(ls_module, "ls_local", lambda *a, **kw: print("local-data"))
-        m.setattr(ls_module, "ls_remote", lambda *a, **kw: print("studio-data"))
-        ls(["s3://x"], all=True, team="team-b")
-    assert capsys.readouterr().out == "local-data\n"
+    (tmp_dir / "data.txt").write_text("x")
+
+    ls([str(tmp_dir)], all=True, team="team-b")
+
+    out = capsys.readouterr().out
+    assert "data.txt" in out
+    assert "Studio:" not in out
+    assert not requests_mock.called
 
 
 def test_ls_default_only_local_when_logged_into_studio(

@@ -14,13 +14,13 @@ usage: datachain auth login [-h] [-v] [-q] [-H HOSTNAME] [-s SCOPES] [-n NAME]
 
 By default, this command authenticates DataChain with Studio using default scopes and assigns a random name as the token name. DataChain uses the token for later Studio commands.
 
-The token is saved in a `credentials` file in your DataChain config directory, for example `~/.config/datachain/credentials` on Linux. Only you can read the file. If other users can read it, DataChain ignores it. Tokens are never saved in a project, so they can't be committed with it.
+The token is saved in a `credentials` file in your DataChain config directory, for example `~/.config/datachain/credentials` on Linux. Only you can read the file. On macOS and Linux, if other users can read it, DataChain ignores it; on Windows, it relies on your user folder's permissions. Tokens are never saved in a project, so they can't be committed with it.
 
 ### Tokens for specific teams
 
 A command runs for a team: the one given with `--team`, or the default team (see [`datachain auth team`](team.md)). DataChain uses the first of these tokens:
 
-1. The `DATACHAIN_STUDIO_TOKEN` environment variable.
+1. The `DATACHAIN_STUDIO_TOKEN` environment variable. It is only sent to the Studio set by `DATACHAIN_STUDIO_URL`, your config or the system config, or the default Studio, never to one that only a project's config sets.
 2. Your token for this team (saved with `--team`).
 3. Your token saved without `--team`.
 
