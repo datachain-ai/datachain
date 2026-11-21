@@ -228,6 +228,16 @@ def test_studio_login_keeps_a_system_default_team(
     assert "default team" not in capsys.readouterr().out
 
 
+def test_studio_login_new_host_keeps_the_system_default_team(get_access_token):
+    # The system config's team is the machine's setting, for any Studio.
+    set_studio(ConfigLevel.SYSTEM, team="acme")
+
+    assert main(["auth", "login", "-H", OTHER_URL]) == 0
+
+    assert Config(ConfigLevel.GLOBAL).read()["studio"] == {"url": OTHER_URL}
+    assert Config().read()["studio"] == {"team": "acme", "url": OTHER_URL}
+
+
 @pytest.mark.parametrize("source", ["project", "env", "turned-off", None])
 def test_studio_login_hints_at_auth_team_only_without_a_team(
     get_access_token, capsys, monkeypatch, source
@@ -833,6 +843,7 @@ def test_studio_auth_list_not_logged_in(capsys):
         ["auth", "token"],
         ["dataset", "ls", "--studio"],
         ["dataset", "ls", "--all"],
+        ["ls", ".", "--all"],
         ["job", "ls"],
     ],
 )

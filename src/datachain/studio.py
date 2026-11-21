@@ -283,12 +283,14 @@ def login(args: "Namespace"):
     print(f"Token will expire in {expires_in_days} days.")
 
     # The default team in your config, over the system config's, is for the Studio
-    # saved there. An empty team is the default turned off.
+    # saved there. An empty team is the default turned off. A system config's team
+    # is the machine's setting and applies to any Studio until you set your own.
     user = ConfigLevel.GLOBAL
     studio = _level_studio_config(user)
     if args.hostname and hostname != _studio_url(studio):
-        # A team picked for another Studio means nothing on this one; a default
-        # turned off stays off.
+        # A team you picked for another Studio means nothing on this one, so yours
+        # is removed; a default turned off stays off, and the system config's team
+        # still applies.
         own_team = Config(user).read().get("studio", {}).get("team")
         path = _update_studio_config(
             user, url=hostname, team="" if own_team == "" else None
