@@ -1,3 +1,5 @@
+from argparse import SUPPRESS
+
 from datachain.cli.parser.utils import CustomHelpFormatter
 
 
@@ -63,15 +65,8 @@ def add_auth_parser(subparsers, parent_parser) -> None:
         default=False,
         help="Use code-based authentication without browser",
     )
-    login_parser.add_argument(
-        "--local",
-        action="store_true",
-        default=False,
-        help=(
-            "Save the token in the project's .datachain/credentials, "
-            "which is used before the user's tokens"
-        ),
-    )
+    # No longer supported; kept to fail with a hint.
+    login_parser.add_argument("--local", action="store_true", help=SUPPRESS)
 
     login_parser.add_argument(
         "--team",
@@ -100,12 +95,8 @@ def add_auth_parser(subparsers, parent_parser) -> None:
         help=auth_logout_help,
         formatter_class=CustomHelpFormatter,
     )
-    logout_parser.add_argument(
-        "--local",
-        action="store_true",
-        default=False,
-        help="Remove the token from the project's .datachain/credentials",
-    )
+    # No longer supported; kept to fail with a hint.
+    logout_parser.add_argument("--local", action="store_true", help=SUPPRESS)
     logout_tokens = logout_parser.add_mutually_exclusive_group()
     logout_tokens.add_argument(
         "--team",
@@ -177,7 +168,7 @@ def add_auth_parser(subparsers, parent_parser) -> None:
     )
 
     auth_list_help = "List saved Studio tokens"
-    auth_list_description = "List the Studio tokens saved for this project and user."
+    auth_list_description = "List the saved Studio tokens."
 
     auth_subparser.add_parser(
         "list",

@@ -14,7 +14,7 @@ from typing_extensions import TypedDict
 from datachain.config import Config
 from datachain.dataset import DatasetRecord
 from datachain.error import DataChainError
-from datachain.remote.credentials import all_logins, resolve_token
+from datachain.remote.credentials import load_logins, resolve_token
 from datachain.utils import STUDIO_URL, retry_with_backoff
 
 T = TypeVar("T")
@@ -132,7 +132,7 @@ class StudioClient:
         token = resolve_token(url, team)
 
         if not token:
-            if team is None and any(lg.url == url for lg in all_logins()):
+            if team is None and any(lg.url == url for lg in load_logins()):
                 # Only tokens for teams are saved, so the team is what's missing.
                 self._get_team()
             for_team = f" for team '{team}'" if team else ""

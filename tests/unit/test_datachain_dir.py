@@ -22,7 +22,7 @@ def make_git(directory, kind="directory"):
 
 
 @pytest.mark.parametrize("location", [".", "nested", "nested/deeper"])
-@pytest.mark.parametrize("marker", ["db", "config", "credentials"])
+@pytest.mark.parametrize("marker", ["db", "config"])
 def test_find_nearest_project_state(tmp_path, monkeypatch, location, marker):
     (tmp_path / ".git").mkdir()
     make_state(tmp_path)
@@ -54,7 +54,7 @@ def test_git_root_bounds_project_discovery(
     assert not (nested / ".datachain").exists()
 
 
-@pytest.mark.parametrize("marker", ["db", "config", "credentials"])
+@pytest.mark.parametrize("marker", ["db", "config"])
 def test_outside_git_uses_cwd(tmp_path, monkeypatch, marker):
     make_state(tmp_path, marker)
     cwd = tmp_path / "nested"
@@ -65,9 +65,7 @@ def test_outside_git_uses_cwd(tmp_path, monkeypatch, marker):
     assert (cwd / ".datachain").is_dir()
 
 
-@pytest.mark.parametrize(
-    "marker", [None, "cache", "tmp", "db", "config", "credentials"]
-)
+@pytest.mark.parametrize("marker", [None, "cache", "tmp", "db", "config"])
 def test_skip_state_without_db_or_config_file(tmp_path, monkeypatch, marker):
     (tmp_path / ".git").mkdir()
     root = make_state(tmp_path)

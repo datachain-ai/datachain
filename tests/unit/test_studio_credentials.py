@@ -32,68 +32,52 @@ def set_studio(level, **values):
 @pytest.mark.parametrize(
     "logins,team,expected",
     [
+        pytest.param([("all", None), ("x", ["x"])], "x", "x", id="team-over-all-teams"),
         pytest.param(
-            [("local-all", None, LOCAL), ("local-x", ["x"], LOCAL)],
-            "x",
-            "local-x",
-            id="local-team-over-local-all-teams",
+            [("all", None), ("x", ["x"])], "y", "all", id="all-teams-for-another-team"
         ),
         pytest.param(
-            [("global-x", ["x"], GLOBAL), ("local-all", None, LOCAL)],
-            "x",
-            "local-all",
-            id="local-all-teams-over-global-team",
+            [("all", None), ("x", ["x"])], None, "all", id="all-teams-without-a-team"
         ),
-        pytest.param(
-            [("global-x", ["x"], GLOBAL), ("local-y", ["y"], LOCAL)],
-            "x",
-            "global-x",
-            id="local-for-another-team-falls-through",
-        ),
-        pytest.param(
-            [("global-all", None, GLOBAL), ("global-x", ["x"], GLOBAL)],
-            "x",
-            "global-x",
-            id="global-team-over-global-all-teams",
-        ),
-        pytest.param(
-            [("global-all", None, GLOBAL), ("global-x", ["x"], GLOBAL)],
-            "y",
-            "global-all",
-            id="all-teams-for-another-team",
-        ),
-        pytest.param(
-            [("global-all", None, GLOBAL), ("global-x", ["x"], GLOBAL)],
-            None,
-            "global-all",
-            id="all-teams-without-a-team",
-        ),
-        pytest.param(
-            [("global-x", ["x"], GLOBAL)],
-            "y",
-            None,
-            id="team-token-only-for-its-teams",
-        ),
+        pytest.param([("x", ["x"])], "y", None, id="team-token-only-for-its-teams"),
     ],
 )
 def test_token_precedence(logins, team, expected):
-    for token, teams, level in logins:
-        studio_login(token, teams=teams, level=level)
+    for token, teams in logins:
+        studio_login(token, teams=teams)
 
     assert resolve_token(STUDIO_URL, team) == expected
 
 
-def test_login_for_another_url_falls_through():
-    studio_login("local-other", url=OTHER_URL, level=LOCAL)
-    studio_login("global")
+def test_token_is_picked_by_url():
+    studio_login("other", url=OTHER_URL)
+    studio_login("default")
 
-    assert resolve_token(STUDIO_URL, "x") == "global"
-    assert resolve_token(OTHER_URL, "x") == "local-other"
+    assert resolve_token(STUDIO_URL, "x") == "default"
+    assert resolve_token(OTHER_URL, "x") == "other"
+
+
+def test_project_team_picks_the_user_token():
+    studio_login("x-token", teams=["x"])
+    studio_login("y-token", teams=["y"], default_team="y")
+    set_studio(LOCAL, team="x")
+
+    assert StudioClient().token == "x-token"  # noqa: S105
+
+
+def test_project_credentials_file_is_not_read(tmp_dir):
+    path = tmp_dir / ".datachain" / "credentials"
+    path.parent.mkdir()
+    path.write_text('[[token]]\ntoken = "project"\n')
+    path.chmod(0o600)
+
+    assert load_logins() == []
+    assert resolve_token(STUDIO_URL, None) is None
 
 
 def test_env_token_wins_for_every_team(monkeypatch):
-    studio_login("local", teams=["acme"], level=LOCAL)
-    studio_login("global")
+    studio_login("team", teams=["acme"])
+    studio_login("all")
     monkeypatch.setenv("DATACHAIN_STUDIO_TOKEN", "env")
 
     assert resolve_token(STUDIO_URL, "acme") == "env"
@@ -149,11 +133,11 @@ def test_url_is_saved_only_for_a_self_hosted_studio():
     studio_login("default")
     studio_login("other", url=OTHER_URL)
 
-    text = Path(credentials_path(GLOBAL)).read_text()
+    text = Path(credentials_path()).read_text()
     assert text.startswith('[[token]]\ntoken = "default"')
     assert STUDIO_URL not in text
     assert f'url = "{OTHER_URL}"' in text
-    logins = [(lg.url, lg.token) for lg in load_logins(GLOBAL)]
+    logins = [(lg.url, lg.token) for lg in load_logins()]
     assert logins == [(STUDIO_URL, "default"), (OTHER_URL, "other")]
 
 
@@ -171,7 +155,7 @@ def test_invalid_file_is_named(global_config_dir, content, error):
     path.chmod(0o600)
 
     with pytest.raises(DataChainError, match="Invalid Studio credentials file") as exc:
-        load_logins(GLOBAL)
+        load_logins()
     assert str(path) in str(exc.value)
     assert error in str(exc.value)
 
@@ -185,12 +169,12 @@ def test_saved_file_is_private(global_config_dir):
 
 
 @posix_only
-def test_file_open_to_others_is_ignored(caplog, tmp_dir):
-    studio_login("committed", level=LOCAL)
-    (tmp_dir / ".datachain" / "credentials").chmod(0o644)
+def test_file_open_to_others_is_ignored(caplog, global_config_dir):
+    studio_login("token")
+    (Path(global_config_dir) / "credentials").chmod(0o644)
 
     with caplog.at_level(logging.WARNING, logger="datachain"):
-        assert load_logins(LOCAL) == []
+        assert load_logins() == []
         assert resolve_token(STUDIO_URL, None) is None
     [warning] = caplog.messages
     assert "other users can access it" in warning

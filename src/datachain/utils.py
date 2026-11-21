@@ -55,7 +55,6 @@ class DataChainDir:
     TMP = "tmp"
     DB = "db"
     CONFIG = "config"
-    CREDENTIALS = "credentials"
     ENV_VAR = "DATACHAIN_DIR"
     ENV_VAR_DATACHAIN_ROOT = "DATACHAIN_ROOT_DIR"
 
@@ -103,7 +102,6 @@ class DataChainDir:
                 if nearest is None and (
                     osp.isfile(datachain_dir / cls.DB)
                     or osp.isfile(datachain_dir / cls.CONFIG)
-                    or osp.isfile(datachain_dir / cls.CREDENTIALS)
                 ):
                     nearest = datachain_dir
                 # Only reuse ancestor state inside a containing Git project.

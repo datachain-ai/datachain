@@ -10,12 +10,11 @@ usage: datachain auth list [-h] [-v] [-q]
 
 ## Description
 
-This command lists the Studio tokens saved for you and for this project, and shows the default team. For each token, it shows:
+This command lists your saved Studio tokens and shows the default team. For each token, it shows:
 
 * `Teams` - The teams the token is for, saved with `--team`, or `*` for a token saved without `--team`: the fallback when no token is saved for a team.
 * `Name` - The token name, as shown in your Studio profile.
 * `Expires` - The date the token expires.
-* `Saved in` - The file the token is saved in.
 
 If `DATACHAIN_STUDIO_TOKEN` is set, the output says so: that token is used for every team, and the saved tokens are not. See [`datachain auth login`](login.md) for how DataChain picks a token.
 
@@ -39,8 +38,8 @@ datachain auth list
 ```
 Default team: acme
 
-Teams       Name        Expires     Saved in
-----------  ----------  ----------  -------------------------------
-*           laptop      2027-11-16  ~/.config/datachain/credentials
-customer-x  customer-x  2027-02-14  ~/.config/datachain/credentials
+Teams       Name        Expires
+----------  ----------  ----------
+*           laptop      2027-11-16
+customer-x  customer-x  2027-02-14
 ```

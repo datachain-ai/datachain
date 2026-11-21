@@ -382,8 +382,8 @@ def reset_session_job_state():
     os.environ.pop("DATACHAIN_JOB_ID", None)
 
 
-def saved_tokens(level: ConfigLevel = ConfigLevel.GLOBAL) -> list[str]:
-    return [login.token for login in load_logins(level)]
+def saved_tokens() -> list[str]:
+    return [login.token for login in load_logins()]
 
 
 def studio_login(
@@ -391,13 +391,12 @@ def studio_login(
     default_team: str | None = None,
     url: str = STUDIO_URL,
     teams: list[str] | None = None,
-    level: ConfigLevel = ConfigLevel.GLOBAL,
     expires: date | None = None,
 ) -> None:
-    """Save a Studio login and, if given, the default team at the same level."""
-    add_login(Login(url=url, token=token, teams=teams, level=level, expires=expires))
+    """Save a Studio login and, if given, the default team in the user's config."""
+    add_login(Login(url=url, token=token, teams=teams, expires=expires))
     if default_team:
-        with Config(level).edit() as conf:
+        with Config(ConfigLevel.GLOBAL).edit() as conf:
             studio = conf.get("studio", {})
             studio["team"] = default_team
             conf["studio"] = studio
