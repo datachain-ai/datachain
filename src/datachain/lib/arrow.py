@@ -935,13 +935,13 @@ class ArrowGenerator(Generator):
                 ]
             for info, path in zip(model.model_fields.values(), paths, strict=True):
                 if (
-                    (layout := union_layout(info.annotation)) is not None
-                    and not layout.use_slots
+                    (field_layout := union_layout(info.annotation)) is not None
+                    and not field_layout.use_slots
                     and f"{path}.{TYPE_TAG_FIELD}" not in values
                     and any(c.startswith(f"{path}.") for c in values)
                 ):
                     values[f"{path}.{TYPE_TAG_FIELD}"] = [
-                        arm_selector(layout.arms[0])
+                        arm_selector(field_layout.arms[0])
                     ] * batch.num_rows
             absent = [ABSENT] * batch.num_rows
             # An output with no fields still takes one object per row.
