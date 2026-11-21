@@ -44,7 +44,11 @@ def read_parquet(
         settings: Settings to use for the chain.
         columns: Input columns to read, in order; all if omitted. Accepts original
             or normalized names, e.g. "ZIP Code" or "zip_code". For Parquet exported
-            by DataChain, it picks signals as `select()` does, e.g. "p.x".
+            by DataChain, it picks signals as `select()` does, e.g. "p.x". When
+            omitted (along with `output` and `column`), DataChain automatically
+            reads only the columns used by `select()`, `group_by()`, `count()`, or
+            `gen()`, even when preceded by `filter()`, `order_by()`, or `mutate()`
+            in any order.
         kwargs: Parameters to pass to `read_storage`. A directory or glob is
             listed once and the listing is reused for 4 hours, so files added or
             changed since are missed or fail to read. Pass `update=True` to list

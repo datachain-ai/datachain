@@ -1781,14 +1781,17 @@ class DataChain:
             return self
         new_schema = self.signals_schema.to_partial(*args)
 
-        if "sys" in self.signals_schema.values and "sys" not in new_schema.values:
+        implicit_sys = (
+            "sys" in self.signals_schema.values and "sys" not in new_schema.values
+        )
+        if implicit_sys:
             new_schema = SignalSchema({"sys": self.signals_schema.values["sys"]}) | (
                 new_schema
             )
 
         columns = new_schema.db_signals()
         return self._evolve(
-            query=self._query.select(*columns),
+            query=self._query.select(*columns, implicit_sys=implicit_sys),
             signal_schema=new_schema,
         )
 
@@ -2933,7 +2936,11 @@ class DataChain:
             nrows: Optional row limit per file.
             columns: Input columns to read, in order; all if omitted. Accepts original
                 or normalized names, e.g. "ZIP Code" or "zip_code". For Parquet exported
-                by DataChain, it picks signals as `select()` does, e.g. "p.x".
+                by DataChain, it picks signals as `select()` does, e.g. "p.x". When
+                omitted (along with `output` and `column`), DataChain automatically
+                reads only the columns used by `select()`, `group_by()`, `count()`, or
+                `gen()`, even when preceded by `filter()`, `order_by()`, or `mutate()`
+                in any order.
             kwargs: Parameters to pass to pyarrow.dataset.dataset.
 
         Example:
@@ -3033,6 +3040,7 @@ class DataChain:
 
         # Prefetch downloads whole files, so a partial read prefetches only small ones.
         partial = nrows or (columns is not None and is_parquet(format))
+        projectable = infer and not col_names and not column and columns is None
         return self.gen(  # type: ignore[arg-type]
             ArrowGenerator(
                 schema,
@@ -3044,6 +3052,7 @@ class DataChain:
                 output_from_types=from_types,
                 parse_options=parse_options,
                 prefetch_max_size=PARTIAL_READ_PREFETCH_MAX_SIZE if partial else None,
+                projectable=projectable,
                 **kwargs,
             ),
             output=output,
