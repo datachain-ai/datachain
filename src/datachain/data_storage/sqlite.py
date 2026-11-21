@@ -268,30 +268,28 @@ class SQLiteDatabaseEngine(DatabaseEngine):
     def reflect_table(self, name: str) -> Table:
         if self.is_closed:
             self._reconnect()
-        # Query self.db directly so tables created in an active transaction are visible.
-        rows = [
-            row
-            for row in self.execute_str(f"PRAGMA table_xinfo({quote(name)})").fetchall()
-            if row[6] != 1
-        ]
-        if not rows:
+        try:
+            columns = sqlalchemy.inspect(self.engine).get_columns(name)
+        except sqlalchemy.exc.NoSuchTableError as exc:
             if (cached := self.metadata.tables.get(name)) is not None:
                 self.metadata.remove(cached)
-            raise TableMissingError(f"Table '{name}' not found")
-        # Convert SQLite type names (e.g. "INTEGER") to SQLAlchemy types.
-        resolve_type = self.dialect._resolve_type_affinity
+            raise TableMissingError(f"Table '{name}' not found") from exc
         return Table(
             name,
             self.metadata,
             *(
                 Column(
-                    row[1],
-                    resolve_type(row[2].upper()),
-                    nullable=not row[3],
-                    server_default=text(str(row[4])) if row[4] is not None else None,
-                    primary_key=bool(row[5]),
+                    col["name"],
+                    col["type"],
+                    nullable=col["nullable"],
+                    server_default=(
+                        text(str(col["default"]))
+                        if col["default"] is not None
+                        else None
+                    ),
+                    primary_key=bool(col["primary_key"]),
                 )
-                for row in rows
+                for col in columns
             ),
             extend_existing=True,
         )

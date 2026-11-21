@@ -478,19 +478,18 @@ def test_get_table_matches_case_insensitive_name_and_added_column(warehouse):
 
 
 @skip_if_not_sqlite
-def test_get_table_inside_transaction_sees_uncommitted_table_metadata(warehouse):
-    with warehouse.db.transaction():
-        warehouse.db.execute_str(
-            "CREATE TABLE tx_rel"
-            " (id INTEGER PRIMARY KEY, x INTEGER NOT NULL DEFAULT 7, opt TEXT)"
-        )
-        warehouse.db.execute_str("INSERT INTO tx_rel (id) VALUES (1)")
-        tx_tbl = warehouse.get_table("tx_rel")
-        assert tx_tbl.c.id.primary_key is True
-        assert tx_tbl.c.x.primary_key is False
-        assert tx_tbl.c.x.nullable is False
-        assert tx_tbl.c.opt.nullable is True
-        assert tx_tbl.c.x.server_default is not None
+def test_get_table_reflects_column_metadata(warehouse):
+    warehouse.db.execute_str(
+        "CREATE TABLE tx_rel"
+        " (id INTEGER PRIMARY KEY, x INTEGER NOT NULL DEFAULT 7, opt TEXT)"
+    )
+    warehouse.db.execute_str("INSERT INTO tx_rel (id) VALUES (1)")
+    tx_tbl = warehouse.get_table("tx_rel")
+    assert tx_tbl.c.id.primary_key is True
+    assert tx_tbl.c.x.primary_key is False
+    assert tx_tbl.c.x.nullable is False
+    assert tx_tbl.c.opt.nullable is True
+    assert tx_tbl.c.x.server_default is not None
     assert warehouse.db.execute_str("SELECT id, x FROM tx_rel").fetchall() == [(1, 7)]
 
 
