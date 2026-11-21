@@ -287,7 +287,7 @@ class SQLiteDatabaseEngine(DatabaseEngine):
                         if col["default"] is not None
                         else None
                     ),
-                    primary_key=bool(col["primary_key"]),
+                    primary_key=bool(col.get("primary_key")),
                 )
                 for col in columns
             ),
