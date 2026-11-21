@@ -121,6 +121,16 @@ def test_expired_token_names_a_self_hosted_studio():
     assert f"Run `datachain auth logout -H {OTHER_URL} --team x`" in str(exc.value)
 
 
+def test_logout_command_quotes_its_arguments():
+    login = Login(url="https://studio.example.com/a b", token="t", teams=["Customer A"])  # noqa: S106
+
+    assert login.logout_command(host=True) == (
+        "datachain auth logout -H 'https://studio.example.com/a b' --team 'Customer A'"
+    )
+    plain = Login(url=STUDIO_URL, token="t", teams=["customer-a"])  # noqa: S106
+    assert plain.logout_command() == "datachain auth logout --team customer-a"
+
+
 def test_login_normalizes_url_and_teams():
     login = Login(url=f"{STUDIO_URL}/", token="token", teams=["a", "a", "b"])  # noqa: S106
 

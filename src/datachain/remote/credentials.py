@@ -14,6 +14,7 @@ A command finds its token from the Studio URL and team it acts on:
 
 import logging
 import os
+import shlex
 import stat
 import tempfile
 from dataclasses import dataclass
@@ -66,8 +67,11 @@ class Login:
         For a token for teams, `team` picks the team to name; it defaults to the
         first.
         """
-        host_flag = f" -H {self.url}" if host else ""
-        team_flag = f" --team {team or self.teams[0]}" if self.teams else ""
+        # Quoted, so the command can be pasted into a shell as is.
+        host_flag = f" -H {shlex.quote(self.url)}" if host else ""
+        team_flag = (
+            f" --team {shlex.quote(team or self.teams[0])}" if self.teams else ""
+        )
         return f"datachain auth logout{host_flag}{team_flag}"
 
 

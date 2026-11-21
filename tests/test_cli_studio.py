@@ -228,11 +228,12 @@ def test_studio_login_keeps_a_system_default_team(
     assert "default team" not in capsys.readouterr().out
 
 
-def test_studio_login_new_host_keeps_the_system_default_team(get_access_token):
+@pytest.mark.parametrize("teams", [[], ["--team", "customer"]], ids=["no-team", "team"])
+def test_studio_login_new_host_keeps_the_system_default_team(get_access_token, teams):
     # The system config's team is the machine's setting, for any Studio.
     set_studio(ConfigLevel.SYSTEM, team="acme")
 
-    assert main(["auth", "login", "-H", OTHER_URL]) == 0
+    assert main(["auth", "login", "-H", OTHER_URL, *teams]) == 0
 
     assert Config(ConfigLevel.GLOBAL).read()["studio"] == {"url": OTHER_URL}
     assert Config().read()["studio"] == {"team": "acme", "url": OTHER_URL}
@@ -359,13 +360,17 @@ def test_studio_login_new_host_keeps_the_default_team_off(get_access_token):
 @pytest.mark.parametrize(
     "hostname,expected",
     [
-        # The global config's Studio already: its default team stays.
-        (STUDIO_URL, {"team": "acme"}),
-        # Only the project's Studio: the global config switches to it.
-        (OTHER_URL, {"url": OTHER_URL, "team": "customer"}),
+        pytest.param(
+            STUDIO_URL, {"team": "acme"}, id="your-studio-keeps-its-default-team"
+        ),
+        pytest.param(
+            OTHER_URL,
+            {"url": OTHER_URL, "team": "customer"},
+            id="project-studio-becomes-yours-with-the-new-team",
+        ),
     ],
 )
-def test_studio_login_hostname_is_compared_with_the_config_it_changes(
+def test_studio_login_with_hostname_of_a_project_studio(
     get_access_token, hostname, expected
 ):
     set_studio(ConfigLevel.GLOBAL, team="acme")
@@ -580,7 +585,7 @@ def test_studio_logout_keeps_the_default_team_off():
     assert Config().read()["studio"]["team"] == ""
 
 
-def test_studio_logout_empty_team_removes_nothing(capsys):
+def test_studio_logout_rejects_empty_team(capsys):
     # E.g. `--team "$TEAM"` with TEAM unset.
     studio_login()
 
@@ -588,7 +593,7 @@ def test_studio_logout_empty_team_removes_nothing(capsys):
         assert main(["auth", "logout", "--team", ""]) == 1
         assert not m.called
 
-    assert "No token for team ''" in capsys.readouterr().err
+    assert "--team can't be empty." in capsys.readouterr().err
     assert saved_tokens() == ["isat_access_token"]
 
 
@@ -932,6 +937,14 @@ def test_expired_token_only_breaks_studio_listings(capsys):
     for command in (["ls", ".", "--studio"], ["ls", "--studio"]):
         assert main(command) == 1
         assert "expired on 2020-01-01" in capsys.readouterr().err
+
+
+def test_studio_ls_without_paths_checks_the_team(capsys):
+    # A token saved without --team covers any team, but there is no team.
+    studio_login()
+
+    assert main(["ls", "--studio"]) == 1
+    assert "Studio team is not set" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("default_team", [None, ""])

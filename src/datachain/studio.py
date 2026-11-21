@@ -296,7 +296,7 @@ def login(args: "Namespace"):
             user, url=hostname, team="" if own_team == "" else None
         )
         print(f"Set Studio URL to {hostname} in {path}")
-        studio = {"url": hostname, "team": "" if studio.get("team") == "" else None}
+        studio = _level_studio_config(user)
 
     # A Studio set only by the environment or a project gets no default team here,
     # and a default team set or turned off stays.
@@ -383,12 +383,14 @@ def _studio_url(studio: dict) -> str:
 def logout(
     team: str | None = None,
     hostname: str | None = None,
-    all_teams: bool = False,
+    all_tokens: bool = False,
 ):
+    if team == "":
+        raise DataChainError("--team can't be empty.")
     url = normalize_url(hostname or get_studio_url())
     # Fails on a file open to others, as removing a token from it would.
     saved = [lg for lg in load_logins(for_update=True) if lg.url == url]
-    if all_teams:
+    if all_tokens:
         logins, what = saved, "No token"
     elif team is not None:
         logins = [login for login in saved if team in (login.teams or ())]
