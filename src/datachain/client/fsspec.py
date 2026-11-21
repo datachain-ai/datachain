@@ -616,9 +616,10 @@ class Client(ABC):
 
     async def _download(self, file: "File", *, callback: "Callback" = None) -> None:
         if self.cache.contains(file):
-            # Already in cache, so there's nothing to do.
             return
-        await self._put_in_cache(file, callback=callback)
+        async with self.cache._download_lock(file, self.fs):
+            if not self.cache.contains(file):
+                await self._put_in_cache(file, callback=callback)
 
     def put_in_cache(self, file: "File", *, callback: "Callback" = None) -> None:
         sync(get_loop(), functools.partial(self._put_in_cache, file, callback=callback))

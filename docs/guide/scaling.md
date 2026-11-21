@@ -42,7 +42,7 @@ DataChain's storage-native architecture means files live in cloud storage and ar
 
 ## Async Prefetch
 
-Prefetch downloads file content ahead of the UDF that reads it. `prefetch=N` downloads the next N files in full while the current one is processed. Default is 2; `prefetch=0` disables it. Tune by file size: ~10-16 for small files, 1 for large files.
+Scalar UDFs use 16 concurrent prefetch workers per process, using 512 MiB of listed file sizes as a read-ahead target. The default keeps a five-row minimum for compatibility, so this is not a hard memory or disk limit. Set `prefetch=N` to control concurrency, `prefetch_bytes` to change the target, or `prefetch=0` to disable it.
 
 In `batch_map()`, `prefetch` counts batches; see [Batched Inference](batch-inference.md#prefetch).
 

@@ -9,7 +9,8 @@ from collections.abc import (
     Iterable,
     Iterator,
 )
-from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from typing import Generic, TypeVar
 
 from fsspec.asyn import get_loop
@@ -32,6 +33,9 @@ class AsyncMapper(Generic[InputT, ResultT]):
     `workers` asyncio coroutines, and the results are yielded in arbitrary
     order.
 
+    `queue_size` bounds buffered input items (not active workers or completed
+    results). It defaults to twice `workers`; both limits must be positive.
+
     If `func` needs to call synchronous functions that may themselves run coroutines
     on the same loop, it must use `mapper.to_thread()`.
 
@@ -49,10 +53,14 @@ class AsyncMapper(Generic[InputT, ResultT]):
         *,
         workers: int = ASYNC_WORKERS,
         loop: asyncio.AbstractEventLoop | None = None,
+        queue_size: int | None = None,
     ):
+        if workers < 1 or (queue_size is not None and queue_size < 1):
+            raise ValueError("workers and queue_size must be positive")
         self.func = func
         self.iterable = iterable
         self.workers = workers
+        self.queue_size = 2 * workers if queue_size is None else queue_size
         self.loop = get_loop() if loop is None else loop
         self.pool = ThreadPoolExecutor(workers)
         self._tasks: set[asyncio.Task] = set()
@@ -65,13 +73,20 @@ class AsyncMapper(Generic[InputT, ResultT]):
         task.add_done_callback(self._tasks.discard)
         return task
 
+    async def _put_work(self, item: InputT) -> None:
+        if self._shutdown_producer.is_set():
+            return
+        await self.work_queue.put(item)
+        if self._shutdown_producer.is_set():
+            self._drain_work_queue()
+
     def _produce(self) -> None:
         try:
             with safe_closing(self.iterable):
                 for item in self.iterable:
                     if self._shutdown_producer.is_set():
                         return
-                    coro = self.work_queue.put(item)
+                    coro = self._put_work(item)
                     fut = asyncio.run_coroutine_threadsafe(coro, self.loop)
                     fut.result()  # wait until the item is in the queue
         finally:
@@ -79,6 +94,15 @@ class AsyncMapper(Generic[InputT, ResultT]):
 
     async def produce(self) -> None:
         await self.to_thread(self._produce)
+
+    def _drain_work_queue(self) -> None:
+        q = getattr(self, "work_queue", None)
+        if q is None:
+            return
+        while not q.empty():
+            with suppress(asyncio.QueueEmpty):
+                q.get_nowait()
+                q.task_done()
 
     def shutdown_producer(self) -> None:
         """
@@ -91,10 +115,10 @@ class AsyncMapper(Generic[InputT, ResultT]):
         delay.
         """
         self._shutdown_producer.set()
-        q = self.work_queue
-        while not q.empty():
-            q.get_nowait()
-            q.task_done()
+        if self.loop.is_running():
+            self.loop.call_soon_threadsafe(self._drain_work_queue)
+        else:
+            self._drain_work_queue()
 
     async def worker(self) -> None:
         while (item := await self.work_queue.get()) is not None:
@@ -105,7 +129,7 @@ class AsyncMapper(Generic[InputT, ResultT]):
                 self.work_queue.task_done()
 
     async def init(self) -> None:
-        self.work_queue = asyncio.Queue(2 * self.workers)
+        self.work_queue = asyncio.Queue(self.queue_size)
         self.result_queue: asyncio.Queue[ResultT | None] = asyncio.Queue(self.workers)
 
     async def run(self) -> None:
@@ -165,13 +189,23 @@ class AsyncMapper(Generic[InputT, ResultT]):
     async def _break_iteration(self) -> None:
         """Signal that iteration must stop ASAP."""
         while not self.result_queue.empty():
-            self.result_queue.get_nowait()
+            with suppress(asyncio.QueueEmpty):
+                self.result_queue.get_nowait()
         await self.result_queue.put(None)
 
     def iterate(self, timeout=None) -> Generator[ResultT, None, None]:
         init = asyncio.run_coroutine_threadsafe(self.init(), self.loop)
         init.result()
-        async_run = asyncio.run_coroutine_threadsafe(self.run(), self.loop)
+        finished = threading.Event()
+
+        async def run():
+            try:
+                await self.run()
+            finally:
+                self._drain_work_queue()
+                finished.set()
+
+        async_run = asyncio.run_coroutine_threadsafe(run(), self.loop)
         try:
             while True:
                 if (result := self.next_result(timeout)) is not None:
@@ -184,7 +218,7 @@ class AsyncMapper(Generic[InputT, ResultT]):
             self.shutdown_producer()
             if not async_run.done():
                 async_run.cancel()
-                wait([async_run])
+            finished.wait()
             self._producer_is_shutdown.wait()
 
     def __iter__(self):
