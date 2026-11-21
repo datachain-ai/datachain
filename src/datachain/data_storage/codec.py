@@ -17,6 +17,7 @@ import pyarrow.compute as pc
 from pydantic import BaseModel, RootModel
 
 from datachain import json
+from datachain.error import RowEncodeError
 from datachain.lib.model_store import ModelStore
 
 DECODE_BATCH_SIZE = 16
@@ -35,18 +36,6 @@ class TypeCodec(NamedTuple):
     default: Any = None
     decode: Callable[[Any], Any] | None = None
     encode_column: "Callable[[pa.Array], pa.Array | None] | None" = None
-
-
-class RowEncodeError(ValueError):
-    """A value its column cannot take; `column` is the column's index."""
-
-    def __init__(self, column: int, value: Any) -> None:
-        self.column = column
-        self.value = value
-        super().__init__(f"invalid value {value!r} for column {column}")
-
-    def __reduce__(self):
-        return RowEncodeError, (self.column, self.value)
 
 
 def _identity(value: Any) -> Any:

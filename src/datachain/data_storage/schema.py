@@ -286,6 +286,15 @@ def partition_columns() -> Sequence[sa.Column]:
     ]
 
 
+def parts_table_name(table_name: str) -> str:
+    return f"{table_name}_parts"
+
+
+def committed_part_keys(parts: sa.Table) -> sa.Select:
+    """Keys of the committed parts; claim rows have none."""
+    return sa.select(parts.c.part_key).where(parts.c.part_key.is_not(None))
+
+
 DataTableT = TypeVar("DataTableT", bound=DataTable)
 
 

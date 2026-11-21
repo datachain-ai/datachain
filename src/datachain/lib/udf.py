@@ -20,7 +20,7 @@ from fsspec.callbacks import DEFAULT_CALLBACK
 
 from datachain.asyn import AsyncMapper
 from datachain.cache import temporary_cache
-from datachain.data_storage.codec import RowEncodeError
+from datachain.error import RowEncodeError
 from datachain.hash_utils import hash_callable
 from datachain.lib.file import File, FileError
 from datachain.lib.signal_schema import SignalSchema

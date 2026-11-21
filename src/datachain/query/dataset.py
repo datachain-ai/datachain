@@ -42,10 +42,11 @@ from datachain.checkpoint_event import (
 from datachain.data_storage.schema import (
     PARTITION_COLUMN_ID,
     coerce_table_types,
+    committed_part_keys,
     partition_col_names,
     partition_columns,
+    parts_table_name,
 )
-from datachain.data_storage.writer import committed_part_keys, parts_table_name
 from datachain.dataset import DatasetDependency, DatasetStatus
 from datachain.error import (
     DatasetInvalidVersionError,

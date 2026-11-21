@@ -15,6 +15,7 @@ import numpy as np
 import pyarrow as pa
 import sqlalchemy as sa
 
+from datachain.data_storage.schema import committed_part_keys, parts_table_name
 from datachain.sql.types import Int64
 
 if TYPE_CHECKING:
@@ -28,10 +29,6 @@ MAX_SEQ = (1 << ID_BITS) - 1
 MAX_WRITER_NO = (1 << 23) - 2
 MAX_ID = (1 << 63) - 1
 LEDGER_COLUMNS = ("part_key", "writer_no", "lo", "hi")
-
-
-def parts_table_name(table_name: str) -> str:
-    return f"{table_name}_parts"
 
 
 def parts_columns() -> list[sa.Column]:
@@ -135,6 +132,14 @@ class Writer:
         self.flush_at = time.monotonic() + self.flush_interval
 
 
-def committed_part_keys(parts: sa.Table) -> sa.Select:
-    """Keys of the committed parts; claim rows have none."""
-    return sa.select(parts.c.part_key).where(parts.c.part_key.is_not(None))
+__all__ = [
+    "ID_BITS",
+    "LEDGER_COLUMNS",
+    "MAX_ID",
+    "MAX_SEQ",
+    "MAX_WRITER_NO",
+    "Writer",
+    "committed_part_keys",
+    "parts_columns",
+    "parts_table_name",
+]
