@@ -187,7 +187,8 @@ def _scan_groups(
             left -= batch.num_rows
             pbar.update(batch.num_rows)
             hits = batch.append_column(index, indices).filter(filter)
-            yield hits.column(index), hits.drop_columns([index])
+            if hits.num_rows:
+                yield hits.column(index), hits.drop_columns([index])
 
 
 def _scan_group_rest(

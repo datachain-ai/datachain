@@ -43,6 +43,41 @@ def rows_parquet(tmp_dir):
     return path.as_uri()
 
 
+@pytest.fixture
+def arrow_rows(monkeypatch):
+    rows = []
+    for name in ("read_batches", "filter_batches"):
+        fn = getattr(arrow, name)
+
+        def record(ds, *args, _fn=fn, **kw):
+            total = 0
+            for idx, batch in _fn(ds, *args, **kw):
+                total += batch.num_rows
+                yield idx, batch
+            rows.append(total)
+
+        monkeypatch.setattr(arrow, name, record)
+    return rows
+
+
+@pytest.fixture
+def nulls_parquet(tmp_dir):
+    path = tmp_dir / "nulls.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "id": [0, 1, 2, 3],
+                "x": pa.array([10, None, 20, 30], type=pa.int64()),
+                "s": pa.array(["a", None, "b", "c"], type=pa.large_string()),
+                "flag": pa.array([True, None, False, True], type=pa.bool_()),
+                "cat": pa.array(["k1", None, "k2", "k1"]).dictionary_encode(),
+            }
+        ),
+        path,
+    )
+    return path.as_uri()
+
+
 def test_read_parquet_select_reads_only_selected_columns(
     tmp_dir, test_session, mocker, monkeypatch, arrow_reads
 ):
@@ -527,7 +562,7 @@ def test_filter_between_on_values(test_session):
 
 
 def test_read_parquet_filter_prunes_row_groups_and_streams_payload(
-    tmp_dir, test_session, monkeypatch
+    tmp_dir, test_session, mocker, monkeypatch
 ):
     path = tmp_dir / "multi_rg.parquet"
     table = pa.table(
@@ -544,6 +579,7 @@ def test_read_parquet_filter_prunes_row_groups_and_streams_payload(
 
     monkeypatch.setattr(ArrowGenerator, "DEFAULT_BATCH_SIZE", 2)
     monkeypatch.setattr(arrow, "SMALL_ROW_GROUP_BYTES", 0)
+    scan_rest = mocker.spy(arrow, "_scan_group_rest")
     res = (
         dc.read_parquet(path.as_uri(), session=test_session)
         .filter((C("a") >= 10) & (C("b") == 60))
@@ -551,6 +587,7 @@ def test_read_parquet_filter_prunes_row_groups_and_streams_payload(
         .to_list("payload", "source.index")
     )
     assert res == [("p5", 5), ("p8", 8)]
+    assert scan_rest.call_count == 1
 
 
 def test_read_parquet_filter_coalesces_remaining_row_groups_after_two_match(
@@ -591,23 +628,6 @@ def test_read_parquet_filter_coalesces_remaining_row_groups_after_two_match(
     # rg 0 and rg 1 use _scan_group_rest; rg 2..5 and rg 6 use two _scan_groups windows.
     assert rest_spy.call_count == 4
     assert scan_spy.call_count == 3
-
-
-@pytest.fixture
-def arrow_rows(monkeypatch):
-    rows = []
-    for name in ("read_batches", "filter_batches"):
-        fn = getattr(arrow, name)
-
-        def record(ds, *args, _fn=fn, **kw):
-            total = 0
-            for idx, batch in _fn(ds, *args, **kw):
-                total += batch.num_rows
-                yield idx, batch
-            rows.append(total)
-
-        monkeypatch.setattr(arrow, name, record)
-    return rows
 
 
 def test_read_parquet_filter_without_select_preserves_source_index_and_all_columns(
@@ -688,24 +708,6 @@ def test_read_parquet_filter_pushdown_operators(
         == full.filter(predicate).to_list("a", "source.index")
         == expected
     )
-
-
-@pytest.fixture
-def nulls_parquet(tmp_dir):
-    path = tmp_dir / "nulls.parquet"
-    pq.write_table(
-        pa.table(
-            {
-                "id": [0, 1, 2, 3],
-                "x": pa.array([10, None, 20, 30], type=pa.int64()),
-                "s": pa.array(["a", None, "b", "c"], type=pa.large_string()),
-                "flag": pa.array([True, None, False, True], type=pa.bool_()),
-                "cat": pa.array(["k1", None, "k2", "k1"]).dictionary_encode(),
-            }
-        ),
-        path,
-    )
-    return path.as_uri()
 
 
 @pytest.mark.parametrize(
@@ -918,6 +920,7 @@ def test_read_parquet_filter_skips_nullable_field_with_non_optional_output():
         to_arrow_filter([C("x") == 0], nullable_schema, {"x": int | None}) is not None
     )
     assert to_arrow_filter([C("x") == 0], non_null_schema, {"x": int}) is not None
+    assert to_arrow_filter([C("x") < 2**64], non_null_schema, {"x": int}) is None
 
 
 @skip_if_not_sqlite
@@ -929,6 +932,8 @@ def test_read_parquet_filter_unpushable_types_fall_back_to_sql(tmp_dir, test_ses
                 "id": [0, 1, 2, 3],
                 "f": [1.5, 0.5, float("nan"), None],
                 "s": ["0", "5", "9", "9"],
+                "n": pa.nulls(4),
+                "u": pa.array([0, 1, 2, 3], type=pa.uint64()),
             }
         ),
         path,
@@ -946,6 +951,8 @@ def test_read_parquet_filter_unpushable_types_fall_back_to_sql(tmp_dir, test_ses
     assert chain.filter(C("id") == True).to_values("id") == [1]  # noqa: E712
     assert chain.filter(C("id") > "5").to_values("id") == []
     assert chain.filter(C("s") == 5).to_values("id") == [1]
+    assert chain.filter(C("n").in_(["foo"])).to_values("id") == []
+    assert chain.filter(C("u") > -1).to_values("id") == [0, 1, 2, 3]
 
 
 def test_read_parquet_filter_on_blank_column_name(tmp_dir, test_session):

@@ -43,9 +43,14 @@ def _filter_fields(
     for name, raw in normalize_col_names(schema.names).items():
         if name not in output:
             continue
+        field = schema.field(raw)
+        col_type = field.type
         anno, optional = unwrap_optional(output[name])
-        if anno in (int, str, bool, bytes) and (
-            optional or not schema.field(raw).nullable
+        if (
+            anno in (int, str, bool, bytes)
+            and (optional or not field.nullable)
+            and not pa.types.is_null(col_type)
+            and not pa.types.is_uint64(col_type)
         ):
             fields[name] = (raw, anno)
     return fields
@@ -79,19 +84,22 @@ def _compare(
             if op is sa_op.is_
             else (col.is_null() | (col != value))
         )
-    if op in _COMPARISONS and type(value) is kind:
-        return op(col, value)  # type: ignore[arg-type,return-value]
-    if (
-        op in (sa_op.in_op, sa_op.not_in_op)
-        and value
-        and all(type(v) is kind for v in value)
-    ):
-        return col.isin(value) if op is sa_op.in_op else ~col.isin(value)
-    if op in (sa_op.between_op, sa_op.not_between_op):
-        lo, hi = (_literal(b) for b in right.clauses)
-        if type(lo) is kind and type(hi) is kind:
-            between = (col >= lo) & (col <= hi)
-            return between if op is sa_op.between_op else ~between
+    try:
+        if op in _COMPARISONS and type(value) is kind:
+            return op(col, value)  # type: ignore[arg-type,return-value]
+        if (
+            op in (sa_op.in_op, sa_op.not_in_op)
+            and value
+            and all(type(v) is kind for v in value)
+        ):
+            return col.isin(value) if op is sa_op.in_op else ~col.isin(value)
+        if op in (sa_op.between_op, sa_op.not_between_op):
+            lo, hi = (_literal(b) for b in right.clauses)
+            if type(lo) is kind and type(hi) is kind:
+                between = (col >= lo) & (col <= hi)
+                return between if op is sa_op.between_op else ~between
+    except OverflowError:
+        pass
     return None
 
 
