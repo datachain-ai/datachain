@@ -268,8 +268,7 @@ class SQLiteDatabaseEngine(DatabaseEngine):
     def reflect_table(self, name: str) -> Table:
         if self.is_closed:
             self._reconnect()
-        # Query PRAGMA table_xinfo on self.db rather than inspect(self.engine),
-        # which opens a separate connection and cannot see uncommitted DDL on self.db.
+        # Query self.db directly so tables created in an active transaction are visible.
         rows = [
             row
             for row in self.execute_str(f"PRAGMA table_xinfo({quote(name)})").fetchall()
@@ -279,8 +278,7 @@ class SQLiteDatabaseEngine(DatabaseEngine):
             if (cached := self.metadata.tables.get(name)) is not None:
                 self.metadata.remove(cached)
             raise TableMissingError(f"Table '{name}' not found")
-        # Map raw SQLite type names from PRAGMA table_xinfo using SQLiteDialect's
-        # type-affinity rules (same helper SQLAlchemy's own PRAGMA reflection uses).
+        # Convert SQLite type names (e.g. "INTEGER") to SQLAlchemy types.
         resolve_type = self.dialect._resolve_type_affinity
         return Table(
             name,
