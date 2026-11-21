@@ -42,15 +42,18 @@ class Config:
         except FileNotFoundError:
             return TOMLDocument()
 
-    def load_config_to_level(self) -> TOMLDocument:
+    def load_config_to_level(self, inclusive: bool = False) -> TOMLDocument:
+        """The levels below this one merged, and this one too with `inclusive`."""
         merged_conf = TOMLDocument()
 
         for merge_level in self.LEVELS:
-            if merge_level == self.level:
+            if merge_level == self.level and not inclusive:
                 break
             config = self.load_one(merge_level)
             if config:
                 merge(merged_conf, config)
+            if merge_level == self.level:
+                break
 
         return merged_conf
 

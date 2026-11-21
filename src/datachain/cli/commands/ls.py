@@ -28,7 +28,7 @@ def ls(
         client = StudioClient(team=team)
         # Fails before any output, local results included: without a login or a
         # team, also when there is no path to request.
-        _ = client.token, client.team
+        client.check_auth()
     label_sections = show_local and show_studio
 
     if show_local:

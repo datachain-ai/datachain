@@ -116,40 +116,28 @@ def test_datasets_ls_flavor_defaults():
 @pytest.mark.parametrize(
     "studio,local,all,logged_in,expected",
     [
-        # (show_local, show_studio). No flags: local only, whatever the login.
-        (False, False, False, False, (True, False)),
-        (False, False, False, True, (True, False)),
-        # Explicit --all keeps both on when logged in, downgrades to local otherwise
+        # (show_local, show_studio). None: the login must not be checked.
+        # No flags: local only.
+        (False, False, False, None, (True, False)),
+        # --all: both with a token for the team, local only without one.
         (False, False, True, True, (True, True)),
         (False, False, True, False, (True, False)),
-        # Explicit single-source flags clear --all
-        (True, False, False, True, (False, True)),
-        (False, True, False, False, (True, False)),
-        (True, True, False, True, (True, True)),
-        (True, False, True, True, (False, True)),
-        (False, True, True, True, (True, False)),
+        # --studio or --local: as given, and --all is cleared.
+        (True, False, False, None, (False, True)),
+        (False, True, False, None, (True, False)),
+        (True, True, False, None, (True, True)),
+        (True, False, True, None, (False, True)),
+        (False, True, True, None, (True, False)),
+        (True, True, True, None, (True, True)),
     ],
 )
 def test_determine_flavors(studio, local, all, logged_in, expected):
-    assert determine_flavors(studio, local, all, lambda: logged_in) == expected
+    def check_login():
+        if logged_in is None:
+            raise AssertionError("credentials read")
+        return logged_in
 
-
-@pytest.mark.parametrize(
-    "studio,local,all",
-    [
-        (False, False, False),
-        (False, True, False),
-        (True, False, False),
-        # --studio or --local clears --all, so no login check either.
-        (True, False, True),
-        (False, True, True),
-    ],
-)
-def test_determine_flavors_checks_login_only_for_all(studio, local, all):
-    def logged_in():
-        raise AssertionError("credentials read")
-
-    determine_flavors(studio, local, all, logged_in)
+    assert determine_flavors(studio, local, all, check_login) == expected
 
 
 def test_dataset_describe_parser():

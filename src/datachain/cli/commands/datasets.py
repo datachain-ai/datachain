@@ -16,7 +16,7 @@ from datachain.lib.dataset_description import DatasetDescription
 from datachain.lib.dataset_info import DatasetInfo
 from datachain.lib.dc import describe
 from datachain.lib.listing_info import ListingInfo
-from datachain.remote.studio import is_token_set
+from datachain.remote.studio import StudioClient, is_token_set
 from datachain.studio import list_datasets as list_datasets_studio
 from datachain.utils import DatasetIdentifier
 
@@ -60,6 +60,10 @@ def list_datasets(
     show_local, show_studio = determine_flavors(
         studio, local, all, lambda: is_token_set(team)
     )
+    if show_studio:
+        # Fails before the local lookup, which could fail first on a name that is
+        # only in Studio.
+        StudioClient(team=team).check_auth()
     if name:
         latest_only = False
 

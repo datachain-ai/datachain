@@ -89,6 +89,13 @@ def self_hosted(url: str) -> str:
     return "" if url == STUDIO_URL else f" at {url}"
 
 
+def config_url(level: ConfigLevel) -> str:
+    """The Studio URL the config sets at this level or a lower one, without the env."""
+    config = Config(level).load_config_to_level(inclusive=True)
+    # An empty URL is the default Studio, as in get_studio_url().
+    return normalize_url((config.get("studio") or {}).get("url") or STUDIO_URL)
+
+
 def env_token_url() -> str:
     """The Studio `DATACHAIN_STUDIO_TOKEN` may be sent to.
 
@@ -97,10 +104,7 @@ def env_token_url() -> str:
     """
     if url := os.environ.get(URL_ENV):
         return normalize_url(url)
-    studio: dict = {}
-    for level in (ConfigLevel.SYSTEM, ConfigLevel.GLOBAL):
-        studio.update(Config(level).read().get("studio", {}) or {})
-    return normalize_url(studio.get("url") or STUDIO_URL)
+    return config_url(ConfigLevel.GLOBAL)
 
 
 def credentials_path() -> str:

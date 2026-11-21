@@ -333,6 +333,58 @@ def test_studio_login_saves_nothing_when_the_config_cant_be_written(
 
 
 @posix_only
+def test_studio_login_changes_no_config_when_the_token_cant_be_saved(
+    get_access_token, global_config_dir
+):
+    set_studio(ConfigLevel.GLOBAL, team="acme")
+    # The config file stays writable, but no new file can be made next to it.
+    Path(global_config_dir).chmod(0o500)
+    try:
+        with requests_mock.mock() as m:
+            m.post(f"{OTHER_URL}/api/device-logout", json={})
+            assert main(["auth", "login", "-H", OTHER_URL, "--team", "x"]) == 1
+            assert m.last_request.headers["Authorization"] == "token isat_access_token"
+    finally:
+        Path(global_config_dir).chmod(0o700)
+
+    assert Config(ConfigLevel.GLOBAL).read()["studio"] == {"team": "acme"}
+    assert saved_tokens() == []
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["auth", "logout", "-H", ""],
+        ["auth", "logout", "-H", "/"],
+        ["auth", "login", "-H", ""],
+    ],
+)
+def test_studio_auth_empty_hostname_fails(get_access_token, capsys, command):
+    # E.g. `-H "$STAGING_URL"` with it unset: not the current Studio's token.
+    studio_login()
+
+    with requests_mock.mock() as m:
+        assert main(command) == 1
+        assert not m.called
+
+    get_access_token.assert_not_called()
+    assert "--hostname can't be empty." in capsys.readouterr().err
+    assert saved_tokens() == ["isat_access_token"]
+
+
+def test_studio_login_exists_error_names_a_studio_set_by_the_env(
+    get_access_token, capsys, monkeypatch
+):
+    monkeypatch.setenv("DATACHAIN_STUDIO_URL", OTHER_URL)
+    studio_login(url=OTHER_URL)
+
+    assert main(["auth", "login"]) == 1
+
+    # Without -H, the command run without the env would remove another token.
+    assert f"`datachain auth logout -H {OTHER_URL}`" in capsys.readouterr().err
+
+
+@posix_only
 def test_studio_login_revokes_the_new_token_when_it_cant_be_saved(
     get_access_token, capsys, global_config_dir
 ):
@@ -527,20 +579,17 @@ def test_studio_old_config_token_is_revoked_at_an_inherited_url(get_access_token
         (400, {"json": {"detail": "Invalid token scope"}}, "Invalid token scope"),
         # Not JSON, e.g. a proxy's error page.
         (400, {"text": "<html>Bad Request</html>"}, "400 Client Error"),
-        # JSON, but not an object.
+        # JSON, but not an object, or without a detail.
         (400, {"json": ["Bad Request"]}, "400 Client Error"),
+        (400, {"json": {"detail": None}}, "400 Client Error"),
         (500, {"json": {"detail": "Oops"}}, "500 Server Error"),
     ],
 )
-def test_studio_login_http_error(get_access_token, capsys, status_code, body, expected):
-    def device_login(**kwargs):
-        with requests_mock.mock() as m:
-            m.post(STUDIO_URL, status_code=status_code, **body)
-            requests.post(STUDIO_URL, timeout=1).raise_for_status()
+def test_studio_login_http_error(capsys, status_code, body, expected):
+    with requests_mock.mock() as m:
+        m.post(f"{STUDIO_URL}/api/device-login", status_code=status_code, **body)
+        assert main(["auth", "login", "--no-open"]) == 1
 
-    get_access_token.side_effect = device_login
-
-    assert main(["auth", "login"]) == 1
     assert f"Failed to authenticate with Studio: {expected}" in capsys.readouterr().err
 
 
@@ -815,6 +864,7 @@ def auth_table(rows: list[list[str]], studio: bool = False) -> str:
 def test_studio_auth_list(capsys):
     studio_login(default_team="acme", name="work laptop", expires=date(2027, 11, 16))
     studio_login("customer_token", teams=["customer-x"], expires=date(2027, 2, 14))
+    studio_login("ab_token", teams=["a", "b"])
 
     assert main(["auth", "list"]) == 0
 
@@ -823,7 +873,11 @@ def test_studio_auth_list(capsys):
     # The default Studio goes unnamed.
     assert STUDIO_URL not in out
     # The fallback token, saved without --team, shows as `*`.
-    expected = [["*", "work laptop", "2027-11-16"], ["customer-x", "", "2027-02-14"]]
+    expected = [
+        ["*", "work laptop", "2027-11-16"],
+        ["customer-x", "", "2027-02-14"],
+        ["a, b", "", ""],
+    ]
     assert auth_table(expected) in out
     assert "isat_access_token" not in out + err
     assert "customer_token" not in out + err
@@ -891,11 +945,11 @@ def test_studio_auth_list_names_the_studio_when_another_is_in_use(capsys, monkey
 
 
 def test_studio_auth_list_keeps_names_that_look_like_numbers(capsys):
-    studio_login(teams=["1e5"])
+    studio_login(teams=["1e5"], name="1e6")
 
     assert main(["auth", "list"]) == 0
 
-    assert auth_table([["1e5", "", ""]]) in capsys.readouterr().out
+    assert auth_table([["1e5", "1e6", ""]]) in capsys.readouterr().out
 
 
 def test_studio_auth_list_not_logged_in(capsys):
@@ -947,6 +1001,17 @@ def test_studio_team_local():
     assert config["studio"]["team"] == "team_name"
 
 
+def test_studio_team_local_empty_turns_the_global_default_off_here(capsys):
+    set_studio(ConfigLevel.GLOBAL, team="acme")
+
+    assert main(["auth", "team", "", "--local"]) == 0
+
+    assert Config(ConfigLevel.GLOBAL).read()["studio"]["team"] == "acme"
+    assert Config().read()["studio"]["team"] == ""
+    assert main(["auth", "team"]) == 1
+    assert "No default team set." in capsys.readouterr().err
+
+
 def test_studio_team_empty_turns_the_default_off(capsys):
     set_studio(ConfigLevel.GLOBAL, team="acme")
 
@@ -985,8 +1050,22 @@ def test_dataset_ls_all_lists_local_only_without_a_token_for_the_team(
 
     list_datasets(test_session.catalog, all=True, team="team-b")
 
-    assert "local-ds" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "local-ds" in out
+    assert "Studio" not in out
     assert not requests_mock.called
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["dataset", "ls", "dev.proj.only-in-studio", "--local", "--studio"],
+        ["dataset", "ls", "unqualified", "--studio"],
+    ],
+)
+def test_dataset_ls_checks_studio_before_the_local_lookup(capsys, command):
+    assert main(command) == 1
+    assert "Not logged in to Studio" in capsys.readouterr().err
 
 
 def test_ls_local_and_studio_without_a_login_prints_nothing(capsys, tmp_dir):

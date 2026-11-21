@@ -90,10 +90,13 @@ def _is_server_error(status_code: int) -> bool:
     return str(status_code).startswith("5")
 
 
-def _reject_empty_team(team: str | None) -> None:
-    # E.g. `--team "$TEAM"` with TEAM unset: fail rather than use another team.
-    if team == "":
-        raise DataChainError("--team can't be empty.")
+def reject_empty(option: str, value: str | None) -> None:
+    """Fail on an option given as "", e.g. `--team "$TEAM"` with TEAM unset.
+
+    Falling back to the default instead could act on another team or Studio.
+    """
+    if value == "":
+        raise DataChainError(f"{option} can't be empty.")
 
 
 def is_token_set(team: str | None = None) -> bool:
@@ -101,7 +104,7 @@ def is_token_set(team: str | None = None) -> bool:
 
     Without a team, the default team is used.
     """
-    _reject_empty_team(team)
+    reject_empty("--team", team)
     config = Config().read().get("studio", {}) or {}
     url, team = get_studio_url(config), team or get_studio_team(config)
     return resolve_token(url, team) is not None
@@ -141,7 +144,7 @@ class Response(Generic[T]):
 
 class StudioClient:
     def __init__(self, timeout: float = 3600.0, team: str | None = None) -> None:
-        _reject_empty_team(team)
+        reject_empty("--team", team)
         self._check_dependencies()
         self.timeout = timeout
         self._config = None
@@ -194,6 +197,10 @@ class StudioClient:
         if not (team := get_studio_team(self.config)):
             raise _team_not_set()
         return team
+
+    def check_auth(self) -> None:
+        """Fail without a token or a team, before a command starts its work."""
+        self._token_and_team()
 
     def _token_and_team(self) -> tuple[str, str]:
         # The token first: without a login there is usually no team either, and
