@@ -157,6 +157,25 @@ def test_url_is_saved_only_for_a_self_hosted_studio():
     assert logins == [(STUDIO_URL, "default"), (OTHER_URL, "other")]
 
 
+@pytest.mark.parametrize(
+    "content,error",
+    [
+        ('token = "isat_abc"\n', "each token must be a [[token]] entry"),
+        ('token = ["isat_abc"]\n', "each token must be a [[token]] entry"),
+        ("[[token]\n", "Unexpected character"),
+    ],
+)
+def test_invalid_file_is_named(global_config_dir, content, error):
+    path = Path(global_config_dir) / "credentials"
+    path.write_text(content)
+    path.chmod(0o600)
+
+    with pytest.raises(DataChainError, match="Invalid Studio credentials file") as exc:
+        load_logins(GLOBAL)
+    assert str(path) in str(exc.value)
+    assert error in str(exc.value)
+
+
 @posix_only
 def test_saved_file_is_private(global_config_dir):
     studio_login("token")
@@ -167,7 +186,6 @@ def test_saved_file_is_private(global_config_dir):
 
 @posix_only
 def test_file_open_to_others_is_ignored(caplog, tmp_dir):
-    # What a token committed to a repo looks like after a clone.
     studio_login("committed", level=LOCAL)
     (tmp_dir / ".datachain" / "credentials").chmod(0o644)
 

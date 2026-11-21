@@ -13,7 +13,7 @@ usage: datachain auth team [-h] [-v] [-q] [--local] [team_name]
 This command sets or shows the default team for Studio operations. By default, the team setting is saved globally, but you can use the `--local` option to set it for the current project.
 If team_name is not passed, the current team in use is shown to the user.
 
-An empty name (`""`) turns the default team off: commands then need `--team` or `DATACHAIN_STUDIO_TEAM`, and `datachain auth login --team` does not set a default team. In a project, `--local ""` turns off your global default team for that project.
+An empty name (`""`) turns the default team off: commands then need `--team` or `DATACHAIN_STUDIO_TEAM`, and `datachain auth login --team` does not set a default team. In a project, `--local ""` turns off your global default team for that project. To let logins set a default team again, delete `team` from the `[studio]` section of the config file.
 
 ## Arguments
 

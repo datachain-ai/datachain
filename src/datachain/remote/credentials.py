@@ -22,6 +22,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 import tomlkit
+from tomlkit.exceptions import TOMLKitError
 
 from datachain.config import Config, ConfigLevel
 from datachain.error import DataChainError
@@ -104,7 +105,7 @@ def load_logins(level: ConfigLevel, *, for_update: bool = False) -> list[Login]:
     path = credentials_path(level)
     try:
         if _open_to_others(path):
-            # A token committed to a repo comes back 0644 from a clone.
+            # As ssh does with private keys.
             if for_update:
                 raise DataChainError(
                     f"Other users can access {path}, so DataChain does not use the "
@@ -113,7 +114,7 @@ def load_logins(level: ConfigLevel, *, for_update: bool = False) -> list[Login]:
             if path not in _warned:
                 _warned.add(path)
                 logger.warning(
-                    "Ignoring Studio logins in %s: other users can access it. "
+                    "Ignoring Studio tokens in %s: other users can access it. "
                     "Run `chmod 600 %s` if you trust it.",
                     path,
                     path,
@@ -123,7 +124,15 @@ def load_logins(level: ConfigLevel, *, for_update: bool = False) -> list[Login]:
             doc = tomlkit.load(f).unwrap()
     except FileNotFoundError:
         return []
+    except TOMLKitError as exc:
+        raise DataChainError(f"Invalid Studio credentials file {path}: {exc}") from exc
 
+    entries = doc.get("token", [])
+    if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
+        raise DataChainError(
+            f"Invalid Studio credentials file {path}: each token must be a "
+            "[[token]] entry."
+        )
     return [
         Login(
             url=item.get("url") or STUDIO_URL,
@@ -133,7 +142,7 @@ def load_logins(level: ConfigLevel, *, for_update: bool = False) -> list[Login]:
             expires=item.get("expires"),
             level=level,
         )
-        for item in doc.get("token", [])
+        for item in entries
         if item.get("token")
     ]
 
