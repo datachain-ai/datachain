@@ -6,6 +6,7 @@ from typing import Any
 
 import pyarrow as pa
 import pyarrow.compute as pc
+import sqlalchemy  # noqa: F401
 from sqlalchemy.sql import operators as sa_op
 from sqlalchemy.sql.elements import (
     BinaryExpression,
