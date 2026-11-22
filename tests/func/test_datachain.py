@@ -139,6 +139,28 @@ def test_union_with_left_that_lists_nothing_reads_right_with_its_config(
         assert sorted(f.read_text() for f in files) == ["local", "meow", "mrow"]
 
 
+def test_union_after_parent_listing_reads_subfolder_files_with_their_config(
+    test_session, tmp_dir
+):
+    (tmp_dir / "sub").mkdir()
+    (tmp_dir / "sub" / "a.txt").write_text("a")
+    dc.read_storage(tmp_dir.as_uri(), session=test_session).count()
+    config = {"use_listings_cache": False}
+    left = dc.read_values(
+        file=[dc.File(source="s3://other-bucket", path="b.txt")], session=test_session
+    )
+    right = dc.read_storage(
+        (tmp_dir / "sub").as_uri(), client_config=config, session=test_session
+    )
+
+    union = left.union(right)
+
+    files = [f for f in union.to_values("file") if f.path == "sub/a.txt"]
+    assert [union.session.catalog.client_config_for(f.source) for f in files] == [
+        config
+    ]
+
+
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
 def test_union_reads_a_shared_source_with_the_left_config(cloud_test_catalog, tmp_dir):
