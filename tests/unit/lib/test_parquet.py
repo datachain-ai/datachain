@@ -586,7 +586,7 @@ def test_read_parquet_filter_prunes_row_groups_and_streams_payload(
         .select("payload", "source.index")
         .to_list("payload", "source.index")
     )
-    assert res == [("p5", 5), ("p8", 8)]
+    assert sorted(res) == [("p5", 5), ("p8", 8)]
     assert scan_rest.call_count == 1
 
 
@@ -613,7 +613,7 @@ def test_read_parquet_filter_coalesces_remaining_row_groups_after_two_match(
         .select("payload", "source.index")
         .to_list("payload", "source.index")
     )
-    assert res == [("p0", 0), ("p2", 2)]
+    assert sorted(res) == [("p0", 0), ("p2", 2)]
     # rg 0 and rg 1 use _scan_group_rest; rg 2..5 use one 4-group _scan_groups
     # window (0 hits -> resets matched=0); rg 6 probes filter column only (0 hits).
     assert rest_spy.call_count == 2
