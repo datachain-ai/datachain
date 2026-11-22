@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import get_args
 
 import cloudpickle
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -1116,10 +1117,21 @@ def test_read_parquet_columns_in_forked_child_after_parent_read(
         ),
         args=(child_conn,),
     )
-    proc.start()
-    proc.join(timeout=10)
-    assert proc.exitcode == 0
-    assert parent_conn.recv() == 3
+    try:
+        proc.start()
+        child_conn.close()
+        proc.join(timeout=10)
+        assert proc.exitcode == 0
+        assert parent_conn.recv() == 3
+    finally:
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=2)
+            if proc.is_alive():
+                proc.kill()
+                proc.join()
+        parent_conn.close()
+        child_conn.close()
 
 
 def test_arrow_generator_is_picklable_and_resets_prefetch_state(tmp_path, catalog):
@@ -1232,3 +1244,38 @@ def test_read_parquet_columns_missing_column_fetches_footer_once(
     assert sorted(values, key=lambda v: v or "") == [None, "x"]
     f0_calls = [r for r in http_requests if r[0].endswith("f0.parquet")]
     assert len(f0_calls) == 1
+
+
+@pytest.mark.parametrize("prefetch", [2, 0])
+def test_read_parquet_columns_fetches_footer_and_chunk_ranges_once_per_file(
+    tmp_path, test_session, http_server, http_requests, monkeypatch, prefetch
+):
+    rng = np.random.default_rng(0)
+    monkeypatch.setattr(arrow_mod, "PARTIAL_READ_PREFETCH_MAX_SIZE", 1)
+    monkeypatch.setattr(parquet_ranges, "PARQUET_FOOTER_SAMPLE_SIZE", 128 * 1024)
+    # Footer > 64 KiB so pyarrow alone would read the 64 KiB tail and then the footer.
+    table = pa.table(
+        {f"c{i}": rng.random(8_000) for i in range(10)}
+    ).replace_schema_metadata({b"pad": b"x" * 35_000})
+    urls = []
+    for i in range(2):
+        path = tmp_path / f"f{i}.parquet"
+        pq.write_table(table, path, row_group_size=8_000)
+        file_size = path.stat().st_size
+        urls.append(f"{http_server}/f{i}.parquet")
+    local = dc.read_parquet(
+        tmp_path.as_uri(), columns=["c1", "c8"], session=test_session
+    ).order_by("c1", "c8")
+    chain = dc.read_parquet(
+        urls,
+        columns=["c1", "c8"],
+        settings={"prefetch": prefetch},
+        session=test_session,
+    ).order_by("c1", "c8")
+    http_requests.clear()
+
+    assert chain.to_list("c1", "c8") == local.to_list("c1", "c8")
+    # Per file: 1 footer sample + 2 non-adjacent column chunk ranges (not 4 sequential).
+    assert len(http_requests) == 2 * 3
+    fetched_bytes = sum(end - start for _, start, end in http_requests)
+    assert 0 < fetched_bytes < 2 * (file_size // 2)
