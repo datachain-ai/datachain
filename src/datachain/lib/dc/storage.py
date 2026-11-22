@@ -84,8 +84,9 @@ def read_storage(
             Used to detect which records are new or changed.
             Default is ("file.path", "file.etag", "file.version"); on GCS with
             versions, ("file.path", "file.version") with `delta_compare`
-            "file.size": a GCS generation changes with the content, not with
-            metadata.
+            "file.size", or "file.path" with ("file.size", "file.etag") without
+            versions: a GCS generation or MD5 changes with the content, not
+            with metadata.
         delta_result_on: Field(s) in the result dataset that match `delta_on` fields.
             Only needed if you rename the identifying fields during processing.
             Default is None.
@@ -149,10 +150,10 @@ def read_storage(
     uris = uri if isinstance(uri, (list, tuple)) else [uri]
     if not uris:
         raise ValueError("No URIs provided")
-    delta_on, delta_compare = _delta_keys(uris, versions, delta_on, delta_compare)
     session_config, client_config = client_configs(
         uris, session, anon, client_config, versions
     )
+    delta_on, delta_compare = _delta_keys(uris, client_config, delta_on, delta_compare)
     session = session_for(session, session_config, in_memory)
     return _read_storage(
         uris,
@@ -173,12 +174,14 @@ def read_storage(
     )
 
 
-def _delta_keys(uris, versions, on, compare):
-    """The default delta key on GCS with versions: a generation changes with the
-    content, not with metadata, which changes the etag.
+def _delta_keys(uris, client_config, on, compare):
+    """The default delta key on GCS: a generation, or MD5 without versions,
+    changes with the content, not with metadata, which changes the etag.
     """
     gcs = all(os.fspath(u).startswith(("gs://", "gcs://")) for u in uris)
-    if versions and gcs and on == DEFAULT_DELTA_ON and compare is None:
+    if gcs and on == DEFAULT_DELTA_ON and compare is None:
+        if client_config.get("version_aware") is False:
+            return "file.path", ("file.size", "file.etag")
         return ("file.path", "file.version"), "file.size"
     return on, compare
 
