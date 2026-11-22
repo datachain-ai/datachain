@@ -121,6 +121,26 @@ def test_union_with_chain_of_other_config_reads_each_source_with_its_config(
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_union_with_left_that_lists_nothing_reads_right_with_its_config(
+    cloud_test_catalog, tmp_dir
+):
+    ctc = cloud_test_catalog
+    (tmp_dir / "note.txt").write_text("local")
+    anonymous = ctc.catalog.copy()
+    anonymous.client_config = _anonymous(ctc)
+    with dc.Session("anonymous", catalog=anonymous) as session:
+        left = dc.read_values(
+            file=[dc.File(source=tmp_dir.as_uri(), path="note.txt")], session=session
+        )
+        cats = dc.read_storage(
+            f"{ctc.src_uri}/cats/", client_config=ctc.client_config, session=session
+        )
+        files = left.union(cats).to_values("file")
+        assert sorted(f.read_text() for f in files) == ["local", "meow", "mrow"]
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
 def test_union_reads_a_shared_source_with_the_left_config(cloud_test_catalog, tmp_dir):
     ctc = cloud_test_catalog
     session = ctc.session
