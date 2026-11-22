@@ -1,3 +1,4 @@
+import os
 from contextlib import contextmanager
 from enum import Enum
 
@@ -23,8 +24,6 @@ class Config:
     def __init__(self, level: ConfigLevel | None = None):
         self.level = level
 
-        self.init()
-
     @classmethod
     def get_dir(cls, level: ConfigLevel | None) -> str:
         if level == ConfigLevel.SYSTEM:
@@ -32,11 +31,7 @@ class Config:
         if level == ConfigLevel.GLOBAL:
             return global_config_dir()
 
-        return str(DataChainDir.find().root)
-
-    def init(self):
-        d = DataChainDir(self.get_dir(self.level))
-        d.init()
+        return DataChainDir().root
 
     def load_one(self, level: ConfigLevel | None = None) -> TOMLDocument:
         config_path = DataChainDir(self.get_dir(level)).config
@@ -47,15 +42,18 @@ class Config:
         except FileNotFoundError:
             return TOMLDocument()
 
-    def load_config_to_level(self) -> TOMLDocument:
+    def load_config_to_level(self, inclusive: bool = False) -> TOMLDocument:
+        """The levels below this one merged, and this one too with `inclusive`."""
         merged_conf = TOMLDocument()
 
         for merge_level in self.LEVELS:
-            if merge_level == self.level:
+            if merge_level == self.level and not inclusive:
                 break
             config = self.load_one(merge_level)
             if config:
                 merge(merged_conf, config)
+            if merge_level == self.level:
+                break
 
         return merged_conf
 
@@ -75,7 +73,10 @@ class Config:
         return DataChainDir(self.get_dir(self.level)).config
 
     def write(self, config: TOMLDocument):
-        with open(self.config_file(), "w") as f:
+        # Only writing creates the directory; reading a missing config is empty.
+        path = self.config_file()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
             dump(config, f)
 
 

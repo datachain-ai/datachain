@@ -1,10 +1,11 @@
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import random
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import dateparser
@@ -19,8 +20,27 @@ from datachain.dataset import (
     parse_dataset_name,
 )
 from datachain.error import DataChainError
-from datachain.remote.studio import StudioClient
-from datachain.utils import flatten
+from datachain.remote.credentials import (
+    TOKEN_ENV,
+    Login,
+    add_login,
+    config_url,
+    conflicting_login,
+    credentials_path,
+    env_token_url,
+    load_logins,
+    normalize_url,
+    remove_login,
+    self_hosted,
+)
+from datachain.remote.studio import (
+    StudioClient,
+    get_studio_env_variable,
+    get_studio_team,
+    get_studio_url,
+    reject_empty,
+)
+from datachain.utils import STUDIO_URL, flatten
 
 logger = logging.getLogger("datachain")
 
@@ -126,31 +146,50 @@ def process_auth_cli_args(args: "Namespace"):
         )
         return 1
 
+    if args.cmd in ("login", "logout") and args.local:
+        raise DataChainError(
+            "--local is no longer supported: Studio tokens are saved only in your "
+            "config. Set the project's team with `datachain auth team <team> --local`."
+        )
     if args.cmd == "login":
         return login(args)
     if args.cmd == "logout":
-        return logout(args.local)
+        return logout(args.team, args.hostname, args.all)
     if args.cmd == "token":
-        return token()
+        return token(args.team)
+    if args.cmd == "list":
+        return list_logins()
     if args.cmd == "team":
         return set_team(args)
     raise DataChainError(f"Unknown command '{args.cmd}'.")
 
 
-def _save_default_team(team_name: str, level: ConfigLevel):
-    config = Config(level)
-    with config.edit() as conf:
-        studio_conf = conf.get("studio", {})
-        studio_conf["team"] = team_name
-        conf["studio"] = studio_conf
+def _update_studio_config(level: ConfigLevel, **values: str | None) -> str:
+    """Set keys in this level's `[studio]` section; None removes a key.
 
+    The file is written only if something changed.
+    """
+    config = Config(level)
+    conf = config.read()
+    before = conf.as_string()
+    studio = conf.get("studio", {})
+    for key, value in values.items():
+        if value is None:
+            studio.pop(key, None)
+        else:
+            studio[key] = value
+    if not studio:
+        conf.pop("studio", None)
+    elif "studio" not in conf:
+        conf["studio"] = studio
+    if conf.as_string() != before:
+        config.write(conf)
     return config.config_file()
 
 
 def set_team(args: "Namespace"):
     if args.team_name is None:
-        config = Config().read().get("studio", {})
-        team = config.get("team")
+        team = get_studio_team()
         if team:
             print(f"Default team is '{team}'")
             return 0
@@ -160,41 +199,58 @@ def set_team(args: "Namespace"):
         )
 
     level = ConfigLevel.LOCAL if args.local else ConfigLevel.GLOBAL
-    file_path = _save_default_team(args.team_name, level)
-    print(f"Set default team to '{args.team_name}' in {file_path}")
+    file_path = _update_studio_config(level, team=args.team_name)
+    if args.team_name:
+        print(f"Set default team to '{args.team_name}' in {file_path}")
+    else:
+        print(f"Turned off the default team in {file_path}")
+
+
+def _login_exists_error(
+    existing: Login, teams: list[str] | None, current_url: str
+) -> DataChainError:
+    team = next((t for t in teams or () if t in (existing.teams or ())), None)
+    # -H also for a self-hosted Studio, so the command works without the env that
+    # may have picked it.
+    host = existing.url != current_url or bool(self_hosted(existing.url))
+    command = existing.logout_command(team, host=host)
+    return DataChainError(
+        f"Token already exists{existing.for_teams()}{self_hosted(existing.url)} in "
+        f"{credentials_path()}. To login with a different token, logout using "
+        f"`{command}`."
+    )
 
 
 def login(args: "Namespace"):
     from dvc_studio_client.auth import StudioAuthError, get_access_token
 
-    from datachain.remote.studio import get_studio_url
-
-    config = Config().read().get("studio", {})
+    reject_empty("--hostname", args.hostname and normalize_url(args.hostname))
+    for team_name in args.team or ():
+        reject_empty("--team", team_name)
+    current_url = get_studio_url()
     name = args.name
-    hostname = args.hostname or get_studio_url(config)
+    hostname = normalize_url(args.hostname or current_url)
     scopes = args.scopes
-
-    # Parse team arguments
-    team_names = args.team
-
+    # `--team a --team a` is one team.
+    team_names = list(dict.fromkeys(args.team)) if args.team else None
     expires_in_days = args.expires_in
+    if expires_in_days < 1:
+        # Studio issues its default lifetime for 0, not the one saved here.
+        raise DataChainError("--expires-in must be at least 1 day.")
 
-    # Set default expiration if not specified
-    if expires_in_days is None:
-        expires_in_days = 365
-
-    if config.get("url", hostname) == hostname and "token" in config:
-        raise DataChainError(
-            "Token already exists. "
-            "To login with a different token, "
-            "logout using `datachain auth logout`."
-        )
+    # Before the check below, so a login here also cleans up a project's old token
+    # when you already have a token.
+    _remove_old_tokens()
+    if existing := conflicting_login(hostname, team_names):
+        raise _login_exists_error(existing, team_names, current_url)
 
     open_browser = not args.no_open
     try:
-        _, access_token = get_access_token(
+        token_name, access_token = get_access_token(
             token_name=name,
-            hostname=hostname,
+            # The client joins "api/..." to it: without the slash, a path prefix like
+            # /workspace would be dropped.
+            hostname=f"{hostname}/",
             scopes=scopes,
             team_names=team_names,
             expires_in_days=expires_in_days,
@@ -205,47 +261,148 @@ def login(args: "Namespace"):
     except StudioAuthError as exc:
         raise DataChainError(f"Failed to authenticate with Studio: {exc}") from exc
     except requests.HTTPError as exc:
+        message = str(exc)
         response = exc.response
-        if response and response.status_code == 400:
-            message = response.json().get("detail", "Unknown error")
-            raise DataChainError(
-                f"Failed to authenticate with Studio: {message}"
-            ) from exc
-        raise DataChainError(f"Failed to authenticate with Studio: {exc}") from exc
+        # A 4xx response is falsy.
+        if response is not None and response.status_code == 400:
+            with contextlib.suppress(ValueError):  # Not JSON, e.g. a proxy's page.
+                body = response.json()
+                if isinstance(body, dict):
+                    message = body.get("detail") or message
+        raise DataChainError(f"Failed to authenticate with Studio: {message}") from exc
 
-    level = ConfigLevel.LOCAL if args.local else ConfigLevel.GLOBAL
-    config_path = save_config(hostname, access_token, level=level)
-    print(f"Authentication complete. Saved token to {config_path}.")
+    expires = datetime.now(UTC) + timedelta(days=expires_in_days)
+    new = Login(
+        url=hostname,
+        token=access_token,
+        teams=team_names,
+        name=token_name,
+        expires=expires.date(),
+    )
+    saved = False
+    try:
+        if existing := conflicting_login(hostname, team_names):
+            # Another login saved it while the browser was open.
+            raise _login_exists_error(existing, team_names, current_url)
+        path = add_login(new)
+        saved = True
+        messages = _save_login_settings(hostname, bool(args.hostname), team_names)
+    except Exception:
+        # Nothing is kept, so the same login can be run again.
+        if saved:
+            _undo_saved_login(new)
+        else:
+            _revoke_or_warn(new, "new token")
+        raise
+    print(f"Authentication complete. Saved token to {path}.")
     if team_names:
-        print(f"Token is scoped to teams: {', '.join(team_names)}")
+        print(f"Token is for teams: {', '.join(team_names)}")
     print(f"Token will expire in {expires_in_days} days.")
-
-    if team_names and len(team_names) == 1:
-        file_path = _save_default_team(team_names[0], level)
-        print(f"Set default team to '{team_names[0]}' in {file_path}")
-    else:
-        with Config(level).edit() as conf:
-            conf.get("studio", {}).pop("team", None)
-        print("You can now use 'datachain auth team' to set the default team.")
+    for message in messages:
+        print(message)
     return 0
 
 
-def logout(local: bool = False):
-    from datachain.remote.studio import get_studio_url
+def _save_login_settings(
+    hostname: str, switch_host: bool, team_names: list[str] | None
+) -> list[str]:
+    """Update your config for a login: the Studio URL with -H, and the default team.
 
-    level = ConfigLevel.LOCAL if local else ConfigLevel.GLOBAL
-    config = Config(level).read().get("studio", {})
-    token = config.get("token")
-    if not token:
-        raise DataChainError(
-            "Not logged in to Studio. Log in with 'datachain auth login'."
+    Writes the config once. Returns the messages to print once the login is saved.
+    """
+    user = ConfigLevel.GLOBAL
+    own = Config(user).read().get("studio", {}) or {}
+    system = Config(ConfigLevel.SYSTEM).read().get("studio", {}) or {}
+    # The default team, yours over the system config's, is for the Studio in your
+    # config. An empty team is the default turned off. A system config's team is
+    # the machine's setting and applies to any Studio until you set your own.
+    studio = {**system, **own}
+    url = normalize_url(studio.get("url") or STUDIO_URL)
+    team = studio.get("team")
+    path = Config(user).config_file()
+    updates: dict[str, str | None] = {}
+    messages = []
+    if switch_host and hostname != url:
+        # A team you picked for another Studio means nothing on this one, so yours
+        # is removed; a default turned off stays off, and the system config's team
+        # still applies.
+        url = updates["url"] = hostname
+        if own.get("team"):
+            updates["team"] = None
+            team = system.get("team")
+        messages.append(f"Set Studio URL to {hostname} in {path}")
+
+    # A Studio set only by the environment or a project gets no default team here,
+    # and a default team set or turned off stays.
+    new_team = team_names[0] if team_names and len(team_names) == 1 else None
+    if new_team and hostname == url and team is None:
+        updates["team"] = new_team
+        messages.append(f"Set default team to '{new_team}' in {path}")
+    if updates:
+        _update_studio_config(user, **updates)
+    if (
+        updates.get("team") is None
+        and not get_studio_env_variable("TEAM")
+        and "team" not in Config().read().get("studio", {})
+    ):
+        # Nothing picks a team for commands: not the env, a config, or a project.
+        messages.append(
+            "You can now use 'datachain auth team' to set the default team."
+        )
+    return messages
+
+
+def _remove_old_tokens() -> None:
+    """Remove, and try to revoke, tokens older versions saved in the config.
+
+    Both this project's config and yours.
+    """
+    for level in (ConfigLevel.LOCAL, ConfigLevel.GLOBAL):
+        if not (old_token := Config(level).read().get("studio", {}).get("token")):
+            continue
+        # Sent only to the Studio older versions used it with: the URL saved at
+        # this level or a lower one, never the environment's.
+        url = config_url(level)
+        path = _update_studio_config(level, token=None)
+        print(f"Removed the token an older version saved in {path}.")
+        _revoke_or_warn(Login(url=url, token=old_token), "old token")
+
+
+def _undo_saved_login(login: Login) -> None:
+    """Revoke and remove a token whose login failed after saving it.
+
+    If either step fails, the token stays saved, so `auth logout` can finish it.
+    """
+    try:
+        _revoke(login)
+        remove_login(login)
+    except Exception:  # noqa: BLE001
+        command = login.logout_command(host=bool(self_hosted(login.url)))
+        print(
+            f"Warning: the new token is still saved in {credentials_path()}. "
+            f"Run `{command}` to remove it.",
+            file=sys.stderr,
         )
 
-    studio_url = get_studio_url(config)
+
+def _revoke_or_warn(login: Login, what: str) -> None:
+    """Revoke a token DataChain doesn't keep; warn if it may still work."""
+    try:
+        _revoke(login)
+    except DataChainError:
+        print(
+            f"Warning: could not revoke the {what} on Studio{self_hosted(login.url)}, "
+            "so it still works there. Revoke it in your Studio profile.",
+            file=sys.stderr,
+        )
+
+
+def _revoke(login: Login) -> bool:
+    """Revoke the token on Studio. False if Studio no longer accepts it."""
     try:
         response = requests.post(
-            f"{studio_url}/api/device-logout",
-            headers={"Authorization": f"token {token}"},
+            f"{login.url}/api/device-logout",
+            headers={"Authorization": f"token {login.token}"},
             timeout=10,
         )
     except requests.RequestException as exc:
@@ -254,32 +411,104 @@ def logout(local: bool = False):
         ) from exc
 
     if response.status_code == 401:
-        print(
-            "Token was already revoked or is invalid on Studio.",
-            file=sys.stderr,
-        )
-    elif not response.ok:
+        return False
+    if not response.ok:
         raise DataChainError(
             f"Studio returned HTTP {response.status_code} while revoking "
             f"the token. Please try again later."
         )
-
-    with Config(level).edit() as conf:
-        del conf["studio"]["token"]
-        conf["studio"].pop("team", None)
-
-    print("Logged out from Studio. (you can log back in with 'datachain auth login')")
+    return True
 
 
-def token():
-    config = Config().read().get("studio", {})
-    token = config.get("token")
-    if not token:
+def logout(
+    team: str | None = None,
+    hostname: str | None = None,
+    all_tokens: bool = False,
+):
+    reject_empty("--team", team)
+    # E.g. `-H "$STAGING_URL"` with it unset would log out from another Studio.
+    reject_empty("--hostname", hostname and normalize_url(hostname))
+    url = normalize_url(hostname or get_studio_url())
+    # Fails on a file open to others, as removing a token from it would.
+    saved = [lg for lg in load_logins(for_update=True) if lg.url == url]
+    if all_tokens:
+        logins, what = saved, "No token"
+    elif team is not None:
+        logins = [login for login in saved if team in (login.teams or ())]
+        what = f"No token for team '{team}'"
+    else:
+        logins = [login for login in saved if login.teams is None]
+        what = "No token saved without --team"
+
+    if not logins:
         raise DataChainError(
-            "Not logged in to Studio. Log in with 'datachain auth login'."
+            f"{what}{self_hosted(url)} in {credentials_path()}. "
+            "Run `datachain auth list` to see the saved tokens."
         )
 
-    print(token)
+    for login in logins:
+        # Removed one at a time, so a failed revoke keeps the tokens not yet revoked.
+        if not _revoke(login):
+            print("Token was already revoked or is invalid on Studio.", file=sys.stderr)
+        remove_login(login)
+        print(f"Logged out from Studio{self_hosted(url)}{login.for_teams()}.")
+
+    # The default team in your config is for the Studio saved there, and goes with
+    # that Studio's last token. An empty team, the default turned off, stays.
+    user = ConfigLevel.GLOBAL
+    if (
+        Config(user).read().get("studio", {}).get("team")
+        and config_url(user) == url
+        and not any(lg.url == url for lg in load_logins())
+    ):
+        _update_studio_config(user, team=None)
+
+    print("(you can log back in with 'datachain auth login')")
+
+
+def token(team: str | None = None):
+    print(StudioClient(team=team).token)
+
+
+def list_logins():
+    config = Config().read().get("studio", {}) or {}
+    url, team = get_studio_url(config), get_studio_team(config)
+    if self_hosted(url):
+        print(f"Studio URL: {url}")
+    print(f"Default team: {team or 'not set'}")
+    env_token = bool(os.environ.get(TOKEN_ENV))
+    if env_token and url != env_token_url():
+        print(
+            f"{TOKEN_ENV} is set, but not sent to {url}, which only a project's "
+            "config sets."
+        )
+        env_token = False
+    elif env_token:
+        print(f"{TOKEN_ENV} is set: it is used for every team, not the saved tokens.")
+
+    rows = [
+        [
+            login.url,
+            # *: saved without --team, the fallback when no token is for the team.
+            "*" if login.teams is None else ", ".join(login.teams),
+            login.name or "",
+            login.expires or "",
+        ]
+        for login in load_logins()
+    ]
+    if not rows:
+        if not env_token:
+            print("Not logged in to Studio. Log in with 'datachain auth login'.")
+        return 0
+
+    headers = ["Studio", "Teams", "Name", "Expires"]
+    if not self_hosted(url) and not any(self_hosted(row[0]) for row in rows):
+        # All for the default Studio, which is in use, so the column says nothing.
+        headers, rows = headers[1:], [row[1:] for row in rows]
+    print()
+    # Team and token names stay as written, even when they look like numbers.
+    print(tabulate.tabulate(rows, headers=headers, disable_numparse=True))
+    return 0
 
 
 def list_datasets(
@@ -375,17 +604,6 @@ def remove_studio_dataset(
         raise DataChainError(response.message)
 
     print(f"Dataset '{name}' removed from Studio")
-
-
-def save_config(hostname, token, level=ConfigLevel.GLOBAL):
-    config = Config(level)
-    with config.edit() as conf:
-        studio_conf = conf.get("studio", {})
-        studio_conf["url"] = hostname
-        studio_conf["token"] = token
-        conf["studio"] = studio_conf
-
-    return config.config_file()
 
 
 def parse_start_time(start_time_str: str | None) -> str | None:
@@ -728,12 +946,6 @@ def upload_files(client: StudioClient, files: list[str]) -> list[str]:
 
 
 def cancel_job(job_id: str, team_name: str | None):
-    token = Config().read().get("studio", {}).get("token")
-    if not token:
-        raise DataChainError(
-            "Not logged in to Studio. Log in with 'datachain auth login'."
-        )
-
     client = StudioClient(team=team_name)
     response = client.cancel_job(job_id)
     if not response.ok:
@@ -813,12 +1025,6 @@ def _stage_duration(step: dict, job_finished: bool) -> str:
 
 
 def show_job_logs(job_id: str, team_name: str | None):
-    token = Config().read().get("studio", {}).get("token")
-    if not token:
-        raise DataChainError(
-            "Not logged in to Studio. Log in with 'datachain auth login'."
-        )
-
     client = StudioClient(team=team_name)
     return show_logs_from_client(client, job_id)
 

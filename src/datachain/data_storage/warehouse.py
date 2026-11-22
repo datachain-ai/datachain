@@ -30,6 +30,7 @@ from datachain.sql.types import SQLType
 from datachain.utils import LIKE_ESCAPE_CHAR, batched, safe_closing, sql_escape_like
 
 if TYPE_CHECKING:
+    import pyarrow as pa
     from sqlalchemy.sql._typing import (
         _ColumnsClauseArgument,
         _FromClauseArgument,
@@ -471,6 +472,18 @@ class AbstractWarehouse(ABC, Serializable):
     def create_parts_table(self, name: str) -> sa.Table:
         """Create an empty ledger: see ``Writer``."""
         return self.create_udf_table(parts_columns(), name=name)
+
+    def insert_arrow(
+        self,
+        table: sa.Table,
+        batch: "pa.RecordBatch",
+    ) -> None:
+        """Insert a batch of stored values, including explicit sys__id."""
+        self.insert_block(
+            table,
+            batch.schema.names,
+            list(zip(*(c.to_pylist() for c in batch.columns), strict=True)),
+        )
 
     @abstractmethod
     def insert_block(
