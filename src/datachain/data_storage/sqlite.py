@@ -2,7 +2,7 @@ import logging
 import os
 import sqlite3
 from collections.abc import Callable, Sequence
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from functools import cached_property, partial, wraps
 from time import sleep
 from typing import TYPE_CHECKING, Any
@@ -883,8 +883,7 @@ class SQLiteWarehouse(AbstractWarehouse):
         ledger: Sequence[tuple] = (),
     ) -> None:
         quote = self.db.dialect.identifier_preparer.quote
-        ctx = nullcontext() if self.db.db.in_transaction else self.db.transaction()
-        with ctx:
+        with self.db.transaction():
             if rows:  # an empty block is a ledger-only flush
                 self.db.executemany(_insert_sql(quote, table.name, columns), rows)
             if ledger:

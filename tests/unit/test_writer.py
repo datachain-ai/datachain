@@ -167,9 +167,8 @@ def test_trim_after_many_claims(warehouse, tables):
     assert rows(warehouse, table) == [(base + 1, 1), (base + 2, 2)]
 
 
-@pytest.mark.parametrize("native", [False, True])
-def test_trim_after_arrow_batches_keeps_committed_parts(native, request):
-    wh = request.getfixturevalue("warehouse_tmpfile" if native else "warehouse")
+def test_trim_after_arrow_batches_keeps_committed_parts(warehouse):
+    wh = warehouse
     table = wh.create_dataset_rows_table("arrow_out", columns=[sa.Column("x", Int)])
     parts = wh.create_parts_table("arrow_out_parts")
     values = list(range(10, 2059))

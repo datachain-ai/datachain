@@ -47,7 +47,7 @@ from datachain.data_storage.schema import (
     partition_columns,
     parts_table_name,
 )
-from datachain.dataset import DatasetDependency, DatasetStatus
+from datachain.dataset import DatasetDependency
 from datachain.error import (
     DatasetInvalidVersionError,
     DatasetNotFoundError,
@@ -145,7 +145,6 @@ class QueryGeneratorFunc(Protocol):
 class QueryGenerator:
     func: QueryGeneratorFunc
     columns: tuple[ColumnElement, ...]
-    table: "Table | None" = None
 
     def only(self, column_names: Sequence[str]) -> Select:
         return self.func(*(c for c in self.columns if c.name in column_names))
@@ -169,10 +168,9 @@ def step_result(
     func: QueryGeneratorFunc,
     columns: Iterable[ColumnElement],
     dependencies: Iterable[DatasetDependencyType] = (),
-    table: "Table | None" = None,
 ) -> "StepResult":
     return StepResult(
-        query_generator=QueryGenerator(func=func, columns=tuple(columns), table=table),
+        query_generator=QueryGenerator(func=func, columns=tuple(columns)),
         dependencies=tuple(dependencies),
     )
 
@@ -1112,7 +1110,6 @@ class UDFStep(Step, ABC):
             + UDF_OUTPUT_FORMAT
         ).hexdigest()
 
-        reused = False
         if not checkpoints_enabled:
             if self.partition_by is not None:
                 query, _ = self._prepare_partition_query(
@@ -1160,7 +1157,6 @@ class UDFStep(Step, ABC):
                     output_table, input_table = self._skip_udf(
                         ch, hash_input, query, job
                     )
-                    reused = True
                 except TableMissingError:
                     logger.warning(
                         "UDF(%s) [job=%s run_group=%s]: Output table not found for "
@@ -1186,8 +1182,7 @@ class UDFStep(Step, ABC):
         # Create result query from output table
         input_query = self.get_input_query(input_table.name, query)
         q, cols = self.create_result_query(output_table, input_query)
-        table = output_table if self.is_generator and not reused else None
-        return step_result(q, cols, table=table)
+        return step_result(q, cols)
 
     def _skip_udf(
         self, checkpoint: Checkpoint, hash_input: str, query, job: Job
@@ -1207,8 +1202,7 @@ class UDFStep(Step, ABC):
             checkpoint.job_id,
         )
         output_table = self._output_table(
-            Checkpoint.output_table_name(checkpoint.job_id, checkpoint.hash),
-            checkpoint=checkpoint,
+            Checkpoint.output_table_name(checkpoint.job_id, checkpoint.hash)
         )
 
         input_table = self.get_or_create_input_table(query, hash_input, job)
@@ -1245,40 +1239,17 @@ class UDFStep(Step, ABC):
 
         return output_table, input_table
 
-    def _output_table(self, name: str, checkpoint: Checkpoint | None = None) -> "Table":
+    def _output_table(self, name: str) -> "Table":
         """An existing output table with our SQLTypes over the reflected ones."""
         # Reflection returns generic backend types (e.g. ClickHouse String gives
         # bytes instead of str, DateTime defaults break CREATE TABLE downstream).
         # Restore SQLTypes from our known schema so downstream query generation
         # decodes values correctly.
-        if (
-            not self.warehouse.db.has_table(name)
-            and checkpoint is not None
-            and (renamed := self._resolve_published_table(checkpoint))
-        ):
-            name = renamed
         known_types = {
             **dict(self.udf.output.items()),
             **{c.name: c.type for c in self.warehouse.dataset_row_cls.sys_columns()},
         }
         return coerce_table_types(self.warehouse.get_table(name), known_types)
-
-    def _resolve_published_table(self, checkpoint: Checkpoint) -> str | None:
-        versions = [
-            (ds, ver)
-            for ds, ver in self.metastore.get_dataset_versions(job_id=checkpoint.job_id)
-            if ds.get_version(ver).status == DatasetStatus.COMPLETE
-        ]
-        if not versions:
-            return None
-        hashes = {c.hash for c in self.metastore.list_checkpoints([checkpoint.job_id])}
-        for ds, ver in versions:
-            digest = hashlib.sha256(
-                f"{checkpoint.table_name}:{ds.get_version(ver).uuid}".encode()
-            ).hexdigest()
-            if digest in hashes:
-                return self.warehouse.dataset_table_name(ds, ver)
-        return None
 
     def _resumable_in_parts(self) -> bool:
         """Whether the output gets a ledger: gen or agg with partition_by.
@@ -3193,20 +3164,12 @@ class DatasetQuery:
                 )
 
             warehouse = self.catalog.warehouse
-            direct_rename = query.table is not None and not Session.is_temp_dataset(
-                name
+            temp_table_name = warehouse.temp_table_name()
+            temp_table = warehouse.create_dataset_rows_table(
+                temp_table_name, columns=columns
             )
-            if direct_rename:
-                assert query.table is not None
-                temp_table = query.table
-                temp_table_name = temp_table.name
-            else:
-                temp_table_name = warehouse.temp_table_name()
-                temp_table = warehouse.create_dataset_rows_table(
-                    temp_table_name, columns=columns
-                )
-                self.temp_table_names.append(temp_table_name)
-                warehouse.insert_into(temp_table, query.select())
+            self.temp_table_names.append(temp_table_name)
+            warehouse.insert_into(temp_table, query.select())
 
             dataset = self.catalog.create_dataset(
                 name,
@@ -3223,27 +3186,19 @@ class DatasetQuery:
             )
             version = dataset.versions[0].version
             try:
-                if dependencies:
-                    self._set_dependencies(dependencies)
+                warehouse.rename_table(
+                    temp_table, warehouse.dataset_table_name(dataset, version)
+                )
+                self.temp_table_names.remove(temp_table_name)
+
                 # Link this dataset version to the job that created it
                 if job_id:
                     self.catalog.metastore.link_dataset_version_to_job(
                         dataset.get_version(version).id, job_id, is_creator=True
                     )
+                if dependencies:
+                    self._set_dependencies(dependencies)
                 self._add_dependencies(dataset, version)  # type: ignore [arg-type]
-
-                warehouse.rename_table(
-                    temp_table, warehouse.dataset_table_name(dataset, version)
-                )
-                if direct_rename and job_id:
-                    self.catalog.metastore.get_or_create_checkpoint(
-                        job_id,
-                        hashlib.sha256(
-                            f"{temp_table_name}:{dataset.get_version(version).uuid}".encode()
-                        ).hexdigest(),
-                    )
-                if temp_table_name in self.temp_table_names:
-                    self.temp_table_names.remove(temp_table_name)
 
                 # Mark as COMPLETE only after all operations succeed.
                 self.catalog.complete_dataset_version(
