@@ -881,10 +881,7 @@ class DataChain:
     def _get_or_create_project(self, namespace: str, project_name: str) -> Project:
         """Get project or raise if creation not allowed."""
         metastore = self.session.catalog.metastore
-        if (namespace, project_name) == (
-            metastore.default_namespace_name,
-            metastore.default_project_name,
-        ):
+        if metastore.is_default_project(project_name, namespace):
             return metastore.default_project
         try:
             return metastore.get_project(

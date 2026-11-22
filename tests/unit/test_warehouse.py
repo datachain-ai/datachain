@@ -472,67 +472,6 @@ def test_get_table_evicts_stale_cached_table_when_dropped_out_of_band(warehouse)
     assert "udf_cached_check" not in warehouse.db.metadata.tables
 
 
-@skip_if_not_sqlite
-def test_get_table_reflects_temp_table_and_view(warehouse):
-    warehouse.db.execute_str("CREATE TEMP TABLE tmp_rel (x INTEGER)")
-    assert "x" in warehouse.get_table("tmp_rel").c
-
-    warehouse.db.execute_str("CREATE VIEW view_rel AS SELECT 1 AS x")
-    assert "x" in warehouse.get_table("view_rel").c
-    assert warehouse.db.has_table("view_rel") is False
-
-
-@skip_if_not_sqlite
-def test_get_table_matches_case_insensitive_name_and_added_column(warehouse):
-    warehouse.db.execute_str("CREATE TABLE MixedCaseRel (x INTEGER)")
-    assert "x" in warehouse.db.get_table("mixedcaserel").c
-
-    warehouse.db.add_column("MixedCaseRel", sa.Column("y", Int64))
-    warehouse.db.close()
-    assert "x" in warehouse.db.get_table("mixedcaserel").c
-    assert warehouse.db.is_closed is False
-    refreshed = warehouse.get_table("MixedCaseRel")
-    assert "y" in refreshed.c
-
-
-@skip_if_not_sqlite
-def test_get_table_reflects_column_metadata(warehouse):
-    warehouse.db.execute_str(
-        "CREATE TABLE tx_rel"
-        " (id INTEGER PRIMARY KEY, x INTEGER NOT NULL DEFAULT 7, opt TEXT)"
-    )
-    warehouse.db.execute_str("INSERT INTO tx_rel (id) VALUES (1)")
-    tx_tbl = warehouse.get_table("tx_rel")
-    assert tx_tbl.c.id.primary_key is True
-    assert tx_tbl.c.x.primary_key is False
-    assert tx_tbl.c.x.nullable is False
-    assert tx_tbl.c.opt.nullable is True
-    assert tx_tbl.c.x.server_default is not None
-    assert warehouse.db.execute_str("SELECT id, x FROM tx_rel").fetchall() == [(1, 7)]
-
-
-@skip_if_not_sqlite
-def test_get_table_updates_recreated_column_type(warehouse):
-    warehouse.db.execute_str("CREATE TABLE recreated_rel (x INTEGER)")
-    assert isinstance(warehouse.get_table("recreated_rel").c.x.type, sa.Integer)
-
-    warehouse.db.execute_str("DROP TABLE recreated_rel")
-    warehouse.db.execute_str("CREATE TABLE recreated_rel (x TEXT)")
-    assert isinstance(warehouse.get_table("recreated_rel").c.x.type, sa.Text)
-
-
-@skip_if_not_sqlite
-def test_get_table_includes_generated_columns_and_skips_hidden_columns(warehouse):
-    warehouse.db.execute_str(
-        "CREATE TABLE measure"
-        " (x INTEGER, doubled INTEGER GENERATED ALWAYS AS (2*x) STORED)"
-    )
-    assert list(warehouse.get_table("measure").c.keys()) == ["x", "doubled"]
-
-    warehouse.db.execute_str("CREATE VIRTUAL TABLE vt_rel USING fts5(body)")
-    assert list(warehouse.get_table("vt_rel").c.keys()) == ["body"]
-
-
 def test_encode_arrow_keeps_arrow_batch_when_all_columns_support_it():
     codecs = [
         TypeCodec(

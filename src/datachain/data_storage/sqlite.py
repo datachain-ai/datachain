@@ -268,15 +268,23 @@ class SQLiteDatabaseEngine(DatabaseEngine):
             return table
         return self.reflect_table(name)
 
+    @retry_sqlite_locks
     def reflect_table(self, name: str) -> Table:
         if self.is_closed:
             self._reconnect()
+        cached = self.metadata.tables.get(name)
         try:
             columns = sqlalchemy.inspect(self.engine).get_columns(name)
         except sqlalchemy.exc.NoSuchTableError as exc:
-            if (cached := self.metadata.tables.get(name)) is not None:
+            if cached is not None:
                 self.metadata.remove(cached)
             raise TableMissingError(f"Table '{name}' not found") from exc
+        if cached is not None and (
+            [c.name for c in cached.columns] != [col["name"] for col in columns]
+            or [c.name for c in cached.primary_key.columns]
+            != [col["name"] for col in columns if col.get("primary_key")]
+        ):
+            self.metadata.remove(cached)
         return Table(
             name,
             self.metadata,
@@ -284,6 +292,16 @@ class SQLiteDatabaseEngine(DatabaseEngine):
                 Column(
                     col["name"],
                     col["type"],
+                    *(
+                        (
+                            sqlalchemy.Computed(
+                                computed["sqltext"],
+                                persisted=computed.get("persisted"),
+                            ),
+                        )
+                        if (computed := col.get("computed")) is not None
+                        else ()
+                    ),
                     nullable=col["nullable"],
                     server_default=(
                         text(str(col["default"]))

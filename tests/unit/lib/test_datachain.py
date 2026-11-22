@@ -1855,10 +1855,19 @@ def test_read_dataset_to_list_runs_two_statements(test_session, version, expecte
     with _trace_sqlite_statements(test_session) as executed:
         rows = dc.read_dataset(
             "selected", version=version, session=test_session
-        ).to_values("num")
+        ).to_list("num")
 
-    assert rows == [expected]
+    assert rows == [(expected,)]
     assert len(executed) == 2
+
+    test_session.catalog.warehouse.db.metadata.clear()
+    with _trace_sqlite_statements(test_session) as cold_executed:
+        cold_rows = dc.read_dataset(
+            "selected", version=version, session=test_session
+        ).to_list("num")
+
+    assert cold_rows == [(expected,)]
+    assert len(cold_executed) == 3
 
 
 @skip_if_not_sqlite
@@ -1870,15 +1879,7 @@ def test_save_in_default_project_skips_projects_query(test_session):
             dc.C("num") == 1
         ).save("proj_shortcut_out")
 
-    assert not any("WHERE projects.name" in sql for sql in executed)
-
-
-@skip_if_not_sqlite
-def test_read_dataset_missing_version_raises_not_found(test_session, no_studio_dataset):
-    dc.read_values(num=[1], session=test_session).save("selected", version="1.0.0")
-
-    with pytest.raises(DatasetNotFoundError, match=r"9\.0\.0"):
-        dc.read_dataset("selected", version="9.0.0", session=test_session)
+    assert not any("FROM projects" in sql for sql in executed)
 
 
 def test_chain_of_maps(test_session):

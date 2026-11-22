@@ -2465,6 +2465,8 @@ class DatasetQuery:
         self.dialect = self.catalog.warehouse.db.dialect
 
         if name is None:
+            if dataset is not None:
+                raise ValueError("Cannot pass 'dataset' without 'name'")
             return
 
         self._init_rooted_query(

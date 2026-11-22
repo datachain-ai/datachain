@@ -162,6 +162,14 @@ def clean_session() -> Generator[None, None, None]:
     Session.cleanup_for_tests()
 
 
+@pytest.fixture
+def clean_job_state(monkeypatch):
+    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
+    reset_session_job_state()
+    yield
+    reset_session_job_state()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def clean_environment(
     monkeypatch_session: MonkeyPatch,

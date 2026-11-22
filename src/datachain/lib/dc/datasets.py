@@ -223,7 +223,8 @@ def read_dataset(
             pass
 
         # Optimization: for local or Studio datasets we already have all metadata,
-        # so pass it down to avoid an extra lookup in DatasetQuery.
+        # so pass it down to avoid an extra lookup in DatasetQuery (remote datasets
+        # stay None so DatasetQuery still pulls missing version data).
         if (is_studio() or is_namespace_local(namespace_name)) and dataset.has_version(
             str(version)
         ):
