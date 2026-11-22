@@ -6,6 +6,7 @@ import pytest
 
 import datachain as dc
 from datachain.catalog import Catalog
+from datachain.data_storage import JobQueryType, JobStatus
 from datachain.dataset import SESSION_DATASET_PREFIX, DatasetStatus
 from datachain.error import DataChainError, DatasetNotFoundError
 from datachain.query.session import Session
@@ -153,6 +154,54 @@ def test_cleanup_temp_datasets_all_states(catalog, project):
     for temp_name in [ds_created.name, ds_complete.name, ds_failed.name]:
         with pytest.raises(DatasetNotFoundError):
             catalog.get_dataset(temp_name, include_incomplete=True)
+
+
+def test_get_in_memory_after_session_exists_keeps_default_session(catalog):
+    default = Session.get(catalog=catalog)
+
+    session = Session.get(in_memory=True)
+
+    assert session.catalog.in_memory
+    assert Session.get(in_memory=True) is session
+    assert Session.get() is default
+
+
+def test_get_in_memory_as_first_call_keeps_global_session_persistent():
+    Session.cleanup_for_tests()
+    try:
+        session = Session.get(in_memory=True)
+
+        assert session.catalog.in_memory
+        assert not Session.get().catalog.in_memory
+    finally:
+        Session.cleanup_for_tests()
+
+
+def test_in_memory_chain_in_studio_job_writes_nothing_to_job_catalog(
+    catalog_tmpfile, tmp_path, monkeypatch
+):
+    job_id = catalog_tmpfile.metastore.create_job(
+        "studio-job", "", query_type=JobQueryType.PYTHON, status=JobStatus.RUNNING
+    )
+    monkeypatch.setenv("DATACHAIN_IS_STUDIO", "True")
+    monkeypatch.setenv("DATACHAIN_JOB_ID", job_id)
+    monkeypatch.setenv("DATACHAIN__METASTORE", catalog_tmpfile.metastore.serialize())
+    monkeypatch.setenv("DATACHAIN__WAREHOUSE", catalog_tmpfile.warehouse.serialize())
+    results = tmp_path / "results"
+    results.mkdir()
+    (results / "a.txt").write_text("a")
+    Session.get(catalog=catalog_tmpfile)
+
+    saved = (
+        dc.read_storage(results.as_uri(), in_memory=True)
+        .map(size=lambda file: file.size, output=int)
+        .save("sizes")
+    )
+
+    assert saved.to_values("size") == [1]
+    assert catalog_tmpfile.listings() == []
+    with pytest.raises(DatasetNotFoundError):
+        catalog_tmpfile.get_dataset("sizes")
 
 
 def test_get_job_returns_none_without_env_or_cached_job(catalog, monkeypatch):

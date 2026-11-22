@@ -47,17 +47,20 @@ def test_get_metastore(sqlite_db):
         metastore.close_on_exit()
 
 
-def test_get_metastore_in_memory():
-    if os.environ.get("DATACHAIN_METASTORE"):
-        with pytest.raises(RuntimeError):
-            get_metastore(in_memory=True)
-    else:
-        metastore = get_metastore(in_memory=True)
+def test_get_metastore_in_memory_with_env_metastore_returns_in_memory_sqlite(
+    tmp_path,
+):
+    persistent = SQLiteMetastore(db_file=str(tmp_path / "studio.db"))
+    try:
+        with patch.dict(os.environ, {"DATACHAIN__METASTORE": persistent.serialize()}):
+            metastore = get_metastore(in_memory=True)
         try:
             assert isinstance(metastore, SQLiteMetastore)
             assert metastore.db.db_file == ":memory:"
         finally:
             metastore.close_on_exit()
+    finally:
+        persistent.close_on_exit()
 
 
 def test_get_warehouse(sqlite_db):
@@ -85,17 +88,20 @@ def test_get_warehouse(sqlite_db):
         warehouse.close_on_exit()
 
 
-def test_get_warehouse_in_memory():
-    if os.environ.get("DATACHAIN_WAREHOUSE"):
-        with pytest.raises(RuntimeError):
-            get_warehouse(in_memory=True)
-    else:
-        warehouse = get_warehouse(in_memory=True)
+def test_get_warehouse_in_memory_with_env_warehouse_returns_in_memory_sqlite(
+    tmp_path,
+):
+    persistent = SQLiteWarehouse(db_file=str(tmp_path / "studio.db"))
+    try:
+        with patch.dict(os.environ, {"DATACHAIN__WAREHOUSE": persistent.serialize()}):
+            warehouse = get_warehouse(in_memory=True)
         try:
             assert isinstance(warehouse, SQLiteWarehouse)
             assert warehouse.db.db_file == ":memory:"
         finally:
             warehouse.close_on_exit()
+    finally:
+        persistent.close_on_exit()
 
 
 def test_get_distributed_class(monkeypatch):

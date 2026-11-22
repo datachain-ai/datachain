@@ -59,6 +59,8 @@ class Session:
     """
 
     GLOBAL_SESSION_CTX: "Session | None" = None
+    # The session `in_memory=True` resolves to; never the global session.
+    IN_MEMORY_SESSION: "Session | None" = None
     SESSION_CONTEXTS: ClassVar[list["Session"]] = []
     _ALL_SESSIONS: ClassVar[WeakSet["Session"]] = WeakSet()
     ORIGINAL_EXCEPT_HOOK = None
@@ -97,6 +99,8 @@ class Session:
             client_config=client_config, in_memory=in_memory
         )
         self._cleanup_catalogs: list[Catalog] = [self.catalog]
+        # The job of an in-memory catalog lives in that catalog; see get_job.
+        self._session_job: Job | None = None
         Session._ALL_SESSIONS.add(self)
 
     def _with_catalog(self, catalog: "Catalog") -> "Session":
@@ -141,8 +145,12 @@ class Session:
         Return the current job if one exists, without creating a new one.
 
         Checks the cached ``_CURRENT_JOB`` and ``DATACHAIN_JOB_ID`` env var.
-        Returns None if no job is found.
+        Returns None if no job is found. A session with an in-memory catalog
+        has a job of its own: the process job lives in the persistent metastore.
         """
+        if self.catalog.in_memory:
+            return (self._parent or self)._session_job
+
         if Session._CURRENT_JOB:
             return Session._CURRENT_JOB
 
@@ -173,8 +181,16 @@ class Session:
               Exit hooks are registered to finalize the job.
 
         Note:
-            Job is shared across all Session instances to ensure one job per process.
+            Job is shared across all Session instances to ensure one job per process,
+            except for sessions with an in-memory catalog, which create a job of
+            their own in that catalog.
         """
+        if self.catalog.in_memory:
+            owner = self._parent or self
+            if owner._session_job is None:
+                owner._session_job = self._create_job()
+            return owner._session_job
+
         if Session._CURRENT_JOB:
             return Session._CURRENT_JOB
 
@@ -196,33 +212,7 @@ class Session:
             )
         else:
             # Local run: create new job
-            query = ""
-            if is_script_run():
-                script = os.path.abspath(sys.argv[0])
-                try:
-                    with open(script) as f:
-                        query = f.read()
-                except OSError:
-                    pass
-            else:
-                # Interactive session or module run - use unique name to avoid
-                # linking unrelated sessions
-                script = str(uuid4())
-            python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
-
-            # try to find the parent job for checkpoint/rerun chain
-            parent = self.catalog.metastore.get_last_job_by_name(script)
-
-            job_id = self.catalog.metastore.create_job(
-                name=script,
-                query=query,
-                query_type=JobQueryType.PYTHON,
-                status=JobStatus.RUNNING,
-                python_version=python_version,
-                rerun_from_job_id=parent.id if parent else None,
-                run_group_id=parent.run_group_id if parent else None,
-            )
-            Session._CURRENT_JOB = self.catalog.metastore.get_job(job_id)
+            Session._CURRENT_JOB = self._create_job()
             Session._OWNS_JOB = True
             Session._JOB_STATUS = JobStatus.RUNNING
 
@@ -238,6 +228,38 @@ class Session:
 
         assert Session._CURRENT_JOB is not None
         return Session._CURRENT_JOB
+
+    def _create_job(self) -> "Job":
+        """Create a running job for a local run in this session's metastore."""
+        query = ""
+        if is_script_run():
+            script = os.path.abspath(sys.argv[0])
+            try:
+                with open(script) as f:
+                    query = f.read()
+            except OSError:
+                pass
+        else:
+            # Interactive session or module run - use unique name to avoid
+            # linking unrelated sessions
+            script = str(uuid4())
+        python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
+
+        # try to find the parent job for checkpoint/rerun chain
+        parent = self.catalog.metastore.get_last_job_by_name(script)
+
+        job_id = self.catalog.metastore.create_job(
+            name=script,
+            query=query,
+            query_type=JobQueryType.PYTHON,
+            status=JobStatus.RUNNING,
+            python_version=python_version,
+            rerun_from_job_id=parent.id if parent else None,
+            run_group_id=parent.run_group_id if parent else None,
+        )
+        job = self.catalog.metastore.get_job(job_id)
+        assert job is not None
+        return job
 
     def _finalize_job_success(self):
         """Mark the current job as completed."""
@@ -360,12 +382,24 @@ class Session:
             session (Session): Optional Session(). If not provided a new session will
                     be created. It's needed mostly for simple API purposes.
             catalog (Catalog): Optional catalog. By default, a new catalog is created.
+            in_memory (bool): Use an in-memory session: the active session if its
+                    catalog is in memory, else one shared by the process, which
+                    never becomes the global session.
         """
         if session:
             return session
 
+        if in_memory:
+            active = cls.active()
+            if active is not None and active.catalog.in_memory:
+                session = active
+            else:
+                if cls.IN_MEMORY_SESSION is None:
+                    cls.IN_MEMORY_SESSION = Session("inmemory", in_memory=True)
+                session = cls.IN_MEMORY_SESSION
+
         # Access the active (most recent) context from the stack
-        if cls.SESSION_CONTEXTS:
+        elif cls.SESSION_CONTEXTS:
             session = cls.SESSION_CONTEXTS[-1]
 
         elif cls.GLOBAL_SESSION_CTX is None:
@@ -373,7 +407,6 @@ class Session:
                 cls.GLOBAL_SESSION_NAME,
                 catalog,
                 client_config=client_config,
-                in_memory=in_memory,
             )
             session = cls.GLOBAL_SESSION_CTX
 
@@ -425,6 +458,9 @@ class Session:
     @classmethod
     def cleanup_for_tests(cls):
         cls._close_all_contexts()
+        if cls.IN_MEMORY_SESSION is not None:
+            cls.IN_MEMORY_SESSION._close()
+            cls.IN_MEMORY_SESSION = None
         if cls.GLOBAL_SESSION_CTX is not None:
             cls.GLOBAL_SESSION_CTX.__exit__(None, None, None)
             cls.GLOBAL_SESSION_CTX = None

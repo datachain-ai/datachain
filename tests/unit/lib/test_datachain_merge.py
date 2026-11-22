@@ -160,8 +160,7 @@ def test_merge_similar_objects_in_memory():
     ]
 
     ch1 = dc.read_values(emp=employees, in_memory=True)
-    # This should use the same session as above (in_memory=True automatically)
-    ch2 = dc.read_values(emp=new_employees)
+    ch2 = dc.read_values(emp=new_employees, in_memory=True)
     assert ch1.session.catalog.in_memory is True
     assert ch1.session.catalog.metastore.db.db_file == ":memory:"
     assert ch1.session.catalog.warehouse.db.db_file == ":memory:"
