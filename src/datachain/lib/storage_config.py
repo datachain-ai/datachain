@@ -80,15 +80,14 @@ def client_configs(
 
 
 def session_for(
-    session: Session | None, client_config: dict | None, in_memory: bool
+    session: Session | None, client_config: dict, in_memory: bool
 ) -> Session:
     """A view of the session with a catalog of its own for one chain: it reads
-    with `client_config`, if given, and records the sources the chain lists.
-    The caller and its cleanup scope are unchanged."""
+    with `client_config` and records the sources the chain lists. The caller
+    and its cleanup scope are unchanged."""
     session = Session.get(session, in_memory=in_memory)
     catalog = session.catalog.copy()
-    if client_config is not None:
-        catalog.client_config = client_config
+    catalog.client_config = client_config
     catalog.source_client_configs = {}
     return session._with_catalog(catalog)
 

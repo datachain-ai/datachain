@@ -74,15 +74,33 @@ def test_read_storage_client_config(tmp_dir):
     }  # New client config is set.
 
 
+_UNREACHABLE = {"aws_endpoint_url": "http://127.0.0.1:9"}
+
+
 def _anonymous(ctc):
     return {"aws_endpoint_url": ctc.client_config["aws_endpoint_url"], "anon": True}
+
+
+def test_read_storage_records_no_source_configs_on_the_session_catalog(
+    test_session, tmp_dir
+):
+    (tmp_dir / "note.txt").write_text("local")
+
+    dc.read_storage(tmp_dir.as_uri(), session=test_session).to_values("file")
+
+    assert test_session.catalog.source_client_configs == {}
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
 @pytest.mark.parametrize("parallel", [1, 2], ids=["serial", "parallel"])
+@pytest.mark.parametrize(
+    "path,expected",
+    [("cats/", ["local", "meow", "mrow"]), ("cats/cat1", ["local", "meow"])],
+    ids=["folder", "file"],
+)
 def test_union_with_chain_of_other_config_reads_each_source_with_its_config(
-    cloud_test_catalog_tmpfile, tmp_dir, parallel
+    cloud_test_catalog_tmpfile, tmp_dir, parallel, path, expected
 ):
     ctc = cloud_test_catalog_tmpfile
     session = ctc.session
@@ -90,15 +108,44 @@ def test_union_with_chain_of_other_config_reads_each_source_with_its_config(
     local = dc.read_storage(
         tmp_dir.as_uri(), client_config=_anonymous(ctc), session=session
     )
-    cats = dc.read_storage(f"{ctc.src_uri}/cats/", session=session)
+    remote = dc.read_storage(f"{ctc.src_uri}/{path}", session=session)
 
     texts = (
-        local.union(cats)
+        local.union(remote)
         .settings(parallel=parallel)
         .map(text=lambda file: file.read_text(), output=str)
     )
 
-    assert sorted(texts.to_values("text")) == ["local", "meow", "mrow"]
+    assert sorted(texts.to_values("text")) == expected
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_union_reads_a_shared_source_with_the_left_config(cloud_test_catalog, tmp_dir):
+    ctc = cloud_test_catalog
+    session = ctc.session
+    (tmp_dir / "note.txt").write_text("local")
+    # Listed once with working credentials, so the right chain reuses this listing.
+    dc.read_storage(ctc.src_uri, session=session).count()
+    cats = dc.read_storage(f"{ctc.src_uri}/cats/", session=session)
+    right = dc.read_storage(
+        [f"{ctc.src_uri}/dogs/", tmp_dir.as_uri()],
+        client_config=_UNREACHABLE,
+        anon=False,
+        session=session,
+    )
+
+    files = cats.union(right).to_values("file")
+
+    assert sorted(f.read_text() for f in files) == [
+        "arf",
+        "bark",
+        "local",
+        "meow",
+        "mrow",
+        "ruff",
+        "woof",
+    ]
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
@@ -127,14 +174,34 @@ def test_export_under_prefix_after_union_with_other_config_uses_source_config(
     ctc = cloud_test_catalog
     session = ctc.session
     (tmp_dir / "note.txt").write_text("local")
-    elsewhere = {"aws_endpoint_url": "http://127.0.0.1:9"}
-    local = dc.read_storage(tmp_dir.as_uri(), client_config=elsewhere, session=session)
+    local = dc.read_storage(
+        tmp_dir.as_uri(), client_config=_UNREACHABLE, session=session
+    )
     cats = dc.read_storage(f"{ctc.src_uri}/cats/", session=session)
     cat = next(f for f in local.union(cats).to_values("file") if f.path == "cats/cat1")
 
     cat.export(f"{ctc.src_uri}/out/nested", placement="filename")
 
     assert (ctc.src / "out" / "nested" / "cat1").read_text() == "meow"
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_to_parquet_after_union_with_other_config_writes_with_destination_config(
+    cloud_test_catalog, tmp_dir
+):
+    ctc = cloud_test_catalog
+    session = ctc.session
+    (tmp_dir / "note.txt").write_text("local")
+    local = dc.read_storage(
+        tmp_dir.as_uri(), client_config=_UNREACHABLE, session=session
+    )
+    cats = dc.read_storage(f"{ctc.src_uri}/cats/", session=session)
+
+    local.union(cats).to_parquet(f"{ctc.src_uri}/out.parquet")
+
+    with (ctc.src / "out.parquet").open("rb") as f:
+        assert pq.read_table(f).num_rows == 3
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)

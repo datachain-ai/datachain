@@ -351,8 +351,8 @@ class Listing:
         recursive: bool | None = True,
         versions: bool,
         client_config: dict,
+        session_config: dict,
         session: Session | None = None,
-        session_config: dict | None = None,
         in_memory: bool = False,
     ) -> None:
         """Use `dc.list_storage()` to create a listing."""
