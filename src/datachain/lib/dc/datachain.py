@@ -2753,7 +2753,8 @@ class DataChain:
         """Calculate differences between two chains containing files.
 
         This method is specifically designed for file chains. It uses file `source`
-        and `path` to match files, and file `version` and `etag` to detect changes.
+        and `path` to match files, and file `version` and `etag` to detect changes;
+        where both files have `md5`, it replaces `etag`.
 
         Parameters:
             other: Chain to compare against.
@@ -2797,7 +2798,10 @@ class DataChain:
         compare_cols = get_file_signals(on, compare_file_signals)
         right_compare_cols = get_file_signals(right_on, compare_file_signals)
 
-        return self.diff(
+        from datachain.diff import _compare
+
+        return _compare(
+            self,
             other,
             on_cols,
             right_on=right_on_cols,
@@ -2808,6 +2812,7 @@ class DataChain:
             modified=modified,
             same=same,
             status_col=status_col,
+            md5=(f"{on}.md5", f"{right_on}.md5"),
         )
 
     def to_pandas(

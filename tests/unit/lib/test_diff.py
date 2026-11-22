@@ -579,6 +579,40 @@ def test_file_diff_nested(test_session, model_leaf_str_default, status_col):
     assert diff.order_by("nested.file.source").to_list(*collect_fields) == expected
 
 
+def test_file_diff_uses_md5_only_when_both_sides_have_md5(test_session):
+    left = dc.read_values(
+        file=[
+            File(source="gs://b", path="meta_only", version="1", etag="e2", md5="m1"),
+            File(source="gs://b", path="content", version="1", etag="e2", md5="m2"),
+            File(source="gs://b", path="old_same", version="1", etag="e1", md5="m1"),
+            File(source="gs://b", path="old_mod", version="1", etag="e2", md5="m1"),
+            File(source="s3://b", path="s3_mod", version="1", etag="e2"),
+        ],
+        session=test_session,
+    )
+    right = dc.read_values(
+        file=[
+            File(source="gs://b", path="meta_only", version="1", etag="e1", md5="m1"),
+            File(source="gs://b", path="content", version="1", etag="e1", md5="m1"),
+            File(source="gs://b", path="old_same", version="1", etag="e1", md5=""),
+            File(source="gs://b", path="old_mod", version="1", etag="e1", md5=""),
+            File(source="s3://b", path="s3_mod", version="1", etag="e1"),
+        ],
+        session=test_session,
+    )
+
+    diff = left.file_diff(
+        right, added=True, deleted=True, modified=True, same=True, status_col="diff"
+    )
+    assert dict(diff.to_list("file.path", "diff")) == {
+        "meta_only": CompareStatus.SAME,
+        "content": CompareStatus.MODIFIED,
+        "old_same": CompareStatus.SAME,
+        "old_mod": CompareStatus.MODIFIED,
+        "s3_mod": CompareStatus.MODIFIED,
+    }
+
+
 def test_multiple_diffs(test_session):
     ds1 = dc.read_values(
         id=[1, 2, 3, 4, 5],

@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 from datetime import datetime
@@ -35,7 +36,8 @@ class GCSClient(RangeListedClient):
     PINNED_VERSION_IS_IMMUTABLE = True
     # the fields a listing asks for: GCS sends every field otherwise
     LIST_FIELDS = (
-        "items(name,size,generation,etag,timeDeleted,updated),nextPageToken,prefixes"
+        "items(name,size,generation,etag,md5Hash,timeDeleted,updated),"
+        "nextPageToken,prefixes"
     )
 
     @classmethod
@@ -201,10 +203,10 @@ class GCSClient(RangeListedClient):
         path = self._path_with_generation(lpath, version_id)
         await self.fs._get_file(path, rpath, callback=callback)
 
-    async def get_current_etag(self, file: File) -> str:
+    async def _get_current_file(self, file: File) -> File:
         path = self._path_with_generation(file.get_fs_path(), file.version)
         info = await self.fs._info(path)
-        return self.info_to_file(info, file.path).etag
+        return self.info_to_file(info, file.path)
 
     def get_file_info(self, path: str, version_id: str | None = None) -> File:
         self.validate_file_path(path)
@@ -276,6 +278,10 @@ class GCSClient(RangeListedClient):
             keep.in_order,
         )
 
+    @staticmethod
+    def _decode_md5(md5_hash: str | None) -> str:
+        return base64.b64decode(md5_hash).hex() if md5_hash else ""
+
     def _file_row(self, d: dict[str, Any]) -> tuple:
         return FileRow(
             self.uri,
@@ -285,6 +291,7 @@ class GCSClient(RangeListedClient):
             d.get("etag", ""),
             not d.get("timeDeleted"),
             self.parse_timestamp(d["updated"]),
+            md5=self._decode_md5(d.get("md5Hash")),
         )
 
     def info_to_file(self, v: dict[str, Any], path: str) -> File:
@@ -292,6 +299,7 @@ class GCSClient(RangeListedClient):
             source=self.uri,
             path=path,
             etag=v.get("etag", ""),
+            md5=self._decode_md5(v.get("md5Hash")),
             version=v.get("generation", "") if self._is_version_aware() else "",
             is_latest=not v.get("timeDeleted"),
             last_modified=self.parse_timestamp(v["updated"]),
