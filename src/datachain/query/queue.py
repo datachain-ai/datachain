@@ -1,7 +1,9 @@
+import multiprocessing  # noqa: F401
 from queue import Empty, Full
 from time import sleep
 from typing import Any
 
+import multiprocess  # noqa: F401
 from multiprocess.queues import Queue
 
 # For more context on the get_from_queue and put_into_queue functions, see the

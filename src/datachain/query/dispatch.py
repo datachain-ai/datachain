@@ -1,4 +1,5 @@
 import contextlib
+import multiprocessing  # noqa: F401
 import os
 import threading
 import traceback
