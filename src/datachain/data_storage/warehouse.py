@@ -15,6 +15,7 @@ from sqlalchemy.sql.selectable import GenerativeSelect
 
 from datachain.client import Client
 from datachain.data_storage.codec import RowCodec, TypeCodec, value_codec
+from datachain.data_storage.schema import PARTITION_COLUMN_ID
 from datachain.data_storage.serializer import Serializable
 from datachain.data_storage.writer import ID_BITS, MAX_ID, Writer, parts_columns
 from datachain.dataset import DatasetRecord, StorageURI
@@ -29,6 +30,7 @@ from datachain.sql.types import SQLType
 from datachain.utils import LIKE_ESCAPE_CHAR, batched, safe_closing, sql_escape_like
 
 if TYPE_CHECKING:
+    import pyarrow as pa
     from sqlalchemy.sql._typing import (
         _ColumnsClauseArgument,
         _FromClauseArgument,
@@ -155,40 +157,39 @@ class AbstractWarehouse(ABC, Serializable):
     def dataset_select_paginated(
         self,
         query,
-        page_size: int = SELECT_BATCH_SIZE,
+        page_size: int | None = None,
     ) -> Generator[Sequence, None, None]:
         """
-        This is equivalent to `db.execute`, but for selecting rows in batches
+        Rows of `query` in pages, as UDF inputs are read: ordered by sys__id,
+        after the partition id when the query selects one. Each page starts
+        after the previous page's last key, so no page re-reads the rows before it.
         """
+        if page_size is None:
+            page_size = SELECT_BATCH_SIZE
+        columns = query.selected_columns
+        names = [n for n in (PARTITION_COLUMN_ID, "sys__id") if n in columns]
+        keys = [columns[n] for n in names]
+        key_at = [list(columns.keys()).index(n) for n in names]
         limit = query._limit
-        paginated_query = query.limit(page_size)
-
-        offset = query._offset or 0
-        num_yielded = 0
+        query = query.order_by(None).order_by(*keys)
 
         # Ensure we're using a thread-local connection
         with self.clone() as wh:
-            while True:
-                if limit is not None:
-                    limit -= num_yielded
-                    num_yielded = 0
-                    if limit <= 0:
-                        break
-                    if limit < page_size:
-                        paginated_query = paginated_query.limit(None).limit(limit)
-
+            page = query
+            while limit is None or limit > 0:
+                size = page_size if limit is None else min(page_size, limit)
                 # Cursor results are not thread-safe, so we convert them to a list
-                results = list(wh.dataset_rows_select(paginated_query.offset(offset)))
-
-                processed = 0
-                for row in results:
-                    processed += 1
-                    yield row
-                    num_yielded += 1
-
-                if processed < page_size:
-                    break  # no more results
-                offset += page_size
+                rows = list(wh.dataset_rows_select(page.limit(size)))
+                yield from rows
+                if len(rows) < size:
+                    break
+                if limit is not None:
+                    limit -= size
+                last = (
+                    sa.literal(rows[-1][i], k.type)
+                    for i, k in zip(key_at, keys, strict=True)
+                )
+                page = query.where(sa.tuple_(*keys) > sa.tuple_(*last))
 
     def _regenerate_system_columns(
         self,
@@ -471,6 +472,18 @@ class AbstractWarehouse(ABC, Serializable):
     def create_parts_table(self, name: str) -> sa.Table:
         """Create an empty ledger: see ``Writer``."""
         return self.create_udf_table(parts_columns(), name=name)
+
+    def insert_arrow(
+        self,
+        table: sa.Table,
+        batch: "pa.RecordBatch",
+    ) -> None:
+        """Insert a batch of stored values, including explicit sys__id."""
+        self.insert_block(
+            table,
+            batch.schema.names,
+            list(zip(*(c.to_pylist() for c in batch.columns), strict=True)),
+        )
 
     @abstractmethod
     def insert_block(

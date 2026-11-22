@@ -140,3 +140,15 @@ class JobNotFoundError(NotFoundError):
 
 class JobAncestryDepthExceededError(DataChainError):
     pass
+
+
+class RowEncodeError(ValueError):
+    """A value its column cannot take; `column` is the column's index."""
+
+    def __init__(self, column: int, value: object) -> None:
+        self.column = column
+        self.value = value
+        super().__init__(f"invalid value {value!r} for column {column}")
+
+    def __reduce__(self):
+        return RowEncodeError, (self.column, self.value)

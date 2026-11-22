@@ -42,12 +42,14 @@ from datachain.checkpoint_event import (
 from datachain.data_storage.schema import (
     PARTITION_COLUMN_ID,
     coerce_table_types,
+    committed_part_keys,
     partition_col_names,
     partition_columns,
+    parts_table_name,
 )
-from datachain.data_storage.writer import committed_part_keys, parts_table_name
 from datachain.dataset import DatasetDependency
 from datachain.error import (
+    DataChainError,
     DatasetInvalidVersionError,
     DatasetNotFoundError,
     QueryScriptAbortError,
@@ -504,7 +506,7 @@ def process_udf_outputs(
 
     def _rows(udf_output, progress):
         for row in udf_output:
-            progress.add(1)
+            progress.add(1 if type(row) is tuple else row.num_rows)
             yield row
 
     with (
@@ -648,6 +650,11 @@ class UDFStep(Step, ABC):
         parts: "Table | None" = None,
     ) -> None:
         catalog = self.session.catalog
+        # read only the columns the UDF reads: a wide input costs nothing extra
+        read = {"sys__id", PARTITION_COLUMN_ID, *self.udf.inner.read_columns()}
+        query = query.with_only_columns(
+            *(c for c in query.selected_columns if c.name in read)
+        )
         rows_to_process = catalog.warehouse.query_count(query)
         if rows_to_process == 0:
             logger.debug(
@@ -1076,10 +1083,21 @@ class UDFStep(Step, ABC):
             partition_tbl = self.create_partitions_table(query)
             temp_tables.append(partition_tbl.name)
 
-        result_query = query.outerjoin(
-            partition_tbl,
-            partition_tbl.c.sys__id == query.selected_columns.sys__id,
-        ).add_columns(*partition_columns())
+        # On SQLite, the partition table's index on (sys__partition_id, rowid)
+        # lets each input page seek to its first row instead of sorting. The
+        # alias is required on ClickHouse when continuing from a reflected
+        # partition table (test_aggregator_continue_from_partial_same_job).
+        part = partition_tbl.alias()
+        result_query = query.join(
+            part,
+            part.c.sys__id == query.selected_columns.sys__id,
+        ).with_only_columns(
+            *(
+                part.c.sys__id.label("sys__id") if c.name == "sys__id" else c
+                for c in query.selected_columns
+            ),
+            part.c[PARTITION_COLUMN_ID],
+        )
         return result_query, _continue
 
     def apply(
@@ -1094,6 +1112,10 @@ class UDFStep(Step, ABC):
         **kwargs,
     ) -> "StepResult":
         query = query_generator.select()
+        if PARTITION_COLUMN_ID in query.selected_columns:
+            raise DataChainError(
+                f"Column '{PARTITION_COLUMN_ID}' is reserved for internal partitioning"
+            )
 
         # Calculate partial hash using UDF identity (name + params + output schema)
         # and partition_by columns. This allows continuing from partial when only
@@ -1105,6 +1127,7 @@ class UDFStep(Step, ABC):
                 hash_input
                 + self.udf.hash(include_body=False)
                 + hash_column_elements(partition_by)
+                + (PARTITION_COLUMN_ID if partition_by else "")
             ).encode()
             + UDF_OUTPUT_FORMAT
         ).hexdigest()

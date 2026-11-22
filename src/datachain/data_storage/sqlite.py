@@ -8,6 +8,8 @@ from time import sleep
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+import pyarrow as pa
+import pyarrow.compute as pc
 import sqlalchemy
 from sqlalchemy import (
     Column,
@@ -31,6 +33,7 @@ from datachain.data_storage import AbstractDBMetastore, AbstractWarehouse
 from datachain.data_storage.codec import (
     TypeCodec,
     base_decode,
+    cast_arrow_column,
     compose,
     decode_datetime,
     value_codec,
@@ -424,6 +427,9 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         Create table. Does nothing if table already exists when if_not_exists=True.
         """
         self.execute(CreateTable(table, if_not_exists=if_not_exists))
+        if kind == "udf":
+            for index in table.indexes:
+                self.execute(CreateIndex(index, if_not_exists=if_not_exists))
 
     def drop_table(self, table: "Table", if_exists: bool = False) -> None:
         self.execute(DropTable(table, if_exists=if_exists))
@@ -759,12 +765,11 @@ _MIN_DATETIME_US = -62_135_596_800_000_000  # 0001-01-01 00:00:00
 _MAX_DATETIME_US = 253_402_300_799_999_999  # 9999-12-31 23:59:59.999999
 
 
-def _encode_datetime_column(column: Any) -> list[Any] | None:
+def _encode_datetime_column(column: Any) -> Any:
     """An Arrow timestamp column as the text `adapt_datetime` stores; None for
     any other column."""
-    import pyarrow as pa
-    import pyarrow.compute as pc
-
+    if pa.types.is_null(column.type):
+        return column.cast(pa.string())
     if not pa.types.is_timestamp(column.type):
         return None
     # Arrow holds aware timestamps as UTC instants: without the timezone they give
@@ -784,9 +789,15 @@ def _encode_datetime_column(column: Any) -> list[Any] | None:
         )
         usts = i64.view(pa.timestamp("us"))
     text = usts.cast(pa.string())
-    return pc.replace_substring_regex(
-        text, pattern=r"\.000000$", replacement=""
-    ).to_pylist()
+    return pc.replace_substring_regex(text, pattern=r"\.000000$", replacement="")
+
+
+def _encode_scalar_column(python_type: type, column: Any) -> Any:
+    """Only accept Arrow types whose Python values this scalar codec accepts."""
+    target = {str: pa.string(), bytes: pa.binary(), float: pa.float64()}.get(
+        python_type, pa.int64()
+    )
+    return cast_arrow_column(python_type, target, column)
 
 
 class SQLiteWarehouse(AbstractWarehouse):
@@ -924,6 +935,14 @@ class SQLiteWarehouse(AbstractWarehouse):
             )
         if isinstance(sql_type, Array):
             return codec._replace(encode=partial(compose, adapt_array, codec.encode))
+        if codec.kept and (kept := next(iter(codec.kept))) in (
+            str,
+            bytes,
+            bool,
+            int,
+            float,
+        ):
+            return codec._replace(encode_column=partial(_encode_scalar_column, kept))
         return codec
 
     def export_dataset_table(

@@ -23,7 +23,7 @@ from sqlalchemy import Column
 from datachain.cache import Cache
 from datachain.checkpoint import Checkpoint, CheckpointStatus
 from datachain.client import Client
-from datachain.data_storage.writer import parts_table_name
+from datachain.data_storage.schema import parts_table_name
 from datachain.dataset import (
     DATASET_PREFIX,
     DEFAULT_DATASET_VERSION,
