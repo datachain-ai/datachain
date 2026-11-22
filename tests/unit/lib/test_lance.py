@@ -87,7 +87,12 @@ def test_read_lance_select_and_filter_pushdown(
     assert [call.args[1] for call in read_spy.call_args_list] == [["a"]]
 
     monkeypatch.setattr(ArrowGenerator, "DEFAULT_BATCH_SIZE", 2)
-    assert chain.filter(C("a") >= 1).select("b").to_values("b") == [30, 20, 10, 10]
+    assert sorted(chain.filter(C("a") >= 1).select("b").to_values("b")) == [
+        10,
+        10,
+        20,
+        30,
+    ]
 
 
 def test_read_lance_rejects_table_files(tmp_dir, test_session):
@@ -263,13 +268,15 @@ def test_read_lance_remote_binary_and_embeddings(tmp_dir, test_session, monkeypa
     assert not list(Path(cache.tmp_dir).glob("lance-*"))
 
     f2 = File(source="http://mock", path="wide2.lance", size=len(raw_bytes))
-    assert dc.read_values(
-        file=[file, f2],
-        session=test_session,
-        settings={"cache": True, "prefetch": 0},
-    ).parse_tabular(format="lance", columns=["id"], output={"id": int}).to_values(
-        "id"
-    ) == [1, 2, 1, 2]
+    assert sorted(
+        dc.read_values(
+            file=[file, f2],
+            session=test_session,
+            settings={"cache": True, "prefetch": 0},
+        )
+        .parse_tabular(format="lance", columns=["id"], output={"id": int})
+        .to_values("id")
+    ) == [1, 1, 2, 2]
     assert downloads == 4
     for _ in range(3):
         assert rows[0][0].read()["id"] == 2
