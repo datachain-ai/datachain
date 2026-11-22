@@ -21,7 +21,7 @@ from pyarrow.fs import FileInfo, FileType, FSSpecHandler, PyFileSystem
 
 from datachain import json
 from datachain.cache import Cache, get_temp_cache
-from datachain.catalog.catalog import clone_catalog_with_cache
+from datachain.catalog import catalog as _catalog
 from datachain.data_storage.codec import to_json_text
 from datachain.fs.reference import ReferenceFileSystem
 from datachain.lib.arrow_filter import to_arrow_filter
@@ -240,7 +240,7 @@ def _local_lance_path(file: File) -> str:
         if (path := tmp_cache.get_path(file)) is not None:
             return path
         file = file.model_copy()
-        file._catalog = clone_catalog_with_cache(catalog, tmp_cache)
+        file._catalog = _catalog.clone_catalog_with_cache(catalog, tmp_cache)
     file.ensure_cached()
     path = file.get_local_path()
     assert path is not None
