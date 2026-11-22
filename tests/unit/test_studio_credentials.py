@@ -1,6 +1,6 @@
 import logging
 import stat
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -154,6 +154,15 @@ def test_logout_command_quotes_its_arguments():
     )
     plain = Login(url=STUDIO_URL, token="t", teams=["customer-a"])  # noqa: S106
     assert plain.logout_command() == "datachain auth logout --team customer-a"
+
+
+def test_token_expires_on_its_expiry_date():
+    # Studio expires it at a time on that date, which isn't saved.
+    today = datetime.now(UTC).date()
+
+    assert Login(url=STUDIO_URL, token="t", expires=today).expired()  # noqa: S106
+    tomorrow = today + timedelta(days=1)
+    assert not Login(url=STUDIO_URL, token="t", expires=tomorrow).expired()  # noqa: S106
 
 
 def test_login_normalizes_url_and_teams():

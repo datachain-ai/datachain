@@ -17,7 +17,7 @@ Each `datachain auth login` has a matching logout:
 
 * `datachain auth logout` removes the token saved by `datachain auth login`, without `--team`.
 * `datachain auth logout --team TEAM` removes the token saved by `datachain auth login --team TEAM`. If that token is also used for other teams, it is removed for them too.
-* `datachain auth logout --all` removes every token.
+* `datachain auth logout --all` removes every token for the Studio.
 
 Your default team is cleared with the last token for the Studio set in your config.
 
@@ -26,7 +26,7 @@ With a self-hosted Studio, logout removes the tokens for the instance in use, an
 ## Options
 
 * `--team TEAM` - Remove the token for this team instead of the one saved without `--team`.
-* `--all` - Remove every token, saved with or without `--team`.
+* `--all` - Remove every token for the Studio, saved with or without `--team`.
 * `-H HOSTNAME`, `--hostname HOSTNAME` - The self-hosted Studio instance to log out from. Defaults to the one in use.
 * `-h`, `--help` - Show the help message and exit.
 * `-v`, `--verbose` - Be verbose.

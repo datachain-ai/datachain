@@ -85,7 +85,7 @@ def add_auth_parser(subparsers, parent_parser) -> None:
     auth_logout_help = "Log out from Studio"
     auth_logout_description = (
         "Revoke and remove the Studio token saved without --team. With --team, "
-        "the token for that team instead; with --all, every token."
+        "the token for that team instead; with --all, every token for the Studio."
     )
 
     logout_parser = auth_subparser.add_parser(
@@ -108,7 +108,7 @@ def add_auth_parser(subparsers, parent_parser) -> None:
         "--all",
         action="store_true",
         default=False,
-        help="Remove every token, saved with or without --team",
+        help="Remove every token for the Studio, saved with or without --team",
     )
     logout_parser.add_argument(
         "-H",

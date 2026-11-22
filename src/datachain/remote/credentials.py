@@ -63,7 +63,9 @@ class Login:
         return f" for team{'s' if len(self.teams) > 1 else ''} {', '.join(self.teams)}"
 
     def expired(self) -> bool:
-        return self.expires is not None and self.expires < datetime.now(UTC).date()
+        # Studio expires a token at a time on this date, which isn't saved, so the
+        # whole day counts: DataChain may say so a little early, but never late.
+        return self.expires is not None and self.expires <= datetime.now(UTC).date()
 
     def logout_command(self, team: str | None = None, host: bool = False) -> str:
         """The `datachain auth logout` command that removes this login.

@@ -333,6 +333,31 @@ def test_studio_login_saves_nothing_when_the_config_cant_be_written(
 
 
 @posix_only
+@pytest.mark.parametrize("failure", ["revoke", "remove"])
+def test_studio_login_keeps_the_token_when_undoing_it_fails(
+    get_access_token, capsys, mocker, global_config_dir, failure
+):
+    # The config can't be written, so the login undoes the saved token, and that
+    # fails too: the token stays saved, and the error says how to remove it.
+    set_studio(ConfigLevel.GLOBAL, team="")
+    config = Path(global_config_dir) / "config"
+    config.chmod(0o444)
+    if failure == "remove":
+        mocker.patch("datachain.studio.remove_login", side_effect=OSError("disk full"))
+    try:
+        with requests_mock.mock() as m:
+            status = 500 if failure == "revoke" else 200
+            m.post(f"{OTHER_URL}/api/device-logout", status_code=status, json={})
+            assert main(["auth", "login", "-H", OTHER_URL, "--team", "x"]) == 1
+    finally:
+        config.chmod(0o644)
+
+    assert saved_tokens() == ["isat_access_token"]
+    command = f"datachain auth logout -H {OTHER_URL} --team x"
+    assert f"Run `{command}` to remove it." in capsys.readouterr().err
+
+
+@posix_only
 def test_studio_login_changes_no_config_when_the_token_cant_be_saved(
     get_access_token, global_config_dir
 ):

@@ -290,9 +290,9 @@ def login(args: "Namespace"):
     except Exception:
         # Nothing is kept, so the same login can be run again.
         if saved:
-            with contextlib.suppress(Exception):
-                remove_login(new)
-        _revoke_or_warn(new, "new token")
+            _undo_saved_login(new)
+        else:
+            _revoke_or_warn(new, "new token")
         raise
     print(f"Authentication complete. Saved token to {path}.")
     if team_names:
@@ -366,6 +366,23 @@ def _remove_old_tokens() -> None:
         path = _update_studio_config(level, token=None)
         print(f"Removed the token an older version saved in {path}.")
         _revoke_or_warn(Login(url=url, token=old_token), "old token")
+
+
+def _undo_saved_login(login: Login) -> None:
+    """Revoke and remove a token whose login failed after saving it.
+
+    If either step fails, the token stays saved, so `auth logout` can finish it.
+    """
+    try:
+        _revoke(login)
+        remove_login(login)
+    except Exception:  # noqa: BLE001
+        command = login.logout_command(host=bool(self_hosted(login.url)))
+        print(
+            f"Warning: the new token is still saved in {credentials_path()}. "
+            f"Run `{command}` to remove it.",
+            file=sys.stderr,
+        )
 
 
 def _revoke_or_warn(login: Login, what: str) -> None:
