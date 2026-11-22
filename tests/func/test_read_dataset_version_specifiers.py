@@ -6,6 +6,7 @@ import pytest
 
 import datachain as dc
 from datachain.error import DatasetNotFoundError, DatasetVersionNotFoundError
+from tests.utils import skip_if_not_sqlite
 
 
 def test_read_dataset_version_specifiers(test_session):
@@ -125,6 +126,7 @@ def test_delete_dataset_version_in_name(test_session, no_studio_dataset):
     )
 
 
+@skip_if_not_sqlite
 def test_read_dataset_missing_version_raises_not_found(test_session, no_studio_dataset):
     dc.read_values(num=[1], session=test_session).save("selected", version="1.0.0")
 
