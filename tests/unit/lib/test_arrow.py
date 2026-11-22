@@ -654,3 +654,46 @@ def test_file_schemas_no_files(test_session):
 )
 def test_is_parquet(format, expected):
     assert is_parquet(format) is expected
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize("format", ["parquet", "csv", "json"])
+@pytest.mark.parametrize("source", [False, True])
+def test_tabular_load_uses_native_arrow(tmp_path, test_session_tmpfile, format, source):
+    path = tmp_path / f"native.{format}"
+    frame = pd.DataFrame({"n": list(range(2048)), "text": ["one"] * 2048})
+    if format == "parquet":
+        frame.to_parquet(path, index=False)
+    elif format == "csv":
+        frame.to_csv(path, index=False)
+    else:
+        frame.to_json(path, orient="records", lines=True)
+    result = (
+        dc.read_storage(path.as_uri(), session=test_session_tmpfile)
+        .parse_tabular(format=format, source=source)
+        .save("native")
+    )
+    assert result.order_by("n").to_list("n", "text") == [
+        (i, "one") for i in range(2048)
+    ]
+    if source:
+        assert [
+            row.read() for row in result.order_by("n").limit(3).to_values("source")
+        ] == frame.head(3).to_dict("records")
+
+
+@skip_if_not_sqlite  # includes SQLite's PRAGMA integrity_check
+def test_read_parquet_with_parallel_keeps_every_row(tmp_path, test_session_tmpfile):
+    for i in range(8):
+        pq.write_table(
+            pa.table({"n": list(range(i * 200, (i + 1) * 200))}),
+            tmp_path / f"part{i}.parquet",
+        )
+    result = dc.read_parquet(
+        f"{tmp_path.as_uri()}/*.parquet",
+        session=test_session_tmpfile,
+        settings={"parallel": 2},
+    ).save("parallel_arrow")
+    assert result.order_by("n").to_values("n") == list(range(1600))
+    db = test_session_tmpfile.catalog.warehouse.db
+    assert db.execute_str("PRAGMA integrity_check").fetchall() == [("ok",)]

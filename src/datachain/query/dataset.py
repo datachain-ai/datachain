@@ -42,10 +42,11 @@ from datachain.checkpoint_event import (
 from datachain.data_storage.schema import (
     PARTITION_COLUMN_ID,
     coerce_table_types,
+    committed_part_keys,
     partition_col_names,
     partition_columns,
+    parts_table_name,
 )
-from datachain.data_storage.writer import committed_part_keys, parts_table_name
 from datachain.dataset import DatasetDependency
 from datachain.error import (
     DataChainError,
@@ -505,7 +506,7 @@ def process_udf_outputs(
 
     def _rows(udf_output, progress):
         for row in udf_output:
-            progress.add(1)
+            progress.add(1 if type(row) is tuple else row.num_rows)
             yield row
 
     with (
