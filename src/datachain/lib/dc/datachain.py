@@ -3085,12 +3085,12 @@ class DataChain:
         if isinstance(path, str) and "://" in path:
             from datachain.client.fsspec import Client
 
+            client = Client.get_implementation(path)
+            storage = client.storage_uri(client.split_url(path)[0])
             fs_kwargs = {
-                **self._query.catalog.client_config,
+                **self._query.catalog.client_config_for(storage),
                 **(fs_kwargs or {}),
             }
-
-            client = Client.get_implementation(path)
 
             if path.startswith("file://"):
                 # pyarrow does not handle file:// uris, and needs a direct path instead.

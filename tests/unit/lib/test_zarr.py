@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 import numpy as np
 import pytest
 
@@ -186,8 +184,10 @@ def test_zarr_store_open_passes_remote_storage_options(
 
     monkeypatch.setattr("datachain.lib.zarr.zarr.open", fake_open)
 
+    catalog = test_session.catalog.copy()
+    catalog.source_client_configs = {"s3://bucket": {"key": "secret"}}
     file = File(source="s3://bucket", path="s.zarr")
-    file._catalog = SimpleNamespace(client_config={"key": "secret"})
+    file._set_stream(catalog)
     info = ZarrStore(file=file).get_info()
 
     assert captured["storage_options"] == {"key": "secret"}
