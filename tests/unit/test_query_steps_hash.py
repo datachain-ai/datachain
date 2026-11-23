@@ -10,7 +10,7 @@ from datachain import C, func
 from datachain.dataset import DatasetRecord, DatasetVersion
 from datachain.func.func import Func
 from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.udf import Aggregator, Generator, Mapper
+from datachain.lib.udf import Aggregator, Generator, Mapper, UDFAdapter
 from datachain.lib.udf_signature import UdfSignature
 from datachain.query.dataset import (
     QueryStep,
@@ -30,6 +30,7 @@ from datachain.query.dataset import (
     Subtract,
     UDFSignal,
 )
+from datachain.sql.types import JSON
 
 
 class CustomFeature(BaseModel):
@@ -292,37 +293,37 @@ def test_subtract_hash(test_session, numbers_dataset, on):
             double,
             ["x"],
             {"double": int},
-            "8ffe5a423a22de6bf8153624392763d01bc64ce2438b102c4301111a5ae2a0c1",
+            "4908d84ef9da9bc3d01139ed9dbae3a1658c5dfd95100f10242333ba61db8670",
         ),
         (
             double2,
             ["y"],
             {"double": int},
-            "adcda7fd17b46b3ad761b611258c11a743dc7ef71ed007b416a448b1391ba7bb",
+            "0346ecf98ecb7871fc091f00f0d0c03caa3cca869b009a2987b7dbcd0b1f8252",
         ),
         (
             double_default,
             ["x"],
             {"double": int},
-            "073c4425ef9a2a744174537de6e35a1e5f743da38bbb1a6b23347a760540eff6",
+            "a054c2830afc5789af7be028357d353716053e109f23293a5f6491eecb1be216",
         ),
         (
             double_kwonly,
             ["x"],
             {"double": int},
-            "e9a57bc156375e45ed9ff9446d31b7aa130d67f3dcaf89e8c534c237772d616a",
+            "ca3181f491bc77c76f1a6553f0e65b9968337824cd952370c5a71d08e6f465e3",
         ),
         (
             map_custom_feature,
             ["t1"],
             {"x": CustomFeature},
-            "95cc34a11e91a01c33f42c5a883779ba8e4fd1758a9aada2e318e4061cc00a6e",
+            "add51841b421b48f1acf83f26837f2707a356434aa0a67d549fce88016fa7b43",
         ),
         (
             DoubleMapper(),
             ["x"],
             {"double": int},
-            "9a8edb2936d17664f2310d422a7454fc72eb735ca13da17e8f940ea408875694",
+            "dd648a071232ffe1d8c41709ae25dd9703381edc62eae32938850878ceee973b",
         ),
     ],
 )
@@ -337,6 +338,13 @@ def test_udf_mapper_hash(
     assert UDFSignal(udf_adapter, None).hash() == _hash
 
 
+def test_udf_hash_after_output_column_type_change_differs():
+    sign = UdfSignature.parse("", {}, double, ["x"], {"double": int}, False)
+    udf_adapter = Mapper._create(sign, SignalSchema(sign.params)).to_udf_wrapper()
+    as_json = UDFAdapter(udf_adapter.inner, {"double": JSON})
+    assert as_json.hash() != udf_adapter.hash()
+
+
 @pytest.mark.parametrize(
     "func,params,output,_hash",
     [
@@ -344,25 +352,25 @@ def test_udf_mapper_hash(
             double_gen,
             ["x"],
             {"double": int},
-            "bda9ea24a9180a99cbab557af9ac91138405be78bd67a2f750adc2faffd2230d",
+            "6c1c537ad940852b1d1ac3e64ba81f6758e62ad13e6e61fc04d803799ef106c7",
         ),
         (
             double_gen_multi_arg,
             ["x", "y"],
             {"double": int},
-            "d1087033394c8d6aed4ba6a6a95de8c61b0d2c804a9fee95e94d6839e96699dd",
+            "b80bb802570ba148c4c4cd3d899d469f18c99e6643e94d09799946425140c694",
         ),
         (
             custom_feature_gen,
             ["t1"],
             {"x": CustomFeature},
-            "31d256650c1e124981ed0781040155af94db009c1b60138a38d0fd45731856a1",
+            "5ff0dcece4256bfbe5cb0e7a862fdc669324cfcec1d0c289d5f3db5b4bdffbdd",
         ),
         (
             TripleGenerator(),
             ["x"],
             {"triple": int},
-            "8a343fc97cfeac9a235edf9cbd205fce9dc446e7fc726aac9333bd997550a577",
+            "154e2d90f1364a3cbaf0350e17f1a5a94a5cc0ff7d0e610274c10004def0c577",
         ),
     ],
 )
@@ -385,14 +393,14 @@ def test_udf_generator_hash(
             ["x"],
             {"double": int},
             [C("x")],
-            "0232b9e988ed6b0baecc7e849058c173d3d9b1cdcfca2f034b1dd0e7dc2f76b9",
+            "9ac800e5f9f8635e931b18af072d66f80746393afceba9fb18a7c70c0608cb00",
         ),
         (
             custom_feature_gen,
             ["t1"],
             {"x": CustomFeature},
             [C.t1.my_name],
-            "86537b34c5e6785b67ede19185c2da756fcdf7fe5a2a38e83fdcf1c351d52552",
+            "21a7ccecd081d474f21f5f45603d73d1dfe2601429f87f5242b11ad0e86a4d64",
         ),
     ],
 )
