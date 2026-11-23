@@ -1369,22 +1369,32 @@ def test_delta_gen_keeps_keys_in_file_rows(test_session, changed):
 
 
 @pytest.mark.parametrize(
-    "uris,versions,on,compare,expected",
+    "uris,client_config,on,compare,expected",
     [
-        (["gs://b/d/"], True, DEFAULT_DELTA_ON, None, "gcs"),
-        (["gs://b/d/"], False, DEFAULT_DELTA_ON, None, "default"),
-        (["gs://b/d/", "s3://b/d/"], True, DEFAULT_DELTA_ON, None, "default"),
-        (["s3://b/d/"], True, DEFAULT_DELTA_ON, None, "default"),
-        (["gs://b/d/"], True, "file.path", None, "default"),
-        (["gs://b/d/"], True, DEFAULT_DELTA_ON, "file.etag", "default"),
+        (["gs://b/d/"], {}, DEFAULT_DELTA_ON, None, "gcs"),
+        (["gs://b/d/"], {"version_aware": True}, DEFAULT_DELTA_ON, None, "gcs"),
+        (
+            ["gs://b/d/"],
+            {"version_aware": False},
+            DEFAULT_DELTA_ON,
+            None,
+            "gcs_unversioned",
+        ),
+        (["gs://b/d/", "s3://b/d/"], {}, DEFAULT_DELTA_ON, None, "default"),
+        (["s3://b/d/"], {}, DEFAULT_DELTA_ON, None, "default"),
+        (["gs://b/d/"], {}, "file.path", None, "default"),
+        (["gs://b/d/"], {}, DEFAULT_DELTA_ON, "file.etag", "default"),
     ],
 )
-def test_delta_keys_on_gcs_follow_generation(uris, versions, on, compare, expected):
+def test_delta_keys_on_gcs_follow_generation(
+    uris, client_config, on, compare, expected
+):
     keys = {
         "gcs": (("file.path", "file.version"), "file.size"),
+        "gcs_unversioned": ("file.path", ("file.size", "file.etag")),
         "default": (on, compare),
     }
-    assert _delta_keys(uris, versions, on, compare) == keys[expected]
+    assert _delta_keys(uris, client_config, on, compare) == keys[expected]
 
 
 @pytest.mark.parametrize("cloud_type", ["gs"], indirect=True)
@@ -1412,6 +1422,44 @@ def test_delta_from_gcs_reprocesses_new_generations(cloud_test_catalog_upload):
     File.upload(b"22", uri + "b.txt", ctc.catalog)
     processed.clear()
     assert sorted(run().to_values("n")) == [1, 2]
+    assert processed == ["b.txt"]
+
+
+@pytest.mark.parametrize("cloud_type", ["gs"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize("explicit_client_config", [False, True])
+def test_delta_from_gcs_without_versions_uses_md5(
+    cloud_test_catalog_upload, explicit_client_config
+):
+    ctc = cloud_test_catalog_upload
+    uri = f"{ctc.src_uri}/delta-unver-{uuid.uuid4().hex[:8]}/"
+    File.upload(b"1", uri + "a.txt", ctc.catalog)
+    File.upload(b"2", uri + "b.txt", ctc.catalog)
+    processed = []
+    read_kwargs: dict[str, Any] = (
+        {"client_config": {**ctc.catalog.client_config, "version_aware": False}}
+        if explicit_client_config
+        else {"versions": False}
+    )
+
+    def text(file: File) -> str:
+        processed.append(file.name)
+        return file.read_text()
+
+    def run():
+        chain = dc.read_storage(
+            uri, update=True, delta=True, session=ctc.session, **read_kwargs
+        )
+        return chain.map(t=text).save("gcs_delta_unver")
+
+    run()
+    assert sorted(processed) == ["a.txt", "b.txt"]
+    processed.clear()
+    # Re-uploading a.txt with identical bytes gives it a new etag with the same MD5;
+    # same-size overwrite of b.txt changes its MD5: only b.txt is reprocessed.
+    File.upload(b"1", uri + "a.txt", ctc.catalog)
+    File.upload(b"3", uri + "b.txt", ctc.catalog)
+    assert sorted(run().to_values("t")) == ["1", "3"]
     assert processed == ["b.txt"]
 
 
