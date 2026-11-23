@@ -166,15 +166,36 @@ def test_get_in_memory_after_session_exists_keeps_default_session(catalog):
     assert Session.get() is default
 
 
-def test_get_in_memory_as_first_call_keeps_global_session_persistent():
-    Session.cleanup_for_tests()
-    try:
-        session = Session.get(in_memory=True)
+def test_get_in_memory_as_first_call_keeps_global_session_persistent(tmp_dir):
+    session = Session.get(in_memory=True)
 
-        assert session.catalog.in_memory
-        assert not Session.get().catalog.in_memory
-    finally:
-        Session.cleanup_for_tests()
+    assert session.catalog.in_memory
+    assert not Session.get().catalog.in_memory
+
+
+def test_get_in_memory_inside_in_memory_context_returns_that_session():
+    with Session("mem", in_memory=True) as active:
+        assert Session.get(in_memory=True) is active
+
+
+def test_get_in_memory_with_client_config_keeps_active_session(catalog):
+    default = Session.get(catalog=catalog)
+
+    session = Session.get(in_memory=True, client_config={"anon": True})
+
+    assert session.catalog.in_memory
+    assert session.catalog.client_config == {"anon": True}
+    assert Session.get() is default
+
+
+def test_get_in_memory_after_closing_it_returns_a_new_session():
+    with Session.get(in_memory=True) as closed:
+        pass
+
+    session = Session.get(in_memory=True)
+
+    assert session is not closed
+    assert dc.read_values(x=[1], session=session).to_values("x") == [1]
 
 
 def test_in_memory_chain_in_studio_job_writes_nothing_to_job_catalog(
@@ -190,7 +211,8 @@ def test_in_memory_chain_in_studio_job_writes_nothing_to_job_catalog(
     results = tmp_path / "results"
     results.mkdir()
     (results / "a.txt").write_text("a")
-    Session.get(catalog=catalog_tmpfile)
+    default = Session.get(catalog=catalog_tmpfile)
+    assert default.get_or_create_job().id == job_id
 
     saved = (
         dc.read_storage(results.as_uri(), in_memory=True)
@@ -199,6 +221,8 @@ def test_in_memory_chain_in_studio_job_writes_nothing_to_job_catalog(
     )
 
     assert saved.to_values("size") == [1]
+    assert saved.job.id != job_id
+    assert default.get_job().id == job_id
     assert catalog_tmpfile.listings() == []
     with pytest.raises(DatasetNotFoundError):
         catalog_tmpfile.get_dataset("sizes")
@@ -211,8 +235,6 @@ def test_get_job_returns_none_without_env_or_cached_job(catalog, monkeypatch):
 
 
 def test_get_job_fetches_from_env_var(catalog, monkeypatch):
-    from datachain.data_storage import JobQueryType, JobStatus
-
     job_id = catalog.metastore.create_job(
         "env-job", "", query_type=JobQueryType.PYTHON, status=JobStatus.RUNNING
     )

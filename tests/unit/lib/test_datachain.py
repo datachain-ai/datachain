@@ -175,7 +175,6 @@ def test_pandas_conversion(test_session):
     assert df_equal(df1, df)
 
 
-@skip_if_not_sqlite
 def test_pandas_conversion_in_memory():
     df = pd.DataFrame(DF_DATA)
     chain = dc.read_pandas(df, in_memory=True)
@@ -371,7 +370,6 @@ def test_from_features_basic(test_session):
     assert set(ds.schema.values()) == {File}
 
 
-@skip_if_not_sqlite
 def test_read_records_basic_in_memory():
     ds = dc.read_records([{"seed": 0}], schema={"seed": int}, in_memory=True)
     assert ds.session.catalog.in_memory is True
@@ -663,7 +661,6 @@ def test_datasets_studio(studio_datasets, test_session):
     assert len(datasets) == 0
 
 
-@skip_if_not_sqlite
 def test_datasets_in_memory():
     ds = dc.datasets(column="dataset", in_memory=True)
     assert ds.session.catalog.in_memory is True
@@ -902,7 +899,6 @@ def test_from_features_simple_types(test_session):
     assert df["odds"].tolist() == values
 
 
-@skip_if_not_sqlite
 def test_from_features_simple_types_in_memory():
     fib = [1, 1, 2, 3, 5, 8]
     values = ["odd" if num % 2 else "even" for num in fib]
@@ -1932,7 +1928,6 @@ def test_parse_tabular(tmp_dir, test_session):
     assert df_equal(df1, df)
 
 
-@skip_if_not_sqlite
 def test_parse_tabular_in_memory(tmp_dir):
     df = pd.DataFrame(DF_DATA)
     path = tmp_dir / "test.parquet"
@@ -2125,7 +2120,6 @@ def test_to_read_csv(tmp_dir, test_session):
     assert df_equal(df1, df)
 
 
-@skip_if_not_sqlite
 def test_read_csv_in_memory(tmp_dir):
     df = pd.DataFrame(DF_DATA)
     path = tmp_dir / "test.csv"
@@ -2135,7 +2129,6 @@ def test_read_csv_in_memory(tmp_dir):
     assert df_equal(df1, df)
 
 
-@skip_if_not_sqlite
 def test_to_read_csv_in_memory(tmp_dir):
     df = pd.DataFrame(DF_DATA)
     dc_to = dc.read_pandas(df, in_memory=True)
@@ -3698,7 +3691,6 @@ def test_read_csv_with_output_named_source_names_new_source_c0_source(
     assert value == "s3"
 
 
-@skip_if_not_sqlite
 def test_read_parquet_in_memory(tmp_dir):
     df = pd.DataFrame(DF_DATA)
     path = tmp_dir / "test.parquet"
@@ -3858,7 +3850,6 @@ def test_to_read_parquet_two_top_level_features(tmp_dir, test_session, chunk_siz
         assert nested == features_nested[n]
 
 
-@skip_if_not_sqlite
 def test_parallel_in_memory():
     prefix = "t & "
     vals = ["a", "b", "c", "d", "e", "f", "g", "h", "i"]
@@ -4590,7 +4581,6 @@ def test_count_with_empty_results(test_session):
     assert chain.count() == 5
 
 
-@skip_if_not_sqlite
 def test_count_in_memory(test_session):
     """Test count functionality with in-memory database."""
     chain = dc.read_values(numbers=[1, 2, 3, 4, 5], in_memory=True)
@@ -4760,7 +4750,6 @@ def test_distinct_with_all_duplicates(test_session):
     assert distinct_both.to_values("categories") == ["A"]
 
 
-@skip_if_not_sqlite
 def test_distinct_in_memory(test_session):
     """Test distinct functionality with in-memory database."""
     chain = dc.read_values(numbers=[1, 2, 2, 3, 3, 3], in_memory=True)
@@ -5275,7 +5264,6 @@ def test_filter_with_boolean_nested_model(test_session):
     assert rejected_in.to_values("records.name") == ["doc-2"]
 
 
-@skip_if_not_sqlite
 def test_filter_in_memory(test_session):
     """Test filter functionality with in-memory database."""
     chain = dc.read_values(numbers=[1, 2, 3, 4, 5], in_memory=True)

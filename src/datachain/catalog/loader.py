@@ -23,16 +23,16 @@ DISTRIBUTED_DISABLED = "DATACHAIN_DISTRIBUTED_DISABLED"
 
 
 def get_metastore(in_memory: bool = False) -> "AbstractMetastore":
-    ensure_plugins_loaded()
-
-    from datachain.data_storage import AbstractMetastore
-    from datachain.data_storage.serializer import deserialize
-
     if in_memory:
         # An in-memory metastore is never the one the environment configures.
         from datachain.data_storage.sqlite import SQLiteMetastore
 
         return SQLiteMetastore(in_memory=True)
+
+    ensure_plugins_loaded()
+
+    from datachain.data_storage import AbstractMetastore
+    from datachain.data_storage.serializer import deserialize
 
     metastore_serialized = os.environ.get(METASTORE_SERIALIZED)
     if metastore_serialized:
@@ -68,16 +68,16 @@ def get_metastore(in_memory: bool = False) -> "AbstractMetastore":
 
 
 def get_warehouse(in_memory: bool = False) -> "AbstractWarehouse":
-    ensure_plugins_loaded()
-
-    from datachain.data_storage import AbstractWarehouse
-    from datachain.data_storage.serializer import deserialize
-
     if in_memory:
         # An in-memory warehouse is never the one the environment configures.
         from datachain.data_storage.sqlite import SQLiteWarehouse
 
         return SQLiteWarehouse(in_memory=True)
+
+    ensure_plugins_loaded()
+
+    from datachain.data_storage import AbstractWarehouse
+    from datachain.data_storage.serializer import deserialize
 
     warehouse_serialized = os.environ.get(WAREHOUSE_SERIALIZED)
     if warehouse_serialized:

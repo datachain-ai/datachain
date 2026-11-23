@@ -10,7 +10,6 @@ import datachain as dc
 from datachain import DataModel
 from datachain.lib.dc import C, DatasetMergeError
 from datachain.lib.signal_schema import SignalResolvingError
-from tests.utils import skip_if_not_sqlite
 
 
 class User(BaseModel):
@@ -150,9 +149,7 @@ def test_merge_similar_objects(test_session):
     assert len(list(ch_inner.to_list())) == 2
 
 
-@skip_if_not_sqlite
 def test_merge_similar_objects_in_memory():
-    # Skip if not on SQLite, as in_memory databases are only supported on SQLite
     new_employees = [
         Employee(id=152, person=User(name="Bob", age=27)),
         Employee(id=201, person=User(name="Karl", age=18)),

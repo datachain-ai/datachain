@@ -73,6 +73,7 @@ class Session:
     _JOB_FINALIZE_HOOK: ClassVar[Callable[[], None] | None] = None
 
     GLOBAL_SESSION_NAME = "global"
+    IN_MEMORY_SESSION_NAME = "inmemory"
     SESSION_UUID_LEN = 6
     TEMP_TABLE_UUID_LEN = 6
 
@@ -110,7 +111,7 @@ class Session:
         view = copy(self)
         view.catalog = catalog
         # Keep the cleanup owner alive; only owners are in _ALL_SESSIONS.
-        view._parent = self._parent or self
+        view._parent = self._owner
         # The owner cleans up temporary datasets created through this view.
         view._cleanup_catalogs = self._cleanup_catalogs
         view.is_new_catalog = False
@@ -129,6 +130,11 @@ class Session:
         if Session.SESSION_CONTEXTS:
             Session.SESSION_CONTEXTS.pop()
 
+    @property
+    def _owner(self) -> "Session":
+        """The session that owns this view's cleanup scope, or this session."""
+        return self._parent or self
+
     def _close(self) -> None:
         """Clean up this scope without changing the active session stack."""
         # Don't cleanup created versions on exception
@@ -139,6 +145,8 @@ class Session:
             self.catalog.warehouse.close_on_exit()
 
         Session._ALL_SESSIONS.discard(self)
+        if Session.IN_MEMORY_SESSION is self:
+            Session.IN_MEMORY_SESSION = None
 
     def get_job(self) -> "Job | None":
         """
@@ -149,7 +157,7 @@ class Session:
         has a job of its own: the process job lives in the persistent metastore.
         """
         if self.catalog.in_memory:
-            return (self._parent or self)._session_job
+            return self._owner._session_job
 
         if Session._CURRENT_JOB:
             return Session._CURRENT_JOB
@@ -186,7 +194,7 @@ class Session:
             their own in that catalog.
         """
         if self.catalog.in_memory:
-            owner = self._parent or self
+            owner = self._owner
             if owner._session_job is None:
                 owner._session_job = self._create_job()
             return owner._session_job
@@ -395,7 +403,9 @@ class Session:
                 session = active
             else:
                 if cls.IN_MEMORY_SESSION is None:
-                    cls.IN_MEMORY_SESSION = Session("inmemory", in_memory=True)
+                    cls.IN_MEMORY_SESSION = Session(
+                        cls.IN_MEMORY_SESSION_NAME, in_memory=True
+                    )
                 session = cls.IN_MEMORY_SESSION
 
         # Access the active (most recent) context from the stack
@@ -417,6 +427,12 @@ class Session:
             session = cls.GLOBAL_SESSION_CTX
 
         if client_config and session.catalog.client_config != client_config:
+            if in_memory:
+                # A view: an in-memory session never becomes the active session.
+                view_catalog = session.catalog.copy()
+                view_catalog.client_config = client_config
+                view_catalog.source_client_configs = {}
+                return session._with_catalog(view_catalog)
             session = Session(
                 "session" + uuid4().hex[:4],
                 catalog,
