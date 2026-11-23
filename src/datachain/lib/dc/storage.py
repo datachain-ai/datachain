@@ -280,6 +280,9 @@ def _read_storage(
             delta_retry=delta_retry,
             delta_unsafe=delta_unsafe,
         )
+        # Union and merge read this chain's files with the config they were listed with.
+        source = Client.parse_url(list_uri)[0]
+        session.catalog.source_client_configs[source] = session.catalog.client_config
         if dc is None:
             file_values.append(
                 listing_lib.get_file_info(list_uri, cache, client_config=client_config)
@@ -418,8 +421,8 @@ class Listing:
         recursive: bool | None = True,
         versions: Versions,
         client_config: dict,
+        session_config: dict,
         session: Session | None = None,
-        session_config: dict | None = None,
         in_memory: bool = False,
     ) -> None:
         """Use `dc.list_storage()` to create a listing."""
@@ -549,6 +552,7 @@ class Listing:
         else:
             catalog = session.catalog.copy(db=False)
         catalog.client_config = self.client_config
+        catalog.source_client_configs = {}
         return catalog
 
     def to_arrow(self) -> "pa.Table":
@@ -644,7 +648,8 @@ def _prepare_listing(
 ) -> tuple["DataChain | None", str, str]:
     """Select a snapshot and attach its full-prefix refresh, without reading rows.
 
-    A single file has no snapshot. Return its URI and the path used to filter rows.
+    A single file has no snapshot. Return the URI of the snapshot, or of the file,
+    and the path used to filter rows.
     """
     from .datasets import read_dataset
 
@@ -673,12 +678,13 @@ def _prepare_listing(
     prepared.add(name)
     chain.signals_schema = chain.signals_schema.mutate({"file": file_type})
     # A reused snapshot can cover a parent: always refresh its whole prefix.
+    snapshot_uri = listing_lib.listing_uri_from_name(name)
     chain._query.set_listing_fn(
         lambda: listing_lib.write_listing(
-            listing_lib.listing_uri_from_name(name),
+            snapshot_uri,
             name,
             session,
             client_config,
         )
     )
-    return chain, list_uri, list_path
+    return chain, snapshot_uri, list_path
