@@ -22,13 +22,7 @@ DISTRIBUTED_IMPORT_PATH = "DATACHAIN_DISTRIBUTED"
 DISTRIBUTED_DISABLED = "DATACHAIN_DISTRIBUTED_DISABLED"
 
 
-def get_metastore(in_memory: bool = False) -> "AbstractMetastore":
-    if in_memory:
-        # An in-memory metastore is never the one the environment configures.
-        from datachain.data_storage.sqlite import SQLiteMetastore
-
-        return SQLiteMetastore(in_memory=True)
-
+def get_metastore() -> "AbstractMetastore":
     ensure_plugins_loaded()
 
     from datachain.data_storage import AbstractMetastore
@@ -67,13 +61,7 @@ def get_metastore(in_memory: bool = False) -> "AbstractMetastore":
     return metastore_class(**metastore_args)
 
 
-def get_warehouse(in_memory: bool = False) -> "AbstractWarehouse":
-    if in_memory:
-        # An in-memory warehouse is never the one the environment configures.
-        from datachain.data_storage.sqlite import SQLiteWarehouse
-
-        return SQLiteWarehouse(in_memory=True)
-
+def get_warehouse() -> "AbstractWarehouse":
     ensure_plugins_loaded()
 
     from datachain.data_storage import AbstractWarehouse
@@ -152,10 +140,17 @@ def get_catalog(
     """
     from datachain.catalog import Catalog
 
-    metastore = get_metastore(in_memory=in_memory)
+    if in_memory:
+        # Never the metastore and warehouse the environment configures.
+        from datachain.data_storage.sqlite import SQLiteMetastore, SQLiteWarehouse
+
+        metastore: AbstractMetastore = SQLiteMetastore(in_memory=True)
+        warehouse: AbstractWarehouse = SQLiteWarehouse(in_memory=True)
+    else:
+        metastore, warehouse = get_metastore(), get_warehouse()
     return Catalog(
         metastore=metastore,
-        warehouse=get_warehouse(in_memory=in_memory),
+        warehouse=warehouse,
         client_config=client_config,
         in_memory=in_memory,
     )

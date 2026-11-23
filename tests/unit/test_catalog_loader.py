@@ -72,25 +72,19 @@ def test_get_warehouse(sqlite_db):
         warehouse.close_on_exit()
 
 
-@pytest.mark.parametrize(
-    "loader,store_cls,kind",
-    [
-        (get_metastore, SQLiteMetastore, "METASTORE"),
-        (get_warehouse, SQLiteWarehouse, "WAREHOUSE"),
-    ],
-    ids=["metastore", "warehouse"],
-)
-def test_in_memory_with_env_config_returns_in_memory_sqlite(
-    tmp_path, monkeypatch, loader, store_cls, kind
+def test_get_catalog_in_memory_with_env_config_uses_in_memory_sqlite(
+    tmp_path, monkeypatch
 ):
-    with store_cls(db_file=str(tmp_path / "studio.db")) as persistent:
-        monkeypatch.setenv(f"DATACHAIN__{kind}", persistent.serialize())
-        monkeypatch.setenv(f"DATACHAIN_{kind}", "not.an.importable.Store")
-        monkeypatch.setenv(f"DATACHAIN_{kind}_ARG_DB_FILE", str(tmp_path / "other.db"))
+    db_file = str(tmp_path / "studio.db")
+    with SQLiteMetastore(db_file=db_file) as ms, SQLiteWarehouse(db_file=db_file) as wh:
+        for kind, store in (("METASTORE", ms), ("WAREHOUSE", wh)):
+            monkeypatch.setenv(f"DATACHAIN__{kind}", store.serialize())
+            monkeypatch.setenv(f"DATACHAIN_{kind}", "not.an.importable.Store")
+            monkeypatch.setenv(f"DATACHAIN_{kind}_ARG_DB_FILE", str(tmp_path / "x.db"))
 
-        with loader(in_memory=True) as store:
-            assert isinstance(store, store_cls)
-            assert store.db.db_file == ":memory:"
+        with get_catalog(in_memory=True) as catalog:
+            assert catalog.metastore.db.db_file == ":memory:"
+            assert catalog.warehouse.db.db_file == ":memory:"
 
 
 def test_get_distributed_class(monkeypatch):
