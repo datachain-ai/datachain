@@ -97,7 +97,7 @@ def remote_dataset_info(requests_mock, remote_dataset):
 
 @pytest.fixture
 def dataset_export(requests_mock, remote_dataset_chunk_url):
-    requests_mock.get(
+    return requests_mock.get(
         f"{STUDIO_URL}/api/datachain/datasets/export",
         json={"export_id": 1, "signed_urls": [remote_dataset_chunk_url]},
     )
@@ -173,6 +173,8 @@ def test_pull_dataset_success(
                 local_ds_version=local_ds_version,
                 cp=False,
             )
+
+    assert dataset_export.last_request.qs["compression"] == ["none"]
 
     project = catalog.metastore.get_project(REMOTE_PROJECT_NAME, REMOTE_NAMESPACE_NAME)
     dataset = catalog.get_dataset(
@@ -401,36 +403,6 @@ def test_pull_dataset_already_exists_locally(
         catalog.get_dataset(
             "dogs", namespace_name=project.namespace.name, project_name=project.name
         )
-
-
-@skip_if_not_sqlite
-def test_pull_dataset_requests_and_reads_plain_parquet(
-    studio_token,
-    catalog,
-    remote_dataset_info,
-    dataset_export_status,
-    remote_dataset_chunk_url,
-    requests_mock,
-    mock_parquet_data,
-):
-    export = requests_mock.get(
-        f"{STUDIO_URL}/api/datachain/datasets/export",
-        json={"export_id": 1, "signed_urls": [remote_dataset_chunk_url]},
-    )
-    requests_mock.get(remote_dataset_chunk_url, content=mock_parquet_data)
-
-    catalog.pull_dataset(
-        f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v1.0.0"
-    )
-
-    assert export.last_request.qs["compression"] == ["none"]
-    dataset = catalog.get_dataset(
-        "dogs",
-        namespace_name=REMOTE_NAMESPACE_NAME,
-        project_name=REMOTE_PROJECT_NAME,
-        versions=["1.0.0"],
-    )
-    assert catalog.warehouse.dataset_rows_count(dataset, "1.0.0") == 4
 
 
 @skip_if_not_sqlite
