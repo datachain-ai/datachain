@@ -625,6 +625,17 @@ def test_glob_match_is_sqlite_glob_on_random_patterns():
             assert glob_match(path, pattern) == bool(expected), (path, pattern)
 
 
+def test_path_filter_is_linear_in_globstars(test_session):
+    paths = path_filter("", ["/".join(["**", "a"] * 8 + ["**", "z*"])], True)
+    names = ["a/" * 48 + "zz/y", "a/" * 8 + "z"]
+    chain = dc.read_values(path=names, session=test_session)
+    for condition in paths.sql(dc.C("path")):
+        chain = chain.filter(condition)
+
+    assert chain.to_values("path") == ["a/" * 8 + "z"]
+    assert [name for name in names if paths.matcher()(name)] == ["a/" * 8 + "z"]
+
+
 def test_glob_match_is_linear_in_stars():
     path = "a" * 1000 + ".txt"
 

@@ -114,10 +114,9 @@ def _brace_range(body: str) -> list[str] | None:
         return [chr(i) for i in range(start, stop + sign, sign * step)]
     start, stop = int(first), int(last)
     sign = 1 if stop >= start else -1
-    # bash pads to the longer end that starts with a zero, as "01" or "-01"
-    width = max(
-        (len(end) for end in (first, last) if re.fullmatch(r"-?0\d+", end)), default=0
-    )
+    # an end such as "01" or "-01" pads every term to the longer end, as bash
+    padded = any(re.fullmatch(r"-?0\d+", end) for end in (first, last))
+    width = max(len(first), len(last)) if padded else 0
     return [f"{n:0{width}d}" for n in range(start, stop + sign, sign * step)]
 
 

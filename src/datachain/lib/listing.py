@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, TypeVar, cast
 
 from fsspec.asyn import get_loop, sync
 from sqlalchemy import and_, case, false, or_, true
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.sql.functions import FunctionElement
 
 import datachain.fs.utils as fsutils
 from datachain.asyn import iter_over_async
@@ -27,6 +29,7 @@ from datachain.lib.convert.flatten import flatten
 from datachain.lib.file import File, FileRow
 from datachain.query.schema import Column
 from datachain.sql.functions import path as pathfunc
+from datachain.sql.types import Boolean
 from datachain.utils import parent_path, safe_closing, uses_glob
 
 if TYPE_CHECKING:
@@ -201,7 +204,10 @@ class PathFilter:
                 return path.glob(value)
             if op == "pattern":
                 regex = _pattern_regex(value, atomic=False)
-                return false() if regex is None else path.regexp(f"^{regex}$")
+                if regex is None:
+                    return false()
+                atomic = _pattern_regex(value, atomic=True)
+                return _PatternMatch(path, f"^{regex}$", f"^{atomic}$")
             return pathfunc.parent(path) == value
 
         steps = [or_(*(cond(*c) for c in self.any_of))] if self.any_of else []
@@ -317,28 +323,55 @@ def _glob_regex(pattern: str) -> "re.Pattern | None":
 
 @functools.lru_cache(maxsize=256)
 def _pattern_regex(pattern: str, atomic: bool) -> "str | None":
-    """A glob ``pattern`` matched folder by folder, as a regex that Python and
-    RE2 read alike; None matches nothing. ``*``, ``?`` and ``[...]`` stay in
-    one folder; ``**`` is any folders. ``atomic`` keeps Python linear."""
-    segments = pattern.split("/")
-    out = []
-    for i, segment in enumerate(segments):
-        last = i == len(segments) - 1
+    """A glob ``pattern`` matched folder by folder, as a regex; None matches
+    nothing. ``*``, ``?`` and ``[...]`` stay in one folder and ``**`` is any
+    folders. The plain form is RE2's too. The ``atomic`` one, for Python's
+    ``re``, keeps each part between stars, and each run of folders between
+    two ``**``, at its leftmost match, so that matching stays linear."""
+    runs: list[list[str]] = [[]]
+    for segment in pattern.split("/"):
         if segment == "**":
-            out.append("(?:[^/]*/)*" + ("[^/]*" if last else ""))
+            runs.append([])
             continue
         parts = _glob_parts(segment, one_folder=True)
         if parts is None:
             return None
-        regex = _atomic_join(parts, "[^/]*") if atomic else "[^/]*".join(parts)
-        out.append(regex if last else f"{regex}/")
-    return "".join(out)
+        runs[-1].append(_atomic_join(parts, "[^/]*") if atomic else "[^/]*".join(parts))
+    head, *rest = runs
+    if not rest:
+        return "/".join(head)
+    *middle, tail = rest
+    regex = "".join(f"{s}/" for s in head)
+    for run in middle:
+        folders = "".join(f"{s}/" for s in run)
+        regex += f"(?>(?:[^/]*/)*?{folders})" if atomic else f"(?:[^/]*/)*{folders}"
+    return f"{regex}(?:[^/]*/)*" + ("/".join(tail) if tail else "[^/]*")
 
 
 @functools.lru_cache(maxsize=256)
 def _pattern_matcher(pattern: str) -> "re.Pattern | None":
     regex = _pattern_regex(pattern, atomic=True)
     return None if regex is None else re.compile(regex)
+
+
+class _PatternMatch(FunctionElement):
+    """Whether a path matches a regex, given in RE2's form and in the one that
+    Python's ``re`` matches in linear time: SQLite's REGEXP is Python's."""
+
+    type = Boolean()
+    inherit_cache = True
+
+
+@compiles(_PatternMatch)
+def _compile_pattern_match(element, compiler, **kwargs):
+    path, regex, _ = element.clauses.clauses
+    return compiler.process(path.op("REGEXP", is_comparison=True)(regex), **kwargs)
+
+
+@compiles(_PatternMatch, "sqlite")
+def _compile_pattern_match_sqlite(element, compiler, **kwargs):
+    path, _, regex = element.clauses.clauses
+    return compiler.process(path.op("REGEXP", is_comparison=True)(regex), **kwargs)
 
 
 def glob_match(path: str, pattern: str) -> bool:

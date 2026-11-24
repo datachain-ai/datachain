@@ -6,7 +6,7 @@ import pytest
 
 import datachain as dc
 from datachain.lib.listing import get_listing
-from tests.utils import instantiate_tree
+from tests.utils import instantiate_tree, skip_if_not_sqlite
 
 DEEP_TREE = {
     "deep": {
@@ -204,6 +204,7 @@ def test_read_storage_thousand_brace_alternatives_of_one_folder(reports_dir):
     assert chain.to_values("file.path") == ["report1.json"]
 
 
+@skip_if_not_sqlite  # hundreds of listings exceed ClickHouse's max_query_size
 def test_read_storage_hundreds_of_brace_folders_after_listing_their_parent(
     reports_dir,
 ):
