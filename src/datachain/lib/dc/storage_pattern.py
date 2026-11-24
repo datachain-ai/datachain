@@ -1,9 +1,14 @@
 import glob
 import os
+import re
 from collections.abc import Sequence
+from itertools import pairwise
 
 from datachain.client.fsspec import is_cloud_uri
 from datachain.lib.listing import ListScope, PathFilter, list_folder
+
+_MAGIC = re.compile(r"[*?[]")
+_RANGE = re.compile(r"(-?\d+|[^\W\d_])\.\.(-?\d+|[^\W\d_])(?:\.\.(-?\d+))?")
 
 
 def validate_cloud_bucket_name(uri: str) -> None:
@@ -14,19 +19,9 @@ def validate_cloud_bucket_name(uri: str) -> None:
     """
     if not is_cloud_uri(uri):
         return
-
-    if "://" in uri:
-        scheme_end = uri.index("://") + 3
-        path_part = uri[scheme_end:]
-
-        if "/" in path_part:
-            bucket_name = path_part.split("/")[0]
-        else:
-            bucket_name = path_part
-
-        glob_chars = ["*", "?", "[", "]", "{", "}"]
-        if any(char in bucket_name for char in glob_chars):
-            raise ValueError(f"Glob patterns in bucket names are not supported: {uri}")
+    bucket = uri.partition("://")[2].split("/")[0]
+    if any(char in bucket for char in "*?[]{}"):
+        raise ValueError(f"Glob patterns in bucket names are not supported: {uri}")
 
 
 def normalize_storage_uri(uri: str | os.PathLike[str]) -> str:
@@ -43,263 +38,196 @@ def normalize_storage_uri(uri: str | os.PathLike[str]) -> str:
 
 
 def split_uri_pattern(uri: str) -> tuple[str, str | None]:
-    """Split a URI into base and pattern; a glob base ends with a directory slash."""
-    if not glob.has_magic(uri):
+    """Split a URI into base and pattern at its first segment with a wildcard;
+    a glob base ends with a directory slash.
+    """
+    scheme, sep, path = uri.partition("://")
+    if not sep:
+        scheme, path = "", uri
+    segments = path.split("/")
+    start = next((i for i, s in enumerate(segments) if glob.has_magic(s)), None)
+    if start is None:
         return uri, None
-
-    if "://" in uri:
-        scheme_end = uri.index("://") + 3
-        scheme_part = uri[:scheme_end]
-        path_part = uri[scheme_end:]
-        path_segments = path_part.split("/")
-
-        pattern_start_idx = None
-        for i, segment in enumerate(path_segments):
-            if glob.has_magic(segment):
-                pattern_start_idx = i
-                break
-
-        if pattern_start_idx is None:
-            return uri, None
-
-        if pattern_start_idx == 0:
-            base = scheme_part + path_segments[0]
-            pattern = "/".join(path_segments[1:]) if len(path_segments) > 1 else "*"
-        else:
-            base = scheme_part + "/".join(path_segments[:pattern_start_idx])
-            pattern = "/".join(path_segments[pattern_start_idx:])
-
-        return base + "/", pattern
-
-    path_segments = uri.split("/")
-
-    pattern_start_idx = None
-    for i, segment in enumerate(path_segments):
-        if glob.has_magic(segment):
-            pattern_start_idx = i
-            break
-
-    if pattern_start_idx is None:
-        return uri, None
-
-    base = (
-        "/".join(path_segments[:pattern_start_idx]) + "/"
-        if pattern_start_idx > 0
-        else "/"
-    )
-    pattern = "/".join(path_segments[pattern_start_idx:])
-
-    return base, pattern
-
-
-def should_use_recursion(pattern: str, user_recursive: bool) -> bool:
-    """Return whether listing should recurse for the given glob pattern."""
-    if not user_recursive:
-        return False
-
-    if "**" in pattern:
-        return True
-
-    return "/" in pattern
+    if sep and start == 0:  # a wildcard in the bucket name
+        return f"{scheme}://{segments[0]}/", "/".join(segments[1:]) or "*"
+    base = "/".join(segments[:start])
+    return f"{scheme}{sep}{base}/", "/".join(segments[start:])
 
 
 def expand_brace_pattern(pattern: str) -> list[str]:
-    """Recursively expand brace patterns into multiple glob patterns.
-
-    Supports:
-    - Comma-separated lists: *.{mp3,wav}
-    - Numeric ranges: file{1..10}
-    - Zero-padded numeric ranges: file{01..10}
-    - Character ranges: file{a..z}
+    """``pattern`` with its braces expanded, as bash does: ``{a,b}`` lists the
+    alternatives, ``{1..9}`` and ``{a..z}`` a range, ``{1..9..2}`` one with a
+    step, and ``{01..10}`` one with zero-padded numbers. A brace with neither,
+    such as ``{a}``, stays as it is.
 
     Examples:
         "*.{mp3,wav}" -> ["*.mp3", "*.wav"]
         "file{1..3}" -> ["file1", "file2", "file3"]
         "file{01..03}" -> ["file01", "file02", "file03"]
-        "file{a..c}" -> ["filea", "fileb", "filec"]
+        "file{a..e..2}" -> ["filea", "filec", "filee"]
         "{a,b}/{c,d}" -> ["a/c", "a/d", "b/c", "b/d"]
     """
-    if "{" not in pattern or "}" not in pattern:
-        return [pattern]
-
-    return _expand_single_braces(pattern)
-
-
-def _expand_single_braces(pattern: str) -> list[str]:
-    if "{" not in pattern or "}" not in pattern:
-        return [pattern]
-
-    start = pattern.index("{")
-    end = start
-    depth = 0
-    for i in range(start, len(pattern)):
-        if pattern[i] == "{":
-            depth += 1
-        elif pattern[i] == "}":
-            depth -= 1
-            if depth == 0:
-                end = i
-                break
-
-    if start >= end:
-        return [pattern]
-
-    prefix = pattern[:start]
-    suffix = pattern[end + 1 :]
-    brace_content = pattern[start + 1 : end]
-
-    if ".." in brace_content:
-        options = _expand_range(brace_content)
-    else:
-        options = [opt.strip() for opt in brace_content.split(",")]
-
-    expanded = []
-    for option in options:
-        combined = prefix + option + suffix
-        expanded.extend(_expand_single_braces(combined))
-
-    return expanded
-
-
-def _expand_range(range_spec: str) -> list[str]:  # noqa: PLR0911
-    if ".." not in range_spec:
-        return [range_spec]
-
-    parts = range_spec.split("..")
-    if len(parts) != 2:
-        return [range_spec]
-
-    start, end = parts[0], parts[1]
-
-    if start.isdigit() and end.isdigit():
-        pad_width = max(len(start), len(end)) if start[0] == "0" or end[0] == "0" else 0
-        start_num = int(start)
-        end_num = int(end)
-
-        if start_num <= end_num:
-            if pad_width > 0:
-                return [str(i).zfill(pad_width) for i in range(start_num, end_num + 1)]
-            return [str(i) for i in range(start_num, end_num + 1)]
-        if pad_width > 0:
-            return [str(i).zfill(pad_width) for i in range(start_num, end_num - 1, -1)]
-        return [str(i) for i in range(start_num, end_num - 1, -1)]
-
-    if len(start) == 1 and len(end) == 1 and start.isalpha() and end.isalpha():
-        start_ord = ord(start)
-        end_ord = ord(end)
-
-        if start_ord <= end_ord:
-            return [chr(i) for i in range(start_ord, end_ord + 1)]
-        return [chr(i) for i in range(start_ord, end_ord - 1, -1)]
-
-    return [range_spec]
-
-
-def convert_globstar_to_glob(filter_pattern: str) -> str:
-    """Convert a ``**`` globstar pattern into an equivalent GLOB pattern."""
-    if "**" not in filter_pattern:
-        return filter_pattern
-
-    parts = filter_pattern.split("/")
-    globstar_positions = [i for i, p in enumerate(parts) if p == "**"]
-
-    num_globstars = len(globstar_positions)
-
-    if num_globstars <= 1:
-        if filter_pattern == "**/*":
-            return "*"
-        if filter_pattern.startswith("**/"):
-            remaining = filter_pattern[3:]
-            if "/" not in remaining:
-                # Pattern like **/*.ext or **/temp?.*
-                # The ** means zero or more directories
-                # For zero directories: pattern should be just the filename pattern
-                # For one or more: pattern should be */filename
-                # Since we can't OR in GLOB, we choose the more permissive option
-                # that works with recursive listing
-                # Special handling: if it's a simple extension pattern, match broadly
-                if remaining.startswith("*."):
-                    return remaining
-                return f"*/{remaining}"
-
-        return filter_pattern.replace("**", "*")
-
-    middle_parts = []
-    start_idx = globstar_positions[0] + 1
-    end_idx = globstar_positions[-1]
-    for i in range(start_idx, end_idx):
-        if parts[i] != "**":
-            middle_parts.append(parts[i])
-
-    if not middle_parts:
-        result = filter_pattern.replace("**", "*")
-    else:
-        middle_pattern = "/".join(middle_parts)
-        last_part = parts[-1] if parts[-1] != "**" else "*"
-
-        if last_part != "*":
-            result = f"*{middle_pattern}*{last_part}"
+    start = 0
+    while (open_ := pattern.find("{", start)) >= 0:
+        start = open_ + 1
+        depth, cuts = 0, [open_]
+        for close in range(open_, len(pattern)):
+            if pattern[close] == "{":
+                depth += 1
+            elif pattern[close] == "}":
+                depth -= 1
+                if not depth:
+                    break
+            elif pattern[close] == "," and depth == 1:
+                cuts.append(close)
         else:
-            result = f"*{middle_pattern}*"
+            continue  # never closed: the "{" is a character
+        cuts.append(close)
+        options = (
+            [pattern[a + 1 : b].strip() for a, b in pairwise(cuts)]
+            if len(cuts) > 2
+            else _brace_range(pattern[open_ + 1 : close])
+        )
+        if options is None:
+            continue  # "{a}" stays, but braces inside it can expand
+        tails = expand_brace_pattern(pattern[close + 1 :])
+        return [
+            f"{pattern[:open_]}{option}{tail}"
+            for alternative in options
+            for option in expand_brace_pattern(alternative)
+            for tail in tails
+        ]
+    return [pattern]
 
-    return result
+
+def _brace_range(body: str) -> list[str] | None:
+    """The terms of a ``{x..y}`` or ``{x..y..step}`` range, or None."""
+    if not (match := _RANGE.fullmatch(body)):
+        return None
+    first, last, step = match.groups()
+    if first.isalpha() != last.isalpha():
+        return None
+    step = abs(int(step or 1)) or 1
+    if first.isalpha():
+        start, stop = ord(first), ord(last)
+        sign = 1 if stop >= start else -1
+        return [chr(i) for i in range(start, stop + sign, sign * step)]
+    start, stop = int(first), int(last)
+    sign = 1 if stop >= start else -1
+    # bash pads to the longer end that starts with a zero, as "01" or "-01"
+    width = max(
+        (len(end) for end in (first, last) if re.fullmatch(r"-?0\d+", end)), default=0
+    )
+    return [f"{n:0{width}d}" for n in range(start, stop + sign, sign * step)]
 
 
-def storage_sources(uris: Sequence) -> list[tuple[str, str | None]]:
+def storage_sources(uris: Sequence) -> list[tuple[str, tuple[str, ...]]]:
     """The URIs to list for ``uris``, in order and with repeats, each with the
-    glob pattern that selects from its listing: braces expanded, a glob listed
-    from its base.
+    glob patterns that select from its listing, none for all of it. Braces
+    expand; the alternatives of one URI with one base share its source.
     """
     sources = []
     for uri in uris:
+        bases: dict[str, dict[str | None, None]] = {}
         for expanded in expand_brace_pattern(str(uri)):
-            expanded = normalize_storage_uri(expanded)
-            base_uri, pattern = split_uri_pattern(expanded)
-            sources.append((base_uri if pattern else expanded, pattern))
+            base, pattern = split_uri_pattern(normalize_storage_uri(expanded))
+            bases.setdefault(base, {})[pattern] = None
+        sources += [
+            (base, () if None in patterns else tuple(filter(None, patterns)))
+            for base, patterns in bases.items()
+        ]
     return sources
 
 
 def path_filter(
-    list_path: str, pattern: str | None, recursive: bool | None
+    list_path: str, patterns: Sequence[str], recursive: bool | None
 ) -> PathFilter:
-    """The paths a URI with glob ``pattern`` selects from its base's listing."""
-    if pattern is None:
+    """The paths of its base's listing that a URI selects: those that match
+    one of its glob ``patterns``, or all of the base when it has none. GLOB's
+    ``*`` crosses ``/``, so a GLOB alone is exact in one folder or for a name
+    such as ``**/*.jpg``; other patterns are also matched folder by folder.
+    """
+    if not patterns:
         return PathFilter.ls(list_path, recursive)
-    glob, use_recursive = _pattern(pattern, list_path, recursive)
-    return PathFilter.ls(list_path, use_recursive).glob(glob)
-
-
-def _pattern(pattern: str, list_path: str, recursive: bool | None) -> tuple[str, bool]:
-    """``pattern`` as a glob of full paths, and whether it recurses."""
-    return (
-        _glob_pattern(pattern, list_path),
-        should_use_recursion(pattern, recursive or False),
-    )
+    folder = _folder(list_path)
+    alternatives = [_segments(p, recursive) for p in patterns]
+    descends = any(map(_descends, alternatives))
+    paths = PathFilter.ls(list_path, descends)
+    conditions = []
+    for segments in alternatives:
+        alternative = [("glob", folder + _glob(segments))]
+        if not _glob_is_exact(segments, descends):
+            alternative.append(("pattern", folder + "/".join(segments)))
+        conditions.append(tuple(alternative))
+    return PathFilter(paths.any_of, tuple(conditions))
 
 
 def list_scope(
-    list_path: str, pattern: str | None, recursive: bool | None
+    list_path: str, patterns: Sequence[str], recursive: bool | None
 ) -> ListScope | None:
     """The part of its folder's listing that a URI's paths can be in: the keys
-    that start with the pattern's literal head, one level only if the URI
-    doesn't recurse. None when it is the whole listing.
+    that start with its patterns' literal head, one level only if none of them
+    descends. None when it is the whole listing.
     """
-    folder = list_folder(list_path)
-    folder = f"{folder}/" if folder else ""
-    if pattern is None:
+    folder = _folder(list_path)
+    if not patterns:
         return None if recursive else ListScope(folder, folder, True)
-    head, use_recursive = _pattern(pattern, list_path, recursive)
-    magic = [i for c in "*?[" if (i := head.find(c)) >= 0]
-    head = head[: min(magic, default=len(head))]
-    prefix = head if head.startswith(folder) else folder
-    one_level = not use_recursive
-    if not one_level and prefix == folder:
+    heads, descends = [], False
+    for pattern in patterns:
+        segments = _segments(pattern, recursive)
+        glob_pattern = _glob(segments)
+        magic = _MAGIC.search(glob_pattern)
+        heads.append(glob_pattern[: magic.start()] if magic else glob_pattern)
+        descends = descends or _descends(segments)
+    prefix = folder + os.path.commonprefix(heads)  # noqa: RUF071 a key prefix
+    if descends and prefix == folder:
         return None
-    return ListScope(folder, prefix, one_level)
+    return ListScope(folder, prefix, not descends)
 
 
-def _glob_pattern(pattern: str, list_path: str) -> str:
-    glob_pattern = convert_globstar_to_glob(pattern)
-    if subpath := list_folder(list_path):
-        glob_pattern = f"{subpath}/{glob_pattern}"
-    return glob_pattern
+def _folder(list_path: str) -> str:
+    """``list_path`` as the start of the paths in it: ``dir/``, or nothing."""
+    folder = list_folder(list_path)
+    return f"{folder}/" if folder else ""
+
+
+def _segments(pattern: str, recursive: bool | None) -> list[str]:
+    """``pattern``'s folders and name, with one ``**`` for a run of them.
+    Without ``recursive``, a ``**`` is no folders, or the files of its folder
+    when it is the name.
+    """
+    segments: list[str] = []
+    for segment in pattern.split("/"):
+        if segment != "**" or segments[-1:] != ["**"]:
+            segments.append(segment)
+    if recursive:
+        return segments
+    *folders, name = segments
+    return [s for s in folders if s != "**"] + ["*" if name == "**" else name]
+
+
+def _descends(segments: list[str]) -> bool:
+    """Whether the paths of ``segments`` can be below the listing's folder."""
+    return len(segments) > 1 or segments == ["**"]
+
+
+def _glob(segments: list[str]) -> str:
+    """A GLOB that every path of ``segments`` matches: GLOB's ``*`` crosses
+    ``/``, so ``**/`` is just ``*``.
+    """
+    *folders, name = segments
+    glob_pattern = "".join("*" if s == "**" else f"{s}/" for s in folders)
+    return re.sub(r"\*\*+", "*", glob_pattern + ("*" if name == "**" else name))
+
+
+def _glob_is_exact(segments: list[str], descends: bool) -> bool:
+    """Whether the GLOB of ``segments`` matches only their paths: a name in the
+    listing's folder when the filter doesn't descend, all files, or a name
+    that ends a path, as ``**/*.jpg``.
+    """
+    if "**" not in segments:
+        return len(segments) == 1 and not descends
+    *folders, name = segments
+    if folders not in ([], ["**"]):
+        return False
+    return name == "**" or (name[:1] == "*" and not glob.has_magic(name[1:]))

@@ -1,3 +1,5 @@
+import glob
+import os
 from pathlib import Path
 
 import pytest
@@ -79,6 +81,54 @@ def tmp_dir(tmp_path):
     return tmp_path
 
 
+REPORTS_TREE = {
+    "report.json": "",
+    "report1.json": "",
+    "notreport.json": "",
+    "repdir": {"not.json": ""},
+    "r": {"port.json": ""},
+    "nested": {
+        "report.json": "",
+        "notreport.json": "",
+        "deep": {"report.json": "", "y.json": ""},
+    },
+    "a": {
+        "report.json": "",
+        "repdir": {"not.json": ""},
+        "nested": {"report.json": "", "deep": {"z.json": ""}},
+        "b": {"c": {"report.json": ""}},
+    },
+}
+
+GLOB_PATTERNS = [
+    "**/report.json",
+    "**/rep*.json",
+    "**/r?port.json",
+    "**/nested/*.json",
+    "**/nested/**/report.json",
+    "**/**/report.json",
+    "*/**/report.json",
+    "nest*/**/report.json",
+    "*/report.json",
+    "*/*/report.json",
+    "[an]*/**",
+    "**",
+]
+
+
+@pytest.fixture
+def reports_dir(tmp_path):
+    instantiate_tree(tmp_path, REPORTS_TREE)
+    return tmp_path
+
+
+def python_glob(root, pattern):
+    paths = glob.glob(f"{root}/{pattern}", recursive=True, include_hidden=True)
+    return sorted(
+        {Path(p).relative_to(root).as_posix() for p in paths if os.path.isfile(p)}
+    )
+
+
 def test_simple_wildcard(tmp_dir):
     result = dc.read_storage(f"{tmp_dir}/deep/level1/temp/*.tmp")
     names = {f.name for f in result.to_values("file")}
@@ -89,6 +139,81 @@ def test_recursive(tmp_dir):
     result = dc.read_storage(f"{tmp_dir}/deep/**/*.mp3")
     files = {f.name for f in result.to_values("file")}
     assert files == {"audio.mp3", "song1.mp3", "track2.mp3"}
+
+
+@pytest.mark.parametrize("pattern", GLOB_PATTERNS)
+def test_read_storage_selects_the_files_python_glob_selects(reports_dir, pattern):
+    chain = dc.read_storage(f"{reports_dir}/{pattern}")
+    assert sorted(chain.to_values("file.path")) == python_glob(reports_dir, pattern)
+
+
+@pytest.mark.parametrize("pattern", GLOB_PATTERNS)
+def test_list_storage_selects_the_files_python_glob_selects(reports_dir, pattern):
+    rows = dc.list_storage(f"{reports_dir}/{pattern}")
+    assert sorted(r.path for r in rows) == python_glob(reports_dir, pattern)
+
+
+@pytest.mark.parametrize(
+    "pattern,expected",
+    [
+        ("**/report.json", ["report.json"]),
+        ("**", ["notreport.json", "report.json", "report1.json"]),
+        ("**/nested/*.json", ["nested/notreport.json", "nested/report.json"]),
+        ("*/report.json", ["a/report.json", "nested/report.json"]),
+    ],
+)
+def test_read_storage_without_recursion_reads_globstar_as_no_folders(
+    reports_dir, pattern, expected
+):
+    chain = dc.read_storage(f"{reports_dir}/{pattern}", recursive=False)
+    assert sorted(chain.to_values("file.path")) == expected
+
+
+def test_read_storage_globstar_after_wildcard_folder_reads_its_own_files(tmp_path):
+    instantiate_tree(
+        tmp_path, {"2021": {"a.jpg": "", "x": {"b.jpg": ""}}, "2022": {"c.png": ""}}
+    )
+    chain = dc.read_storage(f"{tmp_path}/202?/**/*.{{jpg,png}}")
+    assert sorted(chain.to_values("file.path")) == [
+        "2021/a.jpg",
+        "2021/x/b.jpg",
+        "2022/c.png",
+    ]
+
+
+def test_read_storage_overlapping_brace_alternatives_read_each_file_once(reports_dir):
+    chain = dc.read_storage(f"{reports_dir}/*.{{json,js*}}")
+    assert sorted(chain.to_values("file.path")) == [
+        "notreport.json",
+        "report.json",
+        "report1.json",
+    ]
+
+
+def test_list_storage_overlapping_brace_alternatives_list_each_file_once(reports_dir):
+    rows = dc.list_storage(f"{reports_dir}/*.{{json,js*}}")
+    assert sorted(r.path for r in rows) == [
+        "notreport.json",
+        "report.json",
+        "report1.json",
+    ]
+
+
+def test_read_storage_thousand_brace_alternatives_of_one_folder(reports_dir):
+    chain = dc.read_storage(f"{reports_dir}/report{{1..1000}}.js?n")
+    assert chain.to_values("file.path") == ["report1.json"]
+
+
+def test_read_storage_hundreds_of_brace_folders_after_listing_their_parent(
+    reports_dir,
+):
+    dc.read_storage(f"{reports_dir}/").exec()
+    chain = dc.read_storage(f"{reports_dir}/{{a,nested,{{1..300}}}}/*.json")
+    assert sorted(chain.to_values("file.path")) == [
+        "a/report.json",
+        "nested/notreport.json",
+        "nested/report.json",
+    ]
 
 
 def test_recursive_patterns_ext(tmp_dir):

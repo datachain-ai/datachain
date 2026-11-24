@@ -3,7 +3,6 @@ import json
 import os
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from functools import reduce
 from typing import TYPE_CHECKING
 
 import datachain.lib.listing as listing_lib
@@ -60,14 +59,16 @@ def read_storage(
     Parameters:
         uri: Storage path(s) or URI(s). Can be a local path or start with a
             storage prefix like `s3://`, `gs://`, `az://`, `hf://` or "file:///".
-            Supports glob patterns:
-              - `*` : wildcard
-              - `**` : recursive wildcard
-              - `?` : single character
-              - `{a,b}` : brace expansion list
-              - `{1..9}` : brace numeric or alphabetic range
+            Supports glob patterns, which match as in a shell:
+              - `*` : any characters in one file or folder name
+              - `?` : one character in a name
+              - `[abc]`, `[a-z]`, `[^a]` : one character of a set
+              - `**` : any number of folders, none too: `dir/**/*.jpg`
+              - `{a,b}` : alternatives
+              - `{1..9}`, `{01..10}`, `{a..z}`, `{1..9..2}` : ranges
         type: read file as "binary", "text", or "image" data. Default is "binary".
-        recursive: search recursively for the given path.
+        recursive: search recursively for the given path. If False, a `**` in a
+            pattern matches no folders.
         update: list the storage again instead of reusing a saved listing.
             Default is False.
         anon: If True, we will treat cloud bucket as public one.
@@ -197,7 +198,7 @@ def _read_storage(
     file_values = []
     prepared_listings: set[str] = set()
 
-    for list_uri_to_use, glob_pattern in storage_sources(uris):
+    for list_uri_to_use, patterns in storage_sources(uris):
         dc, list_uri, list_path = _prepare_listing(
             list_uri_to_use,
             session,
@@ -224,12 +225,10 @@ def _read_storage(
             continue
 
         chains.append(
-            listing_lib.select_paths(
-                dc, path_filter(list_path, glob_pattern, recursive)
-            )
+            listing_lib.select_paths(dc, path_filter(list_path, patterns, recursive))
         )
 
-    storage_chain = None if not chains else reduce(lambda x, y: x.union(y), chains)
+    storage_chain = _union(chains) if chains else None
 
     if file_values:
         # Use read_records directly (not read_values) so the chain hash is
@@ -248,6 +247,18 @@ def _read_storage(
     assert storage_chain is not None
 
     return storage_chain
+
+
+def _union(chains: "list[DataChain]") -> "DataChain":
+    """The union of ``chains`` as a balanced tree: a long chain of unions is
+    deeper than a query compiles.
+    """
+    while len(chains) > 1:
+        chains = [
+            chains[i].union(chains[i + 1]) if i + 1 < len(chains) else chains[i]
+            for i in range(0, len(chains), 2)
+        ]
+    return chains[0]
 
 
 def list_storage(
@@ -274,7 +285,8 @@ def list_storage(
     Parameters:
         uri: Storage URI(s), as in `read_storage`: buckets, folders or files,
             with glob patterns (`*`, `**`, `?`, `{a,b}`, `{1..9}`).
-        recursive: If False, list only the files directly in the folder.
+        recursive: If False, list only the files directly in the folder, and a
+            `**` in a pattern matches no folders.
         versions: As in `read_storage`, the rows are current files. If True,
             the default, on a versioned bucket they carry their version id. If
             False, they don't, and the listing is faster.
@@ -421,9 +433,9 @@ class Listing:
         scans: dict[str, dict[ListScope | None, list[listing_lib.PathFilter]]] = {}
         objects: list[_Object | _Scan] = []
         described: dict[str, tuple[str, str, str] | None] = {}
-        for uri, pattern in storage_sources(self.uris):
+        for uri, patterns in storage_sources(self.uris):
             client = Client.get_client(uri, cache, **self.client_config)  # type: ignore[arg-type]
-            if uri not in described:  # braces expand to URIs with one base
+            if uri not in described:  # URIs and braces can share a base
                 described[uri] = listing_lib.describe_listing(
                     client, uri, self.versions
                 )
@@ -436,11 +448,11 @@ class Listing:
             whole = list_path == Client.parse_url(list_uri)[1]
             paths = (
                 listing_lib.PathFilter()
-                if pattern is None and self.recursive and whole
-                else path_filter(list_path, pattern, self.recursive)
+                if not patterns and self.recursive and whole
+                else path_filter(list_path, patterns, self.recursive)
             )
             scope = (
-                list_scope(list_path, pattern, self.recursive)
+                list_scope(list_path, patterns, self.recursive)
                 if isinstance(client, RangeListedClient)
                 else None
             )

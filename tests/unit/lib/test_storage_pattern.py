@@ -1,7 +1,6 @@
 import pytest
 
 from datachain.lib.dc.storage_pattern import (
-    _expand_range,
     expand_brace_pattern,
     list_scope,
     split_uri_pattern,
@@ -177,39 +176,56 @@ def test_expand_brace_pattern_complex():
     assert sorted(result) == sorted(expected)
 
 
-def test_expand_brace_pattern_edge_cases():
-    assert _expand_range("abc") == ["abc"]
-    assert _expand_range("1..2..3") == ["1..2..3"]
-
-    # reverse numeric with zero-padding
-    assert expand_brace_pattern("f{03..01}") == ["f03", "f02", "f01"]
-
-    # unknown range format
-    assert _expand_range("aa..zz") == ["aa..zz"]
-
-    # malformed braces - no closing brace
-    assert expand_brace_pattern("f{abc") == ["f{abc"]
+@pytest.mark.parametrize(
+    "pattern,expanded",
+    [
+        ("f{03..01}", ["f03", "f02", "f01"]),
+        ("f{0..10}", [f"f{i}" for i in range(11)]),
+        ("f{00..3}", ["f00", "f01", "f02", "f03"]),
+        ("f{09..011}", ["f009", "f010", "f011"]),
+        ("f{-02..1}", ["f-02", "f-01", "f000", "f001"]),
+        ("f{1..10..3}", ["f1", "f4", "f7", "f10"]),
+        ("f{5..1..-2}", ["f5", "f3", "f1"]),
+        ("f{a..e..2}", ["fa", "fc", "fe"]),
+        ("{a,{b,c}}", ["a", "b", "c"]),
+        ("{a,b{1..2}}", ["a", "b1", "b2"]),
+        ("x{a{b,c}}y", ["x{ab}y", "x{ac}y"]),
+        ("f{a,}g", ["fag", "fg"]),
+        ("f{a}", ["f{a}"]),
+        ("f{1..a}", ["f{1..a}"]),
+        ("f{aa..zz}", ["f{aa..zz}"]),
+        ("f{abc", ["f{abc"]),
+        ("f{a,b", ["f{a,b"]),
+        ("x}{a,b}", ["x}a", "x}b"]),
+    ],
+)
+def test_expand_brace_pattern_as_bash(pattern, expanded):
+    assert expand_brace_pattern(pattern) == expanded
 
 
 @pytest.mark.parametrize(
-    "list_path,pattern,recursive,scope",
+    "list_path,patterns,recursive,scope",
     [
-        ("dir/", None, True, None),
-        ("dir/", None, False, ListScope("dir/", "dir/", True)),
-        ("dir//", None, False, ListScope("dir//", "dir//", True)),
-        ("", None, False, ListScope("", "", True)),
-        ("dir", "*.jpg", True, ListScope("dir/", "dir/", True)),
-        ("dir//", "*.jpg", True, ListScope("dir//", "dir//", True)),
-        ("dir///", "*.jpg", True, ListScope("dir///", "dir///", True)),
-        ("dir", "img_0*.jpg", True, ListScope("dir/", "dir/img_0", True)),
-        ("logs", "2024-*/**", True, ListScope("logs/", "logs/2024-", False)),
-        ("logs", "**/*.json", True, None),
-        ("", "d*/x", True, ListScope("", "d", False)),
-        ("dir", "a[0-9]/*", True, ListScope("dir/", "dir/a", False)),
+        ("dir/", (), True, None),
+        ("dir/", (), False, ListScope("dir/", "dir/", True)),
+        ("dir//", (), False, ListScope("dir//", "dir//", True)),
+        ("", (), False, ListScope("", "", True)),
+        ("dir", ("*.jpg",), True, ListScope("dir/", "dir/", True)),
+        ("dir//", ("*.jpg",), True, ListScope("dir//", "dir//", True)),
+        ("dir///", ("*.jpg",), True, ListScope("dir///", "dir///", True)),
+        ("dir", ("img_0*.jpg",), True, ListScope("dir/", "dir/img_0", True)),
+        ("logs", ("2024-*/**",), True, ListScope("logs/", "logs/2024-", False)),
+        ("logs", ("**/*.json",), True, None),
+        ("logs", ("**/*.json",), False, ListScope("logs/", "logs/", True)),
+        ("logs", ("2024/**/*.json",), False, ListScope("logs/", "logs/2024/", False)),
+        ("", ("d*/x",), True, ListScope("", "d", False)),
+        ("dir", ("a[0-9]/*",), True, ListScope("dir/", "dir/a", False)),
+        ("dir", ("ab*.jpg", "ac*.png"), True, ListScope("dir/", "dir/a", True)),
+        ("dir", ("a/*", "*.jpg"), True, None),
     ],
 )
-def test_list_scope(list_path, pattern, recursive, scope):
-    assert list_scope(list_path, pattern, recursive) == scope
+def test_list_scope(list_path, patterns, recursive, scope):
+    assert list_scope(list_path, patterns, recursive) == scope
 
 
 @pytest.mark.parametrize(
