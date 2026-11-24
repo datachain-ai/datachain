@@ -1365,3 +1365,26 @@ def test_delta_gen_keeps_keys_in_file_rows(test_session, changed):
             chain.save("file_row_result")
     else:
         assert chain.save("file_row_result").to_values("file.path") == ["a"]
+
+
+def test_delta_gen_without_delta_on_column_in_udf_params(test_session):
+    dc.read_values(
+        a=[1, 2],
+        key=[NullableDeltaKey(a=1), None],
+        output={"a": int, "key": NullableDeltaKey | None},
+        session=test_session,
+    ).save("delta_gen_key_src")
+    chain = (
+        dc.read_dataset(
+            "delta_gen_key_src",
+            delta=True,
+            delta_on="key",
+            session=test_session,
+        )
+        .gen(
+            lambda a: [(NullableDeltaKey(a=a) if a == 1 else None, a * 10)],
+            output={"key": NullableDeltaKey | None, "b": int},
+        )
+        .save("delta_gen_key_out")
+    )
+    assert sorted(chain.to_values("b")) == [10, 20]

@@ -23,7 +23,7 @@ from sqlalchemy import Column
 from datachain.cache import Cache
 from datachain.checkpoint import Checkpoint, CheckpointStatus
 from datachain.client import Client
-from datachain.data_storage.writer import parts_table_name
+from datachain.data_storage.schema import parts_table_name
 from datachain.dataset import (
     DATASET_PREFIX,
     DEFAULT_DATASET_VERSION,
@@ -563,6 +563,8 @@ class Catalog:
         tmp_dir=None,
         client_config: dict[str, Any] | None = None,
         in_memory: bool = False,
+        *,
+        source_client_configs: dict[str, dict[str, Any]] | None = None,
     ):
         datachain_dir = DataChainDir(cache=cache_dir, tmp=tmp_dir)
         datachain_dir.init()
@@ -570,6 +572,8 @@ class Catalog:
         self.warehouse = warehouse
         self.cache = Cache(datachain_dir.cache, datachain_dir.tmp)
         self.client_config = client_config if client_config is not None else {}
+        # Client configs of the storage sources (File.source) its chains listed.
+        self.source_client_configs = dict(source_client_configs or {})
         self._init_params = {
             "cache_dir": cache_dir,
             "tmp_dir": tmp_dir,
@@ -587,6 +591,7 @@ class Catalog:
         return {
             **self._init_params,
             "client_config": self.client_config,
+            "source_client_configs": self.source_client_configs,
         }
 
     def copy(self, cache=True, db=True):
@@ -602,6 +607,10 @@ class Catalog:
             result.metastore = None
             result.warehouse = None
         return result
+
+    def client_config_for(self, source: str) -> dict[str, Any]:
+        """The client config to read files of `source` (a `File.source`) with."""
+        return self.source_client_configs.get(source, self.client_config)
 
     def close(self) -> None:
         if not self._owns_connections:
@@ -626,7 +635,9 @@ class Catalog:
         Return the client corresponding to the given source `uri`.
         """
         config = (
-            client_config if client_config is not None else config or self.client_config
+            client_config
+            if client_config is not None
+            else config or self.client_config_for(uri)
         )
         cls = Client.get_implementation(uri)
         return cls.from_source(StorageURI(uri), self.cache, **config)

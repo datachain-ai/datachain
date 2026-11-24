@@ -275,15 +275,24 @@ class DataTable:
         return DirExpansion(self.column)
 
 
-PARTITION_COLUMN_ID = "partition_id"
+PARTITION_COLUMN_ID = "sys__partition_id"
 
 partition_col_names = [PARTITION_COLUMN_ID]
 
 
 def partition_columns() -> Sequence[sa.Column]:
     return [
-        sa.Column(PARTITION_COLUMN_ID, sa.Integer),
+        sa.Column(PARTITION_COLUMN_ID, sa.Integer, index=True),
     ]
+
+
+def parts_table_name(table_name: str) -> str:
+    return f"{table_name}_parts"
+
+
+def committed_part_keys(parts: sa.Table) -> sa.Select:
+    """Keys of the committed parts; claim rows have none."""
+    return sa.select(parts.c.part_key).where(parts.c.part_key.is_not(None))
 
 
 DataTableT = TypeVar("DataTableT", bound=DataTable)
