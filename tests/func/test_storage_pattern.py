@@ -199,6 +199,19 @@ def test_list_storage_overlapping_brace_alternatives_list_each_file_once(reports
     ]
 
 
+def test_read_storage_without_recursion_brace_folder_and_pattern_read_both(
+    reports_dir,
+):
+    chain = dc.read_storage(f"{reports_dir}/{{,*/report.json}}", recursive=False)
+    assert sorted(chain.to_values("file.path")) == [
+        "a/report.json",
+        "nested/report.json",
+        "notreport.json",
+        "report.json",
+        "report1.json",
+    ]
+
+
 def test_read_storage_thousand_brace_alternatives_of_one_folder(reports_dir):
     chain = dc.read_storage(f"{reports_dir}/report{{1..1000}}.js?n")
     assert chain.to_values("file.path") == ["report1.json"]

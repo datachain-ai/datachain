@@ -123,7 +123,8 @@ def _brace_range(body: str) -> list[str] | None:
 def storage_sources(uris: Sequence) -> list[tuple[str, tuple[str, ...]]]:
     """The URIs to list for ``uris``, in order and with repeats, each with the
     glob patterns that select from its listing, none for all of it. Braces
-    expand; the alternatives of one URI with one base share its source.
+    expand; the alternatives of one URI with one base share its source, where
+    the folder itself is the pattern ``**``.
     """
     sources = []
     for uri in uris:
@@ -132,7 +133,7 @@ def storage_sources(uris: Sequence) -> list[tuple[str, tuple[str, ...]]]:
             base, pattern = split_uri_pattern(normalize_storage_uri(expanded))
             bases.setdefault(base, {})[pattern] = None
         sources += [
-            (base, () if None in patterns else tuple(filter(None, patterns)))
+            (base, () if [*patterns] == [None] else tuple(p or "**" for p in patterns))
             for base, patterns in bases.items()
         ]
     return sources
