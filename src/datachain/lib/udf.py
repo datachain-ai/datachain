@@ -23,7 +23,7 @@ from fsspec.callbacks import DEFAULT_CALLBACK
 
 from datachain.asyn import AsyncMapper
 from datachain.cache import temporary_cache
-from datachain.data_storage.codec import RowEncodeError
+from datachain.error import RowEncodeError
 from datachain.hash_utils import hash_callable
 from datachain.lib.file import File, FileError
 from datachain.lib.settings import DEFAULT_PREFETCH
@@ -46,6 +46,8 @@ if TYPE_CHECKING:
     from collections import abc
     from contextlib import AbstractContextManager
     from typing import Self
+
+    import pyarrow as pa
 
     from datachain.cache import Cache
     from datachain.catalog import Catalog
@@ -186,7 +188,7 @@ UDFOutputSpec = Mapping[str, ColumnType]
 # implementing it: the output values in their stored form, then the sys values.
 UDFResult = tuple[Any, ...]
 # A gen or agg result: the rows of one part (an input row, a partition) and its key
-UDFPart = tuple[Any, Iterable[UDFResult]]
+UDFPart = tuple[Any, "Iterable[UDFResult | pa.RecordBatch]"]
 
 PROGRESS_INTERVAL = 0.1  # seconds
 
@@ -286,8 +288,8 @@ class OutputRows:
                 e, self.names, self.schema, self.udf_kind, num_values
             ) from e.__cause__
 
-    def encode_batch(self, batch: Any) -> list[tuple]:
-        """An Arrow batch of leaf columns as stored rows."""
+    def encode_batch(self, batch: "pa.RecordBatch") -> "pa.RecordBatch | list[tuple]":
+        """An Arrow batch of leaf columns as stored columns or tuples."""
         try:
             return self.codec.encode_arrow(batch)
         except RowEncodeError as e:
@@ -542,6 +544,11 @@ class UDFBase(AbstractUDF):
         assert self.params is not None
         return self.prefetch if self.params._file_stream_params else 0
 
+    def read_columns(self) -> list[str]:
+        """The db columns `run()` reads, besides sys__id and the partition id."""
+        assert self.params is not None
+        return self.params.read_columns()
+
     def _input_reader(
         self,
         udf_fields: "Sequence[str]",
@@ -706,9 +713,14 @@ async def _prefetch_input(
     batch_columns: set[int] | None = None,
     max_size: int | None = None,
     pairs: Iterable[tuple[File, File]] | None = None,
+    prefetch_file: "Callable[[File, Callback | None], abc.Awaitable[bool]] | None" = (
+        None
+    ),
 ) -> T:
     if pairs is None:
-        pairs = _prefetch_targets(row, batch_columns, max_size)
+        pairs = _prefetch_targets(
+            row, batch_columns, max_size if prefetch_file is None else None
+        )
     targets: dict[str, list[File]] = {}
     for obj, target in pairs:
         targets.setdefault(target.get_hash(), []).append(obj)
@@ -718,7 +730,11 @@ async def _prefetch_input(
         for group in pending:
             for obj in group:
                 try:
-                    prefetched = await obj._prefetch(download_cb)
+                    prefetched = (
+                        await obj._prefetch(download_cb)
+                        if prefetch_file is None
+                        else await prefetch_file(obj, download_cb)
+                    )
                     if prefetched:
                         after_prefetch()
                 except FileError as e:
@@ -754,6 +770,9 @@ def _prefetch_inputs(
     max_size: int | None = None,
     max_bytes: int | None = None,
     min_rows: int = 2 * DEFAULT_PREFETCH + 1,
+    prefetch_file: "Callable[[File, Callback | None], abc.Awaitable[bool]] | None" = (
+        None
+    ),
 ) -> "abc.Generator[T, None, None]":
     if not prefetch:
         yield from prepared_inputs
@@ -771,6 +790,7 @@ def _prefetch_inputs(
         after_prefetch=after_prefetch,
         batch_columns=batch_columns,
         max_size=max_size,
+        prefetch_file=prefetch_file,
     )
     budget = None
     if max_bytes is not None:
@@ -782,8 +802,18 @@ def _prefetch_inputs(
     def admitted():
         with safe_closing(prepared_inputs):
             for row in prepared_inputs:
-                pairs = list(_prefetch_targets(row, batch_columns, max_size))
-                targets = [target for _, target in pairs]
+                pairs = list(
+                    _prefetch_targets(
+                        row,
+                        batch_columns,
+                        max_size if prefetch_file is None else None,
+                    )
+                )
+                targets = [
+                    target
+                    for _, target in pairs
+                    if max_size is None or 0 < target.size <= max_size
+                ]
                 sizes = budget.targets_for(targets) if budget and targets else {}
                 if budget:
                     budget.take(sizes, mapper._shutdown_producer)
@@ -896,7 +926,6 @@ class Mapper(UDFBase):
                         for i, col in enumerate(zip(*map(prepare, row), strict=True))
                     ]
 
-        prefetch = self._effective_prefetch
         prepared_inputs = _prepare_rows(udf_inputs)
         prepared_inputs = _prefetch_inputs(
             prepared_inputs,
@@ -908,24 +937,27 @@ class Mapper(UDFBase):
             min_rows=self._prefetch_min_rows,
         )
 
-        with (
-            self._teardown_on_exit(),
-            closing(prepared_inputs),
-            _Progress(processed_cb) as progress,
-        ):
+        def _results(progress) -> Iterator[tuple]:
             for id_, *udf_args in prepared_inputs:
                 if batch_columns is None:
+                    row = (*output_row(self.process(*udf_args)), id_)
                     progress.add(1)
-                    yield [(*output_row(self.process(*udf_args)), id_)]
+                    yield row
                     continue
                 self._batch_length = len(id_)
                 results = _batch_results(self.process(*udf_args), len(id_), label)
                 progress.add(len(results))
                 # lazy: rows encoded before an invalid one are still written
-                yield (
-                    (*output_row(result), row_id)
-                    for row_id, result in zip(id_, results, strict=True)
-                )
+                for row_id, result in zip(id_, results, strict=True):
+                    yield (*output_row(result), row_id)
+
+        with (
+            self._teardown_on_exit(),
+            closing(prepared_inputs),
+            _Progress(processed_cb) as progress,
+        ):
+            # one lazy result for all rows: no per-row hand-off to the writer
+            yield _results(progress)
 
 
 class BatchMapper(Mapper):
@@ -1164,6 +1196,20 @@ class Generator(UDFBase):
     delta_key: "Sequence[tuple[str, str]]" = ()
     delta_key_presence: "Sequence[tuple[KeyPresence, KeyPresence]]" = ()
 
+    def read_columns(self) -> list[str]:
+        keys = [spec[0] for spec, _ in self.delta_key_presence if spec is not None]
+        return [*super().read_columns(), *(c for c, _ in self.delta_key), *keys]
+
+    async def _prefetch_file(
+        self, file: File, download_cb: Callback | None = None
+    ) -> bool:
+        if (
+            self.prefetch_max_size is not None
+            and not 0 < file._prefetch_target().size <= self.prefetch_max_size
+        ):
+            return False
+        return await file._prefetch(download_cb)
+
     def run(  # noqa: C901
         self,
         udf_fields: "Sequence[str]",
@@ -1218,7 +1264,7 @@ class Generator(UDFBase):
                         column.split(DEFAULT_DELIMITER)[0], "gen()"
                     )
 
-        def _stored_rows(result_objs, key) -> Iterator[tuple]:
+        def _stored_rows(result_objs, key) -> "Iterator[UDFResult | pa.RecordBatch]":
             pa = sys.modules.get("pyarrow")  # batches come only from arrow readers
             for result_obj in result_objs:
                 if pa is not None and isinstance(result_obj, pa.RecordBatch):
@@ -1226,7 +1272,11 @@ class Generator(UDFBase):
                         columns = (c.to_pylist() for c in result_obj.columns)
                         for values in zip(*columns, strict=True):
                             _check_delta_key(key, values)
-                    yield from output_rows.encode_batch(result_obj)
+                    encoded = output_rows.encode_batch(result_obj)
+                    if isinstance(encoded, pa.RecordBatch):
+                        yield encoded
+                    else:
+                        yield from encoded
                     continue
                 values = output_rows.flatten(result_obj)
                 if key is not None:
@@ -1241,7 +1291,6 @@ class Generator(UDFBase):
             with safe_closing(result) as result_objs:
                 yield from _stored_rows(result_objs, key)
 
-        prefetch = self._effective_prefetch
         prepared_inputs = _prepare_rows(udf_inputs)
         prepared_inputs = _prefetch_inputs(
             prepared_inputs,
@@ -1251,6 +1300,7 @@ class Generator(UDFBase):
             max_size=self.prefetch_max_size,
             max_bytes=self.prefetch_bytes,
             min_rows=self._prefetch_min_rows,
+            prefetch_file=self._prefetch_file,
         )
 
         with (

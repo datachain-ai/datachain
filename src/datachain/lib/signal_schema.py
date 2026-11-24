@@ -784,6 +784,10 @@ class SignalSchema:
 
         return read
 
+    def read_columns(self) -> list[str]:
+        """The db columns the signals are read from; setup signals read none."""
+        return [c for reader in self._signal_plan.values() for c in reader.columns]
+
     def plain_columns(self) -> list[str] | None:
         """The db columns of signals that read back as the values they hold: no
         models, unions, conversions or setup values. None when any signal needs
@@ -793,7 +797,7 @@ class SignalSchema:
         readers = self._signal_plan.values()
         if any(r.layout is not None or r.model is not None for r in readers):
             return None
-        return [c for reader in self._signal_plan.values() for c in reader.columns]
+        return self.read_columns()
 
     def plain_output(self) -> bool:
         """True if no signal is a model or a union: a UDF result is then its

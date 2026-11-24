@@ -1,7 +1,6 @@
 import logging
 from argparse import SUPPRESS, Action, Namespace, _AppendAction
-
-from datachain.error import DataChainError
+from collections.abc import Callable
 
 
 class BooleanOptionalAction(Action):
@@ -71,20 +70,15 @@ def get_logging_level(args: Namespace) -> int:
     return logging.INFO
 
 
-def determine_flavors(studio: bool, local: bool, all: bool, token: str | None):
-    if studio and not token:
-        raise DataChainError(
-            "Not logged in to Studio. Log in with 'datachain auth login'."
-        )
+def determine_flavors(
+    studio: bool, local: bool, all: bool, logged_in: Callable[[], bool]
+) -> tuple[bool, bool]:
+    """Whether to show local and Studio results.
 
+    `logged_in` is called only for `--all`, to fall back to local results without
+    a token. A local listing never reads the credentials, and `--studio` gets its
+    error (not logged in, no team, expired token) from the Studio client.
+    """
     if local or studio:
-        all = False
-
-    if all and not token:
-        all = False
-        local = True
-
-    if not (studio or local or all):
-        local = True
-
-    return all, local, studio
+        return local, studio
+    return True, all and logged_in()

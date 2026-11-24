@@ -1,3 +1,4 @@
+import contextlib
 import datetime as dt
 import enum
 import hashlib
@@ -1825,6 +1826,60 @@ def test_read_dataset_name_version(test_session):
     chain = dc.read_dataset(name)
     assert chain.name == name
     assert chain.version
+
+
+@contextlib.contextmanager
+def _trace_sqlite_statements(session):
+    executed: list[str] = []
+    conns = {session.catalog.metastore.db.db, session.catalog.warehouse.db.db}
+    for conn in conns:
+        conn.set_trace_callback(executed.append)
+    try:
+        yield executed
+    finally:
+        for conn in conns:
+            conn.set_trace_callback(None)
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [(None, 3), ("1.0.0", 1), (1, 2), (">=1.0.0,<2.0.0", 2)],
+    ids=["latest", "exact", "major-int", "range"],
+)
+def test_read_dataset_to_list_runs_two_statements(test_session, version, expected):
+    dc.read_values(num=[1], session=test_session).save("selected", version="1.0.0")
+    dc.read_values(num=[2], session=test_session).save("selected", version="1.10.0")
+    dc.read_values(num=[3], session=test_session).save("selected", version="2.0.0")
+
+    with _trace_sqlite_statements(test_session) as executed:
+        rows = dc.read_dataset(
+            "selected", version=version, session=test_session
+        ).to_list("num")
+
+    assert rows == [(expected,)]
+    assert len(executed) == 2
+
+    test_session.catalog.warehouse.db.metadata.clear()
+    with _trace_sqlite_statements(test_session) as cold_executed:
+        cold_rows = dc.read_dataset(
+            "selected", version=version, session=test_session
+        ).to_list("num")
+
+    assert cold_rows == [(expected,)]
+    assert len(cold_executed) == 3
+
+
+@skip_if_not_sqlite
+def test_save_in_default_project_skips_projects_query(test_session):
+    dc.read_values(num=[1, 2], session=test_session).save("proj_shortcut_src")
+
+    with _trace_sqlite_statements(test_session) as executed:
+        dc.read_dataset("proj_shortcut_src", session=test_session).filter(
+            dc.C("num") == 1
+        ).save("proj_shortcut_out")
+
+    assert not any("FROM projects" in sql for sql in executed)
 
 
 def test_chain_of_maps(test_session):
