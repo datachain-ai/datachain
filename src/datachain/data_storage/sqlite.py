@@ -17,8 +17,8 @@ from sqlalchemy import (
     MetaData,
     Table,
     UniqueConstraint,
-    exists,
     select,
+    text,
     update,
 )
 from sqlalchemy.dialects import sqlite
@@ -264,9 +264,56 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         self.is_closed = False
 
     def get_table(self, name: str) -> Table:
+        if not self.is_closed and (table := self.metadata.tables.get(name)) is not None:
+            return table
+        return self.reflect_table(name)
+
+    @retry_sqlite_locks
+    def reflect_table(self, name: str) -> Table:
         if self.is_closed:
             self._reconnect()
-        return super().get_table(name)
+        cached = self.metadata.tables.get(name)
+        try:
+            columns = sqlalchemy.inspect(self.engine).get_columns(name)
+        except sqlalchemy.exc.NoSuchTableError as exc:
+            if cached is not None:
+                self.metadata.remove(cached)
+            raise TableMissingError(f"Table '{name}' not found") from exc
+        if cached is not None and (
+            [c.name for c in cached.columns] != [col["name"] for col in columns]
+            or [c.name for c in cached.primary_key.columns]
+            != [col["name"] for col in columns if col.get("primary_key")]
+        ):
+            self.metadata.remove(cached)
+        return Table(
+            name,
+            self.metadata,
+            *(
+                Column(
+                    col["name"],
+                    col["type"],
+                    *(
+                        (
+                            sqlalchemy.Computed(
+                                computed["sqltext"],
+                                persisted=computed.get("persisted"),
+                            ),
+                        )
+                        if (computed := col.get("computed")) is not None
+                        else ()
+                    ),
+                    nullable=col["nullable"],
+                    server_default=(
+                        text(str(col["default"]))
+                        if col["default"] is not None
+                        else None
+                    ),
+                    primary_key=bool(col.get("primary_key")),
+                )
+                for col in columns
+            ),
+            extend_existing=True,
+        )
 
     @retry_sqlite_locks
     def execute(self, query) -> sqlite3.Cursor:
@@ -391,25 +438,10 @@ class SQLiteDatabaseEngine(DatabaseEngine):
             yield db
 
     def has_table(self, name: str) -> bool:
-        """
-        Return True if a table exists with the given name
-
-        We cannot simply use `inspect(engine).has_table(name)` like the
-        parent class does because that will return False for a table
-        created during a pending transaction. Instead, we check the
-        sqlite_master table.
-        """
-        query = select(
-            exists(
-                select(1)
-                .select_from(sqlalchemy.table("sqlite_master"))
-                .where(
-                    (sqlalchemy.column("type") == "table")
-                    & (sqlalchemy.column("name") == name)
-                )
-            )
-        )
-        return bool(next(self.execute(query))[0])
+        """Whether table `name` exists, from sqlite_master: the inspector the
+        parent uses misses a table created in a pending transaction."""
+        sql = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = :name"
+        return self.execute(text(sql).bindparams(name=name)).fetchone() is not None
 
     @property
     def table_names(self) -> list[str]:
@@ -914,15 +946,7 @@ class SQLiteWarehouse(AbstractWarehouse):
         return cast(func.instr(source, target), sqlalchemy.Boolean)
 
     def get_table(self, name: str) -> sqlalchemy.Table:
-        try:
-            return Table(
-                name,
-                self.db.metadata,
-                autoload_with=self.db.engine,
-                extend_existing=True,
-            )
-        except sqlalchemy.exc.NoSuchTableError:
-            raise TableMissingError(f"Table '{name}' not found") from None
+        return self.db.reflect_table(name)
 
     def type_codec(self, sql_type: Any) -> TypeCodec:
         """Datetimes are stored as UTC text, arrays as JSON text."""

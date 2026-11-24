@@ -35,6 +35,8 @@ minio = {
 chain = dc.read_storage("s3://my-bucket/data/", client_config=minio)
 ```
 
+Each chain reads its files with its own `client_config`, also after `union` or `merge`. When both chains list the same bucket with different configs, the left chain's config is used. On Hugging Face, all of `hf://datasets` counts as one bucket. A saved dataset is read with the configuration of the session that reads it.
+
 To get the objects of a storage as rows in Python, without a chain or a saved snapshot, use `dc.list_storage()`: see [Listing Storage](listing-storage.md).
 
 ## Structured Formats
