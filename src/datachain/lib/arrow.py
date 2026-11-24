@@ -1176,11 +1176,10 @@ def _file_dataset(
 ) -> Dataset | _LanceDataset:
     if is_lance(kwargs.get("format")):
         return _LanceDataset(file, schema, datachain_read=datachain_read)
+    fs_path = file.get_fs_path()
     if cache_path := file.get_local_path():
-        fs_path = file.path
         fs: Any = ReferenceFileSystem({fs_path: [cache_path]})
     else:
-        fs_path = file.get_fs_path()
         fs = pyarrow_fs(file, kwargs.get("format"), parts)
     return dataset(fs_path, schema=schema, filesystem=fs, **kwargs)
 
