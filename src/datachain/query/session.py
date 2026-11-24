@@ -3,7 +3,6 @@ import logging
 import os
 import re
 import sys
-import threading
 import traceback
 from collections.abc import Callable
 from contextlib import ExitStack
@@ -65,7 +64,6 @@ class Session:
     ORIGINAL_EXCEPT_HOOK = None
 
     # Job management - class-level to ensure one job per process
-    _JOB_LOCK: ClassVar[threading.RLock] = threading.RLock()
     _CURRENT_JOB: ClassVar["Job | None"] = None
     _JOB_STATUS: ClassVar[JobStatus | None] = None
     _OWNS_JOB: ClassVar[bool | None] = None
@@ -94,7 +92,7 @@ class Session:
         session_uuid = uuid4().hex[: self.SESSION_UUID_LEN]
         self.name = f"{name}_{session_uuid}"
         self.is_new_catalog = not catalog
-        self._owned_job_id: str | None = None
+        self._owns_process_job = False
         self._parent: Session | None = None
         self.catalog = catalog or get_catalog(
             client_config=client_config, in_memory=in_memory
@@ -113,7 +111,7 @@ class Session:
         # The owner cleans up temporary datasets created through this view.
         view._cleanup_catalogs = self._cleanup_catalogs
         view.is_new_catalog = False
-        view._owned_job_id = None
+        view._owns_process_job = False
         return view
 
     def __enter__(self):
@@ -126,30 +124,27 @@ class Session:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         try:
-            with Session._JOB_LOCK:
-                if (
-                    self.is_new_catalog
-                    and self.catalog.in_memory
-                    and self._owned_job_id is not None
-                    and Session._CURRENT_JOB is not None
-                    and Session._CURRENT_JOB.id == self._owned_job_id
-                ):
-                    try:
-                        if exc_type is None or (
-                            issubclass(exc_type, SystemExit)
-                            and (
-                                exc_val is None
-                                or getattr(exc_val, "code", exc_val) in (None, 0)
-                            )
-                        ):
-                            self._finalize_job_success()
-                        elif issubclass(exc_type, KeyboardInterrupt):
-                            self._finalize_job_as_canceled()
-                        else:
-                            self._finalize_job_as_failed(exc_type, exc_val, exc_tb)
-                    finally:
-                        self._owned_job_id = None
-                        Session._reset_process_job()
+            if (
+                self.is_new_catalog
+                and self.catalog.in_memory
+                and self._owns_process_job
+            ):
+                try:
+                    if exc_type is None or (
+                        issubclass(exc_type, SystemExit)
+                        and (
+                            exc_val is None
+                            or getattr(exc_val, "code", exc_val) in (None, 0)
+                        )
+                    ):
+                        self._finalize_job_success()
+                    elif issubclass(exc_type, KeyboardInterrupt):
+                        self._finalize_job_as_canceled()
+                    else:
+                        self._finalize_job_as_failed(exc_type, exc_val, exc_tb)
+                finally:
+                    self._owns_process_job = False
+                    Session._reset_process_job()
         finally:
             try:
                 self._close()
@@ -175,17 +170,16 @@ class Session:
         Checks the cached ``_CURRENT_JOB`` and ``DATACHAIN_JOB_ID`` env var.
         Returns None if no job is found.
         """
-        with Session._JOB_LOCK:
+        if Session._CURRENT_JOB:
+            return Session._CURRENT_JOB
+
+        if env_job_id := os.getenv("DATACHAIN_JOB_ID"):
+            Session._CURRENT_JOB = self.catalog.metastore.get_job(env_job_id)
             if Session._CURRENT_JOB:
-                return Session._CURRENT_JOB
+                Session._OWNS_JOB = False
+            return Session._CURRENT_JOB
 
-            if env_job_id := os.getenv("DATACHAIN_JOB_ID"):
-                Session._CURRENT_JOB = self.catalog.metastore.get_job(env_job_id)
-                if Session._CURRENT_JOB:
-                    Session._OWNS_JOB = False
-                return Session._CURRENT_JOB
-
-            return None
+        return None
 
     def get_or_create_job(self) -> "Job":
         """
@@ -208,130 +202,124 @@ class Session:
         Note:
             Job is shared across all Session instances to ensure one job per process.
         """
-        with Session._JOB_LOCK:
-            if Session._CURRENT_JOB:
-                return Session._CURRENT_JOB
-
-            from datachain.lib.dc.utils import is_studio
-
-            if env_job_id := os.getenv("DATACHAIN_JOB_ID"):
-                # SaaS run: just fetch existing job
-                Session._CURRENT_JOB = self.catalog.metastore.get_job(env_job_id)
-                if not Session._CURRENT_JOB:
-                    raise JobNotFoundError(
-                        f"Job {env_job_id} from DATACHAIN_JOB_ID env not found"
-                    )
-                Session._OWNS_JOB = False
-            elif is_studio():
-                raise DataChainError(
-                    "Cannot create job in Studio without DATACHAIN_JOB_ID. "
-                    "This usually means an internal operation is missing "
-                    "ephemeral mode."
-                )
-            else:
-                # Local run: create new job
-                query = ""
-                if is_script_run():
-                    script = os.path.abspath(sys.argv[0])
-                    try:
-                        with open(script) as f:
-                            query = f.read()
-                    except OSError:
-                        pass
-                else:
-                    # Interactive session or module run - use unique name to avoid
-                    # linking unrelated sessions
-                    script = str(uuid4())
-                python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
-
-                # try to find the parent job for checkpoint/rerun chain
-                parent = self.catalog.metastore.get_last_job_by_name(script)
-
-                job_id = self.catalog.metastore.create_job(
-                    name=script,
-                    query=query,
-                    query_type=JobQueryType.PYTHON,
-                    status=JobStatus.RUNNING,
-                    python_version=python_version,
-                    rerun_from_job_id=parent.id if parent else None,
-                    run_group_id=parent.run_group_id if parent else None,
-                )
-                Session._CURRENT_JOB = self.catalog.metastore.get_job(job_id)
-                Session._OWNS_JOB = True
-                Session._JOB_STATUS = JobStatus.RUNNING
-                owner = self
-                while owner._parent is not None and (
-                    owner._parent.catalog.metastore is self.catalog.metastore
-                    or (owner._parent.catalog.in_memory and self.catalog.in_memory)
-                ):
-                    owner = owner._parent
-                owner._owned_job_id = job_id
-
-                # register cleanup hooks only once
-                if not Session._JOB_HOOKS_REGISTERED:
-
-                    def _finalize_success_hook() -> None:
-                        owner._finalize_job_success()
-
-                    Session._JOB_FINALIZE_HOOK = _finalize_success_hook
-                    atexit.register(Session._JOB_FINALIZE_HOOK)
-                    Session._JOB_HOOKS_REGISTERED = True
-
-            assert Session._CURRENT_JOB is not None
+        if Session._CURRENT_JOB:
             return Session._CURRENT_JOB
+
+        from datachain.lib.dc.utils import is_studio
+
+        if env_job_id := os.getenv("DATACHAIN_JOB_ID"):
+            # SaaS run: just fetch existing job
+            Session._CURRENT_JOB = self.catalog.metastore.get_job(env_job_id)
+            if not Session._CURRENT_JOB:
+                raise JobNotFoundError(
+                    f"Job {env_job_id} from DATACHAIN_JOB_ID env not found"
+                )
+            Session._OWNS_JOB = False
+        elif is_studio():
+            raise DataChainError(
+                "Cannot create job in Studio without DATACHAIN_JOB_ID. "
+                "This usually means an internal operation is missing "
+                "ephemeral mode."
+            )
+        else:
+            # Local run: create new job
+            query = ""
+            if is_script_run():
+                script = os.path.abspath(sys.argv[0])
+                try:
+                    with open(script) as f:
+                        query = f.read()
+                except OSError:
+                    pass
+            else:
+                # Interactive session or module run - use unique name to avoid
+                # linking unrelated sessions
+                script = str(uuid4())
+            python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
+
+            # try to find the parent job for checkpoint/rerun chain
+            parent = self.catalog.metastore.get_last_job_by_name(script)
+
+            job_id = self.catalog.metastore.create_job(
+                name=script,
+                query=query,
+                query_type=JobQueryType.PYTHON,
+                status=JobStatus.RUNNING,
+                python_version=python_version,
+                rerun_from_job_id=parent.id if parent else None,
+                run_group_id=parent.run_group_id if parent else None,
+            )
+            Session._CURRENT_JOB = self.catalog.metastore.get_job(job_id)
+            Session._OWNS_JOB = True
+            Session._JOB_STATUS = JobStatus.RUNNING
+            owner = self
+            while owner._parent is not None and (
+                owner._parent.catalog.metastore is self.catalog.metastore
+                or (owner._parent.catalog.in_memory and self.catalog.in_memory)
+            ):
+                owner = owner._parent
+            owner._owns_process_job = True
+
+            # register cleanup hooks only once
+            if not Session._JOB_HOOKS_REGISTERED:
+
+                def _finalize_success_hook() -> None:
+                    owner._finalize_job_success()
+
+                Session._JOB_FINALIZE_HOOK = _finalize_success_hook
+                atexit.register(Session._JOB_FINALIZE_HOOK)
+                Session._JOB_HOOKS_REGISTERED = True
+
+        assert Session._CURRENT_JOB is not None
+        return Session._CURRENT_JOB
 
     def _finalize_job_success(self):
         """Mark the current job as completed."""
-        with Session._JOB_LOCK:
-            if (
-                Session._CURRENT_JOB
-                and Session._OWNS_JOB
-                and Session._JOB_STATUS == JobStatus.RUNNING
-            ):
-                self.catalog.metastore.set_job_status(
-                    Session._CURRENT_JOB.id, JobStatus.COMPLETE
-                )
-                Session._JOB_STATUS = JobStatus.COMPLETE
+        if (
+            Session._CURRENT_JOB
+            and Session._OWNS_JOB
+            and Session._JOB_STATUS == JobStatus.RUNNING
+        ):
+            self.catalog.metastore.set_job_status(
+                Session._CURRENT_JOB.id, JobStatus.COMPLETE
+            )
+            Session._JOB_STATUS = JobStatus.COMPLETE
 
     def _finalize_job_as_canceled(self):
         """Mark the current job as canceled."""
-        with Session._JOB_LOCK:
-            if (
-                Session._CURRENT_JOB
-                and Session._OWNS_JOB
-                and Session._JOB_STATUS == JobStatus.RUNNING
-            ):
-                self.catalog.metastore.set_job_status(
-                    Session._CURRENT_JOB.id, JobStatus.CANCELED
-                )
-                Session._JOB_STATUS = JobStatus.CANCELED
+        if (
+            Session._CURRENT_JOB
+            and Session._OWNS_JOB
+            and Session._JOB_STATUS == JobStatus.RUNNING
+        ):
+            self.catalog.metastore.set_job_status(
+                Session._CURRENT_JOB.id, JobStatus.CANCELED
+            )
+            Session._JOB_STATUS = JobStatus.CANCELED
 
     def _finalize_job_as_failed(self, exc_type, exc_value, tb):
         """Mark the current job as failed with error details."""
-        with Session._JOB_LOCK:
-            if (
-                Session._CURRENT_JOB
-                and Session._OWNS_JOB
-                and Session._JOB_STATUS == JobStatus.RUNNING
-            ):
-                error_stack = "".join(
-                    traceback.format_exception(exc_type, exc_value, tb)
-                )
-                self.catalog.metastore.set_job_status(
-                    Session._CURRENT_JOB.id,
-                    JobStatus.FAILED,
-                    error_message=str(exc_value),
-                    error_stack=error_stack,
-                )
+        if (
+            Session._CURRENT_JOB
+            and Session._OWNS_JOB
+            and Session._JOB_STATUS == JobStatus.RUNNING
+        ):
+            error_stack = "".join(traceback.format_exception(exc_type, exc_value, tb))
+            self.catalog.metastore.set_job_status(
+                Session._CURRENT_JOB.id,
+                JobStatus.FAILED,
+                error_message=str(exc_value),
+                error_stack=error_stack,
+            )
 
-                # Mark any incomplete dataset versions created by this job as FAILED
-                self.catalog.metastore.mark_job_dataset_versions_as_failed(
-                    Session._CURRENT_JOB.id
-                )
-                # Finally clean all incomplete dataset versions
-                self.catalog.cleanup_dataset_versions(job_id=Session._CURRENT_JOB.id)
+            # Mark any incomplete dataset versions created by this job as FAILED
+            self.catalog.metastore.mark_job_dataset_versions_as_failed(
+                Session._CURRENT_JOB.id
+            )
+            # Finally clean all incomplete dataset versions
+            self.catalog.cleanup_dataset_versions(job_id=Session._CURRENT_JOB.id)
 
-                Session._JOB_STATUS = JobStatus.FAILED
+            Session._JOB_STATUS = JobStatus.FAILED
 
     def generate_temp_dataset_name(self) -> str:
         if not any(
@@ -470,17 +458,16 @@ class Session:
 
     @classmethod
     def _reset_process_job(cls) -> None:
-        with cls._JOB_LOCK:
-            if cls._JOB_FINALIZE_HOOK:
-                try:
-                    atexit.unregister(cls._JOB_FINALIZE_HOOK)
-                except ValueError:
-                    pass  # Hook was not registered
-            cls._CURRENT_JOB = None
-            cls._JOB_STATUS = None
-            cls._OWNS_JOB = None
-            cls._JOB_HOOKS_REGISTERED = False
-            cls._JOB_FINALIZE_HOOK = None
+        if cls._JOB_FINALIZE_HOOK:
+            try:
+                atexit.unregister(cls._JOB_FINALIZE_HOOK)
+            except ValueError:
+                pass  # Hook was not registered
+        cls._CURRENT_JOB = None
+        cls._JOB_STATUS = None
+        cls._OWNS_JOB = None
+        cls._JOB_HOOKS_REGISTERED = False
+        cls._JOB_FINALIZE_HOOK = None
 
     @classmethod
     def cleanup_for_tests(cls):
