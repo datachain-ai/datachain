@@ -378,13 +378,42 @@ def test_read_records_basic_in_memory():
     ds = ds.gen(lambda prm: [File(path="")] * 5, params="seed", output={"file": File})
 
     ds_name = "my_ds"
-    saved = ds.save(ds_name)
-    ds = dc.read_dataset(name=ds_name, session=saved.session)
+    ds.save(ds_name)
+    ds = dc.read_dataset(name=ds_name, in_memory=True)
 
     assert isinstance(ds._query.feature_schema, dict)
     assert isinstance(ds.signals_schema, SignalSchema)
     assert ds.schema.keys() == {"file"}
     assert set(ds.schema.values()) == {File}
+
+
+def test_read_dataset_in_memory_after_persistent_session_reads_in_memory_save(
+    test_session,
+):
+    dc.read_values(x=[1, 2], in_memory=True).save("mem_ds")
+
+    assert dc.read_dataset("mem_ds", in_memory=True).to_values("x") == [1, 2]
+
+
+@pytest.mark.parametrize(
+    "combine",
+    [
+        lambda a, b: a.union(b),
+        lambda a, b: a.merge(b, on="x"),
+        lambda a, b: a.subtract(b, on="x"),
+    ],
+    ids=["union", "merge", "subtract"],
+)
+@pytest.mark.parametrize("in_memory_left", [True, False])
+def test_combine_in_memory_with_persistent_chain_raises(
+    test_session, combine, in_memory_left
+):
+    in_memory = dc.read_values(x=[1], in_memory=True)
+    persistent = dc.read_values(x=[1], session=test_session)
+    left, right = (in_memory, persistent) if in_memory_left else (persistent, in_memory)
+
+    with pytest.raises(ValueError, match="in-memory chain with a persistent one"):
+        combine(left, right)
 
 
 def test_read_records_and_gen(test_session):

@@ -2951,6 +2951,14 @@ class DatasetQuery:
         query.steps.append(SQLGroupBy(cols, group_by))
         return query
 
+    def _check_same_database(self, other: "DatasetQuery") -> None:
+        """An in-memory chain and a persistent one live in different databases."""
+        if self.catalog.in_memory != other.catalog.in_memory:
+            raise ValueError(
+                "Cannot combine an in-memory chain with a persistent one; "
+                "read both with the same in_memory"
+            )
+
     def _session_reading(self, other: "DatasetQuery") -> Session:
         """This query's session, reading files of `other`'s storage sources
         with the client configs they were listed with."""
@@ -2963,6 +2971,7 @@ class DatasetQuery:
         return self.session._with_catalog(catalog)
 
     def union(self, dataset_query: "DatasetQuery") -> "DatasetQuery":
+        self._check_same_database(dataset_query)
         left = self.clone()
         right = dataset_query.clone()
         return DatasetQuery(
@@ -2979,6 +2988,7 @@ class DatasetQuery:
         full=False,
         rname="right_",
     ) -> "DatasetQuery":
+        self._check_same_database(dataset_query)
         left = self.clone(new_table=False)
         if self.table.name == dataset_query.table.name:
             # for use case where we join with itself, e.g dogs.join(dogs, "name")
@@ -3065,6 +3075,7 @@ class DatasetQuery:
         on: Sequence[tuple[str, str]],
         presence: Sequence[tuple[KeyPresence, KeyPresence]] = (),
     ) -> "Self":
+        self._check_same_database(dq)
         query = self.clone()
         query.steps.append(Subtract(dq, self.catalog, on=on, presence=presence))
         return query
