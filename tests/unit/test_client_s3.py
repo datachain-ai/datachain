@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import botocore.session
 import pytest
+from aiobotocore.awsrequest import AioAWSResponse
 from botocore.exceptions import ClientError
 from botocore.utils import parse_timestamp
 from fsspec.asyn import get_loop, sync
@@ -705,3 +706,34 @@ def test_elementtree_reads_entries_that_patterns_decline(
 def test_patterns_decline_unparseable_pages(body):
     op = "ListObjectVersions" if b"<ListVersionsResult" in body else "ListObjectsV2"
     assert _page(body, op) is None
+
+
+def test_s3_version_listing_retries_slowdown(mocker, monkeypatch):
+    monkeypatch.delenv("AWS_RETRY_MODE", raising=False)
+    monkeypatch.delenv("AWS_MAX_ATTEMPTS", raising=False)
+    mocker.patch("aiobotocore.session.AioSession.get_scoped_config", return_value={})
+    mocker.patch(
+        "botocore.retries.standard.ExponentialBackoff.delay_amount", return_value=0
+    )
+    mocker.patch(
+        "aiobotocore.retries.bucket.AsyncTokenBucket.acquire", return_value=True
+    )
+    slowdown = b"<Error><Code>SlowDown</Code><Message>Retry.</Message></Error>"
+    slow = AioAWSResponse("", 503, {}, MagicMock(read=AsyncMock(return_value=slowdown)))
+    ok = AioAWSResponse(
+        "", 200, {}, MagicMock(read=AsyncMock(return_value=_as_versions_xml(PAGE)))
+    )
+    send = mocker.patch(
+        "aiobotocore.endpoint.AioEndpoint._send", side_effect=[slow] * 5 + [ok]
+    )
+    client = ClientS3(
+        "b",
+        {"anon": True, "region_name": "us-east-1", "skip_instance_cache": True},
+        None,
+    )
+
+    page = sync(get_loop(), client._list_page, "", "", ("0", "v0"))
+
+    assert [row.path for row in page.rows] == ["a"]
+    assert send.call_count == 6
+    assert client.fs.s3.meta.config.retries["mode"] == "adaptive"

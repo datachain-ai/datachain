@@ -1,3 +1,4 @@
+import asyncio
 import atexit
 import copy
 import hashlib
@@ -24,6 +25,7 @@ from datachain.cache import Cache, get_temp_cache
 from datachain.catalog import catalog as _catalog
 from datachain.data_storage.codec import to_json_text
 from datachain.fs.reference import ReferenceFileSystem
+from datachain.lib import parquet_ranges
 from datachain.lib.arrow_filter import to_arrow_filter
 from datachain.lib.convert.flatten import classify_field, flatten, iter_field_columns
 from datachain.lib.convert.python_to_sql import python_to_sql
@@ -50,6 +52,7 @@ SCHEMA_READ_THREADS = 32
 
 if TYPE_CHECKING:
     from datasets.features.features import Features
+    from fsspec import Callback
     from pydantic import BaseModel
 
     from datachain.client import Client
@@ -123,11 +126,18 @@ class _PartialReadHandler(FSSpecHandler):
     those columns. CSV and JSON are read from the start, so they keep read-ahead.
     """
 
-    def __init__(self, client: "Client", file: File, block_size: int | None):
+    def __init__(
+        self,
+        client: "Client",
+        file: File,
+        block_size: int | None,
+        parts: tuple[int, list[tuple[int, bytes]]] | None = None,
+    ):
         super().__init__(client.fs)
         self.client = client
         self.file = file
         self.block_size = block_size
+        self.parts = parts
 
     def get_file_info(self, paths):
         # Describes the recorded file without looking up the latest object, which a
@@ -135,22 +145,33 @@ class _PartialReadHandler(FSSpecHandler):
         return [FileInfo(path, FileType.File) for path in paths]
 
     def open_input_file(self, path):
-        f = self.client.open_object(
-            self.file,
-            use_cache=False,
-            cb=self.file._download_cb,
-            block_size=self.block_size,
-        )
+        if self.parts is not None:
+            f: Any = parquet_ranges.ParquetBufferedFile(
+                self.client, self.file, *self.parts
+            )
+        else:
+            f = self.client.open_object(
+                self.file,
+                use_cache=False,
+                cb=self.file._download_cb,
+                block_size=self.block_size,
+            )
         return pa.PythonFile(f, mode="r")
 
 
-def pyarrow_fs(file: File, format):
+def pyarrow_fs(
+    file: File,
+    format,
+    parts: tuple[int, list[tuple[int, bytes]]] | None = None,
+):
     client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
     if isinstance(client.fs, LocalFileSystem):
         client.check_unchanged(file)
         return client.fs
     block_size = 0 if is_parquet(format) else None
-    return PyFileSystem(_PartialReadHandler(client, file, block_size=block_size))
+    return PyFileSystem(
+        _PartialReadHandler(client, file, block_size=block_size, parts=parts)
+    )
 
 
 _LANCE_TABLE_DIRS = frozenset(
@@ -692,6 +713,32 @@ class ArrowGenerator(Generator):
         self.projectable = projectable and not self.datachain_read
         self.parse_options = kwargs.pop("parse_options", None)
         self.kwargs = kwargs
+        # By id(file); the file is held so the id stays its own until process().
+        self._parts: dict[
+            int, tuple[File, int, tuple[int, list[tuple[int, bytes]]]]
+        ] = {}
+        self._parts_bytes = 0
+        self._parts_lock = threading.Lock()
+
+    def __getstate__(self) -> dict[str, Any]:
+        state = self.__dict__.copy()
+        state.pop("_parts_lock", None)
+        state["_parts"] = {}
+        state["_parts_bytes"] = 0
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        self.__dict__.update(state)
+        self._parts = {}
+        self._parts_bytes = 0
+        self._parts_lock = threading.Lock()
+
+    def teardown(self) -> None:
+        with self._parts_lock:
+            for _, reserved, _ in self._parts.values():
+                self._parts_bytes = max(0, self._parts_bytes - reserved)
+            self._parts.clear()
+        _clear_lance_tmp_caches()
 
     def hash(self, include_body: bool = True) -> str:
         # The read schema, columns and pushed filter decide what is read, so reads
@@ -753,22 +800,113 @@ class ArrowGenerator(Generator):
             projected.prefetch_max_size = PARTIAL_READ_PREFETCH_MAX_SIZE
         return projected
 
-    def teardown(self):
-        _clear_lance_tmp_caches()
+    async def _prefetch_file(
+        self, file: File, download_cb: "Callback | None" = None
+    ) -> bool:
+        # Let filtering choose the row groups before fetching their payload.
+        if self.filter is not None and not file._caching_enabled:
+            return False
+        if await super()._prefetch_file(file, download_cb):
+            return True
+        if not (columns := self._parquet_columns(file)):
+            return False
+        cancelled = threading.Event()
+        try:
+            _, _, fit = await asyncio.to_thread(
+                self._read_parquet_parts, file, columns, True, cancelled
+            )
+        except BaseException:
+            with self._parts_lock:
+                cancelled.set()
+                _, reserved, _ = self._parts.pop(id(file), (None, 0, None))
+                self._parts_bytes = max(0, self._parts_bytes - reserved)
+            raise
+        return fit
+
+    def _parquet_columns(self, file: File) -> list[str] | None:
+        if (
+            not self.prefetch_max_size
+            or self.filter is not None
+            or not is_parquet(self.kwargs.get("format"))
+            or self.datachain_read
+            or file._caching_enabled
+            or file.get_local_path()
+        ):
+            return None
+        client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
+        if isinstance(client.fs, LocalFileSystem):
+            return None
+        # Picked columns are in self.columns with output, else in self.input_schema.
+        return self.columns or self.input_schema.names  # type: ignore[union-attr]
+
+    def _read_parquet_parts(
+        self,
+        file: File,
+        columns: Sequence[str],
+        prefetch: bool = False,
+        cancelled: threading.Event | None = None,
+    ) -> tuple[int, tuple[int, list[tuple[int, bytes]]], bool]:
+        reserved = 0
+
+        def reserve(n: int) -> bool:
+            nonlocal reserved
+            if not prefetch:
+                return n <= parquet_ranges.PARQUET_RANGE_MAX_BYTES
+            with self._parts_lock:
+                if (
+                    cancelled is not None and cancelled.is_set()
+                ) or n > parquet_ranges.PARQUET_RANGE_MAX_BYTES - self._parts_bytes:
+                    return False
+                self._parts_bytes += n
+                reserved = n
+                return True
+
+        client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
+        try:
+            parts, fit = parquet_ranges.read_parquet_parts(
+                client, file, columns, reserve=reserve
+            )
+        except BaseException:
+            self._release_parts_bytes(reserved)
+            raise
+        if prefetch and fit:
+            with self._parts_lock:
+                if cancelled is not None and cancelled.is_set():
+                    self._parts_bytes = max(0, self._parts_bytes - reserved)
+                    return 0, parts, False
+                self._parts[id(file)] = (file, reserved, parts)
+        return reserved, parts, fit
+
+    def _release_parts_bytes(self, n: int) -> None:
+        with self._parts_lock:
+            self._parts_bytes = max(0, self._parts_bytes - n)
 
     def process(self, file: File):
-        if file._caching_enabled:
-            file.ensure_cached()
-        kwargs = self.kwargs
-        if format := kwargs.get("format"):
-            kwargs["format"] = fix_pyarrow_format(format, self.parse_options)
+        with self._parts_lock:
+            _, reserved, parts = self._parts.pop(id(file), (None, 0, None))
+        try:
+            if file._caching_enabled:
+                file.ensure_cached()
+            if parts is None and (columns := self._parquet_columns(file)):
+                _, parts, _ = self._read_parquet_parts(file, columns)
+            kwargs = self.kwargs
+            if format := kwargs.get("format"):
+                kwargs["format"] = fix_pyarrow_format(format, self.parse_options)
 
-        # With datachain_read, each file is read with its own columns and types.
-        in_schema = None if self.datachain_read else self.input_schema
-        with safe_closing(
-            _file_dataset(file, kwargs, in_schema, datachain_read=self.datachain_read)
-        ) as ds:
-            yield from self._rows(file, ds)
+            # With datachain_read, each file is read with its own columns and types.
+            in_schema = None if self.datachain_read else self.input_schema
+            with safe_closing(
+                _file_dataset(
+                    file,
+                    kwargs,
+                    in_schema,
+                    datachain_read=self.datachain_read,
+                    parts=parts,
+                )
+            ) as ds:
+                yield from self._rows(file, ds)
+        finally:
+            self._release_parts_bytes(reserved)
 
     def _rows(self, file: File, ds: Dataset | _LanceDataset):
         if self.datachain_read:
@@ -1034,14 +1172,16 @@ def _file_dataset(
     schema: pa.Schema | None = None,
     *,
     datachain_read: bool = False,
+    parts: tuple[int, list[tuple[int, bytes]]] | None = None,
 ) -> Dataset | _LanceDataset:
     if is_lance(kwargs.get("format")):
         return _LanceDataset(file, schema, datachain_read=datachain_read)
-    fs_path = file.get_fs_path()
     if cache_path := file.get_local_path():
+        fs_path = file.path
         fs: Any = ReferenceFileSystem({fs_path: [cache_path]})
     else:
-        fs = pyarrow_fs(file, kwargs.get("format"))
+        fs_path = file.get_fs_path()
+        fs = pyarrow_fs(file, kwargs.get("format"), parts)
     return dataset(fs_path, schema=schema, filesystem=fs, **kwargs)
 
 
