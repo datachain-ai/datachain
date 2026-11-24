@@ -470,6 +470,9 @@ class ArrowGenerator(Generator):
     async def _prefetch_file(
         self, file: File, download_cb: "Callback | None" = None
     ) -> bool:
+        # Let filtering choose the row groups before fetching their payload.
+        if self.filter is not None and not file._caching_enabled:
+            return False
         if await super()._prefetch_file(file, download_cb):
             return True
         if not (columns := self._parquet_columns(file)):
