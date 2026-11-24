@@ -13,7 +13,7 @@ from hashlib import blake2b
 from typing import TYPE_CHECKING, TypeVar, cast
 
 from fsspec.asyn import get_loop, sync
-from sqlalchemy import and_, case, false, or_, true
+from sqlalchemy import and_, bindparam, case, false, or_, true
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql.functions import FunctionElement
 
@@ -33,7 +33,7 @@ from datachain.sql.types import Boolean
 from datachain.utils import parent_path, safe_closing, uses_glob
 
 if TYPE_CHECKING:
-    from sqlalchemy import ColumnElement
+    from sqlalchemy import BindParameter, ColumnElement
 
     from datachain.catalog import Catalog
     from datachain.client.fsspec import RangeListedClient
@@ -201,13 +201,13 @@ class PathFilter:
             if op == "eq":
                 return path == value
             if op == "glob":
-                return path.glob(value)
+                return path.glob(_inline(value))
             if op == "pattern":
                 regex = _pattern_regex(value, atomic=False)
                 if regex is None:
                     return false()
                 atomic = _pattern_regex(value, atomic=True)
-                return _PatternMatch(path, f"^{regex}$", f"^{atomic}$")
+                return _PatternMatch(path, f"^{regex}$", _inline(f"^{atomic}\\Z"))
             return pathfunc.parent(path) == value
 
         steps = [or_(*(cond(*c) for c in self.any_of))] if self.any_of else []
@@ -352,6 +352,13 @@ def _pattern_regex(pattern: str, atomic: bool) -> "str | None":
 def _pattern_matcher(pattern: str) -> "re.Pattern | None":
     regex = _pattern_regex(pattern, atomic=True)
     return None if regex is None else re.compile(regex)
+
+
+def _inline(value: str) -> "BindParameter":
+    """``value`` written into SQLite's SQL rather than bound: a URI can expand
+    to more patterns than old SQLite binds (999). ClickHouse binds GLOBs anew,
+    and gets only the RE2 regex, which stays bound."""
+    return bindparam(None, value, literal_execute=True)
 
 
 class _PatternMatch(FunctionElement):

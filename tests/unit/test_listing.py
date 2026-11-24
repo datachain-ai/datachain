@@ -589,6 +589,7 @@ def test_glob_match_is_sqlite_glob(pattern):
         path_filter("", ["[.-0]*/x"], True),
         path_filter("", ["a["], True),
         path_filter("", ["a*", "*.txt", "d*/**/x*"], True),
+        path_filter("", ["**/?"], True),
     ],
 )
 def test_path_filter_python_matches_sql(test_session, paths):
@@ -607,6 +608,8 @@ def test_path_filter_python_matches_sql(test_session, paths):
         "a/b/x.txt",
         "./x",
         "0/x",
+        "a\n",
+        "d/a\n",
     ]
     chain = dc.read_values(path=names, session=test_session)
     for condition in paths.sql(dc.C("path")):

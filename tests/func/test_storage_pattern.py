@@ -1,5 +1,6 @@
 import glob
 import os
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -215,6 +216,23 @@ def test_read_storage_without_recursion_brace_folder_and_pattern_read_both(
 def test_read_storage_thousand_brace_alternatives_of_one_folder(reports_dir):
     chain = dc.read_storage(f"{reports_dir}/report{{1..1000}}.js?n")
     assert chain.to_values("file.path") == ["report1.json"]
+
+
+@pytest.fixture
+def sqlite_999_variables(test_session):
+    db = test_session.catalog.warehouse.db.db
+    limit = db.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+    yield
+    db.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, limit)
+
+
+@skip_if_not_sqlite
+def test_read_storage_thousand_brace_alternatives_after_limiting_sqlite_variables(
+    reports_dir, test_session, sqlite_999_variables
+):
+    uri = f"{reports_dir}/report{{,{{1..1000}}}}.js?n"
+    chain = dc.read_storage(uri, session=test_session)
+    assert sorted(chain.to_values("file.path")) == ["report.json", "report1.json"]
 
 
 @skip_if_not_sqlite  # hundreds of listings exceed ClickHouse's max_query_size
