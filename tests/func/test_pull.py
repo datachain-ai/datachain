@@ -87,9 +87,7 @@ def remote_dataset(
 
 @pytest.fixture
 def remote_dataset_chunk_url():
-    return (
-        "https://studio-blobvault.s3.amazonaws.com/datachain_ds_export_1_0.parquet.lz4"
-    )
+    return "https://studio-blobvault.s3.amazonaws.com/datachain_ds_export_1_0.parquet"
 
 
 @pytest.fixture
@@ -360,7 +358,7 @@ def test_pull_dataset_empty_parquet(
 ):
     requests_mock.get(remote_dataset_chunk_url, content=b"")
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(DataChainError, match="Failed to read dataset file from Studio"):
         catalog.pull_dataset(
             f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v1.0.0"
         )
@@ -403,6 +401,36 @@ def test_pull_dataset_already_exists_locally(
         catalog.get_dataset(
             "dogs", namespace_name=project.namespace.name, project_name=project.name
         )
+
+
+@skip_if_not_sqlite
+def test_pull_dataset_requests_and_reads_plain_parquet(
+    studio_token,
+    catalog,
+    remote_dataset_info,
+    dataset_export_status,
+    remote_dataset_chunk_url,
+    requests_mock,
+    mock_parquet_data,
+):
+    export = requests_mock.get(
+        f"{STUDIO_URL}/api/datachain/datasets/export",
+        json={"export_id": 1, "signed_urls": [remote_dataset_chunk_url]},
+    )
+    requests_mock.get(remote_dataset_chunk_url, content=mock_parquet_data)
+
+    catalog.pull_dataset(
+        f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v1.0.0"
+    )
+
+    assert export.last_request.qs["compression"] == ["none"]
+    dataset = catalog.get_dataset(
+        "dogs",
+        namespace_name=REMOTE_NAMESPACE_NAME,
+        project_name=REMOTE_PROJECT_NAME,
+        versions=["1.0.0"],
+    )
+    assert catalog.warehouse.dataset_rows_count(dataset, "1.0.0") == 4
 
 
 @skip_if_not_sqlite
@@ -614,7 +642,7 @@ def test_pull_corrupt_parquet_leaves_no_state_and_retry_succeeds(
 ):
     requests_mock.get(remote_dataset_chunk_url, content=b"not valid parquet")
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(DataChainError, match="Failed to read dataset file from Studio"):
         catalog.pull_dataset(
             f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v1.0.0"
         )

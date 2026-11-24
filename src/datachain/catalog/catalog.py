@@ -173,7 +173,6 @@ class DatasetRowsFetcher(NodesThreadPool):
 
     def _check_dependencies(self) -> None:
         try:
-            import lz4.frame  # noqa: F401
             import numpy as np  # noqa: F401
             import pandas as pd  # noqa: F401
             import pyarrow as pa  # noqa: F401
@@ -267,8 +266,8 @@ class DatasetRowsFetcher(NodesThreadPool):
             return r.content
 
     def do_task(self, urls):
-        import lz4.frame
         import pandas as pd
+        import pyarrow as pa
 
         # warehouse is not thread safe, use a clone
         with self.warehouse.clone() as warehouse:
@@ -278,9 +277,13 @@ class DatasetRowsFetcher(NodesThreadPool):
                 if self.should_check_for_status():
                     self.check_for_status()
 
-                df = pd.read_parquet(
-                    io.BytesIO(lz4.frame.decompress(self.get_parquet_content(url)))
-                )
+                content = self.get_parquet_content(url)
+                try:
+                    df = pd.read_parquet(io.BytesIO(content))
+                except pa.ArrowInvalid as exc:
+                    raise DataChainError(
+                        f"Failed to read dataset file from Studio: {exc}"
+                    ) from exc
                 df = self.fix_columns(df)
 
                 inserted = warehouse.insert_dataframe_to_table(self.temp_table_name, df)

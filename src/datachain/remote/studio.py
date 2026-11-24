@@ -540,6 +540,7 @@ class StudioClient:
                 "name": dataset.name,
                 "version": version,
                 "source": "cli",
+                "compression": "none",
             },
             method="GET",
         )
