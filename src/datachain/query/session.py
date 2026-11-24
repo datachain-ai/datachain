@@ -106,7 +106,7 @@ class Session:
         view = copy(self)
         view.catalog = catalog
         # Keep the cleanup owner alive; only owners are in _ALL_SESSIONS.
-        view._parent = self
+        view._parent = self._parent or self
         # The owner cleans up temporary datasets created through this view.
         view._cleanup_catalogs = self._cleanup_catalogs
         view.is_new_catalog = False
