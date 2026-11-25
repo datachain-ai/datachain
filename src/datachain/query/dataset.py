@@ -78,7 +78,7 @@ from datachain.query.schema import DEFAULT_DELIMITER, C, ColumnExpr
 from datachain.query.session import Session
 from datachain.query.udf import UdfInfo
 from datachain.sql.functions.random import rand
-from datachain.sql.types import SQLType
+from datachain.sql.types import SQLType, String
 from datachain.utils import (
     determine_processes,
     determine_workers,
@@ -2141,6 +2141,8 @@ class SQLJoin(Step):
     inner: bool
     full: bool
     rname: str
+    left_tags: tuple[tuple[str, str], ...] = ()
+    right_tags: tuple[tuple[str, str], ...] = ()
 
     @staticmethod
     def _split_db_name(name: str) -> tuple[str, str]:
@@ -2165,6 +2167,8 @@ class SQLJoin(Step):
             str(self.inner).encode(),
             str(self.full).encode(),
             self.rname.encode("utf-8"),
+            repr(self.left_tags).encode("utf-8"),
+            repr(self.right_tags).encode("utf-8"),
         ]
 
         return hashlib.sha256(b"".join(parts)).hexdigest()
@@ -2188,9 +2192,22 @@ class SQLJoin(Step):
             query2=self.query2.replace_sources(replacements),
         )
 
-    def get_query(self, dq: "DatasetQuery", temp_tables: list[str]) -> sa.Subquery:
+    def get_query(
+        self,
+        dq: "DatasetQuery",
+        temp_tables: list[str],
+        tags: tuple[tuple[str, str], ...] = (),
+    ) -> sa.Subquery:
         temp_tables_before = len(dq.temp_table_names)
         query = dq.apply_steps().select()
+        if tags:
+            tag_type = SQLType.as_nullable(String())
+            query = query.add_columns(
+                *(
+                    sqlalchemy.type_coerce(sa.literal(tag), tag_type).label(col)
+                    for col, tag in tags
+                )
+            )
         temp_tables.extend(dq.temp_table_names[temp_tables_before:])
 
         if not any(isinstance(step, (SQLJoin, SQLUnion)) for step in dq.steps):
@@ -2279,8 +2296,8 @@ class SQLJoin(Step):
         state: "QueryState",
         **kwargs,
     ) -> StepResult:
-        q1 = self.get_query(self.query1, temp_tables)
-        q2 = self.get_query(self.query2, temp_tables)
+        q1 = self.get_query(self.query1, temp_tables, self.left_tags)
+        q2 = self.get_query(self.query2, temp_tables, self.right_tags)
 
         q1_columns = _drop_system_columns(q1.c)
         existing_column_names = {c.name for c in q1_columns}
@@ -3130,6 +3147,8 @@ class DatasetQuery:
         inner=False,
         full=False,
         rname="right_",
+        left_tags: tuple[tuple[str, str], ...] = (),
+        right_tags: tuple[tuple[str, str], ...] = (),
     ) -> "DatasetQuery":
         left = self.clone(new_table=False)
         if self.table.name == dataset_query.table.name:
@@ -3145,7 +3164,19 @@ class DatasetQuery:
         )
         return DatasetQuery(
             session=self._session_reading(dataset_query),
-            steps=[SQLJoin(self.catalog, left, right, predicates, inner, full, rname)],
+            steps=[
+                SQLJoin(
+                    self.catalog,
+                    left,
+                    right,
+                    predicates,
+                    inner,
+                    full,
+                    rname,
+                    left_tags,
+                    right_tags,
+                )
+            ],
             checkpoints_enabled=self.checkpoints_enabled,
         )
 
