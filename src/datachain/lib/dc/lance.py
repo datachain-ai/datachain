@@ -5,12 +5,6 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from datachain import json
-from datachain.lib.arrow import (
-    _decode_lance_schema,
-    _has_lance_versions,
-    _open_lance_dataset,
-    _tabular_generator,
-)
 from datachain.lib.data_model import DataType
 from datachain.lib.dc.storage_pattern import storage_sources
 from datachain.lib.dc.utils import DatasetPrepareError
@@ -31,6 +25,12 @@ def _open_lance_table(
     session: Session,
     opts: dict[str, Any] | None,
 ) -> tuple[File, Any, Any] | None:
+    from datachain.lib.arrow import (
+        _decode_lance_schema,
+        _has_lance_versions,
+        _open_lance_dataset,
+    )
+
     scheme = urlsplit(target.source).scheme.lower()
     has_ver = False
     try:
@@ -99,6 +99,8 @@ def read_lance(
         kwargs: Parameters passed to `read_storage` (`client_config` uses fsspec
             key names).
     """
+    from datachain.lib.arrow import _tabular_generator
+
     from .records import read_records
     from .storage import read_storage
 
@@ -157,9 +159,7 @@ def read_lance(
             "read each and union() them",
         )
     if bad := set(kwargs) - _TABLE_KWARGS:
-        raise TypeError(
-            f"Argument {sorted(bad)[0]!r} is not supported for Lance tables"
-        )
+        raise TypeError(f"Argument {min(bad)!r} is not supported for Lance tables")
 
     table_records: list[dict[str, Any]] = []
     table_schemas: list[tuple[str, Any]] = []

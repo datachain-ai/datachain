@@ -125,7 +125,7 @@ def test_read_lance_table_versions_and_pushdown(
     with pytest.raises(ValueError, match="without a catalog"):
         ArrowRow.model_validate(r0.model_dump()).read()
     for bad_idx in (-1, 1, 99, 99 << 32):
-        with pytest.raises(IndexError, match="out of range|Invalid"):
+        with pytest.raises(IndexError, match=r"out of range|Invalid"):
             ArrowRow(file=r0.file, index=bad_idx, kwargs=r0.kwargs).read()
 
     with pytest.raises(TypeError, match="not bool"):
@@ -267,6 +267,7 @@ def test_read_lance_http_without_ranges(
     assert dc.read_lance(url, session=test_session).to_values("id") == [1, 2]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="no sparse metadata copy on Windows")
 def test_read_lance_remote_metadata_and_cache(tmp_dir, test_session, monkeypatch):
     path = tmp_dir / "wide.lance"
     b0, b1 = os.urandom(100_000), os.urandom(100_000)

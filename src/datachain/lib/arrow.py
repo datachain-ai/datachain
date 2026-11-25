@@ -223,8 +223,8 @@ def _find_lance_blob(fields: Sequence[pa.Field], prefix: str = "") -> str | None
 def _require_lance():
     try:
         import lance
-        import lance.commit
-        import lance.file
+        import lance.commit  # noqa: F401
+        import lance.file  # noqa: F401
     except ImportError as exc:
         raise ImportError(
             f"Missing dependency for Lance files: {exc}\n"
