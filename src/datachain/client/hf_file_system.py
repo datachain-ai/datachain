@@ -7,7 +7,6 @@ from urllib.parse import quote
 
 from huggingface_hub import HfFileSystem, hf_file_system, hf_hub_url
 from huggingface_hub.constants import REPO_TYPES_URL_PREFIXES
-from huggingface_hub.file_download import _get_file_length_from_http_response
 from huggingface_hub.hf_file_system import (
     SPECIAL_REFS_REVISION_REGEX,
     HfFileSystemStreamFile,
@@ -15,9 +14,43 @@ from huggingface_hub.hf_file_system import (
 from huggingface_hub.utils import HfHubHTTPError
 
 
+class HfPermissionError(PermissionError, FileNotFoundError):
+    pass
+
+
+def _restore_permission_error(
+    cls: type[Exception], args: tuple, state: dict
+) -> Exception:
+    perm_cls = _permission_error_cls(cls)
+    err = perm_cls.__new__(perm_cls, *args)
+    Exception.__init__(err, *args)
+    err.__dict__.update(state)
+    return err
+
+
 @functools.cache
 def _permission_error_cls(cls: type[Exception]) -> type[Exception]:
-    return type(cls.__name__, (cls, PermissionError), {"__module__": cls.__module__})
+    return type(
+        cls.__name__,
+        (cls, PermissionError),
+        {
+            "__module__": cls.__module__,
+            "__reduce_ex__": lambda self, _proto: (
+                _restore_permission_error,
+                (cls, self.args, self.__dict__.copy()),
+            ),
+        },
+    )
+
+
+def _mark_permission_error(err: BaseException | None) -> bool:
+    if isinstance(err, HfHubHTTPError):
+        status = getattr(getattr(err, "response", None), "status_code", None)
+        if status in (401, 403):
+            if not isinstance(err, PermissionError):
+                err.__class__ = _permission_error_cls(type(err))
+            return True
+    return False
 
 
 @contextmanager
@@ -25,26 +58,52 @@ def _translate_auth_error():
     try:
         yield
     except HfHubHTTPError as e:
-        status = getattr(getattr(e, "response", None), "status_code", None)
-        if status in (401, 403) and not isinstance(e, PermissionError):
-            e.__class__ = _permission_error_cls(type(e))
+        _mark_permission_error(e)
+        raise
+    except FileNotFoundError as e:
+        if _mark_permission_error(e.__cause__) and not isinstance(e, PermissionError):
+            raise HfPermissionError(*e.args) from e.__cause__
         raise
 
 
+def _file_url(file_obj) -> str:
+    resolved = file_obj.resolved_path
+    if not getattr(resolved, "repo_id", None):
+        return file_obj.fs.url(file_obj.path)
+    return hf_hub_url(
+        resolved.repo_id,
+        resolved.path_in_repo,
+        repo_type=resolved.repo_type,
+        revision=resolved.revision,
+        endpoint=file_obj.fs.endpoint,
+    )
+
+
 class _PinnedStreamFile(HfFileSystemStreamFile):
+    def url(self) -> str:
+        return _file_url(self)
+
     def _open_connection(self):
         with _translate_auth_error():
             super()._open_connection()
-        if self.loc > 0 and getattr(self.response, "status_code", None) == 200:
-            self.loc = 0
-        if self.loc == 0 and self.response is not None:
-            self.size = _get_file_length_from_http_response(self.response)
+        if getattr(self.response, "status_code", None) == 200:
+            headers = getattr(self.response, "headers", None) or {}
+            if (
+                headers.get("Content-Encoding", "identity").lower() == "identity"
+                and (length := headers.get("Content-Length"))
+                and str(length).isdigit()
+            ):
+                self.size = int(length)
+            if self.loc > 0:
+                resume_loc, self.loc = self.loc, 0
+                super().read(resume_loc)
 
     def close(self):
         try:
             super().close()
         finally:
-            self._exit_stack.close()
+            if exit_stack := getattr(self, "_exit_stack", None):
+                exit_stack.close()
 
 
 class PinnedHfFileSystem(HfFileSystem):
@@ -101,7 +160,9 @@ class PinnedHfFileSystem(HfFileSystem):
     ):
         with _translate_auth_error():
             effective_block_size = (
-                block_size if block_size is not None else self.block_size
+                block_size
+                if block_size is not None
+                else getattr(self, "block_size", None)
             )
             if effective_block_size == 0 and "a" not in mode:
                 kwargs["block_size"] = 0
@@ -119,19 +180,15 @@ class PinnedHfFileSystem(HfFileSystem):
         with _translate_auth_error():
             return super().get_file(rpath, *args, **kwargs)
 
-    def url(self, path, revision=None, **kwargs):
-        resolved = self.resolve_path(path, revision=revision)
-        if not getattr(resolved, "repo_id", None):
-            return super().url(path)
-        return hf_hub_url(
-            resolved.repo_id,
-            resolved.path_in_repo,
-            repo_type=resolved.repo_type,
-            revision=resolved.revision,
-            endpoint=self.endpoint,
-        )
-
     def info(self, path, *args, **kwargs):
-        kwargs.setdefault("expand_info", False)
+        kwargs.setdefault("expand_info", bool(getattr(self, "expand_info", False)))
         with _translate_auth_error():
             return super().info(path, *args, **kwargs)
+
+    def ls(self, path, *args, **kwargs):
+        with _translate_auth_error():
+            return super().ls(path, *args, **kwargs)
+
+    def find(self, path, *args, **kwargs):
+        with _translate_auth_error():
+            return super().find(path, *args, **kwargs)

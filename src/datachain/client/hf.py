@@ -2,10 +2,10 @@ import asyncio
 import functools
 import posixpath
 import re
+from contextvars import ContextVar
 from threading import Event
 from typing import Any
 
-from fsspec.callbacks import DEFAULT_CALLBACK
 from huggingface_hub.utils import EntryNotFoundError
 
 from datachain.lib.file import File
@@ -13,6 +13,7 @@ from datachain.lib.file import File
 from .fsspec import Client
 
 COMMIT = re.compile(r"[0-9a-f]{40}")
+_EXPECTED_SIZE: ContextVar[int | None] = ContextVar("_EXPECTED_SIZE", default=None)
 
 
 class classproperty:  # noqa: N801
@@ -85,7 +86,7 @@ class HfClient(Client):
     @classmethod
     def create_fs(cls, **kwargs):
         if kwargs.pop("anon", False):
-            kwargs.setdefault("token", False)
+            kwargs["token"] = False
         return super().create_fs(**kwargs)
 
     def _is_version_pinned(self, file: "File") -> bool:
@@ -155,16 +156,34 @@ class HfClient(Client):
 
     CHUNK_SIZE = 8 * 1024 * 1024
 
-    async def get_file(self, lpath, rpath, callback, version_id: str | None = None):
+    async def _put_in_cache(self, file: "File", *, callback=None) -> None:
+        has_size = file.size > 0 or (file.size == 0 and bool(file.etag))
+        token = _EXPECTED_SIZE.set(file.size if has_size else None)
+        try:
+            await super()._put_in_cache(file, callback=callback)
+        finally:
+            _EXPECTED_SIZE.reset(token)
+
+    async def get_file(
+        self,
+        lpath,
+        rpath,
+        callback,
+        version_id: str | None = None,
+        expected_size: int | None = None,
+    ):
         fs = self.fs.sync_fs
         p = await asyncio.to_thread(
             fs.resolve_path, lpath, **self._version_kwargs(version_id)
         )
         if not getattr(p, "repo_id", None):
             return await super().get_file(lpath, rpath, callback, version_id)
+        expected = expected_size if expected_size is not None else _EXPECTED_SIZE.get()
         stop = Event()
         task = asyncio.create_task(
-            asyncio.to_thread(self._stream, p.unresolve(), rpath, callback, stop)
+            asyncio.to_thread(
+                self._stream, p.unresolve(), rpath, callback, stop, expected
+            )
         )
         try:
             await asyncio.shield(task)
@@ -178,48 +197,32 @@ class HfClient(Client):
                     pass
             raise
 
-    def _stream(self, path: str, dst: str, callback, stop=None) -> None:
+    def _stream(
+        self,
+        path: str,
+        dst: str,
+        callback,
+        stop=None,
+        expected_size: int | None = None,
+    ) -> None:
         try:
             with (
                 self.fs.sync_fs.open(path, "rb", block_size=0) as src,
                 open(dst, "wb") as out,
             ):
-                try:
-                    written = 0
-                    while (stop is None or not stop.is_set()) and (
-                        chunk := src.read(self.CHUNK_SIZE)
-                    ):
-                        if (
-                            written > 0
-                            and isinstance(getattr(src, "loc", None), int)
-                            and src.loc == len(chunk)
-                        ):
-                            out.seek(0)
-                            out.truncate(0)
-                            callback.relative_update(-written)
-                            written = 0
-                        out.write(chunk)
-                        written += len(chunk)
-                        callback.relative_update(len(chunk))
-                    expected = (
-                        src.size
-                        if isinstance(getattr(src, "size", None), int)
-                        else (
-                            None
-                            if callback is DEFAULT_CALLBACK
-                            else getattr(callback, "size", None)
-                        )
-                    )
-                    if (
-                        (stop is None or not stop.is_set())
-                        and isinstance(expected, int)
-                        and written != expected
-                    ):
-                        raise OSError(
-                            f"Expected {expected} bytes for {path}, got {written}"
-                        )
-                finally:
-                    src._exit_stack.close()
+                written = 0
+                while (stop is None or not stop.is_set()) and (
+                    chunk := src.read(self.CHUNK_SIZE)
+                ):
+                    out.write(chunk)
+                    written += len(chunk)
+                    callback.relative_update(len(chunk))
+                if stop is None or not stop.is_set():
+                    for expected in (expected_size, getattr(src, "size", None)):
+                        if isinstance(expected, int) and written != expected:
+                            raise OSError(
+                                f"Expected {expected} bytes for {path}, got {written}"
+                            )
         except EntryNotFoundError as e:
             raise FileNotFoundError(path) from e
 
@@ -228,10 +231,11 @@ class HfClient(Client):
     ) -> None:
         if self._is_version_pinned(file):
             return
-        if not file.version and "@" in file.path:
+        fs_path = file.get_fs_path()
+        if not self._has_version(file) and "@" in fs_path:
             p = await asyncio.to_thread(
                 self.fs.sync_fs.resolve_path,
-                file.get_fs_path(),
+                fs_path,
             )
             if COMMIT.fullmatch(getattr(p, "revision", None) or ""):
                 return
