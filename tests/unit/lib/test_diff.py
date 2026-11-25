@@ -636,3 +636,30 @@ def test_diff_compare_optional_detects_null_changes(test_session):
 
     modified = new.diff(base, on=["id"], compare=["x"]).to_values("id")
     assert sorted(modified) == [2, 3]  # None->5 and 3->None
+
+
+def test_diff_model_signal_composes_with_union_and_merge(test_session):
+    a = dc.read_values(
+        k=[1, 2],
+        p=[DiffKey(a=1, b="x"), DiffKey(a=2, b="y")],
+        session=test_session,
+    )
+    b = dc.read_values(
+        k=[1],
+        p=[DiffKey(a=1, b="x")],
+        session=test_session,
+    )
+    d = a.diff(b, on="k")
+
+    assert d.union(b).order_by("k").to_list("k", "p") == [
+        (1, DiffKey(a=1, b="x")),
+        (2, DiffKey(a=2, b="y")),
+    ]
+    assert b.union(d).order_by("k").to_list("k", "p") == [
+        (1, DiffKey(a=1, b="x")),
+        (2, DiffKey(a=2, b="y")),
+    ]
+    assert a.merge(d, on="k").order_by("k").to_list("k", "p", "right_p") == [
+        (1, DiffKey(a=1, b="x"), None),
+        (2, DiffKey(a=2, b="y"), DiffKey(a=2, b="y")),
+    ]
