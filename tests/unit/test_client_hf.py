@@ -1,13 +1,20 @@
 import pickle
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import httpx
 import pytest
 from fsspec.asyn import sync
 from huggingface_hub import hf_file_system
+from huggingface_hub.hf_api import RepoFile
 from huggingface_hub.hf_file_system import HfFileSystemFile
-from huggingface_hub.utils import HFValidationError
+from huggingface_hub.utils import (
+    GatedRepoError,
+    HfHubHTTPError,
+    HFValidationError,
+)
 
 from datachain.asyn import get_loop
 from datachain.cache import Cache
@@ -625,10 +632,19 @@ def test_pinned_unchanged_check_reuses_sdk_directory_cache(
     fetch.assert_not_called()
 
 
-def test_mutable_branch_version_checks_etag_on_unchanged():
-    client = HfClient("datasets", {}, Mock(spec=Cache))
-    client._fs = Mock()
-    client._fs._info = AsyncMock(return_value={"size": 4, "blob_id": "new-blob"})
+def test_mutable_branch_version_checks_etag_on_unchanged(
+    catalog, monkeypatch, hf_repositories
+):
+    client = HfClient("datasets", {"token": False}, catalog.cache)
+    fs = client.fs.sync_fs
+    fs.dircache["datasets/org/repo@main"] = [
+        {
+            "name": "datasets/org/repo@main/a.txt",
+            "size": 4,
+            "type": "file",
+            "blob_id": "new-blob",
+        }
+    ]
     file = File(
         source=client.uri,
         path="org/repo/a.txt",
@@ -639,11 +655,41 @@ def test_mutable_branch_version_checks_etag_on_unchanged():
     with pytest.raises(FileNotFoundError, match="etag was old-blob, now new-blob"):
         client.check_unchanged(file)
 
-    client._fs._info = AsyncMock(
-        side_effect=[{"size": 4}, {"size": 4, "blob_id": "new-blob"}]
+    fs.dircache["datasets/org/repo@main"] = [
+        {
+            "name": "datasets/org/repo@main/a.txt",
+            "size": 4,
+            "type": "file",
+            "last_commit": None,
+        }
+    ]
+    monkeypatch.setattr(
+        fs._api,
+        "get_paths_info",
+        lambda *a, **kw: [RepoFile(path="a.txt", size=4, oid="new-blob")],
     )
     with pytest.raises(FileNotFoundError, match="etag was old-blob, now new-blob"):
         client.check_unchanged(file)
+
+
+def test_version_only_file_without_size_does_not_fail_size_check(
+    catalog, monkeypatch, hf_repositories
+):
+    commit = "a" * 40
+    client = HfClient("datasets", {"token": False}, catalog.cache)
+    monkeypatch.setattr(client.fs, "_info", AsyncMock(return_value={"size": 4}))
+    for rev in (commit, "v1"):
+        client.check_unchanged(File(source=client.uri, path="org/repo/a.txt", version=rev))
+    with pytest.raises(FileNotFoundError, match="size was 0, now 4"):
+        client.check_unchanged(
+            File(
+                source=client.uri,
+                path="org/repo/a.txt",
+                version=commit,
+                etag="empty-blob",
+                size=0,
+            )
+        )
 
 
 def test_bucket_metadata_and_resolve_path_with_revision(
@@ -703,36 +749,59 @@ def test_anon_translates_to_token_false_and_credentials_detected():
     assert not HfClient.has_explicit_credentials({"anon": True})
     fs = HfClient.create_fs(anon=True)
     assert fs.sync_fs.token is False
+    fs_override = HfClient.create_fs(anon=True, token="hf_secret")
+    assert fs_override.sync_fs.token is False
 
 
 def test_stream_file_close_releases_exit_stack(catalog, monkeypatch, hf_repositories):
     fs = HfClient("datasets", {"token": False}, catalog.cache).fs.sync_fs
-    stream = fs.open("datasets/org/repo@main/a.txt", "rb", block_size=0)
-    monkeypatch.setattr(
-        hf_file_system.HfFileSystemStreamFile,
-        "_open_connection",
-        lambda self: None,
-    )
-    stream._open_connection()
     closed = Mock()
-    stream._exit_stack.callback(closed)
-    stream.close()
+
+    @contextmanager
+    def fake_stream(*args, **kwargs):
+        try:
+            yield SimpleNamespace(
+                status_code=200,
+                is_error=False,
+                headers={"Content-Length": "4"},
+                iter_bytes=lambda chunk_size=None: iter([b"data"]),
+                iter_content=lambda chunk_size=None: iter([b"data"]),
+                raise_for_status=lambda: None,
+                close=Mock(),
+            )
+        finally:
+            closed()
+
+    monkeypatch.setattr(hf_file_system, "http_stream_backoff", fake_stream)
+    monkeypatch.setattr(
+        hf_file_system,
+        "_get_file_length_from_http_response",
+        lambda response: 4,
+        raising=False,
+    )
+    with fs.open("datasets/org/repo@main/a.txt", "rb", block_size=0) as stream:
+        assert stream.read() == b"data"
     closed.assert_called_once()
 
 
 def test_auth_http_error_is_also_permission_error(catalog, monkeypatch):
-    import httpx
-    from huggingface_hub.utils import HfHubHTTPError
-
     fs = HfClient("datasets", {"token": False}, catalog.cache).fs.sync_fs
-    resp_401 = httpx.Response(
-        401,
-        request=httpx.Request("GET", "https://huggingface.co/api/datasets/org/repo"),
+    req = httpx.Request("GET", "https://huggingface.co/api/datasets/org/repo")
+    resp_401 = httpx.Response(401, request=req)
+    resp_403 = httpx.Response(403, request=req)
+    resp_500 = httpx.Response(500, request=req)
+
+    monkeypatch.setattr(
+        fs._api,
+        "repo_info",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            GatedRepoError("403 Forbidden", response=resp_403)
+        ),
     )
-    resp_500 = httpx.Response(
-        500,
-        request=httpx.Request("GET", "https://huggingface.co/api/datasets/org/repo"),
-    )
+    with pytest.raises(PermissionError) as gated_exc:
+        fs.resolve_path("datasets/org/gated/a.txt")
+    restored_gated = pickle.loads(pickle.dumps(gated_exc.value))  # noqa: S301
+    assert isinstance(restored_gated, (FileNotFoundError, PermissionError))
 
     monkeypatch.setattr(
         hf_file_system.HfFileSystem,
@@ -744,6 +813,8 @@ def test_auth_http_error_is_also_permission_error(catalog, monkeypatch):
     with pytest.raises(PermissionError) as exc_info:
         fs.resolve_path("datasets/org/repo/a.txt")
     assert isinstance(exc_info.value, HfHubHTTPError)
+    restored_401 = pickle.loads(pickle.dumps(exc_info.value))  # noqa: S301
+    assert isinstance(restored_401, (HfHubHTTPError, PermissionError))
 
     monkeypatch.setattr(
         hf_file_system.HfFileSystem,

@@ -83,7 +83,7 @@ class HfClient(Client):
     @classmethod
     def create_fs(cls, **kwargs):
         if kwargs.pop("anon", False):
-            kwargs.setdefault("token", False)
+            kwargs["token"] = False
         return super().create_fs(**kwargs)
 
     def _is_version_pinned(self, file: "File") -> bool:
