@@ -20,6 +20,7 @@ from uuid import uuid4
 import sqlalchemy as sa
 from sqlalchemy import Column
 
+import datachain.sql  # noqa: F401
 from datachain.cache import Cache
 from datachain.checkpoint import Checkpoint, CheckpointStatus
 from datachain.client import Client
