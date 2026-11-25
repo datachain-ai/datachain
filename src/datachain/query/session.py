@@ -125,9 +125,11 @@ class Session:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self._close()
-        if Session.SESSION_CONTEXTS:
-            Session.SESSION_CONTEXTS.pop()
+        try:
+            self._close()
+        finally:
+            if Session.SESSION_CONTEXTS:
+                Session.SESSION_CONTEXTS.pop()
 
     def _close(self) -> None:
         """Clean up this scope without changing the active session stack."""

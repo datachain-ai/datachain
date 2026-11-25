@@ -1,4 +1,5 @@
 import gc
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 from weakref import ref
@@ -7,7 +8,13 @@ import pytest
 
 import datachain as dc
 from datachain.catalog import Catalog
+from datachain.data_storage import JobStatus
 from datachain.query.session import Session
+from tests.utils import (
+    e2e_subprocess_env,
+    run_test_subprocess,
+    wait_for_test_subprocess,
+)
 
 
 def test_listing_dataset_lifecycle(tmp_path, catalog):
@@ -156,3 +163,42 @@ def test_listing_in_another_thread_preserves_active_session(
             assert listing.result(timeout=30) == [("file.txt",)]
         assert Session.get() is parent
         assert kept.to_values("value") == [1]
+
+
+SCRIPT_WITH_IN_MEMORY_SESSIONS = """\
+import sys
+import datachain as dc
+with dc.Session("first", in_memory=True):
+    dc.read_values(x=[1]).save("in_memory")
+dc.read_values(x=[1]).save("persistent")
+with dc.Session("last", in_memory=True):
+    dc.read_values(x=[1]).save("in_memory")
+    {end}
+"""
+
+
+@pytest.mark.parametrize(
+    ("end", "status"),
+    [
+        ("pass", JobStatus.COMPLETE),
+        ("sys.exit(0)", JobStatus.COMPLETE),
+        ("raise ValueError('boom')", JobStatus.FAILED),
+        ("raise KeyboardInterrupt", JobStatus.CANCELED),
+    ],
+    ids=["normal", "sys-exit-0", "error", "ctrl-c"],
+)
+def test_script_exit_after_in_memory_sessions_finalizes_its_job_cleanly(
+    tmp_path, catalog_tmpfile, end, status
+):
+    script = tmp_path / "script.py"
+    script.write_text(SCRIPT_WITH_IN_MEMORY_SESSIONS.format(end=end))
+    env = e2e_subprocess_env(catalog_tmpfile)
+    env.pop("DATACHAIN_JOB_ID", None)
+
+    process = run_test_subprocess([sys.executable, str(script)], env)
+    _, _, stderr = wait_for_test_subprocess(process)
+
+    assert "Exception ignored" not in stderr
+    job = catalog_tmpfile.metastore.get_last_job_by_name(str(script))
+    assert job is not None, stderr
+    assert job.status == status, stderr

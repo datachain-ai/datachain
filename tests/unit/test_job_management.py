@@ -218,22 +218,34 @@ def test_job_is_created_after_save(test_session, monkeypatch, use_datachain_job_
     assert result_job_id == test_session.get_or_create_job().id
 
 
-@skip_if_not_sqlite
-def test_get_or_create_job_after_in_memory_save_creates_persistent_job(
+def test_outer_job_after_in_memory_session_error_stays_running(
     catalog, clean_job_state
 ):
     with Session("outer", catalog=catalog) as outer:
-        with Session("inner", in_memory=True) as inner:
-            dc.read_values(x=[1], session=inner).save("a")
-            inner_job = inner.get_job()
-        assert Session._CURRENT_JOB is None
-        assert Session._JOB_FINALIZE_HOOK is None
+        job = outer.get_or_create_job()
+        with pytest.raises(ValueError), Session("inner", in_memory=True) as inner:
+            assert inner.get_or_create_job().id != job.id
+            raise ValueError
+        assert outer.get_or_create_job() is job
+    assert catalog.metastore.get_job(job.id).status == JobStatus.RUNNING
 
-        outer_job = outer.get_or_create_job()
 
-    assert inner_job is not None
-    assert outer_job.id != inner_job.id
-    assert catalog.metastore.get_job(outer_job.id).status == JobStatus.RUNNING
+def test_save_after_read_storage_in_in_memory_session_records_its_job(tmp_dir):
+    data = tmp_dir / "data"
+    data.mkdir()
+    (data / "a.txt").write_text("a")
+
+    with Session("mem", in_memory=True) as session:
+        dc.read_storage(data.as_uri(), session=session).save("files")
+        dc.read_values(x=[1], session=session).save("values")
+
+        def job_id(name):
+            dataset = session.catalog.get_dataset(name, versions=None)
+            return dataset.get_version(dataset.latest_version).job_id
+
+        job = session.get_job()
+        assert job is not None
+        assert job_id("files") == job_id("values") == job.id
 
 
 @skip_if_not_sqlite

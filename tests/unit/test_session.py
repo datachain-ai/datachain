@@ -363,3 +363,15 @@ def test_session_cleanup_tolerates_dropped_metastore_tables(catalog):
     with pytest.raises(TableMissingError):
         list(metastore.list_datasets_by_prefix("session_"))
     session._cleanup_temp_datasets()
+
+
+def test_session_stack_after_failed_cleanup_drops_the_session(catalog, monkeypatch):
+    def fail(*args, **kwargs):
+        raise RuntimeError("cleanup failed")
+
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        with Session("failing", catalog=catalog) as session:
+            dc.read_values(x=[1], session=session).persist()
+            monkeypatch.setattr(session.catalog, "remove_dataset", fail)
+
+    assert session not in Session.SESSION_CONTEXTS
