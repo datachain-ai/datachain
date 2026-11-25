@@ -33,7 +33,7 @@ def eval_dialog(
 ) -> DialogEval:
     try:
         completion = client.chat_completion(
-            model="openai/gpt-oss-20b",
+            model="openai/gpt-oss-20b:groq",
             max_tokens=512,
             messages=[
                 {
@@ -68,7 +68,7 @@ def eval_dialog(
         "hf://datasets/infinite-dataset-hub/MobilePlanAssistant/data.csv", source=False
     )
     .settings(parallel=True)
-    .setup(client=lambda: InferenceClient(api_key=HF_TOKEN, provider="groq"))
+    .setup(client=lambda: InferenceClient(api_key=HF_TOKEN, provider="auto"))
     .map(response=eval_dialog)
     .to_parquet("hf://datasets/dvcorg/test-datachain-llm-eval/data.parquet")
 )
