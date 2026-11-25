@@ -8,6 +8,8 @@ from time import sleep
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+import pyarrow as pa
+import pyarrow.compute as pc
 import sqlalchemy
 from sqlalchemy import (
     Column,
@@ -15,8 +17,8 @@ from sqlalchemy import (
     MetaData,
     Table,
     UniqueConstraint,
-    exists,
     select,
+    text,
     update,
 )
 from sqlalchemy.dialects import sqlite
@@ -31,6 +33,7 @@ from datachain.data_storage import AbstractDBMetastore, AbstractWarehouse
 from datachain.data_storage.codec import (
     TypeCodec,
     base_decode,
+    cast_arrow_column,
     compose,
     decode_datetime,
     value_codec,
@@ -261,9 +264,56 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         self.is_closed = False
 
     def get_table(self, name: str) -> Table:
+        if not self.is_closed and (table := self.metadata.tables.get(name)) is not None:
+            return table
+        return self.reflect_table(name)
+
+    @retry_sqlite_locks
+    def reflect_table(self, name: str) -> Table:
         if self.is_closed:
             self._reconnect()
-        return super().get_table(name)
+        cached = self.metadata.tables.get(name)
+        try:
+            columns = sqlalchemy.inspect(self.engine).get_columns(name)
+        except sqlalchemy.exc.NoSuchTableError as exc:
+            if cached is not None:
+                self.metadata.remove(cached)
+            raise TableMissingError(f"Table '{name}' not found") from exc
+        if cached is not None and (
+            [c.name for c in cached.columns] != [col["name"] for col in columns]
+            or [c.name for c in cached.primary_key.columns]
+            != [col["name"] for col in columns if col.get("primary_key")]
+        ):
+            self.metadata.remove(cached)
+        return Table(
+            name,
+            self.metadata,
+            *(
+                Column(
+                    col["name"],
+                    col["type"],
+                    *(
+                        (
+                            sqlalchemy.Computed(
+                                computed["sqltext"],
+                                persisted=computed.get("persisted"),
+                            ),
+                        )
+                        if (computed := col.get("computed")) is not None
+                        else ()
+                    ),
+                    nullable=col["nullable"],
+                    server_default=(
+                        text(str(col["default"]))
+                        if col["default"] is not None
+                        else None
+                    ),
+                    primary_key=bool(col.get("primary_key")),
+                )
+                for col in columns
+            ),
+            extend_existing=True,
+        )
 
     @retry_sqlite_locks
     def execute(self, query) -> sqlite3.Cursor:
@@ -388,25 +438,10 @@ class SQLiteDatabaseEngine(DatabaseEngine):
             yield db
 
     def has_table(self, name: str) -> bool:
-        """
-        Return True if a table exists with the given name
-
-        We cannot simply use `inspect(engine).has_table(name)` like the
-        parent class does because that will return False for a table
-        created during a pending transaction. Instead, we check the
-        sqlite_master table.
-        """
-        query = select(
-            exists(
-                select(1)
-                .select_from(sqlalchemy.table("sqlite_master"))
-                .where(
-                    (sqlalchemy.column("type") == "table")
-                    & (sqlalchemy.column("name") == name)
-                )
-            )
-        )
-        return bool(next(self.execute(query))[0])
+        """Whether table `name` exists, from sqlite_master: the inspector the
+        parent uses misses a table created in a pending transaction."""
+        sql = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = :name"
+        return self.execute(text(sql).bindparams(name=name)).fetchone() is not None
 
     @property
     def table_names(self) -> list[str]:
@@ -424,6 +459,9 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         Create table. Does nothing if table already exists when if_not_exists=True.
         """
         self.execute(CreateTable(table, if_not_exists=if_not_exists))
+        if kind == "udf":
+            for index in table.indexes:
+                self.execute(CreateIndex(index, if_not_exists=if_not_exists))
 
     def drop_table(self, table: "Table", if_exists: bool = False) -> None:
         self.execute(DropTable(table, if_exists=if_exists))
@@ -759,12 +797,11 @@ _MIN_DATETIME_US = -62_135_596_800_000_000  # 0001-01-01 00:00:00
 _MAX_DATETIME_US = 253_402_300_799_999_999  # 9999-12-31 23:59:59.999999
 
 
-def _encode_datetime_column(column: Any) -> list[Any] | None:
+def _encode_datetime_column(column: Any) -> Any:
     """An Arrow timestamp column as the text `adapt_datetime` stores; None for
     any other column."""
-    import pyarrow as pa
-    import pyarrow.compute as pc
-
+    if pa.types.is_null(column.type):
+        return column.cast(pa.string())
     if not pa.types.is_timestamp(column.type):
         return None
     # Arrow holds aware timestamps as UTC instants: without the timezone they give
@@ -784,9 +821,15 @@ def _encode_datetime_column(column: Any) -> list[Any] | None:
         )
         usts = i64.view(pa.timestamp("us"))
     text = usts.cast(pa.string())
-    return pc.replace_substring_regex(
-        text, pattern=r"\.000000$", replacement=""
-    ).to_pylist()
+    return pc.replace_substring_regex(text, pattern=r"\.000000$", replacement="")
+
+
+def _encode_scalar_column(python_type: type, column: Any) -> Any:
+    """Only accept Arrow types whose Python values this scalar codec accepts."""
+    target = {str: pa.string(), bytes: pa.binary(), float: pa.float64()}.get(
+        python_type, pa.int64()
+    )
+    return cast_arrow_column(python_type, target, column)
 
 
 class SQLiteWarehouse(AbstractWarehouse):
@@ -903,15 +946,7 @@ class SQLiteWarehouse(AbstractWarehouse):
         return cast(func.instr(source, target), sqlalchemy.Boolean)
 
     def get_table(self, name: str) -> sqlalchemy.Table:
-        try:
-            return Table(
-                name,
-                self.db.metadata,
-                autoload_with=self.db.engine,
-                extend_existing=True,
-            )
-        except sqlalchemy.exc.NoSuchTableError:
-            raise TableMissingError(f"Table '{name}' not found") from None
+        return self.db.reflect_table(name)
 
     def type_codec(self, sql_type: Any) -> TypeCodec:
         """Datetimes are stored as UTC text, arrays as JSON text."""
@@ -924,6 +959,14 @@ class SQLiteWarehouse(AbstractWarehouse):
             )
         if isinstance(sql_type, Array):
             return codec._replace(encode=partial(compose, adapt_array, codec.encode))
+        if codec.kept and (kept := next(iter(codec.kept))) in (
+            str,
+            bytes,
+            bool,
+            int,
+            float,
+        ):
+            return codec._replace(encode_column=partial(_encode_scalar_column, kept))
         return codec
 
     def export_dataset_table(

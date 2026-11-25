@@ -148,7 +148,7 @@ def test_partition_full_row(warehouse, numbers_partitioned):
     batching = Partition()
     batches = batching(
         warehouse.dataset_select_paginated,
-        sa.select(*cols, query.c.partition_id).order_by(query.c.sys__id),
+        sa.select(*cols, query.c[PARTITION_COLUMN_ID]).order_by(query.c.sys__id),
     )
     assert isinstance(batches, GeneratorType)
 
@@ -192,7 +192,7 @@ def test_partition_ids_only(warehouse, numbers_partitioned):
     batching = Partition()
     batches = batching(
         warehouse.dataset_select_paginated,
-        sa.select(*cols, query.c.partition_id).order_by(query.c.sys__id),
+        sa.select(*cols, query.c[PARTITION_COLUMN_ID]).order_by(query.c.sys__id),
         id_col=query.c.sys__id,
     )
     assert isinstance(batches, GeneratorType)

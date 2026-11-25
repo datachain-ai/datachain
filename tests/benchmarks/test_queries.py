@@ -297,3 +297,38 @@ def test_delta_changed(benchmark, test_session, retry):
         for id in range(1, NUM_FILES + 10)
         if not (retry is True and id == 2)
     ]
+
+
+def test_agg_partitioned(benchmark, test_session):
+    dc.read_values(
+        key=[i % 100 for i in range(NUM_ROWS)],
+        val=list(range(NUM_ROWS)),
+        session=test_session,
+    ).save("bench_agg_source")
+
+    def run():
+        return (
+            dc.read_dataset("bench_agg_source", session=test_session)
+            .agg(total=lambda val: [sum(val)], partition_by="key", output=int)
+            .count()
+        )
+
+    assert benchmark(run) == 100
+
+
+def test_map_unused_wide_column(benchmark, test_session):
+    wide_row = [float(i) for i in range(64)]
+    dc.read_values(
+        num=list(range(NUM_JSON_OBJECTS)),
+        wide=[wide_row for _ in range(NUM_JSON_OBJECTS)],
+        session=test_session,
+    ).save("bench_wide_source")
+
+    def run():
+        return (
+            dc.read_dataset("bench_wide_source", session=test_session)
+            .map(doubled=lambda num: num * 2, output=int)
+            .count()
+        )
+
+    assert benchmark(run) == NUM_JSON_OBJECTS

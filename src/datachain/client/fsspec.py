@@ -678,6 +678,7 @@ class RangeListedClient(Client):
     """A client that lists in parallel key ranges (``RangeListing``)."""
 
     LISTS_LEVELS: ClassVar[bool] = False  # whether _list_page takes a delimiter
+    NAMES_FOLDERS: ClassVar[bool] = False  # whether it names them (``Page.folders``)
 
     def _open_remote(self, file: "File", block_size: int | None = None) -> BinaryIO:
         return self._open_checked(
