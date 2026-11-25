@@ -634,21 +634,23 @@ class Client(ABC):
         """Fail if the file changed on the source since the catalog listed it."""
         sync(get_loop(), self._check_unchanged, file, info=info)
 
+    def _has_version(self, file: "File") -> bool:
+        return bool(file.version and file.version != "null")
+
     def _is_version_pinned(self, file: "File") -> bool:
-        return bool(
-            file.version and file.version != "null" and self.PINNED_VERSION_IS_IMMUTABLE
-        )
+        return self._has_version(file) and self.PINNED_VERSION_IS_IMMUTABLE
 
     async def _check_unchanged(
         self, file: "File", *, info: dict[str, Any] | None = None
     ) -> None:
         # Metadata updates can change a pinned file's etag without changing its
         # bytes, so compare its size instead, which still catches appends. A negative
-        # size means it's unknown, so nothing is compared.
+        # size (or an unrecorded default size=0 without an etag) means it's unknown.
         pinned = self._is_version_pinned(file)
+        has_size = file.size > 0 or (file.size == 0 and bool(file.etag))
 
         change = ""
-        if (pinned or (file.version and not file.etag)) and file.size >= 0:
+        if (pinned or (self._has_version(file) and not file.etag)) and has_size:
             size = int(info["size"]) if info is not None else await self.get_size(file)
             if size != file.size:
                 change = f"size was {file.size}, now {size}"
