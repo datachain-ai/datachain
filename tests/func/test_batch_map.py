@@ -351,7 +351,7 @@ def test_batch_map_reads_null_models_like_map_and_agg(test_session, verb):
         chain.batch_map(result=many, batch=2).to_list()
     else:
         chain.agg(result=group).to_list()
-    assert sorted(seen, key=repr) == [Item(value=2), Item(value=None)]
+    assert sorted(seen, key=repr) == [Item(value=2), None]
 
 
 def test_batch_map_list_input(test_session):
