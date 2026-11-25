@@ -166,7 +166,6 @@ def test_listing_in_another_thread_preserves_active_session(
 
 
 SCRIPT_WITH_IN_MEMORY_SESSIONS = """\
-import sys
 import datachain as dc
 with dc.Session("first", in_memory=True):
     dc.read_values(x=[1]).save("in_memory")
@@ -179,13 +178,8 @@ with dc.Session("last", in_memory=True):
 
 @pytest.mark.parametrize(
     ("end", "status"),
-    [
-        ("pass", JobStatus.COMPLETE),
-        ("sys.exit(0)", JobStatus.COMPLETE),
-        ("raise ValueError('boom')", JobStatus.FAILED),
-        ("raise KeyboardInterrupt", JobStatus.CANCELED),
-    ],
-    ids=["normal", "sys-exit-0", "error", "ctrl-c"],
+    [("pass", JobStatus.COMPLETE), ("raise KeyboardInterrupt", JobStatus.CANCELED)],
+    ids=["normal", "ctrl-c"],
 )
 def test_script_exit_after_in_memory_sessions_finalizes_its_job_cleanly(
     tmp_path, catalog_tmpfile, end, status

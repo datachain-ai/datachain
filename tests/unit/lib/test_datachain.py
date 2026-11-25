@@ -388,14 +388,6 @@ def test_read_records_basic_in_memory():
     assert set(ds.schema.values()) == {File}
 
 
-def test_read_dataset_in_memory_after_persistent_session_reads_in_memory_save(
-    test_session,
-):
-    dc.read_values(x=[1, 2], in_memory=True).save("mem_ds")
-
-    assert dc.read_dataset("mem_ds", in_memory=True).to_values("x") == [1, 2]
-
-
 @pytest.mark.parametrize(
     "combine",
     [

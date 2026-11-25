@@ -412,17 +412,14 @@ class Session:
             session = cls.GLOBAL_SESSION_CTX
 
         if client_config and session.catalog.client_config != client_config:
-            if in_memory:
+            if session.catalog.in_memory:
                 # A view: an in-memory session never becomes the active session.
                 view_catalog = session.catalog.copy()
                 view_catalog.client_config = client_config
                 view_catalog.source_client_configs = {}
                 return session._with_catalog(view_catalog)
             session = Session(
-                "session" + uuid4().hex[:4],
-                catalog,
-                client_config=client_config,
-                in_memory=in_memory,
+                "session" + uuid4().hex[:4], catalog, client_config=client_config
             )
             session.__enter__()
 

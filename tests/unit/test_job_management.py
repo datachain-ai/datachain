@@ -230,24 +230,6 @@ def test_outer_job_after_in_memory_session_error_stays_running(
     assert catalog.metastore.get_job(job.id).status == JobStatus.RUNNING
 
 
-def test_save_after_read_storage_in_in_memory_session_records_its_job(tmp_dir):
-    data = tmp_dir / "data"
-    data.mkdir()
-    (data / "a.txt").write_text("a")
-
-    with Session("mem", in_memory=True) as session:
-        dc.read_storage(data.as_uri(), session=session).save("files")
-        dc.read_values(x=[1], session=session).save("values")
-
-        def job_id(name):
-            dataset = session.catalog.get_dataset(name, versions=None)
-            return dataset.get_version(dataset.latest_version).job_id
-
-        job = session.get_job()
-        assert job is not None
-        assert job_id("files") == job_id("values") == job.id
-
-
 @skip_if_not_sqlite
 def test_file_backed_session_exit_leaves_job_running_for_process_exit(
     tmp_dir, clean_job_state

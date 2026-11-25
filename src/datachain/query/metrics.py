@@ -22,8 +22,11 @@ def set(key: str, value: str | int | float | bool | None) -> None:  # noqa: PYI0
             catalog.metastore.update_job(job_id, metrics=metrics)
             return
         # The job lives in the configured metastore, not in the in-memory one.
-        with get_metastore() as metastore:
+        metastore = get_metastore()
+        try:
             metastore.update_job(job_id, metrics=metrics)
+        finally:
+            metastore.close_on_exit()
 
 
 def get(key: str) -> str | int | float | bool | None:

@@ -156,46 +156,30 @@ def test_cleanup_temp_datasets_all_states(catalog, project):
             catalog.get_dataset(temp_name, include_incomplete=True)
 
 
-def test_get_in_memory_after_session_exists_keeps_default_session(catalog):
-    default = Session.get(catalog=catalog)
-
+def test_get_in_memory_returns_one_shared_session_apart_from_default(tmp_dir):
     session = Session.get(in_memory=True)
-
+    default = Session.get()
     assert session.catalog.in_memory
+    assert not default.catalog.in_memory
     assert Session.get(in_memory=True) is session
+
+    view = Session.get(in_memory=True, client_config={"anon": True})
+    assert view.catalog.in_memory
+    assert view.catalog.client_config == {"anon": True}
     assert Session.get() is default
 
+    with session:
+        pass
+    reopened = Session.get(in_memory=True)
+    assert reopened is not session
+    assert dc.read_values(x=[1], session=reopened).to_values("x") == [1]
 
-def test_get_in_memory_as_first_call_keeps_global_session_persistent(tmp_dir):
-    session = Session.get(in_memory=True)
 
-    assert session.catalog.in_memory
-    assert not Session.get().catalog.in_memory
-
-
-def test_get_in_memory_inside_in_memory_context_returns_that_session():
+def test_get_inside_in_memory_session_stays_in_memory():
     with Session("mem", in_memory=True) as active:
         assert Session.get(in_memory=True) is active
-
-
-def test_get_in_memory_with_client_config_keeps_active_session(catalog):
-    default = Session.get(catalog=catalog)
-
-    session = Session.get(in_memory=True, client_config={"anon": True})
-
-    assert session.catalog.in_memory
-    assert session.catalog.client_config == {"anon": True}
-    assert Session.get() is default
-
-
-def test_get_in_memory_after_closing_it_returns_a_new_session():
-    with Session.get(in_memory=True) as closed:
-        pass
-
-    session = Session.get(in_memory=True)
-
-    assert session is not closed
-    assert dc.read_values(x=[1], session=session).to_values("x") == [1]
+        assert Session.get(client_config={"anon": True}).catalog.in_memory
+    assert active not in Session.SESSION_CONTEXTS
 
 
 def test_in_memory_chain_in_studio_job_writes_nothing_to_job_catalog(
@@ -221,7 +205,9 @@ def test_in_memory_chain_in_studio_job_writes_nothing_to_job_catalog(
     )
 
     assert saved.to_values("size") == [1]
-    assert saved.job.id != job_id
+    in_memory_job = Session.get(in_memory=True).get_job()
+    assert in_memory_job is not None
+    assert saved.job.id == in_memory_job.id != job_id
     assert default.get_job().id == job_id
     assert catalog_tmpfile.listings() == []
     with pytest.raises(DatasetNotFoundError):
