@@ -3125,7 +3125,7 @@ class DataChain:
                 the standalone file).
             table: If `True` (default), write a versioned Lance table directory;
                 if `False`, write a single standalone `.lance` v2 file via fsspec.
-            storage_options: Optional Lance storage options (Lance key names),
+            storage_options: Lance storage options for tables (Lance key names),
                 merged over translated `fs_kwargs`.
             kwargs: Forwarded to `write_fragments` or `LanceFileWriter`.
         """

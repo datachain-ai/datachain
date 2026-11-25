@@ -39,7 +39,7 @@ def _open_lance_table(
                 return None
             raise ValueError(f"Lance tables are not supported for '{scheme}://' URIs")
         client = session.catalog.get_client(target.source)
-        has_ver = bool(target.path and _has_lance_versions(target, client))
+        has_ver = bool(target.path and (opts or _has_lance_versions(target, client)))
         if not has_ver:
             if version is None:
                 return None
@@ -53,7 +53,7 @@ def _open_lance_table(
             tbl["storage_options"] = opts
         ds = _open_lance_dataset(target, tbl)
         return target, ds, _decode_lance_schema(ds.schema)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, OverflowError) as exc:
         if version is None and not has_ver:
             return None
         raise DatasetPrepareError(uri, exc) from exc
@@ -94,7 +94,7 @@ def read_lance(
         settings: Settings to use for the chain.
         columns: Input columns (or DataChain signal paths) to read, in order.
         version: Optional Lance table version number (`int`) or tag name (`str`).
-        storage_options: Optional Lance storage options (Lance key names),
+        storage_options: Lance storage options for tables (Lance key names),
             merged over translated `client_config`.
         kwargs: Parameters passed to `read_storage` (`client_config` uses fsspec
             key names).
@@ -147,6 +147,8 @@ def read_lance(
             tables.append(opened)
 
     if not tables:
+        if storage_options:
+            raise TypeError("storage_options apply to Lance tables only")
         return read_storage(
             path, session=session, settings=settings, **kwargs
         ).parse_tabular(
@@ -180,7 +182,7 @@ def read_lance(
                 "fragment": fid,
             }
             table_records.append({"file": row_file, "lance_fragment": json.dumps(tbl)})
-        table_schemas.append((table_records[-len(frags)]["file"].path, schema))
+        table_schemas.append((f"{t.source}/{t.path}", schema))
     ordered = [s for _, s in sorted(table_schemas, key=lambda x: x[0])]
     # Kept on the generator, never in rows: options can hold secrets.
     gen_opts: dict[str, Any] = (

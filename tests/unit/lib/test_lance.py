@@ -141,7 +141,7 @@ def test_read_lance_table_versions_and_pushdown(
         with pytest.raises(TypeError):
             rl(d, **kw)
     g = f"{d.as_uri()}/data/*.lance"
-    for u, v in ((d, 99), ([d, d], 1), (g, 1)):
+    for u, v in ((d, 99), ([d, d], 1), (g, 1), (d, -1)):
         with pytest.raises(DatasetPrepareError):
             rl(u, version=v)
     for col in ("", "a`b"):
@@ -218,6 +218,36 @@ def test_read_lance_rejects_table_internals_blobs_and_clones(tmp_dir, test_sessi
     with pytest.raises(DatasetPrepareError, match=r"tagged\.lance.*missing"):
         rl(tagged_dir, columns=["missing"])
     assert len(list(ms.list_datasets_by_prefix(pfx))) == n_tmp
+
+
+def test_read_lance_json_columns(tmp_dir, test_session):
+    rl = partial(dc.read_lance, session=test_session)
+    j = pa.array(['{"a":1}', '{"a":2}'], pa.json_())
+    lance.write_dataset(pa.table({"id": [1, 2], "j": j}), t := tmp_dir / "j_t.lance")
+    assert rl(t).filter(C("j") == '{"a":2}').to_list("id", "j") == [(2, '{"a":2}')]
+    _write_lance(f := tmp_dir / "j_f.lance", {"id": [1, 2], "j": j})
+    with pytest.raises(DatasetPrepareError, match="JSON column 'j'"):
+        rl(f)
+    with pytest.raises(DatasetPrepareError):
+        rl(f, storage_options={"timeout": "5s"})
+    with pytest.raises(TypeError, match="Lance tables only"):
+        rl("https://h/j_f.lance", storage_options={"timeout": "5s"})
+
+
+def test_read_lance_tables_scan_only_wanted_columns(tmp_dir, test_session, monkeypatch):
+    rv = partial(dc.read_values, session=test_session)
+    rv(a=[1, 2], only1=["u", "v"]).to_lance(t1 := tmp_dir / "t1.lance")
+    rv(a=[3, 4], big=["x", "y"]).to_lance(t2 := tmp_dir / "t2.lance")
+    scanned, scanner = [], lance.LanceFragment.scanner
+
+    def spy(self, *args, **kwargs):
+        scanned.append(tuple(kwargs["columns"]))
+        return scanner(self, *args, **kwargs)
+
+    monkeypatch.setattr(lance.LanceFragment, "scanner", spy)
+    chain = dc.read_lance([t1, t2], session=test_session, columns=["only1"])
+    assert sorted(map(str, chain.to_values("only1"))) == ["None", "None", "u", "v"]
+    assert sorted(scanned) == [(), ("only1",)]
 
 
 def test_read_lance_directory_schema_drift(tmp_dir, test_session):
@@ -334,6 +364,10 @@ def test_read_lance_remote_metadata_and_cache(tmp_dir, test_session, monkeypatch
     for _ in range(2):
         assert src.read()["id"] == 2
     assert downloads == 6
+
+    f3 = File(source="http://mock", path="wide3.lance", size=len(raw_bytes))
+    rv(file=[f3], settings={"cache": True}).parse_tabular(format="lance")
+    assert (downloads, cache.get_total_size()) == (6, 2 * len(raw_bytes))
 
 
 def test_to_lance_roundtrip_and_struct_layout(tmp_dir, test_session, monkeypatch):
@@ -496,6 +530,18 @@ def test_to_lance_table_external_mutations_and_error_cleanup(tmp_dir, test_sessi
         rv(x=[0]).to_lance(p, mode="append")  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="table=False"):
         rv(x=[1]).to_lance("hf://org/repo/d.lance")
+    with pytest.raises(TypeError, match="Lance tables only"):
+        rv(x=[1]).to_lance(tmp_dir / "f.lance", table=False, storage_options={"k": "v"})
+
+    (taken := tmp_dir / "taken").mkdir()
+    (taken / "keep.txt").write_text("x")
+    for mode in ("create", "overwrite"):
+        with pytest.raises(FileExistsError, match="Not a Lance table"):
+            rv(x=[1]).to_lance(taken, mode=mode)
+    assert os.listdir(taken) == ["keep.txt"]
+    (empty := tmp_dir / "empty").mkdir()
+    rv(x=[1]).to_lance(empty)
+    assert rl(empty).to_values("x") == [1]
 
     fail_path = tmp_dir / "failed_create.lance"
     f_fail = File.at(fail_path, session=test_session)
@@ -546,6 +592,14 @@ def test_lance_s3_and_storage_options(
         ((src, val),) = ch.filter(C("id") == 3).to_list("source", "v")
         assert (val, src.read()["v"]) == (30, 30)
         assert "storage_options" not in json.dumps(src.kwargs)
+    s = session_for(test_session, bad, False)
+    s.catalog.source_client_configs[ctc.src_uri] = bad
+    rl_opts = partial(dc.read_lance, uri, session=s, storage_options=lance_opts)
+    assert sorted(rl_opts(anon=False).to_values("v")) == [10, 20, 30]
+    dc.read_values(id=[4], v=[40], session=s).to_lance(
+        uri, mode="overwrite", storage_options=lance_opts
+    )
+    assert rl_opts(anon=False).to_values("v") == [40]
     ch_cfg = dc.read_lance(uri, session=test_session, client_config=ctc.client_config)
     assert ch_cfg.session.catalog.client_config_for("s3://other") == ctc.client_config
 
@@ -588,8 +642,35 @@ def test_lance_s3_and_storage_options(
         ("s3://b", s3_cfg, None, s3_exp),
         ("gs://b", None, None, {"google_service_account_key": '{"a":1}'}),
         ("az://b", az_cfg, {"timeout": "30s"}, az_exp),
+        (
+            "az://b",
+            {"client_id": "c", "client_secret": "s", "tenant_id": "t"},
+            None,
+            {
+                "azure_storage_client_id": "c",
+                "azure_storage_client_secret": "s",
+                "azure_storage_tenant_id": "t",
+            },
+        ),
+        (
+            "az://b",
+            {
+                "connection_string": "AccountName=a;AccountKey=k==;BlobEndpoint=http://h/a"
+            },
+            None,
+            {
+                "azure_storage_account_name": "a",
+                "azure_storage_account_key": "k==",
+                "azure_storage_endpoint": "http://h/a",
+                "allow_http": "true",
+            },
+        ),
     ):
         assert arrow._lance_storage_options(u, cfg, so) == expected
+    monkeypatch.delenv("DATACHAIN_GCP_CREDENTIALS")
+    for tok, expected in (("google_default", None), ("/k.json", "/k.json")):
+        opts = arrow._lance_storage_options("gs://b", {"token": tok})
+        assert (opts or {}).get("google_service_account") == expected
     for scheme in ("http", "https", "hf"):
         with pytest.raises(DatasetPrepareError, match="not supported"):
             dc.read_lance(f"{scheme}://h/t.lance", version=1, session=test_session)

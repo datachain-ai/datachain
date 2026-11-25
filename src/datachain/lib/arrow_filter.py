@@ -48,7 +48,7 @@ def _filter_fields(
         col_type = field.type
         anno, optional = unwrap_optional(output[name])
         if (
-            not isinstance(col_type, pa.ExtensionType)
+            not isinstance(col_type, pa.BaseExtensionType)
             and anno in (int, str, bool, bytes)
             and (optional or not field.nullable)
             and not pa.types.is_null(col_type)

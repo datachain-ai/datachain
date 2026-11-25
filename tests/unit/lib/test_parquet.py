@@ -997,3 +997,10 @@ def test_read_parquet_cached_hive_partitioning(tmp_dir, test_session):
             rows = chain.to_list("source", "a", "year")
             assert [(a, y) for _, a, y in rows] == [(1, 2024), (2, 2024)]
             assert rows[0][0].read() == {"a": 1, "year": 2024}
+
+
+def test_read_parquet_filter_on_json_column(tmp_dir, test_session):
+    j = pa.array(['{"a":1}', '{"a":2}'], pa.json_())
+    pq.write_table(pa.table({"id": [1, 2], "j": j}), path := tmp_dir / "j.parquet")
+    chain = dc.read_parquet(path.as_uri(), session=test_session)
+    assert chain.filter(C("j") == '{"a":2}').to_values("id") == [2]

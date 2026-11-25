@@ -5,6 +5,7 @@ import hashlib
 import io
 import itertools
 import os
+import posixpath
 import shutil
 import struct
 import sys
@@ -207,16 +208,40 @@ def _has_lance_versions(target: File, client: "Client") -> bool:
     return False
 
 
-def _find_lance_blob(fields: Sequence[pa.Field], prefix: str = "") -> str | None:
+def _lance_table_exists(path: str, storage_options: dict[str, str] | None) -> bool:
+    try:
+        _require_lance().dataset(path, storage_options=storage_options)
+    except ValueError as exc:
+        if "was not found" in str(exc):
+            return False
+        raise
+    return True
+
+
+def _holds_non_lance(client: "Client", path: str) -> bool:
+    """A file, or a directory with entries other than a Lance table's own."""
+    return client.fs.isfile(path) or any(
+        posixpath.basename(p.rstrip("/")) not in _LANCE_TABLE_DIRS
+        for p in client.fs.ls(path, detail=False)
+    )
+
+
+def _find_lance_unsupported(
+    fields: Sequence[pa.Field], prefix: str = ""
+) -> tuple[str, str] | None:
+    """The first blob column, or JSON column a file reader returns as JSONB bytes."""
     for f in fields:
         n = prefix.rstrip(".") if f.name == "item" and prefix else f"{prefix}{f.name}"
-        if (f.metadata or {}).get(b"lance-encoding:blob") == b"true" or getattr(
+        meta = f.metadata or {}
+        if meta.get(b"lance-encoding:blob") == b"true" or getattr(
             f.type, "extension_name", ""
         ).startswith("lance.blob"):
-            return n
+            return "blob", n
+        if meta.get(b"ARROW:extension:name") == b"lance.json":
+            return "JSON", n
         children = [f.type.field(i) for i in range(f.type.num_fields)]
-        if blob := _find_lance_blob(children, f"{n}."):
-            return blob
+        if found := _find_lance_unsupported(children, f"{n}."):
+            return found
     return None
 
 
@@ -254,7 +279,18 @@ _LANCE_ALIASES = {
         "sas_token": "azure_storage_sas_key",
         "account_url": "azure_storage_endpoint",
         "endpoint_url": "azure_storage_endpoint",
+        "client_id": "azure_storage_client_id",
+        "client_secret": "azure_storage_client_secret",
+        "tenant_id": "azure_storage_tenant_id",
     },
+}
+# gcsfs token values that name a login method rather than a key file
+_GCSFS_TOKEN_MODES = frozenset(("anon", "google_default", "cloud", "cache", "browser"))
+_AZURE_CONNECTION_KEYS = {
+    "AccountName": "account_name",
+    "AccountKey": "account_key",
+    "BlobEndpoint": "account_url",
+    "SharedAccessSignature": "sas_token",
 }
 
 
@@ -288,8 +324,12 @@ def _lance_storage_options(
         GCSClient._normalize_gcs_kwargs(src)
         if isinstance(tok := src.get("token"), dict):
             opts["google_service_account_key"] = json.dumps(tok)
-        elif isinstance(tok, str) and tok != "anon":
+        elif isinstance(tok, str) and tok not in _GCSFS_TOKEN_MODES:
             opts["google_service_account"] = tok
+    elif scheme == "az" and (conn := src.get("connection_string")):
+        parts = dict(p.split("=", 1) for p in conn.split(";") if "=" in p)
+        for key, name in _AZURE_CONNECTION_KEYS.items():
+            src.setdefault(name, parts.get(key))
     prefix, aliases = _LANCE_PREFIX[scheme], _LANCE_ALIASES[scheme]
     opts |= {
         k: str(v) for k, v in src.items() if k.startswith(prefix) and v is not None
@@ -395,9 +435,9 @@ def _local_lance_path(file: File, tmp: list[Cache], metadata_only: bool) -> str:
     if isinstance(client.fs, LocalFileSystem):
         client.check_unchanged(file)
         return file.get_fs_path()
+    if metadata_only and (path := _lance_metadata_copy(file, client, tmp)):
+        return path
     if not file._caching_enabled:
-        if metadata_only and (path := _lance_metadata_copy(file, client, tmp)):
-            return path
         tmp.append(get_temp_cache(client.cache.tmp_dir, prefix="lance-"))
         client.cache = tmp[-1]
         client.download(file, callback=file._download_cb)
@@ -446,8 +486,8 @@ def _nest_lance(
 
 
 def _decode_lance_schema(schema: pa.Schema, dc_read: bool = False) -> pa.Schema:
-    if (blob := _find_lance_blob(list(schema))) is not None:
-        raise ValueError(f"Lance blob column '{blob}' is not supported")
+    if found := _find_lance_unsupported(list(schema)):
+        raise ValueError(f"Lance {found[0]} column '{found[1]}' is not supported")
     flat = _flatten_structs(pa.Table.from_pylist([], schema=schema)).schema
     if (signal_schema := _get_datachain_schema(schema)) is not None:
         if not dc_read and flat.names != export_schema(signal_schema).names:
@@ -520,12 +560,23 @@ def write_lance(
     with safe_closing(column_chunks):
         if mode not in ("create", "overwrite"):
             raise ValueError(f"Unsupported mode {mode!r}")
+        if storage_options and not table:
+            raise TypeError("storage_options apply to Lance tables only")
         lance, s = _require_lance(), export_schema(signal_schema)
         catalog, dst_path = target._catalog, target.get_fs_path()
         assert catalog is not None
         cfg = catalog.client_config_for(target.source) | (fs_kwargs or {})
         client = catalog.get_client(target.source, client_config=cfg)
-        has_table = _has_lance_versions(target, client)
+        opts = (
+            _lance_storage_options(target.source, cfg, storage_options)
+            if table
+            else None
+        )
+        has_table = (
+            _lance_table_exists(dst_path, opts)
+            if storage_options
+            else _has_lance_versions(target, client)
+        )
         client.fs.invalidate_cache(dst_path)
         if has_table and (not table or mode == "create"):
             raise FileExistsError(f"Lance table already exists: {dst_path}")
@@ -533,12 +584,12 @@ def write_lance(
         if not has_table:
             with suppress(Exception):
                 has_file = bool(
-                    client.fs.isfile(dst_path)
+                    _holds_non_lance(client, dst_path)
                     if table
                     else mode == "create" and client.fs.exists(dst_path)
                 )
         if has_file:
-            raise FileExistsError(f"File already exists: {dst_path}")
+            raise FileExistsError(f"Not a Lance table, already exists: {dst_path}")
         meta = json.dumps(signal_schema.serialize(), ensure_ascii=False)
         raw_schema = pa.schema(
             _nest_lance(s)[0],
@@ -563,7 +614,6 @@ def write_lance(
             )
             return
 
-        opts = _lance_storage_options(target.source, cfg, storage_options)
         read_ver = (
             lance.dataset(dst_path, storage_options=opts).version if has_table else 0
         )
@@ -626,6 +676,8 @@ def _align_lance(
     n = raw.num_rows if raw is not None else rows
     fields = [schema.field(c) for c in columns]
     cls = pa.RecordBatch if is_batch else pa.Table
+    if not fields:  # from_arrays([]) would drop the row count
+        return cls.from_arrays([pa.nulls(n)], names=["_"]).select([])
     arrays = [
         (
             raw.column(f.name).combine_chunks()
@@ -664,7 +716,7 @@ class _LanceTableDataset:
     ) -> Iterator[tuple[pa.Array, pa.RecordBatch]]:
         if self._frag is None:
             return
-        columns = list(kw.get("columns") or self.schema.names)
+        columns = list(self.schema.names if (c := kw.get("columns")) is None else c)
         step = kw.get("batch_size") or ArrowGenerator.DEFAULT_BATCH_SIZE
         present = set(self._physical_schema.names)
         raw_cols = [c for c in columns if c in present]
@@ -752,7 +804,7 @@ class _LanceDataset:
             yield _align_lance(b, self.schema, columns, self._dc)
 
     def to_batches(self, **kw: Any) -> Iterator[pa.RecordBatch]:
-        columns = list(kw.get("columns") or self.schema.names)
+        columns = list(self.schema.names if (c := kw.get("columns")) is None else c)
         step = kw.get("batch_size") or ArrowGenerator.DEFAULT_BATCH_SIZE
         return self._read_batches(columns, step)
 
