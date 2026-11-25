@@ -509,7 +509,9 @@ def test_version_only_file_without_size_does_not_fail_size_check(
     client = HfClient("datasets", {"token": False}, catalog.cache)
     monkeypatch.setattr(client.fs, "_info", AsyncMock(return_value={"size": 4}))
     for rev in (commit, "v1"):
-        client.check_unchanged(File(source=client.uri, path="org/repo/a.txt", version=rev))
+        client.check_unchanged(
+            File(source=client.uri, path="org/repo/a.txt", version=rev)
+        )
     with pytest.raises(FileNotFoundError, match="size was 0, now 4"):
         client.check_unchanged(
             File(
