@@ -86,7 +86,7 @@ REPORTS_TREE = {
     "report.json": "",
     "report1.json": "",
     "notreport.json": "",
-    "repdir": {"not.json": ""},
+    "rep dir": {"not.json": ""},
     "r": {"port.json": ""},
     "nested": {
         "report.json": "",
@@ -106,6 +106,7 @@ GLOB_PATTERNS = [
     "**/rep*.json",
     "**/r?port.json",
     "**/nested/*.json",
+    "**/rep dir/*.json",
     "**/nested/**/report.json",
     "**/**/report.json",
     "*/**/report.json",
