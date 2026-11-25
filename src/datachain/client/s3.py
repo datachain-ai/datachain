@@ -612,9 +612,14 @@ class ClientS3(RangeListedClient):
             )
         except ClientError as e:
             code = e.response.get("Error", {}).get("Code")
-            if not versions or token is not None or code != "NotImplemented":
+            if (
+                not versions
+                or token is not None
+                or code not in ("NotImplemented", "AccessDenied")
+            ):
                 raise
-            # stores without version support, such as R2, hold only current objects
+            # stores without version support, such as R2, hold only current
+            # objects; a caller denied listing versions can list only those
             self._unversioned = True
             return await self._list_page(
                 prefix, start_after, None, hi, page_size, delimiter

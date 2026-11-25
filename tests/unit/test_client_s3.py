@@ -462,8 +462,8 @@ def _listing_client(versions, s3, bucket="bucket"):
 @pytest.mark.parametrize(
     "versions, token, code",
     [
-        (True, None, "AccessDenied"),
-        (True, ("k", "v"), "NotImplemented"),
+        (True, None, "InternalError"),
+        (True, ("k", "v"), "AccessDenied"),
         (False, None, "NotImplemented"),
     ],
     ids=["other-error", "after-first-page", "non-versioned"],
@@ -481,8 +481,9 @@ def test_list_page_errors(versions, token, code):
     assert not s3.list_objects_v2.call_count if versions else True
 
 
-def test_list_page_falls_back_to_current_objects_without_version_support():
-    error = ClientError({"Error": {"Code": "NotImplemented"}}, "ListObjectVersions")
+@pytest.mark.parametrize("code", ["NotImplemented", "AccessDenied"])
+def test_list_page_falls_back_to_current_objects_without_version_support(code):
+    error = ClientError({"Error": {"Code": code}}, "ListObjectVersions")
     contents = [
         {"Key": "a", "Size": 1, "ETag": '"e"', "LastModified": parse_timestamp(0)}
     ]
