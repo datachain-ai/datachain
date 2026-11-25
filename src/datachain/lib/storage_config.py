@@ -50,9 +50,9 @@ def client_configs(
     anon: bool | None,
     client_config: dict | None,
     versions: bool,
-) -> tuple[dict | None, dict]:
-    """The client config a session is made with, if not the active one's, and
-    the client config to list ``uris`` with.
+) -> tuple[dict, dict]:
+    """The client config to read the files of ``uris`` with, and the client
+    config to list them with.
 
     ``client_config`` if given, else the config of ``session`` or the active
     session. ``anon`` is set
@@ -73,21 +73,22 @@ def client_configs(
         anon = True
     if anon is not None:
         config = config | {"anon": anon}
-    session_config = config if client_config is not None or anon is not None else None
+    session_config = config
     if not versions:
         config = config | {"version_aware": False}
     return session_config, config
 
 
 def session_for(
-    session: Session | None, client_config: dict | None, in_memory: bool
+    session: Session | None, client_config: dict, in_memory: bool
 ) -> Session:
-    """Apply client options without changing the caller or its cleanup scope."""
+    """A view of the session with a catalog of its own for one chain: it reads
+    with `client_config` and records the sources the chain lists. The caller
+    and its cleanup scope are unchanged."""
     session = Session.get(session, in_memory=in_memory)
-    if client_config is None or session.catalog.client_config == client_config:
-        return session
     catalog = session.catalog.copy()
     catalog.client_config = client_config
+    catalog.source_client_configs = {}
     return session._with_catalog(catalog)
 
 

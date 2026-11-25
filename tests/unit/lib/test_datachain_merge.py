@@ -64,20 +64,15 @@ def test_merge_objects(test_session):
         assert empl == employees[i]
         i += 1
 
-        assert isinstance(player, TeamMember)
         if empl.person.name != "Bob":
+            assert isinstance(player, TeamMember)
             assert player.player == team[j].player
             assert player.sport == team[j].sport
             assert math.isclose(player.weight, team[j].weight, rel_tol=1e-7)
             assert math.isclose(player.height, team[j].height, rel_tol=1e-7)
             j += 1
         else:
-            # unmatched outer-join row: the Optional fields hydrate as None on
-            # both backends (Optional[float] stays NaN — float is excluded).
-            assert player.player is None
-            assert player.sport is None
-            assert pd.isnull(player.weight)
-            assert pd.isnull(player.height)
+            assert player is None
 
     assert i == len(employees)
     assert j == len(team) - 1
@@ -102,22 +97,18 @@ def test_merge_objects_full_join(test_session, multiple_predicates):
         assert len(items) == 2
 
         empl, player = items
+        if empl is None:
+            assert isinstance(player, TeamMember)
+            assert player.player == "John"
+            continue
+
+        if player is None:
+            assert isinstance(empl, Employee)
+            assert empl.person.name == "Bob"
+            continue
+
         assert isinstance(empl, Employee)
         assert isinstance(player, TeamMember)
-
-        if player.player == "John":
-            # unmatched emp side -> Optional fields are None on both backends.
-            assert empl.person.name is None
-            assert empl.person.age is None
-            continue
-
-        if empl.person.name == "Bob":
-            assert player.player is None
-            assert player.sport is None
-            assert pd.isnull(player.weight)
-            assert pd.isnull(player.height)
-            continue
-
         assert player.player == team[i].player
         assert player.sport == team[i].sport
         assert math.isclose(player.weight, team[i].weight, rel_tol=1e-7)
@@ -742,3 +733,20 @@ def test_merge_computed_keys_do_not_collide_with_signal_names(test_session, left
         ("a/x.jpg", "p"),
         ("b/y.jpg", "q"),
     ]
+
+
+def test_sql_join_hash_includes_model_tags(test_session):
+    left = dc.read_values(id=[1], session=test_session)._query
+    right = dc.read_values(id=[1], session=test_session)._query
+    base = left.join(right, "id").steps[-1].hash()
+    with_left = (
+        left.join(right, "id", left_tags=(("p___type_tag", "Payload"),))
+        .steps[-1]
+        .hash()
+    )
+    with_right = (
+        left.join(right, "id", right_tags=(("p___type_tag", "Payload"),))
+        .steps[-1]
+        .hash()
+    )
+    assert len({base, with_left, with_right}) == 3

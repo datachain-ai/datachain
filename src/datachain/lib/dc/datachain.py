@@ -880,8 +880,11 @@ class DataChain:
 
     def _get_or_create_project(self, namespace: str, project_name: str) -> Project:
         """Get project or raise if creation not allowed."""
+        metastore = self.session.catalog.metastore
+        if metastore.is_default_project(project_name, namespace):
+            return metastore.default_project
         try:
-            return self.session.catalog.metastore.get_project(
+            return metastore.get_project(
                 project_name,
                 namespace,
                 create=is_studio(),
@@ -2473,16 +2476,29 @@ class DataChain:
                 on, right_on, f"Could not resolve {', '.join(errors)}"
             )
 
-        query = self._query.join(
-            right_ds._query, sqlalchemy.and_(*ops), inner, full, rname
-        )
-        query.feature_schema = None
-        ds = self._evolve(query=query)
-
         # Note: merge drops sys signals from both sides, make sure to not include it
         # in the resulting schema
         signals_schema = self.signals_schema.clone_without_sys_signals()
         right_signals_schema = right_ds.signals_schema.clone_without_sys_signals()
+
+        def _model_tags(schema: "SignalSchema") -> tuple[tuple[str, str], ...]:
+            return tuple(
+                (f"{k}{DEFAULT_DELIMITER}{TYPE_TAG_FIELD}", arm_selector(v))
+                for k, v in schema.values.items()
+                if ModelStore.is_pydantic(v)
+            )
+
+        query = self._query.join(
+            right_ds._query,
+            sqlalchemy.and_(*ops),
+            inner,
+            full,
+            rname,
+            left_tags=_model_tags(signals_schema) if full else (),
+            right_tags=_model_tags(right_signals_schema) if not inner else (),
+        )
+        query.feature_schema = None
+        ds = self._evolve(query=query)
 
         ds.signals_schema = signals_schema.merge(
             right_signals_schema,
@@ -3082,12 +3098,12 @@ class DataChain:
         if isinstance(path, str) and "://" in path:
             from datachain.client.fsspec import Client
 
+            client = Client.get_implementation(path)
+            storage = client.storage_uri(client.split_url(path)[0])
             fs_kwargs = {
-                **self._query.catalog.client_config,
+                **self._query.catalog.client_config_for(storage),
                 **(fs_kwargs or {}),
             }
-
-            client = Client.get_implementation(path)
 
             if path.startswith("file://"):
                 # pyarrow does not handle file:// uris, and needs a direct path instead.
