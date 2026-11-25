@@ -112,6 +112,7 @@ def test_split_uri_pattern_edge_cases():
         ("f{-02..1}", ["f-02", "f-01", "f000", "f001"]),
         ("f{1..10..3}", ["f1", "f4", "f7", "f10"]),
         ("f{5..1..-2}", ["f5", "f3", "f1"]),
+        ("f{1..3..0}", ["f1", "f2", "f3"]),
         ("f{a..c}", ["fa", "fb", "fc"]),
         ("f{C..A}", ["fC", "fB", "fA"]),
         ("f{a..e..2}", ["fa", "fc", "fe"]),
@@ -125,12 +126,13 @@ def test_split_uri_pattern_edge_cases():
         ("f{aa..zz}", ["f{aa..zz}"]),
         ("f{\u00b2..\u00b3}", ["f{\u00b2..\u00b3}"]),
         ("f{\u0660..\u0663}", ["f{\u0660..\u0663}"]),
+        ("f{a..\u00e9}", ["f{a..\u00e9}"]),
         ("f{abc", ["f{abc"]),
         ("f{a,b", ["f{a,b"]),
         ("x}{a,b}", ["x}a", "x}b"]),
     ],
 )
-def test_expand_brace_pattern_as_bash(pattern, expanded):
+def test_expand_brace_pattern(pattern, expanded):
     assert expand_brace_pattern(pattern) == expanded
 
 

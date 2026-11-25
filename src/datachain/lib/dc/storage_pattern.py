@@ -47,8 +47,6 @@ def split_uri_pattern(uri: str) -> tuple[str, str | None]:
     start = next((i for i, s in enumerate(segments) if glob.has_magic(s)), None)
     if start is None:
         return uri, None
-    if sep and start == 0:  # a wildcard in the bucket name
-        return f"{scheme}://{segments[0]}/", "/".join(segments[1:]) or "*"
     base = "/".join(segments[:start])
     return f"{scheme}{sep}{base}/", "/".join(segments[start:])
 
@@ -101,7 +99,6 @@ def expand_brace_pattern(pattern: str) -> list[str]:
 
 
 def _brace_range(body: str) -> list[str] | None:
-    """The terms of a ``{x..y}`` or ``{x..y..step}`` range, or None."""
     if not (match := _RANGE.fullmatch(body)):
         return None
     first, last, step = match.groups()
@@ -115,7 +112,7 @@ def _brace_range(body: str) -> list[str] | None:
     start, stop = int(first), int(last)
     sign = 1 if stop >= start else -1
     # an end such as "01" or "-01" pads every term to the longer end, as bash
-    padded = any(re.fullmatch(r"-?0\d+", end) for end in (first, last))
+    padded = any(re.fullmatch(r"-?0[0-9]+", end) for end in (first, last))
     width = max(len(first), len(last)) if padded else 0
     return [f"{n:0{width}d}" for n in range(start, stop + sign, sign * step)]
 
@@ -184,7 +181,6 @@ def list_scope(
 
 
 def _folder(list_path: str) -> str:
-    """``list_path`` as the start of the paths in it: ``dir/``, or nothing."""
     folder = list_folder(list_path)
     return f"{folder}/" if folder else ""
 
@@ -205,7 +201,6 @@ def _segments(pattern: str, recursive: bool | None) -> list[str]:
 
 
 def _descends(segments: list[str]) -> bool:
-    """Whether the paths of ``segments`` can be below the listing's folder."""
     return len(segments) > 1 or segments == ["**"]
 
 
