@@ -59,7 +59,7 @@ def read_storage(
     Parameters:
         uri: Storage path(s) or URI(s). Can be a local path or start with a
             storage prefix like `s3://`, `gs://`, `az://`, `hf://` or "file:///".
-            Supports glob patterns, which match as in a shell:
+            Supports glob patterns:
               - `*` : any characters in one file or folder name
               - `?` : one character in a name
               - `[abc]`, `[a-z]`, `[^a]` : one character of a set
@@ -67,8 +67,7 @@ def read_storage(
               - `{a,b}` : alternatives
               - `{1..9}`, `{01..10}`, `{a..z}`, `{1..9..2}` : ranges
         type: read file as "binary", "text", or "image" data. Default is "binary".
-        recursive: search recursively for the given path. If False, a `**` in a
-            pattern matches no folders.
+        recursive: search recursively for the given path.
         update: list the storage again instead of reusing a saved listing.
             Default is False.
         anon: If True, we will treat cloud bucket as public one.
@@ -198,7 +197,7 @@ def _read_storage(
     file_values = []
     prepared_listings: set[str] = set()
 
-    for list_uri_to_use, patterns in storage_sources(uris):
+    for list_uri_to_use, patterns in storage_sources(uris, recursive):
         dc, list_uri, list_path = _prepare_listing(
             list_uri_to_use,
             session,
@@ -285,8 +284,7 @@ def list_storage(
     Parameters:
         uri: Storage URI(s), as in `read_storage`: buckets, folders or files,
             with glob patterns (`*`, `**`, `?`, `{a,b}`, `{1..9}`).
-        recursive: If False, list only the files directly in the folder, and a
-            `**` in a pattern matches no folders.
+        recursive: If False, list only the files directly in the folder.
         versions: As in `read_storage`, the rows are current files. If True,
             the default, on a versioned bucket they carry their version id. If
             False, they don't, and the listing is faster.
@@ -433,7 +431,7 @@ class Listing:
         scans: dict[str, dict[ListScope | None, list[listing_lib.PathFilter]]] = {}
         objects: list[_Object | _Scan] = []
         described: dict[str, tuple[str, str, str] | None] = {}
-        for uri, patterns in storage_sources(self.uris):
+        for uri, patterns in storage_sources(self.uris, self.recursive):
             client = Client.get_client(uri, cache, **self.client_config)  # type: ignore[arg-type]
             if uri not in described:  # URIs and braces can share a base
                 described[uri] = listing_lib.describe_listing(

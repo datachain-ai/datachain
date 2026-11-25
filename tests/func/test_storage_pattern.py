@@ -154,37 +154,26 @@ def test_recursive(tmp_dir):
     assert files == {"audio.mp3", "song1.mp3", "track2.mp3"}
 
 
+@pytest.mark.parametrize("recursive", [True, False])
 @pytest.mark.parametrize("pattern", GLOB_PATTERNS)
 def test_pattern_selects_the_files_python_glob_selects(
-    reports_dir, storage_paths, pattern
+    reports_dir, storage_paths, pattern, recursive
 ):
     expected = python_glob(reports_dir, pattern)
-    assert storage_paths(f"{reports_dir}/{pattern}") == expected
+    uri = f"{reports_dir}/{pattern}"
+    assert storage_paths(uri, recursive=recursive) == expected
 
 
-@pytest.mark.parametrize(
-    "pattern,expected",
-    [
-        ("**/report.json", ["report.json"]),
-        ("**", ["notreport.json", "report.json", "report1.json"]),
-        ("**/nested/*.json", ["nested/notreport.json", "nested/report.json"]),
-        ("*/report.json", ["a/report.json", "nested/report.json"]),
-        (
-            "{,*/report.json}",
-            [
-                "a/report.json",
-                "nested/report.json",
-                "notreport.json",
-                "report.json",
-                "report1.json",
-            ],
-        ),
-    ],
-)
-def test_pattern_without_recursion_matches_only_its_explicit_folders(
-    reports_dir, storage_paths, pattern, expected
+def test_folder_brace_alternative_without_recursion_lists_one_level(
+    reports_dir, storage_paths
 ):
-    assert storage_paths(f"{reports_dir}/{pattern}", recursive=False) == expected
+    assert storage_paths(f"{reports_dir}/{{,*/report.json}}", recursive=False) == [
+        "a/report.json",
+        "nested/report.json",
+        "notreport.json",
+        "report.json",
+        "report1.json",
+    ]
 
 
 def test_overlapping_brace_alternatives_return_each_file_once(

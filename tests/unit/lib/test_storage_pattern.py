@@ -151,7 +151,7 @@ def test_expand_brace_pattern(pattern, expanded):
     ],
 )
 def test_storage_sources_share_a_base_within_one_uri(uris, sources):
-    assert storage_sources(uris) == sources
+    assert storage_sources(uris, True) == sources
 
 
 @pytest.mark.parametrize(
@@ -167,7 +167,7 @@ def test_storage_sources_share_a_base_within_one_uri(uris, sources):
         ("dir", ("img_0*.jpg",), True, ListScope("dir/", "dir/img_0", True)),
         ("logs", ("2024-*/**",), True, ListScope("logs/", "logs/2024-", False)),
         ("logs", ("**/*.json",), True, None),
-        ("logs", ("**/*.json",), False, ListScope("logs/", "logs/", True)),
+        ("logs", ("**/*.json",), False, None),
         ("logs", ("2024/**/*.json",), False, ListScope("logs/", "logs/2024/", False)),
         ("", ("d*/x",), True, ListScope("", "d", False)),
         ("dir", ("a[0-9]/*",), True, ListScope("dir/", "dir/a", False)),

@@ -117,12 +117,14 @@ def _brace_range(body: str) -> list[str] | None:
     return [f"{n:0{width}d}" for n in range(start, stop + sign, sign * step)]
 
 
-def storage_sources(uris: Sequence) -> list[tuple[str, tuple[str, ...]]]:
+def storage_sources(
+    uris: Sequence, recursive: bool | None
+) -> list[tuple[str, tuple[str, ...]]]:
     """The URIs to list for ``uris``, in order and with repeats, each with the
-    glob patterns that select from its listing, none for all of it. Braces
-    expand; the alternatives of one URI with one base share its source, where
-    the folder itself is the pattern ``**``.
+    glob patterns that select from its listing: braces expanded, a glob listed
+    from its base.
     """
+    folder = "**" if recursive else "*"
     sources = []
     for uri in uris:
         bases: dict[str, dict[str | None, None]] = {}
@@ -130,7 +132,7 @@ def storage_sources(uris: Sequence) -> list[tuple[str, tuple[str, ...]]]:
             base, pattern = split_uri_pattern(normalize_storage_uri(expanded))
             bases.setdefault(base, {})[pattern] = None
         sources += [
-            (base, tuple(p or "**" for p in patterns) if any(patterns) else ())
+            (base, tuple(p or folder for p in patterns) if any(patterns) else ())
             for base, patterns in bases.items()
         ]
     return sources
@@ -139,15 +141,11 @@ def storage_sources(uris: Sequence) -> list[tuple[str, tuple[str, ...]]]:
 def path_filter(
     list_path: str, patterns: Sequence[str], recursive: bool | None
 ) -> PathFilter:
-    """The paths of its base's listing that a URI selects: those that match
-    one of its glob ``patterns``, or all of the base when it has none. GLOB's
-    ``*`` crosses ``/``, so a GLOB alone is exact in one folder or for a name
-    such as ``**/*.jpg``; other patterns are also matched folder by folder.
-    """
+    """The paths a URI with glob ``patterns`` selects from its base's listing."""
     if not patterns:
         return PathFilter.ls(list_path, recursive)
     folder = _folder(list_path)
-    alternatives = [_segments(p, recursive) for p in patterns]
+    alternatives = [_segments(p) for p in patterns]
     descends = any(_descends(s) for s in alternatives)
     paths = PathFilter.ls(list_path, descends)
     conditions = []
@@ -163,15 +161,15 @@ def list_scope(
     list_path: str, patterns: Sequence[str], recursive: bool | None
 ) -> ListScope | None:
     """The part of its folder's listing that a URI's paths can be in: the keys
-    that start with its patterns' literal head, one level only if none of them
-    descends. None when it is the whole listing.
+    that start with the patterns' literal head, one level only if the URI
+    doesn't recurse. None when it is the whole listing.
     """
     folder = _folder(list_path)
     if not patterns:
         return None if recursive else ListScope(folder, folder, True)
     heads, descends = [], False
     for pattern in patterns:
-        segments = _segments(pattern, recursive)
+        segments = _segments(pattern)
         heads.append(re.split(r"[*?[]", _glob(segments), maxsplit=1)[0])
         descends = descends or _descends(segments)
     prefix = folder + os.path.commonprefix(heads)  # noqa: RUF071 a key prefix
@@ -185,19 +183,13 @@ def _folder(list_path: str) -> str:
     return f"{folder}/" if folder else ""
 
 
-def _segments(pattern: str, recursive: bool | None) -> list[str]:
-    """``pattern``'s folders and name, with one ``**`` for a run of them.
-    Without ``recursive``, a ``**`` is no folders, or the files of its folder
-    when it is the name.
-    """
+def _segments(pattern: str) -> list[str]:
+    """``pattern``'s folders and name, with one ``**`` for a run of them."""
     segments: list[str] = []
     for segment in pattern.split("/"):
         if segment != "**" or segments[-1:] != ["**"]:
             segments.append(segment)
-    if recursive:
-        return segments
-    *folders, name = segments
-    return [s for s in folders if s != "**"] + ["*" if name == "**" else name]
+    return segments
 
 
 def _descends(segments: list[str]) -> bool:
