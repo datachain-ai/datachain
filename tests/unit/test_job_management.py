@@ -1,9 +1,10 @@
 import pytest
 
 import datachain as dc
+from datachain.catalog import Catalog, get_catalog
 from datachain.data_storage import JobStatus
 from datachain.query.session import Session
-from tests.utils import reset_session_job_state
+from tests.utils import reset_session_job_state, skip_if_not_sqlite
 
 
 @pytest.fixture
@@ -31,9 +32,7 @@ def test_reuse_job_from_env_var(test_session, monkeypatch):
     assert Session._JOB_STATUS is None
 
 
-def test_get_or_create_creates_job(test_session, patch_argv, monkeypatch):
-    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
-
+def test_get_or_create_creates_job(test_session, patch_argv, clean_job_state):
     job = test_session.get_or_create_job()
 
     db_job = test_session.catalog.metastore.get_job(job.id)
@@ -43,9 +42,7 @@ def test_get_or_create_creates_job(test_session, patch_argv, monkeypatch):
     assert db_job.status == JobStatus.RUNNING
 
 
-def test_finalize_success(test_session, patch_argv, monkeypatch):
-    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
-
+def test_finalize_success(test_session, patch_argv, clean_job_state):
     job = test_session.get_or_create_job()
 
     test_session._finalize_job_success()
@@ -68,10 +65,8 @@ def test_finalize_failure(
     exception_type,
     expected_status,
     should_have_error,
-    monkeypatch,
+    clean_job_state,
 ):
-    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
-
     job = test_session.get_or_create_job()
 
     try:
@@ -94,9 +89,7 @@ def test_finalize_failure(
         assert db_job.error_stack == ""
 
 
-def test_get_or_create_is_idempotent(test_session, patch_argv, monkeypatch):
-    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
-
+def test_get_or_create_is_idempotent(test_session, patch_argv, clean_job_state):
     job1 = test_session.get_or_create_job()
     job2 = test_session.get_or_create_job()
 
@@ -104,9 +97,7 @@ def test_get_or_create_is_idempotent(test_session, patch_argv, monkeypatch):
     assert Session._CURRENT_JOB is job1
 
 
-def test_get_or_create_links_to_parent(test_session, patch_argv, monkeypatch):
-    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
-
+def test_get_or_create_links_to_parent(test_session, patch_argv, clean_job_state):
     job1 = test_session.get_or_create_job()
     test_session._finalize_job_success()
 
@@ -120,10 +111,8 @@ def test_get_or_create_links_to_parent(test_session, patch_argv, monkeypatch):
     assert job2.rerun_from_job_id == job1.id
 
 
-def test_nested_sessions_share_same_job(test_session, patch_argv, monkeypatch):
+def test_nested_sessions_share_same_job(test_session, patch_argv, clean_job_state):
     """Test that nested sessions share the same job (one job per process)."""
-    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
-
     # Outer session creates a job
     job1 = test_session.get_or_create_job()
 
@@ -144,8 +133,9 @@ def test_nested_sessions_share_same_job(test_session, patch_argv, monkeypatch):
     assert job3 is job1
 
 
-def test_except_hook_delegates_to_original(test_session, patch_argv, monkeypatch):
-    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
+def test_except_hook_delegates_to_original(
+    test_session, patch_argv, monkeypatch, clean_job_state
+):
     monkeypatch.setattr("sys.ps1", None, raising=False)
 
     # Set up global session for this test
@@ -175,8 +165,9 @@ def test_except_hook_delegates_to_original(test_session, patch_argv, monkeypatch
     assert db_job.status == JobStatus.FAILED
 
 
-def test_except_hook_preserves_interactive_session(test_session, monkeypatch):
-    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
+def test_except_hook_preserves_interactive_session(
+    test_session, monkeypatch, clean_job_state
+):
     monkeypatch.setattr("sys.ps1", ">>> ", raising=False)
     called = []
     monkeypatch.setattr(
@@ -226,3 +217,142 @@ def test_job_is_created_after_save(test_session, monkeypatch, use_datachain_job_
     dataset = test_session.catalog.get_dataset("my-ds", versions=None)
     result_job_id = dataset.get_version(dataset.latest_version).job_id
     assert result_job_id == test_session.get_or_create_job().id
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize(
+    ("exc", "expected_status"),
+    [
+        (None, JobStatus.COMPLETE),
+        (SystemExit(0), JobStatus.COMPLETE),
+        (SystemExit(None), JobStatus.COMPLETE),
+        (SystemExit(1), JobStatus.FAILED),
+        (ValueError("boom"), JobStatus.FAILED),
+        (KeyboardInterrupt(), JobStatus.CANCELED),
+    ],
+    ids=[
+        "normal-exit",
+        "sys-exit-0",
+        "sys-exit-none",
+        "sys-exit-1",
+        "exception",
+        "keyboard-interrupt",
+    ],
+)
+def test_in_memory_session_exit_finalizes_owned_job(
+    clean_job_state, exc, expected_status
+):
+    s = Session("t", in_memory=True)
+    with s.catalog.metastore.clone(use_new_connection=True) as peer:
+        if exc is None:
+            with s:
+                dc.read_values(x=[1], session=s).save("a")
+                job = s.get_job()
+                hook = Session._JOB_FINALIZE_HOOK
+                assert job is not None
+                assert hook is not None
+                assert peer.get_job(job.id).status == JobStatus.RUNNING
+        else:
+            with pytest.raises(type(exc)):
+                with s:
+                    dc.read_values(x=[1], session=s).save("a")
+                    job = s.get_job()
+                    hook = Session._JOB_FINALIZE_HOOK
+                    assert job is not None
+                    assert hook is not None
+                    assert peer.get_job(job.id).status == JobStatus.RUNNING
+                    raise exc
+        assert peer.get_job(job.id).status == expected_status
+        assert s.get_job() is None
+        assert Session._JOB_FINALIZE_HOOK is None
+        hook()  # no-op even if invoked after in-memory DB is closed
+
+
+@skip_if_not_sqlite
+def test_inner_in_memory_job_retires_on_exit_for_outer_session(
+    catalog, clean_job_state
+):
+    with Session("outer", catalog=catalog) as outer:
+        with Session("inner", in_memory=True) as inner:
+            inner_job = inner.get_or_create_job()
+        outer_job = outer.get_or_create_job()
+        assert outer_job.id != inner_job.id
+        assert catalog.metastore.get_job(outer_job.id).status == JobStatus.RUNNING
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize("cloned_metastore", [False, True])
+def test_in_memory_session_finalizes_job_created_via_catalog_view(
+    clean_job_state, cloned_metastore
+):
+    s = Session("t", in_memory=True)
+    with s.catalog.metastore.clone(use_new_connection=True) as peer:
+        with s:
+            if cloned_metastore:
+                view_cat = Catalog(
+                    metastore=s.catalog.metastore.clone(use_new_connection=True),
+                    warehouse=s.catalog.warehouse.clone(use_new_connection=True),
+                    in_memory=True,
+                )
+            else:
+                view_cat = s.catalog.copy()
+            try:
+                view = s._with_catalog(view_cat)
+                job = view.get_or_create_job()
+                assert peer.get_job(job.id).status == JobStatus.RUNNING
+            finally:
+                if cloned_metastore:
+                    view_cat.metastore.close_on_exit()
+                    view_cat.warehouse.close_on_exit()
+        assert peer.get_job(job.id).status == JobStatus.COMPLETE
+
+
+@skip_if_not_sqlite
+def test_inner_in_memory_session_does_not_finalize_outer_job(catalog, clean_job_state):
+    with Session("outer", catalog=catalog) as outer:
+        job = outer.get_or_create_job()
+        with Session("inner", in_memory=True) as inner:
+            assert inner.get_or_create_job() == job
+        assert catalog.metastore.get_job(job.id).status == JobStatus.RUNNING
+    assert catalog.metastore.get_job(job.id).status == JobStatus.RUNNING
+
+
+@skip_if_not_sqlite
+def test_borrowed_in_memory_catalog_session_exit_leaves_job_running(clean_job_state):
+    in_mem = get_catalog(in_memory=True)
+    try:
+        with Session("borrowed", catalog=in_mem) as s:
+            job = s.get_or_create_job()
+        assert in_mem.metastore.get_job(job.id).status == JobStatus.RUNNING
+    finally:
+        in_mem.metastore.close_on_exit()
+        in_mem.warehouse.close_on_exit()
+
+
+@skip_if_not_sqlite
+def test_file_backed_session_exit_leaves_job_running_for_process_exit(
+    tmp_dir, clean_job_state
+):
+    with Session("file", in_memory=False) as s:
+        job = s.get_or_create_job()
+        peer = s.catalog.metastore.clone(use_new_connection=True)
+    with peer:
+        assert peer.get_job(job.id).status == JobStatus.RUNNING
+
+
+@skip_if_not_sqlite
+def test_in_memory_session_exit_cleans_up_when_job_finalization_raises(
+    clean_job_state, monkeypatch
+):
+    def boom(*args, **kwargs):
+        raise RuntimeError("finalize failed")
+
+    with pytest.raises(RuntimeError, match="finalize failed"):
+        with Session("t", in_memory=True) as s:
+            s.get_or_create_job()
+            monkeypatch.setattr(s.catalog.metastore, "set_job_status", boom)
+
+    assert s not in Session.SESSION_CONTEXTS
+    assert s.catalog.metastore.db.is_closed
+    assert s.get_job() is None
+    assert Session._JOB_FINALIZE_HOOK is None

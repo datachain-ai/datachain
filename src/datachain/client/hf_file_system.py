@@ -1,8 +1,8 @@
 """Hugging Face filesystem support, imported only for HF clients."""
 
-import functools
 from contextlib import contextmanager
 from dataclasses import replace
+from typing import Any
 from urllib.parse import quote
 
 from huggingface_hub import HfFileSystem, hf_file_system, hf_hub_url
@@ -28,19 +28,23 @@ def _restore_permission_error(
     return err
 
 
-@functools.cache
-def _permission_error_cls(cls: type[Exception]) -> type[Exception]:
-    return type(
-        cls.__name__,
-        (cls, PermissionError),
-        {
-            "__module__": cls.__module__,
-            "__reduce_ex__": lambda self, _proto: (
-                _restore_permission_error,
-                (cls, self.args, self.__dict__.copy()),
-            ),
-        },
-    )
+_PERMISSION_ERROR_CLASSES: dict[type[Exception], Any] = {}
+
+
+def _permission_error_cls(cls: type[Exception]) -> Any:
+    if (perm_cls := _PERMISSION_ERROR_CLASSES.get(cls)) is None:
+        perm_cls = _PERMISSION_ERROR_CLASSES[cls] = type(
+            cls.__name__,
+            (cls, PermissionError),
+            {
+                "__module__": cls.__module__,
+                "__reduce_ex__": lambda self, _proto: (
+                    _restore_permission_error,
+                    (cls, self.args, self.__dict__.copy()),
+                ),
+            },
+        )
+    return perm_cls
 
 
 def _mark_permission_error(err: BaseException | None) -> bool:

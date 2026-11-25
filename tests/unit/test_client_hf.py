@@ -686,7 +686,8 @@ def test_auth_http_error_is_also_permission_error(catalog, monkeypatch):
     with pytest.raises(PermissionError) as gated_exc:
         fs.resolve_path("datasets/org/gated/a.txt")
     restored_gated = pickle.loads(pickle.dumps(gated_exc.value))  # noqa: S301
-    assert isinstance(restored_gated, (FileNotFoundError, PermissionError))
+    assert isinstance(restored_gated, FileNotFoundError)
+    assert isinstance(restored_gated, PermissionError)
 
     monkeypatch.setattr(
         hf_file_system.HfFileSystem,
@@ -699,7 +700,8 @@ def test_auth_http_error_is_also_permission_error(catalog, monkeypatch):
         fs.resolve_path("datasets/org/repo/a.txt")
     assert isinstance(exc_info.value, HfHubHTTPError)
     restored_401 = pickle.loads(pickle.dumps(exc_info.value))  # noqa: S301
-    assert isinstance(restored_401, (HfHubHTTPError, PermissionError))
+    assert isinstance(restored_401, HfHubHTTPError)
+    assert isinstance(restored_401, PermissionError)
     with pytest.raises(PermissionError):
         fs.ls("datasets/org/repo")
     with pytest.raises(PermissionError):

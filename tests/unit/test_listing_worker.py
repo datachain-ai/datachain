@@ -21,6 +21,7 @@ from datachain.client import listing_worker
 from datachain.client.fsspec import Client, RangeListedClient
 from datachain.client.listing_worker import (
     Pool,
+    Rows,
     _command,
     _receive,
     _serve,
@@ -29,11 +30,14 @@ from datachain.client.listing_worker import (
 )
 from datachain.client.ranges import Keep, Page, RangeListing
 from datachain.lib.file import FileRow
+from datachain.lib.listing import PageEncoder, rows_digest
 
 ROOT = os.path.dirname(os.path.dirname(datachain.__file__))
 
 
 class FakeClient:
+    encode_page = None
+
     def __init__(self, out, fail=False):
         self.out, self.fail, self.probed_before_ready = out, fail, None
         self.probed = None
@@ -82,15 +86,17 @@ def test_a_child_replies_none_to_a_page_it_fails():
 
 class UnpicklableClient(FakeClient):
     async def _list_page(self, prefix, start_after, token, hi=None, page_size=None):
-        if page_size is None:  # a page whose rows don't pickle
-            return Page([(lambda: None,)], "a", "a", None)  # type: ignore[list-item]
+        if page_size is None:  # a page whose rows don't pickle, unless start_after="ok"
+            row = FileRow("s3://b", "a") if start_after == "ok" else (lambda: None,)
+            return Page([row], "a", "a", None)  # type: ignore[list-item]
 
 
 def test_a_child_replies_none_to_a_page_that_does_not_pickle():
     out = io.BytesIO()
     client = UnpicklableClient(out)
 
-    assert serve(client, out, (7, "", None, None)) == [None, (7, None)]
+    ready, bad, ok = serve(client, out, (7, "", None, None), (8, "ok", None, None))
+    assert (ready, bad, list(ok[1][0])) == (None, (7, None), [FileRow("s3://b", "a")])
 
 
 def test_a_child_ends_on_a_request_it_cannot_read():
@@ -139,10 +145,13 @@ class KeysClient(RangeListedClient):
     PREFIX = "fake://"
     protocol = "fake"
     LIST_PAGE_SIZE = 4
+    ignores_start = False
+    truncated_folders = False
 
     def __init__(self, keys: list[tuple[str, str]], delay=None) -> None:
         super().__init__("bucket", {}, None)  # type: ignore[arg-type]
         self.keys, self.delay, self.requests = keys, delay, 0
+        self.calls: list[tuple[str, object, str]] = []
 
     def info_to_file(self, v, path):
         raise NotImplementedError
@@ -151,11 +160,35 @@ class KeysClient(RangeListedClient):
         self, prefix, start_after, token, hi=None, page_size=None, delimiter=""
     ) -> Page:
         self.requests += 1
+        self.calls.append((start_after, token, delimiter))
         if self.delay:
             await asyncio.sleep(self.delay())
+        after = "" if self.ignores_start else start_after
+        if delimiter:
+            files = [
+                (k, v)
+                for k, v in self.keys
+                if k.startswith(prefix)
+                and delimiter not in k[len(prefix) :]
+                and k > after
+            ]
+            folders = sorted(
+                {
+                    k[: k.find(delimiter, len(prefix)) + len(delimiter)]
+                    for k, _ in self.keys
+                    if k.startswith(prefix)
+                    and delimiter in k[len(prefix) :]
+                    and k > after
+                }
+            )
+            rows = [FileRow("fake://bucket", k, 1, v) for k, v in files]
+            first = files[0][0] if files else None
+            last = max([*(k for k, _ in files), *folders], default=None)
+            folder_token = "more" if self.truncated_folders else None
+            return Page(rows, first, last, folder_token, folders=tuple(folders))
         if token is None:
             token = next(
-                (i for i, (k, _) in enumerate(self.keys) if k > start_after),
+                (i for i, (k, _) in enumerate(self.keys) if k > after),
                 len(self.keys),
             )
         chunk = self.keys[token : token + (page_size or self.LIST_PAGE_SIZE)]
@@ -193,6 +226,7 @@ def test_ranges_that_split_while_pages_are_in_flight_are_exact(seed, mocker):
     mocker.patch("datachain.client.ranges.LIST_WORKERS", 8)
     mocker.patch("datachain.client.ranges.YOUNG_PAGES", 1)
     client = slow_client(seed)
+    client.NAMES_FOLDERS = bool(seed % 2)
 
     pages = _listed(client, processes=False)
 
@@ -383,13 +417,63 @@ def test_a_paused_parent_reads_a_reply_that_came_meanwhile(mocker):
         pool.children = {proc: replies}
         pending = asyncio.create_task(pool.list_page("", None, None))
         await asyncio.sleep(0.3)  # past the timeout: the parent was paused
-        next(iter(replies.values())).set_result(([], None, None, None))
+        next(iter(replies.values())).set_result((Rows([]), None, None, None))
 
-        assert await pending == Page([], None, None, None)
+        page = await pending
+        assert (list(page.rows), *page[1:]) == ([], *Page([], None, None, None)[1:])
         assert proc.returncode is None
         assert proc in pool.children
 
     asyncio.run(check())
+
+
+@pytest.mark.parametrize("encoded", [False, True], ids=["rows", "stored-page"])
+def test_child_pages_decode_lazily_in_the_consumer(test_session, mocker, encoded):
+    warehouse = test_session.catalog.warehouse
+    columns = warehouse.dataset_row_cls.listing_columns()
+    encode = PageEncoder(warehouse.row_codec(columns), True)
+    encode_page = encode if encoded else None
+    rows = [
+        FileRow("fake://bucket", "a", 1, "v1"),
+        FileRow("fake://bucket", "b", 2, "v2"),
+    ]
+    client = KeysClient([(r.path, r.version) for r in rows])
+    client.encode_page = encode_page
+    frame = dump((0, ((encode_page or Rows)(rows), "a", "b", None)))
+    loads = mocker.spy(pickle, "loads")
+
+    async def receive_page():
+        proc = Proc()
+        proc.stdout.feed_data(dump(None))
+        mocker.patch.object(listing_worker, "_spawn", mock.AsyncMock(return_value=proc))
+        pool = Pool(client, "", 1)
+        proc.stdin.write = lambda _: pool.children and proc.stdout.feed_data(frame)
+        pool.start()
+        while not pool.children:  # noqa: ASYNC110
+            await asyncio.sleep(0)
+        page = await pool.list_page("", None, None)
+        pool.close()
+        await pool.wait_closed()
+        return page
+
+    page = asyncio.run(receive_page())
+    assert len(page.rows) == 2
+    assert loads.call_count == 2  # the ready frame and the page frame, not the rows
+
+    if not encoded:
+        assert (page.rows[0], list(page.rows)) == (rows[0], rows)
+        assert loads.call_count == 3
+        assert list(page.rows) == rows
+        assert loads.call_count == 3
+    else:
+        expected = [encode.codec.encode(r) for r in rows]
+        assert (page.rows.rows, page.rows.digest) == (
+            expected,
+            rows_digest(rows, True),
+        )
+        assert loads.call_count == 3
+        assert page.rows.rows == expected
+        assert loads.call_count == 3
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
@@ -717,6 +801,63 @@ def test_a_probe_that_gets_its_token_back_fails():
 
     with pytest.raises(RuntimeError, match="returned the page token it was given"):
         sync(get_loop(), client._probe, "", "a")
+
+
+class ForbiddenDelimiterClient(KeysClient):
+    NAMES_FOLDERS = True
+
+    async def _list_page(
+        self, prefix, start_after, token, hi=None, page_size=None, delimiter=""
+    ):
+        if delimiter:
+            self.calls.append((start_after, token, delimiter))
+            raise PermissionError("delimiter=/ is forbidden by bucket policy")
+        return await super()._list_page(
+            prefix, start_after, token, hi=hi, page_size=page_size
+        )
+
+
+def test_folder_cut_falls_back_to_flat_listing_when_delimiter_is_rejected(caplog):
+    keys = [(f"dir{i:02d}/file.txt", "v1") for i in range(10)]
+    client = ForbiddenDelimiterClient(keys)
+    with caplog.at_level("DEBUG", logger="datachain"):
+        pages = _listed(client, processes=False)
+
+    assert sorted((r.path, r.version) for p in pages for r in p) == keys
+    assert ("dir03/file.txt", None, "/") in client.calls
+    assert not ({lo for lo, _, _ in client.calls} & {f"dir{i:02d}/" for i in range(10)})
+    assert "no folder cut" in caplog.text
+
+
+def test_folder_cut_starts_ranges_at_folders_without_starting_children(mocker):
+    start = mocker.spy(Pool, "start")
+    keys = [(f"dir{i:02d}/file.txt", "v1") for i in range(20)]
+    client = KeysClient(keys)
+    client.NAMES_FOLDERS = True
+
+    assert sorted((r.path, r.version) for p in _listed(client) for r in p) == keys
+    assert ("dir03/file.txt", None, "/") in client.calls
+    starts = {lo for lo, token, delim in client.calls if not delim and token is None}
+    assert starts == {"", *(f"dir{i:02d}/" for i in range(4, 20))}
+    assert not start.call_count
+
+
+@pytest.mark.parametrize("mode", ["root-file", "folders-only", "truncated-folders"])
+def test_folder_cut_skips_ignored_start_after_and_truncated_folder_pages(mode):
+    folders = [(f"dir{i:02d}/file.txt", "v1") for i in range(10)]
+    keys = [("a.txt", "v1"), *folders] if mode == "root-file" else folders
+    client = KeysClient(keys)
+    client.NAMES_FOLDERS = True
+    client.ignores_start = mode != "truncated-folders"
+    client.truncated_folders = mode == "truncated-folders"
+
+    pages = _listed(client, processes=False)
+
+    assert sorted((r.path, r.version) for p in pages for r in p) == keys
+    assert any(delim == "/" for _, _, delim in client.calls)
+    assert not ({lo for lo, _, _ in client.calls} & {f"dir{i:02d}/" for i in range(10)})
+    if client.ignores_start:  # no range starts at a key
+        assert all(not lo for lo, tok, d in client.calls if not d and tok is None)
 
 
 def test_a_frozen_app_lists_in_one_process():

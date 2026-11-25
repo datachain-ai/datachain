@@ -12,6 +12,7 @@ import pytest
 import datachain as dc
 from datachain.client.fileslice import FileWrapper
 from datachain.client.fsspec import Client
+from datachain.error import DataChainError
 from datachain.func import path as pathfunc
 from datachain.lib.file import AudioFile, AudioFragment, File
 from datachain.lib.udf import Mapper, UdfRunError
@@ -1370,3 +1371,43 @@ def test_parallel_udf_imports_sibling_modules_from_another_directory(
         run_test_subprocess([sys.executable, str(script)], env)
     )
     assert rc == 0, stderr
+
+
+def test_map_with_user_column_named_partition_id_preserves_column(test_session):
+    chain = dc.read_values(
+        idx=[0, 1, 2, 3, 4],
+        key=["a", "a", "b", "b", "b"],
+        partition_id=[10, None, 5, None, 1],
+        session=test_session,
+    )
+    assert (
+        chain.map(label=lambda key, partition_id: f"{key}:{partition_id}")
+        .order_by("idx")
+        .to_values("label")
+    ) == ["a:10", "a:None", "b:5", "b:None", "b:1"]
+
+
+def test_agg_with_user_column_named_partition_id_groups_by_partition_by(test_session):
+    chain = dc.read_values(
+        key=["a", "a", "b", "b", "b"],
+        partition_id=[10, None, 5, None, 1],
+        session=test_session,
+    )
+    assert (
+        chain.agg(cnt=lambda key: [len(key)], partition_by="key", output=int)
+        .order_by("cnt")
+        .to_values("cnt")
+    ) == [2, 3]
+
+
+def test_udf_with_user_column_named_sys_partition_id_raises(test_session):
+    chain = dc.read_values(
+        num=[1, 2, 3, 4],
+        k=["a", "a", "b", "b"],
+        sys__partition_id=[9, 8, 9, 8],
+        session=test_session,
+    )
+    with pytest.raises(DataChainError, match="sys__partition_id"):
+        chain.map(r=lambda num: num * 2, output=int).to_list("r")
+    with pytest.raises(DataChainError, match="sys__partition_id"):
+        chain.agg(r=lambda num: [sum(num)], partition_by="k", output=int).to_list("r")
