@@ -8,7 +8,7 @@ import datachain as dc
 from datachain.catalog import Catalog
 from datachain.data_storage import JobQueryType, JobStatus
 from datachain.dataset import SESSION_DATASET_PREFIX, DatasetStatus
-from datachain.error import DataChainError, DatasetNotFoundError
+from datachain.error import DataChainError, DatasetNotFoundError, TableMissingError
 from datachain.query.session import Session
 from tests.utils import skip_if_not_sqlite
 
@@ -351,3 +351,15 @@ def test_cleanup_removes_temporary_data_from_closed_separate_database(
     catalog, catalog_tmpfile
 ):
     _check_closed_catalog_cleanup(catalog, catalog_tmpfile)
+
+
+@skip_if_not_sqlite
+def test_session_cleanup_tolerates_dropped_metastore_tables(catalog):
+    metastore = catalog.metastore
+    session = Session("dropped", catalog=catalog)
+    metastore.db.drop_table(metastore._datasets_dependencies, if_exists=True)
+    metastore.db.drop_table(metastore._dataset_version_jobs, if_exists=True)
+    metastore.db.drop_table(metastore._datasets_versions)
+    with pytest.raises(TableMissingError):
+        list(metastore.list_datasets_by_prefix("session_"))
+    session._cleanup_temp_datasets()

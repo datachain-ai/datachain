@@ -1,6 +1,7 @@
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, get_origin, get_type_hints
 
+from datachain.catalog import is_namespace_local
 from datachain.dataset import parse_dataset_with_version
 from datachain.error import (
     DatasetNotFoundError,
@@ -185,6 +186,7 @@ def read_dataset(
         namespace_name=namespace,
     )
 
+    resolved_dataset = None
     if version is not None:
         dataset = session.catalog.get_dataset_with_remote_fallback(
             name,
@@ -223,6 +225,14 @@ def read_dataset(
             # This handles cases like "1.2.3" which are exact versions, not specifiers
             pass
 
+        # Optimization: for local or Studio datasets we already have all metadata,
+        # so pass it down to avoid an extra lookup in DatasetQuery (remote datasets
+        # stay None so DatasetQuery still pulls missing version data).
+        if (is_studio() or is_namespace_local(namespace_name)) and dataset.has_version(
+            str(version)
+        ):
+            resolved_dataset = dataset
+
     if settings:
         _settings = Settings(**settings)
     else:
@@ -235,6 +245,7 @@ def read_dataset(
         version=version,  #  type: ignore[arg-type]
         session=session,
         update=update,
+        dataset=resolved_dataset,
     )
 
     signals_schema = SignalSchema({"sys": Sys})

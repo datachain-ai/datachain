@@ -13,6 +13,7 @@ from xml.etree.ElementTree import Element, ParseError, fromstring
 from aiobotocore.parsers import AioResponseParserFactory, AioRestXMLParser
 from aiobotocore.session import AioSession
 from botocore import handlers
+from botocore.configprovider import ConstantProvider
 from botocore.exceptions import ClientError, NoCredentialsError
 from botocore.model import Shape
 from botocore.session import Session
@@ -395,6 +396,9 @@ class _S3FileSystem(S3FileSystem):
             refresh = refresh or (self._s3 is not None and was_anonymous != self.anon)
         if self.session is None or (refresh and mine):
             self.session = _ListingSession(**self.kwargs)
+        store = self.session.get_component("config_store")
+        for name, val in (("retry_mode", "adaptive"), ("max_attempts", 11)):
+            store.get_config_provider(name).set_default_provider(ConstantProvider(val))
         self._session_is_owned = False  # s3fs keeps the session, even on refresh
         return await super().set_session(refresh, kwargs)
 

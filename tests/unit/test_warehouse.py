@@ -22,6 +22,7 @@ from datachain.data_storage.codec import (
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SQLiteWarehouse
 from datachain.data_storage.writer import MAX_SEQ
+from datachain.error import TableMissingError
 from datachain.lib.file import File
 from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.udf import JsonSerializationError, OutputRows, UdfError
@@ -456,6 +457,19 @@ def test_check_value_converts_array_items(value, col_type, expected):
 def test_check_value_does_not_re_encode_dict_array_items():
     value = [{"a": 1}, {"b": 2}]
     assert check_value(Array(JSON()))(value) == value
+
+
+@skip_if_not_sqlite
+def test_get_table_evicts_stale_cached_table_when_dropped_out_of_band(warehouse):
+    table = warehouse.create_udf_table([sa.Column("x", Int64)], name="udf_cached_check")
+    first = warehouse.get_table("udf_cached_check")
+    assert warehouse.get_table("udf_cached_check") is first
+    assert warehouse.db.get_table("udf_cached_check") is first
+
+    warehouse.db.execute_str(f"DROP TABLE {table.name}")
+    with pytest.raises(TableMissingError):
+        warehouse.get_table("udf_cached_check")
+    assert "udf_cached_check" not in warehouse.db.metadata.tables
 
 
 def test_encode_arrow_keeps_arrow_batch_when_all_columns_support_it():

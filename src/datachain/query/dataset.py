@@ -2437,6 +2437,7 @@ class DatasetQuery:
         include_incomplete: bool = False,
         steps: Sequence[Step] = (),
         checkpoints_enabled: bool = True,
+        dataset: "DatasetRecord | None" = None,
     ) -> None:
         self.session = Session.get(session, catalog=catalog, in_memory=in_memory)
         if catalog is not None and catalog is not self.session.catalog:
@@ -2464,6 +2465,8 @@ class DatasetQuery:
         self.dialect = self.catalog.warehouse.db.dialect
 
         if name is None:
+            if dataset is not None:
+                raise ValueError("Cannot pass 'dataset' without 'name'")
             return
 
         self._init_rooted_query(
@@ -2473,6 +2476,7 @@ class DatasetQuery:
             namespace_name=namespace_name,
             update=update,
             include_incomplete=include_incomplete,
+            dataset=dataset,
         )
 
     def _init_rooted_query(
@@ -2483,6 +2487,7 @@ class DatasetQuery:
         namespace_name: str | None = None,
         update: bool = False,
         include_incomplete: bool = False,
+        dataset: "DatasetRecord | None" = None,
     ) -> None:
         self.name = name
         if version:
@@ -2493,7 +2498,9 @@ class DatasetQuery:
         if project_name is None:
             project_name = self.catalog.metastore.default_project_name
 
-        if is_listing_dataset(name) and not version:
+        if dataset is not None:
+            self._set_starting_step(dataset)
+        elif is_listing_dataset(name) and not version:
             # not setting query step yet as listing dataset might not exist at
             # this point
             self.list_ds_name = name
