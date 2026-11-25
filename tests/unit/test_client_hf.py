@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, Mock
 import httpx
 import pytest
 from fsspec.asyn import sync
-from huggingface_hub import hf_api, hf_file_system
+from huggingface_hub import hf_file_system
 from huggingface_hub.hf_api import RepoFile
 from huggingface_hub.hf_file_system import HfFileSystemFile
 from huggingface_hub.utils import (
@@ -161,7 +161,9 @@ def test_recursive_listing_accepts_single_files_and_empty_directories(
     monkeypatch.setattr(
         fs,
         "info",
-        lambda path, *a, **kw: (info_calls.append((path, kw)), {"type": "directory"})[1],
+        lambda path, *a, **kw: (info_calls.append((path, kw)), {"type": "directory"})[
+            1
+        ],
     )
     assert (
         sync(get_loop(), lambda: _collect_hf_listing(client, "org/repo@main/file"))
@@ -775,7 +777,9 @@ def test_version_only_file_without_size_does_not_fail_size_check(
     client = HfClient("datasets", {"token": False}, catalog.cache)
     monkeypatch.setattr(client.fs, "_info", AsyncMock(return_value={"size": 4}))
     for rev in (commit, "v1"):
-        client.check_unchanged(File(source=client.uri, path="org/repo/a.txt", version=rev))
+        client.check_unchanged(
+            File(source=client.uri, path="org/repo/a.txt", version=rev)
+        )
     with pytest.raises(FileNotFoundError, match="size was 0, now 4"):
         client.check_unchanged(
             File(
