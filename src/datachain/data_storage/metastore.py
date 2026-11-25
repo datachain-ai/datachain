@@ -1643,12 +1643,6 @@ class AbstractDBMetastore(AbstractMetastore):
         versions: Sequence[str] | None = None,
         include_removed: bool = False,
     ) -> "Select":
-        if not (
-            self.db.has_table(self._datasets.name)
-            and self.db.has_table(self._datasets_versions.name)
-        ):
-            raise TableMissingError
-
         n = self._namespaces
         p = self._projects
         d = self._datasets
@@ -1739,6 +1733,8 @@ class AbstractDBMetastore(AbstractMetastore):
     def _base_list_datasets_query(
         self, include_incomplete: bool = True, include_removed: bool = False
     ) -> "Select":
+        if not self.db.has_table(self._datasets_versions.name):
+            raise TableMissingError  # session cleanup, after tests drop tables
         return self._get_dataset_query(
             self._namespaces_fields,
             self._projects_fields,
