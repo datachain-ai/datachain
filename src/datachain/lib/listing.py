@@ -223,36 +223,24 @@ class PathFilter:
     def matcher(self) -> "Callable[[str], bool]":
         """The filter as a function of a path, built once for many rows."""
 
-        def check(op: str, value: str) -> "Callable[[str], bool]":
+        def check(op: str, value: str) -> "Callable[[str], object]":
             if op == "eq":
                 return value.__eq__
-            if op in ("glob", "pattern"):
-                regex = _glob_regex(value) if op == "glob" else _pattern_matcher(value)
-                return lambda path: regex is not None and bool(regex.fullmatch(path))
+            if op == "glob":
+                return _glob_regex(value).fullmatch
+            if op == "pattern":
+                return _pattern_matcher(value).fullmatch
             return lambda path: parent_path(path) == value
 
         any_of = [check(*c) for c in self.any_of]
         alternatives = [[check(*c) for c in a] for a in self.alternatives]
+        return lambda path: (
+            (not any_of or any(c(path) for c in any_of))
+            and (not alternatives or any(all(c(path) for c in a) for a in alternatives))
+        )
 
-        def match(path: str) -> bool:
-            # plain loops: generators cost more than the checks on most rows
-            if any_of:
-                for check_path in any_of:
-                    if check_path(path):
-                        break
-                else:
-                    return False
-            if not alternatives:
-                return True
-            for checks in alternatives:
-                for check_path in checks:
-                    if not check_path(path):
-                        break
-                else:
-                    return True
-            return False
 
-        return match
+_NOTHING = "(?!)"  # a regex that matches nothing
 
 
 @functools.lru_cache(maxsize=256)
@@ -315,10 +303,12 @@ def _atomic_join(parts: list[str], star: str) -> str:
 
 
 @functools.lru_cache(maxsize=256)
-def _glob_regex(pattern: str) -> "re.Pattern | None":
-    """SQLite's GLOB as a regex; None matches nothing."""
+def _glob_regex(pattern: str) -> re.Pattern:
+    """SQLite's GLOB as a regex."""
     parts = _glob_parts(pattern)
-    return None if parts is None else re.compile(_atomic_join(parts, ".*"), re.DOTALL)
+    return re.compile(
+        _NOTHING if parts is None else _atomic_join(parts, ".*"), re.DOTALL
+    )
 
 
 @functools.lru_cache(maxsize=256)
@@ -349,9 +339,9 @@ def _pattern_regex(pattern: str, atomic: bool) -> "str | None":
 
 
 @functools.lru_cache(maxsize=256)
-def _pattern_matcher(pattern: str) -> "re.Pattern | None":
+def _pattern_matcher(pattern: str) -> re.Pattern:
     regex = _pattern_regex(pattern, atomic=True)
-    return None if regex is None else re.compile(regex)
+    return re.compile(_NOTHING if regex is None else regex)
 
 
 def _inline(value: str) -> "BindParameter":
@@ -383,8 +373,7 @@ def _compile_pattern_match_sqlite(element, compiler, **kwargs):
 
 def glob_match(path: str, pattern: str) -> bool:
     """SQLite's GLOB."""
-    regex = _glob_regex(pattern)
-    return regex is not None and regex.fullmatch(path) is not None
+    return _glob_regex(pattern).fullmatch(path) is not None
 
 
 _DS_ENCODE_RE = re.compile(r"[^a-zA-Z0-9_/:\-]")

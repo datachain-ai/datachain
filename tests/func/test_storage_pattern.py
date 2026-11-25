@@ -109,6 +109,7 @@ GLOB_PATTERNS = [
     "**/nested/**/report.json",
     "**/**/report.json",
     "*/**/report.json",
+    "?/**/*.json",
     "nest*/**/report.json",
     "*/report.json",
     "*/*/report.json",
@@ -121,6 +122,16 @@ GLOB_PATTERNS = [
 def reports_dir(tmp_path):
     instantiate_tree(tmp_path, REPORTS_TREE)
     return tmp_path
+
+
+@pytest.fixture(params=["read_storage", "list_storage"])
+def storage_paths(request):
+    def paths(uri, **kwargs):
+        if request.param == "read_storage":
+            return sorted(dc.read_storage(uri, **kwargs).to_values("file.path"))
+        return sorted(row.path for row in dc.list_storage(uri, **kwargs))
+
+    return paths
 
 
 def python_glob(root, pattern):
@@ -143,15 +154,11 @@ def test_recursive(tmp_dir):
 
 
 @pytest.mark.parametrize("pattern", GLOB_PATTERNS)
-def test_read_storage_selects_the_files_python_glob_selects(reports_dir, pattern):
-    chain = dc.read_storage(f"{reports_dir}/{pattern}")
-    assert sorted(chain.to_values("file.path")) == python_glob(reports_dir, pattern)
-
-
-@pytest.mark.parametrize("pattern", GLOB_PATTERNS)
-def test_list_storage_selects_the_files_python_glob_selects(reports_dir, pattern):
-    rows = dc.list_storage(f"{reports_dir}/{pattern}")
-    assert sorted(r.path for r in rows) == python_glob(reports_dir, pattern)
+def test_pattern_selects_the_files_python_glob_selects(
+    reports_dir, storage_paths, pattern
+):
+    expected = python_glob(reports_dir, pattern)
+    assert storage_paths(f"{reports_dir}/{pattern}") == expected
 
 
 @pytest.mark.parametrize(
@@ -161,84 +168,59 @@ def test_list_storage_selects_the_files_python_glob_selects(reports_dir, pattern
         ("**", ["notreport.json", "report.json", "report1.json"]),
         ("**/nested/*.json", ["nested/notreport.json", "nested/report.json"]),
         ("*/report.json", ["a/report.json", "nested/report.json"]),
+        (
+            "{,*/report.json}",
+            [
+                "a/report.json",
+                "nested/report.json",
+                "notreport.json",
+                "report.json",
+                "report1.json",
+            ],
+        ),
     ],
 )
-def test_read_storage_without_recursion_reads_globstar_as_no_folders(
-    reports_dir, pattern, expected
+def test_pattern_without_recursion_matches_only_its_explicit_folders(
+    reports_dir, storage_paths, pattern, expected
 ):
-    chain = dc.read_storage(f"{reports_dir}/{pattern}", recursive=False)
-    assert sorted(chain.to_values("file.path")) == expected
+    assert storage_paths(f"{reports_dir}/{pattern}", recursive=False) == expected
 
 
-def test_read_storage_globstar_after_wildcard_folder_reads_its_own_files(tmp_path):
-    instantiate_tree(
-        tmp_path, {"2021": {"a.jpg": "", "x": {"b.jpg": ""}}, "2022": {"c.png": ""}}
-    )
-    chain = dc.read_storage(f"{tmp_path}/202?/**/*.{{jpg,png}}")
-    assert sorted(chain.to_values("file.path")) == [
-        "2021/a.jpg",
-        "2021/x/b.jpg",
-        "2022/c.png",
-    ]
-
-
-def test_read_storage_overlapping_brace_alternatives_read_each_file_once(reports_dir):
-    chain = dc.read_storage(f"{reports_dir}/*.{{json,js*}}")
-    assert sorted(chain.to_values("file.path")) == [
-        "notreport.json",
-        "report.json",
-        "report1.json",
-    ]
-
-
-def test_list_storage_overlapping_brace_alternatives_list_each_file_once(reports_dir):
-    rows = dc.list_storage(f"{reports_dir}/*.{{json,js*}}")
-    assert sorted(r.path for r in rows) == [
-        "notreport.json",
-        "report.json",
-        "report1.json",
-    ]
-
-
-def test_read_storage_without_recursion_brace_folder_and_pattern_read_both(
-    reports_dir,
+def test_overlapping_brace_alternatives_return_each_file_once(
+    reports_dir, storage_paths
 ):
-    chain = dc.read_storage(f"{reports_dir}/{{,*/report.json}}", recursive=False)
-    assert sorted(chain.to_values("file.path")) == [
-        "a/report.json",
-        "nested/report.json",
+    assert storage_paths(f"{reports_dir}/*.{{json,js*}}") == [
         "notreport.json",
         "report.json",
         "report1.json",
     ]
 
 
-def test_read_storage_thousand_brace_alternatives_of_one_folder(reports_dir):
-    chain = dc.read_storage(f"{reports_dir}/report{{1..1000}}.js?n")
-    assert chain.to_values("file.path") == ["report1.json"]
-
-
-@pytest.fixture
-def sqlite_999_variables(test_session):
-    db = test_session.catalog.warehouse.db.db
-    limit = db.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
-    yield
-    db.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, limit)
+def test_thousand_brace_alternatives_of_one_folder(reports_dir, storage_paths):
+    assert storage_paths(f"{reports_dir}/report{{1..1000}}.js?n") == ["report1.json"]
 
 
 @skip_if_not_sqlite
-def test_read_storage_thousand_brace_alternatives_after_limiting_sqlite_variables(
-    reports_dir, test_session, sqlite_999_variables
+def test_thousand_brace_patterns_after_limiting_sqlite_variables(
+    reports_dir, test_session
 ):
-    uri = f"{reports_dir}/report{{,{{1..1000}}}}.js?n"
+    db = test_session.catalog.warehouse.db.db
+    db.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+    uri = f"{reports_dir}/**/report{{,{{1..1000}}}}.js?n"
     chain = dc.read_storage(uri, session=test_session)
-    assert sorted(chain.to_values("file.path")) == ["report.json", "report1.json"]
+    assert sorted(chain.to_values("file.path")) == [
+        "a/b/c/report.json",
+        "a/nested/report.json",
+        "a/report.json",
+        "nested/deep/report.json",
+        "nested/report.json",
+        "report.json",
+        "report1.json",
+    ]
 
 
 @skip_if_not_sqlite  # hundreds of listings exceed ClickHouse's max_query_size
-def test_read_storage_hundreds_of_brace_folders_after_listing_their_parent(
-    reports_dir,
-):
+def test_hundreds_of_brace_folders_after_listing_their_parent(reports_dir):
     dc.read_storage(f"{reports_dir}/").exec()
     chain = dc.read_storage(f"{reports_dir}/{{a,nested,{{1..300}}}}/*.json")
     assert sorted(chain.to_values("file.path")) == [

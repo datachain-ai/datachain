@@ -7,8 +7,7 @@ from itertools import pairwise
 from datachain.client.fsspec import is_cloud_uri
 from datachain.lib.listing import ListScope, PathFilter, list_folder
 
-_MAGIC = re.compile(r"[*?[]")
-_RANGE = re.compile(r"(-?\d+|[^\W\d_])\.\.(-?\d+|[^\W\d_])(?:\.\.(-?\d+))?")
+_RANGE = re.compile(r"(-?[0-9]+|[A-Za-z])\.\.(-?[0-9]+|[A-Za-z])(?:\.\.(-?[0-9]+))?")
 
 
 def validate_cloud_bucket_name(uri: str) -> None:
@@ -58,7 +57,8 @@ def expand_brace_pattern(pattern: str) -> list[str]:
     """``pattern`` with its braces expanded, as bash does: ``{a,b}`` lists the
     alternatives, ``{1..9}`` and ``{a..z}`` a range, ``{1..9..2}`` one with a
     step, and ``{01..10}`` one with zero-padded numbers. A brace with neither,
-    such as ``{a}``, stays as it is.
+    such as ``{a}``, stays as it is. Unlike bash, spaces around an alternative
+    are dropped: ``{jpg, png}``.
 
     Examples:
         "*.{mp3,wav}" -> ["*.mp3", "*.wav"]
@@ -133,7 +133,7 @@ def storage_sources(uris: Sequence) -> list[tuple[str, tuple[str, ...]]]:
             base, pattern = split_uri_pattern(normalize_storage_uri(expanded))
             bases.setdefault(base, {})[pattern] = None
         sources += [
-            (base, () if [*patterns] == [None] else tuple(p or "**" for p in patterns))
+            (base, tuple(p or "**" for p in patterns) if any(patterns) else ())
             for base, patterns in bases.items()
         ]
     return sources
@@ -151,7 +151,7 @@ def path_filter(
         return PathFilter.ls(list_path, recursive)
     folder = _folder(list_path)
     alternatives = [_segments(p, recursive) for p in patterns]
-    descends = any(map(_descends, alternatives))
+    descends = any(_descends(s) for s in alternatives)
     paths = PathFilter.ls(list_path, descends)
     conditions = []
     for segments in alternatives:
@@ -175,9 +175,7 @@ def list_scope(
     heads, descends = [], False
     for pattern in patterns:
         segments = _segments(pattern, recursive)
-        glob_pattern = _glob(segments)
-        magic = _MAGIC.search(glob_pattern)
-        heads.append(glob_pattern[: magic.start()] if magic else glob_pattern)
+        heads.append(re.split(r"[*?[]", _glob(segments), maxsplit=1)[0])
         descends = descends or _descends(segments)
     prefix = folder + os.path.commonprefix(heads)  # noqa: RUF071 a key prefix
     if descends and prefix == folder:

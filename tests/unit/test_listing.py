@@ -587,7 +587,7 @@ def test_glob_match_is_sqlite_glob(pattern):
         path_filter("", ["d*/**/x*"], True),
         path_filter("", ["[^d]*/x*"], True),
         path_filter("", ["[.-0]*/x"], True),
-        path_filter("", ["a["], True),
+        path_filter("", ["*/a["], True),
         path_filter("", ["a*", "*.txt", "d*/**/x*"], True),
         path_filter("", ["**/?"], True),
     ],
